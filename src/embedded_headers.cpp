@@ -348,6 +348,31 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+    // The live-tree build/run pair (the running madc IS the compiler —
+    // ^B never re-parses, never execs a madc binary):
+    //   parse_build: emit a native artifact from the handle's EXISTING
+    //       parsed tree — the buffer the handle was last (re)parsed
+    //       from, unsaved edits included, is what compiles. kind: "exe"
+    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       gets diagnostics rows either way (a false always carries at
+    //       least one error row; a handle whose parse has error rows
+    //       never reaches the emitter). Build rows ride out_diags only —
+    //       parse_check stays parse-pure. True = the artifact was
+    //       written. The emit phase runs without yield points (it
+    //       briefly blocks a cooperative scheduler).
+    //   parse_run: run the handle's parsed tree in a fork() child (the
+    //       child inherits the tree, hands it to the backend, runs main
+    //       with argv[0] = the handle's filename; stdio is INHERITED —
+    //       suspend a tui first). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = it never ran:
+    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
+    //       no fork on this platform (win64). ^C reaches the guest
+    //       alone while it runs (the system(3) discipline).
+    // Thread contract: the runtime-eval confinement — a handle is used
+    // only from the thread/program that opened it.
+    bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		     const char *outpath);
+    int64_t parse_run(int64_t handle);
     //   lex_spans: the classes LEXING alone answers (keyword, number,
     //       string, comment — plus what the lexer's own maps know),
     //       from the buffer text only: no includes ingested, header
@@ -814,6 +839,8 @@ extern "C" {
     const char *__php_number_format_sep(int64_t, const char *);
     const char *__php_wordwrap_cstr(const char *, int64_t, const char *);
     const char *__php_wordwrap_value(value *, int64_t, const char *);
+    const char *__php_dirname_cstr(const char *, int64_t);
+    const char *__php_dirname_value(value *, int64_t);
     const char *__php_implode_cstr(const char *, array *);
     value *__php_array_pop_value(value *, array *);
     value *__php_array_shift_value(value *, array *);
@@ -913,6 +940,16 @@ namespace php {
     const char *number_format(int64_t number, const char *separator) { return __php_number_format_sep(number, separator); }
     const char *wordwrap(value &s, int64_t width, const char *brk) { return __php_wordwrap_value(&s, width, brk); }
     const char *wordwrap(const char *s, int64_t width, const char *brk) { return __php_wordwrap_cstr(s, width, brk); }
+    // PHP parity (zend_dirname): the parent path, `levels` times up
+    // (levels defaults to 1; PHP 8's ValueError on levels < 1 maps
+    // pre-L3 to a loud stderr refusal + ""). "." when no separator;
+    // trailing separators trimmed; on a WINDOWS HOST '\' separates too
+    // and a drive prefix survives. Ring-lifetime return (the c_str
+    // contract): pass onward or capture immediately.
+    const char *dirname(value &path) { return __php_dirname_value(&path, 1); }
+    const char *dirname(value &path, int64_t levels) { return __php_dirname_value(&path, levels); }
+    const char *dirname(const char *path) { return __php_dirname_cstr(path, 1); }
+    const char *dirname(const char *path, int64_t levels) { return __php_dirname_cstr(path, levels); }
     // PHP parity signature: implode(separator, array) -> the joined text.
     const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
     // Value-out element returns (the python::format out-param shape,

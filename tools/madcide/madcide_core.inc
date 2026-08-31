@@ -2790,22 +2790,12 @@ void run_ide(const char *path, bool ro)
     long es = ui::entity_by_name(w, "editor-state");
     // The profiles live beside THIS file: derive the directory from
     // __FILE__ (the include-resolved path), so madcide works from any
-    // cwd — the old cwd-relative "tools/madcide/profiles" only worked
-    // from the repository root.
-    const char *self = __FILE__;
-    // Take whichever separator is LAST: a Windows launch spells the source
-    // path with '\' (and the include chain may mix the two). Splitting on
-    // '/' alone cost the first genuine-Win validation its keybindings —
-    // every chord is profile data, so the session had arrows and no exit.
-    const char *sl = strrchr(self, '/');
-    const char *bs = strrchr(self, '\\');
-    if ( !sl || (bs && bs > sl) )
-	sl = bs;
-    if ( sl != 0 )
-	ui::set(w, es, "profile_dir",
-		format("{}/profiles", perl::substr(self, 0, sl - self)));
-    else
-	ui::set(w, es, "profile_dir", "profiles");
+    // cwd. php::dirname owns the split — on a WINDOWS host '\' separates
+    // too (a Windows launch spells the source path with '\'; splitting
+    // on '/' alone cost the first genuine-Win validation its keybindings,
+    // and every chord is profile data). No separator answers ".".
+    ui::set(w, es, "profile_dir",
+	    format("{}/profiles", php::dirname(__FILE__)));
     long t = ui::tui_open();
     if ( t == 0 )
 	return;

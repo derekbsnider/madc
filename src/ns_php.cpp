@@ -779,6 +779,87 @@ const char *php_implode_cstr(const char *glue, madc::value *arr)
 	return slot.c_str();
 }
 
+// php::dirname — zend_dirname parity (PHP 8): trailing separators trim,
+// the last component drops, separators before it trim; "." when no
+// separator remains; an all-separator path answers one separator; ""
+// stays "". A separator is '/' everywhere plus '\\' on a WINDOWS HOST
+// (PHP's IS_SLASH is a build-platform property, never an input mode),
+// and a drive prefix ("C:") survives untouched (dirname("c:foo") is
+// "c:.", dirname("C:\\") stays "C:\\").
+static bool php_dirname_is_sep(char c)
+{
+#ifdef _WIN32
+	return c == '/' || c == '\\';
+#else
+	return c == '/';
+#endif
+}
+
+static void php_dirname_once(std::string *ptr)
+{
+	std::string &s = *ptr;
+	size_t base = 0;
+	size_t end = s.size();
+#ifdef _WIN32
+	if ( s.size() >= 2 && s[1] == ':'
+	     && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) )
+		base = 2;
+#endif
+	if ( end == base )
+		return;			// empty (or a bare drive): unchanged
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 1) trailing separators
+	if ( end == base )
+	{
+		s.resize(base + 1);	// all separators: one survives
+		return;
+	}
+	while ( end > base && !php_dirname_is_sep(s[end - 1]) )
+		--end;			// 2) the last component
+	if ( end == base )
+	{
+		s.resize(base);		// no separator: "." (drive kept)
+		s += '.';
+		return;
+	}
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 3) separators before the component
+	if ( end == base )
+	{
+		s.resize(base + 1);	// the root: its separator survives
+		return;
+	}
+	s.resize(end);
+}
+
+static const char *php_dirname_slot(std::string &slot, int64_t levels)
+{
+	if ( levels < 1 )
+	{
+		// PHP 8 throws ValueError here; pre-L3 the loud-refusal
+		// convention answers instead of a throw escaping the
+		// extern-C boundary (the value_array_for_write precedent).
+		fprintf(stderr, "php::dirname: levels must be >= 1\n");
+		slot.clear();
+		return slot.c_str();
+	}
+	while ( levels-- > 0 )
+		php_dirname_once(&slot);
+	return slot.c_str();
+}
+
+const char *php_dirname_cstr(const char *path, int64_t levels)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = path ? path : "";
+	return php_dirname_slot(slot, levels);
+}
+const char *php_dirname_value(const madc::value *v, int64_t levels)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_dirname_slot(slot, levels);
+}
+
 // Value-out element returns — PHP's array_pop/array_shift return the
 // element itself (mixed), which only the carrier can represent.
 madc::value *php_array_pop_value(madc::value *out, madc::value *arr)
@@ -1004,6 +1085,8 @@ const char *__php_chunk_split_cstr(const char *a, int64_t b, const char *c) { re
 const char *__php_chunk_split_value(madc::value *a, int64_t b, const char *c) { return php_chunk_split_value(a, b, c); }
 const char *__php_number_format_sep(int64_t a, const char *b) { return php_number_format_sep(a, b); }
 const char *__php_wordwrap_cstr(const char *a, int64_t b, const char *c) { return php_wordwrap_cstr(a, b, c); }
+const char *__php_dirname_cstr(const char *a, int64_t b) { return php_dirname_cstr(a, b); }
+const char *__php_dirname_value(madc::value *a, int64_t b) { return php_dirname_value(a, b); }
 const char *__php_wordwrap_value(madc::value *a, int64_t b, const char *c) { return php_wordwrap_value(a, b, c); }
 const char *__php_implode_cstr(const char *a, madc::value *b) { return php_implode_cstr(a, b); }
 madc::value *__php_array_pop_value(madc::value *a, madc::value *b) { return php_array_pop_value(a, b); }
