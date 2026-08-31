@@ -1,0 +1,11 @@
+// Reducer for the silent operand-drop: two operands with no operator
+// between them used to resolve to exStack.top() and DROP the rest —
+// `var m = { "a" 1 }` compiled to `{ 1 }`, exit 0, wrong value. The
+// parseExpression finalize now refuses operand juxtaposition loudly.
+// Adjacent STRING literals are unaffected (lexer-level concatenation).
+// Oracle: g++ `std::vector<int> v{"a" 1};` -> "expected '}'".
+int main()
+{
+	var m = { "a" 1 };
+	return 0;
+}

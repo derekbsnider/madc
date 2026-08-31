@@ -502,6 +502,7 @@ TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
     CHECK(ev[0].text == "hello");
     CHECK(ev[1].kind == tui_event_kind::key);
     CHECK(ev[1].key == tui_key::left);	// edit focused: app owns the caret
+    CHECK(!ev[1].choice_focused);	// no focused choice: no row rides
 
     // Tab cycles focus onto the menu; arrows now navigate it (selection
     // is presentation state — the event only says "repaint").
@@ -535,6 +536,18 @@ TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
     keys.push_back(tui_keyev(tui_key::up));
     m.apply_keys(keys);
     CHECK(m.selection_of(1) == 2u);	// wrap back to Quit
+
+    // A key the widget does not consume (del/ins) reaches the application
+    // WITH the focused choice's live selection riding along — the app can
+    // act on the focused row while selection stays presentation state.
+    keys.clear();
+    keys.push_back(tui_keyev(tui_key::del));
+    ev = m.apply_keys(keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].key == tui_key::del);
+    CHECK(ev[0].choice_focused);
+    CHECK(ev[0].option == 2u);		// the wrapped-to Quit row
 
     // The selected option's highlight follows on the next compose.
     const tui_grid &g = m.compose(r, editor_tree(w, "abc", 0), 8, 40);

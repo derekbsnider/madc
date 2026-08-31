@@ -1,0 +1,11 @@
+// The kind-mix wall over an EXPRESSION literal (the decl-form twin is
+// tests/testvalueinitkeyedmix.mad): the carrier's kinds keep keyed and
+// indexed members apart, so a literal mixing a string KEY with a
+// positional element refuses at COMPILE time — through the same
+// carrier_list_elements wall the declaration literal runs.
+int main()
+{
+	var rows;
+	rows[] = { 1, "k": 2 };
+	return 0;
+}

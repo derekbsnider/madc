@@ -13,6 +13,14 @@ showcase programs, docs samples, and new tests.
   COMPILER GAP: fix the resolver/scan, never spell around it.
 - Prefer `var` / `madc::value` over `std::string`. Use `std::string`
   only when the point of the code IS C++/libstdc++ interop.
+- OWNER RULE (2026-08-31, stated repeatedly): in `.mad`/dialect source,
+  spell the carrier `var` — never `value`. `array` is fine for (and
+  only for) a variable that starts its life as an array — never spell
+  `array` on something that is not one. The
+  three names are one type under `--std=madc`; `var` is the dialect's
+  general spelling, `value` is the C++-interop name. Existing `value`
+  spellings convert as files are touched; the repo-wide sweep rides a
+  merge wave (full battery validates it).
 - Output goes through bare `print` / `println` / `format`
   (always-included madc intrinsics); a line that ends in `\n` under
   `print` is a `println` line. Never `cout` / iostream output in

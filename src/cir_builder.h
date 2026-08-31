@@ -717,11 +717,29 @@ class CirBuilder {
 	// lowered by array_list_init_call.
 	node_t array_decl_ctor_call(TokenDecl *sdcl);
 	// The carrier's brace-list initializer: default construction plus one
-	// registered `push` per element ({} = madarray_make_array, an empty
-	// ARRAY). carrier_push_def_for classifies an element expression's type
-	// onto the push row the registry (add_array_methods) binds for it.
+	// registered `push` per positional element ({} = madarray_make_array,
+	// an empty ARRAY) and one slot ASSIGNMENT per keyed element
+	// (`{ "a": 1 }` — carrier_slot_call + the registered operator= row,
+	// the same lane `m[key] = value` binds). carrier_row_def_for
+	// classifies an element expression's type onto the named row the
+	// registry (add_array_methods / assign_ops) binds for it;
+	// carrier_push_def_for / carrier_assign_def_for name the two rows.
 	node_t array_list_init_call(TokenDecl *sdcl);
+	// The ONE list-literal element lowering behind array_list_init_call
+	// AND the expression literal (translate_expr's carrier ObjTemp
+	// branch): the kind-mix wall, the empty-{} madarray_make_array
+	// call, then per element one registered push (positional) or one
+	// slot assignment (keyed). `recv` supplies a FRESH receiver-address
+	// node per use (a node must not appear twice in the tree). Appends
+	// statements to `stmts`; returns NULL on success or the error node.
+	node_t carrier_list_elements(const std::function<node_t()> &recv,
+				     const std::vector<TokenBase *> &cargs,
+				     const std::vector<TokenBase *> &ckeys,
+				     TokenBase *origin,
+				     std::vector<node_t> &stmts);
+	FuncDef *carrier_row_def_for(const char *opname, DataDef *ad);
 	FuncDef *carrier_push_def_for(DataDef *ad);
+	FuncDef *carrier_assign_def_for(DataDef *ad);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,

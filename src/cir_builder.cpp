@@ -5742,19 +5742,23 @@ node_t CirBuilder::array_decl_ctor_call(TokenDecl *sdcl)
 	return array_ctor_call(var_emit_name(sdcl->var).c_str(), sdcl);
 }
 
-// Which registered `push` row serves a list element of type `ad` — the
-// element classification for the carrier's brace-list lowering. The rows
-// live in add_array_methods' bin_ops table (parser.cpp), the same ones a
-// script `v.push(x)` binds, so literals and pushes cannot drift apart.
+// Which registered row of `opname` serves a list element of type `ad` —
+// the ONE element classification for the carrier's brace-list lowering,
+// shared by its two rows: `push` (positional elements — the same rows a
+// script `v.push(x)` binds) and `operator=` (keyed elements' slot
+// assignment — the same rows `m[key] = value` binds). The rows live in
+// parser.cpp's registration tables (add_array_methods / assign_ops),
+// which OWN the runtime symbol each binds — so literals, pushes, and
+// keyed assignments cannot drift apart.
 // NULL = no row takes this element type (the caller errors loudly).
-FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+FuncDef *CirBuilder::carrier_row_def_for(const char *opname, DataDef *ad)
 {
 	DataDefCLASS *cdd = &ddARRAY;
 	if (is_char_pointer(ad))
-		return class_method_def_by_param(cdd, "push",
+		return class_method_def_by_param(cdd, opname,
 			[](DataDef *p) { return is_char_pointer(p); });
 	if (carrier_behind(ad))
-		return class_method_def_by_param(cdd, "push",
+		return class_method_def_by_param(cdd, opname,
 			[](DataDef *p) { return p && p->is_reference(); });
 	if (!ad || ad->is_pointer())
 		return NULL;
@@ -5767,17 +5771,32 @@ FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
 		want = DataType::dtDOUBLE;
 	else
 		return NULL;
-	return class_method_def_by_param(cdd, "push",
+	return class_method_def_by_param(cdd, opname,
 		[want](DataDef *p) {
 			return p && !p->is_pointer() && p->rawtype() == want;
 		});
 }
 
+FuncDef *CirBuilder::carrier_push_def_for(DataDef *ad)
+{
+	return carrier_row_def_for("push", ad);
+}
+
+FuncDef *CirBuilder::carrier_assign_def_for(DataDef *ad)
+{
+	return carrier_row_def_for("operator=", ad);
+}
+
 // The carrier's BRACE-LIST initializer — `var v = { a, b, c };`,
-// `var v{ a, b, c }`, `var v = {};`. The braces spell the carrier's own
-// list literal, not ctor overload selection: lower to default
-// construction plus one registered `push` per element. `{}` is an EMPTY
-// ARRAY, never a null value (madarray_make_array) — the braces spell a
+// `var v{ a, b, c }`, `var v = {};`, and the KEYED form
+// `var m = { "a": 1, 2, 3: x }` (owner 2026-08-31). The braces spell
+// the carrier's own list literal, not ctor overload selection: lower to
+// default construction plus, in element order, one registered `push`
+// per positional element and one slot ASSIGNMENT per keyed element —
+// carrier_slot_call (key vs index decided there, the subscript slot
+// model's one owner) receiving the registered operator= row, exactly
+// the lane `m[key] = value` lowers through. `{}` is an EMPTY ARRAY,
+// never a null value (madarray_make_array) — the braces spell a
 // container. Locals only: every site that reaches array_decl_ctor_call
 // declares fresh block-scope storage, so `&name` is the receiver.
 node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
@@ -5785,25 +5804,96 @@ node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
 	const std::string vname = var_emit_name(sdcl->var);
 	std::vector<node_t> stmts;
 	stmts.push_back(array_ctor_call(vname.c_str(), sdcl));
-	if (sdcl->ctor_args.empty()) {
+	if (node_t err = carrier_list_elements(
+		    [&]() { return object_addr(vname.c_str(), sdcl); },
+		    sdcl->ctor_args, sdcl->ctor_arg_keys, sdcl, stmts))
+		return err;
+	if (stmts.size() == 1)
+		return stmts[0];
+	node_t blk = list();
+	for (node_t s : stmts)
+		append(blk, s);
+	node_t b = node2(N_BLOCK, list(), blk, sdcl);
+	CIR_NODE(b)->synth_from_origin = true;
+	return b;
+}
+
+// The ONE list-literal element lowering — extracted from
+// array_list_init_call (2026-08-31) so the EXPRESSION literal (the
+// carrier ObjTemp branch in translate_expr) runs the identical loop:
+// the kind-mix wall, the empty-{} madarray_make_array call, then per
+// element one registered push (positional) or one slot assignment
+// (keyed). `recv` yields a fresh receiver-address node per use.
+node_t CirBuilder::carrier_list_elements(const std::function<node_t()> &recv,
+					 const std::vector<TokenBase *> &cargs,
+					 const std::vector<TokenBase *> &ckeys,
+					 TokenBase *origin,
+					 std::vector<node_t> &stmts)
+{
+	// The carrier's kinds keep keyed and indexed members APART (object
+	// = the map, array = the vector; madarray_key_slot and
+	// madarray_index_slot each vivify a NULL value to their own kind
+	// and REFUSE the other): a literal mixing a string KEY with a
+	// positional or integer-keyed element can never construct. Refuse
+	// at compile time, with the kinds named; the runtime refusal stays
+	// the catchable backstop.
+	if (!ckeys.empty()) {
+		bool has_skey = false, has_elem = false;
+		for (size_t ei = 0; ei < cargs.size(); ei++) {
+			TokenBase *k = ei < ckeys.size() ? ckeys[ei] : NULL;
+			switch (k ? Program::madc_array_index_kind(k)
+				  : Program::CarrierIndex::Index) {
+			case Program::CarrierIndex::Key:
+				has_skey = true;
+				break;
+			case Program::CarrierIndex::Runtime:
+				// A carrier key has no compile-time kind —
+				// the runtime kind refusal owns the mix
+				// question for it.
+				break;
+			default:
+				has_elem = true;
+				break;
+			}
+		}
+		if (has_skey && has_elem)
+			return error_node("a value literal cannot mix keyed "
+					  "(object) and positional/indexed "
+					  "(array) elements", origin);
+	}
+	if (cargs.empty()) {
 		const char *sym = "madarray_make_array";
 		need_output_extern(sym, true, { { {N_VOID}, true } });
 		referenced_funcs.insert(sym);
 		node_t args = list();
-		append(args, object_addr(vname.c_str(), sdcl));
-		node_t call = node2(N_CALL, id(sym, sdcl), args, sdcl);
+		append(args, recv());
+		node_t call = node2(N_CALL, id(sym, origin), args, origin);
 		CIR_NODE(call)->synth_from_origin = true;
-		stmts.push_back(node2(N_EXPR, list(), call, sdcl));
+		stmts.push_back(node2(N_EXPR, list(), call, origin));
 	}
-	for (TokenBase *elem : sdcl->ctor_args) {
-		FuncDef *fd = carrier_push_def_for(ctor_arg_datadef(elem));
+	for (size_t ei = 0; ei < cargs.size(); ei++) {
+		TokenBase *elem = cargs[ei];
+		TokenBase *key = ei < ckeys.size() ? ckeys[ei] : NULL;
+		FuncDef *fd = key
+			? carrier_assign_def_for(ctor_arg_datadef(elem))
+			: carrier_push_def_for(ctor_arg_datadef(elem));
 		if (!fd || fd->emit_symbol.empty())
 			return error_node("cannot initialize a value list "
 					  "element of this type", elem);
 		DataDef *pt = fd->parameters[1];
 		bool refp = fd->is_ref_param(1);
 		node_t args = list();
-		append(args, object_addr(vname.c_str(), sdcl));
+		// KEYED element: the receiver is the key's vivified SLOT
+		// (carrier_slot_call — the value-lvalue lane, key vs index
+		// decided there), assigned through the operator= row.
+		// Positional: the carrier itself, through the push row.
+		if (key)
+			append(args, node2(N_CAST, void_ptr_type(),
+					   carrier_slot_call(recv(), key,
+							     origin),
+					   origin));
+		else
+			append(args, recv());
 		std::vector<ExternParam> eparams;
 		eparams.push_back({ {N_VOID}, true });   // receiver (void*)
 		// The same argument branch order the ctor/method call paths
@@ -5841,14 +5931,7 @@ node_t CirBuilder::array_list_init_call(TokenDecl *sdcl)
 		CIR_NODE(call)->synth_from_origin = true;
 		stmts.push_back(node2(N_EXPR, list(), call, elem));
 	}
-	if (stmts.size() == 1)
-		return stmts[0];
-	node_t blk = list();
-	for (node_t s : stmts)
-		append(blk, s);
-	node_t b = node2(N_BLOCK, list(), blk, sdcl);
-	CIR_NODE(b)->synth_from_origin = true;
-	return b;
+	return NULL;
 }
 
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
@@ -6089,6 +6172,19 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 		if (TokenVar *rtv = dynamic_cast<TokenVar *>(arg))
 			return node2(N_CAST, void_ptr_type(),
 				     object_var_addr(rtv->var, arg), arg);
+
+	// A CARRIER LITERAL argument (`rows.push({...})`, an operator= rhs
+	// `rows[] = {...}` — owner 2026-08-31): translate_expr's carrier
+	// ObjTemp branch materializes the cleanup-tagged temp (storage +
+	// construct + the one list lowering) and yields its buffer lvalue,
+	// which DECAYS to the object pointer in the cast — the carrier
+	// argument convention. The class-temp tail below would build a
+	// struct temp and miss the carrier's construct/destruct pairing.
+	if (target == &ddARRAY)
+		if (TokenObjTemp *aot = dynamic_cast<TokenObjTemp *>(arg))
+			if (is_array_object(aot->obj_class))
+				return node2(N_CAST, void_ptr_type(),
+					     translate_expr(arg), arg);
 
 	// An AGGREGATE REFERENCE MEMBER (`_Alloc& __alloc_`, stored as a pointer
 	// slot) denotes its referent ([expr.ref]): the member's stored VALUE
@@ -12088,24 +12184,48 @@ bool CirBuilder::is_carrier_keyed_subscript(TokenBase *tb)
 }
 
 // The slot call for a carrier subscript — the ONE value-lvalue lane for
-// both index kinds: madarray_key_slot(recv, key) for a string KEY (the
+// every index kind: madarray_key_slot(recv, key) for a string KEY (the
 // vivified map entry), madarray_index_slot(recv, idx) for an integer
-// index (the vivified/extended array element). The runtime returns the
-// slot's address, so the call IS the value lvalue's address; N_DEREF of
-// it is the value lvalue the expression lanes return (&* folds back to
-// the call at every consumer that addresses it). recv_void: (void*)-cast
-// node addressing the carrier. Key vs index is Program::madc_array_key_index
-// — the one owner of that question (char pointers and c_str()-bearing
-// classes are keys; every other index is an element). The key argument: a
-// char pointer passes through; a c_str()-bearing class (std::string)
-// coerces through object_cstr_arg — the one existing class-to-cstr owner.
+// index (the vivified/extended array element), madarray_value_slot for
+// a CARRIER index (runtime kind dispatch, owner 2026-08-31), and
+// madarray_append_slot for the NULL-index APPEND (`rows[]`). The runtime
+// returns the slot's address, so the call IS the value lvalue's address;
+// N_DEREF of it is the value lvalue the expression lanes return (&*
+// folds back to the call at every consumer that addresses it).
+// recv_void: (void*)-cast node addressing the carrier. Classification is
+// Program::madc_array_index_kind — the one owner of that question. The
+// key argument: a char pointer passes through; a c_str()-bearing class
+// (std::string) coerces through object_cstr_arg — the one existing
+// class-to-cstr owner.
 node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
 				     TokenBase *origin)
 {
 	node_t a = list();
 	append(a, recv_void);
 	const char *entry;
-	if (Program::madc_array_key_index(index)) {
+	if (!index) {
+		// `rows[]` — the APPEND slot (PHP's empty accessor, owner
+		// 2026-08-31): push a null element, land the assignment in
+		// it. The parser spells an appending subscript as a NULL
+		// index; only the receiver argument travels.
+		entry = "madarray_append_slot";
+		need_output_extern(entry, true, { { {N_VOID}, true } },
+				   { N_CHAR });
+		node_t call = node2(N_CALL, id(entry, origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	}
+	Program::CarrierIndex ik = Program::madc_array_index_kind(index);
+	if (ik == Program::CarrierIndex::Runtime) {
+		// A CARRIER index (`bag[v]`) dispatches on ITS live kind at
+		// runtime (owner 2026-08-31): the index travels by object
+		// address like any carrier argument.
+		entry = "madarray_value_slot";
+		need_output_extern(entry, true,
+				   { { {N_VOID}, true }, { {N_VOID}, true } },
+				   { N_CHAR });
+		append(a, object_arg_addr(index, &ddARRAY));
+	} else if (ik == Program::CarrierIndex::Key) {
 		entry = "madarray_key_slot";
 		need_output_extern(entry, true,
 				   { { {N_VOID}, true }, { {N_CHAR}, true } },
@@ -19612,6 +19732,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		DataDefCLASS *ocdd = ot->obj_class;
 		char otname[40];
 		snprintf(otname, sizeof(otname), "__madc_objtmp_%d", m_strtmp_counter++);
+		// The CARRIER literal in EXPRESSION position (`rows[] =
+		// {...}`, `rows.push({...})`, `m = {...}` — the braced
+		// list re-spelled to the functional form, owner
+		// 2026-08-31): materialize a cleanup-tagged carrier temp
+		// (opaque buffer + madarray_construct; the cleanup
+		// attribute destructs at scope exit) and run the ONE
+		// list-literal lowering into it (carrier_list_elements —
+		// the same loop the declaration literal runs), yielding
+		// the temp's buffer lvalue; its name decays to the object
+		// pointer at every consumer (the carrier argument
+		// convention).
+		if (is_array_object(ocdd) && ot->braced) {
+			m_pending_stmts.push_back(array_storage_decl(otname, tb));
+			std::vector<node_t> lst;
+			lst.push_back(array_ctor_call(otname, tb));
+			if (node_t err = carrier_list_elements(
+				    [&]() { return object_addr(otname, tb); },
+				    ot->ctor_args, ot->ctor_arg_keys, tb, lst))
+				return err;
+			for (node_t s : lst)
+				m_pending_stmts.push_back(s);
+			return id(otname, tb);
+		}
 		Variable *otmp = new Variable(otname, *ocdd, 1, NULL, false);
 		otmp->flags |= vfLOCAL;
 		m_pending_stmts.push_back(var_decl(otmp, tb));

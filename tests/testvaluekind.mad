@@ -1,0 +1,21 @@
+// Kind predicates on the intrinsic carrier — is_string / is_object /
+// is_array beside the existing is_null (madarray_* entries, the ddARRAY
+// accessor registry): a script walking mixed-shape data (a manifest's
+// bare-string vs object TUs) must ask the kind BEFORE a keyed access,
+// which is a script error on scalars by design (madarray_key_slot).
+// Oracle: madc::value's own is_* contract (include/libmadc/value.h).
+int main()
+{
+    var v;
+    js::parse(v, "{\"o\":{\"k\":1},\"a\":[1,2],\"s\":\"x\",\"z\":null}");
+    println("top: obj={} str={} arr={} null={}",
+	    v.is_object() ? 1 : 0, v.is_string() ? 1 : 0,
+	    v.is_array() ? 1 : 0, v.is_null() ? 1 : 0);
+    println("kids: o={} a={} s={} z={}",
+	    v["o"].is_object() ? 1 : 0, v["a"].is_array() ? 1 : 0,
+	    v["s"].is_string() ? 1 : 0, v["z"].is_null() ? 1 : 0);
+    var s = "text";
+    var a2 = {1, 2};
+    println("vars: s={} a={}", s.is_string() ? 1 : 0, a2.is_array() ? 1 : 0);
+    return 0;
+}

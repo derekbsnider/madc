@@ -1069,21 +1069,15 @@ void tui_refresh(int64_t t)
     u->painted = madc::hub::tui_grid();
 }
 
-// Install a keybinding PROFILE: a value object mapping key sequences
-// ("^k s" — space-separated spellings, the same names key events carry)
-// to action names. Bound sequences resolve ahead of every built-in key
-// interpretation and arrive as { event:"action", action:"name",
-// seq:"^k s" } (an unbound completion has an empty action and the seq —
-// the app may report it). The whole table replaces the previous one — a
-// profile swap is one call; an empty object clears. False + stderr on an
-// invalid table (unknown spelling, printable-headed sequence, a sequence
-// shadowing a shorter binding), leaving the installed table unchanged.
-bool tui_bind_keys(int64_t t, madc::value &table)
+// The ONE table -> tui_bindings converter (tui_bind_keys installs the
+// result, tui_validate_keys only verifies — valid here IS bindable
+// there): a value object mapping key sequences to action names becomes
+// a finalized bindings table. False = invalid table (unknown spelling,
+// printable-headed sequence, a sequence shadowing a shorter binding);
+// `err` names the offense for the installing caller's stderr.
+static bool table_to_bindings(madc::value &table, madc::hub::tui_bindings &b,
+			      std::string &err)
 {
-    ui_tui *u = ui_tui_get(t);
-    if ( !u )
-	return false;
-    madc::hub::tui_bindings b;
     if ( table.is_object() )
     {
 	const std::map<std::string, madc::value> &o = table.as_object();
@@ -1094,14 +1088,30 @@ bool tui_bind_keys(int64_t t, madc::value &table)
 		? std::string() : it->second.as_string();
 	    if ( !b.bind(it->first, action) )
 	    {
-		fprintf(stderr, "ui::tui_bind_keys: bad key sequence `%s`\n",
-			it->first.c_str());
+		err = "bad key sequence `" + it->first + "`";
 		return false;
 	    }
 	}
     }
+    return b.finalize(err);
+}
+
+// Install a keybinding PROFILE: a value object mapping key sequences
+// ("^k s" — space-separated spellings, the same names key events carry)
+// to action names. Bound sequences resolve ahead of every built-in key
+// interpretation and arrive as { event:"action", action:"name",
+// seq:"^k s" } (an unbound completion has an empty action and the seq —
+// the app may report it). The whole table replaces the previous one — a
+// profile swap is one call; an empty object clears. False + stderr on an
+// invalid table, leaving the installed table unchanged.
+bool tui_bind_keys(int64_t t, madc::value &table)
+{
+    ui_tui *u = ui_tui_get(t);
+    if ( !u )
+	return false;
+    madc::hub::tui_bindings b;
     std::string err;
-    if ( !b.finalize(err) )
+    if ( !table_to_bindings(table, b, err) )
     {
 	fprintf(stderr, "ui::tui_bind_keys: %s\n", err.c_str());
 	return false;
@@ -1110,9 +1120,25 @@ bool tui_bind_keys(int64_t t, madc::value &table)
     return true;
 }
 
+// Handle-free whole-table validation (the gateway seam): the SESSION
+// layer validates keybinding-profile data — refusal before any state
+// commits — while only the TUI CLIENT holds a tui handle to bind into.
+// The same converter as tui_bind_keys, so a table this accepts binds.
+// The verdict is SILENT by contract: the session composes its own
+// refusal message, and a live tui's stderr is invisible under the alt
+// screen anyway.
+bool tui_validate_keys(madc::value &table)
+{
+    madc::hub::tui_bindings b;
+    std::string err;
+    return table_to_bindings(table, b, err);
+}
+
 // The next SEMANTIC event as a value object (names at the boundary):
 //   { event:"text",   text:"..." }       a coalesced printable run
-//   { event:"key",    key:"up"|"^s"|.. } a non-printable key
+//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
+//       option:N (1-based, the choose contract) when a focused choice
+//       existed — the focused row for keys the widget does not consume
 //   { event:"action", action:"name", seq:"^k s" }  a bound sequence
 //   { event:"choose", option:N, action:"name" }  N is 1-based — the
 //       same number the level-0 menu prints for that option
@@ -1146,6 +1172,12 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	case madc::hub::tui_event_kind::key:
 	    f["event"] = madc::value(std::string("key"));
 	    f["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    // A focused choice's live selection rides along (1-based, the
+	    // choose contract) so the application can act on the focused
+	    // row for keys the widget does not consume (ins/del); absent
+	    // when nothing choice-shaped had focus.
+	    if ( e.choice_focused )
+		f["option"] = madc::value((int64_t)(e.option + 1));
 	    break;
 	case madc::hub::tui_event_kind::choose:
 	    f["event"] = madc::value(std::string("choose"));

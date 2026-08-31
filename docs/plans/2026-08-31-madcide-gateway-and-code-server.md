@@ -76,6 +76,67 @@ engine's focused-choice widget (arrows/enter in tui_model) — respelling
 that from profiles means the scoped tables reaching the engine model;
 design when a personality needs it.
 
+**LANDED (s147, feature/madcide-project-claude):** `@scope` lines in
+the one `parse_keys` (later lines win — the defaults-merge rule), baked
+modal defaults as inline data, and the migration — prompt/confirm/
+project/pane arms all dispatch looked-up NAMES. The named residue
+stands. `toggle_profile` now cycles the `.keys` files found in the
+profile directory (sorted; no name ladder).
+
+**Personality roster (owner, same day: "we should also have ones for
+emacs and neovim"):** `emacs.keys` shipped — the honest C-chord subset
+(C-x families map directly). Two named ENGINE gaps hold back the rest
+of it: no Meta key spelling (an ESC prefix cancels a pending chord) and
+no C-SPC/NUL spelling (set-mark). A vim/neovim personality is NOT a
+keys file — vim is modal (normal/insert, counts, operator+motion); the
+natural substrate is the @scope tables (modes = scopes the MAIN key
+stream consults; `i` flips scope) — a dedicated slice, never a flat
+profile pretending. *(Owner flagged the missing neovim.keys again
+2026-08-31; the modes-as-scopes slice was built on the session surface
+so the mode routing is written once.)*
+
+**LANDED (s149, feature/madcide-project-claude) — vi MODES-AS-SCOPES:**
+`profiles/neovim.keys` is the modal personality: its main table is
+vim's control chords (^R redo, ^F/^B/^D/^U pages, ^L refresh, the ^W
+window family) and `@normal`/`@insert` are the vi mode tables — all
+data through the one parse_keys. Scoped keys now store AS WRITTEN and
+match exact-then-lowercase, so the vi case alphabet (a/A, i/I, o/O,
+x/X) is spelled in data — lowercase-only scopes (every existing
+profile) stay case-insensitive. The session's vi arm
+(`IdeSession::vi_event`) owns the GRAMMAR: counts multiply (2d3w = 6),
+d/c pend and double to the line-wise form, motions are the existing
+shared action vocabulary executed through apply_ide_event recursion
+(one dispatch), count+G = the :N landing rule, `@normal :` enters the
+one colon line, esc clears pending state. A profile carrying @normal
+data loads in normal mode (data decides, no name check); the ^N
+palette's `v` row toggles modal editing and refuses with the road
+where no @normal data exists. %M renders showmode, %k doubles as
+showcmd. Honest absences documented in the profile: no registers/put,
+no text objects, no repeat, no gg (1G), byte-wise operator spans, w/b
+are the shared end-of-word motions (dw = vim's `de` shape) — each a
+demand-driven refinement, never pretended around. The slice's live pty
+probe also CAUGHT a standing defect: a prompt opened from a FOCUSED
+pane row could never commit (the engine hands enter back as a choose;
+prompt_event ignored it) — fixed in its own commit, choose routes
+through the same @prompt data as the enter key, pinned headlessly.
+
+**Modes are general + the ^N MODES PALETTE (owner rulings 2026-08-31,
+LANDED same day):** "no reason our editor/ide cannot have modes" — any
+personality can reach a mode. joe's `^N` (freed from its ^K E shortcut)
+raises the modes palette — the one popup-list widget — whose keys are
+`@modes` profile data through the one parse_keys (baked defaults:
+`:` enters the vi colon line, enter opens the focused row, esc
+dismisses). `^N :` is the two-keystroke door into colon mode, and the
+palette is the only legal spelling — the chord tables refuse prefix
+shadows, so `^n` and `^n :` cannot coexist in the main table. COLON
+MODE is the prompt machinery plus ONE interpreter over the existing
+vocabulary (`w q q! wq x`, `:N` goto, `e <file>`, `r <file>`, `!cmd`
+via the terminal-request seam) — the human face of slice 3's
+commands-with-arguments; `:q` refuses a dirty buffer with the q verb's
+own message (vim's shape). The vi normal/insert mode joined the
+palette as its `v` row when the modes-as-scopes slice landed (s149,
+above); its `@normal :` enters this same line.
+
 ## The ^P project window (RULED 2026-08-31)
 
 ^P's PRIMARY function is the project (palette quick-open is secondary),
@@ -107,6 +168,29 @@ correlating directly with `--project`:
 - ^B correlates: with a manifest open, Build = the `--project` build;
   the manifest's commands section (already named in the ide-controls
   plan) feeds the ^B rows.
+
+**LANDED (s147, feature/madcide-project-claude):** the window
+(grouped rows; [cwd] joins only while filtering), the popup semantics,
+the implicit project + materialization on the second file
+(`<base>.prj.json`, immediate persistence, announce), startup
+read-back, projadd/projdel/projaddcur (+ `^k j` in joe.keys),
+`@project` keys as data in all three profiles, the native OBJECT
+manifest in `--project` (read_project_manifest routes object=native /
+array=cc.json import), js::parse + real js::stringify over the one
+JSON bridge, and the engine's focused-selection-on-key-events
+(ins/del act on the focused row). **The ^B correlation landed in the
+same arc (owner: before the merge wave):** with a manifest open the
+rows go project-wide — Check project (a project handle's FILE-tagged
+per-TU rows; the diags pane leads foreign-file rows with the file, and
+goto OPENS it), Build project (`madc::project_build` — the --project
+AOT lane in-process; output = the manifest's `output`, else its base),
+Run project (verdict first, then `madc::project_run` — the --project
+JIT lane in a fork child; win = a child of self) — and the manifest's
+`commands` section APPENDS its rows as data ({project} joined
+build_subst's vocabulary). An implicit project keeps the single-buffer
+rows. Named residues: no cancellation chain into the project emit lane
+(Stop lands pre-start only); the frozen-project twin of --run-frozen;
+genuine-Win validation of the child-of-self run arm.
 
 Deferred (unchanged): fuzzy filesystem walk; command palette; MRU
 ordering + dirty/diag markers ride this arc's compose work.
@@ -182,8 +266,32 @@ API keeps the door open.
    render/input/refresh/suspend; the session never touches a tui
    handle. The `@pane` binding mechanism + migration of hardwired modal
    keys lands here (client-side).
+
+   **LANDED (s148, feature/madcide-project-claude):** `class IdeSession`
+   (madcide_core.inc = the session layer; the bags stay its private
+   storage initially) with the two surface methods plus lifecycle
+   (open/attach/close) and the seam verbs; the new
+   `tools/madcide/madcide_client.inc` is the TUI client (run_ide, the
+   return-key pause, request servicing). Across the seam: client-pushed
+   FACTS (viewport, terminal presence, pending chord), the KEY TABLE as
+   data (profiles validate handle-free via the new
+   `ui::tui_validate_keys` — one converter with tui_bind_keys — and the
+   client rebinds on a generation counter), and parked TERMINAL
+   REQUESTS (run/projrun/cmd/shell/refresh; the client drains one after
+   each event, suspends, calls `term_exec` back, pauses, resumes —
+   headless sessions refuse exactly as before). The layer boundary is
+   GATED: `scripts/check-madcide-seam.sh` in fulltest (session layer
+   tui-free, negative-controlled). Named residues: state still lives on
+   the bags (member migration rides later slices); events still cross
+   as key/text shapes (commands-with-arguments is slice 3, where modal
+   key→name lookup moves client-side); vised keeps its own smaller
+   apply_event (an example, not the tool).
 2. **The project window** — the first feature written against the API
    (manifest reader/writer symmetry, groups, membership verbs).
+   *(Executed s147 with the owner's re-sequencing — the window came
+   first and pulled the @scope binding mechanism forward with it; the
+   seam slice is now next, and the window's state migrates onto the
+   session type with everything else. ^B correlation still open.)*
 3. **Commands-with-arguments + events**: prompt completions become
    command calls; change notifications for clients.
 4. **Presence + permission tiers**: multi-client sessions, per-client
@@ -196,6 +304,26 @@ API keeps the door open.
    first; trackers by demand.
 
 ## Open questions
+
+- **madcide as an executable artifact** (owner, 2026-08-31: "we should
+  also be able to build it as an executable binary, and then we need to
+  decide if madc should output the binary directly or if madc should
+  emit c11 code and pass that to the compiler we use to build madc").
+  Standing recommendation (unruled): BOTH lanes already exist as
+  first-class outputs of the one IR (ADR 0001) — default to the direct
+  AOT `--exe` lane (self-contained; no C toolchain on the user's
+  machine; ELF/PE/Mach-O writers in-tree; the artifact kind the
+  frozen-artifact taxonomy sanctions), with `--emit=c11` → system
+  compiler as the optimizing RELEASE lane (gcc/clang -O2 beats MIR's
+  fast-but--O1-shape codegen, and it exercises the transpiler). The
+  real work item is neither codegen lane but the LINK: madcide calls
+  the compiler as a library (madc::parse_open/parse_check/
+  project_build, runtime-compiled .madv verbs), so its binary must link
+  the whole madc engine — the libmadc embedding arc's first real
+  consumer: (a) the exe lane learns to link programs that use
+  compiler-as-library namespaces against libmadc, (b) data files
+  (profiles, themes, verb bodies) resolve relative to the binary. Cut
+  as its own slice after the seam + merge wave.
 
 - Is the composed TREE part of the public API (trivial thin clients) or
   a TUI-client detail (raw-state projections only)? Lean: both are

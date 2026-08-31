@@ -783,6 +783,11 @@ public:
     // like FuncDef::param_default_tokens). The parsed ctor_args trees cannot
     // serialize; the flush re-runs the args-list parse over these tokens.
     std::vector<TokenBase *> ctor_arg_src;
+    // The carrier's KEYED list elements (`var m = { "a": 1, 2, "b": 3 }`):
+    // parallel to ctor_args once any key appears — keys[i] is element i's
+    // key expression, NULL for a positional element. Carrier brace lists
+    // only; class ctor-args lists never carry keys (C++ has none).
+    std::vector<TokenBase *> ctor_arg_keys;
     // The ctor_args above came from a BRACED list (`T v{a, b}` / `T v = {a, b}`),
     // not a paren list. [dcl.init.list]/3 makes the two differ for exactly one
     // reason worth carrying this bit: a class with an initializer-list
@@ -6185,10 +6190,16 @@ public:
     // a current-class type alias, a variable matching a contextual type name, and
     // the class scope an expression name resolves to.
     DataDef *resolve_named_datadef(const std::string &name);
-    // Key-vs-element classification for a carrier subscript INDEX: a
-    // string-typed index is an object-kind KEY, anything else an array
-    // element. One owner — the CIR's slot-call routing reads it too.
-    static bool madc_array_key_index(TokenBase *idx);
+    // Key-vs-element classification for a carrier subscript INDEX — the
+    // ONE owner of the question; the CIR's slot-call routing and the
+    // literal kind-mix wall both read it. A char pointer or a
+    // c_str()-bearing class instance is an object-kind KEY; a CARRIER
+    // index has no compile-time kind — it dispatches at RUNTIME on its
+    // live kind (madarray_value_slot: string keys, numeric kinds index —
+    // owner 2026-08-31, replacing the old .c_str()-to-key ceremony);
+    // every other index is an array-kind element INDEX.
+    enum class CarrierIndex { Index, Key, Runtime };
+    static CarrierIndex madc_array_index_kind(TokenBase *idx);
     // Every carrier subscript types as the carrier itself — the SLOT model
     // (a value lvalue over madarray_key_slot / madarray_index_slot). See
     // parser.cpp for the rules and the owner law behind it.
@@ -6381,10 +6392,34 @@ public:
 					      TokenBase *open_brc);
     // A braced-init-list call ARGUMENT ([over.ics.list]): target = the
     // callee's parameter at the current position (hidden-this aware).
-    // Re-spells through the owner above; errors LOUDLY on any shape it
-    // cannot serve — never lets the bare '{' into parseExpression.
+    // When the SELECTED signature's parameter cannot take a braced list,
+    // the callee's method-overload set is searched for one that can
+    // (rows.push({...}) binds push(value&) although the first registered
+    // row is push(const char*)). Re-spells through the owner above;
+    // errors LOUDLY on any shape it cannot serve — never lets the bare
+    // '{' into parseExpression.
     TokenBase *respell_braced_list_call_argument(class TokenCallFunc *tc,
 						 TokenBase *open_brc);
+    // Can this type be the target of the braced-list re-spell? The ONE
+    // owner of the capability question respell_braced_list_for_target's
+    // arms answer (class, or a non-_Complex plain aggregate) — the
+    // overload search above asks it per candidate WITHOUT mutating the
+    // token stream.
+    static bool braced_list_target_capable(DataDef *dd);
+    // The ONE ctor-args/list-elements reader: `expr` and (carrier lists
+    // only) `key: value` elements up to `close_id`, comma-separated, into
+    // the PARALLEL args/keys vectors (keys stays empty for an all-
+    // positional list; NULL = positional otherwise — TokenDecl's
+    // convention). Serves the declaration ctor-args loop, the ObjTemp
+    // functional-construction reader, and the forest flush's re-parse.
+    // `refuse_brace` walls a '{'-headed element even for non-carrier
+    // lists (the ObjTemp reader's behavior); a carrier list always
+    // refuses it. Consumes the close token.
+    void parse_ctor_args_list(std::vector<TokenBase *> &args,
+			      std::vector<TokenBase *> &keys,
+			      bool carrier_list, bool refuse_brace,
+			      TokenID close_id, const char *close_sp,
+			      TokenBase *loc);
     // The ONE brace-list reader for compound-literal-shaped initializers in
     // EXPRESSION position: `(T){...}` (C99 cast arm) and `T{...}` on a plain
     // struct ([expr.type.conv] list-init of an aggregate prvalue — same C11

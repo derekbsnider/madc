@@ -232,5 +232,13 @@ void *madc_lex_spans(void *result, void *source, void *filename);
 int64_t madc_project_open(void *manifest_path);
 void *madc_project_tus(void *result, int64_t handle);
 bool madc_project_close(int64_t handle);
+// The project build/run pair (madcide ^B correlation): the --project
+// AOT lane in-process (result = diagnostics rows; a false always
+// carries an error row) and the --project JIT lane in a fork child
+// (negative = never ran: -1 unreadable manifest, -2 empty, -3 fork/
+// spawn failed).
+bool madc_project_build(void *result, void *manifest_path, void *kind,
+			void *outpath);
+int64_t madc_project_run(void *manifest_path);
 
 #endif // __NS_COMMON_H

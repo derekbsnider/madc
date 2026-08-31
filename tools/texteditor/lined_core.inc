@@ -22,7 +22,7 @@ void bind_lineed_verbs(long w)
     // THE subject-document rule (verbs/_subject.madv) is prepended to
     // every body at bind: `doc` = the actor's active document, else the
     // world's one "document". One owner; bodies never look it up.
-    value pro;
+    var pro;
     if ( !php::file_get_contents(pro,
 	    "tools/texteditor/verbs/_subject.madv") )
     {
@@ -31,7 +31,7 @@ void bind_lineed_verbs(long w)
     }
     for ( int k = 0; k < 9; k = k + 1 )
     {
-	value src;
+	var src;
 	if ( !php::file_get_contents(src,
 		format("tools/texteditor/verbs/{}.madv", LINEED_FILES[k])) )
 	{
@@ -41,7 +41,7 @@ void bind_lineed_verbs(long w)
 	var full = format("{}\n{}", pro, src);
 	ui::bind_verb(w, LINEED_VERBS[k], full.c_str());
     }
-    value chk;
+    var chk;
     if ( !php::file_get_contents(chk, "tools/texteditor/checks/editable.madv") )
     {
 	println(stderr, "cannot load the editable check body");
@@ -58,7 +58,7 @@ void bind_lineed_verbs(long w)
 long setup_document(long w, const char *path, bool ro)
 {
     long doc = ui::create(w, "document");
-    value seed;
+    var seed;
     if ( !php::file_get_contents(seed, path) )
 	return 0;
     ui::text_load(w, doc, seed.c_str());
@@ -81,7 +81,7 @@ void run_session(const char *path, bool ro)
     long es = ui::create(w, "editor-state");
     bind_lineed_verbs(w);
 
-    value out;
+    var out;
     char line[256];
     while ( fgets(line, sizeof(line), stdin) )
     {

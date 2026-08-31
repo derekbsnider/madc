@@ -393,8 +393,11 @@ static void print_usage(const char *prog)
 "\n"
 "Input / mode:\n"
 "  <file>                  compile and JIT-run a single source file\n"
-"  --project <db.json>     build from a compile_commands.json: compile each\n"
-"                          translation unit, link the modules, run the entry\n"
+"  --project <prj.json>    build from a project manifest: compile each\n"
+"                          translation unit, link the modules, run the entry.\n"
+"                          Two shapes by top-level JSON kind: an OBJECT is the\n"
+"                          native manifest (tus/entry/output — what madcide\n"
+"                          writes), an ARRAY is a compile_commands.json import\n"
 "  <file.json>             a .json source is treated as a project manifest\n"
 "                          (implicit --project; gcc/clang-style by extension)\n"
 "  <file.o>...             execute madc-compiled relocatable objects (-c/-r\n"
@@ -1046,7 +1049,7 @@ int main(int argc, char **argv)
     if ( project_manifest )
     {
         std::string err;
-        if ( !read_compile_commands(project_manifest, manifest, err) )
+        if ( !read_project_manifest(project_manifest, manifest, err) )
         {
             std::cerr << "madc --project: " << err << std::endl;
             return 1;

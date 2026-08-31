@@ -87,12 +87,12 @@ long line_start_of(long w, long doc, long line)
 // is dropped; one an insert lands inside grows.
 void shift_hspans(long w, long es, long off, long delta)
 {
-    value hs;
+    var hs;
     ui::get(hs, w, es, "hspans");
     if ( hs.is_null() || php::count(hs) == 0 )
 	return;
     var out = {};
-    for ( value r : hs )
+    for ( var r : hs )
     {
 	long s = r["s"].as_integer();
 	long e = r["e"].as_integer();
@@ -113,7 +113,7 @@ void shift_hspans(long w, long es, long off, long delta)
 	}
 	if ( e > s )
 	{
-	    value nr;
+	    var nr;
 	    nr["s"] = s;
 	    nr["e"] = e;
 	    nr["c"] = r["c"];
@@ -167,9 +167,9 @@ long caret_to_line(long w, long doc, long line, long col)
 void derive_access(long w, long es)
 {
     bool editable = true;
-    value affs;
+    var affs;
     ui::affordances(affs, w, es);
-    for ( value a : affs )
+    for ( var a : affs )
     {
 	var act = format("{}", a["action"]);
 	if ( act == "c" )
@@ -213,7 +213,7 @@ long setup_editor(long w, const char *path, bool ro)
 // = the verb ended the session (q/q! set the quit flag).
 bool do_verb(long w, long es, const char *verb)
 {
-    value out;
+    var out;
     ui::act(out, w, es, verb, "");
     ui::set(w, es, "msg", out.c_str());
     var qd;
@@ -252,9 +252,9 @@ long clamped_caret(long w, long es, long doc)
 // The {caret, modified} payload rule — ONE spelling; checkpoint, undo,
 // and redo all ride it, so every history entry restores document and
 // interaction state together.
-void edit_meta(value &m, long w, long es, long doc, long caret)
+void edit_meta(var &m, long w, long es, long doc, long caret)
 {
-    value p;
+    var p;
     p["caret"] = caret;
     var mod;
     ui::get(mod, w, doc, "modified");
@@ -265,7 +265,7 @@ void edit_meta(value &m, long w, long es, long doc, long caret)
     m = p;
 }
 
-void restore_meta(long w, long es, long doc, value &m)
+void restore_meta(long w, long es, long doc, var &m)
 {
     ui::set(w, es, "caret", m["caret"].as_integer());
     ui::set(w, doc, "modified", m["modified"].as_boolean());
@@ -275,7 +275,7 @@ void restore_meta(long w, long es, long doc, value &m)
 // interaction state that belongs to that moment.
 void edit_checkpoint(long w, long es, long doc, long caret)
 {
-    value m;
+    var m;
     edit_meta(m, w, es, doc, caret);
     ui::text_checkpoint(w, doc, m);
 }
@@ -285,9 +285,9 @@ void edit_checkpoint(long w, long es, long doc, long caret)
 // belonged to the document being restored.
 bool undo_edit(long w, long es, long doc)
 {
-    value now;
+    var now;
     edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
-    value m;
+    var m;
     if ( !ui::text_undo(m, w, doc, now) )
     {
 	ui::set(w, es, "msg", "Nothing to undo.");
@@ -299,9 +299,9 @@ bool undo_edit(long w, long es, long doc)
 
 bool redo_edit(long w, long es, long doc)
 {
-    value now;
+    var now;
     edit_meta(now, w, es, doc, clamped_caret(w, es, doc));
-    value m;
+    var m;
     if ( !ui::text_redo(m, w, doc, now) )
     {
 	ui::set(w, es, "msg", "Nothing to redo.");
@@ -326,7 +326,7 @@ void cut_selection(long w, long es, long doc, long caret, bool editable)
     ui::set(w, es, "mark", -1);
     if ( lo == hi )
 	return;
-    value t;
+    var t;
     ui::text(t, w, doc);
     ui::set(w, es, "clip", perl::substr(t, lo, hi - lo));
     if ( editable )
@@ -365,7 +365,7 @@ void paste_clip(long w, long es, long doc, long caret)
 
 // The kind=="text" arm both editors share: search-pattern append while
 // searching, else a gated insert at the caret.
-void edit_text_run(long w, long es, long doc, long caret, value &ev)
+void edit_text_run(long w, long es, long doc, long caret, var &ev)
 {
     var t = format("{}", ev["text"]);
     if ( es_flag(w, es, "searching") )
@@ -408,7 +408,7 @@ void do_find(long w, long es, long doc, long caret)
 }
 
 // Search-mode key handling; every key is consumed while searching.
-bool search_key(long w, long es, long doc, long caret, value &ev)
+bool search_key(long w, long es, long doc, long caret, var &ev)
 {
     var k = format("{}", ev["key"]);
     if ( k == "enter" )
@@ -443,10 +443,10 @@ bool search_key(long w, long es, long doc, long caret, value &ev)
 
 // The heading bar: the caller's label + the badge rule (read-only wins
 // over modified).
-void compose_heading(value &head, long w, long es, long doc,
+void compose_heading(var &head, long w, long es, long doc,
 		     const char *label)
 {
-    value h;
+    var h;
     h["role"] = "heading";
     h["label"] = label;
     var m;
@@ -465,14 +465,14 @@ void compose_heading(value &head, long w, long es, long doc,
 // JOE's ^K B / ^K K), where a mark WITHOUT an end lights nothing; an
 // editor that never sets `bend` or the flag (vised) keeps the original
 // live mark..caret rule unchanged.
-void compose_edit_node(value &ed, long w, long es, long doc, long caret)
+void compose_edit_node(var &ed, long w, long es, long doc, long caret)
 {
-    value e;
+    var e;
     e["role"] = "edit";
-    value t;
+    var t;
     ui::text(t, w, doc);
     e["content"] = t;
-    value hints;
+    var hints;
     hints["caret"] = caret;
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
@@ -492,10 +492,10 @@ void compose_edit_node(value &ed, long w, long es, long doc, long caret)
 // vised never sets it) > search prompt > transient message > "Ln N,
 // Col M" + the caller's idle suffix (vised's key legend; empty for
 // madcide).
-void compose_status(value &status, long w, long es, long doc, long caret,
+void compose_status(var &status, long w, long es, long doc, long caret,
 		    const char *idle_suffix)
 {
-    value st;
+    var st;
     st["role"] = "status";
     var msg;
     ui::get(msg, w, es, "msg");
@@ -527,27 +527,27 @@ void compose_status(value &status, long w, long es, long doc, long caret,
 
 // The Save/Find/Quit menu — the SAME w/f/q actions both editors
 // dispatch to the same script verbs (criterion 4's choice tree).
-void compose_menu(value &menu)
+void compose_menu(var &menu)
 {
-    value save;
+    var save;
     save["role"] = "item";
     save["content"] = "Save";
     var sa = {};
     sa.push("w");
     save["actions"] = sa;
-    value find;
+    var find;
     find["role"] = "item";
     find["content"] = "Find";
     var fa = {};
     fa.push("f");
     find["actions"] = fa;
-    value quit;
+    var quit;
     quit["role"] = "item";
     quit["content"] = "Quit";
     var qa = {};
     qa.push("q");
     quit["actions"] = qa;
-    value mn;
+    var mn;
     mn["role"] = "choice";
     var opts = {};
     opts.push(save);
@@ -559,7 +559,7 @@ void compose_menu(value &menu)
 
 // Caret movement and the direct edit keys (backspace/del/enter). True =
 // the key was one of ours; false = the dispatcher's key, not handled.
-bool edit_key(long w, long es, long doc, long caret, value &ev)
+bool edit_key(long w, long es, long doc, long caret, var &ev)
 {
     var k = format("{}", ev["key"]);
     bool editable = es_flag(w, es, "editable");

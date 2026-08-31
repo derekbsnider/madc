@@ -49,7 +49,7 @@ extern thread_local bool madc_verbose;
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
 #include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper)
-#include "madc_project.h"	// read_compile_commands — the project-handle manifest reader
+#include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -5451,7 +5451,7 @@ int64_t internal_program_project_open(::Program &self,
 {
     ProjectManifest manifest;
     std::string err;
-    if ( !read_compile_commands(manifest_path, manifest, err) )
+    if ( !read_project_manifest(manifest_path, manifest, err) )
 	return 0;
     parse_project_state *ps = new parse_project_state();
     for ( size_t i = 0; i < manifest.tus.size(); ++i )
@@ -5494,6 +5494,163 @@ bool internal_program_project_close(int64_t handle)
 	if ( ps->tus[i] > 0 )
 	    internal_program_parse_close(ps->tus[i]);
     return parse_project_handles().close(handle);
+}
+
+// The project build (madcide ^B correlation, design doc 2026-08-31:
+// "with a manifest open, Build = the --project build"): the CLI's
+// --project AOT lane (madc_project_emit_native — every TU compiled with
+// its manifest options, ONE MIR-assembled native image) run IN-PROCESS.
+// kind vocabulary = native_kind_of (the one owner; "obj" over multiple
+// TUs takes per-TU naming, so an explicit outpath with it is refused —
+// the CLI's own rule). Diagnostics come back as rows; the lane's TU
+// children live inside the emit call, so a failure's detail is the
+// named backend-diagnostics-as-data residue — the caller runs a project
+// CHECK first (project_open + per-TU parse_check) for real rows, and a
+// false here always carries at least one error row saying that.
+// Thread contract: the runtime-eval confinement; the whole call runs
+// without yield points (it blocks a cooperative scheduler — the
+// project-scale instance of the named backend-yield residue).
+bool internal_program_project_build(::Program &self,
+				    const std::string &manifest_path,
+				    const std::string &kind_name,
+				    madc::value &out,
+				    const std::string &outpath)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    // A synthesized-diagnostics carrier: the emit lane's TU children are
+    // its own; this Program only holds the pre-emit refusals + the belt.
+    ::Program synth(self.engine);
+    bool ok = false;
+    {
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	ProjectManifest manifest;
+	std::string err;
+	if ( kind_ok && !read_project_manifest(manifest_path, manifest, err) )
+	{
+	    kind_ok = false;
+	    synth.set_error(::Program::DiagnosticPhase::compiler, err,
+			    manifest_path.c_str());
+	}
+	if ( kind_ok && kind == mnkObject && !outpath.empty()
+	  && manifest.tus.size() > 1 )
+	{
+	    kind_ok = false;
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "cannot combine an output path with \"obj\" over"
+			    " multiple translation units (per-TU naming)",
+			    manifest_path.c_str());
+	}
+	if ( kind_ok )
+	    ok = madc_project_emit_native(*self.engine, manifest, kind,
+					  outpath.empty()
+					      ? (kind == mnkObject
+						     ? (const char *)0
+						     : "a.out")
+					      : outpath.c_str(),
+					  std::vector<std::string>(),
+					  self.registration_policy.enable_forest_bind,
+					  self.forest_bind_path) == 0;
+	if ( !ok && !child_has_error_row(synth) )
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "project build failed with no recorded diagnostic"
+			    " (run a project check for per-TU rows; backend"
+			    " output goes to stderr)",
+			    manifest_path.c_str());
+    }
+    diagnostic_rows_from_child(synth, out);
+    return ok;
+}
+
+// The project Run (madcide ^B correlation): the --project JIT lane
+// (madc_project_execute — parse every TU with its manifest options,
+// link the modules, run the entry) in a fork() child — parse_run's fork
+// seam, project-wide. stdio is INHERITED (the caller owns the terminal
+// handoff); ^C reaches the guest alone (the system(3) discipline).
+// Returns the guest's exit status (128+signal on a signal death);
+// negative = it never ran: -1 unreadable manifest, -2 empty manifest,
+// -3 fork/spawn failed.
+// Windows arm: no fork — a child OF SELF runs the --project lane
+// (madc_self_exe_path + Process::run_and_wait, design (b)'s
+// child-of-self shape; the frozen-project twin of parse_run's
+// --run-frozen optimization is a named residue).
+int64_t internal_program_project_run(::Program &self,
+				     const std::string &manifest_path)
+{
+    ProjectManifest manifest;
+    std::string err;
+    if ( !read_project_manifest(manifest_path, manifest, err) )
+	return -1;
+    if ( manifest.tus.empty() )
+	return -2;
+#ifdef _WIN32
+    (void)self;
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child's console
+    std::cerr.flush();
+    std::string selfexe = madc_self_exe_path();
+    if ( selfexe.empty() )
+	return -3;
+    std::vector<std::string> cargv;
+    cargv.push_back(selfexe);
+    cargv.push_back("--project");
+    cargv.push_back(manifest_path);
+    madc::error rerr;
+    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
+    return rc < 0 ? -3 : rc;
+#else
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child
+    std::cerr.flush();
+    struct sigaction ign, old_int, old_quit;
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &ign, &old_int);
+    sigaction(SIGQUIT, &ign, &old_quit);
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+	__madc_task_atfork_child();
+	signal(SIGINT, SIG_DFL);	// CLI parity: the guest starts
+	signal(SIGQUIT, SIG_DFL);	// with default dispositions
+	std::string argv0 = manifest_path;
+	char *guest_argv[2];
+	guest_argv[0] = &argv0[0];
+	guest_argv[1] = (char *)0;
+	int rc = madc_project_execute(*self.engine, manifest, 1, guest_argv,
+				      self.registration_policy.enable_forest_bind,
+				      self.forest_bind_path);
+	// The CLI's own mapping: negative = infrastructure failure -> 1.
+	exit(rc < 0 ? 1 : (rc & 0xff));
+    }
+    int64_t status = -3;
+    if ( pid > 0 )
+    {
+	int ws = 0;
+	pid_t r;
+	do
+	    r = waitpid(pid, &ws, 0);
+	while ( r < 0 && errno == EINTR );
+	if ( r == pid )
+	{
+	    // THE status mapper (child_status_exit_mapping owner) —
+	    // its -1 (neither exited nor signaled) folds into -3.
+	    int mapped = map_child_status(ws);
+	    if ( mapped >= 0 )
+		status = mapped;
+	}
+    }
+    sigaction(SIGINT, &old_int, (struct sigaction *)0);
+    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
+    return status;
+#endif
 }
 
 bool internal_program_runtime_eval_expression(::Program &self,

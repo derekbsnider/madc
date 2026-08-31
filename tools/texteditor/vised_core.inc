@@ -21,7 +21,7 @@
 
 // Apply ONE semantic event (the value shape ui::tui_event produces).
 // False = the session should end.
-bool apply_event(long w, long es, long doc, value &ev)
+bool apply_event(long w, long es, long doc, var &ev)
 {
     var kind = format("{}", ev["event"]);
     long caret = clamped_caret(w, es, doc);
@@ -93,23 +93,23 @@ bool apply_event(long w, long es, long doc, value &ev)
 // would typeset sequentially — heading bar, the edit window (caret and
 // mark..caret selection as hints), a status line, and the Choice menu
 // (criterion 4: numbered in line mode, navigable here).
-void compose_tree(value &root, long w, long es, long doc)
+void compose_tree(var &root, long w, long es, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
 
-    value head;
+    var head;
     var p;
     ui::get(p, w, doc, "path");
     compose_heading(head, w, es, doc, p.c_str());
-    value ed;
+    var ed;
     compose_edit_node(ed, w, es, doc, caret);
-    value status;
+    var status;
     compose_status(status, w, es, doc, caret,
 	"  ^S save ^F find ^B mark ^K cut ^U paste ^Q quit ^X discard");
-    value menu;
+    var menu;
     compose_menu(menu);
 
-    value r;
+    var r;
     r["role"] = "group";
     var kids = {};
     kids.push(head);
@@ -138,10 +138,10 @@ void run_visual(const char *path, bool ro)
     bool run = true;
     while ( run )
     {
-	value tree;
+	var tree;
 	compose_tree(tree, w, es, doc);
 	ui::tui_render(t, w, tree);
-	value ev;
+	var ev;
 	if ( !ui::tui_event(ev, t, w) )
 	    break;
 	run = apply_event(w, es, doc, ev);

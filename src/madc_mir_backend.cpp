@@ -161,6 +161,15 @@ double madarray_as_real(void *ptr)
     }
 int64_t madarray_is_null(void *ptr)
     { return ((madc::value *)ptr)->is_null() ? 1 : 0; }
+// The rest of madc::value's kind predicates (value.h contract) — a script
+// walking mixed-shape data (a manifest's bare-string vs object TUs) must
+// ask the kind BEFORE a keyed access, which is a script error on scalars.
+int64_t madarray_is_string(void *ptr)
+    { return ((madc::value *)ptr)->is_string() ? 1 : 0; }
+int64_t madarray_is_object(void *ptr)
+    { return ((madc::value *)ptr)->is_object() ? 1 : 0; }
+int64_t madarray_is_array(void *ptr)
+    { return ((madc::value *)ptr)->is_array() ? 1 : 0; }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.
@@ -228,6 +237,31 @@ void *madarray_index_slot(void *ptr, int64_t idx)
 	} catch ( const std::exception & ) {
 	    __madc_throw_cstr("[index]: value is frozen");
 	}
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
+// `bag[v]` with a CARRIER index — dispatch on the INDEX's live kind
+// (owner 2026-08-31, the elegance ruling: `m[kn]` keys without .c_str()
+// ceremony): a string-kind index KEYS the object kind (madarray_key_slot),
+// integer/bool kinds INDEX the array kind, a real truncates (the numeric
+// subscript rule). Deliberately NOT PHP's coercion table: "8" stays the
+// string key "8", never index 8. A null or container-kind index refuses
+// loudly — indexing by nothing (or by a container) is a bug, never an
+// intent. Before this entry the compile-time index path coerced the
+// carrier's POINTER to the element index (a silent address-as-index).
+void *madarray_value_slot(void *ptr, void *idx)
+    {
+	const madc::value *iv = (const madc::value *)idx;
+	if ( iv->is_string() )
+	{
+	    std::string key((const char *)iv->data(), iv->size());
+	    return madarray_key_slot(ptr, key.c_str());
+	}
+	if ( iv->is_integer() || iv->is_boolean() || iv->is_real() )
+	    return madarray_index_slot(ptr, iv->as_integer());
+	__madc_throw_cstr(iv->is_null()
+	    ? "[var]: null index — a key is a string, an index an integer"
+	    : "[var]: index value must be a string (key) or a number (index)");
 	return NULL;	// unreachable: __madc_throw_cstr does not return
     }
 
@@ -434,6 +468,21 @@ void *madarray_push_value(void *ptr, void *other)
 	madarray_push_target((madc::value *)ptr)
 	    .push_back(*(const madc::value *)other);
 	return ptr;
+    }
+
+// `arr[] = x` — PHP's empty append accessor (owner 2026-08-31): push one
+// null element and return ITS slot address, so the parser's registered
+// operator= rows land the RHS in the appended element — the index slot's
+// append twin (one assignment vocabulary for keyed, indexed, and appended
+// slots). Vivify/kind/freeze errors ride madarray_push_target. vector
+// storage: the slot stays valid until the array next grows, exactly the
+// index-slot contract the CIR consumes within one expression.
+void *madarray_append_slot(void *ptr)
+    {
+	std::vector<madc::value> &vec =
+	    madarray_push_target((madc::value *)ptr);
+	vec.push_back(madc::value());
+	return &vec.back();
     }
 
 // `var v = {};` — an EMPTY brace list is an empty ARRAY, not a null

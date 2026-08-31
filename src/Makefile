@@ -928,6 +928,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
 	@cd .. && bash scripts/check-select-fire-owner.sh
 	@cd .. && bash scripts/check-madcide-single-owners.sh
+	@cd .. && bash scripts/check-madcide-seam.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh

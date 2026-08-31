@@ -14,6 +14,6 @@ while ( k <= total )
         line = k;
     k = k + 1;
 }
-value l;
+var l;
 ui::text_line(l, w, doc, line);
 return format("{}: {}", line, l);

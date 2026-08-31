@@ -1,0 +1,11 @@
+entry=main
+n=3 ok=1 pi=1 nul=1
+tu0=a.mad tu1file=b.c
+compact={"entry":"main","n":3,"nul":null,"ok":true,"pi":3.5,"tus":["a.mad",{"file":"b.c"}]}
+rt=b.c
+varr=1 len=3
+bad=0 isnull=1
+slen=8
+n42=42
+"a": 1
+flat=["x",42]

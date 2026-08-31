@@ -1,0 +1,31 @@
+// madc::project_build / madc::project_run — the --project AOT and JIT
+// lanes as library verbs (the ^B correlation's engine pair, design doc
+// 2026-08-31). Oracle: the CLI's own --project lanes over the SAME
+// manifest (testprojectnative.prj.json → "a_secret=100 from_b=300").
+int main()
+{
+    var diags;
+    bool ok = madc::project_build(diags, "tests/testprojectnative.prj.json",
+				  "exe", "testprojectapi_prog");
+    println("build: ok={} diags={} artifact={}", ok ? 1 : 0,
+	    php::count(diags),
+	    php::file_exists("testprojectapi_prog") ? 1 : 0);
+    // The linked image runs and prints the project's own line.
+    long rc = system("./testprojectapi_prog");
+    println("artifact-rc={}", rc);
+    remove("testprojectapi_prog");
+
+    // The JIT lane in a fork() child — stdio INHERITED, so the guest's
+    // line prints right here; the return is the guest's exit status.
+    long rrc = madc::project_run("tests/testprojectnative.prj.json");
+    println("run-rc={}", rrc);
+
+    // Refusals: an unreadable manifest answers rows / -1, never silence.
+    var d2;
+    println("bad-build: ok={} rows>=1 {}",
+	    madc::project_build(d2, "tests/no_such.prj.json", "exe",
+				"testprojectapi_never") ? 1 : 0,
+	    php::count(d2) >= 1 ? 1 : 0);
+    println("bad-run: {}", madc::project_run("tests/no_such.prj.json"));
+    return 0;
+}

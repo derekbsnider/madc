@@ -23,3 +23,10 @@
 ^d delword
 ^t gotoline
 ^r insertfile
+# The project window (^F here: ^P is this profile's keymap toggle; the
+# JOE diamond is not pico's) + its @project keys as DATA (the baked
+# defaults add esc/backspace).
+^f project
+@project ins projadd
+@project del projdel
+@project enter projopen

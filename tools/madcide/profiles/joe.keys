@@ -16,11 +16,18 @@
 # The IDE keys (owner ruling 2026-08-27): JOE's four control-key arrow
 # synonyms (^B ^F ^P ^N — the WordStar diamond's control spellings) are
 # RECLAIMED; the real arrow keys serve motion. ^R is JOE's retype.
-^p palette
+# ^P raises the PROJECT window (owner ruling 2026-08-31: the project is
+# ^P's primary function; quick-open rides its filter; esc dismisses).
+# ^N raises the MODES palette (owner ruling 2026-08-31): ":" inside it
+# enters the vi colon line (^N : — the @modes keys are data; the chord
+# table cannot spell ^n : beside a bare ^n, so the palette IS the door).
+# ^K E keeps editfile, which ^N used to shortcut.
+^p project
 ^f find
-^n editfile
+^n modes
 ^b build
 ^r refresh
+^k j projaddcur
 # Movement (arrows/home/end/pgup/pgdn are the primary motion keys; these
 # delegate to the one shared movement implementation — the action name
 # is the key vocabulary)
@@ -66,3 +73,10 @@
 ^k ; check
 ^k i outline
 ^k a view
+# The project window's keys (@project scope — pane/modal keys are
+# profile DATA; the baked defaults add esc/backspace). Enter names what
+# a CHOOSE means; ins prompts for the file to add; del removes the
+# focused row's membership (never the file).
+@project ins projadd
+@project del projdel
+@project enter projopen

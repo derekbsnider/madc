@@ -267,12 +267,19 @@ namespace ui {
     // previous one; an empty object clears). False + stderr on an invalid
     // table: unknown spelling, a printable-HEADED sequence (it would
     // swallow typing), or a sequence shadowing a shorter binding.
+    //
+    // tui_validate_keys answers whether a table WOULD bind — the same
+    // validation as tui_bind_keys, with no tui handle and a SILENT
+    // verdict (the caller composes its own refusal message). The
+    // gateway seam leans on it: the session layer validates profile
+    // data; only the TUI client binds.
     int64_t tui_open();
     void    tui_close(int64_t t);
     int64_t tui_rows(int64_t t);
     int64_t tui_cols(int64_t t);
     void    tui_render(int64_t t, int64_t w, value &tree);
     bool    tui_bind_keys(int64_t t, value &table);
+    bool    tui_validate_keys(value &table);
     bool    tui_event(value &out, int64_t t, int64_t w);
     // Hand the terminal back to run a child process (JOE ^K Z shell):
     // tui_suspend restores the screen and modes as found; tui_resume

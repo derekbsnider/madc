@@ -148,6 +148,9 @@ extern "C" {
     const char *__js_encodeURIComponent_cstr(const char *);
     const char *__js_decodeURIComponent_cstr(const char *);
     const char *__js_stringify_cstr(array *);
+    const char *__js_stringify_indent_cstr(value *, int64_t);
+    int64_t __js_parse(value *, const char *);
+    int64_t __js_parse_vtext(value *, value *);
 }
 
 namespace js {
@@ -159,7 +162,17 @@ namespace js {
     const char *atob(const char *input) { return __js_atob_cstr(input); }
     const char *encodeURIComponent(const char *input) { return __js_encodeURIComponent_cstr(input); }
     const char *decodeURIComponent(const char *input) { return __js_decodeURIComponent_cstr(input); }
+    // JSON.stringify parity: the whole value kind set (object/array/
+    // string/number/bool/null), recursive; the indent overload is the
+    // `space` parameter (pretty-printed). Ring-lifetime returns. ONE
+    // carrier overload per arity — array/value/var are one type under
+    // --std=madc, so an array&/value& pair would collide.
     const char *stringify(array &values) { return __js_stringify_cstr(&values); }
+    const char *stringify(value &v, int64_t indent) { return __js_stringify_indent_cstr(&v, indent); }
+    // JSON.parse parity: strict JSON, the whole text or nothing. False =
+    // malformed (JS throws; the pre-L3 mapping is the bool + a null out).
+    bool parse(value &out, const char *text) { return __js_parse(&out, text) != 0; }
+    bool parse(value &out, value &text) { return __js_parse_vtext(&out, &text) != 0; }
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
@@ -385,6 +398,30 @@ namespace madc {
     int64_t project_open(const char *manifest);
     value &project_tus(value &out, int64_t handle);
     bool project_close(int64_t handle);
+    // The project build/run pair (^B correlation: with a manifest open,
+    // Build = the --project build):
+    //   project_build: the --project AOT lane IN-PROCESS — every TU
+    //       compiled with its manifest options, ONE MIR-assembled native
+    //       image ("exe"; "obj" = per-TU objects, so an explicit outpath
+    //       with more than one TU is refused — the CLI's rule). Empty
+    //       outpath = a.out ("exe") / per-TU naming ("obj"). out_diags
+    //       gets rows either way; a false always carries at least one
+    //       error row — per-TU DETAIL comes from a project CHECK
+    //       (project_open + parse_check per TU), run one first. The
+    //       whole call has no yield points (it blocks a cooperative
+    //       scheduler for the build's duration).
+    //   project_run: the --project JIT lane in a fork() child (parse,
+    //       link, run the entry; stdio INHERITED — suspend a tui first;
+    //       ^C reaches the guest alone). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = never ran: -1
+    //       unreadable manifest, -2 empty manifest, -3 fork/spawn
+    //       failed. Windows: a child OF SELF runs the --project lane
+    //       (no fork; the frozen-project twin of parse_run's
+    //       --run-frozen is a named residue).
+    // Thread contract: the runtime-eval confinement.
+    bool project_build(value &out_diags, const char *manifest,
+		       const char *kind, const char *outpath);
+    int64_t project_run(const char *manifest);
 
     // The build surface (madcide IDE-10c): the CLI's AOT lane run
     // IN-PROCESS — parse `path` in a child Program (relative #includes
@@ -1809,12 +1846,19 @@ namespace ui {
     // previous one; an empty object clears). False + stderr on an invalid
     // table: unknown spelling, a printable-HEADED sequence (it would
     // swallow typing), or a sequence shadowing a shorter binding.
+    //
+    // tui_validate_keys answers whether a table WOULD bind — the same
+    // validation as tui_bind_keys, with no tui handle and a SILENT
+    // verdict (the caller composes its own refusal message). The
+    // gateway seam leans on it: the session layer validates profile
+    // data; only the TUI client binds.
     int64_t tui_open();
     void    tui_close(int64_t t);
     int64_t tui_rows(int64_t t);
     int64_t tui_cols(int64_t t);
     void    tui_render(int64_t t, int64_t w, value &tree);
     bool    tui_bind_keys(int64_t t, value &table);
+    bool    tui_validate_keys(value &table);
     bool    tui_event(value &out, int64_t t, int64_t w);
     // Hand the terminal back to run a child process (JOE ^K Z shell):
     // tui_suspend restores the screen and modes as found; tui_resume

@@ -1,0 +1,5 @@
+// Native-manifest project test (owner ruling 2026-08-31): the top-level
+// OBJECT shape — what madcide writes — drives the same two-TU build as
+// testproject.cc.json's array import. The real build is driven by
+// testprojectnative.prj.json via the --project flag in the .flags
+// fixture. This file is an ignored positional.

@@ -1,0 +1,14 @@
+// Reducer for the head-colon spin class: a ':' HEADING an expression
+// parse has no owner (every legal ':' — ternary, case label, range-for,
+// label, bitfield — consumes a left side first), and the old pushback
+// handed the SAME token back to the caller's loop forever. The original
+// reducer shape (`m = { "a": 1 };`) became LEGAL when assignment-rhs
+// carrier literals landed (owner 2026-08-31), so the wall is now pinned
+// through a keyed element MISSING its key — the ':' heads the element's
+// own expression parse. Must ERROR, never hang.
+// Oracle: g++ `v = {: 2};` -> "expected primary-expression before ':'".
+int main()
+{
+	var m = { : 1 };
+	return 0;
+}

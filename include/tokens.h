@@ -1809,6 +1809,11 @@ public:
     // the paren form `T(...)` never does. TokenDecl::ctor_args_braced is the
     // declaration path's twin of this flag.
     bool braced = false;
+    // KEYED carrier-literal elements (`{"a": 1}` in expression position,
+    // owner 2026-08-31): PARALLEL to ctor_args, NULL = positional — the
+    // TokenDecl::ctor_arg_keys convention. Populated only for a braced
+    // list whose obj_class is the carrier (ddARRAY).
+    std::vector<TokenBase *> ctor_arg_keys;
     TokenObjTemp(DataDefCLASS *c) : TokenBase() { obj_class = c; _datatype = (DataDef *)c; }
     virtual TokenID id() const override { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const override { return (DataDef *)obj_class; }
