@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **KEYED value-literal elements (2026-08-31)** — `var m = { "a": 1,
+  "b": "two" };` completes the carrier's brace literal: a `key: value`
+  element assigns into the key's vivified slot through the registered
+  `operator=` rows — the SAME rows `m[key] = value` binds, so the
+  literal and the per-key spelling cannot drift. String keys vivify the
+  OBJECT kind, integer keys index the ARRAY kind (positional pushes and
+  integer keys mix in element order); a literal mixing the two kinds
+  refuses at compile time with the kinds named. Bare var keys stay
+  element indexes (the documented subscript rule — `.c_str()` keys).
+  Pinned by testvalueinitkeyed (JIT + EXE + OBJ) and
+  testvalueinitkeyedmix.
+- **Fixed: the associative-literal parser HANG class** — `{ "a": 1 }`
+  in declaration, assignment, and call-argument positions spun the
+  parser forever (parseExpression pushes a bare `:` back; every caller
+  loop re-popped the same token). Two walls: the brace-list/ctor-args
+  element loop refuses a terminator that is neither `,` nor the close,
+  and parseExpression refuses a `:` that HEADS a parse — killing the
+  class for every caller. gcc/clang (loud "expected '}'") are the
+  oracle. Reducers: testcolonheadexpr, (pre-feature) testvalueinitkeyed.
+- **Fixed (silent wrong answer): operand juxtaposition** — `{ "a" 1 }`
+  compiled to `{ 1 }`: the expression finalize returned the top operand
+  and silently dropped the rest. It now errors loudly ("Malformed
+  expression: N operands with no operator between them"); adjacent
+  string literals are untouched (lexer-level concatenation). Reducer:
+  testexprjuxtapose.
 - **c-testsuite COMPLETE: 220/220, baseline empty (2026-08-29)** — the
   lane now runs in C mode (`--std=gnu11`, owner ruling: C tests are
   measured in the mode the gcc/clang oracles use). Closing fixes: the C
