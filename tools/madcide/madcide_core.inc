@@ -534,52 +534,60 @@ void status_expand(value &out, long w, long es, long doc, long caret,
 }
 
 // The JOE screen model's status line (IDE-9a/9b): ONE inverse row at the
-// TOP, lmsg left / rmsg right with rmsg's fill character between; the
-// one prompt mode, the search prompt, and transient messages OVERLAY it
-// (the same priority rule as the shared compose_status — restated here
-// because the SCREEN MODELS diverge by design: madcide is JOE-shaped,
-// vised keeps the demo's bottom bar).
-void compose_joe_statusline(value &status, long w, long es, long doc,
-			    long caret, value &fnctx);
+// TOP with lmsg left / rmsg right and rmsg's fill character between. The
+// one prompt mode, the search prompt, and transient messages do NOT
+// overlay it — JOE puts them on the BOTTOM line (the msgbuf row); see
+// compose_overlay_row. The SCREEN MODELS diverge by design: madcide is
+// JOE-shaped, vised keeps the demo's bottom bar.
 
-void compose_joe_status(value &status, long w, long es, long doc,
-			long caret, value &fnctx)
+// The bottom message line (JOE's msgbuf): prompt > search > msg, one
+// plain row. This builds CONTENT from the editor state only; WHERE the
+// row goes is the screen model's decision (compose_ide_tree appends it
+// last) — a different editor personality places the same row elsewhere.
+bool compose_overlay_row(value &row, long w, long es)
 {
     value st;
-    st["role"] = "status";
+    st["role"] = "content";
     var pr;
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
+	var pm;
+	ui::get(pm, w, es, "pmode");
+	if ( pm == "confirm" )
+	{
+	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
+	    row = st;
+	    return true;
+	}
 	var pi;
 	ui::get(pi, w, es, "pinput");
 	st["content"] = format("{} (^C aborts): {}", pr, pi);
-	status = st;
-	return;
+	row = st;
+	return true;
     }
     if ( es_flag(w, es, "searching") )
     {
 	var sch;
 	ui::get(sch, w, es, "search");
 	st["content"] = format("Find (^C aborts): {}", sch);
-	status = st;
-	return;
+	row = st;
+	return true;
     }
     var msg;
     ui::get(msg, w, es, "msg");
     if ( !msg.is_null() && strlen(msg.c_str()) > 0 )
     {
 	st["content"] = msg;
-	status = st;
-	return;
+	row = st;
+	return true;
     }
-    compose_joe_statusline(status, w, es, doc, caret, fnctx);
+    return false;
 }
 
-// The FORMATTED half of the JOE status line (lmsg/rmsg seat expansion,
-// no prompt/search/msg overlays) — split out for IDE-9e windows: every
-// window carries its own formatted line; the overlays belong to the
-// ACTIVE window's line only (compose_joe_status above keeps them).
+// The FORMATTED JOE status line (lmsg/rmsg seat expansion). Every
+// window carries its own; prompt/search/msg never touch it — they live
+// on the screen-bottom message line (compose_overlay_row above).
 void compose_joe_statusline(value &status, long w, long es, long doc,
 			    long caret, value &fnctx)
 {
@@ -640,6 +648,17 @@ void end_prompt(long w, long es)
     ui::set(w, es, "prompt", "");
     ui::set(w, es, "pmode", "");
     ui::set(w, es, "pinput", "");
+    ui::set(w, es, "pverb", "");
+}
+
+// A single-key confirm (JOE's "(y,n,^C)?" questions): the label spells
+// its own keys and the CONSEQUENCE is data — the verb y fires. Rides the
+// one prompt mode, so composition and event routing stay shared; n, esc,
+// or any bound action (^C included) cancels.
+void start_confirm(long w, long es, const char *label, const char *verb)
+{
+    start_prompt(w, es, label, "confirm");
+    ui::set(w, es, "pverb", verb);
 }
 
 bool prompt_active(long w, long es)
@@ -743,6 +762,36 @@ void finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, value &ev)
 {
     var kind = format("{}", ev["event"]);
+    var pmode;
+    ui::get(pmode, w, es, "pmode");
+    if ( pmode == "confirm" )
+    {
+	// Single-key: y fires the stored verb; n or esc cancels; ^C
+	// arrives as its BOUND action (discard in the JOE profile), so
+	// any action cancels too. Other keys leave the question standing.
+	if ( kind == "text" )
+	{
+	    var t = format("{}", ev["text"]);
+	    if ( t == "y" || t == "Y" )
+	    {
+		var vb;
+		ui::get(vb, w, es, "pverb");
+		end_prompt(w, es);
+		return do_verb(w, es, vb.c_str());
+	    }
+	    if ( t == "n" || t == "N" )
+		end_prompt(w, es);
+	    return true;
+	}
+	if ( kind == "action" )
+	{
+	    end_prompt(w, es);
+	    return true;
+	}
+	if ( kind == "key" && format("{}", ev["key"]) == "esc" )
+	    end_prompt(w, es);
+	return true;
+    }
     if ( kind == "text" )
     {
 	var in;
@@ -2071,7 +2120,19 @@ bool apply_ide_event(long w, long es, long doc, value &ev)
 	if ( a == "savequit" )
 	    return save_quit(w, es, doc);
 	if ( a == "quit" )
+	{
+	    // JOE ^K Q: a dirty buffer asks JOE's question on the bottom
+	    // line; the lineed q verb's refusal spelling stays lined's.
+	    var qm;
+	    ui::get(qm, w, doc, "modified");
+	    if ( !qm.is_null() && qm.as_boolean() )
+	    {
+		start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
+			      "q!");
+		return true;
+	    }
 	    return do_verb(w, es, "q");
+	}
 	if ( a == "discard" )
 	    return do_verb(w, es, "q!");
 	if ( a == "find" )
@@ -2436,15 +2497,16 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	}
     }
     value status;
-    compose_joe_status(status, w, es, nav, caret, fnctx);
+    compose_joe_statusline(status, w, es, nav, caret, fnctx);
 
     value r;
     r["role"] = "group";
     var kids = {};
     // IDE-9e: with two-plus windows, each window is its own status line +
-    // edit node, stacked. The ACTIVE window is the live one — the status
-    // with overlays and the full edit node composed above (views, spans,
-    // tabwidth), plus the focus hint so the cursor paints in it; it stays
+    // edit node, stacked. The ACTIVE window is the live one — the full
+    // edit node composed above (views, spans, tabwidth) plus the focus
+    // hint so the cursor paints in it (prompt/search/msg belong to the
+    // SCREEN's bottom message line, not any window's status); it stays
     // UNHINTED (flexible) so panes/prompt keep taking their rows from the
     // bottom exactly as in the single shape. INACTIVE windows compose
     // snapshots: their buffer's plain text, their own caret (clamped —
@@ -2686,10 +2748,15 @@ void compose_ide_tree(value &root, long w, long es, long doc)
 	kids.push(box);
     }
 
-    // The transient startup hint on the bottom row (IDE-9b, JOE's -xmsg):
-    // plain content, shown until the first applied event returns the row
-    // to the document.
-    if ( es_int(w, es, "hint", 0) != 0 )
+    // The bottom message line (JOE's msgbuf): prompts, the search
+    // prompt, and transient messages — appended LAST so the flexible
+    // edit node yields the screen's bottom row. The startup hint
+    // (IDE-9b, JOE's -xmsg) shares this line and yields to a live
+    // overlay: JOE has ONE message line, never two.
+    value ovl;
+    if ( compose_overlay_row(ovl, w, es) )
+	kids.push(ovl);
+    else if ( es_int(w, es, "hint", 0) != 0 )
     {
 	value hn;
 	hn["role"] = "content";

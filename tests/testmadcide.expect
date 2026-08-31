@@ -73,6 +73,7 @@ blockcopy: size=88 tail-has-long=1
 blockdel: clip=long size=84
 blocks-undone: size=84
 blockmove: head= add caret=80
+prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
@@ -90,6 +91,8 @@ lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
 cxxview: name=c++ include=1 echo=1 stored-size=109
 cxxview-head: tagged=1 ro=1
 cxxview-exit: name='' caret=0
-quit-refused: cont=1 msg=Unsaved changes — w to save, q! to discard.
+quit-confirm: cont=1 row=Lose changes to this file (y,n,^C)?
+quit-cancel: cont=1 prompt-off=1 modified=true
 save: Wrote 92 bytes.
 savequit: cont=0 msg=Bye.
+quit-discard: cont=0 msg=Bye. prompt-off=1

@@ -702,6 +702,16 @@ int main()
     // the one prompt mode: go to line, find + find-next, insert file
     ev_action(e, "gotoline", "^k l");
     apply_ide_event(w, es, doc, e);
+    // JOE puts prompts on the BOTTOM line (owner 2026-08-31): mid-prompt
+    // the tree's TOP row is the formatted status line and the LAST child
+    // is the prompt row — never the other way around.
+    compose_ide_tree(tree, w, es, doc);
+    var toprow = format("{}", tree["children"][0]["content"]);
+    long lastk = php::count(tree["children"]) - 1;
+    var botrow = format("{}", tree["children"][lastk]["content"]);
+    println("prompt-bottom: top-clean={} bottom={}",
+	    strstr(toprow.c_str(), "aborts") == 0 ? 1 : 0,
+	    botrow);
     ev_text(e, "2");
     apply_ide_event(w, es, doc, e);
     ev_key(e, "enter");
@@ -885,12 +895,21 @@ int main()
     ui::world_close(w2);
 
     // -- the verbs: save (with the silent diagnostics refresh), quit --
+    // JOE ^K Q on a dirty buffer: the single-key confirm on the bottom
+    // line (owner 2026-08-31) — never the lineed verb's vi refusal.
     ev_text(e, "// tail\n");
     apply_ide_event(w, es, doc, e);
     ev_action(e, "quit", "^k q");
     bool cont = apply_ide_event(w, es, doc, e);
-    ui::get(msg, w, es, "msg");
-    println("quit-refused: cont={} msg={}", cont ? 1 : 0, msg);
+    compose_ide_tree(tree, w, es, doc);
+    long lq = php::count(tree["children"]) - 1;
+    var qrow = format("{}", tree["children"][lq]["content"]);
+    println("quit-confirm: cont={} row={}", cont ? 1 : 0, qrow);
+    ev_text(e, "n");
+    cont = apply_ide_event(w, es, doc, e);
+    ui::get(m, w, doc, "modified");
+    println("quit-cancel: cont={} prompt-off={} modified={}", cont ? 1 : 0,
+	    prompt_active(w, es) ? 0 : 1, m);
     ev_action(e, "save", "^k s");
     apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
@@ -899,6 +918,16 @@ int main()
     cont = apply_ide_event(w, es, doc, e);
     ui::get(msg, w, es, "msg");
     println("savequit: cont={} msg={}", cont ? 1 : 0, msg);
+    // the y path: dirty again, ask again, y — the discard verb fires.
+    ev_text(e, "// more\n");
+    apply_ide_event(w, es, doc, e);
+    ev_action(e, "quit", "^k q");
+    apply_ide_event(w, es, doc, e);
+    ev_text(e, "y");
+    cont = apply_ide_event(w, es, doc, e);
+    ui::get(msg, w, es, "msg");
+    println("quit-discard: cont={} msg={} prompt-off={}", cont ? 1 : 0, msg,
+	    prompt_active(w, es) ? 0 : 1);
     ui::world_close(w);
     return 0;
 }
