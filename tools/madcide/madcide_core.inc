@@ -1106,6 +1106,21 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	ui::set(w, es, "pinput", nx.c_str());
 	return true;
     }
+    if ( kind == "choose" )
+    {
+	// A FOCUSED pane makes the engine hand enter back as a CHOOSE
+	// (its focused-choice contract). While the prompt is modal that
+	// enter belongs to the prompt — route it through the same
+	// @prompt data as the key, or a prompt opened from a focused
+	// pane row (tabwidth, theme, keymap) can never commit.
+	var ke;
+	ke["event"] = "key";
+	ke["key"] = "enter";
+	var ca;
+	if ( scoped_action(ca, w, es, "prompt", ke) && ca == "pcommit" )
+	    return finish_prompt(w, es, doc, caret);
+	return true;
+    }
     if ( kind != "key" )
 	return true;
     var a;

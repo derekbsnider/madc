@@ -272,6 +272,24 @@ int main()
     S.apply_ide_event(doc, e);
     ui::get(msg, w, es, "msg");
     println("tabwidth-bad: {}", msg);
+    // A FOCUSED pane makes the engine hand enter back as a CHOOSE — the
+    // prompt is modal, so that enter commits it (found by the live pty
+    // probe: a prompt opened from a focused pane row could never commit).
+    ev_choose(e, 0, "opt-tabwidth");
+    S.apply_ide_event(doc, e);
+    ev_text(e, "6");
+    S.apply_ide_event(doc, e);
+    ev_choose(e, 0, "opt-tabwidth");	// enter, in its focused-pane shape
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("prompt-choose-commit: {} prompt-off={}", msg,
+	    prompt_active(w, es) ? 0 : 1);
+    ev_choose(e, 0, "opt-tabwidth");	// restore tab width 4 the same way
+    S.apply_ide_event(doc, e);
+    ev_text(e, "4");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
     ev_action(e, "options", "^t");	// close the pane
     S.apply_ide_event(doc, e);
     ev_key(e, "right");		// consume the message before gate 3

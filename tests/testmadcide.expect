@@ -39,6 +39,7 @@ options: label=Options rows=3
 options-row0: D Tab width   8
 tabwidth: Tab width 4. hint=4 row0=D Tab width   4
 tabwidth-bad: Tab width '40' — need 1..16.
+prompt-choose-commit: Tab width 6. prompt-off=1
 editfile-new: New file madc_ide_ast5.txt. switched=1 named=1
 editfile-back: home=1 caret-restored=1
 editfile-again: Editing madc_ide_ast5.txt. kept=1 modified=1
