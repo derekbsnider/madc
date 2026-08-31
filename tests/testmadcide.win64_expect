@@ -120,3 +120,8 @@ quit-cancel: cont=1 prompt-off=1 modified=true
 save: Wrote 92 bytes.
 savequit: cont=0 msg=Bye.
 quit-discard: cont=0 msg=Bye. prompt-off=1
+seam-refresh: took=1 kind=refresh drained=0
+seam-cmd: took=1 kind=cmd pause=1
+seam-chord: echoed=1
+seam-keys: moved=1 joe-save=save
+seam-viewport: split-refused=1

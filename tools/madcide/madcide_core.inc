@@ -8,7 +8,7 @@
 // compiler; the check/save actions refresh the data); keybindings are
 // PROFILES — data files mapping key sequences to the action names
 // dispatched here (JOE/WordStar chords by default, owner-directed; swap
-// = one ui::tui_bind_keys call, the composition path untouched), and the
+// = one key-table generation the client rebinds on), and the
 // help pane is a projection OF the loaded profile's own lines.
 //
 // Interaction state (caret/mark/bend/clip/search/prompt + pane, diags,
@@ -16,6 +16,62 @@
 // stays in the renderer. apply_ide_event is terminal-free
 // (tests/testmadcide.mad drives it headlessly with the exact event value
 // shapes).
+
+// ---- the IDE session (the gateway seam, design doc 2026-08-31) ---------
+// THIS FILE IS THE SESSION LAYER. IdeSession owns the IDE's state and
+// semantics; apply_ide_event / compose_ide_tree are its surface. The ui
+// entity bags are the session's private storage (initially — state
+// migrates onto members in later gateway slices); the free functions
+// below are its private implementation over them.
+//
+// The session NEVER touches a tui handle (gated:
+// scripts/check-madcide-seam.sh). The TUI CLIENT (madcide_client.inc)
+// keeps render / input / refresh / suspend and feeds the session what a
+// terminal knows:
+//   - FACTS the client pushes: viewport (cols/rows), terminal presence,
+//     the pending chord (JOE's %k seat).
+//   - the KEY TABLE the session loads as data: the client asks for it
+//     (key_table) and installs it whenever keys_generation moves; the
+//     session validates profiles handle-free (ui::tui_validate_keys), so
+//     refusal semantics stay its own.
+//   - TERMINAL REQUESTS the session parks (term_request: run / projrun /
+//     cmd / shell / refresh): the client drains one after each event
+//     (take_request), suspends, calls term_exec back to run the guest,
+//     pauses, resumes. No terminal pushed = no request parks — headless
+//     sessions refuse with "No terminal to suspend." exactly as before.
+// A remote client would push the same facts and service the same
+// requests over a transport; keys stay client-private either way.
+class IdeSession
+{
+    public:
+	long w;		// the ui world (documents + state entity live in it)
+	long es;	// the editor-state entity — the bags
+
+	long open(const char *path0, bool ro);	// full session startup;
+						// > 0 = the launch doc,
+						// 0 = unreadable path,
+						// -1 = reported fatal
+	void attach(long w0, long es0);	// a session over an EXISTING
+					// world + state entity (the
+					// headless harness, embedders)
+	bool apply_ide_event(long doc, var &ev);	// false = quit
+	void compose_ide_tree(var &root, long doc);
+	long world();
+	long active(long fallback);	// the active buffer's document
+	bool parse_pending(long adoc);	// spawn the parked background
+					// parse; true = spawned (client
+					// keeps serving input)
+	void viewport(long cols, long rows);	// client-pushed facts
+	void terminal(bool has);
+	void pending_chord(const char *pcs);
+	long keys_generation();		// moves when the key table changes
+	void key_table(var &out);
+	bool take_request(var &out);	// drain the parked terminal request
+	void term_exec(var &req);	// run the guest between the
+					// client's suspend and resume
+	void close();			// stop builds, drain tasks, close
+					// parse handles, close the world
+};
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -174,11 +230,13 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
     return true;
 }
 
-// Load a named profile from the session's profile directory and, when a
-// TUI is open, install it. The raw profile text stays on the bag — the
-// help pane (^K H) composes FROM it. False + a status message on failure
-// (the previous table stays installed — tui_bind_keys refuses whole
-// tables).
+// Load a named profile from the session's profile directory: parse it,
+// VALIDATE it handle-free (ui::tui_validate_keys — same rules the
+// client's bind applies, so a table stored here installs there), and
+// store the main table on the bag ("keytable" + a moved "keysgen" — the
+// client rebinds when the generation moves). The raw profile text stays
+// on the bag — the help pane (^K H) composes FROM it. False + a status
+// message on failure (the previous table and its data stay).
 bool load_profile(long w, long es, const char *name)
 {
     // Ring discipline: `name` may lend a ring slot (a caller's .c_str());
@@ -200,15 +258,13 @@ bool load_profile(long w, long es, const char *name)
     var table;
     var scopes;
     parse_keys(table, scopes, full.c_str());
-    long t = es_int(w, es, "tui", 0);
-    if ( t != 0 )
+    if ( !ui::tui_validate_keys(table) )
     {
-	if ( !ui::tui_bind_keys(t, table) )
-	{
-	    ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
-	    return false;
-	}
+	ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
+	return false;
     }
+    ui::set(w, es, "keytable", table);
+    ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);
     // The selection MODEL rides the profile's own vocabulary (owner
     // 2026-08-31: personalities are profile data): a set that binds
@@ -229,7 +285,7 @@ bool load_profile(long w, long es, const char *name)
 // NO profile file loads at startup (a broken install layout must never
 // trap the session in a bindingless editor — the first genuine-Win
 // validation did exactly that). Still data all the way down: an inline
-// profile string through the SAME parse_keys/tui_bind_keys path, a
+// profile string through the SAME parse_keys/validate/store path, a
 // deliberately tiny pico-spelled set (exit/save/help class, plus ^p to
 // retry a real profile once the layout is fixed). The help pane
 // projects from bindtext as usual, so ^G documents the set itself.
@@ -249,9 +305,10 @@ bool bind_rescue_keys(long w, long es)
     var table;
     var scopes;
     parse_keys(table, scopes, full.c_str());
-    long t = es_int(w, es, "tui", 0);
-    if ( t == 0 || !ui::tui_bind_keys(t, table) )
+    if ( !ui::tui_validate_keys(table) )
 	return false;
+    ui::set(w, es, "keytable", table);
+    ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
     ui::set(w, es, "profile", "rescue");
@@ -604,7 +661,7 @@ bool view_name(var &out, long w, long es)
 // Render one joerc-style format string. Supported seats: %n name,
 // %m "(Modified) ", %R "(Read only) ", %r row / %c col (an optional
 // width digit-run left-pads: %4r), %o byte offset, %k the pending chord
-// (JOE's chord echo, via ui::tui_pending), %x the enclosing context —
+// (JOE's chord echo — the client-pushed fact), %x the enclosing context —
 // madcide renders its AST-backed enclosing function here, superior to
 // JOE's textual backward heuristic — %y the active VIEW name in JOE's
 // "(syntax)" seat, and %% a literal percent. UNSUPPORTED joerc escapes
@@ -683,14 +740,12 @@ void status_expand(var &out, long w, long es, long doc, long caret,
 	    seat = format("{}", caret);
 	if ( e == 'k' )
 	{
-	    long t = es_int(w, es, "tui", 0);
-	    if ( t != 0 )
-	    {
-		var pc;
-		ui::tui_pending(pc, t);
-		if ( !pc.is_null() && strlen(pc.c_str()) > 0 )
-		    seat = format("{} ", pc);
-	    }
+	    // The pending chord is a CLIENT-pushed fact (keys are the
+	    // client's; the session only typesets the echo seat).
+	    var pc;
+	    ui::get(pc, w, es, "pendingchord");
+	    if ( !pc.is_null() && strlen(pc.c_str()) > 0 )
+		seat = format("{} ", pc);
 	}
 	if ( e == 'x' )
 	    seat = fnctxv;
@@ -797,8 +852,9 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
     }
     var rout;
     status_expand(rout, w, es, doc, caret, rfmt, fnctx);
-    long t = es_int(w, es, "tui", 0);
-    long cols = t != 0 ? ui::tui_cols(t) : 80;
+    // The viewport is a CLIENT-pushed fact (headless sessions typeset
+    // the joerc default width).
+    long cols = es_int(w, es, "vcols", 80);
     if ( cols < 1 )
 	cols = 80;
     // The renderer's status arm prepends one space — the usable width is
@@ -1455,8 +1511,7 @@ void window_activate(long w, long es, long olddoc, long idx)
 // buffer, same caret), inserted BELOW it; focus stays where it is.
 void split_window(long w, long es, long doc)
 {
-    long t = es_int(w, es, "tui", 0);
-    long trows = t != 0 ? ui::tui_rows(t) : 24;
+    long trows = es_int(w, es, "vrows", 24);	// client-pushed viewport
     long n = window_count(w, es);
     long want = n < 2 ? 2 : n + 1;
     if ( want * (window_min_rows() + 1) > trows )
@@ -1578,8 +1633,7 @@ void grow_window(long w, long es, long dir)
 	ui::set(w, es, "msg", "Only one window.");
 	return;
     }
-    long t = es_int(w, es, "tui", 0);
-    long trows = t != 0 ? ui::tui_rows(t) : 24;
+    long trows = es_int(w, es, "vrows", 24);	// client-pushed viewport
     long base = (trows - n) / n;	// even content share
     long at = es_int(w, es, "winat", 0);
     long nx = (at + 1) % n;
@@ -2345,15 +2399,22 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
 	ui::set(w, es, "msg", format("Building {} -> {} (live parse).", p, o));
 }
 
-// THE return-key pause (one owner, dupaudit family terminal_return_pause):
-// every suspended-terminal run holds the guest's output on screen until
-// enter, then the caller resumes into the full repaint.
-void terminal_return_pause()
+// Park a TERMINAL REQUEST for the client to execute (the gateway seam:
+// render/input/refresh/suspend are the TUI client's — the session only
+// says WHAT it needs). One request slot; the client drains it right
+// after the event that parked it (take_request), so nothing intervenes.
+// A request rides {kind, pause, ...}: kind = run / projrun / cmd /
+// shell / refresh; pause = hold the guest's output until enter (the
+// return-key pause is the CLIENT's — one owner, terminal_return_pause
+// in madcide_client.inc). No terminal pushed = no request parks; false
+// lets the caller refuse ("No terminal to suspend.") exactly as the
+// headless sessions always have.
+bool term_request(long w, long es, var &req)
 {
-    println("");
-    println("[madcide] press enter to return");
-    var pause;
-    madc::getline(pause);
+    if ( !es_flag(w, es, "hasterm") )
+	return false;
+    ui::set(w, es, "termreq", req);
+    return true;
 }
 
 // The Run row (owner ruling 2026-08-27: the running madc IS the
@@ -2381,21 +2442,12 @@ void run_buffer(long w, long es, long doc)
     long h = es_int(w, doc, "phandle", 0);
     if ( h == 0 )
 	return;			// ensure_phandle already said why
-    long t = es_int(w, es, "tui", 0);
-    if ( t == 0 )
-    {
+    var rq;
+    rq["kind"] = "run";
+    rq["doc"] = doc;
+    rq["pause"] = 1;
+    if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
-	return;
-    }
-    if ( !ui::tui_suspend(t) )
-	return;
-    long rc = madc::parse_run(h);
-    terminal_return_pause();
-    ui::tui_resume(t);
-    if ( rc < 0 )
-	ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
-    else
-	ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 }
 
 // terminal-mode rows (Run native): the JOE ^K Z shape — the program
@@ -2403,17 +2455,12 @@ void run_buffer(long w, long es, long doc)
 // before the full-repaint resume.
 void run_in_terminal(long w, long es, const char *cmd)
 {
-    long t = es_int(w, es, "tui", 0);
-    if ( t == 0 )
-    {
+    var rq;
+    rq["kind"] = "cmd";
+    rq["cmd"] = cmd;
+    rq["pause"] = 1;
+    if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
-	return;
-    }
-    if ( !ui::tui_suspend(t) )
-	return;
-    system(cmd);
-    terminal_return_pause();
-    ui::tui_resume(t);
 }
 
 // ---- the ^B project correlation (owner design doc 2026-08-31) ----------
@@ -2583,21 +2630,11 @@ void run_project(long w, long es, long doc)
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
     }
-    long t = es_int(w, es, "tui", 0);
-    if ( t == 0 )
-    {
+    var rq;
+    rq["kind"] = "projrun";
+    rq["pause"] = 1;
+    if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
-	return;
-    }
-    if ( !ui::tui_suspend(t) )
-	return;
-    long rc = madc::project_run(pf.c_str());
-    terminal_return_pause();
-    ui::tui_resume(t);
-    if ( rc < 0 )
-	ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
-    else
-	ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 }
 
 // Seed the command rows AS DATA. Regeneration rides the project
@@ -2847,22 +2884,16 @@ void cycle_view(long w, long es, long doc)
 }
 
 // ---- ^K Z: hand the terminal to a shell -------------------------------
-// Suspend the grid, run the user's shell on the real tty, resume with a
-// full repaint. $SHELL falls back to /bin/sh INSIDE the command — libc
-// system() inherits the terminal, and no getenv is needed (the dlsym
-// fallback would hand the pointer back as a long).
+// The shell request: the client suspends the grid, term_exec runs the
+// user's shell on the real tty, the client resumes into a full repaint.
+// No return-key pause — leaving the shell IS the gesture.
 void open_shell(long w, long es)
 {
-    long t = es_int(w, es, "tui", 0);
-    if ( t == 0 )
-    {
+    var rq;
+    rq["kind"] = "shell";
+    rq["pause"] = 0;
+    if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
-	return;
-    }
-    if ( !ui::tui_suspend(t) )
-	return;
-    system("exec \"${SHELL:-/bin/sh}\"");
-    ui::tui_resume(t);
 }
 
 // ---- the action dispatch ----------------------------------------------
@@ -2899,10 +2930,14 @@ void toggle_pane(long w, long es, const char *name)
 	ui::set(w, es, "pane", name);
 }
 
-// Apply ONE semantic event (the value shapes ui::tui_event produces —
-// action events from the bindings table included). False = quit.
-bool apply_ide_event(long w, long es, long doc, var &ev)
+// Apply ONE semantic event (the value shapes the engine's event query
+// produces — action events from the bindings table included) — the
+// session surface. False = quit.
+bool IdeSession::apply_ide_event(long doc, var &ev)
 {
+    // The startup hint yields to the first event of any kind — the same
+    // "first event returns the row" rule run_ide's loop used to apply.
+    ui::set(w, es, "hint", 0);
     var kind = format("{}", ev["event"]);
     // Stage-2: cooperative background tasks drained — the spawned parse
     // already parked its handle/spans on the bag; recompose only. Before
@@ -3099,12 +3134,14 @@ bool apply_ide_event(long w, long es, long doc, var &ev)
 	}
 	if ( a == "refresh" )
 	{
-	    // JOE's ^R retype: the terminal is lying — drop the delta
-	    // basis and hard-repaint (ui::tui_refresh). Headless sessions
-	    // have no tui on the bag; the action is safely inert there.
-	    long tt = es_int(w, es, "tui", 0);
-	    if ( tt != 0 )
-		ui::tui_refresh(tt);
+	    // JOE's ^R retype: the terminal is lying — a hard repaint is
+	    // the CLIENT's to perform (it owns refresh); the session only
+	    // parks the request. Headless sessions have no terminal
+	    // pushed; the action is safely inert there, as it always was.
+	    var rq;
+	    rq["kind"] = "refresh";
+	    rq["pause"] = 0;
+	    term_request(w, es, rq);
 	    return true;
 	}
 	if ( a == "build" )
@@ -3258,7 +3295,7 @@ bool apply_ide_event(long w, long es, long doc, var &ev)
 // it projects the loaded profile's own lines. The Phase-2 gate's third
 // clause (swap leaves the tree identical) is pinned with the help pane
 // hidden.
-void compose_ide_tree(var &root, long w, long es, long doc)
+void IdeSession::compose_ide_tree(var &root, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
     // The view seam at composition: the edit node presents the NAV
@@ -3354,8 +3391,7 @@ void compose_ide_tree(var &root, long w, long es, long doc)
     long wc = window_count(w, es);
     if ( wc >= 2 )
     {
-	long t9 = es_int(w, es, "tui", 0);
-	long trows = t9 != 0 ? ui::tui_rows(t9) : 24;
+	long trows = es_int(w, es, "vrows", 24);	// client viewport
 	long base = (trows - wc) / wc;
 	if ( base < window_min_rows() )
 	    base = window_min_rows();
@@ -3621,18 +3657,22 @@ void compose_ide_tree(var &root, long w, long es, long doc)
     root = r;
 }
 
-// The IDE loop: the same compose-as-data -> render -> event -> apply
-// cycle as vised, with the JOE profile installed at open.
-void run_ide(const char *path, bool ro)
+// ---- the session lifecycle (the gateway seam) ---------------------------
+
+// Full session startup: the world, the launch document, the data loads
+// (status format, theme, keybinding profile — all validated handle-free),
+// the buffer table, the project read-back, and the first lexical colour.
+// No terminal anywhere: the TUI client opens its own AFTER this and asks
+// for the key table. > 0 = the launch doc; 0 = unreadable path (the
+// caller reports); -1 = fatal, already reported on stderr.
+long IdeSession::open(const char *path0, bool ro)
 {
-    long w = ui::world_new();
-    long doc = setup_editor(w, path, ro);
+    var p = path0;		// ring discipline: own the text first
+    w = ui::world_new();
+    long doc = setup_editor(w, p.c_str(), ro);
     if ( doc == 0 )
-    {
-	printf("cannot read %s\n", path);
-	return;
-    }
-    long es = ui::entity_by_name(w, "editor-state");
+	return 0;
+    es = ui::entity_by_name(w, "editor-state");
     // The profiles live beside THIS file: derive the directory from
     // __FILE__ (the include-resolved path), so madcide works from any
     // cwd. php::dirname owns the split — on a WINDOWS host '\' separates
@@ -3641,10 +3681,6 @@ void run_ide(const char *path, bool ro)
     // and every chord is profile data). No separator answers ".".
     ui::set(w, es, "profile_dir",
 	    format("{}/profiles", php::dirname(__FILE__)));
-    long t = ui::tui_open();
-    if ( t == 0 )
-	return;
-    ui::set(w, es, "tui", t);
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
@@ -3661,56 +3697,170 @@ void run_ide(const char *path, bool ro)
 	{
 	    var dir;
 	    ui::get(dir, w, es, "profile_dir");
-	    ui::tui_close(t);
 	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (tools/madcide/profiles beside madcide.mad).", dir);
-	    return;
+	    return -1;
 	}
     }
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
-    push_buffer_row(w, es, doc, path);
+    push_buffer_row(w, es, doc, p.c_str());
     ui::set(w, es, "bufidx", 0);
     // The project (owner rulings 2026-08-31): the launch file anchors the
     // implicit single-file project; a <base>.prj.json beside it IS the
     // project and loads back (announced on the status line).
-    ui::set(w, es, "launchpath", path);
+    ui::set(w, es, "launchpath", p);
     proj_startup(w, es, doc);
     // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
     // blocked the first render for seconds on a real C++ file): colour
     // rides the first paint from the LEXICAL spans; the full parse runs
-    // as the loop's pending step AFTER a render — the ONE mechanism
-    // startup and buffer switches share.
+    // as the client loop's pending step AFTER a render — the ONE
+    // mechanism startup and buffer switches share (parse_pending).
     lex_first_spans(w, es, doc);
     ui::set(w, es, "pending_parse", 1);
-    bool run = true;
-    while ( run )
+    return doc;
+}
+
+// A session over an EXISTING world + state entity: the headless harness
+// (tests/testmadcide.mad) and embedders seed their own documents and
+// drive the surface directly.
+void IdeSession::attach(long w0, long es0)
+{
+    w = w0;
+    es = es0;
+}
+
+long IdeSession::world()
+{
+    return w;
+}
+
+long IdeSession::active(long fallback)
+{
+    return active_doc(w, es, fallback);
+}
+
+// The paint-before-parse step: when a parse is parked (startup, buffer
+// switch), spawn it as a cooperative task AFTER the client rendered.
+// True = spawned — the client keeps serving keystrokes while it runs;
+// its completion surfaces as a `wake` event (or rides the next
+// keystroke's recompose).
+bool IdeSession::parse_pending(long adoc)
+{
+    if ( es_int(w, es, "pending_parse", 0) == 0 )
+	return false;
+    ui::set(w, es, "pending_parse", 0);
+    go background_parse(w, es, adoc);
+    return true;
+}
+
+// ---- client-pushed terminal facts. The session never touches a tui
+// handle; what a terminal knows arrives as data.
+void IdeSession::viewport(long cols, long rows)
+{
+    ui::set(w, es, "vcols", cols);
+    ui::set(w, es, "vrows", rows);
+}
+
+void IdeSession::terminal(bool has)
+{
+    ui::set(w, es, "hasterm", has);
+}
+
+void IdeSession::pending_chord(const char *pcs)
+{
+    var pc = pcs;		// ring discipline: own the text first
+    ui::set(w, es, "pendingchord", pc);
+}
+
+// ---- the key-table seam: the session validates and stores the main
+// bindings as data; the client installs them whenever the generation
+// moves (profile load, ^K P cycle, rescue fallback).
+long IdeSession::keys_generation()
+{
+    return es_int(w, es, "keysgen", 0);
+}
+
+void IdeSession::key_table(var &out)
+{
+    ui::get(out, w, es, "keytable");
+}
+
+// ---- the terminal-request drain: the client takes the one parked
+// request after each event, suspends, calls term_exec to run the guest,
+// pauses (per the request), resumes.
+bool IdeSession::take_request(var &out)
+{
+    var rq;
+    ui::get(rq, w, es, "termreq");
+    if ( rq.is_null() )
+	return false;
+    var none;
+    ui::set(w, es, "termreq", none);
+    out = rq;
+    return true;
+}
+
+// Run the parked guest — the session half of the terminal handoff (the
+// verdicts already ran when the request parked; nothing intervened, the
+// drain follows the event immediately). The run kinds report their
+// exit on the status line; command/shell output speaks for itself.
+void IdeSession::term_exec(var &req)
+{
+    // The guest writes to the SAME fd 1: flush the host's buffered
+    // stdout first, or a block-buffered run (piped/headless) splices the
+    // guest's output into the middle of a host line.
+    fflush(stdout);
+    var kind = format("{}", req["kind"]);
+    if ( kind == "run" )
     {
-	long adoc = active_doc(w, es, doc);
-	var tree;
-	compose_ide_tree(tree, w, es, adoc);
-	ui::tui_render(t, w, tree);
-	if ( es_int(w, es, "pending_parse", 0) != 0 )
-	{
-	    ui::set(w, es, "pending_parse", 0);
-	    // Stage-2: spawn the parse as a cooperative task instead of
-	    // blocking the loop on it. The input wait hands it the CPU in
-	    // slices between polls; its completion surfaces as a `wake`
-	    // event (or rides the next keystroke's recompose).
-	    go background_parse(w, es, adoc);
-	    continue;		// keep serving keystrokes while it runs
-	}
-	var ev;
-	if ( !ui::tui_event(ev, t, w) )
-	    break;
-	run = apply_ide_event(w, es, adoc, ev);
-	ui::set(w, es, "hint", 0);	// first event returns the row
+	// Fork the buffer's LIVE parse (owner ruling 2026-08-27: the
+	// running madc IS the compiler) — the child inherits the tree.
+	long doc = req["doc"].as_integer();
+	long h = es_int(w, doc, "phandle", 0);
+	if ( h == 0 )
+	    return;
+	long rc = madc::parse_run(h);
+	if ( rc < 0 )
+	    ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
+	else
+	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
+	return;
     }
-    // Stage-2: a spawned parse may still be mid-flight at quit — drain the
-    // task scope BEFORE closing the handles and the world it writes to
-    // (main's-end join would run only after this teardown). A live build
-    // pump gets its stop FIRST (IDE-10b): the send fires its select case,
-    // it SIGTERMs the child and exits — the drain never hangs on it.
+    if ( kind == "projrun" )
+    {
+	// The --project JIT lane in a fork child (win: a child of self).
+	var pf;
+	ui::get(pf, w, es, "projfile");
+	long rc = madc::project_run(pf.c_str());
+	if ( rc < 0 )
+	    ui::set(w, es, "msg", format("Run failed (rc {}).", rc));
+	else
+	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
+	return;
+    }
+    if ( kind == "cmd" )
+    {
+	var c = format("{}", req["cmd"]);
+	system(c.c_str());
+	return;
+    }
+    if ( kind == "shell" )
+    {
+	// $SHELL falls back to /bin/sh INSIDE the command — libc system()
+	// inherits the terminal, and no getenv is needed (the dlsym
+	// fallback would hand the pointer back as a long).
+	system("exec \"${SHELL:-/bin/sh}\"");
+    }
+}
+
+// Session teardown. Stage-2: a spawned parse may still be mid-flight at
+// quit — drain the task scope BEFORE closing the handles and the world
+// it writes to. A live build pump gets its stop FIRST (IDE-10b): the
+// send fires its select case, it SIGTERMs the child and exits — the
+// drain never hangs on it.
+void IdeSession::close()
+{
     if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	long stopc = es_int(w, es, "buildstop", 0);
@@ -3732,6 +3882,5 @@ void run_ide(const char *path, bool ro)
 	if ( ph != 0 )
 	    madc::parse_close(ph);
     }
-    ui::tui_close(t);
     ui::world_close(w);
 }

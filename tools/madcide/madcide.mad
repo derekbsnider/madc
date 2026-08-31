@@ -26,9 +26,14 @@
 // schemes by name), refreshed with the parse.
 // Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
 // moves the caret to its line.
+// The gateway seam (design doc 2026-08-31): madcide_core.inc is the
+// SESSION layer (class IdeSession — state + semantics, terminal-free);
+// madcide_client.inc is the TUI CLIENT (the only tui-handle holder:
+// render/input/refresh/suspend + the run_ide loop).
 #include "../texteditor/lined_core.inc"
 #include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
+#include "madcide_client.inc"
 
 int main(int argc, char **argv)
 {
