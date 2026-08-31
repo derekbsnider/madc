@@ -445,6 +445,21 @@ void *madarray_push_value(void *ptr, void *other)
 	return ptr;
     }
 
+// `arr[] = x` — PHP's empty append accessor (owner 2026-08-31): push one
+// null element and return ITS slot address, so the parser's registered
+// operator= rows land the RHS in the appended element — the index slot's
+// append twin (one assignment vocabulary for keyed, indexed, and appended
+// slots). Vivify/kind/freeze errors ride madarray_push_target. vector
+// storage: the slot stays valid until the array next grows, exactly the
+// index-slot contract the CIR consumes within one expression.
+void *madarray_append_slot(void *ptr)
+    {
+	std::vector<madc::value> &vec =
+	    madarray_push_target((madc::value *)ptr);
+	vec.push_back(madc::value());
+	return &vec.back();
+    }
+
 // `var v = {};` — an EMPTY brace list is an empty ARRAY, not a null
 // value: the braces spell a container. The declaration lowering calls
 // this once after construct; size() reads 0 and is_null() answers false.

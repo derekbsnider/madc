@@ -6386,10 +6386,34 @@ public:
 					      TokenBase *open_brc);
     // A braced-init-list call ARGUMENT ([over.ics.list]): target = the
     // callee's parameter at the current position (hidden-this aware).
-    // Re-spells through the owner above; errors LOUDLY on any shape it
-    // cannot serve — never lets the bare '{' into parseExpression.
+    // When the SELECTED signature's parameter cannot take a braced list,
+    // the callee's method-overload set is searched for one that can
+    // (rows.push({...}) binds push(value&) although the first registered
+    // row is push(const char*)). Re-spells through the owner above;
+    // errors LOUDLY on any shape it cannot serve — never lets the bare
+    // '{' into parseExpression.
     TokenBase *respell_braced_list_call_argument(class TokenCallFunc *tc,
 						 TokenBase *open_brc);
+    // Can this type be the target of the braced-list re-spell? The ONE
+    // owner of the capability question respell_braced_list_for_target's
+    // arms answer (class, or a non-_Complex plain aggregate) — the
+    // overload search above asks it per candidate WITHOUT mutating the
+    // token stream.
+    static bool braced_list_target_capable(DataDef *dd);
+    // The ONE ctor-args/list-elements reader: `expr` and (carrier lists
+    // only) `key: value` elements up to `close_id`, comma-separated, into
+    // the PARALLEL args/keys vectors (keys stays empty for an all-
+    // positional list; NULL = positional otherwise — TokenDecl's
+    // convention). Serves the declaration ctor-args loop, the ObjTemp
+    // functional-construction reader, and the forest flush's re-parse.
+    // `refuse_brace` walls a '{'-headed element even for non-carrier
+    // lists (the ObjTemp reader's behavior); a carrier list always
+    // refuses it. Consumes the close token.
+    void parse_ctor_args_list(std::vector<TokenBase *> &args,
+			      std::vector<TokenBase *> &keys,
+			      bool carrier_list, bool refuse_brace,
+			      TokenID close_id, const char *close_sp,
+			      TokenBase *loc);
     // The ONE brace-list reader for compound-literal-shaped initializers in
     // EXPRESSION position: `(T){...}` (C99 cast arm) and `T{...}` on a plain
     // struct ([expr.type.conv] list-init of an aggregate prvalue — same C11

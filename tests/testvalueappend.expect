@@ -1,0 +1,6 @@
+rows: n=4 r0=42 r1=hello r2.act=colon r2.n=7 r3.1=2
+r2: n=2 a=1 second1=6
+m: x=ex y=2.5
+sub: true
+list: n=3 last=9
+reassign: r0=43

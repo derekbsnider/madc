@@ -11975,29 +11975,103 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     return result;
 }
 
+// The ONE ctor-args/list-elements reader (decl loop, ObjTemp reader, forest
+// flush — the three args-list loops consolidated 2026-08-31). Reads `expr`
+// and, for a CARRIER list, `key: value` elements up to `close_id` into the
+// parallel args/keys vectors. Key-vs-index semantics are the slot call's
+// (madc_array_key_index — the one owner); the CIR lowering assigns a keyed
+// element into the key's vivified slot through the registered operator=
+// rows. A ':' INSIDE an element's ternary never reaches here — the tkTerQ
+// arm consumes it within parseExpression.
+void Program::parse_ctor_args_list(std::vector<TokenBase *> &args,
+				   std::vector<TokenBase *> &keys,
+				   bool carrier_list, bool refuse_brace,
+				   TokenID close_id, const char *close_sp,
+				   TokenBase *loc)
+{
+    while ( peekToken() && peekToken()->id() != close_id )
+    {
+	// A '{'-headed ELEMENT (a nested braced-init-list) must not reach
+	// parseExpression — no brace-head reading exists there, and the NULL
+	// it returns would ride ctor_args into the CIR builder (a carrier
+	// list's stray braces also unbalance the scope stack). Its target
+	// type is only known after ctor selection, so re-spelling is a
+	// future lowering; error loudly, never silently.
+	if ( (carrier_list || refuse_brace)
+	  && peekToken()->id() == TokenID::tkOpBrc )
+	    Throw(peekToken()) << (carrier_list
+		? "Nested brace list in a value literal is not supported (yet)"
+		: "Nested braced-init-list in a constructor argument list is"
+		  " not supported (yet)") << flush;
+	TokenBase *arg = parseExpression(nextToken(), true);
+	// KEYED element (`key: value` — the carrier's associative literal,
+	// owner 2026-08-31): the expression just parsed is the KEY, the
+	// value follows the ':'. Carrier lists only: a class ctor-args
+	// list with a stray ':' falls to the loud terminator wall below
+	// (C++ has no keyed constructor arguments).
+	TokenBase *keyval = NULL;
+	if ( carrier_list
+	  && peekToken() && peekToken()->id() == TokenID::tkColon )
+	{
+	    nextToken(); // consume ':'
+	    if ( !peekToken() || peekToken()->id() == close_id
+	      || peekToken()->id() == TokenID::tkComma )
+		Throw(arg) << "Expected a value after ':' in a keyed"
+		    " value-literal element" << flush;
+	    if ( peekToken()->id() == TokenID::tkOpBrc )
+		Throw(peekToken()) << "Nested brace list in a value"
+		    " literal is not supported (yet)" << flush;
+	    keyval = parseExpression(nextToken(), true);
+	}
+	if ( keyval )
+	{
+	    // Keys ride the PARALLEL vector (NULL = positional): pad up to
+	    // the elements already read, then the key and its value land
+	    // at the same index.
+	    if ( keys.empty() )
+		keys.resize(args.size(), NULL);
+	    keys.push_back(arg);
+	    args.push_back(keyval);
+	}
+	else
+	{
+	    args.push_back(arg);
+	    if ( !keys.empty() )
+		keys.push_back(NULL);
+	}
+	if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+	    nextToken(); // consume ','
+	else if ( peekToken() && peekToken()->id() != close_id )
+	    // An element ends only at ',' or the close. parseExpression
+	    // PUSHES BACK a terminator it does not own (a bare ':' is the
+	    // ternary-branch pushback convention), so without this wall
+	    // the loop re-pops the same token forever — the associative-
+	    // literal hang class.
+	    Throw(peekToken()) << "Expected ',' or '" << close_sp
+		<< "' after constructor argument" << flush;
+    }
+    if ( !peekToken() || peekToken()->id() != close_id )
+	Throw(loc) << "Expected '" << close_sp
+		   << "' after constructor arguments" << flush;
+    // The close token stays UNCONSUMED: the decl caller's source-token
+    // capture tap (param_default_capture_end) must close over the args
+    // alone, before the ')'/'}' is popped.
+}
+
 static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 					 TokenBase *loc, TokenID close_id,
 					 const char *close_spelling)
 {
-    while ( pgm.peekToken() && pgm.peekToken()->id() != close_id )
-    {
-	// A '{'-headed ELEMENT (a nested braced-init-list) must not reach
-	// parseExpression — no brace-head reading exists there, and the NULL
-	// it returns would ride ctor_args into the CIR builder. Its target
-	// type is only known after ctor selection, so re-spelling is a
-	// future lowering; error loudly, never silently (the carrier list
-	// literal's convention).
-	if ( pgm.peekToken()->id() == TokenID::tkOpBrc )
-	    pgm.Throw(pgm.peekToken()) << "Nested braced-init-list in a"
-		" constructor argument list is not supported (yet)" << flush;
-	ot->ctor_args.push_back(pgm.parseExpression(pgm.nextToken(), true));
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
-	    pgm.nextToken();
-    }
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != close_id )
-	pgm.Throw(loc) << "Expected '" << close_spelling
-		       << "' after constructor arguments" << flush;
-    pgm.nextToken();
+    // A BRACED carrier list (`array{ ... }`, incl. the `{...}`-expression
+    // re-spell) is the carrier's own list literal: keyed elements allowed,
+    // the declaration form's semantics (CirBuilder's carrier ObjTemp branch
+    // lowers it through the one list-literal loop).
+    bool carrier_list = ot->braced && ot->obj_class
+		     && ot->obj_class->is_madc_array();
+    pgm.parse_ctor_args_list(ot->ctor_args, ot->ctor_arg_keys,
+			     carrier_list, /*refuse_brace=*/true,
+			     close_id, close_spelling, loc);
+    pgm.nextToken(); // consume ')' or '}'
 }
 
 // Functional construction `T(args)` / `T{args}` / `Template<...>(args)` in expression position:
@@ -23751,13 +23825,14 @@ void Program::flush_forest_pending_globals()
 		    _prv_token = NULL;
 		    TokenDecl *td = new TokenDecl(*gv);
 		    auto parse_args = [&]() {
-			while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
-			{
-			    TokenBase *arg = parseExpression(nextToken(), true);
-			    td->ctor_args.push_back(arg);
-			    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-				nextToken(); // consume ','
-			}
+			// The ONE args-list reader (parse_ctor_args_list —
+			// the decl loop's own reader, so the re-parse cannot
+			// drift from the live parse); the planted TokenClBrk
+			// is the stop, left unconsumed like before.
+			parse_ctor_args_list(td->ctor_args, td->ctor_arg_keys,
+					     /*carrier_list=*/false,
+					     /*refuse_brace=*/false,
+					     TokenID::tkClBrk, ")", td);
 		    };
 		    if ( !pg.ns.empty() )
 		    {
@@ -27338,6 +27413,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     return parsePostfixChainFrom(result, postfix_expr_variable(result));
 }
 
+static DataDef *referent_if_reference(DataDef *dd);   // defined below
+
 TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 {
     if ( !result )
@@ -27537,6 +27614,47 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	if ( pid == TokenID::tkOpSqr )
 	{
 	    TokenBase *open = nextToken();
+	    // `rows[] = x` — PHP's empty APPEND accessor (owner 2026-08-31),
+	    // the postfix-chain twin of the parseExpression subscript arm:
+	    // on a CARRIER receiver, `[]` with no index is the APPEND slot
+	    // (a NULL index; carrier_slot_call's append arm binds
+	    // madarray_append_slot). Serves the chain-head variable
+	    // (`rows[]`) and a mid-chain carrier result (`m["sub"][]`).
+	    // Non-carrier receivers keep requiring an index expression.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkClSqr )
+	    {
+		DataDef *arecv = result ? result->datadef() : NULL;
+		if ( DataDef *ref = referent_if_reference(arecv) )
+		    arecv = ref;
+		TokenVar *atv = result == chain_head
+			      ? dynamic_cast<TokenVar *>(result) : NULL;
+		if ( atv && atv->var.type )
+		{
+		    arecv = atv->var.type;
+		    if ( DataDef *ref = referent_if_reference(arecv) )
+			arecv = ref;
+		}
+		if ( !arecv || !arecv->is_madc_array() )
+		    Throw(open) << "empty '[]' append needs a madc value"
+			" (var) receiver; this subscript requires an index"
+			<< flush;
+		nextToken(); // consume ]
+		TokenBase *app;
+		if ( atv )
+		{
+		    TokenSubscript *ts = new TokenSubscript(atv->var, NULL);
+		    ts->setDataType(madc_array_subscript_type());
+		    app = ts;
+		}
+		else
+		    app = new TokenSubscriptExpr(result, NULL,
+				madc_array_subscript_type());
+		app->file = open->file;
+		app->line = open->line;
+		app->column = open->column;
+		result = app;
+		continue;
+	    }
 	    TokenBase *idx_tb = nextToken();
 	    TokenBase *idx_expr = parseExpression(idx_tb, true);
 	    TokenBase *close = nextToken();
@@ -34087,6 +34205,27 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
 	if ( push_back_comma ) pushToken(tb);
 	done = true;
     }
+    // A braced-init-list as an ASSIGNMENT rhs — `m = { ... };`,
+    // `rows[] = { "k": "v" };` ([expr.ass]/9: the rhs braced list is
+    // target-typed by the ASSIGNEE) — re-spells against the lhs operand's
+    // type so the ONE brace-list owner runs (a class, the carrier
+    // included, becomes the functional form -> TokenObjTemp). A target
+    // the re-spell cannot serve falls through to the legacy route
+    // unchanged. Plain '=' only: compound assignments take no list.
+    if ( tb->id() == TokenID::tkOpBrc
+      && !opStack.empty() && opStack.top()->id() == TokenID::tkAssign
+      && !exStack.empty() && exStack.top()->datadef() )
+    {
+	DataDef *asg_target =
+	    referent_if_reference(exStack.top()->datadef());
+	if ( TokenBase *nh = respell_braced_list_for_target(asg_target, tb) )
+	{
+	    DBG(cout << "parseExpression: assignment-rhs braced list "
+		     << "re-spelled against " << asg_target->name << endl);
+	    pushToken(nh);   // the main loop pops it as the next token
+	    return ExprStep::Break;
+	}
+    }
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
@@ -36828,6 +36967,33 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    {
 			TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
 			exStack.pop();
+			// madc array receivers: a `value &` reference parameter
+			// denotes its referent carrier (shared by the append
+			// arm and the slot typing below).
+			DataDef *sub_recv = tv->var.type;
+			if ( DataDef *ref = referent_if_reference(sub_recv) )
+			    sub_recv = ref;
+			// `rows[] = x` — PHP's empty APPEND accessor (owner
+			// 2026-08-31): on a carrier receiver, `[]` with no
+			// index is the APPEND slot — a TokenSubscript with a
+			// NULL index (carrier_slot_call's append arm binds
+			// madarray_append_slot). Only the carrier appends;
+			// every other receiver refuses LOUDLY (C has no
+			// postfix `x[]`, so nothing legal reaches this).
+			if ( peekToken() && peekToken()->id() == TokenID::tkClSqr )
+			{
+			    if ( !sub_recv || !sub_recv->is_madc_array() )
+				Throw(tb) << "empty '[]' append needs a madc"
+				    " value (var) receiver; this subscript"
+				    " requires an index" << flush;
+			    nextToken(); // consume ]
+			    DBG(cout << "parseExpression: append subscript on "
+				     << tv->var.name << endl);
+			    TokenSubscript *tapp = new TokenSubscript(tv->var, NULL);
+			    tapp->setDataType(madc_array_subscript_type());
+			    exStack.push(tapp);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			// parse index expression (stops at ] via peek-stop below)
 			TokenBase *idx = parseExpression(nextToken());
 			TokenBase *clsqr = nextToken(); // consume ]
@@ -36854,11 +37020,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
 			// madc array subscript: every carrier subscript types as
 			// the carrier — the slot model (madc_array_subscript_type).
-			// A `value &` receiver (reference parameter) denotes its
-			// referent carrier.
-			DataDef *sub_recv = tv->var.type;
-			if ( DataDef *ref = referent_if_reference(sub_recv) )
-			    sub_recv = ref;
+			// sub_recv (hoisted above) already unwrapped a
+			// `value &` reference receiver to its referent.
 			if ( sub_recv && sub_recv->is_madc_array() )
 			    tsn->setDataType(madc_array_subscript_type());
 			exStack.push(tsn);
@@ -36930,6 +37093,27 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    {
 			TokenBase *base_expr = exStack.top();
 			exStack.pop();
+			// `m["sub"][] = x` — the empty APPEND accessor on a
+			// carrier CHAIN link (owner 2026-08-31): the same
+			// NULL-index append slot as the named-receiver arm
+			// above; non-carrier bases refuse loudly (no legal
+			// postfix `x[]` exists).
+			if ( peekToken() && peekToken()->id() == TokenID::tkClSqr )
+			{
+			    DataDef *bdd = base_expr->datadef();
+			    if ( DataDef *ref = referent_if_reference(bdd) )
+				bdd = ref;
+			    if ( !bdd || !bdd->is_madc_array() )
+				Throw(tb) << "empty '[]' append needs a madc"
+				    " value (var) receiver; this subscript"
+				    " requires an index" << flush;
+			    nextToken(); // consume ]
+			    DBG(cout << "parseExpression: append subscript"
+				     " on expression base" << endl);
+			    exStack.push(new TokenSubscriptExpr(base_expr,
+				    NULL, madc_array_subscript_type()));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			TokenBase *idx = parseExpression(nextToken());
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
@@ -38191,8 +38375,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // class (statement and call-argument contexts). Loud wall.
 		    if ( exStack.empty() && opStack.empty() )
 			Throw(tb) << "Unexpected ':' — no expression before it"
-			    " (keyed '{key: value}' literals are not supported"
-			    " (yet))" << flush;
+			    " (a keyed '{key: value}' element needs a key"
+			    " expression before the ':')" << flush;
 		    pushToken(tb); // put : back for caller to consume
 		    done = true;
 		    return done ? ExprStep::Done : ExprStep::Break;
@@ -46705,10 +46889,22 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 // parseExpression, or NULL when the target cannot take a braced list here
 // (unknown, scalar, pointer, _Complex) — the caller errors loudly or keeps
 // its legacy route.
+// The ONE owner of "can this type be a braced-list re-spell target" —
+// asked by the overload search below per candidate WITHOUT touching the
+// token stream, and by the re-spell itself before its arms run.
+bool Program::braced_list_target_capable(DataDef *dd)
+{
+    if ( !dd )
+	return false;
+    if ( dynamic_cast<DataDefCLASS *>(dd) != NULL )
+	return true;
+    return dynamic_cast<DataDefSTRUCT *>(dd) != NULL && !dd->is_complex();
+}
+
 TokenBase *Program::respell_braced_list_for_target(DataDef *target_dd,
 						   TokenBase *open_brc)
 {
-    if ( !target_dd )
+    if ( !braced_list_target_capable(target_dd) )
 	return NULL;
     DataDefSTRUCT *agg = dynamic_cast<DataDefSTRUCT *>(target_dd);
     // An EMPTY list (value-initialization) is spelled with an explicit zero:
@@ -46753,8 +46949,46 @@ TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
 	       + (function_uses_hidden_this(tc->var) ? 1 : 0);
     DataDef *pt = (fd && !fd->is_varargs && idx < fd->parameters.size())
 		? fd->parameters[idx] : NULL;
-    TokenBase *nh = pt
-	? respell_braced_list_for_target(referent_if_reference(pt), open_brc)
+    DataDef *target = pt ? referent_if_reference(pt) : NULL;
+    // OVERLOAD-AWARE ([over.ics.list]): tc->var binds ONE signature at
+    // parse time, but the braced list binds whichever overload takes a
+    // class/aggregate at this position — `rows.push({...})` must find
+    // push(value&) although the first registered row is push(const
+    // char*). Search the owner class's method-overload set (the
+    // class_method_def_by_param walk) for a capable parameter; the FIRST
+    // capable candidate is the re-spell target, and the later overload
+    // re-rank sees the constructed object like any other argument.
+    if ( !braced_list_target_capable(target) )
+    {
+	Method *md = dynamic_cast<FuncDef *>(tc->var.type)
+		   ? (Method *)tc->var.data : NULL;
+	DataDefCLASS *oc = md ? md->owner_class : NULL;
+	const std::string called = fd && !fd->method_display_name.empty()
+				 ? fd->method_display_name : tc->var.name;
+	const std::string mangled = oc ? oc->name + "__" + called
+				       : std::string();
+	if ( oc )
+	    for ( Variable *mv : oc->methods )
+	    {
+		if ( !mv )
+		    continue;
+		FuncDef *ofd = dynamic_cast<FuncDef *>(mv->type);
+		if ( !ofd || ofd->is_varargs
+		  || idx >= ofd->parameters.size() )
+		    continue;
+		if ( mv->name != called && mv->name != mangled
+		  && ofd->method_display_name != called )
+		    continue;
+		DataDef *cand = referent_if_reference(ofd->parameters[idx]);
+		if ( braced_list_target_capable(cand) )
+		{
+		    target = cand;
+		    break;
+		}
+	    }
+    }
+    TokenBase *nh = target
+	? respell_braced_list_for_target(target, open_brc)
 	: NULL;
     if ( !nh )
 	Throw(open_brc) << "cannot list-initialize argument "
@@ -65398,74 +65632,17 @@ fnptr_decl_arm_head:
 	    // captured tokens). Same cursor tap as the v23 param defaults.
 	    DefCapState ctor_cap;
 	    bool ctor_capturing = param_default_capture_begin(ctor_cap);
-	    while ( peekToken() && peekToken()->id() != ctor_close_id )
-	    {
-		// A BARE '{' element in a carrier list literal must not reach
-		// parseExpression (no brace-head reading — the stray braces
-		// unbalance the scope stack, the TokenRETURN wall). Nested
-		// lists are a future lowering; error loudly, never silently.
-		if ( carrier_list_decl
-		  && peekToken()->id() == TokenID::tkOpBrc )
-		    Throw(peekToken()) << "Nested brace list in a value literal"
-			" is not supported (yet)" << flush;
-		TokenBase *arg = parseExpression(nextToken(), true);
-		// KEYED element (`key: value` — the carrier's associative
-		// literal, owner 2026-08-31): the expression just parsed is
-		// the KEY, the value follows the ':'. Key-vs-index semantics
-		// are the slot call's (madc_array_key_index) — exactly what
-		// `m[key] = value` decides — and the CIR lowering assigns
-		// into the key's vivified slot through the registered
-		// operator= rows (array_list_init_call). Carrier lists only:
-		// a class ctor-args list with a stray ':' falls to the loud
-		// wall below (C++ has no keyed constructor arguments). A ':'
-		// INSIDE an element's ternary never reaches here — the tkTerQ
-		// arm consumes it within parseExpression.
-		TokenBase *keyval = NULL;
-		if ( carrier_list_decl
-		  && peekToken() && peekToken()->id() == TokenID::tkColon )
-		{
-		    nextToken(); // consume ':'
-		    if ( !peekToken() || peekToken()->id() == ctor_close_id
-		      || peekToken()->id() == TokenID::tkComma )
-			Throw(arg) << "Expected a value after ':' in a keyed"
-			    " value-literal element" << flush;
-		    if ( peekToken()->id() == TokenID::tkOpBrc )
-			Throw(peekToken()) << "Nested brace list in a value"
-			    " literal is not supported (yet)" << flush;
-		    keyval = parseExpression(nextToken(), true);
-		}
-		if ( keyval )
-		{
-		    // Keys ride the PARALLEL vector (NULL = positional):
-		    // pad up to the elements already read, then the key and
-		    // its value land at the same index.
-		    if ( td->ctor_arg_keys.empty() )
-			td->ctor_arg_keys.resize(td->ctor_args.size(), NULL);
-		    td->ctor_arg_keys.push_back(arg);
-		    td->ctor_args.push_back(keyval);
-		}
-		else
-		{
-		    td->ctor_args.push_back(arg);
-		    if ( !td->ctor_arg_keys.empty() )
-			td->ctor_arg_keys.push_back(NULL);
-		}
-		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-		    nextToken(); // consume ','
-		else if ( peekToken() && peekToken()->id() != ctor_close_id )
-		    // An element ends only at ',' or the close. parseExpression
-		    // PUSHES BACK a terminator it does not own (a bare ':' is
-		    // the ternary-branch pushback convention), so without this
-		    // wall the loop re-pops the same token forever — the
-		    // associative-literal hang class.
-		    Throw(peekToken()) << "Expected ',' or '" << ctor_close_sp
-			<< "' after constructor argument" << flush;
-	    }
+	    // The ONE args-list reader (parse_ctor_args_list): elements plus,
+	    // for a carrier list, `key: value` keyed elements — the CIR
+	    // lowering (array_list_init_call) assigns those into the key's
+	    // vivified slot through the registered operator= rows. Leaves
+	    // the close unconsumed so the capture tap closes over the args
+	    // alone.
+	    parse_ctor_args_list(td->ctor_args, td->ctor_arg_keys,
+				 carrier_list_decl, /*refuse_brace=*/false,
+				 ctor_close_id, ctor_close_sp, tb);
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);
-	    if ( !peekToken() || peekToken()->id() != ctor_close_id )
-		Throw(tb) << "Expected '" << ctor_close_sp
-			  << "' after constructor arguments" << flush;
 	    nextToken(); // consume ')' or '}'
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete

@@ -1,0 +1,43 @@
+// The carrier's APPEND accessor + literal expressions (owner 2026-08-31):
+// `rows[] = expr` is PHP's empty append accessor — madarray_append_slot
+// pushes a null element and the registered operator= rows land the rhs in
+// the appended slot (the same assignment vocabulary as keyed/indexed
+// slots). `{...}` in EXPRESSION position (an assignment rhs, a call
+// argument) re-spells to the functional carrier form and materializes a
+// cleanup-tagged temp through the ONE list-literal lowering the
+// declaration form runs (carrier_list_elements) — so
+//   rows[] = { "this": "that" };
+// replaces the var r; r["k"] = v; rows.push(r); dance. The braced call
+// argument finds push(value&) through the overload-aware re-spell even
+// though the first registered push row takes a scalar.
+int main()
+{
+	var rows;
+	rows[] = 42;
+	rows[] = "hello";
+	rows[] = { "act": "colon", "n": 7 };
+	rows[] = { 1, 2, 3 };
+	println("rows: n={} r0={} r1={} r2.act={} r2.n={} r3.1={}",
+		rows.size(), rows[0], rows[1],
+		rows[2]["act"], rows[2]["n"], rows[3][1]);
+	// braced-list call arguments (keyed and positional)
+	var r2;
+	r2.push({ "a": 1 });
+	r2.push({ 5, 6 });
+	println("r2: n={} a={} second1={}", r2.size(), r2[0]["a"], r2[1][1]);
+	// whole-value replacement by a literal
+	var m;
+	m = { "x": "ex", "y": 2.5 };
+	println("m: x={} y={}", m["x"], m["y"]);
+	// a literal INTO a keyed slot (one-level nesting via the slot model)
+	m["sub"] = { "deep": true };
+	println("sub: {}", m["sub"]["deep"]);
+	// the append accessor on a chain link, and a keyed write into an
+	// appended row
+	m["list"] = { 1, 2 };
+	m["list"][] = 9;
+	println("list: n={} last={}", m["list"].size(), m["list"][2]);
+	rows[0] = 43;
+	println("reassign: r0={}", rows[0]);
+	return 0;
+}
