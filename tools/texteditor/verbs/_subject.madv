@@ -6,7 +6,7 @@
 // world's one "document" (single-doc sessions, headless harnesses).
 long doc = 0;
 {
-    value __ad;
+    var __ad;
     ui::get(__ad, w, actor, "adoc");
     if ( !__ad.is_null() )
 	doc = __ad.as_integer();

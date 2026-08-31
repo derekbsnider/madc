@@ -6,7 +6,7 @@ var p;
 ui::get(p, w, doc, "path");
 if ( p.is_null() )
     return "No path.";
-value t;
+var t;
 ui::text(t, w, doc);
 long nb = php::file_put_contents(p.c_str(), t);
 if ( nb < 0 )
