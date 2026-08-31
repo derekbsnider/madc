@@ -103,17 +103,20 @@ int main()
 	    joesc["project"]["ins"], joesc["project"]["del"],
 	    joesc["project"]["enter"], picosc["project"]["ins"]);
     // The scoped parser's rules: a profile's @scope line OVERRIDES the
-    // baked default per (scope, key) — later lines win; scoped keys fold
-    // case; unscoped lines still fill the main table; untouched defaults
-    // stand (the rescue-keys pattern, data through the same parser).
+    // baked default per (scope, key) — later lines win; scoped keys are
+    // stored AS WRITTEN (a lowercase spelling matches either case at
+    // lookup, spelling BOTH cases makes a scope case-sensitive — the vi
+    // @normal alphabet); unscoped lines still fill the main table;
+    // untouched defaults stand (the rescue-keys pattern, data through
+    // the same parser).
     var st;
     var ssc;
     parse_keys(st, ssc,
-	       format("{}\n@confirm Y quit\n@myscope INS act2\nx save\n",
+	       format("{}\n@confirm y pquit\n@confirm Y sh\n@myscope INS act2\nx save\n",
 		      modal_default_keys_text()));
-    println("scoped: y-override={} ins-fold={} main-x={} prompt-enter={}",
-	    ssc["confirm"]["y"], ssc["myscope"]["ins"], st["x"],
-	    ssc["prompt"]["enter"]);
+    println("scoped: y-override={} Y-cased={} ins-as-written={} main-x={} prompt-enter={}",
+	    ssc["confirm"]["y"], ssc["confirm"]["Y"], ssc["myscope"]["INS"],
+	    st["x"], ssc["prompt"]["enter"]);
     // The baked-in RESCUE set (no profile file loads) is the same data
     // shape: an inline profile string through parse_keys. Binding needs a
     // TUI; headless pins the table content and the tiny exit/save/help
@@ -844,11 +847,22 @@ int main()
 	    es_int(w, es, "caret", -1) == wsz ? 1 : 0);
 
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
+    // The cycle is alphabetical: joe -> neovim -> pico. The neovim hop
+    // pins the MODAL rule (a profile carrying @normal data loads in vi
+    // normal mode — its %M status seat lights, so the identical-tree
+    // clause is pinned across the two NON-modal profiles); the pico hop
+    // pins that a non-modal load clears the mode again.
     var before;
     S.compose_ide_tree(before, doc);
     ev_action(e, "profile", "opt-keymap");
     S.apply_ide_event(doc, e);
     var prof;
+    ui::get(prof, w, es, "profile");
+    var vmswap;
+    ui::get(vmswap, w, es, "vimode");
+    println("swap-modal: profile={} mode={}", prof, vmswap);
+    ev_action(e, "profile", "opt-keymap");
+    S.apply_ide_event(doc, e);
     ui::get(prof, w, es, "profile");
     var after;
     S.compose_ide_tree(after, doc);
@@ -1278,8 +1292,10 @@ int main()
     S.compose_ide_tree(tree, doc);
     var mbox = tree["children"][2];
     var mrow0 = format("{}", mbox["children"][0]["content"]);
-    println("modes-palette: label={} colon-row={}", mbox["label"],
-	    mrow0.index(" :  ") >= 0 ? 1 : 0);
+    var mrow1 = format("{}", mbox["children"][1]["content"]);
+    println("modes-palette: label={} colon-row={} vi-row={}", mbox["label"],
+	    mrow0.index(" :  ") >= 0 ? 1 : 0,
+	    mrow1.index(" v  ") >= 0 ? 1 : 0);
     ev_text(e, ":");			// @modes ':' -> colon mode
     S.apply_ide_event(doc, e);
     var pmd;
@@ -1298,6 +1314,12 @@ int main()
     ev_key(e, "esc");
     S.apply_ide_event(doc, e);
     println("modes-esc: closed={}", modes_active(w, es) ? 0 : 1);
+    // vi mode needs @normal key data — joe carries none, so the palette's
+    // v row (here the direct action it names) refuses with the road.
+    ev_action(e, "vimode", "^n v");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("vi-refuse: {}", msg);
     // The colon vocabulary translates to the EXISTING internals.
     ev_action(e, "colon", "");		// the direct action (bindable)
     S.apply_ide_event(doc, e);
@@ -1327,6 +1349,181 @@ int main()
     long ctook = S.take_request(crq) ? 1 : 0;
     println("colon-exec: took={} kind={}", ctook, crq["kind"]);
     S.term_exec(crq);			// the guest prints colon-exec-ok
+
+    // -- vi MODES-AS-SCOPES (owner 2026-08-31): the neovim profile is
+    //    the MODAL personality — @normal/@insert are scope data through
+    //    the one parse_keys (stored AS WRITTEN: the vi case alphabet);
+    //    the session's vi arm owns the count/operator grammar. A
+    //    profile carrying @normal data loads in NORMAL mode. --
+    const char *vpath = "madc_ide_vi.txt";
+    php::file_put_contents(vpath,
+	"alpha beta gamma\nsecond line\nthird line\n");
+    long w3 = ui::world_new();
+    long doc3 = setup_editor(w3, vpath, false);
+    long es3 = ui::entity_by_name(w3, "editor-state");
+    IdeSession S3;
+    S3.attach(w3, es3);
+    ui::set(w3, es3, "profile_dir", "tools/madcide/profiles");
+    long vok = load_profile(w3, es3, "neovim") ? 1 : 0;
+    var vm;
+    ui::get(vm, w3, es3, "vimode");
+    println("vi-load: ok={} mode={}", vok, vm);
+    // i enters INSERT (typing types again), esc — @insert scope DATA —
+    // returns to NORMAL.
+    ev_text(e, "i");
+    S3.apply_ide_event(doc3, e);
+    var vmi;
+    ui::get(vmi, w3, es3, "vimode");
+    ev_text(e, "Q");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    ui::get(vm, w3, es3, "vimode");
+    var vtx;
+    ui::text(vtx, w3, doc3);
+    println("vi-insert: in={} typed={} out={}", vmi,
+	    vtx.index("Qalpha") == 0 ? 1 : 0, vm);
+    // Normal mode: the %M status seat shows the mode; motions are
+    // @normal data over the shared movement (0 home, $ end, j down).
+    S3.compose_ide_tree(tree, doc3);
+    var vst = format("{}", tree["children"][0]["content"]);
+    long vshown = vst.index("-- NORMAL --") >= 0 ? 1 : 0;
+    ev_text(e, "0");
+    S3.apply_ide_event(doc3, e);
+    long vhome = es_int(w3, es3, "caret", -1);
+    ev_text(e, "$");
+    S3.apply_ide_event(doc3, e);
+    long veol = es_int(w3, es3, "caret", -1);
+    ev_text(e, "j");
+    S3.apply_ide_event(doc3, e);
+    long vjline = line_of(w3, doc3, es_int(w3, es3, "caret", -1));
+    println("vi-motion: shown={} home={} eol={} j-line={}", vshown, vhome,
+	    veol, vjline);
+    // G is the bottom; a count makes it the LINE (1G — the :N landing
+    // rule); a pending count echoes on the showcmd seat.
+    ev_text(e, "G");
+    S3.apply_ide_event(doc3, e);
+    long vgend = es_int(w3, es3, "caret", -1) == ui::text_size(w3, doc3)
+		 ? 1 : 0;
+    ev_text(e, "1");
+    S3.apply_ide_event(doc3, e);
+    var vpend;
+    ui::get(vpend, w3, es3, "vipend");
+    ev_text(e, "G");
+    S3.apply_ide_event(doc3, e);
+    long v1g = line_of(w3, doc3, es_int(w3, es3, "caret", -1));
+    println("vi-goto: G-end={} pend={} 1G-line={}", vgend, vpend, v1g);
+    // x deletes at the caret, counts multiply (3x); the case alphabet is
+    // data — X deletes BEFORE the caret.
+    ev_text(e, "x");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "3");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "x");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    long v3x = vtx.index("ha beta gamma") == 0 ? 1 : 0;
+    ev_text(e, "l");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "X");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    println("vi-x: 3x={} X-case={}", v3x,
+	    vtx.index("a beta gamma") == 0 ? 1 : 0);
+    // Operator + motion: dw deletes the motion's span — the shared word
+    // motion is end-of-word (JOE's ^X), so dw is vim's `de` shape (the
+    // profile documents it): "a" goes, the space stays. A count before
+    // the doubled operator multiplies the line-wise form (2dd).
+    ev_text(e, "d");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "w");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    long vdw = vtx.index(" beta gamma") == 0 ? 1 : 0;
+    ev_text(e, "2");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "d");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "d");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    println("vi-operator: dw={} 2dd={}", vdw,
+	    vtx.index("third line") == 0 ? 1 : 0);
+    // cc: the doubled change empties the line and enters insert mode.
+    ev_text(e, "c");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "c");
+    S3.apply_ide_event(doc3, e);
+    var vmcc;
+    ui::get(vmcc, w3, es3, "vimode");
+    ev_text(e, "fresh");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    println("vi-cc: mode={} text={}", vmcc, vtx == "fresh\n" ? 1 : 0);
+    // o opens below, O above — the case alphabet again.
+    ev_text(e, "o");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "below");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "O");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "mid");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    println("vi-open: text={}", vtx == "fresh\nmid\nbelow\n" ? 1 : 0);
+    // A appends at the line END (a appends after the caret) — and : is
+    // the door into the SAME colon line the palette reaches.
+    ev_text(e, "1");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "G");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "A");
+    S3.apply_ide_event(doc3, e);
+    ev_text(e, "!");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    long vA = vtx.index("fresh!") == 0 ? 1 : 0;
+    ev_text(e, ":");
+    S3.apply_ide_event(doc3, e);
+    var vpm;
+    ui::get(vpm, w3, es3, "pmode");
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    println("vi-A-colon: eol-append={} pmode={} closed={}", vA, vpm,
+	    prompt_active(w3, es3) ? 0 : 1);
+    // An unbound normal-mode character says so and swallows itself; esc
+    // clears a pending count.
+    ev_text(e, "Z");
+    S3.apply_ide_event(doc3, e);
+    ui::get(msg, w3, es3, "msg");
+    long vzmsg = msg.index("not bound") >= 0 ? 1 : 0;
+    ev_text(e, "4");
+    S3.apply_ide_event(doc3, e);
+    ev_key(e, "esc");
+    S3.apply_ide_event(doc3, e);
+    var vcnt;
+    ui::get(vcnt, w3, es3, "vicount");
+    println("vi-unbound: msg={} count-cleared={}", vzmsg,
+	    strlen(vcnt.c_str()) == 0 ? 1 : 0);
+    // The palette's v row toggles modal editing off: typing types again.
+    ev_action(e, "vimode", "^n v");
+    S3.apply_ide_event(doc3, e);
+    ui::get(vm, w3, es3, "vimode");
+    ev_text(e, "x");
+    S3.apply_ide_event(doc3, e);
+    ui::text(vtx, w3, doc3);
+    println("vi-toggle: mode='{}' typed-x={}", vm,
+	    vtx.index("x") >= 0 ? 1 : 0);
+    ui::world_close(w3);
+
     // :q on the now-clean buffer quits — false propagates out of the
     // prompt commit exactly like the quit chord.
     ev_action(e, "colon", "");

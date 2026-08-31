@@ -17,7 +17,10 @@
 // original/MC11/C11 — plus C++ (the reverse render) on a C/C++ buffer —
 // the view seam: read-only lenses over the one document · ^N the MODES
 // palette (owner 2026-08-31): ":" inside it — @modes profile data —
-// enters the vi colon line (:w :q :N :e file :!cmd ...)),
+// enters the vi colon line (:w :q :N :e file :!cmd ...), "v" toggles vi
+// MODAL editing (modes-as-scopes: @normal/@insert scope data + the
+// count/operator grammar; profiles/neovim.keys is the modal personality
+// and loads in normal mode)),
 // Pico-style single chords in the pico profile.
 // The buffer holds a persistent parse handle (madc::parse_open at load,
 // whole-TU refresh on check/save/outline); the status line shows the

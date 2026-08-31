@@ -1,0 +1,70 @@
+# madcide keybinding profile: neovim/vim — the MODAL personality
+# (modes-as-scopes, owner ruling 2026-08-31). The unscoped lines are
+# vim's CONTROL-key chords (the engine table — live in every mode);
+# @normal / @insert are the vi mode tables the session's vi arm routes
+# printable keys through. A profile carrying @normal data loads in
+# NORMAL mode; ^N v (the modes palette) toggles modal editing off/on.
+# Scoped keys match AS WRITTEN — spelling both cases is what makes the
+# vi alphabet case-sensitive (a/A, i/I, o/O, x/X).
+#
+# The grammar (session machinery, not table data): counts multiply
+# (3x, 2d3w = 6 words), d/c pend and double to the line-wise form
+# (dd/cc), a count before G is a line number (5G), esc clears a
+# pending count/operator. Honest absences, never pretended: no
+# registers/put (y/p), no text objects (iw), no repeat (.), no gg
+# (1G is the door), operator spans are byte-wise over the motion, and
+# w/b are the shared end-of-word motions (dw is vim's `de` shape).
+#
+# vim's control chords
+^r redo
+^f pgdn
+^b pgup
+^d pgdn
+^u pgup
+^l refresh
+# the ^W window family (vim's own seats on madcide's window verbs)
+^w ^w nextw
+^w s splitw
+^w o onlywin
+^w c killwin
+^w + groww
+^w - shrinkw
+# madcide's IDE doors (control keys vim leaves unclaimed here; the rest
+# of the IDE rides the colon line and the palettes)
+^n modes
+^p project
+^t options
+^k h help
+^k ; check
+^k i outline
+^k a view
+^k b build
+^k e editfile
+# vi NORMAL mode — motions
+@normal h left
+@normal j down
+@normal k up
+@normal l right
+@normal w wordright
+@normal b wordleft
+@normal 0 home
+@normal $ end
+@normal G vigoto
+# vi NORMAL mode — edits and commands
+@normal x del
+@normal X backspace
+@normal u undo
+@normal d videlete
+@normal c vichange
+@normal : colon
+@normal / find
+@normal n findnext
+# vi NORMAL mode — insert entries
+@normal i viinsert
+@normal I viinsertbol
+@normal a viappend
+@normal A viappendeol
+@normal o viopenbelow
+@normal O viopenabove
+# vi INSERT mode
+@insert esc vinormal

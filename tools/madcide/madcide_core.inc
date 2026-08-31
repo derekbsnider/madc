@@ -56,6 +56,13 @@ class IdeSession
 					// headless harness, embedders)
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void compose_ide_tree(var &root, long doc);
+	bool vi_event(long doc, long nav, var &ev, bool &cont);
+					// the vi modes-as-scopes arm:
+					// true = consumed; cont carries
+					// the continue/quit verdict
+	bool vi_exec(long doc, const char *a, long n);	// one named action,
+					// n times, through apply_ide_event
+	void vi_open_line(long doc, bool above);	// o / O / cc's line
 	long world();
 	long active(long fallback);	// the active buffer's document
 	bool parse_pending(long adoc);	// spawn the parked background
@@ -105,10 +112,12 @@ void path_sans_ext(var &out, var &p)
 // modal keys are profile DATA through this ONE parser, never a hardwired
 // dispatch arm): "@confirm y pyes" binds y inside the confirm question.
 // Unscoped lines fill `table` (the engine's main bindings); scoped lines
-// fill `scopes` ({scope: {key: action}}, keys stored lowercase — the
-// scoped alphabet is single key/character spellings). Later lines
-// overwrite earlier per (scope, key), which is how the baked defaults
-// merge under a profile's own respellings.
+// fill `scopes` ({scope: {key: action}}, keys stored AS WRITTEN — the
+// scoped alphabet is single key/character spellings; a lowercase
+// spelling matches either case at lookup (scoped_action), spelling BOTH
+// cases is what makes a scope case-sensitive: the vi @normal alphabet's
+// a/A, i/I, o/O). Later lines overwrite earlier per (scope, key), which
+// is how the baked defaults merge under a profile's own respellings.
 void parse_keys(var &table, var &scopes, const char *text)
 {
     var t;
@@ -135,17 +144,16 @@ void parse_keys(var &table, var &scopes, const char *text)
 		continue;
 	    var action = php::trim(sp2 + 1);
 	    var key = php::trim(perl::substr(rest, 0, sp2 - rs));
-	    var lk = php::strtolower(key.c_str());
 	    var one = sc[scope.c_str()];
 	    if ( one.is_null() )
 	    {
 		var fresh;
-		fresh[lk.c_str()] = action;
+		fresh[key.c_str()] = action;
 		sc[scope.c_str()] = fresh;
 	    }
 	    else
 	    {
-		one[lk.c_str()] = action;
+		one[key.c_str()] = action;
 		sc[scope.c_str()] = one;
 	    }
 	    continue;
@@ -186,19 +194,22 @@ const char *modal_default_keys_text()
 	   "@project del projdel\n"
 	   "@project enter projopen\n"
 	   "@modes : colon\n"
+	   "@modes v vimode\n"
 	   "@modes enter modesopen\n"
 	   "@modes esc modesclose\n"
 	   "@pane esc paneclose\n";
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
-// Key events look up by key name, text events by their single character
-// — both case-insensitive (the JOE convention; parse_keys stores scoped
-// keys lowercase). Which event KINDS consult a scope is that modal's
-// semantics (a confirm reads characters, a prompt's characters are its
-// input) — the caller picks. False = the scope binds nothing for this
-// event. Sessions that never loaded a profile (the headless harness)
-// lazily seed the baked defaults.
+// Key events look up by key name, text events by their single character.
+// The key matches AS WRITTEN first, then by its lowercase spelling — so
+// a scope whose data is all lowercase stays case-insensitive (the JOE
+// convention, every modal scope), and one spelling both cases is
+// case-sensitive (the vi @normal alphabet). Which event KINDS consult a
+// scope is that modal's semantics (a confirm reads characters, a
+// prompt's characters are its input) — the caller picks. False = the
+// scope binds nothing for this event. Sessions that never loaded a
+// profile (the headless harness) lazily seed the baked defaults.
 bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 {
     var mk;
@@ -225,13 +236,21 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
     }
     else
 	return false;
-    var lk = php::strtolower(k.c_str());
-    var a = sc[lk.c_str()];
+    var a = sc[k.c_str()];		// as written (the vi case alphabet)
+    if ( a.is_null() )
+    {
+	var lk = php::strtolower(k.c_str());
+	a = sc[lk.c_str()];		// lowercase spellings match either case
+    }
     if ( a.is_null() )
 	return false;
     out = a;
     return true;
 }
+
+// The vi mode setter (defined with the vi machinery below — the loaders
+// need it: a modal personality starts in normal mode).
+void vi_enter(long w, long es, const char *mode);
 
 // Load a named profile from the session's profile directory: parse it,
 // VALIDATE it handle-free (ui::tui_validate_keys — same rules the
@@ -278,6 +297,12 @@ bool load_profile(long w, long es, const char *name)
 	if ( a == "bend" )
 	    twopoint = true;
     ui::set(w, es, "selblock", twopoint);
+    // A profile that carries @normal key data IS a modal personality
+    // (the vi modes-as-scopes rule): it loads in vi normal mode; any
+    // other profile clears vi mode — the tables its arm routes through
+    // are gone. Data decides, never the profile's name.
+    var vt = scopes["normal"];
+    vi_enter(w, es, vt.is_null() ? "" : "normal");
     ui::set(w, es, "profile", pname);
     ui::set(w, es, "bindtext", full);	// help documents the modal
 					// defaults along with the profile
@@ -314,6 +339,7 @@ bool bind_rescue_keys(long w, long es)
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
+    vi_enter(w, es, "");		// no @normal data in the rescue set
     ui::set(w, es, "profile", "rescue");
     ui::set(w, es, "bindtext", full);
     ui::set(w, es, "msg",
@@ -664,11 +690,13 @@ bool view_name(var &out, long w, long es)
 // Render one joerc-style format string. Supported seats: %n name,
 // %m "(Modified) ", %R "(Read only) ", %r row / %c col (an optional
 // width digit-run left-pads: %4r), %o byte offset, %k the pending chord
-// (JOE's chord echo — the client-pushed fact), %x the enclosing context —
-// madcide renders its AST-backed enclosing function here, superior to
-// JOE's textual backward heuristic — %y the active VIEW name in JOE's
-// "(syntax)" seat, and %% a literal percent. UNSUPPORTED joerc escapes
-// render EMPTY and light up as their features land (%T %W %I %X %M %S
+// (JOE's chord echo — the client-pushed fact; the vi grammar's pending
+// count/operator echoes here too), %M the vi MODE seat (vim's
+// showmode), %x the enclosing context — madcide renders its AST-backed
+// enclosing function here, superior to JOE's textual backward
+// heuristic — %y the active VIEW name in JOE's "(syntax)" seat, and %%
+// a literal percent. UNSUPPORTED joerc escapes render EMPTY and light
+// up as their features land (%T %W %I %X %S
 // ...). \X attribute escapes are consumed — the status row renders
 // inverse whole-line; intra-line styling is a named seat.
 // The format and the context arrive as VALUES: .c_str() text is
@@ -744,11 +772,30 @@ void status_expand(var &out, long w, long es, long doc, long caret,
 	if ( e == 'k' )
 	{
 	    // The pending chord is a CLIENT-pushed fact (keys are the
-	    // client's; the session only typesets the echo seat).
+	    // client's; the session only typesets the echo seat). With
+	    // no chord in flight the seat echoes the vi grammar's
+	    // pending count/operator instead (vim's showcmd).
 	    var pc;
 	    ui::get(pc, w, es, "pendingchord");
 	    if ( !pc.is_null() && strlen(pc.c_str()) > 0 )
 		seat = format("{} ", pc);
+	    else
+	    {
+		var vp;
+		ui::get(vp, w, es, "vipend");
+		if ( !vp.is_null() && strlen(vp.c_str()) > 0 )
+		    seat = format("{} ", vp);
+	    }
+	}
+	if ( e == 'M' )
+	{
+	    // The vi mode seat (vim's showmode; empty outside vi mode).
+	    var vm;
+	    ui::get(vm, w, es, "vimode");
+	    if ( vm == "insert" )
+		seat = "-- INSERT -- ";
+	    else if ( vm == "normal" )
+		seat = "-- NORMAL -- ";
 	}
 	if ( e == 'x' )
 	    seat = fnctxv;
@@ -2149,19 +2196,141 @@ bool project_event(long w, long es, long doc, var &ev)
     return true;
 }
 
+// ---- the vi MODE: modes-as-scopes (owner ruling 2026-08-31) -------------
+// vim/neovim is MODAL: normal mode's printable keys are COMMANDS, insert
+// mode types. The substrate is the @scope key tables (the design doc's
+// modes-as-scopes): @normal/@insert are profile DATA through the one
+// parse_keys — profiles/neovim.keys is their home — and the session's
+// vi arm (IdeSession::vi_event) routes the MAIN key stream through
+// them; the engine's chord table (control keys) stays live in every
+// mode. Scoped keys match AS WRITTEN, so the data itself spells the vi
+// case alphabet (a/A, i/I, o/O, x/X). The GRAMMAR — counts, pending
+// operator + motion, doubled operators (dd/cc) — is machinery here; the
+// key->name associations stay data (the keybinding law). A profile that
+// carries @normal data IS a modal personality: it loads in normal mode;
+// the modes palette's `v` row (action `vimode`) toggles modal editing
+// anywhere the data exists. Deliberate simplifications, documented and
+// never pretended around: operator spans are BYTE-wise over the motion
+// (dj is a char span, not two lines), no registers/put (y/p), no text
+// objects (iw), no repeat (.), and the caret is the shared byte caret
+// (it may sit one past a line's last character where vim's would not).
+//
+// State bags: "vimode" (""/"normal"/"insert"), "vicount" (the digits so
+// far), "viop"+"viopn" (the pending operator and its stashed count —
+// 2d3w multiplies to 6), "vipend" (the literal echo, vim's showcmd —
+// the %k seat renders it when no engine chord is in flight).
+
+bool vi_active(long w, long es)
+{
+    var m;
+    ui::get(m, w, es, "vimode");
+    if ( m.is_null() )
+	return false;
+    return strlen(m.c_str()) > 0;
+}
+
+void vi_pending_clear(long w, long es)
+{
+    ui::set(w, es, "vicount", "");
+    ui::set(w, es, "viop", "");
+    ui::set(w, es, "viopn", 0);
+    ui::set(w, es, "vipend", "");
+}
+
+void vi_enter(long w, long es, const char *mode)
+{
+    ui::set(w, es, "vimode", mode);
+    vi_pending_clear(w, es);
+}
+
+bool vi_pending(long w, long es)
+{
+    var c;
+    ui::get(c, w, es, "vicount");
+    var o;
+    ui::get(o, w, es, "viop");
+    if ( !c.is_null() && strlen(c.c_str()) > 0 )
+	return true;
+    if ( !o.is_null() && strlen(o.c_str()) > 0 )
+	return true;
+    return false;
+}
+
+// The showcmd echo: every consumed grammar character appends.
+void vi_echo_push(long w, long es, const char *c)
+{
+    var p;
+    ui::get(p, w, es, "vipend");
+    if ( p.is_null() )
+	p = "";
+    ui::set(w, es, "vipend", format("{}{}", p, c));
+}
+
+// The motion VOCABULARY an operator composes over — the shared movement
+// action names (the dispatcher's own arms + edit_key's key spellings).
+bool vi_is_motion(var &a)
+{
+    return a == "left" || a == "right" || a == "up" || a == "down"
+	|| a == "home" || a == "end" || a == "pgup" || a == "pgdn"
+	|| a == "wordleft" || a == "wordright"
+	|| a == "top" || a == "bottom" || a == "vigoto";
+}
+
+// The operator payload: erase [lo, hi) as ONE undo step, caret to lo —
+// block_del's splice shape without the block markers or the clip.
+void vi_span_del(long w, long es, long doc, long lo, long hi)
+{
+    if ( hi <= lo )
+	return;
+    if ( !es_flag(w, es, "editable") )
+    {
+	refuse_edit(w, es);
+	return;
+    }
+    edit_checkpoint(w, es, doc, lo);
+    ed_text_erase(w, es, doc, lo, hi - lo);
+    ui::set(w, es, "caret", lo);
+    ui::set(w, doc, "modified", true);
+}
+
+// Toggle modal editing (the palette's `v` row, or a profile's own
+// `vimode` binding). Entering needs @normal key data — the neovim
+// profile carries it; a profile without any refuses with the road there.
+void vi_toggle(long w, long es)
+{
+    if ( vi_active(w, es) )
+    {
+	vi_enter(w, es, "");
+	ui::set(w, es, "msg", "vi mode off.");
+	return;
+    }
+    var mk;
+    ui::get(mk, w, es, "modekeys");
+    var nt;
+    if ( !mk.is_null() )
+	nt = mk["normal"];
+    if ( nt.is_null() )
+    {
+	ui::set(w, es, "msg",
+		"No @normal keys in this profile (^T Keymap row: neovim).");
+	return;
+    }
+    vi_enter(w, es, "normal");
+    ui::set(w, es, "msg", "vi NORMAL mode (i inserts, ^N v leaves).");
+}
+
 // ---- the MODES palette (owner ruling 2026-08-31) ------------------------
 // "No reason our editor/ide cannot have modes": the `modes` action (joe
 // seats it on ^N — profile data) raises the one popup-list widget over
 // the available editing MODES; the keys inside it are @modes PROFILE
 // DATA through the one parse_keys (baked defaults: ":" enters the vi
-// colon line, enter opens the focused row, esc dismisses). ^N : is two
-// keystrokes into colon mode from a non-modal personality — and it is
-// the only legal spelling: the engine's chord tables refuse a sequence
-// that shadows a shorter binding, so ^n-the-palette and ^n-:-the-chord
-// cannot coexist in the main table. The vi normal/insert MODE (the
-// modes-as-scopes slice) joins as a row here when it lands; a modal
-// personality enters colon from its own @normal ":" instead — one
-// colon implementation either way.
+// colon line, "v" toggles vi modal editing, enter opens the focused
+// row, esc dismisses). ^N : is two keystrokes into colon mode from a
+// non-modal personality — and it is the only legal spelling: the
+// engine's chord tables refuse a sequence that shadows a shorter
+// binding, so ^n-the-palette and ^n-:-the-chord cannot coexist in the
+// main table. A modal personality enters colon from its own @normal ":"
+// instead — one colon implementation either way.
 
 // The rows as data ({act, content} — precomposed like project_rows).
 void modes_show(long w, long es)
@@ -2171,6 +2340,10 @@ void modes_show(long w, long es)
     r1["act"] = "colon";
     r1["content"] = " :  vi command line — one ex command (w q e N !cmd ...)";
     rows.push(r1);
+    var r2;
+    r2["act"] = "vimode";
+    r2["content"] = " v  vi normal/insert editing — toggle modal mode";
+    rows.push(r2);
     ui::set(w, es, "modesrows", rows);
     ui::set(w, es, "pane", "modes");
 }
@@ -2198,6 +2371,12 @@ bool modes_dispatch(long w, long es, long doc, long caret, var &a)
     {
 	modes_hide(w, es);
 	start_prompt(w, es, "Command", "colon");
+	return true;
+    }
+    if ( a == "vimode" )
+    {
+	modes_hide(w, es);
+	vi_toggle(w, es);
 	return true;
     }
     ui::set(w, es, "msg", format("Unknown mode action '{}'.", a));
@@ -3153,6 +3332,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     if ( modes_active(w, es) )
 	return modes_event(w, es, nav, caret, ev);
 
+    // vi MODES-AS-SCOPES (owner 2026-08-31): while a vi mode is active,
+    // this arm routes printable keys through the @normal/@insert scope
+    // tables and the count/operator grammar; what it does not consume
+    // (chords-as-actions, arrows, insert-mode typing) falls through to
+    // the shared handling below.
+    if ( vi_active(w, es) )
+    {
+	bool vcont = true;
+	if ( vi_event(doc, nav, ev, vcont) )
+	    return vcont;
+    }
+
     if ( kind == "action" )
     {
 	var a = format("{}", ev["action"]);
@@ -3328,6 +3519,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	if ( a == "modes" )
 	{
 	    modes_show(w, es);
+	    return true;
+	}
+	if ( a == "vimode" )
+	{
+	    vi_toggle(w, es);
 	    return true;
 	}
 	if ( a == "colon" )
@@ -4109,4 +4305,220 @@ void IdeSession::close()
 	    madc::parse_close(ph);
     }
     ui::world_close(w);
+}
+
+// ---- the vi arm (modes-as-scopes — the session owns mode routing) -------
+
+// Run a named action n times through the ONE dispatcher (apply_ide_event
+// recursion — kind "action" never re-enters the vi arm, so motions, the
+// edit keys, and the IDE verbs all serve the grammar without a second
+// dispatch). False = the session ended (a quit propagates).
+bool IdeSession::vi_exec(long doc, const char *a, long n)
+{
+    var an = a;		// own the text: `a` may lend a ring slot and the
+			// loop below makes ring-returning calls
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var e;
+	e["event"] = "action";
+	e["action"] = an;
+	if ( !apply_ide_event(doc, e) )
+	    return false;
+    }
+    return true;
+}
+
+// o / O (and cc's emptied line): break the line at the caret, land on
+// the EMPTY side, enter insert mode. The caller positions the caret
+// first (o: end of line; O / cc: start of line, stepping back onto the
+// opened line).
+void IdeSession::vi_open_line(long doc, bool above)
+{
+    vi_exec(doc, "enter", 1);
+    if ( above )
+	vi_exec(doc, "left", 1);
+    vi_enter(w, es, "insert");
+}
+
+// The vi arm: routes the main key stream while a vi mode is active.
+// INSERT consumes only what the @insert table binds (esc -> vinormal,
+// baked into the neovim profile's data); NORMAL consumes printables —
+// digits accumulate a count, other characters look up @normal (as
+// written, then lowercase) and feed the grammar: operators pend
+// (doubled = the line-wise form), motions move or bound a pending
+// operator's span, insert entries flip the mode, and everything else
+// the table names runs count times through vi_exec. Keys other than a
+// bound esc (arrows, del, enter, backspace) and engine-chord actions
+// fall through — the shared implementations serve every mode. True =
+// consumed; cont carries the continue/quit verdict.
+bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
+{
+    cont = true;
+    var mode;
+    ui::get(mode, w, es, "vimode");
+    var kind = format("{}", ev["event"]);
+    if ( mode == "insert" )
+    {
+	if ( kind != "key" )
+	    return false;		// typing types; chords act
+	var ia;
+	if ( !scoped_action(ia, w, es, "insert", ev) )
+	    return false;
+	if ( ia == "vinormal" )
+	{
+	    vi_enter(w, es, "normal");
+	    return true;
+	}
+	return false;
+    }
+    // NORMAL mode. Keys stay on the shared implementations; esc clears
+    // a pending count/operator (nothing pending: the pane's, or inert).
+    if ( kind == "key" )
+    {
+	var k = format("{}", ev["key"]);
+	if ( k != "esc" || !vi_pending(w, es) )
+	    return false;
+	vi_pending_clear(w, es);
+	return true;
+    }
+    if ( kind != "text" )
+	return false;
+    var t = format("{}", ev["text"]);
+    if ( strlen(t.c_str()) != 1 )
+	return true;	// a paste is not a command stream — inert here
+    const char *tc = t.c_str();
+    var cnt;
+    ui::get(cnt, w, es, "vicount");
+    if ( cnt.is_null() )
+	cnt = "";
+    if ( (tc[0] >= '1' && tc[0] <= '9')
+	 || (tc[0] == '0' && strlen(cnt.c_str()) > 0) )
+    {
+	// Count digits accumulate (a bare 0 is the home motion). Seven
+	// digits cap the multiplier — the liberal-but-finite knob.
+	if ( strlen(cnt.c_str()) < 7 )
+	{
+	    ui::set(w, es, "vicount", format("{}{}", cnt, t));
+	    vi_echo_push(w, es, tc);
+	}
+	return true;
+    }
+    var a;
+    if ( !scoped_action(a, w, es, "normal", ev) )
+    {
+	vi_pending_clear(w, es);
+	ui::set(w, es, "msg", format("vi: '{}' is not bound.", t));
+	return true;
+    }
+    long n = php::intval(cnt);
+    if ( n < 1 )
+	n = 1;
+    bool counted = strlen(cnt.c_str()) > 0;
+    var opv;
+    ui::get(opv, w, es, "viop");
+    var ops = format("{}", opv);
+    long opn = es_int(w, es, "viopn", 1);
+    if ( opn < 1 )
+	opn = 1;
+    // Operators PEND (their count stashed aside, so d3w and 2d3w both
+    // multiply); the SAME operator again is the line-wise form (dd/cc).
+    if ( a == "videlete" || a == "vichange" )
+    {
+	if ( !(ops == a) )
+	{
+	    ui::set(w, es, "viop", a);
+	    ui::set(w, es, "viopn", n);
+	    ui::set(w, es, "vicount", "");
+	    vi_echo_push(w, es, tc);
+	    return true;
+	}
+	vi_pending_clear(w, es);
+	long total = opn * n;
+	for ( long i = 0; i < total; i = i + 1 )
+	{
+	    long before = ui::text_size(w, doc);
+	    delete_line(w, es, doc, clamped_caret(w, es, nav));
+	    if ( ui::text_size(w, doc) >= before )
+		break;		// the edge (or a refusal): stop repeating
+	}
+	if ( a == "vichange" )
+	    vi_open_line(doc, true);	// cc leaves an opened empty line
+	return true;
+    }
+    if ( vi_is_motion(a) )
+    {
+	long c0 = clamped_caret(w, es, nav);
+	if ( a == "vigoto" )
+	{
+	    // vim's G: a count is the LINE (5G); bare G is the bottom —
+	    // the same landing rule as the colon line's :N.
+	    if ( counted )
+		ui::set(w, es, "caret", caret_to_line(w, nav, n, 0));
+	    else if ( !vi_exec(doc, "bottom", 1) )
+	    {
+		cont = false;
+		return true;
+	    }
+	}
+	else
+	{
+	    long steps = opn * n;
+	    for ( long i = 0; i < steps; i = i + 1 )
+	    {
+		long before = es_int(w, es, "caret", 0);
+		if ( !vi_exec(doc, a.c_str(), 1) )
+		{
+		    cont = false;
+		    return true;
+		}
+		if ( es_int(w, es, "caret", 0) == before )
+		    break;	// the edge: further repeats are no-ops
+	    }
+	}
+	if ( strlen(ops.c_str()) == 0 )
+	{
+	    vi_pending_clear(w, es);	// a bare motion spends its count
+	    return true;
+	}
+	// Operator over the motion's span (byte-wise). Offsets are NAV
+	// space; the mutation gate refuses when a view is displayed.
+	long c1 = clamped_caret(w, es, nav);
+	vi_pending_clear(w, es);
+	vi_span_del(w, es, doc, c0 < c1 ? c0 : c1, c0 < c1 ? c1 : c0);
+	if ( ops == "vichange" )
+	    vi_enter(w, es, "insert");
+	return true;
+    }
+    // Insert-mode entries (a pending operator aborts — no text objects).
+    vi_pending_clear(w, es);
+    if ( a == "viinsert" )
+    {
+	vi_enter(w, es, "insert");
+	return true;
+    }
+    if ( a == "viappend" )
+    {
+	cont = vi_exec(doc, "right", 1);
+	vi_enter(w, es, "insert");
+	return true;
+    }
+    if ( a == "viappendeol" || a == "viinsertbol" )
+    {
+	cont = vi_exec(doc, a == "viappendeol" ? "end" : "home", 1);
+	vi_enter(w, es, "insert");
+	return true;
+    }
+    if ( a == "viopenbelow" || a == "viopenabove" )
+    {
+	bool above = a == "viopenabove";
+	cont = vi_exec(doc, above ? "home" : "end", 1);
+	if ( cont )
+	    vi_open_line(doc, above);
+	return true;
+    }
+    // Everything else the @normal table names (x del, u undo, n
+    // findnext, : colon, / find ...) runs count times through the ONE
+    // dispatcher.
+    cont = vi_exec(doc, a.c_str(), n);
+    return true;
 }

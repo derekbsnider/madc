@@ -2,7 +2,7 @@ joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
 joe-ide: [^p]=project [^f]=find [^n]=modes [^b]=build [^r]=refresh [^k u]=top [^_]=undo
 joe-project: ins=projadd del=projdel enter=projopen pico-ins=projadd
-scoped: y-override=quit ins-fold=act2 main-x=save prompt-enter=pcommit
+scoped: y-override=pquit Y-cased=sh ins-as-written=act2 main-x=save prompt-enter=pcommit
 rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
 validate: joe=1 printable-head=0
 check1: Check: clean.
@@ -86,6 +86,7 @@ win-carets: w2=3 w1=9
 win-clamp: snapshot-ok=1 live-ok=1
 win-grow: neighbor-rows=10
 win-only: wins=0 kids=2 caret-kept=1
+swap-modal: profile=neovim mode=normal
 swap: profile=pico tree=identical
 motion: caret=42
 arrows-bottom: down=43,84,84 up=43 size=84
@@ -101,7 +102,7 @@ prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
-help: pane=help label=Help — pico profile rows=39
+help: pane=help label=Help — pico profile rows=40
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84
@@ -126,12 +127,24 @@ seam-exec-ok
 seam-chord: echoed=1
 seam-keys: moved=1 joe-save=save
 seam-viewport: split-refused=1
-modes-palette: label=Modes colon-row=1
+modes-palette: label=Modes colon-row=1 vi-row=1
 modes-colon: pmode=colon palette-closed=1
 colon-unknown: Unknown command :zz
 modes-esc: closed=1
+vi-refuse: No @normal keys in this profile (^T Keymap row: neovim).
 colon-goto: line=2
 colon-write: wrote=1
 colon-exec: took=1 kind=cmd
 colon-exec-ok
+vi-load: ok=1 mode=normal
+vi-insert: in=insert typed=1 out=normal
+vi-motion: shown=1 home=0 eol=17 j-line=2
+vi-goto: G-end=1 pend=1 1G-line=1
+vi-x: 3x=1 X-case=1
+vi-operator: dw=1 2dd=1
+vi-cc: mode=insert text=1
+vi-open: text=1
+vi-A-colon: eol-append=1 pmode=colon closed=1
+vi-unbound: msg=1 count-cleared=1
+vi-toggle: mode='' typed-x=1
 colon-quit: cont=0
