@@ -47,6 +47,12 @@ packaging shape, and all the proper build scripts and tests in order.
 - **GitHub Actions before ecosystem repos** (owner 2026-09-01): the
   release-build workflow (PK5) precedes brew / winget / apt-yum (PK6)
   — bottles, manifests, and repo metadata all consume its artifacts.
+- **The packages ship a compiled `madcide` binary** (owner
+  2026-09-01): madcide is part of the packaging, not a trailing
+  optional. The packaging pipeline compiles it with the just-built
+  madc itself (the AOT `--exe` lane), linked against the shared
+  libmadc — the dogfood proof of the packaged shape. This folds the
+  old "madcide-as-binary" open question into PK3/PK7 below.
 
 ## Inventory — what already exists (this arc builds on, not from zero)
 
@@ -87,11 +93,19 @@ packaging shape, and all the proper build scripts and tests in order.
   shape" below).
 - **PK3 — staging re-target + install layouts.** `package_release.sh`
   stages the thin CLI + the forest-carrying `.so`. Layouts: Linux
-  `/usr/bin/madc` + `/usr/lib/<triplet>/libmadc.so.0` (+ `.so`
-  symlink; the ldconfig trigger already exists), man + docs + example
-  `madc.ini`; macOS tarball `bin/madc` + `lib/madc.dylib`
+  `/usr/bin/madc` + `/usr/bin/madcide` +
+  `/usr/lib/<triplet>/libmadc.so.0` (+ `.so` symlink; the ldconfig
+  trigger already exists), man + docs + example `madc.ini`; macOS
+  tarball `bin/madc` + `bin/madcide` + `lib/madc.dylib`
   (`@executable_path`-relative rpath, S2 re-signer); Windows zip
-  `madc.exe` + `madc.dll` beside each other (loader-natural).
+  `madc.exe` + `madcide.exe` + `madc.dll` beside each other
+  (loader-natural). The madcide binary is built BY the staged madc
+  (PK7's link seam is therefore a PK3 prerequisite, see below); its
+  data files (profiles/themes/status formats) ship beside it per OS
+  convention (`/usr/share/madcide/` on Linux; beside the exe on
+  Windows; `share/madcide/` in the mac tarball) — madcide's
+  profile-dir resolution must learn the installed location alongside
+  the source-tree one.
 - **PK4 — package-install validation gates.** Install-then-run smoke
   per OS: dpkg/rpm install into a scratch root on the container; the
   Windows/Mac staging flows formalized as scripts (today they are
@@ -113,9 +127,15 @@ packaging shape, and all the proper build scripts and tests in order.
   Center, manual first, Store submission API later if wanted; winget
   rides the `msstore` source automatically); the apt/yum repo-hosting
   decision.
-- **PK7 — madcide-as-binary.** Rides the thin-CLI link seam: madcide
-  links libmadc exactly the way the CLI does (closes the
-  madcide-design-doc open question).
+- **PK7 — madcide-as-binary (a PK3 prerequisite, owner-ruled part of
+  the packaging).** madcide compiles to a native binary via madc's
+  own AOT `--exe` lane, linked against the shared libmadc exactly the
+  way the thin CLI is (closes the madcide-design-doc open question).
+  Ships in every package (PK3); the packaged madcide's data files
+  (profiles/themes/status) resolve from the installed share dir as
+  well as the source tree. Sequenced before PK3's final staging even
+  though numbered last — the number keeps the design-doc
+  cross-references stable.
 
 ## Lane shape after the flip (PK2 decision, owner-visible knob)
 
