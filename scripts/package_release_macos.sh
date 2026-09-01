@@ -9,6 +9,7 @@
 #   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
 #   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
+#   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt
@@ -59,8 +60,9 @@ package_arch() {
 
     rm -rf "$stage"
     mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
-             "$stage/$root/THIRD_PARTY_NOTICES"
+             "$stage/$root/share/doc/madc/examples" "$stage/$root/THIRD_PARTY_NOTICES"
     install -m 755 "$bin" "$stage/$root/bin/madc"
+    install -m 644 docs/examples/madc.ini "$stage/$root/share/doc/madc/examples/madc.ini"
     # The emitted-C runtime (W3): programs madc emits as C11 reference the
     # try/catch + VLA runtime when those features are used; on a Mac with no
     # madc library installed this archive is what `cc emitted.c` links.
@@ -111,7 +113,13 @@ VLA, it references madc's small C runtime. Link the shipped archive:
     cc -std=c11 program.c -L<this-dir>/lib -lmadc_rt -lc++
 
 Programs that used <ns_madc> (the madc dialect surface) additionally need
-the full madc runtime, which this tarball does not ship.
+the full madc runtime, which this tarball does not ship: madc -o refuses
+such programs on macOS with a clear error. (This is also why madcide,
+the IDE the Linux and Windows packages ship as a binary, is not in this
+tarball yet — it arrives with the macOS madc runtime library.)
+
+share/doc/madc/examples/madc.ini is a documented example configuration
+file; to use one, copy it to ~/.config/madc/madc.ini.
 EOF
     tar -C "$stage" -czf "dist/$root.tar.gz" "$root"
     rm -rf "$stage"

@@ -14,13 +14,20 @@
 #   4. restores the saved config.mk and clean-rebuilds the tree back to its
 #      normal (full) configuration
 #
-# Contents:
+# Contents (deb/rpm under /usr; the tarball is the same layout, rootless
+# and relocatable — extract anywhere, $ORIGIN runpaths bind lib/):
 #   /usr/bin/madc                               bin/madc-release
+#   /usr/bin/madcide                            AOT-compiled by that binary
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
-#   /usr/share/man/man1/madc.1.gz               docs/man/madc.1
+#   /usr/share/madcide/profiles/                keybinding/theme profiles
+#   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
+#   /usr/share/doc/madc/examples/madc.ini       documented example config
+#
+# Output artifacts: madc_<ver>-<rel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
+# madc-<ver>-linux-x86_64.tar.gz (+ README-linux.txt inside).
 #
 # libmadc.so.0 ships because madc -o executables reference it at run time
 # (DT_NEEDED); installing it to the system lib dir makes AOT output run
@@ -44,7 +51,8 @@ Standard headers are embedded; common symbols auto-include; top-level
 statements run without main(). Helper namespaces bring PHP-, Perl-,
 Python-, Ruby-, JS-, and Rust-style functions into native C code."
 
-for f in docs/man/madc.1 LICENSE CHANGELOG.md configure; do
+for f in docs/man/madc.1 docs/man/madcide.1 docs/examples/madc.ini \
+         LICENSE CHANGELOG.md configure; do
     if [ ! -e "$f" ]; then
         echo "package_release: missing $f" >&2
         exit 1
@@ -106,10 +114,14 @@ rm -rf tmp/pkgroot tmp/rpmtop
 mkdir -p dist
 
 stage() {
-    local root="$1" libdir="$2"
-    mkdir -p "$root/usr/bin" "$root/$libdir" \
-             "$root/usr/share/man/man1" "$root/usr/share/doc/madc"
-    install -m 755 bin/madc-release "$root/usr/bin/madc"
+    # $3 (prefix) is "usr" for the deb/rpm filesystem layout and "" for
+    # the relocatable tarball root — the SAME staging lines serve all
+    # three packages (one implementation; only the layout parameterizes).
+    local root="$1" libdir="$2" prefix="$3"
+    local p="$root${prefix:+/$prefix}"
+    mkdir -p "$p/bin" "$root/$libdir" \
+             "$p/share/man/man1" "$p/share/doc/madc/examples"
+    install -m 755 bin/madc-release "$p/bin/madc"
     # NO strip here: since the PK2 shared default, `make release` strips
     # the release library BEFORE packing the forest into it (strip-before-
     # pack ordering, src/Makefile) — stripping again rewrites the ELF and
@@ -118,12 +130,16 @@ stage() {
     # can never swap this file.
     install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
     ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
-    install -m 755 tmp/madcide-pkg "$root/usr/bin/madcide"
-    mkdir -p "$root/usr/share/madcide/profiles"
-    install -m 644 tools/madcide/profiles/* "$root/usr/share/madcide/profiles/"
-    gzip -9n < docs/man/madc.1 > "$root/usr/share/man/man1/madc.1.gz"
-    install -m 644 LICENSE "$root/usr/share/doc/madc/copyright"
-    gzip -9n < CHANGELOG.md > "$root/usr/share/doc/madc/changelog.gz"
+    install -m 755 tmp/madcide-pkg "$p/bin/madcide"
+    mkdir -p "$p/share/madcide/profiles"
+    install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
+    gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
+    gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
+    install -m 644 LICENSE "$p/share/doc/madc/copyright"
+    gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
+    # The example config keeps its real name: share/doc is not on
+    # madc.ini's search path, so it can never shadow a user's config.
+    install -m 644 docs/examples/madc.ini "$p/share/doc/madc/examples/madc.ini"
     # dpkg-deb requires plain 0755 directories. GNU chmod's NUMERIC modes
     # deliberately preserve a directory's setgid bit (inherited from the
     # checkout), so it must be cleared symbolically first.
@@ -133,7 +149,7 @@ stage() {
 
 # ---------- deb ----------
 DEBROOT=tmp/pkgroot/deb
-stage "$DEBROOT" "usr/lib/x86_64-linux-gnu"
+stage "$DEBROOT" "usr/lib/x86_64-linux-gnu" usr
 mkdir -p "$DEBROOT/DEBIAN"
 chmod 0755 "$DEBROOT/DEBIAN"
 cat > "$DEBROOT/DEBIAN/control" << EOF
@@ -156,7 +172,7 @@ dpkg-deb --build --root-owner-group "$DEBROOT" "$DEB"
 RPMTOP=$(pwd)/tmp/rpmtop
 mkdir -p "$RPMTOP"/{BUILD,RPMS,SPECS,SOURCES,BUILDROOT}
 BUILDROOT="$RPMTOP/BUILDROOT/madc-${VER}-${REL}.x86_64"
-stage "$BUILDROOT" "usr/lib64"
+stage "$BUILDROOT" "usr/lib64" usr
 cat > "$RPMTOP/SPECS/madc.spec" << EOF
 Name: madc
 Version: ${VER}
@@ -183,12 +199,57 @@ ${DESC_BODY}
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/changelog.gz
+%doc /usr/share/doc/madc/examples/madc.ini
 /usr/share/man/man1/madc.1.gz
+/usr/share/man/man1/madcide.1.gz
 EOF
 rpmbuild --define "_topdir $RPMTOP" --buildroot "$BUILDROOT" -bb "$RPMTOP/SPECS/madc.spec"
 cp "$RPMTOP/RPMS/x86_64/madc-${VER}-${REL}.x86_64.rpm" dist/
 
+# ---------- tarball (relocatable: extract anywhere, no root) ----------
+TROOT="madc-${VER}-linux-x86_64"
+TARSTAGE=tmp/pkgroot/tar
+rm -rf "$TARSTAGE"
+stage "$TARSTAGE/$TROOT" "lib" ""
+cat > "$TARSTAGE/$TROOT/README-linux.txt" << EOF
+madc ${VER} for Linux (x86_64)
+==============================
+
+Install: extract this folder anywhere and add bin/ to your PATH — no
+root needed. The layout is relocatable: bin/madc and bin/madcide find
+lib/libmadc.so.0 through their own \$ORIGIN-relative runpath, and the
+frozen system-header forest lives INSIDE that library, so the toolchain
+is self-contained (no compiler or headers installation required).
+
+Prefer a system install? The .deb and .rpm packages install the same
+contents under /usr and register the library with ldconfig.
+
+Native output (madc -o prog): the produced binary references
+libmadc.so.0 only when it uses the madc runtime; it looks in its own
+../lib first, then this toolchain's lib/, then /usr/local/lib and the
+system search path. A plain C program's executable is runtime-free.
+
+madcide: keybinding profiles and colour schemes load from
+share/madcide/profiles next to this README. See share/man/man1 for the
+manual pages, and share/doc/madc/examples/madc.ini for a documented
+example configuration file.
+EOF
+# The $ORIGIN proof: the staged binaries must bind the STAGED library
+# (relocatable runpath), not the build tree's. ldd resolves runpaths
+# from the binary's real location, so this asserts the shipped bytes.
+for b in madc madcide; do
+    bound=$(ldd "$TARSTAGE/$TROOT/bin/$b" | grep 'libmadc\.so\.0' | awk '{print $3}')
+    case "$bound" in
+        */"$TROOT"/lib/libmadc.so.0) ;;
+        *) echo "package_release: $b binds '$bound', not the staged lib — relocatable runpath broken" >&2
+           exit 1;;
+    esac
+done
+tar -C "$TARSTAGE" -czf "dist/$TROOT.tar.gz" "$TROOT"
+echo "packaged dist/$TROOT.tar.gz"
+
 # ---------- checksums ----------
-( cd dist && sha256sum "madc_${VER}-${REL}_amd64.deb" "madc-${VER}-${REL}.x86_64.rpm" > SHA256SUMS )
+( cd dist && sha256sum "madc_${VER}-${REL}_amd64.deb" "madc-${VER}-${REL}.x86_64.rpm" \
+                       "$TROOT.tar.gz" > SHA256SUMS )
 echo "== dist/ =="
 ls -la dist/

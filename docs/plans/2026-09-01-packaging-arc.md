@@ -131,10 +131,52 @@ packaging shape, and all the proper build scripts and tests in order.
   from `usr/share/madcide` on a real pty (NORESCUE, file renders).
   The package-run suite was skipped for this shape proof
   (`MADC_PKG_SKIP_SUITE=1`) — the merge-wave battery validates the
-  content. OPEN PK3 residues: the macOS/Windows staging twins
-  (`madcide` + data beside the exe / `share/madcide/` in the tarball),
-  a Linux tarball form, a madcide man page, and the example
-  `madc.ini`. PK4 formalizes the extract-and-run smoke as a gate.
+  content. PK4 formalizes the extract-and-run smoke as a gate.
+
+  **✅ PK3 TWINS EXECUTED 2026-09-01 (s151).** The residues closed:
+  - **Windows zip:** `bin/madcide.exe` — compiled in-pipeline by the
+    release PE under wine (`wine madc-release-…exe -o`, probed first:
+    the fresh 0.97.0 hosted PE compiles madcide to a 307 KB PE that
+    RUNS under wine, printing its usage line — it binds
+    `libmadc_rt.dll`, the full-runtime "win64 twin of libmadc.so"
+    already in the zip). Data beside the exe: `bin/profiles/*`
+    (resolve_profile_dir's `<exedir>/profiles` arm). The packager
+    smoke-runs the STAGED exe (usage line = loads + binds + runs;
+    the TUI pty probe is PK4's). NOT stripped — an external strip
+    rewriting a MIR-writer PE is the re-strip-the-forest risk class.
+    Plus `madc.ini.example` at the zip root (non-live name: `./madc.ini`
+    is a real search arm — an example must never shadow a config).
+  - **macOS tarball: madcide DEFERRED with a stated reason (probe
+    evidence 2026-09-01).** The darwin `-o` lane itself refuses
+    runtime-needing programs: *"program needs the madc runtime, which
+    does not exist as a library for this native-emit target"* (probed
+    on madc-mac with the 0.97.0 tarball binary; JIT of the same
+    program is green). madcide needs the C++ script-lane runtime, so
+    `-static-libmadc` (C-lane only) cannot carry it either — **no
+    venue can produce a runnable mac madcide today**; the mac-side
+    compile venue question is moot until darwin grows the
+    libmadc_rt.dll twin. BANKED SLICE: **PK3-mac-runtime** — a
+    hosted-macos full-runtime dylib (whole-archive `LIBMADC_STATIC`,
+    the exact recipe `bin/libmadc_rt.dll` uses), the darwin emit lane
+    naming it (`@rpath` + `@executable_path/../lib`), then madcide in
+    the mac tarball. Until then the tarball README states the gap and
+    the packager ships `share/doc/madc/examples/madc.ini`.
+  - **Linux tarball:** `madc-<ver>-linux-x86_64.tar.gz` — the SAME
+    `stage()` implementation the deb/rpm use, parameterized by prefix
+    (rootless, relocatable). Required the deep fix: `-o` output baked
+    an ABSOLUTE build-tree DT_RUNPATH; `cir_native_link_env` now puts
+    the relocatable arm FIRST (`$ORIGIN/../lib` on ELF,
+    `@executable_path/../lib` on Mach-O, PE unchanged — no runpath),
+    then the compiler's own libdir, then `/usr/local/lib`. The
+    packager asserts the $ORIGIN proof: `ldd` on the staged
+    `bin/madc` + `bin/madcide` must bind the STAGED `lib/libmadc.so.0`
+    (an old-policy binary fails the check — built-in negative
+    control).
+  - **madcide man page** (`docs/man/madcide.1`, gzip-staged into
+    deb/rpm/tarball) + **example `madc.ini`**
+    (`docs/examples/madc.ini`, all keys commented = inert if copied
+    verbatim) in all packages; `madc.1`'s stale `.TH` stamp
+    ("0.38.0", 2026-07-23) made version-neutral.
 - **PK4 — package-install validation gates.** Install-then-run smoke
   per OS: dpkg/rpm install into a scratch root on the container; the
   Windows/Mac staging flows formalized as scripts (today they are
