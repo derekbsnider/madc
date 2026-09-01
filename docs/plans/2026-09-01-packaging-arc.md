@@ -258,6 +258,61 @@ packaging shape, and all the proper build scripts and tests in order.
   lane ledger, `.claude/rules/testing-fulltest.md`). macOS
   signing/notarization deferred (the S2 re-signer covers ad-hoc
   Mach-O signing).
+
+  **✅ PK5 EXECUTED 2026-09-01 (s152).**
+  `.github/workflows/release.yml` (on develop AND master — dispatch
+  requires default-branch presence; the copies stay identical so the
+  next promote merges cleanly):
+  - **Trigger rule (owner):** automatic builds for MASTER PROMOTIONS
+    only — a `gate` job skips the builds unless the pushed v* tag's
+    commit is an ancestor of master (compare API; /release's develop
+    milestone tags must not spin builds — both paths verified against
+    live history: 15cbd661 `diverged` skips, 34187f9c `behind`
+    builds). `workflow_dispatch` always builds (manual = intentional).
+  - **Jobs:** linux-packages (autoreconf + configure +
+    `package_release.sh` with MADC_PKG_SKIP_SUITE=1 — a v* tag exists
+    only on lane-gate-green content — and MADC_PKG_NO_RESTORE=1, the
+    new throwaway-tree knob) and windows-package (container `/workspace`
+    layout mirrored on the runner: cached UCRT libstdc++ stage +
+    license files, zstd v1.5.5 by the provision recipe; wineboot'd
+    prefix; `make release-windows` + `package_release_windows.sh`).
+    The smoke = the PK4 install gates already wired inside the
+    packagers, green in CI on the runner-built bytes.
+  - **Asset ownership:** CI owns the four linux/win assets at
+    releases/download/<tag>/…; `attach-release` creates the release
+    as a DRAFT if absent (CI never publishes) and rewrites only its
+    own SHA256SUMS lines; /promote (updated) waits for the workflow,
+    publishes with the real notes, attaches the two mac tarballs, and
+    merges their checksum lines. Binary-brew (owner ruling: binary
+    formula ONLY) consumes these URLs directly.
+  - **macOS not in CI, stated reason:** the darwin cross-compile runs
+    against the owner-staged SDK (never uploaded); a native mac-runner
+    build needs a darwin-HOST madc that does not exist (the freezer
+    runs the build-host madc). OWNER DIRECTION (2026-09-01, stated
+    three times): GitHub's arm64+Intel mac runners make the
+    darwin-host build port the highest-leverage next slice — native
+    mac builds AND the never-existed full-suite macOS lane AND the
+    first x86_64 execution proof all hang on it. It supersedes this
+    bullet's macos-14/13 build jobs as written.
+  - **Burn-in (6 rounds, 2 real repo bugs flushed):** untracked
+    autoconf output (`configure`/`config.h.in`) → CI runs
+    `autoreconf -i`, clean-clone build proven on the container;
+    `libz-mingw-w64-dev` (the one provision winlane package the apt
+    list dropped); never-booted wine prefix → explicit wineboot step;
+    **forest_pack_windows.sh's hardcoded `WINEPATH='Z:\workspace…'`**
+    — equalled the container layout by accident, died SILENTLY
+    (WINEDEBUG=-all) on any other checkout — now derived from the
+    repo root; verify_pe_release's alternate-flavor probe needs
+    libc++-18-dev host parity (and now tails its probe log on
+    failure — three of the six failures were read blind because the
+    evidence file died with the runner). Runner facts: UCRT stage
+    builds in ~2 min; the full linux job ~17 min; four consecutive
+    linux greens.
+  - **Evidence:** run 33566595108 all-green (gate, linux, windows,
+    attach); draft release v0.97.0 holds exactly
+    deb/rpm/linux-tar/win-zip + SHA256SUMS (the burn-in scaffold —
+    inspect or `gh release delete v0.97.0` at will; the next real
+    promotion recreates its own).
 - **PK6 — ecosystem repos** (each its own slice; all consume PK5
   artifacts): brew tap with bottles; **Microsoft Store submission**
   (MSIX built in the PK5 workflow on a windows runner —
