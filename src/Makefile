@@ -56,7 +56,8 @@ else ifeq ($(MODE),cross-arm64-macos)
 BIN = ../bin/madc-arm64-macos
 else ifeq ($(MODE),hosted-arm64-macos)
 # madc-on-macOS (Route 1): FULL madc binaries cross-COMPILED for Apple
-# hosts (clang-18 + SDK + ld64.lld). Host == target: JIT + native Mach-O
+# hosts (LLVM 18 clang + SDK; ld64.lld cross, Apple ld64 native — the
+# DARWIN_HOST posture below). Host == target: JIT + native Mach-O
 # AOT both live; no MADC_CROSS_TARGET. Ships unstripped -O2 (stripping
 # invalidates the linker signature; re-signer is Phase 3 of the plan).
 BIN = ../bin/madc-hosted-arm64-macos
@@ -188,6 +189,57 @@ endif
 # the hosted binaries carry (the darwin grove cross-FREEZER must parse
 # identical text to what the hosted consumer would live-parse; forest-carriers
 # plan S1). DARWIN_ARCH names the target arch as spelled in binary/lib names.
+# --- darwin BUILD-HOST posture (darwin-host port D1,
+# docs/plans/2026-09-01-darwin-host-port.md). The hosted-*-macos MODEs are
+# ONE mode with two toolchain postures: CROSS (the container — apt clang-18
+# by versioned name, ld64.lld, the owner-staged SDK, the /workspace stages)
+# and NATIVE (a Mac — brew llvm@18 for exact 18.x parity with the
+# container's compiler, Apple ld64, the SDK xcrun names, brew zstd).
+# DARWIN_HOST=1 selects native and defaults ON when the build host IS
+# darwin; every knob stays ?=-overridable (command line beats all). With
+# DARWIN_HOST unset the spellings below are byte-for-byte the cross ones —
+# the container recipe is the oracle (make -n -B text identical).
+# The shell-derived defaults use the $(origin) guard: ?= would make them
+# recursive and re-run brew/xcrun on every expansion.
+HOST_OS := $(shell uname -s)
+ifeq ($(HOST_OS),Darwin)
+DARWIN_HOST ?= 1
+# Xcode's /usr/bin/make is GNU Make 3.81 (2006): it loses MIR's c2mir obj dir
+# (measured, D0 round 3). The build-host userland is brew gnubin, PATH-first.
+ifneq (,$(filter 3.%,$(MAKE_VERSION)))
+$(error GNU make $(MAKE_VERSION) cannot build madc on a darwin host: brew install make coreutils gnu-sed grep, then put $$(brew --prefix make)/libexec/gnubin (and the other three) first on PATH)
+endif
+endif
+ifeq ($(DARWIN_HOST),1)
+ifeq ($(origin DARWIN_LLVM_PREFIX),undefined)
+DARWIN_LLVM_PREFIX := $(shell brew --prefix llvm@18 2>/dev/null)
+endif
+ifeq ($(origin MACOS_SDK),undefined)
+MACOS_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
+endif
+ifeq ($(origin DARWIN_ZSTD_PREFIX),undefined)
+DARWIN_ZSTD_PREFIX := $(shell brew --prefix zstd 2>/dev/null)
+endif
+DARWIN_CLANG ?= $(DARWIN_LLVM_PREFIX)/bin/clang
+DARWIN_CLANGXX ?= $(DARWIN_LLVM_PREFIX)/bin/clang++
+DARWIN_AR ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-ar
+DARWIN_STRIP ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-strip
+# Apple ld64 is the native linker (ad-hoc signs arm64, -sectcreate native);
+# lld stays the CROSS linker. Empty, not undefined — ?= below must not refill.
+DARWIN_LD_FLAGS ?=
+LLVM_LIBCXX_INC ?= $(DARWIN_LLVM_PREFIX)/include/c++/v1
+# brew zstd for the native build (a probe-grade stage; the shipped artifact's
+# pinned v1.5.5 source stage is D2's). Layout differs from the container's
+# per-target stage dir, hence the header-dir / archive split below.
+DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_PREFIX)/include
+DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_PREFIX)/lib/libzstd.a
+endif
+# The CROSS spellings (the container): versioned apt names, ld64.lld.
+DARWIN_CLANG ?= clang-18
+DARWIN_CLANGXX ?= clang++-18
+DARWIN_AR ?= llvm-ar-18
+DARWIN_STRIP ?= llvm-strip-18
+DARWIN_LD_FLAGS ?= -fuse-ld=lld
 MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
 MACOS_MINOS ?= 12
 # The tree the embedded C prelude is FLATTENED from — open-licensed by
@@ -198,7 +250,9 @@ MACOS_MINOS ?= 12
 # with the SDK", its licensed purpose); pointing THIS variable at the SDK
 # is for the never-shipped oracle diff only — gen_darwin_prelude.sh stamps
 # non-open input and verify_macho_release.sh refuses to release it.
-DARWIN_PRELUDE_SYSROOT ?= /workspace/darwin-open-headers/sysroot-any-darwin-any
+# DARWIN_OPEN_HEADERS_HOME is the fetch script's own location knob (one
+# owner): a darwin build host stages under $HOME and both sides read it.
+DARWIN_PRELUDE_SYSROOT ?= $(or $(DARWIN_OPEN_HEADERS_HOME),/workspace/darwin-open-headers)/sysroot-any-darwin-any
 # Apple-target C++ header search, made EXPLICIT. `--sysroot`/`-isysroot` alone
 # is not enough: when the build host has its own libc++ installed (we install
 # libc++-18-dev for the Linux -stdlib=libc++ lane), clang puts its OWN
@@ -238,8 +292,9 @@ DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
 MADC_LINKLIBS_STANDIN = 1
 endif
 # --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
-# The darwin toolchain: clang-18 against the owner's staged SDK, linking with
-# ld64.lld. libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
+# The darwin toolchain: the DARWIN_* knobs above — cross: clang-18 against the
+# owner's staged SDK, linking with ld64.lld; native: brew llvm@18 + Apple ld64.
+# libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
 # host detection through the darwin compiler turns MIR_TARGET_APPLE_P on
 # natively, making the Mach-O writer the native writer). madcdat is forced off:
 # its storage backends' headers do not exist in the SDK.
@@ -256,10 +311,15 @@ DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
 # -fuse-ld=lld is a LINK flag and rides $(LIBS) below, not the driver: on a
 # compile-only invocation clang warns "argument unused during compilation"
 # once per TU, which is every object in the mode.
-CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
-CXX_BASE = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CC  = $(DARWIN_CLANG) -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX_BASE = $(DARWIN_CLANGXX) -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
 CXX = $(CXX_BASE) $(DARWIN_CXX_ISYS)
-AR  = llvm-ar-18
+AR  = $(DARWIN_AR)
+# Loud, at parse time: a missing compiler otherwise surfaces as the generators'
+# silent failure ("No rule to make target .../embedded_headers.cpp").
+ifeq (,$(shell command -v $(firstword $(DARWIN_CLANG)) 2>/dev/null))
+$(error hosted darwin MODE: compiler '$(DARWIN_CLANG)' not found — container: apt clang-18; darwin host: brew install llvm@18 — or set DARWIN_LLVM_PREFIX / DARWIN_CLANG)
+endif
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 # The configure-probed host packages (madcdat backends) do not exist in the
@@ -270,14 +330,16 @@ MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
 DARWIN_ZSTD_DIR ?= /workspace/zstd
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_DIR)/lib
-OPTIONAL_LIBS = $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
+DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_DIR)/lib
+DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC)
+OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB)
 MADC_STORAGE_DB_OFILES =
 # darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
 # export their globals to dlsym without -rdynamic, and --whole-archive is
 # spelled -force_load <archive> (two ld64 args: the bare archive path that
 # follows WHOLE_ARCHIVE_BEGIN on the link line is its operand).
-LIBS = -fuse-ld=lld -lz -lm $(OPTIONAL_LIBS)
+LIBS = $(DARWIN_LD_FLAGS) -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
 endif
@@ -402,7 +464,7 @@ endif
 # the hosted binary carries the same spelling (inert on a run-only Mac —
 # the packed groves serve C++ there).
 ifdef DARWIN_PRELUDE_TARGET
-HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
+HOSTTAB_CXX = $(DARWIN_CLANGXX) -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
 MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 export MADC_SYS_INCLUDE_PREFIX_MAP
 # Per-mode include-table source (embedded_headers.cpp precedent): the hosted
@@ -447,7 +509,7 @@ HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE
 ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
-EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && CLANG="$(DARWIN_CLANG)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else ifdef WIN_EMBED_FALLBACKS
 WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
@@ -768,8 +830,8 @@ release-macos:
 	$(MAKE)
 	$(MAKE) hosted-arm64-macos
 	$(MAKE) hosted-x86-64-macos
-	llvm-strip-18 -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
-	llvm-strip-18 -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
+	$(DARWIN_STRIP) -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
+	$(DARWIN_STRIP) -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
 	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
 	cd .. && bash scripts/macho_exe_dylib_gate.sh

@@ -159,11 +159,57 @@ SDK/cross facts).
   remaining engineering.
 
 - **D1 — the Makefile DARWIN_HOST posture.** Promote the D0 override
-  set into named `?=` knobs (`DARWIN_CC`, `DARWIN_CXX`, `DARWIN_AR`,
-  `DARWIN_LD_FLAVOR`…, defaults = today's cross spellings, so the
+  set into named `?=` knobs (defaults = today's cross spellings, so the
   container path is byte-identical); host-table generation proven on
   darwin. Gate: `hosted-arm64-macos` compiles + links (pre-forest) on
   macos-14 and runs a hello natively.
+  **✅ D1 EXECUTED (2026-09-01).** `src/Makefile` now carries ONE
+  `DARWIN_HOST` posture (auto-on when `uname -s` = Darwin, or
+  `DARWIN_HOST=1`) that derives the D0 override set:
+  `DARWIN_LLVM_PREFIX` (`brew --prefix llvm@18`) → `DARWIN_CLANG` /
+  `DARWIN_CLANGXX` / `DARWIN_AR` / `DARWIN_STRIP` / `LLVM_LIBCXX_INC`;
+  `MACOS_SDK` (`xcrun --show-sdk-path`); `DARWIN_LD_FLAGS` empty (Apple
+  ld64 — `-fuse-ld=lld` is the cross value); `DARWIN_ZSTD_PREFIX`
+  (`brew --prefix zstd`) → `DARWIN_ZSTD_INC` / `DARWIN_ZSTD_LIB` (the
+  container's `DARWIN_ZSTD_DIR` stage layout derives the same pair);
+  `DARWIN_PRELUDE_SYSROOT` reads the fetch script's own
+  `DARWIN_OPEN_HEADERS_HOME` knob. The hosted MODE's `CC`/`CXX_BASE`/
+  `AR`/`LIBS`, `HOSTTAB_CXX`, the prelude generator's `CLANG`, and
+  `release-macos`'s strip all spell through the knobs. Two loud walls:
+  a darwin host under GNU make 3.x is refused at parse time (the
+  measured MIR wall), and a hosted MODE whose compiler is not on PATH
+  is refused with the install line (the generators' silent-failure
+  class). Shell-derived defaults use the `$(origin)` guard (a `?=`
+  would re-run brew/xcrun on every expansion).
+  **Oracle (container = cross posture, byte-identical):** `make -n -B`
+  recipe text IDENTICAL before/after for `hosted-arm64-macos` (317
+  lines incl. the cross-arm64 recursion, MIR sub-make, forest pack,
+  link), default (165), `hosted-x86-64-windows` (162), `release` (162),
+  `debug` (162). Forced native posture on the container
+  (`DARWIN_HOST=1 DARWIN_LLVM_PREFIX=/usr/lib/llvm-18
+  DARWIN_ZSTD_PREFIX=/usr`) derives `/usr/lib/llvm-18/bin/{clang,
+  clang++,llvm-ar}`, `-I/usr/include`, `/usr/lib/libzstd.a`, no
+  `-fuse-ld` — the knob wiring, exercised without a Mac. Negative
+  control: `DARWIN_CLANG=/nonexistent/clang` → `Makefile:321: ***
+  hosted darwin MODE: compiler ... not found`. Then `release-macos`
+  REBUILT from clean mode objdirs on the container: both arches 835
+  units, pack parse errors 64 (baseline 64), `verify_macho_release`
+  OK ×2, tarballs packaged (`dist/madc-0.97.0-macos-{arm64,x86_64}
+  .tar.gz`).
+  **Workflow:** `darwin-probe.yml` shrank to the D1 gate — brew set +
+  gnubin on `GITHUB_PATH`, `DARWIN_OPEN_HEADERS_HOME` in `GITHUB_ENV`,
+  `autoreconf; ./configure --with-forest=none --enable-madcdat=no`,
+  a `make -pn` step echoing the derived posture as evidence, then
+  plain `make -C src -j3 hosted-arm64-macos` and a hello that must
+  print — no overrides; the job FAILS when the build or the run does.
+  Owner dispatches it (`gh workflow run darwin-probe.yml -R
+  derekbsnider/madc --ref develop`).
+  **Residual → D2:** `--with-forest=none` stays until the native
+  self-freeze lands; the brew zstd default is probe-grade (the shipped
+  stage stays the pinned v1.5.5 source build); on a darwin host the
+  bare default goal (`make -C src`) is still the ELF-shaped linux
+  MODE — whether it should redirect to `hosted-$(uname -m)-macos` is
+  D2's call together with `release-macos`'s host-`bin/madc` read-back.
 - **D2 — native self-freeze + verification.** The freeze arm that
   runs the built binary natively; `verify_macho_release.sh`
   portability (`stat -c`); native zstd stage. Gate: packed
