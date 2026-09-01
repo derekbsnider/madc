@@ -80,13 +80,21 @@ packaging shape, and all the proper build scripts and tests in order.
   alone untrustworthy). The flip does not ship before the numbers are
   seen; a material regression is a finding brought to the owner, never
   silently accepted.
-- **PK1 — C-ABI surface audit + policy.** Enumerate the exported
-  `extern "C"` surface of `libmadc.so`; classify every symbol (C-host
-  API vs CIR-emitted machinery vs accidental export); set the export/
-  visibility policy. Output: the documented ABI contract + an audit
-  script as a fulltest gate (a NEW unclassified extern-C export fails
-  loud; negative control included). `.so.1` flips when this gate is
-  green and the owner calls it.
+- **PK1 — C-ABI surface audit + policy. ✅ EXECUTED 2026-09-01.**
+  The complete extern-C surface (1088 unmangled dynamic exports)
+  classified: 94 ABI (every `madc_api.h` declaration exported), 33
+  `madc_*`-prefixed internals + 8 misc allowlisted with dispositions
+  (`scripts/c-abi-internal-exports.txt`), the rest by class (machinery
+  / polyglot / carrier / MIR / GDB-JIT / parser singletons). Contract
+  + visibility policy: **`docs/adr/0003-c-abi-stance.md`**. Gate:
+  `scripts/check-c-abi-surface.sh` in fulltest — self-testing negative
+  controls on every run (bogus export bites, missing declaration
+  bites), SONAME pinned (`libmadc.so.0`; the `.so.1` flip is a
+  deliberate edit there + ADR, on the owner's call). Green on both
+  the QNAP copy and the container library. Residue named in the ADR:
+  the 33 contract-prefixed internals rename to `__madc_*` in the
+  `.so.1` era (forest-ledger symbol-name blast radius — deliberate
+  slice, not this gate).
 - **PK2 — the default flip.** configure defaults become
   `--enable-shared` + forest-in-library; monolithic stays behind the
   flag, still gated. The lane re-shape is decided here (see "Lane
