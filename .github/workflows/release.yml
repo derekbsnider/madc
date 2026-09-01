@@ -180,10 +180,21 @@ jobs:
         run: |
           autoreconf -i
           ./configure
+      - name: initialize wine prefix
+        # A fresh runner HOME has no ~/.wine; without this, the FIRST wine
+        # invocation happens inside forest_pack_windows.sh's freeze and the
+        # prefix bootstrap (noisy, and wine64-only warns about missing
+        # 32-bit parts) fails the freeze-append. Boot it once, wait for the
+        # bootstrap to settle, and keep a persistent server (the container
+        # lesson: without wineserver -p the first run produces phantoms).
+        run: |
+          export WINEDEBUG=-all
+          wineboot --init || true
+          wineserver -w || true
+          wineserver -p || true
       - name: build release PE
         run: |
           export WINEDEBUG=-all
-          wineserver -p || true
           make -C src -j"$(nproc)" release-windows
       - name: package + install-gate smoke (zip under wine)
         run: bash scripts/package_release_windows.sh
