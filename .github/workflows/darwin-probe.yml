@@ -81,6 +81,10 @@ jobs:
           LLVM=$(brew --prefix llvm@18)
           SDK=$(xcrun --show-sdk-path)
           TGT="arm64-apple-macos12"
+          # gen_darwin_prelude.sh reads $CLANG from the environment
+          # (default clang-18); the parse-time $(shell) generators inherit
+          # make's env, so exporting here reaches them.
+          export CLANG="$LLVM/bin/clang"
           make -C src -j3 hosted-arm64-macos \
             MACOS_SDK="$SDK" \
             "CC=$LLVM/bin/clang -target $TGT --sysroot $SDK" \
