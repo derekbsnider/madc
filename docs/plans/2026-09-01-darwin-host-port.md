@@ -125,6 +125,39 @@ SDK/cross facts).
   the documented build-host prerequisite on any Mac (runner images
   ship brew already); Apple clang 17 confirms the llvm@18-for-parity
   compiler decision.
+  **✅ D0 COMPLETE (runner probe rounds 1–4, 2026-09-01) — D1's gate
+  was met BY THE PROBE with zero repo changes.** Run 33571011884:
+  `make exit 0`, `bin/madc-hosted-arm64-macos` (9.2 MB) linked by
+  brew clang-18's driver + Apple ld64 (`-force_load` archive + darwin-host
+  libmir) and RAN the hello natively (`darwin-host-probe-alive`); the
+  whole hosted build took **~56 s** on macos-14 at `-j3`. Facts:
+  - Runner: macOS 14.8.7, Xcode 15.4 SDK, Apple clang 15, ld-1053.12,
+    bash 3.2, `/usr/bin/make` = GNU Make 3.81 (same walls as the owner
+    Mac); brew `llvm@18` = clang 18.1.8 with libc++ headers.
+  - `fetch_darwin_open_headers.sh` runs clean under the mac shell.
+  - ALL 53 hosted TUs compile under `-Wall -Werror`; `HOSTTAB_GEN`
+    (sys_include_paths/predefined_macros) generates on darwin.
+  - Walls found, each already knob-shaped: brew autoreconf needs
+    `automake`; `gen_darwin_prelude.sh` reads `$CLANG` (default
+    clang-18); GNU Make 3.81 loses MIR's `c2mir/` obj dir (gmake 4.4.1
+    via gnubin fixes it); the hosted link's freezer dependency is the
+    CROSS madc (`CROSS_MADC_BIN`), sidestepped for the probe with
+    `--with-forest=none` — that dependency IS D2.
+  - The working override set (= D1's knob list): `MACOS_SDK=$(xcrun
+    --show-sdk-path)`; `CC/CXX_BASE/AR` = `$LLVM/bin/{clang,clang++,
+    llvm-ar}` with `-target arm64-apple-macos12 --sysroot $SDK`;
+    `HOSTTAB_CXX` likewise + `-nostdinc++ -isystem $LLVM/include/c++/v1`;
+    `LLVM_LIBCXX_INC=$LLVM/include/c++/v1`; `DARWIN_PRELUDE_SYSROOT` =
+    the fetched open headers; `DARWIN_ZSTD_DIR` = a stage dir with
+    `lib/zstd.h` + `libzstd-arm64-macos.a`; `LIBS=-lz -lm <zstd.a>`
+    (drops `-fuse-ld=lld` → ld64); env `CLANG=$LLVM/bin/clang`; PATH =
+    gnubin of `make coreutils gnu-sed grep`; configure
+    `--with-forest=none --enable-madcdat=no` with brew CPPFLAGS/LDFLAGS.
+  Consequence: D1 shrinks to KNOB PROMOTION (one `DARWIN_HOST` posture
+  deriving all of the above, defaults = today's cross spellings so the
+  container is byte-identical); D2 (native self-freeze) is the real
+  remaining engineering.
+
 - **D1 — the Makefile DARWIN_HOST posture.** Promote the D0 override
   set into named `?=` knobs (`DARWIN_CC`, `DARWIN_CXX`, `DARWIN_AR`,
   `DARWIN_LD_FLAVOR`…, defaults = today's cross spellings, so the
