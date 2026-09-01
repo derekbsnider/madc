@@ -137,6 +137,33 @@ packaging shape, and all the proper build scripts and tests in order.
   though numbered last — the number keeps the design-doc
   cross-references stable.
 
+## PK0 results (2026-09-01, container, first pass — GATE MET)
+
+`scripts/perf_pack_shapes.sh`, interleaved A/B, n=21 per shape per
+case; mono = the shipped v0.97.0 packed `madc-release`; shared = thin
+CLI + forest-packed `lib/libmadc.so` built from code-identical
+content. Forest evidence: `forest-bind: [library-image] opened
+container (345 units)` — discovery arm 2 served, no live-parse
+fallback; the pack gate ran in-build and was baseline-clean
+(93/93 parse errors, fill-dropped 0, bind cache == no-cache).
+
+| case    | mono median | shared median | delta |
+|---------|-------------|---------------|-------|
+| hello   | 14.80 ms    | 15.17 ms      | +0.37 ms |
+| testint | 5.15 ms     | 5.64 ms       | +0.49 ms |
+
+callgrind Ir (hello): mono 78.97M, shared 81.62M (+3.3%) — consistent
+with the wall delta; the cost is ld.so dynamic-link work on a ~16 MB
+`.so`, ~0.4–0.5 ms per process start.
+
+Sizes: mono CLI 15,978,184 B; thin CLI 149,808 B + `libmadc.so`
+16,124,536 B (forest inside) — shared total +1.8%.
+
+Verdict: the flip costs under half a millisecond of cold start —
+immaterial against the tcc-parity budget. PK0 does not block the
+flip. Residual cases (madcide start, embedding host) land with
+PK7/PK1 respectively; raw TSV at container `tmp/pk0/pk0_results.tsv`.
+
 ## Lane shape after the flip (PK2 decision, owner-visible knob)
 
 Proposal: the packed lane runs the PACKAGED default shape (it is the
