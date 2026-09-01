@@ -211,57 +211,62 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.96.0** — the variadic-class arc: **madc
-compiles and runs its own C++ embedding example**. `bin/madc
-examples/embed_hello.cpp` works end-to-end at g++ parity (variadic
-class-template instantiation with mixed fixed+pack heads, class-pack
-`sizeof...`, static calls through `Adapter<R, Args...>`), and the
-embedding examples gate in `fulltest` covers both the C and C++ legs.
-The libmadc embedding surface hardened with it: constructing a
-`madc::engine` no longer rebinds the host's `std::cout`/`std::cerr`
-(guest capture is invocation-scoped), and engine-registered host
-callbacks reach `eval_expression`'s child program. The release's
-push-gate battery also caught and fixed two forest-artifact defects —
-rebound ranked constructors now stamp their overload symbol (a
-"too many arguments" compile failure shipped in every packed binary
-since at least v0.95.2), and missing-content husks re-include by
-canonical path instead of an ambiguous basename. Before it, the
-v0.95 line was the `ui::` data-hub namespace with Colossal Cave
-Adventure fully playable as a pure madc project, the zero-include
-dialect contract, and the cold-startup arc.
+The current release is **v0.97.0** — the madcide interaction arc and
+the carrier elegance arc. madcide gains its session/client seam
+(`class IdeSession` + a TUI client over the facts/keytable protocol —
+the first slice of the IDE-as-API-gateway architecture), a ^N modes
+palette, and a full **vi modal personality** as pure profile data
+(`profiles/neovim.keys`: @normal/@insert scopes, counts,
+operator+motion grammar, the `:` command line, showmode/showcmd). The
+dialect completes its literal story: keyed literals
+(`var m = { "a": 1 }`), PHP's append accessor (`rows[] = expr`), brace
+literals as expressions (`rows[] = { "act": "colon" };`,
+`rows.push({...})`), and subscripts that dispatch on a var index's
+live kind (`m[kn]` keys by string, indexes by number) — closing a
+silent address-as-index defect and deleting over a hundred lines of
+row-building ceremony from madcide itself. c-testsuite conformance is
+COMPLETE at 220/220 (`--std=gnu11`), and two new parser walls turned
+formerly-silent wrong answers (the associative-literal hang class,
+operand juxtaposition) into loud refusals.
 
-Branch state: v0.96.0 is released on `develop`; v0.95.2 remains the
+Branch state: v0.97.0 is released on `develop`; v0.95.2 remains the
 `master` promotion, with public binaries published for Linux
 (deb/rpm), Windows x86-64, and macOS (Apple Silicon + Intel).
 
-Latest validated results:
+Latest validated results (the v0.97.0 merge-wave battery):
 
-- Linux JIT: **1199 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1150/0**, OBJ lane **1150/0**; packed suite **1199/0/0/9**
+- Linux JIT: **1247 passed / 0 failed / 0 timed out / 9 skipped**
+- native EXE lane **1193/0**, OBJ lane **1193/0**; packed suite **1247/0/0/9**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
+- c-testsuite conformance: **220/220, baseline empty** (C mode,
+  `--std=gnu11`)
 - all three pack lanes green under the degradation gate: Linux and Win64 at
-  93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
-  arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1172/0/0/36**,
-  Win64 **1011/0/0/52** (v0.92.1 gate run; re-validated at promotion) —
-  the only lanes that can see an artifact fail to serve a standard
+  93 tolerated pack parse errors with zero load-side losses, macOS at 64 per
+  arch (six entries raised with a stated reason: the new juxtaposition wall
+  made a pre-existing instantiation-body misparse LOUD — the fix is banked),
+  and every listed header verified present as a container unit
+- headerless (no headers on disk anywhere): Linux **1220/0/0/36** —
+  the only lane that can see an artifact fail to serve a standard
   header from its own frozen corpus
 - macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
-  leg-for-leg parity with the shipped v0.82.0 binary (re-run as a negative
-  control on the same host); the three are standing known-opens (groves
-  `os.str()` husk, the value intrinsic, the exec:// channel), not
-  regressions; both arches packed at 835 units with the Mach-O release
-  verifier green
-- packed Win64 under persistent Wine **1091/0/0/52** (the v0.95.1 gate
-  run — the v0.95.0 win64 `--project` regression fixed before any asset
-  shipped); on genuine Windows 11 (v0.92.1 run) all seven battery legs
-  pass, including compiling a C translation unit on a host with no
-  toolchain installed
+  leg-for-leg parity with the standing known-opens (groves `os.str()`
+  husk, the value intrinsic, the exec:// channel), not regressions;
+  both arches packed at 835 units with the Mach-O release verifier
+  green and the degradation leg at zero admitted-record losses
+- packed Win64 under persistent Wine **1197/0/0/59** on the freshly
+  rebuilt PE; on genuine Windows 11 (v0.92.1 run) all seven battery
+  legs pass, including compiling a C translation unit on a host with
+  no toolchain installed
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.97.0](docs/release-notes/v0.97.0.md) — the madcide interaction
+  arc (gateway seam, modes palette, the vi modal personality as
+  profile data) + the carrier elegance arc (keyed literals, `rows[] =`
+  append, literal expressions, live-kind subscripts); c-testsuite
+  220/220 COMPLETE.
 - [v0.96.0](docs/release-notes/v0.96.0.md) — the variadic-class arc:
   `bin/madc examples/embed_hello.cpp` compiles and RUNS; libmadc
   embedding fixes; two forest-artifact fixes (ranked-ctor symbol
@@ -273,8 +278,6 @@ Latest validated results:
 - [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
   Colossal Cave Adventure fully playable (94/94 logs byte-identical);
   cold startup 829 ms → ~150 ms class; the zero-include contract.
-- [v0.94.0](docs/release-notes/v0.94.0.md) — upstream-community MIR
-  hardening: -O2 wrong-code loop-PHI fold, spill-table bound, aarch64 gate.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 

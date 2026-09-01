@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-wine64	yes	69e751af5be5	2026-08-31	1186/0/58skip (hosted PE, persistent wineserver; madcide cosmetics content)
-macos	yes	69e751af5be5	2026-08-31	mac_battery arm64 8/3 (the 3 standing known-opens leg-for-leg: groves os.str() husk, value intrinsic, exec:// channel; v0.96.0 tarball rebuilt on madcide-cosmetics content)
-c-testsuite	yes	69e751af5be5	2026-08-31	220/220 baseline EMPTY (C mode --std=gnu11; madcide-cosmetics content)
 linux-battery	yes	d8bf72f49028	2026-09-01	jit 1247/0, exe 1193/0, obj 1193/0, packed 1247/0, headerless 1220/0 (s148-s149c madcide gateway+vi+carrier literals merge wave)
+macos	yes	5357a87af73e	2026-09-01	mac_battery arm64 8/3 (the 3 standing known-opens leg-for-leg: groves os.str() husk, value intrinsic, exec:// channel; 0.96.0-content tarball on s148-s149c merge content; degradation leg green fill-dropped 0)
+wine64	yes	5357a87af73e	2026-09-01	1197/0/59skip (hosted PE rebuilt on s148-s149c merge content, persistent wineserver)
+c-testsuite	yes	5357a87af73e	2026-09-01	220/220 baseline EMPTY (C mode --std=gnu11; s148-s149c merge content)

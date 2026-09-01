@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-08-28, SMAUG restored + gated —
+> **Current (2026-09-01, v0.97.0 — the s148–s149c merge wave: madcide
+> gateway seam + vi modal personality + carrier literal ergonomics):**
+> FULL push-gate battery on merged content @d8bf72f4 (+docs-only
+> follow-ups): fulltest rc=0 (all gates) with JIT **1247 passed / 0
+> failed / 0 timed out / 9 skipped**, native EXE **1193/0**, OBJ
+> **1193/0**, packed **1247/0/0/9**, headerless **1220/0/0/36**;
+> wine64 domain **1197/0/0/59** on the freshly rebuilt PE; macOS
+> arm64 hardware battery **8/3** leg-for-leg parity (standing
+> known-opens only; degradation leg zero losses); c-testsuite
+> **220/220 baseline EMPTY** (`--std=gnu11`). New in this wave:
+> testvalueappend/+mix/+bad, testvalueinitkeyed(+mix),
+> testcolonheadexpr, testexprjuxtapose; the var-over-value sweep
+> converted 57 test files to the `var` spelling. darwin pack baseline
+> 58 → 64 with a stated reason (the juxtaposition wall made a
+> pre-existing instantiation-body misparse loud; fix banked as KG Gap
+> instantiation_body_templateid_ctor_call).
+>
+> **Previous (2026-08-28, SMAUG restored + gated —
 > feature/smaug-fntypedef merge wave):** the real MadSMAUG 51-TU
 > `--project` (upstream/smaug1.8 via compile_commands.json) compiles,
 > links, JIT-boots to "Realms of Despair ready", and serves the full

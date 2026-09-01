@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.97.0] — 2026-09-01
+
+The madcide interaction arc (the IdeSession gateway seam, the modes
+palette, the vi modal personality) and the carrier elegance arc
+(keyed literals, the `rows[]` append accessor, literal expressions,
+live-kind subscripts), plus c-testsuite conformance complete at
+220/220.
+
 - **The append accessor + literal EXPRESSIONS (2026-08-31)** — the ruled
   row spelling lands: `rows[] = { "this": "that" };`. PHP's empty `[]`
   is the APPEND slot (`madarray_append_slot` — the same operator= rows
