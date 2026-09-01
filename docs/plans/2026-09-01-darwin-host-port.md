@@ -203,7 +203,14 @@ SDK/cross facts).
   plain `make -C src -j3 hosted-arm64-macos` and a hello that must
   print — no overrides; the job FAILS when the build or the run does.
   Owner dispatches it (`gh workflow run darwin-probe.yml -R
-  derekbsnider/madc --ref develop`).
+  derekbsnider/madc --ref develop`). **✅ Run 33573025122 GREEN on
+  macos-14:** the posture echoed `DARWIN_HOST = 1`, `DARWIN_LLVM_PREFIX :=
+  /opt/homebrew/opt/llvm@18`, `DARWIN_ZSTD_PREFIX := /opt/homebrew/opt/
+  zstd`, `MACOS_SDK := /Applications/Xcode_15.4.app/.../MacOSX.sdk`,
+  `DARWIN_LD_FLAGS =` (empty → ld64), gnubin `GNU Make 4.4.1`; plain
+  `make -C src -j3 hosted-arm64-macos` built the 9.2 MB binary; the hello
+  printed `darwin-host-gate-alive`; `madc 0.97.0`. D1's gate is met on
+  the runner with the repo's own Makefile — no overrides anywhere.
   **Residual → D2:** `--with-forest=none` stays until the native
   self-freeze lands; the brew zstd default is probe-grade (the shipped
   stage stays the pinned v1.5.5 source build); on a darwin host the
