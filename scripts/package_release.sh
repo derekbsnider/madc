@@ -20,6 +20,7 @@
 #   /usr/bin/madcide                            AOT-compiled by that binary
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
+#   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
@@ -33,9 +34,10 @@
 # (DT_NEEDED); installing it to the system lib dir makes AOT output run
 # anywhere the package is installed.
 #
-# Output: dist/madc_<ver>-<rel>_amd64.deb, dist/madc-<ver>-<rel>.x86_64.rpm,
-# dist/SHA256SUMS. Version comes from the VERSION file; override the package
-# revision with PKG_RELEASE=<n> (default 1).
+# All artifacts land in dist/ with their lines in dist/SHA256SUMS (this
+# script rewrites that file wholesale; the win/mac packagers append).
+# Version comes from the VERSION file; override the package revision
+# with PKG_RELEASE=<n> (default 1).
 set -e
 
 cd "$(dirname "$0")/.."
@@ -130,6 +132,11 @@ stage() {
     # can never swap this file.
     install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
     ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
+    # The emitted-C runtime (a few KB, static): what `madc --emit=c11`
+    # output links on a box with no madc at all (cc prog.c -lmadc_rt) —
+    # try/catch context stack + VLA scope-exit helpers, nothing else.
+    # Platform parity: the mac and win archives already ship it.
+    install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
@@ -196,6 +203,7 @@ ${DESC_BODY}
 /usr/bin/madcide
 /usr/lib64/libmadc.so.0
 /usr/lib64/libmadc.so
+/usr/lib64/libmadc_rt.a
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/changelog.gz
@@ -228,6 +236,10 @@ Native output (madc -o prog): the produced binary references
 libmadc.so.0 only when it uses the madc runtime; it looks in its own
 ../lib first, then this toolchain's lib/, then /usr/local/lib and the
 system search path. A plain C program's executable is runtime-free.
+
+Emitted C (madc --emit=c11): on a machine with no madc at all, link
+the shipped archive: cc -std=c11 program.c -L<this-dir>/lib -lmadc_rt
+(only needed when the program enters try/catch or frees a VLA).
 
 madcide: keybinding profiles and colour schemes load from
 share/madcide/profiles next to this README. See share/man/man1 for the

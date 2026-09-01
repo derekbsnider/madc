@@ -177,7 +177,7 @@ void *madcdl_sym_default(const char *name)
 	if (p)
 		return (void *)p;
 	// The module the madc runtime itself lives in. In bin/madc.exe that
-	// is the self handle above; hosted inside libmadc_rt.dll (an AOT
+	// is the self handle above; hosted inside libmadc-0.dll (an AOT
 	// image running eval) the process exe exports NOTHING of ours and
 	// every madc runtime symbol lives HERE — the Linux twin is
 	// dlsym(RTLD_DEFAULT) seeing libmadc.so.0 in the global scope.

@@ -100,7 +100,7 @@ esac
 
 # --- ledger: -static-libmadc from the embedded AOT ledger (the VLA free
 # --- rides rt_vla's ledger module). The emitted exe runs from a directory
-# --- holding ONLY the C++ runtime DLLs — deliberately NOT libmadc_rt.dll:
+# --- holding ONLY the C++ runtime DLLs — deliberately NOT libmadc-0.dll:
 # --- the madc runtime dependency is what the flag removes, and cout's
 # --- mangled-direct libstdc++ imports are outside that promise.
 out=$(remote "bin/madc.exe -o vla.exe -static-libmadc vla.cpp && mkdir -p alone && cp vla.exe bin/libstdc++-6.dll bin/libwinpthread-1.dll alone/ && cd alone && ./vla.exe" 2>&1)

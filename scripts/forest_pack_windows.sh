@@ -38,7 +38,7 @@ fi
 
 # Wine lane posture: silence winediag chatter (it lands on stderr and would
 # poison output comparisons) and let the packer copy in tmp/ bind the
-# libstdc++-6/libwinpthread-1/libmadc_rt DLLs staged beside bin/.
+# libstdc++-6/libwinpthread-1/libmadc-0 DLLs staged beside bin/.
 export WINEDEBUG=-all
 export WINEPATH='Z:\workspace\madc\bin'
 WINE="${MADC_WINE:-wine}"

@@ -75,6 +75,13 @@ dark.
   gate (broken contract is caught at build, not at a consumer's link).
 - The SONAME is pinned in the gate; moving to `.so.1` is a deliberate
   one-line change in the same commit as the promise documentation.
-- Windows (`madc.dll`) and macOS (`madc.dylib`) export surfaces ride
-  their own lanes; this gate covers the ELF surface. Extending the
-  classifier is a PK3/PK5-era follow-up.
+- Windows (`libmadc-0.dll` — renamed from the historically misnamed
+  `libmadc_rt.dll` in the PK3 wave: it is the FULL engine, the twin of
+  `libmadc.so.0`, and it carries the same ABI number mingw-style like
+  its shipped neighbors `libstdc++-6.dll`/`libwinpthread-1.dll`; its
+  import lib is `libmadc.dll.a`, and `_rt` now names ONLY the tiny
+  emitted-C archive `libmadc_rt.a` on every platform) and macOS
+  (`libmadc-0.dylib` when the darwin runtime-library slice lands)
+  export surfaces ride their own lanes; this gate covers the ELF
+  surface. Extending the classifier is a PK3/PK5-era follow-up. The
+  `.so.0` → `.so.1` weigh-in bumps all platform twins together.

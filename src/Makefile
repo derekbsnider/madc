@@ -596,6 +596,7 @@ endif
 # QNAP pull); debug and release own lib/$(MODE)/.
 ifneq (,$(filter release debug,$(MODE)))
 LIBMADC_SHARED = $(LIBDIR)/$(MODE)/libmadc.so
+LIBMADC_RT = $(LIBDIR)/$(MODE)/libmadc_rt.a
 endif
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
@@ -797,7 +798,7 @@ $(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
 # forest packing is the W4 workstream, so this mode builds the dev forest
 # shape (silent live parse). Run validation: wine + scripts/win_run.sh.
 hosted-x86-64-windows:
-	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc_rt.dll
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc-0.dll
 
 # win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
 # UCRT posture + specs swap), so host detection selects the _WIN32 arms
@@ -839,7 +840,7 @@ else
 PACK_IMAGE_ARG =
 endif
 release:
-	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so ../lib/release/libmadc_rt.a
 	strip ../bin/madc-release
 ifeq ($(ENABLE_SHARED_CLI),1)
 	strip --strip-unneeded ../lib/release/libmadc.so
@@ -1107,7 +1108,7 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 # re-archived alone so `cc emitted.c -lmadc_rt` links without the full
 # runtime. No separate source list — membership is ledger_sources.txt's.
 $(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
-	mkdir -p $(LIBDIR)
+	mkdir -p $(dir $@)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
@@ -1218,26 +1219,29 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 ../bin/libwinpthread-1.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libwinpthread-1.dll
 	cp -p $< $@
 
-# libmadc_rt.dll (W3.5): the win64 twin of libmadc.so — the runtime
-# provider AOT images (madc -o prog.exe) import madc_puts / the
-# madc_value_* bridge / the __madc_* helpers from, and the DLL half of
-# the external-link story (the import lib serves
-# `x86_64-w64-mingw32-gcc prog.o -lmadc_rt.dll`). Whole-archive: loaded
-# programs reference these symbols, the DLL itself does not, so plain
-# archive semantics would drop their objects. --export-all-symbols (in
-# LIBS) is the export surface — plain names, the darwin flat-bind
-# analogue. Staged in bin/ beside madc.exe: the PE loader's app-dir rule
-# serves madc.exe's own LoadLibrary probe, wine, win_run.sh's
-# adjacent-DLL shipping, and the release zip alike.
+# libmadc-0.dll (W3.5; renamed from libmadc_rt.dll in the packaging arc
+# — this is the FULL engine, the win64 twin of libmadc.so.0, and the
+# ABI number in the name is the soname twin, mingw-style like its
+# neighbors libstdc++-6/libwinpthread-1; _rt now means ONLY the tiny
+# emitted-C archive): the runtime provider AOT images (madc -o
+# prog.exe) import madc_puts / the madc_value_* bridge / the __madc_*
+# helpers from, and the DLL half of the external-link story (the
+# import lib serves `x86_64-w64-mingw32-gcc prog.o -lmadc.dll`).
+# Whole-archive: loaded programs reference these symbols, the DLL
+# itself does not, so plain archive semantics would drop their objects.
+# --export-all-symbols (in LIBS) is the export surface — plain names,
+# the darwin flat-bind analogue. Staged in bin/ beside madc.exe: the PE
+# loader's app-dir rule serves madc.exe's own LoadLibrary probe, wine,
+# win_run.sh's adjacent-DLL shipping, and the release zip alike.
 # The .def rides the link: PE ld auto-excludes libmingwex/oldnames code
 # from --export-all-symbols, but AOT images import the mingw-stdio map's
 # surface (__mingw_printf family, *l math, dirent) from THIS DLL — the
 # .def re-adds exactly the map's names, generated from the one map owner
 # so the lists can never drift. --export-all-symbols stays on the line:
 # with a .def present ld would otherwise export ONLY the .def names.
-../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
-	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def $(MIRDIR)/mir-int128-helper.h
-	$(CXX) -shared -o $@ $(OBJDIR)/libmadc_rt.def -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
+	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
+	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the

@@ -10,8 +10,8 @@
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
-#   madc-<ver>-windows-x86_64/bin/libmadc_rt.dll      madc runtime for AOT output (madcide binds it too)
-#   madc-<ver>-windows-x86_64/lib/libmadc_rt.dll.a    import lib (link .o output)
+#   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine (win twin of libmadc.so.0; AOT output + madcide bind it)
+#   madc-<ver>-windows-x86_64/lib/libmadc.dll.a       import lib for it (link .o output)
 #   madc-<ver>-windows-x86_64/lib/libmadc_rt.a        emitted-C runtime (try/catch + VLA)
 #   madc-<ver>-windows-x86_64/madc.ini.example        documented example config (non-live name)
 #   madc-<ver>-windows-x86_64/LICENSE
@@ -50,8 +50,8 @@ GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 
 mkdir -p dist
 
-for f in "$BIN" bin/libstdc++-6.dll bin/libwinpthread-1.dll bin/libmadc_rt.dll \
-         lib/libmadc_rt.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+for f in "$BIN" bin/libstdc++-6.dll bin/libwinpthread-1.dll bin/libmadc-0.dll \
+         lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -87,8 +87,8 @@ install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
 install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"
 install -m 755 bin/libstdc++-6.dll "$STAGE/$ROOT/bin/libstdc++-6.dll"
 install -m 755 bin/libwinpthread-1.dll "$STAGE/$ROOT/bin/libwinpthread-1.dll"
-install -m 755 bin/libmadc_rt.dll "$STAGE/$ROOT/bin/libmadc_rt.dll"
-install -m 644 lib/libmadc_rt.dll.a "$STAGE/$ROOT/lib/libmadc_rt.dll.a"
+install -m 755 bin/libmadc-0.dll "$STAGE/$ROOT/bin/libmadc-0.dll"
+install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
 
@@ -131,8 +131,9 @@ Headers outside the packed set are not available on a machine without
 them and fail with a clear error.
 
 Native output (madc -o prog.exe): programs that use madc's runtime
-import libmadc_rt.dll — keep it (and the two runtime DLLs) next to the
-emitted exe or on PATH. Runtime-free programs, and programs built with
+import libmadc-0.dll (the full madc engine) — keep it (and the two
+runtime DLLs) next to the emitted exe or on PATH. Runtime-free
+programs, and programs built with
 -static-libmadc whose runtime needs are covered by the embedded AOT
 ledger, import only the Windows CRT.
 
@@ -141,7 +142,7 @@ toolchain:
 
     x86_64-w64-mingw32-gcc -std=c11 program.c -L<this-dir>\\lib -lmadc_rt
 
-Object output (madc --obj) links against lib\\libmadc_rt.dll.a.
+Object output (madc --obj) links against lib\\libmadc.dll.a.
 
 madcide (bin\\madcide.exe): the madc IDE — a terminal editor whose core
 is the live compiler (diagnostics, outline, and syntax colour are
@@ -159,7 +160,7 @@ into %XDG_CONFIG_HOME%\\madc\\madc.ini.
 EOF
 
 # Launch smoke on the STAGED exe: no-args madcide prints its usage line
-# and exits 1 — proving the shipped bytes load, bind libmadc_rt.dll by
+# and exits 1 — proving the shipped bytes load, bind libmadc-0.dll by
 # adjacency from the staged bin/, and run main. (The interactive TUI
 # needs a console; the install-gate pty probe is PK4's job.)
 smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe 2>/dev/null; true)

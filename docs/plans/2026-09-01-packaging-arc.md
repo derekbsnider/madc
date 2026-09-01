@@ -177,6 +177,22 @@ packaging shape, and all the proper build scripts and tests in order.
     (`docs/examples/madc.ini`, all keys commented = inert if copied
     verbatim) in all packages; `madc.1`'s stale `.TH` stamp
     ("0.38.0", 2026-07-23) made version-neutral.
+  - **Library-family coherence (owner discussion 2026-09-01).** Two
+    products, honest names on every platform: the ENGINE
+    (`libmadc.so.0` / `libmadc-0.dll` / `libmadc-0.dylib`-someday) and
+    the tiny **emitted-C archive** `libmadc_rt.a` (try/catch context
+    stack — one shared copy per program, which is why it is a link
+    archive — plus VLA scope-exit; for `--emit=c11` output compiled by
+    a foreign toolchain on a madc-less box). Executed: (a)
+    `libmadc_rt.dll` → **`libmadc-0.dll`** (it was the FULL engine
+    misnamed `_rt` since W3.5 — ABI number mingw-style like
+    libstdc++-6/libwinpthread-1, twin of `.so.0`, bumps with it;
+    implib → `libmadc.dll.a`; one code site,
+    `cir_windows_import_dlls`, plus Makefile/verify/packager); (b)
+    the linux deb/rpm/tarball now SHIP `libmadc_rt.a` (win/mac
+    tarballs already did) — `make release` builds
+    `lib/release/libmadc_rt.a` (per-mode-names law extended: the rt
+    archive was still on the one shared dev path).
 - **PK4 — package-install validation gates.** Install-then-run smoke
   per OS: dpkg/rpm install into a scratch root on the container; the
   Windows/Mac staging flows formalized as scripts (today they are

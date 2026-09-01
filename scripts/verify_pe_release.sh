@@ -81,7 +81,7 @@ fi
 # 4. The deployment set beside the exe (PE has no runpath; adjacency is
 #    the binding rule; the zip stages exactly these).
 BINDIR=$(dirname "$BIN")
-for dll in libstdc++-6.dll libwinpthread-1.dll libmadc_rt.dll; do
+for dll in libstdc++-6.dll libwinpthread-1.dll libmadc-0.dll; do
     if [ ! -f "$BINDIR/$dll" ]; then
         echo "verify_pe_release: FAILED — $dll missing beside $BIN" >&2
         exit 1
