@@ -93,7 +93,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.build == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
       - name: guard — tag matches VERSION
@@ -137,7 +137,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.build == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
       - name: guard — tag matches VERSION
@@ -148,12 +148,17 @@ jobs:
             exit 1
           fi
       - name: dependencies
+        # libc++-18-dev/abi: verify_pe_release's one-flavor gate probes the
+        # shipped PE with -stdlib=libc++ — the ALTERNATE flavor must be a
+        # viable posture on the build host for the probe to reach the
+        # profile-stack walk (the container carries it via provisioning).
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             g++-13 clang make autoconf g++-mingw-w64-x86-64-posix \
             binutils-mingw-w64-x86-64 wine64 zip unzip wget \
-            libzstd-dev zlib1g-dev libz-mingw-w64-dev
+            libzstd-dev zlib1g-dev libz-mingw-w64-dev \
+            libc++-18-dev libc++abi-18-dev
           sudo mkdir -p /workspace
           sudo chown "$USER" /workspace
       - name: UCRT-flavor libstdc++ stage (cached)

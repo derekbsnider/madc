@@ -108,7 +108,13 @@ timeout 300 "$WINE" "$BIN" -v -stdlib=libc++ \
     tests/teststdunversioned.mad > "$PROFILE_LOG" 2>&1 || true
 if ! grep -aq 'producer config mismatch' "$PROFILE_LOG"; then
     echo "verify_pe_release: FAILED — alternate-flavor probe never reached the profile stack;" >&2
-    echo "  the 'no second profile' check below would be vacuous (see $PROFILE_LOG)" >&2
+    echo "  the 'no second profile' check below would be vacuous. Probe log tail:" >&2
+    # The log must reach the failure report itself — on a CI runner the
+    # file dies with the job (the PK5 burn-in read three of these blind).
+    # A common cause: the alternate flavor's headers are not installed on
+    # the build host, so -stdlib=libc++ bails before any forest bind
+    # (the container carries libc++-18-dev; a bare host does not).
+    tail -n 20 "$PROFILE_LOG" >&2
     exit 1
 fi
 if grep -aq 'opened container' "$PROFILE_LOG"; then
