@@ -74,5 +74,25 @@
 # parameter ranks as error_code* and binds the right overload. Reducer:
 # tests/testaddrofrefoverload.mad (g++/clang++ oracle). KG Gap
 # libcxx_fs_error_code_overload_shape CLOSED.
-58 darwin pack-errors
+#
+# darwin 58 -> 64 (2026-09-01, the 2026-08-23 precedent again): six
+# "Malformed expression: 2 operands with no operator between them" —
+# the s149b operand-juxtaposition wall made a PRE-EXISTING
+# instantiation-body misparse LOUD. The shape: re-parsing a saved
+# pattern body containing `TemplateId<...>()(args)` (libc++
+# `__murmur2_or_cityhash<size_t>()(&__u, sizeof(__u))` in
+# __functional/hash.h __scalar_hash<_Tp,2>::operator(), and five
+# unique_ptr instantiation bodies) mis-consumes the empty ctor parens,
+# leaving the TYPE and the parenthesized call-args as two stranded
+# operands; the instantiated type name even absorbs the UNSUBSTITUTED
+# defaulted non-type arg (…_sizeof__Size_P8). Before the wall this
+# SILENTLY resolved to the top operand — the grove body computed
+# sizeof(__u) instead of the hash — so loud-plus-fallback is strictly
+# better than what 58 was hiding. Burndown item: fix the
+# instantiation-body re-parse of TemplateId<...>()(args) at the
+# template machinery layer, then lower this to 58. Repro: a darwin
+# cross-freeze of `#include <memory>` (bin/madc-arm64-macos
+# --freeze-append) shows the hash.h entry; the six appear in the full
+# manifest freeze. KG Gap: instantiation_body_templateid_ctor_call.
+64 darwin pack-errors
 1 darwin mir-blob-skips
