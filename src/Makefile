@@ -560,6 +560,7 @@ LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
 # Thin-CLI gate vehicle (rule far below, with the other link rules).
 THIN_CLI = $(BINDIR)/madc-thin
+MONO_CLI = $(BINDIR)/madc-mono
 # The emitted-C freestanding runtime archive (macos-release-lane W3): ONLY
 # the dual-build C-lane sources (scripts/ledger_sources.txt stays the one
 # list owner — the same membership rule that keeps those strict C11 with no
@@ -875,6 +876,7 @@ clean:
 	rm -f $(LIBMADC_SHARED)
 	rm -f $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
 	rm -f $(THIN_CLI)
+	rm -f $(MONO_CLI)
 	rm -f $(PROCESS_FIXTURE)
 	rm -f sys_include_paths.cpp
 	rm -f predefined_macros.cpp
@@ -898,7 +900,7 @@ test: $(TESTBINS)
 		fi; \
 	done
 
-fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
+fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/run_tests.sh
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
@@ -941,6 +943,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-one-error-composer.sh
 	@cd .. && bash scripts/check-libc-alias-signatures.sh
 	@cd .. && bash scripts/check-c-abi-surface.sh
+	@cd .. && bash scripts/mono_cli_gate.sh
 	@cd .. && bash scripts/check-storage-seam-adoption.sh
 	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
@@ -1046,6 +1049,14 @@ endif
 # here would make `fulltest`'s prerequisite silently empty.)
 $(THIN_CLI): $(OBJDIR)/madc.o $(LIBMADC_SHARED)
 	$(CXX) -o $@ $(OBJDIR)/madc.o -L$(LIBDIR) -lmadc $(CLI_RPATH) $(CXXFLAGS) $(DEFINES) $(LIBS)
+
+# Monolithic vehicle, the thin one's mirror (packaging arc PK2): the SAME
+# madc.o whole-archived against the static libmadc, so the single-binary
+# OPTIONAL form stays link-proven in a default (shared) tree without
+# reconfiguring it — mono_cli_gate.sh runs it. In a --disable-shared tree
+# bin/madc already IS this shape.
+$(MONO_CLI): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch

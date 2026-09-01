@@ -101,8 +101,11 @@ stage() {
     mkdir -p "$root/usr/bin" "$root/$libdir" \
              "$root/usr/share/man/man1" "$root/usr/share/doc/madc"
     install -m 755 bin/madc-release "$root/usr/bin/madc"
+    # NO strip here: since the PK2 shared default, `make release` strips
+    # lib/libmadc.so BEFORE packing the forest into it (strip-before-pack
+    # ordering, src/Makefile) — stripping again rewrites the ELF and
+    # silently drops the appended forest container.
     install -m 644 lib/libmadc.so "$root/$libdir/libmadc.so.0"
-    strip --strip-unneeded "$root/$libdir/libmadc.so.0"
     ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
     gzip -9n < docs/man/madc.1 > "$root/usr/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$root/usr/share/doc/madc/copyright"

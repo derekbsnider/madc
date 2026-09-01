@@ -341,9 +341,10 @@ for stage in $stages; do
 		;;
 	pull)
 		# Bring the container-built binaries back to the NAS: the two
-		# userlands are ABI-identical (Ubuntu glibc 2.39, g++ 13.3)
-		# and bin/madc links libmadc statically, so pulled binaries
-		# run directly. The QNAP never compiles (owner directive
+		# userlands are ABI-identical (Ubuntu glibc 2.39, g++ 13.3),
+		# so pulled binaries run directly. Since the PK2 default flip
+		# bin/madc is a THIN CLI — the libs block below is what makes
+		# a pulled compiler runnable at all, not just its emitted exes. The QNAP never compiles (owner directive
 		# 2026-07-23). --no-perms/--no-owner/--no-group: the QNAP ACL
 		# rejects chmod on temp files ("Bad address"). Pull only
 		# right after building the CURRENT tree state, and never

@@ -95,10 +95,26 @@ packaging shape, and all the proper build scripts and tests in order.
   the 33 contract-prefixed internals rename to `__madc_*` in the
   `.so.1` era (forest-ledger symbol-name blast radius — deliberate
   slice, not this gate).
-- **PK2 — the default flip.** configure defaults become
-  `--enable-shared` + forest-in-library; monolithic stays behind the
-  flag, still gated. The lane re-shape is decided here (see "Lane
-  shape" below).
+- **PK2 — the default flip. ✅ EXECUTED 2026-09-01.** `./configure`
+  now defaults to the shared shape (`enable_shared_cli=yes` in
+  configure.ac + the generated configure; monolithic via
+  `--disable-shared`) — a plain tree builds the thin CLI, and
+  `make release` produces the packaged product (thin `madc-release` +
+  forest packed into `lib/libmadc.so`). The lane re-shape landed as
+  decided below: fulltest builds BOTH vehicles (`madc-thin` existed;
+  `madc-mono` added — the same `madc.o` whole-archived against the
+  static libmadc) and `scripts/mono_cli_gate.sh` (negative-controlled:
+  the shape assertion must bite on the thin vehicle) is the monolithic
+  form's standing coverage. Collateral fixes that ride the flip:
+  `package_release.sh` no longer re-strips the installed
+  `libmadc.so.0` (post-flip it arrives stripped-then-forest-packed —
+  a second strip would silently drop the appended forest), and
+  `remote_build.sh pull`'s stale "links statically" comment now states
+  that the libs block is what makes a pulled thin compiler runnable.
+  Validation (container): plain configure ⇒ `ENABLE_SHARED_CLI=1`;
+  thin `bin/madc` 58/58 JIT subset; mono/ABI/library-image gates
+  green; release chain + packed subset + exe subset + self-exe gate
+  green (phase 2). Full battery rides the merge wave as always.
 - **PK3 — staging re-target + install layouts.** `package_release.sh`
   stages the thin CLI + the forest-carrying `.so`. Layouts: Linux
   `/usr/bin/madc` + `/usr/bin/madcide` +
@@ -172,14 +188,16 @@ immaterial against the tcc-parity budget. PK0 does not block the
 flip. Residual cases (madcide start, embedding host) land with
 PK7/PK1 respectively; raw TSV at container `tmp/pk0/pk0_results.tsv`.
 
-## Lane shape after the flip (PK2 decision, owner-visible knob)
+## Lane shape after the flip (DECIDED at PK2, 2026-09-01)
 
-Proposal: the packed lane runs the PACKAGED default shape (it is the
-shipping product); the monolithic optional form keeps its existing
-pack/emitpack gates plus a build-and-run smoke — NOT a second full
-battery (battery once per merge wave; lane cost stays flat). Dev
-binary lanes are unchanged (the dev shape stays monolithic unpacked,
-forest = live parse).
+The packed lane runs the PACKAGED default shape (it is the shipping
+product — automatic, since `make release` now builds it); the
+monolithic optional form's standing coverage = the `madc-mono`
+build in fulltest + `mono_cli_gate.sh` (link + run + shape assertion,
+negative-controlled) plus the existing pack/emitpack gates — NOT a
+second full battery (battery once per merge wave; lane cost stays
+flat). Dev binary lanes run the thin dev CLI (unpacked, live parse —
+the forest axis is unchanged).
 
 ## Thread-safety contract
 
