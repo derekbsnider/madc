@@ -108,8 +108,23 @@ SDK/cross facts).
   entirely by command-line overrides — the failure catalog IS the
   deliverable, uploaded as an artifact. Expected first walls: parse-
   time generator scripts under mac sh; the freeze step (no cross madc
-  on the runner — D2's job). Owner-Mac baseline probe when the box is
-  reachable (unreachable 2026-09-01, IP-drift class).
+  on the runner — D2's job).
+  **Owner-Mac baseline (MEASURED 2026-09-01):** macOS 15.3.2 arm64,
+  Command Line Tools ONLY (no Xcode.app) — SDK at
+  `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`, which is
+  EXACTLY the path `MADC_SYS_INCLUDE_PREFIX_MAP` already bakes as
+  canonical (the cross-built include tables match a CLT-only consumer
+  box by existing design); the SDK carries its own libc++ headers
+  (`usr/include/c++/v1` present). Apple clang 17.0.0 (clang-1700),
+  ld64 `ld-1167.5`. NO brew, NO autoconf, bash 3.2.57, and
+  `/usr/bin/make` is **GNU Make 3.81 (2006)** — a hard wall: building
+  needs brew's gmake (≥ 4) like the rest of the gnubin posture.
+  `shasum`/`git`/`python3` present (the fetch script's needs).
+  Conclusions: CLT alone suffices to RUN madc, never to BUILD it —
+  brew (`llvm@18 zstd autoconf coreutils gnu-sed grep bash make`) is
+  the documented build-host prerequisite on any Mac (runner images
+  ship brew already); Apple clang 17 confirms the llvm@18-for-parity
+  compiler decision.
 - **D1 — the Makefile DARWIN_HOST posture.** Promote the D0 override
   set into named `?=` knobs (`DARWIN_CC`, `DARWIN_CXX`, `DARWIN_AR`,
   `DARWIN_LD_FLAVOR`…, defaults = today's cross spellings, so the
