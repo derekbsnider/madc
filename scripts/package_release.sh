@@ -248,14 +248,20 @@ example configuration file.
 EOF
 # The $ORIGIN proof: the staged binaries must bind the STAGED library
 # (relocatable runpath), not the build tree's. ldd resolves runpaths
-# from the binary's real location, so this asserts the shipped bytes.
+# from the binary's real location but does NOT canonicalize (the
+# $ORIGIN arm resolves as .../bin/../lib/libmadc.so.0), so compare
+# canonicalized paths — readlink -f on both sides, the shell analogue
+# of canonical_path_for_compare(). An old-policy binary (absolute
+# build-tree runpath first) still fails: its canonical path is the
+# build tree's lib, never the stage's.
+want=$(readlink -f "$TARSTAGE/$TROOT/lib/libmadc.so.0")
 for b in madc madcide; do
     bound=$(ldd "$TARSTAGE/$TROOT/bin/$b" | grep 'libmadc\.so\.0' | awk '{print $3}')
-    case "$bound" in
-        */"$TROOT"/lib/libmadc.so.0) ;;
-        *) echo "package_release: $b binds '$bound', not the staged lib — relocatable runpath broken" >&2
-           exit 1;;
-    esac
+    real=$(readlink -f "$bound" 2>/dev/null)
+    if [ -z "$real" ] || [ "$real" != "$want" ]; then
+        echo "package_release: $b binds '$bound' (canonical '$real'), not the staged lib — relocatable runpath broken" >&2
+        exit 1
+    fi
 done
 tar -C "$TARSTAGE" -czf "dist/$TROOT.tar.gz" "$TROOT"
 echo "packaged dist/$TROOT.tar.gz"
