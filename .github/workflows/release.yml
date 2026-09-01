@@ -1,0 +1,194 @@
+# release.yml — the PK5 release workflow (packaging arc,
+# docs/plans/2026-09-01-packaging-arc.md).
+#
+# BOUNDARY (owner ruling 2026-09-01): Actions = build + smoke ONLY. The
+# full battery remains the local push gate (container + lane ledger,
+# .claude/rules/testing-fulltest.md) — a v* tag only exists on content
+# the local lane-freshness gate already validated, so the packagers run
+# with MADC_PKG_SKIP_SUITE=1 here and the smoke is the PK4 install gate
+# (scripts/package_install_gate.sh) already wired inside them: the
+# extracted/zipped ARTIFACT bytes run their installed binaries, every
+# probe with its negative control.
+#
+# ASSET OWNERSHIP: this workflow builds and attaches the Linux (.deb,
+# .rpm, tarball) and Windows (.zip) assets — the artifacts PK6's
+# ecosystem repos consume at stable versioned URLs
+# (releases/download/<tag>/<file>). The two macOS tarballs are NOT built
+# here, with a stated reason: the darwin cross-compile runs against the
+# owner-staged Apple SDK (src/Makefile MACOS_SDK — owner-supplied, never
+# uploaded), and a native mac-runner build needs a darwin-HOST madc that
+# does not exist yet (the grove cross-freezer runs the host madc; banked
+# with PK3-mac-runtime). The owner's /promote ceremony attaches the mac
+# tarballs and appends their SHA256SUMS lines — this workflow's checksum
+# step PRESERVES lines for files it does not upload (the same
+# rewrite-own-lines-only discipline the local packagers use on
+# dist/SHA256SUMS).
+#
+# The windows job mirrors the container's /workspace layout on the
+# runner (UCRT-flavor libstdc++ stage, zstd v1.5.5 checkout) so the
+# build scripts run unchanged; the UCRT stage is cached — the stage
+# script is idempotent and exits fast on a warm cache. The cache must
+# include the two gcc license files: package_release_windows.sh ships
+# them, and a stage-only cache hit would skip the source fetch that
+# provides them.
+name: release
+run-name: "release ${{ inputs.tag || github.ref_name }}"
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'release tag to attach assets to (vX.Y.Z; must equal the VERSION file at the built ref)'
+        required: true
+      build_ref:
+        description: 'ref to build (default: the tag itself)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  linux-packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
+      - name: guard — tag matches VERSION
+        run: |
+          ver=$(cat VERSION)
+          if [ "$RELEASE_TAG" != "v$ver" ]; then
+            echo "tag $RELEASE_TAG != v$ver (VERSION at the built ref)" >&2
+            exit 1
+          fi
+      - name: dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            g++-13 clang make rpm cpio libzstd-dev zlib1g-dev
+      - name: configure
+        run: ./configure
+      - name: build + package + install-gate smoke (deb, rpm, tarball)
+        run: |
+          # Suite skipped, citation: a v* tag exists only on content the
+          # local lane-freshness gate ran green on (docs/lane-status.tsv
+          # at the tagged commit); the PK4 gates inside the packager are
+          # this job's smoke. No restore: the runner is discarded.
+          MADC_PKG_SKIP_SUITE=1 MADC_PKG_NO_RESTORE=1 \
+            bash scripts/package_release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/madc_*.deb
+            dist/madc-*.x86_64.rpm
+            dist/madc-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
+      - name: guard — tag matches VERSION
+        run: |
+          ver=$(cat VERSION)
+          if [ "$RELEASE_TAG" != "v$ver" ]; then
+            echo "tag $RELEASE_TAG != v$ver (VERSION at the built ref)" >&2
+            exit 1
+          fi
+      - name: dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            g++-13 clang make g++-mingw-w64-x86-64-posix \
+            binutils-mingw-w64-x86-64 wine64 zip unzip wget \
+            libzstd-dev zlib1g-dev
+          sudo mkdir -p /workspace
+          sudo chown "$USER" /workspace
+      - name: UCRT-flavor libstdc++ stage (cached)
+        uses: actions/cache@v4
+        with:
+          path: |
+            /workspace/win-ucrt-libstdc++/stage
+            /workspace/win-ucrt-libstdc++/gcc-13.2.0/COPYING3
+            /workspace/win-ucrt-libstdc++/gcc-13.2.0/COPYING.RUNTIME
+          key: ucrt-libstdcxx-${{ hashFiles('scripts/build_win_ucrt_libstdcxx.sh') }}
+      - name: build UCRT stage if not cached
+        run: bash scripts/build_win_ucrt_libstdcxx.sh
+      - name: win64 zstd stage (the provision_container.sh recipe)
+        run: |
+          git clone --depth 1 --branch v1.5.5 \
+            https://github.com/facebook/zstd.git /workspace/zstd
+          make -C /workspace/zstd/lib -j"$(nproc)" BUILD_DIR=obj-win64 \
+            CC='x86_64-w64-mingw32-gcc-posix -D_UCRT -D__USE_MINGW_ANSI_STDIO=1' \
+            AR=x86_64-w64-mingw32-ar libzstd.a
+          cp -p /workspace/zstd/lib/libzstd.a /workspace/zstd/libzstd-x86-64-windows.a
+          rm -f /workspace/zstd/lib/libzstd.a
+      - name: configure
+        run: ./configure
+      - name: build release PE
+        run: |
+          export WINEDEBUG=-all
+          wineserver -p || true
+          make -C src -j"$(nproc)" release-windows
+      - name: package + install-gate smoke (zip under wine)
+        run: bash scripts/package_release_windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: dist/madc-*-windows-x86_64.zip
+          if-no-files-found: error
+
+  attach-release:
+    runs-on: ubuntu-24.04
+    needs: [linux-packages, windows-package]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: attach assets at stable URLs (preserve other packagers' checksum lines)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          cd dist
+          files=$(ls madc_*.deb madc-*.x86_64.rpm \
+                     madc-*-linux-x86_64.tar.gz madc-*-windows-x86_64.zip)
+          echo "attaching to $RELEASE_TAG:"; echo "$files"
+          if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # CI never publishes: the DRAFT holds the stable asset set until
+            # the owner's /promote ceremony writes the real notes, attaches
+            # the macOS tarballs, and publishes.
+            gh release create "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+              --draft --title "$RELEASE_TAG" \
+              --notes "Draft — CI-built Linux/Windows assets (install-gate smoked). Release notes and the macOS tarballs are attached by the owner's /promote ceremony."
+          fi
+          # SHA256SUMS: rewrite our own lines only — the mac packager's
+          # lines (attached by /promote) survive a re-run of this workflow.
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" \
+            -p SHA256SUMS -O SHA256SUMS.existing || true
+          : > SHA256SUMS
+          if [ -f SHA256SUMS.existing ]; then
+            cp SHA256SUMS.existing SHA256SUMS
+            for f in $files; do
+              grep -v "  $f\$" SHA256SUMS > SHA256SUMS.tmp || true
+              mv SHA256SUMS.tmp SHA256SUMS
+            done
+          fi
+          sha256sum $files >> SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$RELEASE_TAG" $files SHA256SUMS \
+            --clobber -R "$GITHUB_REPOSITORY"
