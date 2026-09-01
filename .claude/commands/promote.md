@@ -54,38 +54,59 @@ Merges develop into master, tags the release, and pushes.
 5. **Push to GitHub**:
    - Push master
    - Push tags: `git push --tags`
-   - If `gh auth status` succeeds, publish the GitHub Release for madc:
-     `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
-     --notes-file docs/release-notes/vX.Y.Z-master.md --latest`
-     (if gh is not authed, note it in the report and continue)
    - **Every master promotion is THREE-PLATFORM, and the platform
-     suites GATE it** (owner rule, 2026-08-20). Assets upload only
-     after ALL THREE lanes are built, verified, and green — a Windows
-     or macOS regression BLOCKS the promotion and gets fixed first,
-     never recorded as a residue.
+     suites GATE it** (owner rule, 2026-08-20). The release publishes
+     only after ALL THREE lanes are built, verified, and green — a
+     Windows or macOS regression BLOCKS the promotion and gets fixed
+     first, never recorded as a residue.
      1. Linux: `bash scripts/package_release.sh` on the build container
         (rebuilds in the distribution configuration, runs the packed
-        suite against the exact packaged binary, restores the tree;
-        TRUNCATES `dist/SHA256SUMS`).
+        suite against the exact packaged binary, runs the PK4 install
+        gates, restores the tree; TRUNCATES the container's
+        `dist/SHA256SUMS`).
      2. Windows: `scripts/remote_build.sh release-win` (build +
         verify_pe_release), then the wine packed suite
         (`WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin'
         MADC_BIN=bin/madc-release-x86-64-windows.exe MADC_WRAPPER=wine
         MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh`) —
         must be green — then `bash scripts/package_release_windows.sh`
-        (appends to SHA256SUMS).
+        (appends to the container's SHA256SUMS).
      3. macOS: `scripts/remote_build.sh release-macos` (both arches +
         verify_macho_release), then
         `bash scripts/package_release_macos.sh` (appends to SHA256SUMS);
         run the Mac battery (`ssh madc-mac`, `LC_ALL=C` — the alias in
         ~/.ssh/config owns the DHCP-drifting address) when
         the Mac is reachable — a darwin regression blocks too.
-     Pull `dist/` back via scp (NEVER `remote_build.sh sync` before the
-     pull — sync clobbers container `dist/`), then upload the SIX
-     assets:
-     `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm
-     dist/madc-*-windows-x86_64.zip dist/madc-*-macos-arm64.tar.gz
-     dist/madc-*-macos-x86_64.tar.gz dist/SHA256SUMS`
+   - **Release-asset ownership (PK5, 2026-09-01): CI owns the Linux and
+     Windows assets; the local ceremony owns the macOS assets.** The
+     tag push triggers `.github/workflows/release.yml`, which builds
+     the .deb/.rpm/linux-tarball/win-zip from the tagged content,
+     smokes them with the PK4 install gates, and attaches them (plus
+     their SHA256SUMS lines) to the release — creating it as a DRAFT
+     if absent. The container-built copies above exist to run the
+     GATING suites; they are NOT uploaded (two producers of one asset
+     would desynchronize the checksums).
+     1. Wait for the workflow run on the tag to go green:
+        `gh run list --workflow=release.yml` / `gh run watch <id>` —
+        a red run BLOCKS the promotion like any lane.
+     2. Publish the release with the real notes (the workflow may have
+        left a draft): if `gh release view vX.Y.Z` exists, use
+        `gh release edit vX.Y.Z --draft=false --latest
+        --title "vX.Y.Z — <one-line theme>"
+        --notes-file docs/release-notes/vX.Y.Z-master.md`; otherwise
+        `gh release create` with the same title/notes/`--latest`.
+     3. Attach the mac assets: pull the two tarballs from the container
+        via scp (NEVER `remote_build.sh sync` before the pull — sync
+        clobbers container `dist/`), then
+        `gh release upload vX.Y.Z dist/madc-*-macos-arm64.tar.gz
+        dist/madc-*-macos-x86_64.tar.gz`.
+     4. Merge the mac checksum lines into the RELEASE's SHA256SUMS
+        (the CI file is the base — never clobber it with the local
+        six-line file, whose linux/win lines describe container
+        bytes): `gh release download vX.Y.Z -p SHA256SUMS`, drop any
+        existing macos lines, `sha256sum` the two pulled tarballs into
+        it, `gh release upload vX.Y.Z SHA256SUMS --clobber`.
+     (If gh is not authed, note it in the report and continue.)
 
    (MIR needs nothing separate: it lives in-tree at `third_party/mir`,
    so the madc tag versions it — subtree migration 2026-08-11.)

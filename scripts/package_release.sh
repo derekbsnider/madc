@@ -69,6 +69,14 @@ if [ -f config.mk ]; then
     cp config.mk "$SAVED_CONFIG"
 fi
 restore_tree() {
+    # MADC_PKG_NO_RESTORE=1 skips the restore rebuild for a THROWAWAY tree
+    # (a CI runner discarded after the job) — on a development tree the
+    # restore is mandatory: leaving the madcdat=no distribution config in
+    # place silently changes what every later build and test validates.
+    if [ -n "$MADC_PKG_NO_RESTORE" ]; then
+        echo "== tree restore SKIPPED (MADC_PKG_NO_RESTORE) — throwaway build tree =="
+        return 0
+    fi
     echo "== restoring tree configuration =="
     if [ -n "$SAVED_CONFIG" ] && [ -f "$SAVED_CONFIG" ]; then
         cp "$SAVED_CONFIG" config.mk
