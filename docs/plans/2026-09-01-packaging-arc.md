@@ -208,6 +208,46 @@ packaging shape, and all the proper build scripts and tests in order.
   per OS: dpkg/rpm install into a scratch root on the container; the
   Windows/Mac staging flows formalized as scripts (today they are
   manual box rituals).
+
+  **✅ PK4 EXECUTED 2026-09-01 (s152).**
+  `scripts/package_install_gate.sh` extracts the SHIPPED artifact
+  bytes (the dist/ file a user downloads — the packagers' in-flight
+  smokes prove only the stage) into a scratch root and runs the
+  installed binaries; wired as tail calls in `package_release.sh`
+  (deb, rpm, tar) and `package_release_windows.sh` (winzip) — the
+  release ceremony, NOT fulltest (packaging is not per-merge-wave).
+  Probes, each with its negative control (GATE-THE-RULES law):
+  - **deb / rpm** (`dpkg -x` / `rpm2cpio|cpio`): installed `madc`
+    runs a runtime-needing probe with `LD_LIBRARY_PATH=<root
+    libdir>` (an extracted root has no ldconfig), output asserted;
+    `-v` must print `forest-bind: [library-image] opened container`
+    — the frozen forest served from the INSTALLED `libmadc.so.0`
+    (control: the non-verbose run must NOT match); installed
+    `madcide` on a real pty (`scripts/install_gate_pty.py`, the
+    promoted s150 pk7 probe — cwd=/tmp keeps the build-tree-relative
+    `__FILE__` profile arm out of the search, PROVEN by the control
+    firing) = NORESCUE + probe file painted (control: hide
+    `share/madcide/profiles` ⇒ RESCUE banner).
+  - **linux tarball**: same probes with NO `LD_LIBRARY_PATH` at all
+    — the run-time $ORIGIN proof (the packager's ldd check is
+    static; this executes) — plus the binding control: hide
+    `lib/libmadc.so.0` ⇒ `madc` must fail to run.
+  - **win zip** (unzip + wine): the zipped `madc.exe` compiles the
+    runtime-needing probe `-o` INTO `bin/` and the emitted exe runs
+    beside the zipped DLLs (PE adjacency, output asserted); zipped
+    `madcide.exe` prints its usage line (a wine pty probe would
+    prove wine's console layer, not Windows — the TUI proof stays
+    with the genuine-win lane); control: hide `libmadc-0.dll` ⇒
+    neither runs.
+  - **mac tarball: not gateable here, stated reason** — the
+    container cannot execute darwin binaries; its install proof is
+    the mac_battery on owner hardware (whose tarball legs ARE
+    extract-and-run).
+  Evidence: all four gates PASS against the s151 0.97.0 artifacts
+  (every negative control fired), then all three packagers re-ran
+  end-to-end with the gates wired in vivo. `cpio`/`zip`/`unzip`
+  pinned in `provision_container.sh` (`PKGS_package`) — gate-only
+  dependencies whose loss would read as green until package time.
 - **PK5 — GitHub Actions release builds.** One release workflow:
   ubuntu (native Linux build + the mingw cross Windows build — the
   same scripts the container runs), macos-14 (arm64) + macos-13

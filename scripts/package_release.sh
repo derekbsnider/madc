@@ -266,6 +266,14 @@ done
 tar -C "$TARSTAGE" -czf "dist/$TROOT.tar.gz" "$TROOT"
 echo "packaged dist/$TROOT.tar.gz"
 
+# ---------- PK4 install gates: the ARTIFACT bytes, extracted and run ----------
+# The staging asserts above prove the stage; these re-prove what a user
+# actually downloads (each probe carries its own negative control).
+echo "== install gates (extracted-artifact smokes) =="
+bash scripts/package_install_gate.sh deb "$DEB"
+bash scripts/package_install_gate.sh rpm "dist/madc-${VER}-${REL}.x86_64.rpm"
+bash scripts/package_install_gate.sh tar "dist/$TROOT.tar.gz"
+
 # ---------- checksums ----------
 ( cd dist && sha256sum "madc_${VER}-${REL}_amd64.deb" "madc-${VER}-${REL}.x86_64.rpm" \
                        "$TROOT.tar.gz" > SHA256SUMS )

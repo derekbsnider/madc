@@ -162,7 +162,9 @@ EOF
 # Launch smoke on the STAGED exe: no-args madcide prints its usage line
 # and exits 1 — proving the shipped bytes load, bind libmadc-0.dll by
 # adjacency from the staged bin/, and run main. (The interactive TUI
-# needs a console; the install-gate pty probe is PK4's job.)
+# needs a real console: a wine pty probe would prove wine's console
+# layer, not Windows — the TUI proof stays with the genuine-win lane on
+# owner hardware. The PK4 install gate below re-proves the ZIPPED bytes.)
 smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe 2>/dev/null; true)
 case "$smoke_out" in
     *"usage: madcide"*) echo "madcide.exe staged smoke: OK" ;;
@@ -173,6 +175,13 @@ esac
 ( cd "$STAGE" && rm -f "../$ROOT.zip" && zip -q -r -X "../$ROOT.zip" "$ROOT" )
 rm -rf "$STAGE"
 echo "packaged dist/$ROOT.zip"
+
+# PK4 install gate: unzip the ARTIFACT bytes to scratch and run them under
+# wine — the staged smoke above proves the stage, this proves the zip
+# (compile+run -o beside the DLLs, madcide usage, hidden-DLL negative
+# control). See scripts/package_install_gate.sh.
+echo "== install gate (zipped-artifact smoke) =="
+bash scripts/package_install_gate.sh winzip "dist/$ROOT.zip"
 
 # Refresh our line in SHA256SUMS without touching the other packagers' lines.
 ( cd dist

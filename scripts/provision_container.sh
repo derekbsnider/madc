@@ -71,7 +71,11 @@ PKGS_cross="qemu-user-static"
 # rpm supplies rpmbuild for scripts/package_release.sh (.rpm leg); dpkg-deb
 # is part of the base image but rpm is not — its absence 127'd the v0.69.0
 # promote's package build after a container rebuild dropped the apt layer.
-PKGS_package="rpm"
+# cpio + unzip: scripts/package_install_gate.sh (PK4) extracts the shipped
+# artifact bytes — rpm2cpio|cpio for the .rpm, unzip for the Windows zip;
+# zip is the win packager's own dependency. All three would read as green
+# if lost (the gate only runs at package time), so they are pinned here.
+PKGS_package="rpm cpio zip unzip"
 # winlane: the windows release lane (Track 6.4). The -posix flavor is
 # deliberate — winpthreads provides the pthread/std::thread surface madc
 # uses. wine64 is the interim/isolation runner for cross-built PE binaries
@@ -99,7 +103,8 @@ BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
       qemu-aarch64-static
       x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine
-      php"
+      php
+      rpmbuild rpm2cpio cpio zip unzip"
 
 report() {
 	local missing=0
