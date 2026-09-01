@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	d7825bde6263	2026-09-01	jit 1249/0, exe 1194/0, obj 1194/0, packed 1249/0, headerless 1222/0 (run rb-20260901-155116 at 90c040b3; delta to d7825bde = PK4 install-gate scripts + packager tail calls ONLY — not exercised by this lane; the gates themselves ran green in vivo on the 0.97.0 artifacts)
-wine64	yes	d7825bde6263	2026-09-01	1199/0/59skip (run rb-20260901-164028 at 90c040b3, libmadc-0.dll imports; delta to d7825bde = PK4 install-gate scripts ONLY — not exercised by this lane)
-c-testsuite	yes	d7825bde6263	2026-09-01	220/220 baseline EMPTY (run at 90c040b3 incl. _FloatN lexer fix; delta to d7825bde = PK4 install-gate scripts ONLY — not exercised by this lane)
-macos	yes	d7825bde6263	2026-09-01	mac_battery arm64 8/3 leg-for-leg (same 3 standing known-opens: groves os.str() husk, value intrinsic, exec:// channel; 0.97.0 wave-content tarball at a2bccb38; delta to d7825bde = PK4 install-gate scripts ONLY — not exercised by this lane; groves wall 344ms)
+linux-battery	yes	b7a53b961bba	2026-09-01	jit 1249/0, exe 1194/0, obj 1194/0, packed 1249/0, headerless 1222/0 (run rb-20260901-155116 at 90c040b3; delta to b7a53b96 = PK4/PK5 packaging-gate scripts + workflow ONLY — not exercised by this lane; packagers re-proven in vivo 2026-09-01)
+wine64	yes	b7a53b961bba	2026-09-01	1199/0/59skip (run rb-20260901-164028 at 90c040b3, libmadc-0.dll imports; delta to b7a53b96 = PK4/PK5 packaging scripts ONLY — not exercised by this lane)
+c-testsuite	yes	b7a53b961bba	2026-09-01	220/220 baseline EMPTY (run at 90c040b3 incl. _FloatN lexer fix; delta to b7a53b96 = PK4/PK5 packaging scripts ONLY — not exercised by this lane)
+macos	yes	b7a53b961bba	2026-09-01	mac_battery arm64 8/3 leg-for-leg (same 3 standing known-opens: groves os.str() husk, value intrinsic, exec:// channel; 0.97.0 wave-content tarball at a2bccb38; delta to b7a53b96 = PK4/PK5 packaging scripts ONLY — not exercised by this lane; groves wall 344ms)
