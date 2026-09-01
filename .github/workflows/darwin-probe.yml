@@ -1,27 +1,29 @@
-# darwin-probe.yml — D0 of the darwin-host build port
-# (docs/plans/2026-09-01-darwin-host-port.md).
+# darwin-probe.yml — the darwin-host build gate (D1 of the darwin-host
+# build port, docs/plans/2026-09-01-darwin-host-port.md).
 #
-# MEASUREMENT, not a build: drive the existing hosted-arm64-macos MODE
-# on a real macos-14 (arm64) runner with pure `make` command-line
-# overrides (they beat even hard `=` mode assignments) — zero repo
-# changes — and catalog exactly where it breaks. The full make log is
-# the deliverable, uploaded as an artifact either way.
+# D0 measured the runner with pure `make` command-line overrides (zero repo
+# changes) and proved the native build. D1 promoted that override set into
+# the Makefile's DARWIN_HOST posture (auto-on when `uname -s` is Darwin:
+# brew llvm@18 toolchain, Apple ld64, the xcrun SDK, brew zstd) — so this
+# workflow is now a plain `make hosted-arm64-macos` on a real macos-14
+# (arm64) runner, and it FAILS when the build or the hello does. The
+# derived posture is echoed into the log as evidence (runner logs are all
+# that survives the job).
 #
-# Expected early walls (from the plan doc): parse-time generator
-# scripts under the mac shell; the freeze step (the runner has no
-# cross madc — that is D2's self-freeze job). Everything the probe
-# clears is a D1 knob confirmed; everything it hits is a catalogued
-# fact with its log line.
+# Still --with-forest=none: the hosted link's freezer is the CROSS madc
+# (the container model); D2's native self-freeze replaces it.
 #
-# Dispatch-only; never wired to pushes or releases.
+# Dispatch-only; never wired to pushes or releases. The build-host
+# prerequisites are the documented brew set; PATH gets brew's gnubin
+# (Xcode's /usr/bin/make is GNU Make 3.81 — the Makefile refuses it).
 name: darwin-probe
-run-name: "darwin-host D0 probe (${{ inputs.build_ref || 'develop' }})"
+run-name: "darwin-host D1 gate (${{ inputs.build_ref || 'develop' }})"
 
 on:
   workflow_dispatch:
     inputs:
       build_ref:
-        description: 'ref to probe (default develop)'
+        description: 'ref to build (default develop)'
         required: false
         default: 'develop'
 
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 jobs:
-  probe-arm64:
+  gate-arm64:
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -40,92 +42,52 @@ jobs:
         run: |
           sw_vers
           uname -m
-          xcode-select -p
           xcrun --show-sdk-path
-          clang --version | head -2
+          clang --version | head -1
           ld -v 2>&1 | head -1
-          bash --version | head -1
-          make --version | head -1
-          python3 --version
-          brew --version | head -1
-          which autoconf autoreconf shasum sha256sum gtimeout 2>&1 || true
-      - name: brew deps (llvm@18 = the parity compiler; zstd for configure + stage)
+          /usr/bin/make --version | head -1
+      - name: brew deps (llvm@18 = the parity compiler) + the gnubin build-host userland
         run: |
           # automake: brew's autoreconf insists on aclocal even for a
           # plain-autoconf project (ubuntu's quietly skips it).
-          brew install llvm@18 zstd autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -5
-          LLVM=$(brew --prefix llvm@18)
-          echo "llvm prefix: $LLVM"
-          ls "$LLVM/bin" | head -20
-          "$LLVM/bin/clang" --version | head -1
-          ls -d "$LLVM/include/c++/v1" && echo "libc++ headers present"
-      - name: fetch darwin open headers (script portability under mac shell)
+          brew install llvm@18 zstd autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -3
+          for f in make coreutils gnu-sed grep; do
+            echo "$(brew --prefix $f)/libexec/gnubin" >> "$GITHUB_PATH"
+          done
+          # The open-headers stage location: the fetch script's knob, which
+          # the Makefile's DARWIN_PRELUDE_SYSROOT default reads too.
+          echo "DARWIN_OPEN_HEADERS_HOME=$HOME/darwin-open-headers" >> "$GITHUB_ENV"
+      - name: fetch darwin open headers
         run: |
-          export DARWIN_OPEN_HEADERS_HOME="$HOME/darwin-open-headers"
+          make --version | head -1
           bash scripts/fetch_darwin_open_headers.sh
-          cat "$HOME/darwin-open-headers/sysroot-any-darwin-any/.PROVENANCE"
-      - name: zstd stage shim (probe-grade — brew static lib under the stage layout)
-        run: |
-          Z=$(brew --prefix zstd)
-          mkdir -p "$HOME/zstd-stage/lib"
-          cp "$Z/lib/libzstd.a" "$HOME/zstd-stage/libzstd-arm64-macos.a"
-          cp "$Z/include/zstd.h" "$Z/include/zstd_errors.h" "$HOME/zstd-stage/lib/"
-          ls -la "$HOME/zstd-stage" "$HOME/zstd-stage/lib"
-      - name: autoreconf + configure (brew prefixes for the host zstd check)
+          cat "$DARWIN_OPEN_HEADERS_HOME/sysroot-any-darwin-any/.PROVENANCE"
+      - name: autoreconf + configure
         run: |
           autoreconf -i
-          # --with-forest=none: the hosted link otherwise depends on the
-          # CROSS madc as its freezer (the container model) — moot on a
-          # darwin host, where D2 makes the built binary freeze itself.
-          # --enable-madcdat=no: the hosted MODE forces it off anyway; the
-          # runner's brew gdbm/sqlite otherwise leak into probed defines.
+          # --with-forest=none: see the header. --enable-madcdat=no: the
+          # hosted MODE forces it off anyway; the runner's brew gdbm/sqlite
+          # otherwise leak into probed defines. CPPFLAGS/LDFLAGS: configure's
+          # host zstd probe needs the brew prefix on a Mac.
           ./configure --with-forest=none --enable-madcdat=no \
             CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib"
-      - name: the probe — hosted-arm64-macos with native-toolchain overrides
+      - name: the derived DARWIN_HOST posture (evidence)
         run: |
-          set +e
-          # gnubin posture (the plan's build-host userland): Xcode's
-          # /usr/bin/make is GNU Make 3.81 (2006) — round 3 died on it
-          # (MIR's obj/.../c2mir dir never created). brew make = gmake 4.x.
-          for f in make coreutils gnu-sed grep; do
-            PATH="$(brew --prefix $f)/libexec/gnubin:$PATH"
-          done
-          export PATH
-          make --version | head -1
-          LLVM=$(brew --prefix llvm@18)
-          SDK=$(xcrun --show-sdk-path)
-          TGT="arm64-apple-macos12"
-          # gen_darwin_prelude.sh reads $CLANG from the environment
-          # (default clang-18); the parse-time $(shell) generators inherit
-          # make's env, so exporting here reaches them.
-          export CLANG="$LLVM/bin/clang"
-          make -C src -j3 hosted-arm64-macos \
-            MACOS_SDK="$SDK" \
-            "CC=$LLVM/bin/clang -target $TGT --sysroot $SDK" \
-            "CXX_BASE=$LLVM/bin/clang++ -target $TGT --sysroot $SDK" \
-            AR="$LLVM/bin/llvm-ar" \
-            "HOSTTAB_CXX=$LLVM/bin/clang++ -target $TGT --sysroot $SDK -nostdinc++ -isystem $LLVM/include/c++/v1" \
-            LLVM_LIBCXX_INC="$LLVM/include/c++/v1" \
-            DARWIN_PRELUDE_SYSROOT="$HOME/darwin-open-headers/sysroot-any-darwin-any" \
-            DARWIN_ZSTD_DIR="$HOME/zstd-stage" \
-            "LIBS=-lz -lm $HOME/zstd-stage/libzstd-arm64-macos.a" \
-            > probe-make.log 2>&1
-          rc=$?
-          echo "=== make exit: $rc ==="
-          echo "=== last 80 lines ==="
-          tail -80 probe-make.log
-          echo "=== products ==="
-          ls -la bin obj/hosted-arm64-macos 2>/dev/null || true
-          # The probe never fails the workflow: the log is the deliverable.
-          exit 0
-      - name: run it if it exists (the D1 gate, early)
+          make -C src -pn MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos 2>/dev/null \
+            | grep -E '^(HOST_OS|DARWIN_HOST|DARWIN_LLVM_PREFIX|DARWIN_CLANG|DARWIN_CLANGXX|DARWIN_AR|DARWIN_STRIP|DARWIN_LD_FLAGS|DARWIN_ZSTD_PREFIX|DARWIN_ZSTD_INC|DARWIN_ZSTD_LIB|MACOS_SDK|LLVM_LIBCXX_INC|DARWIN_PRELUDE_SYSROOT) ' \
+            | sort
+      - name: build — plain make, no overrides
         run: |
-          if [ -x bin/madc-hosted-arm64-macos ]; then
-            printf 'var g = "darwin-host-probe-alive";\nprintln("{}", g);\n' > /tmp/probe.mad
-            bin/madc-hosted-arm64-macos /tmp/probe.mad || echo "run rc=$?"
-          else
-            echo "no hosted binary produced (expected until D1/D2 land)"
-          fi
+          make -C src -j3 hosted-arm64-macos 2>&1 | tee probe-make.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ls -la bin/madc-hosted-arm64-macos
+      - name: run it — the D1 gate
+        run: |
+          printf 'var g = "darwin-host-gate-alive";\nprintln("{}", g);\n' > /tmp/gate.mad
+          out=$(bin/madc-hosted-arm64-macos /tmp/gate.mad)
+          echo "madc said: $out"
+          test "$out" = "darwin-host-gate-alive"
+          bin/madc-hosted-arm64-macos --version | head -1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
