@@ -31,6 +31,12 @@
 # include the two gcc license files: package_release_windows.sh ships
 # them, and a stage-only cache hit would skip the source fetch that
 # provides them.
+# AUTOMATIC RUNS ARE FOR MASTER PROMOTIONS ONLY (owner, 2026-09-01):
+# /release cuts milestone v* tags ON develop too, and those must not
+# spin release builds. The gate job skips the build jobs unless the
+# pushed tag's commit is an ancestor of master (a promotion tag) —
+# workflow_dispatch always builds (manual = intentional, e.g. a re-run
+# or a test against a draft).
 name: release
 run-name: "release ${{ inputs.tag || github.ref_name }}"
 
@@ -58,8 +64,34 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      - name: master promotions build automatically; develop milestone tags do not
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch — building"
+            exit 0
+          fi
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" --jq .status)
+          if [ "$status" = "identical" ] || [ "$status" = "behind" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "tag is on master (promotion) — building"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "tag not on master (compare status: $status) — a develop milestone tag; skipping release builds"
+          fi
+
   linux-packages:
     runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,9 +107,14 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            g++-13 clang make rpm cpio libzstd-dev zlib1g-dev
+            g++-13 clang make autoconf rpm cpio libzstd-dev zlib1g-dev
       - name: configure
-        run: ./configure
+        # configure and include/config.h.in are autoconf/autoheader OUTPUT,
+        # untracked by design — a clean checkout regenerates them
+        # (autoreconf = autoconf + autoheader; proven in a clean clone).
+        run: |
+          autoreconf -i
+          ./configure
       - name: build + package + install-gate smoke (deb, rpm, tarball)
         run: |
           # Suite skipped, citation: a v* tag exists only on content the
@@ -97,6 +134,8 @@ jobs:
 
   windows-package:
     runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -112,7 +151,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            g++-13 clang make g++-mingw-w64-x86-64-posix \
+            g++-13 clang make autoconf g++-mingw-w64-x86-64-posix \
             binutils-mingw-w64-x86-64 wine64 zip unzip wget \
             libzstd-dev zlib1g-dev
           sudo mkdir -p /workspace
@@ -137,7 +176,10 @@ jobs:
           cp -p /workspace/zstd/lib/libzstd.a /workspace/zstd/libzstd-x86-64-windows.a
           rm -f /workspace/zstd/lib/libzstd.a
       - name: configure
-        run: ./configure
+        # see the linux job: configure is generated output, untracked.
+        run: |
+          autoreconf -i
+          ./configure
       - name: build release PE
         run: |
           export WINEDEBUG=-all
