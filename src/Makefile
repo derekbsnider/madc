@@ -586,6 +586,17 @@ LIBMADC_STATIC = $(LIBDIR)/libmadc-$(MODE).a
 LIBMADC_SHARED = $(LIBDIR)/libmadc-$(MODE).so
 LIBMADC_RT = $(LIBDIR)/libmadc_rt-$(MODE).a
 endif
+# Host modes each need THEIR OWN shared-library product (per-mode-names
+# law, build.md — extended to the library by the PK2 thin-CLI flip): the
+# thin CLIs of dev, debug and release resolve lib/... at RUNTIME, so one
+# shared path would let a dev rebuild swap an unpacked -O0 library under
+# bin/madc-release, and a release pack hand the dev CLI a packed image
+# (which also flips forest-discovery arm 2 under every dev-binary gate).
+# Dev keeps lib/ — the standing dev surface (thin vehicles, gates, the
+# QNAP pull); debug and release own lib/$(MODE)/.
+ifneq (,$(filter release debug,$(MODE)))
+LIBMADC_SHARED = $(LIBDIR)/$(MODE)/libmadc.so
+endif
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 pkgconfigdir ?= $(libdir)/pkgconfig
@@ -823,15 +834,15 @@ release-windows:
 # lib/libmadc.so — and the same strip-before-pack ordering applies to it (the
 # install step therefore must NOT re-strip it; see install below).
 ifeq ($(ENABLE_SHARED_CLI),1)
-PACK_IMAGE_ARG = --image lib/libmadc.so
+PACK_IMAGE_ARG = --image lib/release/libmadc.so
 else
 PACK_IMAGE_ARG =
 endif
 release:
-	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so
 	strip ../bin/madc-release
 ifeq ($(ENABLE_SHARED_CLI),1)
-	strip --strip-unneeded ../lib/libmadc.so
+	strip --strip-unneeded ../lib/release/libmadc.so
 endif
 ifeq ($(WITH_FOREST),embedded)
 	cd .. && bash scripts/forest_pack.sh $(PACK_IMAGE_ARG) bin/madc-release
@@ -843,8 +854,8 @@ endif
 # as the distribution packages (scripts/package_release.sh): the stripped
 # release binary as plain `madc`, the runtime as libmadc.so.0 + dev symlink
 # (madc -o output DT_NEEDs the soname), the man page. Depends on `release`
-# so lib/libmadc.so is guaranteed to be the -O2 release flavor (.libmode
-# stamp) and bin/madc-release is stripped + forest-packed.
+# so lib/release/libmadc.so IS the -O2 release flavor by path (per-mode lib
+# dirs) and bin/madc-release is stripped + forest-packed.
 PREFIX ?= /usr/local
 INSTALL_LIBDIR ?= $(PREFIX)/lib
 install: release
@@ -853,12 +864,12 @@ install: release
 	install -m 755 ../bin/madc-release $(DESTDIR)$(PREFIX)/bin/madc
 ifeq ($(WITH_FOREST),sidecar)
 ifeq ($(ENABLE_SHARED_CLI),1)
-	install -m 644 ../lib/libmadc.so.forest $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0.forest
+	install -m 644 ../lib/release/libmadc.so.forest $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0.forest
 else
 	install -m 644 ../bin/madc-release.forest $(DESTDIR)$(PREFIX)/bin/madc.forest
 endif
 endif
-	install -m 644 ../lib/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+	install -m 644 ../lib/release/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
 # A packed library carries the container as trailing bytes; strip rewrites the
 # ELF image and would discard them (the same law as the packed binary), so the
 # thin-CLI shape strips at release time, BEFORE the pack, and never here.
@@ -883,6 +894,7 @@ clean:
 	rm -f $(MADDAT_ARCHIVE)
 	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
+	rm -rf $(LIBDIR)/release $(LIBDIR)/debug
 	rm -f $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
 	rm -f $(THIN_CLI)
 	rm -f $(MONO_CLI)
@@ -1030,6 +1042,13 @@ CLI_RPATH = -Wl,-rpath,@loader_path/../lib
 else
 CLI_RPATH = -Wl,-rpath,'$$ORIGIN/../lib'
 endif
+# debug/release thin CLIs load THEIR mode's library (per-mode lib dirs
+# above); the extra $ORIGIN/../lib entry keeps an INSTALLED binary
+# working in the flat $(PREFIX)/{bin,lib} layout, where ldconfig or the
+# plain lib dir serves the soname.
+ifneq (,$(filter release debug,$(MODE)))
+CLI_RPATH = -Wl,-rpath,'$$ORIGIN/../lib/$(MODE)' -Wl,-rpath,'$$ORIGIN/../lib'
+endif
 # Link inputs per shape. Monolithic force-includes the WHOLE static archive:
 # runtime helpers are resolved by dlsym(RTLD_DEFAULT), so plain archive
 # semantics would drop those objects. The thin CLI links the shared library
@@ -1093,15 +1112,15 @@ $(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
-	mkdir -p $(LIBDIR)
+	mkdir -p $(dir $@)
 	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 # A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
 # the build tree needs that name too or a thin CLI / host binary cannot load
-# from lib/ (the install tree ships the real file under the soname and the
-# .so as the dev symlink — same names, mirrored). Host modes only: a cross
+# from its lib dir (the install tree ships the real file under the soname and
+# the .so as the dev symlink — same names, mirrored). Host modes only: a cross
 # mode's foreign .so must never claim the host soname.
-ifeq ($(LIBMADC_SHARED),$(LIBDIR)/libmadc.so)
-	ln -sf libmadc.so $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
+ifeq (,$(filter cross-% hosted-%,$(MODE)))
+	ln -sf libmadc.so $(dir $@)libmadc.so.$(MADC_SOVERSION)
 endif
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)

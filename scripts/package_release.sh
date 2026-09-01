@@ -7,7 +7,7 @@
 # not even packaged on Fedora) and madcdat is the exploratory surface, not
 # the language. This script therefore:
 #   1. saves the tree's config.mk, reconfigures --enable-madcdat=no,
-#      clean-rebuilds bin/madc-release + lib/libmadc.so
+#      clean-rebuilds bin/madc-release + lib/release/libmadc.so
 #   2. runs the FULL packed integration suite against that exact binary —
 #      the packaged artifact is a tested artifact
 #   3. stages and builds the .deb and .rpm
@@ -16,7 +16,7 @@
 #
 # Contents:
 #   /usr/bin/madc                               bin/madc-release
-#   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/libmadc.so (stripped copy)
+#   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/share/man/man1/madc.1.gz               docs/man/madc.1
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
@@ -111,10 +111,12 @@ stage() {
              "$root/usr/share/man/man1" "$root/usr/share/doc/madc"
     install -m 755 bin/madc-release "$root/usr/bin/madc"
     # NO strip here: since the PK2 shared default, `make release` strips
-    # lib/libmadc.so BEFORE packing the forest into it (strip-before-pack
-    # ordering, src/Makefile) — stripping again rewrites the ELF and
-    # silently drops the appended forest container.
-    install -m 644 lib/libmadc.so "$root/$libdir/libmadc.so.0"
+    # the release library BEFORE packing the forest into it (strip-before-
+    # pack ordering, src/Makefile) — stripping again rewrites the ELF and
+    # silently drops the appended forest container. lib/release/ is the
+    # release mode's OWN product dir (per-mode-names law): a dev rebuild
+    # can never swap this file.
+    install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
     ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
     install -m 755 tmp/madcide-pkg "$root/usr/bin/madcide"
     mkdir -p "$root/usr/share/madcide/profiles"

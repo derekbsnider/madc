@@ -37,6 +37,14 @@ fail() { echo "forest_sidecar_gate: $1"; exit 1; }
 # REAL bin/madc would leak into every other test run.
 cp "$BIN" "$D/madc"
 
+# Thin-CLI era (PK2 default flip): the copied subject's $ORIGIN/../lib
+# rpath points at tmp/lib, which does not exist — the copy must LOAD
+# before any discovery arm can be probed, so hand the LINKER the build
+# tree's lib explicitly. This does not touch forest discovery: the dev
+# libmadc.so is unpacked, so the library-image arm still misses quietly
+# and the chain reaches the external arms this gate exists to probe.
+export LD_LIBRARY_PATH="$(pwd)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 cat > "$D/producer.cpp" <<'EOF'
 #include <stdio.h>
 int main() { return 0; }

@@ -40,7 +40,7 @@ if ldd bin/madc-release | grep -q "not found"; then
 fi
 
 log "== artifact sizes (bytes) =="
-stat -c '%s  %n' "$OUT/madc-mono" bin/madc-release lib/libmadc.so* 2>/dev/null
+stat -c '%s  %n' "$OUT/madc-mono" bin/madc-release lib/release/libmadc.so* 2>/dev/null
 
 printf 'println("pk0");\n' > "$OUT/hello.mad"
 

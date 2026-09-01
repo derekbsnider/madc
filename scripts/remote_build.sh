@@ -379,6 +379,7 @@ for stage in $stages; do
 			"$REMOTE:/workspace/madc/lib/libmadc.so.0" \
 			"$REMOTE:/workspace/madc/lib/libmadc.a" \
 			"$REMOTE:/workspace/madc/lib/libmadc_rt.a" \
+			"$REMOTE:/workspace/madc/lib/release" \
 			"$LOCAL_MADC/lib/"
 		rc=$?
 		echo "pull libs rc=$rc"
