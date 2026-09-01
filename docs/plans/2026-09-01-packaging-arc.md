@@ -115,21 +115,26 @@ packaging shape, and all the proper build scripts and tests in order.
   thin `bin/madc` 58/58 JIT subset; mono/ABI/library-image gates
   green; release chain + packed subset + exe subset + self-exe gate
   green (phase 2). Full battery rides the merge wave as always.
-- **PK3 — staging re-target + install layouts.** `package_release.sh`
-  stages the thin CLI + the forest-carrying `.so`. Layouts: Linux
-  `/usr/bin/madc` + `/usr/bin/madcide` +
-  `/usr/lib/<triplet>/libmadc.so.0` (+ `.so` symlink; the ldconfig
-  trigger already exists), man + docs + example `madc.ini`; macOS
-  tarball `bin/madc` + `bin/madcide` + `lib/madc.dylib`
-  (`@executable_path`-relative rpath, S2 re-signer); Windows zip
-  `madc.exe` + `madcide.exe` + `madc.dll` beside each other
-  (loader-natural). The madcide binary is built BY the staged madc
-  (PK7's link seam is therefore a PK3 prerequisite, see below); its
-  data files (profiles/themes/status formats) ship beside it per OS
-  convention (`/usr/share/madcide/` on Linux; beside the exe on
-  Windows; `share/madcide/` in the mac tarball) — madcide's
-  profile-dir resolution must learn the installed location alongside
-  the source-tree one.
+- **PK3 — staging re-target + install layouts. ✅ LINUX LEG EXECUTED
+  2026-09-01.** `package_release.sh` now ships the packaged shape:
+  the (post-flip automatically thin) `madc-release` as `/usr/bin/madc`,
+  the forest-carrying `libmadc.so.0` (never re-stripped — see PK2),
+  **`/usr/bin/madcide`** compiled in-pipeline BY the release compiler
+  (`bin/madc-release -o`, stripped), and
+  `/usr/share/madcide/profiles/*` (all 8 data files); rpm `%files`
+  extended to match. Proven end to end on the container:
+  `madc_0.97.0-1_amd64.deb` (10.1 MB — 2.6 MB SMALLER than the
+  monolithic-era 0.95.2 deb) + `madc-0.97.0-1.x86_64.rpm` built;
+  a dpkg-extracted root runs the installed `madc` (forest evidence:
+  `forest-bind: [library-image] opened container (345 units)` from
+  the installed `.so`) and the installed `madcide` loads its profiles
+  from `usr/share/madcide` on a real pty (NORESCUE, file renders).
+  The package-run suite was skipped for this shape proof
+  (`MADC_PKG_SKIP_SUITE=1`) — the merge-wave battery validates the
+  content. OPEN PK3 residues: the macOS/Windows staging twins
+  (`madcide` + data beside the exe / `share/madcide/` in the tarball),
+  a Linux tarball form, a madcide man page, and the example
+  `madc.ini`. PK4 formalizes the extract-and-run smoke as a gate.
 - **PK4 — package-install validation gates.** Install-then-run smoke
   per OS: dpkg/rpm install into a scratch root on the container; the
   Windows/Mac staging flows formalized as scripts (today they are
@@ -152,14 +157,21 @@ packaging shape, and all the proper build scripts and tests in order.
   rides the `msstore` source automatically); the apt/yum repo-hosting
   decision.
 - **PK7 — madcide-as-binary (a PK3 prerequisite, owner-ruled part of
-  the packaging).** madcide compiles to a native binary via madc's
-  own AOT `--exe` lane, linked against the shared libmadc exactly the
-  way the thin CLI is (closes the madcide-design-doc open question).
-  Ships in every package (PK3); the packaged madcide's data files
-  (profiles/themes/status) resolve from the installed share dir as
-  well as the source tree. Sequenced before PK3's final staging even
-  though numbered last — the number keeps the design-doc
-  cross-references stable.
+  the packaging). ✅ EXECUTED 2026-09-01.** madcide AOT-compiles via
+  `madc -o` into a 393 KB binary linked against the shared libmadc
+  exactly like the thin CLI (closes the madcide-design-doc open
+  question — no new link machinery was needed). The one new piece:
+  `resolve_profile_dir` in madcide_core.inc — the source tree
+  (`__FILE__`-relative, unchanged behavior) then the installed
+  layouts anchored on the running binary via `madc::compiler_path()`
+  (process-self in the AOT shape): `<exedir>/../share/madcide/
+  profiles` (Linux/mac packages) then `<exedir>/profiles` (Windows
+  zip). Proven on a pty with the build tree DELETED after compile
+  (the true installed situation): share-dir arm loads the joe profile
+  (no RESCUE, file renders); negative control (share hidden) triggers
+  the RESCUE announcement. Source-tree arm: testmadcide/testvised/
+  testlineed 3/3. The rescue fatal message now names all three
+  layouts.
 
 ## PK0 results (2026-09-01, container, first pass — GATE MET)
 

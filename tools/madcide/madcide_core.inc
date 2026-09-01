@@ -106,6 +106,34 @@ void path_sans_ext(var &out, var &p)
 	out = perl::substr(p, 0, dot - pc);
 }
 
+// Where the profile/theme/status data lives (packaging arc PK7): the
+// source tree keeps profiles beside THIS file (__FILE__ is the
+// include-resolved path — from any cwd, and php::dirname splits both
+// separators for a Windows launch). An INSTALLED madcide is an AOT
+// binary whose __FILE__ names a build tree that box never had, so the
+// running binary's own directory (madc::compiler_path — the process's
+// resolved executable, madcide itself in the AOT shape) anchors the
+// install layouts: <exedir>/../share/madcide/profiles (the Linux/mac
+// package layout) then <exedir>/profiles (the Windows zip: data beside
+// the exe). First existing directory wins; nothing found keeps the
+// source-tree spelling so the rescue report names a real place to fix.
+void resolve_profile_dir(var &dir)
+{
+    dir = format("{}/profiles", php::dirname(__FILE__));
+    if ( php::file_exists(dir) )
+	return;
+    var exedir = php::dirname(madc::compiler_path());
+    var share = format("{}/../share/madcide/profiles", exedir);
+    if ( php::file_exists(share) )
+    {
+	dir = share;
+	return;
+    }
+    var beside = format("{}/profiles", exedir);
+    if ( php::file_exists(beside) )
+	dir = beside;
+}
+
 // One binding per line: "SEQ ACTION" — the action is the LAST word, the
 // sequence everything before it. A leading "@name" token SCOPES the
 // binding to that pane/modal widget (the owner keybinding law: pane and
@@ -3991,14 +4019,13 @@ long IdeSession::open(const char *path0, bool ro)
     if ( doc == 0 )
 	return 0;
     es = ui::entity_by_name(w, "editor-state");
-    // The profiles live beside THIS file: derive the directory from
-    // __FILE__ (the include-resolved path), so madcide works from any
-    // cwd. php::dirname owns the split — on a WINDOWS host '\' separates
-    // too (a Windows launch spells the source path with '\'; splitting
-    // on '/' alone cost the first genuine-Win validation its keybindings,
-    // and every chord is profile data). No separator answers ".".
-    ui::set(w, es, "profile_dir",
-	    format("{}/profiles", php::dirname(__FILE__)));
+    // resolve_profile_dir owns the search: source tree (beside this
+    // file, from any cwd — php::dirname splits both separators; '/'
+    // alone cost the first genuine-Win validation its keybindings),
+    // then the installed layouts anchored on the running binary (PK7).
+    var pdir;
+    resolve_profile_dir(pdir);
+    ui::set(w, es, "profile_dir", pdir.c_str());
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
@@ -4015,7 +4042,7 @@ long IdeSession::open(const char *path0, bool ro)
 	{
 	    var dir;
 	    ui::get(dir, w, es, "profile_dir");
-	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (tools/madcide/profiles beside madcide.mad).", dir);
+	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
 	    return -1;
 	}
     }

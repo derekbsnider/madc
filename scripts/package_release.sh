@@ -80,6 +80,15 @@ if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     exit 1
 fi
 
+# ---------- 1b. madcide (owner ruling 2026-09-01: the packages ship the IDE) ----------
+# Compiled BY the just-built release compiler against the shared libmadc —
+# the dogfood proof of the packaged shape (packaging arc PK7). Its data
+# files ship under /usr/share/madcide; the binary finds them through
+# resolve_profile_dir's install fallback (madcide_core.inc).
+echo "== madcide (AOT via the release compiler) =="
+( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
+strip --strip-unneeded tmp/madcide-pkg
+
 # ---------- 2. packed suite against the distribution binary ----------
 # MADC_PKG_SKIP_SUITE=1 skips the suite for a package run on content a
 # recorded green battery already validated (owner rule 2026-08-09/-11:
@@ -107,6 +116,9 @@ stage() {
     # silently drops the appended forest container.
     install -m 644 lib/libmadc.so "$root/$libdir/libmadc.so.0"
     ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
+    install -m 755 tmp/madcide-pkg "$root/usr/bin/madcide"
+    mkdir -p "$root/usr/share/madcide/profiles"
+    install -m 644 tools/madcide/profiles/* "$root/usr/share/madcide/profiles/"
     gzip -9n < docs/man/madc.1 > "$root/usr/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$root/usr/share/doc/madc/copyright"
     gzip -9n < CHANGELOG.md > "$root/usr/share/doc/madc/changelog.gz"
@@ -163,8 +175,10 @@ ${DESC_BODY}
 
 %files
 /usr/bin/madc
+/usr/bin/madcide
 /usr/lib64/libmadc.so.0
 /usr/lib64/libmadc.so
+/usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/changelog.gz
 /usr/share/man/man1/madc.1.gz
