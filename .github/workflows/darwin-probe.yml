@@ -51,7 +51,9 @@ jobs:
           which autoconf autoreconf shasum sha256sum gtimeout 2>&1 || true
       - name: brew deps (llvm@18 = the parity compiler; zstd for configure + stage)
         run: |
-          brew install llvm@18 zstd autoconf coreutils gnu-sed grep bash make 2>&1 | tail -5
+          # automake: brew's autoreconf insists on aclocal even for a
+          # plain-autoconf project (ubuntu's quietly skips it).
+          brew install llvm@18 zstd autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -5
           LLVM=$(brew --prefix llvm@18)
           echo "llvm prefix: $LLVM"
           ls "$LLVM/bin" | head -20
