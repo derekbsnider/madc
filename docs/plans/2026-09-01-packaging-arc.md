@@ -177,6 +177,17 @@ packaging shape, and all the proper build scripts and tests in order.
     (`docs/examples/madc.ini`, all keys commented = inert if copied
     verbatim) in all packages; `madc.1`'s stale `.TH` stamp
     ("0.38.0", 2026-07-23) made version-neutral.
+  - **Fix-what-you-find (rode this wave, own commit):** the first
+    release-windows pack on s149b-wall content caught the lexer
+    splitting C23 `_FloatN` literal suffixes (`0.0f16` in mingw's
+    avx512fp16intrin.h, reached from every `<windows.h>` TU) into two
+    tokens — the ledger build of rt_posix_time.c refused, killing the
+    pack. Fixed at the scanner: ONE `eat_real_suffix` (three
+    hand-rolled copies consolidated) knowing f16/f32/f64/f128/bf16,
+    typed by the `_Float16`-type precedent (nearest-supported
+    approximation); invalid widths pushed back whole so they stay
+    loud. Reducers tests/testfloatnsuffix{,bad} with the gcc gnu2x
+    oracle; release-windows green again (234 units, verify OK).
   - **Library-family coherence (owner discussion 2026-09-01).** Two
     products, honest names on every platform: the ENGINE
     (`libmadc.so.0` / `libmadc-0.dll` / `libmadc-0.dylib`-someday) and
