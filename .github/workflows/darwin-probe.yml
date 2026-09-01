@@ -74,10 +74,24 @@ jobs:
       - name: autoreconf + configure (brew prefixes for the host zstd check)
         run: |
           autoreconf -i
-          ./configure CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib"
+          # --with-forest=none: the hosted link otherwise depends on the
+          # CROSS madc as its freezer (the container model) — moot on a
+          # darwin host, where D2 makes the built binary freeze itself.
+          # --enable-madcdat=no: the hosted MODE forces it off anyway; the
+          # runner's brew gdbm/sqlite otherwise leak into probed defines.
+          ./configure --with-forest=none --enable-madcdat=no \
+            CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib"
       - name: the probe — hosted-arm64-macos with native-toolchain overrides
         run: |
           set +e
+          # gnubin posture (the plan's build-host userland): Xcode's
+          # /usr/bin/make is GNU Make 3.81 (2006) — round 3 died on it
+          # (MIR's obj/.../c2mir dir never created). brew make = gmake 4.x.
+          for f in make coreutils gnu-sed grep; do
+            PATH="$(brew --prefix $f)/libexec/gnubin:$PATH"
+          done
+          export PATH
+          make --version | head -1
           LLVM=$(brew --prefix llvm@18)
           SDK=$(xcrun --show-sdk-path)
           TGT="arm64-apple-macos12"
