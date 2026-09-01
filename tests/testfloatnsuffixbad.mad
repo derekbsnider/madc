@@ -1,0 +1,6 @@
+// Negative control for the _FloatN suffix eater: a width that is not a
+// _FloatN width (f99) is pushed back WHOLE, so the spelling keeps
+// today's loud two-token diagnosis instead of being silently typed.
+// Oracle: gcc rejects it too ("invalid suffix ... on floating constant").
+double d = 0.5f99;
+printf("%g\n", d);

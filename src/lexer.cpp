@@ -6948,6 +6948,90 @@ TokenBase *Program::_getToken()
 		    }
 		    return true;
 		};
+		// ONE eater for the real-literal type suffixes, shared by the
+		// hex-float, scientific and decimal paths (three hand-rolled
+		// copies would drift): classic f/F -> float and l/L -> long
+		// double, the DFP d/dd spellings (eaten, type left alone —
+		// the pre-existing posture), and the C23 _FloatN family
+		// f16/f32/f64/f128 plus gcc's bf16, which ride the SAME
+		// nearest-supported approximation as the _Float16/_Float32
+		// TYPE spellings (add_datatypes): f16/f32/bf16 -> float,
+		// f64 -> double, f128 -> long double. mingw's
+		// avx512fp16intrin.h spells `0.0f16`; the old one-char
+		// eaters left `16` behind as a second operand (loud since
+		// the s149b juxtaposition wall — the win release pack's
+		// ledger build of rt_posix_time.c was the first to hit it).
+		// A width that is not a _FloatN width is pushed back WHOLE,
+		// so invalid spellings keep today's two-token diagnosis; a
+		// _FloatN imaginary keeps the plain f-suffix complex-float
+		// posture (the eat_imag_suffix call sites are unchanged).
+		char real_type_suffix = 0;
+		DataDef *real_suffix_dd = nullptr;
+		auto eat_real_suffix = [&](std::string &lt) {
+		    real_type_suffix = 0;
+		    real_suffix_dd = nullptr;
+		    if ( !source.good() )
+			return;
+		    int c = source.peek();
+		    if ( c == 'b' || c == 'B' )
+		    {
+			// bf16/BF16 only; 'b' alone never starts a suffix —
+			// restore every consumed char on a mismatch.
+			std::string got;
+			got += (char)source.get();
+			for ( const char *want = "f16"; *want && source.good(); want++ )
+			{
+			    if ( tolower(source.peek()) != *want )
+				break;
+			    got += (char)source.get();
+			}
+			if ( got.size() == 4 )
+			{
+			    lt += got;
+			    real_type_suffix = 'f';
+			    real_suffix_dd = &ddFLOAT;
+			}
+			else
+			    source.pushback(got);
+			return;
+		    }
+		    if ( c == 'f' || c == 'F' )
+		    {
+			real_type_suffix = (char)c;
+			lt += (char)source.get();
+			if ( source.good() && isdigit(source.peek()) )
+			{
+			    std::string w;
+			    while ( source.good() && isdigit(source.peek())
+				 && w.size() < 3 )
+				w += (char)source.get();
+			    if ( w == "16" || w == "32" )
+				real_suffix_dd = &ddFLOAT;
+			    else if ( w == "64" )
+				real_suffix_dd = &ddDOUBLE;
+			    else if ( w == "128" )
+				real_suffix_dd = &ddLDOUBLE;
+			    if ( real_suffix_dd )
+				lt += w;
+			    else
+				source.pushback(w);
+			}
+			return;
+		    }
+		    if ( c == 'l' || c == 'L' )
+		    {
+			real_type_suffix = (char)c;
+			lt += (char)source.get();
+			return;
+		    }
+		    if ( c == 'd' || c == 'D' )
+		    {
+			lt += (char)source.get();
+			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+			    lt += (char)source.get();
+			return;
+		    }
+		};
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
 		// like ul/ULL/Lu) and set type accordingly. With sizeof(int)=4,
 		// the L/LL suffix widens to 64-bit (long/long long), and U
@@ -7105,22 +7189,7 @@ TokenBase *Program::_getToken()
 			    while ( source.good() && isdigit(source.peek()) )
 				lit_text += (char)source.get();
 			}
-		    char real_type_suffix = 0;
-		    if ( source.good() )
-		    {
-			int c = source.peek();
-			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-			{
-			    real_type_suffix = (char)c;
-			    lit_text += (char)source.get();
-			}
-			else if ( c == 'd' || c == 'D' )
-			{
-			    lit_text += (char)source.get();
-			    if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
-				lit_text += (char)source.get();
-			}
-		    }
+		    eat_real_suffix(lit_text);
 		    if ( eat_imag_suffix() )
 		    {
 			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
@@ -7135,7 +7204,9 @@ TokenBase *Program::_getToken()
 		    }
 		    {
 			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
-			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			if ( real_suffix_dd )
+			    tr->setDataType(real_suffix_dd);
+			else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
@@ -7204,16 +7275,7 @@ TokenBase *Program::_getToken()
 			    lit_text += (char)source.get();
 			while ( source.good() && isdigit(source.peek()) )
 			    lit_text += (char)source.get();
-			char real_type_suffix = 0;
-			if ( source.good() )
-			{
-			    int c = source.peek();
-			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-			    {
-				real_type_suffix = (char)c;
-				lit_text += (char)source.get();
-			    }
-			}
+			eat_real_suffix(lit_text);
 			long double num = strtold(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
@@ -7227,7 +7289,9 @@ TokenBase *Program::_getToken()
 			    return tr;
 			}
 			TokenReal *tr = (TokenReal *)make_real(num);
-			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			if ( real_suffix_dd )
+			    tr->setDataType(real_suffix_dd);
+			else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
@@ -7272,25 +7336,11 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && isdigit(source.peek()) )
 			lit_text += (char)source.get();
 		}
-		// C float literal suffixes (f/F, l/L). Preserve the spelling and stamp
-		// the TokenReal type below; macro prescan and later lowering both need
-		// the suffix to survive rather than silently widening it to double.
-		char real_type_suffix = 0;
-		if ( source.good() )
-		{
-		    int c = source.peek();
-		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-		    {
-			real_type_suffix = (char)c;
-			lit_text += (char)source.get();
-		    }
-		    else if ( c == 'd' || c == 'D' )
-		    {
-			lit_text += (char)source.get();
-			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
-			    lit_text += (char)source.get();
-		    }
-		}
+		// C float literal suffixes (f/F, l/L, the _FloatN family).
+		// Preserve the spelling and stamp the TokenReal type below;
+		// macro prescan and later lowering both need the suffix to
+		// survive rather than silently widening it to double.
+		eat_real_suffix(lit_text);
 		long double num = strtold(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
@@ -7309,7 +7359,9 @@ TokenBase *Program::_getToken()
 		    // its width survives into c2mir (it self-determines arithmetic type).
 		    // Without this `1.0f` lowered as a double, which silently widened
 		    // mixed float/float-_Complex arithmetic to double precision.
-		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+		    if ( real_suffix_dd )
+			tr->setDataType(real_suffix_dd);
+		    else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			tr->setDataType(&ddFLOAT);
 		    // An `L` literal is a long double, the same way `f` is a float:
 		    // the suffix is the only thing that says so, and without this the
