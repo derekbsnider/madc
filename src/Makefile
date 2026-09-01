@@ -515,6 +515,15 @@ $(PICOBJDIR)/madc_config.o: $(CONFIG_AXIS_STAMP)
 # when the shape changes (make would otherwise see bin/madc newer than every
 # prerequisite and skip it — the .libmode / .forest-shape precedent).
 ENABLE_SHARED_CLI ?= 0
+# The packaged (thin-CLI) link shape is a HOST shape today: the per-OS
+# shared-library products (madc.dll, madc.dylib) land with the PK3
+# packaging twins. Cross and hosted modes therefore always link
+# monolithic, whatever configure's host default says — without this pin
+# the PK2 default flip would point their $(BIN) at a foreign-format
+# lib/libmadc-$(MODE).so nothing ships yet.
+ifneq (,$(filter cross-% hosted-%,$(MODE)))
+ENABLE_SHARED_CLI = 0
+endif
 LINK_SHAPE_STAMP = $(OBJDIR)/.link-shape-$(ENABLE_SHARED_CLI)
 $(LINK_SHAPE_STAMP):
 	@mkdir -p $(OBJDIR)
