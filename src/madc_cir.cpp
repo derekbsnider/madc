@@ -2078,11 +2078,25 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 	else
 	    needed.push_back(l);
     }
-    runpath = cir_selfexe_libdir();
-    if (!runpath.empty())
-	runpath += ":/usr/local/lib";
+    // Relocatable arm first: a produced binary placed in a relocatable
+    // install (tarball <root>/bin beside <root>/lib — madcide in the
+    // release tarball is the standing case) binds its OWN tree's runtime
+    // before the compiling madc's libdir or the system fallback. The
+    // token is the loader's, never the shell's: $ORIGIN on ELF,
+    // @executable_path on Mach-O. PE has no runpath (adjacency binds) —
+    // its value stays what it was, unread by the writer.
+#ifdef __APPLE__
+    runpath = "@executable_path/../lib:";
+#elif defined(_WIN32)
+    runpath = "";
+#else
+    runpath = "$ORIGIN/../lib:";
+#endif
+    runpath += cir_selfexe_libdir();
+    if (runpath.empty() || runpath[runpath.size() - 1] == ':')
+	runpath += "/usr/local/lib";
     else
-	runpath = "/usr/local/lib";
+	runpath += ":/usr/local/lib";
 }
 
 // THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
