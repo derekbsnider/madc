@@ -37,7 +37,7 @@ fail() { echo "forest_sidecar_gate: $1"; exit 1; }
 # REAL bin/madc would leak into every other test run.
 cp "$BIN" "$D/madc"
 
-# Thin-CLI era (PK2 default flip): the copied subject's $ORIGIN/../lib
+# thin-CLI subject loader (PK2): the copied subject's $ORIGIN/../lib
 # rpath points at tmp/lib, which does not exist — the copy must LOAD
 # before any discovery arm can be probed, so hand the LINKER the build
 # tree's lib explicitly. This does not touch forest discovery: the dev

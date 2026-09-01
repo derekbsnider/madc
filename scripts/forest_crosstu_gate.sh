@@ -43,6 +43,10 @@ fail() { echo "forest_crosstu_gate: $1"; exit 1; }
 # A copy of the dev binary is the bind subject (its sidecar path is
 # $D/madc.forest — never beside the real bin/madc).
 cp "$BIN" "$D/madc"
+# thin-CLI subject loader (PK2): the copy's $ORIGIN/../lib rpath misses from
+# this depth — hand the LINKER the build tree's lib so the subject can LOAD;
+# the dev libmadc.so is unpacked, so forest-discovery arms are unaffected.
+export LD_LIBRARY_PATH="$(pwd)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cat > "$D/producer.cpp" <<'EOF'
 #include <string>
