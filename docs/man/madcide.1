@@ -1,0 +1,109 @@
+.TH MADCIDE 1 "2026-09-01" "madc" "User Commands"
+.SH NAME
+madcide \- terminal IDE built on the live madc compiler
+.SH SYNOPSIS
+.B madcide
+.I file
+.RI [ ro ]
+.SH DESCRIPTION
+.B madcide
+is a terminal IDE whose core is the running
+.BR madc (1)
+compiler itself, not an external process. The buffer holds a persistent
+parse handle: the diagnostics pane, the symbol outline, and the
+enclosing-function indicator in the status line are projections of live
+compiler data, and syntax colour comes from real parse spans classified
+through a colour scheme. Checking a file (^K ;) refreshes the same
+handle \(em there is no separate "run the compiler" step.
+.PP
+Keybindings are data, not code: a
+.I .keys
+profile file maps key sequences to editor actions, and the shipped
+profiles are complete personalities \(em
+.B joe
+(the default: the full JOE/WordStar chord set),
+.BR emacs ,
+.BR pico ,
+and
+.B neovim
+(vi modal editing: normal/insert scopes, counts, operators, and the
+colon line). Swap keymaps live from the options screen (^T), or toggle
+vi modal editing from the modes palette (^N). Colour schemes
+.RI ( .theme
+files) swap the same way (^K T).
+.SH ARGUMENTS
+.TP
+.I file
+The file to edit. A path that does not exist opens as a new file.
+.TP
+.I ro
+Any second argument opens the buffer read-only.
+.SH KEYS
+Under the default JOE profile,
+.B ^K H
+shows the help screen \(em projected from the loaded profile, so it is
+always the truth for the active keymap. Headline chords:
+.B ^K S
+save,
+.B ^K X
+save and exit,
+.B ^K Q
+quit,
+.B ^K F
+find (\fB^L\fR find next),
+.B ^_
+undo /
+.B ^^
+redo,
+.B ^K B
+/
+.B ^K K
+block begin/end (\fB^K C\fR/\fB^K M\fR/\fB^K Y\fR copy/move/delete),
+.B ^K E
+open another file,
+.B ^K O
+/
+.B ^K N
+/
+.B ^K P
+split/next/previous window,
+.B ^K ;
+check the program,
+.B ^K I
+outline,
+.B ^K A
+cycle the code view (original/MC11/C11, plus the C++ reverse render on
+a C/C++ buffer),
+.B ^K Z
+shell,
+.B ^T
+options,
+.B ^N
+the modes palette.
+.SH FILES
+Keybinding profiles, colour schemes, and the status-line layout load
+from the first of these directories that exists:
+.PP
+.nf
+    <source dir>/profiles          (running from a madc source tree)
+    <bindir>/../share/madcide/profiles   (installed layout)
+    <bindir>/profiles              (archive layout, data beside the binary)
+.fi
+.PP
+.I *.keys
+files are keybinding personalities;
+.I *.theme
+files are colour schemes;
+.I joe.status
+is the status-line layout. All are plain text \(em copy and edit them
+to make your own.
+.SH SEE ALSO
+.BR madc (1)
+.br
+Project wiki:
+.UR https://github.com/derekbsnider/madc/wiki
+.UE
+.SH AUTHOR
+Derek Snider, with AI-assisted development.
+.SH LICENSE
+Mozilla Public License 2.0.
