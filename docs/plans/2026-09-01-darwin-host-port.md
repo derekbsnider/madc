@@ -1,0 +1,159 @@
+# The darwin-host build port — madc building (and testing) itself ON macOS
+
+Owner direction 2026-09-01, stated three times during the PK5 wave:
+GitHub's hosted macOS runners exist in BOTH arches (arm64 + Intel), and
+"not only can they do the builds, they can also run all the test
+suites." This arc makes madc a darwin-HOST toolchain — building itself
+natively on a Mac — which is the single prerequisite behind four
+prizes:
+
+1. **CI mac builds** with the runner's legitimately licensed Xcode SDK
+   (the owner-staged SDK never leaves owner hardware; that is why PK5's
+   workflow ships linux+windows only).
+2. **The full-suite macOS lane** — it has NEVER existed anywhere: the
+   container cannot execute darwin, and the owner's Mac runs only the
+   11-leg `mac_battery` (8/3). A native madc on a mac runner can run
+   the entire `run_tests.sh` battery on real darwin.
+3. **The first x86_64 execution proof** — nothing we own can run the
+   x86-64 tarball today (container is linux, owner's Mac is arm64);
+   an Intel mac runner is that venue.
+4. **PK3-mac-runtime rides along** — the `libmadc-0.dylib` engine twin
+   (whole-archive recipe, `@rpath` binding) is SIMPLER to build and
+   verify natively than cross, and it unlocks madcide in the mac
+   tarball (darwin `-o` currently refuses runtime-needing programs).
+
+This plan supersedes the packaging-arc PK5 bullet's "macos-14 +
+macos-13 build jobs" as written (that wording predates the measured
+SDK/cross facts).
+
+## Measured foundation (what is already proven — do not re-derive)
+
+- **Source portability is a solved problem.** The cross lane compiles
+  EVERY madc TU for darwin with clang-18 daily (`hosted-*-macos`
+  MODEs), links with lld, and the products pass `mac_battery` on real
+  hardware. The port is about BUILD MACHINERY, not source.
+- **MIR needs nothing.** The darwin-HOST libmir variant already exists
+  in the Makefile ("no MIR_TARGET knobs: host detection through the
+  darwin compiler turns MIR_TARGET_APPLE_P on natively").
+- **`madc -o` works on darwin** (mac_battery leg 6d; C++-world AOT
+  leg green) — the suite's EXE lane has a foundation.
+- **The darwin forest carrier is a Mach-O SECTION**
+  (`-Wl,-sectcreate,__MADC,__forest`, standalone `forest.bin` built
+  BEFORE link — appended blobs are illegal on signed Mach-O). Today
+  the freezer is the Linux-hosted CROSS madc (`forest_pack_darwin.sh`).
+- **The served C++ world is LLVM's libc++ headers**
+  (`LLVM_LIBCXX_INC ?= /usr/lib/llvm-18/include/c++/v1`) — a
+  provenance + parity PIN (Apache-2.0 text, identical to the
+  `-stdlib=libc++` lane's zero-failure corpus). A darwin build host
+  must serve the SAME 18.x header text (brew `llvm@18`), or groves
+  diverge from the container baseline.
+- **Makefile knob inventory** (recon 2026-09-01): hard `=` spellings
+  needing parameterization: `CC/CXX_BASE = clang{,++}-18 -target …
+  --sysroot $(MACOS_SDK)`, `AR = llvm-ar-18`,
+  `HOSTTAB_CXX = clang++-18 …`, `-fuse-ld=lld` in the mode's `LIBS`.
+  Already `?=`-overridable: `MACOS_SDK`, `DARWIN_PRELUDE_SYSROOT`,
+  `DARWIN_ZSTD_DIR`, `LLVM_LIBCXX_INC`, `MACOS_MINOS`. GNU make
+  command-line overrides beat even hard `=` assignments, so a probe
+  can drive the existing MODE natively with zero repo edits (D0).
+- **The linux default MODE is ELF-shaped**
+  (`LIBS = -rdynamic -ldl …`) and stays that way: on a darwin host the
+  build IS the `hosted-*-macos` MODE with a native toolchain posture —
+  never a second ported "default" path (no-parallel-implementations).
+- Script portability: build-critical gen scripts scanned clean of the
+  obvious GNU-isms; `verify_macho_release.sh` carries one (`stat -c
+  %s`; BSD spells `stat -f %z`). The posture decision below makes the
+  class moot for build hosts.
+
+## Architecture decisions
+
+- **Darwin host ⇒ the `hosted-*-macos` MODE, native toolchain.** One
+  MODE serves cross (container) and native (mac) — the toolchain
+  spellings become variables with the current cross values as
+  defaults. Product names stay identical
+  (`bin/madc-release-{arch}-macos`, `obj/hosted-*/forest.bin`), so
+  `verify_macho_release.sh` and `package_release_macos.sh` consume
+  either origin unchanged.
+- **Native freeze = SELF-freeze.** On a mac, the built hosted binary
+  freezes its own standalone `forest.bin` (run natively), then the
+  link embeds it — producer == consumer EXACTLY (stronger than the
+  cross model's same-tree/same-keys argument). The cross-freezer
+  remains the container's path; the freeze step gains a "runner =
+  native" arm, selected by whether the build host can execute the
+  target (uname-based, not hardcoded).
+- **Native linker = Apple ld64** (ad-hoc signs arm64 automatically,
+  handles `-sectcreate` natively); lld stays the cross linker. The
+  probe measures whether brew `llvm@18`'s clang driver + native ld64
+  compose cleanly.
+- **Compiler = brew `llvm@18` clang, not Apple clang**, for exact
+  version parity with the container's clang-18 (Apple clang is a
+  differently-versioned fork; the groves and warning walls are
+  baselined on LLVM 18). Apple's SDK + ld64 still come from Xcode via
+  `xcrun`. D0 verifies availability/spellings.
+- **Build-host userland = brew gnubin PATH-first** (bash, coreutils,
+  gnu-sed, grep, gmake) on darwin BUILD hosts — collapses the BSD/
+  bash-3.2 portability class for build-time scripts to ~zero. Runtime
+  scripts that must run on ANY Mac (`mac_battery`) stay 3.2-clean as
+  today.
+- **zstd**: per-target static stage, same v1.5.5 recipe as the
+  container, built natively on the mac host (brew zstd acceptable for
+  probes; the shipped artifact's stage stays the pinned source build).
+
+## Slices
+
+- **D0 — measurement (probe workflow, no repo changes).**
+  `.github/workflows/darwin-probe.yml` (dispatch-only, macos-14):
+  inventory (SDK path, clang/ld versions, brew `llvm@18` layout),
+  `fetch_darwin_open_headers.sh` portability, `autoreconf +
+  configure` with brew prefixes, then `make hosted-arm64-macos` driven
+  entirely by command-line overrides — the failure catalog IS the
+  deliverable, uploaded as an artifact. Expected first walls: parse-
+  time generator scripts under mac sh; the freeze step (no cross madc
+  on the runner — D2's job). Owner-Mac baseline probe when the box is
+  reachable (unreachable 2026-09-01, IP-drift class).
+- **D1 — the Makefile DARWIN_HOST posture.** Promote the D0 override
+  set into named `?=` knobs (`DARWIN_CC`, `DARWIN_CXX`, `DARWIN_AR`,
+  `DARWIN_LD_FLAVOR`…, defaults = today's cross spellings, so the
+  container path is byte-identical); host-table generation proven on
+  darwin. Gate: `hosted-arm64-macos` compiles + links (pre-forest) on
+  macos-14 and runs a hello natively.
+- **D2 — native self-freeze + verification.** The freeze arm that
+  runs the built binary natively; `verify_macho_release.sh`
+  portability (`stat -c`); native zstd stage. Gate: packed
+  runner-built binary passes `verify_macho_release` AND its forest
+  unit count matches the container cross-pack baseline; `mac_battery`
+  green (leg-for-leg vs owner-hardware baseline) on the runner.
+- **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
+  (x86_64) build/package/attach with a PK4-style extract-and-run
+  install gate for the tarballs (the x86_64 job = the first-ever
+  execution proof); `/promote` sheds its mac-attach step; asset
+  ownership becomes CI for all six. OWNER DECISION at this exit:
+  whether the container cross lane remains canonical for local
+  ceremonies or becomes verification-only.
+- **D4 — the full-suite macOS lane.** `run_tests.sh` under the gnubin
+  posture on the runner; a `darwin` skip/expect fixture domain via the
+  existing `MADC_SKIP_EXT` machinery for genuinely-divergent tests;
+  triage the first run's failures the root-cause way (no bulk skips).
+  New push-gated lane row (`macos-suite`) in `docs/lane-status.tsv`
+  once green — this is the never-existed lane, the arc's biggest
+  prize.
+- **D5 — PK3-mac-runtime.** `libmadc-0.dylib` (whole-archive
+  `LIBMADC_STATIC`, the `libmadc-0.dll` recipe), the darwin emit lane
+  naming `@rpath/@executable_path/../lib`, tarball staging, madcide
+  in the mac tarball + its install-gate pty probe. Thread-safety
+  contract: unchanged (the engine's existing contract; the dylib is a
+  packaging of the same objects).
+
+## Risks / opens
+
+- **llvm@18 header-text parity**: the gate is grove-level (unit counts
+  + context hashes vs the container baseline), not an assumption. If
+  brew 18.x text drifts from apt 18.x, pin harder (exact 18.1.x) or
+  vendor the include set.
+- **Apple ld64 vs lld behavioral edges** on `-sectcreate` +
+  `-force_load` + export surfaces (`dlsym` of executable globals
+  without `-rdynamic` is a darwin FACT already relied on — native ld64
+  must preserve it; D1's gate exercises it).
+- **Runner wall-times**: unknown for a full mac build (linux job ≈ 17
+  min; mac runners are slower per-core and `-j3/-j4`). D0 measures.
+- **x86_64 divergences** surface for the first time ever in D3/D4 —
+  budget triage time; they are discoveries, not regressions.
