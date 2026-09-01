@@ -39,8 +39,12 @@ fi
 # Wine lane posture: silence winediag chatter (it lands on stderr and would
 # poison output comparisons) and let the packer copy in tmp/ bind the
 # libstdc++-6/libwinpthread-1/libmadc-0 DLLs staged beside bin/.
+# WINEPATH is DERIVED from the repo root (we cd'd there above): a hardcoded
+# 'Z:\workspace\madc\bin' equalled the container's layout by accident and
+# died SILENTLY (WINEDEBUG=-all eats the module-not-found errors) on any
+# other checkout — the GHA runner found it. Wine's default Z: drive is /.
 export WINEDEBUG=-all
-export WINEPATH='Z:\workspace\madc\bin'
+export WINEPATH="Z:$(pwd | sed 's,/,\\,g')\\bin"
 WINE="${MADC_WINE:-wine}"
 
 # AOT ledger (forest-carriers S5): the win64-selected C-lane runtime,
