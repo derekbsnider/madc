@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	2f29fae30cd2	2026-09-01	jit 1249/0, exe 1194/0, obj 1194/0, packed 1249/0, headerless 1222/0 (run rb-20260901-155116 at 90c040b3; delta to 2f29fae3 = PK4/PK5 packaging scripts + win-pack WINEPATH derivation, computed value proven byte-identical on the container — not exercised differently by this lane)
-wine64	yes	2f29fae30cd2	2026-09-01	1199/0/59skip (run rb-20260901-164028 at 90c040b3, libmadc-0.dll imports; delta to 2f29fae3 = packaging scripts + WINEPATH derivation, container value identical — not exercised differently)
-c-testsuite	yes	2f29fae30cd2	2026-09-01	220/220 baseline EMPTY (run at 90c040b3 incl. _FloatN lexer fix; delta to 2f29fae3 = packaging scripts ONLY — not exercised by this lane)
-macos	yes	2f29fae30cd2	2026-09-01	mac_battery arm64 8/3 leg-for-leg (same 3 standing known-opens; 0.97.0 wave-content tarball at a2bccb38; delta to 2f29fae3 = packaging scripts ONLY — not exercised by this lane; groves wall 344ms)
+linux-battery	yes	88fa4a60d580	2026-09-01	jit 1249/0, exe 1194/0, obj 1194/0, packed 1249/0, headerless 1222/0 (run rb-20260901-155116 at 90c040b3; delta to 88fa4a60 = packaging/CI scripts + verify_pe failure-path log tail ONLY — no green-path behavior change; not exercised by this lane)
+wine64	yes	88fa4a60d580	2026-09-01	1199/0/59skip (run rb-20260901-164028 at 90c040b3, libmadc-0.dll imports; delta to 88fa4a60 = packaging/CI scripts + verify_pe failure-path output ONLY — green path unchanged)
+c-testsuite	yes	88fa4a60d580	2026-09-01	220/220 baseline EMPTY (run at 90c040b3 incl. _FloatN lexer fix; delta to 88fa4a60 = packaging/CI scripts ONLY — not exercised by this lane)
+macos	yes	88fa4a60d580	2026-09-01	mac_battery arm64 8/3 leg-for-leg (same 3 standing known-opens; 0.97.0 wave-content tarball at a2bccb38; delta to 88fa4a60 = packaging/CI scripts ONLY — not exercised by this lane; groves wall 344ms)
