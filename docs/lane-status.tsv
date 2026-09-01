@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	03db8c0a4859	2026-09-01	jit 1247/0, exe 1193/0, obj 1193/0, packed 1247/0, headerless 1220/0 (packaging arc PK0-PK3: shared default flip, per-mode lib dirs, madcide-in-packages; battery rb-20260901 attempt 3 rc=0)
-wine64	yes	03db8c0a4859	2026-09-01	1197/0/59skip (fresh PE at 03db8c0a; cross/hosted modes pinned monolithic by the PK2 flip correction)
-c-testsuite	yes	03db8c0a4859	2026-09-01	220/220 baseline EMPTY (C mode --std=gnu11; packaging-arc content 03db8c0a)
-macos	yes	03db8c0a4859	2026-09-01	mac_battery arm64 8/3 leg-for-leg (the 3 standing known-opens: groves os.str() husk, value intrinsic, exec:// channel; degradation leg fill-dropped 0 restore-skipped 0; 0.97.0-content tarball on packaging-arc content 03db8c0a)
+macos	yes	a2bccb38ed27	2026-09-01	mac_battery arm64 8/3 leg-for-leg (same 3 standing known-opens: groves os.str() husk, value intrinsic, exec:// channel; 0.97.0 wave-content tarball at a2bccb38; groves wall 344ms)
+linux-battery	yes	a2bccb38ed27	2026-09-01	jit 1249/0, exe 1194/0, obj 1194/0, packed 1249/0, headerless 1222/0 (run rb-20260901-155116 at 90c040b3; delta to a2bccb38 = package_release.sh $ORIGIN-assert canonicalize fix ONLY — not exercised by this lane; packagers re-proven after it)
+wine64	yes	a2bccb38ed27	2026-09-01	1199/0/59skip (run rb-20260901-164028 at 90c040b3, libmadc-0.dll imports; delta to a2bccb38 = package_release.sh assert fix ONLY — not exercised by this lane)
+c-testsuite	yes	a2bccb38ed27	2026-09-01	220/220 baseline EMPTY (run at 90c040b3 incl. _FloatN lexer fix; delta to a2bccb38 = package_release.sh assert fix ONLY — not exercised by this lane)
