@@ -87,10 +87,34 @@ What it does NOT see, so the plan keeps its own instruments for it:
 How it is used here:
 
 1. **Baseline first** (measure before designing): `aislop scan ./src --json`
-   on the build container, scores per file recorded in
-   `docs/parity/aislop-baseline.json`. The fixing follows the score order
-   within a tier; the scanner does not fix anything (`aislop fix` is
-   mechanical formatting only and is NOT run — tabs/style are the repo's).
+   on the build container; the compact record is
+   `docs/parity/aislop-baseline.txt` (per-rule and per-file counts; the
+   4.5 MB JSON stays in `tmp/`). The fixing follows the score order within
+   a tier; the scanner does not fix anything (`aislop fix` is mechanical
+   formatting only and is NOT run — tabs/style are the repo's).
+
+   **Measured 2026-09-02 (aislop 0.16.0, 80 files): score 32 "Critical",
+   5754 diagnostics.** Read with the repo's conventions in hand:
+   - **5392 (94%) are four style rules that contradict house law**, not
+     defects: `cpp-null-literal` 3107 (the code uses `NULL`),
+     `cpp-c-style-cast` 1338, `cpp-iostream-leftover` 547 and
+     `cpp-endl-in-stream` 400 (the mandated `DBG(cout << ... << endl)`
+     diagnostics). They go in `.aislop/config.yml` as disabled BEFORE any
+     ratchet, or the score measures the style guide, not the code.
+   - **362 signal findings**: `function-too-long` 181 (max 80 lines —
+     parser.cpp 134 signal findings, cir_builder.cpp 75), `cpp-manual-delete`
+     79, `too-many-params` 46, `file-too-large` 16 (every core file),
+     `todo-stub` 14, `cpp-define-constant` 12, `deep-nesting` 7,
+     `unreachable-code` 6 (real: code after return/throw at
+     cir_builder.cpp:19486, lexer.cpp:9755, parser.cpp:36978/39619/54298/
+     68386 — check each), `security/shell-injection` 1 = `madc_system()`,
+     the runtime shim behind the LANGUAGE's `system()` call (by design;
+     suppress with a scoped `aislop-ignore-line`).
+   - **Zero `duplicated helpers` findings for C++** — the Rule #4 detector
+     does not reach this language, exactly the gap the plan assumed.
+     Duplication stays `/dupaudit`'s job; aislop's contribution here is the
+     size/nesting pressure that makes duplicates easier to see, plus the
+     dead-code and todo lists.
 2. **Ratchet**: `ci.failBelow` starts AT the measured baseline of the worst
    file and only ever moves UP; `fulltest` runs `aislop ci --changes --base
    origin/develop` so a change cannot lower a touched file's score.
