@@ -130,6 +130,19 @@ rm -f "$UMB_TMP.c"
 "$(dirname "$0")/gcc_posture_filter.sh" "${MADC_PREDEF_GCC_POSTURE:-}" \
     < "$UMB_TMP.raw" > "$UMB_TMP.flt"
 rm -f "$UMB_TMP.raw"
+# wchar_t is a KEYWORD in C++ ([lex.key]). Apple's <sys/_types/_wchar_t.h>
+# guards its typedef with #ifndef __cplusplus, and flattening under -x c
+# resolved that guard away: the umbrella then redeclared the built-in type
+# as `int` in every darwin C++ TU (libc++ reaches the prelude through its
+# include_next wrappers), and the alias shadowed the keyword's identity in
+# every DERIVED spelling — wchar_t* keyed int32_t*, 113 mixed wide-stream
+# keys in the frozen groves (basic_ostream<int32_t, char_traits<wchar_t>>).
+# Restore the source's guard around that one typedef — the single C/C++
+# text divergence in the C library surface (madc's own embedded stddef.h
+# carries the same guard, as gcc's and clang's do).
+awk '/^typedef .* wchar_t;$/ { print "#ifndef __cplusplus"; print; print "#endif"; next } { print }' \
+    "$UMB_TMP.flt" > "$UMB_TMP.grd"
+mv "$UMB_TMP.grd" "$UMB_TMP.flt"
 # The marker verify_macho_release.sh greps out of shipped binaries: the
 # embedded umbrella rides into .rodata verbatim (gen_embedded_headers.sh
 # string tables survive llvm-strip), so the binary itself names its

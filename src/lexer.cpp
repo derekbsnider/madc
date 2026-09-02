@@ -5687,12 +5687,22 @@ void Program::add_datatypes()
     // madc dialect or an explicit C++ mode at/after their introducing standard;
     // in explicit C modes the real header typedef supplies them (retire-
     // embedded-shims principle — do not preempt the real header).
+    // Registered here as KEYWORDS (TokenDataType::keyword): the typedef
+    // paths refuse to redeclare them, the way g++/clang++ do.
     if ( cpp_keyword_active(STD_CPP98) )
+    {
+	tkWCHAR_T.keyword = true;
 	datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    }
     if ( cpp_keyword_active(STD_CPP20) )
+    {
+	tkCHAR8_T.keyword = true;
 	datatype_map[tkCHAR8_T.str] = &tkCHAR8_T;
+    }
     if ( cpp_keyword_active(STD_CPP11) )
     {
+	tkCHAR16_T.keyword = true;
+	tkCHAR32_T.keyword = true;
 	datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
 	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
     }

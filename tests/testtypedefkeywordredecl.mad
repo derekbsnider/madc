@@ -1,0 +1,7 @@
+// [lex.key]: wchar_t is a keyword, and a typedef may not redeclare a C++
+// built-in type. g++: "redeclaration of C++ built-in type 'wchar_t'";
+// clang++: "cannot combine with previous 'int' declaration specifier".
+// madc used to accept the typedef silently, and the alias then shadowed the
+// keyword's identity in every derived spelling (wchar_t* keyed as int32_t*).
+typedef int wchar_t;
+int main() { return 0; }

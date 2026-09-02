@@ -28,7 +28,15 @@ typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #undef __need_ptrdiff_t
 #endif
 #ifdef __need_wchar_t
+// C++ has wchar_t as a KEYWORD ([lex.key]); gcc's stddef.h and clang's
+// __stddef_wchar_t.h both guard this typedef with #ifndef __cplusplus. An
+// unguarded typedef here redeclared the built-in type as `int` in every C++
+// TU, and the alias shadowed the keyword's identity (wchar_t* keyed as
+// int32_t*: libc++'s basic_string_view<wchar_t>::const_iterator shared one
+// reverse_iterator class with vector<int>'s).
+#ifndef __cplusplus
 typedef __WCHAR_TYPE__ wchar_t;
+#endif
 #undef __need_wchar_t
 #endif
 #ifdef __need_NULL
@@ -77,7 +85,9 @@ typedef __WINT_TYPE__ wint_t;
 // Target-shaped via the seeded __*_TYPE__ macros — see the __need arm above.
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef __SIZE_TYPE__ size_t;
+#ifndef __cplusplus	/* a keyword in C++ — see the __need_wchar_t arm */
 typedef __WCHAR_TYPE__ wchar_t;
+#endif
 
 // C11 max_align_t. The members' natural alignments (long long, long double)
 // give the platform's strictest fundamental alignment on both x86-64 (16,

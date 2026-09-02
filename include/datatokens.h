@@ -23,6 +23,13 @@ public:
     // which madc also pre-registers — so a redefinition check must be able
     // to tell madc's own registration apart from a user declaration.
     bool builtin = false;
+    // True for a LANGUAGE KEYWORD type ([lex.key]: wchar_t, char8_t,
+    // char16_t, char32_t — set where the lexer registers them under the
+    // standard that makes them keywords). Narrower than `builtin`: size_t
+    // or max_align_t are pre-registered names a header may legitimately
+    // typedef; a keyword may never be a typedef's alias name (g++:
+    // "redeclaration of C++ built-in type").
+    bool keyword = false;
     TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }

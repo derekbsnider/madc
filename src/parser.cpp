@@ -2038,10 +2038,35 @@ static bool is_typeof_identifier(const std::string &name)
 // identifiers arrive here the same way from C headers. TokenDataType and
 // TokenKeyword both derive from TokenIdent, so one cast reaches the virtual
 // spelling(). Returns NULL when the token cannot name a typedef alias.
-static const char *typedef_alias_spelling(TokenBase *tb)
+// The ONE acceptor of a typedef's ALIAS name: an identifier, an existing type
+// name being redeclared (C11 6.7p3, the identical-redeclaration rule), or a
+// keyword spelling C admits as an identifier. A LANGUAGE KEYWORD type
+// (TokenDataType::keyword — wchar_t/char8_t/char16_t/char32_t under the std
+// that makes them keywords) is never a typedef name: g++ says "redeclaration
+// of C++ built-in type 'wchar_t'", clang++ "cannot combine with previous
+// 'int' declaration specifier". madc accepted `typedef int wchar_t;` silently
+// and the alias then shadowed the keyword's identity in every DERIVED
+// spelling — bare `wchar_t` still went through the builtin table, but
+// `wchar_t*` resolved the alias and keyed int32_t* (the embedded stddef.h
+// carried exactly that typedef into every C++ TU: libc++'s
+// basic_string_view<wchar_t>::const_iterator shared ONE reverse_iterator
+// class with vector<int>'s, whose ctor then took a wchar_t*).
+static const char *typedef_alias_spelling(Program &pgm, TokenBase *tb)
 {
     if ( !tb )
 	return NULL;
+    // The flag lives on the REGISTRATION (the datatype_map entry the lexer
+    // marks, where the `builtin` twin is read too) — the token stream
+    // carries fresh mints of the name (make_datatype), never the
+    // registered object.
+    if ( tb->type() == TokenType::ttDataType )
+    {
+	flat_datatype_map_iter di =
+	    pgm.datatype_map.find(((TokenIdent *)tb)->spelling());
+	if ( di != pgm.datatype_map.end() && (*di)->keyword )
+	    pgm.Throw(tb) << "redeclaration of C++ built-in type '"
+			  << ((TokenIdent *)tb)->spelling() << "'" << flush;
+    }
     switch ( tb->type() )
     {
 	case TokenType::ttIdentifier:
@@ -42697,7 +42722,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// here, so this path must agree — otherwise valid C fails only
 		// because the body happens to be a struct. All three token kinds
 		// derive from TokenIdent, so the cast still reaches spelling().
-		if ( !typedef_alias_spelling(tn) )
+		if ( !typedef_alias_spelling(pgm, tn) )
 		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 		TokenIdent *alias = (TokenIdent *)tn;
 		alias_dd = pgm.parse_typedef_array_suffix(alias_dd, alias->spelling(), tn);
@@ -48408,7 +48433,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.nextToken();
 	    }
 	    TokenBase *ntok = pgm.nextToken();
-	    const char *nsp = ntok ? typedef_alias_spelling(ntok) : NULL;
+	    const char *nsp = ntok ? typedef_alias_spelling(pgm, ntok) : NULL;
 	    if ( !nsp )
 		pgm.Throw(ntok ? ntok : tn)
 		    << "Expecting alias name in typedef declarator list" << flush;
@@ -48450,12 +48475,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw << "Unexpected end of input in typedef enum" << flush;
 
 	std::string alias;
-	if ( tn->type() == TokenType::ttIdentifier )
-	    alias = ((TokenIdent *)tn)->spelling();
-	else if ( tn->type() == TokenType::ttDataType )
-	    alias = ((TokenDataType *)tn)->spelling();
-	else if ( tn->type() == TokenType::ttKeyword )
-	    alias = ((TokenKeyword *)tn)->spelling();
+	// Same acceptance set as every other typedef arm — ONE owner
+	// (typedef_alias_spelling), so a keyword type is refused here too.
+	if ( const char *alias_sp = typedef_alias_spelling(pgm, tn) )
+	    alias = alias_sp;
 	else
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
@@ -48672,7 +48695,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     tn = pgm.nextToken();
     TokenBase *alias_tok = tn;   // per-occurrence alias token (CIR origin)
     std::string alias;
-    if ( const char *alias_sp = typedef_alias_spelling(tn) )
+    if ( const char *alias_sp = typedef_alias_spelling(pgm, tn) )
 	alias = alias_sp;
     else if ( tn && tn->id() == TokenID::tkSemi
 	   && pgm.is_system_header_path(TokenBase::_parse_file) )
