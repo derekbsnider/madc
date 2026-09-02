@@ -91,7 +91,17 @@ inline bool target_int64_is_longlong()
 class DataDef;
 DataDef *dd_platform_long();
 DataDef *dd_platform_ulong();
+// wchar_t / char16_t / char32_t are DISTINCT fundamental types on every
+// target (never a typedef of their storage type): the target-shaped
+// DataDefPlatformWCHAR singleton (int32 storage on LP64, uint16 on LLP64)
+// and the fixed DataDefCHAR16 / DataDefCHAR32 singletons, typeid-pinned
+// (MADC_TYPEID_PLATFORM_WCHAR / CHAR16 / CHAR32). Their NAME is the C++
+// spelling, so every identity former (template keys, __is_same, the
+// mangler's w / Ds / Di) sees the distinct type without a spelling
+// carve-out.
 DataDef *dd_platform_wchar();
+DataDef *dd_char16();
+DataDef *dd_char32();
 // `long long` / `unsigned long long`: ddINT64/ddUINT64 everywhere EXCEPT
 // the LP64-with-longlong-int64-alias target (darwin), where they are the
 // distinct 8-byte DataDefPlatformLONGLONG/ULONGLONG singletons (typeid
@@ -1591,6 +1601,22 @@ class DataDefPlatformLONGLONG:  public DataDef { public:
 	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
 class DataDefPlatformULONGLONG: public DataDef { public:
 	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
+// wchar_t / char16_t / char32_t (datadef.h decls above): distinct
+// fundamental types whose STORAGE is an integer DataType (so every width /
+// codegen consumer treats them as that integer, which IS the ABI) but whose
+// identity is their own — the NAME feeds template keys, __is_same and the
+// Itanium mangler (w / Ds / Di). NEVER instantiate directly:
+// dd_platform_wchar() / dd_char16() / dd_char32() (parser.cpp) are the one
+// owner. wchar_t is target-shaped (int32 on LP64, uint16 on LLP64 — the
+// accessor decides at first use, after the data model is known).
+class DataDefPlatformWCHAR: public DataDef { public:
+	DataDefPlatformWCHAR(): DataDef("wchar_t", target_llp64() ? 2 : 4,
+					target_llp64() ? DataType::dtUINT16
+						       : DataType::dtINT32) {} };
+class DataDefCHAR16: public DataDef { public:
+	DataDefCHAR16(): DataDef("char16_t", 2, DataType::dtUINT16) {} };
+class DataDefCHAR32: public DataDef { public:
+	DataDefCHAR32(): DataDef("char32_t", 4, DataType::dtUINT32) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
 // caps simple types at 8, which is correct for every other scalar except
 // long double — see DataDefLDOUBLE below).

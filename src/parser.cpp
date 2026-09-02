@@ -2910,8 +2910,8 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     if ( name == "size_t" ) return &ddUINT64;
     if ( name == "ptrdiff_t" ) return &ddINT64;
     if ( name == "wchar_t" ) return dd_platform_wchar();
-    if ( name == "char16_t" ) return &ddUINT16;
-    if ( name == "char32_t" ) return &ddUINT32;
+    if ( name == "char16_t" ) return dd_char16();
+    if ( name == "char32_t" ) return dd_char32();
     if ( name == "max_align_t" ) return &ddMAX_ALIGN_T;
     if ( name == "LPSTR" ) return &ddLPSTR;
     if ( name == "auto" ) return &ddAUTO;
@@ -4159,12 +4159,9 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 {
     if ( !adt )
 	return cv_spelling;
-    // These are distinct C++ template argument spellings even though madc maps
-    // their storage to integer DataDefs internally. Keep the source spelling so
-    // explicit specializations such as `char_traits<wchar_t>` are found.
-    if ( adt->spelling_is("wchar_t") || adt->spelling_is("char16_t")
-      || adt->spelling_is("char32_t") )
-	return cv_spelling + adt->spelling();
+    // wchar_t / char16_t / char32_t need no spelling carve-out any more: they
+    // are distinct dds whose NAME is the C++ spelling (dd_platform_wchar /
+    // dd_char16 / dd_char32), so the identity rule below spells them.
     // A REFERENCE template argument (`tuple<const int&>`) must render with `&`,
     // NOT the ref-as-pointer `*` form. madc lowers references to pointers
     // (DataDefREF IS-A DataDefPTR), so a reference's name/canonical spelling is
@@ -17054,14 +17051,37 @@ DataDef *dd_platform_ulong()
     return dd;
 }
 
-// wchar_t: 4-byte int-shaped on LP64 (glibc/Itanium int32), 2-byte unsigned
-// on LLP64 (mingw/MSVC unsigned short). Width identity only — both targets
-// approximate wchar_t through an existing fixed-width dd (Linux has always
-// used ddINT32); a distinct 'w'-mangling wchar dd is a separate, pre-existing
-// gap on both targets.
+// wchar_t: a DISTINCT fundamental type whose storage is int32 on LP64
+// (glibc / Apple: Itanium w over int) and uint16 on LLP64 (mingw / MSVC
+// unsigned short). Lazy singleton, model read at first use (the
+// dd_platform_long pattern). It used to RETURN the storage dd itself
+// (ddINT32 / ddUINT16), so a wchar_t-bound template argument spelled
+// "int32_t", ctype<wchar_t>'s explicit specialization (keyed wchar_t by a
+// token carve-out) was invisible to dd-borne uses and the memberless
+// primary instantiated (6 darwin + 4 linux pack errors; every wide stream
+// facet); __is_same(int, char_traits<wchar_t>::char_type) said true.
 DataDef *dd_platform_wchar()
 {
-    return target_llp64() ? (DataDef *)&ddUINT16 : (DataDef *)&ddINT32;
+    static DataDefPlatformWCHAR *dd = NULL;
+    if ( !dd )
+	dd = new DataDefPlatformWCHAR();
+    return dd;
+}
+
+DataDef *dd_char16()
+{
+    static DataDefCHAR16 *dd = NULL;
+    if ( !dd )
+	dd = new DataDefCHAR16();
+    return dd;
+}
+
+DataDef *dd_char32()
+{
+    static DataDefCHAR32 *dd = NULL;
+    if ( !dd )
+	dd = new DataDefCHAR32();
+    return dd;
 }
 
 // `long long` (datadef.h): distinct from `long` ONLY where the two must
@@ -17789,6 +17809,10 @@ DataDef *madc_primitive_for_slot(uint32_t slot)
 		case MADC_TYPEID_PLATFORM_ULONGLONG:
 			return (!target_llp64() && target_int64_is_longlong())
 				? dd_platform_ulonglong() : NULL;
+		// Distinct on every target: always the accessor's singleton.
+		case MADC_TYPEID_PLATFORM_WCHAR:	return dd_platform_wchar();
+		case MADC_TYPEID_CHAR16:		return dd_char16();
+		case MADC_TYPEID_CHAR32:		return dd_char32();
 		default:			return NULL;
 	}
 }
@@ -33756,10 +33780,6 @@ std::string Program::canonical_template_arg_spelling(const std::string &spelling
     }
     if ( core.empty() )
 	return std::string();
-    // Distinct C++ argument spellings that share integer storage keep their
-    // source spelling — the template_type_arg_spelling carve-out.
-    if ( core == "wchar_t" || core == "char16_t" || core == "char32_t" )
-	return spelling;
     if ( core.find('<') == std::string::npos )
     {
 	if ( DataDef *dd = resolve_builtin_type_spelling(core) )
@@ -33855,72 +33875,68 @@ std::string Program::canonical_arg_key_fragment(
     // spelling ("int"), use sites look up the canonical one ("int32_t"), and
     // the primary is silently instantiated instead
     // (__numeric_traits_integer<int>::__max folding to ~0 broke std::stoi's
-    // range check). wchar_t/char16_t/char32_t keep their distinct C++
-    // spellings — the identical carve-out template_type_arg_spelling applies
-    // (they share integer storage but are distinct template-argument types).
-    if ( spelling != "wchar_t" && spelling != "char16_t"
-      && spelling != "char32_t" )
+    // range check). wchar_t/char16_t/char32_t are distinct dds named by
+    // their C++ spelling (dd_platform_wchar / dd_char16 / dd_char32), so
+    // they take this same path — no spelling carve-out.
+    if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
     {
-	if ( DataDef *dd = resolve_builtin_type_spelling(spelling) )
+	const std::string &cs = dd->canonical_cpp_spelling();
+	return sanitize_template_arg_fragment(cs.empty() ? dd->name : cs);
+    }
+    // A USER-type argument follows the same one-key rule: the fragment
+    // comes from the RESOLVED type's canonical spelling, not the source
+    // text. A specialization written inside its own namespace spells the
+    // arg UNQUALIFIED (`_IterOps<_ClassicAlgPolicy>` in std::__1; the
+    // reducer's `ops<pol>` in lib), while a use site's binding spells it
+    // qualified ("lib::pol") — raw spellings form DIFFERENT keys, the
+    // spec goes invisible, and the declared-only PRIMARY instantiates
+    // empty ("'f' is not a member function"). A trailing declarator
+    // suffix survives into the fragment; only a clean single-name core
+    // resolves — anything else keeps the raw spelling exactly as before.
+    std::string core = spelling, sfx;
+    while ( !core.empty()
+	 && (core[core.size()-1] == '*' || core[core.size()-1] == '&'
+	  || core[core.size()-1] == ' ') )
+    {
+	if ( core[core.size()-1] != ' ' )
+	    sfx = std::string(1, core[core.size()-1]) + sfx;
+	core.erase(core.size() - 1);
+    }
+    if ( !core.empty() && core.find('<') == std::string::npos )
+	if ( DataDef *cdd = resolve_named_datadef(core) )
 	{
-	    const std::string &cs = dd->canonical_cpp_spelling();
-	    return sanitize_template_arg_fragment(cs.empty() ? dd->name : cs);
+	    const std::string &cs = cdd->canonical_cpp_spelling();
+	    if ( !cs.empty() && cs != core )
+		return sanitize_template_arg_fragment(cs + sfx);
+	    // No canonical C++ spelling: the resolved DataDef's registered
+	    // NAME is the identity. A typedef of an ANONYMOUS aggregate
+	    // (`typedef struct {...} mbstate_t` -> __anon_N) otherwise
+	    // keeps the raw typedef here while every DataDef-driven lane
+	    // (the ClassPattern replay) spells the same argument by name —
+	    // one type split across two keys, so the
+	    // codecvt<char,char,mbstate_t> explicit spec went invisible to
+	    // the pattern materializer's base resolve under --freeze-run.
+	    if ( cs.empty() && !cdd->name.empty() && cdd->name != core )
+		return sanitize_template_arg_fragment(cdd->name + sfx);
 	}
-	// A USER-type argument follows the same one-key rule: the fragment
-	// comes from the RESOLVED type's canonical spelling, not the source
-	// text. A specialization written inside its own namespace spells the
-	// arg UNQUALIFIED (`_IterOps<_ClassicAlgPolicy>` in std::__1; the
-	// reducer's `ops<pol>` in lib), while a use site's binding spells it
-	// qualified ("lib::pol") — raw spellings form DIFFERENT keys, the
-	// spec goes invisible, and the declared-only PRIMARY instantiates
-	// empty ("'f' is not a member function"). A trailing declarator
-	// suffix survives into the fragment; only a clean single-name core
-	// resolves — anything else keeps the raw spelling exactly as before.
-	std::string core = spelling, sfx;
-	while ( !core.empty()
-	     && (core[core.size()-1] == '*' || core[core.size()-1] == '&'
-	      || core[core.size()-1] == ' ') )
+    // A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
+    // a use site spells the RESOLVED type canonically
+    // (`alloc9<int32_t>`, namespace-qualified), so an explicit
+    // specialization registered from the raw source spelling forms a
+    // DIFFERENT key, goes invisible to its uses, and the primary
+    // instantiates silently in its place (tests/testspectemplid.mad).
+    // Canonicalize recursively; an unresolvable spelling keeps the raw
+    // fragment exactly as before.
+    if ( !core.empty() && core.find('<') != std::string::npos )
+    {
+	std::string cs = canonical_template_arg_spelling(spelling);
+	if ( !cs.empty() && cs != spelling )
 	{
-	    if ( core[core.size()-1] != ' ' )
-		sfx = std::string(1, core[core.size()-1]) + sfx;
-	    core.erase(core.size() - 1);
-	}
-	if ( !core.empty() && core.find('<') == std::string::npos )
-	    if ( DataDef *cdd = resolve_named_datadef(core) )
-	    {
-		const std::string &cs = cdd->canonical_cpp_spelling();
-		if ( !cs.empty() && cs != core )
-		    return sanitize_template_arg_fragment(cs + sfx);
-		// No canonical C++ spelling: the resolved DataDef's registered
-		// NAME is the identity. A typedef of an ANONYMOUS aggregate
-		// (`typedef struct {...} mbstate_t` -> __anon_N) otherwise
-		// keeps the raw typedef here while every DataDef-driven lane
-		// (the ClassPattern replay) spells the same argument by name —
-		// one type split across two keys, so the
-		// codecvt<char,char,mbstate_t> explicit spec went invisible to
-		// the pattern materializer's base resolve under --freeze-run.
-		if ( cs.empty() && !cdd->name.empty() && cdd->name != core )
-		    return sanitize_template_arg_fragment(cdd->name + sfx);
-	    }
-	// A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
-	// a use site spells the RESOLVED type canonically
-	// (`alloc9<int32_t>`, namespace-qualified), so an explicit
-	// specialization registered from the raw source spelling forms a
-	// DIFFERENT key, goes invisible to its uses, and the primary
-	// instantiates silently in its place (tests/testspectemplid.mad).
-	// Canonicalize recursively; an unresolvable spelling keeps the raw
-	// fragment exactly as before.
-	if ( !core.empty() && core.find('<') != std::string::npos )
-	{
-	    std::string cs = canonical_template_arg_spelling(spelling);
-	    if ( !cs.empty() && cs != spelling )
-	    {
-		static const char *cfp = ::getenv("MADC_ARGFRAG_PROBE");
-		if ( cfp )
-		    std::cerr << "[argfrag] '" << spelling << "' -> '" << cs
-			<< "'" << std::endl;
-		return sanitize_template_arg_fragment(cs);
-	    }
+	    static const char *cfp = ::getenv("MADC_ARGFRAG_PROBE");
+	    if ( cfp )
+		std::cerr << "[argfrag] '" << spelling << "' -> '" << cs
+		    << "'" << std::endl;
+	    return sanitize_template_arg_fragment(cs);
 	}
     }
     return sanitize_template_arg_fragment(spelling);

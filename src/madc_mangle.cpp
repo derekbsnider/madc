@@ -85,6 +85,8 @@ static std::string builtin_code(const std::string &t)
 	if (t == "double")              return "d";
 	if (t == "long double")         return "e";
 	if (t == "wchar_t")             return "w";
+	if (t == "char16_t")            return "Ds";
+	if (t == "char32_t")            return "Di";
 	if (t == "...")                 return "z";   // trailing ellipsis
 
 	// Fixed-width / width-carrying aliases. The 64-bit rows follow the

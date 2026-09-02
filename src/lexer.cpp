@@ -912,8 +912,8 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
     // dd_platform_wchar()), U'' -> char32_t (uint32), u'' -> char16_t
     // (uint16), u8'' -> char8_t (uint8).
-    ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
-		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
+    ti->setDataType(prefix == "U" ? dd_char32()
+		  : prefix == "u" ? dd_char16()
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
 		  : dd_platform_wchar());
     return ti;
@@ -5630,8 +5630,8 @@ void Program::add_datatypes()
     // would need these statics revisited.
     static TokenDataType tkWCHAR_T("wchar_t", *dd_platform_wchar());
     static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
-    static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
-    static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
+    static TokenDataType tkCHAR16_T("char16_t", *dd_char16());
+    static TokenDataType tkCHAR32_T("char32_t", *dd_char32());
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
     // _Float16 rides the same nearest-supported approximation the other
     // _FloatN spellings use (MIR has no half-float): declarations parse;
