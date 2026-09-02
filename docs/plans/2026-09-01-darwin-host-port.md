@@ -534,6 +534,18 @@ SDK/cross facts).
      REJECTED by the container: inline libc definitions (`__bswap_16`) and
      the script-mode file-scope check made the sub-parse leave partial
      registrations behind — the arena route has no parser in it.
+     **Cost, measured on the release binary:** a zero-include printf hello
+     is 16 ms with println only; the first arena-route cut made it 50 ms
+     (27 ms of it `materialize_pass` building the whole derived population
+     for one admitted name — a closure-shaped filter keeps every unindexed
+     record); `CirMaterializeFilter::exact` (only the asked-for names and
+     their pulled references; a NEW name is growth; a later closure filter
+     widens it) brings it to 21 ms, under the tcc bar; the `#include
+     <stdio.h>` twin is 31 ms. The derived UNRESOLVED census is skipped
+     for an exact pass and reported once per forest across widened
+     re-passes — a re-pass had re-reported every id and forest_pack_gate
+     read DK_NONE 110 vs baseline 55 (a doubled count, not a regression).
+     Landed @5393bf34 (fix) + @eeba65de (posture/fixtures/advisory).
   2. **`__BLOCKS__` in the darwin predefined table — ~20, both arches.**
      A clang feature claim GCC never makes; on a Mac WITH the Command Line
      Tools installed, Apple's real SDK headers (`_stdlib.h` atexit_b /
