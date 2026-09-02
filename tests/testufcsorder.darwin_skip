@@ -1,0 +1,1 @@
+UFCS fires only for an UNDECLARED free name by design (the trigger is "no declared free f", not "declared but not viable"); the darwin prelude is one flattened umbrella, so any include declares strlen and the member-vs-dlsym ordering this test pins never arises here

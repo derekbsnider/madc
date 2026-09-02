@@ -17,8 +17,9 @@
 # D4 adds THE FULL-SUITE macOS LANE: scripts/run_tests.sh (JIT + exe passes)
 # against the release-shaped binary — the packed-suite analogue Linux and
 # Windows have had, never run on a Mac before. Domain posture
-# MADC_SKIP_EXT=darwin (tests/<base>.darwin_{skip,expect,exe_skip} fixtures
-# for genuinely divergent tests, oracle = clang on the runner) and
+# MADC_SKIP_EXT="darwin libcxx" (tests/<base>.darwin_{skip,expect,exe_skip}
+# fixtures for genuinely divergent tests, oracle = clang on the runner; the
+# libcxx domain because the platform's stdlib flavor is libc++) and
 # MADC_EXE_FLAGS=-static-libmadc (an Apple-target program that needs the madc
 # runtime fails at emit without it: no libmadc dylib ships until D5 — the
 # darwin AOT lane IS the static one). The --obj pass is out of the darwin
@@ -164,7 +165,11 @@ jobs:
           # runner's. Wall time is measured here, not assumed.
           date -u +%FT%TZ
           set +e
-          MADC_BIN=bin/madc-release-${{ matrix.arch }}-macos MADC_SKIP_EXT=darwin \
+          # Two domains: darwin (platform) and libcxx — the platform's stdlib
+          # flavor IS libc++, so the .libcxx_skip fixtures (tests of libstdc++
+          # internals) apply here exactly as on the container's -stdlib=libc++
+          # parity lane.
+          MADC_BIN=bin/madc-release-${{ matrix.arch }}-macos MADC_SKIP_EXT="darwin libcxx" \
           MADC_EXE_FLAGS=-static-libmadc MADC_FAIL_DETAIL=12 \
           MADC_EXE_ADVISORY="darwin exe lane is advisory until the runtime dylib ships (D5): -static-libmadc cannot cover the dialect runtime (Tier B)" \
             bash scripts/run_tests.sh --exe 2>&1 | tee suite.log
