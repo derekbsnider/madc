@@ -70,6 +70,14 @@
 # without -static-libmadc (no libmadc dylib ships yet), so the darwin lane
 # runs with MADC_EXE_FLAGS=-static-libmadc. Empty on the default lane.
 #
+# MADC_EXE_ADVISORY (env): non-empty = the EXE pass REPORTS but does not gate
+# the exit status, and the summary names the reason (the value). For a domain
+# whose native-artifact lane is structurally incomplete for a stated reason —
+# darwin until the runtime dylib ships (D5): -static-libmadc cannot cover the
+# dialect runtime (Tier B), so every runtime-needing program fails at link —
+# while the JIT pass gates as usual. Never silent: the reason is printed on
+# the summary line every run. Empty (default) = the EXE lane gates.
+#
 # MADC_FAIL_DETAIL (env): N > 0 prints, under each FAIL line, the exit code
 # and the first N lines of the failing leg's stdout/stderr (and the first
 # unmet .expect line) as indented `  | ` lines. For lanes whose host cannot
@@ -99,6 +107,7 @@ export MADC_BIN="$MADC"
 MADC_WRAPPER="${MADC_WRAPPER:-}"
 MADC_EXE_FLAGS="${MADC_EXE_FLAGS:-}"
 MADC_FAIL_DETAIL="${MADC_FAIL_DETAIL:-0}"
+MADC_EXE_ADVISORY="${MADC_EXE_ADVISORY:-}"
 # detail <label> <text>: the first $MADC_FAIL_DETAIL lines of <text>, indented.
 detail() {
     [ "$MADC_FAIL_DETAIL" -gt 0 ] || return 0
@@ -457,7 +466,11 @@ if [ -n "$MADC_SKIP_EXT" ]; then
 fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
-    echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
+    if [ -n "$MADC_EXE_ADVISORY" ]; then
+        echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests) — ADVISORY, not gating: $MADC_EXE_ADVISORY"
+    else
+        echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
+    fi
 fi
 if [ $RUN_OBJ -eq 1 ]; then
     echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
@@ -471,5 +484,5 @@ fi
 # piping a suite through `tail` — the verdict came from a line nobody read
 # instead of the exit code. A lane that did not run has a 0 counter, so these
 # are unconditional.
-[ $EXE_FAIL -eq 0 ] || exit 1
+[ $EXE_FAIL -eq 0 ] || [ -n "$MADC_EXE_ADVISORY" ] || exit 1
 [ $OBJ_FAIL -eq 0 ] || exit 1

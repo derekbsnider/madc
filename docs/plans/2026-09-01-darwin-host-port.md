@@ -503,6 +503,83 @@ SDK/cross facts).
   upload-artifact v7, download-artifact v8, cache v6) — release.yml's
   bump is proven by its next dispatch. Job timeout 150 min until the
   suite's wall time is measured.
+  **FIRST MEASUREMENT (2026-09-02, runs 33593948720 + 33594687050 with
+  `MADC_FAIL_DETAIL`):** arm64 JIT 1049/202 (0 timeouts), EXE 820/176;
+  Intel JIT 1160/91, EXE 894/212. 90 JIT failures are common, 112 are
+  arm64-only, 1 Intel-only. The suite runs in ~4 min per leg. Root-cause
+  classes (the diagnostics travel with the verdict now):
+  1. **Apple arm64 variadic marshalling through the dlsym K&R guess —
+     ~112 arm64-only.** Every zero-include `printf(...)` script: madc's
+     dynamic-symbol fallback declared an undeclared libc name as
+     `int printf()` (K&R, zero parameters); c2mir compiles a K&R call with
+     every argument NAMED (registers), while a variadic callee on Apple
+     arm64 reads its variadic arguments from the STACK (MIR's `__APPLE__`
+     arm ends named args at the proto's count). Wrong values, addresses
+     printed for ints, SIGSEGV/SIGBUS in the printf family. Linux and
+     x86_64 were forgiving (named and variadic travel alike). Fix at the
+     declaration layer, GCC canon (the builtin's real prototype for a known
+     library function): `Program::forest_adopt_declared_function()` —
+     the pack's declaration index says the name is a bare library
+     function, the arena's FuncDef is materialized through the same
+     `materialize_for` the bound-include restore uses (widened by that one
+     name) and registered through `register_forest_func`, the one owner of
+     restored function registration; adoption is limited to VARIADIC
+     callees in a C-primitive shape (the K&R call is ABI-correct for every
+     non-variadic callee; FILE*/unknown typedefs are exactly where gcc's
+     builtins stop too). The dev lane (bin/madc, live headers, no
+     container) keeps the guess; the forest-bound lanes adopt. Reducer
+     tests/testimplicitlibcproto (`--emit=c11`; strong .headerless_expect
+     + .darwin_expect, weak dev .expect). A first token-slice version
+     (parse the pack's prototype tokens through the statement parser) was
+     REJECTED by the container: inline libc definitions (`__bswap_16`) and
+     the script-mode file-scope check made the sub-parse leave partial
+     registrations behind — the arena route has no parser in it.
+  2. **`__BLOCKS__` in the darwin predefined table — ~20, both arches.**
+     A clang feature claim GCC never makes; on a Mac WITH the Command Line
+     Tools installed, Apple's real SDK headers (`_stdlib.h` atexit_b /
+     qsort_b, ...) take their block branches and madc fails at the first
+     `(^)` declarator. Dropped in `gcc_posture_filter.sh`, the ONE posture
+     filter (with `__clang__`/`__llvm__`/`__VERSION__`).
+  3. **`-static-libmadc` cannot cover the dialect runtime (Tier B) — 169
+     arm64 / 212 Intel exe-build failures, one message.** Every
+     runtime-needing program: `madc_puti` & co. exist only as host
+     objects. Owned by D5 (the runtime dylib). Until then the darwin exe
+     lane is ADVISORY: `MADC_EXE_ADVISORY=<reason>` (run_tests.sh; the
+     reason prints on the summary line every run) — not 169 per-test
+     fixtures for one cause. The 7 FAIL(exe) that DID link (php dumps
+     printing addresses for ints, testprefixincderef) are the varargs class
+     inside an AOT image and re-measure after fix 1.
+  4. **Frozen-grove libc++ template gaps — ~35, both arches:**
+     `__ns_std____1_max` undefined import (16), `basic_string
+     __init_with_sentinel` (5), `list::__base_pointer` ClassPattern (3),
+     `initializer_list` private `__begin_` (2), istream `traits_type`,
+     `__tree` / `unwrap_iter` c2mir warnings (8), `str()` husks — the
+     served-grove fidelity family (pack-degradation baseline, KG gaps).
+     These PASS on the container's live-header libc++ lane: the grove
+     serving is the layer. Own slices.
+  5. **Genuine platform divergences → darwin fixtures:** testsysobject
+     (`platform: darwin`), testfcntl (`O_NDELAY=4`, SDK oracle), testdirent
+     (`sizeof=1048`, Apple dirent) as `.darwin_expect`; testdlopen
+     (libc.so.6), testsysrootinc (sys/sysinfo.h), testbuildnative /
+     testparserun / testmadcide (native build of a runtime-needing program
+     refused until D5) as `.darwin_skip` with the reason.
+  6. **Apple x86_64 `$INODE64` — Intel-only (teststat, testdirent's
+     regs_gt0):** `stat`/`readdir` bind the LEGACY 32-bit-inode symbols on
+     x86_64 while the prelude's structs are the 64-bit-inode layout; Apple
+     redirects through `__asm("_stat$INODE64")` labels on the declarations
+     (arm64 has no legacy variant). madc must honor asm labels on function
+     declarations for the hosted-x86-64-macos target. Own slice.
+  7. **long double on Apple arm64 is double (8 bytes)** — madc reports
+     `sizeof(long double)=16` and c2mir/MIR see `ldouble` where the target
+     has `double` (testlongdouble, testldblalign, testcomplexretconv,
+     testsignalingnan). Target type-model bug. Own slice.
+  8. Remaining singles after the re-measure: testint128 (MIR proto result
+     type, arm64), testgccvectorsizeexprbitwise (aarch64 SIMD insn
+     matching), teststringsize (libc++ `sizeof(std::string)=24` — a
+     `.darwin_expect` once the grove family is clean), testtypedefarg
+     (`0 0 0 0`, both arches), the eval-family / exec-channel / ui
+     segfaults (arm64; re-measure after fix 1), testhttpget/testtcpchannel
+     (first byte lost, arm64).
 - **D5 — PK3-mac-runtime.** `libmadc-0.dylib` (whole-archive
   `LIBMADC_STATIC`, the `libmadc-0.dll` recipe), the darwin emit lane
   naming `@rpath/@executable_path/../lib`, tarball staging, madcide
