@@ -1217,6 +1217,16 @@ std::string DataDef::mangle_scalar_spelling() const
 		return "";
 	if (basetype() != BaseType::btSimple)
 		return "";
+	return target_scalar_spelling();
+}
+
+// The ONE DataType -> target C spelling table (declared in datadef.h). Two
+// askers: the desugar above, for plain scalar aliases, and the type model
+// (madc_stamp_primitive_type_ids), for a PINNED builtin whose display name
+// is not this target's spelling of the type. No alias guard here — that is
+// the desugar's concern, not the table's.
+std::string DataDef::target_scalar_spelling() const
+{
 	switch (rawtype()) {
 	case DataType::dtBOOL:    return "bool";
 	case DataType::dtUINT8:   return "unsigned char";

@@ -392,6 +392,13 @@ public:
     // spelling). Itanium mangling encodes canonical types, never typedef
     // names. Defined in src/madc_mangle.cpp.
     std::string mangle_scalar_spelling() const;
+    // The one DataType -> target C spelling table behind it: "long" /
+    // "unsigned long" for the 64-bit rows on LP64, the `long long` forms on
+    // LLP64, "" for a DataType that is not a plain scalar. No alias guard:
+    // the type model asks it for the PINNED builtins whose display name is
+    // not this target's spelling of the type (see
+    // madc_stamp_primitive_type_ids). Defined in src/madc_mangle.cpp.
+    std::string target_scalar_spelling() const;
     // Strict-equality (===) type-domain identity: do two types share one
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
@@ -1423,7 +1430,7 @@ public:
     bool is_unique_public_nonvirtual_base(DataDefCLASS *b, size_t *off) const;
     // Collect all (transitive) virtual bases, deduped, in canonical order.
     void collect_vbases(std::vector<DataDefCLASS *> &out,
-			std::set<DataDefCLASS *> &seen) const;
+			std::set<DataDefCLASS *> &seen, int depth = 0) const;
     // Virtual function table
     std::vector<std::string> vtable_slots; // method names in vtable slot order
     std::map<std::string, bool> virtual_methods;  // names of methods declared virtual

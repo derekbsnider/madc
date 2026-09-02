@@ -605,7 +605,50 @@ SDK/cross facts).
      sets FuncDef::emit_symbol (the LIBRARY link symbol the arena record
      carries and call_emit_symbol reads first). Runner-verified only (no
      Intel Mac at hand).
-  **STILL OPEN after batch 2 (next wave, in value order):**
+  **WAVE 2 (2026-09-02) — the first two STILL-OPEN items below are CLOSED:**
+  - **`long` vs `long long` identity: FIXED** (the type model, one data rule).
+    Root cause traced with a probe: the use site spelled the resolved pinned
+    dd by its DISPLAY name "int64_t" (`template_type_arg_spelling`'s
+    `canonical spelling, else display name` fallback) and
+    `canonical_arg_key_fragment` re-resolved that string through the
+    SOURCE-spelling table, whose int64_t row is the distinct `long long` dd
+    on Apple; the specialization side keyed the raw token `long` to int64_t.
+    Same flip in `canonical_template_binding_dd` (deduced size_t bound
+    `std::max<unsigned long long>`). Fix: `madc_stamp_primitive_type_ids`
+    stamps a canonical spelling — `DataDef::target_scalar_spelling()`, the
+    mangler's DataType→C table lifted out as the one owner — on exactly the
+    pinned dds whose display name does not round-trip through the table
+    (darwin: ddINT64 `long`, ddUINT64 `unsigned long`; glibc/LLP64 stamp
+    nothing). The binding canonicalizer keeps a dd whose canonical spelling
+    resolves to itself. Exposed and fixed on the way: the class-scope
+    typedef arm compared the source spelling to the display NAME (now the
+    identity spelling) — it had minted `typedef _Tp type` as a new type and
+    `common_type<long,long>` derived from itself; `collect_vbases` now
+    aborts naming a self-based class instead of overflowing the stack.
+    Reducer: `tests/testtplargidentity.mad`. **Reproduce darwin identity on
+    the container**: `bin/madc-arm64-macos --std=c++17 --no-config
+    --no-sysroot-includes --emit=c11 <reducer>` (the Linux-hosted cross
+    freezer carries the darwin type model). Darwin pack 64→66 with the
+    reason stated in the baseline file: same corpus, pre/post freezers
+    diffed, one line differs — `__atomic_is_lock_free` 10→12, the known
+    cross-freezer dlsym leak reached by the `long`/`unsigned long`
+    `__atomic_base` instantiations that no longer alias `long long`; the
+    linux pack is byte-identical (93).
+  - **Strict-mode `<stddef.h>` inside served libc++: FIXED @4fbcae4d.**
+    `embedded_header_outranked` and `embedded_wins_include_next` adopt
+    `resolved_include_provider_exists()` (disk OR pack) — the pack counts as
+    a directory. Mac-verified on a header-less Mac.
+  - **NEW — wchar_t template-argument identity (KG Gap
+    `wchar_t_template_arg_identity`):** a wchar_t-bound argument that arrives
+    as a dd spells its storage dd's display name "int32_t", so
+    `ctype<wchar_t>`'s explicit specialization is invisible and the
+    memberless primary instantiates (6 of the 66 darwin pack errors, 4 in
+    the linux pack; `__is_same(int, char_traits<wchar_t>::char_type)` is
+    TRUE today). The token carve-out and the class-typedef alias are
+    spelling patches over a missing type identity; fix = a distinct wchar_t
+    dd (Itanium `w`). Same family as the long fix, one type over.
+
+  **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
     5).** Apple's headers alias int64_t/uint64_t to `long long`, a distinct

@@ -103,5 +103,18 @@
 # husks in a container-frozen forest and resolve in a natively frozen one (KG
 # Gap cross_freeze_host_dlsym_leak). The baseline stays the CROSS number
 # while the container lane is canonical; a native lane reports IMPROVED.
-64 darwin pack-errors
+# darwin 64 -> 66 (2026-09-02, darwin-host D4 wave 2): the long/long long
+# IDENTITY fix (ddINT64/ddUINT64 carry their target C spelling as canonical
+# where their display name is another type's source spelling; the class-scope
+# typedef arm compares the source spelling to the dd's IDENTITY spelling, not
+# its display name). Measured by freezing the same corpus with the pre-fix
+# freezer (a HEAD worktree) and the post-fix one and diffing the error
+# histograms: ONE line differs — `__atomic_is_lock_free` 10 -> 12. That is the
+# cross-freezer dlsym leak documented above (KG Gap cross_freeze_host_dlsym_leak),
+# reached by two more instantiations: __atomic_base<long>::is_lock_free and
+# __atomic_base<unsigned long>::is_lock_free are now DISTINCT from the
+# long long ones instead of aliasing them, exactly as the type model says.
+# A native darwin freeze (libSystem has the symbol) reports lower. Every
+# other class is byte-identical to the 64 run.
+66 darwin pack-errors
 1 darwin mir-blob-skips

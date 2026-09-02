@@ -25,7 +25,7 @@ documented as the owner, and was not adopted.**
 |---|---|---|---|
 | "does this directory supply header X" (include precedence) | 3 predicates, 2 filesystem-only | `Program::resolved_include_provider_exists()` — "the one existence predicate" per its own comment | header-less Mac: embedded `<stddef.h>` shadowed libc++'s wrapper unit, `#include <iostream>` #errored (fixed 4fbcae4d by adoption) |
 | "what is this scalar type's canonical spelling" | 6 spelling formers + 3 DataType→C-spelling switch tables (`DataDef::mangle_scalar_spelling`, parser.cpp `canonical_builtin_simple_type_name`, cir_dump.cpp scalar word) | none adopted; the mangler's table is the only model-aware one (LLP64 `long long`), the other two hardcode `long` | darwin: the pinned int64 dd's display name "int64_t" re-resolved through the SOURCE-spelling table to `long long`; `isL<long>` keyed two ways, deduced `size_t` bound `std::max<unsigned long long>` — the whole D4 identity class (16 tests both arches) |
-| "is this typedef a distinct type" (class-scope typedef arm) | 2 arms (class scope / namespace scope) | the namespace arm records `scalar_alias_of`; the class arm compared a source SPELLING to a display NAME and forgot the link | any pinned dd with a canonical spelling minted `typedef _Tp type` as a NEW type; `__is_same(long, remove_const<long>::type)` false; `common_type<long,long>` derived from itself (stack overflow in the freezer) |
+| "does this typedef name a distinct type identity" (class-scope typedef arm) | 1 arm, 2 identities riding one string test | the identity spelling rule every former uses (`canonical spelling, else display name`); the arm compared the source SPELLING to the display NAME instead — a proxy that also happened to carry the wchar_t/char16_t/char32_t identity | any pinned dd with a canonical spelling minted `typedef _Tp type` as a NEW type; `__is_same(long, remove_const<long>::type)` false; `common_type<long,long>` derived from itself (stack overflow in the freezer) |
 
 Rule #7 density, measured with `git grep` (2026-09-02, HEAD 4fbcae4d):
 
@@ -114,20 +114,27 @@ The scalar-spelling family is the first entry and is half done:
   their display name is not this target's spelling for the type (stamped by
   `madc_stamp_primitive_type_ids`, computed from the tables — no target test).
 - `canonical_template_binding_dd` honors that canonical spelling; the
-  class-scope typedef arm requires an ALIAS base (typeid) and records
-  `scalar_alias_of`.
+  class-scope typedef arm compares the source spelling to the dd's IDENTITY
+  spelling (canonical, else display name) — never restrict it to alias
+  bases or add `scalar_alias_of` to it: its alias IS the identity for
+  `typedef wchar_t char_type` (canonical "wchar_t"), which is what keeps
+  `char_traits<char_type>` keyed wchar_t.
 - Gate: `tests/testtplargidentity.mad` (g++/clang++ oracle
   `1 1 1 | 1 1 | 1 | 9 7 9`, identical on every target — the reducer
   deliberately avoids `long` vs `long long` distinctness, which madc still
   conflates on glibc); the `collect_vbases` self-base guard is the loud stop
   for the class.
-- Measured (2026-09-02): the darwin pack froze at 79 errors vs 64 before.
+- Measured (2026-09-02): the darwin pack froze at 66 errors vs 64 before.
   The same corpus frozen with the PRE-fix freezer (a HEAD worktree on the
-  container) and the histograms diffed: no new error text; libc++ now
-  instantiates further and reaches two pre-existing classes more often
-  (`ctype_int32_t` 6→17 = the wchar_t identity, `__atomic_is_lock_free`
-  10→12 = the cross-freezer dlsym leak) while four classes shrink. Baseline
-  raised to 79 with that reason (`docs/parity/pack-degradation-baseline.txt`).
+  container) and the histograms diffed: one line differs,
+  `__atomic_is_lock_free` 10→12 — the known cross-freezer dlsym leak, now
+  reached by the `long` and `unsigned long` `__atomic_base` instantiations
+  that no longer alias the `long long` ones. Baseline set to 66 with that
+  reason (`docs/parity/pack-degradation-baseline.txt`). The linux pack is
+  byte-identical (93, dk-none 55). A first version of the typedef-arm fix
+  (alias bases only) had pushed both packs UP in the wchar_t class — the
+  arm's string test was the accidental carrier of the wchar_t identity —
+  which is how the next entry below was found.
 - **Reproduction without a Mac**: the Linux-hosted cross freezer
   (`bin/madc-arm64-macos --std=c++17 --no-config --no-sysroot-includes
   --emit=c11 <reducer>`) carries the darwin type model (MADC_CROSS_APPLE),
@@ -137,7 +144,8 @@ The scalar-spelling family is the first entry and is half done:
   `wchar_t_template_arg_identity`). A wchar_t-bound argument spells its
   storage dd's display name "int32_t", so `ctype<wchar_t>`'s explicit
   specialization is invisible to dd-borne uses and the memberless primary
-  instantiates (17 of the 79 darwin errors, 4 in the linux pack). The token
+  instantiates (6 of the 66 darwin errors, 4 in the linux pack;
+  `__is_same(int, char_traits<wchar_t>::char_type)` is TRUE today). The token
   carve-out in `template_type_arg_spelling` is a spelling patch over a
   missing type identity; the fix is a distinct wchar_t dd (Itanium `w`).
 - Banked, not in this slice: `TraitTypeArg::same_as` compares display NAMES —

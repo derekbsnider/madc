@@ -4260,6 +4260,13 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
       || dynamic_cast<DataDefENUM *>(dd) )
 	return dd;
     DataDef *canon = Program::resolve_builtin_type_spelling(dd->name);
+    // A pinned dd whose display name is ANOTHER type's source spelling on
+    // this target (darwin int64_t = long long) carries a canonical spelling
+    // that resolves back to itself (madc_stamp_primitive_type_ids): it IS the
+    // canonical dd, and by display name alone the binding changed type.
+    if ( canon && canon != dd && !dd->canonical_cpp_spelling().empty()
+      && Program::resolve_builtin_type_spelling(dd->canonical_cpp_spelling()) == dd )
+	canon = dd;
     return canon ? canon : dd;
 }
 
@@ -17792,8 +17799,33 @@ void madc_stamp_primitive_type_ids()
 	{
 		DataDef *dd = madc_primitive_for_slot(slot);
 
-		if ( dd )
-			dd->type_id = slot;
+		if ( !dd )
+			continue;
+		dd->type_id = slot;
+		// The second target-dependent identity fact of a pinned builtin:
+		// its canonical C++ spelling, stamped ONLY where the display name
+		// would lie. A display name ("int64_t") is also a source spelling,
+		// and on one target it names a DIFFERENT type: darwin's headers
+		// alias int64_t/uint64_t to `long long` (dd_platform_longlong, a
+		// distinct dd), so "int64_t" read back through the one
+		// builtin-spelling table no longer reaches ddINT64. Every identity
+		// former spells a dd `canonical spelling, else display name` and
+		// re-resolves it (template-argument keys, deduced bindings); by
+		// display name alone the type changed mid-flight there — the
+		// explicit specialization isL<long> keyed int64_t, its use keyed
+		// long long; a deduced size_t bound std::max<unsigned long long>
+		// while the call asked for uint64_t (undefined __ns_std____1_max).
+		// Exactly those dds get their target C spelling — the table's own
+		// inverse — as the canonical one, so the round trip is the
+		// identity. Where names round-trip (glibc, LLP64) nothing is
+		// stamped and every spelling stays byte-identical.
+		if ( dd->canonical_cpp_spelling().empty() )
+		{
+			DataDef *rt = Program::resolve_builtin_type_spelling(dd->name);
+			std::string ts = dd->target_scalar_spelling();
+			if ( rt && rt != dd && !ts.empty() && ts != dd->name )
+				dd->set_canonical_spelling(ts);
+		}
 	}
 }
 
@@ -19887,12 +19919,25 @@ bool DataDefCLASS::is_unique_public_nonvirtual_base(DataDefCLASS *b, size_t *off
 }
 
 void DataDefCLASS::collect_vbases(std::vector<DataDefCLASS *> &out,
-				  std::set<DataDefCLASS *> &seen) const
+				  std::set<DataDefCLASS *> &seen, int depth) const
 {
     for ( const auto &bs : bases )
     {
+	// A class in its own base chain is an internal invariant violation
+	// (a template key that aliased two spellings of one class): name it
+	// instead of recursing until the stack is gone.
+	if ( bs.base == this || depth > 256 )
+	{
+	    fprintf(stderr, "madc internal: class '%s' (%s) has '%s' (%s) in its"
+		    " own base chain at depth %d\n", name.c_str(),
+		    canonical_cpp_spelling().c_str(),
+		    bs.base ? bs.base->name.c_str() : "(null)",
+		    bs.base ? bs.base->canonical_cpp_spelling().c_str() : "",
+		    depth);
+	    abort();
+	}
 	// a base's own (transitive) virtual bases come first, then the base if virtual
-	bs.base->collect_vbases(out, seen);
+	bs.base->collect_vbases(out, seen, depth + 1);
 	if ( bs.is_virtual && seen.insert(bs.base).second )
 	    out.push_back(bs.base);
     }
@@ -48260,12 +48305,29 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
 	// integer DataType is indistinguishable from a scalar typedef — the
 	// mangle desugar would spell it `i` where libstdc++ has St13_Ios_Openmode).
+	// A class-scope scalar typedef whose SOURCE spelling names a type
+	// identity other than the base dd's own keeps a distinct dd carrying
+	// that spelling as canonical: `typedef wchar_t char_type` (wchar_t is
+	// a distinct C++ type over ddINT32's storage — the char_type alias is
+	// what keeps char_traits<char_type> keyed wchar_t, not int32_t; same
+	// for char16_t/char32_t) and a typedef of a namespace-scope alias dd
+	// (std::streamsize). The comparison is against the dd's IDENTITY
+	// spelling — canonical spelling, else display name — the one rule
+	// every identity former uses. Against the display name alone it minted
+	// `typedef _Tp type` with _Tp = long as a NEW type the moment the
+	// pinned ddINT64 carried the canonical spelling `long` (darwin, where
+	// its display name int64_t is another type's source spelling):
+	// __is_same(long, remove_const<long>::type) went false and libc++'s
+	// common_type<long,long> derived from itself. No alias link on this
+	// alias: unlike the namespace arm below, the alias IS the identity
+	// (wchar_t), so walking to the storage dd would lose it.
 	else if ( !pgm.class_scope_stack.empty()
 	       && dd && !dd->is_pointer()
 	       && dd->basetype() == BaseType::btSimple
 	       && !dynamic_cast<DataDefENUM *>(dd)
 	       && !base_source_spelling.empty()
-	       && base_source_spelling != dd->name )
+	       && base_source_spelling != (dd->canonical_cpp_spelling().empty()
+					   ? dd->name : dd->canonical_cpp_spelling()) )
 	{
 	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
 	    alias_dd->set_canonical_spelling(base_source_spelling);
