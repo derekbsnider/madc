@@ -63569,7 +63569,19 @@ paramdecl:
 	    var->data = (void *)method;
 	}
 	if ( !func_alias_name.empty() )
+	{
 	    var->storage_alias_name = func_alias_name;
+	    // The label IS the function's library link symbol, so it lives on
+	    // the FuncDef too (FuncDef::emit_symbol — what call_emit_symbol
+	    // reads first and what the forest record carries: cir_arena
+	    // defrec.emit_symbol_id). On the Variable alone it survived only a
+	    // live parse: the frozen darwin x86_64 pack restored Apple's
+	    // `int stat(...) __asm("_stat$INODE64")` as plain `stat`, so every
+	    // stat/lstat/fstat/readdir on an Intel Mac ran the legacy 32-bit-inode
+	    // entry against the 64-bit-inode struct (darwin D4: teststat,
+	    // testdirent, Intel-only).
+	    func->emit_symbol = func_alias_name;
+	}
 	if ( owner_class )
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
