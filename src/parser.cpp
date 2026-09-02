@@ -13263,9 +13263,17 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     }
     else if ( type_tb->id() == TokenID::tkMul )
     {
+	// `*` followed by anything but an identifier — `sizeof(*(p))`, the
+	// shape Apple's FD_ZERO expands to (`__builtin_bzero(p, sizeof(*(p)))`),
+	// `sizeof(*p + 1)` — is an EXPRESSION operand, not this arm's
+	// `*ident[.chain]` fast path. Consume nothing and decline: the caller's
+	// sizeof(expression) fallback parses `*` as the unary deref it is and
+	// measures the result type (gcc/clang: sizeof(*(p)) == sizeof(*p)).
+	// Throwing here made a legal C operand a parse error (darwin D4:
+	// teststructinterop, the first FD_ZERO madc ever met).
+	if ( !peekToken() || !is_contextual_identifier_token(peekToken()) )
+	    return NULL;
 	TokenBase *deref_tb = nextToken();
-	if ( !deref_tb || !is_contextual_identifier_token(deref_tb) )
-	    Throw(type_tb) << "Expecting identifier after '*' in " << op_name << flush;
 	DataDef *deref_base = NULL;
 	if ( peekToken()
 	  && (peekToken()->id() == TokenID::tkDot
