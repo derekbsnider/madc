@@ -300,6 +300,30 @@ SDK/cross facts).
   script move together, then the pack-degradation baseline and the libc++
   lane re-baseline. Round 2 = the same gate under the pin; expected 835 /
   64 and the battery leg-for-leg at the owner-hardware 8/3.
+  **✅ Round 2 (run 33575170136) GREEN on BOTH arches — D2's gate is
+  met.** Under the pinned text the `__align_it` class vanished (the
+  iostream, emitted-C-runtime and native-AOT legs pass), and the battery
+  is **leg-for-leg parity with owner hardware**: arm64 8/3 with EXACTLY
+  the three standing known-opens (`os.str()` husk, value intrinsic,
+  exec:// channel — docs/test-status.md names them); x86_64 **9/2** (its
+  exec:// leg passes) — the first x86_64 battery ever run. Correction:
+  the `ostringstream::str()` finding is the standing known-open, NOT an
+  18.1.8 artefact (KG gap re-pointed); `__align_it` IS 18.1.8-only.
+  **Open: corpus parity is close, not exact** — 836 units / 54 pack
+  parse errors on the runner vs the container's 835 / 64 on IDENTICAL
+  libc++ text. The class breakdown differs in exactly one line:
+  `__atomic/atomic_base.h:32 use of undeclared identifier
+  '__atomic_is_lock_free'` ×10 on the container, 0 on the runner (a
+  compiler builtin behind libc++'s `_LIBCPP_HAS_GCC_ATOMIC_IMP` /
+  `_LIBCPP_HAS_C_ATOMIC_IMP` selection at `__config:1183`), plus one
+  extra unit. So the native freezer took a different preprocessor path
+  or opened one header the cross freezer cannot — candidates: the
+  predefined-macro table (captured by brew clang 18.1.8 vs apt 18.1.3),
+  the prelude flattening (same zig pin, different capture clang's
+  resource headers), or a real SDK header via the CLT canonical path if
+  it exists on the runner (a corpus-parity AND open-provenance risk).
+  Round 3 uploads the freeze inputs/outputs (unit dump, pack log, TU,
+  host tables, prelude manifest) for the diff against the container.
 - **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
   (x86_64) build/package/attach with a PK4-style extract-and-run
   install gate for the tarballs (the x86_64 job = the first-ever
