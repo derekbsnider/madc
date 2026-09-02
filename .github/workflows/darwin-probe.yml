@@ -1,23 +1,22 @@
-# darwin-probe.yml — the darwin-host build gate (D1 of the darwin-host
+# darwin-probe.yml — the darwin-host RELEASE gate (D2 of the darwin-host
 # build port, docs/plans/2026-09-01-darwin-host-port.md).
 #
-# D0 measured the runner with pure `make` command-line overrides (zero repo
-# changes) and proved the native build. D1 promoted that override set into
-# the Makefile's DARWIN_HOST posture (auto-on when `uname -s` is Darwin:
-# brew llvm@18 toolchain, Apple ld64, the xcrun SDK, brew zstd) — so this
-# workflow is now a plain `make hosted-arm64-macos` on a real macos-14
-# (arm64) runner, and it FAILS when the build or the hello does. The
-# derived posture is echoed into the log as evidence (runner logs are all
-# that survives the job).
+# D0 measured the runner with pure `make` overrides; D1 promoted them into
+# the Makefile's DARWIN_HOST posture (plain `make hosted-arm64-macos` —
+# green, run 33573025122). D2 makes the runner-built binary a RELEASE
+# candidate: `make release-macos` on a darwin host builds the host arch,
+# freezes the darwin groves with the hosted binary ITSELF (self-freeze:
+# phase-1 link without the forest section -> run it to write the standalone
+# container -> the ordinary -sectcreate link), strips, and verifies the
+# forest bytes + signature with verify_macho_release (reader = the hosted
+# binary). Then the Mac battery runs against the stripped binary in a
+# tarball-shaped stage. Both arches, on GitHub's arm64 and Intel runners —
+# the Intel leg is the first x86_64 EXECUTION proof anywhere.
 #
-# Still --with-forest=none: the hosted link's freezer is the CROSS madc
-# (the container model); D2's native self-freeze replaces it.
-#
-# Dispatch-only; never wired to pushes or releases. The build-host
-# prerequisites are the documented brew set; PATH gets brew's gnubin
-# (Xcode's /usr/bin/make is GNU Make 3.81 — the Makefile refuses it).
+# Evidence goes to the log (all that survives the job) and the make/battery
+# logs upload as artifacts. Dispatch-only; never wired to pushes/releases.
 name: darwin-probe
-run-name: "darwin-host D1 gate (${{ inputs.build_ref || 'develop' }})"
+run-name: "darwin-host D2 release gate (${{ inputs.build_ref || 'develop' }})"
 
 on:
   workflow_dispatch:
@@ -31,8 +30,16 @@ permissions:
   contents: read
 
 jobs:
-  gate-arm64:
-    runs-on: macos-14
+  release-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86-64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -42,6 +49,7 @@ jobs:
         run: |
           sw_vers
           uname -m
+          sysctl -n hw.ncpu
           xcrun --show-sdk-path
           clang --version | head -1
           ld -v 2>&1 | head -1
@@ -62,35 +70,60 @@ jobs:
           make --version | head -1
           bash scripts/fetch_darwin_open_headers.sh
           cat "$DARWIN_OPEN_HEADERS_HOME/sysroot-any-darwin-any/.PROVENANCE"
-      - name: autoreconf + configure
+      - name: autoreconf + configure (forest EMBEDDED — the default)
         run: |
           autoreconf -i
-          # --with-forest=none: see the header. --enable-madcdat=no: the
-          # hosted MODE forces it off anyway; the runner's brew gdbm/sqlite
-          # otherwise leak into probed defines. CPPFLAGS/LDFLAGS: configure's
-          # host zstd probe needs the brew prefix on a Mac.
-          ./configure --with-forest=none --enable-madcdat=no \
+          # --enable-madcdat=no: the hosted MODE forces it off anyway; the
+          # runner's brew gdbm/sqlite otherwise leak into probed defines.
+          # CPPFLAGS/LDFLAGS: configure's host zstd probe needs the brew prefix.
+          ./configure --enable-madcdat=no \
             CPPFLAGS="-I$(brew --prefix)/include" LDFLAGS="-L$(brew --prefix)/lib"
       - name: the derived DARWIN_HOST posture (evidence)
         run: |
-          make -C src -pn MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos 2>/dev/null \
-            | grep -E '^(HOST_OS|DARWIN_HOST|DARWIN_LLVM_PREFIX|DARWIN_CLANG|DARWIN_CLANGXX|DARWIN_AR|DARWIN_STRIP|DARWIN_LD_FLAGS|DARWIN_ZSTD_PREFIX|DARWIN_ZSTD_INC|DARWIN_ZSTD_LIB|MACOS_SDK|LLVM_LIBCXX_INC|DARWIN_PRELUDE_SYSROOT) ' \
+          make -C src -pn MODE=hosted-${{ matrix.arch }}-macos ../bin/madc-hosted-${{ matrix.arch }}-macos 2>/dev/null \
+            | grep -E '^(HOST_OS|HOST_ARCH|HOST_DARWIN_ARCH|DARWIN_HOST|DARWIN_SELF_FREEZE|DARWIN_FREEZER|DARWIN_LLVM_PREFIX|DARWIN_CLANG|DARWIN_CLANGXX|DARWIN_AR|DARWIN_STRIP|DARWIN_OTOOL|DARWIN_LD_FLAGS|DARWIN_ZSTD_PREFIX|DARWIN_ZSTD_INC|DARWIN_ZSTD_LIB|MACOS_SDK|LLVM_LIBCXX_INC|DARWIN_PRELUDE_SYSROOT|RELEASE_MACOS_ARCHES) ' \
             | sort
-      - name: build — plain make, no overrides
+      - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
-          make -C src -j3 hosted-arm64-macos 2>&1 | tee probe-make.log
+          make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee probe-make.log
           test "${PIPESTATUS[0]}" -eq 0
-          ls -la bin/madc-hosted-arm64-macos
-      - name: run it — the D1 gate
+          echo "=== freeze + verify evidence ==="
+          grep -E "forest_pack_gate:|forest_pack_darwin: OK|verify_macho_release:|Froze " probe-make.log
+          ls -la bin/madc-hosted-${{ matrix.arch }}-macos bin/madc-release-${{ matrix.arch }}-macos \
+                 obj/hosted-${{ matrix.arch }}-macos/forest.bin obj/hosted-${{ matrix.arch }}-macos/madc-freezer \
+                 lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a
+          echo "forest units (container cross-pack baseline: 835):"
+          bin/madc-hosted-${{ matrix.arch }}-macos --dump-forest=obj/hosted-${{ matrix.arch }}-macos/forest.bin | grep -c '^unit	'
+      - name: run the STRIPPED release binary — the hello gate
         run: |
           printf 'var g = "darwin-host-gate-alive";\nprintln("{}", g);\n' > /tmp/gate.mad
-          out=$(bin/madc-hosted-arm64-macos /tmp/gate.mad)
+          out=$(bin/madc-release-${{ matrix.arch }}-macos /tmp/gate.mad)
           echo "madc said: $out"
           test "$out" = "darwin-host-gate-alive"
-          bin/madc-hosted-arm64-macos --version | head -1
+          bin/madc-release-${{ matrix.arch }}-macos --version | head -1
+      - name: mac battery on the runner (tarball-shaped stage)
+        run: |
+          # The battery expects the tarball layout: bin/madc + lib/libmadc_rt.a
+          # beside it (leg 6c). Owner-hardware baseline: 8 passed / 3 failed
+          # (three standing known-opens) — the gate holds the PASS floor and
+          # prints every FAIL line for the leg-for-leg compare.
+          mkdir -p tmp/stage/bin tmp/stage/lib
+          cp bin/madc-release-${{ matrix.arch }}-macos tmp/stage/bin/madc
+          cp lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a tmp/stage/lib/libmadc_rt.a
+          set +e
+          bash scripts/mac_battery.sh tmp/stage/bin/madc 2>&1 | tee mac-battery.log
+          set -e
+          echo "=== FAIL lines (compare leg-for-leg with the owner-hardware 8/3 baseline) ==="
+          grep -E '^FAIL' mac-battery.log || echo "(none)"
+          passed=$(sed -n 's/^== battery: \([0-9]*\) passed.*/\1/p' mac-battery.log)
+          echo "passed=$passed (floor 8)"
+          test -n "$passed"
+          test "$passed" -ge 8
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: darwin-probe-log
-          path: probe-make.log
+          name: darwin-release-gate-${{ matrix.arch }}
+          path: |
+            probe-make.log
+            mac-battery.log
           if-no-files-found: warn

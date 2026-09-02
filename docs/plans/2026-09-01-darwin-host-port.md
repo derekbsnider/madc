@@ -223,6 +223,48 @@ SDK/cross facts).
   runner-built binary passes `verify_macho_release` AND its forest
   unit count matches the container cross-pack baseline; `mac_battery`
   green (leg-for-leg vs owner-hardware baseline) on the runner.
+  **✅ D2 IMPLEMENTED (2026-09-02) — awaiting the runner gate.**
+  `src/Makefile`: the FREEZER is chosen per origin — `DARWIN_FREEZER`
+  = `$(CROSS_MADC_BIN)` on the container (unchanged recursive cross
+  make), = `$(OBJDIR)/madc-freezer` when `DARWIN_SELF_FREEZE=1`
+  (auto: `DARWIN_HOST=1` and `HOST_DARWIN_ARCH` == `DARWIN_ARCH`).
+  Self-freeze = phase-1 link of the SAME objects with no forest section
+  (never a product) → `forest_pack_darwin.sh` runs it to write the
+  standalone `forest.bin` → the ordinary `-sectcreate` link. Producer
+  == consumer by identity. A cross-arch hosted MODE on a darwin host
+  refuses at parse time unless `DARWIN_FREEZER=` names a same-arch
+  madc of this tree or `--with-forest=none`. `release-%-macos` is the
+  ONE per-arch strip+verify rule for both origins (reader
+  `MACHO_READER` = `bin/madc` on the container, the unstripped hosted
+  binary on a Mac; `OTOOL=$(DARWIN_OTOOL)`); `release-macos` composes
+  it — both arches sequentially on the container, the host arch on a
+  Mac (no `$(MAKE)` of the ELF-shaped default there). Scripts:
+  `verify_macho_release.sh` (`wc -c` for the size, `MADC_READER`,
+  OTOOL fallback `llvm-otool-18` → `llvm-otool`, GNU `timeout`/
+  `gtimeout` resolution) and `forest_pack_darwin.sh` (freezer-agnostic
+  prose, the same timeout resolution). Workflow: `darwin-probe.yml` is
+  the RELEASE gate on a matrix of `macos-14` (arm64) + `macos-15-intel`
+  (x86_64 — the first x86_64 execution proof): `make release-macos`,
+  freeze/verify evidence + unit count, the STRIPPED binary's hello,
+  then `mac_battery.sh` against a tarball-shaped stage (`bin/madc` +
+  `lib/libmadc_rt.a`) with the owner-hardware PASS floor of 8 and every
+  FAIL line printed for the leg-for-leg compare.
+  **Container oracle:** `make -n -B` text identical (modulo the MIR
+  `-DGITCOMMIT=` define, which tracks HEAD) for hosted-arm64-macos
+  incl. the cross recursion, default, hosted-x86-64-windows; forced
+  self-freeze posture shows the freezer link → freezer-driven pack →
+  `-sectcreate` link and NO cross recursion; cross-arch negative
+  control refuses at `Makefile:634`, `WITH_FOREST=none` lifts it;
+  `release-macos` REBUILT through the per-arch rule: both arches 835
+  units, pack parse errors 64 (baseline 64), 55/55 listed headers
+  present, `verify_macho_release` OK ×2 through `MADC_READER=bin/madc
+  OTOOL=llvm-otool-18`, tarballs packaged + pulled.
+  **Residuals:** brew zstd stays the darwin-host default (the shipped
+  stage's pinned v1.5.5 build joins D3's release job, like the windows
+  job's stage); `macho_exe_dylib_gate.sh` SKIPs on a Mac (it wants the
+  cross madc + `llvm-*-18` names) — parametrize with D3; the darwin
+  default goal (`make -C src` on a Mac = the ELF MODE) is still open —
+  `release-macos`/`hosted-*` are the darwin entry points for now.
 - **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
   (x86_64) build/package/attach with a PK4-style extract-and-run
   install gate for the tarballs (the x86_64 job = the first-ever

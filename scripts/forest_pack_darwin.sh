@@ -1,15 +1,18 @@
 #!/bin/bash
-# forest_pack_darwin.sh — cross-freeze the darwin standard-header groves into
-# a standalone forest container for the hosted-*-macos binaries
+# forest_pack_darwin.sh — freeze the darwin standard-header groves into a
+# standalone forest container for the hosted-*-macos binaries
 # (forest-carriers plan S1, docs/plans/2026-07-25-forest-carriers-plan.md).
 #
-#   bash scripts/forest_pack_darwin.sh <cross-madc> <prelude-manifest> <out.bin>
+#   bash scripts/forest_pack_darwin.sh <freezer-madc> <prelude-manifest> <out.bin>
 #
-# The FREEZER is the Linux-hosted cross madc for the same Apple target
-# (bin/madc-{arm64,x86-64}-macos): it embeds the identical darwin prelude
-# text the hosted binary carries and parses with the target's type facts,
-# so LOADED == parsed holds across the cross-freeze (same source tree, same
-# embedded text, same target keys -> same context hash + config word).
+# The FREEZER is a madc of THIS tree for the same Apple target. On the build
+# container it is the Linux-hosted cross madc (bin/madc-{arm64,x86-64}-macos):
+# it embeds the identical darwin prelude text the hosted binary carries and
+# parses with the target's type facts, so LOADED == parsed holds across the
+# cross-freeze (same source tree, same embedded text, same target keys ->
+# same context hash + config word). On a darwin build host it is the hosted
+# binary ITSELF, linked once without its forest section (the Makefile's
+# self-freeze arm, darwin-host port D2) — producer == consumer exactly.
 #
 # The container is written as a STANDALONE file and embedded at hosted link
 # time via -Wl,-sectcreate,__MADC,__forest (src/Makefile hosted MODEs): lld
@@ -32,11 +35,18 @@ MANIFEST="$2"
 OUT="$3"
 
 if [ -z "$CROSS" ] || [ -z "$MANIFEST" ] || [ -z "$OUT" ]; then
-    echo "usage: $0 <cross-madc> <prelude-manifest> <out.bin>" >&2
+    echo "usage: $0 <freezer-madc> <prelude-manifest> <out.bin>" >&2
     exit 2
 fi
 if [ ! -x "$CROSS" ]; then
-    echo "Error: cross madc '$CROSS' not found/executable" >&2
+    echo "Error: freezer madc '$CROSS' not found/executable" >&2
+    exit 1
+fi
+# GNU timeout: the container has it; a darwin build host gets it from brew
+# coreutils (gnubin `timeout`, or `gtimeout`). Every run stays capped.
+TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+if [ -z "$TIMEOUT" ]; then
+    echo "forest_pack_darwin: needs GNU timeout (brew install coreutils on a Mac)" >&2
     exit 1
 fi
 if [ ! -f "$MANIFEST" ]; then
@@ -45,7 +55,7 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 # AOT ledger (forest-carriers S5): the SAME C-lane runtime sources, compiled
-# by THIS cross madc — so the modules carry darwin-target MIR — and packed as
+# by THIS freezer madc — so the modules carry darwin-target MIR — and packed as
 # one more container segment. This is what makes -static-libmadc work on
 # Mach-O at all: there is no libmadc dylib to fall back to, so a hosted madc
 # whose container has no ledger can never emit a try/catch program.
@@ -92,7 +102,7 @@ ulimit -t 900
 # why this is redirect-then-cat and never `| tee`. The log lands beside the
 # container (a build product, caller-relative like every path here).
 PACK_LOG="$OUT.freeze.log"
-if ! timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
+if ! "$TIMEOUT" 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_darwin: FAILED - freeze-append exited nonzero" >&2
     exit 1
@@ -104,7 +114,7 @@ cat "$PACK_LOG"
 # #include of that name would silently live-parse (the G2 silent-degradation
 # class this gate exists to catch).
 DUMP="$OUT.dump.txt"
-timeout 120 "$CROSS" --dump-forest="$OUT" > "$DUMP"
+"$TIMEOUT" 120 "$CROSS" --dump-forest="$OUT" > "$DUMP"
 if ! grep -q '^forest	units=' "$DUMP"; then
     rm -f "$OUT"
     echo "forest_pack_darwin: FAILED - packed image has no forest directory" >&2
@@ -143,12 +153,14 @@ done <<<"$LEDGER_SOURCES"
 # (find_unit_path_tail); the gate accepts either form, literally rather than
 # through an interpolated regex.
 #
-# There is no --load-log here, and that is structural, not an omission: this is
-# a CROSS freeze, so the build container cannot execute the consumer that would
-# materialize the container. Darwin's consumer half runs where the artifact
-# runs — scripts/mac_battery.sh's forest-degradation leg, on a Mac, against the
-# exact shipped binary. That is the same split task #60 (the macOS headerless
-# cell) exists to close.
+# There is no --load-log here, and that is structural, not an omission: on the
+# build container this is a CROSS freeze, so the consumer that would
+# materialize the container cannot run. Darwin's consumer half runs where the
+# artifact runs — scripts/mac_battery.sh's forest-degradation leg (3c), on a
+# Mac, against the exact shipped binary; the darwin-host release gate
+# (.github/workflows/darwin-probe.yml) runs that battery on the runner right
+# after a native self-freeze. That is the same split task #60 (the macOS
+# headerless cell) exists to close.
 #
 # A gate failure drops the container, as the inlined loops did: leaving a
 # known-degraded $OUT on disk invites a later make step to consume it.

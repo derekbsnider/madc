@@ -5,11 +5,15 @@
 #
 #   bash scripts/verify_macho_release.sh <macho-binary> <expected-forest.bin>
 #
-# Four authorities, all runnable on the Linux container:
+# Four authorities, runnable on the Linux container AND natively on a darwin
+# build host (darwin-host port D2 — the host's brew coreutils/llvm serve the
+# GNU spellings; MADC_READER names the reader, OTOOL the load-command dumper):
 #   1. the __MADC,__forest section exists and its BYTES equal the freeze's
 #      standalone container (extracted by load-command offset/size);
 #   2. the extracted bytes read back as a forest (the same --dump-forest
-#      checks the pack gate applies, run by the Linux bin/madc);
+#      checks the pack gate applies) through the READER: the Linux bin/madc
+#      on the container, the unstripped hosted binary on a darwin host — a
+#      madc of the same tree either way (freeze-context hash);
 #   3. arm64 slices carry LC_CODE_SIGNATURE (llvm-strip re-signs ad-hoc when
 #      it rewrites the file; a missing signature means AMFI kills the binary
 #      on sight). x86-64 darwin does not require one.
@@ -22,7 +26,15 @@ set -e
 
 BIN="$1"
 FOREST="$2"
-OTOOL="${OTOOL:-llvm-otool-18}"
+# Tool spellings: the container's versioned apt names first, then the
+# unversioned ones a brew llvm prefix (or PATH) supplies.
+OTOOL="${OTOOL:-$(command -v llvm-otool-18 || command -v llvm-otool || echo llvm-otool-18)}"
+READER="${MADC_READER:-bin/madc}"
+TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+if [ -z "$TIMEOUT" ]; then
+    echo "verify_macho_release: needs GNU timeout (brew install coreutils on a Mac)" >&2
+    exit 1
+fi
 
 if [ -z "$BIN" ] || [ -z "$FOREST" ]; then
     echo "usage: $0 <macho-binary> <expected-forest.bin>" >&2
@@ -51,7 +63,8 @@ if [ "$SIZE" -le 0 ]; then
     echo "verify_macho_release: FAILED — empty forest section in $BIN" >&2
     exit 1
 fi
-WANT=$(stat -c %s "$FOREST")
+# wc -c, not stat: GNU spells `stat -c %s`, BSD `stat -f %z` — wc is portable.
+WANT=$(($(wc -c < "$FOREST")))
 if [ "$SIZE" -ne "$WANT" ]; then
     echo "verify_macho_release: FAILED — section size $SIZE != container $WANT" >&2
     exit 1
@@ -67,7 +80,7 @@ fi
 
 # 2. Read-back through the production reader.
 DUMP="$EXTRACT.dump"
-if ! timeout 120 bin/madc --dump-forest="$EXTRACT" > "$DUMP" 2>&1; then
+if ! "$TIMEOUT" 120 "$READER" --dump-forest="$EXTRACT" > "$DUMP" 2>&1; then
     rm -f "$EXTRACT" "$DUMP"
     echo "verify_macho_release: FAILED — extracted forest does not read back" >&2
     exit 1

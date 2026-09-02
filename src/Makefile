@@ -202,6 +202,9 @@ endif
 # The shell-derived defaults use the $(origin) guard: ?= would make them
 # recursive and re-run brew/xcrun on every expansion.
 HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
+# The host arch in DARWIN_ARCH spelling (binary/lib names say x86-64).
+HOST_DARWIN_ARCH := $(subst x86_64,x86-64,$(HOST_ARCH))
 ifeq ($(HOST_OS),Darwin)
 DARWIN_HOST ?= 1
 # Xcode's /usr/bin/make is GNU Make 3.81 (2006): it loses MIR's c2mir obj dir
@@ -224,6 +227,7 @@ DARWIN_CLANG ?= $(DARWIN_LLVM_PREFIX)/bin/clang
 DARWIN_CLANGXX ?= $(DARWIN_LLVM_PREFIX)/bin/clang++
 DARWIN_AR ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-ar
 DARWIN_STRIP ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-strip
+DARWIN_OTOOL ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-otool
 # Apple ld64 is the native linker (ad-hoc signs arm64, -sectcreate native);
 # lld stays the CROSS linker. Empty, not undefined — ?= below must not refill.
 DARWIN_LD_FLAGS ?=
@@ -239,6 +243,7 @@ DARWIN_CLANG ?= clang-18
 DARWIN_CLANGXX ?= clang++-18
 DARWIN_AR ?= llvm-ar-18
 DARWIN_STRIP ?= llvm-strip-18
+DARWIN_OTOOL ?= llvm-otool-18
 DARWIN_LD_FLAGS ?= -fuse-ld=lld
 MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
 MACOS_MINOS ?= 12
@@ -604,6 +609,34 @@ $(LINK_SHAPE_STAMP):
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
 CROSS_MADC_BIN = ../bin/madc-$(DARWIN_ARCH)-macos
+# The FREEZER — the madc that parses the darwin groves into $(DARWIN_FOREST_BIN).
+# Cross (the container): the same-arch cross madc, built by the recursive make
+# in the rules below. Native (darwin-host port D2): a darwin host whose arch
+# IS the target's freezes with the hosted binary ITSELF — phase 1 links the
+# same objects with no forest section ($(OBJDIR)/madc-freezer, never a
+# product), runs it to write the standalone container, phase 2 is the
+# ordinary $(BIN) link with -sectcreate. Producer == consumer exactly (the
+# cross model can only argue it: same tree, same embedded text, same target
+# keys). A cross-arch hosted build on a darwin host has no freezer of its own
+# (the cross MODE is a Linux-shaped binary): refuse loudly unless the caller
+# names a same-arch madc of this tree (DARWIN_FREEZER=…, e.g. one running
+# under Rosetta) or builds forest-less.
+ifeq ($(DARWIN_HOST),1)
+ifeq ($(HOST_DARWIN_ARCH),$(DARWIN_ARCH))
+DARWIN_SELF_FREEZE ?= 1
+endif
+endif
+ifeq ($(DARWIN_SELF_FREEZE),1)
+DARWIN_FREEZER = $(OBJDIR)/madc-freezer
+else ifeq ($(DARWIN_HOST),1)
+ifneq ($(WITH_FOREST),none)
+ifeq ($(origin DARWIN_FREEZER),undefined)
+$(error hosted-$(DARWIN_ARCH)-macos on a $(HOST_ARCH) darwin host has no same-arch freezer (the cross MODE is Linux-hosted): build on a $(DARWIN_ARCH) Mac, pass DARWIN_FREEZER=<same-arch madc of this tree>, or configure --with-forest=none)
+endif
+endif
+else
+DARWIN_FREEZER = $(CROSS_MADC_BIN)
+endif
 ifeq ($(WITH_FOREST),embedded)
 FOREST_EMBED_DEP = $(DARWIN_FOREST_BIN)
 FOREST_EMBED_LDFLAGS = -Wl,-sectcreate,__MADC,__forest,$(DARWIN_FOREST_BIN)
@@ -822,18 +855,33 @@ machogate: cross-arm64-macos cross-x86-64-macos
 # kept the forest bytes and the arm64 ad-hoc signature (llvm-strip re-signs
 # when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
 # side's job (W2, scripts/mac_battery.sh).
+# Per-arch release step — ONE implementation for both origins: build the
+# hosted binary, strip into the release-named twin, verify the strip kept the
+# forest bytes + the arm64 signature. The verify READER is the host bin/madc
+# on the container (its freeze-context hash must match the tree that froze
+# the groves — the version string rides the predefined-macro table — so
+# release-macos rebuilds it first); a darwin host has no host-MODE madc, so
+# the unstripped hosted binary reads its own container. A darwin host
+# releases its OWN arch only (the freezer is the binary itself — see the
+# self-freeze block); the container does both, SEQUENTIALLY (the per-mode
+# generated tables share src/ file paths — never parallelize across arches).
+ifeq ($(DARWIN_HOST),1)
+MACHO_READER = bin/madc-hosted-$*-macos
+RELEASE_MACOS_ARCHES = $(HOST_DARWIN_ARCH)
+else
+MACHO_READER = bin/madc
+RELEASE_MACOS_ARCHES = arm64 x86-64
+endif
+release-%-macos:
+	$(MAKE) hosted-$*-macos
+	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
+	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
+
 release-macos:
-	# verify_macho_release.sh reads the packed forests back through the
-	# HOST bin/madc, whose freeze-context hash must match the tree that
-	# froze them (the version string rides the predefined-macro table) —
-	# so the dev binary is rebuilt first. No-op when already current.
+ifneq ($(DARWIN_HOST),1)
 	$(MAKE)
-	$(MAKE) hosted-arm64-macos
-	$(MAKE) hosted-x86-64-macos
-	$(DARWIN_STRIP) -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
-	$(DARWIN_STRIP) -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
-	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
-	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
+endif
+	for a in $(RELEASE_MACOS_ARCHES); do $(MAKE) release-$$a-macos || exit 1; done
 	cd .. && bash scripts/macho_exe_dylib_gate.sh
 
 # madc hosted on macOS (Route 1): full madc binaries for the Macs. The
@@ -1313,11 +1361,19 @@ endif
 # prelude manifest, or the pack script changed (file-mtime prerequisites —
 # the classic if-changed pattern).
 ifdef HOSTED_DARWIN_TARGET
+ifeq ($(DARWIN_SELF_FREEZE),1)
+# Native self-freeze, phase 1: the hosted binary without its forest section —
+# the $(BIN) link minus $(FOREST_EMBED_LDFLAGS). Lives in the mode's obj tree;
+# nothing ships it. Relinks when the objects do, which re-freezes the groves.
+$(DARWIN_FREEZER): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(LINK_SHAPE_STAMP)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(CLI_LINK) $(CXXFLAGS) $(DEFINES) $(LIBS)
+else ifneq ($(DARWIN_HOST),1)
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
+endif
 
-$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
-	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
+$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
+	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
