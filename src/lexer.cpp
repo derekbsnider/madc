@@ -3128,11 +3128,22 @@ void Program::_tokenizer_init()
 	// would leave the exponent bytes uninitialized now that `long double` is
 	// genuinely 16 bytes wide. (It read as the double pattern plus stack
 	// garbage while long double was still mapped to double.)
+	// Where the TARGET's long double IS double (Apple arm64: sizeof 8), the
+	// pattern is the double one in a long double-typed union — gcc/clang
+	// there print nansl 7ff4000000000000; the x87 pair written into an
+	// 8-byte union would overrun it (darwin D4: testsignalingnan printed
+	// 0000a000000000000000 on an M-series Mac). sizeof(long double) is
+	// the target's, read off the compiler building this madc for it
+	// (the DataDefLDOUBLE rule).
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
-		     " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
-		     " __u.__l; }))";
+	if ( sizeof(long double) == 8 )
+	    nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
+			 " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
+	else
+	    nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+			 " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
+			 " __u.__l; }))";
 	macro_map["__builtin_nansl"] = nansl;
     }
     {
