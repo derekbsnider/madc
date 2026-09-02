@@ -2061,8 +2061,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	bool grew = false;
 	if (!want.active) {
 		_mat_filter.active = false;
+		_mat_filter.exact = false;
 		grew = true;
 	} else {
+		// exact -> non-exact is a widening (unindexed records join).
+		if (_mat_filter.exact && !want.exact) {
+			_mat_filter.exact = false;
+			grew = true;
+		}
 		for (std::unordered_map<std::string, bool>::const_iterator it =
 		     want.declared_bound.begin();
 		     it != want.declared_bound.end(); ++it) {
@@ -2070,8 +2076,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 				continue;
 			std::unordered_map<std::string, bool>::iterator oi =
 				_mat_filter.declared_bound.find(it->first);
-			if (oi == _mat_filter.declared_bound.end())
+			if (oi == _mat_filter.declared_bound.end()) {
 				_mat_filter.declared_bound[it->first] = true;
+				// A NEW name is growth only under exact: a closure
+				// filter had already built every unindexed record,
+				// an exact one built none it was not asked for.
+				if (_mat_filter.exact)
+					grew = true;
+			}
 			else if (!oi->second) {
 				oi->second = true;
 				grew = true;
@@ -2171,7 +2183,7 @@ void CirFrozenForest::materialize_pass()
 			it = db.find(nm);
 		if (it != db.end())
 			return it->second ? 1 : -1;
-		return 0;
+		return _mat_filter.exact ? -1 : 0;	// exact: unindexed = not asked for
 	};
 	std::unordered_map<uint64_t, int> verdict_memo;
 	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
@@ -2218,7 +2230,8 @@ void CirFrozenForest::materialize_pass()
 			std::unordered_map<std::string, bool>::const_iterator di =
 				_mat_filter.declared_bound.find(head);
 			int hv = di == _mat_filter.declared_bound.end()
-				 ? 0 : (di->second ? 1 : -1);
+				 ? (_mat_filter.exact ? -1 : 0)
+				 : (di->second ? 1 : -1);
 			hi = head_memo.insert(std::make_pair(head, hv)).first;
 		}
 		return hi->second >= 0;
@@ -2678,9 +2691,14 @@ void CirFrozenForest::materialize_pass()
 	// such a member. Without naming it here the loss surfaces only as a class
 	// that is simply absent, layers later (task #64: std::ios_base died on
 	// `event_callback *__fn_`, and took the whole iostream family with it).
-	DBG(for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+	// An EXACT pass builds on demand — every derived record it did not ask
+	// for is unbuilt by design, not a loss: nothing to census.
+	DBG(for (size_t bi = 0; !_mat_filter.exact && bi < derived_slots.size(); ++bi) {
 		uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 		if (by_id.count(tid))
+			continue;
+		// Once per forest, across widened re-passes (see the member).
+		if (!_derived_unresolved_reported.insert(tid).second)
 			continue;
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))

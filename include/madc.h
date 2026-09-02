@@ -4931,6 +4931,25 @@ public:
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
     Variable *register_forest_func(const PendingForestFunc &pf);
     Variable *activate_forest_func(const std::string &name);
+    // GCC canon for a call to an UNDECLARED name the C library declares: the
+    // call takes the library's REAL prototype (gcc: the builtin's, with a
+    // warning; clang: "implicitly declaring library function 'printf' with type
+    // 'int (const char *, ...)'"). madc's C library is the frozen pack: its
+    // declaration index says which bare names are functions, and its arena
+    // holds each one's typed FuncDef — materialize THAT record (the same
+    // materialize_for the bound-include path uses, widened by one name) and
+    // register it through register_forest_func, the one owner of restored
+    // function registration. No parse, no tokens, no diagnostics.
+    // Runs only where the dlsym zero-parameter guess would otherwise run — a
+    // name that anything in the TU declares never reaches it — and only for
+    // a VARIADIC callee whose parameters and return are C-primitive (or
+    // pointers to them, or typedefs the TU already knows): the K&R call the
+    // guess produces is ABI-correct for every non-variadic callee on every
+    // target madc has (named arguments travel alike), but a variadic callee on
+    // Apple arm64 reads its variadic arguments from the STACK while the K&R
+    // call put them in registers. NULL = the pack declares no such bare
+    // variadic function in that shape: the caller's guess stands, as before.
+    Variable *forest_adopt_declared_function(const std::string &fname);
     void activate_forest_function_family(const std::string &ns,
 	const std::string &display_name);
     void activate_forest_function_display(const std::string &display_name);
@@ -5055,6 +5074,12 @@ public:
     std::map<std::string, PendingForestFunc> forest_deferred_funcs;
     std::map<std::string, std::vector<std::string> >
 	forest_deferred_func_families;
+    // forest_adopt_declared_function: the bare FUNCTION names the pack's decl
+    // index carries (kind pdkFunction; a qualified form is C++ surface), built
+    // once per bound forest on first demand — the "is this a library
+    // function" question answered from the pack, never from a name list.
+    std::unordered_set<std::string> _forest_bare_func_names;
+    bool _forest_bare_func_names_built = false;
     unsigned long long _forest_funcs_eager = 0;
     unsigned long long _forest_funcs_deferred = 0;
     unsigned long long _forest_funcs_activated = 0;
@@ -6575,7 +6600,6 @@ public:
     void execute();
 
     // data management
-    DataDef *findType(std::string &);
     Variable *addVariable(TokenCpnd *, DataDef &, const std::string &, int c=1, void *init=NULL, bool alloc=true);
     Variable *resolve_global_storage_variable(Variable *var) const;
     Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)

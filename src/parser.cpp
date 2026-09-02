@@ -23370,6 +23370,120 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
     return fv;
 }
 
+// forest_adopt_declared_function's type predicate: a C-primitive shape —
+// void / arithmetic, a pointer chain over those (const-qualified allowed), or
+// a C function pointer. Aggregates, enums, references, arrays, SIMD, auto:
+// not adoptable (their declarations would need the declaring header's type
+// surface in the TU — that is what an #include is for; gcc's builtin table
+// stops at the same line: no builtin needs FILE without <stdio.h>).
+static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
+{
+    if ( !dd || depth > 8 )
+	return false;
+    if ( dynamic_cast<DataDefREF *>(dd) )
+	return false;
+    if ( DataDefCONST *cdd = dynamic_cast<DataDefCONST *>(dd) )
+	return forest_adoptable_c_type(cdd->base_type, depth + 1);
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+	return pdd->base_type == NULL
+	    || forest_adoptable_c_type(pdd->base_type, depth + 1);
+    if ( dynamic_cast<DataDefFPTR *>(dd) )
+	return true;
+    if ( dd->is_struct() || dynamic_cast<DataDefENUM *>(dd)
+      || dynamic_cast<DataDefARRAY *>(dd) || dynamic_cast<DataDefSIMD *>(dd)
+      || dynamic_cast<DataDefAUTO *>(dd) || dynamic_cast<DataDefCOMPLEX *>(dd) )
+	return false;
+    return dd->type() == DataType::dtVOID || dd->is_numeric();
+}
+
+// GCC canon (see the declaration): an undeclared variadic call adopts the
+// pack's real prototype. The record comes from the arena through the SAME
+// materialize_for the bound-include restore uses (widened by this one name;
+// monotone, so a TU that already restored a closure only gains) and registers
+// through register_forest_func — parseFunction's restored contract, with no
+// parser involvement, so a rejected candidate leaves NOTHING behind.
+Variable *Program::forest_adopt_declared_function(const std::string &fname)
+{
+    CirFrozenForest *f = ensure_bind_forest();
+    if ( !f )
+	return NULL;
+    if ( !_forest_bare_func_names_built )
+    {
+	_forest_bare_func_names_built = true;
+	std::vector<cir_forest_decl_entry> ents;
+	for ( uint32_t u = 0; u < f->unit_count(); ++u )
+	{
+	    if ( !f->unit_decl_index(u, ents) )
+		continue;
+	    for ( size_t e = 0; e < ents.size(); ++e )
+	    {
+		if ( ents[e].kind != pdkFunction )
+		    continue;
+		const char *nm = f->pool_str(ents[e].name_id);
+		if ( nm && *nm && !strchr(nm, ':') )
+		    _forest_bare_func_names.insert(nm);
+	    }
+	}
+    }
+    if ( !_forest_bare_func_names.count(fname) )
+	return NULL;
+
+    // EXACT: this one name and what its record pulls in — never the whole
+    // derived population a closure filter keeps (measured: 27 ms of a 43 ms
+    // zero-include hello). A TU that already restored a bound closure only
+    // gains the name (monotone widening; the installed mode stays).
+    CirMaterializeFilter want;
+    want.active = true;
+    want.exact = true;
+    want.declared_bound[fname] = true;
+    f->materialize_for(want);
+    const std::vector<CirRestoredFunc> &funcs = f->restored_funcs();
+    const CirRestoredFunc *rf = NULL;
+    for ( size_t i = 0; i < funcs.size() && !rf; ++i )
+	if ( funcs[i].name && funcs[i].fd && fname == funcs[i].name )
+	    rf = &funcs[i];
+    if ( !rf )
+	return NULL;
+    FuncDef *fd = rf->fd;
+    bool shape_ok = fd->is_varargs && fd->declaration_only
+		 && fd->namespace_name.empty()
+		 && forest_adoptable_c_type(&fd->returns);
+    if ( shape_ok && !fd->return_typedef_name.empty() )
+    {
+	std::string tn = fd->return_typedef_name;
+	shape_ok = resolve_named_datadef(tn) != NULL;
+    }
+    for ( size_t i = 0; shape_ok && i < fd->parameters.size(); ++i )
+    {
+	shape_ok = forest_adoptable_c_type(fd->parameters[i]);
+	if ( shape_ok && i < fd->param_typedef_names.size()
+	  && !fd->param_typedef_names[i].empty() )
+	{
+	    // The emitter spells a typedef'd parameter by its typedef NAME:
+	    // adoptable only when this TU already knows that name.
+	    std::string tn = fd->param_typedef_names[i];
+	    shape_ok = resolve_named_datadef(tn) != NULL;
+	}
+    }
+    if ( !shape_ok )
+    {
+	DBG(std::cout << "forest_adopt_declared_function(" << fname
+		      << ") pack declares it but not in an adoptable C shape"
+		      << (fd->is_varargs ? "" : " (not variadic)") << std::endl);
+	return NULL;
+    }
+    PendingForestFunc pf;
+    pf.name = fname;
+    pf.fd = fd;
+    pf.mvar = NULL;
+    pf.mparams = rf->mparams;
+    Variable *var = register_forest_func(pf);
+    DBG(std::cout << "forest_adopt_declared_function(" << fname << ") "
+		  << (var ? "adopted the pack's prototype (" : "registration declined (")
+		  << fd->parameters.size() << " named param(s), ...)" << std::endl);
+    return var;
+}
+
 Variable *Program::activate_forest_func(const std::string &name)
 {
     std::map<std::string, PendingForestFunc>::iterator it =
@@ -36353,7 +36467,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		      && !is_implicit_complex_builtin_name(fname)
 		      && is_dynamic_symbol_allowed(fname) )
 		    {
-			void *sym = madcdl_sym_default(fname.c_str());
+			// The pack's REAL prototype first (GCC: the builtin's).
+			// The zero-parameter variadic guess below is ABI-correct
+			// only where variadic and named arguments travel alike;
+			// Apple arm64 passes every variadic argument on the stack,
+			// so a `printf("%d", x)` declared as `int printf()` read
+			// garbage there (the first darwin suite run, D4: 112
+			// arm64-only failures, every one a zero-include printf).
+			var = forest_adopt_declared_function(fname);
+			void *sym = var ? NULL : madcdl_sym_default(fname.c_str());
 			if ( sym )
 			{
 			    var = addFunction(fname,
@@ -36361,7 +36483,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
-			else if ( fname.compare(0, 10, "__builtin_") == 0 )
+			else if ( !var && fname.compare(0, 10, "__builtin_") == 0 )
 			{
 			    // GCC semantics: every __builtin_X with a libc twin X
 			    // behaves exactly as X. A builtin with no native

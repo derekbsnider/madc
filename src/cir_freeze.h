@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1297,6 +1298,14 @@ struct CirRestoredFuncDefaults
 struct CirMaterializeFilter
 {
 	bool active = false;
+	// exact: ONLY the names declared_bound marks true (plus what an admitted
+	// record's references pull in) materialize; an UNINDEXED record — the
+	// derived entity a closure filter keeps unconditionally — is skipped
+	// too. The on-demand shape: a TU with no bound closure asking for one
+	// library prototype (forest_adopt_declared_function) must not pay the
+	// whole derived population. Monotone with the rest: a later non-exact
+	// filter (a bound closure) WIDENS an installed exact one and re-runs.
+	bool exact = false;
 	std::unordered_map<std::string, bool> declared_bound;
 };
 
@@ -1425,6 +1434,12 @@ class CirFrozenForest
 	// container). materialize_for installs it on the first generation and
 	// UNIONS later, wider filters in (S2 incremental materialization).
 	CirMaterializeFilter _mat_filter;
+	// The derived-type UNRESOLVED census (the -v diagnostic the pack
+	// degradation gate ratchets on) names each id ONCE per forest: a
+	// widened re-pass (materialize_for growing by a name) re-walks every
+	// derived slot and would otherwise re-report the same ids — the gate
+	// then reads a doubled count as a regression that never happened.
+	std::set<uint32_t> _derived_unresolved_reported;
 	// S2 (R4-lite): what earlier generations already EMITTED, so a later,
 	// wider filter re-runs the passes without duplicating. _mat_done_slots
 	// covers the arena-slot-keyed walks (typedef / ns-surface / enum-record
