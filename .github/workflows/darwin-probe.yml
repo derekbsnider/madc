@@ -165,7 +165,7 @@ jobs:
           date -u +%FT%TZ
           set +e
           MADC_BIN=bin/madc-release-${{ matrix.arch }}-macos MADC_SKIP_EXT=darwin \
-          MADC_EXE_FLAGS=-static-libmadc \
+          MADC_EXE_FLAGS=-static-libmadc MADC_FAIL_DETAIL=12 \
             bash scripts/run_tests.sh --exe 2>&1 | tee suite.log
           rc=${PIPESTATUS[0]}
           set -e
