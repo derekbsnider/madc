@@ -105,8 +105,17 @@ UMB_TMP="$OUTDIR/.umbrella.$$"
 # and pulls block-typed declarations (qsort_b & co, `^` syntax) that madc —
 # like gcc — does not support; the headers guard them, so this compiles
 # them out cleanly.
+# -D_FORTIFY_SOURCE=0: Apple's cdefs turns fortification ON for clang, and
+# the secure/ wrappers then flatten into `#define strcpy(...)
+# __builtin___strcpy_chk(...)` macros whose SET depends on the capture
+# compiler's builtin inventory (`__has_builtin(__builtin___strlcpy_chk)`: no
+# on the container's 18.1.3, yes on a mac runner's 18.1.8 — six lines of
+# drift in the shipped prelude). At level 0 the wrappers compile out and the
+# prelude text is a function of the pinned headers alone. It also aligns the
+# served C surface with the linux and win64 worlds, neither of which is
+# fortified (glibc needs _FORTIFY_SOURCE + optimization; mingw has none).
 if ! $CLANG -target "$TARGET" --sysroot "$SYSROOT" -x c -std=c11 -fno-blocks \
-        -D_Nullable= -D_Nonnull= -D_Null_unspecified= \
+        -D_Nullable= -D_Nonnull= -D_Null_unspecified= -D_FORTIFY_SOURCE=0 \
         -E -dD -P "$UMB_TMP.c" -o "$UMB_TMP.raw"; then
     rm -f "$UMB_TMP.c" "$UMB_TMP.raw"
     echo "Error: $CLANG preprocess of the darwin prelude failed" >&2

@@ -4314,7 +4314,40 @@ const char *const *Program::sys_include_paths() const
     // Minimal C list when detection produced nothing (no compiler at build time).
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
-    return f->paths;
+    if ( registration_policy.enable_sysroot_includes )
+	return f->paths;
+    // The toolchain-only view (registration_policy.enable_sysroot_includes ==
+    // false): the compiler reports its search list in a fixed order — the
+    // C++ stdlib dirs, then its own builtin (compiler-owned) dir, then the
+    // sysroot's C dirs and frameworks — so "everything up to and including the
+    // compiler-owned dir" IS the set of roots the toolchain owns, and what
+    // follows is the host's C library / SDK. Cached per flavor, NULL-terminated
+    // like the table it views. A table with no compiler-owned slot cannot be
+    // cut honestly: refuse loudly rather than guess a position.
+    if ( _toolchain_paths_flavor == f && !_toolchain_paths.empty() )
+	return _toolchain_paths.data();
+    const char *owned = f->compiler_owned_dir ? f->compiler_owned_dir : "";
+    _toolchain_paths.clear();
+    bool cut = false;
+    for ( int i = 0; f->paths[i]; ++i )
+    {
+	_toolchain_paths.push_back(f->paths[i]);
+	if ( *owned && strcmp(f->paths[i], owned) == 0 )
+	{
+	    cut = true;
+	    break;
+	}
+    }
+    if ( !cut )
+    {
+	_toolchain_paths.clear();
+	throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
+				 "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
+				 + "'); cannot separate toolchain roots from sysroot roots");
+    }
+    _toolchain_paths.push_back((const char *)0);
+    _toolchain_paths_flavor = f;
+    return _toolchain_paths.data();
 }
 
 bool Program::posix_compat_enabled() const

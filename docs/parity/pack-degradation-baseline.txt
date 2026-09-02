@@ -94,5 +94,14 @@
 # cross-freeze of `#include <memory>` (bin/madc-arm64-macos
 # --freeze-append) shows the hash.h entry; the six appear in the full
 # manifest freeze. KG Gap: instantiation_body_templateid_ctor_call.
+# darwin, NATIVE self-freeze (darwin-host port D2, 2026-09-02): 54. Same
+# libc++ text (pinned: scripts/fetch_libcxx_headers.sh), same 835 units with
+# identical token counts — the 10-error gap is the CROSS freezer's own: its
+# undeclared-identifier fallback probes the BUILD HOST's dynamic symbols, and
+# the Linux host has no __atomic_is_lock_free (libatomic is not loaded) where
+# libSystem does; ten __atomic_base<T>::is_lock_free instantiations are error
+# husks in a container-frozen forest and resolve in a natively frozen one (KG
+# Gap cross_freeze_host_dlsym_leak). The baseline stays the CROSS number
+# while the container lane is canonical; a native lane reports IMPROVED.
 64 darwin pack-errors
 1 darwin mir-blob-skips

@@ -1,0 +1,1 @@
+glibc-only header (<sys/sysinfo.h>); the win64 sysroot has no such file

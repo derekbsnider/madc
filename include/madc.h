@@ -2443,6 +2443,20 @@ public:
 	// gets it on through compile_options. It rides the policy so a child
 	// Program (runtime eval, --project TU) inherits it with everything else.
 	bool enable_forest_bind = false;
+	// May `#include <...>` (and __has_include) walk the SYSROOT roots of the
+	// system include table — the C library / SDK dirs and frameworks that
+	// follow the compiler-owned dir — or only the roots the toolchain owns
+	// (the C++ stdlib dirs and the compiler's own builtin dir)? ON is the
+	// default: a compile serves whatever the host has. OFF is the FREEZER's
+	// posture (--no-sysroot-includes): the frozen forest must be the corpus
+	// a header-LESS consumer would parse — the embedded prelude serves C —
+	// so a build host that happens to carry a real SDK must not leak its
+	// text into the groves (a `__has_include(<sys/_types/_mbstate_t.h>)`
+	// probe inside libc++ did exactly that on a mac runner: one Apple SDK
+	// header frozen into a shipped forest). Cut at ONE point — the table
+	// view sys_include_paths() returns — so resolution, __has_include,
+	// #include_next and system-header classification cannot disagree.
+	bool enable_sysroot_includes = true;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
 	RuntimeEvalChildPolicy runtime_eval_source_policy;
@@ -4052,6 +4066,8 @@ public:
     const madc_stdlib_flavor *stdlib_flavor = NULL;
     mutable std::vector<std::string> _canon_prefixes;		// cache: see sys_include_prefixes_canonical()
     mutable const madc_stdlib_flavor *_canon_prefix_flavor = NULL;
+    mutable std::vector<const char *> _toolchain_paths;		// cache: see sys_include_paths() (enable_sysroot_includes == false)
+    mutable const madc_stdlib_flavor *_toolchain_paths_flavor = NULL;
     void add_include_dir(const std::string &dir);	// normalize (trailing '/') + append to include_paths
     void add_cli_define(const std::string &def);	// split NAME[=VALUE] (bare => "1") into cli_defines
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)

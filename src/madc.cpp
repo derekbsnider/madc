@@ -451,6 +451,11 @@ static void print_usage(const char *prog)
 "                          container's AOT ledger segment, so -static-libmadc\n"
 "                          programs carry it (repeatable; the build's list is\n"
 "                          scripts/ledger_sources.txt)\n"
+"  --no-sysroot-includes   resolve <...> only from the toolchain's own roots\n"
+"                          (the C++ stdlib dirs + the compiler's builtin dir)\n"
+"                          and the embedded headers — never the host's C\n"
+"                          library / SDK dirs. The freezer's posture: a frozen\n"
+"                          forest is the header-less consumer's corpus\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -797,6 +802,15 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-sysroot-includes") == 0) {
+            // Hermetic system-include resolution (darwin-host port D2): the
+            // toolchain-only view of the include table, so a FREEZE on a host
+            // that carries a real SDK produces the same corpus as one that
+            // does not (the header-less consumer's). Rides the engine too so
+            // --project translation units inherit it.
+            engine.registration_policy.enable_sysroot_includes = false;
+            prog->registration_policy.enable_sysroot_includes = false;
             filearg = i + 1;
         } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
             madc_pack_forest_path = argv[i] + 14;

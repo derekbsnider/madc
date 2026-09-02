@@ -1,0 +1,21 @@
+// --no-sysroot-includes (tests/testnosysrootinc.flags): the toolchain-only view
+// of the system include table — the C++ stdlib dirs and the compiler's builtin
+// dir stay, the host's C library / SDK dirs do not. <sys/sysinfo.h> exists
+// only there, so this #include must fail LOUDLY (compile refused, the name in
+// the diagnostic). Positive control: tests/testsysrootinc.mad, the same program
+// without the flag. This is the FREEZER's posture (scripts/forest_pack_darwin.sh):
+// a frozen forest is the header-less consumer's corpus, and a build host that
+// carries a real SDK must not leak its text into the groves.
+// No <stdio.h>: on linux madc's embedded C headers are a SUPPLEMENT, not a
+// provider (glibc's own header is the one that resolves), so under the flag
+// stdio.h would fail first and mask the header this pair is about. The
+// always-available println intrinsic keeps the program include-free apart
+// from the sysroot-only header.
+#include <sys/sysinfo.h>
+int main()
+{
+	struct sysinfo s;
+	int ok = sysinfo(&s) == 0;
+	println("sysroot header resolved: {}", ok);
+	return 0;
+}

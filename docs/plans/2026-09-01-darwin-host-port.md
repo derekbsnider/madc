@@ -324,6 +324,60 @@ SDK/cross facts).
   it exists on the runner (a corpus-parity AND open-provenance risk).
   Round 3 uploads the freeze inputs/outputs (unit dump, pack log, TU,
   host tables, prelude manifest) for the diff against the container.
+  **✅ Round 3 (run 33575773604) GREEN both arches; the gap is EXPLAINED
+  and closed (D2c).** Diffing the runner's freeze evidence against the
+  container's: all 835 shared units have IDENTICAL token counts — the
+  frozen text was already the same corpus. The differences were three
+  HOST LEAKS into the served world plus one cross-freezer artifact:
+  1. **+1 unit** = the runner's real
+     `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/
+     sys/_types/_mbstate_t.h` — libc++'s `__has_include` probe answered
+     by the host SDK (the CLT path EXISTS on GH mac runners): a corpus
+     AND open-provenance leak (one Apple header frozen into a shipped
+     forest). Fix: `--no-sysroot-includes`
+     (`RegistrationPolicy::enable_sysroot_includes`, cut at the ONE table
+     view `Program::sys_include_paths()` returns, so `#include`,
+     `__has_include`, `#include_next` and system-header classification
+     agree by construction): toolchain roots only — the C++ stdlib dirs
+     and the compiler-owned dir — never the host's C library / SDK.
+     `forest_pack_darwin.sh` passes it (no-op on the container, where
+     those roots do not exist). Reducer pair: `tests/testsysrootinc`
+     (positive control) + `tests/testnosysrootinc` (`.flags`,
+     `.expect_err`). On linux madc's embedded C headers are a SUPPLEMENT
+     (glibc's header resolves), so the pair stays include-free apart from
+     the sysroot-only `<sys/sysinfo.h>`.
+  2. **`__VERSION__`** was the only predefined-macro difference
+     ("Ubuntu Clang 18.1.3 (1ubuntu1)" vs "Homebrew Clang 18.1.8"): the
+     capture compiler's identity leaking through the GCC posture into the
+     table AND the flattened prelude. Fix in `gcc_posture_filter.sh` (the
+     ONE posture filter): `__VERSION__` = the bare posture version, which
+     is exactly GCC's spelling (`gcc -dM -E`: `"13.3.0"`).
+  3. **Prelude fortify drift**: Apple's cdefs turns `_FORTIFY_SOURCE` on
+     for clang, and the `secure/` wrapper SET flattened into the prelude
+     depends on the capture compiler's builtin inventory
+     (`__has_builtin(__builtin___strlcpy_chk)`: yes on 18.1.8, no on
+     18.1.3 — six lines of drift). Fix: `gen_darwin_prelude.sh` flattens
+     at `-D_FORTIFY_SOURCE=0`; the prelude is a function of the pinned
+     headers alone, and the served C surface now matches linux/win64
+     (neither fortified). Container prelude: −74 lines (the whole
+     `__builtin___*_chk` block, 36 macros), +`__VERSION__ "13.3.0"`.
+  4. **The container's ten `__atomic_is_lock_free` errors are the CROSS
+     freezer's own**: its undeclared-identifier dlsym fallback probes the
+     BUILD HOST's symbols (Linux: no libatomic loaded), where libSystem
+     has it — ten `__atomic_base<T>::is_lock_free` bodies are error husks
+     in every container-frozen darwin forest and resolve in a natively
+     frozen one, exactly as a Mac consumer's live parse would. KG Gap
+     `cross_freeze_host_dlsym_leak`; the pack-degradation baseline
+     comment records native 54 vs cross 64 (the baseline stays the cross
+     number while the container lane is canonical). Clang's resource
+     headers (stdint/stddef/stdarg/limits/stdatomic) are byte-identical
+     between 18.1.3 and 18.1.8 — not a drift source.
+  **Container oracle for D2c:** `release-macos` rebuilt: both arches 835
+  units, 64 (== 64) pack parse errors, `verify_macho_release` OK ×2;
+  reducer pair + `testinclude*`/`testhasinclude*`/`testposixcompat*`
+  8/8 JIT, exe 1/1, obj 1/1. Round 4 expectation: 835 units, 54 errors,
+  prelude + predefined table byte-identical to the container's, battery
+  8/3 (arm64) / 9/2 (x86_64).
 - **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
   (x86_64) build/package/attach with a PK4-style extract-and-run
   install gate for the tarballs (the x86_64 job = the first-ever
