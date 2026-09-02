@@ -265,6 +265,41 @@ SDK/cross facts).
   cross madc + `llvm-*-18` names) — parametrize with D3; the darwin
   default goal (`make -C src` on a Mac = the ELF MODE) is still open —
   `release-macos`/`hosted-*` are the darwin entry points for now.
+  **Runner gate round 1 (run 33574153379, 2026-09-02) — the self-freeze
+  WORKS on both arches, and the header-text drift the plan predicted is
+  now MEASURED.** Both legs (macos-14 arm64, macos-15-intel x86_64):
+  `make release-macos` GREEN — phase-1 freezer linked, the hosted binary
+  froze its own groves, `-sectcreate` link, strip, `verify_macho_release`
+  OK; the STRIPPED binary ran the hello on x86_64 — **the first x86_64
+  execution proof anywhere**. But the frozen corpus was brew llvm@18's
+  libc++ **18.1.8** text, not the container's apt **18.1.3**: 837 units /
+  54 pack parse errors vs the 835 / 64 baseline (a different error SET,
+  not just fewer), and `mac_battery` fell to 5/6 passes: the groves
+  reference `basic_string::__align_it` (18.1.8's static member function
+  template — madc emitted it as an EXTERN call: undefined MIR import in
+  `cout << "hi"`, `call to undeclared function` in emitted C, "not on the
+  AOT ledger" in `-static-libmadc`), `ostringstream::str()` came back
+  "Unidentified member", and the include-free `value` intrinsic failed
+  c2mir's check (`invalid operand types of +`) with the exec:// channel
+  leg printing nothing on arm64 — the last two not yet attributed (they
+  are re-measured under the pin before any chase).
+  **Decision: header text is a pinned INPUT.** `scripts/fetch_libcxx_headers.sh`
+  stages the container's exact package (`libc++-18-dev 1:18.1.3-1ubuntu1`
+  amd64 deb from the Ubuntu pool, sha256-pinned, 1017 files, `diff -r`
+  EMPTY against the container's installed tree, idempotent, bad-sha
+  refuses); the Makefile's darwin-host `LLVM_LIBCXX_INC` default reads
+  its `LIBCXX_HEADERS_HOME` knob, and a hosted MODE whose served headers
+  are missing refuses at parse time (clang is SILENT about a missing
+  `-isystem`). The 18.1.8 corpus stays an explicit opt-in
+  (`LLVM_LIBCXX_INC=$(brew --prefix llvm@18)/include/c++/v1`) — it is a
+  CONFORMANCE burndown, two classes found: KG Gaps
+  `libcxx_18_1_8_align_it_extern_call` and
+  `libcxx_18_1_8_ostringstream_str_lookup` (fix-what-you-find: owned,
+  scheduled right after the port's gate is green, not "eventually").
+  Bumping the pin is a served-C++-world change: container apt + this
+  script move together, then the pack-degradation baseline and the libc++
+  lane re-baseline. Round 2 = the same gate under the pin; expected 835 /
+  64 and the battery leg-for-leg at the owner-hardware 8/3.
 - **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
   (x86_64) build/package/attach with a PK4-style extract-and-run
   install gate for the tarballs (the x86_64 job = the first-ever

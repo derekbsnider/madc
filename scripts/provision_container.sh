@@ -75,7 +75,7 @@ PKGS_cross="qemu-user-static"
 # artifact bytes — rpm2cpio|cpio for the .rpm, unzip for the Windows zip;
 # zip is the win packager's own dependency. All three would read as green
 # if lost (the gate only runs at package time), so they are pinned here.
-PKGS_package="rpm cpio zip unzip"
+PKGS_package="rpm cpio zip unzip zstd"
 # winlane: the windows release lane (Track 6.4). The -posix flavor is
 # deliberate — winpthreads provides the pthread/std::thread surface madc
 # uses. wine64 is the interim/isolation runner for cross-built PE binaries

@@ -231,7 +231,15 @@ DARWIN_OTOOL ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-otool
 # Apple ld64 is the native linker (ad-hoc signs arm64, -sectcreate native);
 # lld stays the CROSS linker. Empty, not undefined — ?= below must not refill.
 DARWIN_LD_FLAGS ?=
-LLVM_LIBCXX_INC ?= $(DARWIN_LLVM_PREFIX)/include/c++/v1
+# The served C++ world must be the EXACT header text the container serves
+# (apt libc++-18-dev 18.1.3): brew's llvm@18 is 18.1.8 and its text drifts —
+# the first native self-freeze measured 837 units / 54 pack parse errors
+# against the 835 / 64 baseline, with groves referencing constructs madc has
+# not met (basic_string::__align_it). scripts/fetch_libcxx_headers.sh stages
+# the pinned package's tree (its LIBCXX_HEADERS_HOME knob, read here too);
+# the 18.1.8 corpus stays an explicit opt-in
+# (LLVM_LIBCXX_INC=$(brew --prefix llvm@18)/include/c++/v1) for conformance probes.
+LLVM_LIBCXX_INC ?= $(or $(LIBCXX_HEADERS_HOME),/workspace/libcxx-headers)/include/c++/v1
 # brew zstd for the native build (a probe-grade stage; the shipped artifact's
 # pinned v1.5.5 source stage is D2's). Layout differs from the container's
 # per-target stage dir, hence the header-dir / archive split below.
@@ -324,6 +332,11 @@ AR  = $(DARWIN_AR)
 # silent failure ("No rule to make target .../embedded_headers.cpp").
 ifeq (,$(shell command -v $(firstword $(DARWIN_CLANG)) 2>/dev/null))
 $(error hosted darwin MODE: compiler '$(DARWIN_CLANG)' not found — container: apt clang-18; darwin host: brew install llvm@18 — or set DARWIN_LLVM_PREFIX / DARWIN_CLANG)
+endif
+# The served C++ headers likewise: a missing -isystem dir is SILENT for clang,
+# and the freeze would then fail far downstream with "file not found <string>".
+ifeq (,$(wildcard $(LLVM_LIBCXX_INC)/__config))
+$(error hosted darwin MODE: served libc++ headers not found at $(LLVM_LIBCXX_INC) — container: apt libc++-18-dev; darwin host: bash scripts/fetch_libcxx_headers.sh — or set LLVM_LIBCXX_INC)
 endif
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a

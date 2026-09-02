@@ -4,7 +4,8 @@
 # D0 measured the runner with pure `make` overrides; D1 promoted them into
 # the Makefile's DARWIN_HOST posture (plain `make hosted-arm64-macos` —
 # green, run 33573025122). D2 makes the runner-built binary a RELEASE
-# candidate: `make release-macos` on a darwin host builds the host arch,
+# candidate: `make release-macos` on a darwin host builds the host arch
+# (serving the container's PINNED libc++ 18.1.3 header text, not brew's 18.1.8),
 # freezes the darwin groves with the hosted binary ITSELF (self-freeze:
 # phase-1 link without the forest section -> run it to write the standalone
 # container -> the ordinary -sectcreate link), strips, and verifies the
@@ -62,14 +63,20 @@ jobs:
           for f in make coreutils gnu-sed grep; do
             echo "$(brew --prefix $f)/libexec/gnubin" >> "$GITHUB_PATH"
           done
-          # The open-headers stage location: the fetch script's knob, which
-          # the Makefile's DARWIN_PRELUDE_SYSROOT default reads too.
+          # The two staged INPUT trees: each fetch script's own location knob,
+          # which the Makefile's DARWIN_PRELUDE_SYSROOT / LLVM_LIBCXX_INC
+          # darwin-host defaults read too.
           echo "DARWIN_OPEN_HEADERS_HOME=$HOME/darwin-open-headers" >> "$GITHUB_ENV"
-      - name: fetch darwin open headers
+          echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
+      - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text)
         run: |
           make --version | head -1
           bash scripts/fetch_darwin_open_headers.sh
           cat "$DARWIN_OPEN_HEADERS_HOME/sysroot-any-darwin-any/.PROVENANCE"
+          # brew llvm@18 is 18.1.8; the served C++ world is pinned to the
+          # container's apt libc++-18-dev 18.1.3 text (see the script header).
+          bash scripts/fetch_libcxx_headers.sh
+          cat "$LIBCXX_HEADERS_HOME/.PROVENANCE"
       - name: autoreconf + configure (forest EMBEDDED — the default)
         run: |
           autoreconf -i
