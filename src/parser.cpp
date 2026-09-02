@@ -33902,8 +33902,19 @@ std::string Program::canonical_arg_key_fragment(
 	    sfx = std::string(1, core[core.size()-1]) + sfx;
 	core.erase(core.size() - 1);
     }
+    // The core resolves in the SAME order as a bare spelling: the builtin
+    // table first, the named lookup for user types second. The named
+    // lookup's datatype_map step hands back the lexer's literal-typing
+    // ddINT "int" for `int`, so `template<> struct N<int*>` keyed intP
+    // while every use site — spelled from the declared-type canonical dd —
+    // keyed int32_tP: the specialization was invisible and the primary
+    // instantiated silently (tests/testptrbuiltinspec.mad).
     if ( !core.empty() && core.find('<') == std::string::npos )
-	if ( DataDef *cdd = resolve_named_datadef(core) )
+    {
+	DataDef *cdd = resolve_builtin_type_spelling(core);
+	if ( !cdd )
+	    cdd = resolve_named_datadef(core);
+	if ( cdd )
 	{
 	    const std::string &cs = cdd->canonical_cpp_spelling();
 	    if ( !cs.empty() && cs != core )
@@ -33919,6 +33930,7 @@ std::string Program::canonical_arg_key_fragment(
 	    if ( cs.empty() && !cdd->name.empty() && cdd->name != core )
 		return sanitize_template_arg_fragment(cdd->name + sfx);
 	}
+    }
     // A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
     // a use site spells the RESOLVED type canonically
     // (`alloc9<int32_t>`, namespace-qualified), so an explicit
