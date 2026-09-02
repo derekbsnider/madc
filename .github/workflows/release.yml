@@ -100,7 +100,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.build == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
       - name: guard — tag matches VERSION
@@ -130,7 +130,7 @@ jobs:
           # this job's smoke. No restore: the runner is discarded.
           MADC_PKG_SKIP_SUITE=1 MADC_PKG_NO_RESTORE=1 \
             bash scripts/package_release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: |
@@ -144,7 +144,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.build == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
       - name: guard — tag matches VERSION
@@ -169,7 +169,7 @@ jobs:
           sudo mkdir -p /workspace
           sudo chown "$USER" /workspace
       - name: UCRT-flavor libstdc++ stage (cached)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             /workspace/win-ucrt-libstdc++/stage
@@ -210,7 +210,7 @@ jobs:
           make -C src -j"$(nproc)" release-windows
       - name: package + install-gate smoke (zip under wine)
         run: bash scripts/package_release_windows.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-package
           path: dist/madc-*-windows-x86_64.zip
@@ -230,7 +230,7 @@ jobs:
     if: needs.gate.outputs.build == 'true'
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
       - name: guard — tag matches VERSION
@@ -294,7 +294,7 @@ jobs:
         # host arch by default; the packager re-verifies the exact bytes it
         # tars, then runs scripts/package_install_gate.sh mactar on the tarball.
         run: bash scripts/package_release_macos.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-package-${{ matrix.arch }}
           path: dist/madc-*-macos-*.tar.gz
@@ -304,7 +304,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [linux-packages, windows-package, macos-package]
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true

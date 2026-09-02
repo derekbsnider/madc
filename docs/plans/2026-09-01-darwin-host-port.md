@@ -479,6 +479,30 @@ SDK/cross facts).
   New push-gated lane row (`macos-suite`) in `docs/lane-status.tsv`
   once green — this is the never-existed lane, the arc's biggest
   prize.
+  **WIRED 2026-09-02 (first run = MEASUREMENT):** darwin-probe.yml gains
+  the suite step after the battery — `MADC_BIN=bin/madc-release-<arch>-macos
+  MADC_SKIP_EXT=darwin MADC_EXE_FLAGS=-static-libmadc bash
+  scripts/run_tests.sh --exe` (the release-shaped binary = the packed-suite
+  analogue), wall time stamped, `suite.log` + a sorted `suite-failures.txt`
+  uploaded; a new dispatch input `suite_gate` (default true) makes the
+  step gate — `suite_gate=false` is the measurement mode for the triage
+  run. Shape decisions, each with its stated reason: (1) the exe pass
+  links `-static-libmadc` because an Apple-target program that needs the
+  madc runtime fails at emit otherwise (`cir_target_runtime_refused`; no
+  libmadc dylib until D5) — the darwin AOT lane IS the static one, and
+  mac_battery leg 6d already proves that shape; this needed ONE generic
+  runner knob, `MADC_EXE_FLAGS` (env, exe-pass link line only; container
+  controls: unset = unchanged, a bogus flag = every exe link FAILS);
+  (2) `--obj` is out of the darwin domain (no Mach-O relocatable writer;
+  mac_battery leg 6 documents the loud decline) — stated in the workflow,
+  no per-test fixtures; (3) the unit tests (`make -C src test`) are the
+  ELF default MODE's and stay on the container — the darwin default goal
+  is a separate open; (4) the headerless cell for macOS stays OPEN
+  (headerless_suite.sh: needs a sandbox-profile masking primitive, not
+  faked). Actions bumped to their Node 24 majors (checkout v7,
+  upload-artifact v7, download-artifact v8, cache v6) — release.yml's
+  bump is proven by its next dispatch. Job timeout 150 min until the
+  suite's wall time is measured.
 - **D5 — PK3-mac-runtime.** `libmadc-0.dylib` (whole-archive
   `LIBMADC_STATIC`, the `libmadc-0.dll` recipe), the darwin emit lane
   naming `@rpath/@executable_path/../lib`, tarball staging, madcide

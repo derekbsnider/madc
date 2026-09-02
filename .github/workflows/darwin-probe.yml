@@ -14,10 +14,23 @@
 # tarball-shaped stage. Both arches, on GitHub's arm64 and Intel runners —
 # the Intel leg is the first x86_64 EXECUTION proof anywhere.
 #
-# Evidence goes to the log (all that survives the job) and the make/battery
-# logs upload as artifacts. Dispatch-only; never wired to pushes/releases.
+# D4 adds THE FULL-SUITE macOS LANE: scripts/run_tests.sh (JIT + exe passes)
+# against the release-shaped binary — the packed-suite analogue Linux and
+# Windows have had, never run on a Mac before. Domain posture
+# MADC_SKIP_EXT=darwin (tests/<base>.darwin_{skip,expect,exe_skip} fixtures
+# for genuinely divergent tests, oracle = clang on the runner) and
+# MADC_EXE_FLAGS=-static-libmadc (an Apple-target program that needs the madc
+# runtime fails at emit without it: no libmadc dylib ships until D5 — the
+# darwin AOT lane IS the static one). The --obj pass is out of the darwin
+# domain (no Mach-O relocatable writer yet; mac_battery leg 6 documents the
+# loud decline) — stated here, not per test. `suite_gate=false` turns the
+# suite into a MEASUREMENT (logs + failure list uploaded, job stays green)
+# for the first-run triage; the default gates.
+#
+# Evidence goes to the log (all that survives the job) and the make/battery/
+# suite logs upload as artifacts. Dispatch-only; never wired to pushes/releases.
 name: darwin-probe
-run-name: "darwin-host D2 release gate (${{ inputs.build_ref || 'develop' }})"
+run-name: "darwin-host release gate + macOS suite (${{ inputs.build_ref || 'develop' }}, gate=${{ inputs.suite_gate || 'true' }})"
 
 on:
   workflow_dispatch:
@@ -26,6 +39,10 @@ on:
         description: 'ref to build (default develop)'
         required: false
         default: 'develop'
+      suite_gate:
+        description: 'fail the job on suite failures (false = measure only: upload logs, stay green)'
+        required: false
+        default: 'true'
 
 permissions:
   contents: read
@@ -41,9 +58,9 @@ jobs:
           - runner: macos-15-intel
             arch: x86-64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.build_ref || 'develop' }}
       - name: inventory — what the runner actually has
@@ -139,12 +156,37 @@ jobs:
           echo "passed=$passed (floor 8)"
           test -n "$passed"
           test "$passed" -ge 8
-      - uses: actions/upload-artifact@v4
+      - name: the full suite on the runner — JIT + exe passes, darwin domain (the macOS lane)
+        run: |
+          # Release-shaped binary (the packed-suite analogue), hermetic runner
+          # flags, darwin domain fixtures, static AOT link. --obj deliberately
+          # absent (see the header). tests/ is the checkout's; /tmp is the
+          # runner's. Wall time is measured here, not assumed.
+          date -u +%FT%TZ
+          set +e
+          MADC_BIN=bin/madc-release-${{ matrix.arch }}-macos MADC_SKIP_EXT=darwin \
+          MADC_EXE_FLAGS=-static-libmadc \
+            bash scripts/run_tests.sh --exe 2>&1 | tee suite.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          date -u +%FT%TZ
+          grep -E '^(FAIL|TIMEOUT)' suite.log | sort > suite-failures.txt || true
+          echo "=== suite summary ==="
+          tail -4 suite.log
+          echo "failure lines: $(wc -l < suite-failures.txt)   suite rc=$rc"
+          if [ "${{ inputs.suite_gate || 'true' }}" = "true" ]; then
+            exit "$rc"
+          else
+            echo "suite_gate=false — MEASUREMENT run; failures are triage input, not a verdict"
+          fi
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: darwin-release-gate-${{ matrix.arch }}
           path: |
             probe-make.log
             mac-battery.log
+            suite.log
+            suite-failures.txt
             tmp/freeze-evidence/
           if-no-files-found: warn

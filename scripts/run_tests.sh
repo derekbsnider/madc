@@ -63,6 +63,12 @@
 # text mode (gcc-parity-correct platform behavior); the .expect model is
 # per-line SUBSTRING match (grep -F), which tolerates the trailing \r —
 # fixtures stay LF, no normalization layer needed.
+#
+# MADC_EXE_FLAGS (env): extra flags for the EXE pass's native link only
+# (whitespace-split, placed before -o). The domain's AOT-lane posture, not
+# a per-test knob: on Apple targets a runtime-needing program fails at emit
+# without -static-libmadc (no libmadc dylib ships yet), so the darwin lane
+# runs with MADC_EXE_FLAGS=-static-libmadc. Empty on the default lane.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
@@ -85,6 +91,7 @@ MADC="${MADC_BIN:-bin/madc}"
 # where the caller did not need to set MADC_BIN explicitly.
 export MADC_BIN="$MADC"
 MADC_WRAPPER="${MADC_WRAPPER:-}"
+MADC_EXE_FLAGS="${MADC_EXE_FLAGS:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
@@ -369,7 +376,7 @@ for t in tests/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $MADC_EXE_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             # The produced ARTIFACT runs under the same wrapper as the
             # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
