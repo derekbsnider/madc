@@ -1,0 +1,28 @@
+// The ONE builtin-spelling table (Program::resolve_builtin_type_spelling)
+// must name every fundamental type by its OWN dd. Two rows lagged the type
+// model: `long double` -> the double dd and `__int128` -> the 64-bit dd, so
+// the template-argument key formers spelled K<long double> as K<double>
+// and W<__int128> as W<long> — ONE shared instantiation (sizeof(K<double>)
+// read 16), the wrong explicit specialization selected — and the overload
+// scorer, comparing identity through the same table, tied f(long double)
+// with f(double). Platform-independent shape: specialization selectors
+// plus sizeof agreement, never the sizes themselves.
+// Oracle: g++ and clang++ print 1 2 3 4 5 6 | 1 1 1.
+template <class T> struct W { enum { v = 0 }; };
+template <> struct W<long double> { enum { v = 1 }; };
+template <> struct W<double> { enum { v = 2 }; };
+template <> struct W<__int128> { enum { v = 3 }; };
+template <> struct W<long> { enum { v = 4 }; };
+template <> struct W<unsigned __int128> { enum { v = 5 }; };
+template <> struct W<unsigned long> { enum { v = 6 }; };
+template <class T> struct K { enum { v = sizeof(T) }; };
+int main()
+{
+    __builtin_printf("%d %d %d %d %d %d | %d %d %d\n",
+	W<long double>::v, W<double>::v, W<__int128>::v, W<long>::v,
+	W<unsigned __int128>::v, W<unsigned long>::v,
+	(int)(K<long double>::v == sizeof(long double)),
+	(int)(K<double>::v == sizeof(double)),
+	(int)(K<__int128>::v == sizeof(__int128)));
+    return 0;
+}

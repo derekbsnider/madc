@@ -2910,15 +2910,27 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
 	return dd_platform_longlong();
     if ( name == "unsigned long long" || name == "unsigned long long int" )
 	return dd_platform_ulonglong();
+    // __int128 and long double are their OWN types with their own dds
+    // (ddINT128/ddUINT128, ddLDOUBLE — the lexer's type-specifier path
+    // emits them). These rows once pointed at the 64-bit / double dds
+    // from before those types landed, so the identity formers keyed
+    // K<long double> as K<double> and W<__int128> as W<long>: one shared
+    // instantiation, sizeof(K<double>) 16, the wrong specialization
+    // picked, and (once the overload scorer compared identity through
+    // this table) f(long double) tied f(double) — tests/testbuiltintplkey,
+    // tests/teststaticoverload.
     if ( name == "__int128" || name == "signed __int128" )
-	return &ddINT64;
+	return &ddINT128;
     if ( name == "unsigned __int128" )
-	return &ddUINT64;
+	return &ddUINT128;
     if ( name == "float" || name == "_Float16" || name == "_Float32"
       || name == "__bf16" )
 	return &ddFLOAT;
-    if ( name == "double" || name == "long double"
-      || name == "_Float64" || name == "_Float128"
+    if ( name == "long double" )
+	return &ddLDOUBLE;
+    // The _FloatN spellings ride the nearest-supported approximation (no
+    // dd of their own); a real _Float128/_Float64x type is its own slice.
+    if ( name == "double" || name == "_Float64" || name == "_Float128"
       || name == "_Float32x" || name == "_Float64x" )
 	return &ddDOUBLE;
     if ( name == "int8_t" ) return &ddINT8;
