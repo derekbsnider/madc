@@ -24922,7 +24922,7 @@ bool Program::embedded_header_is_system_library_shim(const std::string &name) co
 // Position is derived from the generated table, never a name list (Rule #7):
 // madc's own ns_*/__madc__ headers need no exception because no real directory
 // ships those names.
-bool Program::embedded_header_outranked(const std::string &name) const
+bool Program::embedded_header_outranked(const std::string &name)
 {
     for ( std::size_t i = 0; i < include_paths.size(); ++i )
     {
@@ -24941,8 +24941,17 @@ bool Program::embedded_header_outranked(const std::string &name) const
     {
 	if ( owned == paths[i] )
 	    return false;   // reached the slot — everything after it loses
-	std::ifstream probe((std::string(paths[i]) + name).c_str());
-	if ( probe.good() )
+	// "Does this directory supply the name" is the ONE existence predicate
+	// resolved_include_provider_exists(): ordinary storage OR the pack's
+	// raw-source slot. The header-less-Mac promise cuts both ways: with
+	// nothing on disk, the PACK is the installed header set. libc++'s
+	// <stddef.h> wrapper exists there as a unit (c++/v1/stddef.h) exactly
+	// as it would on disk, and it must outrank the embedded copy just the
+	// same — a filesystem-only probe here let the embedded copy shadow it
+	// and <cstddef> #errored that its wrapper was bypassed (darwin D4:
+	// `--std=c++17 #include <iostream>` on a Mac without the staged libc++
+	// tree; the runner has the tree and never saw it).
+	if ( resolved_include_provider_exists(std::string(paths[i]) + name) )
 	    return true;
     }
     return false;          // slot not in the list — preserve the old order

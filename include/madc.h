@@ -5212,7 +5212,7 @@ public:
     // dirs (and every -I dir) come before it and win; C library dirs come after
     // it and lose. Lets a real libc++/libstdc++ wrapper header take precedence
     // while an unsupplied name still resolves from the embedded copy.
-    bool embedded_header_outranked(const std::string &name) const;
+    bool embedded_header_outranked(const std::string &name);	// non-const: may open the source forest
     bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     Variable *runtime_eval_scope_target(Variable *var) const;

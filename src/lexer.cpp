@@ -4791,8 +4791,9 @@ bool Program::embedded_wins_include_next(const std::string &incfile)
 	    return true;    // reached the slot before any real provider
 	std::string candidate = search[i]
 	    + (search[i].empty() || search[i].back() == '/' ? "" : "/") + incfile;
-	std::ifstream probe(candidate.c_str());
-	if ( probe.good() )
+	// On disk or in the pack — the same provider test resolve_include_next_path
+	// applies, and the one embedded_header_outranked applies from the top.
+	if ( resolved_include_provider_exists(candidate) )
 	    return false;   // a real directory between here and the slot wins
     }
     return true;   // slot not reached in the list — preserve the old order
