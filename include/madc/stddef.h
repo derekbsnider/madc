@@ -59,9 +59,18 @@ typedef __WINT_TYPE__ wint_t;
 #ifndef __MADC_STDDEF_H
 #define __MADC_STDDEF_H 1
 
-#ifndef NULL
+// UNCONDITIONAL, like the __need arm and gcc's own stddef.h ("in case
+// <stdio.h> has defined it"): an `#ifndef NULL` guard made this arm's
+// definition depend on what ran earlier in the TU — invisible live, fatal
+// frozen. The darwin pack's canonical order puts the flattened prelude
+// (which defines NULL) before this unit, so the freeze recorded a stddef.h
+// unit with NO NULL, and a TU whose only route to NULL is the bare-name
+// auto-include (`c.next = NULL;`, zero includes) had none (darwin D4:
+// testphpdumpptr, testprojectwiden). The pack's stddef.h is the freestanding
+// header for the auto-include, so it must PRODUCE NULL, not merely leave it
+// produced.
+#undef NULL
 #define NULL ((void *)0)
-#endif
 
 #define offsetof(type, member) ((__SIZE_TYPE__)&((type *)0)->member)
 
