@@ -453,6 +453,25 @@ SDK/cross facts).
     SKIP names the knob). `/promote` and the packaging-arc plan state
     CI ownership of all six assets; the container cross `release-macos`
     is the local verification lane whose tarballs are never uploaded.
+  **BURN-IN GREEN 2026-09-02 — D3 DONE (run 33589127706, dispatched
+  against the existing v0.97.0 draft with build_ref=develop @18dc95d7):**
+  all five jobs green. Both mac legs leg-for-leg identical: the pinned
+  zstd stage cloned + built natively by the hosted MODE's compiler
+  (`DARWIN_ZSTD_LIB = ~/zstd/libzstd-<arch>-macos.a`, the brew derivation
+  bypassed), `DARWIN_FREEZER = obj/hosted-<arch>-macos/madc-freezer`,
+  `RELEASE_MACOS_ARCHES = <host arch>`, forest_pack_darwin 835 units,
+  verify_macho_release OK, tarball packaged, `mactar` gate PASS — marker
+  probe ok, **mac_battery 9/2 on both arches** (the two FAILs = the two
+  standing known-opens: the `os.str()` husk inside the chained C++ groves
+  leg, the value intrinsic), negative control ok (hidden `libmadc_rt.a`
+  ⇒ leg 6c FAILS). attach-release: the draft carries SIX assets + a
+  six-line SHA256SUMS (deb, rpm, linux tarball, windows zip, macos arm64,
+  macos x86_64). Wall: arm64 leg ≈ 4 min, Intel ≈ 8 min; the run is
+  bounded by the linux job as before. master's `release.yml` synced
+  IDENTICAL (@2056f871). **Exit decision (owner):** canonical mac lane —
+  recommendation: runner-native canonical for shipped assets (faithful
+  self-freeze, no owner-SDK dependence, execution-proven per arch);
+  container cross `release-macos` = local verification lane.
 - **D4 — the full-suite macOS lane.** `run_tests.sh` under the gnubin
   posture on the runner; a `darwin` skip/expect fixture domain via the
   existing `MADC_SKIP_EXT` machinery for genuinely-divergent tests;
