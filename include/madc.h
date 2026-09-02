@@ -6250,6 +6250,12 @@ public:
     // parser.cpp for the rules and the owner law behind it.
     DataDef *madc_array_subscript_type();
     static DataDef *resolve_builtin_type_spelling(const std::string &name);
+    // The fundamental type a SCALAR dd denotes, PROVEN through that one
+    // table (cv peeled, namespace-alias chain walked, identity spelling
+    // resolved), or NULL when the identity cannot be established. Distinct
+    // types over one storage (wchar_t / int, char16_t / unsigned short,
+    // char / signed char) come back distinct. Defined in parser.cpp.
+    static DataDef *proven_scalar_identity(const DataDef *dd);
     // madc-dialect spellings of the intrinsic tagged carrier (ddARRAY ==
     // madc::value): `array` / `value` / `var`. Gated to STD_MADC; NULL in
     // every strict C/C++ mode. Instance method on purpose — these names

@@ -13883,14 +13883,39 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 					return (ape && ppe
 						&& same_enum_type(ape, ppe))
 						? 5 : -1;
-				// Integer typedefs collapse to sized canonicals
-				// UNEVENLY (size_t may sit behind an alias
-				// DataDef while the argument resolved straight
-				// to uint64_t — libstdc++'s __stoa takes
-				// std::size_t* against a size_t* argument), so
-				// NUMERIC pointees compare by representation:
-				// the same rawtype test the numeric value lane
-				// below uses for its exact match.
+				// Two scalar pointees compare by TYPE IDENTITY when
+				// both are proven (Program::proven_scalar_identity,
+				// the one builtin table): [conv.ptr] has no
+				// wchar_t* -> int* conversion although the storage
+				// matches, and a representation test scored the
+				// int32_t instance an exact 5 for a `const wchar_t*`
+				// argument — registration order then picked it
+				// (kind<int> served kind(const wchar_t*); the pack
+				// froze basic_ostream<int32_t, char_traits<wchar_t>>
+				// from _M_write's `const char_type*`). Integer
+				// typedefs that collapse UNEVENLY (size_t behind an
+				// alias dd, the argument at uint64_t — libstdc++'s
+				// __stoa) meet at ONE identity through the alias
+				// chain. An UNPROVEN pointee (an alias the table
+				// cannot name) keeps the representation test —
+				// reject only what is proven unrelated.
+				const DataDef *aid = Program::proven_scalar_identity(ab);
+				const DataDef *pid = Program::proven_scalar_identity(pb);
+				if (aid && pid) {
+					// Env-gated probe (MADC_OVL_PROBE): a proven-distinct
+					// pointee pair — the identity rejection is otherwise
+					// invisible behind "no matching constructor".
+					if (aid != pid && ::getenv("MADC_OVL_PROBE"))
+						fprintf(stderr, "[ovl] pointee identity reject:"
+							" arg %s (canon '%s') -> %s vs param %s"
+							" (canon '%s') -> %s\n",
+							ab->name.c_str(),
+							ab->canonical_cpp_spelling().c_str(),
+							aid->name.c_str(), pb->name.c_str(),
+							pb->canonical_cpp_spelling().c_str(),
+							pid->name.c_str());
+					return aid == pid ? 5 : -1;
+				}
 				if (ab->is_numeric() && pb->is_numeric())
 					return ab->rawtype() == pb->rawtype()
 						? 5 : -1;
@@ -13906,7 +13931,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		return -1;
 	}
 	if (p_num && a_num) {
-		if (adc->rawtype() == pdc->rawtype())
+		// An exact match is TYPE identity, not representation: a
+		// wchar_t argument reaching an `int` parameter is an integral
+		// promotion ([conv.prom]) — viable, but ranked below the exact
+		// wchar_t overload it used to tie with (and lose to, by
+		// registration order). Two proven scalars compare by identity;
+		// an unproven one keeps the representation test.
+		const DataDef *aid = Program::proven_scalar_identity(adc);
+		const DataDef *pid = Program::proven_scalar_identity(pdc);
+		if (aid && pid ? aid == pid : adc->rawtype() == pdc->rawtype())
 			return 5;
 		// Grade within the numeric domain instead of a flat 4: staying
 		// in one domain (integer->integer, floating->floating) ranks

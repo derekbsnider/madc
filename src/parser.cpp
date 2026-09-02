@@ -4304,6 +4304,39 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
     return canon ? canon : dd;
 }
 
+// [basic.fundamental] identity for a SCALAR dd, PROVEN: the fundamental type
+// the dd denotes, or NULL when its identity cannot be established from the
+// one builtin table. Peels cv, walks the namespace-alias chain the typedef
+// arm records (std::size_t -> ddUINT64), then resolves the root's IDENTITY
+// spelling — canonical spelling, else display name, the one rule every
+// identity former uses — through resolve_builtin_type_spelling. A
+// class-scope alias minted for a source spelling (`typedef int ct` inside a
+// class: an alias dd named ct whose canonical spelling is "int") resolves the
+// same way. Distinct fundamental types over ONE storage — wchar_t / int,
+// char16_t / unsigned short, char32_t / unsigned int, char / signed char,
+// darwin long / long long — come back as DISTINCT dds; a representation test
+// (rawtype) cannot tell them apart, and that is the only reason this exists:
+// the overload scorer tied kind<int>'s `const int*` against a `const
+// wchar_t*` argument and registration order picked the int instance (the
+// pack froze basic_ostream<int32_t, char_traits<wchar_t>>). Enums, classes,
+// pointers, references and function types answer NULL — they are not scalars
+// and carry their own identity rules; a caller falls back to whatever test
+// it used before, rejecting only what is PROVEN unrelated.
+DataDef *Program::proven_scalar_identity(const DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    const DataDef *u = dd->unqualified();
+    if ( !u || u->basetype() != BaseType::btSimple || u->is_pointer()
+      || u->is_reference() || u->is_function() || u->as_fptr_dd()
+      || dynamic_cast<const DataDefENUM *>(u) )
+	return NULL;
+    while ( u->scalar_alias_of )
+	u = u->scalar_alias_of;
+    const std::string &cs = u->canonical_cpp_spelling();
+    return resolve_builtin_type_spelling(cs.empty() ? u->name : cs);
+}
+
 static std::string sanitize_template_fragment(const std::string &s)
 {
     std::string out;
@@ -33903,6 +33936,11 @@ std::string Program::canonical_arg_key_fragment(
     int64_t v = 0;
     if ( fold_nontype_template_arg(argtoks, spelling, v) )
 	return sanitize_template_fragment(std::to_string(v));
+    // Env-gated probe (MADC_ARGFRAG_PROBE): every fragment request — the
+    // spelling that arrives, before any arm rewrites it.
+    static const char *afp_in = ::getenv("MADC_ARGFRAG_PROBE");
+    if ( afp_in )
+	std::cerr << "[argfrag] in '" << spelling << "'" << std::endl;
     // One key rule for BOTH registration and lookup (see
     // template_instantiation_key_head): a BUILTIN type argument's fragment
     // comes from the canonical DataDef the lexer's type-specifier path emits
@@ -33954,6 +33992,10 @@ std::string Program::canonical_arg_key_fragment(
 	if ( cdd )
 	{
 	    const std::string &cs = cdd->canonical_cpp_spelling();
+	    if ( afp_in )
+		std::cerr << "[argfrag] user core '" << core << "' -> name='"
+		    << cdd->name << "' cs='" << cs << "' sfx='" << sfx << "'"
+		    << std::endl;
 	    if ( !cs.empty() && cs != core )
 		return sanitize_template_arg_fragment(cs + sfx);
 	    // No canonical C++ spelling: the resolved DataDef's registered
@@ -54523,6 +54565,22 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		    (int)pgm.dependent_parse_in_progress,
 		    (int)call_involves_placeholder(tc),
 		    pgm.cur_func_name.c_str());
+	    // The call ARGUMENTS' types — a deduced binding that spells a
+	    // storage type (int32_t for a wchar_t char_type*) is diagnosed here.
+	    for ( size_t i = 0; i < tc->parameters.size(); ++i )
+	    {
+		DataDef *ad = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
+		DataDefPTR *ap = dynamic_cast<DataDefPTR *>(ad);
+		DataDef *ab = ap ? ap->base_type : NULL;
+		fprintf(stderr, "FNTPLPROBE   arg[%zu]='%s' canon='%s' pointee='%s'"
+			" pcanon='%s' ident=%s\n", i,
+			ad ? ad->name.c_str() : "(null)",
+			ad ? ad->canonical_cpp_spelling().c_str() : "",
+			ab ? ab->name.c_str() : "-",
+			ab ? ab->canonical_cpp_spelling().c_str() : "",
+			Program::proven_scalar_identity(ab)
+			    ? Program::proven_scalar_identity(ab)->name.c_str() : "-");
+	    }
 	    for ( size_t i = 0; i < tc->explicit_template_args.size(); ++i )
 	    {
 		DataDef *ea = tc->explicit_template_args[i];

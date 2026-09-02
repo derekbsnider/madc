@@ -59,8 +59,8 @@
 #          closure drop (linux 1 -> 0, win64 3 -> 0): those dropped records
 #          were the long-double-bearing ones, so the container now carries
 #          MORE than it did. Gated by forest_bind_gate [ldouble].
-93 linux pack-errors
-55 linux dk-none
+68 linux pack-errors
+45 linux dk-none
 0 linux closure-drops
 93 win64 pack-errors
 55 win64 dk-none
@@ -116,5 +116,31 @@
 # long long ones instead of aliasing them, exactly as the type model says.
 # A native darwin freeze (libSystem has the symbol) reports lower. Every
 # other class is byte-identical to the 64 run.
-66 darwin pack-errors
+# linux 93 -> 68, dk-none 55 -> 45; darwin 66 -> 52 (2026-09-02, darwin-host
+# D4 wave 3, the wchar_t identity slice — five commits): wchar_t/char16_t/
+# char32_t are DISTINCT dds (the ctype<wchar_t> facet class: 4 linux + 6
+# darwin); the served C headers' wchar_t typedef is guarded #ifndef
+# __cplusplus (embedded stddef.h; the darwin prelude generator restores
+# Apple's guard the -x c flatten resolved away) and a typedef may not
+# redeclare a keyword type — the shadow that keyed every DERIVED wchar_t
+# spelling int32_t* (basic_ostream<int32_t, char_traits<wchar_t>>,
+# numpunct_int32_t, the reverse_iterator shared by basic_string_view<wchar_t>
+# and vector<int>: mixed wide keys linux 87 -> 0, darwin 113 -> 0); the
+# overload scorer compares scalar identity, not rawtype; and an explicit
+# specialization on a pointer to a builtin (N<int*>) keys through the one
+# builtin table. win64 is left at its 93/55 line until its lane re-measures
+# (a ratchet only moves on a measured run; IMPROVED is not a failure).
+# darwin 49 -> 52 within the same wave (the 64 -> 66 precedent again): once
+# the one builtin table names long double and __int128 by their own dds,
+# hash<long double>, hash<__int128> and hash<unsigned __int128> stop
+# aliasing hash<double> / hash<long> / hash<unsigned long> and instantiate
+# their OWN bodies — the 16-byte `__scalar_hash<_Tp, 2>` partial
+# specialization (hash.h:273), whose `__murmur2_or_cityhash<size_t>()(...)`
+# is the KNOWN instantiation-body misparse (KG Gap
+# instantiation_body_templateid_ctor_call, 5 -> 8 instances). The three new
+# instances are correct type identity meeting an old burndown item, not a
+# new class; every other line is identical to the 49 run. The cross freezer
+# gives long double the Linux host's 16 bytes — a native darwin arm64 freeze
+# (8-byte long double) reports one fewer.
+52 darwin pack-errors
 1 darwin mir-blob-skips

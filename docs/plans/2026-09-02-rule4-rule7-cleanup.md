@@ -164,14 +164,49 @@ The scalar-spelling family is the first entry and is half done:
   --emit=c11 <reducer>`) carries the darwin type model (MADC_CROSS_APPLE),
   so every darwin identity reducer runs on the build container in seconds.
   Use it before any Mac round trip.
-- Next entry of the same family: **wchar_t** (KG Gap
-  `wchar_t_template_arg_identity`). A wchar_t-bound argument spells its
-  storage dd's display name "int32_t", so `ctype<wchar_t>`'s explicit
-  specialization is invisible to dd-borne uses and the memberless primary
-  instantiates (6 of the 66 darwin errors, 4 in the linux pack;
-  `__is_same(int, char_traits<wchar_t>::char_type)` is TRUE today). The token
-  carve-out in `template_type_arg_spelling` is a spelling patch over a
-  missing type identity; the fix is a distinct wchar_t dd (Itanium `w`).
+- **wchar_t (KG Gap `wchar_t_template_arg_identity`): DONE, D4 wave 3.**
+  Distinct dds (DataDefPlatformWCHAR / CHAR16 / CHAR32, slots 39–41); the
+  three spelling carve-outs deleted. Two more families surfaced underneath
+  and are recorded here so the inventory does not rediscover them:
+  - **rawtype-as-identity** (representation standing in for type identity).
+    Owner: `Program::proven_scalar_identity()` — the fundamental type a
+    scalar dd denotes, proven through the one builtin table (cv peeled,
+    alias chain walked, identity spelling resolved). Adopted by both scalar
+    lanes of `score_arg_to_param`. OPEN copies: the fn-ptr signature
+    compare in `score_arg_to_param`, the typedef-redecl dedup's pointer arm
+    in `TokenTYPEDEF::parse` (`existing->rawtype() == alias_dd->rawtype()`).
+    Divergence to state: a `wchar_t*`/`int*` pair reads "same" in both.
+  - **keyword-redeclaration acceptance** (a typedef naming a C++ keyword
+    type). Owner: `typedef_alias_spelling` (the one alias acceptor; the enum
+    arm's private 3-way switch was a fifth copy and adopted it). The flag
+    (`TokenDataType::keyword`) is registration-owned and map-read, the
+    `builtin` shape — a first version read it from the token and never
+    fired, because the lexer mints a fresh token per occurrence. OPEN: only
+    wchar_t/char8_t/char16_t/char32_t are flagged; C89's `typedef int bool`
+    must stay legal, so the set is the [lex.key] types C spells as
+    identifiers, not every keyword.
+  - **one key rule, two resolution orders** (CONSOLIDATED): the bare arm of
+    `canonical_arg_key_fragment` resolved a builtin spelling through the
+    table while the suffix arm resolved its core through
+    `resolve_named_datadef` (datatype_map first → the lexer's literal-typing
+    ddINT "int"); `template<> struct N<int*>` keyed intP against int32_tP
+    uses. Both arms now resolve table-first (`tests/testptrbuiltinspec.mad`).
+  - **stale rows in the one builtin-spelling table** (CONSOLIDATED): the
+    owner `Program::resolve_builtin_type_spelling` still mapped
+    `long double` to ddDOUBLE and `__int128` to ddINT64 from before those
+    dds existed — the SPELLED side of the type model disagreed with the
+    DECLARED side (the lexer emits ddLDOUBLE/ddINT128), so K<long double>
+    == K<double> and W<__int128> answered for W<long>; and pch.cpp's
+    `builtin_datadef_from_spelling` was a full private COPY of the table
+    that had drifted further (wchar_t -> ddINT32). Rows fixed, the copy
+    adopts the owner (`tests/testbuiltintplkey.mad`). Lesson for P1: a
+    table that names types is itself a copy of the type model — every new
+    dd must visit it, or better, the table should be derived from the dds.
+  - **flattening loses C++ guards** (header text): the darwin prelude is
+    flattened under `-x c`, so any `#ifndef __cplusplus` in Apple's C
+    headers is resolved away. wchar_t was the one instance in the served
+    surface; `gen_darwin_prelude.sh` restores that guard. A second such
+    divergence would be a second awk line — the generator owns the rule.
 - Banked, not in this slice: `TraitTypeArg::same_as` compares display NAMES —
   two class-scope aliases of one type (`size_type` vs `difference_type`)
   read as different types. C++ says a typedef never mints a type. Fix =

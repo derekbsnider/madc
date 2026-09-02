@@ -638,15 +638,51 @@ SDK/cross facts).
     `embedded_header_outranked` and `embedded_wins_include_next` adopt
     `resolved_include_provider_exists()` (disk OR pack) — the pack counts as
     a directory. Mac-verified on a header-less Mac.
-  - **NEW — wchar_t template-argument identity (KG Gap
-    `wchar_t_template_arg_identity`):** a wchar_t-bound argument that arrives
-    as a dd spells its storage dd's display name "int32_t", so
-    `ctype<wchar_t>`'s explicit specialization is invisible and the
-    memberless primary instantiates (6 of the 66 darwin pack errors, 4 in
-    the linux pack; `__is_same(int, char_traits<wchar_t>::char_type)` is
-    TRUE today). The token carve-out and the class-typedef alias are
-    spelling patches over a missing type identity; fix = a distinct wchar_t
-    dd (Itanium `w`). Same family as the long fix, one type over.
+  - **wchar_t template-argument identity (KG Gap
+    `wchar_t_template_arg_identity`): FIXED, D4 wave 3 — five commits.**
+    The symptom (a wchar_t-bound argument keyed "int32_t": `ctype<wchar_t>`'s
+    explicit specialization invisible, the memberless primary instantiated,
+    `__is_same(int, char_traits<wchar_t>::char_type)` TRUE) had THREE
+    causes stacked, each found once the one above it was gone:
+    1. **types** — `dd_platform_wchar()` returned the storage dd itself
+       (ddINT32 / ddUINT16); char16_t/char32_t were ddUINT16/ddUINT32.
+       Now DataDefPlatformWCHAR / DataDefCHAR16 / DataDefCHAR32, distinct
+       dds named by their C++ spelling (typeid slots 39/40/41), the three
+       spelling carve-outs deleted, Ds/Di mangling rows added.
+    2. **headers + typedef** — the embedded `stddef.h` typedef'd
+       `__WCHAR_TYPE__ wchar_t` unconditionally where gcc/clang guard with
+       `#ifndef __cplusplus`, and the darwin prelude flattened Apple's
+       `_wchar_t.h` under `-x c`, resolving the same guard away; madc
+       accepted `typedef int wchar_t;` silently, so every DERIVED spelling
+       (`wchar_t*`) keyed int32_t*. Both header texts carry the oracle's
+       guard now (the prelude generator restores it), and
+       `typedef_alias_spelling` — the one alias acceptor — refuses a
+       language-keyword type (`TokenDataType::keyword`, read from the
+       registration like `builtin`). This was the darwin-specific half:
+       113 mixed wide-stream keys in the frozen groves.
+    3. **overloads** — `score_arg_to_param` tied two scalar pointees /
+       values on rawtype, so `const wchar_t*` bound a first-registered
+       `kind<int>` instance. Both lanes compare through
+       `Program::proven_scalar_identity()` (the one builtin table);
+       unproven pointees keep the representation test.
+    Found on the way: an explicit specialization on a pointer to a builtin
+    (`template<> struct N<int*>`) keyed intP while its uses keyed int32_tP —
+    `canonical_arg_key_fragment`'s suffix arm resolved its core through
+    `resolve_named_datadef` (the lexer's literal-typing ddINT) instead of
+    the builtin table the bare arm uses; one order for both arms now
+    (`tests/testptrbuiltinspec.mad`). And two rows of that one table
+    predated the types they name (`long double` -> the double dd,
+    `__int128` -> the 64-bit dd): K<long double> and K<double> shared ONE
+    instantiation, W<__int128> answered for W<long>, and the identity
+    scorer tied f(long double) with f(double) — rows fixed, pch.cpp's
+    private copy of the table adopts the owner
+    (`tests/testbuiltintplkey.mad`; the battery caught it in
+    teststaticoverload). Measured: linux pack 93 -> 68
+    (dk-none 55 -> 45), darwin 66 -> 52 (49 + three more instances of
+    the known `__scalar_hash<_Tp, 2>` body misparse, now that hash<long
+    double>/hash<__int128> no longer alias the 8-byte hashes); mixed wide keys linux
+    87 -> 0, darwin 113 -> 0. Reducers as tests: testwchartidentity,
+    teststddefwchar, testtypedefkeywordredecl, testptrbuiltinspec.
 
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
