@@ -72,20 +72,29 @@ Merges develop into master, tags the release, and pushes.
         must be green — then `bash scripts/package_release_windows.sh`
         (appends to the container's SHA256SUMS).
      3. macOS: `scripts/remote_build.sh release-macos` (both arches +
-        verify_macho_release), then
-        `bash scripts/package_release_macos.sh` (appends to SHA256SUMS);
-        run the Mac battery (`ssh madc-mac`, `LC_ALL=C` — the alias in
-        ~/.ssh/config owns the DHCP-drifting address) when
-        the Mac is reachable — a darwin regression blocks too.
-   - **Release-asset ownership (PK5, 2026-09-01): CI owns the Linux and
-     Windows assets; the local ceremony owns the macOS assets.** The
+        verify_macho_release — the container CROSS lane, the local
+        verification of the darwin build; its tarballs are never
+        uploaded), then `bash scripts/package_release_macos.sh`
+        (packages both, re-verifies, prints the stated mactar SKIP);
+        the EXECUTION proof is CI's (below): the two native mac jobs
+        run the Mac battery inside the PK4 mactar gate on the exact
+        tarball bytes. Run the owner-Mac battery (`ssh madc-mac`,
+        `LC_ALL=C` — the alias in ~/.ssh/config owns the DHCP-drifting
+        address) when the Mac is reachable as additional evidence — a
+        darwin regression blocks too.
+   - **Release-asset ownership (PK5 2026-09-01; macOS joined at the
+     darwin-host port D3, 2026-09-02): CI owns ALL SIX assets.** The
      tag push triggers `.github/workflows/release.yml`, which builds
-     the .deb/.rpm/linux-tarball/win-zip from the tagged content,
-     smokes them with the PK4 install gates, and attaches them (plus
-     their SHA256SUMS lines) to the release — creating it as a DRAFT
-     if absent. The container-built copies above exist to run the
-     GATING suites; they are NOT uploaded (two producers of one asset
-     would desynchronize the checksums).
+     the .deb/.rpm/linux-tarball/win-zip on ubuntu and the two macOS
+     tarballs NATIVELY on GitHub's arm64 + Intel mac runners (pinned
+     inputs, self-frozen groves — release-equivalent to the container's
+     cross build by construction), smokes every one with the PK4
+     install gates (the mac ones with the Mac battery's PASS floor),
+     and attaches them (plus their SHA256SUMS lines) to the release —
+     creating it as a DRAFT if absent. The container-built copies above
+     exist to run the GATING suites and verifications; they are NOT
+     uploaded (two producers of one asset would desynchronize the
+     checksums).
      1. Wait for the workflow run on the tag to go green:
         `gh run list --workflow=release.yml` / `gh run watch <id>` —
         a red run BLOCKS the promotion like any lane.
@@ -95,17 +104,10 @@ Merges develop into master, tags the release, and pushes.
         --title "vX.Y.Z — <one-line theme>"
         --notes-file docs/release-notes/vX.Y.Z-master.md`; otherwise
         `gh release create` with the same title/notes/`--latest`.
-     3. Attach the mac assets: pull the two tarballs from the container
-        via scp (NEVER `remote_build.sh sync` before the pull — sync
-        clobbers container `dist/`), then
-        `gh release upload vX.Y.Z dist/madc-*-macos-arm64.tar.gz
-        dist/madc-*-macos-x86_64.tar.gz`.
-     4. Merge the mac checksum lines into the RELEASE's SHA256SUMS
-        (the CI file is the base — never clobber it with the local
-        six-line file, whose linux/win lines describe container
-        bytes): `gh release download vX.Y.Z -p SHA256SUMS`, drop any
-        existing macos lines, `sha256sum` the two pulled tarballs into
-        it, `gh release upload vX.Y.Z SHA256SUMS --clobber`.
+     3. Confirm the asset set: `gh release view vX.Y.Z` lists SIX
+        assets + SHA256SUMS (deb, rpm, linux tarball, windows zip, two
+        macOS tarballs). Nothing is uploaded from the container — the
+        local `dist/` describes container bytes and stays local.
      (If gh is not authed, note it in the report and continue.)
 
    (MIR needs nothing separate: it lives in-tree at `third_party/mir`,

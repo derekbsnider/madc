@@ -278,17 +278,24 @@ packaging shape, and all the proper build scripts and tests in order.
     prefix; `make release-windows` + `package_release_windows.sh`).
     The smoke = the PK4 install gates already wired inside the
     packagers, green in CI on the runner-built bytes.
-  - **Asset ownership:** CI owns the four linux/win assets at
-    releases/download/<tag>/…; `attach-release` creates the release
-    as a DRAFT if absent (CI never publishes) and rewrites only its
-    own SHA256SUMS lines; /promote (updated) waits for the workflow,
-    publishes with the real notes, attaches the two mac tarballs, and
-    merges their checksum lines. Binary-brew (owner ruling: binary
-    formula ONLY) consumes these URLs directly.
-  - **macOS not in CI, stated reason:** the darwin cross-compile runs
-    against the owner-staged SDK (never uploaded); a native mac-runner
-    build needs a darwin-HOST madc that does not exist (the freezer
-    runs the build-host madc). OWNER DIRECTION (2026-09-01, stated
+  - **Asset ownership:** CI owns ALL SIX assets at
+    releases/download/<tag>/… (the four linux/win ones since PK5; the
+    two macOS tarballs since the darwin-host port D3, 2026-09-02 —
+    built NATIVELY on macos-14 arm64 + macos-15-intel x86_64 from
+    pinned inputs, smoked by the PK4 `mactar` gate = extract, run, the
+    Mac battery's PASS floor, the hidden-archive negative control);
+    `attach-release` creates the release as a DRAFT if absent (CI
+    never publishes) and rewrites only its own SHA256SUMS lines;
+    /promote (updated) waits for the workflow and publishes with the
+    real notes. Binary-brew (owner ruling: binary formula ONLY)
+    consumes these URLs directly.
+  - **macOS in CI (was: not, with a stated reason).** The original
+    reason — the darwin cross-compile needs the owner-staged SDK, and
+    a native build needs a darwin-HOST madc that did not exist — was
+    dissolved by the darwin-host build port (D0–D3,
+    docs/plans/2026-09-01-darwin-host-port.md): the runner's hosted
+    madc self-freezes the groves; the SDK never leaves the owner's
+    machines. OWNER DIRECTION (2026-09-01, stated
     three times): GitHub's arm64+Intel mac runners make the
     darwin-host build port the highest-leverage next slice — native
     mac builds AND the never-existed full-suite macOS lane AND the

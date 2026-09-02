@@ -394,13 +394,65 @@ SDK/cross facts).
   The runner-built binaries are now release-equivalent to the container's
   by construction: same inputs (pinned libc++ text, pinned open C headers,
   posture-filtered tables), same corpus, producer == consumer.
-- **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
-  (x86_64) build/package/attach with a PK4-style extract-and-run
-  install gate for the tarballs (the x86_64 job = the first-ever
-  execution proof); `/promote` sheds its mac-attach step; asset
-  ownership becomes CI for all six. OWNER DECISION at this exit:
+- **D3 — CI mac jobs in release.yml.** macos-14 (arm64) +
+  macos-15-intel (x86_64; GitHub retired macos-13 — the label the D2
+  gate proved) build/package/attach with a PK4-style extract-and-run
+  install gate for the tarballs; `/promote` sheds its mac-attach step;
+  asset ownership becomes CI for all six. OWNER DECISION at this exit:
   whether the container cross lane remains canonical for local
   ceremonies or becomes verification-only.
+  **IMPLEMENTED 2026-09-02 (burn-in pending):**
+  - `release.yml` gains `macos-package`, a two-leg matrix mirroring
+    darwin-probe's provisioning (brew set + gnubin on GITHUB_PATH; the
+    three staged INPUT trees at their scripts' knobs via GITHUB_ENV —
+    `DARWIN_OPEN_HEADERS_HOME`, `LIBCXX_HEADERS_HOME`, and the new
+    `DARWIN_ZSTD_DIR`), `make release-macos` (host arch), then
+    `package_release_macos.sh`; `attach-release` needs it and lists the
+    two tarballs; the header states the new ownership. The draft note
+    no longer promises an owner-attached mac asset.
+  - **zstd is a pinned input now on the darwin host too:**
+    `scripts/stage_darwin_zstd.sh <arch>` is the ONE recipe for the
+    per-target static v1.5.5 archive on both build hosts — it reads the
+    hosted MODE's `CC`/`AR` from the Makefile through a new `print-%`
+    introspection rule (never a copy of the compiler line), pin-checks
+    the tree (`git describe --exact-match` = v1.5.5; a drifted tree
+    refuses, exit 1), and never leaves a target-flavored `lib/libzstd.a`
+    behind. Container oracle: the recipe with the cross CC reproduced
+    the July arm64 stage byte-for-byte in size (796888). The Makefile's
+    darwin-host block now skips the brew INC/LIB derivation when
+    `DARWIN_ZSTD_DIR` is given (an `$(origin)` guard); brew zstd stays
+    the probe default. `provision_container.sh` reports + stages the
+    darwin twins (SDK present) and the pinned libc++ stage.
+  - **The libc++ copyright shipped is the pinned package's own:**
+    `fetch_libcxx_headers.sh` also extracts
+    `usr/share/doc/libc++-18-dev/copyright` to
+    `$LIBCXX_HEADERS_HOME/copyright` (idempotency requires it), and
+    `package_release_macos.sh` reads ONLY that file — the container's
+    `/usr/share/doc` path is gone (one source on both hosts; the
+    container stage is now provisioned, tarball copyright `cmp`-equal to
+    the stage).
+  - **Per-arch packager:** `package_release_macos.sh [arm64|x86-64 ...]`;
+    default = the host's `release-macos` set (both on the cross host,
+    the host arch on a Mac = `RELEASE_MACOS_ARCHES`). SHA256SUMS
+    refreshes only the lines packaged this run (container oracle: a
+    single-arch call left the other arch's line intact). On a darwin
+    host the re-verify reads through the arch's hosted binary and brew
+    llvm@18's `llvm-otool` (`MADC_READER`/`OTOOL` env override).
+  - **PK4 `mactar` install gate** (`package_install_gate.sh mactar`,
+    wired into the packager): extract → the shipped `bin/madc` runs the
+    marker probe → `mac_battery.sh` on the extracted layout with a PASS
+    floor (`MAC_BATTERY_FLOOR`, default 8 = the owner-hardware baseline;
+    every FAIL line printed) → NEGATIVE CONTROL: hide `lib/libmadc_rt.a`
+    and leg 6c must FAIL. Host arch only (a foreign-arch tarball is
+    refused — no Rosetta proof); a stated SKIP on a non-darwin host (the
+    container's packager run prints it). Byte-identity oracle for all of
+    the above: `make -n -B` of the four container recipes (hosted arm64,
+    default ELF, hosted win64, release-arm64-macos) IDENTICAL to HEAD.
+  - `macho_exe_dylib_gate.sh` tool names are knobs (`OTOOL`/`OBJDUMP`/
+    `NM`/`MADC`/`FOREST`; defaults = the container's apt spellings; a
+    SKIP names the knob). `/promote` and the packaging-arc plan state
+    CI ownership of all six assets; the container cross `release-macos`
+    is the local verification lane whose tarballs are never uploaded.
 - **D4 — the full-suite macOS lane.** `run_tests.sh` under the gnubin
   posture on the runner; a `darwin` skip/expect fixture domain via the
   existing `MADC_SKIP_EXT` machinery for genuinely-divergent tests;
