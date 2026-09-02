@@ -378,6 +378,22 @@ SDK/cross facts).
   8/8 JIT, exe 1/1, obj 1/1. Round 4 expectation: 835 units, 54 errors,
   prelude + predefined table byte-identical to the container's, battery
   8/3 (arm64) / 9/2 (x86_64).
+  **✅ Round 4 (run 33586189982, D2c content) — D2 CLOSED with EXACT
+  parity on both arches:** flattened prelude byte-IDENTICAL to the
+  container's, predefined-macro table IDENTICAL (499 arm64 / 469 x86_64
+  entries), unit list + per-unit token counts IDENTICAL (835 units, no
+  SDK unit), 54 pack parse errors (the container's 64 minus the cross
+  freezer's ten dlsym husks — the native number is the faithful one),
+  `verify_macho_release` OK, stripped hello on both. Battery **9/2 on
+  BOTH arches**: the exec:// channel leg that failed on arm64 in rounds
+  1–3 (and is one of the three owner-hardware standing known-opens) now
+  PASSES — the fortify wrappers the prelude used to carry were breaking
+  the channel child's output on arm64; `-D_FORTIFY_SOURCE=0` removed
+  them. Owner-hardware confirmation pending (Mac unreachable); the
+  remaining known-opens are the `os.str()` husk and the value intrinsic.
+  The runner-built binaries are now release-equivalent to the container's
+  by construction: same inputs (pinned libc++ text, pinned open C headers,
+  posture-filtered tables), same corpus, producer == consumer.
 - **D3 — CI mac jobs in release.yml.** macos-14 (arm64) + macos-13
   (x86_64) build/package/attach with a PK4-style extract-and-run
   install gate for the tarballs (the x86_64 job = the first-ever
