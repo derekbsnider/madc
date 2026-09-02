@@ -23,6 +23,10 @@
 # Layout under $LIBCXX_HEADERS_HOME (default /workspace/libcxx-headers):
 #   libc++-18-dev_<ver>_amd64.deb     the verified pinned artifact
 #   include/c++/v1/...                the header tree (what LLVM_LIBCXX_INC names)
+#   copyright                         the package's license text — the ONE source
+#                                     of the tarball's libc++-copyright.txt
+#                                     (package_release_macos.sh), so the notice
+#                                     shipped is the pinned package's own
 #   .PROVENANCE                       one-line stamp: package, version, sha256
 #
 # Bumping the pin = a served-C++-world change: move the container (apt) and
@@ -37,11 +41,13 @@ DEB_ARCH=amd64
 DEB_SHA256=31223b203414f2a4bb2a115e5626aa7c8ccab031740cf5ccf3d1da21eb6a208d
 DEB_URL="http://archive.ubuntu.com/ubuntu/pool/universe/l/llvm-toolchain-18/${DEB_PACKAGE}_${DEB_VERSION}_${DEB_ARCH}.deb"
 DEB_TREE=usr/lib/llvm-18/include/c++/v1
+DEB_COPYRIGHT=usr/share/doc/libc++-18-dev/copyright
 EXPECT_FILES=1017
 
 HOME_DIR="${LIBCXX_HEADERS_HOME:-/workspace/libcxx-headers}"
 DEB="$HOME_DIR/${DEB_PACKAGE}_${DEB_VERSION}_${DEB_ARCH}.deb"
 TREE="$HOME_DIR/include/c++/v1"
+COPYRIGHT="$HOME_DIR/copyright"
 STAMP="$DEB_PACKAGE $DEB_VERSION $DEB_ARCH sha256=$DEB_SHA256"
 
 sha256_of() {
@@ -50,7 +56,7 @@ sha256_of() {
 }
 
 if [ -f "$HOME_DIR/.PROVENANCE" ] && [ "$(cat "$HOME_DIR/.PROVENANCE")" = "$STAMP" ] \
-        && [ -f "$TREE/__config" ]; then
+        && [ -f "$TREE/__config" ] && [ -s "$COPYRIGHT" ]; then
     echo "libc++ headers: already staged ($STAMP)"
     exit 0
 fi
@@ -73,12 +79,14 @@ if [ "$got" != "$DEB_SHA256" ]; then
 fi
 
 # A .deb is an ar archive; noble's data member is zstd-compressed tar with
-# ./-prefixed paths. Extract only the header tree, into a scratch dir, then
-# move it into place atomically so a half-extracted stage never passes.
+# ./-prefixed paths. Extract only the header tree + the copyright file, into
+# a scratch dir, then move them into place atomically so a half-extracted
+# stage never passes.
 WORK=$(mktemp -d "$HOME_DIR/.extract.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 ( cd "$WORK" && ar x "$DEB" data.tar.zst )
-zstd -dc "$WORK/data.tar.zst" | tar -x -C "$WORK" "./$DEB_TREE"
+zstd -dc "$WORK/data.tar.zst" | tar -x -C "$WORK" "./$DEB_TREE" "./$DEB_COPYRIGHT"
+[ -s "$WORK/$DEB_COPYRIGHT" ] || { echo "libc++ headers: deb carries no $DEB_COPYRIGHT" >&2; exit 1; }
 n=$(find "$WORK/$DEB_TREE" -type f | wc -l | tr -d ' ')
 if [ "$n" -ne "$EXPECT_FILES" ]; then
     echo "libc++ headers: extracted $n files, expected $EXPECT_FILES — deb layout changed?" >&2
@@ -89,5 +97,6 @@ grep -Eq '^#[[:space:]]*define[[:space:]]+_LIBCPP_VERSION[[:space:]]+180100([[:s
 rm -rf "$TREE"
 mkdir -p "$HOME_DIR/include/c++"
 mv "$WORK/$DEB_TREE" "$TREE"
+mv "$WORK/$DEB_COPYRIGHT" "$COPYRIGHT"
 printf '%s\n' "$STAMP" > "$HOME_DIR/.PROVENANCE"
-echo "libc++ headers: staged $n files at $TREE ($STAMP)"
+echo "libc++ headers: staged $n files at $TREE + copyright ($STAMP)"

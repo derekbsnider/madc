@@ -1,9 +1,13 @@
 #!/bin/bash
-# Build the macOS release tarballs (macos-release-lane plan W4).
+# Build the macOS release tarballs (macos-release-lane plan W4; per-arch +
+# darwin-host posture: darwin-host port D3).
 #
-#   bash scripts/package_release_macos.sh          (run from the repo root)
+#   bash scripts/package_release_macos.sh [arm64|x86-64 ...]   (from the repo root)
 #
-# Stages one tar.gz per arch into dist/, named
+# Arches default to what `make -C src release-macos` built on THIS host: both
+# on the container (the cross lane), the host arch on a darwin host (the
+# release.yml mac jobs — one runner per arch). Stages one tar.gz per arch
+# into dist/, named
 #   madc-<ver>-macos-arm64.tar.gz / madc-<ver>-macos-x86_64.tar.gz
 # each containing
 #   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
@@ -23,19 +27,61 @@
 # forest-carrier, signature, AND prelude-provenance gates (W0.5) hold
 # for the EXACT bytes tarred, not by construction: the recipe strips
 # binaries before its own verify step, so a failed verify still leaves
-# fresh binaries on disk (bitten 2026-08-11). In-vivo evidence (AMFI,
-# behavior) is scripts/mac_battery.sh on the owner's Macs.
+# fresh binaries on disk (bitten 2026-08-11). The verify reader/otool
+# follow the Makefile's posture: bin/madc + llvm-otool-18 on the
+# container; on a darwin host the hosted binary of the arch being
+# packaged reads its own forest and brew llvm@18's llvm-otool dumps the
+# load commands (env MADC_READER / OTOOL override both).
+#
+# In-vivo evidence: on a darwin host each tarball then runs the PK4
+# install gate (scripts/package_install_gate.sh mactar — extract, run,
+# the Mac battery with its PASS floor, the hidden-archive negative
+# control); on the container that leg prints a stated SKIP and the
+# owner's Macs / the release.yml mac jobs are the execution proof.
+#
+# The libc++ copyright shipped is the PINNED package's own file, from the
+# stage scripts/fetch_libcxx_headers.sh writes (LIBCXX_HEADERS_HOME) —
+# one source on both build hosts, never the build host's /usr/share/doc.
 set -e
 
 VER=$(cat VERSION)
+HOST_OS=$(uname -s)
+LIBCXX_HOME="${LIBCXX_HEADERS_HOME:-/workspace/libcxx-headers}"
+
+if [ "$HOST_OS" = Darwin ]; then
+    # The Makefile's DARWIN_OTOOL default (brew llvm@18); keg-only, not on PATH.
+    OTOOL="${OTOOL:-$(brew --prefix llvm@18 2>/dev/null)/bin/llvm-otool}"
+    export OTOOL
+fi
+SHA256SUM=$(command -v sha256sum || echo "shasum -a 256")
+
+# Arch selection: explicit args (bin spellings; x86_64 accepted), else the
+# host's release-macos set — both arches on a cross host, the host arch on
+# a darwin host (RELEASE_MACOS_ARCHES in src/Makefile says the same).
+ARCHES=()
+for a in "$@"; do
+    case "$a" in
+        arm64|x86-64) ARCHES+=("$a") ;;
+        x86_64) ARCHES+=("x86-64") ;;
+        *) echo "package_release_macos: unknown arch '$a' (arm64 | x86-64)" >&2; exit 2 ;;
+    esac
+done
+if [ ${#ARCHES[@]} -eq 0 ]; then
+    if [ "$HOST_OS" = Darwin ]; then
+        ARCHES=("$(uname -m | sed 's/x86_64/x86-64/')")
+    else
+        ARCHES=(arm64 x86-64)
+    fi
+fi
 
 mkdir -p dist
 
 package_arch() {
-    local bin_arch="$1" pkg_arch="$2"
+    local bin_arch="$1" pkg_arch="${1/x86-64/x86_64}"
     local bin="bin/madc-release-${bin_arch}-macos"
     local root="madc-${VER}-macos-${pkg_arch}"
     local stage="dist/.stage-${pkg_arch}"
+    local reader="${MADC_READER:-bin/madc}"
 
     if [ ! -f "$bin" ]; then
         echo "package_release_macos: $bin missing — run 'make -C src release-macos' first" >&2
@@ -47,7 +93,10 @@ package_arch() {
     # assumption wrong — the recipe strips the binaries BEFORE its
     # verify step, so a failed verify still leaves fresh binaries on
     # disk for a later packaging pass to pick up.
-    if ! bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/forest.bin"; then
+    if [ "$HOST_OS" = Darwin ] && [ -z "${MADC_READER:-}" ]; then
+        reader="bin/madc-hosted-${bin_arch}-macos"
+    fi
+    if ! MADC_READER="$reader" bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/forest.bin"; then
         echo "package_release_macos: $bin failed verify_macho_release — refusing to package" >&2
         exit 1
     fi
@@ -70,12 +119,13 @@ package_arch() {
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
-    # (Apache-2.0-with-LLVM-exception): carry the license text.
-    if [ -f /usr/share/doc/libc++-18-dev/copyright ]; then
-        install -m 644 /usr/share/doc/libc++-18-dev/copyright \
+    # (Apache-2.0-with-LLVM-exception): carry the license text — the pinned
+    # package's own, from the stage that also serves its header text.
+    if [ -s "$LIBCXX_HOME/copyright" ]; then
+        install -m 644 "$LIBCXX_HOME/copyright" \
             "$stage/$root/THIRD_PARTY_NOTICES/libc++-copyright.txt"
     else
-        echo "package_release_macos: libc++ copyright text not found" >&2
+        echo "package_release_macos: $LIBCXX_HOME/copyright missing — bash scripts/fetch_libcxx_headers.sh stages the pinned libc++ package (headers + copyright)" >&2
         exit 1
     fi
     # The embedded C prelude derives from Apple's APSL/BSD libc headers
@@ -124,20 +174,26 @@ EOF
     tar -C "$stage" -czf "dist/$root.tar.gz" "$root"
     rm -rf "$stage"
     echo "packaged dist/$root.tar.gz"
+    # PK4: re-prove the ARTIFACT bytes (runs on a darwin host; stated SKIP
+    # elsewhere — see scripts/package_install_gate.sh).
+    bash scripts/package_install_gate.sh mactar "dist/$root.tar.gz"
+    PACKAGED+=("$root.tar.gz")
 }
 
-package_arch arm64 arm64
-package_arch x86-64 x86_64
+PACKAGED=()
+for a in "${ARCHES[@]}"; do
+    package_arch "$a"
+done
 
-# Refresh our lines in SHA256SUMS without touching the .deb/.rpm ones.
+# Refresh OUR lines in SHA256SUMS — only the tarballs packaged this run;
+# the .deb/.rpm/.zip lines (and the other arch's, on a one-arch host) stay.
 ( cd dist
-  if [ -f SHA256SUMS ]; then
-      grep -v -e "madc-${VER}-macos-arm64.tar.gz" \
-              -e "madc-${VER}-macos-x86_64.tar.gz" SHA256SUMS > SHA256SUMS.tmp || true
-  else
-      : > SHA256SUMS.tmp
-  fi
-  sha256sum "madc-${VER}-macos-arm64.tar.gz" "madc-${VER}-macos-x86_64.tar.gz" >> SHA256SUMS.tmp
+  if [ -f SHA256SUMS ]; then cp SHA256SUMS SHA256SUMS.tmp; else : > SHA256SUMS.tmp; fi
+  for f in "${PACKAGED[@]}"; do
+      grep -v "  $f\$" SHA256SUMS.tmp > SHA256SUMS.tmp2 || true
+      mv SHA256SUMS.tmp2 SHA256SUMS.tmp
+  done
+  $SHA256SUM "${PACKAGED[@]}" >> SHA256SUMS.tmp
   mv SHA256SUMS.tmp SHA256SUMS )
 
 echo "== dist/ =="

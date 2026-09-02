@@ -12,6 +12,7 @@
 #   bash scripts/package_install_gate.sh rpm    dist/madc-<ver>-<rel>.x86_64.rpm
 #   bash scripts/package_install_gate.sh tar    dist/madc-<ver>-linux-x86_64.tar.gz
 #   bash scripts/package_install_gate.sh winzip dist/madc-<ver>-windows-x86_64.zip
+#   bash scripts/package_install_gate.sh mactar dist/madc-<ver>-macos-<arch>.tar.gz   (darwin host)
 #   bash scripts/package_install_gate.sh all    # every gateable artifact for VERSION
 #
 # Per-artifact probes (each asserts its failure mode loudly, and every
@@ -38,8 +39,15 @@
 #            zipped madcide.exe prints its usage line [control: hide
 #            bin/libmadc-0.dll => both must fail].
 #
-# The macOS tarball is NOT gateable here — the container cannot execute
-# darwin binaries; its install proof is the mac_battery on owner hardware.
+#   mactar   (darwin host only — the release.yml mac jobs; the container
+#            cannot execute darwin binaries and prints a stated SKIP) tar
+#            extract; the shipped bin/madc runs the probe (output asserted);
+#            scripts/mac_battery.sh against the extracted tarball layout
+#            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
+#            owner-hardware baseline) and prints every FAIL line [control:
+#            hide lib/libmadc_rt.a => battery leg 6c must FAIL — proving
+#            the battery exercised THIS tarball's archive]. Host arch only:
+#            a tarball for the other arch is refused (no Rosetta proof).
 #
 # The pty probe forces cwd=/tmp (see install_gate_pty.py): the shipped
 # madcide's {dirname(__FILE__)}/profiles arm is baked build-tree-RELATIVE,
@@ -239,6 +247,63 @@ gate_winzip() {
     echo "package_install_gate: PASS winzip ($artifact)"
 }
 
+# ---------- the macOS tarball (darwin host) ----------
+gate_mactar() {
+    local artifact="$1" scratch="$GATE_TMP/mactar" root out host want passed floor tmo
+    [ -f "$artifact" ] || fail mactar "artifact not found: $artifact"
+    host=$(uname -s)
+    if [ "$host" != Darwin ]; then
+        echo "package_install_gate: SKIP mactar ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs this leg)"
+        return 0
+    fi
+    tmo=$(command -v timeout || command -v gtimeout || true)
+    [ -n "$tmo" ] || fail mactar "no timeout/gtimeout on this host (brew coreutils)"
+    rm -rf "$scratch"; mkdir -p "$scratch"
+    tar -C "$scratch" -xzf "$artifact" || fail mactar "tar refused $artifact"
+    root=$(echo "$scratch"/madc-*-macos-*)
+    [ -d "$root" ] || fail mactar "expected one madc-*-macos-<arch> root in $artifact"
+    root=$(cd "$root" && pwd)
+    want=$(uname -m)
+    case "$root" in
+        *"-macos-$want") ;;
+        *) fail mactar "$artifact is not a $want tarball — the gate runs the host arch only (no Rosetta proof)" ;;
+    esac
+    [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
+    [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
+
+    # 1. the shipped madc runs a program
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )
+    case "$out" in
+        *"$MARKER"*) ok mactar "shipped madc runs (JIT output asserted)" ;;
+        *) fail mactar "shipped madc did not produce '$MARKER' (got: $out)" ;;
+    esac
+
+    # 2. the Mac battery against the extracted tarball layout (bin/madc +
+    # lib/libmadc_rt.a beside it = leg 6c's shape). The full output is the
+    # release evidence — print it; gate the PASS count.
+    floor="${MAC_BATTERY_FLOOR:-8}"
+    out=$( ( ulimit -t 600; "$tmo" 900 bash scripts/mac_battery.sh "$root/bin/madc" ) 2>&1 )
+    printf '%s\n' "$out" | sed 's/^/    | /'
+    passed=$(printf '%s\n' "$out" | sed -n 's/^== battery: \([0-9]*\) passed.*/\1/p')
+    [ -n "$passed" ] || fail mactar "mac_battery printed no '== battery:' summary"
+    if [ "$passed" -ge "$floor" ]; then
+        ok mactar "mac battery: $passed passed (floor $floor); FAIL lines: $(printf '%s\n' "$out" | grep -c '^FAIL')"
+    else
+        fail mactar "mac battery: $passed passed < floor $floor"
+    fi
+
+    # 3. negative control: hide the shipped runtime archive => leg 6c FAILS.
+    command -v cc >/dev/null 2>&1 || fail mactar "negative control needs cc (leg 6c info-skips without it)"
+    mv "$root/lib/libmadc_rt.a" "$root/lib/libmadc_rt.a.hidden"
+    out=$( ( ulimit -t 600; "$tmo" 900 bash scripts/mac_battery.sh "$root/bin/madc" ) 2>&1 )
+    mv "$root/lib/libmadc_rt.a.hidden" "$root/lib/libmadc_rt.a"
+    case "$out" in
+        *"FAIL - emitted-C runtime archive"*) ok mactar "negative control: hidden lib/libmadc_rt.a => battery leg 6c FAILS" ;;
+        *) fail mactar "negative control broken: lib/libmadc_rt.a hidden but leg 6c did not FAIL" ;;
+    esac
+    echo "package_install_gate: PASS mactar ($artifact)"
+}
+
 # ---------- dispatch ----------
 mode="${1:-}"
 write_probes
@@ -247,6 +312,7 @@ case "$mode" in
     rpm)    gate_rpm    "${2:?usage: package_install_gate.sh rpm <artifact>}" ;;
     tar)    gate_tar    "${2:?usage: package_install_gate.sh tar <artifact>}" ;;
     winzip) gate_winzip "${2:?usage: package_install_gate.sh winzip <artifact>}" ;;
+    mactar) gate_mactar "${2:?usage: package_install_gate.sh mactar <artifact>}" ;;
     all)
         VER=$(cat VERSION)
         found=0
@@ -256,11 +322,16 @@ case "$mode" in
         [ -f "$tarball" ] && { gate_tar "$tarball"; found=1; }
         winzip="dist/madc-${VER}-windows-x86_64.zip"
         [ -f "$winzip" ] && { gate_winzip "$winzip"; found=1; }
+        # the mac tarball of THIS host's arch, on a darwin host only
+        if [ "$(uname -s)" = Darwin ]; then
+            mactar="dist/madc-${VER}-macos-$(uname -m).tar.gz"
+            [ -f "$mactar" ] && { gate_mactar "$mactar"; found=1; }
+        fi
         [ "$found" = 1 ] || fail all "no gateable ${VER} artifacts in dist/"
         echo "package_install_gate: PASS all (version ${VER})"
         ;;
     *)
-        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip> <artifact> | all" >&2
+        echo "usage: package_install_gate.sh <deb|rpm|tar|winzip|mactar> <artifact> | all" >&2
         exit 2
         ;;
 esac

@@ -21,9 +21,13 @@
 #   - /workspace/madc — the git tree (MIR included at third_party/mir),
 #     restored by scripts/remote_build.sh sync (or a clone).
 #   - /workspace/zstd — the per-target static zstd builds the hosted darwin
-#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1);
-#     the darwin twins rebuild from that tree by hand if lost, the win64 one
-#     is staged below.
+#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1).
+#     The tree itself is the v1.5.5 clone; its three archives ARE staged
+#     below (win64 here, the darwin twins via scripts/stage_darwin_zstd.sh
+#     once the SDK is present).
+#   Staged here (self-healing, fetch scripts own them): the darwin open C
+#   headers, the pinned libc++ text + copyright (/workspace/libcxx-headers —
+#   the mac packager's ONE copyright source), the UCRT libstdc++ stage.
 set -u
 
 CHECK_ONLY=0
@@ -138,6 +142,15 @@ report() {
 		printf '  MISSING darwin open headers — scripts/fetch_darwin_open_headers.sh stages them\n'
 		missing=1
 	fi
+	# The pinned libc++ header text + copyright (darwin-host port D2b/D3):
+	# the mac packager ships THIS stage's copyright — its one source.
+	local lhome="${LIBCXX_HEADERS_HOME:-/workspace/libcxx-headers}"
+	if [ -f "$lhome/.PROVENANCE" ] && [ -s "$lhome/copyright" ]; then
+		printf '  ok      pinned libc++ stage (%s)\n' "$(cat "$lhome/.PROVENANCE")"
+	else
+		printf '  MISSING pinned libc++ stage (%s) — scripts/fetch_libcxx_headers.sh stages it\n' "$lhome"
+		missing=1
+	fi
 	# The win64 zstd stage (W4.1): the hosted-windows MODE links it, and its
 	# absence fails that build loudly at link — but report it here so a lost
 	# stage is visible before a build is attempted.
@@ -148,6 +161,18 @@ report() {
 		printf '  MISSING win64 zstd stage (%s) — staged below from /workspace/zstd\n' "$wzstd"
 		missing=1
 	fi
+	# The darwin zstd twins (forest-carriers S1): the hosted-<arch>-macos
+	# MODEs link them; ONE recipe, scripts/stage_darwin_zstd.sh.
+	local a dzstd
+	for a in arm64 x86-64; do
+		dzstd="${DARWIN_ZSTD_DIR:-/workspace/zstd}/libzstd-$a-macos.a"
+		if [ -f "$dzstd" ]; then
+			printf '  ok      darwin zstd stage (%s)\n' "$dzstd"
+		else
+			printf '  MISSING darwin zstd stage (%s) — scripts/stage_darwin_zstd.sh %s (needs the SDK)\n' "$dzstd" "$a"
+			missing=1
+		fi
+	done
 	return $missing
 }
 
@@ -167,6 +192,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
 
 echo "provision_container: staging darwin open headers (W0.5 prelude input)"
 bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
+
+echo "provision_container: staging the pinned libc++ text + copyright (darwin-host port D2b)"
+bash "$(dirname "$0")/fetch_libcxx_headers.sh" || exit 1
 
 echo "provision_container: staging UCRT-flavor libstdc++ (windows lane W1)"
 bash "$(dirname "$0")/build_win_ucrt_libstdcxx.sh" || exit 1
@@ -189,6 +217,17 @@ if [ ! -f "$WZSTD_A" ]; then
 	# never leave a target-flavored libzstd.a in lib/ for another target's
 	# build to pick up stale
 	rm -f /workspace/zstd/lib/libzstd.a
+fi
+
+# darwin zstd twins (forest-carriers S1 / darwin-host D3): the hosted MODE's
+# own CC/AR build them, which needs the owner-supplied SDK — without it the
+# report above already says MISSING; do not turn that into a provisioning
+# failure here.
+if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
+	for a in arm64 x86-64; do
+		echo "provision_container: staging darwin zstd ($a)"
+		bash "$(dirname "$0")/stage_darwin_zstd.sh" "$a" || exit 1
+	done
 fi
 
 echo "provision_container: verifying"

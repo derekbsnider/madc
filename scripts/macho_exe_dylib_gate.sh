@@ -28,6 +28,12 @@
 # (obj/hosted-arm64-macos/forest.bin, produced by `make -C src
 # release-macos`; the forest-less cross madc has no AOT ledger of its
 # own, so the gate hands it the hosted container via --forest-bind).
+#
+# Knobs (env; defaults = the container's versioned apt spellings, so the
+# fulltest posture is unchanged): OTOOL / OBJDUMP / NM name the Mach-O
+# readers (a darwin host: $(brew --prefix llvm@18)/bin/llvm-otool etc.),
+# MADC the emitting madc, FOREST the darwin forest container. A SKIP names
+# the knob that would lift it — never silent about WHICH tool was missing.
 set -u
 cd "$(dirname "$0")/.."
 D=tmp/machoexedylibgate
@@ -38,13 +44,16 @@ skip() { echo "macho_exe_dylib_gate: SKIP ($1)"; exit 0; }
 
 run() { ( ulimit -t 300; timeout 400 "$@" ); }
 
-for t in llvm-otool-18 llvm-objdump-18 llvm-nm-18; do
-	command -v "$t" >/dev/null 2>&1 || skip "$t not installed"
+OTOOL="${OTOOL:-llvm-otool-18}"
+OBJDUMP="${OBJDUMP:-llvm-objdump-18}"
+NM="${NM:-llvm-nm-18}"
+for pair in "OTOOL=$OTOOL" "OBJDUMP=$OBJDUMP" "NM=$NM"; do
+	command -v "${pair#*=}" >/dev/null 2>&1 || skip "${pair#*=} not installed (knob ${pair%%=*})"
 done
-MADC=bin/madc-arm64-macos
-[ -x "$MADC" ] || skip "$MADC not built (make -C src cross-arm64-macos)"
-FOREST=obj/hosted-arm64-macos/forest.bin
-[ -f "$FOREST" ] || skip "$FOREST not built (make -C src release-macos)"
+MADC="${MADC:-bin/madc-arm64-macos}"
+[ -x "$MADC" ] || skip "$MADC not built (make -C src cross-arm64-macos; knob MADC)"
+FOREST="${FOREST:-obj/hosted-arm64-macos/forest.bin}"
+[ -f "$FOREST" ] || skip "$FOREST not built (make -C src release-macos; knob FOREST)"
 
 rm -rf "$D"
 mkdir -p "$D"
@@ -59,8 +68,8 @@ int main()
 }
 EOF
 
-load_dylibs() { llvm-otool-18 -l "$1" 2>/dev/null | grep -A2 "LC_LOAD_DYLIB" | grep -c "name "; }
-binds() { llvm-objdump-18 --macho --bind "$1" 2>/dev/null; }
+load_dylibs() { "$OTOOL" -l "$1" 2>/dev/null | grep -A2 "LC_LOAD_DYLIB" | grep -c "name "; }
+binds() { "$OBJDUMP" --macho --bind "$1" 2>/dev/null; }
 
 # --- leg A: pure C, no extras — the two-level negative control ------------
 if run "$MADC" -o "$D/cprog" "$D/cprog.c" >"$D/c.log" 2>&1; then
@@ -81,7 +90,7 @@ fi
 # --- leg B: C++ under -static-libmadc — libc++ loaded, imports flat -------
 if run "$MADC" --forest-bind="$FOREST" -static-libmadc -o "$D/xprog" \
 		"$D/xprog.mad" >"$D/x.log" 2>&1; then
-	lcs=$(llvm-otool-18 -l "$D/xprog" 2>/dev/null | grep -A2 "LC_LOAD_DYLIB" | grep "name ")
+	lcs=$("$OTOOL" -l "$D/xprog" 2>/dev/null | grep -A2 "LC_LOAD_DYLIB" | grep "name ")
 	echo "$lcs" | grep -q "/usr/lib/libc++.1.dylib" \
 		&& pass "[B] LC_LOAD_DYLIB /usr/lib/libc++.1.dylib present" \
 		|| fail "[B] no libc++ load command: $lcs"
@@ -95,7 +104,7 @@ if run "$MADC" --forest-bind="$FOREST" -static-libmadc -o "$D/xprog" \
 	mb=$(echo "$b" | grep -c "__madc_")
 	[ "$mb" = "0" ] && pass "[B] zero __madc_ imports (ledger merged in-image)" \
 		|| fail "[B] $mb __madc_ bind(s) — the ledger merge left runtime imports"
-	llvm-nm-18 "$D/xprog" 2>/dev/null | grep -q " T ___madc_try_push" \
+	"$NM" "$D/xprog" 2>/dev/null | grep -q " T ___madc_try_push" \
 		&& pass "[B] ___madc_try_push defined in the image symtab" \
 		|| fail "[B] ___madc_try_push not defined in the image"
 else

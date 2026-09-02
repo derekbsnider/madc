@@ -220,8 +220,13 @@ endif
 ifeq ($(origin MACOS_SDK),undefined)
 MACOS_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
 endif
+# brew zstd is the darwin-host PROBE default; an explicit DARWIN_ZSTD_DIR
+# (the pinned v1.5.5 stage scripts/stage_darwin_zstd.sh writes — what the
+# shipped artifact links) wins: the hosted block below derives INC/LIB from it.
+ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
 ifeq ($(origin DARWIN_ZSTD_PREFIX),undefined)
 DARWIN_ZSTD_PREFIX := $(shell brew --prefix zstd 2>/dev/null)
+endif
 endif
 DARWIN_CLANG ?= $(DARWIN_LLVM_PREFIX)/bin/clang
 DARWIN_CLANGXX ?= $(DARWIN_LLVM_PREFIX)/bin/clang++
@@ -240,11 +245,13 @@ DARWIN_LD_FLAGS ?=
 # the 18.1.8 corpus stays an explicit opt-in
 # (LLVM_LIBCXX_INC=$(brew --prefix llvm@18)/include/c++/v1) for conformance probes.
 LLVM_LIBCXX_INC ?= $(or $(LIBCXX_HEADERS_HOME),/workspace/libcxx-headers)/include/c++/v1
-# brew zstd for the native build (a probe-grade stage; the shipped artifact's
-# pinned v1.5.5 source stage is D2's). Layout differs from the container's
-# per-target stage dir, hence the header-dir / archive split below.
+# brew zstd for the native PROBE build. Layout differs from the per-target
+# stage dir (DARWIN_ZSTD_DIR: lib/zstd.h + libzstd-<arch>-macos.a), hence the
+# header-dir / archive split; the stage dir, when named, owns both below.
+ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
 DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_PREFIX)/include
 DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_PREFIX)/lib/libzstd.a
+endif
 endif
 # The CROSS spellings (the container): versioned apt names, ld64.lld.
 DARWIN_CLANG ?= clang-18
@@ -743,6 +750,12 @@ else
 DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
 endif
 
+
+# Introspection: `make -s [MODE=<mode>] print-VAR` echoes VAR's EXPANDED value.
+# Build-side scripts (scripts/stage_darwin_zstd.sh reads CC/AR of a hosted
+# MODE) consume the ONE definition instead of restating a compiler line.
+print-%:
+	@echo '$($*)'
 all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
