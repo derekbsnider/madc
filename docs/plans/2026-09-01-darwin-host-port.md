@@ -546,6 +546,105 @@ SDK/cross facts).
      re-passes — a re-pass had re-reported every id and forest_pack_gate
      read DK_NONE 110 vs baseline 55 (a doubled count, not a regression).
      Landed @5393bf34 (fix) + @eeba65de (posture/fixtures/advisory).
+  **MEASUREMENT #2 (2026-09-02, run 33641540075 @1e27ae4f, after fix-1 +
+  batch-1):** arm64 JIT 1147/100 (was 1049/202), Intel JIT 1183/64 (was
+  1160/91); exe advisory 185/213 exe-build (Tier B, one cause). Triage on
+  the owner's M-series Mac (ssh, the fresh cross tarball, then per-fix
+  cross builds scp'd over) — every class below MEASURED there before the
+  fix, VERIFIED there after:
+  9. **Strict-mode adoption miss (arm64 ~20).** Under --std=c17/gnu11/c++17
+     the container's producer config mismatches the compile, the exact
+     bind is NULL (the "multi-dialect fall-through"), so fix-1 never ran:
+     zero-include strict-mode printf still read garbage; and `__builtin_X`
+     went straight to the dlsym twin guess. forest_adopt_declared_function
+     falls back to the stdlib-flavor-matched source forest (a C-primitive
+     variadic prototype does not vary with the freezing dialect; GCC's
+     builtin prototype applies in every -std), and
+     register_builtin_twin_alias adopts X for `__builtin_X` (a FuncDef copy
+     emitting as X, registered through register_forest_func). Reducer
+     tests/testimplicitlibcprotoc17. @3078d41e.
+  10. **libc++ std::string LAYOUT on Apple arm64 (arm64 ~35: to_string,
+     operator+, stod aborts, php::/rust:: string publics returning `[]`,
+     the polyglot/eval segfaults).** `__config` selects
+     `_LIBCPP_ABI_ALTERNATE_STRING_LAYOUT` on arm64-apple only under
+     `_LIBCPP_COMPILER_CLANG_BASED`, the identity gcc_posture_filter.sh
+     drops, so the frozen arm64 grove used the standard SSO layout while
+     Apple's libc++.dylib and the clang-built ns_* host objects use the
+     alternate one — byte dump: madc-built "abc" = `06 61 62 63 …` (size at
+     byte 0), dylib-built to_string(42) = `34 32 … 02` (size at byte 23).
+     A TARGET ABI fact: gen_predefined_macros.sh appends the define to a
+     posture-filtered table that defines __APPLE__ and __aarch64__ (the one
+     _LIBCPP_ABI_* define inside that clang-gated block; x86_64 keeps the
+     old layout in the same branch — no line). Not the shared filter: a
+     define arriving via the prelude umbrella lands after __config decided.
+     Reducer tests/teststringabiinterop (one .expect, every lane). @b03d6e4b.
+  11. **`sizeof(*(p))` grammar (both arches: teststructinterop).** Apple's
+     FD_ZERO expands to `__builtin_bzero(p, sizeof(*(p)))`; the sizeof
+     type-query arm claimed every `*`-led operand as `*ident` and threw.
+     The arm now declines without consuming so the sizeof(expression)
+     fallback measures it. Reducer tests/testsizeofderefparen. @c5a2dd79.
+  12. **Bare `NULL` (both arches: testphpdumpptr, testprojectwiden).** The
+     auto-include binds the pack's stddef.h unit alone (12 tokens: offsetof,
+     ptrdiff_t) — the embedded header's full arm guarded NULL with #ifndef,
+     false at freeze time under the prelude-first canonical order. Now
+     unconditional (#undef + #define, gcc's shape). @36c27de7.
+  13. **libc++ flavor domain (4, both arches).** The suite runs
+     MADC_SKIP_EXT="darwin libcxx": testinvocable/testtraitassign/
+     testcompare_realhdr/teststringsize test libstdc++ internals and carry
+     .libcxx_skip already (the container's -stdlib=libc++ lane). testufcsorder
+     .darwin_skip: UFCS fires only for an UNDECLARED name by design and the
+     darwin umbrella declares strlen from any include. @ae3abdeb.
+  14. **long double = double on Apple arm64 (arm64 4-5).** DataDefLDOUBLE
+     baked 16/16 (x87); now sizeof/alignof(long double) of the compiler
+     building madc for the target — what c2mir already does
+     (sizeof (mir_ldouble)). Linux/Windows x86-64 unchanged (16/16).
+  15. **Apple x86_64 `$INODE64` (Intel: teststat, testdirent).** The asm
+     label landed on the Variable's storage_alias_name only, which the freeze
+     does not carry; the x86_64 pack restored `stat` plain (verified: emit-C
+     with that forest bound on Linux calls `stat`). parseFunction now also
+     sets FuncDef::emit_symbol (the LIBRARY link symbol the arena record
+     carries and call_emit_symbol reads first). Runner-verified only (no
+     Intel Mac at hand).
+  **STILL OPEN after batch 2 (next wave, in value order):**
+  - **`long` vs `long long` identity on darwin (std::max undefined import 16
+    both arches + testtypedefarg + likely basic_string __init_with_sentinel
+    5).** Apple's headers alias int64_t/uint64_t to `long long`, a distinct
+    type from `long` (Itanium x vs l), while the builtin ddINT64/ddUINT64
+    are DISPLAY-named "int64_t"/"uint64_t" with an EMPTY canonical C++
+    spelling; a spelling round-trip through that display name resolves to
+    the darwin typedef and changes the type: `template<> struct isL<long>`
+    registers as `isL_int64_t` (before the pack's typedef seeds load) while
+    the use `isL<long>` instantiates `isL_long_long` (after); vector's
+    `__recommend` calls `std::max<size_type>(2 * __cap, __new_size)` with
+    size_type = unsigned long, the pack holds only `max<unsigned long long>`
+    instantiations, the CIR-time rank finds no viable candidate
+    (`a0=uint64_t` vs `unsigned long long`), std_free_function_instantiation
+    fails to mint `max<unsigned long>` and the call binds the bare
+    placeholder. A user `std::max<unsigned long>(a, b)` fails the same way;
+    `<unsigned long long>` works. Fix at the type model: the builtin scalar
+    dds carry their target C++ spelling from init (mangle_scalar_spelling's
+    table), never a typedef name; no spelling round-trip may change a type.
+  - **Strict-mode `<stddef.h>` inside a served libc++ header** (`--std=c++17`
+    `#include <iostream>` on a Mac WITHOUT the baked libc++ path: `<cstddef>`
+    #errors because `<stddef.h>` resolved to the embedded freestanding header
+    instead of libc++'s wrapper unit). The runner has the staged tree at the
+    baked path so its suite never sees it — the tarball user does. Own slice;
+    consider running the runner suite with the staged input trees REMOVED
+    (the darwin headerless cell, nearly free on the runner).
+  - **Nested-std class name leak (testclassproto):** with the darwin pack
+    bound, a user `class path` under `using namespace std` collides with
+    `std::__fs::filesystem::path` (renaming the class passes) — a
+    bare-name registration of a nested-namespace seed.
+  - Grove fidelity families (both arches): list `__base_pointer` ClassPattern
+    (3), initializer_list private `__begin_` (2), istream `traits_type` (1),
+    `__filesystem/path.h` `format` (2), iomanip shifts (1), istringstream
+    type (4), `.str()` husks (3), `__init_with_sentinel` (5, likely the
+    identity class), `__ns_outer__detail_make_sig`/`count`/`make`/`pick`
+    placeholders (5).
+  - testvartpldepparams (parse error on darwin only, zero includes; the
+    bisect variants ran silent), testint128 / SIMD insn matching (MIR
+    aarch64), c2mir `i2d` on an `ldouble` operand (testcomplexretconv —
+    re-measure after item 14).
   2. **`__BLOCKS__` in the darwin predefined table — ~20, both arches.**
      A clang feature claim GCC never makes; on a Mac WITH the Command Line
      Tools installed, Apple's real SDK headers (`_stdlib.h` atexit_b /
