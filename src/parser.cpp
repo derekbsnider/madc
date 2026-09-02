@@ -23404,7 +23404,18 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
 // parser involvement, so a rejected candidate leaves NOTHING behind.
 Variable *Program::forest_adopt_declared_function(const std::string &fname)
 {
+    // The exact-config bind first. When the container's producer config does
+    // not match this compile — a strict --std=c17/c++17 TU against the
+    // dialect-frozen pack, the "multi-dialect fall-through" where headers are
+    // served as re-tokenized source — the stdlib-flavor match still owns the
+    // arena, and a C-primitive variadic prototype does not vary with the
+    // dialect that froze it. GCC canon does not vary either: the builtin's
+    // prototype applies in every -std. (Darwin D4 re-measure: every
+    // zero-include strict-mode printf still read garbage on Apple arm64
+    // because this returned NULL on the config mismatch.)
     CirFrozenForest *f = ensure_bind_forest();
+    if ( !f )
+	f = ensure_source_forest();
     if ( !f )
 	return NULL;
     if ( !_forest_bare_func_names_built )
@@ -23481,6 +23492,38 @@ Variable *Program::forest_adopt_declared_function(const std::string &fname)
     DBG(std::cout << "forest_adopt_declared_function(" << fname << ") "
 		  << (var ? "adopted the pack's prototype (" : "registration declined (")
 		  << fd->parameters.size() << " named param(s), ...)" << std::endl);
+    return var;
+}
+
+// `__builtin_X` IS X (GCC semantics). When the pack adopts X's prototype, the
+// builtin spelling gets X's FuncDef too — a COPY (emit_symbol is
+// per-declaration state; X's own record stays unaliased) that emits as X —
+// registered through register_forest_func, the one owner of restored
+// function registration, so the Variable/Method shape is the adopted twin's
+// and nothing about the builtin spelling is hand-built here. NULL when the
+// pack does not adopt the twin: the caller's dynamic-symbol path stands.
+Variable *Program::register_builtin_twin_alias(const std::string &fname,
+					       const std::string &twin)
+{
+    Variable *tv = forest_adopt_declared_function(twin);
+    FuncDef *tfd = tv ? dynamic_cast<FuncDef *>(tv->type) : NULL;
+    if ( !tfd )
+	return NULL;
+    FuncDef *bfd = new FuncDef(*tfd);
+    bfd->emit_symbol = twin;
+    PendingForestFunc pf;
+    pf.name = fname;
+    pf.fd = bfd;
+    pf.mvar = NULL;
+    if ( Method *tm = static_cast<Method *>(tv->data) )
+	for ( size_t i = 0; i < tm->parameters.size(); ++i )
+	    if ( tm->parameters[i] && tm->parameters[i]->type )
+		pf.mparams.push_back(std::make_pair(
+		    tm->parameters[i]->name.c_str(), tm->parameters[i]->type));
+    Variable *var = register_forest_func(pf);
+    DBG(std::cout << "register_builtin_twin_alias(" << fname << ") "
+		  << (var ? "aliases the adopted " : "declined for ")
+		  << twin << std::endl);
     return var;
 }
 
@@ -36492,7 +36535,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // data-driven, no per-builtin list (real <math.h> C++
 			    // regions call __builtin_acosf etc. directly).
 			    std::string twin = fname.substr(10);
-			    void *tsym = is_dynamic_symbol_allowed(twin)
+			    // The twin's REAL prototype first, as for the bare
+			    // name above: __builtin_printf("%d", x) is printf's
+			    // call and needs printf's variadic shape — the guess
+			    // below is the Apple arm64 failure again (darwin D4
+			    // re-measure: testboolbitfield and friends, --std=c17).
+			    if ( is_dynamic_symbol_allowed(twin) )
+				var = register_builtin_twin_alias(fname, twin);
+			    void *tsym = ( !var && is_dynamic_symbol_allowed(twin) )
 				       ? madcdl_sym_default(twin.c_str()) : NULL;
 			    if ( tsym )
 			    {

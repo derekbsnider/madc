@@ -4950,6 +4950,10 @@ public:
     // call put them in registers. NULL = the pack declares no such bare
     // variadic function in that shape: the caller's guess stands, as before.
     Variable *forest_adopt_declared_function(const std::string &fname);
+    // `__builtin_X` IS X: register the adopted twin's prototype under the
+    // builtin spelling (a copy emitting as X). NULL when X is not adopted.
+    Variable *register_builtin_twin_alias(const std::string &fname,
+					  const std::string &twin);
     void activate_forest_function_family(const std::string &ns,
 	const std::string &display_name);
     void activate_forest_function_display(const std::string &display_name);
