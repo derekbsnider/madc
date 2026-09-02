@@ -55,6 +55,10 @@ jobs:
           clang --version | head -1
           ld -v 2>&1 | head -1
           /usr/bin/make --version | head -1
+          # Does the CLT SDK path (the prefix-map canonical the served include
+          # tables name) EXIST here? If so a native freezer can open real SDK C
+          # headers the container never sees — a corpus-parity + provenance risk.
+          ls -d /Library/Developer/CommandLineTools/SDKs/*.sdk 2>&1 || echo "no CLT SDK path"
       - name: brew deps (llvm@18 = the parity compiler) + the gnubin build-host userland
         run: |
           # automake: brew's autoreconf insists on aclocal even for a
@@ -101,6 +105,15 @@ jobs:
                  lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a
           echo "forest units (container cross-pack baseline: 835):"
           bin/madc-hosted-${{ matrix.arch }}-macos --dump-forest=obj/hosted-${{ matrix.arch }}-macos/forest.bin | grep -c '^unit	'
+          # Freeze INPUTS + outputs for the corpus-parity diff against the
+          # container (unit list, pack log, the generated TU, the host tables,
+          # the prelude manifest) — collected into one dir for the artifact.
+          mkdir -p tmp/freeze-evidence
+          cp obj/hosted-${{ matrix.arch }}-macos/forest.bin.dump.txt obj/hosted-${{ matrix.arch }}-macos/forest.bin.freeze.log \
+             obj/hosted-${{ matrix.arch }}-macos/forest.bin.tu.cpp obj/hosted-${{ matrix.arch }}-macos/sys_include_paths.cpp \
+             obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/.MANIFEST src/predefined_macros.cpp tmp/freeze-evidence/
+          cp obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/*.h tmp/freeze-evidence/ 2>/dev/null || true
+          ls -la tmp/freeze-evidence
       - name: run the STRIPPED release binary — the hello gate
         run: |
           printf 'var g = "darwin-host-gate-alive";\nprintln("{}", g);\n' > /tmp/gate.mad
@@ -133,4 +146,5 @@ jobs:
           path: |
             probe-make.log
             mac-battery.log
+            tmp/freeze-evidence/
           if-no-files-found: warn
