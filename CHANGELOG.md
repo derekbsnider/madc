@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Darwin-host build port — native macOS builds, CI-owned release assets (D0–D3, 2026-09-01/02)
+
+- **madc builds natively on macOS** (`make -C src release-macos` on a Mac):
+  a `DARWIN_HOST` posture in `src/Makefile` derives the brew llvm@18 /
+  Apple ld64 / xcrun SDK toolchain, every knob `?=`, and the container's
+  cross recipe stays byte-identical (`make -n -B` is the oracle). The
+  hosted binary **self-freezes** the darwin groves (phase-1 freezer link
+  → pack → `-sectcreate` link; producer == consumer), so no cross madc is
+  needed anywhere on the darwin path.
+- **Pinned inputs, not host conveniences:** the open darwin C headers
+  (`fetch_darwin_open_headers.sh`), the build container's exact libc++
+  18.1.3 header text + copyright (`fetch_libcxx_headers.sh`, sha256-pinned
+  deb), and zstd v1.5.5 built by the hosted MODE's own compiler line
+  (`stage_darwin_zstd.sh`, reading `CC`/`AR` through a new Makefile
+  `print-%` rule). Corpus parity with the container is EXACT on both
+  runner arches (prelude/predefined table/835 units identical).
+- **The freezer sees only the toolchain's include world:**
+  `--no-sysroot-includes` (`RegistrationPolicy::enable_sysroot_includes`,
+  cut at the one `Program::sys_include_paths()` view) keeps a host's real
+  SDK headers out of a shipped forest; `gcc_posture_filter.sh` normalizes
+  `__VERSION__` to the posture; the darwin prelude flattens at
+  `-D_FORTIFY_SOURCE=0` (this also fixed the `exec://` channel leg on
+  arm64). Reducer pair `tests/testsysrootinc` + `tests/testnosysrootinc`.
+- **release.yml builds all six assets:** the two macOS tarballs come from
+  GitHub's native mac runners (macos-14 arm64, macos-15-intel x86_64 —
+  the first x86_64 execution proof), each smoked by the new PK4 `mactar`
+  install gate (extract → run → `mac_battery` PASS floor → hidden
+  `libmadc_rt.a` negative control). `package_release_macos.sh` is
+  per-arch; `/promote` no longer attaches mac assets by hand.
+  `macho_exe_dylib_gate.sh` tool names are knobs.
+
 ## [v0.97.0] — 2026-09-01
 
 The madcide interaction arc (the IdeSession gateway seam, the modes
