@@ -1,0 +1,20 @@
+// std::string objects cross the madc/stdlib boundary in BOTH directions with
+// the layout the platform's stdlib was BUILT with. libc++ selects
+// _LIBCPP_ABI_ALTERNATE_STRING_LAYOUT on Apple arm64, but only under the clang
+// identity madc's GCC posture drops — the first darwin suite re-measure read
+// every dylib-built string as garbage (to_string 26 bytes long, "pre" + b ==
+// "repre") while madc-built strings were fine. The predefined table restates
+// that target ABI fact (scripts/gen_predefined_macros.sh). One .expect for
+// every lane: libstdc++ and libc++ on the container, both mac arches.
+#include <string>
+#include <iostream>
+int main()
+{
+	std::string b = "bar";
+	std::string c = "pre" + b;            // stdlib operator+ -> madc
+	std::string d = std::to_string(42);   // stdlib -> madc
+	std::cout << c << "|" << c.size() << std::endl;
+	std::cout << d << "|" << d.size() << std::endl;
+	std::cout << std::stoi(d) + std::stod("1.5") << std::endl;   // madc -> stdlib
+	return 0;
+}
