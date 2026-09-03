@@ -25934,7 +25934,23 @@ std::string Program::resolve_namespace_name_in_scope(
     const std::string class_scoped = resolve_class_scoped_ns(name);
     if ( !class_scoped.empty() )
 	return class_scoped;
-    return canonical_namespace_path("", name);
+    std::string absolute = canonical_namespace_path("", name);
+    if ( !absolute.empty() )
+	return absolute;
+    // [namespace.udir]/2: a using-directive makes the nominated namespace's
+    // members — its nested namespaces included — visible to unqualified
+    // lookup as if declared in the nearest enclosing namespace, so after
+    // `using namespace lib;` the qualifier `fs` in `fs::path` names lib::fs.
+    // Tried last: a name the scope chain or the global scope resolves wins
+    // (the ambiguity [namespace.udir]/6 diagnoses is not diagnosed here).
+    for ( size_t u = 0; u < active_using_namespaces.size(); ++u )
+    {
+	std::string via = canonical_namespace_path(active_using_namespaces[u],
+						   name);
+	if ( !via.empty() )
+	    return via;
+    }
+    return std::string();
 }
 
 // Walk the classes that are in scope — the current method's owner first, then
