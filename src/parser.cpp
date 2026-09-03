@@ -34800,6 +34800,100 @@ static bool template_id_is_type_expression_context(Program &pgm,
 // casts, new/sizeof-family, etc. `tb` advances through the stream; arm-level
 // breaks map to Break, `done = true` paths to Done. ttKeyword falls through
 // into the dispatch for keyword tokens that are contextual identifiers.
+// Forward declarations for the free-callee arity window below: the
+// declarator-region splitter (defined with the out-of-line attach) and the
+// pack-expansion test (defined with tsubst) — both ONE owners reused here.
+static bool outofline_declarator_param_regions(
+	const std::vector<TokenBase *> &decl,
+	std::vector<std::vector<TokenBase *> > &params,
+	size_t *close_out);
+static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i);
+
+// The arity window [required, maxargs] of a free-function TEMPLATE
+// declaration, read off its declarator: a defaulted parameter (`= x` at the
+// region's top level) is optional, a pack or ellipsis (`...`) makes the upper
+// bound unbounded. False when the declarator has no readable parameter list.
+static bool fn_template_decl_arity_window(const std::vector<TokenBase *> &decl,
+					  size_t &required, size_t &maxargs)
+{
+    std::vector<std::vector<TokenBase *> > params;
+    if ( !outofline_declarator_param_regions(decl, params, NULL) )
+	return false;
+    required = 0;
+    maxargs = params.size();
+    for ( size_t pi = 0; pi < params.size(); ++pi )
+    {
+	bool defaulted = false, pack = false;
+	const std::vector<TokenBase *> &r = params[pi];
+	for ( size_t i = 0; i < r.size(); ++i )
+	{
+	    if ( !r[i] )
+		continue;
+	    if ( r[i]->id() == TokenID::tkAssign )
+		defaulted = true;
+	    if ( tsubst_three_dots_at(r, i) )
+		pack = true;
+	}
+	if ( pack )
+	    maxargs = (size_t)-1;
+	else if ( !defaulted )
+	    ++required;
+    }
+    return true;
+}
+
+// [over.match.viable] for the UFCS trigger: `var` names a free function (or
+// the placeholder of a free-function template set) — is EVERY candidate of
+// its namespace-scope overload set arity-inviable for a call with `argc`
+// arguments? True only when at least one candidate is known and none can
+// take `argc`; an unreadable declarator or an unknown shape answers false
+// (the call keeps its established path). Motivating case: libc++'s <map>
+// makes `std::count` (3 params) visible through ADL, and `count(m, k)` must
+// still re-form as `m.count(k)` — libstdc++'s <map> declares no free count,
+// which is why the arity-blind trigger never met the shape before the darwin
+// host (testufcscall, D4 measurements #3/#4, both arches).
+static bool free_callee_arity_inviable(Program &pgm, Variable *var, size_t argc)
+{
+    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( !fd || fd->function_display_name.empty() )
+	return false;
+    std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    size_t candidates = 0;
+    std::vector<Program::FnTemplateDef> *tsets[2] = {
+	pgm.thawed_fn_templates(key), pgm.thawed_fn_template_decls(key) };
+    for ( int ti = 0; ti < 2; ++ti )
+    {
+	std::vector<Program::FnTemplateDef> *ts = tsets[ti];
+	if ( !ts || (ti == 0 && ts == pgm.fn_template_map.end())
+	  || (ti == 1 && ts == pgm.fn_template_decl_map.end()) )
+	    continue;
+	for ( size_t ci = 0; ci < ts->size(); ++ci )
+	{
+	    size_t req = 0, mx = 0;
+	    if ( !fn_template_decl_arity_window((*ts)[ci].decl, req, mx) )
+		return false;
+	    ++candidates;
+	    if ( argc >= req && argc <= mx )
+		return false;
+	}
+    }
+    std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator osi =
+	pgm.namespace_fn_overload_sets.find(key);
+    if ( osi != pgm.namespace_fn_overload_sets.end() )
+	for ( size_t ei = 0; ei < osi->second.size(); ++ei )
+	{
+	    Variable *ov = osi->second[ei].var;
+	    FuncDef *ofd = ov ? dynamic_cast<FuncDef *>(ov->type) : NULL;
+	    if ( !ofd )
+		continue;
+	    ++candidates;
+	    if ( argc >= ofd->required_param_count()
+	      && (ofd->is_varargs || argc <= ofd->parameters.size()) )
+		return false;
+	}
+    return candidates > 0;
+}
+
 // ---- UFCS (madc dialect): the member-access fallback ----------------------
 // `x.f(args)` / `p->f(args)` on a receiver with NO member `f` re-forms as the
 // ordinary call `f(x, args)` / `f(p, args)`. Member lookup runs FIRST and wins
@@ -34886,14 +34980,17 @@ bool Program::ufcs_access_fallback(TokenBase *receiver, TokenIdent *ident_tb,
 // libc symbol of the same name. That ordering is the one behaviour this slice
 // changes, and tests/testufcscall.mad pins it.
 //
-// TRIGGER: no declared free `f` at all. NOT "declared but not arity-viable" —
-// measured, that stronger trigger is not needed. Of the four motivating calls,
-// `size(v)`, `begin(v)` and `empty(v)` ALREADY work today (libstdc++ really
-// does declare std::size/std::begin/std::empty, which is the very duplication
-// the proposal complains about), and only `count(m, k)` fails — with "use of
-// undeclared identifier", i.e. no declaration at all. Widening the trigger to
-// arity would mean judging a whole namespace overload set, which risks stealing
-// a call that resolves today; there is no evidence it buys anything.
+// TRIGGER: no declared free `f` at all, OR a declared free `f` whose whole
+// namespace-scope set is arity-inviable for this call
+// (free_callee_arity_inviable). The first form covered the four motivating
+// calls on libstdc++ (`size(v)`, `begin(v)`, `empty(v)` resolve to the real
+// std free functions; `count(m, k)` had no declaration at all). libc++
+// supplied the counterexample the arity-blind trigger lacked: its <map>
+// reaches std::count — 3 parameters — through ADL, so `count(m, k)` bound
+// the template, deduction failed, and the call fell to the implicit K&R
+// guess (`extern long long count();` -> MIR undefined import). Judging the
+// set by ARITY only — never by types — cannot steal a call that resolves
+// today: a set with any candidate that can take the arguments is untouched.
 //
 // The receiver is read by LOOKAHEAD, not by parsing: the first argument must be
 // a single identifier naming a class-typed variable. tokens[0] is the `(` (the
@@ -36806,12 +36903,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		}
-		// UFCS (--std=madc): no declared free `f` is visible. Try the
-		// member form `arg0.f(rest)` BEFORE the unresolved-symbol
-		// guesses below (dlsym, C89 implicit int) — the owner's order is
+		// UFCS (--std=madc): no declared free `f` is visible — or the
+		// visible free `f` is a namespace-scope set none of whose
+		// candidates can take THIS call's argument count
+		// ([over.match.viable]; libc++'s <map> reaches std::count, a
+		// 3-parameter template, by ADL). Try the member form
+		// `arg0.f(rest)` BEFORE the unresolved-symbol guesses below
+		// (dlsym, C89 implicit int) — the owner's order is viable
 		// declared free -> member -> existing unresolved-symbol
 		// behaviour, and tests/testufcscall.mad pins it.
-		if ( !var
+		if ( (!var
+		      || free_callee_arity_inviable(*this, var,
+						    count_queued_call_arguments()))
 		  && ufcs_call_fallback(ident_tb, parsed_operator_name,
 					opStack, tb, done, code) )
 		    return done ? ExprStep::Done : ExprStep::Break;

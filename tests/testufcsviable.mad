@@ -1,0 +1,17 @@
+// UFCS (madc dialect): `count(m, k)` re-forms as m.count(k) even when a FREE
+// std::count IS visible — here through <algorithm>; on libc++ <map> alone
+// reaches it by ADL (testufcscall on the darwin runner). The visible set has
+// no candidate that can take two arguments, so it is not viable and the
+// member form wins. Oracle (the member calls, C++): 1 0
+#include <map>
+#include <algorithm>
+#include <stdio.h>
+
+int main()
+{
+	std::map<int, int> m;
+	m[3] = 9;
+	m[5] = 25;
+	printf("%d %d\n", (int)count(m, 3), (int)count(m, 4));
+	return 0;
+}
