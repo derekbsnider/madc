@@ -143,5 +143,15 @@
 # new class; every other line is identical to the 49 run. The cross freezer
 # gives long double the Linux host's 16 bytes — a native darwin arm64 freeze
 # (8-byte long double) reports one fewer.
-52 darwin pack-errors
+# darwin 52 -> 48 (2026-09-03, darwin-host D4 wave 6 close-out): the four
+# "'X' is a private member of 'X'" entries are FIXED at the access rule —
+# a lambda (a hoisted nested function) written inside a member has that
+# member's access ([class.access]/2; access_context_class walks the compound
+# chain to the enclosing member), so libc++ bodies whose mem-init lambdas
+# read private members (basic_string's move constructor `__s.__r_`) now
+# freeze. Every other class is identical to the 52 run; the four "Expecting
+# ] in lambda expression" lines are the capture forms madc does not parse
+# yet (`[=]`, `[this]`, named captures — KG Gap lambda_capture_forms), the
+# next lambda burndown item. Reducer: tests/testlambdamemberaccess.mad.
+48 darwin pack-errors
 1 darwin mir-blob-skips

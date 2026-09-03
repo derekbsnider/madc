@@ -29129,15 +29129,42 @@ static bool function_is_friend_of(const std::string &fname,
 
 // The identity of the function body being parsed, for the friend-function
 // grant: its display name when recorded (overload sets carry the source name
-// — "operator<"), else its Variable name.
+// — "operator<"), else its Variable name. The OUTERMOST function along the
+// compound chain: a lambda or a GNU nested function is hoisted under a name
+// no friend declaration can spell, and [class.access]/2 gives it the access
+// of the function it is written in — so the enclosing function's grant is
+// the one that counts. A plain function body has no enclosing method and
+// answers as before.
 static std::string current_function_friend_name(TokenCpnd *code)
 {
-    if ( !code || !code->method )
+    Method *outer = NULL;
+    for ( TokenCpnd *c = code; c; c = c->parent )
+	if ( c->method )
+	    outer = c->method;
+    if ( !outer )
 	return std::string();
-    if ( FuncDef *fd = dynamic_cast<FuncDef *>(code->method->returns.type) )
+    if ( FuncDef *fd = dynamic_cast<FuncDef *>(outer->returns.type) )
 	if ( !fd->function_display_name.empty() )
 	    return fd->function_display_name;
-    return code->method->returns.name;
+    return outer->returns.name;
+}
+
+// The class whose access the body being parsed enjoys ([class.access]/2: a
+// local class of a member function — a lambda, a hoisted nested function —
+// may access the same names the member function itself may access): the
+// nearest method with an owner class along the compound chain. A free
+// function's body compound has no parent, so the walk ends there; NULL
+// outside any member. The ONE derivation every access check reads —
+// libc++'s basic_string move constructor reads the private __r_ inside its
+// `[](basic_string& __s) { ... __s.__r_ ... }` mem-init lambda, and the
+// closure's own compound (owner NULL) judged it an outsider
+// (tests/testlambdamemberaccess).
+static DataDefCLASS *access_context_class(TokenCpnd *code)
+{
+    for ( TokenCpnd *c = code; c; c = c->parent )
+	if ( c->method && c->method->owner_class )
+	    return c->method->owner_class;
+    return NULL;
 }
 
 // Access-control core (P2.5 / P2.5c). Given a member's access flag `acc`
@@ -35185,8 +35212,7 @@ bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
     // Access control on the SELECTED overload ([class.access]). UFCS must
     // never become a way to reach a private member from outside the class.
     {
-	DataDefCLASS *cur_class =
-	    (code && code->method) ? code->method->owner_class : NULL;
+	DataDefCLASS *cur_class = access_context_class(code);
 	std::string av = method_access_violation(cls, &tc->var, id, cur_class,
 						 current_function_friend_name(code));
 	if ( !av.empty() )
@@ -36011,8 +36037,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				}
 			    var = &tc->var;
 			    {
-				DataDefCLASS *cur_class =
-				    (code && code->method) ? code->method->owner_class : NULL;
+				DataDefCLASS *cur_class = access_context_class(code);
 				std::string av =
 				    method_access_violation(struct_type, var, id, cur_class,
 					current_function_friend_name(code));
@@ -36078,8 +36103,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			var = &tc->var;
 			// Access control on the SELECTED overload ([class.access]).
 			{
-			    DataDefCLASS *cur_class =
-				(code && code->method) ? code->method->owner_class : NULL;
+			    DataDefCLASS *cur_class = access_context_class(code);
 			    std::string av =
 				method_access_violation(struct_type, var, id, cur_class,
 				    current_function_friend_name(code));
@@ -36199,8 +36223,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // from outside the (derived) class. cur_class = the class whose
 		    // method body we are parsing (NULL outside any method).
 		    {
-			DataDefCLASS *cur_class =
-			    (code && code->method) ? code->method->owner_class : NULL;
+			DataDefCLASS *cur_class = access_context_class(code);
 			std::string av =
 			    member_access_violation(struct_type, id, cur_class,
 				current_function_friend_name(code));
@@ -36454,8 +36477,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    }
 				var = &tc->var;
 				{
-				    DataDefCLASS *cur_class =
-					(code && code->method) ? code->method->owner_class : NULL;
+				    DataDefCLASS *cur_class = access_context_class(code);
 				    std::string av =
 					method_access_violation(base, var, id, cur_class,
 					    current_function_friend_name(code));
@@ -36521,8 +36543,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    var = &tc->var;
 			    // Access control on the SELECTED overload ([class.access]).
 			    {
-				DataDefCLASS *cur_class =
-				    (code && code->method) ? code->method->owner_class : NULL;
+				DataDefCLASS *cur_class = access_context_class(code);
 				std::string av =
 				    method_access_violation(base, var, id, cur_class,
 					current_function_friend_name(code));
@@ -36562,8 +36583,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // Access control (P2.5): reject private/protected member access
 		    // via `->` from outside the (derived) class.
 		    {
-			DataDefCLASS *cur_class =
-			    (code && code->method) ? code->method->owner_class : NULL;
+			DataDefCLASS *cur_class = access_context_class(code);
 			std::string av =
 			    member_access_violation(base, id, cur_class,
 				current_function_friend_name(code));
