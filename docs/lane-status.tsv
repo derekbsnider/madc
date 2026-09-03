@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	8211a7b271a8	2026-09-03	jit 1263/0/9skip exe 1204/0 obj 1204/0 packed 1263/0/9skip headerless 1235/0/37skip; forest_pack_gate linux 68/45 = baseline; forest_bind_gate 27/27 (new: secvptr) (tmp/logs/d4-wave5.log, D4 wave 5: forest-restored husk completes from canonical identity; restored secondary vptr owners + vtable_slots/virtual_methods frozen, format 42; bound protos before Pass-1.5 vtables)
-wine64	yes	8211a7b271a8	2026-09-03	1212/0/60skip (tmp/logs/d4-wave5.log), verify_pe_release OK, win64 pack 68 / dk-none 46 = baseline
-c-testsuite	yes	8211a7b271a8	2026-09-03	220/220 passed, baseline EMPTY (tmp/logs/d4-wave5.log)
-macos	yes	8211a7b271a8	2026-09-03	container cross release-macos both arches 835 units, darwin pack 52 = baseline both, verify_macho OK, tarballs packaged (tmp/logs/d4-wave5.log); owner M-series Mac ran the build-29 darwin binary (8211a7b2 content): testistreamctorarg 41 82 ok in dialect (pack-bound) AND --std=c++17 (live) mode, r_iss rc 41 both modes, testsstream/testmanip/teststreambool at oracle output, teststreamwideops all five lines, every wave-3/4 reducer unchanged (tmp/logs/mac-red-29.log)
+linux-battery	yes	3eee5c437f94	2026-09-03	jit 1277/0/9skip exe 1218/0 obj 1218/0 packed 1277/0/9skip headerless 1248/0/38skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29 (new: friendgrant, patternalias); warning ratchet GREEN incl. the new libc++ std::map twin (tmp/logs/d4-wave6b.log)
+wine64	yes	3eee5c437f94	2026-09-03	1225/0/61skip (tmp/logs/d4-wave6b.log), verify_pe_release OK, win64 pack 68 = baseline
+c-testsuite	yes	3eee5c437f94	2026-09-03	220/220 passed, baseline EMPTY (tmp/logs/d4-wave6b.log)
+macos	yes	3eee5c437f94	2026-09-03	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (52 -> 48 this wave), verify_macho OK (tmp/logs/d4-wave6b.log); owner M-series Mac: std::map + every wave-6 reducer green on madc-b42/b43 (tmp/logs/mac-red-42.log, mac-red-43.log)

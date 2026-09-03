@@ -802,6 +802,170 @@ SDK/cross facts).
   config word, so a `--std=c++17` run with --forest-bind is a LIVE parse —
   "passes under c++17" meant "passes live", not a strict-mode difference.
 
+  **WAVE 6 LANDED (2026-09-03, nineteen commits on 3f7c88ef: 9f144e11 4b032c94
+  da57f5d5 4632b410 + 2ef73b51 bb1477ad ece8de40 ef7ed6b9 4b8dbb0c 327f4896 61153b26
+  a8fbf20e + 624cb050 c85cefdb f413c761 c73f4496 6725ae40 77f54223 3eee5c43): measurement
+  #4 (run 33784047473 @3f7c88ef: arm64 1227/23, Intel 1236/14) — every common
+  darwin failure traced to a root and reproduced on the container, none
+  darwin-specific in mechanism; the aarch64 MIR floor (9 arm64-only tests) is
+  deferred LAST by owner ruling, batched with the three open vnmakarov/mir
+  issues.** (1) 9f144e11 — teststructinterop printed FD_ISSET's raw macro
+  result through %ld (Apple's __DARWIN_FD_ISSET returns the bit; test defect).
+  (2) 4b032c94 — a member function named with explicit template arguments
+  hides a namespace-scope function of the same name ([basic.lookup.unqual];
+  `bind<U>(...)` in a member body bound <sys/socket.h>'s ::bind and the
+  instantiation died as an undefined MIR import — testcopiedrefptrparam;
+  reducer tests/testmemberhidesglobal.mad). (3) da57f5d5 — a template-head
+  hidden-friend operator DEFINITION inside a class is a namespace-scope
+  operator template ([temp.friend]; libc++ writes every <iomanip> inserter
+  that way — testiomanip; reducer tests/testhiddenfriendtemplate.mad), and
+  ef7ed6b9 freezes the friendship grants (friend_function_names /
+  friend_class_names as defrec word runs, format 42 -> 43) so the pack-bound
+  consumer honours them too (bind-gate case friendgrant). (4) 2ef73b51 —
+  constructor overload ranking reads the argument's VALUE CATEGORY
+  ([over.ics.rank]/3.2.3): std::move(x) / a by-value call / static_cast<T&&>
+  (TokenCast::to_rvalue_ref, recorded at the named-cast parse) prefer a
+  concrete T&& ctor and an lvalue cannot bind one; an INSTANTIATED
+  member-template ctor (tsubst_source set) is deduction-decided and never
+  judged — the first cut refused every lvalue to libc++'s
+  __compressed_pair(_U1&&, _U2&&) / std::pair and broke std::map on both
+  libraries in build-33/35 (silent wrong answer on linux before: the copy
+  ctor won every move; reducer tests/testrvaluectorselect.mad `3 3 -1`).
+  (5) bb1477ad — an out-of-class constructor DEFINITION attaches to the in-class
+  declaration by SIGNATURE, not arity (libc++ vector declares five
+  one-parameter ctors and defines copy/move out of class; testinitlist,
+  testinitlistclass, testvecmembercopy; reducer
+  tests/testoutoflinectoroverload.mad `3 3 -1 9`). (6) ece8de40 — the dialect
+  UFCS trigger fires when the visible free-function set has NO arity-viable
+  candidate, not only when the name is unbound (libc++ <map> reaches
+  std::count by ADL — testufcscall; reducer tests/testufcsviable.mad `1 0`).
+  (7) 4b8dbb0c — a same-tag aggregate from another scope never takes a bare key
+  or emitted identity a complete aggregate holds, in BOTH orders: the class
+  parser gains the global-reclaims-bare mirror arm (linux threw "already
+  defined"; darwin live collided std::__1::__fs::filesystem::path with the
+  user's `class path`), and the forest RESTORE applies the sibling-namespace
+  rule itself (the user's global class parses first, libc++'s path is
+  demand-restored later and clobbered struct_map + emitted a second `struct
+  path` — testclassproto under the pack, `no member named 'n'`); one
+  flat_scope_identifier replaces three inline `::`->`_` loops (reducer
+  tests/testnamespaceclasscollide.mad `7 40 1`); a8fbf20e closes the pack
+  ORDER neither could see — libc++'s path is pulled into the type graph by a
+  restored record's reference and registered nowhere, so the EMITTER (the only
+  layer that meets both objects) now tells a same-spelling twin from a
+  different entity (m_emitted_struct_owner + struct_emission_deduped) and
+  gives the latter a distinct emitted identity (`__madc_global__path` beside
+  libc++'s `path`; testclassproto pack emission 9 clang errors -> 0). (8) 327f4896 — a class-pattern
+  CAPTURE whose decltype(...) operand is unresolved (a call to a body-less
+  fn-template placeholder still answering its ddINT64 default, or a
+  dependent-member TokenInt stand-in) poisons the capture so the class stays
+  on the parse lane: libc++'s __unwrap_iter_impl<_Iter,true>::_ToAddressT
+  was baked as int64 in the frozen pattern and every vector copy failed with
+  c2mir `invalid operand types of -` (testnestedenumvec, testvartplsigchain,
+  testvartplsigchainns, testvecmembercopy; bind-gate case patternalias, tally
+  27 -> 29; reducer tests/testpatternalias.mad; MADC_MTI_PROBE_CLASS now shows
+  `_ToAddressT -> int32_t*` under the darwin pack). (9) 61153b26 — a
+  using-directive's nested namespaces resolve as qualifiers
+  ([namespace.udir]/2; `using namespace lib; fs::path` — found by the
+  collision reducer's first spelling; reducer tests/testusingnsnested.mad
+  `1 5 9`). (10) 624cb050 — testmemberhidesglobal declares its own global
+  `::bind` instead of including <sys/socket.h> (mingw has none; the wave-6 wine
+  lane failed at the include, 1219/1 -> 1220/0). (11) c85cefdb — THE
+  REGRESSION the Mac A/B caught (b29 ok -> b38 `madc: caught SIGABRT` on
+  teststdmapint / testufcscall / testufcsviable; the linux battery was green
+  because libstdc++'s _Rb_tree never returns a node holder by value): 2ef73b51's
+  value-category ranking read `return __h;` (libc++ __tree::__construct_node,
+  a unique_ptr __node_holder) as the lvalue the name is, refused
+  `unique_ptr(unique_ptr&&)`, the copy ctor is deleted, and
+  class_copy_construct_into_retbuf fell to its bit-copy fallback — the local's
+  cleanup destructor then freed the node under the tree (double free: SIGABRT on
+  macOS malloc, SIGSEGV on linux under `-stdlib=libc++`). [class.copy.elision]/3:
+  a `return` operand naming a non-volatile automatic object of the return class
+  (a local or a parameter) is resolved AS IF an rvalue — the return-copy site,
+  the only implicit-move context the builder has, now says so
+  (returned_operand_is_implicitly_movable -> select_ctor_overload's
+  implicit_move flag; one pass suffices since only concrete-`T&&` candidates
+  read the category). Reducers tests/testimplicitmovereturn.mad (`c 5` — the
+  move ctor, not the copy ctor's 105, which the PRE-wave binary printed too; a
+  move-only class returned from a local) and tests/teststdmapint_libcxx (the
+  libc++ std::map shape on the linux battery; the libstdc++ twin never saw it).
+  METHOD that found it in minutes: `--emit=c11` with the pre-wave and post-wave
+  cross binaries on the Mac (~/d4/madc-b29 vs madc-b38) and diff — the
+  move-ctor call in __construct_node became `(*__retbuf) = __h`. The fix then
+  exposed FOUR PRE-EXISTING defects (b29 fails each too), one commit each:
+  (12) f413c761 — a class prvalue carried as a c2mir STRUCT VALUE (a
+  by-value call of a class returned natively: no destructor, so no __retbuf) IS
+  the result object: object_arg_addr spills it bitwise when its address is
+  needed and the declaration lane initializes `C b = make(5)` directly
+  (guaranteed elision) — before, a class WITH user copy/move ctors and NO
+  destructor fell between class_trivially_copyable (the raw-call test) and
+  class_needs_dtor (the retbuf decision): its move ctor was handed `&make(5)`
+  (c2mir `lvalue required as unary & operand`); ONE predicate now,
+  native_class_value_result (tests/testnativeretinit `5 7 1 9 0`).
+  (13) c73f4496 — a ctor MEMBER INITIALIZER converting a derived pointer
+  to a base pointer member applies upcast_class_ptr like the assignment and
+  declaration lanes: `struct D : A, B {}; struct It { B *p; It(D *q) : p(q) {} }`
+  read A's field through p (madc `1 2 0`, oracle `2 2 1` — silent), and on a
+  primary base c2mir warned `incompatible types in assignment to a pointer` on
+  every libc++ std::map (`__tree_iterator(__node_pointer) : __ptr_(__p)`), which
+  the zero-warnings census would have refused for the new libc++ test
+  (tests/testmemberinitupcast). (14) 6725ae40 — LAMBDAS: the closure's
+  call operator is parsed by parseFunction (parameter declarators, trailing
+  return with the parameters in scope, body, auto deduction, the nested-function
+  hoist with `[&]`'s capture-by-reference) — the hand-rolled `type ident` loop
+  accepted no declarator, and the implicit-move rule made `return s;` on a
+  std::string select libc++'s MOVE constructor for the first time, whose __r_
+  mem-init is `[](basic_string& __s) -> decltype(__s.__r_)&& { ... }(__str)`:
+  every std::string move under -stdlib=libc++ died with "Expecting identifier
+  in lambda parameter list" (teststrret_libcxx, teststrplus_libcxx — green in
+  the wave-6 battery only because the copy ctor had always won;
+  tests/testlambdaparamref `7 0 / 12 / 5 3 / 14`). (15) 77f54223 — ACCESS
+  CONTEXT: a lambda (a hoisted nested function) written in a member has the
+  member's access ([class.access]/2); the seven access checks read ONE
+  derivation, access_context_class (the nearest enclosing member along the
+  compound chain), and the friend grant reads the outermost function's name —
+  the same libc++ lambda reads the private __r_ (tests/testlambdamemberaccess
+  `10 25`). (16) 3eee5c43 — the close-out battery's first red
+  (test_libmadc_program "call supports script string object returns", SIGSEGV):
+  the implicit move applied to a returned by-value PARAMETER, and madc's
+  parameter is a bitwise alias of the caller's object, so the move emptied the
+  host's std::string in place; a returned parameter keeps the copy until the
+  parameter is the callee's own object (the rule applies to a LOCAL only; the
+  dependency is written at the site and on the Gap). STILL OPEN from the same
+  drafts, filed as KG Gaps: by-value CLASS PARAMETERS are bitwise copies with
+  no parameter destructor (`void f(D d)` from an lvalue prints `f 1` where g++
+  prints `f 101 ~101` — silent, exit 0; string_pass_by_value_semantics
+  generalized; the Itanium fix is pass-by-invisible-reference with caller-side
+  temp + destruction, a parameter-representation change; it BLOCKS the
+  parameter half of the implicit-move rule); a deleted copy ctor with no viable move
+  leaves the retbuf copy on its silent bit-copy fallback where g++ rejects the
+  program; lambda capture forms beyond `[]` / `[&]` (`[=]`, `[this]`, named and
+  init-captures). Also 4632b410: MADC_MTI_PROBE_CLASS set-alias + MADC_DT_PROBE
+  gate-input probes (they located the unwrap split: type=17 — the operand is
+  the CALL, typed by the placeholder callee's default, not a TokenInt).
+  Verification: build-38 (tmp/logs/d4-build-38.log): forest_bind_gate GREEN
+  29/29, the 21 targeted linux tests 21/0, the 246-test class/template/map
+  subset 246/0, packs at baseline (linux 68, darwin 52), darwin pack-bound
+  emissions of testiomanip / testclassproto / testufcscall clang-clean, the
+  alias probe `int32_t*`. Builds 39-43 (tmp/logs/d4-build-39..43.log, the six
+  fixes): each fix verified on the container against the g++/clang++ oracle in both dialects before its commit (build-39 the std::map fix + testimplicitmovereturn; build-40 testnativeretinit; build-41 testmemberinitupcast + testlambdaparamref, libc++ std::map warning 1 -> 0; build-42 testlambdamemberaccess, teststrret/strplus_libcxx green, subset 372/0, darwin pack 52 -> 48; build-43 the returned-parameter exclusion after the close-out battery's unit-test SIGSEGV, subset 309/0); forest_bind_gate 29/29 throughout; the close-out battery at 3eee5c43 (tmp/logs/d4-wave6b.log): linux jit 1277/0/9skip exe 1218/0 obj 1218/0 packed 1277/0/9skip headerless 1248/0/38skip, warning ratchet GREEN, packs linux 68 / win64 68 / darwin 48; wine 1225/0/61skip + verify_pe_release OK; c-testsuite 220/220; macos cross both arches 835 units + verify_macho OK. Mac (tmp/logs/mac-red-39.log, mac-red-42.log): madc-b42 (77f54223) and madc-b43 (3eee5c43, the battery's release binary) on the owner's M-series Mac: teststdmapint / testufcscall / testufcsviable pass in the pack, live and under --std=c++17 where b38 aborted; every wave-6 reducer, all six new reducers, teststrret/strplus_libcxx, the existing lambda tests and the wave-3/4/5 regress line print their oracle output; the __tree:722 warning is gone on darwin too. TRAP: the first mac-red-42 run used a sed without g and ran madc-b39 — grep the driver's M= line before believing a red Mac run. Builds 33 and 35 were RED first: the T&& refusal hit
+  forwarding references (the candidate is the ctor-template INSTANCE, spelled
+  `tag*&&`, no template-parameter names of its own — tsubst_source is the
+  handle), the capture poison keyed on a TokenInt while the operand is the
+  CALL, and the collision reducer's `using namespace lib; fs::path` was a
+  separate gap (G). Open after wave 6 — Gap
+  libcxx_fn_template_placeholder_called_in_instantiated_body (wave-7 first
+  item): the darwin emissions of testvecmembercopy / testinitlist /
+  testinitlistclass / testnestedenumvec / testvartplsigchain(ns) still call
+  the un-instantiated `std::forward` / `__uninitialized_allocator_copy_impl`
+  placeholders (`extern long long f()`) inside instantiated bodies
+  (make_pair<int*,int*>, pair's converting ctor, __uninitialized_allocator_copy),
+  pack and live alike — surfaced once the unwrap alias stopped the c2mir error
+  earlier in the pipeline; libc++ list __base_pointer rebind (3 arm64 tests);
+  istream traits_type soft errors under the pack (test passes); filebuf D1Ev
+  conflicting externs (emit-C portability); iomanip live memmove undeclared;
+  `<filesystem>` `clock` on linux libstdc++; the 9 aarch64 MIR-floor tests
+  LAST with the three vnmakarov/mir issues (owner ruling).
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
