@@ -60361,14 +60361,56 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	}
 	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
 	    continue;
-	// NOTE ([temp.deduct]/8, defaulted params): this lane does NOT resolve
-	// an unbound defaulted param's default. Its callers pass EXPLICIT args
-	// only, and a defaulted param here may still be DEDUCED from the call
-	// arguments at full instantiation — resolving the default early served
-	// the wrong type to c++20's iterator_traits chains (stl_iterator.h:141).
-	// The member-template twin (resolve_member_template_call_return_type)
-	// DOES enforce defaults: its __test-style callers are all-explicit by
-	// construction. A deduction-aware version for this lane is filed.
+	// [temp.deduct]/8, defaulted params — in deduction ORDER: the explicit
+	// arguments, then deduction from the call arguments, then each still-
+	// unbound TYPE parameter's DEFAULT. Filled only when the call's argument
+	// types were supplied (call_arg_types non-NULL): the deduction above then
+	// ran over every argument, so a parameter still unbound is one no
+	// argument binds — the case the default exists for. With explicit args
+	// alone a defaulted parameter may still be DEDUCED at full
+	// instantiation, and filling its default early served the wrong type to
+	// c++20's iterator_traits chains (stl_iterator.h:141); that path is
+	// unchanged. libc++'s pre-C++20 __unwrap_range spells its result type
+	// through `_Unwrapped = decltype(std::__unwrap_iter(std::declval<
+	// _Iter>()))`, and __unwrap_iter's own return is
+	// `decltype(_Impl::__unwrap(std::declval<_Iter>()))` with `_Impl =
+	// __unwrap_iter_impl<_Iter>` defaulted: without the fill the candidate
+	// was declined below for the unbound _Impl, the unevaluated call kept
+	// the ddINT64 placeholder, __unwrap_range returned pair<int64,int64>,
+	// and __uninitialized_allocator_copy_impl had no viable overload for
+	// every std::vector copy under libc++ (tests/testvecmembercopy_libcxx).
+	// Concrete bindings only (a capture's placeholders would fail every
+	// default — the member-template twin's rule), resolved in the template's
+	// DEFINITION namespace by the SFINAE-clean resolver, in parameter order
+	// so a default may name an earlier parameter. A default that does not
+	// resolve leaves its parameter unbound: the unbound-return check below
+	// then declines the candidate exactly as before — full instantiation
+	// owns [temp.deduct]/8 VIABILITY; this lane only answers the type it
+	// can form.
+	if ( call_arg_types && !class_pattern_capture_in_progress
+	  && !ft.typeparam_defaults.empty() )
+	{
+	    bool binding_concrete = true;
+	    for ( std::map<std::string, DataDef *>::const_iterator bi =
+		    binding.begin();
+		  binding_concrete && bi != binding.end(); ++bi )
+		if ( !bi->second
+		  || datadef_has_unresolved_dependent_surface(bi->second) )
+		    binding_concrete = false;
+	    Program::NamespaceScope def_scope(*this, ft.ns);
+	    for ( size_t i = 0; binding_concrete && i < nfixed
+				&& i < ft.typeparam_defaults.size(); ++i )
+	    {
+		if ( binding.count(ft.typeparams[i])
+		  || ft.typeparam_defaults[i].empty() )
+		    continue;
+		if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
+		    continue;		// a non-type default is a VALUE, not a type
+		if ( DataDef *rd = resolve_template_param_default_type(
+			ft.typeparam_defaults[i], binding, ft.owner_class) )
+		    binding[ft.typeparams[i]] = rd;
+	    }
+	}
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
 	// depends on a parameter that must be DEDUCED from the call arguments.
@@ -60412,6 +60454,7 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// resolver reads the substituted decl tokens directly — no emission.
 	DataDef *rt = NULL;
 	bool dt_ref = false;
+	bool operand_parsed = false;
 	{
 	    // [temp.names]: unqualified names in the candidate's return type
 	    // bind in its DEFINITION context — gcc 13's `__and_fn` (defined in
@@ -60422,7 +60465,31 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    Program::NamespaceScope ns_scope(*this, ft.ns);
 	    if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
 	      && contextual_identifier_name(sub[0]) == "decltype" )
+	    {
 		rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
+		// Every other decltype operand — a static member call on the
+		// (substituted) class type, libc++ __unwrap_iter's
+		// `decltype(_Impl::__unwrap(std::declval<_Iter>()))` — goes to
+		// the ONE declared-type resolver: its decltype arm parses the
+		// operand as an UNEVALUATED operand (unevaluated_operand_depth
+		// — no body instantiation, and the operand tree is dropped once
+		// its type is read, so nothing reaches emission). The parse
+		// takes the substituted tokens into the expression tree, so
+		// they are not freed below. A reference-typed operand answers
+		// as its referenced type + the ref flag, the shape the
+		// template-id lane already reports.
+		if ( !rt )
+		{
+		    operand_parsed = true;
+		    rt = resolve_type_token_range(sub, 0, sub.size());
+		    if ( rt && rt->is_reference() )
+		    {
+			DataDefREF *rr = static_cast<DataDefREF *>(rt);
+			rt = rr->base_type;
+			dt_ref = true;
+		    }
+		}
+	    }
 	    else
 		rt = resolve_type_token_range(sub, 0, sub.size());
 	}
@@ -60454,8 +60521,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		      << "(" << pack_elems.size() << ") sub='" << spelled
 		      << "' -> " << (rt ? rt->name : "(fail)") << std::endl;
 	});
-	for ( TokenBase *t : sub )
-	    delete t;
+	if ( !operand_parsed )
+	    for ( TokenBase *t : sub )
+		delete t;
 	if ( rt )
 	{
 	    if ( ret_ref )
