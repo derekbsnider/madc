@@ -12884,8 +12884,9 @@ bool CirBuilder::native_class_value_result(TokenBase *arg, DataDefCLASS *cls)
 
 // [class.copy.elision]/3 (C++11 [class.copy]/32): a `return` operand that
 // NAMES a non-volatile automatic object of the function's return class — a
-// local variable or a function parameter; not a static, a reference, a member
-// or a global — is an implicitly movable entity: overload resolution for the
+// local variable (a function parameter too in the standard; see the body for
+// why madc's parameter stays a copy for now); not a static, a reference, a
+// member or a global — is an implicitly movable entity: overload resolution for the
 // copy into the result object is first performed as if the name were an
 // rvalue, so the move constructor beats the copy constructor and a move-only
 // class is returnable at all. The value-category ranking in
@@ -12903,7 +12904,16 @@ static bool returned_operand_is_implicitly_movable(DataDefCLASS *cdd,
 	if (!tv)
 		return false;
 	const Variable &v = tv->var;
-	if (!(v.flags & (vfLOCAL | vfPARAM)) || (v.flags & vfSTATIC))
+	// A PARAMETER is an implicitly movable entity too ([class.copy.elision]/3
+	// names "a function parameter"), but madc's by-value class parameter is
+	// today a BITWISE image of the caller's argument that the callee never
+	// destroys (KG Gap class_param_by_value_bitwise_copy): moving from it
+	// steals the CALLER's object — `std::string echo(std::string s) {
+	// return s; }` left the host's string pointing into the callee's frame
+	// (test_libmadc_program "call supports script string object returns",
+	// SIGSEGV). Until the parameter is the callee's own object, a returned
+	// parameter keeps the copy it always had; only a LOCAL moves.
+	if (!(v.flags & vfLOCAL) || (v.flags & (vfSTATIC | vfPARAM)))
 		return false;
 	if (!v.type || v.type->is_reference())
 		return false;
