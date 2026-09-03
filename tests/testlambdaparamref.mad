@@ -1,0 +1,27 @@
+// Lambda PARAMETER DECLARATORS (`S &s`, `const int *p`, `int &x`) and a
+// trailing return type that names a parameter (`-> decltype(s.v)`) — the
+// closure's call operator is parsed by the function-parameter grammar. The
+// shape libc++ 18 writes in basic_string's move constructor:
+//   __r_([](basic_string& __s) -> decltype(__s.__r_)&& { ... }(__str))
+// Before: "Expecting identifier in lambda parameter list" at the `&`.
+// Oracle g++ == clang++: 7 0 / 12 / 5 3 / 14
+#include <stdio.h>
+struct S {
+	int v;
+	S(int x) : v(x) {}
+	S(S &&o) : v([](S &s) -> int { int t = s.v; s.v = 0; return t; }(o)) {}
+};
+int main()
+{
+	S a(7);
+	S b(static_cast<S &&>(a));
+	printf("%d %d\n", b.v, a.v);
+	int k = [](const int *p) -> int { return *p + 5; }(&b.v);
+	printf("%d\n", k);
+	auto sw = [](int &x, int &y) { int t = x; x = y; y = t; };
+	int p = 3, q = 5;
+	sw(p, q);
+	printf("%d %d\n", p, q);
+	printf("%d\n", [](S &s) -> decltype(s.v) { return s.v * 2; }(b));
+	return 0;
+}

@@ -64954,29 +64954,26 @@ TokenBase *Program::parseLambda()
 {
     DBG(cout << "parseLambda() START" << endl);
 
-    auto resolve_lambda_param_type = [&](TokenBase *type_tb) -> TokenDataType * {
-	return resolve_declared_type_token(type_tb, true, true);
-    };
-
-    // we already consumed '[', peek at next token
-    // [](params) { body }       — pure lambda (no capture)
-    // [int](params) { body }    — pure lambda with return type
-    // [&](params) { body }      — capture all outer vars by reference
+    // we already consumed '[' — the capture list, then the closure's call
+    // operator:
+    // [](params) { body }       — no capture
+    // [&](params) { body }      — capture the enclosing variables the body uses,
+    //                             by reference (hidden pointer params, CIR side)
+    // [T](params) { body }      — the dialect's explicit return type
+    // (params) may carry any parameter-declaration parseFunction accepts, and
+    // a trailing `-> T` / `-> decltype(param.member)&&` after them.
     TokenBase *tn = nextToken();
-    DataDef *rettype = &ddVOID;
-    bool explicit_rettype = false;
+    DataDef *rettype = &ddAUTO;	// deduced from the body, or the trailing return
     bool is_capturing = false;
 
-    // check for [&] capture syntax
     if ( tn->id() == TokenID::tkBand )
     {
 	is_capturing = true;
 	tn = nextToken(); // consume &, expect ]
     }
-    else if ( TokenDataType *ret_type = resolve_lambda_param_type(tn) )
+    else if ( TokenDataType *ret_type = resolve_declared_type_token(tn, true, true) )
     {
 	rettype = &ret_type->definition;
-	explicit_rettype = true;
 	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
 	tn = nextToken();
     }
@@ -64984,153 +64981,68 @@ TokenBase *Program::parseLambda()
     if ( tn->id() != TokenID::tkClSqr )
 	Throw(tn) << "Expecting ] in lambda expression" << flush;
 
-    // expect '('
+    // expect '(' — parseFunction takes over AT the '(' exactly as it does
+    // after a named declarator.
     tn = nextToken();
     if ( tn->id() != TokenID::tkOpBrk )
 	Throw(tn) << "Expecting ( after lambda [...]" << flush;
 
-    // generate unique name
     std::string lambda_name = "__lambda_" + std::to_string(lambda_counter++);
-
     DBG(cout << "parseLambda() name: " << lambda_name << endl);
 
-    // create FuncDef
-    FuncDef *func = new FuncDef(*rettype);
-    funcdef_map[lambda_name] = func;
+    // A lambda-expression is a closure with ONE call operator
+    // ([expr.prim.lambda]); madc lowers it to a hoisted free function plus a
+    // function pointer. parseFunction owns everything from the '(' on: the
+    // parameter-declaration grammar (declarators — `basic_string& __s` —
+    // const, defaults, packs), the trailing return type resolved with the
+    // parameters in scope (`-> decltype(__s.__r_)&&`), the body, C++14
+    // return deduction from the body (ddAUTO), and — inside a function body —
+    // the nested-function hoist (a unique symbol via FuncDef::local_emit_name,
+    // a source-named alias in the enclosing scope) with capture-by-reference
+    // configured the way [&] always was (configure_nested_function_captures).
+    // The hand-rolled `type ident` parameter loop this replaces rejected every
+    // declarator: libc++ 18's basic_string move constructor initializes __r_
+    // with `[](basic_string& __s) -> decltype(__s.__r_)&& { ... }(__str)`, so
+    // the first program that moved a std::string (a `return s;` after the
+    // implicit-move rule) died with "Expecting identifier in lambda parameter
+    // list" (tests/testlambdaparamref).
+    std::string saved_func_name = cur_func_name;	// parseFunction sets it for __func__
+    std::string id = lambda_name;
+    parseFunction(*rettype, id, NULL);
+    cur_func_name = saved_func_name;
+
+    funcdef_map_iter fmi = funcdef_map.find(id);
+    if ( fmi == funcdef_map.end() || !fmi->second )
+	Throw(tn) << "lambda '" << lambda_name << "' did not register a function" << flush;
+    FuncDef *func = fmi->second;
+    Variable *var = tkProgram->findVariable(strpool, id);
+    if ( !var )
+	Throw(tn) << "lambda '" << lambda_name << "' did not register a variable" << flush;
+
+    // [expr.prim.lambda.closure]: a body with no value-bearing return is void.
+    // parseFunction's deducer leaves the ddAUTO placeholder in place then;
+    // FuncDef::returns is a reference, so the void closure is a fresh FuncDef
+    // (the same rebuild parseFunction itself uses for a deduced type).
+    if ( &func->return_value_type() == &ddAUTO )
+    {
+	FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(ddVOID, false));
+	funcdef_map[id] = fresh;
+	var->type = fresh;
+	func = fresh;
+    }
+
+    // The capture list is the closure's contract: `[]` captures nothing
+    // (the nested-function configuration parseFunction applied is withdrawn),
+    // `[&]` keeps capture-by-reference of whatever the body uses. At file scope
+    // parseFunction parsed a plain function, so `[&]` collects here (nothing
+    // encloses it to capture — the list stays empty).
     func->has_captures = is_capturing;
-
-    if ( is_capturing )
-    {
-	// Collect all currently visible vars from the enclosing compound chain
-	// These are "potential captures" — whichever ones the body actually uses
-	TokenCpnd *outer = compounds.empty() ? NULL : compounds.top();
-	while ( outer )
-	{
-	    for ( auto *v : outer->variables )
-		func->potential_captures.push_back(v);
-	    // also capture method parameters from the outer scope
-	    if ( outer->method )
-		for ( auto *p : outer->method->parameters )
-		    func->potential_captures.push_back(p);
-	    outer = outer->parent;
-	}
-	// Capture-by-reference is lowered in the CIR builder: each enclosing
-	// variable the body actually uses becomes a hidden `T *name` pointer
-	// parameter (FuncDef::captured_vars), appended AFTER the user params, and
-	// every call site forwards `&var`. So func->parameters carries ONLY the
-	// user-declared params here — no synthetic env placeholder.
-	DBG(cout << "parseLambda() [&] capturing " << func->potential_captures.size() << " outer vars" << endl);
-    }
-
-    // parse parameters (same pattern as parseFunction)
-    std::vector<std::string> param_ids;
-    TokenDataType *pb;
-
-    while ( (tn=nextToken()) && tn->id() != TokenID::tkClBrk )
-    {
-	pb = resolve_lambda_param_type(tn);
-	if ( !pb )
-	    Throw(tn) << "Expecting type in lambda parameter list" << flush;
-
-	tn = nextToken();
-
-	if ( !is_contextual_identifier_token(tn) )
-	    Throw(tn) << "Expecting identifier in lambda parameter list" << flush;
-
-	std::string pid = contextual_identifier_name(tn);
-	param_ids.push_back(pid);
-	func->parameters.push_back(&pb->definition);
-	func->param_typedef_names.push_back("");
-
-	DBG(cout << "parseLambda() param: " << pb->definition.name << ' ' << pid << endl);
-
-	// peek for comma or closing paren
-	tn = peekToken();
-	if ( tn && tn->id() == TokenID::tkComma )
-	    nextToken(); // consume comma
-    }
-
-    // create Variable and Method (same as parseFunction)
-    Variable *var = addVariable(NULL, *func, lambda_name);
-    Method *method = new Method(*var);
-    var->data = (void *)method;
-
-    // Capture params are synthesized in the CIR builder (see parseLambda's
-    // capture comment above) — method->parameters holds only the user params.
-    for ( size_t i = 0; i < param_ids.size(); ++i )
-    {
-	Variable *pv = new Variable(param_ids[i], *func->parameters[i], 1, NULL, false);
-	pv->flags |= vfPARAM | vfLOCAL;
-	method->parameters.push_back(pv);
-    }
-
-    // expect '{' for the body
-    tn = nextToken();
-    if ( tn->id() != TokenID::tkOpBrc )
-	Throw(tn) << "Expecting { for lambda body" << flush;
-
-    // push compound scope and parse the body
-    pushCompound();
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    if ( code )
-	code->method = method;
-
-    TokenFunc *tf = new TokenFunc(*var);
-    DBG(cout << "parseLambda() calling parseCompound()" << endl);
-    TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
-
-    tf->method = method;
-    tf->parent = tc->parent;
-    tf->variables = tc->variables;
-    tf->statements = tc->statements;
-    tf->deferred = tc->deferred;
-    tf->end_line = tc->end_line;
-
-    // C++14 lambda return-type deduction: with no explicit `[T](...)` return
-    // type, deduce it from the body's first value-bearing `return`. FuncDef
-    // returns is a C++ reference and cannot be reseated, so replace the
-    // FuncDef with a fresh one carrying the deduced type (same pattern as the
-    // return-type refresh in parseFunction). The Variable's `type` pointer and
-    // funcdef_map entry are rebound; Method holds a reference to the Variable
-    // so it picks up the new type automatically.
-    if ( !explicit_rettype )
-    {
-	DataDef *deduced = NULL;
-	for ( TokenStmt *s : tf->statements )
-	    if ( (deduced = deduce_return_type_from_stmt(this, s)) )
-		break;
-	if ( deduced && deduced != &func->return_value_type() )
-	{
-	    DBG(cout << "parseLambda() deduced return type: "
-		    << func->return_value_type().name << " -> " << deduced->name << endl);
-	    FuncDef *fresh = new FuncDef(*deduced);
-	    fresh->parameters		 = func->parameters;
-	    fresh->has_captures		 = func->has_captures;
-	    fresh->potential_captures	 = func->potential_captures;
-	    fresh->captures		 = func->captures;
-	    fresh->return_types		 = func->return_types;
-	    fresh->multi_ret_struct	 = func->multi_ret_struct;
-	    fresh->const_params		 = func->const_params;
-	    fresh->is_varargs		 = func->is_varargs;
-	    fresh->is_void_params	 = func->is_void_params;
-	    fresh->no_instrument_function = func->no_instrument_function;
-	    fresh->explicit_alignment	 = func->explicit_alignment;
-	    fresh->vague_linkage	 = func->vague_linkage;
-	    fresh->internal_linkage	 = func->internal_linkage;
-	    funcdef_map[lambda_name] = fresh;
-	    var->type = fresh;
-	    func = fresh;
-	}
-    }
-
-    // push the lambda as a top-level function in the AST
-    // It will be compiled before the enclosing function since
-    // the enclosing function's ast.push happens after parseCompound returns.
-    DBG(cout << "parseLambda() pushing " << lambda_name << " onto ast" << endl);
-    ast.push_back(tf);
-    pending_funcs.push_back(tf);
-
-    DBG(cout << "parseLambda() END — returning TokenVar for " << lambda_name << endl);
+    if ( !is_capturing )
+	func->potential_captures.clear();
+    else if ( func->potential_captures.empty() )
+	configure_nested_function_captures(func);
+    DBG(cout << "parseLambda() END — returning TokenVar for " << id
+	     << " (captures " << func->potential_captures.size() << ")" << endl);
 
     // return a TokenVar that references the lambda function variable
     // When compiled, TokenVar::compile() emits the function's address
