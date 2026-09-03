@@ -335,6 +335,18 @@ struct defrec {
 	uint32_t vslot_count;
 	uint32_t vmeth_begin;	// word run: DataDefCLASS::virtual_methods keys
 	uint32_t vmeth_count;
+	// (v43) The friendship GRANTS ([class.friend]) — parse-time name
+	// state the access check reads (function_is_friend_of /
+	// friend_class_names). Never frozen before: a hidden-friend operator
+	// TEMPLATE hoisted from a restored class (libc++ <iomanip>'s
+	// __iom_t5 inserter) instantiated its body against the restored
+	// class and the body's `__x.__n_` read was refused as private, so
+	// the instantiation failed silently and the call fell to the raw C
+	// `<<` (testiomanip on the darwin runner, pack-bound only).
+	uint32_t friendfn_begin;	// word run: DataDefCLASS::friend_function_names
+	uint32_t friendfn_count;
+	uint32_t friendcls_begin;	// word run: DataDefCLASS::friend_class_names
+	uint32_t friendcls_count;
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

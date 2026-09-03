@@ -1549,10 +1549,48 @@ int main()
 EOF
 run_case secvptr "fb=21 fa=10 sum=6 sz=40"
 
+# --- case: friendgrant — a class whose PRIVATE member is read by its hidden-friend
+#     operators (one plain, one a TEMPLATE-HEAD friend), restored from the grove.
+#     The friendship grants (friend_function_names / friend_class_names) are
+#     parse-time access state; before v43 they were never frozen, so a hoisted
+#     hidden-friend body instantiated against the restored class was refused its
+#     private read, the instantiation failed silently, and the operator fell to
+#     the raw C operator (libc++ <iomanip>'s __iom_t5 inserter, testiomanip on
+#     the darwin runner — pack-bound only). Both operators must bind and answer
+#     exactly as live and g++ do.
+cat > tmp/fbgate_friendgrant.h <<'EOF'
+#ifndef FBGATE_FRIENDGRANT_H
+#define FBGATE_FRIENDGRANT_H
+class FbfA {
+	int n;
+public:
+	FbfA(int v) : n(v) {}
+	friend int operator+(const FbfA &a, int k) { return a.n + k; }
+	template <class T>
+	friend T operator*(const FbfA &a, T k) { return a.n * k; }
+};
+#endif
+EOF
+cat > tmp/fbgate_friendgrant_producer.cpp <<'EOF'
+#include <fbgate_friendgrant.h>
+int main() { FbfA a(1); return a + 1; }
+EOF
+cat > tmp/fbgate_friendgrant_consumer.cpp <<'EOF'
+#include <fbgate_friendgrant.h>
+#include <cstdio>
+int main()
+{
+    FbfA a(7);
+    printf("plus=%d times=%d\n", a + 1, a * 2);
+    return 0;
+}
+EOF
+run_case friendgrant "plus=8 times=14"
+
 # NOTE: this tally is hand-maintained, and that bit me — the [ldouble] case ran
 # and passed while the summary still said 25/25, so the line UNDERSTATED
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 27/27 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr"
+echo "forest_bind_gate: GREEN 28/28 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant"
 exit 0

@@ -562,7 +562,11 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 42 };	// v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 43 };	// v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
+	// v43: defrec friendfn/friendcls runs — the friendship grants
+	// (friend_function_names / friend_class_names), parse-time access
+	// state a restored class never carried (hoisted hidden-friend bodies
+	// were refused their private reads under the pack).
 enum : uint32_t { CIR_FOREST_CONFIG_STDLIB_MASK = 0xfffe0000u };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 

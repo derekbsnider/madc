@@ -3086,6 +3086,16 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 			forest_arena.add_word(forest_arena.strings.intern(vm->first.c_str()));
 			++r.vmeth_count;
 		}
+		// --- v43: the friendship grants (see defrec) — word runs of the
+		//     befriended function and class NAMES, in declaration order.
+		r.friendfn_begin = (uint32_t)forest_arena.payload.size();
+		r.friendfn_count = (uint32_t)cdd->friend_function_names.size();
+		for (size_t k = 0; k < cdd->friend_function_names.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->friend_function_names[k].c_str()));
+		r.friendcls_begin = (uint32_t)forest_arena.payload.size();
+		r.friendcls_count = (uint32_t)cdd->friend_class_names.size();
+		for (size_t k = 0; k < cdd->friend_class_names.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->friend_class_names[k].c_str()));
 
 		// --- class-scope name maps (v20): type aliases, static member types,
 		//     static-const values. Resolve every type-id FIRST (lazy stamping

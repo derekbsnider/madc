@@ -2998,6 +2998,27 @@ void CirFrozenForest::materialize_pass()
 				if (vn)
 					cdd->virtual_methods[vn] = true;
 			}
+			// v43: the friendship grants — the access check's name
+			// state (a hoisted hidden-friend body reads the private
+			// member it was befriended for).
+			cdd->friend_function_names.clear();
+			for (uint32_t ff = 0; ff < r.friendfn_count; ++ff) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.friendfn_begin, ff, nid))
+					break;
+				const char *fn = a.c_str(nid);
+				if (fn)
+					cdd->friend_function_names.push_back(fn);
+			}
+			cdd->friend_class_names.clear();
+			for (uint32_t fc = 0; fc < r.friendcls_count; ++fc) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.friendcls_begin, fc, nid))
+					break;
+				const char *cn = a.c_str(nid);
+				if (cn)
+					cdd->friend_class_names.push_back(cn);
+			}
 			// The layout-time secondary owners list is not in the
 			// record; the groups it produced are. Refill it so the
 			// struct emitter names every secondary vptr field the
