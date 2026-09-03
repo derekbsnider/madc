@@ -44251,6 +44251,13 @@ static bool find_free_operator_declarator(
 	size_t &oper_idx_out, size_t &lparen_out);
 static std::string skipped_template_function_declarator_name(
 	const std::vector<TokenBase *> &tokens);
+static void register_skipped_namespace_template_function(
+	Program &pgm, const std::vector<TokenBase *> &tokens,
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
+	const std::vector<bool> *typeparam_is_type,
+	const std::vector<bool> *typeparam_is_pack,
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints);
 
 // True when a skipped FRIEND declaration is a free-operator DEFINITION (has a
 // body): `friend bool operator<(...) noexcept { ... }`. Bodyless friend
@@ -45961,6 +45968,46 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    pgm, ddc, skipped_decl,
 			    pgm.last_skipped_template_typeparams, access_flags,
 			    constructor_source_name);
+		    // A template-head hidden-friend operator DEFINITION
+		    // (`template <class C, class T> friend basic_ostream<C,T>&
+		    // operator<<(basic_ostream<C,T>&, const __iom_t5&) {...}` —
+		    // every libc++ <iomanip> manipulator inserter) is a
+		    // NAMESPACE-SCOPE function template ([class.friend],
+		    // [temp.friend]) that ADL finds through the class operand.
+		    // The non-template twin is hoisted at class completion
+		    // (parse_hoisted_friend_operator); this one registers
+		    // through the ONE namespace-scope template registration
+		    // (operator capture + retained body, keyed on the enclosing
+		    // namespace, which class scope does not change), with the
+		    // `friend` specifier dropped wherever it sits before the
+		    // parameter list. Without it `cout << setw(5)` reached the
+		    // raw C `<<` with a struct operand (testiomanip on libc++).
+		    std::string friend_opname;
+		    if ( is_friend_decl
+		      && skipped_friend_operator_definition(skipped_decl,
+							    &friend_opname) )
+		    {
+			std::vector<TokenBase *> hoist;
+			bool params_seen = false;
+			for ( size_t hi = 0; hi < skipped_decl.size(); ++hi )
+			{
+			    TokenBase *ht = skipped_decl[hi];
+			    if ( !ht )
+				continue;
+			    if ( ht->id() == TokenID::tkOpBrk )
+				params_seen = true;
+			    if ( !params_seen && ht->id() == TokenID::tkFRIEND )
+				continue;
+			    hoist.push_back(ht);
+			}
+			register_skipped_namespace_template_function(
+			    pgm, hoist, pgm.last_skipped_template_typeparams,
+			    &pgm.last_skipped_template_typeparam_defaults,
+			    &pgm.last_skipped_template_typeparam_is_type,
+			    &pgm.last_skipped_template_typeparam_is_pack,
+			    &pgm.last_skipped_template_typeparam_constraints);
+			ddc->friend_function_names.push_back(friend_opname);
+		    }
 		}
 		pgm.last_skipped_template_decl.clear();
 		pgm.last_skipped_template_typeparams.clear();
@@ -53666,7 +53713,7 @@ static void register_skipped_namespace_template_function(
 	const std::vector<std::vector<TokenBase *>> *typeparam_defaults,
 	const std::vector<bool> *typeparam_is_type,
 	const std::vector<bool> *typeparam_is_pack,
-	const std::vector<std::vector<TokenBase *>> *typeparam_constraints = NULL)
+	const std::vector<std::vector<TokenBase *>> *typeparam_constraints)
 {
     // NO empty-namespace bail. A function template at GLOBAL scope is an
     // ordinary function template — [temp] does not require a namespace — and
