@@ -4323,6 +4323,35 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
     return canon ? canon : dd;
 }
 
+// The IDENTITY SPELLING of a bound template argument — the string every
+// identity former compares: the instantiation memo (inst_key), the overload
+// set's template_arg_names, and the ranker's explicit-argument match. The
+// convention is the canonical binding dd's NAME (canonical_template_binding_dd
+// above), with the ONE exception the name cannot carry: madc lowers
+// references to pointers (DataDefREF IS-A DataDefPTR), so a reference dd's
+// NAME is its pointer twin's — `int&` and `int*` are both "int32_t*" — and
+// by name alone `std::forward<_T1>(__t1)` inside libc++'s
+// make_pair<int*,int*> (_T1 = int*) memo-HIT the forward<int&> instance the
+// vector's construct path had made: no forward<int*> instance was ever
+// minted, the call ranked against `int&` with an `int*` argument, found
+// nothing viable, and fell to the placeholder import (`extern long long
+// __ns_std____1_forward()` inside make_pair's body — the last placeholder
+// call of every std::vector copy under libc++). A reference spells
+// `referent-identity&`, recursively (`int*&` -> "int32_t*&"), the rendering
+// rule template_type_arg_spelling already applies to a use-site reference
+// argument for the same reason.
+static std::string template_binding_identity_spelling(DataDef *dd)
+{
+    if ( !dd )
+	return std::string();
+    if ( dd->is_reference() )
+	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(dd) )
+	    if ( r->base_type )
+		return template_binding_identity_spelling(r->base_type) + "&";
+    DataDef *canon = canonical_template_binding_dd(dd);
+    return canon ? canon->name : dd->name;
+}
+
 // [basic.fundamental] identity for a SCALAR dd, PROVEN: the fundamental type
 // the dd denotes, or NULL when its identity cannot be established from the
 // one builtin table. Peels cv, walks the namespace-alias chain the typedef
@@ -18955,7 +18984,9 @@ static Variable *rank_fn_overload_candidates(
 	    for ( size_t ti = 0; ti < explicit_template_args->size(); ++ti )
 	    {
 		DataDef *td = (*explicit_template_args)[ti];
-		std::string tn = td ? td->name : std::string();
+		// The same identity spelling the instance recorded (a
+		// reference argument is NOT its pointer twin).
+		std::string tn = template_binding_identity_spelling(td);
 		if ( e.template_arg_names[ti] != tn )
 		{ explicit_match = false; break; }
 	    }
@@ -56415,7 +56446,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			   + "<";
     for ( size_t i = 0; i < ft.typeparams.size(); ++i )
 	inst_key += (binding.count(ft.typeparams[i])
-		     ? binding[ft.typeparams[i]]->name
+		     ? template_binding_identity_spelling(binding[ft.typeparams[i]])
 		     : tmpl_name_subst.count(ft.typeparams[i])
 		       ? tmpl_name_subst[ft.typeparams[i]] : std::string()) + ",";
     // A multi-element pack contributes no `binding[pack_param]` entry, so fold its
@@ -56423,7 +56454,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // must NOT collide on the same instantiation.
     if ( pack_elems.size() >= 2 )
 	for ( size_t e = 0; e < pack_elems.size(); ++e )
-	    inst_key += "@" + (pack_elems[e] ? pack_elems[e]->name : std::string());
+	    inst_key += "@" + template_binding_identity_spelling(pack_elems[e]);
     // Non-type tid-pack VALUES are a distinct instantiation axis (`_Indexes={0}`
     // vs `{1}`) with no `binding` entry — fold them in so they don't collide.
     for ( std::map<std::string, int64_t>::const_iterator
@@ -56445,8 +56476,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	inst_key += "@" + tp->first + "=";
 	for ( size_t e = 0; e < tp->second.size(); ++e )
-	    inst_key += (tp->second[e] ? tp->second[e]->name
-				       : std::string()) + "|";
+	    inst_key += template_binding_identity_spelling(tp->second[e]) + "|";
     }
     inst_key += ">";
     // fn_template_map[key] holds EVERY overload sharing the name; two
@@ -57432,11 +57462,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		std::map<std::string, DataDef *>::const_iterator bi =
 		    binding.find(ft.typeparams[ti]);
 		if ( bi != binding.end() && bi->second )
-		    ne.template_arg_names.push_back(bi->second->name);
+		    ne.template_arg_names.push_back(
+			template_binding_identity_spelling(bi->second));
 		else if ( tidpack_one.count(ft.typeparams[ti])
 		       && tidpack_one[ft.typeparams[ti]] )
 		    ne.template_arg_names.push_back(
-			tidpack_one[ft.typeparams[ti]]->name);
+			template_binding_identity_spelling(
+			    tidpack_one[ft.typeparams[ti]]));
 		else if ( tidpack_empty_names.count(ft.typeparams[ti]) )
 		    ne.template_arg_names.push_back("{}");
 		else if ( nontype_tidpack_one.count(ft.typeparams[ti]) )
@@ -57454,8 +57486,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    // contributes no entries.
 		    for ( size_t pe = 0; pe < pack_elems.size(); ++pe )
 			ne.template_arg_names.push_back(
-			    pack_elems[pe] ? pack_elems[pe]->name
-					   : std::string());
+			    template_binding_identity_spelling(pack_elems[pe]));
 		else
 		    ne.template_arg_names.push_back(std::string());
 	    }

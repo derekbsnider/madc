@@ -1,0 +1,43 @@
+// One function template instantiated first for a REFERENCE argument (T = int&,
+// from an lvalue through a forwarding reference) and then, by explicit
+// argument, for the pointer twin (T = int*). madc lowers references to
+// pointers, so a reference dd is NAMED as its pointer ("int32_t*" for both),
+// and the instantiation memo, the overload set's recorded template arguments
+// and the ranker's explicit-argument match all keyed on that name: the second
+// request memo-hit the forward<int&> instance, ranked an int* argument against
+// its int& parameter, found nothing viable, and the call fell to the
+// declaration-only placeholder (undefined `__ns_ns_forward` import) — libc++
+// make_pair<int*,int*>'s `std::forward<_T1>(__t1)` after vector's construct
+// path had made forward<int&>. Oracle g++ == clang++: 5 7 5
+#include <stdio.h>
+
+template <class T> struct rr { typedef T type; };
+template <class T> struct rr<T&> { typedef T type; };
+template <class T> struct rr<T&&> { typedef T type; };
+
+namespace ns {
+
+template <class T>
+inline T&& forward(typename rr<T>::type& t) { return static_cast<T&&>(t); }
+template <class T>
+inline T&& forward(typename rr<T>::type&& t) { return static_cast<T&&>(t); }
+
+// U deduces int& for an lvalue int: forward<int&>.
+template <class U>
+int take(U&& u) { return ns::forward<U>(u); }
+
+// T1 deduces int* for an rvalue int*: forward<int*> — the pointer twin of int&.
+template <class T1>
+int *pass(T1&& t1) { return ns::forward<T1>(t1); }
+
+}
+
+int main()
+{
+	int a = 5, b = 7;
+	int *pb = &b;
+	int x = ns::take(a);
+	int *q = ns::pass(pb + 0);
+	printf("%d %d %d\n", x, *q, *ns::pass(&a));
+	return 0;
+}
