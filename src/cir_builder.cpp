@@ -12641,6 +12641,17 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 		// _Rb_tree::_Auto_node's `_Rb_tree& _M_t` init `_M_t(__t)`.
 		if (m.second && m.second->is_reference())
 			init = node1(N_ADDR, init, origin);
+		// Derived->base pointer (or reference) member initializer
+		// (`__ptr_(__p)`: libc++ __tree_iterator's __iter_pointer from a
+		// __node_pointer, two bases up): the mem-init twin of the
+		// assignment (`a = b`) and declaration (`A *p = bptr`) arms —
+		// the upcast made explicit, a SECONDARY base's offset applied
+		// (tests/testmemberinitupcast: `B *p; It(D *q) : p(q)` read A's
+		// field through p — a silent wrong answer — and c2mir warned
+		// `incompatible types in assignment to a pointer` on every
+		// libc++ std::map). upcast_class_ptr returns its operand
+		// unchanged when no conversion applies.
+		init = upcast_class_ptr(init, m.second, ci->args[0], origin);
 		node_t asgn = node2(N_ASSIGN, fld, init, origin);
 		flush_pending_stmts(out);
 		out.push_back(node2(N_EXPR, list(), asgn, origin));
