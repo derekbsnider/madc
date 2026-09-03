@@ -2078,6 +2078,25 @@ static const char *typedef_alias_spelling(Program &pgm, TokenBase *tb)
     }
 }
 
+// sizeof of a STRING LITERAL: the array type `const char[N]` /
+// `const wchar_t[N]` — element count plus the terminator, times the element
+// size. A wide literal's TokenStr payload is 4-byte UTF-32 codepoints; the
+// TARGET's wchar_t decides the element units (2-byte UTF-16 with surrogate
+// pairs on LLP64), through the ONE re-encoder addWideLiteral uses. Both
+// sizeof arms (bare `sizeof L"x"` and `sizeof(L"x")`) measured the payload in
+// BYTES: sizeof(L"x") read 5 where g++/clang++ say 8 (tests/teststreamwideops).
+static void madc_wide_payload_target_units(const std::string &s, size_t unit_size,
+					   std::vector<uint32_t> &units);
+static int64_t literal_token_sizeof(TokenStr *ts)
+{
+    if ( !ts->wide )
+	return (int64_t)ts->spelling_len() + 1;	// include NUL terminator
+    DataDef *wdd = dd_platform_wchar();
+    std::vector<uint32_t> units;
+    madc_wide_payload_target_units(ts->str, wdd->size, units);
+    return (int64_t)(units.size() + 1) * (int64_t)wdd->size;
+}
+
 static bool is_decltype_identifier(const std::string &name)
 {
     return name == "decltype";
@@ -13453,10 +13472,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	}
 	// sizeof "literal" — string literal without parens
 	if ( probe && probe->type() == TokenType::ttString )
-	{
-	    TokenStr *ts = static_cast<TokenStr *>(nextToken());
-	    return ts->spelling_len() + 1; // include NUL terminator
-	}
+	    return literal_token_sizeof(static_cast<TokenStr *>(nextToken()));
 	// sizeof literal-constant — `sizeof 0` (c-testsuite 00038): the
 	// unary-expression operand needs no parens; a numeric/char literal
 	// carries its own type, measured exactly as the parenthesized
@@ -13511,8 +13527,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	// before parseExpression transforms it.
 	if ( type_tb && type_tb->type() == TokenType::ttString )
 	{
-	    TokenStr *ts = static_cast<TokenStr *>(type_tb);
-	    value = ts->spelling_len() + 1; // include NUL terminator
+	    value = literal_token_sizeof(static_cast<TokenStr *>(type_tb));
 	    have_value = true;
 	    dd = NULL;
 	}
