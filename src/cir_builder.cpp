@@ -15895,17 +15895,15 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 				if (DataDef *referent = ref_param_referent(tv->var.type))
 					return referent;
 			}
-			if (tv->var.is_fixed_array() && tv->var.type && m_prog)
-				return m_prog->getPointerType(tv->var.type);
 		}
-		if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
-			if (tm->is_fixed_array_member() && tm->var.type && m_prog)
-				return m_prog->getPointerType(tm->var.type);
-		}
-		if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
-			if (ca->element_type && m_prog)
-				return m_prog->getPointerType(ca->element_type);
-		}
+		// [conv.array]/[conv.func] decay — ONE owner
+		// (Program::array_decay_pointer): fixed-array variables and
+		// members, partial subscripts of multi-dimensional arrays, C
+		// array types. This lambda carried its own copy of three of
+		// those arms.
+		if (m_prog)
+			if (DataDef *adp = m_prog->array_decay_pointer(arg))
+				return adp;
 		return arg->datadef();
 	};
 	DataDef *rhs_dd = overload_arg_datadef(rhs);
@@ -16595,7 +16593,14 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 	// spelling is the pointer representation and no candidate ever matches
 	// (`cout << s` with a `const string &s` parameter bound the bogus
 	// member streambuf* overload).
-	DataDef *rhs_dd = top->right->datadef();
+	// [conv.array]: a fixed-array operand (`char ca[]`; a wide literal is a
+	// wchar_t[N] Variable) is a VALUE here and decays to pointer-to-element.
+	// Typed as the bare element it matched the free operator<<(ostream&,
+	// char) and printed garbage. ONE decay owner: Program::array_decay_pointer
+	// (the call-argument lanes and select_operator_overload use it too).
+	DataDef *rhs_dd = m_prog->array_decay_pointer(top->right);
+	if (!rhs_dd)
+		rhs_dd = top->right->datadef();
 	if (!as_class_instance(rhs_dd))
 		if (DataDefCLASS *rdc = operand_object_class(top->right))
 			rhs_dd = rdc;
@@ -16635,8 +16640,20 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		if (!deduce_lhs(ov, binding, stype, &c0)) continue;
 		bool rhs_deduced = false;
 		DataDefCLASS *c1 = NULL;
-		std::string rhs_param = ov.param_spellings[1];
-		if (norm_type_w2(ov.param_spellings[1]) != rhs_norm)
+		// param[1] is matched with the binding the LHS just deduced
+		// SUBSTITUTED in ([temp.deduct.call]: one binding for the whole
+		// signature). Compared raw, the generic `const _CharT*` inserter
+		// never matched a pointer rhs — only libstdc++'s char-specific
+		// overload, spelled literally `const char*`, did — so every wide
+		// stream fell to the member operator<<(const void*) and printed
+		// `wcout << L"x"` as a POINTER (tests/teststreamwideops.mad).
+		// The mangler wants the $Tn form of the raw spelling.
+		std::string p1sub = ov.param_spellings[1];
+		for (const auto &b : binding)
+			p1sub = subst_bound_ident(p1sub, b.first, b.second);
+		std::string rhs_param = substitute_tparams(ov.param_spellings[1],
+							  ov.template_params);
+		if (norm_type_w2(p1sub) != rhs_norm)
 		{
 			const std::string &rspell = ov.param_spellings[1];
 			// Only a by-reference class param can deduce here.

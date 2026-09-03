@@ -18208,9 +18208,10 @@ DataDef *Program::array_decay_pointer(TokenBase *operand)
 	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
 	    return getPointerType(ts->object.type);
     }
-    if ( DataDefCArray *ca = operand->datadef()->as_carray_dd() )
-	if ( ca->element_type )
-	    return getPointerType(ca->element_type);
+    if ( DataDef *odd = operand->datadef() )
+	if ( DataDefCArray *ca = odd->as_carray_dd() )
+	    if ( ca->element_type )
+		return getPointerType(ca->element_type);
     return NULL;
 }
 
