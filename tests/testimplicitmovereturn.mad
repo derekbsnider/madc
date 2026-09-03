@@ -1,0 +1,35 @@
+// [class.copy.elision]/3: `return h;` naming a local resolves the copy into
+// the result object as if h were an rvalue — the move constructor wins over
+// the copy constructor (c 5, not the copy ctor's 105), and a move-only class
+// (a deleted copy constructor) is returnable at all: the moved-from local's
+// destructor must find nothing to free. Oracle g++ == clang++:
+//   held 7 / free 7 / va -1 / c 5
+#include <stdio.h>
+struct H {
+	int *p;
+	H(int *q) : p(q) {}
+	H(const H &) = delete;
+	H(H &&o) : p(o.p) { o.p = 0; }
+	~H() { if (p) { printf("free %d\n", *p); *p = -1; } }
+};
+static int va = 7;
+H make() { H h(&va); return h; }
+struct C {
+	int n;
+	C(int v) : n(v) {}
+	C(const C &o) : n(o.n + 100) {}
+	C(C &&o) : n(o.n) { o.n = -1; }
+	~C() {}
+};
+C makec() { C c(5); return c; }
+int main()
+{
+	{
+		H r = make();
+		printf("held %d\n", r.p ? *r.p : 0);
+	}
+	printf("va %d\n", va);
+	C c = makec();
+	printf("c %d\n", c.n);
+	return 0;
+}

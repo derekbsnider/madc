@@ -1765,15 +1765,19 @@ public:
 	// (see the definition): feeds the T&& preference in select_ctor_overload.
 	enum CtorArgCategory { cacUnknown, cacLvalue, cacRvalue };
 	CtorArgCategory ctor_arg_value_category(TokenBase *arg);
+	// implicit_move: argument 0 is a `return` operand naming a local or a
+	// parameter ([class.copy.elision]/3) — ranked as an rvalue.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
-			       const std::vector<TokenBase *> &ctor_args);
+			       const std::vector<TokenBase *> &ctor_args,
+			       bool implicit_move = false);
 	// select_ctor_overload + copy-time member-template ctor recovery: when
 	// selection misses (or lands on the declaration-only placeholder),
 	// instantiate the class's member-template ctor for THESE argument types
 	// (idempotent, memoized) and re-select. The placement-new lambda's dance,
 	// shared by every construction-emission site.
 	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
-			       const std::vector<TokenBase *> &ctor_args);
+			       const std::vector<TokenBase *> &ctor_args,
+			       bool implicit_move = false);
 	// [dcl.init.list]/3-4 — LIST-initialization of a class that has an
 	// initializer-list constructor: the WHOLE braced list is ONE
 	// std::initializer_list<E> argument and only initializer-list ctors are

@@ -12840,6 +12840,34 @@ DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 	return class_needs_dtor(cdd) ? cdd : NULL;
 }
 
+// [class.copy.elision]/3 (C++11 [class.copy]/32): a `return` operand that
+// NAMES a non-volatile automatic object of the function's return class — a
+// local variable or a function parameter; not a static, a reference, a member
+// or a global — is an implicitly movable entity: overload resolution for the
+// copy into the result object is first performed as if the name were an
+// rvalue, so the move constructor beats the copy constructor and a move-only
+// class is returnable at all. The value-category ranking in
+// select_ctor_overload otherwise reads a named variable as the lvalue it is,
+// and so refused libc++'s `unique_ptr(unique_ptr&&)` for __tree's
+// `return __h;` (__construct_node): the copy constructor is deleted, the
+// bit-copy fallback aliased the node, and the local's cleanup destructor
+// freed it under the tree — every std::map insert double-freed (SIGABRT on
+// macOS malloc, SIGSEGV on linux; tests/teststdmapint_libcxx,
+// tests/testimplicitmovereturn).
+static bool returned_operand_is_implicitly_movable(DataDefCLASS *cdd,
+						   TokenBase *src)
+{
+	TokenVar *tv = src ? src->as_var_tok() : NULL;
+	if (!tv)
+		return false;
+	const Variable &v = tv->var;
+	if (!(v.flags & (vfLOCAL | vfPARAM)) || (v.flags & vfSTATIC))
+		return false;
+	if (!v.type || v.type->is_reference())
+		return false;
+	return as_class_instance(v.type) == cdd;
+}
+
 // Copy-construct `cdd` from `src` into the __retbuf return slot. Prefer an
 // available copy constructor; otherwise use the legacy bit-copy plus member
 // reconstruction fallback. `src` is a TokenBase whose translate_expr yields the
@@ -12851,7 +12879,8 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 {
 	std::vector<TokenBase *> copy_args;
 	if (src) copy_args.push_back(src);
-	FuncDef *copy_ctor = select_or_instantiate_ctor(cdd, copy_args);
+	FuncDef *copy_ctor = select_or_instantiate_ctor(
+		cdd, copy_args, returned_operand_is_implicitly_movable(cdd, src));
 	if (copy_ctor && src) {
 		std::string sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
@@ -14245,7 +14274,8 @@ static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi)
 }
 
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
-					  const std::vector<TokenBase *> &ctor_args)
+					  const std::vector<TokenBase *> &ctor_args,
+					  bool implicit_move)
 {
 	if (!cdd || cdd->ctors.empty()) return NULL;
 	FuncDef *best = NULL;
@@ -14302,8 +14332,17 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			// category the tree cannot state keeps today's ranking.
 			if (s >= 0 && refp
 			    && ctor_param_is_concrete_rvalue_ref(fd, pi)) {
-				CtorArgCategory cat =
-					ctor_arg_value_category(ctor_args[i]);
+				// [class.copy.elision]/3: the operand of a
+				// `return` that names a local or a parameter
+				// is resolved AS IF an rvalue — the caller
+				// says so (implicit_move); the tree alone
+				// reads the name as the lvalue it is. ONE pass
+				// suffices: only concrete-`T&&` candidates
+				// read the category, so when none is viable
+				// the ranking is exactly the lvalue pass's.
+				CtorArgCategory cat = (implicit_move && i == 0)
+					? cacRvalue
+					: ctor_arg_value_category(ctor_args[i]);
 				if (cat == cacLvalue)
 					s = -1;
 				else if (cat == cacRvalue)
@@ -14645,9 +14684,10 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 }
 
 FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
-					const std::vector<TokenBase *> &ctor_args)
+					const std::vector<TokenBase *> &ctor_args,
+					bool implicit_move)
 {
-	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	FuncDef *ctor = select_ctor_overload(cdd, ctor_args, implicit_move);
 	static const char *soi = ::getenv("MADC_SOI_PROBE");
 	if (soi && *soi && cdd && strstr(cdd->name.c_str(), soi))
 		fprintf(stderr, "[soi] cls=%s nargs=%zu chose=%s mt=%d declonly=%d"
@@ -14675,7 +14715,8 @@ FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
 		// residue), which keep their pre-existing loud path.
 		m_prog->instantiate_member_ctor_template_for_construction(
 			cdd, ctor_args, false);
-		if (FuncDef *inst = select_ctor_overload(cdd, ctor_args))
+		if (FuncDef *inst = select_ctor_overload(cdd, ctor_args,
+							 implicit_move))
 			ctor = inst;
 	}
 	return ctor;
