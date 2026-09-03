@@ -52445,14 +52445,37 @@ void Program::register_outofline_member_instantiations(
 	// unresolved signature keeps the established first-available order.
 	std::vector<ParsedParamSig> def_sigs;
 	bool def_sigs_ok = false;
-	if ( !def_is_ctor && !def.is_member_template )
+	if ( !def.is_member_template )
 	{
+	    // The same-name siblings THIS def must be told apart from. For a
+	    // plain ctor def they are the in-class plain ctors of the same
+	    // user arity (the arity arm below separates the rest): libc++
+	    // vector declares FIVE one-parameter constructors and defines the
+	    // copy and move ones out of class — matched by arity alone, the
+	    // move body (`__begin_ = __x.__begin_`) attached to whichever
+	    // one-parameter ctor came first (the initializer_list overload:
+	    // "'__begin_' is a private member of 'initializer_list_double'",
+	    // testinitlist / testinitlistclass on the darwin runner; the
+	    // libstdc++ vector defines its move ctor in-class, so linux never
+	    // met the shape until tests/testoutoflinectoroverload.mad).
 	    size_t same_name = 0;
 	    for ( Variable *cand : ddc->methods )
 	    {
 		FuncDef *cfd = cand && cand->data
 		    ? dynamic_cast<FuncDef *>(cand->type) : NULL;
-		if ( cfd && cfd->method_display_name == def.member_name )
+		if ( !cfd )
+		    continue;
+		if ( def_is_ctor )
+		{
+		    if ( cfd->is_member_template
+		      || !vector_contains_variable(ddc->ctors, cand) )
+			continue;
+		    size_t cand_params = cfd->parameters.empty()
+			? 0 : cfd->parameters.size() - 1;
+		    if ( def_arity == (size_t)-1 || cand_params == def_arity )
+			++same_name;
+		}
+		else if ( cfd->method_display_name == def.member_name )
 		    ++same_name;
 	    }
 	    std::vector<std::vector<TokenBase *> > pregions;
@@ -52530,9 +52553,10 @@ void Program::register_outofline_member_instantiations(
 		// instantiated ctor stayed declaration-only and bound to an
 		// external Itanium import nothing defines. Match a plain
 		// in-class-declared ctor by ctor-ness plus user-parameter
-		// arity; same-arity overloads differing only by type keep
-		// first-candidate-wins (the member-template arm has the same
-		// depth limit via its template-param count).
+		// arity, then — when sibling ctors share that arity — by the
+		// def's resolved parameter signature (def_sigs above, the
+		// same rule the non-ctor overload gate applies); a signature
+		// that could not be resolved keeps first-candidate-wins.
 		if ( cfd->is_member_template )
 		    continue;
 		if ( !vector_contains_variable(ddc->ctors, cand) )
@@ -52540,6 +52564,8 @@ void Program::register_outofline_member_instantiations(
 		size_t cand_params = cfd->parameters.empty()
 		    ? 0 : cfd->parameters.size() - 1;
 		if ( def_arity != (size_t)-1 && cand_params != def_arity )
+		    continue;
+		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
 		    continue;
 	    }
 	    else if ( def_is_ctor )

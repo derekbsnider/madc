@@ -1,0 +1,40 @@
+// libc++ vector shape: several one-parameter constructors declared in-class,
+// the copy and move constructors DEFINED out of class with noexcept and the
+// injected-class-name as the parameter type. Oracle g++ / clang++: 3 3 -1 9
+#include <initializer_list>
+#include <memory>
+#include <stdio.h>
+
+template<class T, class A = std::allocator<T> >
+struct Box {
+	typedef A allocator_type;
+	typedef unsigned long size_type;
+	T *b;
+	int n;
+	Box() noexcept : b(0), n(0) {}
+	explicit Box(const allocator_type& a) noexcept : b(0), n(9) {}
+	explicit Box(size_type k) : b(0), n((int)k) {}
+	Box(const Box& x);
+	Box(std::initializer_list<T> il) : b(0), n((int)il.size()) {}
+	Box(std::initializer_list<T> il, const allocator_type& a) : b(0), n((int)il.size()) {}
+	Box(Box&& x) noexcept;
+	Box(Box&& x, const allocator_type& a) : b(x.b), n(x.n) {}
+	int size() const { return n; }
+};
+
+template<class T, class A>
+inline Box<T, A>::Box(const Box& x) : b(x.b), n(x.n) {}
+
+template<class T, class A>
+inline Box<T, A>::Box(Box&& x) noexcept : b(x.b), n(x.n) { x.b = 0; x.n = -1; }
+
+int main()
+{
+	Box<double> a = {1.0, 2.0, 3.0};
+	Box<double> c(a);
+	Box<double> d(static_cast<Box<double>&&>(a));
+	std::allocator<double> al;
+	Box<double> e(al);
+	printf("%d %d %d %d\n", c.size(), d.size(), a.size(), e.size());
+	return 0;
+}
