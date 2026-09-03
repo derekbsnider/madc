@@ -3,8 +3,10 @@
 // namespace-scope function — even one the platform headers declare.
 //
 // Shape 1 (the darwin-host D4 reducer, testcopiedrefptrparam on libc++): a
-// member TEMPLATE calls a sibling member template `bind<U>(...)` while
-// <sys/socket.h> declares the global `::bind`. madc bound the global, the
+// member TEMPLATE calls a sibling member template `bind<U>(...)` while a
+// global `::bind` is declared — on the darwin runner <sys/socket.h>'s; here
+// a user declaration of the same shape, so the reducer runs on every
+// platform (mingw has no <sys/socket.h>). madc bound the global, the
 // instantiation died on the hidden-this arity and was kept as a silent
 // placeholder, and the program failed at link with an undefined
 // `Linker_int32_t__run`. Shape 2 is the plain-call form (`abs(-3)` is S::abs,
@@ -12,8 +14,10 @@
 // Oracle g++ / clang++: 1 / -6 -6
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/socket.h>
 #include <utility>
+
+int bind(int fd, const void *addr, unsigned len);
+int bind(int fd, const void *addr, unsigned len) { return fd + (addr ? 1 : 0) + (int)len; }
 
 template<typename T>
 struct Linker {
