@@ -30567,6 +30567,18 @@ void Program::set_class_type_alias(DataDefCLASS *owner,
 	return;
     if ( active_class_registration_journal )
 	active_class_registration_journal->record_type_alias_write(owner, name);
+    // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every class-scope
+    // alias write for a matching owner — the ONE setter, so it sees the
+    // typedef arm, the using-alias arm, the ClassPattern materializer and
+    // the forest restore alike (the restore-alias probe reports only the
+    // last of those).
+    {
+	static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
+	if ( mtp && *mtp && owner->name.find(mtp) != std::string::npos )
+	    fprintf(stderr, "MTIPROBE set-alias %s::%s -> %s\n",
+		    owner->name.c_str(), name.c_str(),
+		    type ? type->name.c_str() : "(null)");
+    }
     owner->type_aliases[name] = type;
 }
 
@@ -59774,6 +59786,22 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
     bool deduce_from_args = false;
     if ( !tc )
 	return NULL;
+    // Env-gated probe (MADC_DT_PROBE, the decltype family): every gate input
+    // of this lane, before any bail — a decltype alias that silently kept the
+    // 64-bit placeholder has to be read here, where the lane decides.
+    {
+	static const char *dtp = ::getenv("MADC_DT_PROBE");
+	if ( dtp && *dtp )
+	{
+	    FuncDef *pfd = dynamic_cast<FuncDef *>(tc->var.type);
+	    fprintf(stderr, "[dtprobe] fn-tpl-return callee=%s explicit=%zu"
+		    " uneval=%d params=%zu disp=%s ns=%s\n",
+		    tc->var.name.c_str(), tc->explicit_template_args.size(),
+		    unevaluated_operand_depth, tc->parameters.size(),
+		    pfd ? pfd->function_display_name.c_str() : "(no FuncDef)",
+		    pfd ? pfd->namespace_name.c_str() : "-");
+	}
+    }
     if ( tc->explicit_template_args.empty() )
     {
 	if ( unevaluated_operand_depth == 0 || tc->parameters.empty() )
