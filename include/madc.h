@@ -3728,9 +3728,14 @@ public:
     // `lhs <op> rhs` cases whose operator body must be instantiated because no
     // exported library symbol covers that operand shape.
     // Returns the deduced return class; *callee_out = the registered overload.
+    // `want`: the signature the caller's overload RANKING selected — only the
+    // retained template with that exact signature is instantiated (one
+    // [over.match.best] decision, not a second registration-order walk);
+    // NULL = no ranked winner, this lane's own candidate walk applies.
     DataDef *instantiate_free_operator_template(const std::string &opname,
 						TokenBase *lhs, TokenBase *rhs,
-						Variable **callee_out);
+						Variable **callee_out,
+						const FreeOperatorOverload *want = NULL);
     // Cfront lowering: when a binary class-operand operator resolves ONLY via
     // a retained operator template (no member operator, no exported free
     // shape), return a call node to the instantiated overload. NULL = not

@@ -57265,7 +57265,7 @@ static DataDefCLASS *class_or_base_with_template_head(DataDefCLASS *cls,
 static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	const std::string &opname, TokenBase *lhs, TokenBase *rhs,
-	Variable **callee_out)
+	Variable **callee_out, const Program::FreeOperatorOverload *want)
 {
     // Type parameters only, no packs: this path handles simple free-operator
     // templates whose operands can be matched from concrete argument types.
@@ -57287,6 +57287,19 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	return NULL;
     if ( ov.param_spellings.size() != 2 )
 	return NULL;
+    // The caller that RANKED the overload set (CirBuilder::
+    // std_free_operator_instantiation) names its winner: this candidate must
+    // BE that signature — the same declaration, extracted the same way — or
+    // it is not the one to instantiate. Without the hand-over the body served
+    // here was chosen a SECOND time, by this lane's registration-order walk,
+    // and could differ from the ranked winner ([over.match.best] is decided
+    // once). A caller with no ranked winner (the parser's own lowering, the
+    // tsubst re-resolution) passes NULL and keeps this lane's walk.
+    if ( want
+      && (ov.param_spellings != want->param_spellings
+	  || ov.return_spelling != want->return_spelling
+	  || ov.template_params != want->template_params) )
+	return NULL;
 #ifdef MADC_DBG_QCALL
     fprintf(stderr, "[FREEOP]  cand p0='%s' p1='%s' ret='%s'\n",
 	    ov.param_spellings[0].c_str(), ov.param_spellings[1].c_str(),
@@ -57302,7 +57315,18 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	std::string flat = spelling_strip_spaces(sp);
 	if ( flat.size() >= 2 && flat.compare(flat.size() - 2, 2, "&&") == 0 )
 	    return NULL;	// && overloads never take this path
-	DataDef *arg_dd = operands[i] ? operands[i]->datadef() : NULL;
+	// [conv.array]: a fixed-array operand (`wchar_t wa[]`) is a VALUE here
+	// and decays to pointer-to-element — Program::array_decay_pointer is
+	// the ONE owner of that rule (the cir ranking lane and the call-
+	// argument lanes use it). Typed as its bare ELEMENT, `wcout << wa`
+	// deduced _CharT = wchar_t for the single-character inserter and THAT
+	// body was served: the array's address passed as one wchar_t, the
+	// bad code point set badbit, and every later wcout line vanished
+	// (tests/teststreamwideops.mad on libc++, which exports no wchar_t
+	// inserter to pre-empt this route).
+	DataDef *arg_dd = pgm.array_decay_pointer(operands[i]);
+	if ( !arg_dd )
+	    arg_dd = operands[i] ? operands[i]->datadef() : NULL;
 	if ( !arg_dd )
 	    return NULL;
 	DataDef *arg_core = arg_dd;
@@ -57479,10 +57503,17 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 }
 
 DataDef *Program::instantiate_free_operator_template(const std::string &opname,
-	TokenBase *lhs, TokenBase *rhs, Variable **callee_out)
+	TokenBase *lhs, TokenBase *rhs, Variable **callee_out,
+	const FreeOperatorOverload *want_in)
 {
     const std::string suffix = "::" + opname;
     DataDef *result = NULL;
+    // `want_in` points into free_operator_overloads; a body parse below may
+    // grow that vector (ensure_free_overload_surfaces), so the walk compares
+    // against a COPY.
+    const FreeOperatorOverload want_copy = want_in ? *want_in
+						   : FreeOperatorOverload();
+    const FreeOperatorOverload *want = want_in ? &want_copy : NULL;
     // Env-gated probe (MADC_FREEOP_PROBE=<opname substring>) — the BODY half.
     // The W2 caller matched its candidate in free_operator_overloads (the
     // captured SIGNATURES); the body served here comes from fn_template_map
@@ -57518,14 +57549,16 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 #endif
 	    for ( size_t vi = 0; vi < vec.size(); ++vi )
 		if ( DataDef *ret = try_instantiate_free_operator_template(
-			*this, vec[vi], key, opname, lhs, rhs, callee_out) )
+			*this, vec[vi], key, opname, lhs, rhs, callee_out,
+			want) )
 		{ result = ret; return true; }
 	    return false;
 	});
     if ( _fop_on )
-	fprintf(stderr, "FOPBODY %s -> %s (keys=%zu candidates=%zu)\n",
+	fprintf(stderr, "FOPBODY %s -> %s (keys=%zu candidates=%zu want=%s)\n",
 		opname.c_str(), result ? "INSTANTIATED" : "NO BODY",
-		_fop_keys, _fop_cands);
+		_fop_keys, _fop_cands,
+		want ? want->param_spellings[1].c_str() : "(any)");
     return result;
 }
 

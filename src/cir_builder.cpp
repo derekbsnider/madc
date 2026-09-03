@@ -16872,7 +16872,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		{
 			Variable *callee = NULL;
 			DataDef *ret = m_prog->instantiate_free_operator_template(
-				mname, top->left, top->right, &callee);
+				mname, top->left, top->right, &callee, best);
 			if (!callee || !w2_is_scalar_return_datadef(ret))
 				best = NULL;
 			else
@@ -16931,8 +16931,11 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 					" -> body route\n", mname.c_str(),
 					sym.c_str());
 		}
+		// The ranked winner's OWN body — the parser lane instantiates
+		// that signature and no other (a second candidate walk there
+		// served the single-_CharT inserter for `wcout << wa`).
 		if (m_prog->instantiate_free_operator_template(
-			    mname, top->left, top->right, &bv) && bv)
+			    mname, top->left, top->right, &bv, best) && bv)
 			if (FuncDef *bfd = dynamic_cast<FuncDef *>(bv->type)) {
 				m_free_op_body_by_call[top] = bv;
 				m_free_op_inst_by_call[top] = bfd;
