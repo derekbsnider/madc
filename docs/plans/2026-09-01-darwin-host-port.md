@@ -768,6 +768,40 @@ SDK/cross facts).
   is derived from the husk's canonical template-id spelling at the ONE
   consult (pending_instantiation_from_canonical_identity).
 
+  **WAVE 5 LANDED (2026-09-03, b14a6e2c + 8211a7b2): the istringstream /
+  stringstream family = two frozen-forest defects, neither darwin-specific.**
+  (1) b14a6e2c — a forest-restored INCOMPLETE husk completes on demand from
+  its canonical identity: parseDeclaration's demand-completion consulted
+  pending_template_instantiations, a parse-time table minted only by the
+  live forward-instantiation arm and never frozen; the record is now derived
+  from the husk's canonical template-id spelling at the one consult
+  (pending_instantiation_from_canonical_identity). (2) 8211a7b2 — a restored
+  POLYMORPHIC class is the parsed class: secondary_vptr_owners refilled from
+  the restored vtable groups (the struct emitter named secondary vptr fields
+  from the never-frozen layout list while ctors stamped from the frozen
+  groups: `struct has no member __vptr_16` in basic_iostream<char>'s ctor);
+  the flat vtable_slots list and virtual_methods set now FREEZE as defrec
+  word runs (format 41 -> 42; every restored class had answered
+  vtable_slot("~$deleting") < 0 — no deleting dtor, no `delete p` dispatch —
+  and is_virtual_method() false); bound user-header method prototypes
+  splice before the Pass-1.5 vtables that take their addresses. Reducers:
+  tests/testistreamctorarg.mad (oracle `41 82 ok`) and forest_bind_gate
+  case `secvptr` — the FIRST polymorphic bind case (the 26 others had no
+  virtuals), which fails on the pre-fix binary exactly as the darwin family
+  did. The linux libstdc++ pack carried the vptr-field hole silently (pad
+  filler kept offsets; libstdc++ exports every stream ctor body). Measured
+  on the darwin cross freezer with the pack bound: all eight family tests
+  emit and pass clang -fsyntax-only; the owner's M-series Mac ran the
+  build-29 darwin binary (tmp/logs/mac-red-29.log): testistreamctorarg
+  `41 82 ok` in BOTH dialect (pack-bound) and --std=c++17 (live) mode,
+  testsstream / testmanip / teststreambool at oracle output, teststreamwideops
+  all five lines, every wave-3/4 reducer unchanged. Env probes kept:
+  MADC_DECL_PROBE (ctor-call branch inputs), MADC_LAYOUT_PROBE (every
+  compute_layout run of a class).
+  Lesson for the runner measurement: the pack is frozen for the DIALECT
+  config word, so a `--std=c++17` run with --forest-bind is a LIVE parse —
+  "passes under c++17" meant "passes live", not a strict-mode difference.
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
