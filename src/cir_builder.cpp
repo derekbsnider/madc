@@ -29996,6 +29996,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	// prototypes they reference (Pass 1) and before the function definitions
 	// (Pass 2) that initialize __vptr from them. Iterate struct_map once more,
 	// deduped by class pointer.
+	// Every Pass-1 prototype is in top_list at this point; the vtable
+	// initializers below take function ADDRESSES as global-init constants,
+	// which c2mir requires declared first. Bound (forest) user-header method
+	// prototypes are produced later, by the eager block before Pass 2 — they
+	// splice in HERE, not at the tail, or a restored polymorphic class's
+	// vtable named its own loaded virtuals before their declarations
+	// ("undeclared identifier FbgA___dtor" — forest_bind_gate [secvptr]).
+	node_t pass1_proto_anchor = c2mir_op_tail(c2m, top_list);
 	std::set<DataDefCLASS *> emitted_vtables;
 	for (auto &kv : prog->struct_map) {
 		DataDefCLASS *cdd = as_user_class(kv.second);
@@ -30542,10 +30550,16 @@ node_t CirBuilder::translate_module(Program *prog)
 					forest_protos.push_back(proto);
 			}
 		}
-		// Prototypes ahead of all definitions (matching the live proto pass), then
-		// the definitions at the front of the def list (header-before-.cpp order).
-		for (size_t i = 0; i < forest_protos.size(); ++i)
-			append(top_list, forest_protos[i]);
+		// Prototypes ahead of all definitions (matching the live proto pass) —
+		// spliced at the Pass-1 tail, BEFORE the Pass-1.5 vtable initializers
+		// that take their addresses — then the definitions at the front of the
+		// def list (header-before-.cpp order).
+		if (!forest_protos.empty()) {
+			node_t fp_list = list();
+			for (size_t i = 0; i < forest_protos.size(); ++i)
+				append(fp_list, forest_protos[i]);
+			c2mir_op_splice_after(c2m, top_list, pass1_proto_anchor, fp_list);
+		}
 		func_def_nodes.insert(func_def_nodes.begin(),
 				      forest_bodies.begin(), forest_bodies.end());
 	}

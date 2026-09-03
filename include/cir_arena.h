@@ -323,6 +323,18 @@ struct defrec {
 	// split into two words like constvalrec's value.
 	uint32_t carray_count_lo;
 	uint32_t carray_count_hi;
+	// CLASS polymorphic NAME state (v42): the flat inheritance-merged
+	// vtable_slots list (word run of name ids, slot order) and the
+	// virtual_methods name set (word run of name ids). Both are parse-time
+	// state build_vtable_groups and the override/dispatch predicates read;
+	// only the DERIVED groups were frozen, so a restored class answered
+	// vtable_slot("~$deleting") < 0 (no deleting dtor synthesized, no
+	// dispatch through `delete p`) and is_virtual_method() false (a
+	// consumer-side derived class never saw the override).
+	uint32_t vslot_begin;	// word run: DataDefCLASS::vtable_slots name ids
+	uint32_t vslot_count;
+	uint32_t vmeth_begin;	// word run: DataDefCLASS::virtual_methods keys
+	uint32_t vmeth_count;
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

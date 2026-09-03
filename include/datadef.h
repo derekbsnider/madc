@@ -1476,6 +1476,10 @@ public:
     };
     std::vector<VtableGroup> vtable_groups;
     void build_vtable_groups(); // defined in parser.cpp; run after compute_layout
+    // The inverse of build_vtable_groups' secondary arm: refill the layout-time
+    // secondary_vptr_owners from RESTORED vtable_groups (frozen forest: the
+    // groups are frozen, the owners list is not). Defined in parser.cpp.
+    void secondary_vptr_owners_from_groups();
     // Resolve a virtual method name to its (group, in-group slot). Returns false if
     // not a virtual method of any group.
     bool find_vslot(const std::string &m, size_t &group, int &slot) const {

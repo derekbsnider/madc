@@ -1515,10 +1515,44 @@ sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer
 rm -f "$sb_snap" "$sb_gcc"
 echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
 
+# --- case: secvptr — a class with a SECONDARY polymorphic base restored from the
+#     grove, whose INLINE ctor is loaded and emitted. The struct emitter names
+#     the secondary vptr fields from the layout-time secondary_vptr_owners list;
+#     the ctor stamps them from vtable_groups. Only the groups are frozen, so a
+#     restored class refills the list from them (secondary_vptr_owners_from_groups).
+#     Without the refill the bound `struct C` lacked `__vptr_16` and the loaded
+#     ctor's stamp of it was a c2mir "struct has no member" error (libc++
+#     basic_iostream<char>, the darwin-host istringstream family). `pb->fb()`
+#     dispatches through the secondary vptr, so a wrong stamp is a wrong answer.
+cat > tmp/fbgate_secvptr.h <<'EOF'
+#ifndef FBGATE_SECVPTR_H
+#define FBGATE_SECVPTR_H
+struct FbgA { long a; FbgA() : a(1) {} virtual ~FbgA() {} virtual int fa() { return 10; } };
+struct FbgB { long b; FbgB() : b(2) {} virtual ~FbgB() {} virtual int fb() { return 20; } };
+struct FbgC : FbgA, FbgB { long c; FbgC() : c(3) {} int fb() { return 21; } };
+#endif
+EOF
+cat > tmp/fbgate_secvptr_producer.cpp <<'EOF'
+#include <fbgate_secvptr.h>
+int main() { FbgC x; return x.fa(); }
+EOF
+cat > tmp/fbgate_secvptr_consumer.cpp <<'EOF'
+#include <fbgate_secvptr.h>
+#include <cstdio>
+int main()
+{
+    FbgC x;
+    FbgB *pb = &x;
+    printf("fb=%d fa=%d sum=%ld sz=%d\n", pb->fb(), x.fa(), x.a + x.b + x.c, (int)sizeof(FbgC));
+    return 0;
+}
+EOF
+run_case secvptr "fb=21 fa=10 sum=6 sz=40"
+
 # NOTE: this tally is hand-maintained, and that bit me — the [ldouble] case ran
 # and passed while the summary still said 25/25, so the line UNDERSTATED
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 26/26 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
+echo "forest_bind_gate: GREEN 27/27 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr"
 exit 0

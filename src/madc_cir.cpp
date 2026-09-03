@@ -3070,6 +3070,22 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		r.vgroup_count = (uint32_t)vgs.size();
 		for (size_t g = 0; g < vgs.size(); ++g)
 			forest_arena.add_payload(vgs[g]);
+		// --- v42: the flat vtable_slots list and the virtual_methods name set —
+		//     the parse-time polymorphic NAME state the groups were derived
+		//     from (see defrec). Word runs of interned names.
+		r.vslot_begin = (uint32_t)forest_arena.payload.size();
+		r.vslot_count = (uint32_t)cdd->vtable_slots.size();
+		for (size_t k = 0; k < cdd->vtable_slots.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->vtable_slots[k].c_str()));
+		r.vmeth_begin = (uint32_t)forest_arena.payload.size();
+		r.vmeth_count = 0;
+		for (std::map<std::string, bool>::const_iterator vm = cdd->virtual_methods.begin();
+		     vm != cdd->virtual_methods.end(); ++vm) {
+			if (!vm->second)
+				continue;
+			forest_arena.add_word(forest_arena.strings.intern(vm->first.c_str()));
+			++r.vmeth_count;
+		}
 
 		// --- class-scope name maps (v20): type aliases, static member types,
 		//     static-const values. Resolve every type-id FIRST (lazy stamping

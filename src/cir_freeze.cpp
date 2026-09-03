@@ -2974,6 +2974,35 @@ void CirFrozenForest::materialize_pass()
 				}
 				cdd->vtable_groups.push_back(g);
 			}
+			// v42: the flat vtable_slots list and the virtual_methods
+			// name set — the parse-time state the groups were derived
+			// from. Pass 1.45/1.8 gate the deleting dtor on
+			// vtable_slot("~$deleting"), `delete p` dispatches on it,
+			// and a consumer-side derived class detects an override
+			// through is_virtual_method(): all four answered "not
+			// virtual" for every restored class before this run.
+			cdd->vtable_slots.clear();
+			for (uint32_t sl = 0; sl < r.vslot_count; ++sl) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.vslot_begin, sl, nid))
+					break;
+				const char *sn = a.c_str(nid);
+				if (sn)
+					cdd->vtable_slots.push_back(sn);
+			}
+			for (uint32_t vm = 0; vm < r.vmeth_count; ++vm) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.vmeth_begin, vm, nid))
+					break;
+				const char *vn = a.c_str(nid);
+				if (vn)
+					cdd->virtual_methods[vn] = true;
+			}
+			// The layout-time secondary owners list is not in the
+			// record; the groups it produced are. Refill it so the
+			// struct emitter names every secondary vptr field the
+			// restored constructors stamp (LOADED == parsed).
+			cdd->secondary_vptr_owners_from_groups();
 			bool bok = true;
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
 				madc::dis::baserec br;

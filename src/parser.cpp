@@ -19906,6 +19906,28 @@ void DataDefCLASS::compute_layout()
     if ( trait_is_empty(this) && size == 0 )
 	size = 1;
     class_align = maxalign;   // cache the TRUE class alignment for alignment()
+    // Env-gated probe (MADC_LAYOUT_PROBE=<class-name substring>): every layout
+    // run of a matching class — the object identity, its sizes, and each
+    // base's contribution. The question it answers: do two different class
+    // objects (or two runs) carry one name with different base offsets? (A
+    // struct emitted with `__vptr_24` beside a ctor stamping `__vptr_16` —
+    // both read this one computation, so they can only disagree across
+    // objects or runs.)
+    {
+	static const char *_lp = ::getenv("MADC_LAYOUT_PROBE");
+	if ( _lp && *_lp && name.find(_lp) != std::string::npos )
+	{
+	    fprintf(stderr, "LAYOUT %s this=%p nvsize=%zu size=%zu own_block_off=%zu"
+		    " complete=%d members=%zu\n", name.c_str(), (void *)this,
+		    nvsize, size, own_block_off, (int)is_complete, members.size());
+	    for ( auto &bs : bases )
+		fprintf(stderr, "LAYOUT   base %s this=%p nvsize=%zu size=%zu"
+			" offset=%zu virtual=%d primary=%d\n",
+			bs.base ? bs.base->name.c_str() : "(null)", (void *)bs.base,
+			bs.base ? bs.base->nvsize : 0, bs.base ? bs.base->size : 0,
+			bs.offset, (int)bs.is_virtual, (int)bs.is_primary);
+	}
+    }
 }
 
 // Rewrite each member's final offset from its origin: own members (origin -1, or
@@ -20017,6 +20039,38 @@ void DataDefCLASS::build_vtable_groups()
 	ap += 2 + gvbs.size();   // this group's prologue precedes its address point
 	g.addr_point = ap;
 	ap += g.slots.size();
+    }
+}
+
+// The inverse of build_vtable_groups' secondary arm, for a class whose
+// vtable_groups were RESTORED from a frozen forest while the layout-time
+// secondary_vptr_owners list was not (compute_layout fills it; the record
+// carries the groups it derives, not the list). Every group after the primary
+// that is not a virtual base's own group at its hoisted offset is a secondary
+// polymorphic base subobject at its offset — exactly the entries
+// build_vtable_groups turned into groups. Two consumers read the two forms:
+// the struct emitter names the secondary vptr FIELDS from this list
+// (`__vptr_<off>`), the ctor stamps them from the groups. Without the refill
+// a restored basic_iostream<char> emitted vptr fields at 0 and 24 (the
+// basic_ios vbase) but none at 16 for its basic_ostream base, while its
+// restored constructor stamped `__vptr_16` — c2mir "struct has no member
+// __vptr_16" on libc++ (no exported constructor body pre-empts the emission;
+// the darwin-host D4 istringstream family). The linux pack carried the same
+// hole silently: the pad filler kept every offset right and no emitted body
+// named the missing field.
+void DataDefCLASS::secondary_vptr_owners_from_groups()
+{
+    secondary_vptr_owners.clear();
+    for ( size_t gi = 1; gi < vtable_groups.size(); ++gi )
+    {
+	const VtableGroup &g = vtable_groups[gi];
+	if ( !g.owner )
+	    continue;
+	std::map<DataDefCLASS *, size_t>::const_iterator vi =
+	    vbase_offset.find(g.owner);
+	if ( vi != vbase_offset.end() && vi->second == g.this_offset )
+	    continue;	// the vbase's own group (build_vtable_groups' last arm)
+	secondary_vptr_owners.push_back({g.owner, g.this_offset});
     }
 }
 
