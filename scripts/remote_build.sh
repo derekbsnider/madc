@@ -331,7 +331,16 @@ for stage in $stages; do
 		#   MADC_SKIP_EXT      BOTH domains, so .win64_skip AND .wine64_skip
 		#                      fixtures apply (it is a whitespace-split LIST).
 		#   WINEDEBUG=-all     otherwise wine's chatter buries the summary.
-		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		#   </dev/null >/dev/null 2>&1 on the wineserver: a persistent
+		#                      server spawned by THIS stage (no server yet —
+		#                      a fresh container) inherits the ssh session's
+		#                      pipes and holds them open forever, so the
+		#                      stage never returns although the suite has
+		#                      printed its summary (9 hours lost on
+		#                      2026-09-03 after a power failure). When a
+		#                      server already runs, wineserver -p exits at
+		#                      once and the redirect is inert.
+		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'
