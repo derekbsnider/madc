@@ -22631,6 +22631,45 @@ void Program::thaw_all_frozen_templates()
     fn_template_decl_map.for_each(thaw_fn_vec);		/* thaw-owner */
 }
 
+// A scoped spelling as a C identifier fragment (`std::__1::__fs` ->
+// `std____1____fs`, `ns::fn` -> `ns__fn`): the emitted-identity rename the
+// block-scope, sibling-namespace and global-reclaim arms of TokenSTRUCT::parse
+// / TokenCLASS::parse apply, and the forest restore mirrors.
+static std::string flat_scope_identifier(const std::string &scoped)
+{
+    std::string flat = scoped;
+    for ( size_t fi = 0; fi < flat.size(); ++fi )
+	if ( flat[fi] == ':' )
+	    flat[fi] = '_';
+    return flat;
+}
+
+// The live sibling-namespace rule ([basic.scope.namespace]; the
+// "Sibling-NAMESPACE same-tag definitions" arms of TokenSTRUCT::parse and
+// TokenCLASS::parse) applied to a RESTORED aggregate: the bare tag is already
+// the flat key of a COMPLETE aggregate from a DIFFERENT scope — the user's
+// global `class path` parsed before libc++'s std::__1::__fs::filesystem::path
+// was demand-restored (the darwin pack, testclassproto) — so this one keeps
+// its namespace registration only and takes a distinct emitted identity.
+// Registering the bare key would clobber the holder for every later
+// unqualified use, and two `struct path` definitions in one c2mir TU resolve
+// every member reference against whichever was emitted first (the emission's
+// name dedup kept libc++'s: `no member named 'n' in 'struct path'`). A
+// same-spelling twin (the v40 live-wins seam) and an incomplete forward
+// declaration keep today's overwrite.
+static bool restored_aggregate_yields_bare_tag(Program &pgm,
+					       const std::string &tag,
+					       DataDefSTRUCT *sdd)
+{
+    if ( !sdd || sdd->canonical_cpp_spelling().empty() )
+	return false;
+    datadef_map_citer prior = pgm.struct_map.find(tag);
+    DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+	? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+    return prior_sd && prior_sd != sdd && prior_sd->is_complete
+	&& prior_sd->canonical_cpp_spelling() != sdd->canonical_cpp_spelling();
+}
+
 void Program::forest_restore_decls(CirFrozenForest &forest)
 {
     ForestWorkFrame _fw(&_forest_work_seconds, &_forest_work_depth);
@@ -23014,7 +23053,16 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    << " (restored object is not a DataDefSTRUCT)" << std::endl);
 		continue;
 	    }
-	    struct_map.set(name, sdd);
+	    // The bare surfaces (struct_map key, flat datatype staging) belong
+	    // to a complete same-tag aggregate from another scope already:
+	    // sibling-namespace rule, restore side (see the helper).
+	    const bool yields_bare =
+		restored_aggregate_yields_bare_tag(*this, name, sdd);
+	    if ( yields_bare )
+		sdd->name = flat_scope_identifier(rt.ns ? rt.ns : "")
+			  + "__" + name;
+	    else
+		struct_map.set(name, sdd);
 	    // Live parity: a parsed tag is ALSO a bare type name (struct≡class
 	    // — `union myu {...};` makes `myu v;` resolve with no typedef), so
 	    // the restore stages the flat datatype registration exactly like
@@ -23023,11 +23071,14 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 	    // skips as already-resolvable, so NO typedef record exists) left
 	    // the bound name unresolvable (testservent's sigevent_t.h parse).
 	    TokenDataType *tdt = new TokenDataType(rt.name, *sdd);
-	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
-	    forest_pending_datatype_names.insert(name);
+	    if ( !yields_bare )
+	    {
+		forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+		forest_pending_datatype_names.insert(name);
+	    }
 	    TopDecl td;
 	    td.kind = sdd->union_layout ? DeclKind::dkUnion : DeclKind::dkStruct;
-	    td.name = name;
+	    td.name = yields_bare ? sdd->name : name;
 	    td.dd = sdd;
 	    td.forest_system = declared_system(rt.ns, name);
 	    top_decls.push_back(td);
@@ -23064,10 +23115,23 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		    << " (restored object is not a DataDefCLASS)" << std::endl);
 		continue;
 	    }
-	    struct_map.set(name, cdd);
+	    // Sibling-namespace rule, restore side (see the helper): a bare
+	    // tag held by a complete aggregate from another scope stays with
+	    // its holder; this class registers in its namespace only and
+	    // takes a distinct emitted identity.
+	    const bool yields_bare =
+		restored_aggregate_yields_bare_tag(*this, name, cdd);
+	    if ( yields_bare )
+		cdd->name = flat_scope_identifier(rt.ns ? rt.ns : "")
+			  + "__" + name;
+	    else
+		struct_map.set(name, cdd);
 	    TokenDataType *tdt = new TokenDataType(rt.name, *cdd);
-	    forest_pending_datatypes.push_back(std::make_pair(name, tdt));
-	    forest_pending_datatype_names.insert(name);
+	    if ( !yields_bare )
+	    {
+		forest_pending_datatypes.push_back(std::make_pair(name, tdt));
+		forest_pending_datatype_names.insert(name);
+	    }
 	    if ( ns_ok )
 		register_in_namespace(rt.ns, name, cdd, tdt);
 	    // Stage every restored METHOD for program registration, exactly as a
@@ -41969,11 +42033,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// arms above and below apply).
 		pgm.register_scoped_struct_tag_shadow(scoped);
 		block_tag_shadowed = true;
-		std::string fn_flat = pgm.cur_func_name;
-		for ( size_t fi = 0; fi < fn_flat.size(); ++fi )
-		    if ( fn_flat[fi] == ':' )
-			fn_flat[fi] = '_';
-		dds->name = fn_flat + "__b"
+		dds->name = flat_scope_identifier(pgm.cur_func_name) + "__b"
 		    + std::to_string(++pgm.block_struct_tag_seq)
 		    + "__" + tag->spelling();
 	    }
@@ -41995,11 +42055,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		  && prior_sd->canonical_cpp_spelling() != here_spelling )
 		{
 		    tag_store_key = pgm.current_namespace() + "::" + tag->spelling();
-		    std::string ns_flat = pgm.current_namespace();
-		    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
-			if ( ns_flat[fi] == ':' )
-			    ns_flat[fi] = '_';
-		    dds->name = ns_flat + "__" + tag->spelling();
+		    dds->name = flat_scope_identifier(pgm.current_namespace())
+			      + "__" + tag->spelling();
 		}
 	    }
 	    // The MIRROR case: a GLOBAL-scope definition whose bare tag is
@@ -45718,11 +45775,50 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( prior_sd && prior_sd->is_complete
 	  && prior_sd->canonical_cpp_spelling() != here_spelling )
 	{
-	    std::string ns_flat = pgm.current_namespace();
-	    for ( size_t fi = 0; fi < ns_flat.size(); ++fi )
-		if ( ns_flat[fi] == ':' )
-		    ns_flat[fi] = '_';
-	    pgm.set_token_spelling(tag, ns_flat + "__" + class_source_name);
+	    pgm.set_token_spelling(tag,
+		flat_scope_identifier(pgm.current_namespace()) + "__"
+		+ class_source_name);
+	}
+    }
+
+    // The MIRROR of the sibling-namespace re-key above: a GLOBAL-scope class
+    // definition whose bare tag is held by a flat-registered NAMESPACE-scoped
+    // prior — libc++'s std::__1::__fs::filesystem::path served from the darwin
+    // pack under the bare convenience key, then the user's own `class path`
+    // (testclassproto); or `namespace lib { namespace fs { class path{}; } }`
+    // followed by a global `class path` (tests/testnamespaceclasscollide).
+    // [basic.scope.namespace]: both declarations are legal, and unqualified
+    // lookup at global scope must find ::path — so the GLOBAL definition takes
+    // the bare key and the prior RELOCATES to its canonical scoped key (the
+    // registry never erases; in-namespace references resolve through the
+    // per-namespace registries, not this flat convenience slot). The EMITTED
+    // identity must stay distinct too: two same-name struct definitions in one
+    // c2mir TU cross-resolve member references (the pack case emitted libc++'s
+    // `struct path { __pn_ }` and the user's constructors then read
+    // `__this->n` off it: "struct has no member n"). The prior's records
+    // already carry its name, so the one being defined NOW takes the rename —
+    // the same rule TokenSTRUCT::parse applies (`__madc_global__` + tag). A
+    // true global redefinition still throws below: its prior's canonical
+    // spelling IS the bare tag (or empty).
+    bool global_reclaims_bare = false;
+    std::string class_emitted_name = tag->spelling();
+    if ( pgm.current_namespace().empty() && !nested_owner_class
+      && !has_local_class_identity )
+    {
+	datadef_map_citer prior = pgm.struct_map.find(tag->spelling());
+	DataDefSTRUCT *prior_sd = prior != pgm.struct_map.end()
+	    ? dynamic_cast<DataDefSTRUCT *>(prior->second) : NULL;
+	if ( prior_sd && prior_sd->is_complete
+	  && !prior_sd->canonical_cpp_spelling().empty()
+	  && prior_sd->canonical_cpp_spelling() != tag->spelling() )
+	{
+	    pgm.pack_tap_struct(prior_sd->canonical_cpp_spelling());
+	    pgm.struct_map.set(prior_sd->canonical_cpp_spelling(), prior_sd);
+	    global_reclaims_bare = true;
+	    class_emitted_name = std::string("__madc_global__") + tag->spelling();
+	    DBG(cout << "TokenCLASS::parse() global '" << tag->spelling()
+		<< "' reclaims the bare key from '"
+		<< prior_sd->canonical_cpp_spelling() << "'" << endl);
 	}
     }
 
@@ -45731,7 +45827,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     bool completing_forward_decl = false;
     DataDefCLASS *ddc = NULL;
     dmi = pgm.struct_map.find(tag->spelling());
-    if ( dmi != pgm.struct_map.end() )
+    if ( dmi != pgm.struct_map.end() && !global_reclaims_bare )
     {
 	DataDefCLASS *fwd = dynamic_cast<DataDefCLASS *>(dmi->second);
 	if ( has_local_class_identity && fwd )
@@ -45810,7 +45906,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw(tag) << "Class '" << tag->spelling() << "' already defined" << flush;
     }
     if ( !ddc )
-	ddc = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+	ddc = new DataDefCLASS(class_emitted_name, 0, DataType::dtRESERVED);
     // Only ever SET it: completing a forward declaration reuses the incomplete
     // class object, and a re-entered definition must not un-final it.
     if ( head_final )

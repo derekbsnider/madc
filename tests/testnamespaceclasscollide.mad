@@ -1,0 +1,23 @@
+// Two classes with the same bare name — one namespaced, one GLOBAL, defined
+// in that order and both used: distinct types, distinct emitted structs, and
+// the global one owns the bare name at global scope. Oracle g++ / clang++:
+// 7 40 1
+#include <stdio.h>
+namespace lib { namespace fs {
+	class path { public: int m; path() : m(1) {} };
+} }
+class path {
+public:
+	int n;
+	path() { n = 7; }
+	path(int v) { n = v; }
+};
+
+int main()
+{
+	path a;
+	path b(40);
+	lib::fs::path p;
+	printf("%d %d %d\n", a.n, b.n, p.m);
+	return 0;
+}
