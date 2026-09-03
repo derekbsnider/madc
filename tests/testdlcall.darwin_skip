@@ -1,0 +1,1 @@
+dlopen("libc.so.6") names the glibc soname; darwin has no libc.so.6 (libSystem is in the dyld cache) — the test is linux-domain by construction

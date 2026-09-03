@@ -1,0 +1,1 @@
+redeclares int16_t/int32_t/int64_t (unsigned) where Apple's <stdio.h> already typedefs the signed fixed-width names; clang on macOS rejects the same source — glibc's <stdio.h> declares none of them
