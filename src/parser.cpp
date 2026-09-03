@@ -65979,6 +65979,22 @@ fnptr_decl_arm_head:
 	    Throw(tb) << "Unexpected end of data in list initializer" << flush;
     }
 
+    // Env-gated probe (MADC_DECL_PROBE=<type-name substring>): the ctor-call
+    // branch's inputs for a matching declarator — the dd's basetype and class
+    // identity, and the two paren-group verdicts that can send `T x(args)` to
+    // the function-declaration route.
+    if ( const char *dp = ::getenv("MADC_DECL_PROBE") )
+	if ( *dp && decl_type && nt
+	  && decl_type->name.find(dp) != std::string::npos )
+	    fprintf(stderr, "[decl] id='%s' type='%s' bt=%d class=%d ref=%d "
+		    "dims=%zu nt=%d fdef=%d pdc=%d\n", id.c_str(),
+		    decl_type->name.c_str(), (int)decl_type->basetype(),
+		    decl_type->as_class_dd() ? 1 : 0, (int)ret_is_ref,
+		    arr_dims.size(), (int)nt->id(),
+		    nt->id() == TokenID::tkOpBrk
+			? (int)paren_group_is_function_def() : -1,
+		    nt->id() == TokenID::tkOpBrk
+			? (int)paren_group_can_be_param_decl_clause() : -1);
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // AND direct-list-initialization: ClassName var{arg1, arg2, ...} —
     // [dcl.init.list]/3: when the class has constructors, the braced list's
