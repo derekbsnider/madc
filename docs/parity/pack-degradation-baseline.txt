@@ -62,8 +62,8 @@
 68 linux pack-errors
 45 linux dk-none
 0 linux closure-drops
-93 win64 pack-errors
-55 win64 dk-none
+68 win64 pack-errors
+46 win64 dk-none
 0 win64 closure-drops
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
@@ -128,8 +128,9 @@
 # and vector<int>: mixed wide keys linux 87 -> 0, darwin 113 -> 0); the
 # overload scorer compares scalar identity, not rawtype; and an explicit
 # specialization on a pointer to a builtin (N<int*>) keys through the one
-# builtin table. win64 is left at its 93/55 line until its lane re-measures
-# (a ratchet only moves on a measured run; IMPROVED is not a failure).
+# builtin table. win64 measured by its own release-win pack run in the wave-3
+# battery (2026-09-03): 93 -> 68 pack-errors, dk-none 55 -> 46 — the same
+# libstdc++ corpus as linux (mingw ships 13.2), the same classes cleared.
 # darwin 49 -> 52 within the same wave (the 64 -> 66 precedent again): once
 # the one builtin table names long double and __int128 by their own dds,
 # hash<long double>, hash<__int128> and hash<unsigned __int128> stop
