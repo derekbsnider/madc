@@ -53735,14 +53735,15 @@ static bool skipped_template_body_is_inline_destroy(
 static bool skipped_template_body_is_inline_identity_refcast(
 	const std::vector<TokenBase *> &tokens, const std::string &name)
 {
-    // Declarator: the function-name token immediately before '('.
-    size_t lparen = tokens.size();
-    for ( size_t i = 0; i < tokens.size(); ++i )
-	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
-	  && skipped_template_function_name(tokens[i]) == name
-	  && i + 1 < tokens.size() && tokens[i + 1]
-	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
-	{ lparen = i + 1; break; }
+    // ONE declarator locator (see try_instantiate_namespace_fn_template): the
+    // caller's `name` must be the declarator this locator finds — a same-named
+    // token inside a leading decltype return is not it.
+    std::string located;
+    size_t name_idx =
+	skipped_template_function_declarator_name_index(tokens, &located);
+    if ( name_idx >= tokens.size() || located != name )
+	return false;
+    size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
     if ( lparen >= tokens.size() )
 	return false;
     // Exactly one parameter (no top-level comma); its NAME = last identifier.
