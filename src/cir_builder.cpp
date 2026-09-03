@@ -14074,6 +14074,105 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	return arg->datadef();
 }
 
+// [basic.lval] value category of a constructor ARGUMENT, as far as the tree
+// says — the input [over.ics.rank]/3.2.3 needs to prefer `T&&` over
+// `const T&` for an rvalue and to refuse `T&&` for an lvalue. Only the
+// unambiguous shapes answer; everything else is Unknown and keeps today's
+// ranking (no preference, no refusal):
+//   std::move(x)                -> Rvalue (an identity forward with no explicit
+//                                  template argument is move)
+//   std::forward<T>(x), T non-ref -> Rvalue; T a reference -> Unknown (DataDefREF
+//                                  spells `&` and `&&` alike)
+//   a call returning by value    -> Rvalue (prvalue)
+//   static_cast<T&&>(x)          -> Rvalue (xvalue — the move-ctor test shape
+//                                  libc++ writes out of class); static_cast<T&>
+//                                  -> Lvalue; a cast to a non-reference type
+//                                  -> Rvalue (functional / C-style: prvalue)
+//   a named variable / member    -> Lvalue (a named rvalue reference too)
+CirBuilder::CtorArgCategory CirBuilder::ctor_arg_value_category(TokenBase *arg)
+{
+	if (!arg)
+		return cacUnknown;
+	if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(arg)) {
+		if (identity_forward_operand(fw)) {
+			if (fw->explicit_template_args.empty())
+				return cacRvalue;
+			DataDef *t = fw->explicit_template_args[0];
+			return (t && !t->is_reference()) ? cacRvalue : cacUnknown;
+		}
+		FuncDef *fd = call_target_funcdef(fw);
+		if (fd && !fd->returns_reference()
+		    && !fd->return_value_type().is_reference())
+			return cacRvalue;
+		return cacUnknown;
+	}
+	if (TokenCallMethod *cm = dynamic_cast<TokenCallMethod *>(arg)) {
+		FuncDef *fd = dynamic_cast<FuncDef *>(cm->var.type);
+		if (fd && !fd->returns_reference()
+		    && !fd->return_value_type().is_reference())
+			return cacRvalue;
+		return cacUnknown;
+	}
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg)) {
+		// [expr.static.cast]/1,4 ([expr.cast] for the C-style form): a
+		// cast to a reference type yields an lvalue (`T&`) or an xvalue
+		// (`T&&`); a cast to a non-reference type yields a prvalue.
+		// DataDefREF spells both reference kinds `&`, so the parse
+		// records which one the source wrote (TokenCast::to_rvalue_ref).
+		if (!tc->cast_type || !tc->cast_type->is_reference())
+			return cacRvalue;
+		return tc->to_rvalue_ref ? cacRvalue : cacLvalue;
+	}
+	if (dynamic_cast<TokenVar *>(arg) || dynamic_cast<TokenMember *>(arg))
+		return cacLvalue;
+	return cacUnknown;
+}
+
+// Parameter i of `fd` is a CONCRETE rvalue reference (`T&&`, T not one of the
+// constructor template's own parameters): DataDefREF spells `&` for both
+// reference kinds, so the captured source spelling is the only carrier (the
+// same discipline is_nonconst_lref_param and the mangler use). A FORWARDING
+// reference (`_Up&&` / `_Args&&...` on a member-template ctor — libc++'s
+// __compressed_pair(_T1&&, _T2&&), std::pair(_U1&&, _U2&&), every node
+// construction behind emplace / _M_emplace_hint_unique) binds an lvalue too
+// ([temp.deduct.call]/3 deduces `_Up` as `U&`), so it is not rvalue-only and
+// keeps today's ranking: build-33 refused every lvalue to those and left
+// std::map / vector<T>::push_back with no viable constructor.
+static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi)
+{
+	if (!fd || pi >= fd->param_cpp_spellings.size())
+		return false;
+	// An INSTANCE of a member-template constructor (tsubst_source links it
+	// to its pattern) has no parameter left to judge: deduction against
+	// this very argument list formed its parameter types ([temp.deduct.call]
+	// — an lvalue deduces `U` as `U&`, and the substituted spelling reads
+	// `tag*&&`, the reference's DataDef name plus the pattern's `&&`), so a
+	// `&&` here is the forwarding reference, already bound. Judging it as a
+	// concrete rvalue reference refused the lvalue that deduced it
+	// (tests/testmembertmplctor: "no matching constructor for box_int32_t(tag)").
+	if (fd->tsubst_source)
+		return false;
+	std::string sp = fd->param_cpp_spellings[pi];
+	while (!sp.empty() && sp[sp.size() - 1] == ' ')
+		sp.erase(sp.size() - 1);
+	if (sp.size() >= 3 && sp.compare(sp.size() - 3, 3, "...") == 0) {
+		sp.erase(sp.size() - 3);
+		while (!sp.empty() && sp[sp.size() - 1] == ' ')
+			sp.erase(sp.size() - 1);
+	}
+	if (sp.size() < 2 || sp.compare(sp.size() - 2, 2, "&&") != 0)
+		return false;
+	if (fd->is_member_template || !fd->template_param_names.empty()) {
+		std::string base = sp.substr(0, sp.size() - 2);
+		while (!base.empty() && base[base.size() - 1] == ' ')
+			base.erase(base.size() - 1);
+		for (size_t t = 0; t < fd->template_param_names.size(); t++)
+			if (fd->template_param_names[t] == base)
+				return false;   // forwarding reference
+	}
+	return true;
+}
+
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args)
 {
@@ -14122,6 +14221,23 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			int s = score_arg_to_param(adc, pt, refp, true,
 					is_zero_integer_literal(ctor_args[i]),
 					fd->is_nonconst_lref_param(pi));
+			// [over.ics.rank]/3.2.3 on a `T&&` parameter: an rvalue
+			// argument prefers it over `const T&` (the move ctor
+			// wins for std::move(x) — before this the copy ctor,
+			// declared first, took the tie and the moved-from
+			// object kept its resources: tests/testrvaluectorselect,
+			// silent wrong answer); an LVALUE argument cannot bind
+			// it at all ([dcl.init.ref]/5). An argument whose
+			// category the tree cannot state keeps today's ranking.
+			if (s >= 0 && refp
+			    && ctor_param_is_concrete_rvalue_ref(fd, pi)) {
+				CtorArgCategory cat =
+					ctor_arg_value_category(ctor_args[i]);
+				if (cat == cacLvalue)
+					s = -1;
+				else if (cat == cacRvalue)
+					++s;
+			}
 			if (s < 0) { ok = false; break; }
 			total += s;
 		}
@@ -14136,7 +14252,8 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			if (csel && *csel
 			    && cdd->name.find(csel) != std::string::npos)
 				fprintf(stderr, "[CTORSEL] cls=%s cand=%s ok=%d "
-					"total=%d p1=%s nargs=%zu a0=%s a0tok=%s "
+					"total=%d p1=%s sp1=%s mt=%d tpn=%zu "
+					"nargs=%zu a0=%s a0tok=%s "
 					"at=%s:%d in=%s\n",
 					cdd->name.c_str(), cv->name.c_str(),
 					(int)ok, total,
@@ -14144,6 +14261,11 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					    && fd->parameters[1]
 					    ? fd->parameters[1]->name.c_str()
 					    : "-",
+					fd->param_cpp_spellings.size() > 1
+					    ? fd->param_cpp_spellings[1].c_str()
+					    : "-",
+					(int)fd->is_member_template,
+					fd->template_param_names.size(),
 					ctor_args.size(),
 					ctor_args.empty()
 					    || !ctor_arg_datadef(ctor_args[0])

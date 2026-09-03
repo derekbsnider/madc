@@ -1751,6 +1751,10 @@ public:
 	node_t class_tag_ref(DataDef *dd, TokenBase *origin = NULL);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
+	// Value category of a constructor argument, as far as the tree says
+	// (see the definition): feeds the T&& preference in select_ctor_overload.
+	enum CtorArgCategory { cacUnknown, cacLvalue, cacRvalue };
+	CtorArgCategory ctor_arg_value_category(TokenBase *arg);
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
 	// select_ctor_overload + copy-time member-template ctor recovery: when

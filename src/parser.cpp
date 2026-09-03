@@ -27470,6 +27470,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	if ( pt->id() == TokenID::tkMul )
 	    cast_dd = getPointerType(cast_dd);
     }
+    bool cast_to_rvalue_ref = false;
     if ( peekToken()
       && (peekToken()->id() == TokenID::tkBand
        || peekToken()->id() == TokenID::tkLand) )
@@ -27477,7 +27478,11 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	// A cast to REFERENCE type (`static_cast<T&&>(x)`, `static_cast<T&>(x)`)
 	// denotes the operand OBJECT itself ([expr.static.cast]p3) — mark the
 	// type as a reference so the CIR lowering keeps the operand lvalue
-	// instead of emitting a value cast (whose result has no address).
+	// instead of emitting a value cast (whose result has no address). Which
+	// reference kind the source wrote decides the cast's VALUE CATEGORY
+	// (xvalue for `&&`, lvalue for `&`) — recorded on the TokenCast, since
+	// DataDefREF does not carry it.
+	cast_to_rvalue_ref = peekToken()->id() == TokenID::tkLand;
 	nextToken();
 	cast_dd = getReferenceType(cast_dd);
     }
@@ -27508,6 +27513,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	Throw(cast_tb) << "Expecting ')' after "
 	    << cast_name << "<...>(...)" << flush;
     TokenCast *tc = new TokenCast(cast_dd, expr);
+    tc->to_rvalue_ref = cast_to_rvalue_ref;
     tc->file = cast_tb->file;
     tc->line = cast_tb->line;
     tc->column = cast_tb->column;

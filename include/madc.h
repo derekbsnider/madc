@@ -1131,6 +1131,11 @@ class TokenCast: public TokenBase
 public:
     DataDef *cast_type;   // target type
     TokenBase *expr;      // expression being cast
+    // The source spelled an RVALUE-reference target (`static_cast<T&&>(x)`):
+    // DataDefREF spells `&` and `&&` alike, and the value category of the
+    // cast ([expr.static.cast]/1: xvalue vs lvalue) is what constructor
+    // overload ranking reads (CirBuilder::ctor_arg_value_category).
+    bool to_rvalue_ref = false;
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }

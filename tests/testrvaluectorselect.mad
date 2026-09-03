@@ -1,0 +1,18 @@
+// [over.ics.rank]: an rvalue argument prefers the T&& constructor over
+// const T&. Oracle g++ / clang++: 3 3 -1
+#include <stdio.h>
+#include <utility>
+struct B {
+	int n;
+	B(int v) : n(v) {}
+	B(const B& x) : n(x.n) {}
+	B(B&& x) : n(x.n) { x.n = -1; }
+};
+int main()
+{
+	B a(3);
+	B c(a);
+	B d(std::move(a));
+	printf("%d %d %d\n", c.n, d.n, a.n);
+	return 0;
+}
