@@ -684,6 +684,49 @@ SDK/cross facts).
     87 -> 0, darwin 113 -> 0. Reducers as tests: testwchartidentity,
     teststddefwchar, testtypedefkeywordredecl, testptrbuiltinspec.
 
+  **MEASUREMENT #3 (2026-09-03, run 33759725335 @5511a3f9, after wave 3 — the
+  wchar_t identity slice — both jobs green): arm64 JIT 1215/36/19skip (was
+  100 at #2, 202 at #1), Intel JIT 1224/27/19skip (was 64, 91). EXE lane
+  advisory: arm64 947/210, Intel 936/230 (-static-libmadc cannot cover the
+  dialect runtime until D5).** Intel's 27 are a strict subset of arm64's 36;
+  the nine arm64-only ones are the MIR aarch64 floor (gccvector x3 = SIMD,
+  testint128 proto result type, testcomplexretconv `i2d` on ldouble,
+  testbuiltincomplexparts / testbuiltinconjf abort, testprintfdouble SIGBUS =
+  varargs double, teststdiobuiltinredirects garbage). The 27 common, by
+  family — every one a served-grove libc++ gap, and (new this round) the
+  istringstream and `.str()` families REPRODUCE ON THE CONTAINER: the cross
+  freezer in DEFAULT (dialect) mode with the darwin pack bound
+  (`bin/madc-arm64-macos --no-config --no-sysroot-includes
+  --forest-bind=obj/hosted-arm64-macos/forest.bin --emit=c11 <test>`); the same
+  TU passes under `--std=c++17`, and the linux libstdc++ pack passes in the
+  dialect — a dialect-mode gate in the grove path is the layer:
+  - istringstream/stringstream TYPE with a parenthesized ctor argument (5:
+    testistream_libcxx, testopinherit, teststreambool, testvbasedyn;
+    testcopiedrefptrparam = istream `traits_type`): `std::istringstream
+    s("41")` is routed to parseFunction ("Failed to find type when parsing
+    function parameters") — `std::istringstream s;`, `sizeof`, and a USER
+    `typedef basic_istringstream<char> myiss; myiss s("41")` all work, so the
+    pack-restored typedef's dd is not seen as btClass by parseDeclaration's
+    ctor-call branch in dialect mode.
+  - `.str()` husks (3: testmanip, testsstream, testvaluecoutsstream) —
+    `Unidentified member 'str' in basic_stringstream_char_...`; reproduces
+    the same way.
+  - `unwrap_iter.h:48 invalid operand types of -` c2mir check error (4:
+    testnestedenumvec, testvartplsigchain, testvartplsigchainns,
+    testvecmembercopy) — the `__tree`/`unwrap_iter` class of measurement #1,
+    now a hard error; emits clean C11 on the cross freezer (the error is
+    c2mir's) — compile the emitted C for arm64 to reproduce.
+  - list `__base_pointer` ClassPattern (3), path.h `format` (2: testmanipview,
+    testofstreamwrite), initializer_list private `__begin_` (2), testiomanip
+    (shift operands), testufcscall (`__ns_std____1_count` undefined),
+    testclassproto (nested-std seed leak), teststreamdecl_libcxx (0 vs 1),
+    teststructinterop (tm fields).
+  - Domain, not defects (fixtures landed ebc105d5): testgnuattributemode and
+    testmemclralignwide redeclare int16_t/int32_t/int64_t against Apple's
+    <stdio.h> (clang rejects too); testdlcall dlopens libc.so.6.
+  Triage artifacts: tmp/d4-m3/{arm64,x86-64}/ (suite.log, suite-failures.txt,
+  classified/).
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
