@@ -1201,6 +1201,12 @@ public:
     // (gcc canon: a too-large literal warns + truncates; wide values otherwise
     // arise from >64-bit constant folding).
     uint32_t wide_handle = 0;
+    // The parser's stand-in for a call it could not resolve inside a
+    // dependent (tsubst-pattern) or class-pattern CAPTURE parse — a `0`
+    // typed int64 where a call belongs. Anything that would bake this
+    // token's TYPE into a retained pattern (a `decltype(...)` alias in a
+    // class template body) must treat it as poison, never as a constant.
+    bool dependent_call_placeholder = false;
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
     TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
@@ -1217,7 +1223,7 @@ public:
     virtual double dval() const override    { return (double)_token; }
     virtual TokenType type() const override { return TokenType::ttInteger; }
     virtual TokenID   id()   const override { return TokenID::tkInt; }
-    virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
+    virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; c->dependent_call_placeholder = dependent_call_placeholder; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) override { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
     virtual TokenInt *as_int_tok() override { return this; }

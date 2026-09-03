@@ -11626,6 +11626,29 @@ TokenDataType *Program::resolve_member_chain_or_type(TokenDataType *type_tok,
     return type_tok;
 }
 
+// The decltype operand's type is a PLACEHOLDER, not a type: (a) the int64
+// stand-in a dependent member call leaves (make_dependent_call_placeholder),
+// or (b) a call whose callee is a body-less namespace function-template
+// placeholder (function_display_name is the placeholder-shape discriminator,
+// exactly as resolve_namespace_fn_template_call_return_type reads it) whose
+// return the deduction lane could not form — return_override unset, the
+// registered ddINT64 default still answering. Only a class-pattern CAPTURE
+// asks: a live parse resolves the same call per instantiation.
+static bool decltype_operand_is_unresolved_placeholder(TokenBase *expr)
+{
+    if ( !expr )
+	return false;
+    if ( TokenInt *ph = dynamic_cast<TokenInt *>(expr) )
+	return ph->dependent_call_placeholder;
+    TokenCallFunc *tc = expr->type() == TokenType::ttCallFunc
+		      ? expr->as_callfunc_tok() : NULL;
+    if ( !tc || tc->return_override )
+	return false;
+    FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+    return fd && !fd->function_display_name.empty()
+	&& tc->datadef() == &ddINT64;
+}
+
 TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 						  bool consume_ns_tokens,
 						  bool allow_lazy_types,
@@ -11789,6 +11812,30 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( !close || close->id() != TokenID::tkClBrk )
 	    Throw(close ? close : tb) << "Expecting ')' after decltype(...)" << flush;
 	DataDef *dd = expr ? expr->datadef() : NULL;
+	// A class-pattern CAPTURE parse met a call it cannot resolve against
+	// the template-parameter placeholders (the deduction of
+	// `std::__to_address(std::declval<_Iter>())` has nothing to bind
+	// `_Tp*` to) and stood in the int64 placeholder. The alias's type is
+	// DEPENDENT — knowable only per instantiation — so baking the
+	// placeholder's int64 into the pattern would type every
+	// materialization wrong (libc++ __unwrap_iter_impl<_Iter,true>::
+	// _ToAddressT came out long long in the darwin pack: c2mir `invalid
+	// operand types of -` for every std::vector copy). Poison the
+	// capture, exactly as the defaulted-param SFINAE return does: the
+	// class stays on the parse lane, which resolves the decltype per
+	// instantiation in both the live and the forest-bound consumer.
+	// (The KIND — a re-derivable dependent-decltype alias node — is the
+	// follow-on; this is the correctness floor.) The operand is the CALL
+	// itself when the callee is a namespace function-template placeholder
+	// (`std::__to_address(...)` answers with its ddINT64 default), and a
+	// TokenInt stand-in when it is a dependent member call.
+	if ( class_pattern_capture_in_progress
+	  && decltype_operand_is_unresolved_placeholder(expr) )
+	{
+	    dependent_parse_poisoned = true;
+	    Throw(tb) << "class-pattern capture cannot bake a "
+		      << "dependent decltype(...) operand" << flush;
+	}
 	if ( getenv("MADC_DT_PROBE") )
 	    fprintf(stderr, "[dtprobe] decltype operand -> '%s' (expr id=%d type=%d)\n",
 		    dd ? dd->name.c_str() : "(null)",
@@ -27124,6 +27171,7 @@ static TokenInt *make_dependent_call_placeholder(Program &pgm, TokenBase *at)
 	pgm.dependent_parse_poisoned = true;
     TokenInt *ti = new TokenInt(0);
     ti->setDataType(&ddINT64);
+    ti->dependent_call_placeholder = true;
     if ( at )
     {
 	ti->file = at->file;

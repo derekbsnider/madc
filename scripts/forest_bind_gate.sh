@@ -1587,10 +1587,52 @@ int main()
 EOF
 run_case friendgrant "plus=8 times=14"
 
+# --- case: patternalias — a class template partial specialization whose
+#     class-scope alias is `decltype` of a call on the template parameter
+#     (`using A = decltype(addr_of(declv<It>()))` — libc++'s
+#     __unwrap_iter_impl<_Iter,true>::_ToAddressT), frozen from the grove and
+#     instantiated by the consumer for NEW arguments. The freezer's class-pattern
+#     CAPTURE parse resolved that decltype against the placeholder `It`, the
+#     deduction failed, and the alias was captured as a CONCRETE int64 — so every
+#     pattern materialization (the frozen exemplar and each consumer
+#     instantiation) typed `A` as long long: c2mir `invalid operand types of -`
+#     in std::vector copies on the darwin runner (4 tests). Live and g++ agree
+#     on the per-instantiation type; the bound consumer must too.
+cat > tmp/fbgate_patternalias.h <<'EOF'
+#ifndef FBGATE_PATTERNALIAS_H
+#define FBGATE_PATTERNALIAS_H
+template<class T> T* fbpa_addr_of(T* p) { return p; }
+template<class T> T fbpa_declv();
+template<class It, bool = true> struct FbpaImpl;
+template<class It>
+struct FbpaImpl<It, true> {
+	using A = decltype(fbpa_addr_of(fbpa_declv<It>()));
+	static A un(It i) { return fbpa_addr_of(i); }
+};
+#endif
+EOF
+cat > tmp/fbgate_patternalias_producer.cpp <<'EOF'
+#include <fbgate_patternalias.h>
+int main() { char c = 'x'; char *p = FbpaImpl<char*>::un(&c); return *p == 'x' ? 0 : 1; }
+EOF
+cat > tmp/fbgate_patternalias_consumer.cpp <<'EOF'
+#include <fbgate_patternalias.h>
+#include <cstdio>
+int main()
+{
+    int x = 1; long y = 2;
+    int *p = FbpaImpl<int*>::un(&x);
+    long *q = FbpaImpl<long*>::un(&y);
+    printf("%d %ld\n", *p, *q);
+    return 0;
+}
+EOF
+run_case patternalias "1 2"
+
 # NOTE: this tally is hand-maintained, and that bit me — the [ldouble] case ran
 # and passed while the summary still said 25/25, so the line UNDERSTATED
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 28/28 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant"
+echo "forest_bind_gate: GREEN 29/29 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
 exit 0
