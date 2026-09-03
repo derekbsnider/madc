@@ -586,6 +586,10 @@ class CirBuilder {
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// `arg` is a by-value result of class `cls` carried as a c2mir struct
+	// value (a natively returned class: no destructor, no __retbuf) — the
+	// prvalue IS the result object; see the definition.
+	bool native_class_value_result(TokenBase *arg, DataDefCLASS *cls);
 	// The single function-signature owner for the __retbuf decision: reject
 	// pointer/reference/multi returns, then classify the returned value type.
 	DataDefCLASS *function_retbuf_class(class FuncDef *fd);

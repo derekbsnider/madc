@@ -6350,27 +6350,34 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
 		if (as_class_instance(ot->obj_class) == target)
 			return object_call_temp_addr(arg, target, arg);
-	// A call returning a TRIVIALLY-COPYABLE class BY VALUE lowers to a raw
-	// call node — an rvalue; `&call` is not an lvalue and c2mir rejects it
-	// (`b.base() - a.base()`). Fall through to the materializing tail,
-	// where the implicit-copy fallback assigns the value into an
-	// addressable temp ([class.temporary]). NON-trivial returns never get
-	// here as raw calls: madc-compiled ones took the retbuf arm above, and
-	// external sret calls materialize their own slot temp inside
-	// translate_expr (so &translate_expr IS a temp lvalue — routing them
-	// into the tail recursed object_arg_addr -> class_ctor_call forever
-	// through the copy ctor's const-ref parameter).
-	bool rvalue_call = (arg && (arg->type() == TokenType::ttCallFunc
-				    || arg->type() == TokenType::ttCallMethod)
-			    && !ref_returning_call_type(arg)
-			    && class_trivially_copyable(target))
-	    // A by-value class OPERATOR result (free operator+ via the body
-	    // route — a struct-value-returning call) is the same prvalue;
-	    // spill it into the addressable temp identically.
-	    || (class_operator_value_result(arg)
-		&& class_trivially_copyable(target));
-	if (!rvalue_call
-	    && as_class_instance(arg ? arg->datadef() : NULL) == target)
+	// A by-value class result carried as a c2mir STRUCT VALUE (a call, or a
+	// free-operator result, of a class returned natively —
+	// native_class_value_result) is a prvalue: `&call` is not an lvalue and
+	// c2mir rejects it (`b.base() - a.base()`; a class WITH user copy/move
+	// constructors returned natively for lack of a destructor —
+	// tests/testnativeretinit). Spill it BITWISE into an addressable temp
+	// ([class.temporary]): the value IS the result object, so no
+	// constructor runs — the materializing tail's class_ctor_call would
+	// select the class's copy/move constructor and re-enter here with the
+	// same call (the coercion cycle), and the implicit-copy assignment it
+	// reached for a trivially copyable class is exactly this spill.
+	// NON-trivial returns never get here as raw calls: madc-compiled ones
+	// took the retbuf arm above, and external sret calls materialize their
+	// own slot temp inside translate_expr (so &translate_expr IS a temp
+	// lvalue).
+	if (native_class_value_result(arg, target)) {
+		char name[32];
+		snprintf(name, sizeof(name), "__madc_objtmp_%d",
+			 m_strtmp_counter++);
+		Variable *tmp = new Variable(name, *target, 1, NULL, false);
+		tmp->flags |= vfLOCAL;
+		m_pending_stmts.push_back(var_decl(tmp, arg));
+		node_t rhs = translate_expr(arg);
+		m_pending_stmts.push_back(node2(N_EXPR, list(),
+			node2(N_ASSIGN, id(name, arg), rhs, arg), arg));
+		return object_addr(name, arg);
+	}
+	if (as_class_instance(arg ? arg->datadef() : NULL) == target)
 		return node2(N_CAST, void_ptr_type(),
 			     node1(N_ADDR, translate_expr(arg), arg), arg);
 
@@ -12838,6 +12845,30 @@ DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
 	return class_needs_dtor(cdd) ? cdd : NULL;
+}
+
+// `arg` is a by-value result of class `cls` carried as a c2mir STRUCT VALUE:
+// a call (function or method, not reference-returning) or a free-operator
+// result whose class returns NATIVELY — no destructor, so no __retbuf
+// (class_return_via_retbuf is NULL; the retbuf ABI never yields a raw call).
+// Such a prvalue IS the result object ([class.temporary]; [dcl.init]
+// guaranteed elision): initializing an object from it is a struct
+// assignment and binding a reference to it spills it bitwise into a temp —
+// no constructor runs in either case, whatever copy/move constructors the
+// class declares. The consumers used to key on class_trivially_copyable, so
+// a natively returned class WITH a user copy constructor was handed to its
+// move constructor as `&call` (c2mir: `lvalue required as unary & operand`).
+bool CirBuilder::native_class_value_result(TokenBase *arg, DataDefCLASS *cls)
+{
+	if (!arg || !cls || class_return_via_retbuf(cls))
+		return false;
+	if (as_class_instance(arg->datadef()) != cls)
+		return false;
+	TokenType t = arg->type();
+	if ((t == TokenType::ttCallFunc || t == TokenType::ttCallMethod)
+	    && !ref_returning_call_type(arg))
+		return true;
+	return class_operator_value_result(arg);
 }
 
 // [class.copy.elision]/3 (C++11 [class.copy]/32): a `return` operand that
@@ -25053,6 +25084,26 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 				return;
 			}
 		}
+	}
+	// `C b = makeC();` where makeC returns cdcl NATIVELY (a struct value:
+	// no destructor, so no __retbuf — native_class_value_result):
+	// [dcl.init] guaranteed elision — b IS the result object and no
+	// copy/move constructor runs; the returned struct value assigned into
+	// b's storage is exactly that. The retbuf twin is the call-NRVO arm
+	// above; the generic lane below selected the class's move constructor
+	// and handed it the address of the prvalue (tests/testnativeretinit).
+	if (ctor_args.size() == 1
+	    && native_class_value_result(ctor_args[0], cdcl)) {
+		node_t lhs = id(sdcl->var.name.c_str(), sdcl);	// allowed-exception: guarded !file_global
+		node_t rhs = translate_expr(ctor_args[0]);
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		append(items, node2(N_EXPR, list(),
+				    node2(N_ASSIGN, lhs, rhs, sdcl), sdcl));
+		emit_try_body_cleanup_push(sdcl->var.name.c_str(),
+					   cdcl, items, sdcl, 0);
+		return;
 	}
 	node_t cc = class_ctor_call(&sdcl->var, cdcl,
 				    ctor_args, sdcl);
