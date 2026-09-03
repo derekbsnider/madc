@@ -1126,6 +1126,11 @@ public:
 };
 
 // (TYPE *) cast expression — type annotation, no codegen for pointer casts
+// A scoped spelling as a C identifier fragment (`std::__1::__fs` ->
+// `std____1____fs`): the emitted-identity rename the parser's scope arms, the
+// forest restore and the CIR emitter's collision dedup all apply (parser.cpp).
+std::string flat_scope_identifier(const std::string &scoped);
+
 class TokenCast: public TokenBase
 {
 public:

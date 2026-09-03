@@ -10729,6 +10729,77 @@ void CirBuilder::emit_class_member_deps(
 	}
 }
 
+// Record that `sdd` owns the emitted identity `sdd->name` from here on: the
+// name set every emitter consults, plus the owner the dedup needs to tell a
+// twin from a different entity.
+void CirBuilder::claim_emitted_struct(std::set<std::string> &emitted_structs,
+				      DataDefSTRUCT *sdd)
+{
+	if (!sdd) return;
+	const std::string &nm = sdd->name;
+	emitted_structs.insert(nm);
+	m_emitted_struct_owner[nm] = sdd;
+}
+
+// A distinct emitted identity for an aggregate whose bare name another
+// aggregate already emitted — the renames the live registration arms give a
+// second definer: a namespaced entity spells its scope
+// (`std____1____fs__filesystem__path`, the sibling-namespace rule), a global
+// one takes the `__madc_global__` prefix (the global-reclaims-bare rule); a
+// counter breaks any further tie. The template-id head is cut before the
+// scope is read so a `::` inside the argument list is never mistaken for it.
+std::string CirBuilder::distinct_emitted_identity(
+	DataDefSTRUCT *sdd, const std::set<std::string> &emitted_structs)
+{
+	std::string head = sdd->canonical_cpp_spelling();
+	size_t lt = head.find('<');
+	if (lt != std::string::npos)
+		head.erase(lt);
+	size_t sep = head.rfind("::");
+	std::string base = (!head.empty() && sep != std::string::npos)
+		? flat_scope_identifier(head.substr(0, sep)) + "__" + sdd->name
+		: "__madc_global__" + sdd->name;
+	std::string cand = base;
+	for (unsigned n = 2; emitted_structs.count(cand)
+			     || m_emitted_struct_owner.count(cand); ++n)
+		cand = base + "__" + std::to_string(n);
+	return cand;
+}
+
+// The ONE question every struct-definition emitter asks before it writes a
+// body: has this aggregate's emitted identity gone out already? The same
+// object, or a same-spelling TWIN (the v40 live-wins seam keeps a restored
+// class alive beside its live re-definition, same layout; a C tag restored
+// and parsed) -> yes, dedup exactly as before. A DIFFERENT entity holding the
+// name -> this one takes a distinct emitted identity NOW, ahead of its own
+// body and every reference the function passes write, and is emitted. The
+// case that found it: the user's global `class path` (testclassproto) and
+// libc++'s std::__1::__fs::filesystem::path under the darwin pack — the
+// twin was pulled into the type graph by a restored record's reference and
+// registered nowhere the parser's scope arms (TokenCLASS::parse, the restore
+// loop) could see, so the emitter is the only layer that meets both; the
+// name dedup then dropped the user's body and its constructors read
+// `__this->n` off libc++'s struct (clang: no member named 'n').
+bool CirBuilder::struct_emission_deduped(
+	const std::set<std::string> &emitted_structs, DataDefSTRUCT *sdd)
+{
+	if (!sdd || !emitted_structs.count(sdd->name))
+		return false;
+	std::map<std::string, DataDefSTRUCT *>::const_iterator ow =
+		m_emitted_struct_owner.find(sdd->name);
+	if (ow == m_emitted_struct_owner.end() || !ow->second || ow->second == sdd)
+		return true;
+	if (ow->second->canonical_cpp_spelling() == sdd->canonical_cpp_spelling())
+		return true;	// a twin of the emitted one
+	std::string fresh = distinct_emitted_identity(sdd, emitted_structs);
+	DBG(std::cout << "emit: aggregate '" << sdd->name << "' ("
+		<< sdd->canonical_cpp_spelling() << ") takes emitted identity '"
+		<< fresh << "' — the name is held by '"
+		<< ow->second->canonical_cpp_spelling() << "'" << std::endl);
+	sdd->name = fresh;
+	return false;
+}
+
 void CirBuilder::emit_struct_with_deps(
 	DataDefSTRUCT *sdd, node_t top_list,
 	std::set<std::string> &emitted_structs,
@@ -10749,7 +10820,7 @@ void CirBuilder::emit_struct_with_deps(
 	// Already emitted (by name) — its body and deps are out. Anonymous aggregates
 	// have a unique synthetic tag never recorded here, so they fall through to the
 	// recurse-only path below (their body is inlined at the use site).
-	if (!sdd->is_anonymous && emitted_structs.count(sdd->name))
+	if (!sdd->is_anonymous && struct_emission_deduped(emitted_structs, sdd))
 		return;
 	// By-value embedding is acyclic in valid C (an incomplete type can't be a
 	// by-value member), so recursing members first cannot loop.
@@ -10757,7 +10828,7 @@ void CirBuilder::emit_struct_with_deps(
 			       emitted_classes, emitting_classes);
 	// Emit the named struct's own body once; anonymous aggregates are spelled
 	// inline at the use site, so only their member deps (hoisted above) matter.
-	if (!sdd->is_anonymous && !emitted_structs.count(sdd->name)) {
+	if (!sdd->is_anonymous && !struct_emission_deduped(emitted_structs, sdd)) {
 		auto cti = m_combined_typedef_alias.find(sdd->name);
 		if (cti != m_combined_typedef_alias.end()) {
 			// The struct's def-point is a combined `typedef struct X {...} Y;`.
@@ -10769,11 +10840,11 @@ void CirBuilder::emit_struct_with_deps(
 			Program::TopDecl *td = cti->second;
 			node_t n = typedef_decl(typedef_emit_name(td->name, td->dd),
 						td->dd, emitted_structs, false);
-			emitted_structs.insert(sdd->name);
+			claim_emitted_struct(emitted_structs, sdd);
 			m_hoisted_combined_aliases.insert(td->name);
 			if (n) append(top_list, n);
 		} else {
-			emitted_structs.insert(sdd->name);
+			claim_emitted_struct(emitted_structs, sdd);
 			node_t sd = struct_def(sdd);
 			if (sd) append(top_list, sd);
 		}
@@ -10790,7 +10861,7 @@ void CirBuilder::emit_class_struct_with_deps(
 	// A generic dependent local class (placeholder members) is a Tree-1 pattern
 	// artifact — never emitted globally; its concrete per-instantiation clone is.
 	if (struct_has_dependent_member(cdd)) return;
-	if (emitted_classes.count(cdd) || emitted_structs.count(cdd->name))
+	if (emitted_classes.count(cdd) || struct_emission_deduped(emitted_structs, cdd))
 		return;
 	if (emitting_classes.count(cdd))
 		return;
@@ -10798,10 +10869,10 @@ void CirBuilder::emit_class_struct_with_deps(
 	emit_class_member_deps(cdd, top_list, emitted_structs,
 			       emitted_classes, emitting_classes);
 	emitting_classes.erase(cdd);
-	if (emitted_classes.count(cdd) || emitted_structs.count(cdd->name))
+	if (emitted_classes.count(cdd) || struct_emission_deduped(emitted_structs, cdd))
 		return;
 	emitted_classes.insert(cdd);
-	emitted_structs.insert(cdd->name);
+	claim_emitted_struct(emitted_structs, cdd);
 	node_t cd = class_struct_def(cdd);
 	if (cd) {
 		append(top_list, cd);
@@ -28900,6 +28971,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	};
 	std::set<std::string> emitted_structs;
+	m_emitted_struct_owner.clear();
 	std::set<std::string> emitted_globals;
 	std::set<DataDefCLASS *> emitted_classes;
 	std::set<DataDefCLASS *> emitting_classes;
@@ -28966,7 +29038,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			// alias) that renders its body inline.
 			if (sdd && sdd->is_complete &&
 			    (is_def_point || !struct_def_points.count(sdd->name)))
-				emitted_structs.insert(sdd->name);
+				claim_emitted_struct(emitted_structs, sdd);
 			break;
 		}
 		case Program::DeclKind::dkStruct:
@@ -28975,11 +29047,12 @@ node_t CirBuilder::translate_module(Program *prog)
 			// A generic dependent local struct (placeholder members) is a Tree-1
 			// pattern artifact — skip global emission; the concrete per-
 			// instantiation clone is emitted instead.
-			if (sdd && sdd->is_complete && !emitted_structs.count(sdd->name)
-			    && !struct_has_dependent_member(sdd)) {
+			if (sdd && sdd->is_complete
+			    && !struct_has_dependent_member(sdd)
+			    && !struct_emission_deduped(emitted_structs, sdd)) {
 				emit_class_member_deps(sdd, top_list, emitted_structs,
 						       emitted_classes, emitting_classes);
-				emitted_structs.insert(sdd->name);
+				claim_emitted_struct(emitted_structs, sdd);
 				node_t sd = struct_def(sdd);
 				if (sd) {
 					stamp(sd, td);

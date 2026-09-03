@@ -417,6 +417,16 @@ class CirBuilder {
 	// translate_module pre-scan; the aliases it emits early are recorded below so
 	// the source-order Pass 0 skips re-emitting them.
 	std::map<std::string, Program::TopDecl *> m_combined_typedef_alias;
+	// Emitted struct identity -> the aggregate that owns it (beside the
+	// name set the emitters thread through): the dedup reads it to tell a
+	// same-spelling twin from a different entity (struct_emission_deduped).
+	std::map<std::string, DataDefSTRUCT *> m_emitted_struct_owner;
+	void claim_emitted_struct(std::set<std::string> &emitted_structs,
+				  DataDefSTRUCT *sdd);
+	std::string distinct_emitted_identity(
+		DataDefSTRUCT *sdd, const std::set<std::string> &emitted_structs);
+	bool struct_emission_deduped(const std::set<std::string> &emitted_structs,
+				     DataDefSTRUCT *sdd);
 	std::set<std::string> m_hoisted_combined_aliases;
 	// The C identifier to EMIT for a typedef alias `alias` of type `dd`: normally
 	// the bare alias itself, but for an ambiguous alias (above) backed by a struct

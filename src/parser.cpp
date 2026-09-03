@@ -22682,7 +22682,7 @@ void Program::thaw_all_frozen_templates()
 // `std____1____fs`, `ns::fn` -> `ns__fn`): the emitted-identity rename the
 // block-scope, sibling-namespace and global-reclaim arms of TokenSTRUCT::parse
 // / TokenCLASS::parse apply, and the forest restore mirrors.
-static std::string flat_scope_identifier(const std::string &scoped)
+std::string flat_scope_identifier(const std::string &scoped)
 {
     std::string flat = scoped;
     for ( size_t fi = 0; fi < flat.size(); ++fi )
