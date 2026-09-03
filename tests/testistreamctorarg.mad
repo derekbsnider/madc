@@ -1,0 +1,21 @@
+// A CLASS-typed declaration with a parenthesized constructor argument through
+// a namespace-scope TYPEDEF of a template-id: `std::istringstream s("41")`
+// (libc++: `typedef basic_istringstream<char> istringstream;` inside the
+// inline namespace std::__1, served from the frozen pack). On the darwin
+// runner in default (dialect) mode this was routed to the function-
+// declaration path ("Failed to find type when parsing function parameters")
+// while `std::istringstream s;`, `sizeof`, `__is_class` and a USER typedef of
+// the same template-id all worked, and the same statement under --std=c++17
+// constructed correctly. Oracle: g++ and clang++ print 41 82 ok.
+#include <sstream>
+int main()
+{
+    std::istringstream s("41");
+    int v = 0;
+    s >> v;
+    std::stringstream ss("82");
+    int w = 0;
+    ss >> w;
+    __builtin_printf("%d %d %s\n", v, w, (v == 41 && w == 82) ? "ok" : "BAD");
+    return 0;
+}

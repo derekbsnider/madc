@@ -11135,6 +11135,62 @@ bool Program::has_pending_template_instantiation(const std::string &mangled_name
     return false;
 }
 
+static bool split_template_id_spelling(const std::string &s, std::string &outer,
+				       std::vector<std::string> &args);
+static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
+						      const std::string &spelling);
+
+// The pending-instantiation record for an INCOMPLETE concrete husk, derived
+// from the husk's own canonical template-id spelling. The live
+// forward-instantiation mint (instantiate_template_use's bodyless-template
+// arm) records {template, args} in pending_template_instantiations; a husk
+// RESTORED from a frozen forest has no such record — the forest carries the
+// class (an incomplete aggregate with no member payload is live state, the
+// freeze-end sweep keeps it) but pending_template_instantiations is a
+// parse-time side table that is never frozen. The canonical spelling IS that
+// record: its head is the template_map key (namespace-stripped, like the
+// mint's tname) and its arguments resolve through the one canonical-spelling
+// seam. libc++'s __fwd/sstream.h typedefs mint basic_istringstream<char> from
+// the forward declaration before <sstream> defines the template; nothing in
+// the pack TU demands completion, so the pack serves a 0-member husk and the
+// consumer's `std::istringstream s("41")` — parseDeclaration's demand-
+// completion found no record — fell to the function-declaration route
+// ("Failed to find type when parsing function parameters" at the ctor
+// argument; darwin-host D4 measurement #3, eight tests). Returns the
+// template name the record was filed under, or "" when this husk cannot be
+// completed here (not a husk, no canonical template-id, no definition
+// registered, an argument that is not a type).
+static std::string pending_instantiation_from_canonical_identity(
+	Program &pgm, const std::string &mangled)
+{
+    flat_datatype_map_iter have = pgm.datatype_map.find(mangled);
+    if ( have == pgm.datatype_map.end() )
+	return std::string();
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(
+	&((TokenDataType *)(*have))->definition);
+    if ( !cls || cls->is_dependent_placeholder
+      || !is_incomplete_class_datadef(cls) )
+	return std::string();
+    const std::string &canon = cls->canonical_cpp_spelling();
+    if ( canon.empty() )
+	return std::string();
+    std::string outer;
+    std::vector<std::string> arg_spellings;
+    if ( !split_template_id_spelling(canon, outer, arg_spellings)
+      || outer.empty() || !pgm.template_with_body(outer) )
+	return std::string();
+    std::vector<TokenDataType *> args;
+    for ( size_t i = 0; i < arg_spellings.size(); ++i )
+    {
+	TokenDataType *tdt = resolve_canonical_type_spelling(pgm, arg_spellings[i]);
+	if ( !tdt )
+	    return std::string();
+	args.push_back(tdt);
+    }
+    record_pending_template_instantiation(pgm, outer, mangled, canon, args);
+    return outer;
+}
+
 bool Program::request_template_instantiation_completion(const std::string &mangled_name)
 {
     template_completion_requested.insert(mangled_name);
@@ -11150,7 +11206,13 @@ bool Program::request_template_instantiation_completion(const std::string &mangl
 	    return true;
 	}
     }
-    return false;
+    // No live record: a forest-restored husk completes from its identity.
+    const std::string tname =
+	pending_instantiation_from_canonical_identity(*this, mangled_name);
+    if ( tname.empty() )
+	return false;
+    complete_pending_template_instantiations(tname);
+    return true;
 }
 
 // Demand-completion for a class type reaching a context that REQUIRES a
