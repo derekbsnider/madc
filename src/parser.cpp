@@ -36650,9 +36650,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		{
 		    std::string mname = member_lookup_name;
 		    DataDefCLASS *mc = code->method->owner_class;
+		    // A member FUNCTION named with explicit template arguments
+		    // (`bind<U>(...)`) is the same rule: class scope hides the
+		    // namespace-scope `::bind` that <sys/socket.h> declares (the
+		    // darwin prelude reaches it; linux with the include too). The
+		    // plain-call form `f(args)` is already served by the
+		    // arity-matched member arm above; only the template-id form
+		    // fell through to the global and its instantiation then died
+		    // on the hidden-this arity — silently, the placeholder kept.
 		    if ( !code->findVariable(strpool, mname) && !code->findParameter(mname)
 		      && (mc->m_offset(mname) >= 0
-		       || resolve_class_static_member_type(mc, mname)) )
+		       || resolve_class_static_member_type(mc, mname)
+		       || (peekToken() && peekToken()->id() == TokenID::tkLT
+			   && mc->findMethod(mname))) )
 			prefer_class_member = true;
 		}
 		var = (parsed_operator_name || prefer_class_member)

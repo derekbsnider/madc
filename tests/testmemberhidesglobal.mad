@@ -1,0 +1,47 @@
+// [basic.lookup.unqual] inside a member function: class scope is searched
+// before namespace scope, so a member function hides a same-named
+// namespace-scope function — even one the platform headers declare.
+//
+// Shape 1 (the darwin-host D4 reducer, testcopiedrefptrparam on libc++): a
+// member TEMPLATE calls a sibling member template `bind<U>(...)` while
+// <sys/socket.h> declares the global `::bind`. madc bound the global, the
+// instantiation died on the hidden-this arity and was kept as a silent
+// placeholder, and the program failed at link with an undefined
+// `Linker_int32_t__run`. Shape 2 is the plain-call form (`abs(-3)` is S::abs,
+// never ::abs from <stdlib.h>), served by the arity-matched member arm.
+// Oracle g++ / clang++: 1 / -6 -6
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <utility>
+
+template<typename T>
+struct Linker {
+	typedef T *pointer;
+	template<typename U>
+	void bind(pointer& parent, U& value) { parent = (pointer)&value; }
+	template<typename U>
+	int run(U& value)
+	{
+		pointer parent;
+		bind<U>(parent, std::forward<U&>(value));
+		return parent == &value;
+	}
+};
+
+struct S {
+	int abs(int x) { return x * 2; }
+	template<typename U> int twice(U v) { return v * 2; }
+	int run() { return abs(-3); }
+	int runt() { return twice<int>(-3); }
+};
+
+int main()
+{
+	int value = 42;
+	Linker<int> linker;
+	printf("%d\n", linker.run(value));
+	S s;
+	printf("%d %d\n", s.run(), s.runt());
+	return 0;
+}
