@@ -727,6 +727,47 @@ SDK/cross facts).
   Triage artifacts: tmp/d4-m3/{arm64,x86-64}/ (suite.log, suite-failures.txt,
   classified/).
 
+  **WAVE 4 LANDED (2026-09-03, six commits on 5511a3f9 — fb6f3537 9b2ee46c
+  75388cb5 a49380c8 44da4f8e cf61e762): stream operands + wide literals in
+  BOTH free-operator lanes.** `std::cout << ca` (char[]) printed garbage and
+  `std::wcout << L"x"` / `<< q` printed a POINTER on every platform; fixed
+  in the cir ranking lane (fb6f3537: the rhs decays through the ONE owner
+  Program::array_decay_pointer; the lhs binding is substituted into param[1]
+  before matching so the generic `const _CharT*` inserter deduces), then
+  the same defect's second copy in the retained-template BODY route
+  (cf61e762: libc++ exports no wchar_t inserter, so
+  Program::instantiate_free_operator_template serves the body — it typed
+  operands as the bare element and re-selected by registration order,
+  serving the single-_CharT inserter for `wcout << wa`; it now types through
+  the same decay owner AND instantiates only the signature the ranking lane
+  chose — [over.match.best] decided once). sizeof(L"x") measures target
+  units (9b2ee46c). Reducer tests/teststreamwideops.mad (g++ == clang++ ==
+  madc on libstdc++ and libc++; Mac: all five lines, dialect and c++17).
+  Darwin domain fixtures for three linux-domain tests (75388cb5). Packs
+  unchanged (linux 68/45, darwin 52).
+
+  **WAVE 5 SLICE 1 — root cause pinned (2026-09-03):** the istringstream
+  ctor-argument family is PACK vs LIVE, not dialect vs strict (the pack is
+  frozen for the dialect config word; a `--std=c++17` compile parses live —
+  `--no-forest-bind` in default mode passes too). libc++'s __fwd/sstream.h
+  typedefs instantiate basic_istringstream<char> / basic_stringstream<char>
+  / basic_stringbuf<char> from the FORWARD declaration before <sstream>
+  defines the template; nothing in the pack TU demands completion; the
+  freeze-end sweep records memberless incomplete aggregates on purpose, so
+  the pack serves 0-member husks (`forest_restore_decls: class
+  basic_istringstream_char_... (0 members, 0 bases, 0 methods)`).
+  parseDeclaration's demand-completion (complete_class_type_on_demand ->
+  request_template_instantiation_completion) consults
+  pending_template_instantiations — a parse-time side table minted only by
+  the live forward-instantiation path and never frozen — finds nothing, the
+  husk keeps has_user_ctor=false, the ctor-call branch is skipped and the
+  declaration falls to parseFunction. basic_ios / basic_istream restore
+  complete because libc++ has extern templates for them; libstdc++'s
+  <sstream> has `extern template class basic_istringstream<char>`, which is
+  why the linux pack never showed it. Fix (in flight): the pending record
+  is derived from the husk's canonical template-id spelling at the ONE
+  consult (pending_instantiation_from_canonical_identity).
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel

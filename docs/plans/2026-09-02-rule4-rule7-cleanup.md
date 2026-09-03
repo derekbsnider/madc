@@ -260,6 +260,67 @@ is unsafe under the battery cadence and unreviewable.
   fails `fulltest` unless the baseline is moved with a stated reason.
 - `/dupaudit` step 2 (re-check known families) runs at every merge wave,
   not only at feature merge.
+- Textual clones get their own ratchet (owner pointer 2026-09-03:
+  https://github.com/kucherenko/jscpd). `scripts/check-clones.sh` runs
+  jscpd over `src include scripts` (token floor ~60, JSON + console) against
+  a baseline in `docs/parity/` — fail on growth, lower it when a family is
+  consolidated, negative control included; the JSON seeds `DupFamily`
+  candidates. jscpd catches copied TEXT (pch.cpp's private builtin table,
+  the copied array-decay arms); `/dupaudit` catches the rule implemented
+  twice with no shared text (the six angle scanners, the two free-operator
+  matchers). Both, not one. Provision node in
+  `scripts/provision_container.sh`; measure first, threshold second.
+
+### P5 — parser.cpp decomposition: abstraction first, files follow
+
+Owner direction 2026-09-03: split parser.cpp (~66k lines) into manageable
+pieces, by ABSTRACTION rather than by line count, and keep the polyglot
+front-end vision (docs/plans/madc-vision-and-invariants.md, I1–I8) as a
+constraint on the split — not as a later add-on. Recon of how gcc and
+clang do both: docs/plans/2026-09-03-frontend-architecture-recon.md.
+
+The seam: **syntax vs semantics** (clang's Parser/Sema boundary, gcc/cp's
+per-concern files).
+
+- Front end (language-specific): the C/C++/dialect grammar readers —
+  parseStatement, parseDeclaration, parseFunction, `Token*::parse`, the
+  C-family lexer. Selected through `LanguageStd`. A TypeScript / Python /
+  Ruby front end is a second grammar + `TokenSource` producing the same
+  parse tree and the same `cir_node`; it adds no semantic file.
+- Core (language-neutral): type model + the one builtin table, name and
+  namespace lookup, overload ranking (all lanes), template instantiation
+  (the tsubst spine, pending completion), class layout, mangling, the
+  forest and registries, the CIR builder. Nothing here reads a token or
+  knows which grammar fed it.
+
+Abstractions, in the order their seams are already clean:
+
+1. `TokenSource` (`next`/`peek`/`push`) — the lexer becomes its first
+   implementation; grammar readers depend on the interface.
+2. `FrontEnd` — owns a grammar, consumes a `TokenSource`, drives the IR
+   builder; chosen by `LanguageStd` the way the keyword gate already is.
+3. Semantic services peeled off `Program` as objects, one per merge wave,
+   each a pure move with the battery as the oracle: lookup, overload,
+   template, type, class. Each extraction shrinks parser.cpp by the size
+   of the service — the file split and the object split are the same
+   commits.
+4. Persistence (forest, registries) as the storage service those objects
+   use.
+5. `LanguageStd` grows toward libcpp's `lang_defaults`: one row per
+   standard, per-feature columns; the keyword registry becomes a
+   `TokenKinds.def`-style mask table.
+
+Rules for the arc: pure moves only (no logic in a move commit; trailers
+`n/a — behaviour-preserving`); one internal header (`src/parser_internal.h`)
+for helpers two concern files share — a helper that exists twice cannot be
+declared once, so the duplicates surface here; feature branch, quiet window
+between D4 waves, one battery per merge wave; `git log -L` must still
+follow a function through the split. Gate at the end: a `sema_*` file that
+includes the lexer, or a `parser_*` file that forms a type, fails
+`fulltest` (a grep with a negative control).
+
+Sequencing stays as ruled: C++ core → C stability → new front ends. The
+decomposition is the precondition for the third, not its start.
 
 ## Non-goals
 
