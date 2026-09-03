@@ -53784,16 +53784,14 @@ static bool capture_free_function_overload(
 {
     if ( pgm.current_namespace().empty() || name.empty() )
 	return false;
-    // Locate the declarator: the function-name token immediately before '('.
-    size_t declarator_start = tokens.size(), lparen = tokens.size();
-    for ( size_t i = 0; i < tokens.size(); ++i )
-    {
-	if ( tokens[i] && is_skipped_template_function_name(tokens[i])
-	  && skipped_template_function_name(tokens[i]) == name
-	  && i + 1 < tokens.size() && tokens[i + 1]
-	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
-	{ declarator_start = i; lparen = i + 1; break; }
-    }
+    // ONE declarator locator (see try_instantiate_namespace_fn_template); the
+    // caller's `name` is that locator's answer for these same tokens.
+    size_t declarator_start =
+	skipped_template_function_declarator_name_index(tokens, NULL);
+    if ( declarator_start >= tokens.size() || !tokens[declarator_start] )
+	return false;
+    size_t lparen = skipped_template_function_param_lparen(tokens,
+							   declarator_start);
     if ( lparen >= tokens.size() )
 	return false;
     // Only REAL system-header functions bind mangled-direct (data-driven, Rule #7):
@@ -55144,16 +55142,18 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( is_pack )
 	    pack_tps.push_back(ft.typeparams[i]);
     }
-    std::string name = skipped_template_function_declarator_name(ft.decl);
-    if ( name.empty() )
+    // The declarator is located ONCE, by the delimiter-aware locator (the
+    // name token before the first TOP-LEVEL `(`). The template's own name may
+    // also occur INSIDE its leading decltype return —
+    // `decltype(Impl<I>::unwrap(I())) unwrap(I i)` — where a first-occurrence
+    // name search read the operand's `(I())` as the parameter list and no
+    // argument could deduce against it.
+    std::string name;
+    size_t name_idx =
+	skipped_template_function_declarator_name_index(ft.decl, &name);
+    if ( name.empty() || name_idx >= ft.decl.size() )
 	{ FTPROBE("exit-52816"); return false; }
-    size_t name_idx = ft.decl.size(), lparen = ft.decl.size();
-    for ( size_t i = 0; i < ft.decl.size(); ++i )
-	if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
-	  && skipped_template_function_name(ft.decl[i]) == name
-	  && i + 1 < ft.decl.size() && ft.decl[i + 1]
-	  && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
-	{ name_idx = i; lparen = i + 1; break; }
+    size_t lparen = skipped_template_function_param_lparen(ft.decl, name_idx);
     if ( lparen >= ft.decl.size() )
 	{ FTPROBE("exit-52825"); return false; }
     Program::FreeOperatorOverload ov;
@@ -58077,16 +58077,15 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 static bool po_param_spellings(Program &pgm, Program::FnTemplateDef &ft,
 			       std::vector<std::string> &out)
 {
-    std::string name = skipped_template_function_declarator_name(ft.decl);
-    if ( name.empty() )
+    // ONE declarator locator (see try_instantiate_namespace_fn_template): a
+    // first-occurrence name search mislocated a declarator whose name recurs
+    // inside its leading decltype return.
+    std::string name;
+    size_t name_idx =
+	skipped_template_function_declarator_name_index(ft.decl, &name);
+    if ( name.empty() || name_idx >= ft.decl.size() )
 	return false;
-    size_t name_idx = ft.decl.size(), lparen = ft.decl.size();
-    for ( size_t i = 0; i < ft.decl.size(); ++i )
-	if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
-	  && skipped_template_function_name(ft.decl[i]) == name
-	  && i + 1 < ft.decl.size() && ft.decl[i + 1]
-	  && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
-	{ name_idx = i; lparen = i + 1; break; }
+    size_t lparen = skipped_template_function_param_lparen(ft.decl, name_idx);
     if ( lparen >= ft.decl.size() )
 	return false;
     Program::FreeOperatorOverload ov;
@@ -60216,16 +60215,14 @@ DataDef *Program::resolve_fn_template_return_by_key(
     // catch-all serves only when every SFINAE overload's return fails.
     std::stable_partition(cands.begin(), cands.end(),
 	[](FnTemplateDef *c) {
-	    const std::string nm =
-		skipped_template_function_declarator_name(c->decl);
-	    for ( size_t i = 0; i + 4 < c->decl.size(); ++i )
-		if ( c->decl[i] && is_skipped_template_function_name(c->decl[i])
-		  && skipped_template_function_name(c->decl[i]) == nm
-		  && c->decl[i+1] && c->decl[i+1]->id() == TokenID::tkOpBrk )
-		    return !(c->decl[i+2] && c->decl[i+2]->id() == TokenID::tkDot
-			  && c->decl[i+3] && c->decl[i+3]->id() == TokenID::tkDot
-			  && c->decl[i+4] && c->decl[i+4]->id() == TokenID::tkDot);
-	    return true;
+	    // ONE declarator locator (see try_instantiate_namespace_fn_template).
+	    size_t ni = skipped_template_function_declarator_name_index(c->decl,
+								    NULL);
+	    size_t lp = skipped_template_function_param_lparen(c->decl, ni);
+	    if ( lp >= c->decl.size() || !c->decl[lp]
+	      || c->decl[lp]->id() != TokenID::tkOpBrk )
+		return true;
+	    return !tsubst_three_dots_at(c->decl, lp + 1);
 	});
     static const std::set<std::string> specifiers = {
 	"static", "constexpr", "inline", "virtual", "friend", "extern",
@@ -60250,26 +60247,23 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	}
 	if ( pack_name.empty() && explicit_args.size() > ft.typeparams.size() )
 	    continue;
-	std::string name = skipped_template_function_declarator_name(ft.decl);
-	if ( name.empty() )
+	// ONE declarator locator (see try_instantiate_namespace_fn_template): a
+	// name recurring inside the leading decltype return no longer ends the
+	// return range early.
+	std::string name;
+	size_t name_index =
+	    skipped_template_function_declarator_name_index(ft.decl, &name);
+	if ( name.empty() || name_index >= ft.decl.size() )
 	    continue;
-	size_t name_index = ft.decl.size();
-	for ( size_t i = 0; i < ft.decl.size(); ++i )
-	    if ( ft.decl[i] && is_skipped_template_function_name(ft.decl[i])
-	      && skipped_template_function_name(ft.decl[i]) == name
-	      && i + 1 < ft.decl.size() && ft.decl[i + 1]
-	      && ft.decl[i + 1]->id() == TokenID::tkOpBrk )
-		{ name_index = i; break; }
-	if ( name_index >= ft.decl.size() )
-	    continue;
+	size_t lparen = skipped_template_function_param_lparen(ft.decl, name_index);
 	// Locate the return-type token range [rs, re): trailing (`-> R` after the
 	// param list) takes precedence over the leading position.
 	size_t rs = 0, re = name_index;
 	bool is_trailing = false;
-	if ( name_index + 1 < ft.decl.size() && ft.decl[name_index + 1]
-	  && ft.decl[name_index + 1]->id() == TokenID::tkOpBrk )
+	if ( lparen < ft.decl.size() && ft.decl[lparen]
+	  && ft.decl[lparen]->id() == TokenID::tkOpBrk )
 	{
-	    size_t pd = 0, j = name_index + 1;
+	    size_t pd = 0, j = lparen;
 	    for ( ; j < ft.decl.size(); ++j )
 	    {
 		if ( !ft.decl[j] ) continue;
