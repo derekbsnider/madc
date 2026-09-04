@@ -1,0 +1,40 @@
+// [class.copy.elision]/3 (C++11 [class.copy]/32): a `return` operand naming a
+// by-value PARAMETER is an implicitly movable entity — overload resolution
+// for the result object treats it as an rvalue first, so the move
+// constructor beats the copy constructor, and a move-only class is
+// returnable from its parameter at all. The parameter is the callee's own
+// object (Itanium: caller-constructed, caller-destroyed), so moving from it
+// never touches the caller's argument. Oracle: g++ == clang++.
+#include <stdio.h>
+
+int copies = 0, moves = 0;
+
+struct H {
+	int v;
+	H(int x) : v(x) {}
+	H(const H &o) : v(o.v + 100) { copies++; }
+	H(H &&o) : v(o.v + 1000) { moves++; }
+};
+
+H pass(H h) { return h; }
+
+struct M {
+	int v;
+	M(int x) : v(x) {}
+	M(const M &) = delete;
+	M(M &&o) : v(o.v + 1) {}
+};
+
+M take(M m) { return m; }
+
+int main()
+{
+	H a(1);
+	H b = pass(a);			// copy into the parameter, move out of it
+	printf("b %d a %d copies %d moves %d\n", b.v, a.v, copies, moves);
+	H c = pass(H(5));		// the prvalue IS the parameter, move out
+	printf("c %d copies %d moves %d\n", c.v, copies, moves);
+	M m = take(M(3));
+	printf("m %d\n", m.v);
+	return 0;
+}

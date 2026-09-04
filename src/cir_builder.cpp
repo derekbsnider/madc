@@ -13043,9 +13043,8 @@ bool CirBuilder::native_class_value_result(TokenBase *arg, DataDefCLASS *cls)
 
 // [class.copy.elision]/3 (C++11 [class.copy]/32): a `return` operand that
 // NAMES a non-volatile automatic object of the function's return class — a
-// local variable (a function parameter too in the standard; see the body for
-// why madc's parameter stays a copy for now); not a static, a reference, a
-// member or a global — is an implicitly movable entity: overload resolution for the
+// local variable or a function parameter; not a static, a reference, a member
+// or a global — is an implicitly movable entity: overload resolution for the
 // copy into the result object is first performed as if the name were an
 // rvalue, so the move constructor beats the copy constructor and a move-only
 // class is returnable at all. The value-category ranking in
@@ -13064,15 +13063,15 @@ static bool returned_operand_is_implicitly_movable(DataDefCLASS *cdd,
 		return false;
 	const Variable &v = tv->var;
 	// A PARAMETER is an implicitly movable entity too ([class.copy.elision]/3
-	// names "a function parameter"), but madc's by-value class parameter is
-	// today a BITWISE image of the caller's argument that the callee never
-	// destroys (KG Gap class_param_by_value_bitwise_copy): moving from it
-	// steals the CALLER's object — `std::string echo(std::string s) {
-	// return s; }` left the host's string pointing into the callee's frame
-	// (test_libmadc_program "call supports script string object returns",
-	// SIGSEGV). Until the parameter is the callee's own object, a returned
-	// parameter keeps the copy it always had; only a LOCAL moves.
-	if (!(v.flags & vfLOCAL) || (v.flags & (vfSTATIC | vfPARAM)))
+	// names "a function parameter"). Under the invisible-reference ABI
+	// (class_param_via_invisible_ref) the by-value class parameter is the
+	// callee's OWN object — a caller-constructed temp the caller destroys
+	// after the call; the libmadc call shim constructs (text) or copies
+	// (instance) its own temp too — so moving from it never touches the
+	// caller's argument. (3eee5c43 excluded it while the parameter was a
+	// bitwise alias of the caller's object: `std::string echo(std::string
+	// s) { return s; }` moved the HOST's string out from under it.)
+	if (!(v.flags & (vfLOCAL | vfPARAM)) || (v.flags & vfSTATIC))
 		return false;
 	if (!v.type || v.type->is_reference())
 		return false;
@@ -28334,6 +28333,12 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		if (params[i].kind != ShimSlot::K_CLASS_INST
 		    || !class_param_via_invisible_ref(params[i].cdd))
 			continue;
+		// A move-only class (copy constructor deleted) cannot be COPIED
+		// out of the host's cell — the host keeps its object, so a move
+		// is not on offer either: no shim (the K_CLASS_INST bit copy that
+		// stood here before was a silent wrong answer for such a class).
+		if (params[i].cdd->has_deleted_copy_ctor)
+			return NULL;
 		char tname[40], sname[40];
 		snprintf(tname, sizeof(tname), "__madc_shim_p%u", (unsigned)i);
 		snprintf(sname, sizeof(sname), "__madc_shim_s%u", (unsigned)i);
