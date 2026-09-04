@@ -42,6 +42,7 @@ madc_target_bitfield_abi	engine global: target ABI facts
 madc_target_data_model	engine global: target ABI facts
 madc_target_int64_alias	engine global: target ABI facts
 madc_target_os	engine global: target ABI facts
+madc_target_va_list	engine global: target ABI facts
 madc_verbose	engine global: -v/--verbose flag (DBG)
 #
 # Misc unprefixed internals (visibility-trim candidates, .so.1 era):
