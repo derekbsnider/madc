@@ -55985,6 +55985,31 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    return adp;
 	return arg_dd_ ? arg_dd_->unqualified() : arg_dd_;
     };
+    // ONE scalar deduction step — the deducer over the by-value adjusted
+    // argument with the argument expression in hand, then the
+    // [temp.deduct.type]/2 agreement check against a binding an EARLIER
+    // argument made (deduced_bindings_conflict, the one owner), else the
+    // fresh binding. Returns the deducer's verdict (1 deduced, 0 concrete,
+    // <0 undecomposable); `conflict` is the disagreement, a deduction
+    // failure for both callers below (the already-bound consistency check
+    // and the general deduction), which differ only in what an
+    // undecomposable shape means to them.
+    auto deduce_scalar_arg = [&](const std::string &sp_, DataDef *deduce_dd_,
+				 size_t ai, std::string &tp_, DataDef *&dd_,
+				 bool &conflict) -> int {
+	conflict = false;
+	int r_ = fn_template_deduce_param(sp_, ft.typeparams, deduce_dd_, tp_,
+					  dd_, &pgm, tc->parameters[ai]);
+	if ( r_ == 1 )
+	{
+	    std::map<std::string, DataDef *>::iterator bi_ = binding.find(tp_);
+	    if ( bi_ != binding.end() )
+		conflict = deduced_bindings_conflict(bi_->second, dd_);
+	    else
+		binding[tp_] = dd_;
+	}
+	return r_;
+    };
     for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
     {
 	if ( i >= tc->parameters.size() )
@@ -56093,16 +56118,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		{
 		    std::string tp2;
 		    DataDef *dd2 = NULL;
-		    if ( fn_template_deduce_param(sp, ft.typeparams,
-				decayed_for_deduction(sp, arg_dd, i), tp2, dd2,
-				&pgm, tc->parameters[i]) == 1 && dd2 )
-		    {
-			std::map<std::string, DataDef *>::iterator bi =
-			    binding.find(tp2);
-			if ( bi != binding.end()
-			  && deduced_bindings_conflict(bi->second, dd2) )
-			    { FTPROBE("inconsistent-deduction"); return false; }
-		    }
+		    bool conflict = false;
+		    deduce_scalar_arg(sp, decayed_for_deduction(sp, arg_dd, i),
+				      i, tp2, dd2, conflict);
+		    if ( conflict )
+			{ FTPROBE("inconsistent-deduction"); return false; }
 		}
 		continue;
 	    }
@@ -56325,12 +56345,13 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		{ FTPROBE("exit-53188// template-id param the argument can't match"); return false; }
 	    }
 	}
-	// [temp.deduct.call]/2 by-value decays — decayed_for_deduction above.
+	// [temp.deduct.call]/2 by-value decays — decayed_for_deduction above;
+	// the deduction and its agreement check — deduce_scalar_arg above.
 	DataDef *deduce_dd = decayed_for_deduction(sp, arg_dd, i);
 	std::string tp;
 	DataDef *dd = NULL;
-	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd,
-					 &pgm, tc->parameters[i]);
+	bool conflict = false;
+	int r = deduce_scalar_arg(sp, deduce_dd, i, tp, dd, conflict);
 	if ( r < 0 )
 	    { FTPROBE("exit-53213"); return false; }
 	if ( r == 0 )
@@ -56347,22 +56368,15 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		{ FTPROBE("concrete-param-mismatch"); return false; }
 	    continue;
 	}
-	{
-	    // A parameter already deduced from an earlier argument must agree
-	    // (deduced_bindings_conflict, the one owner). First-binding-wins
-	    // made libc++'s `basic_string(_InputIterator, _InputIterator)`
-	    // viable for (20, 'x') — _InputIterator = int from the first
-	    // argument, the char ignored — and its body was instantiated for
-	    // int; g++ and clang never see a candidate.
-	    std::map<std::string, DataDef *>::iterator bi = binding.find(tp);
-	    if ( bi != binding.end() )
-	    {
-		if ( deduced_bindings_conflict(bi->second, dd) )
-		    { FTPROBE("inconsistent-deduction"); return false; }
-	    }
-	    else
-		binding[tp] = dd;
-	}
+	// A parameter already deduced from an earlier argument must agree
+	// ([temp.deduct.type]/2; deduce_scalar_arg compared through the one
+	// owner and bound a fresh deduction). First-binding-wins made libc++'s
+	// `basic_string(_InputIterator, _InputIterator)` viable for (20, 'x')
+	// — _InputIterator = int from the first argument, the char ignored —
+	// and its body was instantiated for int; g++ and clang never see a
+	// candidate.
+	if ( conflict )
+	    { FTPROBE("inconsistent-deduction"); return false; }
     }
     // An empty pack must not ALSO have bound an element (a fn-ptr deduction
     // saying empty while a trailing argument filled the pack is a mismatch).
