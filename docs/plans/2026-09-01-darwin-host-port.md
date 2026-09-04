@@ -1417,6 +1417,26 @@ SDK/cross facts).
 
   Lanes at 02a76f49 (2026-09-05, tmp/logs/w7f-battery.log): linux jit 1297/0/9skip exe 1238/0 obj 1238/0 packed 1297/0/9skip headerless 1266/0/40skip, fulltest rc=0 with every gate GREEN (clone-origin and deduction-owner included), forest_pack_gate linux 68 = baseline, forest_bind_gate 29/29, warn ratchet GREEN (0 warnings), tsubst flag-on GREEN; wine64 1243/0/63skip + verify_pe_release OK + win64 pack 68 = baseline; c-testsuite 220/220 baseline EMPTY; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK; darwin pack check on the rebuilt cross madc + refrozen x86-64 pack: teststringparambyvalue(+_libcxx) emitted C has 0 o25 definitions and 0 __init_with_sentinel mentions; dp2 keeps its sentinel (the trait-fold gap, expected). Battery 1 on 360831da stopped at the deduction-owner gate; 02a76f49 is that fix.
 
+  **MEASUREMENT #9 (run 33920437418 @801ae480 — code 02a76f49 — 2026-09-04
+  21:18 UTC; the owner dispatched it as `suite_gate=fals`, which the workflow's
+  `= "true"` test reads as measurement mode): arm64 1272/12/22skip, Intel
+  1281/3/22skip — EXACTLY THE PREDICTION. Passes +3 on each arch versus #8 (the
+  two std::string(n, c) tests closed by wave 7c — provenance + deduction — and
+  the new testdeductionconflict); zero new failures. The Intel 3 are the libc++
+  <list> tests (testforeachiter, testphpdumpiter, testptrcmpupcast); the arm64 12
+  are those 3 plus the 9 MIR aarch64-floor tests, list unchanged
+  (testbuiltincomplexparts / testbuiltinconjf, testcomplexretconv,
+  testgccvectorbitwisenot / testgccvectorlit / testgccvectorsizeexprbitwise,
+  testint128, testprintfdouble, teststdiobuiltinredirects). Zero c2mir
+  warnings in the suite logs. Runner mac battery 10/1 both (the include-free
+  value intrinsic, the standing known-open). Exe lane advisory (arm64 1000/214,
+  Intel 990/233; -static-libmadc Tier B until D5). THE DARWIN RESIDUE IS NOW
+  EXACTLY THE TWO ARCS: libc++ <list> (the two-phase completion arc, owner
+  scope; it never worked — the 2026-08-16 libc++ lane run predates the tests)
+  and the MIR aarch64 floor — both PROMOTION BLOCKERS under the 2026-09-04 law
+  (darwin-suite green on both arches, or every failure a filed .darwin_skip
+  with its reason).**
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
