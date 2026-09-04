@@ -12855,25 +12855,28 @@ bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
 			FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
 			external = dt && !dt->emit_symbol.empty();
 		}
-		if (external) {
-			need_output_extern(sym.c_str(), false, { { {N_VOID}, true } });
-		} else {
+		if (!external)
 			referenced_funcs.insert(sym);
-			// Emit a TYPED forward prototype `void sym(struct mc *)` for the
-			// in-module member dtor. Without a forward proto, an aggregate dtor
-			// emitted before the member dtor's definition calls it as an
-			// implicit-int K&R variadic function — which mis-wires the `this`
-			// argument (ABI mismatch: a non-variadic 1-arg callee reads `this`
-			// from the wrong place) → null-`this` deref in the member dtor (the
-			// std::map/std::set `_Rb_tree` empty-container dtor SIGSEGV@0x8). The
-			// proto matches the definition's param type, so no conflicting-types.
-			need_output_extern(sym.c_str(), false, { { {}, true, mc } });
-		}
+		// ONE prototype shape for the member dtor, external or in-module:
+		// the TYPED `void sym(struct mc *)`. Without a forward proto, an
+		// aggregate dtor emitted before the member dtor's definition calls
+		// it as an implicit-int K&R variadic function — which mis-wires the
+		// `this` argument (ABI mismatch: a non-variadic 1-arg callee reads
+		// `this` from the wrong place) → null-`this` deref in the member
+		// dtor (the std::map/std::set `_Rb_tree` empty-container dtor
+		// SIGSEGV@0x8). An EXTERNALLY-BOUND dtor (emit_symbol set — the
+		// library exports it) is `void sym(X *)` in the Itanium ABI too, and
+		// madc may ALSO emit its header-inline body under that label (a
+		// referenced deferred lazy body: libc++ basic_filebuf<char>::
+		// ~basic_filebuf, D1Ev) — the old `extern void sym(void *)` here
+		// then conflicted with the typed definition (clang: conflicting
+		// types; c2mir tolerated it, so only the portable --emit=c11 output
+		// broke: testofstreamwrite / testmanipview under libc++). The
+		// argument `&__this->m` is a `struct mc *` and needs no cast.
+		need_output_extern(sym.c_str(), false, { { {}, true, mc } });
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
 		node_t addr = node1(N_ADDR, fld, origin);
-		if (external)
-			addr = node2(N_CAST, void_ptr_type(), addr, origin);
 		node_t a = list();
 		append(a, addr);
 		node_t call = node2(N_CALL, id(sym.c_str(), origin), a, origin);
