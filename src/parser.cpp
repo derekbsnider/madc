@@ -4789,9 +4789,9 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	    spelling += opname;
 	    if ( tokens_out )
 	    {
-		tokens_out->push_back(t->clone());
+		tokens_out->push_back(t->clone_origin());
 		for ( TokenBase *s : opsyms )
-		    tokens_out->push_back(s->clone());
+		    tokens_out->push_back(s->clone_origin());
 	    }
 	    t = nextToken();
 	    continue;
@@ -4819,7 +4819,7 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	    spelling += frag;
 	}
 	if ( tokens_out )
-	    tokens_out->push_back(t->clone());
+	    tokens_out->push_back(t->clone_origin());
 	// The stream step, not a bare update(): a non-type argument's `<` is
 	// judged by lookup (`A::num < B::num`, `K::num < 5`, `n < 5` — see
 	// DelimDepth::lt_reads_as_less_than); a bare tracker here read every
@@ -4848,7 +4848,7 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
     TokenSemi *sentinel = new TokenSemi();
     std::vector<TokenBase *> inj;
     for ( size_t i = 0; i < seq.size(); ++i )
-	inj.push_back(seq[i]->clone());
+	inj.push_back(seq[i]->clone_origin());
     inj.push_back(sentinel);
     for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
 	  it != inj.rend(); ++it )
@@ -5110,7 +5110,7 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 		subst.find(s);
 	    if ( si != subst.end() )
 	    {
-		out.push_back(si->second->clone());
+		out.push_back(si->second->clone_origin());
 		continue;
 	    }
 	    if ( token_subst )
@@ -5120,12 +5120,12 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 		if ( ti != token_subst->end() )
 		{
 		    for ( TokenBase *st : ti->second )
-			out.push_back(st ? st->clone() : NULL);
+			out.push_back(st ? st->clone_origin() : NULL);
 		    continue;
 		}
 	    }
 	}
-	out.push_back(bt ? bt->clone() : NULL);
+	out.push_back(bt ? bt->clone_origin() : NULL);
     }
     return out;
 }
@@ -5171,9 +5171,9 @@ static std::vector<TokenBase *> clone_template_tokens_with_pack_subst(
 	    std::map<std::string, TokenDataType *>::const_iterator si =
 		subst.find(((TokenIdent *)bt)->spelling());
 	    if ( si != subst.end() )
-	    { out.push_back(si->second->clone()); continue; }
+	    { out.push_back(si->second->clone_origin()); continue; }
 	}
-	out.push_back(bt ? bt->clone() : NULL);
+	out.push_back(bt ? bt->clone_origin() : NULL);
     }
     return out;
 }
@@ -5860,7 +5860,7 @@ static void record_dependent_shell_origin(
     org.raw_arg_tokens.resize(raw_arg_tokens.size());
     for ( size_t ai = 0; ai < raw_arg_tokens.size(); ++ai )
 	for ( TokenBase *t : raw_arg_tokens[ai] )
-	    org.raw_arg_tokens[ai].push_back(t ? t->clone() : NULL);
+	    org.raw_arg_tokens[ai].push_back(t ? t->clone_origin() : NULL);
 }
 
 TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td,
@@ -5946,7 +5946,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	for ( TokenBase *dt : td.typeparam_defaults[ai] )
 	{
 	    spelling += template_token_fragment(dt);
-	    arg_tokens.push_back(dt ? dt->clone() : NULL);
+	    arg_tokens.push_back(dt ? dt->clone_origin() : NULL);
 	}
 	args.push_back(spelling);
 	raw_arg_tokens.push_back(arg_tokens);
@@ -5991,7 +5991,7 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    if ( i )
 		replay.push_back(new TokenComma());
 	    for ( TokenBase *t : raw_arg_tokens[i] )
-		replay.push_back(t ? t->clone() : NULL);
+		replay.push_back(t ? t->clone_origin() : NULL);
 	}
 	replay.push_back(new TokenGT());
 	for ( std::vector<TokenBase *>::reverse_iterator it = replay.rbegin();
@@ -6550,7 +6550,7 @@ static void record_pending_template_instantiation(
     pti.mangled_name = mangled;
     pti.canonical_spelling = canon;
     for ( size_t i = 0; i < args.size(); ++i )
-	pti.args.push_back((TokenDataType *)args[i]->clone());
+	pti.args.push_back((TokenDataType *)args[i]->clone_origin());
     pending.push_back(pti);
 }
 
@@ -7339,7 +7339,7 @@ class BasicClassPatternResolver
 	    if ( slot_tok && &slot_tok->definition == memo_arguments[i]
 	      && template_type_arg_spelling(slot_tok, "")
 		 != basic_class_datadef_spelling(memo_arguments[i]) )
-		replay.push_back(slot_tok->clone());
+		replay.push_back(slot_tok->clone_origin());
 	    else if ( DataDefCONST *carg =
 			dynamic_cast<DataDefCONST *>(memo_arguments[i]) )
 	    {
@@ -7726,7 +7726,7 @@ static std::vector<TokenBase *> basic_class_pattern_member_template_tokens(
 	    if ( subst != binding.type_subst.end() )
 	    {
 		out.push_back(basic_class_pattern_token_at_source(
-		    subst->second->clone(), token));
+		    subst->second->clone_origin(), token));
 		continue;
 	    }
 	    if ( spelling == binding.definition.class_name )
@@ -7745,7 +7745,7 @@ static std::vector<TokenBase *> basic_class_pattern_member_template_tokens(
 			binding.definition, tokens, i + 1);
 		if ( !foreign_qualified && !distinct_specialization )
 		{
-		    TokenIdent *renamed = (TokenIdent *)token->clone();
+		    TokenIdent *renamed = (TokenIdent *)token->clone_origin();
 		    pgm.set_token_spelling(renamed, binding.local_name);
 		    out.push_back(basic_class_pattern_token_at_source(
 			renamed, token));
@@ -7762,7 +7762,7 @@ static std::vector<TokenBase *> basic_class_pattern_member_template_tokens(
 	    }
 	}
 	out.push_back(token ? basic_class_pattern_token_at_source(
-	    token->clone(), token) : NULL);
+	    token->clone_origin(), token) : NULL);
     }
     basic_class_pattern_canonicalize_type_tokens(pgm, out);
     return out;
@@ -9142,7 +9142,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		std::vector<TokenBase *> repl;
 		for ( TokenBase *t : n->second )
 		    if ( t )
-			repl.push_back(t->clone());
+			repl.push_back(t->clone_origin());
 		token_subst[n->first] = repl;
 	    }
 	    // A deduced pack binds to absorbed concrete args. Route type elements
@@ -9596,7 +9596,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    else
 		for ( size_t k = 0; k < 7; ++k )
-		    inj.push_back(td.body[bi+k]->clone());
+		    inj.push_back(td.body[bi+k]->clone_origin());
 	    bi += 6;
 	    continue;
 	}
@@ -9661,10 +9661,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			    {
 				for ( TokenBase *et : elems[e] )
 				    if ( et )
-					inj.push_back(et->clone());
+					inj.push_back(et->clone_origin());
 			    }
 			    else
-				inj.push_back(pt2->clone());
+				inj.push_back(pt2->clone_origin());
 			}
 		    }
 		    if ( elems.empty() && !inj.empty()
@@ -9874,7 +9874,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    {
 					if ( ne ) inj.push_back(new TokenComma());
 					if ( tpk->second[ne] )
-					    inj.push_back(tpk->second[ne]->clone());
+					    inj.push_back(tpk->second[ne]->clone_origin());
 				    }
 				    if ( tpk->second.empty() && !inj.empty()
 				      && inj.back()->id() == TokenID::tkComma )
@@ -9882,7 +9882,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    k += 3;
 				}
 				else if ( e < tpk->second.size() && tpk->second[e] )
-				    inj.push_back(tpk->second[e]->clone());
+				    inj.push_back(tpk->second[e]->clone_origin());
 				continue;
 			    }
 			    std::map<std::string,
@@ -9898,7 +9898,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				    {
 					if ( ne ) inj.push_back(new TokenComma());
 					for ( TokenBase *et : vpk->second[ne] )
-					    if ( et ) inj.push_back(et->clone());
+					    if ( et ) inj.push_back(et->clone_origin());
 				    }
 				    if ( vpk->second.empty() && !inj.empty()
 				      && inj.back()->id() == TokenID::tkComma )
@@ -9907,7 +9907,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				}
 				else if ( e < vpk->second.size() )
 				    for ( TokenBase *et : vpk->second[e] )
-					if ( et ) inj.push_back(et->clone());
+					if ( et ) inj.push_back(et->clone_origin());
 				continue;
 			    }
 			    // The ctor's expanded PARAMETER pack: element e of
@@ -9928,7 +9928,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				inj.push_back(ei2);
 				continue;
 			    }
-			    inj.push_back(pt2->clone());
+			    inj.push_back(pt2->clone_origin());
 			}
 			if ( gen )
 			{
@@ -9987,7 +9987,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			    inj.push_back(new TokenComma());
 			for ( TokenBase *et : vit->second[e] )
 			    if ( et )
-				inj.push_back(et->clone());
+				inj.push_back(et->clone_origin());
 		    }
 		    if ( vit->second.empty() && !inj.empty()
 		      && inj.back()->id() == TokenID::tkComma )
@@ -10057,13 +10057,13 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		}
 	    }
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
-	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
+	    if ( si != subst.end() ) { inj.push_back(si->second->clone_origin()); continue; }
 	    std::map<std::string, std::vector<TokenBase *> >::iterator nti =
 		token_subst.find(s);
 	    if ( nti != token_subst.end() )
 	    {
 		for ( size_t ni = 0; ni < nti->second.size(); ++ni )
-		    inj.push_back(nti->second[ni]->clone());
+		    inj.push_back(nti->second[ni]->clone_origin());
 		continue;
 	    }
 	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
@@ -10194,10 +10194,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			{
 			    if ( ei )
 				inj.push_back(new TokenComma());
-			    inj.push_back(elems[ei]->clone());
+			    inj.push_back(elems[ei]->clone_origin());
 			    for ( size_t sk = bi + 1; sk < sj; ++sk )
 				if ( td.body[sk] )
-				    inj.push_back(td.body[sk]->clone());
+				    inj.push_back(td.body[sk]->clone_origin());
 			    // A ONE-element pack keeps the SOURCE name, so
 			    // every arity-1 expansion stays byte-identical to
 			    // what it was before per-element naming existed —
@@ -10224,7 +10224,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		{
 		    if ( ei )
 		        inj.push_back(new TokenComma());
-		    inj.push_back(elems[ei]->clone());
+		    inj.push_back(elems[ei]->clone_origin());
 		}
 		if ( bi + 3 < td.body.size()
 		  && td.body[bi+1]->id() == TokenID::tkDot
@@ -10355,10 +10355,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    if ( self_template_base || self_template_body_distinct
 		      || self_template_member_distinct )
 		    {
-			inj.push_back(bt->clone());   // keep class_name; args substitute below
+			inj.push_back(bt->clone_origin());   // keep class_name; args substitute below
 			continue;
 		    }
-		    TokenIdent *ni = (TokenIdent *)bt->clone();
+		    TokenIdent *ni = (TokenIdent *)bt->clone_origin();
 		    set_token_spelling(ni, mangled);
 		    inj.push_back(ni);
 		    if ( bi + 1 < td.body.size()
@@ -10382,7 +10382,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		}
 	    }
 	}
-	inj.push_back(bt->clone());
+	inj.push_back(bt->clone_origin());
     }
     // Terminate the class definition so the class parser stops cleanly without
     // consuming the caller's following tokens (e.g. the declared variable name).
@@ -10634,7 +10634,7 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 	std::vector<TokenBase *> body;
 	for ( TokenBase *t : arg_tokens[i] )
 	    if ( t )
-		body.push_back(t->clone());
+		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
 	size_t saved_diag_count = diagnostics.size();
 	Program::ErrorInfo saved_error = last_error;
@@ -10800,7 +10800,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    for ( TokenBase *dt : td.typeparam_defaults[ai] )
 	    {
 		spelling += template_token_fragment(dt);
-		toks.push_back(dt->clone());
+		toks.push_back(dt->clone_origin());
 	    }
 	    args.push_back(spelling);
 	    arg_tokens.push_back(toks);
@@ -10919,7 +10919,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    {
 			used_params.insert(nm);
 			for ( TokenBase *rt : *si->second )
-			    body.push_back(rt->clone());
+			    body.push_back(rt->clone_origin());
 			// A PACK param (`_Args`) in the alias body is followed by a
 			// `...` pack-expansion ellipsis (`__construct_helper<_Tp,
 			// _Args...>`). The arg slot holds the (single) bound element;
@@ -10934,7 +10934,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 			continue;
 		    }
 		}
-		body.push_back(bt ? bt->clone() : NULL);
+		body.push_back(bt ? bt->clone_origin() : NULL);
 	    }
 	    body.push_back(new TokenSemi());
 
@@ -11115,7 +11115,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    std::vector<TokenBase *> probe;
 		    for ( TokenBase *t : arg_tokens[i] )
 			if ( t )
-			    probe.push_back(t->clone());
+			    probe.push_back(t->clone_origin());
 		    probe.push_back(new TokenSemi());
 		    size_t sdc = diagnostics.size();
 		    Program::ErrorInfo se = last_error;
@@ -11236,11 +11236,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 		if ( si != subst.end() )
 		{
-		    inj.push_back(si->second->clone());
+		    inj.push_back(si->second->clone_origin());
 		    continue;
 		}
 	    }
-	    inj.push_back(bt->clone());
+	    inj.push_back(bt->clone_origin());
 	}
 	inj.push_back(new TokenSemi());
 	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
@@ -11273,11 +11273,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 	    if ( si != subst.end() )
 	    {
-		inj.push_back(si->second->clone());
+		inj.push_back(si->second->clone_origin());
 		continue;
 	    }
 	}
-	inj.push_back(bt->clone());
+	inj.push_back(bt->clone_origin());
     }
     TokenSemi *alias_sentinel = new TokenSemi();
     inj.push_back(alias_sentinel);
@@ -11346,11 +11346,11 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
 		if ( si != subst.end() )
 		{
-		    inj2.push_back(si->second->clone());
+		    inj2.push_back(si->second->clone_origin());
 		    continue;
 		}
 	    }
-	    inj2.push_back(bt->clone());
+	    inj2.push_back(bt->clone_origin());
 	}
 	TokenSemi *sentinel2 = new TokenSemi();
 	inj2.push_back(sentinel2);
@@ -11452,7 +11452,7 @@ void Program::complete_pending_template_instantiations(const std::string &class_
 	{
 	    if ( ai )
 		toks.push_back(new TokenComma());
-	    toks.push_back(pending[i].args[ai]->clone());
+	    toks.push_back(pending[i].args[ai]->clone_origin());
 	}
 	toks.push_back(new TokenGT());
 	for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
@@ -12328,7 +12328,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
     // (namespace_chain_datatype owns the walk).
     if ( TokenDataType *proto = namespace_chain_datatype(tname) )
     {
-	TokenDataType *use = (TokenDataType *)proto->clone();
+	TokenDataType *use = (TokenDataType *)proto->clone_origin();
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
@@ -12344,7 +12344,7 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	// stamped with this use-site token's position, so a typedef'd-type
 	// usage (and any diagnostic or CIR node derived from it) maps to the
 	// use site rather than the typedef definition.
-	TokenDataType *use = (TokenDataType *)(*dmi)->clone();
+	TokenDataType *use = (TokenDataType *)(*dmi)->clone_origin();
 	use->file   = tb->file;
 	use->line   = tb->line;
 	use->column = tb->column;
@@ -12951,7 +12951,7 @@ static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
 {
     if ( !proto || !at )
 	return proto;
-    TokenDataType *t = (TokenDataType *)proto->clone();
+    TokenDataType *t = (TokenDataType *)proto->clone_origin();
     t->file = at->file;
     t->line = at->line;
     t->column = at->column;
@@ -17276,7 +17276,7 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     Program::ErrorInfo saved_error = last_error;
     std::vector<TokenBase *> body;
     for ( TokenBase *ct : cond_toks )
-	body.push_back(ct->clone());
+	body.push_back(ct->clone_origin());
     body.push_back(new TokenSemi());
     TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
@@ -19863,7 +19863,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 			sub.push_back(new TokenDataType(pack_elems[e]->name.c_str(),
 							*pack_elems[e]));
 		    else
-			sub.push_back(pt ? pt->clone() : NULL);
+			sub.push_back(pt ? pt->clone_origin() : NULL);
 		}
 	    }
 	    for ( TokenBase *pt : pat )
@@ -19876,7 +19876,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 	    std::string tn = contextual_identifier_name(t);
 	    if ( tn == pack_name )   // leave raw for the `...` expansion above
 	    {
-		sub.push_back(t->clone());
+		sub.push_back(t->clone_origin());
 		continue;
 	    }
 	    std::map<std::string, DataDef *>::const_iterator bi = binding.find(tn);
@@ -19887,7 +19887,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 		continue;
 	    }
 	}
-	sub.push_back(t ? t->clone() : NULL);
+	sub.push_back(t ? t->clone_origin() : NULL);
     }
     return sub;
 }
@@ -31556,7 +31556,7 @@ static std::vector<TokenBase *> class_pattern_clone_tokens(
     std::vector<TokenBase *> out;
     out.reserve(tokens.size());
     for ( size_t i = 0; i < tokens.size(); ++i )
-	out.push_back(tokens[i] ? tokens[i]->clone() : NULL);
+	out.push_back(tokens[i] ? tokens[i]->clone_origin() : NULL);
     return out;
 }
 
@@ -33861,7 +33861,7 @@ bool Program::eval_substituted_slot_type(
 		continue;
 	    }
 	}
-	body.push_back(t ? t->clone() : NULL);
+	body.push_back(t ? t->clone_origin() : NULL);
     }
     // Resolve under the same muted SFINAE trap as the decltype probe: a
     // resolution failure IS the answer (the spec is rejected), never a
@@ -33957,7 +33957,7 @@ bool Program::eval_decltype_probe_tokens(const std::vector<TokenBase *> &slot_to
 		continue;
 	    }
 	}
-	body.push_back(t ? t->clone() : NULL);
+	body.push_back(t ? t->clone_origin() : NULL);
     }
     // A failing probe IS the SFINAE answer, not an error. Rewinding the
     // diagnostics watermark is not enough on its own: throwbuf::sync prints to
@@ -34286,7 +34286,7 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     std::vector<TokenBase *> body;
     for ( TokenBase *t : argtoks )
 	if ( t )
-	    body.push_back(t->clone());
+	    body.push_back(t->clone_origin());
     TokenSemi *sentinel = new TokenSemi();
     body.push_back(sentinel);
     saved_tokens = tokens.swap_in(std::move(body));
@@ -34339,7 +34339,7 @@ bool Program::constraint_expression_well_formed(
     std::vector<TokenBase *> body;
     for ( TokenBase *t : exprtoks )
 	if ( t )
-	    body.push_back(t->clone());
+	    body.push_back(t->clone_origin());
     body.push_back(new TokenSemi());
     saved_tokens = tokens.swap_in(std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
@@ -34441,7 +34441,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	    dv.push_back(new TokenLT());
 	    for ( int i = 0; i < name_idx; ++i )
 	    {
-		dv.push_back(p[i]->clone());
+		dv.push_back(p[i]->clone_origin());
 		if ( p[i]->id() == TokenID::tkBand
 		  || p[i]->id() == TokenID::tkLand )
 		    has_ref = true;
@@ -34471,11 +34471,11 @@ int64_t Program::evaluate_requires_expression_constant()
 		if ( si != psubst.end() )
 		{
 		    for ( TokenBase *r : si->second )
-			out.push_back(r->clone());
+			out.push_back(r->clone_origin());
 		    continue;
 		}
 	    }
-	    out.push_back(t ? t->clone() : NULL);
+	    out.push_back(t ? t->clone_origin() : NULL);
 	}
 	return out;
     };
@@ -34489,7 +34489,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	std::vector<TokenBase *> body;
 	for ( TokenBase *t : toks )
 	    if ( t )
-		body.push_back(t->clone());
+		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
 	saved = tokens.swap_in(std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
@@ -34516,7 +34516,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	std::vector<TokenBase *> body;
 	for ( TokenBase *t : ty )
 	    if ( t )
-		body.push_back(t->clone());
+		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
 	saved = tokens.swap_in(std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
@@ -34613,19 +34613,19 @@ int64_t Program::evaluate_requires_expression_constant()
 		{
 		    // C<A...> -> C< rt, A... >
 		    for ( size_t i = 0; i <= lt; ++i )
-			cid.push_back(cc[i]->clone());
+			cid.push_back(cc[i]->clone_origin());
 		    cid.push_back(rtt);
 		    if ( lt + 1 < cc.size()
 		      && cc[lt + 1]->id() != TokenID::tkGT )
 			cid.push_back(new TokenComma());
 		    for ( size_t i = lt + 1; i < cc.size(); ++i )
-			cid.push_back(cc[i]->clone());
+			cid.push_back(cc[i]->clone_origin());
 		}
 		else
 		{
 		    // bare `C` -> C< rt >
 		    for ( TokenBase *t : cc )
-			cid.push_back(t->clone());
+			cid.push_back(t->clone_origin());
 		    cid.push_back(new TokenLT());
 		    cid.push_back(rtt);
 		    cid.push_back(new TokenGT());
@@ -34993,7 +34993,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		    std::vector<TokenBase *> toks;
 		    for ( TokenBase *t : arg_tokens_by_slot[i] )
 			if ( t )
-			    toks.push_back(t->clone());
+			    toks.push_back(t->clone_origin());
 		    nontype_ded[ptrim] = toks;
 		    score += 10;   // deduced param: less specialized than an exact value (20)
 		    continue;
@@ -35125,7 +35125,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		std::vector<TokenBase *> cbody;
 		for ( TokenBase *t : ctoks )
 		    if ( t )
-			cbody.push_back(t->clone());
+			cbody.push_back(t->clone_origin());
 		cbody.push_back(new TokenSemi());
 		saved = tokens.swap_in(std::move(cbody));
 		std::streambuf *sc = std::cerr.rdbuf();
@@ -37742,7 +37742,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( dmi != datatype_map.end() )
 			{
 			    TokenDataType *use =
-				(TokenDataType *)(*dmi)->clone();
+				(TokenDataType *)(*dmi)->clone_origin();
 			    use->file   = ident_tb->file;
 			    use->line   = ident_tb->line;
 			    use->column = ident_tb->column;
@@ -39662,7 +39662,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    ++brackets;
 		    DBG(cout << "Got (, pushing onto opStack" << endl);
-		    opStack.push(tb); // opStack.push(tb->clone());
+		    opStack.push(tb); // opStack.push(tb->clone_origin());
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// colon stops expression (ternary false branch, case label, range-for)
@@ -40646,7 +40646,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << " id() " << (int)tb->id() << endl);
-		to = (TokenOperator *)tb; // ->clone();
+		to = (TokenOperator *)tb; // ->clone_origin();
 		to->left = NULL;
 		to->right = NULL;
 		// whiile: there is a function at the top of the operator stack)
@@ -40708,7 +40708,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	{
 	    case TokenType::ttInteger:
 	        DBG(cout << "Pushing integer: " << (int)tb->get() << " onto exStack" << endl);
-		exStack.push(tb); // exStack.push(tb->clone());
+		exStack.push(tb); // exStack.push(tb->clone_origin());
 		break;
 	    case TokenType::ttReal:
 	        DBG(cout << "Pushing number: " << ((TokenReal *)tb)->dval() << " onto exStack" << endl);
@@ -42090,7 +42090,7 @@ static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
 	return;
     std::vector<TokenBase *> seq;
     for ( TokenBase *t : init_toks )
-	seq.push_back(t->clone());
+	seq.push_back(t->clone_origin());
     seq.push_back(new TokenSemi());
     TokenStream::State saved_stream = pgm.tokens.swap_in(std::move(seq));
     // Fresh expression-position context: the live parse's last consumed token
@@ -42168,10 +42168,10 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
 	    }				     // resolved at the close below
 	    std::vector<TokenBase *> optail;
 	    delimStepStream(tn, bd, &optail);
-	    binit_toks.push_back(tn->clone());
+	    binit_toks.push_back(tn->clone_origin());
 	    for ( TokenBase *ot : optail )
 		if ( ot )
-		    binit_toks.push_back(ot->clone());
+		    binit_toks.push_back(ot->clone_origin());
 	}
 	if ( bd.angle > 0 && bangle_comma )
 	    Throw(tn) << "Ambiguous '<' in braced member default initializer"
@@ -42214,10 +42214,10 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
 	    angle_comma = true;
 	std::vector<TokenBase *> optail;
 	delimStepStream(tn, d, &optail);
-	init_toks.push_back(tn->clone());
+	init_toks.push_back(tn->clone_origin());
 	for ( TokenBase *ot : optail )
 	    if ( ot )
-		init_toks.push_back(ot->clone());
+		init_toks.push_back(ot->clone_origin());
     }
     if ( d.angle > 0 && angle_comma )
 	Throw(tn) << "Ambiguous '<' in member default initializer with"
@@ -44643,16 +44643,16 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	else
 	    init.name = contextual_identifier_name(name_tb);
 	std::vector<TokenBase *> id_toks;
-	id_toks.push_back(name_tb->clone());
+	id_toks.push_back(name_tb->clone_origin());
 	while ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
-	    id_toks.push_back(nextToken()->clone());
+	    id_toks.push_back(nextToken()->clone_origin());
 	    TokenBase *part = nextToken();
 	    if ( !part || !is_contextual_identifier_token(part) )
 		Throw(part ? part : name_tb)
 		    << "Expecting qualified initializer name after '::'" << flush;
 	    init.name += "::" + contextual_identifier_name(part);
-	    id_toks.push_back(part->clone());
+	    id_toks.push_back(part->clone_origin());
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
@@ -45317,7 +45317,7 @@ static bool synthesize_defaulted_comparison(
 						       : "strong_ordering");
 	if ( di == ni->end() || !di->second )
 	    return false;
-	ret_tdt = (TokenDataType *)di->second->clone();
+	ret_tdt = (TokenDataType *)di->second->clone_origin();
     }
     else
 	ret_tdt = new TokenDataType("bool", ddBOOL);
@@ -45403,7 +45403,7 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	// is an ordinary function definition.
 	if ( inj.empty() && t->id() == TokenID::tkFRIEND )
 	    continue;
-	inj.push_back(t->clone());
+	inj.push_back(t->clone_origin());
     }
     if ( inj.empty() )
 	return;
@@ -45734,7 +45734,7 @@ static bool try_parse_defaulted_member_template_constructor(
     if ( has_body )
 	for ( size_t i = open_idx + 1; i <= decl_end; ++i )
 	    definition_tokens.push_back(pgm.tokens[i]
-					? pgm.tokens[i]->clone() : NULL);
+					? pgm.tokens[i]->clone_origin() : NULL);
 
     std::vector<TokenBase *> signature_tokens;
     for ( size_t i = open_idx + 1; i <= param_close_idx; ++i )
@@ -51887,7 +51887,7 @@ std::vector<TokenBase *> Program::collect_template_default_argument()
 	    d.update(t);
 	    int closed = before - d.angle;
 	    if ( closed == 0 )
-		out.push_back(t->clone());
+		out.push_back(t->clone_origin());
 	    else if ( closed > 1 )
 	    {
 		out.push_back(new TokenGT());
@@ -51902,7 +51902,7 @@ std::vector<TokenBase *> Program::collect_template_default_argument()
 	    }
 	    continue;
 	}
-	out.push_back(t->clone());
+	out.push_back(t->clone_origin());
 	d.update(t);
     }
     return out;
@@ -51948,7 +51948,7 @@ void Program::skip_template_id_suffix(std::vector<TokenBase *> *out)
 		out->push_back(new TokenGT());
 	    }
 	    else
-		out->push_back(t->clone());
+		out->push_back(t->clone_origin());
 	}
     }
     while ( d.angle > 0 && peekToken() );
@@ -52617,10 +52617,10 @@ static void parse_template_parameter_list(
 	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
 	if ( consumed_any && head && popped.size() == consumed )
 	{
-	    run.push_back(head->clone());
+	    run.push_back(head->clone_origin());
 	    for ( TokenBase *p : popped )
 		if ( p )
-		    run.push_back(p->clone());
+		    run.push_back(p->clone_origin());
 	}
 	return consumed_any;
     };
@@ -52793,7 +52793,7 @@ static void extract_inner_template_typeparams(
 	return;
     std::vector<TokenBase *> head;
     for ( size_t i = 2; i <= close; ++i )
-	head.push_back(decl[i] ? decl[i]->clone() : NULL);
+	head.push_back(decl[i] ? decl[i]->clone_origin() : NULL);
 
     TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(head));
     TokenBase *saved_cur = pgm.curToken();
@@ -53359,19 +53359,19 @@ void Program::register_outofline_member_instantiations(
 		std::map<std::string, TokenDataType *>::iterator si =
 		    tsubst.find(s);
 		if ( si != tsubst.end() )
-		    { sub.push_back(si->second->clone()); continue; }
+		    { sub.push_back(si->second->clone_origin()); continue; }
 		std::map<std::string, std::vector<TokenBase *> >::iterator ti =
 		    toksubst.find(s);
 		if ( ti != toksubst.end() )
 		{
 		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
 			sub.push_back(ti->second[ni2]
-				      ? ti->second[ni2]->clone() : NULL);
+				      ? ti->second[ni2]->clone_origin() : NULL);
 		    continue;
 		}
 		if ( s == class_name )
 		{
-		    TokenIdent *ren = (TokenIdent *)bt->clone();
+		    TokenIdent *ren = (TokenIdent *)bt->clone_origin();
 		    set_token_spelling(ren, registered_mangled);
 		    sub.push_back(ren);
 		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
@@ -53380,7 +53380,7 @@ void Program::register_outofline_member_instantiations(
 		    continue;
 		}
 	    }
-	    sub.push_back(bt->clone());
+	    sub.push_back(bt->clone_origin());
 	}
 
 	// Signature gate for OVERLOADED non-ctor members: the name+constness
@@ -53778,12 +53778,12 @@ void Program::instantiate_outofline_nested_classes(
 		    }
 		    for ( size_t ai = 0; ai < arg_tokens_by_slot[slot].size(); ++ai )
 			inj.push_back(arg_tokens_by_slot[slot][ai]
-				      ? arg_tokens_by_slot[slot][ai]->clone() : NULL);
+				      ? arg_tokens_by_slot[slot][ai]->clone_origin() : NULL);
 		    continue;
 		}
 		if ( s == class_name )
 		{
-		    TokenIdent *ni = (TokenIdent *)bt->clone();
+		    TokenIdent *ni = (TokenIdent *)bt->clone_origin();
 		    set_token_spelling(ni, registered_mangled);
 		    inj.push_back(ni);
 		    if ( bi + 1 < def.decl.size() && def.decl[bi + 1]
@@ -53797,7 +53797,7 @@ void Program::instantiate_outofline_nested_classes(
 		    continue;
 		}
 	    }
-	    inj.push_back(bt->clone());
+	    inj.push_back(bt->clone_origin());
 	}
 	if ( !subst_ok )
 	{
@@ -56472,7 +56472,7 @@ DataDef *Program::resolve_template_param_default_type(
 	    // The pack name is an operand, not a type occurrence. Keep it
 	    // spelled so evaluate_type_query can find its published arity.
 	    for ( size_t j = i; j <= i + 6; ++j )
-		body.push_back(default_tokens[j]->clone());
+		body.push_back(default_tokens[j]->clone_origin());
 	    i += 6;
 	    continue;
 	}
@@ -56488,7 +56488,7 @@ DataDef *Program::resolve_template_param_default_type(
 		continue;
 	    }
 	}
-	body.push_back(bt->clone());
+	body.push_back(bt->clone_origin());
     }
     body.push_back(new TokenSemi());
 
@@ -56727,7 +56727,7 @@ static std::vector<TokenBase *> clone_run_with_template_names(
 		continue;
 	    }
 	}
-	out.push_back(t ? t->clone() : NULL);
+	out.push_back(t ? t->clone_origin() : NULL);
     }
     return out;
 }
@@ -57405,7 +57405,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    if ( !value_pack_name.empty() && pn == value_pack_name )
 		    { inj.push_back(new TokenIdent(elem_value_name(e).c_str())); continue; }
 		}
-		inj.push_back(pt->clone());
+		inj.push_back(pt->clone_origin());
 	    }
 	};
 	for ( size_t i = 0; i < ft.decl.size(); ++i )
@@ -57430,7 +57430,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    // rewrite `P` to a bound TYPE and manufacture the un-foldable
 		    // `sizeof...(int32_t&)`.
 		    for ( size_t k = 0; k < 7; ++k )
-			inj.push_back(ft.decl[i+k]->clone());
+			inj.push_back(ft.decl[i+k]->clone_origin());
 		    i += 6;
 		    continue;
 		}
@@ -57457,7 +57457,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			if ( e ) inj.push_back(new TokenComma());
 			inj.push_back(new TokenDataType(
 			    bind_spelling(pack_elems[e]).c_str(), *pack_elems[e]));
-			for ( TokenBase *sfx : decl_suffix ) inj.push_back(sfx->clone());
+			for ( TokenBase *sfx : decl_suffix ) inj.push_back(sfx->clone_origin());
 			inj.push_back(new TokenIdent(elem_value_name(e).c_str()));
 		    }
 		    i = k + 3;	// consumed _Args [decl-suffix] ... __args
@@ -57515,9 +57515,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		{ inj.push_back(new TokenIdent(tni->second.c_str())); continue; }
 		std::map<std::string, TokenDataType *>::iterator si = subst.find(idname);
 		if ( si != subst.end() && idname != pack_param )
-		{ inj.push_back(si->second->clone()); continue; }
+		{ inj.push_back(si->second->clone_origin()); continue; }
 	    }
-	    inj.push_back(bt->clone());
+	    inj.push_back(bt->clone_origin());
 	}
 	multi_done = true;
     }
@@ -57557,7 +57557,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // tidpack_empty_names counts this arm used to consult are published
 	    // as pack arities before the loop, so the parser resolves them.
 	    for ( size_t k = 0; k < 7; ++k )
-		inj.push_back(ft.decl[i+k]->clone());
+		inj.push_back(ft.decl[i+k]->clone_origin());
 	    i += 6;
 	    continue;
 	}
@@ -57727,9 +57727,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    std::map<std::string, TokenDataType *>::iterator si =
 		subst.find(idname);
 	    if ( si != subst.end() )
-		inj.push_back(si->second->clone());
+		inj.push_back(si->second->clone_origin());
 	    else
-		inj.push_back(bt->clone());
+		inj.push_back(bt->clone_origin());
 	    // One-element pack expansion: `_Base...` (type position) and
 	    // `__base...` (value expansion) both expand to the single bound
 	    // element — drop the `...` (three tkDot tokens). Real C varargs
@@ -57773,7 +57773,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 			   && (ft.decl[k]->id() == TokenID::tkBand
 			    || ft.decl[k]->id() == TokenID::tkLand)) )
 		    {
-			inj.push_back(ft.decl[k]->clone());
+			inj.push_back(ft.decl[k]->clone_origin());
 			++copied;
 		    }
 		    ++k;
@@ -57792,7 +57792,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    }
 	    continue;
 	}
-	inj.push_back(bt->clone());
+	inj.push_back(bt->clone_origin());
     }
 
 #ifdef MADC_DBG_PACK
@@ -57814,6 +57814,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    fprintf(stderr, " %s",
 		    inj[i] ? overload_token_spelling(inj[i]).c_str() : "?");
 	fprintf(stderr, "\n");
+	// Provenance: the pattern's own first token file, the first injected
+	// clone's file, and the parse position the clones fell back to. A
+	// pattern restored with NO file attributes its instantiation to the
+	// CALL SITE's file (a header body becomes user code to the builder's
+	// root/library split — emitted unconditionally).
+	const char *pf = (!ft.decl.empty() && ft.decl[0] && ft.decl[0]->file)
+			 ? ft.decl[0]->file : "(null)";
+	const char *jf = (!inj.empty() && inj[0] && inj[0]->file)
+			 ? inj[0]->file : "(null)";
+	fprintf(stderr, "MTBPROBE prov %s pattern_file=%s inj0_file=%s parse_file=%s\n",
+		inst_key.c_str(), pf, jf,
+		TokenBase::_parse_file ? TokenBase::_parse_file : "(null)");
     }
     // SFINAE pre-check ([temp.deduct]): substitution failure in the
     // SIGNATURE silently discards the candidate — it must never reach the
@@ -57899,7 +57911,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		size_t sandbox_base = pgm.tokens.size();
 		pgm.pushToken(new TokenSemi());
 		for ( size_t ri = rt_end; ri-- > rt_begin; )
-		    pgm.pushToken(inj[ri]->clone());
+		    pgm.pushToken(inj[ri]->clone_origin());
 		bool resolved = false;
 		try
 		{
@@ -58371,7 +58383,7 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
     {
 	if ( i )
 	    toks.push_back(new TokenComma());
-	toks.push_back(arg_types[i]->clone());
+	toks.push_back(arg_types[i]->clone_origin());
     }
     toks.push_back(new TokenGT());
     for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
@@ -59565,7 +59577,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	return NULL;
     std::vector<TokenBase *> def_tokens;
     for ( size_t i = op + 1; i < decl.size(); ++i )
-	def_tokens.push_back(decl[i] ? decl[i]->clone() : NULL);
+	def_tokens.push_back(decl[i] ? decl[i]->clone_origin() : NULL);
     tsubst_drop_pack_decl_ellipsis(fd, def_tokens);
     if ( def_tokens.empty() )
 	return NULL;
@@ -59789,7 +59801,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     std::vector<TokenBase *> inj;
     for ( size_t i = kw; i <= close; ++i )
 	if ( decl[i] )
-	    inj.push_back(decl[i]->clone());
+	    inj.push_back(decl[i]->clone_origin());
     inj.push_back(new TokenSemi());
     // Replay context: the instantiate_template_use model (fresh compounds +
     // class scope with the owner pushed, cleared parse-mode flags, the owner's
@@ -60122,7 +60134,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		|| (t->type() == TokenType::ttIdentifier
 		    && static_cast<TokenIdent *>(t)->spelling_is("static"))) )
 	    continue;	// drop the static specifier
-	ft.decl.push_back(t ? t->clone() : NULL);
+	ft.decl.push_back(t ? t->clone_origin() : NULL);
     }
     size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( name_idx >= ft.decl.size() || !ft.decl[name_idx] )
@@ -60515,7 +60527,7 @@ bool Program::instantiate_member_ctor_template_candidate(
 	    }
 	    continue;
 	}
-	ft.decl.push_back(t ? t->clone() : NULL);
+	ft.decl.push_back(t ? t->clone_origin() : NULL);
     }
     size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
     if ( ni >= ft.decl.size() || !ft.decl[ni] )
@@ -61421,7 +61433,7 @@ static void stamp_member_template_pattern(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_defaults[i] )
 		fd->member_template_param_defaults.back().push_back(
-		    t ? t->clone() : NULL);
+		    t ? t->clone_origin() : NULL);
 	}
     // Per-param CONSTRAINT runs (same parallel-vector contract, cloned for
     // the same lifetime reason): a non-type param's compound declared type —
@@ -61435,7 +61447,7 @@ static void stamp_member_template_pattern(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_constraints[i] )
 		fd->member_template_param_constraints.back().push_back(
-		    t ? t->clone() : NULL);
+		    t ? t->clone_origin() : NULL);
 	}
     std::string ret_spelling;
     std::vector<std::string> param_spellings;
@@ -61482,7 +61494,7 @@ static void stamp_member_template_pattern(
 	fd->member_template_return_tokens.clear();
 	for ( size_t i = rs; i < name_idx; ++i )
 	    fd->member_template_return_tokens.push_back(
-		tokens[i] ? tokens[i]->clone() : NULL);
+		tokens[i] ? tokens[i]->clone_origin() : NULL);
 	// Retain each FUNCTION parameter's TYPE token run (declaration order,
 	// truncated at a top-level `=` default value): [temp.deduct]/8's other
 	// half — the SFINAE may live in the parameter type itself
@@ -61524,7 +61536,7 @@ static void stamp_member_template_pattern(
 		if ( truncated )
 		    continue;
 		for ( size_t k = j0; k < j; ++k )
-		    run.push_back(tokens[k] ? tokens[k]->clone() : NULL);
+		    run.push_back(tokens[k] ? tokens[k]->clone_origin() : NULL);
 	    }
 	    if ( any || !run.empty() )
 		fd->member_template_param_type_tokens.push_back(run);
@@ -61551,7 +61563,7 @@ static void stamp_member_template_pattern(
     {
 	fd->member_template_decl.clear();
 	for ( size_t i = 0; i < tokens.size(); ++i )
-	    fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone()
+	    fd->member_template_decl.push_back(tokens[i] ? tokens[i]->clone_origin()
 							 : NULL);
     }
 }
@@ -61587,7 +61599,7 @@ static void stamp_member_template_pattern_decl_only(
     fd->member_template_return_tokens.clear();
     for ( size_t i = 0; i < ret_tokens.size(); ++i )
 	fd->member_template_return_tokens.push_back(
-	    ret_tokens[i] ? ret_tokens[i]->clone() : NULL);
+	    ret_tokens[i] ? ret_tokens[i]->clone_origin() : NULL);
     // v36: the per-param DEFAULT runs carry a decl-only member template's
     // whole [temp.deduct]/8 SFINAE (`typename = decltype(declval<_Tp1&>().
     // ~_Tp1())`, __is_destructible_impl::__test) — without them a thawed
@@ -61601,7 +61613,7 @@ static void stamp_member_template_pattern_decl_only(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_defaults[i] )
 		fd->member_template_param_defaults.back().push_back(
-		    t ? t->clone() : NULL);
+		    t ? t->clone_origin() : NULL);
 	}
     // v38: the CONSTRAINT runs gate the non-type default fill exactly like
     // the body-bearing stamp (one shared rule).
@@ -61613,7 +61625,7 @@ static void stamp_member_template_pattern_decl_only(
 		std::vector<TokenBase *>());
 	    for ( TokenBase *t : typeparam_constraints[i] )
 		fd->member_template_param_constraints.back().push_back(
-		    t ? t->clone() : NULL);
+		    t ? t->clone_origin() : NULL);
 	}
 }
 
@@ -61774,13 +61786,13 @@ std::vector<TokenBase *> Program::collect_template_class_prefix()
 	  && (pt->id() == TokenID::tkOpBrc || pt->id() == TokenID::tkSemi) )
 	    break;
 	TokenBase *t = nextToken();
-	prefix.push_back(t->clone());
+	prefix.push_back(t->clone_origin());
 	// operator-ids (operator<, …) and their symbol token(s) are part of a
 	// NAME — collected verbatim, never counted as delimiters.
 	std::vector<TokenBase *> opsyms;
 	delimStepStream(t, d, &opsyms);
 	for ( TokenBase *s : opsyms )
-	    prefix.push_back(s->clone());
+	    prefix.push_back(s->clone_origin());
     }
     return prefix;
 }
@@ -62525,7 +62537,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	if ( popped.size() == consumed )
 	    for ( size_t i = 1; i < popped.size(); ++i )
 		if ( popped[i] )
-		    partial_spec_constraint.push_back(popped[i]->clone());
+		    partial_spec_constraint.push_back(popped[i]->clone_origin());
     }
 
     // Expect `class|struct Name` then capture through the matching '}'.
@@ -62570,9 +62582,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    pgm.delimStepStream(t, d, &opsyms);
 	    if ( past_eq )
 	    {
-		constraint.push_back(t->clone());
+		constraint.push_back(t->clone_origin());
 		for ( TokenBase *o : opsyms )
-		    constraint.push_back(o->clone());
+		    constraint.push_back(o->clone_origin());
 	    }
 	    else if ( outside && t->id() == TokenID::tkAssign )
 		past_eq = true;
@@ -62626,13 +62638,13 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    TokenBase *at = pgm.nextToken();
 	    if ( at->id() == TokenID::tkSemi && d.top() )
 		break;
-	    target.push_back(at->clone());
+	    target.push_back(at->clone_origin());
 	    // operator-ids and their symbol token(s) are part of a NAME, collected
 	    // verbatim and never counted as delimiters.
 	    std::vector<TokenBase *> opsyms;
 	    pgm.delimStepStream(at, d, &opsyms);
 	    for ( TokenBase *s : opsyms )
-		target.push_back(s->clone());
+		target.push_back(s->clone_origin());
 	}
 	if ( target.empty() )
 	    pgm.Throw(alias_tb) << "Expecting target type in template using declaration" << flush;
@@ -62689,7 +62701,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		nd.typeparams = typeparams;
 		nd.typeparam_is_pack = typeparam_is_pack;
 		for ( size_t i = 0; i < skipped_decl.size(); ++i )
-		    nd.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
+		    nd.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone_origin() : NULL);
 		const Program::TemplateDef *owner_template =
 		    pgm.find_template(oolc_class, pgm.current_namespace());
 		std::string owner_ns = owner_template
@@ -62721,7 +62733,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		vd.typeparam_is_pack = typeparam_is_pack;
 		vd.defining_namespace = pgm.current_namespace();
 		for ( TokenBase *t : vt_init )
-		    vd.init.push_back(t ? t->clone() : NULL);
+		    vd.init.push_back(t ? t->clone_origin() : NULL);
 		pgm.pack_tap_name(vt_name, Program::pdkTemplate);	// B4a: both map keys
 		if ( !pgm.current_namespace().empty() )
 		    pgm.pack_tap_name(pgm.current_namespace() + "::" + vt_name,
@@ -62754,7 +62766,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 					  d.inner_typeparams, d.inner_is_pack,
 					  d.inner_is_type);
 	    for ( size_t i = 0; i < skipped_decl.size(); ++i )
-		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone() : NULL);
+		d.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone_origin() : NULL);
 	    const Program::TemplateDef *owner_template =
 		pgm.find_template(ool_class, pgm.current_namespace());
 	    std::string owner_ns = owner_template
@@ -62832,7 +62844,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		specialization_arg_spellings.push_back(spelling);
 		std::vector<TokenBase *> cloned;
 		for ( size_t ai = 0; ai < argtoks.size(); ++ai )
-		    cloned.push_back(argtoks[ai] ? argtoks[ai]->clone() : NULL);
+		    cloned.push_back(argtoks[ai] ? argtoks[ai]->clone_origin() : NULL);
 		spec_pattern_tokens.push_back(cloned);
 		if ( sep->id() == TokenID::tkComma )
 		    continue;
@@ -62875,8 +62887,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     // Store CLONES we own: the consumed originals may be freed/reused once this
     // parse pass moves on, so capturing raw pointers would dangle at instantiation.
     std::vector<TokenBase *> body;
-    body.push_back(class_kw->clone());
-    body.push_back(name_tb->clone());
+    body.push_back(class_kw->clone_origin());
+    body.push_back(name_tb->clone_origin());
     for ( size_t i = 0; i < prefix.size(); ++i )
 	body.push_back(prefix[i]);
     int depth = 0;
@@ -62884,7 +62896,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     for (;;)
     {
 	tn = pgm.nextToken();
-	body.push_back(tn->clone());
+	body.push_back(tn->clone_origin());
 	if ( tn->id() == TokenID::tkOpBrc ) { depth++; seen_brace = true; }
 	else if ( tn->id() == TokenID::tkClBrc )
 	{
@@ -63013,12 +63025,12 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    TokenBase *bt = body[bi];
 	    if ( bi == 1 && bt && bt->type() == TokenType::ttIdentifier )
 	    {
-		TokenIdent *ni = (TokenIdent *)bt->clone();
+		TokenIdent *ni = (TokenIdent *)bt->clone_origin();
 		pgm.set_token_spelling(ni, mangled);
 		inj.push_back(ni);
 		continue;
 	    }
-	    inj.push_back(bt ? bt->clone() : NULL);
+	    inj.push_back(bt ? bt->clone_origin() : NULL);
 	}
 	inj.push_back(new TokenSemi());
 	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
@@ -63815,14 +63827,14 @@ void Program::param_default_capture_end(const DefCapState &st,
     for ( size_t i = p0; i > p1; --i )
     {
 	TokenBase *t = st.pb[i - 1];
-	out.push_back(t ? t->clone() : NULL);
+	out.push_back(t ? t->clone_origin() : NULL);
     }
     // ...then the consumed buffer range (nonempty only when the pushback fully
     // drained or began empty — the v23 shape).
     for ( size_t i = st.cap_begin; i < cap_end; ++i )
     {
 	TokenBase *t = tokens.buf_at(i);
-	out.push_back(t ? t->clone() : NULL);
+	out.push_back(t ? t->clone_origin() : NULL);
     }
 }
 
@@ -65012,7 +65024,7 @@ paramdecl:
 		else if ( nt->id() == TokenID::tkClSqr && sd > 0 ) --sd;
 		else if ( nt->id() == TokenID::tkOpBrc ) ++bd;
 		else if ( nt->id() == TokenID::tkClBrc && bd > 0 ) --bd;
-		trailing_ret_tokens.push_back(nt->clone());
+		trailing_ret_tokens.push_back(nt->clone_origin());
 		nt = nextToken();
 	    }
 	    continue;
@@ -65606,6 +65618,17 @@ paramdecl:
 	tf->line = source.line();
 	tf->column = 0;
     }
+    // Env-gated probe (MADC_ROOTSPLIT_PROBE=<substr of the fn id>): where the
+    // attribution above came from — the `{` token's file or the current
+    // source — beside what the builder's root/library split will read.
+    {
+	static const char *rs_probe = ::getenv("MADC_ROOTSPLIT_PROBE");
+	if ( rs_probe && *rs_probe && id.find(rs_probe) != std::string::npos )
+	    fprintf(stderr, "ROOTSPLIT parseFunction %s prv=%s src=%s -> file=%s\n",
+		    id.c_str(),
+		    (_prv_token && _prv_token->file) ? _prv_token->file : "(null)",
+		    source.fname(), tf->file ? tf->file : "(null)");
+    }
     // Phase-5 slice 4b (parse-once): a member-template INSTANTIATION whose
     // source carries a Tree-1 dependent_pattern takes its body from tsubst at
     // lowering, so parsing the substituted body tokens here is discarded work
@@ -66185,7 +66208,7 @@ static void assign_initializer_range(std::vector<TokenBase *> &inits,
     if ( inits.size() <= last_index )
 	inits.resize(last_index + 1, NULL);
     for ( size_t idx = first_index; idx <= last_index; ++idx )
-	inits[idx] = (idx == first_index) ? value : (value ? value->clone() : NULL);
+	inits[idx] = (idx == first_index) ? value : (value ? value->clone_origin() : NULL);
 }
 
 // How many FLAT scalar initializers one object of `dd` consumes under
@@ -67396,7 +67419,7 @@ fnptr_decl_arm_head:
 		    comma_continuation_starts_declarator(peek);
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
-		pushToken(tb->clone());
+		pushToken(tb->clone_origin());
 		if ( parsing_extern_decl )
 		    pushToken(new TokenEXTERN());
 		if ( gotstatic )
@@ -68471,7 +68494,7 @@ fnptr_decl_arm_head:
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
-		pushToken(tb->clone());
+		pushToken(tb->clone_origin());
 		if ( parsing_extern_decl )
 		    pushToken(new TokenEXTERN());
 		if ( gotstatic )

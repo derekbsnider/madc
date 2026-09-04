@@ -289,6 +289,29 @@ public:
     static void *operator new(std::size_t sz);
     static void  operator delete(void *p);
     virtual TokenBase *clone() { return new TokenBase(_token); }
+    // A copy that keeps WHERE the original came from. clone() builds a fresh
+    // token, and the constructor stamps it with the CURRENT parse position —
+    // right for a macro-expansion replacement (the expansion site is its
+    // location; the lexer's clones), wrong for every copy the parser makes of
+    // a template pattern, a default argument, or a call argument: those are
+    // the same source text from the same place, and an instantiation is
+    // attributed to the pattern's definition ([temp.inst]; gcc's instantiated
+    // decl carries the pattern's DECL_SOURCE_LOCATION, clang's the template's
+    // SourceLocation). A pattern copy stamped with the call site's file read
+    // as USER code to the builder's root/library split and was emitted
+    // unconditionally — the darwin pack lowering an unselected libc++
+    // basic_string constructor instance whose body could not link.
+    TokenBase *clone_origin()
+    {
+	TokenBase *c = clone();
+	if ( c )
+	{
+	    c->file = file;
+	    c->line = line;
+	    c->column = column;
+	}
+	return c;
+    }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
     virtual void setFlag(tokflag_t f) { _flags |= f; }

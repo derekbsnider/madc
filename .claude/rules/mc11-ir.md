@@ -8,6 +8,10 @@
   parse subtree that built it.
 - Those tokens carry file / line / column. Preserve them — they are the path
   back to the original source.
+- Copy a token with `TokenBase::clone_origin()`, never bare `clone()`: `clone()`
+  stamps the copy with the CURRENT parse position. The lexer's macro-expansion
+  replacement is the one bare `clone()` (the expansion site is its location).
+  Gate: `scripts/check-clone-origin.sh` (fulltest).
 - The IR is BOTH lowered and high-level by construction:
   - c2mir consumes the lowered C11 `node_t` view (classes already
     struct + functions, templates already instantiated, etc.).

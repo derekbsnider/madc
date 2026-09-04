@@ -1319,7 +1319,7 @@ static bool tsubst_subst_origin_arg_run(
 				break;
 			}
 		}
-		out.push_back(t->clone());
+		out.push_back(t->clone_origin());	// a pattern copy keeps its origin
 	}
 	if (!ok)
 		return false;
@@ -29581,9 +29581,23 @@ node_t CirBuilder::translate_module(Program *prog)
 	std::vector<node_t> func_def_nodes;
 	std::map<std::string, TokenFunc *> lib_funcs;   // emit-symbol -> library fn
 	std::vector<TokenFunc *> roots;
+	// Env-gated probe (MADC_ROOTSPLIT_PROBE=<substr of the fn name>): the
+	// file each function is attributed to and the verdict it earns here —
+	// a root is emitted unconditionally, a library fn only on reference,
+	// so a body attributed to the WRONG file is emitted (or dropped)
+	// wholesale, silently (the darwin pack lowering an unselected
+	// basic_string ctor instance as a root).
+	static const char *rs_probe = getenv("MADC_ROOTSPLIT_PROBE");
 	for (TokenFunc *tf : funcs) {
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
-		if (tfd && prog->is_system_header_path(tf->file))
+		bool sys = tfd && prog->is_system_header_path(tf->file);
+		if (rs_probe && *rs_probe
+		    && tf->var.name.find(rs_probe) != std::string::npos)
+			fprintf(stderr, "ROOTSPLIT %s file=%s line=%d -> %s\n",
+				tf->var.name.c_str(),
+				tf->file ? tf->file : "(null)", tf->line,
+				sys ? "lib" : "root");
+		if (sys)
 			lib_funcs[func_emit_name(tf->var, tfd)] = tf;
 		else
 			roots.push_back(tf);
