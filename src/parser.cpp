@@ -14473,9 +14473,10 @@ static int trait_scalar_assignable_from(DataDef *to, DataDef *from)
     // convertible: [conv.ptr] admits only a null pointer constant, a VALUE
     // property no type has. Reading it as convertible (DataDefPTR is
     // "numeric" in madc's model) made is_convertible<const int&, const char*>
-    // true and let a string_view-constrained constructor template past its
-    // SFINAE guard (libc++ basic_string(const _Tp&, const allocator&) for
-    // _Tp = int — the darwin std::string(n, c) wall).
+    // true and let a constructor template whose SFINAE guard asks for exactly
+    // that conversion (libc++ basic_string(const _Tp&, const allocator&),
+    // _Tp convertible to the class's view type) past its guard for _Tp = int
+    // — the darwin std::string(n, c) wall.
     bool from_ptr = from->is_pointer() || dynamic_cast<DataDefCArray *>(from);
     if ( from_ptr )
 	return (to->is_pointer() || to == &ddBOOL) ? 1 : 0;
