@@ -13762,14 +13762,17 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    if ( !dd )
 		dd = resolve_named_datadef(tname);
 	    // Template-id or qualified type as the operand — sizeof(Box<int>),
-	    // alignof(std::vector<int>), sizeof(Tmpl<X>::member): the bare-name
-	    // lookups above cannot consume '<...>' or a '::' chain. Route
-	    // through the one declared-type resolver — the same path the
-	    // explicit-dtor name and dynamic_cast arms use; it instantiates on
-	    // demand ([expr.sizeof] requires a complete type) and consumes
-	    // nothing when it fails, so the sizeof(expression) fallback still
-	    // sees an intact stream. Variables already won above, so a
-	    // less-than expression (sizeof(v < 3)) never reaches this arm.
+	    // alignof(std::vector<int>), sizeof(Tmpl<X>::member),
+	    // sizeof(Outer::Nested): the bare-name lookups above cannot consume
+	    // '<...>' or a '::' chain, and when one follows, the bare name is
+	    // NOT the operand — `sizeof(O::N)` measured O and then died on the
+	    // `::` ("Expecting ')' after sizeof type"). Route through the one
+	    // declared-type resolver — the same path the explicit-dtor name and
+	    // dynamic_cast arms use; it instantiates on demand ([expr.sizeof]
+	    // requires a complete type) and consumes nothing when it fails, so
+	    // the sizeof(expression) fallback still sees an intact stream.
+	    // Variables already won above, so a less-than expression
+	    // (sizeof(v < 3)) never reaches this arm.
 	    if ( !dd && peekToken()
 	      && (peekToken()->id() == TokenID::tkLT
 	       || peekToken()->id() == TokenID::tkNS) )
@@ -41704,11 +41707,63 @@ size_t Program::parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool na
     return (size_t)width;
 }
 
+bool Program::qualified_class_head_starts_definition()
+{
+    enum { WantScope, WantName, AfterName } st = WantScope;
+    size_t i = 0;
+    DelimDepth d(this);
+    while ( i < tokens.size() && tokens[i] )
+    {
+	TokenBase *t = tokens[i];
+	if ( !d.top() )			// inside a template-argument list
+	{
+	    i += delim_scan_step(tokens, i, d);
+	    continue;
+	}
+	if ( st == WantScope )
+	{
+	    if ( t->id() != TokenID::tkNS )
+		break;
+	    st = WantName;
+	}
+	else if ( st == WantName )
+	{
+	    if ( !is_contextual_identifier_token(t) )
+		return false;
+	    st = AfterName;
+	}
+	else if ( t->id() == TokenID::tkNS )	// AfterName: one more scope
+	    st = WantName;
+	else if ( t->id() != TokenID::tkLT )	// AfterName: the head has ended
+	    break;
+	i += delim_scan_step(tokens, i, d);	// a `<` here opens the name's arguments
+    }
+    if ( st != AfterName || !d.top() || i >= tokens.size() || !tokens[i] )
+	return false;
+    if ( is_contextual_identifier_token(tokens[i])
+      && contextual_identifier_name(tokens[i]) == "final" )
+	++i;
+    return i < tokens.size() && tokens[i]
+	&& (tokens[i]->id() == TokenID::tkOpBrc
+	 || tokens[i]->id() == TokenID::tkColon);
+}
+
 bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 					       TokenBase *after_tag)
 {
     if ( is_c_mode() || !after_tag )
 	return false;
+    // A class-head with a nested-name-specifier (`struct Owner::Nested {`,
+    // `struct Owner::Nested : Base {`) is an out-of-line nested-class
+    // DEFINITION — C++-only syntax whose head only the class parser's qualified
+    // arm resolves (it attaches Nested to Owner and completes the declaration
+    // the owner's scope holds) — so it takes the class parser whatever its body
+    // holds. Without this the struct parser read `struct Owner` as an
+    // elaborated type and the declaration parser died on the `:` or `{`
+    // ("Expecting identifier after type" — libstdc++ fs_path.h's
+    // `struct path::_Cmpt : path`).
+    if ( after_tag->id() == TokenID::tkNS )
+	return qualified_class_head_starts_definition();
     if ( after_tag->id() == TokenID::tkColon )
 	return true;
     if ( after_tag->id() != TokenID::tkOpBrc )

@@ -6417,6 +6417,13 @@ public:
     // body's tokens and parse them later, and promote a struct base to a class.
     bool cpp_struct_body_needs_class_parser(const std::string &tag_name,
 					    TokenBase *after_tag);
+    // The struct parser has consumed the tag and tokens[0] is the `::` after
+    // it: does the rest of the nested-name-specifier — `(:: name
+    // [<template-args>])+` — lead into a class-specifier (`{`, a base-clause
+    // `:`, or `final` before either)? gcc's cp_parser_class_head parses the
+    // optional nested-name-specifier for every class-key and then asks exactly
+    // that of the next token (cp_parser_nth_token_starts_class_definition_p).
+    bool qualified_class_head_starts_definition();
     bool consume_anonymous_aggregate_open(bool &packed);
     DataDefSTRUCT *parse_class_anonymous_aggregate(TokenBase *kw);
     void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,

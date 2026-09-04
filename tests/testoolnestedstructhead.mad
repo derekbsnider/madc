@@ -1,0 +1,32 @@
+#include <stdio.h>
+// An out-of-line nested-class definition with a STRUCT-key class-head and a
+// nested-name-specifier — `struct Owner::Nested [final] [: bases] { ... }` —
+// is C++-only syntax: gcc's cp_parser_class_head parses the optional
+// nested-name-specifier for every class-key and lets the next token (`{` or
+// `:`) decide that a class-specifier follows; the class-key of the definition
+// is a property of the one type declared in the owner.
+struct A { int v; struct B; B *link; A(int x) : v(x), link(0) {} };
+struct A::B : A { int w; B(int x, int y) : A(x), w(y) {} };
+struct P { struct C; C *c; struct D; P() : c(0) {} };
+struct P::C { int r; };                                  // plain body
+struct P::D final : P { int s; D(int a) : s(a) {} };     // final + base clause
+// the <filesystem> shape: the nested class derives from its OWNER and is
+// declared before the owner's members that refer to it
+struct path {
+    struct _Cmpt;
+    int _M_pos;
+    path() : _M_pos(0) {}
+    struct Iter { const _Cmpt *cur; };
+};
+struct path::_Cmpt : path { _Cmpt(int p) : path(), _M_kind(0) { _M_pos = p; } int _M_kind; };
+int main()
+{
+    A::B b(3, 4); A a(9); a.link = &b;
+    printf("%d %d %d\n", b.v, b.w, a.link->w);
+    P::C c; c.r = 7; P p; p.c = &c;
+    P::D d(8);
+    printf("%d %d %d\n", p.c->r, d.s, (int)(sizeof(d) > sizeof(P)));
+    path::_Cmpt cm(5); cm._M_kind = 2; path::Iter it; it.cur = &cm;
+    printf("%d %d\n", it.cur->_M_pos, it.cur->_M_kind);
+    return 0;
+}
