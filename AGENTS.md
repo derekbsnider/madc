@@ -347,7 +347,7 @@ editing — don't try to memorize all of them.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [mc11-ir.md](.claude/rules/mc11-ir.md)           |    26 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
-| [delimiter-tracking.md](.claude/rules/delimiter-tracking.md) | 23 | **ONE tracker for `(` `[` `{` `<`.** Never hand-roll `++paren_depth` / `--angle_depth` / `>>`-splitting — use `DelimDepth` + `delim_scan_step()` / `delimStepStream()`. Gated by `check-one-delim-tracker.sh` |
+| [delimiter-tracking.md](.claude/rules/delimiter-tracking.md) | 33 | **ONE tracker for `(` `[` `{` `<`.** Never hand-roll `++paren_depth` / `--angle_depth` / `>>`-splitting — use `DelimDepth` + `delim_scan_step()` / `delimStepStream()`. Whether a `<` opens is a NAME question ([temp.names]/3) answered by the Program's lookup predicates; every stream scan carries the Program handle. Gated by `check-one-delim-tracker.sh` |
 | [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
 | [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 39 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 44 | Compare with `gcc -S -fverbose-asm` first, fix at deepest layer, operator self-determination |
@@ -360,10 +360,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **33 rules, 919 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~382 lines** — loaded by Claude via
+- **34 rules, 981 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~414 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1339 lines.**
+- **Grand total loaded by Claude Code per turn: ~1395 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

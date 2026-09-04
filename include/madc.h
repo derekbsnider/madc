@@ -2312,6 +2312,24 @@ struct MadcCompileGroup
 };
 
 // program class, keep things somewhat contained
+// One parsed template-parameter-list (`template < ... >`), the shape
+// parse_template_parameter_list fills for TokenTEMPLATE::parse and the
+// retained head of an out-of-line member-template definition. The kinds are
+// parallel to names: is_type (a type parameter), is_pack, and
+// is_template_template (`template<class> class TT` — the one parameter kind
+// that IS a template-name before a `<`, [temp.names]/3).
+struct ParsedTemplateParameterList {
+    std::vector<std::string> names;
+    std::vector<std::vector<TokenBase *> > defaults;
+    std::vector<std::vector<TokenBase *> > constraints;
+    std::vector<bool> is_type;
+    std::vector<bool> is_pack;
+    std::vector<bool> is_template_template;
+    bool has_non_type_params;
+
+    ParsedTemplateParameterList() : has_non_type_params(false) {}
+};
+
 class Program
 {
     friend struct MadcSharedPreludeCache;
@@ -3878,6 +3896,42 @@ public:
     // ptr_type_cache) so a Tree-1 pattern referencing one outlives the per-TU frame.
     std::vector<std::map<std::string, DataDef *>> template_param_scopes;
     std::vector<DataDefTemplateParam *> template_param_pool;
+    // The parameter lists of every TokenTEMPLATE::parse in flight (innermost
+    // last) — the head, base clause and body CAPTURE run before any
+    // dependent-body frame exists. Pushed/popped by the ScanTemplateParams
+    // RAII guard; read through scan_template_param_kind.
+    std::vector<const ParsedTemplateParameterList *> scan_template_param_lists;
+    // Per dependent-body frame (parallel to template_param_scopes): the
+    // frame's typeparam_is_type, or NULL when the pusher has no kinds.
+    std::vector<const std::vector<bool> *> template_param_scope_types;
+    enum class TemplateParamKind { None, Type, Value, TemplateTemplate,
+				   ValueOrTemplate };
+    TemplateParamKind scan_template_param_kind(const std::string &name) const;
+    bool scan_name_is_template_param(const std::string &name) const;
+    struct ScanTemplateParams {
+	Program &pgm;
+	ScanTemplateParams(Program &p, const ParsedTemplateParameterList &list)
+	    : pgm(p) { pgm.scan_template_param_lists.push_back(&list); }
+	~ScanTemplateParams() { pgm.scan_template_param_lists.pop_back(); }
+    };
+    // [temp.names]/3 — THE owner of "does a `<` after this name begin a
+    // template-argument-list?", answered by NAME LOOKUP the way gcc's
+    // cp_parser_template_name and clang's Sema::isTemplateName answer it
+    // (never by token adjacency). Opens: lookup finds a template. LessThan: it
+    // finds a non-template entity (a data / static member, enumerator, typedef,
+    // variable, a type or value template parameter). Unknown: nothing found, or
+    // only non-template functions — the caller keeps its legacy reading. Read by
+    // DelimDepth::lt_reads_as_less_than (every scan carrying the Program) and by
+    // the expression parser's class-qualified name site. Defined in parser.cpp
+    // beside the template-parameter kind query.
+    enum class LtReading { Opens, LessThan, Unknown };
+    LtReading class_member_lt_reading(DataDefCLASS *owner, const std::string &name);
+    LtReading unqualified_name_lt_reading(const std::string &name);
+    // A qualifier token that is a DEPENDENT scope (a template parameter by
+    // name or typed placeholder, a dependent placeholder class).
+    bool scan_qualifier_is_dependent(TokenBase *tok) const;
+    // The concrete class a `q0::q1::...::` chain (root first) denotes, or NULL.
+    DataDefCLASS *scan_resolve_qualifier_chain(const std::vector<TokenBase *> &root_first);
     // get-or-create a placeholder for parameter `name` at 0-based `index`.
     DataDefTemplateParam *intern_template_param(const std::string &name, unsigned index);
     // resolve `name` to an active template-parameter placeholder, innermost frame
@@ -4008,15 +4062,24 @@ public:
 	TemplateParamScope(const TemplateParamScope &);
 	TemplateParamScope &operator=(const TemplateParamScope &);
     public:
-	TemplateParamScope(Program &p, const std::vector<std::string> &names) : pgm(p)
+	// `is_type` (parallel to names, the pusher's typeparam_is_type) lets
+	// scan_template_param_kind tell a type parameter from a value / template
+	// template one inside the frame; NULL records no kinds.
+	TemplateParamScope(Program &p, const std::vector<std::string> &names,
+			   const std::vector<bool> *is_type = NULL) : pgm(p)
 	{
 	    std::map<std::string, DataDef *> frame;
 	    for ( size_t i = 0; i < names.size(); ++i )
 		if ( !names[i].empty() )
 		    frame[names[i]] = pgm.intern_template_param(names[i], (unsigned)i);
 	    pgm.template_param_scopes.push_back(frame);
+	    pgm.template_param_scope_types.push_back(is_type);
 	}
-	~TemplateParamScope() { pgm.template_param_scopes.pop_back(); }
+	~TemplateParamScope()
+	{
+	    pgm.template_param_scopes.pop_back();
+	    pgm.template_param_scope_types.pop_back();
+	}
     };
     // Canonical C++ spelling of the template-id being instantiated right now,
     // stashed by instantiate_template_use around the class re-parse so
@@ -6301,7 +6364,10 @@ public:
     // class — the class-scope half of the contextual-type-name shadow test
     // (a member named value/array/var wins over the dialect type spelling).
     bool current_method_class_has_member(const std::string &name);
-    DataDefCLASS *resolve_expression_class_scope(const std::string &name);
+    // `lazy` = false skips the lazy libc type registration tail — a SCAN's
+    // lookup (DelimDepth::lt_reads_as_less_than) must not register anything.
+    DataDefCLASS *resolve_expression_class_scope(const std::string &name,
+						 bool lazy = true);
     // What a qualifier names before `::` in an expression — THE one classify
     // policy for the expression arms (postfix chain, address-of, identifier
     // arm). Owns alias resolution and the collision diagnosis; each arm reads

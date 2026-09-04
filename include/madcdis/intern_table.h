@@ -143,6 +143,28 @@ public:
     }
     uint32_t intern(const char *s, uint32_t len) const { return len ? intern(s, len, hash_bytes(s, len)) : 0; }
     uint32_t intern(const std::string &s) const { return intern(s.data(), (uint32_t)s.size()); }
+
+    // Read-only lookup: the id these bytes ALREADY have, or npos when the
+    // spelling was never interned (empty -> id 0) — frozen_intern_table's
+    // find() contract on the live table, for a caller that must not add a
+    // spelling: a scan asking "is this name a template?" for every identifier
+    // it passes would otherwise grow the template-name pool with every
+    // variable and member name in a header.
+    enum : uint32_t { npos = NIL };
+    uint32_t find(const char *s, uint32_t len, uint32_t h) const
+    {
+	if ( len == 0 ) return 0;
+	uint32_t b = h & ((uint32_t)_buckets.size() - 1);
+	for ( uint32_t i = _buckets[b]; i != NIL; i = _entries[i].next )
+	{
+	    const Entry &e = _entries[i];
+	    if ( e.hash == h && e.len == len && memcmp(&_bytes[e.off], s, len) == 0 )
+		return i;
+	}
+	return npos;
+    }
+    uint32_t find(const char *s, uint32_t len) const { return len ? find(s, len, hash_bytes(s, len)) : 0; }
+    uint32_t find(const std::string &s) const { return find(s.data(), (uint32_t)s.size()); }
     uint32_t intern(const char *s)        const { return intern(s, (uint32_t)strlen(s)); }
 
     void begin_transaction(transaction_state &state) const

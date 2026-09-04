@@ -1,0 +1,29 @@
+// A `<` after a DEPENDENT qualified name inside a template argument list is the
+// less-than operator, not a template-argument-list opener ([temp.names]/3: a
+// dependent member is a template-name only after the `template` keyword).
+// libstdc++ <ratio> writes `integral_constant<bool, _R1::num < _R2::num>` as a
+// base clause; madc's delimiter scanner counted that `<` as an open, the
+// class-prefix capture ran to the next stray `>` in a later header, and every
+// header after <ratio> parsed inside std's still-open namespace (<chrono>,
+// <filesystem>: `using ::clock` failed). Oracle: g++ == clang++.
+#include <stdio.h>
+
+template<bool B> struct BC { static const bool value = B; };
+template<int N> struct I { static const int num = N; };
+
+template<class A, class B, bool = (A::num == 0 || B::num == 0)>
+struct Less : BC<A::num < B::num> { };
+
+template<class A, class B>
+struct Less<A, B, true> : BC<A::num <= B::num> { };
+
+template<class A, class B>
+struct Diff { static const int value = A::num > B::num ? A::num - B::num : B::num - A::num; };
+
+int main()
+{
+	printf("%d %d %d\n", (int)Less<I<1>, I<2> >::value,
+	       (int)Less<I<3>, I<2> >::value, (int)Less<I<0>, I<0> >::value);
+	printf("%d %d\n", Diff<I<7>, I<2> >::value, Diff<I<2>, I<7> >::value);
+	return 0;
+}

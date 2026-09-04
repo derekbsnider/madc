@@ -3477,6 +3477,216 @@ DataDefTemplateParam *Program::intern_template_param(const std::string &name,
     return tp;
 }
 
+// Which template parameter, if any, does `name` denote here — of a template
+// whose head/base/body CAPTURE is in flight (scan_template_param_lists, the
+// ParsedTemplateParameterList TokenTEMPLATE::parse holds) or of a dependent-body
+// frame (template_param_scopes + template_param_scope_types)? A type or value
+// parameter is never a template-name; a template template parameter always
+// is; a frame that recorded no kinds cannot tell a value parameter from a
+// template template one (ValueOrTemplate). Read by the `<` tests below.
+Program::TemplateParamKind Program::scan_template_param_kind(
+	const std::string &name) const
+{
+    for ( size_t i = scan_template_param_lists.size(); i-- > 0; )
+    {
+	const ParsedTemplateParameterList *pl = scan_template_param_lists[i];
+	if ( !pl )
+	    continue;
+	for ( size_t k = 0; k < pl->names.size(); ++k )
+	{
+	    if ( pl->names[k] != name )
+		continue;
+	    if ( k < pl->is_template_template.size() && pl->is_template_template[k] )
+		return TemplateParamKind::TemplateTemplate;
+	    return (k < pl->is_type.size() && pl->is_type[k])
+		   ? TemplateParamKind::Type : TemplateParamKind::Value;
+	}
+    }
+    for ( size_t i = template_param_scopes.size(); i-- > 0; )
+    {
+	std::map<std::string, DataDef *>::const_iterator it =
+	    template_param_scopes[i].find(name);
+	if ( it == template_param_scopes[i].end() )
+	    continue;
+	const std::vector<bool> *kinds = i < template_param_scope_types.size()
+				       ? template_param_scope_types[i] : NULL;
+	const DataDefTemplateParam *tp =
+	    dynamic_cast<const DataDefTemplateParam *>(it->second);
+	if ( kinds && tp && tp->param_index < kinds->size()
+	  && (*kinds)[tp->param_index] )
+	    return TemplateParamKind::Type;
+	return TemplateParamKind::ValueOrTemplate;
+    }
+    return TemplateParamKind::None;
+}
+
+bool Program::scan_name_is_template_param(const std::string &name) const
+{
+    return scan_template_param_kind(name) != TemplateParamKind::None;
+}
+
+// Is this qualifier token a DEPENDENT scope — a template parameter (by name,
+// or the typed placeholder the capture parse resolved it to) or a dependent
+// placeholder class? A name it qualifies is not a template-name without the
+// `template` keyword ([temp.names]/3). An opaque tag standing for a CONCRETE
+// class whose members madc has not seen is not dependent.
+bool Program::scan_qualifier_is_dependent(TokenBase *tok) const
+{
+    if ( !tok )
+	return false;
+    if ( tok->type() == TokenType::ttDataType )
+    {
+	const DataDef &dd = ((TokenDataType *)tok)->definition;
+	if ( dd.is_template_param() )
+	    return true;
+	const DataDefCLASS *c = dynamic_cast<const DataDefCLASS *>(&dd);
+	return c && c->is_dependent_placeholder && !c->opaque_concrete_tag;
+    }
+    return is_contextual_identifier_token(tok)
+	&& scan_name_is_template_param(contextual_identifier_name(tok));
+}
+
+// The concrete class a nested-name-specifier `q0::q1::...::` denotes (tokens
+// root first), or NULL when any segment is not a resolvable class: the root by
+// the expression parser's own qualifier lookup (no lazy libc registration from
+// a scan), every further segment as a member type of the class so far.
+DataDefCLASS *Program::scan_resolve_qualifier_chain(
+	const std::vector<TokenBase *> &root_first)
+{
+    DataDefCLASS *cls = NULL;
+    for ( size_t i = 0; i < root_first.size(); ++i )
+    {
+	TokenBase *q = root_first[i];
+	DataDef *dd = NULL;
+	if ( q && q->type() == TokenType::ttDataType )
+	    dd = &((TokenDataType *)q)->definition;
+	else if ( q && is_contextual_identifier_token(q) )
+	{
+	    const std::string qn = contextual_identifier_name(q);
+	    dd = i == 0 ? resolve_expression_class_scope(qn, false)
+			: resolve_class_type_alias(cls, qn);
+	}
+	cls = dynamic_cast<DataDefCLASS *>(dd);
+	if ( !cls )
+	    return NULL;
+    }
+    return cls;
+}
+
+// [temp.names]/3 for a name qualified by a CONCRETE class — THE owner of "does
+// a `<` after `owner::name` begin a template-argument-list?", decided the way
+// gcc's cp_parser_template_name and clang's Sema::isTemplateName decide it:
+// by name lookup. Opens when lookup finds any declaration of a template (a
+// member class/alias template of the owner or a base, a member function
+// template); LessThan when it finds a non-template entity (a data member, a
+// static data member or enumerator, a member typedef / nested type) — `K::num
+// < 5`; Unknown when it finds nothing (an incomplete or externally-defined
+// class: the caller keeps its legacy reading) or only non-template functions
+// (madc's own member-template marking is not the oracle for a function set;
+// the call site's explicit-argument capture keeps its reading).
+Program::LtReading Program::class_member_lt_reading(DataDefCLASS *owner,
+						    const std::string &name)
+{
+    if ( !owner )
+	return LtReading::Unknown;
+    const uint32_t name_id = template_name_pool.find(name);
+    std::set<DataDefCLASS *> seen;
+    std::vector<DataDefCLASS *> work(1, owner);
+    while ( !work.empty() )
+    {
+	DataDefCLASS *c = work.back();
+	work.pop_back();
+	if ( !c || !seen.insert(c).second )
+	    continue;
+	if ( name_id && name_id != madc::dis::intern_table::npos
+	  && (find_template_raw(name_id, std::string(), c)
+	      || find_template_alias_raw(name_id, std::string(), c)) )
+	    return LtReading::Opens;
+	for ( size_t i = 0; i < c->methods.size(); ++i )
+	{
+	    Variable *m = c->methods[i];
+	    FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	    if ( !fd )
+		continue;
+	    if ( m->name != name && fd->method_display_name != name )
+		continue;
+	    if ( fd->is_member_template )
+		return LtReading::Opens;
+	}
+	for ( size_t i = 0; i < c->bases.size(); ++i )
+	    work.push_back(c->bases[i].base);
+	if ( c->base_class )
+	    work.push_back(c->base_class);
+    }
+    std::string mname = name;
+    if ( owner->m_offset(mname) >= 0 )
+	return LtReading::LessThan;
+    if ( resolve_class_static_member_type(owner, name) )
+	return LtReading::LessThan;
+    int64_t cval = 0;
+    if ( resolve_class_static_member_const_value(owner, name, cval) )
+	return LtReading::LessThan;
+    if ( DataDef *alias = resolve_class_type_alias(owner, name) )
+    {
+	// The injected-class-name of a class template IS a template-name
+	// ([temp.names]/3): leave a self-reference to the caller's reading.
+	if ( !(dynamic_cast<DataDefCLASS *>(alias) && alias->name == name) )
+	    return LtReading::LessThan;
+    }
+    return LtReading::Unknown;
+}
+
+// [temp.names]/3 for an UNQUALIFIED name at the current parse position. A type
+// or value template parameter is never a template-name (a template template
+// parameter always is); then any template in scope — class, alias, function,
+// variable, concept — opens; a member of the enclosing class answers by
+// class_member_lt_reading; a variable that is not a function is LessThan
+// (`n < 5`). Functions and undeclared names keep the opening reading (3.3:
+// "finds one or more functions or finds nothing"). Templates are asked before
+// variables: a local variable hiding a namespace template is the one shape
+// that order misreads, and no real header writes it inside an argument list.
+Program::LtReading Program::unqualified_name_lt_reading(const std::string &name)
+{
+    switch ( scan_template_param_kind(name) )
+    {
+	case TemplateParamKind::Type:
+	case TemplateParamKind::Value:		return LtReading::LessThan;
+	case TemplateParamKind::TemplateTemplate: return LtReading::Opens;
+	case TemplateParamKind::ValueOrTemplate: return LtReading::Unknown;
+	case TemplateParamKind::None:		break;
+    }
+    const uint32_t name_id = template_name_pool.find(name);
+    if ( name_id && name_id != madc::dis::intern_table::npos
+      && (find_template_raw(name_id, std::string(), NULL)
+	  || find_template_alias_raw(name_id, std::string(), NULL)) )
+	return LtReading::Opens;
+    if ( fn_template_map.find(name) != fn_template_map.end()
+      || var_template_map.find(name) != var_template_map.end()
+      || concept_map.count(name) )
+	return LtReading::Opens;
+    const std::string ns = current_namespace();
+    if ( !ns.empty() )
+    {
+	const std::string qn = ns + "::" + name;
+	if ( fn_template_map.find(qn) != fn_template_map.end()
+	  || var_template_map.find(qn) != var_template_map.end()
+	  || concept_map.count(qn) )
+	    return LtReading::Opens;
+    }
+    if ( !compounds.empty() && compounds.top() && compounds.top()->method
+      && compounds.top()->method->owner_class )
+    {
+	LtReading r = class_member_lt_reading(compounds.top()->method->owner_class,
+					      name);
+	if ( r != LtReading::Unknown )
+	    return r;
+    }
+    if ( Variable *v = findVariable(name) )
+	if ( !v->type || !v->type->is_function() )
+	    return LtReading::LessThan;
+    return LtReading::Unknown;
+}
+
 // resolve `name` to an active template-parameter placeholder (innermost frame
 // first). Returns NULL — the common case — when no dependent-body frame is active,
 // keeping the consult below O(1) on the non-template path.
@@ -3595,7 +3805,8 @@ bool Program::current_method_class_has_member(const std::string &name)
     return false;
 }
 
-DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
+DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name,
+						      bool lazy)
 {
     DataDef *dd = resolve_current_class_type_alias(name);
     if ( !dd && !compounds.empty() && compounds.top()
@@ -3613,7 +3824,7 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name)
 	if ( dmi != struct_map.end() )
 	    dd = dmi->second;
     }
-    if ( !dd )
+    if ( !dd && lazy )
 	dd = lazy_resolve_type(name);
     return dynamic_cast<DataDefCLASS *>(dd);
 }
@@ -3836,7 +4047,99 @@ struct DelimDepth {
     int paren = 0, square = 0, brace = 0, angle = 0;
     std::vector<int> angle_paren;   // paren depth at each angle open
     TokenBase *prev = NULL;         // previous token seen by update()
+    // The Program whose NAME LOOKUP the `<` test consults (lt_reads_as_less_than).
+    // A STREAM scan — one that walks the live token stream at a parse position
+    // — constructs with the Program (`DelimDepth d(this)` / `(&pgm)`; the shape
+    // scripts/check-one-delim-tracker.sh enforces) and Program::delimStepStream
+    // sets it too; an INDEX scan over a stored token run may leave it NULL and
+    // keeps the token-only reading (angle_open_context alone). hist[] is the
+    // short token history behind prev (hist[0] == prev) the qualified-name
+    // walk reads.
+    Program *pgm = NULL;
+    enum { HIST = 8 };
+    TokenBase *hist[HIST] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    DelimDepth() {}
+    explicit DelimDepth(Program *p) : pgm(p) {}
     bool top() const { return !paren && !square && !brace && !angle; }
+    // [temp.names]/3, decided the way gcc (cp_parser_template_name) and clang
+    // (Sema::isTemplateName) decide it — by NAME LOOKUP, never by token
+    // adjacency: a `<` after a name begins a template-argument-list only when
+    // the name IS a template (lookup finds a template declaration, or the
+    // `template` keyword / a type-only context says so), and a name qualified
+    // by a DEPENDENT nested-name-specifier is not a template-name without the
+    // keyword. angle_open_context is the token-only approximation (any
+    // identifier opens); this narrows it wherever the Program can be asked:
+    //   `K::num < 5`          num a static data member of concrete K -> less-than
+    //   `_R1::num < _R2::num` _R1 a template parameter (<ratio>)     -> less-than
+    //   `n < 5`, `N < 5`      a variable / a type or value parameter -> less-than
+    //   `TT<int>`, `S::tmpl<int>`, `f<int>(...)`, an unknown name  -> opens
+    // A type-only context keeps the opening reading ([temp.names]/3.4; gcc's
+    // tag_type != none_type): `typename T::x<...>`, `class T::x<...>`, a
+    // base-specifier `: T::x<...>` / `, T::x<...>` outside an argument list.
+    // A global-qualified chain (`::a::b <`), a template-id qualifier
+    // (`X<T>::m <`) and a member access (`obj.m <`) are not resolvable from
+    // tokens and keep the opening reading. Before this rule, <ratio>'s
+    // `integral_constant<bool, _R1::num < _R2::num>` opened an angle that never
+    // closed: the class-prefix capture ran through every later header to a
+    // stray `>`, std's namespace stayed open, and <ctime>'s `using ::clock`
+    // failed under <chrono> / <filesystem>.
+    bool lt_reads_as_less_than() const
+    {
+	if ( !pgm || !prev || !is_contextual_identifier_token(prev) )
+	    return false;
+	if ( hist[1] && hist[1]->id() == TokenID::tkTEMPLATE )
+	    return false;			// `T::template name <`
+	std::vector<TokenBase *> quals;		// innermost qualifier first
+	int i = 1;
+	while ( i + 1 < HIST && hist[i] && hist[i]->id() == TokenID::tkNS
+	     && hist[i + 1]
+	     && (is_contextual_identifier_token(hist[i + 1])
+		 || hist[i + 1]->type() == TokenType::ttDataType) )
+	{
+	    quals.push_back(hist[i + 1]);
+	    i += 2;
+	}
+	if ( i < HIST && hist[i] && hist[i]->id() == TokenID::tkNS )
+	    return false;			// `::a::b <`, `X<T>::m <`
+	TokenBase *before = i < HIST ? hist[i] : NULL;
+	const std::string name = contextual_identifier_name(prev);
+	if ( quals.empty() )
+	{
+	    if ( before && (before->id() == TokenID::tkDot
+			 || before->id() == TokenID::tkDeRef) )
+		return false;			// `obj.name <`
+	    return pgm->unqualified_name_lt_reading(name)
+		   == Program::LtReading::LessThan;
+	}
+	if ( before && type_only_context_intro(before) )
+	    return false;
+	for ( size_t k = 0; k < quals.size(); ++k )
+	    if ( pgm->scan_qualifier_is_dependent(quals[k]) )
+		return true;
+	std::vector<TokenBase *> root_first(quals.rbegin(), quals.rend());
+	DataDefCLASS *cls = pgm->scan_resolve_qualifier_chain(root_first);
+	return cls && pgm->class_member_lt_reading(cls, name)
+			== Program::LtReading::LessThan;
+    }
+    // The token before a qualified name that makes it a type-only context: an
+    // elaborated-type keyword, `typename`, an access specifier or `virtual`
+    // (base-specifier heads) and — outside every argument list, where they
+    // cannot be the conditional operator or an argument separator — the
+    // base-clause `:` and `,`.
+    bool type_only_context_intro(TokenBase *t) const
+    {
+	TokenID id = t->id();
+	if ( id == TokenID::tkCLASS || id == TokenID::tkSTRUCT
+	  || id == TokenID::tkUNION )
+	    return true;
+	if ( !angle && (id == TokenID::tkColon || id == TokenID::tkComma) )
+	    return true;
+	if ( !is_contextual_identifier_token(t) )
+	    return false;
+	const std::string s = contextual_identifier_name(t);
+	return s == "typename" || s == "public" || s == "private"
+	    || s == "protected" || s == "virtual";
+    }
     // A `<` can only BEGIN a template-argument-list after a name (template-id
     // head: identifier / type name / the `template` keyword). After `)`, `]`,
     // a literal, etc. it is the less-than OPERATOR — real <type_traits> writes
@@ -3880,7 +4183,8 @@ struct DelimDepth {
 	    // Inside `(...)`/`[...]` the paren balancing alone locates the
 	    // enclosing construct, so angles there are simply not tracked.
 	    case TokenID::tkLT:
-		if ( !paren && !square && angle_open_context(prev) )
+		if ( !paren && !square && angle_open_context(prev)
+		  && !lt_reads_as_less_than() )
 		{
 		    ++angle;
 		    angle_paren.push_back(paren);
@@ -3894,6 +4198,9 @@ struct DelimDepth {
 	    default: break;
 	}
 	prev = t;
+	for ( int k = HIST - 1; k > 0; --k )
+	    hist[k] = hist[k - 1];
+	hist[0] = t;
     }
 private:
     void close_angle()
@@ -4456,7 +4763,7 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 						     std::string &spelling,
 						     std::vector<TokenBase *> *tokens_out)
 {
-    DelimDepth d;
+    DelimDepth d(this);
     TokenBase *t = first;
     while ( t )
     {
@@ -4513,7 +4820,11 @@ TokenBase *Program::collect_template_argument_spelling(TokenBase *first,
 	}
 	if ( tokens_out )
 	    tokens_out->push_back(t->clone());
-	d.update(t);
+	// The stream step, not a bare update(): a non-type argument's `<` is
+	// judged by lookup (`A::num < B::num`, `K::num < 5`, `n < 5` — see
+	// DelimDepth::lt_reads_as_less_than); a bare tracker here read every
+	// one as an opener and the scan ran past the real `>`.
+	delimStepStream(t, d);
 	t = nextToken();
     }
     Throw(first) << "Unexpected end of input in template argument list" << flush;
@@ -27264,7 +27575,7 @@ static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
 TokenBase *Program::consume_unresolved_dependent_call(TokenBase *open)
 {
     TokenBase *t = open;
-    DelimDepth d;
+    DelimDepth d(this);
     d.update(open);            // `open` is the '(' — seeds paren depth at 1
     while ( d.paren > 0 && peekToken() )
 	d.update(t = nextToken());
@@ -27643,6 +27954,7 @@ bool Program::isOperatorIdStart(TokenBase *t)
 void Program::delimStepStream(TokenBase *t, DelimDepth &d,
 			      std::vector<TokenBase *> *extra)
 {
+    d.pgm = this;
     if ( !isOperatorIdStart(t) )
     {
 	d.update(t);
@@ -29381,8 +29693,12 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
     {
 	pgm.nextToken(); // consume '::'
 	member_tb = pgm.nextToken();
+	bool template_keyword = false;
 	if ( member_tb && member_tb->id() == TokenID::tkTEMPLATE )
+	{
+	    template_keyword = true;
 	    member_tb = pgm.nextToken();
+	}
 	if ( !member_tb )
 	    pgm.Throw(anchor_tb) << "Expecting identifier after '"
 				 << scope_name << "::'" << flush;
@@ -29409,8 +29725,20 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	// their existing handling.
 	Variable *member_fn = scope->findMethod(member_name);
 	bool member_is_static_fn = member_fn && (member_fn->flags & vfSTATIC);
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLT
-	  && !member_is_static_fn )
+	// [temp.names]/3 by lookup (Program::class_member_lt_reading — the
+	// reading gcc's cp_parser_template_name gives `Scope::name <`): the `<`
+	// begins a template-argument-list only when `name` is a template or the
+	// `template` keyword said so. After a static DATA member, enumerator or
+	// typedef it is the less-than operator (`K::num < 5`, tests/
+	// testlessthanqualified); the unconditional skip below consumed the rest
+	// of the statement as template arguments.
+	bool lt_follows = pgm.peekToken()
+		       && pgm.peekToken()->id() == TokenID::tkLT;
+	if ( lt_follows && !template_keyword
+	  && pgm.class_member_lt_reading(scope, member_name)
+	     == Program::LtReading::LessThan )
+	    lt_follows = false;
+	if ( lt_follows && !member_is_static_fn )
 	{
 	    if ( TokenDataType *inst =
 		    pgm.instantiate_template_id(member_name, member_tb,
@@ -32428,7 +32756,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     ClassRegistrationJournal journal(*this);
     {
 	NamespaceScope namespace_scope(*this, td.defining_namespace);
-	TemplateParamScope param_scope(*this, td.typeparams);
+	TemplateParamScope param_scope(*this, td.typeparams,
+				       &td.typeparam_is_type);
 	if ( td.owner_class )
 	    class_scope_stack.push_back(td.owner_class);
 	try
@@ -47198,7 +47527,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    if ( !cur || (cur->id() != TokenID::tkAssign
 			       && cur->id() != TokenID::tkOpBrc) )
 			return cur;
-		    DelimDepth d;
+		    DelimDepth d(&pgm);
 		    pgm.delimStepStream(cur, d, NULL);
 		    TokenBase *t;
 		    while ( (t = pgm.nextToken()) )
@@ -47393,7 +47722,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			// Explicit paren/square/brace, NOT d.top(): this scan
 			// never tracked angle brackets, and top() also demands
 			// angle == 0 — `a < b;` would open one and swallow the ';'.
-			DelimDepth d;
+			DelimDepth d(&pgm);
 			while ( (tn = pgm.nextToken()) )
 			{
 			    if ( tn->id() == TokenID::tkSemi
@@ -51285,7 +51614,7 @@ bool Program::consume_ellipsis()
 std::vector<TokenBase *> Program::collect_template_default_argument()
 {
     std::vector<TokenBase *> out;
-    DelimDepth d;
+    DelimDepth d(this);
     while ( peekToken() )
     {
 	TokenBase *pt = peekToken();
@@ -51418,8 +51747,8 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    // the template's typeparam_is_type and emits a TokenInt for it.
 	    std::vector<TokenBase *> ntoks;
 	    ntoks.push_back(at);
-	    DelimDepth d;
-	    d.update(at);
+	    DelimDepth d(this);
+	    delimStepStream(at, d, &ntoks);
 	    while ( peekToken() )
 	    {
 		TokenBase *pk = peekToken();
@@ -51659,7 +51988,7 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
     // conversion-function-id, which the parser's strict reader rejects. The
     // operator's own symbol tokens are appended to `seen` so signature
     // extraction still sees the full operator-id.
-    DelimDepth d;
+    DelimDepth d(this);
     TokenBase *t = first;
     while ( t )
     {
@@ -51987,17 +52316,6 @@ static bool skipped_template_variable(
     return true;
 }
 
-struct ParsedTemplateParameterList {
-    std::vector<std::string> names;
-    std::vector<std::vector<TokenBase *> > defaults;
-    std::vector<std::vector<TokenBase *> > constraints;
-    std::vector<bool> is_type;
-    std::vector<bool> is_pack;
-    bool has_non_type_params;
-
-    ParsedTemplateParameterList() : has_non_type_params(false) {}
-};
-
 // `template <Concept Name>` — a type-constraint head ([temp.param]/4): the
 // parameter is a constrained TYPE parameter, though the token shape matches a
 // non-type parameter (`size_t _Np`). The head naming a registered concept is
@@ -52026,11 +52344,13 @@ static void parse_template_parameter_list(
 	Program &pgm, ParsedTemplateParameterList &out)
 {
     auto add_parameter = [&](const std::string &name, bool is_type,
-			      bool is_pack = false)
+			      bool is_pack = false,
+			      bool is_template_template = false)
     {
 	out.names.push_back(name);
 	out.is_type.push_back(is_type);
 	out.is_pack.push_back(is_pack);
+	out.is_template_template.push_back(is_template_template);
     };
     auto capture_type_suffix = [&pgm](TokenBase *head,
 				      std::vector<TokenBase *> &run) -> bool
@@ -52071,22 +52391,23 @@ static void parse_template_parameter_list(
 		if ( pgm.peekToken()
 		  && is_template_parameter_decl_name(pgm.peekToken()) )
 		    add_parameter(template_parameter_decl_name(
-			pgm.nextToken()), false, true);
+			pgm.nextToken()), false, true, true);
 		else
 		    add_parameter("__anon_ttpack"
-			+ std::to_string(anonymous_index++), false, true);
+			+ std::to_string(anonymous_index++), false, true, true);
 	    }
 	    else if ( pgm.peekToken()
 		   && (is_template_param_separator(pgm.peekToken())
 		    || pgm.peekToken()->id() == TokenID::tkAssign) )
 		add_parameter("__anon_ttparam"
-		    + std::to_string(anonymous_index++), false);
+		    + std::to_string(anonymous_index++), false, false, true);
 	    else
 	    {
 		token = pgm.nextToken();
 		if ( !is_template_parameter_decl_name(token) )
 		    pgm.Throw(token) << "Expecting template-template parameter name" << flush;
-		add_parameter(template_parameter_decl_name(token), false);
+		add_parameter(template_parameter_decl_name(token), false, false,
+			      true);
 	    }
 	    out.has_non_type_params = true;
 	}
@@ -58950,7 +59271,8 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 				    ? current_namespace() : method_namespace);
     if ( owner->canonical_cpp_spelling().find('<') != std::string::npos )
 	instantiating_canonical_spelling = owner->canonical_cpp_spelling();
-    TemplateParamScope param_scope(*this, fd->template_param_names);
+    TemplateParamScope param_scope(*this, fd->template_param_names,
+				   &fd->template_param_is_type);
     dependent_parse_in_progress = true;
     bool saved_poisoned = dependent_parse_poisoned;
     dependent_parse_poisoned = false;
@@ -61791,6 +62113,9 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     ParsedTemplateParameterList parameter_list;
     parse_template_parameter_list(pgm, parameter_list);
+    // The scanner reads `T::member <` as less-than for these names while this
+    // template's head, base clause and body are captured (DelimDepth).
+    Program::ScanTemplateParams scan_params(pgm, parameter_list);
     std::vector<std::string> &typeparams = parameter_list.names;
     std::vector<std::vector<TokenBase *> > &typeparam_defaults =
 	parameter_list.defaults;
@@ -62874,7 +63199,7 @@ bool Program::scan_old_style_definition_suffix(
     if ( !is_old_style_parameter_declaration_start(peekToken()) )
 	return false;
 
-    DelimDepth d;
+    DelimDepth d(this);
     for ( size_t guard = 0; guard < 512; ++guard )
     {
 	TokenBase *t = nextToken();
@@ -66107,7 +66432,7 @@ fnptr_decl_arm_head:
 	    if ( name_tok && name_tok->id() == TokenID::tkOpBrk )
 	    {
 		nested_decl_stash.push_back(name_tok);
-		DelimDepth ndd;
+		DelimDepth ndd(this);
 		ndd.update(name_tok);
 		while ( !ndd.top()
 		     || (peekToken() && (peekToken()->id() == TokenID::tkOpBrk

@@ -155,3 +155,77 @@ the body's opening `{`, both of which appear at top level — stays in the
 caller, tested against the depth *before* each token is applied. That is the
 rule the file states generally: unify how depth is **updated**; leave each
 site's *use* of the depth alone.
+
+## Round 7 (2026-09-04): which `<` is a bracket at all is a NAME question
+
+The counting was solid by round 6 and the bug came back anyway, because the
+recurring class was never the counting. Before `DelimDepth` counts a `<` it
+decides whether that `<` is a bracket, and until this round that decision was
+made from the token before it: any identifier opened a template-argument list.
+C++ does not decide it that way. [temp.names]/3 says a `<` begins a
+template-argument-list only after a name that IS a template — one the keyword
+`template` introduces, or one for which **name lookup** finds a template (or,
+for an unqualified name, functions or nothing). Both canons implement exactly
+that: gcc's `cp_parser_template_name` looks the name up and returns "expected
+template-name" (so the `<` is less-than) whenever lookup finds no template,
+including a dependent scope without the keyword; clang's `Sema::isTemplateName`
+returns `TNK_Non_template` for the same cases. Neither compiler's skip or cache
+scanners count angle brackets at all — they track `(` `[` `{` only, and where a
+`,` could be inside a template-argument list they *parse* tentatively.
+
+The shape that exposed it was libstdc++ `<ratio>`:
+
+```cpp
+struct __ratio_less_impl<_R1, _R2, true, false>
+  : integral_constant<bool, _R1::num < _R2::num> { };
+```
+
+`_R1` is a template parameter, so `_R1::num` is a dependent name and cannot be
+a template-name without `template` — the `<` is less-than. Reading it as an
+opener left the class-prefix capture one level deep past the real `>`, and it
+ran through every header after `<ratio>` to a stray `>` in `<bits/types.h>`,
+swallowing `extern "C" {` and namespace braces on the way. `std` stayed open,
+`clock` registered as `std::clock`, and `<ctime>`'s `using ::clock;` failed in
+every TU that included `<chrono>` or `<filesystem>`.
+
+The first fix added the dependent-qualifier rule to the tracker — and only to
+scans that passed the Program handle through `delimStepStream`. The
+template-argument splitter (`collect_template_argument_spelling`) built a bare
+tracker and called `update()` itself, so the include-free reducer
+(`struct Less : BC<A::num < B::num>`) still failed: "BC<> expects 1
+argument(s)". Two more reducers showed the gap was the whole rule, not the
+dependent case: `struct L : BC<K::num < 5> {}` with a concrete class K, and the
+plain expression `int x = K::num < 5;` — the expression parser's class-qualified
+site skipped `<...>` as template arguments on sight of the `<`.
+
+What round 7 changes:
+
+- The decision has ONE owner, in the Program, answered by lookup:
+  `class_member_lt_reading(owner, name)` (a member template opens; a data /
+  static member, enumerator or typedef is less-than; nothing or only
+  non-template functions is Unknown) and `unqualified_name_lt_reading(name)`
+  (a type or value template parameter is less-than, a template template
+  parameter opens; templates in scope open; a variable is less-than; functions
+  and undeclared names keep the opening reading, as 3.3 says).
+- `DelimDepth::lt_reads_as_less_than()` reads them for every scan that carries
+  the Program, walking the `q0::q1::name` chain behind the `<`: a dependent
+  qualifier anywhere in the chain is less-than; a concrete chain resolves to a
+  class and asks; a type-only context (`typename`, an elaborated-type keyword, a
+  base-specifier head) keeps the opening reading exactly as gcc's `tag_type !=
+  none_type` arm does.
+- The expression parser's class-qualified site reads the same predicate
+  instead of its own `<` test.
+- Every stream scan constructs its tracker with the Program (`DelimDepth
+  d(this)` / `d(&pgm)`), and `check-one-delim-tracker.sh` fails on a bare
+  tracker driven by `update()` inside a function that walks the stream — the
+  precise shape the splitter bug lived in. Index scans over stored token runs
+  keep the token-only reading; they can only ever be less strict than lookup.
+
+Residue, stated: a qualifier that is itself a template-id (`I<7>::num < 5`
+spelled in source inside an argument list) is not resolvable from tokens and
+keeps the opening reading; the expression parser handles that spelling by
+resolving `I<7>` first. The clone lane's substituted body carries `I<7>` as one
+type token, so the reducer's shape is covered.
+
+Reducers: `tests/testtplargless.mad`, `tests/testlessthanqualified.mad`
+(g++ == clang++).

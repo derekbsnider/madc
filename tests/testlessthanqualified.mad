@@ -1,0 +1,37 @@
+// [temp.names]/3: a `<` after a name begins a template-argument-list only when
+// the name IS a template — decided by name lookup (gcc cp_parser_template_name,
+// clang Sema::isTemplateName), never by token adjacency. Every `<` below that
+// follows a NON-template name is the less-than operator: a static data member
+// of a concrete class (K::num), a variable (n), a non-type template parameter
+// (N), a dependent member (T::num), in a base clause, a template argument and
+// a plain expression. K::T<4> (a member template) and TT<int> (a template
+// template parameter) keep opening. Oracle: g++ == clang++.
+#include <stdio.h>
+
+template<bool B> struct BC { static const bool value = B; };
+struct K {
+	static const int num = 3;
+	template<int M> struct T { static const int v = M; };
+};
+template<int N> struct I { static const int num = N; };
+const int n = 3;
+
+struct L1 : BC<K::num < 5> { };
+struct L2 : BC<n < 5> { };
+template<int N> struct P : BC<N < 5> { };
+template<class T> struct D : BC<T::num < 5> { };
+template<class T> int f() { return T::num < 5; }
+template<template<class> class TT> struct W : TT<int> { };
+template<class U> struct Box { static const int num = 7; };
+
+int main()
+{
+	int x = K::num < 5;
+	int y = I<7>::num < 5;
+	int z = n < 5;
+	printf("%d %d %d\n", (int)L1::value, (int)L2::value, (int)P<9>::value);
+	printf("%d %d %d\n", (int)D<K>::value, (int)D<I<9> >::value, f<K>());
+	printf("%d %d %d\n", x, y, z);
+	printf("%d %d %d\n", (int)BC<K::num < 5>::value, K::T<4>::v, W<Box>::num);
+	return 0;
+}
