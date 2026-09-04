@@ -25018,6 +25018,14 @@ void Program::flush_forest_pending_globals()
 						  : mirror_order[i].first)
 		<< std::endl);
 	}
+	// v27: restored NAMESPACE ALIASES — the map entries verbatim (an entry
+	// the live parse already made for the same alias wins: re-declaring an
+	// alias to the same namespace is the [namespace.alias] no-op).
+	const std::vector<CirRestoredNsAlias> &nsa = bind_forest->restored_nsaliases();
+	for ( size_t i = 0; i < nsa.size(); ++i )
+	    if ( nsa[i].alias && *nsa[i].alias && nsa[i].target && *nsa[i].target
+	      && !namespace_aliases.count(nsa[i].alias) )
+		namespace_aliases[nsa[i].alias] = nsa[i].target;
 	// v26: restored DEFERRED METHOD BODIES — rebuild each
 	// deferred_lazy_bodies entry VERBATIM (var = the restored method
 	// Variable registered by the pending-funcs flush above), so the
@@ -26288,6 +26296,12 @@ std::string Program::canonical_nested_namespace(const std::string &parent,
     // pseudo-namespaces live in namespace_datatype_map, so both maps count
     // as "exists" — same dual probe the descent loops always used.
     std::string cand = parent.empty() ? comp : parent + "::" + comp;
+    // A namespace ALIAS declared in PARENT under this name denotes its target
+    // ([namespace.alias]) — the one place every resolver sees through it.
+    std::map<std::string, std::string>::const_iterator ai =
+	namespace_aliases.find(cand);
+    if ( ai != namespace_aliases.end() )
+	return ai->second;
     if ( namespace_map.find(cand) != namespace_map.end()
       || namespace_datatype_map.find(cand) != namespace_datatype_map.end() )
 	return cand;
@@ -41055,6 +41069,60 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 	ns_name += "::" + ns_parts[i];
 
     tn = nextToken();
+    // namespace-alias-definition ([namespace.alias]): `namespace identifier =
+    // qualified-namespace-specifier ;`. The alias is a NAME for the target
+    // namespace in the current scope, seen through by every lookup — gcc
+    // pushes a NAMESPACE_DECL whose DECL_NAMESPACE_ALIAS is the ORIGINAL
+    // namespace (do_namespace_alias), clang a NamespaceAliasDecl
+    // (ActOnNamespaceAliasDef); neither gives it registries of its own. madc
+    // keys namespaces by canonical name, so the alias is one map entry
+    // (namespace_aliases) that canonical_nested_namespace reads first. A
+    // block-scope alias registers in the enclosing namespace — the same
+    // simplification using-directives already have. Re-declaring an alias to
+    // the same namespace is a no-op; to a different one, an error.
+    if ( tn && tn->id() == TokenID::tkAssign && ns_parts.size() == 1 )
+    {
+	TokenBase *tt = nextToken();
+	bool global_qualified = false;
+	if ( tt && tt->id() == TokenID::tkNS )
+	{
+	    global_qualified = true;
+	    tt = nextToken();
+	}
+	if ( !tt || !is_contextual_identifier_token(tt) )
+	    Throw(tt ? tt : tn) << "Expecting namespace name after '='" << flush;
+	std::string target = contextual_identifier_name(tt);
+	while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    nextToken();
+	    TokenBase *part = nextToken();
+	    if ( !part || !is_contextual_identifier_token(part) )
+		Throw(part ? part : tt) << "Expecting namespace name after '::'" << flush;
+	    target += "::" + contextual_identifier_name(part);
+	}
+	std::string resolved = global_qualified
+	    ? canonical_namespace_path("", target)
+	    : resolve_namespace_name_in_scope(target);
+	if ( resolved.empty() )
+	    Throw(tt) << "'" << target << "' is not a namespace-name" << flush;
+	TokenBase *semi = nextToken();
+	if ( !semi || semi->id() != TokenID::tkSemi )
+	    Throw(semi ? semi : tt) << "Expecting ';' after namespace alias" << flush;
+	std::string key = current_namespace().empty()
+	    ? ns_name : current_namespace() + "::" + ns_name;
+	std::map<std::string, std::string>::iterator prior =
+	    namespace_aliases.find(key);
+	if ( prior != namespace_aliases.end() && prior->second != resolved )
+	    Throw(tn) << "redefinition of namespace alias '" << ns_name
+		      << "' to a different namespace" << flush;
+	if ( namespace_map.find(key) != namespace_map.end()
+	  || namespace_datatype_map.find(key) != namespace_datatype_map.end() )
+	    Throw(tn) << "'" << ns_name << "' is already a namespace" << flush;
+	namespace_aliases[key] = resolved;
+	DBG(std::cout << "TokenNAMESPACE::parse() alias " << key << " = "
+		      << resolved << std::endl);
+	return NULL;
+    }
     if ( !tn || tn->id() != TokenID::tkOpBrc )
 	Throw(tn) << "Expecting '{' after namespace name" << flush;
 

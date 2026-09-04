@@ -112,6 +112,11 @@ enum DefKind : uint32_t {
 			// The flush rebuilds the entry (var = the restored method
 			// Variable) so the EXISTING materialize-and-lower fixpoint
 			// re-runs the one live derivation on first ODR-use.
+	DK_NSALIAS,	// v27: a NAMESPACE ALIAS (Program::namespace_aliases): ns_id = the
+			// alias's own qualified key ("n::d", bare "fs" at global scope),
+			// name_id = the canonical target namespace. The flush re-adds the
+			// map entry verbatim, so `namespace fs = std::filesystem;` in a
+			// packed header binds exactly as the live parse left it.
 };
 
 // Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a

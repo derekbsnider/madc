@@ -4062,6 +4062,16 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::map<std::string, std::vector<std::string>> inline_namespace_children;
+    // namespace-alias-definitions ([namespace.alias]): "scope::alias" (the
+    // alias's own qualified key; bare at global scope) -> the CANONICAL target
+    // namespace. Read FIRST by canonical_nested_namespace, the one existence
+    // probe every qualifier / type / function / template / using-directive
+    // resolution goes through, so an alias is seen through everywhere with no
+    // registry of its own (gcc: DECL_NAMESPACE_ALIAS unwrapped by every lookup;
+    // clang: NamespaceAliasDecl::getNamespace). Parse-time Program state, one
+    // per Program (the inline_namespace_children contract); transported by the
+    // forest pack as DK_NSALIAS records.
+    std::map<std::string, std::string> namespace_aliases;
     // Lexical namespace context. Each entry is the FULL active namespace
     // ("std::__cxx11"); back() is the active one (empty stack = global scope).
     // The idiomatic twin of class_scope_stack: a vector (not std::stack) so

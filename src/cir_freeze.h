@@ -562,7 +562,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 43 };	// v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 44 };	// v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies
@@ -1186,6 +1186,12 @@ struct CirRestoredNsBind
 	// redundancy) stay bind-only: the live mirror grows no sets.
 	bool ov_member;
 };
+// v27: a namespace alias (Program::namespace_aliases entry).
+struct CirRestoredNsAlias
+{
+	const char *alias;		// the alias's qualified key
+	const char *target;		// the canonical target namespace
+};
 
 // A restored file-scope FREE-FUNCTION declaration (RC2): the reconstructed
 // FuncDef (forest-owned, declaration-only) under its call name.
@@ -1387,6 +1393,7 @@ class CirFrozenForest
 	std::vector<CirRestoredGlobal> _restored_globals;
 	std::vector<CirRestoredNsLink> _restored_nslinks;	// v25: inline-ns links
 	std::vector<CirRestoredNsBind> _restored_nsbinds;	// v25: using-decl fn imports
+	std::vector<CirRestoredNsAlias> _restored_nsaliases;	// v27: namespace aliases
 	std::vector<CirRestoredDeferredBody> _restored_defbodies;	// v26
 	// RC2: restored free-function declarations, built by materialize_from_arena
 	// from the DF_IS_FREE_FUNC DK_FUNC records.
@@ -1615,6 +1622,8 @@ public:
 	{ return _restored_nslinks; }		// v25
 	const std::vector<CirRestoredNsBind> &restored_nsbinds() const
 	{ return _restored_nsbinds; }		// v25
+	const std::vector<CirRestoredNsAlias> &restored_nsaliases() const
+	{ return _restored_nsaliases; }	// v27
 	const std::vector<CirRestoredDeferredBody> &restored_defbodies() const
 	{ return _restored_defbodies; }		// v26
 	// RC2: the restored free-function declarations. Valid after

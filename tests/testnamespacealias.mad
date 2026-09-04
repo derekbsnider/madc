@@ -1,0 +1,35 @@
+#include <stdio.h>
+// namespace-alias-definition ([namespace.alias]): `namespace b = a;` declares
+// b as a name for the namespace a in the current scope — qualified lookup,
+// nested namespaces, types, functions, templates, a using-directive and an
+// alias of an alias all see through it (gcc: a NAMESPACE_DECL whose
+// DECL_NAMESPACE_ALIAS every lookup unwraps; clang: NamespaceAliasDecl).
+namespace a {
+    int x = 1;
+    struct S { int v; };
+    int f(int q) { return q * 2; }
+    template<class T> struct Box { T t; };
+    namespace inner { int y = 5; }
+}
+namespace b = a;
+namespace c = b;                      // an alias of an alias names a
+namespace n {
+    namespace d = a;                  // declared in n: n::d from outside
+    int g() { return d::x + d::inner::y; }
+}
+namespace e = a::inner;               // a nested namespace as the target
+int main()
+{
+    b::S s; s.v = 7;
+    c::Box<int> bx; bx.t = 9;
+    int block = 0;
+    {
+	namespace fs = a::inner;      // block scope
+	block = fs::y;
+    }
+    printf("%d %d %d %d %d\n", b::x, b::f(3), b::inner::y, s.v, bx.t);
+    printf("%d %d %d %d\n", c::x, n::g(), n::d::x, e::y);
+    using namespace b;                // a using-directive through the alias
+    printf("%d %d\n", x, block);
+    return 0;
+}

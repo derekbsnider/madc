@@ -4598,6 +4598,21 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		}
 	}
 
+	// 4b (v27): NAMESPACE ALIASES (Program::namespace_aliases) — a
+	// `namespace fs = std::filesystem;` inside a packed header must LOAD as
+	// it parsed: ns_id = the alias's qualified key, name_id = the canonical
+	// target. The flush re-adds the map entries verbatim.
+	for (std::map<std::string, std::string>::const_iterator
+	     ai = prog->namespace_aliases.begin();
+	     ai != prog->namespace_aliases.end(); ++ai, ++next) {
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind    = madc::dis::DK_NSALIAS;
+		r.ns_id   = a.strings.intern(ai->first.c_str());
+		r.name_id = a.strings.intern(ai->second.c_str());
+		a.set_def_at(next, r);
+	}
+
 	// 5 (v25): USING-DECLARATION function imports — `namespace std {
 	// using ::abort; }` registers TWO surfaces ([namespace.udecl]): the
 	// namespace_map[ns][name] binding (first-wins) AND membership in
