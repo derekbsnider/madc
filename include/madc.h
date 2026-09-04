@@ -2662,6 +2662,36 @@ public:
 					       DataDefSTRUCT *sdd);
     DataDefSTRUCT *mint_incomplete_struct_tag(const std::string &name,
 					      bool is_union);
+    // The ONE owner of an incomplete aggregate's OBJECT KIND. A first
+    // declaration is completed IN PLACE by whatever definition follows (gcc
+    // xref_tag: "the forward-reference will be altered into a real type";
+    // clang: every redeclaration shares one RecordType), and under C++ a
+    // struct IS a class ([class]/1 — the class-key is a property of the one
+    // type; struct and class are interchangeable between declaration and
+    // definition, gcc CLASSTYPE_DECLARED_CLASS / clang isClassCompatTagKind),
+    // so the placeholder must already be the object the class parser can
+    // complete: a DataDefCLASS in every C++ mode, a DataDefSTRUCT in C. A
+    // DataDefSTRUCT placeholder the class parser had to REPLACE left every
+    // pointer typed against it (DataDefPTR::base_type) on the empty object.
+    DataDefSTRUCT *new_incomplete_aggregate(const std::string &emitted_name,
+					    bool is_union);
+    // An elaborated-type-specifier's implicit first declaration inside a
+    // declaration ([dcl.type.elab]/3, [basic.scope.pdecl]/7 — `struct S *p;`
+    // with S undeclared): the bare-keyed struct_map entry, minted on a miss.
+    DataDef *struct_tag_or_implicit_forward(const std::string &sname,
+					    bool is_union);
+    // The prior declaration a class-head DEFINITION completes ([class.pre],
+    // [dcl.type.elab]): the aggregate registered under the caller's store key
+    // for the tag, or — for a nested class-head, whose two parsers key the
+    // emitted identity differently (`Owner::Name` in the struct parser,
+    // `Owner__Name` in the class parser) — the name as the OWNER's own scope
+    // declares it (gcc cp_parser_class_name looks the class-head name up in
+    // the nested-name-specifier's scope; clang LookupQualifiedName in the
+    // specifier's DeclContext). Only an INCOMPLETE prior is returned; a
+    // complete one is a redefinition and the callers keep their diagnostics.
+    DataDefSTRUCT *incomplete_prior_aggregate(const std::string &store_key,
+					      DataDefCLASS *owner,
+					      const std::string &source_name);
     // Dedicated dense pool for the template-name domain (template/partial-spec/
     // alias/var-template/fn-template map keys). Separate from strpool so each
     // intern_keyed_map's _slot array stays sized to the small template-name set,

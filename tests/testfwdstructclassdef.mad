@@ -1,0 +1,43 @@
+#include <stdio.h>
+// A first declaration and its definition are ONE type ([class.pre]; gcc xref_tag
+// alters the forward-reference node into the real type, clang's redeclarations
+// share one RecordType), and the class-key is a property of that one type: a
+// struct-key declaration may be completed by a class-shaped or class-key
+// definition and vice versa. Every pointer, reference and typedef made between
+// the declaration and the definition denotes the completed type.
+struct B;
+typedef B BT;
+B *g;
+struct B { int w; B(int y) : w(y) {} };
+// class-key declaration, struct-key plain definition
+class C;
+C *gc;
+struct C { int v; };
+// struct-key declaration, class-key definition with a method, used through a
+// pointer parameter declared before the definition
+struct D;
+int read_d(D *p);
+class D { public: int q; D(int a) : q(a) {} int twice() const { return q * 2; } };
+int read_d(D *p) { return p->twice(); }
+// an elaborated-type-specifier first-declares the tag ([basic.scope.pdecl]/7)
+struct F *fp;
+struct F { int z; F(int a) : z(a) {} };
+// a first-declared struct used as a base after its plain definition: the base
+// subobject must carry the completed layout (sizeof(E) == 12, e.i at 4)
+struct P;
+struct P { char c; int i; };
+struct E : P { char d; };
+int main()
+{
+    B b(4); g = &b; BT *t = &b; B &r = b;
+    printf("%d %d %d\n", g->w, t->w, r.w);
+    C c; c.v = 7; gc = &c;
+    printf("%d %d\n", gc->v, (int)sizeof(C));
+    D d(5);
+    printf("%d %d\n", read_d(&d), d.q);
+    F f(9); fp = &f;
+    printf("%d\n", fp->z);
+    E e; e.c = 'x'; e.i = 3; e.d = 'y';
+    printf("%d %d %c\n", (int)sizeof(E), e.i, e.d);
+    return 0;
+}

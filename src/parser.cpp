@@ -42096,13 +42096,54 @@ TokenDataType *Program::register_cpp_aggregate_name(const std::string &name,
     return tdt_;
 }
 
+DataDefSTRUCT *Program::new_incomplete_aggregate(const std::string &emitted_name,
+						 bool is_union)
+{
+    // The same mode gate as cpp_struct_body_needs_class_parser: wherever a
+    // struct-key body may be handed to the class parser, its placeholder is
+    // the object that parser completes in place.
+    DataDefSTRUCT *fwd = is_c_mode()
+	? new DataDefSTRUCT(emitted_name, 0)
+	: new DataDefCLASS(emitted_name, 0, DataType::dtRESERVED);
+    fwd->union_layout = is_union;
+    return fwd;
+}
+
+DataDef *Program::struct_tag_or_implicit_forward(const std::string &sname,
+						 bool is_union)
+{
+    datadef_map_citer sdmi = struct_map.find(sname);
+    if ( sdmi != struct_map.end() )
+	return sdmi->second;
+    DataDefSTRUCT *fwd = new_incomplete_aggregate(sname, is_union);
+    pack_tap_struct(sname);	// B4a tap
+    struct_map.set(sname, fwd);
+    return fwd;
+}
+
+DataDefSTRUCT *Program::incomplete_prior_aggregate(const std::string &store_key,
+						   DataDefCLASS *owner,
+						   const std::string &source_name)
+{
+    datadef_map_citer it = struct_map.find(store_key);
+    DataDefSTRUCT *prior = it != struct_map.end()
+	? dynamic_cast<DataDefSTRUCT *>(it->second) : NULL;
+    if ( !prior && owner )
+    {
+	std::map<std::string, DataDef *>::iterator ai =
+	    owner->type_aliases.find(source_name);
+	if ( ai != owner->type_aliases.end() )
+	    prior = dynamic_cast<DataDefSTRUCT *>(ai->second);
+    }
+    return prior && prior->is_incomplete_placeholder() ? prior : NULL;
+}
+
 DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
 						   bool is_union)
 {
     DataDefCLASS *owner = nested_aggregate_owner();
     std::string emitted_name = owner ? owner->name + "__" + name : name;
-    DataDefSTRUCT *fwd = new DataDefSTRUCT(emitted_name, 0);
-    fwd->union_layout = is_union;
+    DataDefSTRUCT *fwd = new_incomplete_aggregate(emitted_name, is_union);
     std::string store_key = scoped_struct_tag(name);
     pack_tap_struct(store_key);	// B4a tap
     struct_map.set(store_key, fwd);
@@ -42617,6 +42658,36 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    }
 	}
     }
+    // The definition of a tag whose FIRST declaration is already registered in
+    // this scope (`struct S;`, or an elaborated-type-specifier that first-
+    // declared S) completes THAT object — gcc's xref_tag alters the forward-
+    // reference node into the real type, clang's redeclarations share one
+    // RecordType. Every pointer, reference and typedef made in between holds
+    // the placeholder (DataDefPTR::base_type), so the body is parsed INTO it
+    // rather than into a fresh object copied back field by field: the copy
+    // carried a hand-kept field list and no class-only state, and a
+    // placeholder the class parser had to REPLACE (struct-key declaration,
+    // class-shaped body) left those pointers on the empty object for good.
+    // The re-key arms above never fire for an incomplete prior — it is this
+    // scope's own declaration; the class-key twin lives in TokenCLASS::parse.
+    bool was_pre_registered = false;
+    if ( tag && !global_reclaims_bare && !block_tag_shadowed )
+    {
+	DataDefSTRUCT *prior = pgm.incomplete_prior_aggregate(tag_store_key,
+							      pgm.nested_aggregate_owner(),
+							      tag->spelling());
+	if ( prior )
+	{
+	    if ( dds->struct_is_final )
+		prior->struct_is_final = true;
+	    prior->definition_origin = dds->definition_origin;
+	    delete dds;
+	    dds = prior;
+	    was_pre_registered = true;
+	    DBG(cout << "TokenSTRUCT::parse() defining into the prior declaration of "
+		<< tag_store_key << endl);
+	}
+    }
     dds->union_layout = is_union;
     if ( is_packed || pgm.pack_current() == 1 )
 	dds->pack = 1;
@@ -42656,7 +42727,6 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // resolve the self-reference. The struct is treated as "incomplete" at
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
-    bool was_pre_registered = false;
     if ( tag && (pgm.struct_map.find(tag_store_key) == pgm.struct_map.end()
 		 || global_reclaims_bare || block_tag_shadowed) )
     {
@@ -42851,15 +42921,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    }
 			    else
 			    {
-				if ( sdmi == pgm.struct_map.end() )
-				{
-				    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
-				    fwd->union_layout = inner_union_kw;
-				    pgm.pack_tap_struct(sname);	// B4a tap
-				    pgm.struct_map.set(sname, fwd);
-				    sdmi = pgm.struct_map.find(sname);
-				}
-				inner_type = new TokenDataType(sname.c_str(), *sdmi->second);
+				inner_type = new TokenDataType(sname.c_str(),
+				    *pgm.struct_tag_or_implicit_forward(sname, inner_union_kw));
 			    }
 			}
 		    }
@@ -43145,15 +43208,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		}
 		else
 		{
-		    if ( sdmi == pgm.struct_map.end() )
-		    {
-			DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
-			fwd->union_layout = nested_union_kw;
-			pgm.pack_tap_struct(sname);	// B4a tap
-			pgm.struct_map.set(sname, fwd);
-			sdmi = pgm.struct_map.find(sname);
-		    }
-		    mtype = new TokenDataType(sname.c_str(), *sdmi->second);
+		    mtype = new TokenDataType(sname.c_str(),
+			*pgm.struct_tag_or_implicit_forward(sname, nested_union_kw));
 		}
 	    }
 	}
@@ -43469,15 +43525,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// A struct with no nested type is untouched, so trivial C structs stay
 	// plain DataDefSTRUCTs exactly as before.
 	bool has_nested_type = !nested_type_decls.empty();
+	DataDefCLASS *as_class = dynamic_cast<DataDefCLASS *>(dds);
 	if ( ( has_object_member || has_default_init || has_nested_type )
-	  && !dynamic_cast<DataDefCLASS *>(dds) ) {
+	  && !as_class ) {
 	    DataDefCLASS *ddc = new DataDefCLASS(dds->name, dds->size, dds->rawtype());
 	    static_cast<DataDefSTRUCT &>(*ddc) = *dds; // copy the parsed struct state
-	    // This is the point where a completed DataDefSTRUCT becomes a class.
-	    // Initialize the class-only layout fields now; otherwise a later use as
-	    // a base sees nvsize == 0, because the base-clause promotion helper
-	    // correctly declines an object that is already a DataDefCLASS.
-	    ddc->compute_layout();
 	    if ( was_pre_registered && tag )
 		pgm.struct_map.set(tag_store_key, ddc);   // repoint the self-ref pre-registration
 	    // The old DataDefSTRUCT is left alive (not deleted): a self-reference
@@ -43485,7 +43537,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // and emission is by tag name, so both denote the same `struct s`. dds now
 	    // refers to the class for the rest of this function (registration/typedef/return).
 	    dds = ddc;
+	    as_class = ddc;
 	}
+	// The class-only layout fields (nvsize / class_align / own_block_off) are
+	// initialized for EVERY class this parser completes: the one just
+	// promoted, and a first-declared C++ aggregate — a DataDefCLASS since its
+	// `struct S;` (new_incomplete_aggregate) — whose body turned out plain.
+	// Otherwise a later use as a base sees nvsize == 0 (the base-clause
+	// promotion helper correctly declines an object already a DataDefCLASS).
+	if ( as_class )
+	    as_class->compute_layout();
 	// Now that `dds` is final, publish the nested types as scope members
 	// ([class.nest]). Done here rather than at each nested declaration
 	// because the enclosing object only becomes a DataDefCLASS above.
@@ -43515,36 +43576,6 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// We registered `dds` ourselves before body-parsing to enable
 		// self-reference; the entry is already correct, nothing to do.
 		DBG(cout << "TokenSTRUCT::parse() finalized self-registered struct " << tag->spelling() << " size=" << dds->size << endl);
-	    }
-	    else if ( existing->size == 0 && existing->members.empty() )
-	    {
-		// Complete a forward-declared struct in place.
-		existing->members = dds->members;
-		existing->member_counts = dds->member_counts;
-		existing->member_count_exprs = dds->member_count_exprs;
-		existing->member_array_flags = dds->member_array_flags;
-		// Multi-dim shapes (`int m[49][81]`) and per-member access control
-		// must carry over too — without member_dims the completed struct
-		// keeps only the flattened member_count, so a 2D member renders as
-		// `int m[3969]` and `m[i][j]` fails ("subscripted value is neither
-		// array nor pointer").
-		existing->member_dims = dds->member_dims;
-		existing->member_access = dds->member_access;
-		existing->anonymous_aggregates = dds->anonymous_aggregates;
-		existing->member_explicit_align = dds->member_explicit_align;
-		existing->member_offsets = dds->member_offsets;
-		existing->member_bitfields = dds->member_bitfields;
-		existing->size = dds->size;
-		existing->runtime_size_expr = dds->runtime_size_expr;
-		existing->pack = dds->pack;
-		existing->max_align = dds->max_align;
-		existing->tag_explicit_align = dds->tag_explicit_align;
-		existing->union_layout = dds->union_layout;
-		existing->definition_origin = dds->definition_origin;
-		existing->is_complete = true;
-		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->spelling() << " size=" << existing->size << endl);
-		delete dds;
-		dds = existing;
 	    }
 	    else if ( existing->forest_restored )
 	    {
@@ -46355,20 +46386,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	DataDefCLASS *fwd = dynamic_cast<DataDefCLASS *>(dmi->second);
 	if ( has_local_class_identity && fwd )
 	    pgm.function_local_class_identities[fwd] = local_class_identity;
-	DataDefSTRUCT *sfwd = dynamic_cast<DataDefSTRUCT *>(dmi->second);
-	if ( fwd && !fwd->is_complete && fwd->size == 0 && fwd->members.empty()
+	if ( fwd && fwd->is_incomplete_placeholder()
 	  && fwd->methods.empty() && fwd->ctors.empty()
 	  && fwd->bases.empty() )
 	{
 	    ddc = fwd;
-	    completing_forward_decl = true;
-	}
-	else if ( !fwd && sfwd && !sfwd->is_complete
-	       && sfwd->size == 0 && sfwd->members.empty() )
-	{
-	    ddc = new DataDefCLASS(tag->spelling(), 0, sfwd->rawtype());
-	    static_cast<DataDefSTRUCT &>(*ddc) = *sfwd;
-	    pgm.struct_map.set(tag->spelling(), ddc);
 	    completing_forward_decl = true;
 	}
 	else if ( pgm.fn_template_instantiation_depth > 0 && fwd
@@ -49941,16 +49963,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 		    << (tag_is_union ? "union" : "struct")
 		    << " name after tag keyword" << flush;
 	    std::string sname = ((TokenIdent *)tag)->spelling();
-	    datadef_map_citer sdmi = struct_map.find(sname);
-	    if ( sdmi == struct_map.end() )
-	    {
-		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
-		fwd->union_layout = tag_is_union;
-		pack_tap_struct(sname);	// B4a tap
-		struct_map.set(sname, fwd);
-		sdmi = struct_map.find(sname);
-	    }
-	    param_dd = sdmi->second;
+	    param_dd = struct_tag_or_implicit_forward(sname, tag_is_union);
 	}
 	else if ( nt->type() == TokenType::ttDataType )
 	{
@@ -63060,17 +63073,7 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 	if ( !tag || !is_contextual_identifier_token(tag) )
 	    Throw(tag ? tag : nt) << "Expecting struct/union name in K&R parameter declaration" << flush;
 	std::string sname = contextual_identifier_name(tag);
-	datadef_map_citer sdmi = struct_map.find(sname);
-	if ( sdmi == struct_map.end() )
-	{
-	    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
-	    if ( nt->id() == TokenID::tkUNION )
-		fwd->union_layout = true;
-	    pack_tap_struct(sname);	// B4a tap
-	    struct_map.set(sname, fwd);
-	    sdmi = struct_map.find(sname);
-	}
-	return sdmi->second;
+	return struct_tag_or_implicit_forward(sname, nt->id() == TokenID::tkUNION);
     }
 
     if ( nt->id() == TokenID::tkENUM )
@@ -63967,22 +63970,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( tag_nt->type() != TokenType::ttIdentifier )
 		Throw(tag_nt) << "Expecting " << kw << " name after '" << kw << "' in parameters" << flush;
 	    std::string sname = ((TokenIdent *)tag_nt)->spelling();
-	    datadef_map_citer sdmi = struct_map.find(sname);
-	    if ( sdmi == struct_map.end() )
-	    {
-		// C permits pointers/references to incomplete struct types in
-		// parameter lists, so synthesize a forward declaration on demand.
-		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
-		if ( nt->id() == TokenID::tkUNION )
-		    fwd->union_layout = true;
-		pack_tap_struct(sname);	// B4a tap
-		struct_map.set(sname, fwd);
-		sdmi = struct_map.find(sname);
-	    }
+	    // C permits pointers/references to incomplete struct types in
+	    // parameter lists, so synthesize a forward declaration on demand.
+	    DataDef *sdd = struct_tag_or_implicit_forward(sname,
+							  nt->id() == TokenID::tkUNION);
 	    std::string tname(kw);
 	    tname += " ";
 	    tname.append(sname);
-	    pb = new TokenDataType(tname.c_str(), *sdmi->second);
+	    pb = new TokenDataType(tname.c_str(), *sdd);
 	}
 	else
 	if ( nt->id() == TokenID::tkENUM )

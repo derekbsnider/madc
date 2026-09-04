@@ -1172,6 +1172,12 @@ public:
     // zero-length-array struct (`char x[0];`) keeps size 0 exactly like
     // g++/clang++ in C++ mode; pure-C callers keep the GNU empty-struct-0
     // extension by default.
+    // A first declaration with no body yet (`struct S;`, or an elaborated-
+    // type-specifier that first-declares S): the object a later definition
+    // completes IN PLACE — one type, declared then defined. The class parser
+    // adds its own class-shape checks (no methods / ctors / bases) on top.
+    bool is_incomplete_placeholder() const
+    { return !is_complete && size == 0 && members.empty(); }
     void finalize(bool cpp_min_object_size = false)
     {
 	endBitFieldRun();
