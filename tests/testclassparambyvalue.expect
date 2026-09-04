@@ -1,0 +1,11 @@
+f 106
+a 1 copies 1 live 1
+f 12
+copies 1 moves 0 live 1
+f 1006
+copies 1 moves 1 live 1
+sum 103
+dtors 5 live 1
+h 3
+rd 1
+g 13 p.x 1

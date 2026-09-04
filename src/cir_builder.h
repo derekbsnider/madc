@@ -586,6 +586,25 @@ class CirBuilder {
 	// non-trivial class needing a dtor). NULL for trivial structs (native
 	// struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// The PARAMETER twin of class_return_via_retbuf: the class `dd` denotes
+	// IF passed BY VALUE crosses the call by INVISIBLE REFERENCE (Itanium
+	// ABI; [class.temporary], [expr.call]): a class non-trivial for the
+	// purposes of calls — a non-trivial copy or move constructor, or a
+	// non-trivial destructor. The CALLER copy/move-constructs the parameter
+	// object and destroys it; the callee's parameter is `struct T *`. NULL
+	// for a trivially copyable class (a plain C struct by value) and for
+	// pointers/references. See cir_builder.cpp.
+	DataDefCLASS *class_param_via_invisible_ref(DataDef *dd);
+	// True when a NAMED variable is a by-value class PARAMETER passed by
+	// invisible reference: pointer-stored inside the callee (a value read
+	// derefs, member access arrows, its object address is the variable's
+	// value). Answers from the recipe method's real parameter list under
+	// two-tree tsubst, like the reference-parameter deref arm.
+	bool param_is_invisible_ref(const class Variable &v);
+	// True when a NAMED variable holds the object's ADDRESS rather than the
+	// object itself (pointer/reference typed, or an invisible-reference
+	// parameter). The single addressing rule every object receiver shares.
+	bool var_is_pointer_stored(const class Variable &v);
 	// `arg` is a by-value result of class `cls` carried as a c2mir struct
 	// value (a natively returned class: no destructor, no __retbuf) — the
 	// prvalue IS the result object; see the definition.
@@ -682,6 +701,16 @@ class CirBuilder {
 	// matching object value is passed as-is; a convertible scalar/pointer is
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
+	// The class-object VALUE (a c2mir struct lvalue/value) an argument
+	// denotes for class `target`: a matching object as-is, a convertible
+	// scalar/pointer/other-class materialized into a scope-local temporary
+	// (class_object_temp). object_arg_value's value half; also the
+	// functional-cast `T(x)` expression value.
+	node_t class_object_value(TokenBase *arg, DataDefCLASS *target);
+	// A cleanup-tagged scope-local temporary of class `target` constructed
+	// from `arg` (copy / move / converting constructor by overload
+	// resolution — class_ctor_call); returns the temp's lvalue.
+	node_t class_object_temp(TokenBase *arg, DataDefCLASS *target);
 
 	enum class RefArgValueForm {
 		ReferentValue,
@@ -1502,6 +1531,15 @@ public:
 		// register on x86-64 SysV. Never spell that placement here.
 		bool ret_addr;
 	};
+	// The ONE param-shape owner for an output extern proto: a class
+	// reference -> void*, a pointer -> its pointee shape, a by-value class
+	// passed by invisible reference -> `struct X *` (class_param_via_
+	// invisible_ref, in lock-step with param_decl), a trivially copyable
+	// class -> the struct tag by value, else the native scalar specs.
+	ExternParam native_param_shape(DataDef *dd, bool refp);
+	void native_func_shape(FuncDef *fd, bool &ret_ptr,
+			       std::vector<c2mir_node_code_t> &ret_specs,
+			       std::vector<ExternParam> &params);
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning

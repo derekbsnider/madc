@@ -4474,10 +4474,16 @@ static std::vector<c2mir_node_code_t> native_scalar_specs(DataDef *dd)
 	}
 }
 
-static CirBuilder::ExternParam native_param_shape(DataDef *dd, bool refp)
+CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 {
 	if (param_object_class(dd, refp))
 		return { {N_VOID}, true, NULL };
+	// A by-value CLASS parameter passed by INVISIBLE REFERENCE (Itanium):
+	// the extern proto declares `struct X *` — the shape param_decl gives
+	// the definition and object_arg_value passes (the caller-constructed
+	// parameter object's address).
+	if (DataDefCLASS *ic = class_param_via_invisible_ref(dd))
+		return { {}, true, ic };
 	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
 		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
 			return { {N_CHAR}, true, NULL };
@@ -4496,7 +4502,7 @@ static CirBuilder::ExternParam native_param_shape(DataDef *dd, bool refp)
 	return { native_scalar_specs(dd), false, NULL };
 }
 
-static void native_func_shape(FuncDef *fd, bool &ret_ptr,
+void CirBuilder::native_func_shape(FuncDef *fd, bool &ret_ptr,
 			      std::vector<c2mir_node_code_t> &ret_specs,
 			      std::vector<CirBuilder::ExternParam> &params)
 {
@@ -6495,11 +6501,13 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	return object_addr(name, arg);
 }
 
-// Coerce an argument to a class-object VALUE for a by-value parameter.
-// Matching object values pass as values. Non-object values accepted by a
-// converting constructor are materialized into a scope-lived temp and that temp
-// is passed by value.
-node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
+// The class-object VALUE an argument denotes for class `target`: a matching
+// object passes as-is (its c2mir struct lvalue/value); a non-object value or
+// another class accepted by a converting constructor is materialized into a
+// scope-lived temp (class_object_temp) and that temp's lvalue is the value.
+// object_arg_value's value half — a by-value formal of a TRIVIALLY COPYABLE
+// class takes exactly this; the functional-cast `T(x)` expression value too.
+node_t CirBuilder::class_object_value(TokenBase *arg, DataDefCLASS *target)
 {
 	if (!target)
 		return translate_expr(arg);
@@ -6527,6 +6535,16 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 			       ? node1(N_DEREF, translate_expr(arg), arg)
 			       : translate_expr(arg);
 
+	return class_object_temp(arg, target);
+}
+
+// A cleanup-tagged scope-local temporary of class `target` constructed from
+// `arg`: class_ctor_call selects the copy, move ([class.copy.ctor], by the
+// argument's value category) or converting constructor — or the implicit
+// memberwise copy. The declaration and the construction ride m_pending_stmts
+// ahead of the current statement; the temp's lvalue is returned.
+node_t CirBuilder::class_object_temp(TokenBase *arg, DataDefCLASS *target)
+{
 	// Pattern-mode construction deferral (see object_arg_addr): a dependent-typed
 	// arg cannot be materialized into a concrete `target` temp in the recipe —
 	// reject the pattern so the body falls back to its parsed concrete form.
@@ -6551,6 +6569,59 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 	node_t cc = class_ctor_call(tmp, target, ctor_args, arg);
 	if (cc) m_pending_stmts.push_back(cc);
 	return id(name, arg);
+}
+
+// The argument node for a BY-VALUE class formal of class `target`.
+//
+// A trivially copyable class is a plain C struct passed by value: the object
+// VALUE (class_object_value). A class NON-TRIVIAL for the purposes of calls
+// (class_param_via_invisible_ref — a non-trivial copy/move constructor or
+// destructor) is passed by INVISIBLE REFERENCE, the Itanium ABI's lowering
+// of [class.temporary]/[expr.call]: the CALLER constructs the parameter
+// object and destroys it after the call, and the callee's formal is
+// `struct T *` (param_decl; the callee reads it through
+// param_is_invisible_ref). Before this, madc passed the struct VALUE — a
+// bitwise image of the caller's object with no copy constructor and no
+// destructor: `void f(D d)` printed `f 1` where g++ prints `f 101` then
+// `~101` (KG Gap class_param_by_value_bitwise_copy); a callee's `s += s` on
+// a by-value std::string reallocated and freed the CALLER's buffer (double
+// free); and a by-value class argument to a library callee (Itanium: a
+// pointer) was handed a struct.
+//   - a class PRVALUE — a by-value call result (the __retbuf temp), a
+//     functional-construction temporary `T(x)` from a non-`T` operand, a
+//     by-value operator result — IS the parameter object ([class.temporary],
+//     guaranteed elision): its materialized temp's address, no second
+//     constructor;
+//   - an lvalue / xvalue of the class (an identity cast `(T)a` included), or
+//     a converting source: a fresh caller-owned cleanup-tagged temp, copy /
+//     move / converting-constructed (class_object_temp), and its address.
+// The parameter temp is scope-lived like every temporary madc materializes
+// (g++ destroys it at the end of the full-expression) — the temporaries'
+// lifetime model, not this ABI decision.
+node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
+{
+	if (!target || !class_param_via_invisible_ref(target))
+		return class_object_value(arg, target);
+	// Pattern-mode pack expansion: keep the marked expression for tsubst
+	// (the concrete element is substituted and re-lowered).
+	if (dynamic_cast<TokenPackExpansion *>(arg)
+	    && template_param_in_pack_pattern(arg))
+		return class_object_value(arg, target);
+	bool prvalue = object_returning_call_class(arg) == target;
+	if (!prvalue)
+		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+			prvalue = as_class_instance(ot->obj_class) == target;
+	if (!prvalue)
+		if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
+			prvalue = as_class_instance(tc->cast_type) == target
+				  && tc->expr
+				  && as_class_instance(tc->expr->datadef()) != target;
+	if (!prvalue)
+		prvalue = arg && class_operator_value_result(arg)
+			  && as_class_instance(arg->datadef()) == target;
+	if (prvalue)
+		return node1(N_ADDR, class_object_value(arg, target), arg);
+	return node1(N_ADDR, class_object_temp(arg, target), arg);
 }
 
 bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
@@ -6960,7 +7031,12 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			if (m_cur_captured_fd && m_cur_capture_set.count(cv)) {
 				note_capture(cv);
 				append(args, id(cv->name.c_str(), tcf));
-			} else if (cv->type && cv->type->is_reference()) {
+			} else if ((cv->type && cv->type->is_reference())
+				   || param_is_invisible_ref(*cv)) {
+				// A by-value class parameter passed by invisible
+				// reference is pointer-stored like a reference: forward
+				// the stored object address (capture_param_type made
+				// the capture param `T *`).
 				append(args, id(cv->name.c_str(), tcf));
 			} else {
 				append(args, node1(N_ADDR, id(cv->name.c_str(), tcf), tcf));
@@ -8303,9 +8379,11 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	};
 
 	// Array parameters are lowered to `void *`: a pointer to the first element.
-	// Class value parameters keep their concrete `struct T` type so member
-	// access inside the callee remains typed; references are already pointer
-	// DataDefs by the time they reach this emitter.
+	// A trivially copyable class value parameter keeps its concrete `struct T`
+	// type so member access inside the callee remains typed; a class
+	// non-trivial for the purposes of calls is passed by INVISIBLE REFERENCE
+	// (`struct T *`, below); references are already pointer DataDefs by the
+	// time they reach this emitter.
 	if (ptype) {
 		// rawtype() always strips the pointer/reference band, so it never
 		// returns a dtARRAYref (20000+) value — the old `|| dtARRAYref` arm
@@ -8319,6 +8397,23 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			append(pdecl_list, pointer());
 			return wrap(pspec, pdecl_list);
 		}
+	}
+
+	// A by-value CLASS parameter of a class non-trivial for the purposes of
+	// calls is passed by INVISIBLE REFERENCE (Itanium ABI): the callee's
+	// formal is `struct T *` — the caller-constructed parameter object's
+	// address (object_arg_value). Every signature lane — definition,
+	// prototype, fn-ptr type, thunk, wrapper; the extern shape via
+	// native_param_shape — reads this ONE owner, and the callee's reads go
+	// through param_is_invisible_ref. A typedef alias keeps its spelling
+	// (`DD *d`).
+	if (class_param_via_invisible_ref(ptype)) {
+		node_t pspec = typedef_alias.empty()
+			       ? type_list(ptype)
+			       : type_list(ptype, typedef_alias);
+		node_t pdecl_list = list();
+		append(pdecl_list, pointer());
+		return wrap(pspec, pdecl_list);
 	}
 
 	// Parameter declared via a typedef alias keeps the alias as the type spec
@@ -10988,11 +11083,13 @@ static bool reference_member_value_is_stored_address(TokenBase *tb)
 // True when a NAMED variable holds the object's address rather than the object
 // itself. For these the object address is the variable's value (`name`); for a
 // value object lvalue it is `&name`. This is the single addressing rule shared
-// by every object-class receiver.
-static bool var_is_pointer_stored(const Variable &v)
+// by every object-class receiver. A by-value class parameter passed by
+// invisible reference (param_is_invisible_ref) is pointer-stored too.
+bool CirBuilder::var_is_pointer_stored(const Variable &v)
 {
 	if (v.type && v.type->is_pointer()) return true;
 	if (v.is_reference()) return true;
+	if (param_is_invisible_ref(v)) return true;
 	return false;
 }
 
@@ -12856,6 +12953,48 @@ DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
 	return class_needs_dtor(cdd) ? cdd : NULL;
+}
+
+// The PARAMETER twin of class_return_via_retbuf. The Itanium C++ ABI passes a
+// class that is "non-trivial for the purposes of calls" — a non-trivial copy
+// or move constructor, or a non-trivial destructor — by INVISIBLE REFERENCE:
+// the CALLER constructs the parameter object (copy / move from an lvalue /
+// xvalue; a prvalue argument IS the object) and destroys it after the call;
+// the callee receives its address, and its formal is `struct T *`. That is
+// how g++ and clang lower `void f(D d)`, and it is what a library callee
+// compiled by them expects. madc's class model answers the two halves:
+// class_needs_dtor (own or transitive destructor) and !class_trivially_copyable
+// (a user copy/move constructor, a vtable, or a member/base with one). A
+// trivially copyable class stays a plain C struct passed by value (registers
+// or memory — the target's business, c2mir's native struct passing).
+DataDefCLASS *CirBuilder::class_param_via_invisible_ref(DataDef *dd)
+{
+	if (!dd || dd->is_pointer()) return NULL;
+	DataDefCLASS *cdd = as_class_instance(dd);
+	if (!cdd) return NULL;
+	return (class_needs_dtor(cdd) || !class_trivially_copyable(cdd)) ? cdd
+									 : NULL;
+}
+
+// A by-value class PARAMETER passed by invisible reference is POINTER-STORED
+// in the callee: `struct T *d` holds the caller-constructed parameter object's
+// address, so a value read is `(*d)`, a member access is `d->m`, and the
+// object's address is `d` itself — the same shape a reference parameter
+// already has (param_decl declares it; this predicate is what the callee's
+// read/address/member arms consult). Under two-tree tsubst the dependent-
+// pattern body binds its identifiers to body-local Variables that may not
+// carry the parameter flag the recipe FuncDef's parameter does (the
+// reference-parameter deref arm of the TokenVar read consults m_cur_method
+// for the same loss) — ask the method's real parameter list by name.
+bool CirBuilder::param_is_invisible_ref(const Variable &v)
+{
+	if (v.flags & vfPARAM)
+		return class_param_via_invisible_ref(v.type) != NULL;
+	if (m_tsubst_pattern_mode && m_cur_method)
+		for (Variable *pv : m_cur_method->parameters)
+			if (pv && (pv->flags & vfPARAM) && pv->name == v.name)
+				return class_param_via_invisible_ref(pv->type) != NULL;
+	return false;
 }
 
 // `arg` is a by-value result of class `cls` carried as a c2mir STRUCT VALUE:
@@ -20631,6 +20770,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				note_capture(&tv->var);
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: reference PARAMETER deref
 			}
+			// A by-value CLASS parameter passed by INVISIBLE REFERENCE
+			// (param_is_invisible_ref): the callee's `struct T *d` holds
+			// the caller-constructed parameter object's address, so every
+			// value use reads through it — `d` -> `(*d)` — the class twin
+			// of the reference-parameter deref above. note_capture first,
+			// as there: a [&]-captured such parameter is a `T *` capture
+			// param holding the same address.
+			if (param_is_invisible_ref(tv->var)) {
+				note_capture(&tv->var);
+				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: invisible-reference PARAMETER deref
+			}
 			// Two-tree tsubst: while building a dependent-pattern body
 			// (m_tsubst_pattern_mode), the body-bound TokenVar may have lost the
 			// reference wrapper the method's PARAMETER still carries — the
@@ -20728,6 +20878,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// _ZNSt7__cxx118numpunctIcE2idE that nothing declared.
 			note_global_reference(ta->var);
 			if (ta->var.is_reference())
+				return id(var_emit_name(ta->var).c_str(), tb);
+			// `&d` where d is a by-value class parameter passed by
+			// invisible reference: the stored VALUE is the parameter
+			// object's address (the reference arm's class twin).
+			if (param_is_invisible_ref(ta->var))
 				return id(var_emit_name(ta->var).c_str(), tb);
 			// `&valueobj` for the intrinsic value carrier: its storage is an
 			// opaque `long long name[array_obj_words()]` (array_storage_decl),
@@ -20983,13 +21138,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		TokenMember *tm = (tb ? tb->as_member_tok() : NULL);
 		if (tm) {
 			node_t obj;
+			bool captured_obj = false;
 			if (tm->parent_expr)
 				obj = translate_expr(tm->parent_expr);
-			else if (note_capture(&tm->object))
+			else if (note_capture(&tm->object)) {
 				// Captured struct object: `(*name).field` (the `.`/`->`
 				// selection below is unchanged — `(*name)` is the struct lvalue).
 				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
-			else
+				captured_obj = true;
+			} else
 				// var_emit_name resolves a namespace extern's Itanium
 				// storage alias (madc::sys -> _ZN4madc3sysE), matching
 				// the subscript path and the extern decl's own id.
@@ -21019,7 +21176,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else {
 				// A pointer object uses `->`; a bare array object decays to a
 				// pointer and also uses `->`.
-				ptr_like = tm->object.type->is_pointer() || obj_is_array;
+				ptr_like = tm->object.type->is_pointer() || obj_is_array
+					// A by-value CLASS parameter passed by invisible
+					// reference is pointer-stored in the callee
+					// (`struct T *d`): `d.m` -> `d->m`. Only when the
+					// parameter IS the accessed object: a chained access
+					// (`p.a.b`, parent_expr set) reads its parent's
+					// translation, and tm->object then only carries the
+					// parent member's type. A [&]-captured one was
+					// deref'd above into the struct lvalue: `.`.
+					|| (!tm->parent_expr && !captured_obj
+					    && param_is_invisible_ref(tm->object));
 			}
 			c2mir_node_code_t code = ptr_like ? N_DEREF_FIELD : N_FIELD;
 			// Detect & reject the inverse of the bug above: `->` is valid on
@@ -21033,6 +21200,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					? tm->parent_expr->datadef() : tm->object.type;
 				bool deref_ok = obj_is_array
 					|| (tm->object.type && tm->object.type->is_pointer())
+					|| (!tm->parent_expr && !captured_obj
+					    && param_is_invisible_ref(tm->object))
 					|| (odd && odd->is_pointer());
 				if (!deref_ok && odd && odd->is_struct())
 					return error_node("'->' applied to a non-pointer "
@@ -21247,8 +21416,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (is_zero_integer_literal(tc->expr))
 					return zero_struct_compound(cst, tb);
 			}
+			// The cast EXPRESSION is the object value (a temp lvalue for
+			// a converting source) — never the by-value-formal argument
+			// shape, which for an invisible-reference class is an address.
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
-				return object_arg_value(tc->expr, cast_class);
+				return class_object_value(tc->expr, cast_class);
 			// Function-pointer cast `(RET (*)(params)) expr` (qsort comparator,
 			// atexit handler, ...). The generic scalar/pointer path below renders
 			// a DataDefFPTR via type_list as a bare `long`, so the cast emitted as
@@ -28129,6 +28301,51 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		stmts.push_back(cc);
 	}
 
+	// 2b. Class-INSTANCE parameter temporaries for a class passed by
+	// INVISIBLE REFERENCE (class_param_via_invisible_ref): the shim is the
+	// CALLER, so it constructs the parameter object — a copy of the host's
+	// instance cell by the class's copy constructor or the implicit
+	// memberwise copy (class_ctor_call over a reference view of the cell,
+	// `struct X *__madc_shim_sN = (struct X *)madc_value_data(slot, 0);`)
+	// — and its scope cleanup destroys it after the call (Itanium: the
+	// caller owns the parameter object). A trivially copyable instance
+	// keeps the by-value deref in step 4.
+	for (size_t i = 0; i < params.size(); i++) {
+		if (params[i].kind != ShimSlot::K_CLASS_INST
+		    || !class_param_via_invisible_ref(params[i].cdd))
+			continue;
+		char tname[40], sname[40];
+		snprintf(tname, sizeof(tname), "__madc_shim_p%u", (unsigned)i);
+		snprintf(sname, sizeof(sname), "__madc_shim_s%u", (unsigned)i);
+		param_tmp[i] = tname;
+		std::vector<ExternParam> dp{ { {N_CHAR}, true }, { {N_VOID}, true } };
+		need_output_extern("madc_value_data", true, dp);
+		node_t sdecl = simple(N_SPEC_DECL);
+		append(sdecl, node1(N_SHARE, node1(N_LIST, class_tag_ref(params[i].cdd))));
+		append(sdecl, node2(N_DECL, id(sname), node1(N_LIST, pointer())));
+		append(sdecl, ignore());
+		append(sdecl, ignore());
+		append(sdecl, node2(N_CAST, class_ptr_type(params[i].cdd),
+				    helper_call("madc_value_data",
+						{arg_slot(i), integer(0)})));
+		stmts.push_back(sdecl);
+		Variable *tv = new Variable(tname, *params[i].cdd, 1, NULL, false);
+		tv->flags |= vfLOCAL;
+		node_t vd = var_decl(tv, NULL);
+		if (!vd) return NULL;
+		stmts.push_back(vd);
+		Variable *sv = new Variable(sname, *new DataDefREF(*params[i].cdd),
+					    1, NULL, false);
+		sv->flags |= vfLOCAL;
+		std::vector<TokenBase *> copy_arg(1, new TokenVar(*sv));
+		node_t cc = class_ctor_call(tv, params[i].cdd, copy_arg, NULL);
+		if (!cc) return NULL;
+		for (node_t pstmt : m_pending_stmts)
+			stmts.push_back(pstmt);
+		m_pending_stmts.clear();
+		stmts.push_back(cc);
+	}
+
 	// 3. Return landing: an instance cell or a protocol temp, before the call.
 	std::string ret_tmp;
 	if (rkind == R_INST) {
@@ -28198,9 +28415,20 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 			append(cargs, helper_call("madc_value_text", {arg_slot(i), integer(0)}));
 			break;
 		case ShimSlot::K_CLASS_TEXT:
-			append(cargs, id(param_tmp[i].c_str()));
+			// An invisible-reference class (std::string is one): the
+			// caller-constructed parameter object's ADDRESS.
+			if (class_param_via_invisible_ref(params[i].cdd))
+				append(cargs, node1(N_ADDR, id(param_tmp[i].c_str())));
+			else
+				append(cargs, id(param_tmp[i].c_str()));
 			break;
 		case ShimSlot::K_CLASS_INST: {
+			// Invisible-reference class: the copy step 2b constructed
+			// IS the parameter object — pass its address.
+			if (!param_tmp[i].empty()) {
+				append(cargs, node1(N_ADDR, id(param_tmp[i].c_str())));
+				break;
+			}
 			std::vector<ExternParam> dp{ { {N_CHAR}, true }, { {N_VOID}, true } };
 			need_output_extern("madc_value_data", true, dp);
 			append(cargs, node1(N_DEREF,
