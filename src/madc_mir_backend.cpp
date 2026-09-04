@@ -609,6 +609,7 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
     struct c2mir_options opts;
     memset(&opts, 0, sizeof(opts));
     opts.message_file = stderr;
+    opts.ignore_warnings_p = madc_no_warnings ? 1 : 0; /* -w */
 
     CStringReader reader = {c_source.c_str(), 0, c_source.size()};
     int ok = c2mir_compile(ctx, &opts, c_string_getc, &reader,

@@ -70,6 +70,8 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     // -g: stamp source locations on MIR insns and snapshot each function's
     // typed locals while compiling (consumed by cir_register_source_debug).
     opts->debug_info_p = madc_debug_info ? 1 : 0;
+    // -w: c2mir prints no warnings (its ignore_warnings_p; errors unaffected).
+    opts->ignore_warnings_p = madc_no_warnings ? 1 : 0;
     // -c/-o/-shared: gen captures relocatable object code instead of
     // publishing executable code (consumed by c2mir_get_native_object).
     opts->native_object_p = madc_object_mode ? 1 : 0;

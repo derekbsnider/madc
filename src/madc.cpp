@@ -493,6 +493,7 @@ static void print_usage(const char *prog)
 "                          c2mir, execute) to stderr after the run\n"
 "  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
 "                          program (forces -O0, no inlining, spill-all)\n"
+"  -w                      inhibit all warning messages (gcc -w)\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "  -V, --version           print the madc version (and the cross target, if\n"
@@ -651,6 +652,10 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "-g") == 0) {
             madc_debug_info = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-w") == 0) {
+            // gcc vocabulary: inhibit all warning messages (c2mir's included).
+            madc_no_warnings = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "-c") == 0) {
             // gcc vocabulary: compile to a relocatable native .o, do not run.

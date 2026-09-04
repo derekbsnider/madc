@@ -25,6 +25,7 @@
 thread_local bool madc_verbose MADC_GLOBAL_WEAK = false;
 thread_local int madc_opt_level MADC_GLOBAL_WEAK = 1;
 thread_local bool madc_debug_info MADC_GLOBAL_WEAK = false;
+thread_local bool madc_no_warnings MADC_GLOBAL_WEAK = false;
 thread_local bool madc_object_mode MADC_GLOBAL_WEAK = false;
 
 // Resolved absolute path of the running executable (see datadef.h).

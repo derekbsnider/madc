@@ -25,6 +25,7 @@ madc_dlopen	#load/dlopen runtime entry
 madc_dlsym	#load/dlopen runtime entry
 madc_jit_symbolize	JIT debug: symbolize helper
 madc_no_eval_shims	engine global: eval shim policy flag
+madc_no_warnings	engine global: -w (inhibit warnings) flag
 madc_object_mode	engine global: object-mode flag
 madc_opt_level	engine global: optimization level
 madc_pack_forest_path	engine global: forest pack path override

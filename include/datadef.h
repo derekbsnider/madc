@@ -32,6 +32,12 @@ extern thread_local int madc_opt_level;
 // registers a GDB-JIT debug object after link so gdb can break/step/inspect
 // JIT'd code. Overrides madc_opt_level for MIR gen.
 extern thread_local bool madc_debug_info;
+// `-w` (gcc: inhibit all warning messages): c2mir's compile warnings are not
+// printed. For a program that provokes a diagnostic ON PURPOSE (a test whose
+// construct warns in gcc and clang too, e.g. `extern int c = 7;`), the way to
+// say so -- the warning census ratchet stays at zero without a per-test
+// allowance. Errors are unaffected.
+extern thread_local bool madc_no_warnings;
 // True only while the production parser is building an isolated class pattern.
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
