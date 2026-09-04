@@ -1330,6 +1330,93 @@ SDK/cross facts).
   subsets 0 failures, forest_bind_gate 29/29, smaug_gate OK (A), libcxx_gate
   OK (D).**
 
+  **MEASUREMENT #8 (run 33902996610 @bbedcc4c, 2026-09-04 17:54 UTC): arm64
+  1269/14/22skip, Intel 1278/5/22skip — passes +7 (the wave's tests), failures
+  UNCHANGED in count: the two std::string(n, c) tests moved ONE LAYER DOWN. #7:
+  `cir error: no matching constructor basic_string_view(int32_t*)` (closed by
+  D). #8: `MIR error: import of undefined item basic_string_..._init_with_
+  sentinel` — the losing iterator-pair constructor instance
+  `basic_string(_InputIterator, _InputIterator)` for (20, 'x') was LOWERED in
+  the pack lane (defined before `main`, as a user ROOT) together with its
+  `__init<int,int>` helper, whose body calls the never-instantiated
+  `__init_with_sentinel<int,int>`; live emitted neither. The linux repro had
+  been emit-only (`--emit=c11 rc=0` cannot see a MIR link error) — the
+  emitted C shows it: a call with no definition. Runner mac battery 10/1 both.**
+
+  **WAVE 7c LANDED (2026-09-04, two fixes + a gate, on bbedcc4c: PR=360831da
+  token provenance, DE=530187d7 deduction consistency).** The root was two
+  layers below the pack. (1) PROVENANCE: TokenBase::clone() and its 118
+  overrides construct a fresh token, and TokenBase's constructor stamps it
+  with the CURRENT parse position — every parser-side copy of a template
+  pattern, default argument, call argument or substitution run lost its
+  origin. The injected member-template body was attributed to whatever token
+  the parser had last consumed: live got enable_if.h BY LUCK (the constraint's
+  `= 0` default) — a library function, unreferenced, never emitted; the pack
+  lane got the USER file (the restored pattern's tokens had been frozen with
+  the producer TU's file, for the same reason) — a user ROOT, emitted
+  unconditionally. Two earlier fixes had met the same stamping and patched
+  around it locally (`_parse_*` redirected across a clone loop: class-template
+  instantiation, the lazy capture); the member-template injection had none.
+  gcc/clang locate an instantiation at the template's definition; a
+  macro-expanded token at its expansion site. Fix: TokenBase::clone_origin()
+  (tokens.h) is the one owner of "copy this token" — all 146 parser.cpp copies
+  and the builder's tsubst run copy read it; src/lexer.cpp's five
+  macro-replacement clones stay bare by canon. Gate: scripts/check-clone-
+  origin.sh in fulltest (negative control; the lexer the one exempt file).
+  Rule bullet in mc11-ir.md. Probes kept: MADC_ROOTSPLIT_PROBE (the builder's
+  root/library verdict + parseFunction's `{`-token attribution), the MTB
+  `prov` line. Before/after on the pack lane: `file=tests/teststringparam
+  byvalue.mad line=21 -> root` / `file=.../c++/v1/string line=1066 -> lib`;
+  the refrozen x86-64 darwin pack's emitted C defines no o25, no
+  `__init__o4__mti`, mentions no `__init_with_sentinel`; darwin pack gate 48 =
+  baseline. KG Gap pack_lane_lowers_unselected_ctor_template_instance (D2)
+  CLOSED by this root — the emitted definition sets of the two lanes now differ
+  only by symbol NAMES (Gap pack_vs_live_instantiation_symbol_naming_divergence,
+  low: `__mti__o3` vs `__mti`, `unsigned_long` vs `uint64_t` in
+  __libcpp_numeric_limits, hash suffixes). (2) DEDUCTION: the call lane's
+  deduction loop SKIPPED any argument whose parameter named only already-bound
+  template parameters (a rule written for EXPLICIT template arguments), so
+  `(20, 'x')` deduced _InputIterator = int from the first argument and never
+  looked at the char — [temp.deduct.type]/2 makes that a deduction FAILURE
+  (g++: "deduced conflicting types for parameter 'It' ('int' and 'char')"); the
+  candidate must not exist. Now explicit bindings keep the skip (P is concrete
+  after substitution), a parameter an earlier ARGUMENT deduced is deduced again
+  through decayed_for_deduction (the one owner of the [temp.deduct.call]/2
+  adjustments: function/array decay AND the top-level cv drop — `const int ci;
+  pick(ci, 2)` deduces T = int, where the old block bound T = const int) and
+  compared through deduced_bindings_conflict (the one owner; the free-operator
+  walker's inline compare reads it too). tests/testdeductionconflict.mad (g++ ==
+  clang++ `2 23 9 1`): the user-code twin `template<class It> W(It, It)` called
+  as W(20, (char)3) had instantiated an ill-formed body (`*a` on an int) and
+  failed to compile. With both fixes the iterator-pair candidate is never
+  instantiated for the real test (MADC_ROOTSPLIT_PROBE prints nothing). NOT
+  fixed here, recorded: tmp/w7bv/dp2.mad `std::string a(20, 120)` — a
+  CONSISTENT (int, int) deduction keeps the candidate, its constraint
+  `__has_input_iterator_category<int>` cannot fold (KG Gap unfoldable_trait_
+  in_sfinae_guard_accepted_by_placeholder: the `decltype(__test<_Tp>(nullptr))`
+  detection idiom), the template WINS as the exact match, its body references
+  the silently-dropped ill-formed `__init_with_sentinel<int,int>`: undefined
+  import in EVERY lane (live linux libc++ too) — the trait-fold slice.
+  Verification: reducer == g++ == clang++ (runner 1/0); a 415-test
+  template/string/container subset 0 failures; forest_bind_gate 29/29;
+  libcxx_gate OK; tsubst flag-on GREEN; class_pattern_equivalence OK;
+  smaug_gate OK; refrozen x86-64 darwin pack: no o25 / __init__o4__mti /
+  __init_with_sentinel in the emitted C, pack gate 48 = baseline. (3) THE GATE
+  CAUGHT THE FIX: the first wave-7c battery's fulltest ran integration
+  1297/0/9skip on PR+DE and STOPPED at scripts/check-fn-template-deduction-
+  owner.sh (`expression-aware deduction delegates: 3 (target 2)`) — DE's
+  already-bound arm re-deduced with its OWN deducer call, a second scalar
+  deduction site beside the general block's, each with its own copy of the
+  agreement check: the drift that gate exists to prevent. DG=02a76f49:
+  deduce_scalar_arg (a lambda beside decayed_for_deduction) is the ONE step —
+  the deducer with the argument expression, then the [temp.deduct.type]/2
+  agreement check through deduced_bindings_conflict, else the fresh binding —
+  and both callers read it, differing only in what an undecomposable shape
+  means (the arm keeps the skip, the block fails the candidate). Behaviour-
+  preserving; the battery re-ran on it.**
+
+  Lanes at 02a76f49 (2026-09-05, tmp/logs/w7f-battery.log): linux jit 1297/0/9skip exe 1238/0 obj 1238/0 packed 1297/0/9skip headerless 1266/0/40skip, fulltest rc=0 with every gate GREEN (clone-origin and deduction-owner included), forest_pack_gate linux 68 = baseline, forest_bind_gate 29/29, warn ratchet GREEN (0 warnings), tsubst flag-on GREEN; wine64 1243/0/63skip + verify_pe_release OK + win64 pack 68 = baseline; c-testsuite 220/220 baseline EMPTY; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK; darwin pack check on the rebuilt cross madc + refrozen x86-64 pack: teststringparambyvalue(+_libcxx) emitted C has 0 o25 definitions and 0 __init_with_sentinel mentions; dp2 keeps its sentinel (the trait-fold gap, expected). Battery 1 on 360831da stopped at the deduction-owner gate; 02a76f49 is that fix.
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
