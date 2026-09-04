@@ -16465,31 +16465,31 @@ madc_wide_int Program::parse_constant_primary()
     }
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
-	// Check for cast: (type)value — e.g. (char)SB, (unsigned char)~0
+	// A cast `(type-id) cast-expression` — (char)SB, (unsigned char)~0 —
+	// only when the parenthesized run IS a type-id ([expr.cast]; gcc's
+	// cp_parser_cast_expression parses the type-id tentatively and requires
+	// the `)`). A run that merely STARTS with a type token is otherwise a
+	// parenthesized expression: `(I<0>::num == 0)`, the shape a substituted
+	// dependent non-type DEFAULT argument takes (the parameter became a type
+	// token) — the old arm swallowed it to the `)` as the cast target, the
+	// fold failed, the default stayed unfolded and the partial specialization
+	// keyed on `true` was never selected (tests/testtpldefaultdepfold).
 	TokenBase *inner = peekToken();
 	if ( inner && (inner->type() == TokenType::ttDataType
 	  || inner->id() == TokenID::tkCONST
 	  || inner->id() == TokenID::tkRESTRICT) )
 	{
-	    // Extract the cast target type for truncation
 	    DataDef *cast_dd = NULL;
 	    bool is_unsigned = false;
-	    while ( peekToken()
-	         && peekToken()->id() != TokenID::tkClBrk )
+	    size_t n = constant_cast_type_id_extent(cast_dd, is_unsigned);
+	    if ( n )
 	    {
-		TokenBase *ct = nextToken();
-		if ( ct->type() == TokenType::ttDataType )
-		    cast_dd = &((TokenDataType *)ct)->definition;
-		if ( ct->type() == TokenType::ttIdentifier )
-		{
-		    std::string tname = ((TokenIdent *)ct)->spelling();
-		    if ( tname == "unsigned" ) is_unsigned = true;
-		}
-	    }
-	    if ( peekToken() )
+		for ( size_t k = 0; k < n; ++k )
+		    nextToken();
 		nextToken(); // consume ')'
-	    madc_wide_int val = parse_constant_primary();
-	    return apply_integer_cast_value(cast_dd, val, is_unsigned);
+		madc_wide_int val = parse_constant_primary();
+		return apply_integer_cast_value(cast_dd, val, is_unsigned);
+	    }
 	}
 	out = parse_constant_integer_expression();
 	tb = nextToken();
@@ -16498,6 +16498,69 @@ madc_wide_int Program::parse_constant_primary()
 	return out;
     }
     Throw(tb) << "Expecting integer constant expression" << flush;
+    return 0;
+}
+
+// The type-id run of a constant-context cast, non-consumingly: from tokens[0]
+// (right after the `(`) to the `)` — a type token, cv-qualifiers, the
+// `unsigned` / `signed` / `long` / `short` words, `*` / `&`, and after a type
+// token an optional `::name` MEMBER-TYPE chain (peek_class_member_type_chain,
+// which rejects a VALUE leaf such as `I<0>::num`). Returns the token count
+// before the `)`, or 0 when the run is not a type-id.
+size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigned)
+{
+    cast_dd = NULL;
+    is_unsigned = false;
+    size_t i = 0;
+    while ( i < tokens.size() && tokens[i] )
+    {
+	TokenBase *t = tokens[i];
+	if ( t->id() == TokenID::tkClBrk )
+	    return (cast_dd || is_unsigned) ? i : 0;
+	if ( t->type() == TokenType::ttDataType )
+	{
+	    cast_dd = &((TokenDataType *)t)->definition;
+	    ++i;
+	    if ( i < tokens.size() && tokens[i]
+	      && tokens[i]->id() == TokenID::tkNS )
+	    {
+		DataDefCLASS *owner = dynamic_cast<DataDefCLASS *>(cast_dd);
+		DataDef *member_type = NULL;
+		size_t consumed = 0;
+		std::string leaf;
+		if ( !owner || !peek_class_member_type_chain(owner, tokens, i,
+							     member_type,
+							     consumed, leaf) )
+		    return 0;		// `Type::value ...`: a qualified VALUE
+		cast_dd = member_type;
+		i += consumed;
+	    }
+	    continue;
+	}
+	if ( is_type_qualifier_token(t) || t->id() == TokenID::tkMul
+	  || t->id() == TokenID::tkBand || t->id() == TokenID::tkLand )
+	{
+	    ++i;
+	    continue;
+	}
+	if ( t->type() == TokenType::ttIdentifier )
+	{
+	    const std::string w = ((TokenIdent *)t)->spelling();
+	    if ( w == "unsigned" )
+	    {
+		is_unsigned = true;
+		++i;
+		continue;
+	    }
+	    if ( w == "signed" || w == "long" || w == "short" || w == "int"
+	      || w == "char" )
+	    {
+		++i;
+		continue;
+	    }
+	}
+	return 0;
+    }
     return 0;
 }
 

@@ -1,0 +1,30 @@
+// A DEPENDENT non-type default template argument folds after substitution:
+// `bool = (A::num == 0)` becomes `(I<0>::num == 0)` -> 1, and the partial
+// specialization <A, true> is selected. madc left the default unfolded — the
+// constant-expression parser read the parenthesized `(I<0>::num == 0)` as a
+// C-style CAST `(type)...` because the substituted qualifier is a type token,
+// swallowed the whole parenthesis as the cast target and failed the fold — so
+// the primary was instantiated instead (silent: `1 1` for g++'s `2 1`).
+// Oracle: g++ == clang++.
+#include <stdio.h>
+
+template<int N> struct I { static const int num = N; };
+struct K { static const int num = 0; };
+
+template<class A, bool = (A::num == 0)> struct Z { static const int v = 1; };
+template<class A> struct Z<A, true> { static const int v = 2; };
+
+template<class A, class B, bool = (A::num == 0 || B::num == 0)>
+struct E { static const int v = 10; };
+template<class A, class B> struct E<A, B, true> { static const int v = 20; };
+
+template<class A, int = (A::num) * 2 + 1> struct O { static const int v = 0; };
+template<class A> struct O<A, 7> { static const int v = 7; };
+
+int main()
+{
+	printf("%d %d %d\n", Z<I<0> >::v, Z<I<3> >::v, Z<K>::v);
+	printf("%d %d %d\n", E<I<0>, I<5> >::v, E<I<4>, I<5> >::v, E<K, I<9> >::v);
+	printf("%d %d %d\n", O<I<3> >::v, O<I<2> >::v, (int)(unsigned char)~0);
+	return 0;
+}

@@ -5624,6 +5624,11 @@ public:
     // — gcc's wide_int model); int64 consumers truncate at the assignment
     // boundary, which is gcc's own #if/intmax_t semantics.
     madc_wide_int parse_constant_primary();
+    // [expr.cast] in constant context: the token count of a parenthesized run
+    // (the `(` already consumed) that IS a type-id up to its `)`, with the cast
+    // target and `unsigned`-ness; 0 when the run is a parenthesized EXPRESSION
+    // (`(I<0>::num == 0)`). Defined beside parse_constant_primary.
+    size_t constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigned);
     madc_wide_int parse_constant_mul();
     madc_wide_int parse_constant_add();
     madc_wide_int parse_constant_shift();
