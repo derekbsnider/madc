@@ -61598,6 +61598,44 @@ DataDefCLASS *Program::resolve_qualified_class_owner(const std::vector<std::stri
 	}
     }
 
+    // A CLASS-rooted chain (`Outer::Inner`, `ns::Outer::Inner`): the longest
+    // leading run that names a namespace is the root scope, the next name a
+    // class in it, and each further name a nested class found in the scope
+    // the previous one denotes ([class.qual]) — the descent
+    // scan_resolve_qualifier_chain performs over tokens, here over names.
+    // Without it every out-of-line member of a NESTED class was "Unknown C++
+    // declarator scope" (libstdc++ fs_path.h `path::iterator::operator++()`).
+    if ( scope_parts.size() > 1 )
+	for ( size_t p = 0; p + 1 < scope_parts.size(); ++p )
+	{
+	    DataDef *root = NULL;
+	    if ( p == 0 )
+	    {
+		root = resolve_expression_class_scope(scope_parts[0], false);
+		if ( !root )
+		    root = resolve_named_datadef(scope_parts[0]);
+	    }
+	    else
+	    {
+		std::string ns = resolve_namespace_name_in_scope(
+				    join_scope_parts(scope_parts, p));
+		namespace_datatype_map_t::iterator nti = ns.empty()
+		    ? namespace_datatype_map.end()
+		    : namespace_datatype_map.find(ns);
+		if ( nti == namespace_datatype_map.end() )
+		    continue;
+		datatype_map_iter dti = nti->find(scope_parts[p]);
+		if ( dti != nti->end() )
+		    root = &dti->second->definition;
+	    }
+	    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(root);
+	    for ( size_t i = p + 1; cls && i < scope_parts.size(); ++i )
+		cls = dynamic_cast<DataDefCLASS *>(
+			resolve_class_type_alias(cls, scope_parts[i]));
+	    if ( cls )
+		return cls;
+	}
+
     return dynamic_cast<DataDefCLASS *>(resolve_named_datadef(class_name));
 }
 
