@@ -46381,6 +46381,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     bool completing_forward_decl = false;
     DataDefCLASS *ddc = NULL;
     dmi = pgm.struct_map.find(tag->spelling());
+    // A NESTED class-head completing a declaration the OWNER's scope holds —
+    // `struct B;` inside A, then `struct B { ... }` in the body or
+    // `class A::B { ... }` out of line: the struct parser keyed that placeholder
+    // `A::B` while this parser keys the emitted identity `A__B`, so the probe
+    // above misses it and a fresh object would split the type in two. The head
+    // name is looked up in the owner's scope, exactly as gcc's
+    // cp_parser_class_name does in the nested-name-specifier's scope and clang's
+    // ActOnTag does with LookupQualifiedName; the placeholder found there is
+    // registered under this parser's key so the completion arm below adopts it.
+    if ( dmi == pgm.struct_map.end() && nested_owner_class && !global_reclaims_bare )
+	if ( DataDefCLASS *prior = dynamic_cast<DataDefCLASS *>(
+		pgm.incomplete_prior_aggregate(tag->spelling(), nested_owner_class,
+					       class_source_name)) )
+	{
+	    pgm.pack_tap_struct(tag->spelling());	// B4a tap
+	    pgm.struct_map.set(tag->spelling(), prior);
+	    dmi = pgm.struct_map.find(tag->spelling());
+	    DBG(cout << "TokenCLASS::parse() completing the owner-scope declaration of "
+		<< class_source_name << " in " << nested_owner_class->name << endl);
+	}
     if ( dmi != pgm.struct_map.end() && !global_reclaims_bare )
     {
 	DataDefCLASS *fwd = dynamic_cast<DataDefCLASS *>(dmi->second);
