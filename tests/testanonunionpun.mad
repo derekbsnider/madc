@@ -1,0 +1,52 @@
+// Members of an ANONYMOUS union inside a struct share storage, so a store
+// through one member must be seen by a load through another. c2mir gave each
+// such access the alias class of the MEMBER's type instead of the union's, and
+// from -O2 (GVN/CCP) a load through `ival` no longer saw the store through
+// `fval` (upstream vnmakarov/mir#473; a named union was always right). The
+// .flags fixture runs this at -O2. Oracle: gcc/g++ at any level print
+// 3ff8000000000000 twice, then 4000000000000000 twice, then 3ff8000000000000.
+extern int printf(const char *, ...);
+typedef struct { union { long long ival; double fval; void *ref; }; } Value;
+typedef struct { union { long long ival; double fval; void *ref; } u; } NValue;
+long long anon(void)
+{
+	Value v;
+	v.ival = 0;
+	v.fval = 1.5;
+	return v.ival;
+}
+long long named(void)
+{
+	NValue v;
+	v.u.ival = 0;
+	v.u.fval = 1.5;
+	return v.u.ival;
+}
+long long anon_arr(int i)
+{
+	Value regs[2];
+	regs[0].ival = 0;
+	regs[1].ival = 0;
+	regs[i].fval = 2.0;
+	return regs[0].ival + regs[1].ival;
+}
+long long named_arr(int i)
+{
+	NValue regs[2];
+	regs[0].u.ival = 0;
+	regs[1].u.ival = 0;
+	regs[i].u.fval = 2.0;
+	return regs[0].u.ival + regs[1].u.ival;
+}
+long long deref(Value *p)
+{
+	p->ival = 0;
+	p->fval = 1.5;
+	return p->ival;
+}
+int main(void)
+{
+	Value v;
+	printf("%llx\n%llx\n%llx\n%llx\n%llx\n", anon(), named(), anon_arr(1), named_arr(1), deref(&v));
+	return 0;
+}
