@@ -966,6 +966,97 @@ SDK/cross facts).
   `<filesystem>` `clock` on linux libstdc++; the 9 aarch64 MIR-floor tests
   LAST with the three vnmakarov/mir issues (owner ruling).
 
+  **MEASUREMENT #5 (run 33816087788 @bb69b2ab, 2026-09-03 23:06 UTC): arm64
+  1246/18/22skip (from 1227/23), Intel 1255/9/22skip (from 1236/14) — ZERO new
+  failures on either arch; five fixed on both (testclassproto,
+  testcopiedrefptrparam, testiomanip, teststructinterop, testufcscall).
+  Intel's 9 == the common set: 6 placeholder-gap tests (testinitlist /
+  testinitlistclass `import of undefined item __uninitialized_allocator_copy_impl`;
+  testvecmembercopy / testnestedenumvec / testvartplsigchain(ns) vector:387:33
+  `lvalue required as unary & operand`) + 3 libc++ list `__base_pointer`
+  (testforeachiter, testphpdumpiter, testptrcmpupcast). arm64 adds the 9
+  MIR-floor tests (testbuiltincomplexparts / testbuiltinconjf abort,
+  testprintfdouble SIGBUS, testgccvectorbitwisenot / testgccvectorlit /
+  testgccvectorsizeexprbitwise, testcomplexretconv `i2d` on ldouble, testint128
+  proto result type, teststdiobuiltinredirects garbage). Runner mac battery 10/1
+  both arches — the `__tree:722` warning is gone; the include-free value
+  intrinsic (`invalid operand types of +`) is the standing known-open. Exe lane
+  advisory (arm64 975/213, Intel 964/233, all `-static-libmadc` Tier B).**
+
+  **WAVE 7, ITEM 1 LANDED (2026-09-04, four commits on bb69b2ab: 33beee8f
+  0a353603 5357a30c 92e9cc53) — Gap libcxx_fn_template_placeholder_called_in_
+  instantiated_body CLOSED: all six placeholder-gap tests pass under
+  -stdlib=libc++ on linux with zero warnings; the darwin runner re-measures
+  them in dispatch #6.** The chain, traced with include-free reducers
+  (tmp/w7auto*.mad -> tests/testfntplsamename, tests/testfntpldefaultdecltype,
+  tests/testfntplrefidentity; the libc++ twin tests/testvecmembercopy_libcxx is
+  the linux gate for the whole chain):
+  (1) 0a353603 — libc++ 18's pre-C++20 `__unwrap_range` spells its result type
+  through a DEFAULTED parameter, `_Unwrapped = decltype(std::__unwrap_iter(
+  std::declval<_Iter>()))`, and `__unwrap_iter`'s own return is
+  `decltype(_Impl::__unwrap(std::declval<_Iter>()))` with `_Impl` defaulted.
+  The unevaluated call's return lane (resolve_fn_template_return_by_key) filled
+  no [temp.deduct]/8 defaults and resolved only template-id decltype operands,
+  so the call kept the int64 placeholder, `_Unwrapped` = int64_t, `__unwrap_range`
+  returned pair<int64,int64> (its body computed pair<int*,int*> and CONVERTED on
+  return — visible in `--emit=c11`), and `__uninitialized_allocator_copy_impl`
+  had no viable overload: the un-instantiated placeholder call. The lane now
+  fills defaults after deduction (call argument types known; concrete bindings;
+  definition namespace) and hands any other decltype operand to the ONE
+  declared-type resolver's decltype arm.
+  (2) 5357a30c — the last placeholder, `std::forward<_T1>(__t1)` inside
+  make_pair<int*,int*>: madc names a reference dd as its pointer twin (DataDefREF
+  IS-A DataDefPTR; `int&` and `int*` are both "int32_t*"), and the three identity
+  formers of a fn-template instantiation — the inst_key memo, the overload set's
+  template_arg_names, the ranker's explicit-argument match — keyed on that name:
+  forward<int*> memo-hit the forward<int&> instance vector's construct path had
+  made, ranked non-viable, fell to the placeholder. ONE identity spelling now
+  (template_binding_identity_spelling, beside canonical_template_binding_dd): a
+  reference spells `referent&`. Follow-on (first-class refs Phase 2): a
+  DataDefREF NAME of its own.
+  (3) 33beee8f + 92e9cc53 — found by the first reducer: six sites located a
+  fn-template declarator by a first-occurrence NAME search; a same-named token
+  inside the leading decltype return (`decltype(Impl<I>::unwrap(I())) unwrap(I i)`)
+  became the declarator and `(I())` the parameter list. All six read the ONE
+  DelimDepth-aware locator now.
+  Verification (container build-2): reducers `3 4 1` / `5 7 5` == g++ == clang++;
+  the six libc++ shapes rc=0, every .expect line met, zero warnings; the
+  fn-template + libc++ neighbourhood subset 75/75.
+  Lanes at 92e9cc53 (2026-09-04, tmp/logs/w7-battery.log): linux jit 1281/0/9skip,
+  exe 1222/0, obj 1222/0, packed 1281/0/9skip, headerless 1251/0/39skip
+  (forest_pack_gate linux 68 = baseline, forest_bind_gate 29/29, warning
+  ratchet GREEN, tsubst flag-on GREEN); wine64 1228/0/62skip + verify_pe_release
+  OK (win64 pack 68 = baseline); c-testsuite 220/220; macos cross release both
+  arches 835 units, darwin pack 48 = baseline (mir-blob-skips 1/1), verify_macho
+  OK. Dispatch #6 measures the item on the darwin runner (expected residue:
+  arm64 ~12 = 9 MIR floor + 3 list, Intel ~3 list).
+
+  **WAVE 7, ITEM 2 = libc++ `<list>` — ANALYSED, FILED (KG Gap
+  libcxx_list_node_pointer_traits_completion_cycle), NOT FIXED: a design change.**
+  Reproduces live on linux (`-stdlib=libc++`: list:353 `expression before '->'
+  must be a pointer`, list:667 `member reference is not a structure or union`),
+  not only on the darwin pack. `__list_node_pointer_traits<T,void*>`'s
+  `typedef __rebind_pointer_t<void*, __list_node<T,void*>> __node_pointer` names
+  `__list_node<T,void*>` only to form a POINTER to it; C++ forms that pointer to
+  the incomplete specialization ([temp.inst]/1), madc COMPLETES the pointee, whose
+  base `__list_node_base<T,void*>` then typedefs `_NodeTraits::__node_pointer /
+  __base_pointer / __link_pointer` while the traits class is mid-instantiation —
+  ephemeral opaque dependent-member placeholders (MADC_MTI_PROBE_CLASS:
+  `opaque-member owner=__list_node_pointer_traits_int32_t_voidP member=
+  __node_pointer in canon std::__1::__list_node_base<int32_t,void*>`) baked into
+  the base's typedefs; the traits aliases heal afterwards (`set-alias
+  __link_pointer -> __list_node_base_int32_t_voidP*`) but `__prev_`/`__next_`/
+  `__ptr_` keep the placeholder and `->` refuses. The pack-bound lane reports the
+  same cycle as "basic ClassPattern could not resolve __base_pointer". Fix shape:
+  a class template-id used as a template ARGUMENT (or a pointee) is an opaque
+  SHELL completed on a completeness demand — the machinery exists for
+  declared-only templates (instantiate_opaque_template_use,
+  complete_shell_class_type, has_pending_template_instantiation); making every
+  template-argument use go through it is the two-phase arc, owner-visible in
+  scope. Reducer (tmp/w7list.mad; clang++ -stdlib=libc++ `2 3`):
+  `#include <list>` `std::list<int> l; l.push_back(1); l.push_back(2);` iterate
+  with `std::list<int>::iterator`, print size and sum.
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel

@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	3eee5c437f94	2026-09-03	jit 1277/0/9skip exe 1218/0 obj 1218/0 packed 1277/0/9skip headerless 1248/0/38skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29 (new: friendgrant, patternalias); warning ratchet GREEN incl. the new libc++ std::map twin (tmp/logs/d4-wave6b.log)
-wine64	yes	3eee5c437f94	2026-09-03	1225/0/61skip (tmp/logs/d4-wave6b.log), verify_pe_release OK, win64 pack 68 = baseline
-c-testsuite	yes	3eee5c437f94	2026-09-03	220/220 passed, baseline EMPTY (tmp/logs/d4-wave6b.log)
-macos	yes	3eee5c437f94	2026-09-03	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (52 -> 48 this wave), verify_macho OK (tmp/logs/d4-wave6b.log); owner M-series Mac: std::map + every wave-6 reducer green on madc-b42/b43 (tmp/logs/mac-red-42.log, mac-red-43.log)
+linux-battery	yes	92e9cc538eef	2026-09-04	jit 1281/0/9skip exe 1222/0 obj 1222/0 packed 1281/0/9skip headerless 1251/0/39skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29; warn ratchet GREEN; tsubst flag-on GREEN (tmp/logs/w7-battery.log)
+wine64	yes	92e9cc538eef	2026-09-04	1228/0/62skip (tmp/logs/w7-battery.log), verify_pe_release OK, win64 pack 68 = baseline
+c-testsuite	yes	92e9cc538eef	2026-09-04	220/220 passed, baseline EMPTY (tmp/logs/w7-battery.log)
+macos	yes	92e9cc538eef	2026-09-04	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK (tmp/logs/w7-battery.log); owner M-series Mac verify pending dispatch #6
