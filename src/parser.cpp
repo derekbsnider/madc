@@ -55474,6 +55474,24 @@ static std::string fn_template_value_pack_name(
 // unique symbol; call_target_funcdef ranks the set against the call's arg
 // types at CIR time. A parse failure is non-fatal: the injected tokens are
 // drained and the call falls back to the body-less placeholder.
+// [temp.deduct.type]/2: every P/A pair that deduces a template parameter must
+// deduce the SAME value; a second argument deducing a different type is a
+// deduction FAILURE — the candidate does not exist (g++: "deduced conflicting
+// types for parameter 'T' ('int' and 'char')"). The ONE owner of that
+// comparison for every deduction lane (the call lane and the free-operator
+// walker): identity after [temp.type] canonicalization (flavor twins, scalar
+// typedef aliases fold), then the name — never pointer identity alone.
+static bool deduced_bindings_conflict(DataDef *bound, DataDef *dd)
+{
+    if ( !bound || !dd || bound == dd )
+	return false;
+    DataDef *cb = canonical_template_binding_dd(bound);
+    DataDef *cd = canonical_template_binding_dd(dd);
+    if ( cb == cd )
+	return false;
+    return cb->name != cd->name;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -55897,6 +55915,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     }
 #endif
     std::map<std::string, DataDef *> binding;
+    std::set<std::string> explicit_bound;	// bound by <explicit args>, not deduced
     bool pack_empty = false;	// the pack deduced to ZERO elements (elide it)
     std::map<std::string, std::vector<std::string> > tid_pack_spellings;
     // Explicit template arguments bind the leading (non-pack) parameters.
@@ -55937,8 +55956,35 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
 	for ( size_t i = 0;
 	      i < tc->explicit_template_args.size() && i < nonpack; ++i )
+	{
 	    binding[ft.typeparams[i]] = tc->explicit_template_args[i];
+	    explicit_bound.insert(ft.typeparams[i]);
+	}
     }
+    // [temp.deduct.call]/2: deducing a BY-VALUE (non-reference) type parameter
+    // from a FUNCTION or ARRAY argument applies the standard decays —
+    // `R(Args)` -> `R(*)(Args)`, `T[N]` -> `T*`. Without the function decay
+    // `transform(b, e, fn)` deduced the operation type parameter from `fn` as
+    // the bare FuncDef (incomplete, non-callable `void __op`); without the
+    // array decay `transform(a, a+N, b, fn)` deduced the iterator parameter
+    // from `a` as the array type `int[N]`, so the body's `*__first` hit
+    // "cannot dereference non-pointer type". A reference parameter (spelling
+    // has `&`) binds directly — no decay (the array/function keeps its type).
+    // The same paragraph drops a cv-qualified A's TOP-LEVEL cv for a by-value
+    // P (`const int ci; pick(ci, 2)` deduces T = int from both arguments —
+    // DataDef::unqualified(), the one const peel). ONE owner for both
+    // deduction points below (the already-bound consistency check and the
+    // general deduction).
+    auto decayed_for_deduction = [&](const std::string &sp_, DataDef *arg_dd_,
+				     size_t ai) -> DataDef * {
+	if ( sp_.find('&') != std::string::npos )
+	    return arg_dd_;
+	if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd_) )
+	    return new DataDefFPTR(afd);
+	if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[ai]) )
+	    return adp;
+	return arg_dd_ ? arg_dd_->unqualified() : arg_dd_;
+    };
     for ( size_t i = 0; i < ov.param_spellings.size(); ++i )
     {
 	if ( i >= tc->parameters.size() )
@@ -56024,7 +56070,42 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 			    unbound = true;
 		    }
 	    if ( names_tp && !unbound )
+	    {
+		// Bound by EXPLICIT template arguments: P is concrete after
+		// substitution — nothing to deduce, the general block's
+		// conversion check does not apply either (substitution
+		// resolves the spelling). Bound by an EARLIER ARGUMENT:
+		// [temp.deduct.type]/2 requires this argument to deduce the
+		// SAME type — `(20, 'x')` against `(_InputIterator,
+		// _InputIterator)` is a deduction failure, not "first binding
+		// wins" (libc++'s iterator-pair basic_string ctor was viable
+		// for std::string(20, 'x') and its body instantiated for int).
+		// Deduce when the shape allows it and compare through the one
+		// owner; a shape the deducer cannot decompose keeps the skip
+		// (substitution resolves it, as before).
+		bool all_explicit = true;
+		for ( size_t wi = 0; wi < words.size() && all_explicit; ++wi )
+		    for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
+			if ( words[wi] == ft.typeparams[tj]
+			  && !explicit_bound.count(ft.typeparams[tj]) )
+			    all_explicit = false;
+		if ( !all_explicit )
+		{
+		    std::string tp2;
+		    DataDef *dd2 = NULL;
+		    if ( fn_template_deduce_param(sp, ft.typeparams,
+				decayed_for_deduction(sp, arg_dd, i), tp2, dd2,
+				&pgm, tc->parameters[i]) == 1 && dd2 )
+		    {
+			std::map<std::string, DataDef *>::iterator bi =
+			    binding.find(tp2);
+			if ( bi != binding.end()
+			  && deduced_bindings_conflict(bi->second, dd2) )
+			    { FTPROBE("inconsistent-deduction"); return false; }
+		    }
+		}
 		continue;
+	    }
 	    // ...and the same for a parameter whose unbound names all sit in a
 	    // NON-DEDUCED CONTEXT ([temp.deduct.type]/5) — a qualified-id's
 	    // nested-name-specifier. Deduction is not attempted there, so
@@ -56244,23 +56325,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		{ FTPROBE("exit-53188// template-id param the argument can't match"); return false; }
 	    }
 	}
-	// [temp.deduct.call]: deducing a BY-VALUE (non-reference) type parameter
-	// from a FUNCTION or ARRAY argument applies the standard decays —
-	// `R(Args)` -> `R(*)(Args)`, `T[N]` -> `T*`. Without the function decay
-	// `transform(b, e, fn)` deduced the operation type parameter from `fn` as
-	// the bare FuncDef (incomplete, non-callable `void __op`); without the
-	// array decay `transform(a, a+N, b, fn)` deduced the iterator parameter
-	// from `a` as the array type `int[N]`, so the body's `*__first` hit
-	// "cannot dereference non-pointer type". A reference parameter (spelling
-	// has `&`) binds directly — no decay (the array/function keeps its type).
-	DataDef *deduce_dd = arg_dd;
-	if ( sp.find('&') == std::string::npos )
-	{
-	    if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd) )
-		deduce_dd = new DataDefFPTR(afd);
-	    else if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[i]) )
-		deduce_dd = adp;
-	}
+	// [temp.deduct.call]/2 by-value decays — decayed_for_deduction above.
+	DataDef *deduce_dd = decayed_for_deduction(sp, arg_dd, i);
 	std::string tp;
 	DataDef *dd = NULL;
 	int r = fn_template_deduce_param(sp, ft.typeparams, deduce_dd, tp, dd,
@@ -56281,8 +56347,22 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 		{ FTPROBE("concrete-param-mismatch"); return false; }
 	    continue;
 	}
-	if ( binding.find(tp) == binding.end() )
-	    binding[tp] = dd;
+	{
+	    // A parameter already deduced from an earlier argument must agree
+	    // (deduced_bindings_conflict, the one owner). First-binding-wins
+	    // made libc++'s `basic_string(_InputIterator, _InputIterator)`
+	    // viable for (20, 'x') — _InputIterator = int from the first
+	    // argument, the char ignored — and its body was instantiated for
+	    // int; g++ and clang never see a candidate.
+	    std::map<std::string, DataDef *>::iterator bi = binding.find(tp);
+	    if ( bi != binding.end() )
+	    {
+		if ( deduced_bindings_conflict(bi->second, dd) )
+		    { FTPROBE("inconsistent-deduction"); return false; }
+	    }
+	    else
+		binding[tp] = dd;
+	}
     }
     // An empty pack must not ALSO have bound an element (a fn-ptr deduction
     // saying empty while a trailing argument filled the pack is a mismatch).
@@ -58607,9 +58687,8 @@ static DataDef *try_instantiate_free_operator_template(Program &pgm,
 	if ( r == 1 )
 	{
 	    std::map<std::string, DataDef *>::iterator bi = binding.find(tp);
-	    if ( bi != binding.end() && bi->second != dd
-	      && bi->second->name != dd->name )
-		return NULL;
+	    if ( bi != binding.end() && deduced_bindings_conflict(bi->second, dd) )
+		return NULL;	// [temp.deduct.type]/2 — the one owner
 	    if ( bi == binding.end() )
 		binding[tp] = dd;
 	}
