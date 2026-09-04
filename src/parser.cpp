@@ -13773,7 +13773,7 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    // the sizeof(expression) fallback still sees an intact stream.
 	    // Variables already won above, so a less-than expression
 	    // (sizeof(v < 3)) never reaches this arm.
-	    if ( !dd && peekToken()
+	    if ( peekToken()
 	      && (peekToken()->id() == TokenID::tkLT
 	       || peekToken()->id() == TokenID::tkNS) )
 	    {

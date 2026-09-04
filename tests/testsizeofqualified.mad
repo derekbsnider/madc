@@ -1,0 +1,14 @@
+#include <stdio.h>
+// sizeof / alignof of a QUALIFIED type-id: the operand is the whole
+// nested-name-specifier chain ([expr.sizeof] takes a type-id), not the bare
+// leading name — `sizeof(O::N)` measured O and then died on the `::`.
+struct O { struct N { char c; int w; }; struct M { double d; }; int k; };
+namespace ns { struct T { long a, b; }; }
+template<class X> struct Box { X x; char tag; };
+int main()
+{
+    printf("%d %d %d\n", (int)sizeof(O::N), (int)sizeof(O::M), (int)sizeof(O));
+    printf("%d %d %d\n", (int)alignof(O::N), (int)alignof(O::M), (int)(sizeof(O::N) > sizeof(O)));
+    printf("%d %d\n", (int)sizeof(ns::T), (int)sizeof(Box<O::N>));
+    return 0;
+}
