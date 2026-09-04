@@ -1208,6 +1208,128 @@ SDK/cross facts).
   identifier after type" (oolnested.mad); `namespace fs = std::filesystem;`
   NAMESPACE ALIAS -> "Expecting '{' after namespace name" (nsalias.mad).
 
+  **MEASUREMENT #7 (run 33882552642 @dc9baf0d, 2026-09-04 14:14 UTC): arm64
+  1262/14/22skip (from 1256/12), Intel 1271/5/22skip (from 1265/3); zero
+  c2mir warnings; runner mac battery 10/1 both. The common set = the 3
+  libc++ `<list>` cycle tests + 2 NEW: teststringparambyvalue and its _libcxx
+  twin (wave-7 item 3's own reducers) — `std::string a(20, 'x')` died
+  "no matching constructor for call to 'basic_string_view<char>(int32_t*)'"
+  under the darwin PACK on both arches while the live parse passed.
+  Reproduced on linux: `bin/madc-x86-64-macos --forest-bind=obj/hosted-
+  x86-64-macos/forest.bin -stdlib=libc++ --emit=c11 tmp/w7bv/dp2.mad` fails,
+  `--no-forest-bind` passes. arm64 adds the 9 MIR-floor tests (unchanged).**
+
+  **WAVE 7b LANDED (2026-09-04, seven code commits on dc9baf0d: A=d624d03e
+  B=061bb0ca C=a21e31cd E=eca465e9 F=ce331a34 D=636d30de N=29aca401, plus
+  G=7beeb022, a comment-only reword — the battery's fulltest ran the
+  integration suite 1296/0/9skip and STOPPED at its second gate,
+  check-no-std-hardcoding: the commit-D comment spelled
+  "string_view-constrained" and the gate reads comments (`\bstring_[a-z]`;
+  "not even a comment"); the gates after it were pre-run on G's binary,
+  tmp/logs/w7d-pregates.log, 85/85; W=e398fabd
+  tests/testsizeofqualified.win64_expect — the wine lane's one failure was
+  this test's linux expectation on an LLP64 target, madc == mingw-g++ there;
+  L=2630aca5 the ledger RELEASE tier, see docs/rules/branching.md). LANES
+  @e398fabd (tmp/logs/w7d-battery.log): linux jit 1296/0/9skip exe 1237/0 obj
+  1237/0 packed 1296/0/9skip headerless 1265/0/40skip (forest_pack_gate linux
+  68 = baseline; forest_bind_gate 29/29; warn ratchet GREEN; tsubst flag-on
+  GREEN); wine64 1242/0/63skip (re-run with the fixture, rb-20260904-163837;
+  first run 1241/1) + verify_pe_release OK + win64 pack 68 = baseline;
+  c-testsuite 220/220 baseline EMPTY; macos cross release both arches 835
+  units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK;
+  DARWIN-PACK REPRO on the rebuilt cross madc: tmp/w7bv/dp2.mad,
+  teststringparambyvalue and its _libcxx twin all rc=0 under
+  `--forest-bind=obj/hosted-x86-64-macos/forest.bin -stdlib=libc++ --emit=c11`
+  — commit D closes dispatch #7's two new failures; dispatch #8 confirms on
+  the runners.** The `<filesystem>`
+  frontier peeled three layers and exposed a fourth underneath. A (aggregates
+  ONE object): `struct B; B *g; struct B { int w; B(int); }` then `g->w` failed
+  "no member named 'w'" at GLOBAL scope — the struct parser minted a
+  DataDefSTRUCT placeholder and the class parser, unable to complete it in
+  place, REPLACED it (every DataDefPTR::base_type typed against the
+  declaration stayed on the empty object). gcc xref_tag keeps one node ("the
+  forward-reference will be altered into a real type"); clang's
+  redeclarations share one RecordType; both make the class-key a property of
+  the one type (CLASSTYPE_DECLARED_CLASS / isClassCompatTagKind). Now:
+  new_incomplete_aggregate decides the placeholder's KIND by mode (a
+  DataDefCLASS wherever a struct-key body may take the class parser),
+  struct_tag_or_implicit_forward is the one implicit-forward mint (5 raw
+  copies folded), TokenSTRUCT::parse builds the body INTO the prior
+  (incomplete_prior_aggregate; the field-by-field copy arm is gone) and runs
+  compute_layout for every class it completes; the class parser's replacing
+  arm is gone. tests/testfwdstructclassdef (g++ == clang++ `4 4 4 / 7 4 / 10
+  5 / 9 / 12 3 y`). B (nested prior in the OWNER scope): the struct parser
+  keys a nested placeholder `A::B`, the class parser `A__B` — it probed its
+  own key only and minted a second object; it now asks the owner-scope lookup
+  (gcc cp_parser_class_name in the nested-name-specifier's scope; clang
+  LookupQualifiedName). tests/testnestedfwdclassdef (`1 4 6 / 5 1`). C
+  (struct-key qualified head): `struct A::B : A {` never reached the class
+  parser — cpp_struct_body_needs_class_parser only knew `{`/`:` right after
+  the tag; qualified_class_head_starts_definition walks the
+  nested-name-specifier (DelimDepth d(this)) and answers gcc's
+  cp_parser_nth_token_starts_class_definition_p question. tests/
+  testoolnestedstructhead (`3 4 4 / 7 8 1 / 5 2`); fs_path.h:859 passed. E
+  (sizeof of a QUALIFIED type-id): `sizeof(O::N)` measured O and died on the
+  `::` — the `!dd &&` guard on the declared-type route; tests/
+  testsizeofqualified (`8 8 4 / 4 8 1 / 16 12`). F (out-of-line member of a
+  NESTED class): resolve_qualified_class_owner knew `ns::Class` only; a
+  class-rooted chain now descends by resolve_class_type_alias ([class.qual],
+  the scan_resolve_qualifier_chain descent over names); tests/
+  testnestedoutoflinemember (`13 2 42 8 4`); fs_path.h:1359 passed. D (the
+  darwin failure — SFINAE fidelity, KG Gap sfinae_constrained_ctor_template_
+  instantiated_past_its_guard CLOSED): libc++'s `basic_string(const _Tp&,
+  const allocator&)`, constrained on __can_be_converted_to_string_view, was
+  INSTANTIATED for _Tp = int in every lane (MADC_MTB_PROBE `inj
+  BS__BS__o25<int32_t,0,>`); the live lane never lowered the losing instance,
+  the pack lane did. Two roots in the trait, each a silent wrong answer: (a) the scalar
+  rule let any arithmetic type convert to a pointer ([conv.ptr] admits only a
+  null pointer constant) — is_convertible<const int&, const char*> read 1;
+  (b) the trait refused every scalar<->class / unrelated class pair as
+  "cannot faithfully evaluate" — is_convertible to a class is copy-init
+  through a non-explicit converting ctor ([over.match.copy], [class.conv.ctor],
+  no nested user conversion per [over.best.ics]/4): trait_class_constructible
+  gained a copy_init form (FuncDef::is_explicit skipped; an unrelated class
+  arg not viable; aggregate params of either object kind); also a trait
+  operand's cv on the pointer itself (`const char* const&`) parses. With the
+  trait folding to 0 the constraint arg is concrete, `enable_if_t<0, int>`
+  has no `::type`, and instantiate_template_alias_use's concrete-arg branch
+  returns the substitution failure. A third edit — a NON-dependent but
+  UNFOLDABLE alias arg as failure — was tried and REVERTED: it flipped every
+  libc++ guard on a trait madc cannot fold into rejection (teststrdefault_
+  libcxx: `__assign_trivially_copyable` undefined import); those traits are
+  KG Gap unfoldable_trait_in_sfinae_guard_accepted_by_placeholder
+  (is_assignable<char&, const char&>, __has_input_iterator_category<char*>,
+  __can_rewrap, __is_segmented_iterator …) — and the same disposition keeps
+  the iterator-pair ctor `basic_string(_InputIterator, _InputIterator)`
+  instantiated for int (`__has_input_iterator_category<int>` does not fold),
+  a losing instance the PACK lane may still lower (D2). Dispatch #8 tells.
+  tests/testsfinaeconvertible
+  (`1 13 / 0 0 1 0 / 1 1 1 1 / 1 0 0 0`); libc++-free reducers tmp/w7bv/
+  sf3 sf5 sf6 cv4 cv5. After D the constraint FAILS for int (MTB `FAIL
+  BS__BS__o25 constraint[1]`); dispatch #8 re-measures the pack lane. NEW KG
+  Gap pack_lane_lowers_unselected_ctor_template_instance (D2): the pack lane
+  lowers an instantiated ctor body the live lane never emits — a LOADED !=
+  parsed emission-set divergence, its own slice. N (namespace alias,
+  [namespace.alias]): `namespace b = a;` — Program::namespace_aliases
+  ("scope::alias" -> canonical target) read FIRST by canonical_nested_
+  namespace, the one existence probe every qualifier / type / function /
+  template / using-directive resolution passes; transported by the pack as
+  DK_NSALIAS (CIR_FOREST_FORMAT_VERSION 44); gcc do_namespace_alias's
+  DECL_NAMESPACE_ALIAS unwrapped by ORIGINAL_NAMESPACE, clang's
+  NamespaceAliasDecl. tests/testnamespacealias (`1 6 5 7 9 / 1 6 1 5 / 1 5`).
+  `<filesystem>` NEXT FRONTIER: fs_path.h:1433 `__path_iter_distance`
+  "use of undeclared identifier" — a name used in an inline member body
+  before its declaration later in the header (complete-class context /
+  deferred body lookup). ALSO MEASURED, filed: 77 token-level hand-rolled
+  delimiter counters in parser.cpp (LT 12, OpBrc 14, OpBrk 41, OpSqr 10 —
+  template_class_head_is_qualified and cpp_struct_body_needs_class_parser
+  among them); check-one-delim-tracker.sh keys on variable NAMES and misses
+  them all — KG DupFamily token_level_delimiter_counters; the migration + a
+  token-level ratchet marker is the next tracker slice. Verification per
+  commit: build rc=0 zero warnings, reducer == g++ == clang++, neighbourhood
+  subsets 0 failures, forest_bind_gate 29/29, smaug_gate OK (A), libcxx_gate
+  OK (D).**
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
