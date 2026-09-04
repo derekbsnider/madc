@@ -1,0 +1,38 @@
+#include <stdio.h>
+// A constrained constructor template is a candidate only when its SFINAE
+// constraint holds after deduction ([temp.deduct]/8) — and the constraint's
+// convertibility trait must answer as gcc and clang do ([meta.rel]
+// is_convertible: copy-initialization through a NON-EXPLICIT converting
+// constructor; [conv.ptr]: an integer is not a pointer). The libc++
+// shape: basic_string(const _Tp&, const allocator&) constrained on
+// __can_be_converted_to_string_view<_CharT, _Traits, _Tp>.
+template<bool B, class T = void> struct enable_if {};
+template<class T> struct enable_if<true, T> { typedef T type; };
+template<bool B, class T = void> using enable_if_t = typename enable_if<B, T>::type;
+template<bool B> struct bool_constant { static const bool value = B; };
+template<class F, class T> struct is_conv : bool_constant<__is_convertible(F, T)> {};
+struct W { int n; };
+struct V { V(const char *p) : n(p ? 3 : 0) {} V(const W &w) : n(w.n) {} int n; int size() const { return n; } };
+struct X { explicit X(const char *) {} };
+template<class T> struct can_view
+    : bool_constant<is_conv<const T&, V>::value && !is_conv<const T&, const char*>::value> {};
+struct S {
+    S(unsigned long n, char c) : k(1) { (void)n; (void)c; }
+    template<class T, enable_if_t<can_view<T>::value && !__is_same(T, S), int> = 0>
+    S(const T& t, int a) : k(0) { V v = t; k = v.size() + a; }
+    int k;
+};
+int main()
+{
+    S a(20, 'x');                 // the (n, c) constructor; the template is not a candidate
+    W w; w.n = 3;
+    S b(w, 10);                   // the template, T = W: V(w).size() + 10 (W -> V by V(const W&))
+    printf("%d %d\n", a.k, b.k);
+    printf("%d %d %d %d\n", (int)__is_convertible(const int&, const char*), (int)__is_convertible(const int&, V),
+	   (int)__is_convertible(const char*, V), (int)__is_convertible(const char*, X));
+    printf("%d %d %d %d\n", (int)__is_convertible(long, int), (int)__is_convertible(int*, void*),
+	   (int)__is_convertible(decltype(nullptr), const char*), (int)__is_convertible(int*, bool));
+    printf("%d %d %d %d\n", (int)__is_convertible(const W&, V), (int)__is_convertible(const W&, const char*),
+	   (int)__is_convertible(V, const char*), (int)__is_convertible(V, int));
+    return 0;
+}

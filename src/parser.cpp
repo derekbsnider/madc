@@ -14466,9 +14466,22 @@ static int trait_scalar_assignable_from(DataDef *to, DataDef *from)
 	return -1;
     if ( to == from || to->name == from->name )
 	return 1;
+    // A pointer (or array, which decays) SOURCE converts to another pointer
+    // (madc's one pointer family — qualification, void* and derived-to-base
+    // are not told apart here) or to bool ([conv.bool]) — never to another
+    // arithmetic type. A pointer TARGET from an arithmetic type is NOT
+    // convertible: [conv.ptr] admits only a null pointer constant, a VALUE
+    // property no type has. Reading it as convertible (DataDefPTR is
+    // "numeric" in madc's model) made is_convertible<const int&, const char*>
+    // true and let a string_view-constrained constructor template past its
+    // SFINAE guard (libc++ basic_string(const _Tp&, const allocator&) for
+    // _Tp = int — the darwin std::string(n, c) wall).
+    bool from_ptr = from->is_pointer() || dynamic_cast<DataDefCArray *>(from);
+    if ( from_ptr )
+	return (to->is_pointer() || to == &ddBOOL) ? 1 : 0;
+    if ( to->is_pointer() )
+	return 0;
     if ( to->is_numeric() && from->is_numeric() )
-	return 1;
-    if ( to->is_pointer() && (from->is_pointer() || from->is_numeric()) )
 	return 1;
     return -1;
 }
@@ -14633,6 +14646,13 @@ static bool trait_class_has_conversion_op(DataDefCLASS *c)
 // (-1 = not constant-foldable) rather than guessing a canon answer.
 static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
 					       const TraitTypeArg &to);
+// copy_init = the COPY-initialization form ([over.match.copy]): explicit
+// constructors are not candidates and no user-defined conversion is allowed
+// inside a candidate's own parameter conversion ([over.best.ics]/4).
+static int trait_class_constructible(DataDefCLASS *c,
+				     const std::vector<TraitTypeArg> &args,
+				     bool need_nothrow, int depth,
+				     bool copy_init = false);
 
 // Env-gated probe (MADC_ISCONV_PROBE=1): every __is_convertible fold with its
 // verdict — the overload-flip diagnostic when a newly-foldable trait changes
@@ -14676,10 +14696,45 @@ static int trait_is_convertible_uninstrumented(const TraitTypeArg &from,
 	if ( (!toc || toc->ctors.empty())
 	  && (!fromc || !trait_class_has_conversion_op(fromc)) )
 	    return 0;
+	// A converting constructor of the target taking the source class
+	// ([class.conv.ctor], copy-init form): a definite 1. Otherwise a
+	// conversion function on the source is the only other path — its
+	// target type is not modeled (-1); none -> a definite 0.
+	std::vector<TraitTypeArg> one(1, from);
+	int via_ctor = (toc && !toc->ctors.empty())
+	    ? trait_class_constructible(toc, one, false, 0, true) : 0;
+	if ( via_ctor == 1 )
+	    return 1;
+	bool conv_op = fromc && trait_class_has_conversion_op(fromc);
+	if ( via_ctor == 0 )
+	    return conv_op ? -1 : 0;
 	return -1;			// user machinery — undetermined
     }
-    if ( to_cls || from_cls )
-	return -1;			// class <-> scalar: user machinery
+    if ( to_cls )
+    {
+	// scalar -> class: copy-initialization through a NON-EXPLICIT
+	// converting constructor whose one required parameter takes From by a
+	// standard conversion ([over.match.copy], [class.conv.ctor]; no
+	// user-defined conversion inside that sequence, [over.best.ics]/4) —
+	// the constructibility walk in its copy-init form. A class with no
+	// constructors at all (a plain aggregate) offers no path: a definite 0.
+	// libc++ asks exactly this of every basic_string(const _Tp&, ...)
+	// candidate (__can_be_converted_to_string_view).
+	DataDefCLASS *toc = dynamic_cast<DataDefCLASS *>(to.dd);
+	if ( !toc || toc->ctors.empty() )
+	    return 0;
+	std::vector<TraitTypeArg> one(1, from);
+	return trait_class_constructible(toc, one, false, 0, true);
+    }
+    if ( from_cls )
+    {
+	// class -> scalar: only a conversion function ([class.conv.fct]) can
+	// do it — none is a definite 0; its target type is not modeled (-1).
+	DataDefCLASS *fromc = dynamic_cast<DataDefCLASS *>(from.dd);
+	if ( !fromc || !trait_class_has_conversion_op(fromc) )
+	    return 0;
+	return -1;
+    }
     return trait_scalar_convertible_from(to.dd, from);
 }
 
@@ -14768,7 +14823,8 @@ static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
 // (-1); a positive match from a plain candidate stays decisive.
 static int trait_class_constructible(DataDefCLASS *c,
 				     const std::vector<TraitTypeArg> &args,
-				     bool need_nothrow, int depth)
+				     bool need_nothrow, int depth,
+				     bool copy_init)
 {
     bool same_class_arg = args.size() == 1 && args[0].dd
 	&& (args[0].dd == c || args[0].dd->name == c->name);
@@ -14798,6 +14854,10 @@ static int trait_class_constructible(DataDefCLASS *c,
 	    saw_unmodelable = true;   // a ctor template can accept nearly anything
 	    continue;
 	}
+	// Copy-initialization ([over.match.copy]): an `explicit` constructor
+	// is not a converting constructor — never a candidate here.
+	if ( copy_init && fd->is_explicit )
+	    continue;
 	saw_user_ctor = true;
 	// A `= default` special member behaves as the implicit one — the
 	// memberwise walk below owns it (its noexcept is the conjunction).
@@ -14849,13 +14909,23 @@ static int trait_class_constructible(DataDefCLASS *c,
 	    const TraitTypeArg &a = args[i];
 	    if ( !pref || !a.dd )
 	    { unmodelable = true; viable = false; break; }
-	    if ( DataDefCLASS *pcl = dynamic_cast<DataDefCLASS *>(pref) )
+	    // An AGGREGATE parameter (class, plain struct or union — a struct
+	    // that never earned class-hood is a DataDefSTRUCT and was falling
+	    // to the scalar rule, which refused it as unmodelable): the same
+	    // type, or a derived class for a class parameter.
+	    if ( DataDefSTRUCT *pagg = dynamic_cast<DataDefSTRUCT *>(pref) )
 	    {
-		if ( a.dd == pcl || a.dd->name == pcl->name )
+		if ( a.dd == pagg || a.dd->name == pagg->name )
 		    continue;
-		if ( dynamic_cast<DataDefCLASS *>(a.dd)
+		DataDefCLASS *pcl = dynamic_cast<DataDefCLASS *>(pagg);
+		if ( pcl && dynamic_cast<DataDefCLASS *>(a.dd)
 		  && trait_is_base_of(pcl, a.dd) )
 		    continue;
+		// Copy-initialization allows no user-defined conversion inside
+		// the constructor's own parameter conversion ([over.best.ics]/4):
+		// an unrelated argument type is not viable — not unmodeled.
+		if ( copy_init )
+		{ viable = false; break; }
 		unmodelable = true;   // would need a conversion madc can't rank
 		viable = false;
 		break;
@@ -15050,12 +15120,23 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	    nextToken();
 	    dd = getPointerType(dd);
 	}
+	// cv-qualifiers on the POINTER itself (`char* const`, `const char*
+	// const&` — libc++'s `const _Tp&` with _Tp a pointer, once spelled):
+	// the top-level cv of a by-value operand is dropped ([expr.type]); on
+	// a reference operand it is the referent's constness.
+	bool pointer_const = false;
+	while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+			     || peekToken()->id() == TokenID::tkVOLATILE) )
+	{
+	    if ( nextToken()->id() == TokenID::tkCONST )
+		pointer_const = true;
+	}
 	a.dd = dd;
 	// Trailing reference (`T&` / `T&&`) — load-bearing for __is_assignable.
 	if ( peekToken() && peekToken()->id() == TokenID::tkBand )
-	{ nextToken(); a.is_lref = true; }
+	{ nextToken(); a.is_lref = true; a.referent_const |= pointer_const; }
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
-	{ nextToken(); a.is_rref = true; }
+	{ nextToken(); a.is_rref = true; a.referent_const |= pointer_const; }
 	unwrap_baked_trait_arg(a);
 	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
 	// member-type placeholder) is unanswerable: any 0/1 answered here
