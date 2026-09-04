@@ -43,7 +43,11 @@ CHECK_ONLY=0
 #            the standard library madc's second ABI flavor targets
 # codec      zstd: the forest / PCH container codec (HAVE_ZSTD)
 # storage    madcdat backends configure probes for
-# cross      qemu-user-static: runs aarch64-linux artifacts on x86-64
+# cross      qemu-user-static: runs aarch64-linux artifacts on x86-64;
+#            gcc/g++-aarch64-linux-gnu: the cross toolchain + sysroot that
+#            builds an aarch64 c2m and the gcc oracle for it (the qemu loop
+#            for MIR aarch64 work -- the 2026-07-25 install was never pinned
+#            here and a container rebuild silently lost it)
 # gdb: parser-crash attribution — a stack-overflow SIGSEGV's recursion cycle
 # is visible in three backtrace frames (how the libc++ <string> allocator
 # CRTP loop was found, 2026-07-28); the built-in handler prints raw
@@ -71,7 +75,7 @@ PKGS_codec="libzstd-dev zlib1g-dev"
 # without it configure reports xqdbm=0 and the build quietly loses a
 # backend (and its unit-test surface) versus the pre-crash config.
 PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
-PKGS_cross="qemu-user-static"
+PKGS_cross="qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
 # rpm supplies rpmbuild for scripts/package_release.sh (.rpm leg); dpkg-deb
 # is part of the base image but rpm is not — its absence 127'd the v0.69.0
 # promote's package build after a container rebuild dropped the apt layer.
@@ -105,7 +109,7 @@ ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package
 # versioned name we invoke).
 BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
-      qemu-aarch64-static
+      qemu-aarch64-static aarch64-linux-gnu-gcc aarch64-linux-gnu-g++
       x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine
       php
       rpmbuild rpm2cpio cpio zip unzip"
@@ -120,6 +124,18 @@ report() {
 			missing=1
 		fi
 	done
+	# The aarch64 sysroot paths c2m's std_libs dlopen under qemu-user
+	# (-L /usr/aarch64-linux-gnu): Debian's cross libc lives in .../lib only,
+	# while c2m (and glibc's loader) spell /lib64 and /lib/aarch64-linux-gnu.
+	# Two links make both resolve (staged below); without them every JIT
+	# import fails ("can not load symbol memcpy").
+	if [ -e /usr/aarch64-linux-gnu/lib64/libc.so.6 ] \
+	   && [ -e /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu/libc.so.6 ]; then
+		printf '  ok      aarch64 sysroot lib64 + multiarch links\n'
+	else
+		printf '  MISSING aarch64 sysroot lib64 / multiarch links (staged below)\n'
+		missing=1
+	fi
 	# The SDK is not ours to install, but its absence silently downgrades the
 	# darwin gates to skips — so always say whether it is there.
 	local sdk="${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}"
@@ -189,6 +205,13 @@ sudo apt-get update -qq || exit 1
 echo "provision_container: installing"
 # One transaction: a partial install is harder to reason about than a failure.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
+
+# aarch64-linux sysroot links (see report): idempotent.
+if [ -d /usr/aarch64-linux-gnu/lib ]; then
+	echo "provision_container: linking the aarch64 sysroot lib64 + multiarch paths"
+	sudo ln -sfn lib /usr/aarch64-linux-gnu/lib64 || exit 1
+	sudo ln -sfn . /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu || exit 1
+fi
 
 echo "provision_container: staging darwin open headers (W0.5 prelude input)"
 bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
