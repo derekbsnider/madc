@@ -1,6 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
-linux-battery	yes	92e9cc538eef	2026-09-04	jit 1281/0/9skip exe 1222/0 obj 1222/0 packed 1281/0/9skip headerless 1251/0/39skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29; warn ratchet GREEN; tsubst flag-on GREEN (tmp/logs/w7-battery.log)
-wine64	yes	92e9cc538eef	2026-09-04	1228/0/62skip (tmp/logs/w7-battery.log), verify_pe_release OK, win64 pack 68 = baseline
-c-testsuite	yes	92e9cc538eef	2026-09-04	220/220 passed, baseline EMPTY (tmp/logs/w7-battery.log)
-macos	yes	92e9cc538eef	2026-09-04	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK (tmp/logs/w7-battery.log); owner M-series Mac verify pending dispatch #6
+linux-battery	yes	d4b4a51c3b02	2026-09-04	jit 1289/0/9skip exe 1230/0 obj 1230/0 packed 1289/0/9skip headerless 1258/0/40skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29; warn ratchet GREEN; tsubst flag-on GREEN (tmp/logs/w7c-battery.log)
+wine64	yes	d4b4a51c3b02	2026-09-04	1235/0/63skip (tmp/logs/w7c-battery.log), verify_pe_release OK, win64 pack 68 = baseline
+c-testsuite	yes	d4b4a51c3b02	2026-09-04	220/220 passed, baseline EMPTY (tmp/logs/w7c-battery.log)
+macos	yes	d4b4a51c3b02	2026-09-04	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK (tmp/logs/w7c-battery.log); owner M-series Mac verify pending dispatch #7

@@ -1128,7 +1128,12 @@ SDK/cross facts).
   construction. Own slice.
 
   **WAVE 7, ITEMS 4–6 LANDED (2026-09-04, four commits on 2455aafa: G=84e51a1d
-  D=529d3824 E=28606840 F=69427eb1).** Item 4a (G, found by item 4's reducer — KG Gap
+  D=529d3824 E=28606840 F=69427eb1; + H=d4b4a51c, the `/* identity-read */`
+  markers check-template-thaw-choke demanded on D's two fn_template_map
+  existence reads — the first wave battery's fulltest stopped at that gate with
+  the integration suite itself 1289/0; the ten gates after it were pre-run
+  green before H, which also hardens the constant-cast type-id walk for
+  elaborated types and fixes leg 15's C-driver derivation).** Item 4a (G, found by item 4's reducer — KG Gap
   dependent_nontype_default_arg_read_as_cast_unfolded, SILENT exit 0, CLOSED):
   a dependent non-type default template argument `bool = (A::num == 0)` never
   folded after substitution, so `Z<I<0>>` instantiated the primary instead of
