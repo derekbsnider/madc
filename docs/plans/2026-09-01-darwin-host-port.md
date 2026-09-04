@@ -1072,6 +1072,137 @@ SDK/cross facts).
   969/238, all `-static-libmadc` Tier B). Artifacts in
   scratchpad/d4-33828999038.**
 
+  **WAVE 7, ITEM 3 LANDED (2026-09-04, three commits on d1f4f0ea: 2466bbb9
+  f974dec0 2455aafa) — KG Gaps class_param_by_value_bitwise_copy and
+  string_pass_by_value_semantics CLOSED (both SILENT, exit 0): a by-value
+  CLASS parameter is the callee's own object.** madc lowered `void f(D d)` as
+  a C struct-by-value formal: a bitwise image of the caller's argument with no
+  copy constructor and no destructor — `f(a)` printed `f 1` where g++ and
+  clang print `f 101` then `~101`; a callee's `s += s` on a by-value
+  std::string reallocated and freed the CALLER's buffer (double free,
+  SIGABRT); and a by-value class argument to a library callee compiled by
+  g++/clang (which expects a pointer) was handed a struct. 2466bbb9: the
+  Itanium lowering — a class non-trivial for the purposes of calls is passed
+  by INVISIBLE REFERENCE: the caller copy/move-constructs the parameter object
+  (a prvalue argument IS it) into a cleanup-tagged temp and passes its
+  address; the callee's formal is `struct T *` and every use reads through it.
+  One owner per half beside its return-side twin: class_param_via_invisible_ref
+  decides the ABI; param_decl declares the formal for every signature lane and
+  native_param_shape (now a CirBuilder member) the extern shape;
+  object_arg_value passes the parameter object's address (its value half is
+  class_object_value, the temp class_object_temp — the functional cast keeps
+  the value); param_is_invisible_ref marks the callee's parameter
+  pointer-stored, read by var_is_pointer_stored, the TokenVar read, the member
+  access (gated on !parent_expr: a chained `p.a.b` TokenMember's object is the
+  ROOT variable, flags and all — the first build turned `__this->_M_impl.x`
+  into `->` in every std::vector body), the address-of arm and the capture
+  forwarding; the libmadc call shim passes a text-constructed std::string temp
+  by address and COPIES an instance slot into its own temp. f974dec0: the
+  return side keyed on class_needs_dtor alone, so a destructor-less class with
+  a user copy/move constructor was returned as a native struct VALUE — a
+  returned member (`H get() { return h; }`) never ran the copy constructor
+  (`g 5` for g++'s `g 105`), an xvalue member never moved, a conditional of
+  locals never copied; class_nontrivial_for_calls (class_needs_dtor ||
+  !class_trivially_copyable) is now the ONE predicate behind
+  class_return_via_retbuf and class_param_via_invisible_ref (the shim's
+  instance-cell finalizer is NULL for a class with no destruction need). 2455aafa:
+  the parameter half of the implicit-move rule returns
+  (returned_operand_is_implicitly_movable admits vfPARAM again — 3eee5c43 had
+  excluded it while the parameter aliased the caller's object): `return h;`
+  from a parameter moves, and a move-only class is returnable from its
+  parameter (madc had silently bit-copied it). Reducers (g++ == clang++):
+  tests/testclassparambyvalue (copy / prvalue / xvalue / two params /
+  dtor-only class / trivially copyable control), tests/teststringparambyvalue
+  (+ the _libcxx twin), tests/testretuserctorclass, tests/testparamimplicitmove.
+  Verification: container builds 1–6 (tmp/logs/w7bv-build-*.log, zero
+  warnings), class/template/string/lambda/operator/container neighbourhood
+  570/0 after the chained-member gate, test_libmadc_program 133/0,
+  forest_bind_gate 29/29. NEW open KG Gap
+  temporaries_scope_lived_not_full_expression: every temporary madc
+  materializes (the parameter object now included) is destroyed at the end of
+  the enclosing BLOCK, where C++ destroys it at the end of the full-expression
+  — observable as destructor timing (reducer tmp/w7bv/templife.mad: g++
+  `after f: live 1`, madc `live 2`); fix shape = the per-statement flush in
+  translate_block wraps a temp-bearing expression/return statement in its own
+  block, a declaration keeps its var_decl outside and wraps only the
+  construction. Own slice.
+
+  **WAVE 7, ITEMS 4–6 LANDED (2026-09-04, four commits on 2455aafa: G=84e51a1d
+  D=529d3824 E=28606840 F=69427eb1).** Item 4a (G, found by item 4's reducer — KG Gap
+  dependent_nontype_default_arg_read_as_cast_unfolded, SILENT exit 0, CLOSED):
+  a dependent non-type default template argument `bool = (A::num == 0)` never
+  folded after substitution, so `Z<I<0>>` instantiated the primary instead of
+  the `<A, true>` partial specialization. parse_constant_primary decided "cast"
+  from the first token after `(` alone — a substituted parameter is a TYPE
+  token, so `( I_0 :: num == 0 )` was swallowed to the `)` as a cast target
+  and the fold failed. [expr.cast]: a cast only when the parenthesized run IS
+  a type-id (gcc parses the type-id tentatively and requires the `)`) —
+  constant_cast_type_id_extent walks the run non-consumingly, reusing
+  peek_class_member_type_chain for a `::name` member-TYPE chain (a value leaf
+  is rejected). tests/testtpldefaultdepfold.mad (g++ == clang++ `2 1 2 / 20 10
+  20 / 7 0 255`). Item 4 (D, `<filesystem>` clock on linux libstdc++ —
+  KG Gap dependent_qualified_less_than_read_as_template_open CLOSED): whether
+  a `<` begins a template-argument-list is a NAME question ([temp.names]/3),
+  decided by lookup the way gcc's cp_parser_template_name and clang's
+  Sema::isTemplateName decide it — never by the token before it. madc's
+  DelimDepth::angle_open_context read any identifier before `<` as a
+  template-id head, so <ratio>'s `struct __ratio_less_impl<_R1, _R2, true,
+  false> : integral_constant<bool, _R1::num < _R2::num> { };` opened an angle
+  that never closed: the class-prefix capture ran through every later header
+  to a stray `>` in <bits/types.h>, std's namespace stayed open, time.h's
+  `clock` registered as std::clock and <ctime>'s `using ::clock;` failed in
+  every TU including <chrono> or <filesystem>. The same token rule sat in the
+  template-ARGUMENT splitter (a bare DelimDepth driven by update(): the
+  include-free reducer's base clause `BC<A::num < B::num>` failed "BC<> expects
+  1 argument(s)" even with the capture right) and in the expression parser
+  (`int x = K::num < 5;` skipped `<...>` as template arguments on sight). ONE
+  owner now, on Program: class_member_lt_reading (a member template opens; a
+  data / static member, enumerator, typedef is less-than; nothing or only
+  non-template functions = Unknown, legacy reading kept) and
+  unqualified_name_lt_reading (type / value template parameter less-than,
+  template template parameter opens, templates in scope open, a variable
+  less-than, functions and undeclared names keep opening per 3.3);
+  DelimDepth::lt_reads_as_less_than reads them for every scan that carries the
+  Program (walking the `q0::q1::name` chain: a dependent qualifier anywhere is
+  less-than, a concrete chain resolves to a class and asks, `typename` / an
+  elaborated keyword / a base-specifier head keep opening = gcc's `tag_type !=
+  none_type`); resolve_class_qualified_expression reads the same predicate.
+  Parameter KINDS now travel everywhere a parameter list does
+  (ParsedTemplateParameterList.is_template_template, TemplateParamScope
+  frames carry typeparam_is_type). Every stream scan constructs its tracker
+  WITH the Program (`DelimDepth d(this)` / `d(&pgm)`) and
+  check-one-delim-tracker.sh fails a bare tracker driven by update() in a
+  stream-walking function — the shape the bug lived in (negative control: 8
+  pre-conversion sites flagged). Reducers tests/testtplargless.mad (g++ ==
+  clang++ `1 0 1 / 5 5`) and tests/testlessthanqualified.mad (`1 1 0 / 1 0 1 /
+  1 0 1 / 1 4 7`). Residue, stated: a template-id qualifier spelled in source
+  inside an argument list (`BC<I<7>::num < 5>`) is not resolvable from tokens
+  and keeps the opening reading in a token scan. Item 5 (E, filebuf D1Ev
+  conflicting externs — KG Gap member_dtor_extern_declared_void_ptr_conflicts_
+  with_typed_proto CLOSED): class_member_destruct declares an aggregate's
+  member destructor with ONE typed shape `void sym(struct mc *)` whether
+  madc-emitted or bound to a library export (the Itanium signature either
+  way) — libc++ basic_filebuf<char>::~basic_filebuf is exported AND parsed
+  from <fstream>, so the old `extern void ..D1Ev(void *)` conflicted with the
+  typed definition; c2mir tolerated it, clang rejected the emitted C11
+  (testofstreamwrite / testmanipview under -stdlib=libc++). Item 6 (F, iomanip
+  live memmove undeclared — KG Gap libcxx_iomanip_live_memmove_undeclared
+  CLOSED): the Pass-0.75 referenced-function prototype sweep is one lambda
+  (referenced_funcdef_protos) run again at Pass 1.95 into late_list for the
+  header-declared functions a body the Pass-1.9 fixpoint materialized LATE
+  referenced first (`memmove` inside libc++ __constexpr_memmove); c2mir
+  implicit-int'd the call, clang rejected the emitted C. Gate: libcxx_gate.sh
+  leg 15 — the emitted C11 of testofstreamwrite / testmanipview / testiomanip
+  under libc++ is strict-C11 clean (clang -std=c11 -fsyntax-only), with a
+  negative control (a conflicting redeclaration appended must be rejected).
+  Verification: container build-11 rc=0 (zero warnings), the two D reducers
+  and every tal*/clk* probe at oracle, the three emit-C legs 0 errors,
+  neighbourhood subset 534/0/6skip (templates, classes, containers, streams, constants, casts, enums, C89), forest_bind_gate 29/29. `<filesystem>`
+  NEXT FRONTIER (both g++-trivial, reducers tmp/w7bv/): `struct path::_Cmpt :
+  path {` out-of-line NESTED class definition with base clause -> "Expecting
+  identifier after type" (oolnested.mad); `namespace fs = std::filesystem;`
+  NAMESPACE ALIAS -> "Expecting '{' after namespace name" (nsalias.mad).
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
