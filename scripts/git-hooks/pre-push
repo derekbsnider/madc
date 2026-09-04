@@ -2,10 +2,12 @@
 # pre-push — the lane-freshness PUSH gate (owner directive 2026-08-28:
 # "we need most of these tests before we can PUSH anything to github").
 #
-# Pushing develop or master requires every push-gated lane in
-# docs/lane-status.tsv to be FRESH (green on code-equivalent content —
-# scripts/lane_ledger.sh check --promote). Feature branches push freely:
-# the gate protects the shared integration branches, not WIP.
+# Pushing develop requires every push-gated lane in docs/lane-status.tsv
+# to be FRESH (green on code-equivalent content — scripts/lane_ledger.sh
+# check --promote). Pushing master requires the release tier as well
+# (check --release; owner law 2026-09-04: every platform lane's FULL suite
+# is green before a master release). Feature branches push freely: the
+# gate protects the shared integration branches, not WIP.
 #
 # Fail-closed: a gate that cannot run blocks the push. The loud escape
 # hatch for a genuine emergency is MADC_PUSH_NOGATE=1 — it prints what
@@ -17,14 +19,15 @@
 set -u
 cd "$(git rev-parse --show-toplevel)"
 
-gated=0
+mode=""
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
 	case "$remote_ref" in
-		refs/heads/develop|refs/heads/master) gated=1;;
+		refs/heads/develop) [ -z "$mode" ] && mode=--promote;;
+		refs/heads/master) mode=--release;;
 	esac
 done
 
-[ "$gated" -eq 0 ] && exit 0
+[ -z "$mode" ] && exit 0
 
 if [ "${MADC_PUSH_NOGATE:-}" = "1" ]; then
 	echo "pre-push: MADC_PUSH_NOGATE=1 — lane gate SKIPPED for a" \
@@ -33,8 +36,8 @@ if [ "${MADC_PUSH_NOGATE:-}" = "1" ]; then
 fi
 
 echo "pre-push: develop/master push — checking lane freshness" \
-     "(docs/lane-status.tsv)" >&2
-if ! timeout 60 bash scripts/lane_ledger.sh check --promote >&2; then
+     "(docs/lane-status.tsv, ${mode#--} tier)" >&2
+if ! timeout 60 bash scripts/lane_ledger.sh check "$mode" >&2; then
 	echo "pre-push: BLOCKED — stale lane(s) above; run them on current" \
 	     "content and record with scripts/lane_ledger.sh, or (emergency" \
 	     "only) MADC_PUSH_NOGATE=1 git push" >&2

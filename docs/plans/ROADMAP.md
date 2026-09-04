@@ -123,6 +123,7 @@ class-(b) GNU extensions, and reimplementing eval/exec + REPL on MIR.
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 | 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
 | 2.11 | **Self-host: madc compiles its own C++11 source** (ultimate dogfood) | large | **Planned (2026-06-26)** — feature audit done | failure-driven `selfhost` harness |
+| 2.12 | **C++11 conformance measured by a third-party suite** — gcc's g++ testsuite (`g++.dg` + `g++.old-deja` `dg-do run` tests with no target clause or `target c++11`: ~2330) driven by the existing gcc-torture runner, ratcheted against a baseline | 1-2 wk to first measurement | **Planned (2026-09-04)** — a ROADMAP GOAL, never a push or release gate (owner ruling); the metric is class-(a) C++11 failures → 0 | [2026-09-04-cxx-conformance-lane.md](2026-09-04-cxx-conformance-lane.md) |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
 **2.7 remaining:** exceptions are SCALAR-ONLY (int/double/cstr/`catch(...)`).
@@ -526,6 +527,7 @@ SMAUG target terminal, web, and GUI from the same game code.
 | **ADR 0001 — CIR/c2mir backend (why c2mir, not direct-MIR)** | [../adr/0001-cir-c2mir-backend.md](../adr/0001-cir-c2mir-backend.md) |
 | Code Cleanup | [code-cleanup.md](code-cleanup.md) |
 | C++ Support | [cpp-support.md](cpp-support.md) |
+| C++ conformance lane — g++ testsuite, C++11 parity as a roadmap goal (never a gate) | [2026-09-04-cxx-conformance-lane.md](2026-09-04-cxx-conformance-lane.md) |
 | Cross-Cutting Insights | [cross-cutting-insights.md](cross-cutting-insights.md) |
 | Data Storage & Federation (legacy) | [data-storage-federation.md](data-storage-federation.md) |
 | madcdis Core Substrate | [madcdis-plan.md](madcdis-plan.md) |

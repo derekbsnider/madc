@@ -12,12 +12,22 @@
 # HEAD — `git diff --quiet <recorded> HEAD -- $CODE_PATHS` — so docs-only
 # commits never stale a lane, and any src/tests/scripts change stales
 # every lane that has not re-run. `check --promote` fails LOUDLY on any
-# stale promote-gated lane; /promote runs it as a hard gate.
+# stale promote-gated lane; the pre-push hook runs it on a develop push, and
+# `check --release` — the same check over the develop set PLUS the release
+# tier (promote=release) — on a master push and in /promote.
 #
 # Usage:
 #   lane_ledger.sh record <lane> <tally...>   stamp HEAD+date for a GREEN run
-#   lane_ledger.sh check [--promote]          list staleness; --promote exits
-#                                             1 on any stale promote-gated lane
+#   lane_ledger.sh check [--promote|--release]
+#                                             list staleness; --promote exits 1
+#                                             on any stale push-gated lane
+#                                             (promote=yes: the develop push
+#                                             gate); --release ALSO gates the
+#                                             release tier (promote=release —
+#                                             owner law 2026-09-04: every
+#                                             platform lane's FULL suite is
+#                                             green before a master release;
+#                                             the master push runs it)
 #   lane_ledger.sh selftest                   the negative control (check must
 #                                             FAIL a stale row and PASS a fresh
 #                                             one); check runs it first itself
@@ -71,6 +81,21 @@ stale_reason() {
 	fi
 }
 
+# gate_applies <mode> <promote-flag>: does a STALE row with this flag block
+# under this check mode? --promote (the develop push) blocks on `yes`;
+# --release (the master push / promotion) blocks on `yes` AND `release` —
+# the platform lanes whose FULL suite must be green before a master release
+# (owner law 2026-09-04) but whose cost or hardware keeps them off every
+# develop push (the libc++ flavor lane, the darwin runner suite, genuine
+# Windows). `no` never blocks; it is recorded for the record.
+gate_applies() {
+	case "$1" in
+		--promote) [ "$2" = "yes" ];;
+		--release) [ "$2" = "yes" ] || [ "$2" = "release" ];;
+		*) return 1;;
+	esac
+}
+
 check() {
 	local promote_gate="${1:-}"
 	ensure_ledger
@@ -85,14 +110,13 @@ check() {
 		else
 			printf '%-16s %-8s %-14s %-12s %s (%s)\n' \
 				"$lane" "$promote" STALE "$date" "$tally" "$reason"
-			if [ "$promote_gate" = "--promote" ] \
-			   && [ "$promote" = "yes" ]; then
+			if gate_applies "$promote_gate" "$promote"; then
 				rc=1
 			fi
 		fi
 	done < "$LEDGER"
 	if [ "$rc" -ne 0 ]; then
-		echo "lane_ledger: PROMOTE BLOCKED — stale promote-gated" \
+		echo "lane_ledger: ${promote_gate#--} BLOCKED — stale gated" \
 		     "lane(s) above must re-run on current content" >&2
 	fi
 	return $rc
@@ -130,8 +154,24 @@ selftest() {
 		rm -f "$tmp"
 		return 1
 	fi
+	# The release tier: a stale `release` row must NOT block a develop push
+	# (--promote) and MUST block a master push (--release).
+	{
+		printf '%s\n' "$HEADER"
+		printf 'selftest-release-stale\trelease\t%s\tnever\t0/0\n' "$stale_sha"
+	} > "$tmp"
+	if ! ( LEDGER="$tmp"; check --promote ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale release-tier row blocked a develop push" >&2
+		rm -f "$tmp"
+		return 1
+	fi
+	if ( LEDGER="$tmp"; check --release ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale release-tier row passed --release" >&2
+		rm -f "$tmp"
+		return 1
+	fi
 	rm -f "$tmp"
-	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes)"
+	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes, release tier gates master only)"
 }
 
 case "${1:-}" in
@@ -140,6 +180,6 @@ case "${1:-}" in
 		  selftest || exit 1	# the gate proves it can fail, every use
 		  check "${1:-}";;
 	selftest) selftest;;
-	*) echo "usage: $0 record <lane> <tally...> | check [--promote] | selftest" >&2
+	*) echo "usage: $0 record <lane> <tally...> | check [--promote|--release] | selftest" >&2
 	   exit 2;;
 esac

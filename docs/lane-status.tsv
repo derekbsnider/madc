@@ -1,6 +1,8 @@
 # lane	promote	last_green_commit	date	tally
-genuine-win	no	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); flip to yes when automatable
+genuine-win	release	none	never	owner-hardware release-checklist lane (v0.92.1: 1010/0); release tier (owner law 2026-09-04): a fresh green run is required before a master release
 linux-battery	yes	d4b4a51c3b02	2026-09-04	jit 1289/0/9skip exe 1230/0 obj 1230/0 packed 1289/0/9skip headerless 1258/0/40skip; forest_pack_gate linux 68 = baseline; forest_bind_gate 29/29; warn ratchet GREEN; tsubst flag-on GREEN (tmp/logs/w7c-battery.log)
 wine64	yes	d4b4a51c3b02	2026-09-04	1235/0/63skip (tmp/logs/w7c-battery.log), verify_pe_release OK, win64 pack 68 = baseline
 c-testsuite	yes	d4b4a51c3b02	2026-09-04	220/220 passed, baseline EMPTY (tmp/logs/w7c-battery.log)
 macos	yes	d4b4a51c3b02	2026-09-04	container cross release-macos both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK (tmp/logs/w7c-battery.log); owner M-series Mac verify pending dispatch #7
+libcxx	release	none	never	linux -stdlib=libc++ flavor lane (scripts/remote_build.sh libcxx: jit + exe + obj) — macOS's library on linux hardware; last full run 2026-08-16 (1046/0/13skip) PREDATES every std::list test (added 2026-08-18); run + record before any master release
+darwin-suite	release	none	never	the FULL madc suite on GitHub's arm64 + Intel mac runners (gh workflow run darwin-probe.yml -R derekbsnider/madc --ref <candidate> -f suite_gate=true) — green = 0 failures on BOTH arches, or every failure a filed .darwin_skip with its reason; measurement #7 @dc9baf0d: arm64 1262/14 Intel 1271/5 (9 MIR floor + 3 libc++ <list> + 2 fixed in wave 7b)

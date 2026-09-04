@@ -23,14 +23,25 @@ Merges develop into master, tags the release, and pushes.
    - Merge develop: `git merge develop`
    - If there are merge conflicts, STOP and ask the user
 
-3. **Run the three platform lanes BEFORE tagging** (lesson of
-   2026-08-23, second occurrence of the same cascade: v0.92.0→v0.92.1
-   and v0.95.0→v0.95.1 both tagged first, then a lane caught a real
-   platform regression and the fix forced a patch tag). The lanes are
-   the ones in step 5 — build and validate all three platforms at the
-   promotion candidate BEFORE `git tag`; a lane failure gets fixed on
-   develop and the candidate moves. Tag only content all three lanes
-   have proven.
+3. **Every platform lane's FULL suite green BEFORE tagging** (owner law
+   2026-09-04; and the lesson of 2026-08-23, second occurrence of the same
+   cascade: v0.92.0→v0.92.1 and v0.95.0→v0.95.1 both tagged first, then a
+   lane caught a real platform regression and the fix forced a patch tag).
+   The mechanical gate is `bash scripts/lane_ledger.sh check --release` at
+   the promotion candidate — the master pre-push hook runs the same check —
+   which requires the develop push-gated lanes (linux battery, wine64,
+   c-testsuite, the `macos` cross BUILD) AND the release tier:
+   - `libcxx` — `scripts/remote_build.sh libcxx` (jit + exe + obj under
+     `-stdlib=libc++`, macOS's library on linux hardware);
+   - `darwin-suite` — `gh workflow run darwin-probe.yml -R derekbsnider/madc
+     --ref <candidate> -f suite_gate=true`, the FULL suite on both mac
+     runner arches, green on both (a failing test is fixed or carries a
+     `.darwin_skip` stating why it is out of the domain);
+   - `genuine-win` — the owner-hardware Windows run.
+   Record each green with `scripts/lane_ledger.sh record <lane> <tally>` at
+   the candidate. A stale or red row blocks; fix on develop and move the
+   candidate. Tag only content every lane has proven. The platform BUILDS
+   and packaging steps are in step 5.
 
    **Then tag the release**: `git tag vX.Y.Z` (from VERSION file)
    - If the tag already exists, skip tagging and warn the user

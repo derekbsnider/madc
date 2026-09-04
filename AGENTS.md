@@ -296,7 +296,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [branching.md](.claude/rules/branching.md)       |    12 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop` |
+| [branching.md](.claude/rules/branching.md)       |    37 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop`; lane-freshness push gate; OWNER LAW: every platform lane's FULL suite green before master (`check --release`) |
 | [feature-guards.md](.claude/rules/feature-guards.md) |   9 | `#ifdef FEATURE_NAME` for in-progress code; never `git checkout` over uncommitted work |
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
@@ -360,10 +360,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **34 rules, 981 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **34 rules, 989 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~414 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1395 lines.**
+- **Grand total loaded by Claude Code per turn: ~1411 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
