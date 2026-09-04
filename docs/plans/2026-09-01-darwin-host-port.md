@@ -1057,6 +1057,21 @@ SDK/cross facts).
   `#include <list>` `std::list<int> l; l.push_back(1); l.push_back(2);` iterate
   with `std::list<int>::iterator`, print size and sum.
 
+  **MEASUREMENT #6 (run 33828999038 @67401362, 2026-09-04 02:17 UTC): arm64
+  1256/12/22skip (from 1246/18), Intel 1265/3/22skip (from 1255/9) — ZERO new
+  failures on either arch; the six placeholder-gap tests fixed on both
+  (testinitlist, testinitlistclass, testnestedenumvec, testvartplsigchain,
+  testvartplsigchainns, testvecmembercopy) — exactly the predicted residue.
+  Intel's 3 == the common set == the libc++ `<list>` cycle (testforeachiter,
+  testphpdumpiter, testptrcmpupcast: list:315 `basic ClassPattern could not
+  resolve __base_pointer in __list_node_base`, KG Gap
+  libcxx_list_node_pointer_traits_completion_cycle). arm64 adds the 9
+  MIR-floor tests (unchanged list). Runner mac battery 10/1 both arches (the
+  include-free value intrinsic = the standing known-open); zero c2mir
+  warnings in either suite log. Exe lane advisory (arm64 984/214, Intel
+  969/238, all `-static-libmadc` Tier B). Artifacts in
+  scratchpad/d4-33828999038.**
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
