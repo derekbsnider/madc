@@ -50,6 +50,21 @@
 #error "undefined or unsupported generation target for C"
 #endif
 
+/* The target's va_list is a SCALAR -- `char *`: win64 (vadefs.h) and Apple
+   arm64 (every vararg on the stack, Apple's ABI keeps the AAPCS64 record out)
+   -- rather than a record (SysV x86-64's __va_list_tag[1], AAPCS64's
+   five-field struct).  A scalar va_list lives in a register pseudo, so the
+   va_start / va_arg intrinsics, which take the list's ADDRESS, spill it with
+   MIR_ADDR first (the arms below).  ONE target fact, read by both arms; the
+   old `_WIN32` spelling was the HOST, and left the Apple arm64 madc handing
+   vprintf the address of its 24-byte SysV record instead of the char *
+   (dispatch #9: teststdiobuiltinredirects, testprintfdouble). */
+#if MIR_TARGET_WINDOWS_P || (MIR_TARGET_APPLE_P && MIR_TARGET_IS_AARCH64)
+#define SCALAR_VA_LIST_P 1
+#else
+#define SCALAR_VA_LIST_P 0
+#endif
+
 #ifndef C2M_TARGET_MS_BITFIELD_LAYOUT
 #define C2M_TARGET_MS_BITFIELD_LAYOUT 0
 #endif
@@ -19173,22 +19188,23 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1 = get_new_temp (c2m_ctx, MIR_T_I64);
       op2 = val_gen (c2m_ctx, NL_HEAD (args->u.ops));
       if (op2.mir_op.mode == MIR_OP_MEM) {
-#ifndef _WIN32
+#if !SCALAR_VA_LIST_P
         if (op2.mir_op.u.mem.type == MIR_T_UNDEF)
 #endif
           op2 = mem_to_address (c2m_ctx, op2, FALSE);
       }
-#ifdef _WIN32
+#if SCALAR_VA_LIST_P
       else if (op2.mir_op.mode == MIR_OP_REG) {
-        /* MIR_VA_ARG takes the va_list's ADDRESS.  win64's scalar va_list
-           (char *) lives in a register pseudo — take its address with
-           MIR_ADDR (the same mechanism gen N_ADDR uses; the generator then
-           binds the pseudo to a stack slot).  Passing the register itself
-           made the machinized code dereference ap's uninitialized VALUE
-           (madc win-lane crash, 2026-08-12).  This branch is win-only: on
-           SysV va_list is an ARRAY, so a REG here already holds its decayed
-           ADDRESS — an extra MIR_ADDR double-indirects and corrupts va_arg
-           (caught by the native probe battery). */
+        /* MIR_VA_ARG takes the va_list's ADDRESS.  A scalar va_list (char *:
+           win64 vadefs.h, Apple arm64) lives in a register pseudo — take its
+           address with MIR_ADDR (the same mechanism gen N_ADDR uses; the
+           generator then binds the pseudo to a stack slot).  Passing the
+           register itself made the machinized code dereference ap's
+           uninitialized VALUE (madc win-lane crash, 2026-08-12).  This
+           branch is scalar-only: on SysV / AAPCS64 va_list is an ARRAY or a
+           record, so a REG here already holds its decayed ADDRESS — an extra
+           MIR_ADDR double-indirects and corrupts va_arg (caught by the
+           native probe battery). */
         op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
         emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op2.mir_op);
         op2 = addr;
@@ -19246,15 +19262,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     } else if (va_start_p) {
       op1 = val_gen (c2m_ctx, NL_HEAD (args->u.ops));
       if (op1.mir_op.mode == MIR_OP_MEM) {
-#ifndef _WIN32
+#if !SCALAR_VA_LIST_P
         if (op1.mir_op.u.mem.type == MIR_T_UNDEF)
 #endif
           op1 = mem_to_address (c2m_ctx, op1, FALSE);
       }
-#ifdef _WIN32
+#if SCALAR_VA_LIST_P
       else if (op1.mir_op.mode == MIR_OP_REG) {
-        /* win64 scalar va_list in a register: MIR_VA_START needs its ADDRESS —
-           see the va_arg twin above (win-only for the same reason). */
+        /* scalar va_list in a register: MIR_VA_START needs its ADDRESS — see
+           the va_arg twin above (scalar-only for the same reason). */
         op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
         emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op1.mir_op);
         op1 = addr;

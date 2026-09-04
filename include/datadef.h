@@ -80,6 +80,18 @@ extern TargetInt64Alias madc_target_int64_alias;
 inline bool target_int64_is_longlong()
 { return madc_target_int64_alias == TargetInt64Alias::LongLong; }
 
+// The TARGET's va_list SHAPE — the fifth target property, same shape and same
+// one-owner rule. SysV x86-64: the struct __va_list_tag[1] array gcc, glibc
+// and c2mir share. AAPCS64 (linux-aarch64): the five-field record. A SCALAR
+// `char *` on win64 (vadefs.h) and on Apple arm64 (every vararg on the
+// stack). Program::builtin_va_list_type() mints the type from this and the
+// lexer's __builtin_va_copy body follows it; nothing else re-tests _WIN32 or
+// __APPLE__ for it. Defined beside the data-model owner.
+enum class TargetVaList { SysVTagArray, AAPCS64Struct, Scalar };
+extern TargetVaList madc_target_va_list;
+inline bool target_scalar_va_list()
+{ return madc_target_va_list == TargetVaList::Scalar; }
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the

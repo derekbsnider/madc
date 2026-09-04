@@ -2768,9 +2768,11 @@ void Program::_tokenizer_init()
     // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
     // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
     // it as `((void)(ap))`).
-    // va_list is the real __madc_va_list_tag[1] array type, so va_end is a
-    // no-op cast (an array lvalue cannot be assigned) and va_copy copies the
-    // one element — the same bodies the embedded stdarg.h macros use.
+    // va_end is a no-op cast whatever the shape. va_copy follows the TARGET's
+    // va_list shape (madc_target_va_list, datadef.h): the SysV array copies
+    // its one element; the AAPCS64 record and the scalar `char *` are plain
+    // assignments. The embedded stdarg.h's va_copy expands to this builtin,
+    // so the shape has one owner.
     {
 	MacroDef m;
 	m.params = {"__ap"};
@@ -2780,7 +2782,8 @@ void Program::_tokenizer_init()
     {
 	MacroDef m;
 	m.params = {"__dest", "__src"};
-	m.body = "((__dest)[0] = (__src)[0])";
+	m.body = madc_target_va_list == TargetVaList::SysVTagArray
+	    ? "((__dest)[0] = (__src)[0])" : "((__dest) = (__src))";
 	macro_map["__builtin_va_copy"] = m;
     }
     // Report the GCC version that compiled madc itself.

@@ -3010,12 +3010,42 @@ DataDef *Program::madc_dialect_type_spelling(const std::string &name) const
 // module references it (no source declaration exists to emit).
 DataDef *Program::builtin_va_list_type()
 {
-    if ( target_llp64() )
+    // The shape is the target's (madc_target_va_list, datadef.h) — the win64
+    // lane once keyed this on the data model, and the Apple arm64 madc, LP64
+    // like Linux, minted the SysV record: `vprintf(fmt, ap)` handed libc the
+    // ADDRESS of the record where Apple's ABI reads the `char *` itself
+    // (dispatch #9: relay("%s %c %d") printed garbage, wrap_printf a double
+    // as 0.00), while MIR's own va_arg — which takes the address anyway —
+    // read every argument right.
+    switch ( madc_target_va_list )
     {
-	static DataDefPTR *win_va_list_dd = NULL;
-	if ( !win_va_list_dd )
-	    win_va_list_dd = new DataDefPTR(ddCHAR);
-	return win_va_list_dd;
+    case TargetVaList::Scalar:
+    {
+	static DataDefPTR *scalar_va_list_dd = NULL;
+	if ( !scalar_va_list_dd )
+	    scalar_va_list_dd = new DataDefPTR(ddCHAR);
+	return scalar_va_list_dd;
+    }
+    case TargetVaList::AAPCS64Struct:
+    {
+	// AAPCS64 B.? `va_list` is the record itself (not an array of one):
+	// passed by value it exceeds 16 bytes, so a callee receives the
+	// address of a copy — what glibc's aarch64 vprintf expects.
+	static DataDefSTRUCT *aapcs_va_list_dd = NULL;
+	if ( !aapcs_va_list_dd )
+	{
+	    aapcs_va_list_dd = new DataDefSTRUCT("__madc_va_list_tag", 0);
+	    aapcs_va_list_dd->addMember("__stack", ddVOIDptr, 1);
+	    aapcs_va_list_dd->addMember("__gr_top", ddVOIDptr, 1);
+	    aapcs_va_list_dd->addMember("__vr_top", ddVOIDptr, 1);
+	    aapcs_va_list_dd->addMember("__gr_offs", ddINT32, 1);
+	    aapcs_va_list_dd->addMember("__vr_offs", ddINT32, 1);
+	    aapcs_va_list_dd->is_complete = true;
+	}
+	return aapcs_va_list_dd;
+    }
+    case TargetVaList::SysVTagArray:
+	break;
     }
     static DataDefCArray *va_list_dd = NULL;
     if ( !va_list_dd )
@@ -3054,11 +3084,12 @@ DataDef *Program::complex_type_of(DataDef *elem)
 DataDef *Program::use_builtin_va_list()
 {
     DataDef *dd = builtin_va_list_type();
-    // Only the SysV array-of-struct shape has a tag to register; the win64
-    // `char *` shape needs no struct emission.
+    // The record shapes have a tag to register (the SysV array's element,
+    // the AAPCS64 struct itself); the scalar `char *` needs no emission.
     DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd);
-    if ( ca && ca->element_type && !struct_map.count(ca->element_type->name) )
-	struct_map.set(ca->element_type->name, ca->element_type);
+    DataDef *tag = ca ? ca->element_type : dynamic_cast<DataDefSTRUCT *>(dd);
+    if ( tag && !struct_map.count(tag->name) )
+	struct_map.set(tag->name, tag);
     return dd;
 }
 
@@ -17690,6 +17721,31 @@ TargetInt64Alias madc_target_int64_alias =
 #else
 	TargetInt64Alias::Long;
 #endif
+
+// The va_list shape (datadef.h). Host-derived like its siblings: a hosted
+// madc's build target IS the script target (win64 mingw and the Apple arm64
+// clang build both say so at compile time); the emit-only cross madcs carry
+// the target in MADC_CROSS_TARGET. Apple arm64 is the one Apple target with
+// the scalar shape — Apple x86-64 keeps the SysV record.
+static TargetVaList default_target_va_list()
+{
+#if defined(_WIN32) || defined(MADC_CROSS_WINDOWS)
+	return TargetVaList::Scalar;
+#elif defined(__APPLE__) && defined(__aarch64__)
+	return TargetVaList::Scalar;
+#elif defined(MADC_CROSS_TARGET)
+	if ( strcmp(MADC_CROSS_TARGET, "arm64-macos") == 0 )
+		return TargetVaList::Scalar;
+	if ( strcmp(MADC_CROSS_TARGET, "aarch64-linux") == 0 )
+		return TargetVaList::AAPCS64Struct;
+	return TargetVaList::SysVTagArray;
+#elif defined(__aarch64__)
+	return TargetVaList::AAPCS64Struct;
+#else
+	return TargetVaList::SysVTagArray;
+#endif
+}
+TargetVaList madc_target_va_list = default_target_va_list();
 
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
