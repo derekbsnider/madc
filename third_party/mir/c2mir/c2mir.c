@@ -12443,6 +12443,8 @@ struct gen_ctx {
   HTAB (reg_var_t) * reg_var_tab;
   int reg_free_mark;
   MIR_label_t continue_label, break_label;
+  int call_arg_vararg_p; /* the call argument being lowered sits past the callee's
+                            declared parameters (or the callee is unprototyped) */
   op_t top_gen_last_op;
   op_t stmtexpr_last_val;    /* the op the marked stmtexpr_last_expr produced —
                                 read by N_STMTEXPR instead of top_gen_last_op,
@@ -12484,6 +12486,7 @@ struct gen_ctx {
 #define one_op gen_ctx->one_op
 #define minus_one_op gen_ctx->minus_one_op
 #define curr_func gen_ctx->curr_func
+#define call_arg_vararg_p gen_ctx->call_arg_vararg_p
 #define slow_code_part gen_ctx->slow_code_part
 #define reg_var_tab gen_ctx->reg_var_tab
 #define reg_free_mark gen_ctx->reg_free_mark
@@ -19269,6 +19272,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         struct type *arg_type;
         e = arg->attr;
         arg_type = e->type;
+        /* Read by the target's call-arg lowering: a vararg position keeps the
+           shape the callee's va_arg reads (aarch64 keeps _Complex varargs as
+           a block; the HFA split is for declared parameters). */
+        call_arg_vararg_p = param == NULL;
         assert (param != NULL || NL_HEAD (param_list->u.ops) == NULL
                 || func_type->u.func_type->dots_p);
         if (param != NULL) {
