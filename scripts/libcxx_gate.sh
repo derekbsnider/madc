@@ -392,7 +392,9 @@ esac
 # the oracle. The negative control appends a conflicting redeclaration to a
 # clean emission and asserts it is rejected, so a silent compiler (wrong
 # driver, empty file) cannot pass the leg.
-CLANGC="${CLANGXX%++}"
+# The C driver beside the C++ one: `clang++` -> `clang`, `clang++-18` -> `clang-18`
+# (a bare `${CLANGXX%++}` cannot strip the `++` in front of a version suffix).
+CLANGC="${CLANGXX/clang++/clang}"
 command -v "$CLANGC" >/dev/null 2>&1 || CLANGC=""
 if [ -z "$CLANGC" ]; then
 	fail "no C driver beside $CLANGXX for the emitted-C11 leg"

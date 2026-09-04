@@ -3660,7 +3660,7 @@ Program::LtReading Program::unqualified_name_lt_reading(const std::string &name)
       && (find_template_raw(name_id, std::string(), NULL)
 	  || find_template_alias_raw(name_id, std::string(), NULL)) )
 	return LtReading::Opens;
-    if ( fn_template_map.find(name) != fn_template_map.end()
+    if ( fn_template_map.find(name) != fn_template_map.end()	/* identity-read: existence */
       || var_template_map.find(name) != var_template_map.end()
       || concept_map.count(name) )
 	return LtReading::Opens;
@@ -3668,7 +3668,7 @@ Program::LtReading Program::unqualified_name_lt_reading(const std::string &name)
     if ( !ns.empty() )
     {
 	const std::string qn = ns + "::" + name;
-	if ( fn_template_map.find(qn) != fn_template_map.end()
+	if ( fn_template_map.find(qn) != fn_template_map.end()	/* identity-read: existence */
 	  || var_template_map.find(qn) != var_template_map.end()
 	  || concept_map.count(qn) )
 	    return LtReading::Opens;
@@ -16822,15 +16822,17 @@ size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigne
 {
     cast_dd = NULL;
     is_unsigned = false;
+    bool saw_type = false;	// at least one type-specifier in the run
     size_t i = 0;
     while ( i < tokens.size() && tokens[i] )
     {
 	TokenBase *t = tokens[i];
 	if ( t->id() == TokenID::tkClBrk )
-	    return (cast_dd || is_unsigned) ? i : 0;
+	    return saw_type ? i : 0;
 	if ( t->type() == TokenType::ttDataType )
 	{
 	    cast_dd = &((TokenDataType *)t)->definition;
+	    saw_type = true;
 	    ++i;
 	    if ( i < tokens.size() && tokens[i]
 	      && tokens[i]->id() == TokenID::tkNS )
@@ -16854,18 +16856,32 @@ size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigne
 	    ++i;
 	    continue;
 	}
+	// An elaborated-type-specifier `struct tag` / `union tag` / `enum tag`
+	// / `class tag` (its tag is a name, not a type token): a type-id.
+	if ( t->id() == TokenID::tkSTRUCT || t->id() == TokenID::tkUNION
+	  || t->id() == TokenID::tkENUM || t->id() == TokenID::tkCLASS )
+	{
+	    saw_type = true;
+	    ++i;
+	    if ( i < tokens.size() && tokens[i]
+	      && is_contextual_identifier_token(tokens[i]) )
+		++i;
+	    continue;
+	}
 	if ( t->type() == TokenType::ttIdentifier )
 	{
 	    const std::string w = ((TokenIdent *)t)->spelling();
 	    if ( w == "unsigned" )
 	    {
 		is_unsigned = true;
+		saw_type = true;
 		++i;
 		continue;
 	    }
 	    if ( w == "signed" || w == "long" || w == "short" || w == "int"
 	      || w == "char" )
 	    {
+		saw_type = true;
 		++i;
 		continue;
 	    }
