@@ -16,6 +16,15 @@ static int target_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
 static int reg_aggregate_size (c2m_ctx_t c2m_ctx, struct type *type) {
   size_t size;
 
+  /* __int128 is memory-shaped in c2mir (memory_value_type_p) and rides the
+     two-GPR lane a 16-byte aggregate uses: x0:x1 as a result, two GPRs (or
+     a BLK on the stack) as an argument -- AAPCS64 C.9 for a 16-byte integer.
+     Without this arm simple_add_res_proto asked get_mir_type for a MIR type
+     __int128 does not have ("wrong result type in proto", testint128 on
+     arm64).  AAPCS64's even-numbered-pair rule for a 16-byte fundamental
+     argument (NGRN rounded up to even) is a recorded refinement: c2mir's BLK
+     lane places it in the next two GPRs. */
+  if (int128_type_p (type)) return 16;
   if (type->mode != TM_STRUCT && type->mode != TM_UNION) return -1;
   return (size = type_size (c2m_ctx, type)) <= 2 * 8 ? (int) size : -1;
 }
