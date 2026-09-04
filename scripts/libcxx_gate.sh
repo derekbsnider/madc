@@ -379,6 +379,49 @@ _ZStplI*NSt3__1*)
 *)	fail "libc++ std::operator+ has an unexpected scope: $llvm_sym" ;;
 esac
 
+# --- leg 15: the emitted C11 of libc++ stream programs is strict-C11 clean ---
+# --emit=c11 is a first-class output (backend-strategy.md): the portable C must
+# compile under a strict C11 compiler, not only under c2mir, which tolerates an
+# implicit function declaration and a conflicting redeclaration. Two shapes the
+# wave-7 darwin residue caught, both under libc++'s header-inline bodies: the
+# aggregate member-dtor extern `void D1Ev(void *)` beside the typed definition
+# madc emits for the same exported header-inline dtor (basic_filebuf, the
+# <fstream> consumers testofstreamwrite / testmanipview), and `memmove` called
+# from a template body the materialization fixpoint instantiated late, after
+# the prototype sweep had run (testiomanip). clang -std=c11 -fsyntax-only is
+# the oracle. The negative control appends a conflicting redeclaration to a
+# clean emission and asserts it is rejected, so a silent compiler (wrong
+# driver, empty file) cannot pass the leg.
+CLANGC="${CLANGXX%++}"
+command -v "$CLANGC" >/dev/null 2>&1 || CLANGC=""
+if [ -z "$CLANGC" ]; then
+	fail "no C driver beside $CLANGXX for the emitted-C11 leg"
+else
+	l15ok=1
+	for t in testofstreamwrite testmanipview testiomanip; do
+		if ! run "$MADC" -stdlib=libc++ --emit=c11 "tests/$t.mad" \
+			> "$D/l15_$t.c" 2>"$D/l15_$t.err"; then
+			fail "--emit=c11 -stdlib=libc++ tests/$t.mad failed: $(head -c 200 "$D/l15_$t.err")"
+			l15ok=0
+			continue
+		fi
+		if "$CLANGC" -std=c11 -fsyntax-only -w -x c "$D/l15_$t.c" 2>"$D/l15_$t.clang"; then
+			pass "emitted C11 of $t (libc++) is strict-C11 clean"
+		else
+			fail "emitted C11 of $t (libc++) rejected by $CLANGC: $(grep -m1 error "$D/l15_$t.clang")"
+			l15ok=0
+		fi
+	done
+	if [ $l15ok -eq 1 ]; then
+		{ cat "$D/l15_testiomanip.c"; printf '\nextern void main(int);\n'; } > "$D/l15_ctl.c"
+		if "$CLANGC" -std=c11 -fsyntax-only -w -x c "$D/l15_ctl.c" 2>/dev/null; then
+			fail "negative control: $CLANGC accepted a conflicting redeclaration of main"
+		else
+			pass "negative control: a conflicting redeclaration is rejected by $CLANGC"
+		fi
+	fi
+fi
+
 # --- leg 6: the redefinition diagnostic survives ---------------------------
 if run "$MADC" "$D/conflict.c" >/dev/null 2>"$D/l6.err"; then
 	fail "a conflicting user typedef was accepted (diagnostic lost)"

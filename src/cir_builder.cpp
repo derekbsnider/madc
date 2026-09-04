@@ -30247,7 +30247,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	// (typed_proto_syms is declared above materialize_and_lower — see there.)
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
-	// which only declares what #include pulled in).
+	// which only declares what #include pulled in). ONE sweep body, run
+	// here into top_list and AGAIN at Pass 1.95 into late_list for the
+	// callees the Pass-1.9 fixpoint's late-materialized bodies referenced
+	// first: a header-declared C function called only from a libc++
+	// template body instantiated then (`memmove` inside
+	// __constexpr_memmove, testiomanip under libc++) otherwise stayed
+	// undeclared — c2mir implicit-int'd it, clang rejects the emitted C
+	// ("call to undeclared library function"). The re-run declares only
+	// what nothing declared yet (typed_proto_syms, emitted_extern_syms).
+	std::set<std::string> emitted_extern_syms;
+	auto referenced_funcdef_protos = [&](node_t into) {
 	for (auto &kv : prog->funcdef_map) {
 		const std::string &fname = kv.first;
 		FuncDef *fd = kv.second;
@@ -30275,6 +30285,8 @@ node_t CirBuilder::translate_module(Program *prog)
 			}
 		}
 		if (!referenced_funcs.count(symbol) && !referenced_funcs.count(fname))
+			continue;
+		if (typed_proto_syms.count(symbol) || emitted_extern_syms.count(symbol))
 			continue;
 		// c2mir intrinsics (__builtin_va_*, alloca, the overflow set)
 		// are lowered BY NAME; an extern proto SHADOWS the intrinsic
@@ -30385,15 +30397,19 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(proto, ignore());
 		append(proto, ignore());
-		append(top_list, proto);
+		append(into, proto);
 		typed_proto_syms.insert(symbol);
 		// Rung 3: a loaded-body callee proto survives only while a kept
 		// body still references its symbol.
 		cond_mark_sym(proto, symbol);
 	}
+	};
+	referenced_funcdef_protos(top_list);
 	// From here on, a funcdef-sourced loaded-body callee first referenced by
 	// a LATE materialization can no longer ride this pass — the m&l callee
-	// stage switches to typed_proto_syms (see the flag's declaration).
+	// stage switches to typed_proto_syms (see the flag's declaration); a
+	// funcdef-sourced LIVE callee first referenced late rides the Pass-1.95
+	// re-run of the same sweep.
 	pass075_done = true;
 
 	// Pass 0.78: extern declarations for referenced libc globals.
@@ -30459,7 +30475,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Pass 0.8: output externs for runtime and external symbols referenced by
 	// lowering SO FAR. Bodies translated by the Pass-1.9 fixpoint re-run
 	// register more entries after this point; the late declaration pass below
-	// Pass 1.9 flushes those (emitted_extern_syms records this batch).
+	// Pass 1.9 flushes those (emitted_extern_syms — declared above Pass
+	// 0.75, whose re-run consults it — records this batch).
 	// Fold in the Pass 1 user-function proto symbols (keyed by tf->var.name —
 	// exactly what func_proto declares below) so the extern flush also skips a
 	// void* duplicate of a symbol that Pass 1 will type.
@@ -30467,7 +30484,6 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (dynamic_cast<FuncDef *>(tf->var.type))
 			typed_proto_syms.insert(tf->var.name);
 
-	std::set<std::string> emitted_extern_syms;
 	for (auto &kv : m_output_externs) {
 		if (typed_proto_syms.count(kv.first)) continue;
 		append(top_list, kv.second);
@@ -30868,6 +30884,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 	flush_forest_lazy_protos((size_t)-1);
+	// (a2) The Pass-0.75 referenced-funcdef sweep again, for the header-
+	//      declared functions the fixpoint's late-materialized bodies
+	//      referenced first (skips everything already declared).
+	referenced_funcdef_protos(late_list);
 	// (b) Externs registered (need_output_extern) during fixpoint body
 	//     translation after Pass 0.8 ran. Skip any symbol that ALSO got a typed
 	//     forward proto (Pass 0.75 / Pass 1 / materialized) — emitting both is a
