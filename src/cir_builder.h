@@ -582,9 +582,13 @@ class CirBuilder {
 	// inline_builtin_kind "forward") — transparent for TYPE questions;
 	// NULL when fw is not such a call. See cir_builder.cpp.
 	TokenBase *identity_forward_operand(TokenCallFunc *fw);
+	// Itanium "non-trivial for the purposes of calls": a non-trivial
+	// copy/move constructor or destructor. The ONE predicate behind the
+	// two positional ABI owners below. See cir_builder.cpp.
+	bool class_nontrivial_for_calls(DataDefCLASS *cdd);
 	// The class that, returned by value, must use the __retbuf ABI (a
-	// non-trivial class needing a dtor). NULL for trivial structs (native
-	// struct return). See cir_builder.cpp.
+	// class non-trivial for the purposes of calls). NULL for a trivially
+	// copyable class (native struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
 	// The PARAMETER twin of class_return_via_retbuf: the class `dd` denotes
 	// IF passed BY VALUE crosses the call by INVISIBLE REFERENCE (Itanium

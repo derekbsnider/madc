@@ -12941,39 +12941,59 @@ bool CirBuilder::class_has_own_user_dtor(DataDefCLASS *cdd)
 
 static std::string ctor_call_symbol(DataDefCLASS *cdd, FuncDef *ctor);
 
+// Itanium C++ ABI: a class "non-trivial for the purposes of calls" — a
+// non-trivial copy or move constructor (user-provided; a vtable; a member or
+// base with one), or a non-trivial destructor (own or transitive) — is
+// RETURNED through the hidden result pointer (__retbuf) and PASSED by
+// invisible reference; a trivially copyable class travels as a plain C
+// struct value both ways (c2mir's native struct return / struct argument).
+// madc's class model answers it with its two halves: class_needs_dtor and
+// !class_trivially_copyable (an explicitly defaulted copy/move constructor
+// is dropped from the ctor set at parse and is the implicit one, so it
+// keeps the class trivial when its members are). The ONE predicate behind
+// class_return_via_retbuf and class_param_via_invisible_ref — the two
+// positional questions must agree: a class returned natively (a c2mir struct
+// value) but received by pointer, or the reverse, is an ABI split down the
+// middle of every call.
+bool CirBuilder::class_nontrivial_for_calls(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	return class_needs_dtor(cdd) || !class_trivially_copyable(cdd);
+}
+
 // The class that `dd` denotes IF returning it by value must use the
-// struct-return (__retbuf) ABI — i.e. a non-trivial class: one that needs a
-// destructor (object members / user dtor / non-trivial base). A bit-copy return
-// of such a class would double-free its members' resources at the two scope
-// exits, so the callee must deep-copy into *__retbuf. A trivial struct keeps
-// c2mir's native struct return. Returns NULL otherwise.
+// struct-return (__retbuf) ABI — a class non-trivial for the purposes of
+// calls (class_nontrivial_for_calls). A bit-copy return of a class needing a
+// destructor would double-free its members' resources at the two scope
+// exits; a bit-copy return of a class with a USER copy/move constructor
+// never runs it — `H get() { return h; }` handed the member's bytes back
+// where g++ copy-constructs (+100), and a parameter can never be elided —
+// so the callee constructs into *__retbuf in both cases. A trivially
+// copyable class keeps c2mir's native struct return. Returns NULL otherwise.
 DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 {
 	if (!dd || dd->is_pointer()) return NULL;
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
-	return class_needs_dtor(cdd) ? cdd : NULL;
+	return class_nontrivial_for_calls(cdd) ? cdd : NULL;
 }
 
 // The PARAMETER twin of class_return_via_retbuf. The Itanium C++ ABI passes a
-// class that is "non-trivial for the purposes of calls" — a non-trivial copy
-// or move constructor, or a non-trivial destructor — by INVISIBLE REFERENCE:
-// the CALLER constructs the parameter object (copy / move from an lvalue /
-// xvalue; a prvalue argument IS the object) and destroys it after the call;
-// the callee receives its address, and its formal is `struct T *`. That is
-// how g++ and clang lower `void f(D d)`, and it is what a library callee
-// compiled by them expects. madc's class model answers the two halves:
-// class_needs_dtor (own or transitive destructor) and !class_trivially_copyable
-// (a user copy/move constructor, a vtable, or a member/base with one). A
-// trivially copyable class stays a plain C struct passed by value (registers
-// or memory — the target's business, c2mir's native struct passing).
+// class that is non-trivial for the purposes of calls
+// (class_nontrivial_for_calls) by INVISIBLE REFERENCE: the CALLER constructs
+// the parameter object (copy / move from an lvalue / xvalue; a prvalue
+// argument IS the object) and destroys it after the call; the callee
+// receives its address, and its formal is `struct T *`. That is how g++ and
+// clang lower `void f(D d)`, and it is what a library callee compiled by
+// them expects. A trivially copyable class stays a plain C struct passed by
+// value (registers or memory — the target's business, c2mir's native struct
+// passing).
 DataDefCLASS *CirBuilder::class_param_via_invisible_ref(DataDef *dd)
 {
 	if (!dd || dd->is_pointer()) return NULL;
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
-	return (class_needs_dtor(cdd) || !class_trivially_copyable(cdd)) ? cdd
-									 : NULL;
+	return class_nontrivial_for_calls(cdd) ? cdd : NULL;
 }
 
 // A by-value class PARAMETER passed by invisible reference is POINTER-STORED
@@ -28351,15 +28371,25 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	if (rkind == R_INST) {
 		// `char *__cell = 0; __cell = make_instance(__out, TID, SIZE, &dtor);`
 		// The callee then constructs the result DIRECTLY into the cell;
-		// the cell's finalizer is the class's own complete-object dtor.
-		std::string dtor_sym = class_complete_dtor_symbol(ret_cdd);
-		// TYPED forward proto (`void d(struct X *)`): a madc-emitted dtor's
-		// definition is typed, and a `void *` extern here is a conflicting
-		// declaration gcc rejects (c2mir tolerates it, so only the portable
-		// --emit=c11 output broke) — same shape as the explicit-dtor arm.
-		std::vector<ExternParam> dparams{ { {}, true, ret_cdd } };
-		need_output_extern(dtor_sym.c_str(), false, dparams);
-		referenced_funcs.insert(dtor_sym);
+		// the cell's finalizer is the class's own complete-object dtor —
+		// or NULL for a class that needs no destruction (the __retbuf lane
+		// carries every class non-trivial for the purposes of calls, a
+		// user copy/move constructor alone included; the cell accepts a
+		// null finalizer, and no `Cls___dtor` body exists to name).
+		bool ret_has_dtor = class_needs_dtor(ret_cdd);
+		std::string dtor_sym = ret_has_dtor
+				       ? class_complete_dtor_symbol(ret_cdd)
+				       : std::string();
+		if (ret_has_dtor) {
+			// TYPED forward proto (`void d(struct X *)`): a madc-emitted
+			// dtor's definition is typed, and a `void *` extern here is a
+			// conflicting declaration gcc rejects (c2mir tolerates it, so
+			// only the portable --emit=c11 output broke) — same shape as
+			// the explicit-dtor arm.
+			std::vector<ExternParam> dparams{ { {}, true, ret_cdd } };
+			need_output_extern(dtor_sym.c_str(), false, dparams);
+			referenced_funcs.insert(dtor_sym);
+		}
 		std::vector<ExternParam> mi_params{
 			{ {N_CHAR}, true }, { {N_UNSIGNED}, false },
 			{ {N_LONG, N_LONG}, false }, { {N_VOID}, true } };
@@ -28375,7 +28405,9 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 					{id("__out"),
 					 integer((int64_t)prog->type_id_for(ret_cdd)),
 					 integer((int64_t)ret_cdd->size),
-					 id(dtor_sym.c_str())});
+					 ret_has_dtor
+					 ? id(dtor_sym.c_str())
+					 : node2(N_CAST, void_ptr_type(), integer(0))});
 		stmts.push_back(node2(N_EXPR, list(), node2(N_ASSIGN, id("__cell"), mi)));
 		stmts.push_back(node4(N_IF, list(),
 				      node2(N_EQ, id("__cell"), integer(0)),
