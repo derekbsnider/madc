@@ -170,6 +170,24 @@ int64_t madarray_is_object(void *ptr)
     { return ((madc::value *)ptr)->is_object() ? 1 : 0; }
 int64_t madarray_is_array(void *ptr)
     { return ((madc::value *)ptr)->is_array() ? 1 : 0; }
+int64_t madarray_is_boolean(void *ptr)
+    { return ((madc::value *)ptr)->is_boolean() ? 1 : 0; }
+int64_t madarray_is_integer(void *ptr)
+    { return ((madc::value *)ptr)->is_integer() ? 1 : 0; }
+int64_t madarray_is_real(void *ptr)
+    { return ((madc::value *)ptr)->is_real() ? 1 : 0; }
+int64_t madarray_is_bytes(void *ptr)
+    { return ((madc::value *)ptr)->is_bytes() ? 1 : 0; }
+int64_t madarray_is_instance(void *ptr)
+    { return ((madc::value *)ptr)->is_instance() ? 1 : 0; }
+// The payload bytes of a text kind (string / bytes): value.h's data(), no
+// copy, with the length count() answers — what the stream inserter's
+// script-side rendering (bits/value_stream) writes. Other kinds have none.
+const char *madarray_data(void *ptr)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	return v->is_string() || v->is_bytes() ? (const char *)v->data() : NULL;
+    }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.

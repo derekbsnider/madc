@@ -724,6 +724,12 @@ const char *value::kind_name(kind k)
 // take the ns_common report convention (stderr + nothing streamed) because
 // this symbol is also the script binding and a C++ throw must not cross into
 // JIT frames.
+void value_not_streamable_notice(const value &v)
+{
+    std::cerr << "operator<<: value is " << value::kind_name(v.type())
+	      << ", not streamable — nothing written" << std::endl;
+}
+
 std::ostream &operator<<(std::ostream &os, const value &v)
 {
     switch ( v.type() )
@@ -745,8 +751,7 @@ std::ostream &operator<<(std::ostream &os, const value &v)
     case value::kind::instance:
 	break;
     }
-    std::cerr << "operator<<: value is " << value::kind_name(v.type())
-	      << ", not streamable — nothing written" << std::endl;
+    value_not_streamable_notice(v);
     return os;
 }
 

@@ -7,15 +7,48 @@
 // ostream guard (_GLIBCXX_OSTREAM / _LIBCPP_OSTREAM — <iostream>,
 // <fstream>, <sstream>, or the bare-cout auto-include), madc dialect
 // only. Strict C/C++ modes never see it; <ns_madc>'s guarded twin is
-// their opt-in, and redeclaration beside it is safe (the overload
-// registry dedups same-spelling redeclarations).
+// their opt-in — a DECLARATION beside this one is safe (the overload
+// registry dedups same-spelling redeclarations), so the twin declares
+// only when this fragment declares (the same flavor predicate below)
+// and steps aside when this fragment defines the body.
 //
 // Stream a value EXACTLY as the contained type would stream (owner
 // ruling 2026-08-19): each kind forwards to the real inserter, so
 // std::hex / setprecision / boolalpha apply the way they do to a plain
 // int / double / bool; null streams nothing; array/object/instance are
-// not streamable (a stderr notice, nothing written). Resolves
-// mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+// not streamable (a stderr notice, nothing written).
+//
+// TWO RENDERINGS, one publics list (dialect-lean.md's guard model). When
+// the script's stdlib flavor is the host's, the declaration resolves
+// mangled-direct to the real madc::operator<< (src/madc_value.cpp). When
+// it is not — linux -stdlib=libc++ on a libstdc++-built madc, the parity
+// lane; __MADC_HOST_LIBCPP__ is the lexer's build fact, _LIBCPP_VERSION
+// the script's — the stream object is the SCRIPT flavor's basic_ostream
+// and no host symbol can take it (a std::string marshals by its bytes,
+// task #69; a stream cannot), so the inserter is rendered HERE in the
+// script's flavor: kind by kind through the carrier's own predicates and
+// accessors, the same forwarding the host body does, compiled against the
+// stream it is handed. The container-kind notice is the host's one text.
 namespace madc {
+#if (defined(_LIBCPP_VERSION) && defined(__MADC_HOST_LIBCPP__)) \
+ || (!defined(_LIBCPP_VERSION) && !defined(__MADC_HOST_LIBCPP__))
     std::ostream &operator<<(std::ostream &os, const value &v);
+#else
+    void value_not_streamable_notice(const value &v);
+    inline std::ostream &operator<<(std::ostream &os, const value &v)
+    {
+	if ( v.is_null() )
+	    return os;
+	if ( v.is_boolean() )
+	    return os << v.as_boolean();
+	if ( v.is_integer() )
+	    return os << v.as_integer();
+	if ( v.is_real() )
+	    return os << v.as_real();
+	if ( v.is_string() || v.is_bytes() )
+	    return os.write(v.data(), v.size());
+	value_not_streamable_notice(v);
+	return os;
+    }
+#endif
 }

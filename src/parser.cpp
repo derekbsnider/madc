@@ -25523,6 +25523,7 @@ void Program::add_array_methods()
 	    fd->declaration_only = true;
 	    fd->emit_symbol = "madarray_count";
 	    fd->method_display_name = name;
+	    fd->is_const_method = true;		// a reader (value.h: const)
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
@@ -25548,6 +25549,11 @@ void Program::add_array_methods()
 	{ "is_string",  DataType::dtBOOL,   "madarray_is_string"  },
 	{ "is_object",  DataType::dtBOOL,   "madarray_is_object"  },
 	{ "is_array",   DataType::dtBOOL,   "madarray_is_array"   },
+	{ "is_boolean", DataType::dtBOOL,   "madarray_is_boolean" },
+	{ "is_integer", DataType::dtBOOL,   "madarray_is_integer" },
+	{ "is_real",    DataType::dtBOOL,   "madarray_is_real"    },
+	{ "is_bytes",   DataType::dtBOOL,   "madarray_is_bytes"   },
+	{ "is_instance",DataType::dtBOOL,   "madarray_is_instance"},
     };
     for ( const ArrayAccessor &ac : accessors )
     {
@@ -25561,6 +25567,9 @@ void Program::add_array_methods()
 	    fd->declaration_only = true;
 	    fd->emit_symbol = ac.sym;
 	    fd->method_display_name = ac.name;
+	    // Readers, const like value.h's: callable on a `const value &`
+	    // (the stream inserter's script-side rendering reads one).
+	    fd->is_const_method = true;
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
@@ -25583,6 +25592,10 @@ void Program::add_array_methods()
 	// catchable) — std::string::at's role for scanners, sized for the
 	// carrier (no char& into the cell).
 	{ "at",     DataType::dtINT64, "madarray_at",     1 },
+	// data(): the payload bytes of a text kind (value.h's data(); the
+	// length is count()) — what the stream inserter's script-side
+	// rendering writes (bits/value_stream). NULL for the other kinds.
+	{ "data",   ptr_of(ddCHAR),    "madarray_data",   0 },
     };
     for ( const ArrayStrMethod &sm : str_methods )
     {
@@ -25598,6 +25611,7 @@ void Program::add_array_methods()
 	    fd->declaration_only = true;
 	    fd->emit_symbol = sm.sym;
 	    fd->method_display_name = sm.name;
+	    fd->is_const_method = true;		// readers (value.h: const)
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
@@ -25659,42 +25673,42 @@ void Program::add_array_methods()
     // returns the receiver (the operator= reference lowering); the value
     // variants bind const array& like the copy-assign.
     struct ArrayBinOp { const char *name; typespec_t ret; typespec_t param;
-			const char *sym; };
+			const char *sym; bool const_method; };
     const ArrayBinOp bin_ops[] = {
 	{ "operator==", DataType::dtBOOL,     ptr_of(ddCHAR),
-	  "madarray_eq_cstr" },
+	  "madarray_eq_cstr", true },
 	{ "operator==", DataType::dtBOOL,     typespec_t(array_ref),
-	  "madarray_eq_value" },
+	  "madarray_eq_value", true },
 	{ "operator!=", DataType::dtBOOL,     ptr_of(ddCHAR),
-	  "madarray_ne_cstr" },
+	  "madarray_ne_cstr", true },
 	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
-	  "madarray_ne_value" },
+	  "madarray_ne_value", true },
 	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
-	  "madarray_append_cstr" },
+	  "madarray_append_cstr", false },
 	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
-	  "madarray_append_value" },
+	  "madarray_append_value", false },
 	// index(needle): Python's list.index / str.find shape — first
 	// position of the needle (element-equal for arrays, substring
 	// for strings), -1 when absent (a question, never a throw).
 	{ "index",      DataType::dtINT64,    ptr_of(ddCHAR),
-	  "madarray_index_cstr" },
+	  "madarray_index_cstr", true },
 	{ "index",      DataType::dtINT64,    typespec_t(array_ref),
-	  "madarray_index_value" },
+	  "madarray_index_value", true },
 	// push(x): append one ELEMENT (operator+= owns TEXT append).
 	// Returns the receiver so pushes chain. The brace-list declaration
 	// lowering (`var v = { a, b, c };` — CirBuilder::array_list_init_call)
 	// selects these same rows, so script pushes and list literals
 	// cannot drift apart.
 	{ "push",       typespec_t(array_ref), ptr_of(ddCHAR),
-	  "madarray_push_cstr" },
+	  "madarray_push_cstr", false },
 	{ "push",       typespec_t(array_ref), DataType::dtINT64,
-	  "madarray_push_int" },
+	  "madarray_push_int", false },
 	{ "push",       typespec_t(array_ref), DataType::dtDOUBLE,
-	  "madarray_push_real" },
+	  "madarray_push_real", false },
 	{ "push",       typespec_t(array_ref), DataType::dtBOOL,
-	  "madarray_push_bool" },
+	  "madarray_push_bool", false },
 	{ "push",       typespec_t(array_ref), typespec_t(array_ref),
-	  "madarray_push_value" },
+	  "madarray_push_value", false },
     };
     for ( const ArrayBinOp &op : bin_ops )
     {
@@ -25708,6 +25722,7 @@ void Program::add_array_methods()
 	    fd->declaration_only = true;
 	    fd->emit_symbol = op.sym;
 	    fd->method_display_name = op.name;
+	    fd->is_const_method = op.const_method;	// the questions are
 	    if ( op.param.dd == array_ref )
 		fd->const_params = { false, false, true };
 	}
@@ -25783,6 +25798,7 @@ void Program::add_array_methods()
 		fd->declaration_only = true;
 		fd->emit_symbol = "madarray_cstr";
 		fd->method_display_name = "c_str";
+		fd->is_const_method = true;	// a reader (value.h: const)
 	    }
 	    Method *md = static_cast<Method *>(var->data);
 	    if ( md )

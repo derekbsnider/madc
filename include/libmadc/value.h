@@ -159,6 +159,11 @@ private:
 // binding (<ns_madc>, mangled-direct), and no C++ exception may cross into
 // JIT frames (see report_frozen, src/ns_common.cpp).
 std::ostream &operator<<(std::ostream &os, const value &v);
+// The container-kind refusal notice (the report convention above): ONE text
+// for both renderings of the inserter — the host body and the script-side
+// rendering bits/value_stream compiles when the script's stdlib flavor is not
+// the host's (it binds here mangled-direct: a madc type, flavor-neutral).
+void value_not_streamable_notice(const value &v);
 
 } // namespace madc
 

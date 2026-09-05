@@ -316,9 +316,23 @@ namespace madc {
     // not streamable (a stderr notice, nothing written — C++ gives
     // std::vector no operator<< either, and the kind is only known at run
     // time). Present only when <ostream>/<iostream> precedes this header,
-    // the same guard model as the std::string conveniences above. Resolves
-    // mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+    // the same guard model as the std::string conveniences above.
+    //
+    // The inserter's two RENDERINGS live in bits/value_stream (the lexer
+    // injects it in madc mode at the ostream guard's completion): the
+    // mangled-direct declaration when the script's stdlib flavor is the
+    // host's, an inline body compiled in the script's flavor when it is not.
+    // This twin is the strict-mode opt-in and repeats only the DECLARATION —
+    // under a flavor mismatch it would re-declare a function the fragment
+    // DEFINES, and the emitted C carried the symbol twice with different
+    // types (the libcxx_gate's strict-C11 check on testiomanip) — so it steps
+    // aside exactly when the fragment renders the body; the predicate is the
+    // fragment's (the lexer's __MADC_HOST_LIBCPP__ vs the script's
+    // _LIBCPP_VERSION).
+#if (defined(_LIBCPP_VERSION) && defined(__MADC_HOST_LIBCPP__)) \
+ || (!defined(_LIBCPP_VERSION) && !defined(__MADC_HOST_LIBCPP__))
     std::ostream &operator<<(std::ostream &os, const value &v);
+#endif
 #endif
 
     // The system object (Python `sys` convention — include this header

@@ -1,0 +1,29 @@
+// -stdlib=libc++ twin of testvaluecout / testvaluestream: `cout << value` on
+// a libstdc++-built madc parsing libc++ headers (the linux parity lane). The
+// inserter is a host-implemented public taking the SCRIPT's std::ostream — a
+// libc++ basic_ostream the libstdc++ host cannot take, and a stream cannot
+// marshal by its bytes the way a std::string does (task #69): the import
+// _ZN4madclsERNSt3__113basic_ostream...ERKNS_5valueE was undefined for ten
+// tests. bits/value_stream now renders the inserter script-side when the
+// script's flavor is not the host's (__MADC_HOST_LIBCPP__ vs _LIBCPP_VERSION),
+// kind by kind through the carrier's own predicates, so std::hex / boolalpha
+// / setprecision apply exactly as to the contained type. Oracle: the same
+// stream program over a std::string / long / double / bool (clang++
+// -stdlib=libc++ == g++) prints the .expect.
+#include <iostream>
+#include <iomanip>
+using namespace std;
+
+int main()
+{
+	var s = "hello";
+	var n = 42;
+	var d = 2.5;
+	var b = true;
+	var nul;
+	cout << s << " " << n << " " << d << " " << b << "|" << nul << "|" << endl;
+	cout << hex << n << dec << " " << boolalpha << b << " "
+	     << setprecision(3) << fixed << d << endl;
+	cout << setw(6) << n << "|" << left << setw(4) << s << "|" << endl;
+	return 0;
+}

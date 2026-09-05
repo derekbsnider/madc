@@ -2705,6 +2705,15 @@ void Program::_tokenizer_init()
     define_map["__madc__"] = "1";
     define_map["__MADC__"] = "1";
     define_map["__MADC_VERSION__"] = "\"" MADC_VERSION_STR "\"";
+    // The stdlib flavor madc ITSELF was built against — a build fact a dialect
+    // fragment compares against the script's (_LIBCPP_VERSION / __GLIBCXX__)
+    // to render a std::-typed convenience script-side when the two differ
+    // (bits/value_stream: a libc++ script on a libstdc++ host cannot bind the
+    // host's ostream inserter — the stream object is the script flavor's).
+    // madc_mangle_host_stdlib() is the same fact for the builder.
+#if defined(_LIBCPP_VERSION)
+    define_map["__MADC_HOST_LIBCPP__"] = "1";
+#endif
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
