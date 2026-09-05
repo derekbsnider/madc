@@ -313,6 +313,15 @@ struct arr_type {
 struct vector_type {
   struct type *el_type;
   mir_size_t size, nel;
+  /* gcc's TYPE_VECTOR_OPAQUE -- the type of a vector COMPARISON's result.  Its
+     lanes are the signed integer of the operand lane's size (c-typeck.cc
+     build_binary_op -> build_opaque_vector_type); it converts implicitly to
+     ANY vector type of the same size (vector_types_convertible_p: assignment,
+     initialization, argument, return, the conditional operator), and it is a
+     binary-operator operand beside any vector with the same lane count, class
+     and size (vector_types_compatible_elements_p).  clang's default
+     -flax-vector-conversions=integer accepts the same programs.  */
+  unsigned int opaque_p : 1;
 };
 
 struct func_type {
@@ -6575,10 +6584,40 @@ static int compatible_types_p (struct type *type1, struct type *type2, int ignor
   return TRUE;
 }
 
+/* gcc's vector_types_convertible_p, the opaque arm: a vector comparison's
+   result (struct vector_type::opaque_p) converts implicitly to any vector type
+   of the same size -- assignment, initialization, argument passing, return, the
+   conditional operator.  Two named vector types stay strictly compatible
+   (compatible_types_p), as in gcc without -flax-vector-conversions. */
+static int opaque_vector_convertible_p (c2m_ctx_t c2m_ctx, struct type *type1,
+                                        struct type *type2) {
+  return (vector_type_p (type1) && vector_type_p (type2)
+          && (type1->u.vector_type->opaque_p || type2->u.vector_type->opaque_p)
+          && raw_type_size (c2m_ctx, type1) == raw_type_size (c2m_ctx, type2));
+}
+
+/* gcc's vector_types_compatible_elements_p: two vectors are binary-operator
+   operands when their element types are the same, or one is opaque and the
+   lanes agree in count, class (integer / floating) and size. */
+static int opaque_vector_compatible_elements_p (c2m_ctx_t c2m_ctx, struct type *type1,
+                                                struct type *type2) {
+  struct type *el1, *el2;
+
+  if (!vector_type_p (type1) || !vector_type_p (type2)) return FALSE;
+  if (!type1->u.vector_type->opaque_p && !type2->u.vector_type->opaque_p) return FALSE;
+  if (type1->u.vector_type->nel != type2->u.vector_type->nel) return FALSE;
+  el1 = type1->u.vector_type->el_type;
+  el2 = type2->u.vector_type->el_type;
+  return (raw_type_size (c2m_ctx, el1) == raw_type_size (c2m_ctx, el2)
+          && integer_type_p (el1) == integer_type_p (el2)
+          && floating_type_p (el1) == floating_type_p (el2));
+}
+
 static int compatible_integer_vector_types_p (c2m_ctx_t c2m_ctx, struct type *type1,
                                               struct type *type2) {
   return supported_integer_vector_type_p (c2m_ctx, type1)
-         && compatible_types_p (type1, type2, TRUE);
+         && (compatible_types_p (type1, type2, TRUE)
+             || opaque_vector_compatible_elements_p (c2m_ctx, type1, type2));
 }
 
 static int compatible_integer_shift_count_vector_types_p (c2m_ctx_t c2m_ctx,
@@ -6681,16 +6720,18 @@ static struct type *integer_shift_vector_type (c2m_ctx_t c2m_ctx, struct type *t
   return NULL;
 }
 
+static struct type *vector_cmp_result_type (c2m_ctx_t c2m_ctx, struct type *vector_type);
+
 static struct type *integer_cmp_vector_type (c2m_ctx_t c2m_ctx, node_code_t code,
                                              struct type *type1, struct type *type2,
                                              struct expr *expr1, struct expr *expr2) {
   struct type *res = integer_bin_op_vector_type (c2m_ctx, type1, type2, expr1, expr2);
 
-  if (res != NULL) return res;
-  if (code == N_EQ || code == N_NE || code == N_LT || code == N_LE || code == N_GT
-      || code == N_GE)
-    return int128_bin_op_vector_type (c2m_ctx, type1, type2);
-  return NULL;
+  if (res == NULL
+      && (code == N_EQ || code == N_NE || code == N_LT || code == N_LE || code == N_GT
+          || code == N_GE))
+    res = int128_bin_op_vector_type (c2m_ctx, type1, type2);
+  return res == NULL ? NULL : vector_cmp_result_type (c2m_ctx, res);
 }
 
 static int scalar_fits_v128_float_lane_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
@@ -6719,17 +6760,26 @@ static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type 
 static mir_size_t vector_el_count (c2m_ctx_t c2m_ctx, struct type *type);
 static mir_ullong round_up_power_of_two (mir_ullong value);
 
-static struct type *signed_integer_vector_type_for_vector (c2m_ctx_t c2m_ctx,
-                                                           struct type *vector_type) {
-  struct type el_type;
+/* The type of a vector comparison over VECTOR_TYPE's lanes: gcc's opaque vector
+   of the SIGNED integer of the lane's size (struct vector_type::opaque_p), for
+   integer and floating operand lanes alike, an unsigned operand included.  A
+   lane read back is -1 or 0, so `long long x = (ua == ub)[0]` and
+   `(ua == ub)[0] < 0` agree with gcc and clang; typing the integer result as
+   the OPERAND vector widened an all-ones lane to 4294967295 and ordered it
+   above zero, and typing the double result as a `long` vector made it
+   unassignable to `long long` lanes. */
+static struct type *vector_cmp_result_type (c2m_ctx_t c2m_ctx, struct type *vector_type) {
+  struct type el_type, *res;
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
   init_type (&el_type);
   el_type.mode = TM_BASIC;
-  el_type.u.basic_type = get_int_basic_type (lane_size);
-  return create_vector_type_with_nel (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
-                                      vector_el_count (c2m_ctx, vector_type),
-                                      vector_type->pos_node);
+  el_type.u.basic_type = lane_size == 16 ? TP_INT128 : get_int_basic_type (lane_size);
+  res = create_vector_type_with_nel (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
+                                     vector_el_count (c2m_ctx, vector_type),
+                                     vector_type->pos_node);
+  res->u.vector_type->opaque_p = TRUE;
+  return res;
 }
 
 static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
@@ -6737,7 +6787,7 @@ static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *
   struct type *vector_type = v128_float_bin_op_vector_type (c2m_ctx, type1, type2);
 
   if (vector_type == NULL) return NULL;
-  return signed_integer_vector_type_for_vector (c2m_ctx, vector_type);
+  return vector_cmp_result_type (c2m_ctx, vector_type);
 }
 
 static int same_size_vector_cast_p (c2m_ctx_t c2m_ctx, struct type *to_type,
@@ -6844,6 +6894,7 @@ static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type 
   vector_type->el_type = create_type (c2m_ctx, el_type);
   vector_type->size = size;
   vector_type->nel = nel;
+  vector_type->opaque_p = FALSE;
   res->pos_node = pos_node;
   res->mode = TM_VECTOR;
   res->u.vector_type = vector_type;
@@ -8774,7 +8825,9 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
       error (c2m_ctx, POS (assign_node), "%s", msg);
     }
   } else if (left->mode == TM_VECTOR) {
-    if (right->mode != TM_VECTOR || !compatible_types_p (left, right, TRUE)) {
+    if (right->mode != TM_VECTOR
+        || !(compatible_types_p (left, right, TRUE)
+             || opaque_vector_convertible_p (c2m_ctx, left, right))) {
       msg = (code == N_CALL ? "incompatible argument type for vector type parameter"
              : code != N_RETURN ? "incompatible types in assignment to vector"
                                 : "incompatible return-expr type in function returning a vector");
@@ -11046,7 +11099,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                && t2->u.tag_type == t3->u.tag_type) {
       *e->type = *t2;
     } else if (t2->mode == TM_VECTOR && t3->mode == TM_VECTOR
-               && compatible_types_p (t2, t3, TRUE)) {
+               && (compatible_types_p (t2, t3, TRUE)
+                   || opaque_vector_convertible_p (c2m_ctx, t2, t3))) {
       *e->type = *t2;
     } else if ((t2->mode == TM_PTR && null_const_p (e3, t3))
                || (t3->mode == TM_PTR && null_const_p (e2, t2))) {
@@ -14659,8 +14713,11 @@ static op_t gen_int128_vector_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirab
   op_t src1 = materialize_int128_vector_node (c2m_ctx, node1, type1);
   op_t src2 = materialize_int128_vector_node (c2m_ctx, node2, type2);
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
-  MIR_type_t high_type = signed_integer_type_p (type->u.vector_type->el_type) ? MIR_T_I64
-                                                                              : MIR_T_U64;
+  /* the comparison's signedness is the OPERANDS' -- the result type is gcc's
+     opaque signed vector (vector_cmp_result_type) */
+  struct type *cmp_type = int128_vector_type_p (c2m_ctx, type1) ? type1 : type2;
+  int signed_p = signed_integer_type_p (cmp_type->u.vector_type->el_type);
+  MIR_type_t high_type = signed_p ? MIR_T_I64 : MIR_T_U64;
   op_t low1 = get_new_temp (c2m_ctx, MIR_T_U64);
   op_t high1 = get_new_temp (c2m_ctx, high_type);
   op_t low2 = get_new_temp (c2m_ctx, MIR_T_U64);
@@ -14688,7 +14745,6 @@ static op_t gen_int128_vector_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirab
     op_t eq_high = get_new_temp (c2m_ctx, MIR_T_I64);
     op_t cmp_low = get_new_temp (c2m_ctx, MIR_T_I64);
     op_t low_if_eq = get_new_temp (c2m_ctx, MIR_T_I64);
-    int signed_p = signed_integer_type_p (type->u.vector_type->el_type);
     MIR_insn_code_t high_cmp
       = (r->code == N_LT || r->code == N_LE ? (signed_p ? MIR_LT : MIR_ULT)
                                              : (signed_p ? MIR_GT : MIR_UGT));
@@ -14919,43 +14975,50 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   struct type *type = ((struct expr *) r->attr)->type;
   struct type *type1 = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
   struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+  /* The comparison's lane width and SIGNEDNESS are the operands' (a scalar
+     operand is broadcast to the other's lanes); the result TYPE is gcc's
+     opaque signed vector (vector_cmp_result_type) and only shapes the
+     destination -- an unsigned `>` must not become a signed cmgt. */
+  struct type *cmp_type = vector_type_p (type1) ? type1 : type2;
   op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
   op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   op_t cmp_dest, all_ones;
 
   if (code == N_EQ || code == N_NE) {
-    if (v128_i32_packed_eq_vector_type_p (c2m_ctx, type)) {
+    if (v128_i32_packed_eq_vector_type_p (c2m_ctx, cmp_type)) {
       if (code == N_EQ)
-        return emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type),
-                                     op1, type1, op2, type2, type, dest);
-      cmp_dest = vector_temp (c2m_ctx, type);
-      emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1,
-                            type1, op2, type2, type, cmp_dest);
-      all_ones = const_integer_vector (c2m_ctx, type, -1);
-      return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type,
-                                   dest);
+        return emit_v128_i32_bin_op (c2m_ctx,
+                                     get_v128_i32_packed_eq_insn_code (c2m_ctx, cmp_type), op1,
+                                     type1, op2, type2, cmp_type, dest);
+      cmp_dest = vector_temp (c2m_ctx, cmp_type);
+      emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, cmp_type), op1,
+                            type1, op2, type2, cmp_type, cmp_dest);
+      all_ones = const_integer_vector (c2m_ctx, cmp_type, -1);
+      return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, cmp_type, all_ones, cmp_type,
+                                   cmp_type, dest);
     }
-    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, cmp_type, dest);
   }
 
-  if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, type))
-    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+  if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, cmp_type))
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, cmp_type, dest);
 
   if (code == N_GT)
-    return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, dest);
+    return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, cmp_type, dest);
   if (code == N_LT)
-    return emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, type, dest);
+    return emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, cmp_type, dest);
 
-  cmp_dest = vector_temp (c2m_ctx, type);
+  cmp_dest = vector_temp (c2m_ctx, cmp_type);
   if (code == N_LE) {
-    emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, cmp_dest);
+    emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, cmp_type, cmp_dest);
   } else {
     assert (code == N_GE);
-    emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, type, cmp_dest);
+    emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, cmp_type, cmp_dest);
   }
-  all_ones = const_integer_vector (c2m_ctx, type, -1);
-  return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type, dest);
+  all_ones = const_integer_vector (c2m_ctx, cmp_type, -1);
+  return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, cmp_type, all_ones, cmp_type,
+                               cmp_type, dest);
 }
 
 static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,

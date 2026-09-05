@@ -1,0 +1,73 @@
+#include <stdio.h>
+
+/* The type of a vector comparison is gcc's OPAQUE vector of the SIGNED integer
+   of the lane's size: it converts to any same-size vector type (long, long
+   long and unsigned long long lanes for a double compare; a signed vector for
+   an unsigned compare), it is a binary-operator operand beside a vector of
+   either signedness, and a lane read back is -1 or 0 (never 4294967295).
+   c2mir typed the integer result as the OPERAND vector (unsigned lanes widened
+   to 4294967295 and ordered above 0) and the double result as a `long` vector
+   ("incompatible types in assignment to vector" for `long long` lanes).
+   gcc == clang. */
+typedef double v2df __attribute__((vector_size(16)));
+typedef float v4sf __attribute__((vector_size(16)));
+typedef int v4si __attribute__((vector_size(16)));
+typedef unsigned v4su __attribute__((vector_size(16)));
+typedef long long v2di __attribute__((vector_size(16)));
+typedef long v2dl __attribute__((vector_size(16)));
+typedef unsigned long long v2du __attribute__((vector_size(16)));
+typedef unsigned short v8hu __attribute__((vector_size(16)));
+typedef unsigned char v16qu __attribute__((vector_size(16)));
+typedef unsigned short V32 __attribute__((vector_size(32)));
+typedef unsigned long V8 __attribute__((vector_size(8)));
+
+v4si pass(v4si m) { return m; }
+v2di pass2(v2di m) { return m; }
+
+int main(void)
+{
+    v2df ad = {1.5, 2.5}, bd = {1.5, 2.0};
+    v4sf af = {1.0f, 2.0f, 3.0f, 4.0f}, bf = {1.0f, 3.0f, 2.0f, 4.0f};
+    v4su ua = {1, 2, 3, 4}, ub = {1, 3, 3, 5};
+    v4si sa = {-1, 2, -3, 4}, sb = {1, 2, 3, 4};
+    v8hu ha = {1, 2, 3, 4, 5, 6, 7, 8}, hb = {1, 0, 3, 0, 5, 0, 7, 0};
+    v16qu ca = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    v16qu cb = {1, 0, 3, 0, 5, 0, 7, 0, 9, 0, 11, 0, 13, 0, 15, 0};
+    V32 wa = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    V32 wb = {1, 0, 3, 0, 5, 0, 7, 0, 9, 0, 11, 0, 13, 0, 15, 0};
+    V8 e = {5}, f = {6};
+    /* a double compare into long long, long and unsigned long long lanes */
+    v2di ed = ad == bd;
+    v2dl ld = ad < bd;
+    v2du gd = ad > bd;
+    printf("%lld %lld | %ld %ld | %llu %llu\n", ed[0], ed[1], ld[0], ld[1], gd[0], gd[1]);
+    /* a float compare into int and unsigned lanes */
+    v4si ef = af == bf;
+    v4su lf = af < bf;
+    printf("%d %d %d %d | %u %u %u %u\n", ef[0], ef[1], ef[2], ef[3], lf[0], lf[1], lf[2], lf[3]);
+    /* an unsigned compare into a signed vector, a signed one into an unsigned */
+    v4si eu = ua == ub;
+    v4su gs = sa > sb;
+    v4su geu = ua >= ub;
+    printf("%d %d %d %d | %u %u %u %u | %u %u %u %u\n", eu[0], eu[1], eu[2], eu[3],
+	   gs[0], gs[1], gs[2], gs[3], geu[0], geu[1], geu[2], geu[3]);
+    /* the lane is SIGNED: widened it is -1, and it orders below zero */
+    long long x = (ua == ub)[0], y = (ha == hb)[1], z = (ca == cb)[2];
+    double dv = (ua == ub)[3];
+    printf("%lld %lld %lld %.1f | %d %d\n", x, y, z, dv, (ua == ub)[0] < 0, (ua == ub)[0] > 0);
+    /* an operand beside either signedness; ~ keeps the result's type */
+    v4su m1 = (ua == ub) & ub;
+    v4si m2 = ~(ua == ub) | sb;
+    v4su m3 = ua & (sa < sb);
+    printf("%u %u %u %u | %d %d %d %d | %u %u %u %u\n", m1[0], m1[1], m1[2], m1[3],
+	   m2[0], m2[1], m2[2], m2[3], m3[0], m3[1], m3[2], m3[3]);
+    /* an argument, a return value */
+    v4si r1 = pass(ua == ub);
+    v2di r2 = pass2(ad != bd);
+    printf("%d %d %d %d | %lld %lld\n", r1[0], r1[1], r1[2], r1[3], r2[0], r2[1]);
+    /* 32-byte and 8-byte vectors take the same rule */
+    V32 w = wa == wb;
+    V8 g = ~(e < f);
+    printf("%u %u %u %u | %lu\n", w[0], w[1], w[14], w[15], g[0]);
+    return 0;
+}
