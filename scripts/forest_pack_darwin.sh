@@ -178,4 +178,44 @@ if ! bash "$(dirname "$0")/forest_pack_gate.sh" --profile darwin \
     exit 1
 fi
 
+# Consumer PARSE leg: the freezer madc can parse and lower a program against
+# the container it just wrote (--forest-bind + --emit=c11 — no execution, so
+# it runs on the Linux build container as well as on a darwin host). The
+# darwin lane's failures that live in the pack's SEMANTICS (a pack-served
+# class template completing in a different order than a live parse — the
+# libc++ <list> node class reaching `__node->__as_link()` as an incomplete
+# shell, dispatch #13 of the darwin-host port) used to be visible only on a
+# Mac; each consumer named in forest_pack_consumers_darwin.txt must parse and
+# emit rc=0 from the pack here. The list is data (test basenames, one per
+# line, # comments); an empty list or a missing test fails — never a vacuous
+# pass.
+CONSUMERS="$(dirname "$0")/forest_pack_consumers_darwin.txt"
+TESTS_DIR="$(dirname "$0")/../tests"
+consumer_count=0
+while IFS= read -r consumer; do
+    consumer="${consumer%%#*}"
+    consumer="$(echo "$consumer" | tr -d '[:space:]')"
+    [ -n "$consumer" ] || continue
+    consumer_count=$((consumer_count + 1))
+    if [ ! -f "$TESTS_DIR/$consumer.mad" ]; then
+        rm -f "$OUT"
+        echo "forest_pack_darwin: FAILED — consumer $consumer.mad is not in tests/ (the list names a test that no longer exists)" >&2
+        exit 1
+    fi
+    if ! "$TIMEOUT" 120 "$CROSS" --forest-bind="$OUT" --no-sysroot-includes \
+            --emit=c11 "$TESTS_DIR/$consumer.mad" > /dev/null 2> "$OUT.consumer.$consumer.err"; then
+        echo "forest_pack_darwin: FAILED — consumer $consumer does not parse against the pack:" >&2
+        grep -E 'error|Error' "$OUT.consumer.$consumer.err" | head -5 >&2
+        rm -f "$OUT"
+        exit 1
+    fi
+    rm -f "$OUT.consumer.$consumer.err"
+done < "$CONSUMERS"
+if [ "$consumer_count" -eq 0 ]; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED — $CONSUMERS names no consumer (the parse leg would be vacuous)" >&2
+    exit 1
+fi
+echo "forest_pack_darwin: consumer parse leg OK ($consumer_count program(s) parsed from the pack)"
+
 echo "forest_pack_darwin: OK ($(grep -c '^unit	' "$DUMP") units in $OUT for $(basename "$CROSS"))"

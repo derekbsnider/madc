@@ -6452,12 +6452,36 @@ static std::string dependent_surface_reason(DataDef *dd,
     return std::string();
 }
 
+static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
+					 size_t begin, size_t end);
+
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
-						       const std::string &member_name)
+						       const std::string &member_name,
+						       const std::vector<std::vector<TokenBase *> > *member_template_args)
 {
     if ( !owner || member_name.empty() )
 	return NULL;
+    // A member TEMPLATE-id's identity carries its argument list: two uses of
+    // `_Traits::template rebind_alloc<...>` in one class with different
+    // arguments (libc++ __list_imp: `<__node_type>` for __node_allocator,
+    // `<__node_base>` for __node_base_allocator) are two types. Keyed by
+    // owner + member alone they shared ONE placeholder whose derivation
+    // recipe the second use overwrote, so a class pattern captured from the
+    // dependent parse re-derived BOTH as allocator<__list_node_base> and every
+    // node pointer in a pattern-served std::list pointed at the base node —
+    // the darwin forest pack's <list> failure (dispatch #13).
+    std::string args_spelling;
+    if ( member_template_args )
+	for ( size_t i = 0; i < member_template_args->size(); ++i )
+	{
+	    if ( i )
+		args_spelling += ",";
+	    args_spelling += serialize_token_range((*member_template_args)[i], 0,
+						   (*member_template_args)[i].size());
+	}
     std::string dep_name = owner->name + "__" + sanitize_template_fragment(member_name);
+    if ( member_template_args )
+	dep_name += "__" + sanitize_template_fragment(args_spelling);
     flat_datatype_map_iter have = datatype_map.find(dep_name);
     if ( have != datatype_map.end() )
 	return dynamic_cast<DataDefCLASS *>(&(*have)->definition);
@@ -6465,16 +6489,23 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
     DataDefCLASS *dep = new DataDefCLASS(dep_name, 0, DataType::dtRESERVED);
     dep->is_dependent_placeholder = true;
     // Record the derivation so tsubst can re-derive the CONCRETE member type
-    // under an instance substitution (see DependentDerivedOrigin).
+    // under an instance substitution (see DependentDerivedOrigin) — the
+    // member template-id's argument runs included, minted WITH the identity.
     {
 	DependentDerivedOrigin &org = dependent_derived_origin[dep];
 	org.source = owner;
 	org.kind = DependentDerivedOrigin::MemberType;
 	org.member = member_name;
+	if ( member_template_args )
+	{
+	    org.member_is_template = true;
+	    org.raw_arg_tokens = *member_template_args;
+	}
     }
     std::string owner_spelling = owner->canonical_cpp_spelling().empty()
 			       ? owner->name : owner->canonical_cpp_spelling();
-    dep->set_canonical_spelling(owner_spelling + "::" + member_name);
+    dep->set_canonical_spelling(owner_spelling + "::" + member_name
+	+ (member_template_args ? "<" + args_spelling + ">" : std::string()));
     // An INCOMPLETE owner with a PENDING lazy completion heals later
     // ([temp.inst] — the pending-record arm): caching this member
     // placeholder under its flat name would OUTLIVE the healing and serve
@@ -11961,13 +11992,8 @@ TokenDataType *Program::resolve_typename_type_token(TokenBase *first,
 				 : true) )
 	{
 	    alias_dd = materialize_dependent_member_type(
-		owner ? static_cast<DataDef *>(owner) : param_owner, member_name);
-	    if ( alias_dd && member_is_template )
-	    {
-		DependentDerivedOrigin &origin = dependent_derived_origin[alias_dd];
-		origin.member_is_template = true;
-		origin.raw_arg_tokens = member_template_args;
-	    }
+		owner ? static_cast<DataDef *>(owner) : param_owner, member_name,
+		member_is_template ? &member_template_args : NULL);
 	}
 	if ( !alias_dd )
 	    return NULL;
@@ -12101,13 +12127,8 @@ TokenDataType *Program::resolve_class_member_type_chain(DataDefCLASS *owner,
 	DataDef *alias_dd = resolve_class_type_alias(owner, member_name);
 	if ( !alias_dd && class_allows_opaque_member_type(owner) )
 	{
-	    alias_dd = materialize_dependent_member_type(owner, member_name);
-	    if ( alias_dd && member_is_template )
-	    {
-		DependentDerivedOrigin &origin = dependent_derived_origin[alias_dd];
-		origin.member_is_template = true;
-		origin.raw_arg_tokens = member_template_args;
-	    }
+	    alias_dd = materialize_dependent_member_type(owner, member_name,
+		member_is_template ? &member_template_args : NULL);
 	}
 	if ( !alias_dd )
 	    Throw(member_tb) << "'" << member_name

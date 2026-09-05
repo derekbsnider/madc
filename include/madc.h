@@ -6340,8 +6340,12 @@ public:
     // Owner is any dependent-surface type: an opaque placeholder CLASS or a
     // bare TEMPLATE-PARAMETER placeholder (`typename T::member` in a dependent
     // pattern/capture parse) — only name/canonical spelling are read from it.
+    // A member TEMPLATE-id (`Owner::template m<A>`) is a distinct identity per
+    // argument list: `rebind_alloc<__node_type>` and `rebind_alloc<__node_base>`
+    // in one class are two placeholders with two derivation recipes.
     DataDefCLASS *materialize_dependent_member_type(DataDef *owner,
-						    const std::string &member_name);
+						    const std::string &member_name,
+						    const std::vector<std::vector<TokenBase *> > *member_template_args = NULL);
     DataDefCLASS *materialize_opaque_class_type(const std::string &name,
 						const std::string &canonical);
     // Stamp a freshly-minted opaque dependent shell/tag with its mint
