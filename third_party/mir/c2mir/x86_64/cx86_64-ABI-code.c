@@ -409,6 +409,11 @@ static int process_aggregate_arg (c2m_ctx_t c2m_ctx, struct type *arg_type,
 
   if (n_qwords == 0) return 0;
   if (!memory_value_type_p (arg_type)) return 0;
+  if (n_qwords == 1 && qword_types[0] == MIR_T_V128 && !v128_reg_class_p (c2m_ctx, arg_type)) {
+    /* win64: MS x64 passes a 16-byte vector by reference -- a memory-value
+       block in every position (the pre-register-class shape) */
+    return 0;
+  }
   if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
     /* A 128-bit vector is an SSE-class SCALAR (__m128): with no SSE register
        left it goes to the stack as a 16-byte aligned vector VALUE (SysV

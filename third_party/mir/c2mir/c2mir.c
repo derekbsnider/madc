@@ -6125,7 +6125,19 @@ static int v128_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
    __m128 BY REFERENCE; the x86-64 ABI code keeps its own shape there and the
    vararg read stays on the block path, see va_block_type_p.) */
 static int v128_reg_class_p (c2m_ctx_t c2m_ctx, struct type *type) {
+#if defined(_WIN32)
+  /* MS x64: "__m128 types, arrays, and strings are never passed by immediate
+     value; a pointer is passed to memory allocated by the caller" -- a 16-byte
+     vector is a memory-value BLOCK at the call boundary (MIR's win64 block
+     convention passes exactly that pointer, and va_block_arg reads it), and
+     only the RETURN rides xmm0 (process_ret_type's classification).  The
+     register-class lane would put it in an xmm register. */
+  (void) c2m_ctx;
+  (void) type;
+  return FALSE;
+#else
   return v128_vector_type_p (c2m_ctx, type);
+#endif
 }
 
 static mir_size_t vector_lane_size (c2m_ctx_t c2m_ctx, struct type *type) {
