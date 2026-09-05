@@ -50,6 +50,7 @@ void *va_arg_builtin (void *p, uint64_t t) {
   /* the SSE class: float, double and the 128-bit vector (__m128) -- each xmm
      register is saved in a 16-byte slot of the register save area */
   int fp_p = type == MIR_T_F || type == MIR_T_D || MIR_vector_type_p (type);
+  int size16_p = type == MIR_T_LD || MIR_vector_type_p (type);
   void *a;
 
   if (fp_p && va->fp_offset <= 160) {
@@ -59,8 +60,13 @@ void *va_arg_builtin (void *p, uint64_t t) {
     a = (char *) va->reg_save_area + va->gp_offset;
     va->gp_offset += 8;
   } else {
+    /* a 16-byte argument takes a 16-byte ALIGNED slot of the overflow area
+       (SysV 3.5.7 step 7: the alignment of the type, 16 for long double and
+       __m128) */
+    if (size16_p)
+      va->overflow_arg_area = (uint64_t *) (((uint64_t) va->overflow_arg_area + 15) / 16 * 16);
     a = va->overflow_arg_area;
-    va->overflow_arg_area += type == MIR_T_LD ? 2 : 1;
+    va->overflow_arg_area += size16_p ? 2 : 1;
   }
   return a;
 }
@@ -517,11 +523,15 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
       } else {
         uint32_t offset = (uint32_t) ((i + nres) * sizeof (long double));
 
+        /* a 16-byte stack argument takes a 16-byte ALIGNED slot (SysV 3.2.3);
+           the area below starts 16-byte aligned at the call */
+        sp_offset = (sp_offset + 15) / 16 * 16;
         gen_ldst (code, sp_offset, offset, TRUE);
         gen_ldst (code, sp_offset + 8, offset + 8, TRUE);
         sp_offset += 16;
       }
     } else if (type == MIR_T_LD) {
+      sp_offset = (sp_offset + 15) / 16 * 16; /* a 16-byte aligned slot, as above */
       gen_ldst80 (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)));
       sp_offset += 16;
     } else if (MIR_blk_type_p (type)) {

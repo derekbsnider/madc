@@ -264,6 +264,11 @@ static int get_int_arg_reg_num (MIR_reg_t arg_reg) {
 }
 #endif
 
+/* A 16-byte argument passed in memory -- long double (x87 class) and the
+   128-bit vector (SSE class, no register left) -- occupies a 16-byte ALIGNED
+   stack slot on SysV x86-64 (3.2.3: the slot is aligned to the type). */
+static int stack_arg_16_p (MIR_type_t type) { return type == MIR_T_LD || type == MIR_T_V128; }
+
 static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *fp_arg_num,
                               MIR_insn_code_t *mov_code) {
   MIR_reg_t arg_reg;
@@ -635,6 +640,14 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
                        : type == MIR_T_LD ? MIR_LDMOV
                        : type == MIR_T_V128 ? MIR_VMOV
                                           : MIR_MOV);
+#ifndef _WIN32
+      /* a 16-byte argument -- long double, a 128-bit vector -- takes a 16-byte
+         ALIGNED stack slot (SysV 3.2.3: a memory argument is aligned to its
+         type); after an odd number of eightbytes the caller pads one.  gcc's
+         callee reads it there; MIR's own callee (below) does too, and the
+         aligned movdqa a V128 stack store uses faults on an 8-byte slot. */
+      if (stack_arg_16_p (type)) arg_stack_size = (arg_stack_size + 15) / 16 * 16;
+#endif
       mem_op = _MIR_new_var_mem_op (ctx, mem_type, arg_stack_size, SP_HARD_REG, MIR_NON_VAR, 1);
       new_insn = MIR_new_insn (ctx, new_insn_code, mem_op, arg_op);
       gen_assert (prev_call_insn != NULL); /* call_insn should not be 1st after simplification */
@@ -1099,6 +1112,11 @@ static void target_machinize (gen_ctx_t gen_ctx) {
                        : type == MIR_T_LD ? MIR_LDMOV
                        : type == MIR_T_V128 ? MIR_VMOV
                                           : MIR_MOV);
+#ifndef _WIN32
+      /* the caller's 16-byte aligned slot for a 16-byte argument (see the
+         call side): the incoming argument area starts 16-byte aligned */
+      if (stack_arg_16_p (type)) mem_size = (mem_size + 15) / 16 * 16;
+#endif
       mem_op = _MIR_new_var_mem_op (ctx, mem_type,
                                     mem_size + 8 /* ret */
                                       + start_sp_from_bp_offset,

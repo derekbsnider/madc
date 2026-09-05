@@ -1,0 +1,60 @@
+/* A 16-byte vector through `...` and va_arg — gcc's vector extension treats
+   a vector_size(16) type as a fundamental register-class value at a call
+   boundary (SysV x86-64: the SSE class, an xmm register or a 16-byte aligned
+   stack slot; AAPCS64: a Short Vector in v[NSRN]); va_arg reads it from the
+   FP register save area or the 16-byte aligned overflow slot. Beside int and
+   double varargs, and with the FP registers exhausted so the vector spills to
+   the stack. Oracle: gcc == clang. */
+int printf(const char *, ...);
+#include <stdarg.h>
+typedef int v4si __attribute__((vector_size(16)));
+typedef double v2df __attribute__((vector_size(16)));
+
+long long sum_all(int n, ...)
+{
+    va_list ap;
+    long long s = 0;
+    int i;
+    va_start(ap, n);
+    for (i = 0; i < n; i++) {
+	int kind = va_arg(ap, int);
+	if (kind == 0) {
+	    s += va_arg(ap, int);
+	} else if (kind == 1) {
+	    s += (long long) va_arg(ap, double);
+	} else if (kind == 2) {
+	    v4si v = va_arg(ap, v4si);
+	    s += v[0] + v[1] + v[2] + v[3];
+	} else {
+	    v2df d = va_arg(ap, v2df);
+	    s += (long long) (d[0] + d[1]);
+	}
+    }
+    va_end(ap);
+    return s;
+}
+/* the vector vararg read as an rvalue (no destination object) */
+int first_lane(int n, ...)
+{
+    va_list ap;
+    int r;
+    va_start(ap, n);
+    r = va_arg(ap, v4si)[0];
+    r += va_arg(ap, v4si)[3];
+    va_end(ap);
+    return r;
+}
+int main(void)
+{
+    v4si a = {1, 2, 3, 4}, b = {10, 20, 30, 40};
+    v2df d = {0.5, 1.5};
+    printf("%lld\n", sum_all(3, 0, 7, 2, a, 1, 2.0));
+    printf("%lld\n", sum_all(4, 2, a, 2, b, 3, d, 0, 100));
+    /* more than eight FP-class varargs: the ninth spills to the stack */
+    printf("%lld\n", sum_all(10, 1, 1.0, 1, 1.0, 1, 1.0, 1, 1.0, 1, 1.0, 1, 1.0, 1, 1.0, 1, 1.0, 2, b, 3, d));
+    /* seven integer varargs first: on x86-64 the seventh is the first overflow
+       qword, so the vector after it takes a 16-byte ALIGNED overflow slot */
+    printf("%lld\n", sum_all(9, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 2, a, 3, d));
+    printf("%d\n", first_lane(2, a, b));
+    return 0;
+}
