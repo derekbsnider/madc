@@ -1,0 +1,40 @@
+// -stdlib=libc++ twin of the std::list half of testforeachiter / testphpdumpiter
+// / testptrcmpupcast (the darwin-suite residue, KG Gap
+// libcxx_list_node_pointer_traits_completion_cycle). libc++'s
+// __list_node_pointer_traits<T,void*> names __list_node<T,void*> only to form a
+// POINTER to it (__rebind_pointer_t) — a template ARGUMENT, a context that never
+// requires the specialization complete ([temp.inst]/1). madc instantiated it
+// eagerly, INSIDE the traits class's own instantiation, and __list_node's base
+// __list_node_base then asked the still-memberless traits class for
+// __node_pointer / __base_pointer / __link_pointer: ephemeral placeholders baked
+// into __prev_ / __next_, and `->` through them refused (list:353 "expression
+// before -> must be a pointer", list:667 "member reference is not a structure
+// or union"; the darwin pack: "basic ClassPattern could not resolve
+// __base_pointer"). A template-id argument met while a class body is in flight
+// now defers to the moment that class is complete. Oracle: clang++
+// -stdlib=libc++ == g++ print the .expect.
+#include <list>
+#include <string>
+#include <stdio.h>
+
+int main()
+{
+	std::list<int> l;
+	l.push_back(1);
+	l.push_back(2);
+	l.push_front(0);
+	int s = 0;
+	for (std::list<int>::iterator it = l.begin(); it != l.end(); ++it)
+		s += *it;
+	printf("%d %d\n", (int)l.size(), s);
+	for (int v : l)
+		printf("v %d\n", v);
+	std::list<std::string> ls;
+	ls.push_back("aa");
+	ls.push_back("bb");
+	for (std::string x : ls)
+		printf("s %s\n", x.c_str());
+	ls.pop_front();
+	printf("%d %s\n", (int)ls.size(), ls.front().c_str());
+	return 0;
+}

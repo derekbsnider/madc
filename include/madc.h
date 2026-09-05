@@ -3694,6 +3694,47 @@ public:
     // instead of recursing. The re-parse lane going unguarded was a stack
     // overflow on `#include <string>` under -stdlib=libc++.
     std::set<std::string> class_inst_in_progress;
+    // The compound depth each in-flight class instantiation's body started at
+    // (ClassInstInFlightGuard, both lanes): the innermost entry equal to the
+    // live depth means the parse is in that body's own declarative region,
+    // not in a method body parsed eagerly within it.
+    std::vector<size_t> class_inst_compound_bases;
+    // > 0 while a TYPE-ID that never requires a named specialization complete
+    // is being resolved ([temp.inst]/1): a template argument in a template-id's
+    // arg loop (explicit or defaulted; the parse lane and the class-pattern
+    // serve), or any part of an alias-template use. A class template-id
+    // reached at that depth while a class body is in flight
+    // (template_arg_deferral_context) becomes a pending shell instead of
+    // instantiating eagerly inside that body; the enclosing instantiation
+    // completes it once its own class is complete
+    // (complete_deferred_arg_instantiations) — the eager order let the
+    // argument's class ask the still-memberless enclosing class for a member
+    // type (libc++ <list>: __list_node_base's _NodeTraits::__node_pointer while
+    // __list_node_pointer_traits was mid-parse). A class or function body
+    // parse and every demand replay run at depth 0 (TemplateArgReplayScope).
+    size_t template_arg_resolve_depth = 0;
+    std::vector<std::string> deferred_arg_instantiations;
+    struct TemplateArgResolveScope {
+	Program &pgm;
+	TemplateArgResolveScope(Program &p) : pgm(p)
+	{ ++pgm.template_arg_resolve_depth; }
+	~TemplateArgResolveScope() { --pgm.template_arg_resolve_depth; }
+    };
+    struct TemplateArgReplayScope {
+	Program &pgm;
+	size_t saved;
+	TemplateArgReplayScope(Program &p)
+	    : pgm(p), saved(p.template_arg_resolve_depth)
+	{ pgm.template_arg_resolve_depth = 0; }
+	~TemplateArgReplayScope() { pgm.template_arg_resolve_depth = saved; }
+    };
+    bool template_arg_deferral_context() const
+    {
+	return template_arg_resolve_depth > 0
+	    && !class_inst_compound_bases.empty()
+	    && compounds.size() == class_inst_compound_bases.back();
+    }
+    void complete_deferred_arg_instantiations(size_t mark);
     // Alias-template uses currently being resolved (keyed tname + arg spellings).
     // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
     // reachable because variadic members really instantiate) — it short-circuits to

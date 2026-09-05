@@ -3426,6 +3426,12 @@ static TokenBase *resolve_class_static_member_value(Program &pgm,
 						    const std::string &member,
 						    TokenBase *at)
 {
+    // [class.mem]: a static member read requires the class complete — a
+    // pending shell (a deferred template-argument instantiation, a bodyless
+    // forward instantiation) completes on demand here.
+    scope = dynamic_cast<DataDefCLASS *>(pgm.complete_class_type_on_demand(scope));
+    if ( !scope )
+	return NULL;
     DataDef *static_dd = resolve_class_static_member_type(scope, member);
     if ( !static_dd )
 	return NULL;
@@ -3618,6 +3624,12 @@ DataDefCLASS *Program::scan_resolve_qualifier_chain(
 Program::LtReading Program::class_member_lt_reading(DataDefCLASS *owner,
 						    const std::string &name)
 {
+    if ( !owner )
+	return LtReading::Unknown;
+    // Lookup needs the real class: a pending shell (a deferred template-
+    // argument instantiation) completes on demand before the question is
+    // asked — a memberless shell would answer Unknown for a member it has.
+    owner = dynamic_cast<DataDefCLASS *>(complete_class_type_on_demand(owner));
     if ( !owner )
 	return LtReading::Unknown;
     const uint32_t name_id = template_name_pool.find(name);
@@ -6095,6 +6107,8 @@ TokenDataType *Program::instantiate_shell_origin_replay(
     // instantiate_template_use. Args here are already CONCRETE, so the
     // variadic real-instantiation gate must be open (a `tuple<int>` use
     // real-instantiates exactly like the member-type-chain path).
+    // A demand replay is a real instantiation, never a deferral context.
+    TemplateArgReplayScope replay_ctx(*this);
     std::vector<TokenBase *> replay;
     replay.push_back(new TokenLT());
     bool first_run = true;
@@ -7319,8 +7333,14 @@ class BasicClassPatternResolver
     {
 	memo_arguments.clear();
 	memo_arguments.reserve(arguments.size());
-	for ( size_t i = 0; i < arguments.size(); ++i )
-	    memo_arguments.push_back(resolve(arguments[i]));
+	{
+	    // The nested template-id's ARGUMENTS: a type-id context, the
+	    // class-pattern twin of the parse lane's arg loop
+	    // (Program::template_arg_resolve_depth).
+	    Program::TemplateArgResolveScope arg_ctx(pgm);
+	    for ( size_t i = 0; i < arguments.size(); ++i )
+		memo_arguments.push_back(resolve(arguments[i]));
+	}
 	DataDef *cached = find_memoized(memo_kind, memo_name_id,
 	    memo_namespace_id, owner, memo_arguments, memo_hash);
 	if ( cached )
@@ -8387,6 +8407,11 @@ public:
 	for ( size_t i = 0; i < node.bases.size(); ++i )
 	{
 	    DataDef *base_dd = resolver.resolve(node.bases[i].type);
+	    // [class.derived]/2: a base shall be complete — a pending shell (a
+	    // deferred template-argument instantiation reaching the base through
+	    // a substituted parameter) completes on demand here.
+	    if ( base_dd )
+		base_dd = pgm.complete_class_type_on_demand(base_dd);
 	    DataDefCLASS *base = dynamic_cast<DataDefCLASS *>(base_dd);
 	    // A base that instantiated as a plain DataDefSTRUCT (an EMPTY
 	    // struct never earns class-hood — e.g. the C++20 __iterator_traits
@@ -8586,12 +8611,23 @@ static TokenDataType *instantiate_basic_class_pattern(
 // for a base clause naming the template's own specialization as a template
 // ARGUMENT (libc++'s allocator : __non_trivial_if<..., allocator<_Tp>>).
 struct ClassInstInFlightGuard {
-    std::set<std::string> &set;
+    Program &pgm;
     std::string key;
     bool inserted;
-    ClassInstInFlightGuard(std::set<std::string> &s, const std::string &k)
-	: set(s), key(k), inserted(s.insert(k).second) {}
-    ~ClassInstInFlightGuard() { if ( inserted ) set.erase(key); }
+    ClassInstInFlightGuard(Program &p, const std::string &k)
+	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second)
+    {
+	// The body's own declarative region starts at this compound depth: a
+	// template-id argument defers only there, never inside a method body
+	// parsed eagerly within it (Program::template_arg_deferral_context).
+	pgm.class_inst_compound_bases.push_back(pgm.compounds.size());
+    }
+    ~ClassInstInFlightGuard()
+    {
+	pgm.class_inst_compound_bases.pop_back();
+	if ( inserted )
+	    pgm.class_inst_in_progress.erase(key);
+    }
 };
 
 // Env-gated diagnostics for the variadic real-instantiation routing and the
@@ -8878,7 +8914,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    {
 		std::string cv_spelling;
 		at = consume_template_type_arg_qualifiers(at, cv_spelling);
-		TokenDataType *adt = resolve_declared_type_token(at, true, true);
+		TokenDataType *adt;
+		{
+		    TemplateArgResolveScope arg_ctx(*this);	// a template argument
+		    adt = resolve_declared_type_token(at, true, true);
+		}
 		if ( !adt )
 		    Throw(at) << "Expecting a type argument to "
 				  << tname << "<>" << flush;
@@ -8963,7 +9003,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    TokenBase *dtok = nextToken();
 	    std::string cv_spelling;
 	    dtok = consume_template_type_arg_qualifiers(dtok, cv_spelling);
-	    TokenDataType *adt = resolve_declared_type_token(dtok, true, true);
+	    TokenDataType *adt;
+	    {
+		TemplateArgResolveScope arg_ctx(*this);	// a template argument
+		adt = resolve_declared_type_token(dtok, true, true);
+	    }
 	    if ( !adt )
 		Throw(dtok ? dtok : tb)
 		    << "Could not resolve default template argument for "
@@ -9283,6 +9327,16 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    ++_class_inst_cache;
 	    return use_site_type_token(cached, tb);
 	}
+	// A pending shell named again as a template argument while a class body
+	// is in flight stays deferred (its completion is queued for the
+	// enclosing instantiation, see template_arg_resolve_depth); any other
+	// mention of an incomplete shell instantiates it below, as before.
+	if ( template_arg_deferral_context()
+	  && has_pending_template_instantiation(registered_mangled) )
+	{
+	    deferred_arg_instantiations.push_back(registered_mangled);
+	    return use_site_type_token(cached, tb);
+	}
     }
     // A variadic template admitted to the real path (template_pack_real_instantiable)
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
@@ -9299,8 +9353,49 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	&& variadic_inst_in_progress.count(registered_mangled) != 0;
     bool recursive_inflight = class_inst_in_progress.count(registered_mangled) != 0;
     bool recursive_opaque = recursive_sticky || recursive_inflight;
+    // [temp.inst]/1: a class template-id named as a TEMPLATE ARGUMENT — here,
+    // in the class-pattern serve's argument resolution or anywhere in an
+    // alias-template use (template_arg_resolve_depth) — is not a context that
+    // requires the specialization complete; C++ instantiates it at its first
+    // such demand. madc instantiates eagerly, and eagerly INSIDE another
+    // class's instantiation the order is observable: the argument's class (or
+    // its base) asks the enclosing, still-memberless class for a member type
+    // and bakes an ephemeral placeholder into its own typedefs (libc++ <list>:
+    // __list_node_pointer_traits<T,void*>'s first typedef names
+    // __list_node<T,void*>; its base __list_node_base<T,void*> typedefs
+    // _NodeTraits::__node_pointer while the traits class is mid-parse, and the
+    // `->` through __prev_/__next_ then refuses). So while a class body is in
+    // flight, such an argument becomes the same pending shell a bodyless
+    // template mints, completed by the enclosing instantiation the moment its
+    // class is complete (complete_deferred_arg_instantiations) or by any
+    // completeness demand before that. Type arguments only — the pending
+    // record replays type args; a non-type or pack argument keeps the eager
+    // path — and never inside a dependent parse.
+    bool all_type_args = true;
+    for ( size_t i = 0; i < arg_tokens_by_slot.size() && all_type_args; ++i )
+	if ( !arg_tokens_by_slot[i].empty() )
+	    all_type_args = false;
+    // A MEMBER class template (td.owner_class) keeps the eager path: the
+    // pending record replays by the bare template name, which does not carry
+    // the owner (`__alloc_traits<A,T>::rebind<T>` stayed a shell in a class
+    // pattern, "could not resolve type ... name='other'"). So does a
+    // template whose body lives in a PARTIAL SPECIALIZATION (td swapped to the
+    // matched spec above; the primary is bodyless — `common_type<T,U>`,
+    // `__common_type2_imp<T,U,void>`): the replay re-enters by the primary's
+    // name and the cache-hit branch hands a bodyless primary's shell straight
+    // back, before spec matching, so a deferred shell of such a template could
+    // never complete (the libc++ <locale> freeze: `common_type<int64_t,
+    // int64_t>::type` unresolved in chrono's duration spec).
+    bool deferred_arg = template_arg_deferral_context()
+		     && !dependent_parse_in_progress
+		     && !td.body.empty() && !dependent_surface
+		     && !placeholder_arg && !recursive_opaque
+		     && !td.owner_class && !td.is_partial_specialization
+		     && !template_has_parameter_pack(td.typeparam_is_pack)
+		     && pack_subst.empty() && token_pack_subst.empty()
+		     && all_type_args;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || placeholder_arg || recursive_opaque )
+      || placeholder_arg || recursive_opaque || deferred_arg )
     {
 	++_class_inst_opaque;
 	{
@@ -9346,13 +9441,20 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
 	    namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
-	if ( unresolved_surface )
+	if ( unresolved_surface || deferred_arg )
 	    record_dependent_shell_origin(*this, fwd, td, tname,
 					  arg_spellings,
 					  shell_origin_arg_tokens);
 	record_pending_template_instantiation(*this, tname, registered_mangled, canon, type_args);
+	if ( deferred_arg )
+	    deferred_arg_instantiations.push_back(registered_mangled);
 	return use_site_type_token(tdt, tb);
     }
+
+    // Template-argument specializations this body only NAMES are deferred
+    // past it (template_arg_resolve_depth): the entries recorded from here on
+    // are this instantiation's to complete once its class is complete.
+    size_t deferred_mark = deferred_arg_instantiations.size();
 
     std::string class_profile_identity;
     if ( td.owner_class )
@@ -9492,11 +9594,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    TokenDataType *served;
 	    {
-		ClassInstInFlightGuard in_flight(class_inst_in_progress,
-						 registered_mangled);
+		ClassInstInFlightGuard in_flight(*this, registered_mangled);
+		TemplateArgReplayScope body_ctx(*this);	// a body is a fresh type-id context
 		NamespaceScope namespace_scope(*this, td.defining_namespace);
 		served = instantiate_basic_class_pattern(*this, binding);
 	    }
+	    // The class is complete: instantiate the template-argument
+	    // specializations its body only NAMED (deferred) now.
+	    complete_deferred_arg_instantiations(deferred_mark);
 	    // Depth is 0 again here (the serve's journal closed): run any
 	    // captures queued by nested demand inside the serve.
 	    drain_pending_class_pattern_captures();
@@ -10546,8 +10651,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // serve: mark it so a self-referential re-entry (base clause naming this
     // very specialization as a template argument) is served the incomplete
     // shell by the cache-hit branch instead of re-instantiating forever.
-    ClassInstInFlightGuard reparse_in_flight(class_inst_in_progress,
-					     registered_mangled);
+    ClassInstInFlightGuard reparse_in_flight(*this, registered_mangled);
+    TemplateArgReplayScope body_ctx(*this);	// a body is a fresh type-id context
 
     ClassParseCensusScope class_parse_scope(*this, class_profile_identity,
 	legacy_reason, canon);
@@ -10620,6 +10725,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	instantiate_outofline_nested_classes(td.class_name,
 	    td.defining_namespace, registered_mangled, arg_tokens_by_slot);
     }
+
+    // The class is complete: instantiate the template-argument specializations
+    // its body only NAMED (deferred, see template_arg_resolve_depth) now.
+    complete_deferred_arg_instantiations(deferred_mark);
 
     flat_datatype_map_iter now = datatype_map.find(registered_mangled);
     if ( now == datatype_map.end() )
@@ -10782,6 +10891,13 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 						     DataDefCLASS *owner_hint)
 {
     InstTimer _it(*this, _inst_alias_count);	// --show-stats
+    // An alias-template use is a type-id: nothing in it — its arguments, their
+    // defaults, the substituted target — requires a named specialization
+    // complete ([temp.alias], [temp.inst]/1). A class template-id met here
+    // while a class body is in flight defers (template_arg_resolve_depth); a
+    // class body instantiated from inside this resolution starts its own
+    // context at depth 0.
+    TemplateArgResolveScope arg_ctx(*this);
     const uint32_t tname_id = template_name_pool.intern(tname);
     const Program::TemplateAliasDef *tdp = find_template_alias(
 	tname_id, ns_hint, owner_hint);
@@ -11465,6 +11581,8 @@ void Program::complete_pending_template_instantiations(const std::string &class_
 	return;
     if ( !template_with_body(class_name) )
 	return;
+    // A demand replay is a real instantiation, never a deferral context.
+    TemplateArgReplayScope replay_ctx(*this);
 
     std::vector<Program::PendingTemplateInstantiation> pending = pi->second;
     for ( size_t i = 0; i < pending.size(); ++i )
@@ -11492,6 +11610,34 @@ void Program::complete_pending_template_instantiations(const std::string &class_
 
 	TokenIdent fake_name(class_name.c_str());
 	instantiate_template_use(class_name, &fake_name);
+    }
+}
+
+// The template-argument specializations a class body only NAMED while its
+// instantiation was in flight (deferred_arg_instantiations past `mark`, see
+// template_arg_resolve_depth): complete each one still a shell, through the
+// pending record every other completeness demand replays. The enclosing class
+// is complete now, so a base or member of the argument's class that asks it
+// for a member type gets the real one — the eager order handed it a shell
+// mid-instantiation (libc++ __list_node_base's _NodeTraits::__node_pointer
+// while __list_node_pointer_traits was still being parsed). A replay is a
+// real instantiation, never itself a deferral context; an entry a demand
+// completed earlier is skipped.
+void Program::complete_deferred_arg_instantiations(size_t mark)
+{
+    if ( deferred_arg_instantiations.size() <= mark )
+	return;
+    TemplateArgReplayScope replay_ctx(*this);
+    while ( deferred_arg_instantiations.size() > mark )
+    {
+	std::string name = deferred_arg_instantiations[mark];
+	deferred_arg_instantiations.erase(deferred_arg_instantiations.begin()
+					  + (std::ptrdiff_t)mark);
+	flat_datatype_map_iter have = datatype_map.find(name);
+	if ( have == datatype_map.end()
+	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
+	    continue;
+	request_template_instantiation_completion(name);
     }
 }
 
@@ -15170,6 +15316,12 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
 	{ nextToken(); a.is_rref = true; a.referent_const |= pointer_const; }
 	unwrap_baked_trait_arg(a);
+	// [meta.rqmts]: a type trait's class operand shall be complete — a
+	// pending shell (a deferred template-argument instantiation, a bodyless
+	// forward instantiation) completes on demand here, as sizeof's operand
+	// does; a dependent placeholder has no record and is refused below.
+	if ( dynamic_cast<DataDefCLASS *>(a.dd) )
+	    a.dd = complete_class_type_on_demand(a.dd);
 	// A DEPENDENT argument (an unbound template param `_Tp`, a dependent
 	// member-type placeholder) is unanswerable: any 0/1 answered here
 	// bakes a wrong constant into whatever context asked. Refuse — a
@@ -16575,6 +16727,13 @@ bool Program::fold_constant_qualified_member_walk(TokenBase *first,
     // scope's (possibly inherited) static `value` member, the same constant the
     // `::value` form reads. Only EMPTY `{}`/`()` (value-init); a braced
     // initializer with contents is not a constant trait.
+    // [class.mem]: a member read requires the class complete — a pending
+    // shell (a deferred template-argument instantiation an alias template
+    // resolved to: libstdc++ _Head_base's default argument
+    // `__empty_not_final<_Head>::value`) completes on demand here, the way
+    // the member-TYPE chain does; a dependent placeholder has no record.
+    if ( scope )
+	scope = dynamic_cast<DataDefCLASS *>(complete_class_type_on_demand(scope));
     if ( scope && tokens.size() >= 2 && tokens[0] && tokens[1]
       && (tokens[0]->id() == TokenID::tkOpBrc
        || tokens[0]->id() == TokenID::tkOpBrk) )
@@ -16600,6 +16759,9 @@ bool Program::fold_constant_qualified_member_walk(TokenBase *first,
 	TokenBase *seg = nextToken();
 	if ( !seg )
 	    return false;
+	// The scope this segment is looked up in must be complete (above).
+	if ( scope )
+	    scope = dynamic_cast<DataDefCLASS *>(complete_class_type_on_demand(scope));
 	std::string seg_name;
 	if ( seg->type() == TokenType::ttDataType )
 	    seg_name = ((TokenDataType *)seg)->spelling();
@@ -46499,6 +46661,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    if ( !bcls )
 		pgm.Throw(bn) << "Unknown base class '" << base_name << "'" << flush;
+	    // [class.derived]/2: a base shall be a complete class — a pending
+	    // shell reaching a base clause (a deferred template-argument
+	    // instantiation arriving through a substituted parameter, a
+	    // bodyless forward instantiation) completes on demand here, the
+	    // way a by-value declaration's type does.
+	    if ( DataDefCLASS *complete_base = dynamic_cast<DataDefCLASS *>(
+			pgm.complete_class_type_on_demand(bcls)) )
+		bcls = complete_base;
 	    base_specs.push_back(BaseSpec{bcls, 0, bvirtual, baccess, false});
 	    pgm.note_class_base_spec();
 	    // [temp.variadic]/5: a base-specifier may carry a pack-expansion `...`.
@@ -58191,6 +58361,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // 0 for the body; restore after, like the sibling scope/linkage state above.
     int saved_uneval = pgm.unevaluated_operand_depth;
     pgm.unevaluated_operand_depth = 0;
+    // Likewise a fresh TYPE-ID context: nothing in a body is a template
+    // argument of the use that triggered it (Program::template_arg_resolve_depth).
+    Program::TemplateArgReplayScope arg_ctx(pgm);
 
     bool ok = true;
     // SFINAE-quiet attempt: this body parse is a speculative candidate
