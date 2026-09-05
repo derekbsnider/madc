@@ -366,6 +366,11 @@ static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t i
   VARR_PUSH (MIR_line_map_t, gen_line_map, e);
 }
 
+/* The move insn for a value of a given type (MIR_MOV for the integer shapes,
+   MIR_VMOV for the 128-bit vector) -- defined below, declared here so a target
+   file reads the one owner instead of spelling the ladder itself. */
+static MIR_insn_code_t get_move_code (MIR_type_t type);
+
 /* Target selection via mir-target.h (madc fork): host detection by
    default, MIR_TARGET_<ARCH> overrides for a cross-capture build. */
 #if MIR_TARGET_IS_X86_64

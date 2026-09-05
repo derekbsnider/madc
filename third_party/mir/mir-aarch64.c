@@ -69,18 +69,25 @@ void *va_arg_builtin (void *p, uint64_t t) {
   struct aarch64_va_list *va = p;
   MIR_type_t type = t;
 #if defined(__APPLE__)
-  void *a = va->arg_area;
+  void *a;
 
-  if (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) {
+  if ((type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type)) {
+    /* a 16-byte argument takes a 16-byte-aligned pair of slots (AAPCS64 C.14) */
+    va->arg_area = (uint64_t *) (((uint64_t) va->arg_area + 15) / 16 * 16);
+    a = va->arg_area;
     va->arg_area += 2;
   } else {
+    a = va->arg_area;
     va->arg_area++;
   }
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   if (type == MIR_T_F || type == MIR_T_I32) a = (char *) a + 4; /* 2nd word of doubleword */
 #endif
 #else
-  int fp_p = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD;
+  /* the SIMD/FP class: F, D, LD and the 128-bit vector (a Q register: the vr
+     save area holds every FP register at a 16-byte stride) */
+  int fp_p = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD || MIR_vector_type_p (type);
+  int size16_p = (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
   void *a;
 
   if (fp_p && va->__vr_offs < 0) {
@@ -90,11 +97,9 @@ void *va_arg_builtin (void *p, uint64_t t) {
     a = (char *) va->__gr_top + va->__gr_offs;
     va->__gr_offs += 8;
   } else {
-    if (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16)
-      va->__stack = (void *) (((uint64_t) va->__stack + 15) / 16 * 16);
+    if (size16_p) va->__stack = (void *) (((uint64_t) va->__stack + 15) / 16 * 16);
     a = va->__stack;
-    va->__stack
-      = (char *) va->__stack + (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 16 : 8);
+    va->__stack = (char *) va->__stack + (size16_p ? 16 : 8);
   }
 #endif
   return a;

@@ -41,7 +41,10 @@ static const MIR_reg_t TEMP_LDOUBLE_HARD_REG2 = V17_HARD_REG;
 
 static inline int target_hard_reg_type_ok_p (MIR_reg_t hard_reg, MIR_type_t type) {
   assert (hard_reg <= MAX_HARD_REG);
-  return MIR_fp_type_p (type) ? hard_reg >= V0_HARD_REG : hard_reg < V0_HARD_REG;
+  /* The 128-bit vector is an FP-class value: it lives in the SIMD/FP file as a
+     Q register -- the shape the 128-bit long double already has there. */
+  return MIR_fp_type_p (type) || MIR_vector_type_p (type) ? hard_reg >= V0_HARD_REG
+                                                          : hard_reg < V0_HARD_REG;
 }
 
 static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
@@ -57,5 +60,5 @@ static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
 }
 
 static int target_locs_num (MIR_reg_t loc, MIR_type_t type) {
-  return loc > MAX_HARD_REG && type == MIR_T_LD ? 2 : 1;
+  return loc > MAX_HARD_REG && (type == MIR_T_LD || MIR_vector_type_p (type)) ? 2 : 1;
 }
