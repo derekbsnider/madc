@@ -1,0 +1,52 @@
+#include <stdio.h>
+
+/* A vector shifted by a SCALAR count of any integer type: the scalar is a
+   count, not a lane value (gcc converts nothing; clang agrees), so an `int`
+   count shifts 16-bit and 8-bit lanes, and so do a `long long` and an
+   `unsigned char` count, at 16, 32 and 8 bytes; compound assignment too.
+   c2mir demanded that the count FIT a lane ("shift operands should be of an
+   integer type" for `v8hu << int_var`), accepting only a constant. */
+typedef unsigned short v8hu __attribute__((vector_size(16)));
+typedef short v8hi __attribute__((vector_size(16)));
+typedef unsigned char v16qu __attribute__((vector_size(16)));
+typedef signed char v16qi __attribute__((vector_size(16)));
+typedef unsigned short V32 __attribute__((vector_size(32)));
+typedef unsigned char V8 __attribute__((vector_size(8)));
+
+int main(void)
+{
+    volatile int n = 3;
+    long long m = 2;
+    unsigned char u = 1;
+    v8hu a = {1, 2, 4, 0x8000, 0x4000, 7, 9, 0xffff};
+    v8hi s = {-1, -2, -32768, 4, -100, 100, 7, -7};
+    v16qu c = {1, 2, 4, 8, 16, 32, 64, 128, 255, 254, 3, 5, 7, 9, 11, 13};
+    v16qi d = {-1, -2, -4, -8, -16, -32, -64, -128, 127, 126, 3, 5, 7, 9, 11, 13};
+    V32 w = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0x8000};
+    V8 e = {1, 2, 4, 8, 16, 32, 64, 128};
+    v8hu l = a << n, r = a >> n, lm = a << m, ru = a >> u;
+    v8hi sr = s >> n, srm = s >> m;
+    v16qu cl = c << n, cr = c >> u;
+    v16qi dr = d >> n;
+    V32 wl = w << n, wr = w >> m;
+    V8 el = e << u, er = e >> n;
+    int i;
+    for (i = 0; i < 8; i++) printf("%u ", l[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%u ", r[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%u ", lm[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%u ", ru[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%d ", sr[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%d ", srm[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%u ", cl[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%u ", cr[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%d ", dr[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%u ", wl[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%u ", wr[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%u ", el[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%u ", er[i]); printf("\n");
+    a <<= n; s >>= m; c >>= n;
+    for (i = 0; i < 8; i++) printf("%u ", a[i]); printf("\n");
+    for (i = 0; i < 8; i++) printf("%d ", s[i]); printf("\n");
+    for (i = 0; i < 16; i++) printf("%u ", c[i]); printf("\n");
+    return 0;
+}

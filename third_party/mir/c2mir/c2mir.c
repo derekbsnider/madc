@@ -6711,8 +6711,15 @@ static struct type *integer_shift_vector_type (c2m_ctx_t c2m_ctx, struct type *t
                                                struct expr *expr2) {
   if (compatible_integer_vector_types_p (c2m_ctx, type1, type2)) return type1;
   if (compatible_integer_shift_count_vector_types_p (c2m_ctx, type1, type2)) return type1;
-  if (supported_integer_vector_type_p (c2m_ctx, type1)
-      && scalar_fits_integer_vector_lane_p (c2m_ctx, type1, type2, expr2))
+  /* vector << scalar: the scalar is the shift COUNT, not a lane value -- an
+     integer of ANY type (gcc c-typeck.cc build_binary_op, LSHIFT_EXPR /
+     RSHIFT_EXPR: `code0 == VECTOR_TYPE && code1 == INTEGER_TYPE` keeps type0
+     with the count unconverted; clang agrees).  The lane-fit test stays for a
+     scalar LEFT operand, which IS broadcast into the lanes.  EXPR2 is unused:
+     the count's value never decides the type. */
+  (void) expr2;
+  if (supported_integer_vector_type_p (c2m_ctx, type1) && integer_type_p (type2)
+      && !vector_type_p (type2))
     return type1;
   if (supported_integer_vector_type_p (c2m_ctx, type2)
       && scalar_fits_integer_vector_lane_p (c2m_ctx, type2, type1, expr1))
