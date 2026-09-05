@@ -1466,6 +1466,56 @@ SDK/cross facts).
   names in the triage are exe-build differences, not JIT failures). Both jobs
   green (arm64 10 min, Intel 23 min); triage under tmp/d4-triage/d4-33942662074.**
 
+  **WAVE 11 LANDED — APPLE STACK-ARGUMENT PACKING + THE aarch64-linux PLAIN
+  CHAR (2026-09-05, s156; plan docs/plans/2026-09-05-apple-arm64-stack-arg-packing.md).
+  d1f6c853: Apple's arm64 ABI packs a NON-variadic stack argument at its
+  natural size and alignment — a char one byte, a short two, an int or a float
+  four, a composite 8-byte aligned; a variadic argument keeps the 8-byte slot
+  Apple's va_arg advances by, and the va_list of a vararg function starts after
+  the named stack arguments rounded up to 8 — where AAPCS64 gives every one 8
+  bytes. MIR used the generic slot on both sides of a call and in both shims,
+  so a MIR caller and a MIR callee agreed with each other while a clang-compiled
+  caller or callee read the ninth int of a ten-int function from [sp+0] and the
+  tenth from [sp+4] (the pair's iapply10: 788400285 under -eg / 463669405 under
+  -ei for 385; KG Gap mir_aarch64_apple_stack_arg_packing) — a SILENT wrong
+  answer, unreachable from madc<->madc tests. One owner in mir-aarch64.h
+  (stack_arg_slot_size / stack_arg_slot_start / stack_arg_mem_type, beside
+  fp_class_type_p / stack_arg_16_p) read by the machinizer's call site and
+  callee (a packed char / short / int / float read with a load of its own
+  width), va_start, the ff_call shim (strb / strh / str w / str x by slot size)
+  and the Apple interp shim (ldrsb x / ldrb w / ldrsh x / ldrh w / ldrsw x /
+  ldr w / ldr x by size and signedness) whose vararg handoff now passes the
+  caller's sp advanced past the named stack arguments — the generic targets
+  move nothing (every slot stays 8 or 16). The interop pair grows eleven probes
+  in both directions: ten ints / chars / shorts / floats, a char / int / char /
+  long / short / composite / char / float run over the packed area, a vararg
+  function whose ninth named argument is on the stack, and their callbacks
+  (scripts/vector_abi_gate.sh LINES 17 -> 28; negative chars and shorts check
+  the callee's sign extension). 779bb654: the qemu stage of that pair found
+  c2mir declaring plain char SIGNED for every aarch64 flavor where
+  aarch64-linux-gnu-gcc and clang have it UNSIGNED (__CHAR_UNSIGNED__): the two
+  probes passing negative chars printed the x86-64 values (23 / -7876207) where
+  the gcc-built pair prints 4887 / 248123793 — mir_char / MIR_CHAR_MIN /
+  MIR_CHAR_MAX (caarch64.h) now follow the target (signed under
+  MIR_TARGET_APPLE_P / MIR_TARGET_WINDOWS_P, unsigned otherwise), the linux
+  flavor predefines __CHAR_UNSIGNED__ 1 and the shipped <limits.h> keys
+  CHAR_MIN / CHAR_MAX on it, as gcc's does; x86-64 and Apple untouched. madc's
+  own front end carries the twin for its emit-only cross-aarch64-linux mode
+  (DataType dtCHAR == dtINT8: plain char IS the signed 8-bit tag; no lane runs
+  that mode today) — KG Gap madc_cross_aarch64_linux_plain_char_signed, open,
+  with the layer chain. Upstream vnmakarov/mir has the same signed-char
+  declaration for aarch64 (and ppc64 / s390x): a PR candidate for the owner's
+  review. Gated on three platforms: linux x86-64 (the fulltest gate: c2m -eg,
+  c2m -ei and madc through #load byte-identical to gcc, 28 lines), linux
+  aarch64 under qemu (the pair -eg / -ei, the char reducers and every S1-S4
+  reducer == aarch64-gcc; tmp/logs/w11-a64b.log), Apple (the cross-built
+  arm64-macos c2m against an Apple-clang dylib, -eg and -ei, 28 lines identical
+  — iapply10 included; tmp/logs/w11-chain.log).
+  Mac (arm64, the cross release build staged at ~/madc-s154): 1287 pass / 3 fail / 23 skip (tools/ and examples/ staged) — the 3 libc++ <list> tests only (testforeachiter, testphpdumpiter, testptrcmpupcast); the 19 vector tests 19/0 (tmp/logs/w11-mac-suite.log; the cross release-arm64-macos build of 779bb654)
+  Lanes at 779bb654 (tmp/logs/w11-battery.log): linux battery jit 1304/0/9skip exe 1245/0 obj 1245/0 packed 1304/0/9skip headerless 1273/0/40skip, fulltest rc=0 with every gate in the chain GREEN (vector_abi_gate OK: c2m -eg, c2m -ei and madc byte-identical to the host compiler, 28 lines; check-c-abi-surface OK: 1090 extern-C exports classified, 43 listed internal; warning ratchet GREEN; tag-arithmetic 0/0; forest_pack_gate linux 68 = baseline); wine64 1250/0/63skip + verify_pe_release OK (234 units) + win64 pack 68 = baseline; c-testsuite 220/220, 0 outside baseline; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK both (tmp/logs/w11-battery.log; rb-20260905-133223 / -142056 / -142550).
+  THE DARWIN RESIDUE STAYS ONE ARC: libc++ <list> (owner scope). Dispatch #12
+  (not yet run) now measures wave 11 (expect arm64 3 = the <list> tests, Intel 3).**
+
   **WAVE 10 LANDED — THE VECTOR CALLING CONVENTION (2026-09-05, s156; plan
   docs/plans/2026-09-05-aarch64-simd-v128.md, section "The vector calling
   convention"). Opening S5 showed that every vector-ABI gate so far had compared

@@ -1,11 +1,64 @@
 # Apple arm64: stack-argument PACKING — plan
 
-Status: PLANNED (2026-09-05, s156), found by the vector calling-convention arc's
-Mac stage (docs/plans/2026-09-05-aarch64-simd-v128.md, "The vector calling
-convention"). KG Gap `mir_aarch64_apple_stack_arg_packing`. Owner scope: the MIR
-fork (`third_party/mir`: mir-gen-aarch64.c, mir-aarch64.c); nothing in madc.
+Status: LANDED (2026-09-05, s156) — d1f6c853 (the packing rule, both machinizer
+arms, both shims, va_start and the interp shim's vararg handoff; the interop
+pair's eleven packing probes; the gate at 28 lines) and 779bb654 (found by the
+wave's qemu stage: c2mir's plain char is UNSIGNED on the AAPCS64 linux target —
+see "Landed" below). Planned the same day, found by the vector
+calling-convention arc's Mac stage (docs/plans/2026-09-05-aarch64-simd-v128.md,
+"The vector calling convention"). KG Gap `mir_aarch64_apple_stack_arg_packing`
+FIXED. Owner scope: the MIR fork (`third_party/mir`: mir-aarch64.h,
+mir-gen-aarch64.c, mir-aarch64.c, mir-interp.c); nothing in madc.
 
-## The rule
+## Landed
+
+- **One owner** (mir-aarch64.h, beside `fp_class_type_p` / `stack_arg_16_p`):
+  `stack_arg_slot_size (type, vararg_p)` — 16 for a 16-byte type, on Apple 1 / 2
+  / 4 for a NON-variadic I8 / I16 / I32-or-F, else 8; `stack_arg_slot_start
+  (offset, slot_size)` — the running offset rounded up to the slot's alignment
+  (its size); `stack_arg_mem_type (type, vararg_p)` — the argument's own type
+  for the SIMD/FP class and for a slot narrower than 8 bytes (a typed load
+  extends), else I64. The generic targets read the same helpers and move
+  nothing (every slot stays 8 or 16; the qemu stage is byte-identical).
+- **Machinizer** (mir-gen-aarch64.c): the call site's first-pass accounting and
+  stack-store arm, the callee's parameter loads, blocks rounded to 8 first; and
+  `va_start`'s `__stack` = the entry sp + the named stack area rounded to 8 on
+  BOTH hosts (Apple stored the bare entry sp — wrong for a vararg function with
+  a ninth named argument on the stack: Apple's own va_start is `add x8, sp,
+  #120` past the packed int at [sp+112]).
+- **ff_call** (mir-aarch64.c): first pass and stores by slot size — `strb` /
+  `strh` / `str w` / `str x` (`int_st_pat`, imm12 scaled by `slot_scale`), the
+  FP store at the type's slot (a non-variadic float packs to 4 on Apple).
+- **Apple interp shim**: loads from the caller's stack by size and signedness —
+  `ldrsb x` / `ldrb w` / `ldrsh x` / `ldrh w` / `ldrsw x` / `ldr w` / `ldr x`
+  (`int_ld_pat`); the handler's own slots stay 8 bytes (`handler_slot_size`);
+  the vararg handoff (fdaa33b4) hands `x9 + round8 (named stack area)`.
+- **The gate**: tests/abi/libvecnative.c + vec_ffcall.c gain `nisum10`,
+  `ncsum10`, `nssum10`, `nfsum10`, `nmixpack` (char / int / char / long / short
+  / composite / char / float over the packed area), `nva9` (a ninth named int
+  on the stack, then varargs) and the callbacks `capply10`, `sapply10`,
+  `fapply10`, `mixapply`, `va9apply` — eleven lines, both directions;
+  scripts/vector_abi_gate.sh LINES 28. Negative chars and shorts check the
+  callee's sign extension. Verified: x86-64 (fulltest gate; c2m -eg / -ei /
+  madc == gcc), qemu aarch64 (== aarch64-gcc, tmp/logs/w11-a64b.log), the Mac
+  (== Apple clang under -eg and -ei, iapply10 included; tmp/logs/w11-chain.log).
+- **Found by the gate, fixed in 779bb654**: c2mir (caarch64.h) declared plain
+  char SIGNED for every aarch64 flavor; the AAPCS64 linux ABI has it UNSIGNED
+  (`__CHAR_UNSIGNED__`; `(char) 200 < 0` is false, CHAR_MAX 255) — the two
+  probes passing negative chars differed from the aarch64-gcc build of the pair
+  under qemu. `mir_char` / `MIR_CHAR_MIN` / `MIR_CHAR_MAX` now follow the
+  target (signed under `MIR_TARGET_APPLE_P` / `MIR_TARGET_WINDOWS_P`), the
+  linux flavor predefines `__CHAR_UNSIGNED__ 1`, the shipped `<limits.h>` keys
+  `CHAR_MIN` / `CHAR_MAX` on it. Reducer tmp/mirq/charlim.c (== gcc under -eg /
+  -ei; the x86-64 host c2m and madc keep gcc's signed output). madc's own
+  front end has the TWIN for its emit-only cross-aarch64-linux mode
+  (`DataType::dtCHAR == dtINT8` — plain char IS the signed 8-bit tag, so a
+  target-keyed `is_unsigned()` needs a distinct tag; no lane runs that mode) —
+  KG Gap `madc_cross_aarch64_linux_plain_char_signed`, open. Upstream
+  vnmakarov/mir carries the same declaration (aarch64, ppc64, s390x): a PR
+  candidate, owner review gates it.
+
+## The rule (as planned)
 
 AAPCS64 (the generic procedure call standard) rounds every stack argument up to
 8 bytes (C.12/C.14). Apple's arm64 ABI ("Writing ARM64 Code for Apple
