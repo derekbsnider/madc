@@ -4055,6 +4055,11 @@ public:
 						  DataDefCLASS *owner,
 						  const std::string &enclosing_symbol);
     registration_map<DataDef *, DataDefPTR *> ptr_type_cache; // cached pointer-to-T DataDefs
+    // the ANONYMOUS vector types the parser mints (an inline vector_size cast
+    // or declaration attribute, a vector comparison's result), one DataDefSIMD
+    // per (element, bytes) — simd_type() is the owner; a NAMED vector typedef
+    // stays its own object
+    std::map<std::pair<DataDef *, size_t>, DataDefSIMD *> simd_type_cache;
     registration_map<DataDef *, DataDefREF *> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
     registration_map<DataDef *, DataDefCONST *> const_type_cache; // cached const-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
@@ -5880,6 +5885,8 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    DataDefSIMD *simd_type(DataDef *elem, size_t bytes);
+    DataDef *simd_comparison_type(DataDef *ld, DataDef *rd);
     // The type of '&x' from x's type: pointer-to-referent for a reference
     // operand ([expr.unary.op]p3), else pointer-to-type.
     DataDefPTR *addressof_result_type(DataDef *operand_type);

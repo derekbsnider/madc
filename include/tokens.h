@@ -908,6 +908,19 @@ public:
     virtual TokenID id() const override { return TokenID::tkBand; }
     virtual TokenBase *clone() override { return new TokenBand(); }
     virtual inline int precedence() const override { return 8; }
+    // C11 6.5.10: the usual arithmetic conversions type a bitwise operator
+    // exactly as they type the additive ones (TokenAdd's rule; children
+    // queried ONCE) — the wider / unsigned integer, and a SIMD operand's
+    // vector. The bare TokenOperator default (`int`) typed `(a & b)[i]` as a
+    // scalar, so the `[` fell through to the lambda introducer.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // logical and operator &&
@@ -928,6 +941,15 @@ public:
     virtual TokenID id() const override { return TokenID::tkBor; }
     virtual TokenBase *clone() override { return new TokenBor(); }
     virtual inline int precedence() const override { return 10; }
+    // C11 6.5.12 — the usual arithmetic conversions, TokenBand's rule.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // logical or operator ||
@@ -948,6 +970,15 @@ public:
     virtual TokenID id() const override { return TokenID::tkXor; }
     virtual TokenBase *clone() override { return new TokenXor(); }
     virtual inline int precedence() const override { return 9; }
+    // C11 6.5.11 — the usual arithmetic conversions, TokenBand's rule.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // ternary operator ? (if)
@@ -1084,6 +1115,10 @@ class TokenBSL: public TokenMultiOp
     {
 	if ( resolved_type ) return resolved_type;
 	DataDef *ld = left ? left->datadef() : NULL;
+	// a vector's shift is the vector (gcc's vector extension) — the width
+	// test below would read a 4-byte vector as a promoted int
+	if ( ld && ld->is_simd() )
+	    return ld;
 	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
 	  && (ld->size > ddINT.size
 	   || (ld->size == ddINT.size && ld->is_unsigned())) )
@@ -1104,6 +1139,10 @@ class TokenBSR: public TokenMultiOp
     {
 	if ( resolved_type ) return resolved_type;
 	DataDef *ld = left ? left->datadef() : NULL;
+	// a vector's shift is the vector (gcc's vector extension) — the width
+	// test below would read a 4-byte vector as a promoted int
+	if ( ld && ld->is_simd() )
+	    return ld;
 	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
 	  && (ld->size > ddINT.size
 	   || (ld->size == ddINT.size && ld->is_unsigned())) )

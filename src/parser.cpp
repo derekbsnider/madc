@@ -18913,6 +18913,21 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	    to->set_resolved_type(cat);
 	return;
     }
+    // A built-in comparison with a SIMD operand types as gcc's opaque
+    // signed-lane vector (simd_comparison_type). The vector operand is not a
+    // class object, so the operator machinery below never reaches it, and the
+    // token's default `int` typed `(ua == ub)[0]` as a non-subscriptable
+    // scalar (the `[` fell through to the lambda introducer) and hid the
+    // lane's signedness from every parse-time consumer.
+    if ( !to->resolved_type && to->left && to->right
+      && (to->id() == TokenID::tkEquals || to->id() == TokenID::tkNotEq
+       || to->id() == TokenID::tkLT || to->id() == TokenID::tkGT
+       || to->id() == TokenID::tkLE || to->id() == TokenID::tkGE) )
+    {
+	if ( DataDef *vt = simd_comparison_type(to->left->datadef(),
+						to->right->datadef()) )
+	{ to->set_resolved_type(vt); return; }
+    }
     bool unary = to->argc() == 1;
     bool postfix = unary && to->left != NULL;
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
@@ -27036,6 +27051,52 @@ DataDefPTR *Program::getPointerType(DataDef *base)
 	forest_arena_record_unary(ptr);
     DBG(std::cout << "getPointerType() created " << ptr->name << " for base " << base->name << std::endl);
     return ptr;
+}
+
+// The one owner of the ANONYMOUS vector types the parser mints — an inline
+// `__attribute__((vector_size(N)))` on a cast or a declaration, a vector
+// comparison's result (simd_comparison_type) — interned per (element, bytes)
+// as getPointerType interns pointer-to-T, so a query-time consumer meets one
+// object per shape. A NAMED vector typedef (`typedef int v4si
+// __attribute__((vector_size(16)))`) stays its own DataDefSIMD: the name is
+// its identity.
+DataDefSIMD *Program::simd_type(DataDef *elem, size_t bytes)
+{
+    std::pair<DataDef *, size_t> key(elem, bytes);
+    auto it = simd_type_cache.find(key);
+    if ( it != simd_type_cache.end() )
+	return it->second;
+    DataDefSIMD *simd = new DataDefSIMD(elem, "", bytes);
+    simd_type_cache[key] = simd;
+    DBG(std::cout << "simd_type() created a " << bytes << "-byte vector of "
+		  << (elem ? elem->name : std::string("?")) << std::endl);
+    return simd;
+}
+
+// The type of a built-in COMPARISON with a SIMD operand: gcc's opaque vector
+// of the SIGNED integer of the lane's size, lane count preserved (gcc
+// c-typeck.cc build_binary_op -> build_opaque_vector_type; c2mir's
+// vector_cmp_result_type is the lowering-side twin, so the C it receives is
+// typed the same way). A scalar comparison keeps TokenOperator's `int`; NULL
+// when neither operand is a vector.
+DataDef *Program::simd_comparison_type(DataDef *ld, DataDef *rd)
+{
+    DataDefSIMD *v = ld ? ld->as_simd_dd() : NULL;
+    if ( !v && rd )
+	v = rd->as_simd_dd();
+    if ( !v || !v->element_type )
+	return NULL;
+    DataDef *lane;
+    switch ( v->element_type->size )
+    {
+	case 1:  lane = &ddINT8;   break;
+	case 2:  lane = &ddINT16;  break;
+	case 4:  lane = &ddINT;    break;
+	case 8:  lane = &ddINT64;  break;
+	case 16: lane = &ddINT128; break;
+	default: return NULL;
+    }
+    return simd_type(lane, v->vector_bytes);
 }
 
 DataDefREF *Program::getReferenceType(DataDef *base)
@@ -38540,7 +38601,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			bool comma_returns_fixed_array = comma_fixed_array
 			    && comma_fixed_array->var.is_fixed_array()
 			    && comma_fixed_array->var.type;
-			if ( dd && (dd->is_pointer()
+			// ... or a SIMD vector VALUE: gcc's vector extension
+			// subscripts any vector expression to its lane —
+			// `(a + b)[2]`, `(-a)[1]`, `(a == b)[0]`, a call
+			// returning a vector — exactly as the vector-variable
+			// arm above types `a[2]`. Without this arm the `[`
+			// after such an expression fell through to the lambda
+			// introducer below ("Expecting ] in lambda expression").
+			if ( dd && (dd->is_pointer() || dd->is_simd()
 			  || comma_returns_fixed_array) )
 			{
 			    TokenBase *base_expr = exStack.top();
@@ -38556,6 +38624,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 			    }
+			    else if ( elem_type && elem_type->is_simd() )
+				elem_type = static_cast<DataDefSIMD *>(elem_type)->element_type;
 			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    return done ? ExprStep::Done : ExprStep::Break;
@@ -38796,7 +38866,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    cast_dd = NULL;
 			    }
 			    if ( cast_vector_bytes > 0 && cast_dd )
-				cast_dd = new DataDefSIMD(cast_dd, "", cast_vector_bytes);
+				cast_dd = simd_type(cast_dd, cast_vector_bytes);
 			}
 			else if ( peek1->id() == TokenID::tkSTRUCT || peek1->id() == TokenID::tkUNION )
 			{
@@ -69199,7 +69269,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    if ( attr_vector_bytes > 0 )
 	    {
 		TokenDataType *tdt = (TokenDataType *)tb;
-		DataDef *simd = new DataDefSIMD(&tdt->definition, "", attr_vector_bytes);
+		DataDef *simd = simd_type(&tdt->definition, attr_vector_bytes);
 		tdt = new TokenDataType("", *simd);
 		DBG(std::cout << "parseStatement: wrapping type in SIMD(" << attr_vector_bytes << " bytes)" << std::endl);
 		return parseDeclaration(tdt);
