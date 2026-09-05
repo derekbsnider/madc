@@ -1420,6 +1420,71 @@ static const struct pattern patterns[] = {
   {MIR_VDIVF32, "r r r", "6e20fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.4s,Vn.4s,Vm.4s */
   {MIR_VDIVF64, "r r r", "6e60fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.2d,Vn.2d,Vm.2d */
 
+  /* Compares produce all-ones / zero lanes (the interpreter's convention). */
+  {MIR_VEQI8, "r r r", "6e208c00:ffe0fc00 vd0 vn1 vm2"},  /* cmeq Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VEQI16, "r r r", "6e608c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VEQI32, "r r r", "6ea08c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VEQI64, "r r r", "6ee08c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VGTI8, "r r r", "4e203400:ffe0fc00 vd0 vn1 vm2"},  /* cmgt Vd.16b,Vn.16b,Vm.16b (signed) */
+  {MIR_VGTI16, "r r r", "4e603400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VGTI32, "r r r", "4ea03400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VGTI64, "r r r", "4ee03400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VEQF32, "r r r", "4e20e400:ffe0fc00 vd0 vn1 vm2"}, /* fcmeq Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VEQF64, "r r r", "4e60e400:ffe0fc00 vd0 vn1 vm2"}, /* fcmeq Vd.2d,Vn.2d,Vm.2d */
+  /* fcmeq Vd,Vn,Vm; not Vd.16b,Vd.16b */
+  {MIR_VNEF32, "r r r", "4e20e400:ffe0fc00 vd0 vn1 vm2; 6e205800:fffffc00 vd0 vn0"},
+  {MIR_VNEF64, "r r r", "4e60e400:ffe0fc00 vd0 vn1 vm2; 6e205800:fffffc00 vd0 vn0"},
+  /* a < b is b > a: fcmgt Vd,Vm(op2),Vn(op1); a <= b is fcmge with the same swap. */
+  {MIR_VLTF32, "r r r", "6ea0e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmgt Vd.4s,Vop2.4s,Vop1.4s */
+  {MIR_VLTF64, "r r r", "6ee0e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmgt Vd.2d,Vop2.2d,Vop1.2d */
+  {MIR_VLEF32, "r r r", "6e20e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmge Vd.4s,Vop2.4s,Vop1.4s */
+  {MIR_VLEF64, "r r r", "6e60e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmge Vd.2d,Vop2.2d,Vop1.2d */
+
+  /* Lane-count shifts: NEON shifts each lane by the SIGNED low byte of the
+     count lane (a negative count shifts right), so a left shift is ushl on the
+     counts as given and a right shift is ushl / sshl on the negated counts
+     (V16, a fixed temp). Counts of lane-width or more give 0 / the sign fill --
+     what C defines is in range; a count >= 128 (UB in C) is not modelled. */
+  {MIR_VLSHVI8, "r r r", "6e204400:ffe0fc00 vd0 vn1 vm2"},  /* ushl Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VLSHVI16, "r r r", "6e604400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VLSHVI32, "r r r", "6ea04400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VLSHVI64, "r r r", "6ee04400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.2d,Vn.2d,Vm.2d */
+  /* neg V16.T,Vop2.T; ushl Vd.T,Vop1.T,V16.T */
+  {MIR_VURSHVI8, "r r r", "6e20b800:fffffc00 hd10 vn2; 6e204400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI16, "r r r", "6e60b800:fffffc00 hd10 vn2; 6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI32, "r r r", "6ea0b800:fffffc00 hd10 vn2; 6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI64, "r r r", "6ee0b800:fffffc00 hd10 vn2; 6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  /* neg V16.T,Vop2.T; sshl Vd.T,Vop1.T,V16.T */
+  {MIR_VRSHVI8, "r r r", "6e20b800:fffffc00 hd10 vn2; 4e204400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI16, "r r r", "6e60b800:fffffc00 hd10 vn2; 4e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI32, "r r r", "6ea0b800:fffffc00 hd10 vn2; 4ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI64, "r r r", "6ee0b800:fffffc00 hd10 vn2; 4ee04400:ffe0fc00 vd0 vn1 hm10"},
+
+  /* Scalar-count shifts: the count is the low 64 bits of the count vector
+     (mir-interp.c). umov X9,Vop2.d[0]; [neg X9,X9;] dup V16.T,W9|X9;
+     ushl|sshl Vd.T,Vop1.T,V16.T -- X9 and V16 are the fixed temps. */
+  {MIR_VLSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e020c00:fffffc00 hd10 hn9; 6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VLSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e040c00:fffffc00 hd10 hn9; 6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VLSHI64, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e080c00:fffffc00 hd10 hn9; 6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e020c00:fffffc00 hd10 hn9;"
+   "6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e040c00:fffffc00 hd10 hn9;"
+   "6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI64, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e080c00:fffffc00 hd10 hn9;"
+   "6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e020c00:fffffc00 hd10 hn9;"
+   "4e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e040c00:fffffc00 hd10 hn9;"
+   "4ea04400:ffe0fc00 vd0 vn1 hm10"},
+
   {MIR_EXT8, "r r", "93401c00:fffffc00 rd0 rn1"},  /* sxtb rd, wn */
   {MIR_EXT16, "r r", "93403c00:fffffc00 rd0 rn1"}, /* sxth rd, wn */
   {MIR_EXT32, "r r", "93407c00:fffffc00 rd0 rn1"}, /* sxtw rd, wn */
