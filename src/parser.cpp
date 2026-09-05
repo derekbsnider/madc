@@ -30322,6 +30322,45 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	ssize_t member_ofs = scope->m_offset(member_name);
 	if ( member_ofs >= 0 )
 	{
+	    // [class.qual], [expr.prim.id]/2: a qualified NON-STATIC data
+	    // member named inside a member function of `scope` or of a class
+	    // derived from it designates the member of *this — `B::x` in a
+	    // derived method, libc++ list's `base::__end_.__next_` — an
+	    // implicit-this access through the enclosing method's __this, at the
+	    // member's offset within the base subobject plus that subobject's
+	    // offset in the object (the unqualified member arm's lowering, one
+	    // level of qualification deeper). It was lowered to the constant 0
+	    // typed as the member: a SILENT wrong value, and a member chain on
+	    // it ("member reference is not a structure or union").
+	    {
+		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+		DataDefCLASS *cur_class =
+		    (code && code->method) ? code->method->owner_class : NULL;
+		size_t base_off = cur_class == scope ? 0
+				: cur_class ? cur_class->base_offset_of(scope)
+					    : (size_t)-1;
+		if ( cur_class && base_off != (size_t)-1 )
+		{
+		    std::string thisid = "__this";
+		    if ( Variable *thisvar = code->method->findParameter(thisid) )
+		    {
+			DataDef *mtype = scope->m_type(member_name);
+			Variable *member =
+			    new Variable(member_name, *mtype, 1, NULL, false);
+			TokenMember *tm = new TokenMember(*thisvar, *member,
+					(ssize_t)base_off + member_ofs);
+			tm->file = member_tb->file;
+			tm->line = member_tb->line;
+			tm->column = member_tb->column;
+			exStack.push(tm);
+			*tb_out = member_tb;
+			return QualifiedClassExprAction::PushedExpression;
+		    }
+		}
+	    }
+	    // No object: only an unevaluated operand may name the member
+	    // ([expr.prim.id]/2 — sizeof / decltype read its type), which is
+	    // what a value typed as the member serves.
 	    TokenInt *ti = new TokenInt(0);
 	    ti->setDataType(scope->m_type(member_name));
 	    ti->file = member_tb->file;
@@ -69248,9 +69287,14 @@ bool Program::datatype_statement_starts_qualified_expr()
     if ( i >= tokens.size() || !tokens[i] )
 	return false;
     TokenID id = tokens[i]->id();
+    // `.` / `->` / `[` right after the qualified-id: the qualified-id is an
+    // OBJECT expression ([class.qual]: `base::__end_.__next_ = ...`, libc++
+    // list's node relinking through the base subobject) — a declaration
+    // would follow the type-id with a declarator, never a member access.
     return id == TokenID::tkOpBrk || id == TokenID::tkAssign
 	|| id == TokenID::tkSemi || id == TokenID::tkInc
-	|| id == TokenID::tkDec;
+	|| id == TokenID::tkDec || id == TokenID::tkDot
+	|| id == TokenID::tkDeRef || id == TokenID::tkOpSqr;
 }
 
 // MT-1 `go <call-expr>;` — tb is the consumed contextual `go` head (see the

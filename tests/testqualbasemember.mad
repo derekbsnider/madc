@@ -1,0 +1,33 @@
+// A qualified NON-STATIC data member named inside a member function
+// ([class.qual], [expr.prim.id]/2): `B::x` in a method of a class derived
+// from B is the member of *this, and `B::end.next` continues as an ordinary
+// member chain — libc++ <list> relinks its nodes exactly so
+// (`base::__end_.__next_ = ...`, `base::__end_.__prev_->__next_ = ...`).
+// The shared class-qualified expression resolver lowered such a member to the
+// constant 0 typed as the member (a silent wrong value; a chain on it:
+// "member reference is not a structure or union"), and at statement start
+// `base::end.next = ...` was read as a declaration ("Expecting identifier
+// after type"). Oracle: g++ -O0 and clang++ -O0 print the .expect.
+#include <stdio.h>
+
+struct N { N *next; int v; };
+struct B { N end; int x; };
+struct D : B {
+	typedef B base;
+	int f() { return B::x + 1; }
+	int g() { N n; n.v = 7; B::end.next = &n; return B::end.next->v; }
+	int k() { N n; n.v = 9; end.next = &n; return B::end.v + end.next->v; }
+	int h(N *m) { base::end.next = m; return base::end.next->v; }
+};
+
+int main()
+{
+	D d;
+	d.x = 41;
+	d.end.v = 1;
+	printf("%d %d %d\n", d.f(), d.g(), d.k());
+	N m;
+	m.v = 3;
+	printf("%d\n", d.h(&m));
+	return 0;
+}
