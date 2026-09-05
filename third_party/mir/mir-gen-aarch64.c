@@ -1411,6 +1411,15 @@ static const struct pattern patterns[] = {
   {MIR_VMULI16, "r r r", "4e609c00:ffe0fc00 vd0 vn1 vm2"}, /* mul Vd.8h,Vn.8h,Vm.8h */
   {MIR_VMULI32, "r r r", "4ea09c00:ffe0fc00 vd0 vn1 vm2"}, /* mul Vd.4s,Vn.4s,Vm.4s */
 
+  {MIR_VADDF32, "r r r", "4e20d400:ffe0fc00 vd0 vn1 vm2"}, /* fadd Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VADDF64, "r r r", "4e60d400:ffe0fc00 vd0 vn1 vm2"}, /* fadd Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VSUBF32, "r r r", "4ea0d400:ffe0fc00 vd0 vn1 vm2"}, /* fsub Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VSUBF64, "r r r", "4ee0d400:ffe0fc00 vd0 vn1 vm2"}, /* fsub Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VMULF32, "r r r", "6e20dc00:ffe0fc00 vd0 vn1 vm2"}, /* fmul Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VMULF64, "r r r", "6e60dc00:ffe0fc00 vd0 vn1 vm2"}, /* fmul Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VDIVF32, "r r r", "6e20fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VDIVF64, "r r r", "6e60fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.2d,Vn.2d,Vm.2d */
+
   {MIR_EXT8, "r r", "93401c00:fffffc00 rd0 rn1"},  /* sxtb rd, wn */
   {MIR_EXT16, "r r", "93403c00:fffffc00 rd0 rn1"}, /* sxth rd, wn */
   {MIR_EXT32, "r r", "93407c00:fffffc00 rd0 rn1"}, /* sxtw rd, wn */
