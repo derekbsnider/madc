@@ -161,7 +161,10 @@ static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct ty
   MIR_alias_t alias;
   op_t home;
 
-  if (!complex_type_p (arg_type)) return FALSE;
+  /* every other register-class parameter that needs a gather -- the 128-bit
+     vector -- is the generic lane's (v128_gen_gather_arg) */
+  if (!complex_type_p (arg_type))
+    return simple_gen_gather_arg (c2m_ctx, name, arg_type, param_decl, arg_info);
   ct = complex_component_mir_type (arg_type);
   fp_reg = MIR_reg (ctx, FP_NAME, curr_func->u.func);
   alias = get_type_alias (c2m_ctx, arg_type);
