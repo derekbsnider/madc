@@ -256,7 +256,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   MIR_func_t func = curr_func_item->u.func;
   MIR_proto_t proto = call_insn->ops[0].u.ref->u.proto;
   size_t nargs, nops = MIR_insn_nops (ctx, call_insn), start = proto->nres + 2;
-  size_t int_arg_num = 0, fp_arg_num = 0, mem_size = 0, blk_offset = 0, qwords;
+  size_t int_arg_num = 0, fp_arg_num = 0, mem_size = 0, blk_offset = 0, qwords, slot_size;
   MIR_type_t type, mem_type;
   MIR_op_mode_t mode;
   MIR_var_t *arg_vars = NULL;
@@ -306,11 +306,14 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     if (i - start == nargs) int_arg_num = fp_arg_num = 8;
 #endif
     if (MIR_blk_type_p (type) && (qwords = (call_insn->ops[i].u.var_mem.disp + 7) / 8) <= 2) {
-      if (int_arg_num + qwords > 8) blk_offset += qwords * 8;
+      if (int_arg_num + qwords > 8) blk_offset = stack_arg_slot_start (blk_offset, 8) + qwords * 8;
       int_arg_num += qwords;
     } else if (get_arg_reg (type, &int_arg_num, &fp_arg_num, &new_insn_code) == MIR_NON_VAR) {
-      if (stack_arg_16_p (type) && blk_offset % 16 != 0) blk_offset = (blk_offset + 15) / 16 * 16;
-      blk_offset += stack_arg_16_p (type) ? 16 : 8;
+      /* the slot's size and alignment by type and position (stack_arg_slot_size,
+         mir-aarch64.h): 8 bytes, 16 for a 16-byte type, on Apple a non-variadic
+         char / short / int / float at its natural size */
+      slot_size = stack_arg_slot_size (type, i - start >= nargs);
+      blk_offset = stack_arg_slot_start (blk_offset, slot_size) + slot_size;
     }
   }
   blk_offset = (blk_offset + 15) / 16 * 16;
@@ -367,7 +370,8 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
                                                    MIR_NON_VAR, 1));
             gen_add_insn_before (gen_ctx, call_insn, new_insn);
           }
-        } else { /* pass on stack w/o address: */
+        } else { /* pass on stack w/o address: 8-byte aligned qwords */
+          mem_size = stack_arg_slot_start (mem_size, 8);
           gen_blk_mov (gen_ctx, call_insn, mem_size, SP_HARD_REG, 0, arg_op.u.var_mem.base, qwords,
                        int_arg_num);
           call_insn->ops[i]
@@ -416,8 +420,13 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
       gen_add_insn_before (gen_ctx, call_insn, new_insn);
       call_insn->ops[i] = arg_reg_op;
     } else { /* put arguments on the stack */
-      if (stack_arg_16_p (type) && mem_size % 16 != 0) mem_size = (mem_size + 15) / 16 * 16;
-      mem_type = fp_class_type_p (type) ? type : MIR_T_I64;
+      /* the slot's size, alignment and access width (stack_arg_slot_size /
+         stack_arg_mem_type, mir-aarch64.h): 8 bytes, 16 for a 16-byte type, and
+         on Apple a non-variadic char / short / int / float packed at its natural
+         size -- the store is that narrow */
+      slot_size = stack_arg_slot_size (type, i - start >= nargs);
+      mem_size = stack_arg_slot_start (mem_size, slot_size);
+      mem_type = stack_arg_mem_type (type, i - start >= nargs);
       new_insn_code = get_move_code (type);
       mem_op = get_new_hard_reg_mem_op (gen_ctx, mem_type, mem_size, SP_HARD_REG, &insn1, &insn2);
       if (type != MIR_T_RBLK) {
@@ -436,7 +445,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
       next_insn = DLIST_NEXT (MIR_insn_t, new_insn);
       create_new_bb_insns (gen_ctx, prev_insn, next_insn, call_insn);
       call_insn->ops[i] = mem_op;
-      mem_size += stack_arg_16_p (type) ? 16 : 8;
+      mem_size += slot_size;
       if (ext_insn != NULL) gen_add_insn_after (gen_ctx, curr_prev_call_insn, ext_insn);
       curr_prev_call_insn = new_insn;
     }
@@ -809,7 +818,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
   MIR_var_t var;
   MIR_reg_t ret_reg, arg_reg;
   MIR_op_t ret_reg_op, arg_reg_op, mem_op, temp_op;
-  size_t i, int_arg_num, fp_arg_num, mem_size, qwords;
+  size_t i, int_arg_num, fp_arg_num, mem_size, qwords, slot_size;
 
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
@@ -846,6 +855,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
           gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, R8_HARD_REG),
                    _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
         }
+        mem_size = stack_arg_slot_start (mem_size, 8); /* 8-byte aligned qwords */
         gen_add_insn_before (gen_ctx, anchor,
                              MIR_new_insn (ctx, MIR_ADD,
                                            _MIR_new_var_op (ctx, i + MAX_HARD_REG + 1),
@@ -868,12 +878,16 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, R8_HARD_REG),
                  _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
       }
-      mem_type = fp_class_type_p (type) ? type : MIR_T_I64;
-      if (stack_arg_16_p (type)) mem_size = (mem_size + 15) / 16 * 16;
+      /* the parameter's slot mirrors the call site's (stack_arg_slot_size /
+         stack_arg_mem_type, mir-aarch64.h): on Apple a packed char / short / int
+         / float is read with a load of its own width, extended by its type */
+      slot_size = stack_arg_slot_size (type, FALSE);
+      mem_type = stack_arg_mem_type (type, FALSE);
+      mem_size = stack_arg_slot_start (mem_size, slot_size);
       new_insn_code = get_move_code (type);
       mem_op = new_hard_reg_mem_op (gen_ctx, anchor, mem_type, mem_size, R8_HARD_REG);
       gen_mov (gen_ctx, anchor, new_insn_code, _MIR_new_var_op (ctx, i + MAX_HARD_REG + 1), mem_op);
-      mem_size += stack_arg_16_p (type) ? 16 : 8;
+      mem_size += slot_size;
     }
   }
   alloca_p = FALSE;
@@ -948,9 +962,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         gen_delete_insn (gen_ctx, insn);
       }
     } else if (code == MIR_VA_START) {
-#if !defined(__APPLE__)
       MIR_op_t treg_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
-#endif
       MIR_op_t prev_sp_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
       MIR_op_t va_op = insn->ops[0];
       MIR_reg_t va_reg;
@@ -973,15 +985,15 @@ static void target_machinize (gen_ctx_t gen_ctx) {
       /* __stack: prev_sp = mem64[fp + 16] */
       gen_mov (gen_ctx, insn, MIR_MOV, prev_sp_op,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
-#if defined(__APPLE__)
-      gen_mov (gen_ctx, insn, MIR_MOV,
-               _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, va_reg, MIR_NON_VAR, 1), prev_sp_op);
-#else
-      /* mem64[va_reg].__stack = prev_sp + mem_size */
-      new_insn = MIR_new_insn (ctx, MIR_ADD, treg_op, prev_sp_op, MIR_new_int_op (ctx, mem_size));
+      /* mem64[va_reg].__stack = prev_sp + the named stack arguments' area rounded
+         up to 8: the first anonymous argument's slot (AAPCS64 B.4; Apple's own
+         va_start -- a packed ninth int leaves a 4-byte tail the list skips) */
+      new_insn = MIR_new_insn (ctx, MIR_ADD, treg_op, prev_sp_op,
+                               MIR_new_int_op (ctx, stack_arg_slot_start (mem_size, 8)));
       gen_add_insn_before (gen_ctx, insn, new_insn);
       gen_mov (gen_ctx, insn, MIR_MOV,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, va_reg, MIR_NON_VAR, 1), treg_op);
+#if !defined(__APPLE__)
       /* __gr_top: mem64[va_reg].__gr_top = prev_sp */
       gen_mov (gen_ctx, insn, MIR_MOV,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 8, va_reg, MIR_NON_VAR, 1), prev_sp_op);

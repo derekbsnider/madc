@@ -3,7 +3,11 @@
    object that c2m loads with -L/-l.  Every function either takes/returns
    vectors across the boundary or calls BACK into the c2m-compiled program
    through a function pointer (the interp shim under -ei, generated code
-   under -eg).  Header-free apart from <stdarg.h>. */
+   under -eg).  The stack-argument PACKING probes at the end (ten ints / chars /
+   shorts / floats, a mixed run, a vararg function with a named stack argument)
+   are where Apple's arm64 ABI packs a non-variadic stack argument at its
+   natural size while AAPCS64 and SysV give every one 8 bytes.  Header-free
+   apart from <stdarg.h>. */
 #include <stdarg.h>
 typedef int v4si __attribute__((vector_size(16)));
 typedef double v2df __attribute__((vector_size(16)));
@@ -88,4 +92,67 @@ long double ldapply(long double (*f)(long, long, long, long, long, long, long, l
 long double vldapply(long double (*f)(int, int, ...))
 {
     return f(3, 100, 0, 1L, 0, 2L, 1, 0.25L);
+}
+/* Stack-argument packing.  Ten arguments put the ninth and tenth on the stack
+   (AAPCS64: 8-byte slots; Apple arm64: an int or float at 4 bytes, a short at
+   2, a char at 1, aligned to its size); nmixpack runs a char / int / char /
+   long / short / composite / char / float sequence over the packed area (the
+   composite 8-byte aligned); nva9 is a vararg function whose ninth NAMED
+   argument is on the stack -- its va_list starts after that argument, rounded
+   up to 8.  Negative chars and shorts check the callee's sign extension. */
+struct S2 { long a, b; };
+int nisum10(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9, int a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+int ncsum10(char a1, char a2, char a3, char a4, char a5, char a6, char a7, char a8, char a9, char a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+int nssum10(short a1, short a2, short a3, short a4, short a5, short a6, short a7, short a8, short a9, short a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+float nfsum10(float a1, float a2, float a3, float a4, float a5, float a6, float a7, float a8, float a9, float a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+long nmixpack(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8,
+              char c, int i, char c2, long l, short s, struct S2 st, char c3, float f)
+{
+    return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + c * 1000000L + i * 100000L + c2 * 10000L
+           + l * 1000L + s * 100L + (st.a + st.b) * 10L + c3 * 3L + (long) f;
+}
+long nva9(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8, int a9, ...)
+{
+    va_list ap;
+    long s = a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 * 1000L;
+    va_start(ap, a9);
+    s += va_arg(ap, int) * 100L;
+    s += va_arg(ap, long) * 10L;
+    s += va_arg(ap, int);
+    va_end(ap);
+    return s;
+}
+int capply10(int (*f)(char, char, char, char, char, char, char, char, char, char))
+{
+    return f(1, 2, 3, 4, 5, 6, 7, 8, -9, -10);
+}
+int sapply10(int (*f)(short, short, short, short, short, short, short, short, short, short))
+{
+    return f(1, 2, 3, 4, 5, 6, 7, 8, -900, -1000);
+}
+float fapply10(float (*f)(float, float, float, float, float, float, float, float, float, float))
+{
+    return f(1, 2, 3, 4, 5, 6, 7, 8, 9.5f, 10.25f);
+}
+long mixapply(long (*f)(long, long, long, long, long, long, long, long,
+                        char, int, char, long, short, struct S2, char, float))
+{
+    struct S2 st = {100, 200};
+    return f(1, 2, 3, 4, 5, 6, 7, 8, -9, 10, 11, 12, -13, st, 14, 15.5f);
+}
+long va9apply(long (*f)(long, long, long, long, long, long, long, long, int, ...))
+{
+    return f(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11L, 12);
 }

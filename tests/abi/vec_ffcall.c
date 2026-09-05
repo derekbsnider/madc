@@ -1,8 +1,10 @@
 /* The c2m half of the vector ABI interop gate (see libvecnative.c): calls the
    native functions with vectors (declared, nine-deep, mixed with integers,
    varargs) and hands them callbacks that receive vectors, nine vectors, a
-   vector vararg list, nine doubles and ten ints.  Oracle: the same file
-   compiled by the platform compiler and linked with libvecnative.c. */
+   vector vararg list, nine doubles and ten ints -- and the stack-argument
+   packing probes (ten ints / chars / shorts / floats, a mixed run, a vararg
+   function with a named stack argument) in both directions.  Oracle: the same
+   file compiled by the platform compiler and linked with libvecnative.c. */
 int printf(const char *, ...);
 #include <stdarg.h>
 typedef int v4si __attribute__((vector_size(16)));
@@ -24,6 +26,20 @@ long double nld7(long a1, long a2, long a3, long a4, long a5, long a6, long a7, 
 long double nvld(int n, int pad, ...);
 long double ldapply(long double (*f)(long, long, long, long, long, long, long, long double, long));
 long double vldapply(long double (*f)(int, int, ...));
+struct S2 { long a, b; };
+int nisum10(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9, int a10);
+int ncsum10(char a1, char a2, char a3, char a4, char a5, char a6, char a7, char a8, char a9, char a10);
+int nssum10(short a1, short a2, short a3, short a4, short a5, short a6, short a7, short a8, short a9, short a10);
+float nfsum10(float a1, float a2, float a3, float a4, float a5, float a6, float a7, float a8, float a9, float a10);
+long nmixpack(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8,
+              char c, int i, char c2, long l, short s, struct S2 st, char c3, float f);
+long nva9(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8, int a9, ...);
+int capply10(int (*f)(char, char, char, char, char, char, char, char, char, char));
+int sapply10(int (*f)(short, short, short, short, short, short, short, short, short, short));
+float fapply10(float (*f)(float, float, float, float, float, float, float, float, float, float));
+long mixapply(long (*f)(long, long, long, long, long, long, long, long,
+                        char, int, char, long, short, struct S2, char, float));
+long va9apply(long (*f)(long, long, long, long, long, long, long, long, int, ...));
 
 v4si cb_add(v4si a, v4si b) { return a * b + a; }
 v4si cb9(v4si a, v4si b, v4si c, v4si d, v4si e, v4si f, v4si g, v4si h, v4si i)
@@ -72,6 +88,36 @@ long double cb_vld2(int n, int pad, ...)
     va_end(ap);
     return s;
 }
+/* the packing probes' callbacks: the c2m side is the CALLEE of a native caller */
+int cb_c10(char a1, char a2, char a3, char a4, char a5, char a6, char a7, char a8, char a9, char a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+int cb_s10(short a1, short a2, short a3, short a4, short a5, short a6, short a7, short a8, short a9, short a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+float cb_f10(float a1, float a2, float a3, float a4, float a5, float a6, float a7, float a8, float a9, float a10)
+{
+    return a1 + 2 * a2 + 3 * a3 + 4 * a4 + 5 * a5 + 6 * a6 + 7 * a7 + 8 * a8 + 9 * a9 + 10 * a10;
+}
+long cb_mix(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8,
+            char c, int i, char c2, long l, short s, struct S2 st, char c3, float f)
+{
+    return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + c * 1000000L + i * 100000L + c2 * 10000L
+           + l * 1000L + s * 100L + (st.a + st.b) * 10L + c3 * 3L + (long) f;
+}
+long cb_va9(long a1, long a2, long a3, long a4, long a5, long a6, long a7, long a8, int a9, ...)
+{
+    va_list ap;
+    long s = a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 * 1000L;
+    va_start(ap, a9);
+    s += va_arg(ap, int) * 100L;
+    s += va_arg(ap, long) * 10L;
+    s += va_arg(ap, int);
+    va_end(ap);
+    return s;
+}
 static void pv(const char *tag, v4si v) { printf("%s %d %d %d %d\n", tag, v[0], v[1], v[2], v[3]); }
 int main(void)
 {
@@ -95,5 +141,19 @@ int main(void)
     printf("nvld %.2Lf\n", nvld(3, 100, 0, 1L, 0, 2L, 1, 0.25L));
     printf("ldapply %.1Lf\n", ldapply(cb_ld7));
     printf("vldapply %.2Lf\n", vldapply(cb_vld2));
+    {
+	struct S2 st = {100, 200};
+	printf("nisum10 %d\n", nisum10(1, 2, 3, 4, 5, 6, 7, 8, 9, 10));
+	printf("ncsum10 %d\n", ncsum10(1, 2, 3, 4, 5, 6, 7, 8, -9, -10));
+	printf("nssum10 %d\n", nssum10(1, 2, 3, 4, 5, 6, 7, 8, -900, -1000));
+	printf("nfsum10 %.2f\n", nfsum10(1, 2, 3, 4, 5, 6, 7, 8, 9.5f, 10.25f));
+	printf("nmixpack %ld\n", nmixpack(1, 2, 3, 4, 5, 6, 7, 8, -9, 10, 11, 12, -13, st, 14, 15.5f));
+	printf("nva9 %ld\n", nva9(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11L, 12));
+	printf("capply10 %d\n", capply10(cb_c10));
+	printf("sapply10 %d\n", sapply10(cb_s10));
+	printf("fapply10 %.2f\n", fapply10(cb_f10));
+	printf("mixapply %ld\n", mixapply(cb_mix));
+	printf("va9apply %ld\n", va9apply(cb_va9));
+    }
     return 0;
 }

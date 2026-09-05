@@ -19,7 +19,11 @@
 # declared, nine deep, mixed with integers and a stack long, through `...`
 # (including the FP registers exhausted), callbacks receiving vectors / nine
 # vectors / a vector vararg list / nine doubles / ten ints, and long double on
-# the stack and through `...`.
+# the stack and through `...` -- and the stack-argument PACKING probes (ten
+# ints / chars / shorts / floats, a mixed run, a vararg function with a named
+# stack argument) in both directions: Apple arm64 packs a non-variadic stack
+# argument at its natural size where AAPCS64 and SysV give every one 8 bytes,
+# so the linux lanes gate the generic rule and the Mac stage the Apple one.
 #
 # Non-vacuity: the oracle must print the expected line count; a lane that
 # prints nothing, or dies, fails.
@@ -33,7 +37,7 @@ ulimit -t 300 2>/dev/null
 MADC="${MADC_BIN:-bin/madc}"
 C2M="${C2M_BIN:-obj/mir/host/c2m}"
 HOSTCC="${HOST_CC:-cc}"
-LINES=17
+LINES=28
 
 fail() { echo "vector_abi_gate: $1"; exit 1; }
 

@@ -2686,11 +2686,11 @@ static void interp (MIR_context_t ctx, MIR_item_t func_item, va_list va, MIR_val
     }
   }
 #if defined(__APPLE__) && defined(__aarch64__)
-  /* The Apple interp shim (mir-aarch64.c) appends the CALLER's stack pointer
-     after the declared arguments of a vararg function: every Apple vararg
-     lives on the caller's stack, so the interpreted function's va_list starts
-     there, not where the declared slots end (a 16-byte vector slot's
-     alignment padding would sit in between). */
+  /* The Apple interp shim (mir-aarch64.c) appends the CALLER's stack pointer,
+     advanced past the named stack arguments, after the declared arguments of a
+     vararg function: every Apple vararg lives on the caller's stack, so the
+     interpreted function's va_list starts there, not where the declared slots
+     end (a 16-byte vector slot's alignment padding would sit in between). */
   if (func->vararg_p) va = va_arg (va, char *);
 #endif
 #if VA_LIST_IS_ARRAY_P

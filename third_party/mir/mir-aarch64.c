@@ -324,8 +324,34 @@ static uint32_t fp_ld_pat (MIR_type_t type) {
 static uint32_t fp_st_pat (MIR_type_t type) {
   return type == MIR_T_F ? sts_pat : stack_arg_16_p (type) ? stld_pat : std_pat;
 }
-/* the byte size of a SIMD/FP-class stack argument slot */
-static uint32_t fp_slot_size (MIR_type_t type) { return stack_arg_16_p (type) ? 16 : 8; }
+/* The integer-class store of a stack argument by its slot size -- strb / strh /
+   str w / str x: Apple packs a non-variadic char, short and int at its natural
+   size (stack_arg_slot_size, mir-aarch64.h), AAPCS64 gives every one 8 bytes;
+   the imm12 is scaled by the slot size (slot_scale). */
+static uint32_t slot_scale (uint32_t slot_size) {
+  return slot_size == 1 ? 0 : slot_size == 2 ? 1 : slot_size == 4 ? 2 : slot_size == 8 ? 3 : 4;
+}
+static uint32_t int_st_pat (uint32_t slot_size) {
+  return (slot_size == 1   ? 0x39000000 /* strb w, [xn|sp], offset */
+          : slot_size == 2 ? 0x79000000 /* strh w, [xn|sp], offset */
+          : slot_size == 4 ? 0xb9000000 /* str w, [xn|sp], offset */
+                           : st_pat);
+}
+#if defined(__APPLE__)
+/* the load of a stack argument from the CALLER's stack (the interp shim), by
+   its slot size and extended by the argument's signedness */
+static uint32_t int_ld_pat (MIR_type_t type, uint32_t slot_size) {
+  int signed_p = type == MIR_T_I8 || type == MIR_T_I16 || type == MIR_T_I32;
+
+  return (slot_size == 1   ? (signed_p ? 0x39800000 : 0x39400000) /* ldrsb x / ldrb w */
+          : slot_size == 2 ? (signed_p ? 0x79800000 : 0x79400000) /* ldrsh x / ldrh w */
+          : slot_size == 4 ? (signed_p ? 0xb9800000 : 0xb9400000) /* ldrsw x / ldr w */
+                           : gen_ld_pat);                          /* ldr x */
+}
+/* the slot the interp shim lays out for its handler's va_arg walk: a
+   MIR_val_t-sized 8 bytes, 16 for a 16-byte type */
+static uint32_t handler_slot_size (MIR_type_t type) { return stack_arg_16_p (type) ? 16 : 8; }
+#endif
 
 /* Generation: fun (fun_addr, res_arg_addresses):
    push x19, x30; sp-=sp_offset; x9=fun_addr; x19=res/arg_addrs
@@ -336,7 +362,7 @@ static uint32_t fp_slot_size (MIR_type_t type) { return stack_arg_16_p (type) ? 
    x10=mem[x19,<offset>]; res_reg=mem[x10]; ...
    pop x19, x30; ret x30. */
 void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, size_t nargs,
-                        _MIR_arg_desc_t *arg_descs, size_t arg_vars_num MIR_UNUSED) {
+                        _MIR_arg_desc_t *arg_descs, size_t arg_vars_num) {
   static const uint32_t prolog[] = {
     0xa9bf7bf3, /* stp x19,x30,[sp, -16]! */
     0xd10003ff, /* sub sp,sp,<sp_offset> */
@@ -353,7 +379,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
   };
   MIR_type_t type;
   uint32_t n_xregs = 0, n_vregs = 0, sp_offset = 0, blk_offset = 0, pat, offset_imm, scale;
-  uint32_t sp = 31, addr_reg, qwords;
+  uint32_t sp = 31, addr_reg, qwords, slot_size;
   const uint32_t temp_reg = 10; /* x10 */
   VARR (uint8_t) * code;
   void *res;
@@ -365,19 +391,19 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
     if (i == arg_vars_num) n_xregs = n_vregs = 8;
 #endif
     type = arg_descs[i].type;
+    /* the slot's size and alignment by type and position (stack_arg_slot_size,
+       mir-aarch64.h): 8 bytes, 16 for a 16-byte type (AAPCS64 C.14), on Apple a
+       non-variadic char / short / int / float at its natural size */
+    slot_size = stack_arg_slot_size (type, i >= arg_vars_num);
     if ((MIR_T_I8 <= type && type <= MIR_T_U64) || type == MIR_T_P || MIR_all_blk_type_p (type)) {
       if (MIR_blk_type_p (type) && (qwords = (arg_descs[i].size + 7) / 8) <= 2) {
-        if (n_xregs + qwords > 8) blk_offset += qwords * 8;
+        if (n_xregs + qwords > 8) blk_offset = stack_arg_slot_start (blk_offset, 8) + qwords * 8;
         n_xregs += qwords;
       } else {
-        if (n_xregs++ >= 8) blk_offset += 8;
+        if (n_xregs++ >= 8) blk_offset = stack_arg_slot_start (blk_offset, slot_size) + slot_size;
       }
     } else if (fp_class_type_p (type)) {
-      if (n_vregs++ >= 8) {
-        /* a 16-byte argument takes a 16-byte ALIGNED slot (AAPCS64 C.14) */
-        if (stack_arg_16_p (type)) blk_offset = (blk_offset + 15) / 16 * 16;
-        blk_offset += fp_slot_size (type);
-      }
+      if (n_vregs++ >= 8) blk_offset = stack_arg_slot_start (blk_offset, slot_size) + slot_size;
     } else {
       MIR_get_error_func (ctx) (MIR_call_op_error, "wrong type of arg value");
     }
@@ -404,6 +430,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
             push_insns (code, &pat, sizeof (pat));
           }
         } else {
+          sp_offset = stack_arg_slot_start (sp_offset, 8); /* 8-byte aligned qwords */
           for (uint32_t n = 0; n < qwords; n++) {
             pat = gen_ld_pat | (((n * 8) >> scale) << 10) | temp_reg | (addr_reg << 5);
             push_insns (code, &pat, sizeof (pat));
@@ -418,6 +445,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         gen_blk_mov (code, blk_offset, (i + nres) * sizeof (MIR_val_t), qwords, addr_reg);
         blk_offset += qwords * 8;
         if (n_xregs++ >= 8) {
+          sp_offset = stack_arg_slot_start (sp_offset, 8);
           pat = st_pat | ((sp_offset >> scale) << 10) | addr_reg | (sp << 5);
           push_insns (code, &pat, sizeof (pat));
           sp_offset += 8;
@@ -428,11 +456,15 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         pat = ld_pat | offset_imm | 8; /* x8 - hidden result address */
       } else if (n_xregs < 8) {
         pat = ld_pat | offset_imm | n_xregs++;
-      } else {
+      } else { /* a stack slot: 8 bytes, or on Apple a non-variadic char / short /
+                  int at its natural size -- the store is that narrow */
+        slot_size = stack_arg_slot_size (type, i >= arg_vars_num);
         pat = ld_pat | offset_imm | temp_reg;
         push_insns (code, &pat, sizeof (pat));
-        pat = st_pat | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
-        sp_offset += 8;
+        sp_offset = stack_arg_slot_start (sp_offset, slot_size);
+        pat = int_st_pat (slot_size) | ((sp_offset >> slot_scale (slot_size)) << 10) | temp_reg
+              | (sp << 5);
+        sp_offset += slot_size;
       }
       push_insns (code, &pat, sizeof (pat));
     } else if (fp_class_type_p (type)) {
@@ -441,12 +473,14 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
       pat = fp_ld_pat (type);
       if (n_vregs < 8) {
         pat |= offset_imm | n_vregs++;
-      } else {
-        if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
+      } else { /* a slot of the type's size and alignment: 8, 16 (AAPCS64 C.14),
+                  4 for a non-variadic float on Apple */
+        slot_size = stack_arg_slot_size (type, i >= arg_vars_num);
+        sp_offset = stack_arg_slot_start (sp_offset, slot_size);
         pat |= offset_imm | temp_reg;
         push_insns (code, &pat, sizeof (pat));
         pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
-        sp_offset += fp_slot_size (type);
+        sp_offset += slot_size;
       }
       push_insns (code, &pat, sizeof (pat));
     } else {
@@ -538,7 +572,7 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
   VARR_CREATE (uint8_t, code, ctx->alloc, 128);
 #if defined(__APPLE__)
   int stack_arg_sp_offset, sp_offset, scale;
-  uint32_t qwords, sp = 31;
+  uint32_t qwords, sp = 31, slot_size, named_stack;
   uint32_t base_reg_mask = ~(uint32_t) (0x3f << 5);
   static const uint32_t temp_reg = 10; /* x10 */
   MIR_type_t type;
@@ -564,7 +598,7 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       continue;
     }
     if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
-    sp_offset += fp_class_type_p (type) ? fp_slot_size (type) : 8;
+    sp_offset += handler_slot_size (type);
   }
   if (func->vararg_p) sp_offset += 8; /* the caller's stack pointer, see below */
   imm = 0; /* the va_list starts at sp */
@@ -587,6 +621,7 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       } else {
         /* passed on stack: ldr t, stack_arg_offset[x9]; st t, offset[sp];
                             ldr t, stack_arg_offset+8[x9]; st t, offset+8[sp]: */
+        stack_arg_sp_offset = stack_arg_slot_start (stack_arg_sp_offset, 8); /* 8-byte aligned */
         for (int n = 0; n < qwords; n++) {
           pat
             = (ld_pat & base_reg_mask) | (stack_arg_sp_offset >> scale) << 10 | temp_reg | (9 << 5);
@@ -605,12 +640,17 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
         pat = st_pat | ((sp_offset >> scale) << 10) | 8 | (sp << 5);
       } else if (n_xregs < 8) { /* str xreg, sp_offset[sp]  */
         pat = st_pat | ((sp_offset >> scale) << 10) | n_xregs++ | (sp << 5);
-      } else { /* ldr t, stack_arg_offset[x9]; st t, sp_offset[sp]: */
-        pat
-          = (ld_pat & base_reg_mask) | ((stack_arg_sp_offset >> scale) << 10) | temp_reg | (9 << 5);
+      } else { /* ld t, stack_arg_offset[x9]; st t, sp_offset[sp]: the caller's slot
+                  is 8 bytes, or a packed non-variadic char / short / int at its
+                  natural size, read at that width and extended by the argument's
+                  signedness (int_ld_pat) */
+        slot_size = stack_arg_slot_size (type, FALSE);
+        stack_arg_sp_offset = stack_arg_slot_start (stack_arg_sp_offset, slot_size);
+        pat = int_ld_pat (type, slot_size) | ((stack_arg_sp_offset >> slot_scale (slot_size)) << 10)
+              | temp_reg | (9 << 5);
         push_insns (code, &pat, sizeof (pat));
         pat = st_pat | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
-        stack_arg_sp_offset += 8;
+        stack_arg_sp_offset += slot_size;
       }
       sp_offset += 8;
       push_insns (code, &pat, sizeof (pat));
@@ -620,8 +660,10 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
       if (n_vregs < 8) { /* st[s|d|q] vreg, sp_offset[sp]  */
         pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | n_vregs++ | (sp << 5);
-      } else {
-        if (stack_arg_16_p (type)) stack_arg_sp_offset = (stack_arg_sp_offset + 15) / 16 * 16;
+      } else { /* the caller's slot: 8 bytes, 16 aligned to 16 for a vector, 4 for
+                  a non-variadic float (Apple packs it) */
+        slot_size = stack_arg_slot_size (type, FALSE);
+        stack_arg_sp_offset = stack_arg_slot_start (stack_arg_sp_offset, slot_size);
         pat = (fp_ld_pat (type) & base_reg_mask) | (9 << 5);
         /* the caller's stack slot offset is an imm12 SCALED by the access size,
            in bits [21:10] -- the raw byte offset OR-ed into the register fields
@@ -629,9 +671,9 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
         pat |= ((stack_arg_sp_offset >> scale) << 10) | temp_reg;
         push_insns (code, &pat, sizeof (pat));
         pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
-        stack_arg_sp_offset += fp_slot_size (type);
+        stack_arg_sp_offset += slot_size;
       }
-      sp_offset += fp_slot_size (type);
+      sp_offset += handler_slot_size (type);
       push_insns (code, &pat, sizeof (pat));
     } else {
       MIR_get_error_func (ctx) (MIR_call_op_error, "wrong type of arg value");
@@ -640,12 +682,21 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
   if (func->vararg_p) {
     /* Apple passes every variadic argument on the CALLER's stack, so the
        interpreted function's va_list must start there -- at the sp the shim
-       was entered with (x9), never "where the declared slots end": a 16-byte
-       vector slot's alignment padding, or a declared vector before an odd
-       number of 8-byte slots, breaks any attempt to keep the two areas
-       contiguous.  The handler (interp, mir-interp.c) reads this slot after
-       the declared arguments and continues from the pointer it holds. */
-    pat = st_pat | ((sp_offset >> 3) << 10) | 9 | (sp << 5); /* str x9, sp_offset[sp] */
+       was entered with (x9) plus the named stack arguments' area rounded up to
+       8 (the first anonymous argument's slot, Apple's own va_start), never
+       "where the declared slots end": a 16-byte vector slot's alignment
+       padding, or a declared vector before an odd number of 8-byte slots,
+       breaks any attempt to keep the two areas contiguous.  The handler
+       (interp, mir-interp.c) reads this slot after the declared arguments and
+       continues from the pointer it holds. */
+    named_stack = stack_arg_slot_start (stack_arg_sp_offset, 8);
+    if (named_stack != 0) { /* add x10, x9, named_stack */
+      mir_assert (named_stack < (1 << 12));
+      pat = 0x91000000 | (named_stack << 10) | (9 << 5) | temp_reg;
+      push_insns (code, &pat, sizeof (pat));
+    }
+    /* str x9|x10, sp_offset[sp] */
+    pat = st_pat | ((sp_offset >> 3) << 10) | (named_stack != 0 ? temp_reg : 9) | (sp << 5);
     push_insns (code, &pat, sizeof (pat));
     sp_offset += 8;
   }
