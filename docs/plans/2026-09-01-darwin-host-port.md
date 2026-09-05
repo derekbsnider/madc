@@ -1437,6 +1437,20 @@ SDK/cross facts).
   (darwin-suite green on both arches, or every failure a filed .darwin_skip
   with its reason).**
 
+  **MEASUREMENT #10 (run 33934880333 @df6c620e — code b152299f — 2026-09-05
+  01:02 UTC, `suite_gate=false`): arm64 1279/6/23skip, Intel 1283/3/22skip —
+  EXACTLY THE PREDICTION, and exactly the arm64 Mac's own full-suite tally on
+  the same content (tmp/logs/w8-mac-fullsuite.log). Passes +7 on arm64 and +2
+  on Intel versus #9; zero new failures. The arm64 6 = the 3 gccvector tests
+  (testgccvectorbitwisenot, testgccvectorlit, testgccvectorsizeexprbitwise —
+  the aarch64 V128 SIMD arc, docs/plans/2026-09-05-aarch64-simd-v128.md) + the
+  3 libc++ <list> tests (testforeachiter, testphpdumpiter, testptrcmpupcast);
+  the Intel 3 = the <list> tests. Wave 8's six MIR-floor fixes hold on the
+  runner (testbuiltincomplexparts, testbuiltinconjf, testcomplexretconv,
+  testint128, testprintfdouble, teststdiobuiltinredirects all pass). Exe lane
+  advisory (arm64 1012/210, Intel 992/233). Triage:
+  tmp/d4-triage/d4-33934880333.**
+
   **WAVE 8 LANDED — THE MIR aarch64 FLOOR (2026-09-05; the owner switched the
   queue to MIR with libc++ <list> after it, and pointed at upstream
   vnmakarov/mir #472-#475, #429, PR#466, PR#439). Seven root commits on
