@@ -1451,6 +1451,47 @@ SDK/cross facts).
   advisory (arm64 1012/210, Intel 992/233). Triage:
   tmp/d4-triage/d4-33934880333.**
 
+  **WAVE 9 LANDED — THE aarch64 SIMD (MIR_T_V128) ARC, S1-S4 (2026-09-05,
+  s155; plan docs/plans/2026-09-05-aarch64-simd-v128.md). The three gccvector
+  tests were the last MIR-floor residue after wave 8: the fork's <=16-byte
+  vector support is target-independent above the backend and was x86-64 only —
+  mir-gen-aarch64.c, mir-aarch64.h, mir-aarch64.c had ZERO V128 sites, so a
+  vector argument rode the integer lanes (8 of 16 bytes; the two SILENT tests)
+  and a V128 memory operand met a table with no vmov (the loud one). One rule:
+  a V128 is an FP-class 128-bit register value, the LD-in-Q shape the backend
+  already moves (the LDMOV rows), saves (V8-V15 at a 16-byte stride) and passes
+  (v[NSRN], a 16-byte stack slot). S1 d123c3b0 register class + moves + spills +
+  the AAPCS64 short-vector convention (fp_class_type_p / stack_arg_16_p, one
+  predicate per ABI fact; mir-gen.c's get_move_code forward-declared as the one
+  move-code owner; the mv/Mv letters; va_arg_builtin's vector arms; the NEON
+  encoding oracle promoted into the subtree, aarch64-neon-encodings.md);
+  S2 715dc569 and/orr/eor, add/sub .16b/.8h/.4s/.2d, mul .8h/.4s; S3 43b4f307
+  fadd/fsub/fmul/fdiv .4s/.2d; S4 797d88b8 cmeq, signed cmgt, fcmeq, fcmeq+mvn,
+  fcmgt/fcmge with swapped operands, ushl/sshl per-lane shifts, neg+shift for
+  the per-lane right shifts, umov/[neg]/dup/shift for the scalar-count shifts on
+  the fixed temps X9 + V16. Gate: ALL 8 qemu reducers == aarch64 gcc at c2m's
+  default level and -O2 (tmp/logs/simd-qemu-3.log). D5 IN ACTION — the S4
+  reducers, plain GNU C green under gcc and clang, exposed THREE FRONT-END gaps
+  (each fixed on develop first, its own commit + gcc==clang reducer):
+  ef156cac parser (a SIMD-typed EXPRESSION is subscriptable — `(a + b)[2]` fell
+  to the lambda introducer; TokenBand/Bor/Xor type by the usual arithmetic
+  conversions, C11 6.5.10-12, where they were bare `int`; a vector comparison
+  types at reduce time as gcc's opaque signed-lane vector;
+  Program::simd_type owns the anonymous vector types), 15126633 c2mir (a vector
+  comparison is gcc's OPAQUE vector of SIGNED lanes — `(ua == ub)[0]` widened to
+  4294967295, a SILENT wrong answer on every target; a double compare into
+  `long long` lanes was rejected), 90990307 c2mir (a vector shifted by a scalar
+  count of any integer type — the count went through the lane-fit test).
+  Mac (arm64, the cross release build staged at ~/madc-s154): 1285 pass / 3 fail / 23 skip (tools/ and examples/ staged) — the 3 libc++ <list> tests only (testforeachiter, testphpdumpiter, testptrcmpupcast); the 17 vector tests, the 3 formerly-failing gccvector tests and the 3 new front-end reducers included, 17/0 (tmp/logs/simd-mac.log); release-arm64-macos 835 units, forest_pack_gate OK, verify_macho OK
+  Lanes at 797d88b8 (tmp/logs/w9-battery.log): linux battery jit 1302/0/9skip exe 1243/0 obj 1243/0 packed 1302/0/9skip headerless 1271/0/40skip, fulltest rc=0 with every gate in the chain GREEN (check-c-abi-surface OK: 1090 extern-C exports classified, 43 listed internal; warning ratchet GREEN, 0 warnings over 1311 compiled; tag-arithmetic 0/0; tsubst flag-on GREEN; forest_pack_gate linux 68 = baseline; forest_bind_gate all OK); wine64 1248/0/63skip + verify_pe_release OK (234 units) + win64 pack 68 = baseline; c-testsuite 220/220, 0 outside baseline; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK both (tmp/logs/w9-battery.log).
+  OPEN in the arc: S5 — the ff_call / interp shims (c2m's surface, not madc's)
+  with the two recorded shim defects (KG Gaps
+  mir_ff_call_shim_val_stride_long_double,
+  mir_aarch64_apple_interp_shim_stack_fp_arg_offset_unencoded) and the Apple
+  va_arg arm's oracle through an arm64-macos c2m. THE DARWIN RESIDUE IS NOW ONE
+  ARC: libc++ <list> (owner scope). Dispatch #11 measures wave 9 (expect arm64
+  3 = the <list> tests, Intel 3).**
+
   **WAVE 8 LANDED — THE MIR aarch64 FLOOR (2026-09-05; the owner switched the
   queue to MIR with libc++ <list> after it, and pointed at upstream
   vnmakarov/mir #472-#475, #429, PR#466, PR#439). Seven root commits on
