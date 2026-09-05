@@ -1466,6 +1466,28 @@ SDK/cross facts).
   names in the triage are exe-build differences, not JIT failures). Both jobs
   green (arm64 10 min, Intel 23 min); triage under tmp/d4-triage/d4-33942662074.**
 
+  **MEASUREMENT #12 (run 33972297886 @27947466 — code 779bb654 — 2026-09-05
+  ~14:40 UTC, `suite_gate=false`): arm64 1287/3/23skip, Intel 1288/3/22skip —
+  EXACTLY THE PREDICTION, and the arm64 Mac's own full-suite tally on the
+  same content (tmp/logs/w11-mac-suite.log). Passes +2 on each arch versus
+  #11 (the wave-11 reducers); zero new failures. The 3 on EACH arch = the
+  libc++ <list> trio (testforeachiter, testphpdumpiter, testptrcmpupcast):
+  ONE root on both arches, KG Gap libcxx_list_node_pointer_traits_completion_cycle
+  — now the owner-assigned top priority, fixed in the wave that follows
+  (the template-argument completion site). Runner mac battery 10/1 both
+  arches (the standing include-free value intrinsic). Exe lane advisory as
+  before (arm64 211 / Intel 234 exe-build failures = the -static-libmadc D5
+  residue). Both jobs green; triage in the session task be4y2pqmp's log.
+  The libcxx lane, run on the same content for the first time since
+  2026-08-16 (tmp/logs/w11-libcxx.log): JIT 1286/14/13skip, EXE 1227/0 of the
+  JIT-passing — the 14 = the <list> trio + ten `cout << value` tests whose
+  host inserter symbol is libc++-mangled and cannot exist in the libstdc++
+  host (testvaluecout, testvaluestream, testvaluecoutorder,
+  testvaluecoutsstream, testvaluector, testarraymember, testarraysubscript,
+  testiomanip, testsysobject, testsysscript) + teststrargcoerce (the format
+  intrinsic reading a libc++ std::string with the host's layout, SIGSEGV) —
+  three roots, all fixed in the same wave.**
+
   **WAVE 11 LANDED — APPLE STACK-ARGUMENT PACKING + THE aarch64-linux PLAIN
   CHAR (2026-09-05, s156; plan docs/plans/2026-09-05-apple-arm64-stack-arg-packing.md).
   d1f6c853: Apple's arm64 ABI packs a NON-variadic stack argument at its
