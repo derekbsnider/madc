@@ -47,7 +47,9 @@ struct x86_64_va_list {
 void *va_arg_builtin (void *p, uint64_t t) {
   struct x86_64_va_list *va = p;
   MIR_type_t type = t;
-  int fp_p = type == MIR_T_F || type == MIR_T_D;
+  /* the SSE class: float, double and the 128-bit vector (__m128) -- each xmm
+     register is saved in a 16-byte slot of the register save area */
+  int fp_p = type == MIR_T_F || type == MIR_T_D || MIR_vector_type_p (type);
   void *a;
 
   if (fp_p && va->fp_offset <= 160) {

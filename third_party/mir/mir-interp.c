@@ -2444,12 +2444,16 @@ static void call (MIR_context_t ctx, MIR_val_t *bp, MIR_op_t *insn_arg_ops, code
       } else {
         mode = insn_arg_ops[i].value_mode;
         mir_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                    || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                    || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
         if (mode == MIR_OP_FLOAT)
           (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                        "passing float variadic arg (should be passed as double)");
+        /* a 128-bit vector through `...` keeps its type: the ff_call shim
+           places it like a declared V128 argument (an SSE / SIMD register or a
+           16-byte stack slot) -- the I64 arm passed its low 8 bytes */
         call_arg_descs[i].type = (mode == MIR_OP_DOUBLE    ? MIR_T_D
                                   : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+                                  : mode == MIR_OP_VECTOR  ? MIR_T_V128
                                                            : MIR_T_I64);
       }
     }

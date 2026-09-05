@@ -95,6 +95,18 @@ static int stack_arg_16_p (MIR_type_t type) {
   return (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
 }
 
+/* The argument type of a call operand BEYOND the prototype (a vararg): its
+   value mode decides.  A 128-bit vector is a SIMD/FP-class value like a double
+   (AAPCS64 C.1: a Short Vector takes the next V register, or a 16-byte aligned
+   stack slot; Apple puts every vararg on the stack, 16-byte aligned) -- the
+   default I64 arm would pass its low 8 bytes in an X register. */
+static MIR_type_t vararg_value_type (MIR_op_mode_t mode) {
+  return (mode == MIR_OP_DOUBLE    ? MIR_T_D
+          : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+          : mode == MIR_OP_VECTOR  ? MIR_T_V128
+                                   : MIR_T_I64);
+}
+
 static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *fp_arg_num,
                               MIR_insn_code_t *mov_code) {
   MIR_reg_t arg_reg;
@@ -290,12 +302,12 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       gen_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
       if (mode == MIR_OP_FLOAT)
         (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                      "passing float variadic arg (should be passed as double)");
       if (mode == MIR_OP_LDOUBLE && __SIZEOF_LONG_DOUBLE__ == 8) mode = MIR_OP_DOUBLE;
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      type = vararg_value_type (mode);
     }
     gen_assert (!MIR_all_blk_type_p (type) || call_insn->ops[i].mode == MIR_OP_VAR_MEM);
     if (type == MIR_T_RBLK && i == start) continue; /* hidden arg */
@@ -327,7 +339,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       if (mode == MIR_OP_LDOUBLE && __SIZEOF_LONG_DOUBLE__ == 8) mode = MIR_OP_DOUBLE;
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      type = vararg_value_type (mode);
     }
     ext_insn = NULL;
     if ((ext_code = get_ext_code (type)) != MIR_INVALID_INSN) { /* extend arg if necessary */

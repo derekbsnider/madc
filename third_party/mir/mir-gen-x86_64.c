@@ -374,11 +374,16 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       gen_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
       if (mode == MIR_OP_FLOAT)
         (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                      "passing float variadic arg (should be passed as double)");
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      /* a 128-bit vector through `...` is an SSE-class value like a double: the
+         next xmm register, or a 16-byte stack slot (SysV 3.2.3; gcc/clang) */
+      type = (mode == MIR_OP_DOUBLE    ? MIR_T_D
+              : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+              : mode == MIR_OP_VECTOR  ? MIR_T_V128
+                                       : MIR_T_I64);
     }
     if (xmm_args < 8 && (type == MIR_T_F || type == MIR_T_D || type == MIR_T_V128)) xmm_args++;
     ext_insn = NULL;
@@ -1434,11 +1439,15 @@ static void isave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
            _MIR_new_var_op (ctx, hard_reg));
 }
 
-static void dsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t hard_reg) {
+/* Save a WHOLE xmm argument register into its 16-byte register-save-area slot
+   (SysV 3.5.7: the save area holds the full XMM register; gcc uses movaps).
+   A movsd saved only the low eightbyte, so a 128-bit vector vararg read its
+   upper two lanes from whatever the slot held before. */
+static void vsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t hard_reg) {
   MIR_context_t ctx = gen_ctx->ctx;
 
-  gen_mov (gen_ctx, anchor, MIR_DMOV,
-           _MIR_new_var_mem_op (ctx, MIR_T_D, disp, SP_HARD_REG, MIR_NON_VAR, 1),
+  gen_mov (gen_ctx, anchor, MIR_VMOV,
+           _MIR_new_var_mem_op (ctx, MIR_T_V128, disp, SP_HARD_REG, MIR_NON_VAR, 1),
            _MIR_new_var_op (ctx, hard_reg));
 }
 
@@ -1531,14 +1540,14 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     isave (gen_ctx, anchor, offset + 24, CX_HARD_REG);
     isave (gen_ctx, anchor, offset + 32, R8_HARD_REG);
     isave (gen_ctx, anchor, offset + 40, R9_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 48, XMM0_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 64, XMM1_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 80, XMM2_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 96, XMM3_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 112, XMM4_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 128, XMM5_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 144, XMM6_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 160, XMM7_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 48, XMM0_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 64, XMM1_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 80, XMM2_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 96, XMM3_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 112, XMM4_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 128, XMM5_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 144, XMM6_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 160, XMM7_HARD_REG);
     bp_saved_reg_offset += reg_save_area_size;
   }
 #endif
