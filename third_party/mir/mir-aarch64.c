@@ -566,6 +566,7 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
     if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
     sp_offset += fp_class_type_p (type) ? fp_slot_size (type) : 8;
   }
+  if (func->vararg_p) sp_offset += 8; /* the caller's stack pointer, see below */
   imm = 0; /* the va_list starts at sp */
   sp_offset = 0;
   stack_arg_sp_offset = 0;
@@ -635,6 +636,18 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
     } else {
       MIR_get_error_func (ctx) (MIR_call_op_error, "wrong type of arg value");
     }
+  }
+  if (func->vararg_p) {
+    /* Apple passes every variadic argument on the CALLER's stack, so the
+       interpreted function's va_list must start there -- at the sp the shim
+       was entered with (x9), never "where the declared slots end": a 16-byte
+       vector slot's alignment padding, or a declared vector before an odd
+       number of 8-byte slots, breaks any attempt to keep the two areas
+       contiguous.  The handler (interp, mir-interp.c) reads this slot after
+       the declared arguments and continues from the pointer it holds. */
+    pat = st_pat | ((sp_offset >> 3) << 10) | 9 | (sp << 5); /* str x9, sp_offset[sp] */
+    push_insns (code, &pat, sizeof (pat));
+    sp_offset += 8;
   }
   pat = add_x2_sp | (imm << 10);
   push_insns (code, &pat, sizeof (pat));
