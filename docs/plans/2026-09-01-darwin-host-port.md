@@ -1451,6 +1451,21 @@ SDK/cross facts).
   advisory (arm64 1012/210, Intel 992/233). Triage:
   tmp/d4-triage/d4-33934880333.**
 
+  **MEASUREMENT #11 (run 33942662074 @0e121dd3 — code 797d88b8 — 2026-09-05
+  03:44 UTC, `suite_gate=false`): arm64 1285/3/23skip, Intel 1286/3/22skip —
+  EXACTLY THE PREDICTION, and exactly the arm64 Mac's own full-suite tally on
+  the same content (tmp/logs/simd-mac.log). Passes +6 on arm64 and +3 on Intel
+  versus #10 (the three gccvector tests and the three new front-end reducers);
+  zero new failures. The 3 on EACH arch = the libc++ <list> tests
+  (testforeachiter, testphpdumpiter, testptrcmpupcast): the darwin residue is
+  ONE root on both arches, KG Gap libcxx_list_node_pointer_traits_completion_cycle
+  (owner scope). The three gccvector tests the SIMD arc S1-S4 targeted pass on
+  the runner (testgccvectorbitwisenot, testgccvectorlit,
+  testgccvectorsizeexprbitwise). Exe lane advisory as before (arm64 210 / Intel
+  233 exe-build failures = the -static-libmadc D5 residue; the 23 Intel-only
+  names in the triage are exe-build differences, not JIT failures). Both jobs
+  green (arm64 10 min, Intel 23 min); triage under tmp/d4-triage/d4-33942662074.**
+
   **WAVE 9 LANDED — THE aarch64 SIMD (MIR_T_V128) ARC, S1-S4 (2026-09-05,
   s155; plan docs/plans/2026-09-05-aarch64-simd-v128.md). The three gccvector
   tests were the last MIR-floor residue after wave 8: the fork's <=16-byte
