@@ -6114,6 +6114,20 @@ static int v128_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 16;
 }
 
+/* A 128-bit vector crosses a CALL as a REGISTER-CLASS value -- SysV x86-64: the
+   SSE class (an xmm register, or a 16-byte aligned stack slot when none is
+   left, never demoted to an INTEGER block); AAPCS64: a Short Vector (v[NSRN],
+   or a 16-byte aligned stack slot); the result in xmm0 / v0; the same through
+   `...` -- although c2mir keeps every vector memory-backed inside a function
+   (aggregate_type_p / memory_value_type_p).  This is the one predicate every
+   call-boundary site reads: argument prototypes, call operands, the parameter
+   gather, results, returns and va_arg.  (win64 differs -- MS x64 passes an
+   __m128 BY REFERENCE; the x86-64 ABI code keeps its own shape there and the
+   vararg read stays on the block path, see va_block_type_p.) */
+static int v128_reg_class_p (c2m_ctx_t c2m_ctx, struct type *type) {
+  return v128_vector_type_p (c2m_ctx, type);
+}
+
 static mir_size_t vector_lane_size (c2m_ctx_t c2m_ctx, struct type *type) {
   assert (type->mode == TM_VECTOR);
   return raw_type_size (c2m_ctx, type->u.vector_type->el_type);
@@ -6268,9 +6282,19 @@ static int memory_value_type_p (const struct type *type) {
    the value's memory).  win64-mingw long double qualifies (by-reference in
    varargs, see memory_value_type_p); SysV long double stays on the scalar
    path (its value lives directly in the overflow area). */
-static int va_block_type_p (const struct type *type) {
+static int va_block_type_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *type) {
 #if defined(_WIN32) && defined(__GNUC__)
   if (type->mode == TM_BASIC && type->u.basic_type == TP_LDOUBLE) return TRUE;
+#endif
+#if !defined(_WIN32)
+  /* A 128-bit vector vararg is a register-class SCALAR (v128_reg_class_p): its
+     16 bytes sit in the SSE / SIMD register save area or a 16-byte aligned
+     stack slot and MIR_VA_ARG (va_arg_builtin's vector arm) finds them.  The
+     block path read it as a two-eightbyte AGGREGATE -- two xmm slots on
+     x86-64, the GP area on aarch64: garbage lanes against gcc / clang and
+     against MIR's own caller.  win64 stays on the block path: MS x64 passes
+     an __m128 vararg BY REFERENCE, which is what its va_block_arg reads. */
+  if (v128_reg_class_p (c2m_ctx, type)) return FALSE;
 #endif
   return aggregate_type_p (type);
 }
@@ -15848,8 +15872,18 @@ static op_t complex_temp (c2m_ctx_t c2m_ctx, enum basic_type bt);
 static op_t complex_to_complex (c2m_ctx_t c2m_ctx, op_t op, enum basic_type from_bt,
                                 enum basic_type to_bt);
 
-static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *ret_type) {
-  return aggregate_type_p (ret_type);
+static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
+  /* a 128-bit vector result rides v0 / xmm0 (v128_reg_class_p), never the
+     hidden result pointer */
+  return aggregate_type_p (ret_type) && !v128_reg_class_p (c2m_ctx, ret_type);
+}
+
+/* The MIR type of an argument on the generic lane: a memory-value type travels
+   as a block -- except the 128-bit vector, a register-class value. */
+static MIR_type_t MIR_UNUSED simple_arg_mir_type (c2m_ctx_t c2m_ctx, struct type *arg_type) {
+  return (memory_value_type_p (arg_type) && !v128_reg_class_p (c2m_ctx, arg_type)
+            ? MIR_T_BLK
+            : get_mir_type (c2m_ctx, arg_type));
 }
 
 static void MIR_UNUSED simple_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
@@ -15928,6 +15962,14 @@ static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
     MIR_op_t im_op = VARR_GET (MIR_op_t, call_ops, call_ops_start + 3);
     complex_store (c2m_ctx, res, ct, 0, new_op (NULL, re_op));
     complex_store (c2m_ctx, res, ct, imag_off, new_op (NULL, im_op));
+  } else if (v128_reg_class_p (c2m_ctx, ret_type)) {
+    /* the V128 result register into the memory-backed result slot the call
+       lowering reserved for a memory-value type returned in registers */
+    assert (res.mir_op.mode == MIR_OP_MEM);
+    emit2 (c2m_ctx, MIR_VMOV,
+           MIR_new_mem_op (c2m_ctx->ctx, MIR_T_V128, res.mir_op.u.mem.disp, res.mir_op.u.mem.base,
+                           res.mir_op.u.mem.index, res.mir_op.u.mem.scale),
+           VARR_GET (MIR_op_t, call_ops, call_ops_start + 2));
   }
   return res;
 }
@@ -15951,7 +15993,10 @@ static void MIR_UNUSED simple_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_t
     VARR_PUSH (MIR_op_t, ret_ops, re.mir_op);
     VARR_PUSH (MIR_op_t, ret_ops, im.mir_op);
   } else if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
-    VARR_PUSH (MIR_op_t, ret_ops, val.mir_op);
+    /* a memory-backed vector value is returned in a V128 register */
+    VARR_PUSH (MIR_op_t, ret_ops,
+               v128_reg_class_p (c2m_ctx, ret_type) ? force_v128_reg (c2m_ctx, val).mir_op
+                                                    : val.mir_op);
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
     var = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, ret_addr_reg, 0, 1));
@@ -15988,7 +16033,7 @@ static void MIR_UNUSED simple_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name
     VARR_PUSH (MIR_var_t, arg_vars, var);
     return;
   }
-  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
+  type = simple_arg_mir_type (c2m_ctx, arg_type);
   var.name = name;
   var.type = type;
   if (type == MIR_T_BLK) var.size = type_size (c2m_ctx, arg_type);
@@ -16011,9 +16056,11 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
                                addr.mir_op.u.reg, 0, 1));
     return;
   }
-  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
+  type = simple_arg_mir_type (c2m_ctx, arg_type);
   if (type != MIR_T_BLK) {
-    VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
+    /* a memory-backed vector argument is loaded into a V128 register operand */
+    VARR_PUSH (MIR_op_t, call_ops,
+               type == MIR_T_V128 ? force_v128_reg (c2m_ctx, arg).mir_op : arg.mir_op);
   } else {
     assert (arg.mir_op.mode == MIR_OP_MEM);
     arg = mem_to_address (c2m_ctx, arg, TRUE);
@@ -16023,12 +16070,28 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
   }
 }
 
-static int MIR_UNUSED simple_gen_gather_arg (c2m_ctx_t c2m_ctx MIR_UNUSED,
-                                             const char *name MIR_UNUSED,
-                                             struct type *arg_type MIR_UNUSED,
-                                             decl_t param_decl MIR_UNUSED,
+/* A 128-bit vector parameter arrives in a register (v128_reg_class_p): move it
+   into the parameter's memory-backed frame home, the shape every vector
+   consumer reads.  The one gather for x86-64 and the generic lane. */
+static int MIR_UNUSED v128_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name,
+                                           struct type *arg_type, decl_t param_decl) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t var;
+
+  if (!v128_reg_class_p (c2m_ctx, arg_type)) return FALSE;
+  var = new_op (param_decl, MIR_new_alias_mem_op (ctx, MIR_T_V128, param_decl->offset,
+                                                  MIR_reg (ctx, FP_NAME, curr_func->u.func), 0, 1,
+                                                  get_type_alias (c2m_ctx, arg_type), 0));
+  emit2 (c2m_ctx, MIR_VMOV, var.mir_op,
+         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF, name, NULL).reg));
+  return TRUE;
+}
+
+static int MIR_UNUSED simple_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name,
+                                             struct type *arg_type, decl_t param_decl,
                                              void *arg_info MIR_UNUSED) {
-  return FALSE;
+  return v128_gen_gather_arg (c2m_ctx, name, arg_type, param_decl);
 }
 
 /* Can be used by target functions */
@@ -19307,7 +19370,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         op2 = addr;
       }
 #endif
-      if (va_block_type_p (type)) {
+      if (va_block_type_p (c2m_ctx, type)) {
         if (desirable_dest == NULL) {
           /* A struct/union va_arg used as an rvalue (no destination object)
              still needs storage to receive the aggregate; allocate a frame
@@ -19339,6 +19402,36 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
              assignment under va_arg_p -- so compute the type directly.) */
           res.mir_op = MIR_new_mem_op (ctx, get_mir_type (c2m_ctx, type), 0, res.mir_op.u.reg, 0, 1);
         else /* present the freshly allocated buffer as the aggregate lvalue */
+          res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
+      } else if (v128_reg_class_p (c2m_ctx, type)) {
+        /* A 128-bit vector vararg: MIR_VA_ARG hands back the ADDRESS of its 16
+           bytes (the SSE / SIMD register save area, or a 16-byte aligned stack
+           slot -- va_arg_builtin's vector arm); copy the value into the
+           destination, or into a fresh 16-byte temporary presented as the
+           memory-backed vector rvalue every vector consumer reads. */
+        op_t val = get_new_temp (c2m_ctx, MIR_T_V128);
+
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VA_ARG, op1.mir_op, op2.mir_op,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, 0, 0, 1)));
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VMOV, val.mir_op,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, op1.mir_op.u.reg, 0, 1)));
+        if (desirable_dest == NULL) {
+          res = get_new_temp (c2m_ctx, MIR_T_I64);
+          MIR_append_insn (ctx, curr_func,
+                           MIR_new_insn (ctx, MIR_ALLOCA, res.mir_op, MIR_new_int_op (ctx, 16)));
+        } else {
+          assert (desirable_dest->mir_op.mode == MIR_OP_MEM);
+          res = mem_to_address (c2m_ctx, *desirable_dest, TRUE);
+        }
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VMOV,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, res.mir_op.u.reg, 0, 1),
+                                       val.mir_op));
+        if (desirable_dest != NULL)
+          res = *desirable_dest;
+        else
           res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
       } else {
         MIR_append_insn (ctx, curr_func,

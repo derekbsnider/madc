@@ -409,6 +409,17 @@ static int process_aggregate_arg (c2m_ctx_t c2m_ctx, struct type *arg_type,
 
   if (n_qwords == 0) return 0;
   if (!memory_value_type_p (arg_type)) return 0;
+  if (n_qwords == 1 && qword_types[0] == MIR_T_V128) {
+    /* A 128-bit vector is an SSE-class SCALAR (__m128): with no SSE register
+       left it goes to the stack as a 16-byte aligned vector VALUE (SysV
+       3.2.3 5c -- mir-gen's stack V128 arm), never demoted to an
+       INTEGER-class block.  The demotion below is for aggregates; applied to
+       the ninth vector argument it declared a BLK parameter that
+       target_gen_gather_arg still moved as a V128 register ("vmov ... Got
+       'int', expected 'vector'"). */
+    if (arg_info->n_fregs < 8) arg_info->n_fregs++;
+    return 1;
+  }
   update_last_qword_type (c2m_ctx, arg_type, qword_types, n_qwords);
   n_iregs = n_fregs = 0;
   for (n = 0; n < n_qwords; n++) { /* start from the last qword */
@@ -564,15 +575,5 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
 
 static int target_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name, struct type *arg_type,
                                   decl_t param_decl, target_arg_info_t *arg_info MIR_UNUSED) {
-  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
-  MIR_context_t ctx = c2m_ctx->ctx;
-  op_t var;
-
-  if (!v128_vector_type_p (c2m_ctx, arg_type)) return FALSE;
-  var = new_op (param_decl, MIR_new_alias_mem_op (ctx, MIR_T_V128, param_decl->offset,
-                                                  MIR_reg (ctx, FP_NAME, curr_func->u.func), 0, 1,
-                                                  get_type_alias (c2m_ctx, arg_type), 0));
-  emit2 (c2m_ctx, MIR_VMOV, var.mir_op,
-         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF, name, NULL).reg));
-  return TRUE;
+  return v128_gen_gather_arg (c2m_ctx, name, arg_type, param_decl);
 }
