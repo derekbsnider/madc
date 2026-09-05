@@ -62,3 +62,20 @@ static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
 static int target_locs_num (MIR_reg_t loc, MIR_type_t type) {
   return loc > MAX_HARD_REG && (type == MIR_T_LD || MIR_vector_type_p (type)) ? 2 : 1;
 }
+
+/* The SIMD/FP argument class: F, D, LD and the 128-bit vector -- AAPCS64 C.1
+   allocates a Short Vector exactly like a floating-point value (v[NSRN]).
+   Read by the machinizer (mir-gen-aarch64.c) and the call shims
+   (mir-aarch64.c): one owner for both directions of every call. */
+static inline int fp_class_type_p (MIR_type_t type) {
+  return type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD || MIR_vector_type_p (type);
+}
+
+/* A 16-byte, 16-byte-aligned stack argument slot -- and a Q register in the
+   register file: the 128-bit long double and every vector.  (With MIR_LD_IS_D
+   the long double is 8 bytes and MIR_T_LD is canonicalized away before it
+   reaches here; the predicate is written per type so Apple's 8-byte long
+   double never shares the vector's slot.) */
+static inline int stack_arg_16_p (MIR_type_t type) {
+  return (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
+}

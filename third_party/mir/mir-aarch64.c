@@ -71,7 +71,7 @@ void *va_arg_builtin (void *p, uint64_t t) {
 #if defined(__APPLE__)
   void *a;
 
-  if ((type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type)) {
+  if (stack_arg_16_p (type)) {
     /* a 16-byte argument takes a 16-byte-aligned pair of slots (AAPCS64 C.14) */
     va->arg_area = (uint64_t *) (((uint64_t) va->arg_area + 15) / 16 * 16);
     a = va->arg_area;
@@ -86,8 +86,8 @@ void *va_arg_builtin (void *p, uint64_t t) {
 #else
   /* the SIMD/FP class: F, D, LD and the 128-bit vector (a Q register: the vr
      save area holds every FP register at a 16-byte stride) */
-  int fp_p = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD || MIR_vector_type_p (type);
-  int size16_p = (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
+  int fp_p = fp_class_type_p (type);
+  int size16_p = stack_arg_16_p (type);
   void *a;
 
   if (fp_p && va->__vr_offs < 0) {
@@ -314,6 +314,19 @@ static const uint32_t sts_pat = 0xbd000000;  /* str s, [xn|sp], offset */
 static const uint32_t std_pat = 0xfd000000;  /* str d, [xn|sp], offset */
 static const uint32_t stld_pat = 0x3d800000; /* str q, [xn|sp], offset */
 
+/* The SIMD/FP-class access for a type: s for F, d for D and the 8-byte long
+   double, q for the 16-byte long double and the 128-bit vector (stack_arg_16_p,
+   mir-aarch64.h) -- the load / store word and the imm12 scale. */
+static uint32_t fp_scale (MIR_type_t type) { return type == MIR_T_F ? 2 : stack_arg_16_p (type) ? 4 : 3; }
+static uint32_t fp_ld_pat (MIR_type_t type) {
+  return type == MIR_T_F ? lds_pat : stack_arg_16_p (type) ? ldld_pat : ldd_pat;
+}
+static uint32_t fp_st_pat (MIR_type_t type) {
+  return type == MIR_T_F ? sts_pat : stack_arg_16_p (type) ? stld_pat : std_pat;
+}
+/* the byte size of a SIMD/FP-class stack argument slot */
+static uint32_t fp_slot_size (MIR_type_t type) { return stack_arg_16_p (type) ? 16 : 8; }
+
 /* Generation: fun (fun_addr, res_arg_addresses):
    push x19, x30; sp-=sp_offset; x9=fun_addr; x19=res/arg_addrs
    x10=mem[x19,<offset>]; (arg_reg=mem[x10](or addr of blk copy on the stack)
@@ -359,8 +372,12 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
       } else {
         if (n_xregs++ >= 8) blk_offset += 8;
       }
-    } else if (type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD) {
-      if (n_vregs++ >= 8) blk_offset += type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 16 : 8;
+    } else if (fp_class_type_p (type)) {
+      if (n_vregs++ >= 8) {
+        /* a 16-byte argument takes a 16-byte ALIGNED slot (AAPCS64 C.14) */
+        if (stack_arg_16_p (type)) blk_offset = (blk_offset + 15) / 16 * 16;
+        blk_offset += fp_slot_size (type);
+      }
     } else {
       MIR_get_error_func (ctx) (MIR_call_op_error, "wrong type of arg value");
     }
@@ -373,7 +390,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
     if (i == arg_vars_num) n_xregs = n_vregs = 8;
 #endif
     type = arg_descs[i].type;
-    scale = type == MIR_T_F ? 2 : type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 4 : 3;
+    scale = fp_class_type_p (type) ? fp_scale (type) : 3;
     offset_imm = (((i + nres) * sizeof (MIR_val_t) << 10)) >> scale;
     if (MIR_blk_type_p (type)) {
       qwords = (arg_descs[i].size + 7) / 8;
@@ -418,22 +435,18 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         sp_offset += 8;
       }
       push_insns (code, &pat, sizeof (pat));
-    } else if (type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD) {
-      pat = type == MIR_T_F                                  ? lds_pat
-            : type == MIR_T_D || __SIZEOF_LONG_DOUBLE__ == 8 ? ldd_pat
-                                                             : ldld_pat;
+    } else if (fp_class_type_p (type)) {
+      /* v[n_vregs] while a register is left, else a stack slot -- 16 bytes and
+         16-byte aligned for the 16-byte long double and the 128-bit vector */
+      pat = fp_ld_pat (type);
       if (n_vregs < 8) {
         pat |= offset_imm | n_vregs++;
       } else {
-        if (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16)
-          sp_offset = (sp_offset + 15) / 16 * 16;
+        if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
         pat |= offset_imm | temp_reg;
         push_insns (code, &pat, sizeof (pat));
-        pat = type == MIR_T_F                                  ? sts_pat
-              : type == MIR_T_D || __SIZEOF_LONG_DOUBLE__ == 8 ? std_pat
-                                                               : stld_pat;
-        pat |= ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
-        sp_offset += type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 16 : 8;
+        pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
+        sp_offset += fp_slot_size (type);
       }
       push_insns (code, &pat, sizeof (pat));
     } else {
@@ -455,15 +468,9 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
       offset_imm >>= 3;
       pat = st_pat | offset_imm | n_xregs++ | (19 << 5);
       push_insns (code, &pat, sizeof (pat));
-    } else if ((res_types[i] == MIR_T_F || res_types[i] == MIR_T_D || res_types[i] == MIR_T_LD)
-               && n_vregs < 8) {
-      offset_imm >>= res_types[i] == MIR_T_F                                  ? 2
-                     : res_types[i] == MIR_T_D || __SIZEOF_LONG_DOUBLE__ == 8 ? 3
-                                                                              : 4;
-      pat = res_types[i] == MIR_T_F                                  ? sts_pat
-            : res_types[i] == MIR_T_D || __SIZEOF_LONG_DOUBLE__ == 8 ? std_pat
-                                                                     : stld_pat;
-      pat |= offset_imm | n_vregs++ | (19 << 5);
+    } else if (fp_class_type_p (res_types[i]) && n_vregs < 8) {
+      offset_imm >>= fp_scale (res_types[i]);
+      pat = fp_st_pat (res_types[i]) | offset_imm | n_vregs++ | (19 << 5);
       push_insns (code, &pat, sizeof (pat));
     } else {
       MIR_get_error_func (ctx) (MIR_ret_error,
@@ -543,6 +550,10 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
 
   assert (__SIZEOF_LONG_DOUBLE__ == 8);
   push_insns (code, arg_mov_start_pat, sizeof (arg_mov_start_pat));
+  /* The argument slots the handler's va_arg walks: 8 bytes each, a 128-bit
+     vector 16 bytes in a 16-byte ALIGNED slot (va_arg_builtin's Apple arm).
+     The area starts at sp -- 16-byte aligned -- so every slot's alignment is
+     relative to it; the padding, if any, goes above the last slot. */
   sp_offset = 0;
   for (size_t i = 0; i < func->nargs; i++) { /* args */
     type = VARR_GET (MIR_var_t, func->vars, i).type;
@@ -552,15 +563,16 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       sp_offset += 8 * qwords;
       continue;
     }
-    sp_offset += 8;
+    if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
+    sp_offset += fp_class_type_p (type) ? fp_slot_size (type) : 8;
   }
-  imm = sp_offset % 16;
-  sp_offset = imm == 0 ? 0 : 8;
+  imm = 0; /* the va_list starts at sp */
+  sp_offset = 0;
   stack_arg_sp_offset = 0;
   n_xregs = n_vregs = 0;
   for (size_t i = 0; i < func->nargs; i++) { /* args */
     type = VARR_GET (MIR_var_t, func->vars, i).type;
-    scale = type == MIR_T_F ? 2 : 3;
+    scale = fp_class_type_p (type) ? fp_scale (type) : 3;
     if (MIR_blk_type_p (type)
         && (qwords = (VARR_GET (MIR_var_t, func->vars, i).size + 7) / 8) <= 2) {
       /* passing by one or two qwords */
@@ -601,23 +613,24 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       }
       sp_offset += 8;
       push_insns (code, &pat, sizeof (pat));
-    } else if (type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD) {
-      if (n_vregs < 8) { /* st[s|d] vreg, sp_offset[sp]  */
-        pat = (type == MIR_T_F ? sts_pat : std_pat) | ((sp_offset >> scale) << 10) | n_vregs++
-              | (sp << 5);
-        sp_offset += 8;
+    } else if (fp_class_type_p (type)) {
+      /* a 128-bit vector: a 16-byte aligned slot here, and a 16-byte aligned
+         slot in the caller's stack area (AAPCS64 C.14) when v0-v7 are used up */
+      if (stack_arg_16_p (type)) sp_offset = (sp_offset + 15) / 16 * 16;
+      if (n_vregs < 8) { /* st[s|d|q] vreg, sp_offset[sp]  */
+        pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | n_vregs++ | (sp << 5);
       } else {
-        pat = ((type == MIR_T_F ? lds_pat : ldd_pat) & base_reg_mask) | (9 << 5);
+        if (stack_arg_16_p (type)) stack_arg_sp_offset = (stack_arg_sp_offset + 15) / 16 * 16;
+        pat = (fp_ld_pat (type) & base_reg_mask) | (9 << 5);
         /* the caller's stack slot offset is an imm12 SCALED by the access size,
            in bits [21:10] -- the raw byte offset OR-ed into the register fields
            was right only for the first stack FP argument (offset 0) */
         pat |= ((stack_arg_sp_offset >> scale) << 10) | temp_reg;
         push_insns (code, &pat, sizeof (pat));
-        pat = (type == MIR_T_F ? sts_pat : std_pat) | ((sp_offset >> scale) << 10) | temp_reg
-              | (sp << 5);
-        stack_arg_sp_offset += 8;
-        sp_offset += 8;
+        pat = fp_st_pat (type) | ((sp_offset >> scale) << 10) | temp_reg | (sp << 5);
+        stack_arg_sp_offset += fp_slot_size (type);
       }
+      sp_offset += fp_slot_size (type);
       push_insns (code, &pat, sizeof (pat));
     } else {
       MIR_get_error_func (ctx) (MIR_call_op_error, "wrong type of arg value");
@@ -649,11 +662,8 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
   /* move results: */
   n_xregs = n_vregs = offset = 0;
   for (uint32_t i = 0; i < nres; i++) {
-    if ((results[i] == MIR_T_F || results[i] == MIR_T_D || results[i] == MIR_T_LD) && n_vregs < 8) {
-      pat = results[i] == MIR_T_F                                  ? lds_pat
-            : results[i] == MIR_T_D || __SIZEOF_LONG_DOUBLE__ == 8 ? ldd_pat
-                                                                   : ldld_pat;
-      pat |= n_vregs;
+    if (fp_class_type_p (results[i]) && n_vregs < 8) {
+      pat = fp_ld_pat (results[i]) | n_vregs;
       n_vregs++;
     } else if (n_xregs < 8) {  // ??? ltp use
       pat = ld_pat | n_xregs;
@@ -662,9 +672,7 @@ void *_MIR_get_interp_shim (MIR_context_t ctx, MIR_item_t func_item, void *handl
       MIR_get_error_func (ctx) (MIR_ret_error,
                                 "aarch64 can not handle this combination of return values");
     }
-    offset_imm = offset >> (results[i] == MIR_T_F                                    ? 2
-                            : results[i] == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 4
-                                                                                     : 3);
+    offset_imm = offset >> (fp_class_type_p (results[i]) ? fp_scale (results[i]) : 3);
     mir_assert (offset_imm < (1 << 12));
     pat |= offset_imm << 10;
     push_insns (code, &pat, sizeof (pat));

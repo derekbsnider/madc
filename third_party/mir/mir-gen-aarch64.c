@@ -82,18 +82,9 @@ static MIR_insn_code_t get_ext_code (MIR_type_t type) {
   }
 }
 
-/* The SIMD/FP register class: F, D, LD and the 128-bit vector -- AAPCS64 C.1
-   allocates a short vector exactly like a floating-point value (v[NSRN]). */
-static int fp_class_type_p (MIR_type_t type) {
-  return type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD || MIR_vector_type_p (type);
-}
-
-/* A 16-byte, 16-byte-aligned stack argument slot: the 128-bit long double and
-   every vector.  (With MIR_LD_IS_D the long double is 8 bytes and MIR_T_LD is
-   canonicalized away before it reaches here.) */
-static int stack_arg_16_p (MIR_type_t type) {
-  return (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
-}
+/* fp_class_type_p and stack_arg_16_p -- the SIMD/FP argument class and the
+   16-byte stack slot -- live in mir-aarch64.h: the call shims (mir-aarch64.c)
+   read the same two predicates. */
 
 /* The argument type of a call operand BEYOND the prototype (a vararg): its
    value mode decides.  A 128-bit vector is a SIMD/FP-class value like a double
