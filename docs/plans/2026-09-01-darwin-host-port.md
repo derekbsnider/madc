@@ -1437,6 +1437,89 @@ SDK/cross facts).
   (darwin-suite green on both arches, or every failure a filed .darwin_skip
   with its reason).**
 
+  **WAVE 8 LANDED — THE MIR aarch64 FLOOR (2026-09-05; the owner switched the
+  queue to MIR with libc++ <list> after it, and pointed at upstream
+  vnmakarov/mir #472-#475, #429, PR#466, PR#439). Seven root commits on
+  35e581c6, one root each, plus the two gate fixes and the SIMD arc plan
+  (0a776767). LOOPS: the arm64 Mac (`ssh madc-mac`,
+  staged `~/madc-s154`: the container's `release-arm64-macos` binary, tests/,
+  tools/, examples/, a perl `timeout` shim; the darwin runner's skip domains)
+  and qemu on the container (an aarch64 c2m under `qemu-aarch64-static -L
+  /usr/aarch64-linux-gnu`, oracle `aarch64-linux-gnu-gcc -static`; reducers
+  tmp/mirq/*.c; toolchain + sysroot links pinned by PROV=dcd836b0). ROOTS of
+  the nine (six fixed): (1) VA=fd487dc0 — madc modelled `__builtin_va_list` as
+  the SysV x86-64 `__va_list_tag[1]` on every non-LLP64 target; Apple arm64's
+  is a scalar `char *`, so every va_list a MIR variadic handed to libc was the
+  record's ADDRESS (teststdiobuiltinredirects `hA> 0`, testprintfdouble
+  `0.00` then SIGBUS; MIR's own va_arg, which takes the address, was right).
+  The va_list SHAPE is now the fifth target property beside the data model,
+  bit-field ABI, OS and int64 spelling: TargetVaList {SysVTagArray,
+  AAPCS64Struct, Scalar} (datadef.h; default_target_va_list; builtin_va_list_
+  type; use_builtin_va_list; the lexer's __builtin_va_copy body; stdarg.h's
+  va_copy -> the builtin, the `#ifdef _WIN32` twin gone) and c2mir's
+  SCALAR_VA_LIST_P (MIR_TARGET_WINDOWS_P || Apple && aarch64) replaces the two
+  host-keyed `_WIN32` va_arg/va_start arms. testbuiltinvalisttypedef (a
+  compile-error test for the ARRAY shape's `ap = 0` diagnostic) gets the
+  darwin-arm64 skip its win64 twin has. (2) CX=93010447 — a `_Complex`
+  argument is an AAPCS64 Homogeneous Floating-point Aggregate in consecutive
+  FP registers; c2mir's aarch64 target passed a GPR block, so libm conjf /
+  crealf / cimag (the lexer's __builtin_conj* map) read garbage and the tests'
+  OWN abort() on the wrong value read as MIR SIGABRTs (testbuiltinconjf,
+  testbuiltincomplexparts; madc's darwin signal handler prints no frames —
+  KG Gap darwin_signal_handler_backtrace_empty). caarch64-ABI-code.c gains the
+  complex arms (two FP vars, two complex_load ops, the callee gather), gated
+  on a new gen_ctx flag call_arg_vararg_p: varargs keep the block shape MIR's
+  va_block_arg reads. (3) LD=7d63083a — MIR_LD_IS_D canonicalized data, proto
+  results, func vars and memory operands but NOT registers (new_func_reg) nor
+  create_proto's copied result/argument types: `i2d ... Got 'ldouble'` then
+  `call: operand #3 Got 'double', expected 'ldouble'` (testcomplexretconv,
+  testcomplexfwddeclparams); canon_type reaches every typed slot MIR mints.
+  (4) I128=63a6dd6f — caarch64-ABI-code.c had no __int128 arm (`wrong result
+  type in proto`); reg_aggregate_size answers 16 (x0:x1; arguments already
+  rode the BLK lane); verified under qemu against the gcc oracle line for
+  line. (5) The three gccvector tests are NOT fixed: mir-gen-aarch64.c and
+  mir-aarch64.c have ZERO V128 sites (the fork's SIMD is x86-64 only) — the
+  aarch64 SIMD arc, planned in docs/plans/2026-09-05-aarch64-simd-v128.md
+  (KG Gap aarch64_v128_simd_missing). UPSTREAM: #472 REPRODUCED + FIXED
+  X472=0a2d3e8e (a file-scope `extern` WITH an initializer is a definition,
+  C17 6.9.2p1; gcc-worded warning; tests/testexterninit); #473 REPRODUCED +
+  FIXED X473=49741295 (anonymous-union members carry the union's alias class
+  in N_FIELD / N_DEREF_FIELD; -O2 only — madc's default is -O1 —
+  tests/testanonunionpun with a `-O2` .flags); #475 not in our tree (the
+  reload-mem-ops guard exists); #474 present (win64 per-call spill space,
+  perf, later); #429 both shapes pass on the Mac; PR#466 already adopted;
+  PR#439 nothing needed (madc accepts `int f(...)`). Both fixes are candidate
+  upstream PRs (owner review gates submission). VERIFICATION: pass 2
+  (tmp/logs/w8b-verify.log) Mac nine 6 pass / 3 gccvector fail, broader
+  varargs/printf/stdio/complex/int128/ldouble subsets 113/0, linux subsets
+  127/0, unit rc=0, release-arm64-macos rc=0; the FULL arm64 Mac suite on
+  this content (tmp/logs/w8-mac-fullsuite.log): 1275/10/23skip, of which 4
+  were stage artifacts (tools/, examples/ and tmp/ not staged) that pass after
+  staging — the REAL tally 1279/6: the 3 gccvector + the 3 libc++ <list>
+  tests, exactly the dispatch-#10 prediction. THE GATE CAUGHT THE WAVE AGAIN:
+  battery 1's fulltest ran integration 1299/0/9skip and stopped at
+  scripts/check-c-abi-surface.sh — `UNDECLARED-madc_-EXPORT madc_target_
+  va_list`: the fifth target property joined the code without joining
+  scripts/c-abi-internal-exports.txt, where its four siblings are
+  dispositioned "engine global: target ABI facts"; 0149306d lists it (scripts
+  only; the ledger's code paths include scripts/, so battery 2 re-ran on it).
+  AND A SECOND TIME: battery 2's chain passed that gate and stopped at the
+  warning ratchet (scripts/warn_census.sh --check: `3 > 0 testexterninit.mad`)
+  — the #472 reducer's `extern int c = 7;` lines warn BY DESIGN (gcc and clang
+  warn on the construct too; 0a2d3e8e gave c2mir gcc's wording) and a test
+  without a baseline entry allows zero. Neither a baseline allowance (the
+  ratchet only goes down) nor a weaker reducer (every such declaration warns
+  everywhere) was right; the missing piece was the compiler's own way to say
+  "this program provokes diagnostics on purpose": gcc's `-w`. W=b152299f
+  adds `-w` (thread_local madc_no_warnings -> c2mir's ignore_warnings_p at
+  both option fills, --help, docs/usage.md, the C-ABI disposition in the same
+  commit) and tests/testexterninit.flags carries it; battery 3 ran on that.
+  Recorded refinements (KG): variadic complex HFA conformance, AAPCS64's
+  even-pair rule for a 16-byte fundamental argument, struct HFAs still GPR
+  blocks, the darwin backtrace.**
+
+  Lanes at b152299f (2026-09-05, tmp/logs/w8-battery3.log): linux battery jit 1299/0/9skip exe 1240/0 obj 1240/0 packed 1299/0/9skip headerless 1268/0/40skip, fulltest rc=0 with every gate in the chain GREEN (check-c-abi-surface OK: 1090 extern-C exports classified, 43 listed internal; warning ratchet GREEN, 0 baseline warnings over 1308 compiled; tag-arithmetic 0/0; tsubst flag-on GREEN; forest_pack_gate linux 68 = baseline; forest_bind_gate all OK); wine64 1245/0/63skip + verify_pe_release OK (234 units) + win64 pack 68 = baseline; c-testsuite 220/220, baseline EMPTY; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK both (tmp/logs/w8-battery3.log; battery 1 stopped at check-c-abi-surface, battery 2 at the warning ratchet).
+
   **STILL OPEN after batch 2 (the first two closed in wave 2 above; the rest in value order):**
   - **`long` vs `long long` identity on darwin (std::max undefined import 16
     both arches + testtypedefarg + likely basic_string __init_with_sentinel
@@ -1476,7 +1559,8 @@ SDK/cross facts).
   - testvartpldepparams (parse error on darwin only, zero includes; the
     bisect variants ran silent), testint128 / SIMD insn matching (MIR
     aarch64), c2mir `i2d` on an `ldouble` operand (testcomplexretconv —
-    re-measure after item 14).
+    re-measure after item 14). [wave 8: testint128 and testcomplexretconv
+    CLOSED; SIMD = the aarch64 V128 arc plan.]
   2. **`__BLOCKS__` in the darwin predefined table — ~20, both arches.**
      A clang feature claim GCC never makes; on a Mac WITH the Command Line
      Tools installed, Apple's real SDK headers (`_stdlib.h` atexit_b /
@@ -1517,8 +1601,8 @@ SDK/cross facts).
      has `double` (testlongdouble, testldblalign, testcomplexretconv,
      testsignalingnan). Target type-model bug. Own slice.
   8. Remaining singles after the re-measure: testint128 (MIR proto result
-     type, arm64), testgccvectorsizeexprbitwise (aarch64 SIMD insn
-     matching), teststringsize (libc++ `sizeof(std::string)=24` — a
+     type, arm64 — CLOSED wave 8), testgccvectorsizeexprbitwise (aarch64 SIMD insn
+     matching — the V128 arc plan), teststringsize (libc++ `sizeof(std::string)=24` — a
      `.darwin_expect` once the grove family is clean), testtypedefarg
      (`0 0 0 0`, both arches), the eval-family / exec-channel / ui
      segfaults (arm64; re-measure after fix 1), testhttpget/testtcpchannel
