@@ -1466,6 +1466,49 @@ SDK/cross facts).
   names in the triage are exe-build differences, not JIT failures). Both jobs
   green (arm64 10 min, Intel 23 min); triage under tmp/d4-triage/d4-33942662074.**
 
+  **WAVE 10 LANDED — THE VECTOR CALLING CONVENTION (2026-09-05, s156; plan
+  docs/plans/2026-09-05-aarch64-simd-v128.md, section "The vector calling
+  convention"). Opening S5 showed that every vector-ABI gate so far had compared
+  c2m against c2m: a self-consistent caller and callee agree whatever the layout.
+  With ONE side compiled by the platform compiler (tests/abi/libvecnative.c as a
+  shared object; the same pair built wholly by the host compiler as the oracle)
+  the vector ABI was wrong on x86-64 — madc included: a vector through `...` was
+  garbage (silent, exit 0), a ninth vector argument died loudly, no 16-byte
+  stack slot was ever 16-byte aligned (long double too; a movdqa store faulted
+  on the 8-byte slot), the vararg prologue saved xmm0-7's low eightbyte only —
+  and on aarch64 everywhere: c2mir passed every vector as a two-register block
+  and returned it through the x8 hidden pointer, so the wave-9 V-register
+  convention was never reached by c2m-compiled code. Ten code commits, one
+  rule: a 128-bit vector is a REGISTER-CLASS value at every call boundary
+  (v128_reg_class_p, the one c2mir predicate — arguments, results, varargs,
+  va_arg): e85f6c68 c2mir, 464d0a4d the MIR vararg typing + x86-64 va_arg
+  builtin + whole-xmm saves, 4fbffc77 x86-64 16-byte stack slots (+
+  tests/testgccvectorvararg, tests/testgccvectorargs9), 4486c513 the aarch64
+  gather, b70903ed the ff_call MIR_val_t stride (the Apple stride defect, KG
+  Gap mir_ff_call_shim_val_stride_long_double: c2m -ei on the Mac now prints
+  printf's arguments), 75648579 the Apple interp shim imm12 (KG Gap
+  mir_aarch64_apple_interp_shim_stack_fp_arg_offset_unencoded), 62e86e2d S5 —
+  the aarch64 call shims place a V128 like the 16-byte long double
+  (fp_class_type_p / stack_arg_16_p moved to mir-aarch64.h as the one owner for
+  the backend and the shims), fdaa33b4 the Apple interp shim hands an
+  interpreted vararg function the caller's stack as its va_list (the
+  start-at-8 contiguity fold cannot survive 16-byte slots), 0661a666 the gate:
+  scripts/vector_abi_gate.sh in fulltest (c2m -eg, c2m -ei and madc through
+  #load, 17 lines byte-identical to the host compiler's build of the pair).
+  Gated on three platforms: linux x86-64 (the fulltest gate; every reducer
+  through madc / c2m -eg / -ei == gcc; tmp/logs/vabi-x86-4.log), linux aarch64
+  under qemu (the pair against an aarch64-gcc shared object, -eg and -ei, plus
+  every S1-S4 reducer at -O0 / -O2 / -ei; tmp/logs/vabi-a64-2.log), Apple
+  (a cross-built arm64-macos c2m against an Apple-clang dylib, -eg and -ei;
+  tmp/logs/vabi-mac-3.log) — the ONE line the Mac still fails is the recorded
+  Apple stack-argument PACKING gap (iapply10: Apple packs sub-8-byte non-variadic
+  stack arguments by natural size, MIR uses 8-byte slots; KG Gap
+  mir_aarch64_apple_stack_arg_packing, the next wave), a different rule.
+  Mac (arm64, the cross release build staged at ~/madc-s154): 1287 pass / 3 fail / 23 skip (tools/ and examples/ staged) — the 3 libc++ <list> tests only (testforeachiter, testphpdumpiter, testptrcmpupcast); the 19 vector tests (the two new reducers testgccvectorvararg and testgccvectorargs9 included) 19/0 (tmp/logs/w10-mac.log; the cross release-arm64-macos build of fdaa33b4 — 7e0098d1 differs only under #if defined(_WIN32))
+  Lanes at 7e0098d1 (tmp/logs/w10-battery.log): linux battery jit 1304/0/9skip exe 1245/0 obj 1245/0 packed 1304/0/9skip headerless 1273/0/40skip, fulltest rc=0 with every gate in the chain GREEN (vector_abi_gate OK: c2m -eg, c2m -ei and madc byte-identical to the host compiler; check-c-abi-surface OK: 1090 extern-C exports classified, 43 listed internal; warning ratchet GREEN; tag-arithmetic 0/0; tsubst flag-on GREEN; forest_pack_gate linux 68 = baseline); wine64 1250/0/63skip + verify_pe_release OK (234 units) + win64 pack 68 = baseline, the two new vector reducers included, and the interop pair under wine == mingw-gcc (tmp/w10-vabi-win.sh); c-testsuite 220/220, 0 outside baseline; macos cross release both arches 835 units, darwin pack 48 = baseline both (mir-blob-skips 1/1), verify_macho OK both (tmp/logs/w10-battery-2.log).
+  THE DARWIN RESIDUE STAYS ONE ARC: libc++ <list> (owner scope). Dispatch #12
+  measures wave 10 (expect arm64 3 = the <list> tests, Intel 3).**
+
   **WAVE 9 LANDED — THE aarch64 SIMD (MIR_T_V128) ARC, S1-S4 (2026-09-05,
   s155; plan docs/plans/2026-09-05-aarch64-simd-v128.md). The three gccvector
   tests were the last MIR-floor residue after wave 8: the fork's <=16-byte
