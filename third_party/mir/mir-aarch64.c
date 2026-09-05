@@ -374,7 +374,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
 #endif
     type = arg_descs[i].type;
     scale = type == MIR_T_F ? 2 : type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 4 : 3;
-    offset_imm = (((i + nres) * sizeof (long double) << 10)) >> scale;
+    offset_imm = (((i + nres) * sizeof (MIR_val_t) << 10)) >> scale;
     if (MIR_blk_type_p (type)) {
       qwords = (arg_descs[i].size + 7) / 8;
       if (qwords <= 2) {
@@ -398,7 +398,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         n_xregs += qwords;
       } else {
         addr_reg = n_xregs < 8 ? n_xregs : 13;
-        gen_blk_mov (code, blk_offset, (i + nres) * sizeof (long double), qwords, addr_reg);
+        gen_blk_mov (code, blk_offset, (i + nres) * sizeof (MIR_val_t), qwords, addr_reg);
         blk_offset += qwords * 8;
         if (n_xregs++ >= 8) {
           pat = st_pat | ((sp_offset >> scale) << 10) | addr_reg | (sp << 5);
@@ -449,7 +449,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
   ((uint32_t *) (VARR_ADDR (uint8_t, code) + VARR_LENGTH (uint8_t, code)))[-1] |= sp_offset << 10;
   n_xregs = n_vregs = 0;
   for (size_t i = 0; i < nres; i++) { /* results */
-    offset_imm = i * sizeof (long double) << 10;
+    offset_imm = i * sizeof (MIR_val_t) << 10;
     if (((MIR_T_I8 <= res_types[i] && res_types[i] <= MIR_T_U64) || res_types[i] == MIR_T_P)
         && n_xregs < 8) {
       offset_imm >>= 3;
