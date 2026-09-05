@@ -1,0 +1,20 @@
+// -stdlib=libc++ twin of teststrargcoerce: println of a std::string and
+// php::trim over one on the libc++ parity lane. The format intrinsic handed
+// __madc_fmt_stdstring the SCRIPT's string, which the host read with its own
+// (libstdc++) layout — a nil data pointer, SIGSEGV in fwrite. A foreign-flavor
+// std::string argument is now handed over as bytes + length through its own
+// c_str()/size(). Same .expect as the default-lane test.
+#include <ns_php>
+#include <string>
+int main()
+{
+	array a;
+	std::string s = "hello";
+	php::array_push(a, s);
+	println("count={}", php::count(a));
+	println("elem={}", php::array_get_cstr(a, 0));
+	std::string padded = "  mid  ";
+	println("[{}]", php::trim(padded));
+	println("[{}]", padded);
+	return 0;
+}

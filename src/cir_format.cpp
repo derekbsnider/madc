@@ -44,6 +44,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_mangle.h"
 #include "cir_builder.h"
 
 extern "C" {
@@ -332,6 +333,7 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 
 	const char *sym = NULL;
 	node_t val = NULL;
+	node_t val2 = NULL;	// a second value operand (bytes + length)
 	std::vector<ExternParam> params;
 	params.push_back({ {N_VOID}, true });		// sink
 	params.push_back({ {N_CHAR}, true });		// spec bytes
@@ -376,17 +378,63 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	case fkStdString:
 	case fkValue:
 	{
-		sym = kind == fkValue ? "__madc_fmt_value"
-				      : "__madc_fmt_stdstring";
-		params.push_back({ {N_VOID}, true });
 		DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(u);
 		if ( !cls )
 		{
 			why = "argument's class type is unresolved";
 			return false;
 		}
-		val = node2(N_CAST, void_ptr_type(),
-			    object_arg_addr(arg, cls), origin);
+		node_t obj = node2(N_CAST, void_ptr_type(),
+				   object_arg_addr(arg, cls), origin);
+		if ( kind == fkStdString && madc_mangle_flavor_differs() )
+		{
+			// __madc_fmt_stdstring reads a std::string of the HOST's
+			// layout. A string of the OTHER flavor (linux -stdlib=libc++
+			// on a libstdc++-built madc: 24 bytes, SSO, the data pointer
+			// nowhere near where libstdc++ keeps it — it read a nil
+			// pointer and fwrite crashed) is handed over as bytes +
+			// length through its OWN c_str()/size(): the script members,
+			// the view the marshalling thunk takes too. The object's
+			// address is bound to a local first, so an argument that is
+			// a call is evaluated once.
+			std::string cstr_sym, size_sym;
+			if ( !script_string_view_syms(cls, cstr_sym, size_sym) )
+			{
+				why = "the argument's string class has no "
+				      "c_str()/size() to read it through";
+				return false;
+			}
+			char oname[40];
+			snprintf(oname, sizeof oname, "__madc_fmtobj_%d",
+				 m_strtmp_counter++);
+			node_t ospec = list();
+			append(ospec, simple(N_VOID, origin));
+			node_t odeclr = list();
+			append(odeclr, pointer());
+			node_t odecl = simple(N_SPEC_DECL, origin);
+			append(odecl, node1(N_SHARE, ospec));
+			append(odecl, node2(N_DECL, id(oname, origin), odeclr));
+			append(odecl, ignore());
+			append(odecl, ignore());
+			append(odecl, obj);
+			out.push_back(odecl);
+			sym = "__madc_fmt_str_n";
+			params.push_back({ {N_CHAR}, true });
+			params.push_back({ {N_LONG, N_LONG}, false });
+			node_t ca = list();
+			append(ca, id(oname, origin));
+			val = node2(N_CALL, id(cstr_sym.c_str(), origin), ca,
+				    origin);
+			node_t sa = list();
+			append(sa, id(oname, origin));
+			val2 = node2(N_CALL, id(size_sym.c_str(), origin), sa,
+				     origin);
+			break;
+		}
+		sym = kind == fkValue ? "__madc_fmt_value"
+				      : "__madc_fmt_stdstring";
+		params.push_back({ {N_VOID}, true });
+		val = obj;
 		break;
 	}
 	}
@@ -398,6 +446,8 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 		append(a, str(spec.c_str(), spec.size() + 1, origin));
 		append(a, integer((long)spec.size(), origin));
 		append(a, val);
+		if ( val2 )
+			append(a, val2);
 		out.push_back(node2(N_EXPR, list(),
 				    node2(N_CALL, id(sym, origin), a, origin),
 				    origin));

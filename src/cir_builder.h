@@ -1344,6 +1344,11 @@ public:
 					std::string &size_sym,
 					std::string &ctor_sym,
 					std::string &dtor_sym);
+	// The script flavor's c_str()/size() view of one of its strings (the
+	// thunk's and the format intrinsic's shared owner).
+	bool script_string_view_syms(class DataDefCLASS *scr,
+				     std::string &cstr_sym,
+				     std::string &size_sym);
 	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
 	std::vector<node_t> m_flvmar_defs;
 	int m_flvmar_counter = 0;

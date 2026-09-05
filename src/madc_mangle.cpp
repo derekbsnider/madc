@@ -1149,6 +1149,20 @@ MangleStdlib madc_mangle_active_stdlib()
 	return g_std_stdlib;
 }
 
+MangleStdlib madc_mangle_host_stdlib()
+{
+#if defined(_LIBCPP_VERSION)
+	return mstdlibLlvm;
+#else
+	return mstdlibGnu;
+#endif
+}
+
+bool madc_mangle_flavor_differs()
+{
+	return g_std_stdlib != madc_mangle_host_stdlib();
+}
+
 MangleHostFlavorScope::MangleHostFlavorScope()
 	: saved_stdlib(g_std_stdlib), saved_abi_ns(g_std_abi_ns)
 {

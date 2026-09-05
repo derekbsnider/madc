@@ -4949,7 +4949,7 @@ bool CirBuilder::flavor_marshal_candidate(FuncDef *fd) const
 {
 	if (!fd)
 		return false;
-	if (madc_mangle_active_stdlib() != mstdlibLlvm)
+	if (!madc_mangle_flavor_differs())
 		return false;	// script flavor == host build flavor
 	for (size_t i = 0; i < fd->parameters.size(); ++i) {
 		DataDef *p = fd->parameters[i];
@@ -5006,7 +5006,7 @@ std::string CirBuilder::flavor_marshal_thunk(const std::string &sym,
 		return std::string();	// escape hatch (default: ON)
 	if (sym.empty() || !flavor_marshal_candidate(fd)) {
 		if (fmt_probe && fd && !sym.empty()
-		    && madc_mangle_active_stdlib() == mstdlibLlvm)
+		    && madc_mangle_flavor_differs())
 			fprintf(stderr, "[flvmar-t] %s DECLINE: not a candidate "
 				"(params=%zu)\n", sym.c_str(),
 				fd->parameters.size());
@@ -5050,12 +5050,37 @@ std::string CirBuilder::flavor_marshal_thunk(const std::string &sym,
 	return tn;
 }
 
+// The SCRIPT flavor's read-only view of one of its strings: the c_str() and
+// size() member symbols on the carrier class, registered as protos and
+// referenced functions (their bodies are the header's inline ones, compiled
+// here like every other libc++ member). ONE owner for both consumers — the
+// marshalling thunk below (the bytes it hands the host) and the format
+// intrinsic's std::string operand under a foreign flavor (cir_format.cpp).
+// False = the class has no such members (not a string).
+bool CirBuilder::script_string_view_syms(DataDefCLASS *scr,
+					 std::string &cstr_sym,
+					 std::string &size_sym)
+{
+	if (!scr)
+		return false;
+	cstr_sym = class_method_symbol(scr, "c_str");
+	size_sym = class_method_symbol(scr, "size");
+	if (cstr_sym == "c_str" || size_sym == "size")
+		return false;
+	referenced_funcs.insert(cstr_sym);
+	referenced_funcs.insert(size_sym);
+	need_output_extern(cstr_sym.c_str(), true, { { {N_VOID}, true } });
+	need_output_extern(size_sym.c_str(), false, { { {N_VOID}, true } },
+			   { N_LONG, N_LONG });
+	return true;
+}
+
 // The shared carrier-symbol set for a marshalling site: the SCRIPT flavor's
-// c_str/size member symbols on the carrier class, and the HOST flavor's
-// string ctor (const char*, size_type, const allocator&) + D1 dtor, minted
-// through the mangler under host state and dlsym-verified. Registers protos
-// and referenced_funcs for the script members. False = this site cannot
-// marshal (the loud original behavior stays).
+// c_str/size member symbols on the carrier class (script_string_view_syms),
+// and the HOST flavor's string ctor (const char*, size_type, const
+// allocator&) + D1 dtor, minted through the mangler under host state and
+// dlsym-verified. False = this site cannot marshal (the loud original
+// behavior stays).
 bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
 					    std::string &cstr_sym,
 					    std::string &size_sym,
@@ -5063,10 +5088,6 @@ bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
 					    std::string &dtor_sym)
 {
 	if (!scr)
-		return false;
-	cstr_sym = class_method_symbol(scr, "c_str");
-	size_sym = class_method_symbol(scr, "size");
-	if (cstr_sym == "c_str" || size_sym == "size")
 		return false;
 	{
 		MangleHostFlavorScope host_state;
@@ -5081,11 +5102,8 @@ bool CirBuilder::flavor_marshal_string_syms(DataDefCLASS *scr,
 	if (!madcdl_sym_default(ctor_sym.c_str())
 	    || !madcdl_sym_default(dtor_sym.c_str()))
 		return false;
-	referenced_funcs.insert(cstr_sym);
-	referenced_funcs.insert(size_sym);
-	need_output_extern(cstr_sym.c_str(), true, { { {N_VOID}, true } });
-	need_output_extern(size_sym.c_str(), false, { { {N_VOID}, true } },
-			   { N_LONG, N_LONG });
+	if (!script_string_view_syms(scr, cstr_sym, size_sym))
+		return false;
 	need_output_extern(ctor_sym.c_str(), false,
 			   { { {N_VOID}, true }, { {N_CHAR}, true },
 			     { {N_LONG, N_LONG}, false }, { {N_VOID}, true } });
@@ -22363,7 +22381,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					dynamic_cast<DataDefCLASS *>(sv->type);
 				std::string cs, ss, hctor, hdtor;
 				if (!(fm_arm && *fm_arm == '0')
-				    && madc_mangle_active_stdlib() == mstdlibLlvm
+				    && madc_mangle_flavor_differs()
 				    && scls
 				    && flavor_marshal_string_syms(scls, cs, ss,
 								  hctor, hdtor)) {
