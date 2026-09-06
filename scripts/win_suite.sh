@@ -56,8 +56,13 @@ if [ ${#runtime_files[@]} -gt 0 ]; then
 		exit 3
 	fi
 fi
-if ! scp -q -r -o BatchMode=yes tests "$WIN_SSH:$STAGE/"; then
-	echo "win_suite: test-tree copy failed" >&2
+# The suite's inputs beyond tests/: the editor tests include
+# ../tools/texteditor/lined_core.inc and the ui tests read
+# examples/adventure/adventure.world — the same trees the Mac suite stage
+# carries. A missing tree fails six tests as "Failed to open include file" /
+# "cannot read" on the box while wine, run from the repo root, never sees it.
+if ! scp -q -r -o BatchMode=yes tests tools examples "$WIN_SSH:$STAGE/"; then
+	echo "win_suite: test/tools/examples tree copy failed" >&2
 	exit 3
 fi
 
