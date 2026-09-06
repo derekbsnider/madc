@@ -60,7 +60,10 @@ Do not build the provider; do not vendor for keeps; do not touch `tui_model`.
   beside `madc-mac`; key authorized and probed 2026-09-06: x86_64, macOS
   15.7.4, derek.snider logged in on the console — a GUI session exists for
   ssh-launched windows — CommandLineTools at /Library/Developer/
-  CommandLineTools, WebKit.framework present). On any Mac:
+  CommandLineTools with Apple clang 17.0.0 and SDK MacOSX26.2.sdk,
+  WebKit.framework present, 12 cores; **no cmake, pkg-config or brew** — build
+  the library there with a one-line `clang++` invocation, never by
+  installing tooling on the owner's machine). On any Mac:
   bash 3.2, no `timeout`, `export LC_ALL=C` in every remote command. The
   Intel Mac means the x86-64 darwin artifacts (`bin/madc-x86-64-macos` /
   `madc-release-x86-64-macos`, `scripts/remote_build.sh release-macos`
@@ -110,7 +113,7 @@ declare.
 | Lane | How | Pass |
 |------|-----|------|
 | Linux (container) | `xvfb-run -a bin/madc tmp/spike/hello.mad` after provisioning webkitgtk-6.0 + xvfb; a `webview_dispatch`'d terminate (or a bound JS callback) ends the run | exit 0 within the timeout; a screenshot via `xwd`/`import` (ImageMagick) or a DOM read-back through a bound callback proves the page rendered |
-| macOS (the owner's x86 MacBook — NOT `madc-mac`, which is Jane's and desktop-less) | build the library with clang against WebKit.framework on that Mac; run the same `.mad` with the x86-64 darwin madc (or a native `-o` build) | a window appears on the console session; exit 0 |
+| macOS (`madc-mac-x86`, the owner's x86 MacBook — NOT `madc-mac`, which is Jane's and desktop-less) | build the library on that Mac with one `clang++ -std=c++11 -shared -framework WebKit -framework Cocoa ...` line (no cmake there); run the same `.mad` with the x86-64 darwin madc (or a native `-o` build) staged in a per-session `~/madc-sNN` dir | a window appears on the console session; exit 0 |
 | Windows (WSL channel) | build the DLL with the mingw toolchain on the container (WebView2 loader bundled), stage it beside the packed PE the way `win_run.sh` stages, run through the channel | a window appears in the desktop session (screenshot via PowerShell `System.Drawing` or the owner's eyes); or a documented NO with the Session-0 evidence |
 
 Report ONE line per lane: **GO** / **NO-GO** / **BLOCKED (reason)**, the
