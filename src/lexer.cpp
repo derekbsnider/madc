@@ -1694,7 +1694,7 @@ TokenBase *Program::tokenize_import_directive()
     return getToken();
 }
 
-// The binder shared by `import` and (until it retires) `#load`. JIT: open the
+// The binder shared by `import` and the low-level `#load`. JIT: open the
 // spelled library into the default symbol scope (madc_module_open: beside the
 // running binary's ../lib first, then the loader's own search) — or, under
 // --no-auto-load or in an emit-only cross madc, bind to the program's own
@@ -6597,8 +6597,9 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == ';' )
 			source.get();
-		    // #load "spelling" as ns; — sugar over the import binder with a
-		    // VERBATIM spelling (retires with the import slice; testdlopen).
+		    // #load "spelling" as ns; — the low-level directive (tooling /
+		    // fixtures, like #pragma): the import binder with the file spelled
+		    // VERBATIM — you name the file, you own the platform. testdlopen.
 		    bind_module_namespace(ns_name, libname, /*link_form=*/false);
 		    return getToken();
 		}

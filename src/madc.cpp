@@ -418,12 +418,15 @@ static void print_usage(const char *prog)
 "                          it is not the same as putting the library first with -I.\n"
 "  -D<name>[=value]        define a preprocessor macro\n"
 "  -I<dir>                 add an include search directory\n"
-"  -l<name>                load lib<name>.so into the global scope so its symbols\n"
-"                          resolve at link time (e.g. -lcrypt). Works with or\n"
-"                          without --project.\n"
-"  --no-auto-load          do not act on #load directives (e.g. an embedded\n"
-"                          header auto-loading libm/libcrypt); link explicitly\n"
-"                          via -l instead. The namespace binds to global scope.\n"
+"  -l<name>                bind a library so its symbols resolve at link time\n"
+"                          (e.g. -lcrypt): a module or bare name spelled for the\n"
+"                          target by the module map (-lm = libm.so.6 /\n"
+"                          libSystem.B.dylib / ucrtbase.dll; lib<name>.<dso>\n"
+"                          otherwise; a path verbatim). The build-line form of\n"
+"                          the source's `import`. Works with or without --project.\n"
+"  --no-auto-load          do not act on `import` / #load library bindings (the\n"
+"                          library is linked, not loaded); link explicitly via\n"
+"                          -l. The namespace binds to the program's own scope.\n"
 "  --no-includes           do not process #include directives\n"
 "  --no-embedded-headers   disable baked-in headers; use real system headers\n"
 "  --no-posix-compat       disable Win64's additive POSIX header supplements\n"
@@ -557,9 +560,9 @@ static void print_usage(const char *prog)
 "  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
 "                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
-"                          dlopen/#load-consumable; PIC, no TEXTREL)\n"
+"                          dlopen/import-consumable; PIC, no TEXTREL)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
-"  -l<name> becomes a DT_NEEDED lib<name>.so in AOT mode (dlopen otherwise).\n";
+"  -l<name> becomes a DT_NEEDED / load command / PE import in AOT mode (opened otherwise).\n";
 }
 
 #ifdef MADC_CROSS_TARGET
@@ -739,10 +742,11 @@ int main(int argc, char **argv)
             prog->registration_policy.enable_posix_compat = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--no-auto-load") == 0) {
-            // Do not act on #load directives: the named library is not loaded
-            // and the namespace binds to the global symbol scope, so linking
-            // is explicit (e.g. via -l). Set on the engine too so --project
-            // translation-unit Programs (created from the engine) inherit it.
+            // Do not act on `import` / #load library bindings: the library is
+            // not opened and the namespace binds to the program's own symbol
+            // scope, so linking is explicit (e.g. via -l). Set on the engine
+            // too so --project translation-unit Programs (created from the
+            // engine) inherit it.
             engine.registration_policy.enable_auto_library_loading = false;
             prog->registration_policy.enable_auto_library_loading = false;
             filearg = i + 1;

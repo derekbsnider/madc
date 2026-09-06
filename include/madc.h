@@ -2417,11 +2417,11 @@ public:
 	bool enable_core_functions = true;
 	bool enable_process_functions = true;
 	bool enable_dlfcn_functions = true;
-	// When false, a #load directive does not dlopen its named library; the
-	// namespace is bound to the global symbol scope instead, so the symbols
-	// must be provided explicitly (e.g. via `madc -l<lib>` or the host). Lets
-	// a build make all linking explicit. (enable_dlfcn_functions=false is the
-	// stricter sandbox knob that forbids #load outright.)
+	// When false, an `import` / #load does not open its library; the
+	// namespace is bound to the program's own symbol scope instead, so the
+	// symbols must be provided explicitly (e.g. via `madc -l<lib>` or the
+	// host). Lets a build make all linking explicit. (enable_dlfcn_functions
+	// =false is the stricter sandbox knob that forbids the binding outright.)
 	bool enable_auto_library_loading = true;
 	bool enable_runtime_eval_source_scope_access = true;
 	bool enable_runtime_eval_expression_scope_access = true;
@@ -5471,7 +5471,7 @@ public:
 					       const char *origin_name);
 	// import (C++20 [cpp.pre] made whole; docs/language/import.md): the
 	// directive-position test, the directive reader, and the binder it
-	// shares with #load until that retires.
+	// shares with the low-level #load (verbatim file spelling).
 	bool import_directive_position();
 	TokenBase *tokenize_import_directive();
 	void bind_module_namespace(const std::string &ns, const std::string &spelling,

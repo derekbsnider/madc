@@ -6971,11 +6971,11 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			 && is_class_object_value(arg))
 			// No declared formal — a varargs tail (`printf("%s", s)`;
 			// an is_varargs FuncDef's LAST parameter is the varargs
-			// MARKER, so the tail starts at size()-1) or a #load'd
-			// zero-declared-param external (`libc::atoi(num)`): a
+			// MARKER, so the tail starts at size()-1) or an import-bound
+			// zero-declared-param member (`libc::atoi(num)`): a
 			// class-object value whose class has c_str() (a madc
 			// string) auto-coerces to const char* — the documented
-			// #load convention (task #67). Classes without c_str keep
+			// import alias-form convention. Classes without c_str keep
 			// their previous lowering (object_cstr_arg falls back to
 			// translate_expr); plain C structs never reach here
 			// (is_class_object_value is user-class-gated).
