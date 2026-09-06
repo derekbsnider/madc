@@ -18,6 +18,15 @@ and modern framework analysis.
 > [universal-application-interaction-rendering-abstraction.md](universal-application-interaction-rendering-abstraction.md);
 > the execution plan is
 > [2026-08-24-ui-interaction-rework-and-texteditor.md](2026-08-24-ui-interaction-rework-and-texteditor.md).
+>
+> **2026-09-06 (owner ruling):** Phase 5 (web backend) and Phase 6 (native
+> GUI) are ONE target — HTML/CSS through the platform's own webview
+> (WebView2 / WKWebView / WebKitGTK / Android WebView), with a browser over a
+> socket as the same page on another transport. Design, recon and slices:
+> [2026-09-06-ui-web-target-and-madcide-gui.md](2026-09-06-ui-web-target-and-madcide-gui.md)
+> (madcide GUI mode is the first customer; `import` replaces `#load` as the
+> platform-agnostic module binding). The GTK4/SDL2 native-widget phase below
+> is superseded.
 
 ## Vision
 
