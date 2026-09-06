@@ -26,6 +26,15 @@ ssize_t read_fd(int fd, void *buffer, std::size_t size);
 // this for CONSISTENT path spellings, never for link identity.
 std::string resolve_real_path(const char *path);
 
+// Host-filesystem path splitting — THE owner of "where does the directory
+// part end". On Windows both '/' and '\' separate (a path may mix them:
+// the include chain concatenates '/' onto user-spelled '\' prefixes); on
+// POSIX '\' is an ordinary filename character, so only '/' splits.
+// dirname keeps the trailing separator ("tools\\madcide\\"), empty when
+// the path has no directory part; basename is the complement.
+std::string host_path_dirname(const std::string &path);
+std::string host_path_basename(const std::string &path);
+
 // Thread-safe local time (POSIX localtime_r). The Win32 arm is the MS
 // localtime_s — NOTE the two spell their argument orders opposite ways,
 // which is exactly why call sites go through this owner. False on failure,

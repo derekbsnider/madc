@@ -1,0 +1,16 @@
+// sizeof's operand may be a parenthesized deref EXPRESSION: `sizeof(*(p))` is
+// the shape Apple's FD_ZERO expands to (`__builtin_bzero(p, sizeof(*(p)))`) and
+// gcc/clang measure it exactly like sizeof(*p). madc's sizeof type-query arm
+// took `*` + anything as its `*ident` fast path and threw "Expecting identifier
+// after '*'" — a legal C operand read as a parse error (darwin D4:
+// teststructinterop, the first FD_ZERO madc ever met). Oracle: gcc -std=c17
+// prints 4 8 1 1 on LP64.
+#define ZERO_OF(p) ((int)sizeof(*(p)))
+int main(void)
+{
+	int *p = 0;
+	long a[3];
+	printf("%d %d %d %d\n", (int)sizeof(*(p)), (int)sizeof(*(a)),
+	       (int)(sizeof(*(p)) == sizeof(int)), ZERO_OF(a) == 8);
+	return 0;
+}

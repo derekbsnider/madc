@@ -1,0 +1,48 @@
+// wchar_t / char16_t / char32_t are DISTINCT fundamental types over integer
+// storage ([basic.fundamental]): a template argument, a class-scope typedef,
+// a deduced pointer or value binding, and an overload set must all keep that
+// identity. madc used to hand out the storage dd itself (int32_t / uint16_t /
+// uint32_t), so ctype<wchar_t>'s explicit specialization went invisible to
+// dd-borne uses and __is_same(int, char_traits<wchar_t>::char_type) said
+// true; and the overload scorer compared scalar pointees by representation,
+// so an instantiation kind<int> served a `const wchar_t*` argument (the pack
+// froze basic_ostream<int32_t, char_traits<wchar_t>> out of _M_write's
+// `const char_type*`). sizeof(wchar_t) is the target's: 4 on LP64
+// (.expect), 2 on win64 (.win64_expect).
+// Oracle: g++ and clang++ print the same on every target.
+#include <string>
+template <class C> struct N { enum { v = 0 }; };
+template <> struct N<wchar_t> { enum { v = 1 }; };
+template <> struct N<int> { enum { v = 2 }; };
+template <> struct N<char16_t> { enum { v = 3 }; };
+template <> struct N<unsigned short> { enum { v = 4 }; };
+template <> struct N<char32_t> { enum { v = 5 }; };
+template <> struct N<unsigned int> { enum { v = 6 }; };
+template <class C> int kind(const C *p) { return N<C>::v; }
+template <class C> int kind2(C c) { return N<C>::v; }
+struct B { typedef int ct; int g(const ct *p) { return kind(p); } };
+struct W { typedef wchar_t ct; int g(const ct *p) { return kind(p); } };
+int main()
+{
+    int i = 0; wchar_t w = 0; unsigned short us = 0; char16_t c16 = 0;
+    unsigned int ui = 0; char32_t c32 = 0;
+    B b; W ww;
+    // the int / unsigned instances register FIRST: a representation tie
+    // would hand every wide argument to them
+    __builtin_printf("%d %d %d %d %d %d | %d %d | %d %d %d\n",
+	kind(&i), kind(&w), kind(&us), kind(&c16), kind(&ui), kind(&c32),
+	b.g(&i), ww.g(&w),
+	kind2(i), kind2(w), kind2(c16));
+    __builtin_printf("%d %d %d %d %d | %d %d %d\n",
+	(int)__is_same(wchar_t, std::char_traits<wchar_t>::char_type),
+	(int)__is_same(int, std::char_traits<wchar_t>::char_type),
+	(int)__is_same(int, wchar_t),
+	(int)__is_same(char16_t, unsigned short),
+	(int)__is_same(char32_t, unsigned int),
+	(int)__is_same(wchar_t, std::wstring::value_type),
+	(int)__is_same(char16_t, std::u16string::value_type),
+	(int)__is_same(char32_t, std::u32string::value_type));
+    __builtin_printf("%d %d %d\n", (int)sizeof(wchar_t), (int)sizeof(char16_t),
+	(int)sizeof(char32_t));
+    return 0;
+}

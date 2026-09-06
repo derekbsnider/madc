@@ -1,0 +1,15 @@
+#include <map>
+#include <cstdio>
+using namespace std;
+
+int main()
+{
+	map<int, int> m;
+	m[1] = 10;
+	m[2] = 20;
+	printf("two distinct: size=%zu m[1]=%d m[2]=%d\n",
+	       m.size(), m[1], m[2]);
+	m[1] = 99;
+	printf("after update: size=%zu m[1]=%d\n", m.size(), m[1]);
+	return 0;
+}

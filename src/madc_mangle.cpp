@@ -85,6 +85,8 @@ static std::string builtin_code(const std::string &t)
 	if (t == "double")              return "d";
 	if (t == "long double")         return "e";
 	if (t == "wchar_t")             return "w";
+	if (t == "char16_t")            return "Ds";
+	if (t == "char32_t")            return "Di";
 	if (t == "...")                 return "z";   // trailing ellipsis
 
 	// Fixed-width / width-carrying aliases. The 64-bit rows follow the
@@ -99,6 +101,14 @@ static std::string builtin_code(const std::string &t)
 	if (t == "uint16_t")            return "t";
 	if (t == "int32_t")             return "i";
 	if (t == "uint32_t")            return "j";
+	// These rows also encode the PINNED dds by NAME (ddINT64/ddUINT64 are
+	// subclasses, exempt from the desugar, so their names land here), and
+	// on darwin those dds stand for the whole long-shaped LP64 family —
+	// size_t through ddUINT64 must stay m (_Znwm, the libc++ export), so
+	// the rows follow the data model ONLY. Darwin's x/y int64_t identity
+	// lives in the DISTINCT dd_platform_longlong() dds, whose "long long"
+	// names encode through the rows above (the mac battery's _Znwy
+	// regression is the tombstone for flipping these by the alias).
 	if (t == "int64_t")             return target_llp64() ? "x" : "l";
 	if (t == "uint64_t")            return target_llp64() ? "y" : "m";
 	if (t == "size_t")              return target_llp64() ? "y" : "m";
@@ -1139,6 +1149,20 @@ MangleStdlib madc_mangle_active_stdlib()
 	return g_std_stdlib;
 }
 
+MangleStdlib madc_mangle_host_stdlib()
+{
+#if defined(_LIBCPP_VERSION)
+	return mstdlibLlvm;
+#else
+	return mstdlibGnu;
+#endif
+}
+
+bool madc_mangle_flavor_differs()
+{
+	return g_std_stdlib != madc_mangle_host_stdlib();
+}
+
 MangleHostFlavorScope::MangleHostFlavorScope()
 	: saved_stdlib(g_std_stdlib), saved_abi_ns(g_std_abi_ns)
 {
@@ -1209,6 +1233,16 @@ std::string DataDef::mangle_scalar_spelling() const
 		return "";
 	if (basetype() != BaseType::btSimple)
 		return "";
+	return target_scalar_spelling();
+}
+
+// The ONE DataType -> target C spelling table (declared in datadef.h). Two
+// askers: the desugar above, for plain scalar aliases, and the type model
+// (madc_stamp_primitive_type_ids), for a PINNED builtin whose display name
+// is not this target's spelling of the type. No alias guard here — that is
+// the desugar's concern, not the table's.
+std::string DataDef::target_scalar_spelling() const
+{
 	switch (rawtype()) {
 	case DataType::dtBOOL:    return "bool";
 	case DataType::dtUINT8:   return "unsigned char";

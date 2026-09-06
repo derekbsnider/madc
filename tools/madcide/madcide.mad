@@ -1,0 +1,52 @@
+// madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
+// Usage: madc tools/madcide/madcide.mad <file> [ro]
+// Run it from the repository root (verb bodies and keybinding profiles
+// load by relative path). The buffer is the texteditor machinery; the
+// diagnostics pane and outline are projections of live compiler data;
+// keybindings are configurable profiles — the full JOE/WordStar set by
+// default (see profiles/joe.keys, the readable truth: WordStar diamond
+// ^B^F^P^N + ^A/^E + ^Z/^X words + ^U/^V screens; ^K S/^K D save ·
+// ^K X save+exit · ^K Q quit · ^C discard · ^K B/^K K block begin/end ·
+// ^K C/^K M/^K Y block copy/move/delete · ^K F find + ^L find next ·
+// ^_ undo / ^^ redo · ^Y/^W delete line/word · ^K R insert file ·
+// ^K L go to line · ^K U/^K V file top/end · ^K H help (the loaded
+// profile, projected) · ^K Z shell · ^K E edit file (buffers, JOE's
+// own key; open path switches, missing path = New File) · ^K ; check ·
+// ^T options (live values, Keymap row swaps profiles) · ^K I outline ·
+// ^K O/^K N/^K P split/next/previous window · ^K A cycle the code view
+// original/MC11/C11 — plus C++ (the reverse render) on a C/C++ buffer —
+// the view seam: read-only lenses over the one document · ^N the MODES
+// palette (owner 2026-08-31): ":" inside it — @modes profile data —
+// enters the vi colon line (:w :q :N :e file :!cmd ...), "v" toggles vi
+// MODAL editing (modes-as-scopes: @normal/@insert scope data + the
+// count/operator grammar; profiles/neovim.keys is the modal personality
+// and loads in normal mode)),
+// Pico-style single chords in the pico profile.
+// The buffer holds a persistent parse handle (madc::parse_open at load,
+// whole-TU refresh on check/save/outline); the status line shows the
+// enclosing function from its RETAINED state — composition never runs
+// the compiler. Syntax colour rides the same handle: madc::parse_spans
+// classification through a colour SCHEME (profiles/*.theme — class ->
+// JOE-vocabulary style spec, data like the keybindings; ^K T swaps
+// schemes by name), refreshed with the parse.
+// Tab cycles focus (buffer / pane / menu); a pane row chosen with enter
+// moves the caret to its line.
+// The gateway seam (design doc 2026-08-31): madcide_core.inc is the
+// SESSION layer (class IdeSession — state + semantics, terminal-free);
+// madcide_client.inc is the TUI CLIENT (the only tui-handle holder:
+// render/input/refresh/suspend + the run_ide loop).
+#include "../texteditor/lined_core.inc"
+#include "../texteditor/editor_events.inc"
+#include "madcide_core.inc"
+#include "madcide_client.inc"
+
+int main(int argc, char **argv)
+{
+    if ( argc < 2 )
+    {
+	printf("usage: madcide <file> [ro]\n");
+	return 1;
+    }
+    run_ide(argv[1], argc > 2);
+    return 0;
+}

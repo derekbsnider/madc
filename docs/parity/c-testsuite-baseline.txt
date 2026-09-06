@@ -1,0 +1,104 @@
+# c-testsuite known-fail baseline (scripts/c_testsuite_lane.sh ratchet).
+# One test filename per line; # comments allowed. The lane is RED on any
+# failure NOT listed here, and reports loudly when a listed test passes so
+# this file only ever shrinks. Seeded 2026-08-28 from the first-ever run:
+# 198/220 passed at feature/win-vt-tui-claude @1add3d11 (bin/madc, JIT).
+#
+# Triage classes (signatures from the seeding run):
+#
+# -- wrong output / silent-wrong-answer class (highest priority follow-up) --
+# 00204: FIXED 2026-08-28 — MIR va_block_arg case 2 (all-SSE block) had no
+#        register-exhaustion check; gate tests/testvastructfpexhaust.mad.
+# 00210: FIXED 2026-08-28 — the generic expression-fptr call arm now accepts
+#        a TokenCast receiver (any ((T(*)())p)() shape, attr'd or not);
+#        gate tests/testcastfnptrcall.mad.
+# 00205: FIXED 2026-08-28 — three stacked defects: exponential operator
+#        datadef() recursion (the hang; gate tests/testaddchaindepth.mad),
+#        unary plus under a cast, and flat-initializer struct-array element
+#        count (both gated by tests/teststaticinitflat.mad).
+#
+# -- parse gaps: declarators --
+# 00089: FIXED 2026-08-29 — typedef-struct arm adopts
+#        parse_fnptr_member_tail; call-of-call fptr value (`go()()`)
+#        via the call-result arm, both stacks (gate:
+#        teststructfnptrtypedef)
+# 00124: FIXED 2026-08-29 — nested parenthesized declarator in the fn-ptr
+#        declaration arm (stash + re-enter, one level per pass) +
+#        fnptr_decl_pieces recurses on a DataDefFPTR return type
+#        (gate: testfnptrretfnptr)
+# 00130: FIXED 2026-08-29 — `(` is a valid declarator head at the comma
+#        continuation (comma_continuation_starts_declarator, ONE rule
+#        both sites); re-entry's fn-ptr/ptr-array arm owns the parens
+#        (gate: testcommaptrarray)
+# 00162: FIXED 2026-08-29 — skip_param_array_qualifiers (both param
+#        bracket scans) + the plain parenthesized pointer param arm
+#        (gate: testparamarrayqual)
+# 00170: FIXED 2026-08-29 — `enum TAG` elaborated-specifier arm in
+#        resolve_declared_type_token + parseFnPtrParams enum arm
+#        (gate: testenumtagtype)
+# 00209: FIXED 2026-08-29 — abstract fn-type params (6.7.6.3p8
+#        adjustment) at both param grammars, array-of-fnptr typedef +
+#        abstract param (one CArray shape), CArray-of-FPTR typedef
+#        emission (gate: testabstractfnparam)
+#
+# -- parse gaps: statements/expressions --
+# 00038: FIXED 2026-08-29 — evaluate_type_query's unparenthesized arm
+#        accepts numeric/char literals (measured from the literal's own
+#        datadef, matching the parenthesized expression fallback)
+#        (gate: testsizeofunary)
+# 00051: FIXED 2026-08-29 — non-compound switch bodies (TokenSWITCH's
+#        single-statement arm; parse_switch_label gains a no-bucket mode)
+#        + label-chained `foo: case 1:` via parse_nested_case_label, the
+#        shared dispatch-entry owner (gate: testswitchnobody)
+# 00103: FIXED 2026-08-29 — parse_deref_paren_operand: ONE owner for the
+#        cast-head discrimination across all four unary-deref arms (also
+#        closed `*(union U*)p` and the N-star arm's `***(expr)`
+#        under-deref) (gate: testderefcastparen)
+# 00120: FIXED 2026-08-29 — resolve_enum_member_type: both member arms
+#        delegate an enum DEFINITION body to TokenENUM::parse and adopt
+#        the re-fed type token (gate: testanonenummember)
+# 00143: FIXED 2026-08-28 — nested case labels become dispatch-only entries
+#        (in_place_label) with a top-of-switch goto jump table; gate
+#        tests/testduffdevice.mad.
+# 00150: FIXED 2026-08-29 — parse_compound_struct_lit adopts the shared
+#        parse_array_designator_initializer for `[idx] =` elements;
+#        positional resume after the slot (gate: testcompoundlitdesig)
+# 00152: FIXED 2026-08-29 — real root was #line, not #error-in-skipped-
+#        group: the directive now renumbers (macro-expanded arg, optional
+#        filename) and expandIfMacros knows predefined __LINE__/__FILE__
+#        (gate: testlinedirective)
+# 00213: FIXED 2026-08-29 — a literal-constant ternary condition prunes
+#        the dead arm at CIR emission (gcc constant-folds these; the dead
+#        stmt-expr-with-labeled-while shape is legal only as skipped code)
+#        (gate: testdeadternary)
+# 00219: FIXED 2026-08-29 — _Generic (parse-time selection, gate:
+#        testgenericsel; usual_arithmetic_result for the parse-side
+#        int+long=long view); then pointee-const type identity in the C
+#        declaration grammar: consume_declarator_stars mints DataDefCONST
+#        (getConstType) for a pending low-level const before deriving the
+#        pointer, so `const char *` != `char *`; lvalue conversion peels
+#        top-level quals; member access through a const pointee peels to
+#        the unqualified layout (gate: testconstpointee). C mode only —
+#        the C++ producer is the const campaign's Phase 3/4.
+#
+# -- CIR/c2mir rejections --
+# 00053: FIXED 2026-08-29 — block-scope struct tag shadowing: shadow
+#        frames (block_struct_tag_shadows, the tag twin of the typedef
+#        frames) restore at block exit; the shadow definition gets a
+#        unique emitted identity (gate: teststructtagshadow)
+# 00095: FIXED 2026-08-29 — real root was &main-before-definition, not
+#        tentative defs (those already merged): Pass 1 no longer skips
+#        main's prototype; var_emit_name keeps proto/def in lock-step in
+#        every wrap mode (gate: testmainaddr)
+# 00202: FIXED 2026-08-29 — ## placemarker: an empty right operand emits
+#        a separating space so the next body token cannot glue (`+`+`+`
+#        re-lexed as `++`); plus unary `+` after a binary operator in the
+#        expression parser (gate: testpastemarker)
+# 00216: FIXED 2026-08-29 — TokenVar::clone, unwrap_scalar_braces emission
+#        pass (gate: testscalarbraceinit), nested `.field` designators via
+#        read_struct_lit's type cursor (gate: testnesteddesignated); then
+#        (a) flex-array init no longer mutates the SHARED struct type —
+#        sizeof stays the base size, c2mir owns the object's extended
+#        storage (gate: testflexsizeof); (b) empty-struct sizeof 0 comes
+#        with the lane's C mode (owner ruling 2026-08-29: the lane runs
+#        --std=gnu11).

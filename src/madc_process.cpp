@@ -17,6 +17,7 @@
 #include <windows.h>
 #else
 #include <sys/wait.h>
+#include <time.h>	/* nanosleep: wait_or_kill's grace slices (MT-3b) */
 #include <unistd.h>
 
 extern char **environ;
@@ -91,7 +92,7 @@ bool make_cloexec_pipe(int fds[2], error *err)
 }
 #endif // !_WIN32
 
-class ProcessPipeChannel : public DataChannel
+class ProcessPipeChannel : public DataChannel, public PollableDataChannel
 {
 public:
 	ProcessPipeChannel(const std::string &channel_name, bool readable, bool writable)
@@ -167,6 +168,11 @@ public:
 	}
 
 	void close() override { close_fd(fd_); }
+
+	intptr_t read_poll_handle() const override
+	{
+		return (readable_ && fd_ >= 0) ? (intptr_t)fd_ : (intptr_t)-1;
+	}
 
 private:
 	std::string name_;
@@ -735,6 +741,22 @@ bool Process::close_stdin(error *err)
 	return true;
 }
 
+#ifndef _WIN32
+// Map a reaped waitpid status to the process-facing exit shape — 128+signal
+// for a killed child — ONE owner (dupaudit family child_status_exit_mapping;
+// gate: check-child-status-map-owner.sh). Shared (madcdis/process.h): the
+// fork-Run reap (parse_run) adopts it too. run_and_wait deliberately stays
+// apart: its contract turns abnormal termination into -1 + err, not a code.
+int map_child_status(int child_status)
+{
+	if ( WIFEXITED(child_status) )
+		return WEXITSTATUS(child_status);
+	if ( WIFSIGNALED(child_status) )
+		return 128 + WTERMSIG(child_status);
+	return -1;
+}
+#endif
+
 bool Process::wait(error *err)
 {
 	if ( !_->has_started )
@@ -768,14 +790,61 @@ bool Process::wait(error *err)
 		return false;
 	}
 	_->has_exited = true;
-	if ( WIFEXITED(child_status) )
-		_->status = WEXITSTATUS(child_status);
-	else if ( WIFSIGNALED(child_status) )
-		_->status = 128 + WTERMSIG(child_status);
-	else
-		_->status = -1;
+	_->status = map_child_status(child_status);
 #endif
 	return true;
+}
+
+bool Process::wait_or_kill(int grace_ms, error *err)
+{
+	if ( !_->has_started )
+	{
+		set_process_error(err, "cannot wait for a process that was not started");
+		return false;
+	}
+	if ( _->has_exited )
+		return true;
+	if ( grace_ms < 0 )
+		grace_ms = 0;
+#ifdef _WIN32
+	// No SIGKILL on Windows (the CRT declares only the six ANSI signals)
+	// and no graceful/forced split — TerminateProcess IS the hard stop, so
+	// the escalation reports the same 128+SIGTERM shape terminate() uses.
+	if ( WaitForSingleObject(_->child, (DWORD)grace_ms) != WAIT_OBJECT_0 )
+		TerminateProcess(_->child, 128 + SIGTERM);
+	return wait(err);
+#else
+	// Poll for a voluntary exit through the grace window (SIGTERM was
+	// already sent by terminate() on this path), then hard-kill. 20ms
+	// slices: prompt for the common quick exit, cheap for the rest.
+	int waited_ms = 0;
+	for ( ;; )
+	{
+		int child_status = 0;
+		pid_t result;
+		do
+			result = ::waitpid(_->child, &child_status, WNOHANG);
+		while ( result < 0 && errno == EINTR );
+		if ( result < 0 )
+		{
+			set_process_errno(err, "process wait failed", errno);
+			return false;
+		}
+		if ( result > 0 )
+		{
+			_->has_exited = true;
+			_->status = map_child_status(child_status);
+			return true;
+		}
+		if ( waited_ms >= grace_ms )
+			break;
+		struct timespec ts = { 0, 20 * 1000 * 1000 };
+		::nanosleep(&ts, NULL);
+		waited_ms += 20;
+	}
+	::kill(_->child, SIGKILL);
+	return wait(err);
+#endif
 }
 
 bool Process::started() const { return _->has_started; }
@@ -958,7 +1027,7 @@ namespace {
 // exec:// as a registry channel: write -> child stdin, read -> child stdout.
 // The child's stderr stays on the parent's (inherit_stderr) so an undrained
 // stderr pipe can never block a chatty child. Never seekable.
-class ExecDataChannel : public DataChannel
+class ExecDataChannel : public DataChannel, public PollableDataChannel
 {
 public:
 	explicit ExecDataChannel(std::unique_ptr<Process> process)
@@ -1020,16 +1089,46 @@ public:
 	{
 		if ( !process_ )
 			return;
-		// Stdin EOF + a closed stdout let the child run out; wait() reaps
-		// it, and the Process dtor SIGKILLs one that never exits.
+		// Stdin EOF + a closed stdout let the child run out; wait()
+		// reaps it. A CANCELLED channel escalates (MT-3b): the child
+		// already got terminate()'s SIGTERM — after a 2s grace for
+		// its handlers to flush, SIGKILL reaps it, so a
+		// SIGTERM-ignoring child can no longer hang this close (the
+		// old shape waited forever; the dtor's SIGKILL never ran).
 		process_->close_stdin();
 		process_->stdout_channel().close_read();
-		process_->wait();
+		if ( cancelled_ )
+			process_->wait_or_kill(2000);
+		else
+			process_->wait();
 		process_.reset();
+	}
+
+	// The waitable READ side is the child's stdout pipe.
+	intptr_t read_poll_handle() const override
+	{
+		if ( !process_ )
+			return (intptr_t)-1;
+		PollableDataChannel *pollable =
+			pollable_surface(&process_->stdout_channel());
+		return pollable ? pollable->read_poll_handle() : (intptr_t)-1;
+	}
+
+	// Stop-this-build (IDE-10b): SIGTERM the child so the following
+	// close() reaps promptly instead of waiting for it to run out.
+	// MT-3b closed the residue: close() on a cancelled channel
+	// escalates to SIGKILL after a 2s grace, so a SIGTERM-ignoring
+	// child cannot hang it.
+	void cancel() override
+	{
+		cancelled_ = true;
+		if ( process_ )
+			process_->terminate();
 	}
 
 private:
 	std::unique_ptr<Process> process_;
+	bool cancelled_ = false;
 };
 
 class ExecChannelFactory : public DataChannelRegistry::Factory

@@ -1,0 +1,25 @@
+/* GNU flexible-array-member initialization extends the INITIALIZED
+   OBJECT's storage, never the type (c-testsuite 00216): sizeof(struct W),
+   sizeof(gw) and sizeof(gw2) all stay the base size even though gw's
+   initializer supplies three flex elements. The old
+   infer_flexible_array_member_counts wrote the inferred count back into
+   the SHARED DataDefSTRUCT, so every later sizeof of the type reported
+   the one variable's extended size. The extended storage itself is
+   c2mir's job (the CIR emits `s[]` plus the initializer list); the flex
+   elements must still be initialized and readable.
+   Oracle: gcc/clang -std=gnu11 print a=4 b=4 c=4 d=4 9. */
+#include <stdio.h>
+
+struct S { int a; };
+struct W { int x; struct S s[]; };
+struct W gw = {1, {2, 3, 4}};
+struct W gw2 = {9};
+
+int main()
+{
+    printf("a=%d\n", (int)sizeof(struct W));
+    printf("b=%d\n", (int)sizeof(gw));
+    printf("c=%d\n", (int)sizeof(gw2));
+    printf("d=%d %d\n", gw.s[2].a, gw2.x);
+    return 0;
+}

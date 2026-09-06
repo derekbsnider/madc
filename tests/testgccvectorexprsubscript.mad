@@ -1,0 +1,34 @@
+#include <stdio.h>
+
+/* A SIMD vector VALUE is subscriptable, not only a vector variable: gcc's
+   vector extension indexes any vector expression to its lane. madc's
+   expression parser read the `[` after a parenthesized vector expression (or a
+   call returning a vector) as a lambda introducer: "Expecting ] in lambda
+   expression". gcc == clang. */
+typedef unsigned v4su __attribute__((vector_size(16)));
+typedef int v4si __attribute__((vector_size(16)));
+typedef short v8hi __attribute__((vector_size(16)));
+typedef float v4sf __attribute__((vector_size(16)));
+
+v4si make(int k)
+{
+    v4si r = {k, k + 1, k + 2, k + 3};
+    return r;
+}
+
+int main(void)
+{
+    v4su a = {1, 2, 3, 4}, b = {10, 20, 30, 40};
+    v4si ia = {-1, -2, -3, -4};
+    v8hi h = {1, 2, 3, 4, 5, 6, 7, 8};
+    v4sf f = {0.5f, 1.5f, 2.5f, 3.5f};
+    int i = 2;
+    printf("%u %u %u\n", (a + b)[2], (a + 1)[0], (b - a)[3]);
+    printf("%d %d\n", (-ia)[1], (~ia)[3]);
+    printf("%u %u\n", (a & b)[i], ((a | b) ^ a)[1]);
+    printf("%d %d\n", (h * h)[7], (h << 2)[3]);
+    printf("%.1f %.1f\n", (f + f)[1], (f * 2.0f)[3]);
+    printf("%d %d\n", make(10)[3], (make(1) + make(2))[0]);
+    printf("%d\n", (a + b)[0] + (a + b)[1] * 2);
+    return 0;
+}

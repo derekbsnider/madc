@@ -1,0 +1,1 @@
+wine ships no sort.exe (the exec:// child dies at spawn, so the byte case is structurally unwaitable); genuine Windows has system32 sort.exe — the win64 lane still covers this test

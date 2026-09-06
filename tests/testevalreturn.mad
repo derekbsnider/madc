@@ -1,0 +1,25 @@
+// Runtime-eval string form: every way a body can produce text must survive
+// the frame boundary (KG gap eval_wrapper_value_return_silent_empty — every
+// COMPUTED text came back empty when the wrapper handed back a payload
+// borrow; the body's cleanup dtors run before the marshalling shim copies
+// the result). The carrier's c_str() and the `return <value>;` coercion are
+// ring-lifetime text (value-first.md's pre-L3 text-return convention).
+int main()
+{
+    var ctx;
+    ctx["greet"] = "hello";
+    var out;
+    madc::eval_string_ctx(out, "var a = \"x\"; return a.c_str();", ctx);
+    printf("cstr=[%s]\n", out);
+    madc::eval_string_ctx(out, "var a = \"y\"; return a;", ctx);
+    printf("var=[%s]\n", out);
+    madc::eval_string_ctx(out, "return \"lit\";", ctx);
+    printf("lit=[%s]\n", out);
+    madc::eval_string_ctx(out, "var a = \"z\"; return format(\"{}!\", a);", ctx);
+    printf("fmt=[%s]\n", out);
+    madc::eval_string_ctx(out, "return greet;", ctx);
+    printf("ctx=[%s]\n", out);
+    madc::eval_string_ctx(out, "var a = \"a\"; a += \"b\"; return a.c_str();", ctx);
+    printf("pluseq=[%s]\n", out);
+    return 0;
+}

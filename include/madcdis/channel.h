@@ -45,6 +45,26 @@ public:
 	bool close_write();
 	void close();
 
+	// Readiness (MT-4b): poll_state() = 1 when read/readline makes
+	// progress NOW (buffered text, readable bytes, or an EOF/error one
+	// read will surface), 0 = it would wait, -1 = dead (failed, closed,
+	// or EOF fully drained). Channels with no waitable read side
+	// (memory, file) always report 1 — their reads never block.
+	// wait_readable() parks the calling task until progress is possible
+	// (true) or the channel is dead (false). read_wait_handle() is the
+	// raw poll handle for event-loop plumbing (a CRT fd; -1 = not
+	// waitable) — int64_t on purpose: the embedded-header twin must
+	// mangle identically on every platform (intptr_t does not).
+	int64_t poll_state();
+	bool wait_readable();
+	int64_t read_wait_handle();
+
+	// Abandon the transfer NOW (IDE-10b stop): tear down the endpoint
+	// without waiting for graceful completion — an exec:// child is
+	// SIGTERMed — so a following close() returns promptly. No-op on
+	// channels with nothing to abandon.
+	void cancel();
+
 private:
 	channel(const channel &);
 	channel &operator=(const channel &);

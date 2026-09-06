@@ -3,9 +3,8 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
-    {"bits/std_format", R"EMBED(#include <string>
-// bits/std_format — std::format / std::print / std::println, the madc
-// dialect's ALWAYS-AVAILABLE C++23 formatting surface. These are
+    {"bits/std_format", R"EMBED(// bits/std_format — std::format / std::print / std::println, the madc
+// dialect's ALWAYS-AVAILABLE C++23-style formatting surface. These are
 // COMPILER-IMPLEMENTED intrinsics (the php::print_r / php::var_dump
 // carrier): declared here, defined NOWHERE — the call site knows every
 // argument's concrete type, so src/cir_format.cpp parses and validates
@@ -15,15 +14,33 @@ static std::map<std::string, std::string> embedded_headers = {
 // <format>/<print> header is ever parsed — that is the point (owner
 // directive 2026-08-19: part of madc, not an expensive header).
 //
+// ZERO INCLUDES — deliberately (owner standing rule 2026-08-21: the
+// --std=madc surface must not depend on C++ system header parsing).
+// format returns ring-lifetime const char* — the c_str() contract
+// (ns_common::ring_slot, 8 thread-local slots): pass it onward or
+// capture into a var/value immediately; a pointer stays valid until
+// its slot recycles. The declaration flips to a `value` return when
+// L3 (value by-value returns) lands. It does NOT return std::string —
+// that would make every dialect TU pay the <string> closure for one
+// declaration (owner ruling 2026-08-21).
+//
 // The lexer's auto-include serves this fragment when a bare
 // format/print/println identifier appears (madc dialect only), so a
 // zero-include script just calls std::println("x={}", x). The oracle
 // for every formatting behavior is libstdc++'s real std::format —
 // tests/unit/rt_format_oracle.inc pins it.
 namespace std {
-    template<class... Ts> std::string format(const char *__fmt, const Ts &...__vs);
+    template<class... Ts> const char *format(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void print(const char *__fmt, const Ts &...__vs);
     template<class... Ts> void println(const char *__fmt, const Ts &...__vs);
+    // C++23 [print.fun] stream-directed forms — std::print(stderr, ...).
+    // The stream parameter is spelled void* so this always-available
+    // fragment never depends on <stdio.h>'s FILE: any FILE* converts
+    // implicitly, while a const char* format string cannot (const loss),
+    // so the two-overload set stays unambiguous. The lowering
+    // (cir_format.cpp) routes on the ARGUMENT's type either way.
+    template<class... Ts> void print(void *__stream, const char *__fmt, const Ts &...__vs);
+    template<class... Ts> void println(void *__stream, const char *__fmt, const Ts &...__vs);
 }
 )EMBED"},
     {"bits/value_stream", R"EMBED(// bits/value_stream — the always-available half of the madc value
@@ -118,13 +135,54 @@ namespace madc {
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
-    {"ns_js", R"EMBED(#include <string>
+    {"ns_js", R"EMBED(// madc embedded <ns_js> — JS-style conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
+extern "C" {
+    int64_t __js_parseInt(const char *, int64_t);
+    const char *__js_btoa_cstr(const char *);
+    const char *__js_atob_cstr(const char *);
+    const char *__js_encodeURIComponent_cstr(const char *);
+    const char *__js_decodeURIComponent_cstr(const char *);
+    const char *__js_stringify_cstr(array *);
+    const char *__js_stringify_indent_cstr(value *, int64_t);
+    int64_t __js_parse(value *, const char *);
+    int64_t __js_parse_vtext(value *, value *);
+}
+
+namespace js {
+    int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
+    // Lean PRIMARIES (dialect-lean.md, JS parity): each returns a NEW
+    // string — ring-lifetime returns (the c_str contract): pass onward
+    // or capture immediately.
+    const char *btoa(const char *input) { return __js_btoa_cstr(input); }
+    const char *atob(const char *input) { return __js_atob_cstr(input); }
+    const char *encodeURIComponent(const char *input) { return __js_encodeURIComponent_cstr(input); }
+    const char *decodeURIComponent(const char *input) { return __js_decodeURIComponent_cstr(input); }
+    // JSON.stringify parity: the whole value kind set (object/array/
+    // string/number/bool/null), recursive; the indent overload is the
+    // `space` parameter (pretty-printed). Ring-lifetime returns. ONE
+    // carrier overload per arity — array/value/var are one type under
+    // --std=madc, so an array&/value& pair would collide.
+    const char *stringify(array &values) { return __js_stringify_cstr(&values); }
+    const char *stringify(value &v, int64_t indent) { return __js_stringify_indent_cstr(&v, indent); }
+    // JSON.parse parity: strict JSON, the whole text or nothing. False =
+    // malformed (JS throws; the pre-L3 mapping is the bool + a null out).
+    bool parse(value &out, const char *text) { return __js_parse(&out, text) != 0; }
+    bool parse(value &out, value &text) { return __js_parse_vtext(&out, &text) != 0; }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
 extern "C" {
     std::string *__js_btoa(std::string *, const char *);
     std::string *__js_atob(std::string *, const char *);
     std::string *__js_encodeURIComponent(std::string *, const char *);
     std::string *__js_decodeURIComponent(std::string *, const char *);
-    int64_t __js_parseInt(const char *, int64_t);
     std::string *__js_stringify(std::string *, array *);
 }
 
@@ -133,9 +191,9 @@ namespace js {
     std::string &atob(std::string &result, const char *input) { return *__js_atob(&result, input); }
     std::string &encodeURIComponent(std::string &result, const char *input) { return *__js_encodeURIComponent(&result, input); }
     std::string &decodeURIComponent(std::string &result, const char *input) { return *__js_decodeURIComponent(&result, input); }
-    int64_t parseInt(const char *text, int64_t radix) { return __js_parseInt(text, radix); }
     std::string &stringify(std::string &result, array &values) { return *__js_stringify(&result, &values); }
 }
+#endif
 )EMBED"},
     {"ns_js.h", R"EMBED(#ifndef MADC_NS_JS_H
 #define MADC_NS_JS_H
@@ -235,6 +293,226 @@ namespace madc {
     void context_set_string(value &ctx, const char *key, const char *v);
     void context_set_array(value &ctx, const char *key, value &v);
 
+    // Compiler data as data: compile (NEVER execute) `source` with the
+    // same front end bin/madc runs, in a policy-clamped child, and return
+    // the compiler's own structured data as a value array. `filename` is
+    // the display name diagnostics carry (default "<source>").
+    //   diagnostics rows: { severity, phase, message, file, line, column }
+    //       (severity "error"/"warning"; empty array = a clean buffer)
+    //   outline rows:     { kind, name, line, column, end_line } for the
+    //       buffer's OWN definitions, source order (kind: "function"
+    //       today; classes/globals are a named extension seat; end_line
+    //       = the closing brace's line)
+    // Nothing in the buffer runs; diagnostics are captured, not printed.
+    // Thread contract: each call owns its child program — the runtime-eval
+    // machinery's confinement.
+    value &diagnostics(value &out, const char *source);
+    value &diagnostics(value &out, const char *source, const char *filename);
+    value &outline(value &out, const char *source);
+    value &outline(value &out, const char *source, const char *filename);
+
+    // The render query (the view seam's code views): parse `source` in the
+    // same policy-clamped child and render its cir_node tree (MC11-IR) as
+    // `target` — the --emit= vocabulary ("c11" | "mc11"). `out` becomes
+    // the rendered text (string kind). False = unknown target, or a buffer
+    // that does not parse/translate (diagnostics captured, not printed).
+    // Nothing in the buffer runs. Thread contract: each call owns its
+    // child program — the runtime-eval machinery's confinement.
+    bool emit(value &out, const char *source, const char *filename,
+	      const char *target);
+
+    // Persistent parse handles: the compiler-data surfaces above given a
+    // LIFETIME. parse_open compiles (NEVER executes) `source` in a child
+    // that stays live behind an int64 handle (>= 1; parse errors do not
+    // fail the open — they are the handle's state); parse_open_file opens
+    // a TU from disk through the lexer's own file ingestion (0 = the path
+    // is unreadable); parse_refresh whole-TU re-parses the handle with
+    // new text; parse_close frees it (handles are never reused within a
+    // run). Queries read the RETAINED state — no re-parse per query:
+    //   parse_outline / parse_check: the outline / diagnostics row shapes
+    //       above, from the last (re)parse.
+    //   parse_enclosing: the INNERMOST of the TU's own function
+    //       definitions containing (line, column) — a { kind, name, line,
+    //       column, end_line } object, or an empty value when none (the
+    //       status line's query).
+    // A project handle groups a compile_commands.json manifest's TUs:
+    // project_open parses every TU on open with the manifest entry's own
+    // -I/-D/--std options — project diagnostics match the --project
+    // build (0 = unreadable manifest; a TU whose file cannot be read, or
+    // whose options are refused, carries handle 0 in the rows);
+    // project_tus returns { file, handle } rows; project_close closes the
+    // project's TU handles with it.
+    // Thread contract: a handle is confined to the thread/program that
+    // opened it — the runtime-eval machinery's confinement.
+    int64_t parse_open(const char *source, const char *filename);
+    int64_t parse_open_file(const char *path);
+    bool parse_refresh(int64_t handle, const char *source);
+    bool parse_close(int64_t handle);
+    value &parse_outline(value &out, int64_t handle);
+    value &parse_check(value &out, int64_t handle);
+    value &parse_enclosing(value &out, int64_t handle, int64_t line,
+			   int64_t column);
+    //   parse_spans: highlight classification rows for the TU's OWN
+    //       tokens from the retained state — { line, column, length,
+    //       class } in source coordinates (1-based line; column = the
+    //       span's START, 0-based — note diagnostics columns elsewhere
+    //       are end-anchored); class names: keyword, ident, number,
+    //       string, comment (from retained trivia), type, function (an
+    //       identifier the tree defines as a function, on its head
+    //       line). Data, not styling: a theme maps names to colours.
+    value &parse_spans(value &out, int64_t handle);
+    // The live-tree build/run pair (the running madc IS the compiler —
+    // ^B never re-parses, never execs a madc binary):
+    //   parse_build: emit a native artifact from the handle's EXISTING
+    //       parsed tree — the buffer the handle was last (re)parsed
+    //       from, unsaved edits included, is what compiles. kind: "exe"
+    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       gets diagnostics rows either way (a false always carries at
+    //       least one error row; a handle whose parse has error rows
+    //       never reaches the emitter). Build rows ride out_diags only —
+    //       parse_check stays parse-pure. True = the artifact was
+    //       written. The emit phase runs without yield points (it
+    //       briefly blocks a cooperative scheduler).
+    //   parse_run: run the handle's parsed tree in a fork() child (the
+    //       child inherits the tree, hands it to the backend, runs main
+    //       with argv[0] = the handle's filename; stdio is INHERITED —
+    //       suspend a tui first). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = it never ran:
+    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
+    //       no fork on this platform (win64). ^C reaches the guest
+    //       alone while it runs (the system(3) discipline).
+    // Thread contract: the runtime-eval confinement — a handle is used
+    // only from the thread/program that opened it.
+    bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		     const char *outpath);
+    int64_t parse_run(int64_t handle);
+    //   lex_spans: the classes LEXING alone answers (keyword, number,
+    //       string, comment — plus what the lexer's own maps know),
+    //       from the buffer text only: no includes ingested, header
+    //       macros stay unexpanded identifiers, no handle, no retained
+    //       state. Milliseconds where a full C++ parse is seconds —
+    //       the first-paint colour source; the parse handle's spans
+    //       replace these when the parse lands (staged parsing stage 1,
+    //       docs/plans/2026-08-26-madcide-staged-parse-and-state.md).
+    value &lex_spans(value &out, const char *text, const char *filename);
+    int64_t project_open(const char *manifest);
+    value &project_tus(value &out, int64_t handle);
+    bool project_close(int64_t handle);
+    // The project build/run pair (^B correlation: with a manifest open,
+    // Build = the --project build):
+    //   project_build: the --project AOT lane IN-PROCESS — every TU
+    //       compiled with its manifest options, ONE MIR-assembled native
+    //       image ("exe"; "obj" = per-TU objects, so an explicit outpath
+    //       with more than one TU is refused — the CLI's rule). Empty
+    //       outpath = a.out ("exe") / per-TU naming ("obj"). out_diags
+    //       gets rows either way; a false always carries at least one
+    //       error row — per-TU DETAIL comes from a project CHECK
+    //       (project_open + parse_check per TU), run one first. The
+    //       whole call has no yield points (it blocks a cooperative
+    //       scheduler for the build's duration).
+    //   project_run: the --project JIT lane in a fork() child (parse,
+    //       link, run the entry; stdio INHERITED — suspend a tui first;
+    //       ^C reaches the guest alone). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = never ran: -1
+    //       unreadable manifest, -2 empty manifest, -3 fork/spawn
+    //       failed. Windows: a child OF SELF runs the --project lane
+    //       (no fork; the frozen-project twin of parse_run's
+    //       --run-frozen is a named residue).
+    // Thread contract: the runtime-eval confinement.
+    bool project_build(value &out_diags, const char *manifest,
+		       const char *kind, const char *outpath);
+    int64_t project_run(const char *manifest);
+
+    // The build surface (madcide IDE-10c): the CLI's AOT lane run
+    // IN-PROCESS — parse `path` in a child Program (relative #includes
+    // resolve as the CLI's do), emit a native artifact at `outpath`.
+    // kind: "exe" = PIE executable (the CLI -o default), "obj" =
+    // relocatable object (-r -o). out_diags gets diagnostics rows (the
+    // diagnostics() shape) either way; a failure ALWAYS carries at least
+    // one error row. True = the artifact was written. The parse phase
+    // cooperates with `go` tasks; the emit phase runs without yield
+    // points (it briefly blocks a cooperative scheduler).
+    // Thread contract: the runtime-eval confinement — each call owns
+    // its child Program.
+    bool build_native(value &out_diags, const char *path, const char *kind,
+		      const char *outpath);
+    // The running compiler's own resolved executable path — "run this
+    // program" spawns a child OF SELF, never a PATH madc. Stable for the
+    // process lifetime; "" = the platform probe failed. Concurrent reads
+    // are safe.
+    const char *compiler_path();
+
+    // Value channels between cooperative tasks (MT-2; the Go contract —
+    // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
+    // rendezvous; send/recv PARK the running task and are the blocking
+    // verbs `go` composes with. recv returns false only when the channel
+    // is closed AND drained (out becomes null); send on a closed channel
+    // and close of a closed channel throw (catch (const char *)). Values
+    // are COPIED through the channel — share by communicating.
+    int64_t chan_make(int64_t capacity);
+    bool chan_send(int64_t chan, value &v);
+    bool chan_recv(value &out, int64_t chan);
+    void chan_close(int64_t chan);
+    int64_t chan_len(int64_t chan);
+
+    // Fan-in select (MT-4; recv side — send cases and the keyword arrive
+    // with MT-5): `chans` = array of handles; parks until a case can
+    // receive; returns the fired index with the value in `out`.
+    // DETERMINISTIC: the lowest-index ready case wins. Closed-and-drained
+    // cases are disabled; -1 + null when every case is dead (the fan-in
+    // terminator). try_recv is the default-arm equivalent: 1 = got a
+    // value, 0 = would block, -1 = closed and drained.
+    int64_t chan_select(value &out, value &chans);
+    int64_t chan_try_recv(value &out, int64_t chan);
+
+    // Park this task for `ms` milliseconds of SCHEDULER time (real
+    // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
+    // jumps when only sleepers remain, so timed tests run instantly).
+    void sleep_ms(int64_t ms);
+
+    // Drain the task root scope NOW: run ready tasks until none remain
+    // live (idempotent; a no-op when nothing was spawned). The interim
+    // structured-join verb until MT-3 scopes land — for tearing down
+    // resources a still-running task writes to (main's end joins anyway,
+    // but only AFTER your teardown code ran). task_live = the live
+    // spawned-but-unfinished count (diagnostics; a poll loop's guard).
+    void task_drain();
+    int64_t task_live();
+
+    // Structured scopes + cancellation (MT-3; Kotlin's ownership over
+    // Go's spelling). scope_begin opens a scope and makes it this task's
+    // innermost: every `go` between begin and end attaches to it (no open
+    // scope = the root scope main's end drains — the pre-scope
+    // semantics). scope_end JOINS: it blocks until every attached task —
+    // and, transitively, every task of scopes opened inside — has
+    // finished, then throws the FIRST uncaught member error (as text,
+    // catch (const char *)), else throws "madc: task cancelled" when the
+    // scope was cancelled, else returns. Only the opening task may end a
+    // scope, innermost-first. A member's uncaught error CANCELS its
+    // siblings (the failed-child rule); the error rethrows at the join.
+    // scope_cancel requests cancellation of the scope's whole subtree
+    // (any task may call it; returns immediately): every member's NEXT
+    // blocking verb — chan send/recv/select, sleep_ms, channel reads —
+    // throws "madc: task cancelled" (sticky; a task spawned into a
+    // cancelled scope is born cancelled; cleanup after cancellation must
+    // not use blocking verbs). yield() is NOT a cancellation point;
+    // compute loops poll cancelled() — true when this task, or any scope
+    // it currently has open, is cancel-requested.
+    // Thread contract: single scheduler thread, cooperative (the task
+    // runtime's contract); handles are task-runtime-global.
+    int64_t scope_begin();
+    void scope_end(int64_t scope);
+    void scope_cancel(int64_t scope);
+    bool cancelled();
+
+    // Line input, value-first: read one '\n'-terminated line from stdin
+    // into a string-kind value (newline consumed, not stored). Returns
+    // false only when NOTHING was read (clean EOF) — a final unterminated
+    // line still returns true with its text, and an empty line returns
+    // true with "". The std::getline(cin, string&) contract, carried by
+    // the carrier.
+    bool getline(value &out);
+
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes
     // this header in this translation unit (libstdc++/libc++ guard).
@@ -323,60 +601,143 @@ namespace madc {
 	bool close_write();
 	void close();
 
+	// Readiness (MT-4b): poll_state() = 1 when read/readline makes
+	// progress NOW (buffered text, readable bytes, or the one EOF/error
+	// observation a read surfaces), 0 = it would wait, -1 = dead
+	// (failed, closed, or EOF fully drained). Channels with no waitable
+	// read side (memory, file) always report 1 — their reads never
+	// block. wait_readable() parks the calling task until progress is
+	// possible (true) or the channel is dead (false). read_wait_handle()
+	// is the raw poll handle for event-loop plumbing (a CRT fd; -1 =
+	// not waitable).
+	int64_t poll_state();
+	bool wait_readable();
+	int64_t read_wait_handle();
+
+	// Abandon the transfer NOW (stop-this-build): tear down the
+	// endpoint without waiting for graceful completion — an exec://
+	// child is SIGTERMed — so a following close() returns promptly.
+	void cancel();
+
     private:
 	channel(const channel &);
 	channel &operator=(const channel &);
 
 	void *impl_;
     };
+
+    // Byte-endpoint select case (MT-4b): register a channel whose READ
+    // readiness selects beside value channels in chan_select. The case
+    // FIRES with out = null when read/readline would make progress — the
+    // script then reads from the channel object it holds. A dead endpoint
+    // (EOF drained, or failed) DISABLES like a closed-and-drained value
+    // channel. Register once and reuse the handle; the channel object must
+    // outlive it. Throws when the channel has no waitable read side
+    // (memory/file reads never block, so there is nothing to wait on).
+    int64_t chan_readable(channel &c);
 }
 )EMBED"},
-    {"ns_perl", R"EMBED(#include <string>
+    {"ns_perl", R"EMBED(// madc embedded <ns_perl> — Perl-style string + list conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*/array-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    int64_t __perl_chop(std::string *);
-    int64_t __perl_chomp(std::string *);
     void __perl_grep(array *, const char *, array *);
     void __perl_glob(array *, const char *);
     int64_t __perl_scalar(array *);
     void __perl_push(array *, const char *);
+    void __perl_unshift(array *, const char *);
+    void __perl_split(array *, const char *, const char *);
+    int64_t __perl_index(const char *, const char *);
+    int64_t __perl_rindex(const char *, const char *);
+    int64_t __perl_length(const char *);
+    int64_t __perl_chop_value(value *);
+    int64_t __perl_chomp_value(value *);
+    value *__perl_pop_value(value *, array *);
+    value *__perl_shift_value(value *, array *);
+    const char *__perl_join_cstr(const char *, array *);
+    const char *__perl_reverse_cstr(const char *);
+    const char *__perl_reverse_value(value *);
+    const char *__perl_lc_cstr(const char *);
+    const char *__perl_lc_value(value *);
+    const char *__perl_uc_cstr(const char *);
+    const char *__perl_uc_value(value *);
+    const char *__perl_ucfirst_cstr(const char *);
+    const char *__perl_ucfirst_value(value *);
+    const char *__perl_lcfirst_cstr(const char *);
+    const char *__perl_lcfirst_value(value *);
+    const char *__perl_substr_cstr(const char *, int64_t, int64_t);
+    const char *__perl_substr_value(value *, int64_t, int64_t);
+}
+
+namespace perl {
+    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
+    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
+    int64_t scalar(array &values) { return __perl_scalar(&values); }
+    void push(array &values, const char *text) { __perl_push(&values, text); }
+    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
+    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
+    int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
+    int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
+    int64_t length(const char *text) { return __perl_length(text); }
+    // Lean PRIMARIES (dialect-lean.md, Perl parity). chop/chomp MUTATE the
+    // value's text — that IS Perl — returning the removed char / count.
+    // pop/shift return the ELEMENT via a value out-param (empty leaves it
+    // null). Text returns are ring-lifetime (the c_str contract): pass
+    // onward or capture immediately.
+    int64_t chop(value &s) { return __perl_chop_value(&s); }
+    int64_t chomp(value &s) { return __perl_chomp_value(&s); }
+    value &pop(value &out, array &values) { return *__perl_pop_value(&out, &values); }
+    value &shift(value &out, array &values) { return *__perl_shift_value(&out, &values); }
+    // Perl parity signature: join(separator, list).
+    const char *join(const char *separator, array &values) { return __perl_join_cstr(separator, &values); }
+    const char *reverse(value &s) { return __perl_reverse_value(&s); }
+    const char *reverse(const char *s) { return __perl_reverse_cstr(s); }
+    const char *lc(value &s) { return __perl_lc_value(&s); }
+    const char *lc(const char *s) { return __perl_lc_cstr(s); }
+    const char *uc(value &s) { return __perl_uc_value(&s); }
+    const char *uc(const char *s) { return __perl_uc_cstr(s); }
+    const char *ucfirst(value &s) { return __perl_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __perl_ucfirst_cstr(s); }
+    const char *lcfirst(value &s) { return __perl_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __perl_lcfirst_cstr(s); }
+    const char *substr(value &text, int64_t offset, int64_t length) { return __perl_substr_value(&text, offset, length); }
+    const char *substr(const char *text, int64_t offset, int64_t length) { return __perl_substr_cstr(text, offset, length); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    int64_t __perl_chop(std::string *);
+    int64_t __perl_chomp(std::string *);
     std::string *__perl_pop(std::string *, array *);
     std::string *__perl_shift(std::string *, array *);
-    void __perl_unshift(array *, const char *);
     std::string *__perl_join(std::string *, const char *, array *);
-    void __perl_split(array *, const char *, const char *);
     std::string *__perl_reverse(std::string *);
     std::string *__perl_lc(std::string *);
     std::string *__perl_uc(std::string *);
     std::string *__perl_ucfirst(std::string *);
     std::string *__perl_lcfirst(std::string *);
-    int64_t __perl_index(const char *, const char *);
-    int64_t __perl_rindex(const char *, const char *);
-    int64_t __perl_length(const char *);
     std::string *__perl_substr(std::string *, const char *, int64_t, int64_t);
 }
 
 namespace perl {
     int64_t chop(std::string &s) { return __perl_chop(&s); }
     int64_t chomp(std::string &s) { return __perl_chomp(&s); }
-    void grep(array &dest, const char *needle, array &src) { __perl_grep(&dest, needle, &src); }
-    void glob(array &out, const char *pattern) { __perl_glob(&out, pattern); }
-    int64_t scalar(array &values) { return __perl_scalar(&values); }
-    void push(array &values, const char *text) { __perl_push(&values, text); }
     std::string &pop(std::string &result, array &values) { return *__perl_pop(&result, &values); }
     std::string &shift(std::string &result, array &values) { return *__perl_shift(&result, &values); }
-    void unshift(array &values, const char *text) { __perl_unshift(&values, text); }
     std::string &join(std::string &result, const char *separator, array &values) { return *__perl_join(&result, separator, &values); }
-    void split(array &out, const char *pattern, const char *text) { __perl_split(&out, pattern, text); }
     std::string &reverse(std::string &s) { return *__perl_reverse(&s); }
     std::string &lc(std::string &s) { return *__perl_lc(&s); }
     std::string &uc(std::string &s) { return *__perl_uc(&s); }
     std::string &ucfirst(std::string &s) { return *__perl_ucfirst(&s); }
     std::string &lcfirst(std::string &s) { return *__perl_lcfirst(&s); }
-    int64_t index(const char *haystack, const char *needle) { return __perl_index(haystack, needle); }
-    int64_t rindex(const char *haystack, const char *needle) { return __perl_rindex(haystack, needle); }
-    int64_t length(const char *text) { return __perl_length(text); }
     std::string &substr(std::string &result, const char *text, int64_t offset, int64_t length) { return *__perl_substr(&result, text, offset, length); }
 }
+#endif
 )EMBED"},
     {"ns_perl.h", R"EMBED(#ifndef MADC_NS_PERL_H
 #define MADC_NS_PERL_H
@@ -437,68 +798,94 @@ inline std::string &substr(std::string &result, const char *text, int64_t offset
 
 #endif
 )EMBED"},
-    {"ns_php", R"EMBED(#include <string>
+    {"ns_php", R"EMBED(// madc embedded <ns_php> — PHP-style string + array conveniences.
+// Declaration-only: the php:: publics resolve mangled-direct (Itanium
+// symbols) or route through the extern-C __php_* runtime entries below
+// (cpp-first-api.md).
+//
+// DIALECT-LEAN (owner standing rule 2026-08-21: the --std=madc surface
+// must not depend on C++ system header parsing): this header deliberately
+// does NOT include <string>, so php::-using dialect scripts never pay the
+// <string> closure. The primary surface is typed in value / array /
+// const char*. The std::string overloads below are C++-INTEROP
+// CONVENIENCES, declared only when <string> was included BEFORE this
+// header (gated on the standard library's own include guards — the
+// <ns_madc> convention). Auto-include orders <string> first, so scripts
+// with no explicit includes get them whenever they use a `string`;
+// explicit includers write `#include <string>` above `#include <ns_php>`.
 extern "C" {
-    std::string *__php_trim(std::string *);
-    std::string *__php_ltrim(std::string *);
-    std::string *__php_rtrim(std::string *);
-    std::string *__php_chop(std::string *);
-    std::string *__php_ucfirst(std::string *);
-    std::string *__php_lcfirst(std::string *);
-    std::string *__php_str_repeat(std::string *, int64_t);
-    std::string *__php_str_replace(std::string *, std::string *, std::string *);
-    std::string *__php_str_pad(std::string *, int64_t, std::string *);
-    int64_t __php_str_word_count(std::string *);
-    std::string *__php_nl2br(std::string *);
-    std::string *__php_str_rot13(std::string *);
-    std::string *__php_chunk_split(std::string *, int64_t, std::string *);
-    std::string *__php_number_format(std::string *, int64_t, std::string *);
-    std::string *__php_wordwrap(std::string *, int64_t, std::string *);
-
     void __php_explode(array *, const char *, const char *);
-    std::string *__php_implode(std::string *, const char *, array *);
     int64_t __php_count(array *);
     int64_t __php_array_push(array *, const char *);
     int64_t __php_array_push_int(array *, int64_t);
     int64_t __php_array_push_real(array *, double);
     int64_t __php_array_push_bool(array *, bool);
     int64_t __php_array_push_value(array *, value *);
-    std::string *__php_array_pop(std::string *, array *);
-    std::string *__php_array_get(std::string *, array *, int64_t);
     int64_t __php_array_get_int(array *, int64_t);
     const char *__php_array_get_cstr(array *, int64_t);
     void __php_array_reverse(array *);
     int64_t __php_in_array(const char *, array *);
+    int64_t __php_array_key_exists(const char *, value *);
+    int64_t __php_array_key_exists_int(int64_t, value *);
+    const char *__php_strtolower(value *);
+    const char *__php_strtolower_cstr(const char *);
+    const char *__php_strtoupper(value *);
+    const char *__php_strtoupper_cstr(const char *);
+    const char *__php_ucfirst_value(value *);
+    const char *__php_ucfirst_cstr2(const char *);
+    int64_t __php_ctype_digit(value *);
+    int64_t __php_ctype_digit_cstr(const char *);
+    int64_t __php_file_exists(value *);
+    int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_file_get_contents(value *, const char *);
+    int64_t __php_file_get_contents_vpath(value *, value *);
+    int64_t __php_file_put_contents_cstr(const char *, const char *);
+    int64_t __php_file_put_contents_value(const char *, value *);
+    int64_t __php_intval(value *);
+    int64_t __php_intval_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
     void __php_array_unique(array *);
-    std::string *__php_array_shift(std::string *, array *);
     void __php_array_unshift(array *, const char *);
     void __php_sort(array *);
     void __php_rsort(array *);
     void __php_array_slice(array *, array *, int64_t, int64_t);
     void __php_array_merge(array *, array *);
     void __php_array_column(array *, array *, int64_t);
+    const char *__php_trim_cstr(const char *);
+    const char *__php_trim_value(value *);
+    const char *__php_ltrim_cstr(const char *);
+    const char *__php_ltrim_value(value *);
+    const char *__php_rtrim_cstr(const char *);
+    const char *__php_rtrim_value(value *);
+    const char *__php_lcfirst_cstr(const char *);
+    const char *__php_lcfirst_value(value *);
+    const char *__php_nl2br_cstr(const char *);
+    const char *__php_nl2br_value(value *);
+    const char *__php_str_rot13_cstr(const char *);
+    const char *__php_str_rot13_value(value *);
+    const char *__php_str_repeat_cstr(const char *, int64_t);
+    const char *__php_str_repeat_value(value *, int64_t);
+    const char *__php_str_replace_cstr(const char *, const char *, const char *);
+    const char *__php_str_replace_value(const char *, const char *, value *);
+    const char *__php_str_pad_cstr(const char *, int64_t, const char *);
+    const char *__php_str_pad_value(value *, int64_t, const char *);
+    int64_t __php_str_word_count_cstr(const char *);
+    int64_t __php_str_word_count_value(value *);
+    const char *__php_chunk_split_cstr(const char *, int64_t, const char *);
+    const char *__php_chunk_split_value(value *, int64_t, const char *);
+    const char *__php_number_format_sep(int64_t, const char *);
+    const char *__php_wordwrap_cstr(const char *, int64_t, const char *);
+    const char *__php_wordwrap_value(value *, int64_t, const char *);
+    const char *__php_dirname_cstr(const char *, int64_t);
+    const char *__php_dirname_value(value *, int64_t);
+    const char *__php_implode_cstr(const char *, array *);
+    value *__php_array_pop_value(value *, array *);
+    value *__php_array_shift_value(value *, array *);
+    void __php_array_get_value(array *, int64_t, value *);
 }
 
 namespace php {
-    std::string &trim(std::string &s);
-    std::string &ltrim(std::string &s);
-    std::string &rtrim(std::string &s);
-    std::string &chop(std::string &s);
-    std::string &ucfirst(std::string &s);
-    std::string &lcfirst(std::string &s);
-    std::string &str_repeat(std::string &s, int64_t count);
-    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
-    std::string &str_pad(std::string &s, int64_t length, std::string &pad);
-    int64_t str_word_count(std::string &s);
-    std::string &nl2br(std::string &s);
-    std::string &str_rot13(std::string &s);
-    std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator);
-    std::string &number_format(std::string &result, int64_t number, std::string &separator);
-    std::string &wordwrap(std::string &s, int64_t width, std::string &separator);
-
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
-    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
     int64_t count(array &values) { return __php_count(&values); }
     // array_push is ONE overloaded name, PHP parity: it accepts any value
     // type and RETURNS the array's new element count. ONE carrier overload
@@ -511,16 +898,106 @@ namespace php {
     int64_t array_push(array &values, double v) { return __php_array_push_real(&values, v); }
     int64_t array_push(array &values, bool v) { return __php_array_push_bool(&values, v); }
     int64_t array_push(array &values, value &v) { return __php_array_push_value(&values, &v); }
-    int64_t array_push(array &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
-    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
-    std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
     int64_t array_get_int(array &values, int64_t index) { return __php_array_get_int(&values, index); }
     const char *array_get_cstr(array &values, int64_t index) { return __php_array_get_cstr(&values, index); }
     void array_reverse(array &values) { __php_array_reverse(&values); }
     int64_t in_array(const char *needle, array &values) { return __php_in_array(needle, &values); }
+    // PHP parity (key FIRST): does the key exist in the container? The
+    // object kind answers its map; an int key answers the array kind's
+    // index range (and the int key's decimal spelling on an object bag).
+    // Never vivifies — the existence question beside the vivifying keyed
+    // subscript bag["k"].
+    bool array_key_exists(const char *key, value &values) { return __php_array_key_exists(key, &values) != 0; }
+    bool array_key_exists(int64_t key, value &values) { return __php_array_key_exists_int(key, &values) != 0; }
+    // PHP-parity case transforms: byte-wise ASCII (PHP 8 semantics,
+    // locale-independent). Ring-lifetime returns (the c_str contract):
+    // pass onward or capture into a var/value immediately.
+    const char *strtolower(value &s) { return __php_strtolower(&s); }
+    const char *strtolower(const char *s) { return __php_strtolower_cstr(s); }
+    const char *strtoupper(value &s) { return __php_strtoupper(&s); }
+    const char *strtoupper(const char *s) { return __php_strtoupper_cstr(s); }
+    const char *ucfirst(value &s) { return __php_ucfirst_value(&s); }
+    const char *ucfirst(const char *s) { return __php_ucfirst_cstr2(s); }
+    // PHP parity: true iff non-empty and every byte is 0-9.
+    bool ctype_digit(value &s) { return __php_ctype_digit(&s) != 0; }
+    bool ctype_digit(const char *s) { return __php_ctype_digit_cstr(s) != 0; }
+    // file_exists — true for an existing file OR directory (PHP parity;
+    // no stat-cache emulation, madc answers the live filesystem).
+    bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
+    bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+
+    // file_get_contents — the whole file as a string-kind value, binary-
+    // faithful (PHP parity). PHP's string|false union takes the pre-L3
+    // carrier mapping: contents arrive in OUT, the bool return is the
+    // false channel (false = failure, out untouched).
+    bool file_get_contents(value &out, const char *filename) { return __php_file_get_contents(&out, filename) != 0; }
+    bool file_get_contents(value &out, value &filename) { return __php_file_get_contents_vpath(&out, &filename) != 0; }
+
+    // file_put_contents — create/truncate + write; BYTES WRITTEN, with
+    // PHP's int|false mapped to -1 for the false channel (pre-L3).
+    // Scalar data coerces to its text; containers answer -1.
+    int64_t file_put_contents(const char *filename, const char *data) { return __php_file_put_contents_cstr(filename, data); }
+    int64_t file_put_contents(const char *filename, value &data) { return __php_file_put_contents_value(filename, &data); }
+    // PHP parity (base 10): longest digit prefix converts; int passes
+    // through, real truncates, bool 1/0, containers 0.
+    int64_t intval(value &v) { return __php_intval(&v); }
+    int64_t intval(const char *s) { return __php_intval_cstr(s); }
+    // Lean PRIMARIES (dialect-lean.md, PHP parity): PHP string functions
+    // return a NEW string and never mutate the subject — these return
+    // ring-lifetime text (the c_str contract: pass onward or capture
+    // immediately). The guarded std::string& forms below are C++-interop
+    // conveniences that mutate in place (historical shape); the lean
+    // forms are the semantics of record.
+    const char *trim(value &s) { return __php_trim_value(&s); }
+    const char *trim(const char *s) { return __php_trim_cstr(s); }
+    const char *ltrim(value &s) { return __php_ltrim_value(&s); }
+    const char *ltrim(const char *s) { return __php_ltrim_cstr(s); }
+    const char *rtrim(value &s) { return __php_rtrim_value(&s); }
+    const char *rtrim(const char *s) { return __php_rtrim_cstr(s); }
+    // PHP chop is an alias of rtrim.
+    const char *chop(value &s) { return __php_rtrim_value(&s); }
+    const char *chop(const char *s) { return __php_rtrim_cstr(s); }
+    const char *lcfirst(value &s) { return __php_lcfirst_value(&s); }
+    const char *lcfirst(const char *s) { return __php_lcfirst_cstr(s); }
+    const char *nl2br(value &s) { return __php_nl2br_value(&s); }
+    const char *nl2br(const char *s) { return __php_nl2br_cstr(s); }
+    const char *str_rot13(value &s) { return __php_str_rot13_value(&s); }
+    const char *str_rot13(const char *s) { return __php_str_rot13_cstr(s); }
+    const char *str_repeat(value &s, int64_t count) { return __php_str_repeat_value(&s, count); }
+    const char *str_repeat(const char *s, int64_t count) { return __php_str_repeat_cstr(s, count); }
+    // PHP argument order: (search, replace, subject).
+    const char *str_replace(const char *search, const char *replace, value &subject) { return __php_str_replace_value(search, replace, &subject); }
+    const char *str_replace(const char *search, const char *replace, const char *subject) { return __php_str_replace_cstr(search, replace, subject); }
+    const char *str_pad(value &s, int64_t length, const char *pad) { return __php_str_pad_value(&s, length, pad); }
+    const char *str_pad(const char *s, int64_t length, const char *pad) { return __php_str_pad_cstr(s, length, pad); }
+    int64_t str_word_count(value &s) { return __php_str_word_count_value(&s); }
+    int64_t str_word_count(const char *s) { return __php_str_word_count_cstr(s); }
+    const char *chunk_split(value &s, int64_t chunklen, const char *separator) { return __php_chunk_split_value(&s, chunklen, separator); }
+    const char *chunk_split(const char *s, int64_t chunklen, const char *separator) { return __php_chunk_split_cstr(s, chunklen, separator); }
+    const char *number_format(int64_t number, const char *separator) { return __php_number_format_sep(number, separator); }
+    const char *wordwrap(value &s, int64_t width, const char *brk) { return __php_wordwrap_value(&s, width, brk); }
+    const char *wordwrap(const char *s, int64_t width, const char *brk) { return __php_wordwrap_cstr(s, width, brk); }
+    // PHP parity (zend_dirname): the parent path, `levels` times up
+    // (levels defaults to 1; PHP 8's ValueError on levels < 1 maps
+    // pre-L3 to a loud stderr refusal + ""). "." when no separator;
+    // trailing separators trimmed; on a WINDOWS HOST '\' separates too
+    // and a drive prefix survives. Ring-lifetime return (the c_str
+    // contract): pass onward or capture immediately.
+    const char *dirname(value &path) { return __php_dirname_value(&path, 1); }
+    const char *dirname(value &path, int64_t levels) { return __php_dirname_value(&path, levels); }
+    const char *dirname(const char *path) { return __php_dirname_cstr(path, 1); }
+    const char *dirname(const char *path, int64_t levels) { return __php_dirname_cstr(path, levels); }
+    // PHP parity signature: implode(separator, array) -> the joined text.
+    const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
+    // Value-out element returns (the python::format out-param shape,
+    // pre-L3): PHP's array_pop/array_shift/array_get return the element
+    // itself (mixed), which only the carrier can represent. Empty (or
+    // degraded) containers leave `out` null.
+    value &array_pop(value &out, array &values) { return *__php_array_pop_value(&out, &values); }
+    value &array_shift(value &out, array &values) { return *__php_array_shift_value(&out, &values); }
+    value &array_get(value &out, array &values, int64_t index) { __php_array_get_value(&values, index, &out); return out; }
     int64_t array_search(const char *needle, array &values) { return __php_array_search(needle, &values); }
     void array_unique(array &values) { __php_array_unique(&values); }
-    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
     void array_unshift(array &values, const char *text) { __php_array_unshift(&values, text); }
     void sort(array &values) { __php_sort(&values); }
     void rsort(array &values) { __php_rsort(&values); }
@@ -546,6 +1023,56 @@ namespace php {
     // PHP's var_dump returns void and is variadic.
     template<class... Ts> void var_dump(const Ts &...vs);
 }
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header (the <ns_madc> guard convention above).
+extern "C" {
+    std::string *__php_trim(std::string *);
+    std::string *__php_ltrim(std::string *);
+    std::string *__php_rtrim(std::string *);
+    std::string *__php_chop(std::string *);
+    std::string *__php_ucfirst(std::string *);
+    std::string *__php_lcfirst(std::string *);
+    std::string *__php_str_repeat(std::string *, int64_t);
+    std::string *__php_str_replace(std::string *, std::string *, std::string *);
+    std::string *__php_str_pad(std::string *, int64_t, std::string *);
+    int64_t __php_str_word_count(std::string *);
+    std::string *__php_nl2br(std::string *);
+    std::string *__php_str_rot13(std::string *);
+    std::string *__php_chunk_split(std::string *, int64_t, std::string *);
+    std::string *__php_number_format(std::string *, int64_t, std::string *);
+    std::string *__php_wordwrap(std::string *, int64_t, std::string *);
+    std::string *__php_implode(std::string *, const char *, array *);
+    std::string *__php_array_pop(std::string *, array *);
+    std::string *__php_array_get(std::string *, array *, int64_t);
+    std::string *__php_array_shift(std::string *, array *);
+}
+
+namespace php {
+    std::string &trim(std::string &s);
+    std::string &ltrim(std::string &s);
+    std::string &rtrim(std::string &s);
+    std::string &chop(std::string &s);
+    std::string &ucfirst(std::string &s);
+    std::string &lcfirst(std::string &s);
+    std::string &str_repeat(std::string &s, int64_t count);
+    std::string &str_replace(std::string &search, std::string &replace, std::string &subject);
+    std::string &str_pad(std::string &s, int64_t length, std::string &pad);
+    int64_t str_word_count(std::string &s);
+    std::string &nl2br(std::string &s);
+    std::string &str_rot13(std::string &s);
+    std::string &chunk_split(std::string &s, int64_t chunklen, std::string &separator);
+    std::string &number_format(std::string &result, int64_t number, std::string &separator);
+    std::string &wordwrap(std::string &s, int64_t width, std::string &separator);
+    std::string &implode(std::string &result, const char *glue, array &values) { return *__php_implode(&result, glue, &values); }
+    int64_t array_push(array &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
+    std::string &array_pop(std::string &result, array &values) { return *__php_array_pop(&result, &values); }
+    std::string &array_get(std::string &result, array &values, int64_t index) { return *__php_array_get(&result, &values, index); }
+    bool array_key_exists(std::string &key, value &values) { return __php_array_key_exists(key.c_str(), &values) != 0; }
+    std::string &array_shift(std::string &result, array &values) { return *__php_array_shift(&result, &values); }
+}
+#endif
 )EMBED"},
     {"ns_php.h", R"EMBED(#ifndef MADC_NS_PHP_H
 #define MADC_NS_PHP_H
@@ -650,14 +1177,14 @@ inline void array_column(madc::value &dest, madc::value &src, int64_t column_ind
 
 #endif
 )EMBED"},
-    {"ns_python", R"EMBED(#include <string>
+    {"ns_python", R"EMBED(// madc embedded <ns_python> — Python-style string conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    std::string *__py_title(std::string *);
-    std::string *__py_swapcase(std::string *);
-    std::string *__py_center(std::string *, int64_t, const char *);
-    std::string *__py_ljust(std::string *, int64_t, const char *);
-    std::string *__py_rjust(std::string *, int64_t, const char *);
-    std::string *__py_zfill(std::string *, int64_t);
+    value *__py_format_value(value *, const char *, array *);
     int64_t __py_count(const char *, const char *);
     int64_t __py_startswith(const char *, const char *);
     int64_t __py_endswith(const char *, const char *);
@@ -665,6 +1192,63 @@ extern "C" {
     int64_t __py_isalpha(const char *);
     int64_t __py_isalnum(const char *);
     int64_t __py_isspace(const char *);
+    const char *__py_title_cstr(const char *);
+    const char *__py_title_value(value *);
+    const char *__py_swapcase_cstr(const char *);
+    const char *__py_swapcase_value(value *);
+    const char *__py_center_cstr(const char *, int64_t, const char *);
+    const char *__py_center_value(value *, int64_t, const char *);
+    const char *__py_ljust_cstr(const char *, int64_t, const char *);
+    const char *__py_ljust_value(value *, int64_t, const char *);
+    const char *__py_rjust_cstr(const char *, int64_t, const char *);
+    const char *__py_rjust_value(value *, int64_t, const char *);
+    const char *__py_zfill_cstr(const char *, int64_t);
+    const char *__py_zfill_value(value *, int64_t);
+    const char *__py_replace_cstr(const char *, const char *, const char *);
+    const char *__py_replace_value(value *, const char *, const char *);
+}
+
+namespace python {
+    // Python str.format on the shared std::format engine ({} automatic,
+    // {0} manual, format specs, {{ }} escaping); the value-out lean
+    // primary — the std::string form below is the guarded convenience.
+    value &format(value &out, const char *fmt, array &args) { __py_format_value(&out, fmt, &args); return out; }
+    int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
+    int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
+    int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
+    int64_t isdigit(const char *text) { return __py_isdigit(text); }
+    int64_t isalpha(const char *text) { return __py_isalpha(text); }
+    int64_t isalnum(const char *text) { return __py_isalnum(text); }
+    int64_t isspace(const char *text) { return __py_isspace(text); }
+    // Lean PRIMARIES (dialect-lean.md, Python parity): Python strings are
+    // immutable — every str method returns a NEW string. Ring-lifetime
+    // returns (the c_str contract): pass onward or capture immediately.
+    const char *title(value &s) { return __py_title_value(&s); }
+    const char *title(const char *s) { return __py_title_cstr(s); }
+    const char *swapcase(value &s) { return __py_swapcase_value(&s); }
+    const char *swapcase(const char *s) { return __py_swapcase_cstr(s); }
+    const char *center(value &s, int64_t width, const char *fill) { return __py_center_value(&s, width, fill); }
+    const char *center(const char *s, int64_t width, const char *fill) { return __py_center_cstr(s, width, fill); }
+    const char *ljust(value &s, int64_t width, const char *fill) { return __py_ljust_value(&s, width, fill); }
+    const char *ljust(const char *s, int64_t width, const char *fill) { return __py_ljust_cstr(s, width, fill); }
+    const char *rjust(value &s, int64_t width, const char *fill) { return __py_rjust_value(&s, width, fill); }
+    const char *rjust(const char *s, int64_t width, const char *fill) { return __py_rjust_cstr(s, width, fill); }
+    const char *zfill(value &s, int64_t width) { return __py_zfill_value(&s, width); }
+    const char *zfill(const char *s, int64_t width) { return __py_zfill_cstr(s, width); }
+    const char *replace(value &s, const char *old_text, const char *new_text) { return __py_replace_value(&s, old_text, new_text); }
+    const char *replace(const char *s, const char *old_text, const char *new_text) { return __py_replace_cstr(s, old_text, new_text); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    std::string *__py_title(std::string *);
+    std::string *__py_swapcase(std::string *);
+    std::string *__py_center(std::string *, int64_t, const char *);
+    std::string *__py_ljust(std::string *, int64_t, const char *);
+    std::string *__py_rjust(std::string *, int64_t, const char *);
+    std::string *__py_zfill(std::string *, int64_t);
     std::string *__py_replace(std::string *, const char *, const char *);
     std::string *__py_format(std::string *, const char *, array *);
 }
@@ -676,16 +1260,10 @@ namespace python {
     std::string &ljust(std::string &s, int64_t width, const char *fill) { return *__py_ljust(&s, width, fill); }
     std::string &rjust(std::string &s, int64_t width, const char *fill) { return *__py_rjust(&s, width, fill); }
     std::string &zfill(std::string &s, int64_t width) { return *__py_zfill(&s, width); }
-    int64_t count(const char *haystack, const char *needle) { return __py_count(haystack, needle); }
-    int64_t startswith(const char *text, const char *prefix) { return __py_startswith(text, prefix); }
-    int64_t endswith(const char *text, const char *suffix) { return __py_endswith(text, suffix); }
-    int64_t isdigit(const char *text) { return __py_isdigit(text); }
-    int64_t isalpha(const char *text) { return __py_isalpha(text); }
-    int64_t isalnum(const char *text) { return __py_isalnum(text); }
-    int64_t isspace(const char *text) { return __py_isspace(text); }
     std::string &replace(std::string &s, const char *old_text, const char *new_text) { return *__py_replace(&s, old_text, new_text); }
     std::string &format(std::string &result, const char *fmt, array &args) { return *__py_format(&result, fmt, &args); }
 }
+#endif
 )EMBED"},
     {"ns_python.h", R"EMBED(#ifndef MADC_NS_PYTHON_H
 #define MADC_NS_PYTHON_H
@@ -736,36 +1314,78 @@ inline std::string &format(std::string &result, const char *fmt, madc::value &ar
 
 #endif
 )EMBED"},
-    {"ns_ruby", R"EMBED(#include <string>
+    {"ns_ruby", R"EMBED(// madc embedded <ns_ruby> — Ruby-style string + array conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*/array-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
-    std::string *__rb_squeeze(std::string *);
-    std::string *__rb_tr(std::string *, const char *, const char *);
     void __rb_chars(array *, const char *);
-    std::string *__rb_capitalize(std::string *);
-    std::string *__rb_delete(std::string *, const char *);
     int64_t __rb_count(const char *, const char *);
     int64_t __rb_include(const char *, const char *);
-    std::string *__rb_gsub(std::string *, const char *, const char *);
-    std::string *__rb_sub(std::string *, const char *, const char *);
     void __rb_rotate(array *, int64_t);
     void __rb_compact(array *);
     void __rb_flatten(array *, const char *);
+    const char *__rb_squeeze_cstr(const char *);
+    const char *__rb_squeeze_value(value *);
+    const char *__rb_capitalize_cstr(const char *);
+    const char *__rb_capitalize_value(value *);
+    const char *__rb_tr_cstr(const char *, const char *, const char *);
+    const char *__rb_tr_value(value *, const char *, const char *);
+    const char *__rb_delete_cstr(const char *, const char *);
+    const char *__rb_delete_value(value *, const char *);
+    const char *__rb_gsub_cstr(const char *, const char *, const char *);
+    const char *__rb_gsub_value(value *, const char *, const char *);
+    const char *__rb_sub_cstr(const char *, const char *, const char *);
+    const char *__rb_sub_value(value *, const char *, const char *);
+}
+
+namespace ruby {
+    void chars(array &out, const char *text) { __rb_chars(&out, text); }
+    int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
+    int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
+    void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
+    void compact(array &values) { __rb_compact(&values); }
+    void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
+    // Lean PRIMARIES (dialect-lean.md, Ruby parity): these are the
+    // NON-BANG methods — they return a NEW string. Ring-lifetime returns
+    // (the c_str contract): pass onward or capture immediately.
+    const char *squeeze(value &s) { return __rb_squeeze_value(&s); }
+    const char *squeeze(const char *s) { return __rb_squeeze_cstr(s); }
+    const char *capitalize(value &s) { return __rb_capitalize_value(&s); }
+    const char *capitalize(const char *s) { return __rb_capitalize_cstr(s); }
+    const char *tr(value &s, const char *from, const char *to) { return __rb_tr_value(&s, from, to); }
+    const char *tr(const char *s, const char *from, const char *to) { return __rb_tr_cstr(s, from, to); }
+    const char *delete(value &s, const char *chars) { return __rb_delete_value(&s, chars); }
+    const char *delete(const char *s, const char *chars) { return __rb_delete_cstr(s, chars); }
+    const char *gsub(value &s, const char *pattern, const char *replacement) { return __rb_gsub_value(&s, pattern, replacement); }
+    const char *gsub(const char *s, const char *pattern, const char *replacement) { return __rb_gsub_cstr(s, pattern, replacement); }
+    const char *sub(value &s, const char *pattern, const char *replacement) { return __rb_sub_value(&s, pattern, replacement); }
+    const char *sub(const char *s, const char *pattern, const char *replacement) { return __rb_sub_cstr(s, pattern, replacement); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    std::string *__rb_squeeze(std::string *);
+    std::string *__rb_tr(std::string *, const char *, const char *);
+    std::string *__rb_capitalize(std::string *);
+    std::string *__rb_delete(std::string *, const char *);
+    std::string *__rb_gsub(std::string *, const char *, const char *);
+    std::string *__rb_sub(std::string *, const char *, const char *);
 }
 
 namespace ruby {
     std::string &squeeze(std::string &s) { return *__rb_squeeze(&s); }
     std::string &tr(std::string &s, const char *from, const char *to) { return *__rb_tr(&s, from, to); }
-    void chars(array &out, const char *text) { __rb_chars(&out, text); }
     std::string &capitalize(std::string &s) { return *__rb_capitalize(&s); }
     std::string &delete(std::string &s, const char *chars) { return *__rb_delete(&s, chars); }
-    int64_t count(const char *text, const char *chars) { return __rb_count(text, chars); }
-    int64_t include(const char *text, const char *substr) { return __rb_include(text, substr); }
     std::string &gsub(std::string &s, const char *pattern, const char *replacement) { return *__rb_gsub(&s, pattern, replacement); }
     std::string &sub(std::string &s, const char *pattern, const char *replacement) { return *__rb_sub(&s, pattern, replacement); }
-    void rotate(array &values, int64_t n) { __rb_rotate(&values, n); }
-    void compact(array &values) { __rb_compact(&values); }
-    void flatten(array &values, const char *text) { __rb_flatten(&values, text); }
 }
+#endif
 )EMBED"},
     {"ns_ruby.h", R"EMBED(#ifndef MADC_NS_RUBY_H
 #define MADC_NS_RUBY_H
@@ -810,48 +1430,97 @@ inline void flatten(madc::value &values, const char *text) { __rb_flatten(&value
 
 #endif
 )EMBED"},
-    {"ns_rust", R"EMBED(#include <string>
+    {"ns_rust", R"EMBED(// madc embedded <ns_rust> — Rust-style string + array conveniences.
+// DIALECT-LEAN (owner standing rule 2026-08-21): ZERO includes — the
+// char*/array-typed surface below is always available; the std::string
+// C++-interop conveniences are declared only when <string> was included
+// BEFORE this header (the <ns_madc> guard convention; auto-include
+// orders <string> first, explicit includers write it above this line).
 extern "C" {
     int64_t __rust_contains(const char *, const char *);
     int64_t __rust_starts_with(const char *, const char *);
     int64_t __rust_ends_with(const char *, const char *);
-    std::string *__rust_trim(std::string *);
-    std::string *__rust_trim_start(std::string *);
-    std::string *__rust_trim_end(std::string *);
-    std::string *__rust_replace(std::string *, const char *, const char *);
-    std::string *__rust_repeat(std::string *, int64_t);
     int64_t __rust_len(const char *);
     int64_t __rust_is_empty(const char *);
     void __rust_split(array *, const char *, const char *);
     void __rust_split_whitespace(array *, const char *);
-    std::string *__rust_join(std::string *, array *, const char *);
-    std::string *__rust_first(std::string *, array *);
-    std::string *__rust_last(std::string *, array *);
-    std::string *__rust_get(std::string *, array *, int64_t);
     void __rust_push(array *, const char *);
-    std::string *__rust_pop(std::string *, array *);
+    const char *__rust_trim_cstr(const char *);
+    const char *__rust_trim_value(value *);
+    const char *__rust_trim_start_cstr(const char *);
+    const char *__rust_trim_start_value(value *);
+    const char *__rust_trim_end_cstr(const char *);
+    const char *__rust_trim_end_value(value *);
+    const char *__rust_replace_cstr(const char *, const char *, const char *);
+    const char *__rust_replace_value(value *, const char *, const char *);
+    const char *__rust_repeat_cstr(const char *, int64_t);
+    const char *__rust_repeat_value(value *, int64_t);
+    const char *__rust_join_cstr(array *, const char *);
+    value *__rust_first_value(value *, array *);
+    value *__rust_last_value(value *, array *);
+    value *__rust_get_value(value *, array *, int64_t);
+    value *__rust_pop_value(value *, array *);
 }
 
 namespace rust {
     int64_t contains(const char *text, const char *needle) { return __rust_contains(text, needle); }
     int64_t starts_with(const char *text, const char *prefix) { return __rust_starts_with(text, prefix); }
     int64_t ends_with(const char *text, const char *suffix) { return __rust_ends_with(text, suffix); }
+    int64_t len(const char *text) { return __rust_len(text); }
+    int64_t is_empty(const char *text) { return __rust_is_empty(text); }
+    void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
+    void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
+    void push(array &values, const char *value) { __rust_push(&values, value); }
+    // Lean PRIMARIES (dialect-lean.md, Rust parity): trim/replace/repeat/
+    // join return NEW strings — ring-lifetime returns (the c_str
+    // contract). first/last/get/pop return the ELEMENT via a value
+    // out-param (Rust's Option: `out` stays null when there is nothing).
+    const char *trim(value &s) { return __rust_trim_value(&s); }
+    const char *trim(const char *s) { return __rust_trim_cstr(s); }
+    const char *trim_start(value &s) { return __rust_trim_start_value(&s); }
+    const char *trim_start(const char *s) { return __rust_trim_start_cstr(s); }
+    const char *trim_end(value &s) { return __rust_trim_end_value(&s); }
+    const char *trim_end(const char *s) { return __rust_trim_end_cstr(s); }
+    const char *replace(value &s, const char *from, const char *to) { return __rust_replace_value(&s, from, to); }
+    const char *replace(const char *s, const char *from, const char *to) { return __rust_replace_cstr(s, from, to); }
+    const char *repeat(value &s, int64_t count) { return __rust_repeat_value(&s, count); }
+    const char *repeat(const char *s, int64_t count) { return __rust_repeat_cstr(s, count); }
+    const char *join(array &values, const char *sep) { return __rust_join_cstr(&values, sep); }
+    value &first(value &out, array &values) { return *__rust_first_value(&out, &values); }
+    value &last(value &out, array &values) { return *__rust_last_value(&out, &values); }
+    value &get(value &out, array &values, int64_t idx) { return *__rust_get_value(&out, &values, idx); }
+    value &pop(value &out, array &values) { return *__rust_pop_value(&out, &values); }
+}
+
+#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
+// std::string C++-INTEROP conveniences — present only because <string>
+// precedes this header.
+extern "C" {
+    std::string *__rust_trim(std::string *);
+    std::string *__rust_trim_start(std::string *);
+    std::string *__rust_trim_end(std::string *);
+    std::string *__rust_replace(std::string *, const char *, const char *);
+    std::string *__rust_repeat(std::string *, int64_t);
+    std::string *__rust_join(std::string *, array *, const char *);
+    std::string *__rust_first(std::string *, array *);
+    std::string *__rust_last(std::string *, array *);
+    std::string *__rust_get(std::string *, array *, int64_t);
+    std::string *__rust_pop(std::string *, array *);
+}
+
+namespace rust {
     std::string &trim(std::string &s) { return *__rust_trim(&s); }
     std::string &trim_start(std::string &s) { return *__rust_trim_start(&s); }
     std::string &trim_end(std::string &s) { return *__rust_trim_end(&s); }
     std::string &replace(std::string &s, const char *from, const char *to) { return *__rust_replace(&s, from, to); }
     std::string &repeat(std::string &s, int64_t count) { return *__rust_repeat(&s, count); }
-    int64_t len(const char *text) { return __rust_len(text); }
-    int64_t is_empty(const char *text) { return __rust_is_empty(text); }
-    void split(array &out, const char *text, const char *delim) { __rust_split(&out, text, delim); }
-    void split_whitespace(array &out, const char *text) { __rust_split_whitespace(&out, text); }
     std::string &join(std::string &result, array &values, const char *sep) { return *__rust_join(&result, &values, sep); }
     std::string &first(std::string &result, array &values) { return *__rust_first(&result, &values); }
     std::string &last(std::string &result, array &values) { return *__rust_last(&result, &values); }
     std::string &get(std::string &result, array &values, int64_t idx) { return *__rust_get(&result, &values, idx); }
-    void push(array &values, const char *value) { __rust_push(&values, value); }
     std::string &pop(std::string &result, array &values) { return *__rust_pop(&result, &values); }
 }
+#endif
 )EMBED"},
     {"ns_rust.h", R"EMBED(#ifndef MADC_NS_RUST_H
 #define MADC_NS_RUST_H
@@ -907,6 +1576,306 @@ inline std::string &pop(std::string &result, madc::value &values) { return *__ru
 #endif
 
 #endif
+)EMBED"},
+    {"ns_ui", R"EMBED(// madc embedded <ns_ui> — the generic interaction/session surface
+// (Track 7 Phase 1; reworked in Track 7.2 R1). Declaration-only: the
+// ui:: publics below resolve mangled-direct (Itanium symbols) to the
+// real namespace ui implementations in the host, src/ns_ui.cpp
+// (cpp-first-api.md).
+//
+// VALUE-FIRST: typed in madc's `value` carrier, int64_t handles, and
+// const char* — this header deliberately includes nothing. Rendered
+// projections return as string-kind values through `value &out`
+// parameters (the <ns_madc> convention; value-by-value returns are a
+// standing carrier open).
+//
+// GENERIC BY LAW (Rule #7): the engine ships no verbs and no
+// application vocabulary. A world's %verb lines DECLARE actions and
+// their gating (keys/levels/refusal — data); the application attaches
+// verb BODIES as madc source via bind_verb (the script-entity binding
+// kind — bodies execute through the same registry, gating, and
+// structured invocation as native host bindings). Relation and property
+// names in the graph reads below are arguments. Two substrate
+// conventions are fixed by this session layer and documented here:
+// containment is the `in` relation; a carried entity confers a key via
+// its `grants` bag property.
+
+namespace ui {
+    // ---- interaction (the prompt handler) ------------------------------
+    // Write `text`, FLUSH, read a line, return it. Scripted stdin (a
+    // pipe/file) additionally echoes the returned line after the read —
+    // no terminal exists to echo it — so a piped transcript reads
+    // exactly like an interactive session (and EOF leaves the trailing
+    // prompt, the reference shape). '#'-led lines are script comments:
+    // consumed silently in both modes (a script does not re-show the
+    // prompt for them; a terminal does). Returns false at EOF.
+    bool prompt(value &out, const char *text);
+
+    // Open a world file (the %world tagged format). Returns a session
+    // handle (> 0), or 0 with the reason on stderr. Sessions are
+    // independent; close releases one.
+    int64_t world_open(const char *path);
+    bool    world_save(int64_t w, const char *path);
+    void    world_close(int64_t w);
+
+    // An EMPTY session — no world file, no declarations. For
+    // applications whose data is not authored world content (an editor's
+    // documents are files it opens itself). Same handle space, registry,
+    // and lifecycle as world_open.
+    int64_t world_new();
+
+    // Attach a madc-source BODY to a verb name (the script-entity
+    // binding kind). Gating comes from the world's %verb declaration of
+    // the same name when present; an undeclared name binds ungated. The
+    // body is compiled as an eval unit per invocation with the
+    // invocation's fields as top-level names — `w` (session handle),
+    // `actor`, `target` (entity ids), `arg` (the raw argument text),
+    // `verb` (the action's spelling) — and returns the player-facing
+    // text. Bodies run inside ui::act: they must not re-enter act and
+    // must not open or close worlds — ENFORCED: a nested act on the same
+    // world is refused with "action re-entered the registry (verbs do
+    // not re-enter act)", which the outer body receives as that call's
+    // result text (queued follow-up invocations are a held seat).
+    void bind_verb(int64_t w, const char *name, const char *source);
+
+    // Code-entity key-gating (the hub's Decided rule: defining or
+    // editing code entities is itself key-gated). Arms the gate:
+    // every LATER bind_verb/bind_check on this session requires `key`
+    // (cumulative; satisfied through the same keys+levels credentials
+    // as every condition — ui::session_grant and key implications
+    // apply). Unset = open. A refused bind is loud on stderr and binds
+    // nothing.
+    void bind_require_key(int64_t w, const char *key);
+
+    // Attach a madc-source availability CHECK to a bound verb — the
+    // state-conditional half of availability ("read-only document
+    // disables the edit verbs"). The body runs with the same context
+    // fields as a verb body and answers "ok" for available or the
+    // refusal reason otherwise; the SAME evaluation gates ui::act and
+    // answers ui::affordances, so enumeration and dispatch can never
+    // disagree. Check bodies are READ-ONLY by contract: no mutation, no
+    // ui::act, no session lifecycle.
+    void bind_check(int64_t w, const char *name, const char *source);
+
+    // Entity lookup by canonical name (0 = absent).
+    int64_t entity_by_name(int64_t w, const char *name);
+
+    // Create a new entity with the given canonical name (routes through
+    // the hub's mutation context). Returns its id (0 on a bad handle or
+    // empty name). Runtime entities (actors, singletons) ride the same
+    // save as the authored world.
+    int64_t create(int64_t w, const char *name);
+
+    // Where an entity is (its containment target; 0 = nowhere). The
+    // driver's room-change detection for auto-look.
+    int64_t location(int64_t w, int64_t entity);
+
+    // Session credentials: role keys and per-domain levels. Data-derived
+    // credentials (carried grants) are added per actor at each use.
+    void session_grant(int64_t w, const char *key);
+    void session_level(int64_t w, const char *domain, int64_t level);
+
+    // The keys+levels evaluator, surfaced: does the actor's EFFECTIVE
+    // credential set (session grants + carried grants + implications)
+    // hold this key? Entity-attached conditions in application verbs
+    // check through here.
+    bool has_key(int64_t w, int64_t actor, const char *key);
+
+    // The generic entity inspector projection, rendered to text in a
+    // string-kind value. Gated by the world's `%require inspect` line —
+    // projection selection IS the access decision.
+    value &render_inspect(value &out, int64_t w, int64_t target);
+
+    // The SAME inspect projection as DATA: out = the value tree — sparse
+    // objects of { role, label, content, hints, states[], actions[],
+    // subject, children[] }, role/states/actions spelled by name. A gate
+    // refusal arrives as a status-role node, so tree consumers handle it
+    // with the same walk.
+    value &inspect_tree(value &out, int64_t w, int64_t target);
+
+    // Typeset a value-shaped projection tree (the inspect_tree schema;
+    // every field optional) through the level-0 renderer — applications
+    // compose projections as ordinary data and hand them here. A
+    // `choice` node's children render as a numbered menu in line mode;
+    // a selection-capable renderer reads the SAME tree. Typesetting
+    // only: the tree arrives already access-filtered.
+    value &render_tree(value &out, int64_t w, value &tree);
+
+    // Verb dispatch: the driver sends the verb word and the rest of the
+    // line; act interprets that into a structured invocation and
+    // executes it through the registry (gating included). The result
+    // text is player-facing; an empty result means the verb is unknown
+    // (the driver phrases that).
+    value &act(value &out, int64_t w, int64_t actor, const char *verb,
+	       const char *rest);
+
+    // Affordance enumeration for the actor's current context: out = an
+    // array of {action, target, provider, label, visible, enabled,
+    // reason} objects — every registered action with its truthful
+    // availability from the same keys+levels evaluator that gates
+    // execution. A frontend may hide or disable from this; it never
+    // grants.
+    value &affordances(value &out, int64_t w, int64_t actor);
+
+    // ---- generic graph reads (relation/property names are data) --------
+    // Keyed-link enumeration: out = array of {key, target} objects for
+    // the `rel` links FROM `from`, in link order (key "" when unkeyed;
+    // target = the linked entity's canonical name).
+    value &links(value &out, int64_t w, int64_t from, const char *rel);
+
+    // Word -> entity over the actor's current scope (carried,
+    // co-located, focus — the resolution order): matches the canonical
+    // name or the `alias_prop` bag property (the application's
+    // vocabulary, passed as data). 0 = no match.
+    int64_t resolve(int64_t w, int64_t actor, const char *word,
+		    const char *alias_prop);
+
+    // ---- entity bag access (E2, the Adventure feeder wave) -------------
+    // Reads copy OUT of the world and never vivify its bags; writes route
+    // through the hub's mutation context — the one write surface.
+
+    // The value at `key` in the entity's bag, copied into `out`
+    // (null kind when the entity or key is absent).
+    value &get(value &out, int64_t w, int64_t entity, const char *key);
+    // The entity's canonical name (string kind; empty when absent).
+    value &name_of(value &out, int64_t w, int64_t entity);
+    // Containment enumeration: out = array of the NAMES of the entities
+    // held by `container` (the world's `in` relation), in link order.
+    value &contents(value &out, int64_t w, int64_t container);
+
+    // Bag writes: one overloaded name, any value kind (nested trees ride
+    // the carrier overload).
+    void set(int64_t w, int64_t entity, const char *key, const value &v);
+    void set(int64_t w, int64_t entity, const char *key, const char *v);
+    void set(int64_t w, int64_t entity, const char *key, int64_t v);
+    void set(int64_t w, int64_t entity, const char *key, bool v);
+    void set(int64_t w, int64_t entity, const char *key, double v);
+    // Move `entity` into `dest`'s containment (dest 0 = out of the world).
+    void move(int64_t w, int64_t entity, int64_t dest);
+
+    // ---- text component (R4): a piece-table buffer attached to an
+    // entity — the hub's second component kind. Offsets and lengths are
+    // BYTES; lines are 1-based, length excluding the '\n'; an empty
+    // buffer has zero lines and a trailing unterminated span is a line.
+    // Writes route through the hub's mutation context. Document
+    // properties (path, modified, read_only) are application bag keys —
+    // never touched here. Size/line/find reads answer -1 when the entity
+    // has no text component (or the query is out of range).
+    void text_load(int64_t w, int64_t entity, const char *text);
+    void text_insert(int64_t w, int64_t entity, int64_t off, const char *text);
+    void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len);
+    void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+		      const char *text);
+    value  &text(value &out, int64_t w, int64_t entity);
+    int64_t text_size(int64_t w, int64_t entity);
+    int64_t text_line_count(int64_t w, int64_t entity);
+    value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
+    int64_t text_find(int64_t w, int64_t entity, int64_t from,
+		      const char *needle);
+    // Word motion (JOE ^Z/^X): a word byte is [A-Za-z0-9_].
+    // text_word_right = the offset just past the end of the next word;
+    // text_word_left = the offset of the first byte of the previous
+    // word; both clamp, -1 = no text component.
+    int64_t text_word_left(int64_t w, int64_t entity, int64_t from);
+    int64_t text_word_right(int64_t w, int64_t entity, int64_t from);
+    // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
+    // mutation, carrying an OPAQUE application payload (store the caret
+    // there — it rides with the state it belongs to); one semantic edit,
+    // one checkpoint. text_undo restores the newest snapshot and hands
+    // the payload back (false: no component or nothing to undo). History
+    // is runtime-only like the component; text_load clears it.
+    // The four-argument undo and text_redo are the redo-preserving pair:
+    // now_meta = the payload live on the document being LEFT (its caret),
+    // captured onto the opposite stack so undo/redo restore document +
+    // interaction state together. A checkpoint (a new edit) clears redo;
+    // the three-argument undo is the legacy destructive form (clears
+    // redo too).
+    void text_checkpoint(int64_t w, int64_t entity, value &meta);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
+    bool text_redo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
+
+    // The view seam's coordinate map (the document lens): a display
+    // ("what is painted") <-> stored ("the document truth") byte map
+    // riding as DATA — an array of {disp, stored, len} copy-segment
+    // rows. Stored bytes outside every segment are CONCEALED (markdown
+    // formatting chars, folds); display bytes outside every segment are
+    // SYNTHETIC (rendered views, decoration). These are the ONE
+    // projection owner's dialect face — never re-derive caret math per
+    // view. Contract: 1:1 inside a copy segment (caret ends included);
+    // strictly inside a gap collapses FORWARD to the next segment;
+    // past the end lands just after the last image; an EMPTY map (a
+    // wholly rendered view) answers 0. -1 = malformed map / negative
+    // offset.
+    int64_t lens_to_display(value &map, int64_t stored);
+    int64_t lens_to_stored(value &map, int64_t display);
+
+    // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
+    // provider seam (the built-in target is the dependency-free
+    // VT100/xterm one; richer providers register beside it). The loop:
+    // compose the projection as data -> tui_render -> tui_event ->
+    // apply. The SAME value-shaped tree render_tree typesets
+    // sequentially presents on the grid — a `choice` menu becomes
+    // NAVIGABLE (arrows move the selection, enter chooses), an `edit`
+    // node becomes a scrolled document window whose caret/selection ride
+    // its hints ({caret, sel_start, sel_end} — byte offsets).
+    //
+    // tui_open: 0 with the reason on stderr when no target can serve
+    // (no tty, none registered, one already open). tui_event blocks for
+    // the next semantic event object:
+    //   {event:"text", text}          a coalesced printable run
+    //   {event:"key", key}            "up","enter","^s",... for the app
+    //   {event:"choose", option, action}  option is 1-based — the same
+    //       number the level-0 menu prints
+    //   {event:"action", action, seq}  a bound key sequence completed
+    //       (empty action = unbound miss; seq says which)
+    //   {event:"focus"} {event:"resize"}  recompose and re-render
+    // and returns false at end of input. Render before the first event;
+    // tab cycles focus between the tree's choice/edit nodes.
+    //
+    // tui_bind_keys installs a keybinding PROFILE: a value object mapping
+    // key sequences to action names ({"^k s": "save", ...} — sequences
+    // are space-separated key spellings, the same names key events carry;
+    // chords any length; letters in sequences are case-insensitive, the
+    // JOE ^K S == ^K s convention). Bound sequences resolve ahead of the built-in
+    // key handling; a profile swap is one call (the table replaces the
+    // previous one; an empty object clears). False + stderr on an invalid
+    // table: unknown spelling, a printable-HEADED sequence (it would
+    // swallow typing), or a sequence shadowing a shorter binding.
+    //
+    // tui_validate_keys answers whether a table WOULD bind — the same
+    // validation as tui_bind_keys, with no tui handle and a SILENT
+    // verdict (the caller composes its own refusal message). The
+    // gateway seam leans on it: the session layer validates profile
+    // data; only the TUI client binds.
+    int64_t tui_open();
+    void    tui_close(int64_t t);
+    int64_t tui_rows(int64_t t);
+    int64_t tui_cols(int64_t t);
+    void    tui_render(int64_t t, int64_t w, value &tree);
+    bool    tui_bind_keys(int64_t t, value &table);
+    bool    tui_validate_keys(value &table);
+    bool    tui_event(value &out, int64_t t, int64_t w);
+    // Hand the terminal back to run a child process (JOE ^K Z shell):
+    // tui_suspend restores the screen and modes as found; tui_resume
+    // re-enters grid mode, re-reads the size, and forces the next
+    // tui_render to repaint every row. Pair them around the child; do
+    // not render or read events while suspended.
+    bool    tui_suspend(int64_t t);
+    bool    tui_resume(int64_t t);
+    // JOE's ^R retype: the terminal's contents can no longer be trusted
+    // (external writes on the tty) — reset the delta-paint basis so the
+    // NEXT tui_render repaints every row from scratch.
+    void    tui_refresh(int64_t t);
+    // The chord entered so far (canonical spelling, "^k") — empty when
+    // none is pending. A status line's chord-echo seat (JOE's %k) reads
+    // it at compose time.
+    void    tui_pending(value &out, int64_t t);
+}
 )EMBED"},
     {"posix/dlfcn.h", R"EMBED(// SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////

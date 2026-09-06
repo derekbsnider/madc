@@ -1,0 +1,11 @@
+// Project-handle fixture TU 2 (owned by testparsehandle.mad): two
+// definitions of its own, no includes (outline: 2 rows).
+long tu_two(long x)
+{
+    return x * 2;
+}
+
+long tu_three(long x)
+{
+    return tu_two(x) + x;
+}

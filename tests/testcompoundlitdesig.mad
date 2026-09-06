@@ -1,0 +1,28 @@
+// Array designators inside compound-literal brace lists (c-testsuite
+// 00150 `{[0] = 1, 1+1}`): parse_compound_struct_lit adopts the shared
+// parse_array_designator_initializer (the one owner of the `[first
+// (... last)] =` grammar); positional elements resume after the
+// designated slot, and `. field` reordering keeps working beside it.
+// Oracle: gcc/clang print a=1 b=2 pa=1 pb=2 r0=1 r1=2 / q=0,9,9,5.
+struct S1 { int a; int b; };
+struct S2 {
+    struct S1 s1;
+    struct S1 *ps1;
+    int arr[2];
+};
+struct S1 gs1 = { .a = 1, 2 };
+struct S2 *s = &(struct S2) {
+    {.b = 2, .a = 1},
+    &gs1,
+    {[0] = 1, 1+1}
+};
+struct A { int arr[4]; };
+
+int main()
+{
+    struct A *a = &(struct A){ {[1 ... 2] = 9, 5} };
+    printf("a=%d b=%d pa=%d pb=%d r0=%d r1=%d\n",
+           s->s1.a, s->s1.b, s->ps1->a, s->ps1->b, s->arr[0], s->arr[1]);
+    printf("q=%d,%d,%d,%d\n", a->arr[0], a->arr[1], a->arr[2], a->arr[3]);
+    return 0;
+}

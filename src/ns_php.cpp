@@ -555,6 +555,67 @@ int64_t php_file_exists_value(const madc::value *v)
 	return php_file_exists(p.c_str());
 }
 
+// php::file_get_contents — PHP parity: the whole file as a string
+// (binary-faithful — PHP reads bytes, never lines). PHP's string|false
+// union takes the pre-L3 carrier mapping documented in <ns_php>: the
+// contents arrive in an OUT value, the return is the false channel
+// (false = failure, out untouched). Warning-free like a @-call; madc
+// answers the live filesystem.
+int64_t php_file_get_contents(madc::value *out, const char *path)
+{
+	if ( !out || !path || !*path )
+		return 0;
+	std::ifstream in(path, std::ios::binary);
+	if ( !in )
+		return 0;
+	std::ostringstream ss;
+	ss << in.rdbuf();
+	if ( in.bad() )
+		return 0;
+	*out = madc::value(ss.str());
+	return 1;
+}
+int64_t php_file_get_contents_vpath(madc::value *out, const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	std::string p((const char *)v->data(), v->size());
+	return php_file_get_contents(out, p.c_str());
+}
+
+// php::file_put_contents — PHP parity: create/truncate + write the whole
+// payload; answers BYTES WRITTEN. PHP's int|false maps to -1 for the
+// false channel (pre-L3). Scalar data coerces to its text like every
+// PHP write; a container has no PHP-legal text and answers -1.
+int64_t php_file_put_contents(const char *path, const char *data,
+			      size_t len)
+{
+	if ( !path || !*path )
+		return -1;
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if ( !out )
+		return -1;
+	if ( len )
+		out.write(data, (std::streamsize)len);
+	out.flush();
+	return out ? (int64_t)len : -1;
+}
+int64_t php_file_put_contents_cstr(const char *path, const char *data)
+{
+	return php_file_put_contents(path, data ? data : "",
+				     data ? strlen(data) : 0);
+}
+int64_t php_file_put_contents_value(const char *path, const madc::value *v)
+{
+	if ( v && v->is_string() )
+		return php_file_put_contents(path, (const char *)v->data(),
+					     v->size());
+	if ( !v || v->is_object() || v->is_array() || v->is_instance() )
+		return -1;
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_file_put_contents(path, slot.c_str(), slot.size());
+}
+
 // php::intval — PHP parity (base 10): leading whitespace, optional sign,
 // then the longest digit prefix converts ("12abc" -> 12, "abc" -> 0).
 // Integer kind passes through; real truncates toward zero; bool 1/0;
@@ -716,6 +777,87 @@ const char *php_implode_cstr(const char *glue, madc::value *arr)
 	std::string &slot = ns_common::ring_slot();
 	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""));
 	return slot.c_str();
+}
+
+// php::dirname — zend_dirname parity (PHP 8): trailing separators trim,
+// the last component drops, separators before it trim; "." when no
+// separator remains; an all-separator path answers one separator; ""
+// stays "". A separator is '/' everywhere plus '\\' on a WINDOWS HOST
+// (PHP's IS_SLASH is a build-platform property, never an input mode),
+// and a drive prefix ("C:") survives untouched (dirname("c:foo") is
+// "c:.", dirname("C:\\") stays "C:\\").
+static bool php_dirname_is_sep(char c)
+{
+#ifdef _WIN32
+	return c == '/' || c == '\\';
+#else
+	return c == '/';
+#endif
+}
+
+static void php_dirname_once(std::string *ptr)
+{
+	std::string &s = *ptr;
+	size_t base = 0;
+	size_t end = s.size();
+#ifdef _WIN32
+	if ( s.size() >= 2 && s[1] == ':'
+	     && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) )
+		base = 2;
+#endif
+	if ( end == base )
+		return;			// empty (or a bare drive): unchanged
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 1) trailing separators
+	if ( end == base )
+	{
+		s.resize(base + 1);	// all separators: one survives
+		return;
+	}
+	while ( end > base && !php_dirname_is_sep(s[end - 1]) )
+		--end;			// 2) the last component
+	if ( end == base )
+	{
+		s.resize(base);		// no separator: "." (drive kept)
+		s += '.';
+		return;
+	}
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 3) separators before the component
+	if ( end == base )
+	{
+		s.resize(base + 1);	// the root: its separator survives
+		return;
+	}
+	s.resize(end);
+}
+
+static const char *php_dirname_slot(std::string &slot, int64_t levels)
+{
+	if ( levels < 1 )
+	{
+		// PHP 8 throws ValueError here; pre-L3 the loud-refusal
+		// convention answers instead of a throw escaping the
+		// extern-C boundary (the value_array_for_write precedent).
+		fprintf(stderr, "php::dirname: levels must be >= 1\n");
+		slot.clear();
+		return slot.c_str();
+	}
+	while ( levels-- > 0 )
+		php_dirname_once(&slot);
+	return slot.c_str();
+}
+
+const char *php_dirname_cstr(const char *path, int64_t levels)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = path ? path : "";
+	return php_dirname_slot(slot, levels);
+}
+const char *php_dirname_value(const madc::value *v, int64_t levels)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_dirname_slot(slot, levels);
 }
 
 // Value-out element returns — PHP's array_pop/array_shift return the
@@ -943,6 +1085,8 @@ const char *__php_chunk_split_cstr(const char *a, int64_t b, const char *c) { re
 const char *__php_chunk_split_value(madc::value *a, int64_t b, const char *c) { return php_chunk_split_value(a, b, c); }
 const char *__php_number_format_sep(int64_t a, const char *b) { return php_number_format_sep(a, b); }
 const char *__php_wordwrap_cstr(const char *a, int64_t b, const char *c) { return php_wordwrap_cstr(a, b, c); }
+const char *__php_dirname_cstr(const char *a, int64_t b) { return php_dirname_cstr(a, b); }
+const char *__php_dirname_value(madc::value *a, int64_t b) { return php_dirname_value(a, b); }
 const char *__php_wordwrap_value(madc::value *a, int64_t b, const char *c) { return php_wordwrap_value(a, b, c); }
 const char *__php_implode_cstr(const char *a, madc::value *b) { return php_implode_cstr(a, b); }
 madc::value *__php_array_pop_value(madc::value *a, madc::value *b) { return php_array_pop_value(a, b); }
@@ -957,6 +1101,10 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }
+int64_t __php_file_get_contents_vpath(madc::value *a, madc::value *b) { return php_file_get_contents_vpath(a, b); }
+int64_t __php_file_put_contents_cstr(const char *a, const char *b) { return php_file_put_contents_cstr(a, b); }
+int64_t __php_file_put_contents_value(const char *a, madc::value *b) { return php_file_put_contents_value(a, b); }
 int64_t __php_intval(madc::value *a) { return php_intval_value(a); }
 int64_t __php_intval_cstr(const char *a) { return php_intval_cstr(a); }
 int64_t __php_array_search(const char *a, madc::value *b) { return php_array_search(a, b); }

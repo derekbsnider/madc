@@ -1,0 +1,25 @@
+// Braces around scalar initializers (gcc warns, c2mir refuses — from
+// c-testsuite 00216): unwrap_scalar_braces normalizes them type-directedly
+// at emission, with a positional cursor that stops when brace elision
+// starts, and whole-object slot fillers (strings — raw or materialized as
+// char-pointer vars — and aggregate-typed expressions) keep the cursor.
+// The lt2 line also pins TokenVar::clone (a range designator clones its
+// value per slot; the missing override minted RAW TokenBase nodes).
+// Oracle: gcc/clang -O0.
+typedef unsigned char u8;
+struct S { u8 a, b; u8 c[2]; };
+struct T { u8 s[16]; u8 a; };
+struct U { u8 a; struct S s; u8 b; struct T t; };
+struct S gs3 = { (1), {(2)}, {(((3))), {4}}};
+struct U gu3 = { {3}, {5,6,7,8,}, 4, {"huhu", 43}};
+struct U gu4 = { 3, {5,6,7,},  5, { "bla", {44}} };
+
+int main()
+{
+    int elt = 0x42;
+    struct T lt2 = { { [1 ... 5] = 9, [6 ... 10] = elt, [4 ... 7] = elt+1 }, 1 };
+    printf("a=%d %d %d %d\n", gs3.a, gs3.b, gs3.c[0], gs3.c[1]);
+    printf("b=%d %d %d\n", gu3.a, gu3.t.a, gu4.t.a);
+    printf("c=%d %d %d %d\n", lt2.s[1], lt2.s[4], lt2.s[8], lt2.a);
+    return 0;
+}

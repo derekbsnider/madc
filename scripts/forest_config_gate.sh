@@ -40,6 +40,10 @@ fail() { echo "forest_config_gate: $1"; exit 1; }
 # sidecar or config fixture can leak into another test run.
 cp "$BIN" "$D/madc"
 MADC=$ROOT/$D/madc
+# thin-CLI subject loader (PK2): the copy's $ORIGIN/../lib rpath misses from
+# this depth — hand the LINKER the build tree's lib so the subject can LOAD;
+# the dev libmadc.so is unpacked, so forest-discovery arms are unaffected.
+export LD_LIBRARY_PATH="$ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 cat > "$D/consumer.c" <<'EOF'
 #include <stdio.h>

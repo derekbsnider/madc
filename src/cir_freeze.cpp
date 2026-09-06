@@ -1936,6 +1936,7 @@ static const ForestRecordable &forest_recordable_cached(
 			break;
 		case madc::dis::DK_NSLINK:
 		case madc::dis::DK_NSBIND:
+		case madc::dis::DK_NSALIAS:
 		case madc::dis::DK_DEFBODY:
 			e.ns_slots.push_back(s);
 			break;
@@ -2061,8 +2062,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	bool grew = false;
 	if (!want.active) {
 		_mat_filter.active = false;
+		_mat_filter.exact = false;
 		grew = true;
 	} else {
+		// exact -> non-exact is a widening (unindexed records join).
+		if (_mat_filter.exact && !want.exact) {
+			_mat_filter.exact = false;
+			grew = true;
+		}
 		for (std::unordered_map<std::string, bool>::const_iterator it =
 		     want.declared_bound.begin();
 		     it != want.declared_bound.end(); ++it) {
@@ -2070,8 +2077,14 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 				continue;
 			std::unordered_map<std::string, bool>::iterator oi =
 				_mat_filter.declared_bound.find(it->first);
-			if (oi == _mat_filter.declared_bound.end())
+			if (oi == _mat_filter.declared_bound.end()) {
 				_mat_filter.declared_bound[it->first] = true;
+				// A NEW name is growth only under exact: a closure
+				// filter had already built every unindexed record,
+				// an exact one built none it was not asked for.
+				if (_mat_filter.exact)
+					grew = true;
+			}
 			else if (!oi->second) {
 				oi->second = true;
 				grew = true;
@@ -2171,7 +2184,7 @@ void CirFrozenForest::materialize_pass()
 			it = db.find(nm);
 		if (it != db.end())
 			return it->second ? 1 : -1;
-		return 0;
+		return _mat_filter.exact ? -1 : 0;	// exact: unindexed = not asked for
 	};
 	std::unordered_map<uint64_t, int> verdict_memo;
 	auto name_verdict = [&](uint32_t name_id, uint32_t ns_id) -> int {
@@ -2218,7 +2231,8 @@ void CirFrozenForest::materialize_pass()
 			std::unordered_map<std::string, bool>::const_iterator di =
 				_mat_filter.declared_bound.find(head);
 			int hv = di == _mat_filter.declared_bound.end()
-				 ? 0 : (di->second ? 1 : -1);
+				 ? (_mat_filter.exact ? -1 : 0)
+				 : (di->second ? 1 : -1);
 			hi = head_memo.insert(std::make_pair(head, hv)).first;
 		}
 		return hi->second >= 0;
@@ -2678,9 +2692,14 @@ void CirFrozenForest::materialize_pass()
 	// such a member. Without naming it here the loss surfaces only as a class
 	// that is simply absent, layers later (task #64: std::ios_base died on
 	// `event_callback *__fn_`, and took the whole iostream family with it).
-	DBG(for (size_t bi = 0; bi < derived_slots.size(); ++bi) {
+	// An EXACT pass builds on demand — every derived record it did not ask
+	// for is unbuilt by design, not a loss: nothing to census.
+	DBG(for (size_t bi = 0; !_mat_filter.exact && bi < derived_slots.size(); ++bi) {
 		uint32_t tid = madc::dis::arena_id_of(derived_slots[bi]);
 		if (by_id.count(tid))
+			continue;
+		// Once per forest, across widened re-passes (see the member).
+		if (!_derived_unresolved_reported.insert(tid).second)
 			continue;
 		madc::dis::defrec r;
 		if (!a.get_def_at(tid, r))
@@ -2956,6 +2975,56 @@ void CirFrozenForest::materialize_pass()
 				}
 				cdd->vtable_groups.push_back(g);
 			}
+			// v42: the flat vtable_slots list and the virtual_methods
+			// name set — the parse-time state the groups were derived
+			// from. Pass 1.45/1.8 gate the deleting dtor on
+			// vtable_slot("~$deleting"), `delete p` dispatches on it,
+			// and a consumer-side derived class detects an override
+			// through is_virtual_method(): all four answered "not
+			// virtual" for every restored class before this run.
+			cdd->vtable_slots.clear();
+			for (uint32_t sl = 0; sl < r.vslot_count; ++sl) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.vslot_begin, sl, nid))
+					break;
+				const char *sn = a.c_str(nid);
+				if (sn)
+					cdd->vtable_slots.push_back(sn);
+			}
+			for (uint32_t vm = 0; vm < r.vmeth_count; ++vm) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.vmeth_begin, vm, nid))
+					break;
+				const char *vn = a.c_str(nid);
+				if (vn)
+					cdd->virtual_methods[vn] = true;
+			}
+			// v43: the friendship grants — the access check's name
+			// state (a hoisted hidden-friend body reads the private
+			// member it was befriended for).
+			cdd->friend_function_names.clear();
+			for (uint32_t ff = 0; ff < r.friendfn_count; ++ff) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.friendfn_begin, ff, nid))
+					break;
+				const char *fn = a.c_str(nid);
+				if (fn)
+					cdd->friend_function_names.push_back(fn);
+			}
+			cdd->friend_class_names.clear();
+			for (uint32_t fc = 0; fc < r.friendcls_count; ++fc) {
+				uint32_t nid = 0;
+				if (!a.get_word(r.friendcls_begin, fc, nid))
+					break;
+				const char *cn = a.c_str(nid);
+				if (cn)
+					cdd->friend_class_names.push_back(cn);
+			}
+			// The layout-time secondary owners list is not in the
+			// record; the groups it produced are. Refill it so the
+			// struct emitter names every secondary vptr field the
+			// restored constructors stamp (LOADED == parsed).
+			cdd->secondary_vptr_owners_from_groups();
 			bool bok = true;
 			for (uint32_t b = 0; b < r.bases_count; ++b) {
 				madc::dis::baserec br;
@@ -3245,8 +3314,21 @@ void CirFrozenForest::materialize_pass()
 						cdd, dispname)] = mi;
 				if (!dispname.empty())
 					cdd->method_map[dispname] = mv;
-				if (is_ctor)
+				if (is_ctor) {
 					cdd->ctors.push_back(mv);
+					// Env-gated probe (MADC_COPY_PROBE=<substr>):
+					// the methodrec-arm ctor push — which restore
+					// path populates a class's ctor set.
+					static const char *cpp_ =
+						::getenv("MADC_COPY_PROBE");
+					if (cpp_ && *cpp_ && cdd->name.find(cpp_)
+							     != std::string::npos)
+						fprintf(stderr, "[ctor-push] matrec"
+							" cls=%s var=%s fd=%p len='%s'\n",
+							cdd->name.c_str(),
+							mv->name.c_str(), (void *)fd,
+							fd->local_emit_name.c_str()); // allowed-exception: debug print, not symbol build
+				}
 				// v23: stage the method's default-arg token runs for
 				// the flush (parseExpression re-runs inside the
 				// owner's class + namespace scope). v24: not for the
@@ -3380,8 +3462,15 @@ void CirFrozenForest::materialize_pass()
 				method_disp_first_rec[std::make_pair(
 					pi.cdd, pi.disp)] = pi.rec_index;
 		}
-		if (pi.mflags & madc::dis::MF_CTOR)
+		if (pi.mflags & madc::dis::MF_CTOR) {
 			pi.cdd->ctors.push_back(mv);
+			// Env-gated probe (MADC_COPY_PROBE=<substr>): ctor-set push.
+			static const char *cpp_ = ::getenv("MADC_COPY_PROBE");
+			if (cpp_ && *cpp_
+			    && pi.cdd->name.find(cpp_) != std::string::npos)
+				fprintf(stderr, "[ctor-push] import cls=%s var=%s\n",
+					pi.cdd->name.c_str(), mv->name.c_str());
+		}
 	}
 
 	// Pass 3: DK_TYPEDEF records (flat + namespaced aliases, at their
@@ -3468,6 +3557,15 @@ void CirFrozenForest::materialize_pass()
 				(r.flags & madc::dis::DF_NSBIND_OVERLOAD_MEMBER) != 0;
 			if (b.ns && *b.ns && b.name && *b.name && b.key && *b.key) {
 				_restored_nsbinds.push_back(b);
+				_mat_done_slots.insert(s);
+			}
+		} else if (r.kind == madc::dis::DK_NSALIAS) {
+			// v27: a namespace alias — the flush re-adds the map entry.
+			CirRestoredNsAlias na;
+			na.alias  = r.ns_id ? a.c_str(r.ns_id) : NULL;
+			na.target = r.name_id ? a.c_str(r.name_id) : NULL;
+			if (na.alias && *na.alias && na.target && *na.target) {
+				_restored_nsaliases.push_back(na);
 				_mat_done_slots.insert(s);
 			}
 		} else if (r.kind == madc::dis::DK_DEFBODY) {

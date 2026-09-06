@@ -1,0 +1,8 @@
+handle: 1
+check rows: 1
+  2:13 Failed to find type when parsing function parameters
+outline: 3
+  function before @ 1
+  function after @ 3
+  function main @ 4
+encl@3: after

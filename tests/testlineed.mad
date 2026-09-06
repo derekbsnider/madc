@@ -1,0 +1,17 @@
+// R4 gate: the line-mode text editor (design doc §7.7) — every command is
+// a SCRIPT verb through the one registry; every edit is a range operation
+// over the piece-table component composed from line spans; §7.3's
+// read-only and modified rules are exercised at the refusal level (phase
+// two runs the same session read-only). The application under test is THE
+// example itself (tools/texteditor — one copy, no test fork).
+#include "../tools/texteditor/lined_core.inc"
+
+int main()
+{
+    const char *path = "madc_lineed_test.txt";
+    php::file_put_contents(path, "alpha\nbeta\ngamma\n");
+    run_session(path, false);
+    printf("-- read-only session --\n");
+    run_session(path, true);
+    return 0;
+}

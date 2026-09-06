@@ -23,6 +23,13 @@ public:
     // which madc also pre-registers — so a redefinition check must be able
     // to tell madc's own registration apart from a user declaration.
     bool builtin = false;
+    // True for a LANGUAGE KEYWORD type ([lex.key]: wchar_t, char8_t,
+    // char16_t, char32_t — set where the lexer registers them under the
+    // standard that makes them keywords). Narrower than `builtin`: size_t
+    // or max_align_t are pre-registered names a header may legitimately
+    // typedef; a keyword may never be a typedef's alias name (g++:
+    // "redeclaration of C++ built-in type").
+    bool keyword = false;
     TokenDataType(const char *k, DataDef &d) : TokenIdent(k), str(k ? k : ""), definition(d) {}
     virtual const char *spelling() const override { return str.c_str(); }
     virtual size_t spelling_len() const override { return str.size(); }
@@ -283,6 +290,18 @@ public:
     virtual bool is_constant() const override { return var.is_constant(); }
     virtual bool is_real() const override { return _datatype->is_real(); }
     virtual void set(int64_t c) override { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
+    // Without this override, TokenBase::clone() minted a RAW TokenBase
+    // (type 0, id 0 — untranslatable at CIR) wherever a variable leaf is
+    // cloned: range designators (`[6 ... 10] = elt`, c-testsuite 00216)
+    // clone the value per slot via assign_initializer_range.
+    virtual TokenBase *clone() override
+    {
+	TokenVar *tv = new TokenVar(var);
+	tv->file = file;
+	tv->line = line;
+	tv->column = column;
+	return tv;
+    }
     virtual TokenVar *as_var_tok() override { return this; }
 };
 

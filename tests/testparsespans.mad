@@ -1,0 +1,36 @@
+// madc::parse_spans (madcide AST-2 / IDE-7): highlight classification
+// rows from a parse handle's RETAINED state — keyword/ident/number/
+// string/comment/type/function, source coordinates, data not styling.
+// Compile-NEVER-execute (.expect_quiet is the capture proof).
+int main()
+{
+    var src = "// lead comment\nlong add(long a, long b)\n{\n    return a + 40; /* two\nline */\n}\nconst char *s = \"hi\";\n";
+    long h = madc::parse_open(src.c_str(), "spans.mad");
+    var sp;
+    madc::parse_spans(sp, h);
+    println("spans: {}", php::count(sp));
+    for ( var r : sp )
+	println("  {} {}:{} +{}", r["class"], r["line"], r["column"],
+		r["length"]);
+
+    // Refresh replaces the classification state wholesale.
+    var src2 = "long only() { return 1; } // tail\n";
+    madc::parse_refresh(h, src2.c_str());
+    madc::parse_spans(sp, h);
+    long comments = 0;
+    long functions = 0;
+    for ( var r : sp )
+    {
+	if ( r["class"] == "comment" )
+	    comments = comments + 1;
+	if ( r["class"] == "function" )
+	    functions = functions + 1;
+    }
+    println("refresh: comments={} functions={}", comments, functions);
+
+    // A closed handle refuses with an empty result.
+    madc::parse_close(h);
+    madc::parse_spans(sp, h);
+    println("closed spans: {}", php::count(sp));
+    return 0;
+}

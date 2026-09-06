@@ -23,14 +23,25 @@ Merges develop into master, tags the release, and pushes.
    - Merge develop: `git merge develop`
    - If there are merge conflicts, STOP and ask the user
 
-3. **Run the three platform lanes BEFORE tagging** (lesson of
-   2026-08-23, second occurrence of the same cascade: v0.92.0→v0.92.1
-   and v0.95.0→v0.95.1 both tagged first, then a lane caught a real
-   platform regression and the fix forced a patch tag). The lanes are
-   the ones in step 5 — build and validate all three platforms at the
-   promotion candidate BEFORE `git tag`; a lane failure gets fixed on
-   develop and the candidate moves. Tag only content all three lanes
-   have proven.
+3. **Every platform lane's FULL suite green BEFORE tagging** (owner law
+   2026-09-04; and the lesson of 2026-08-23, second occurrence of the same
+   cascade: v0.92.0→v0.92.1 and v0.95.0→v0.95.1 both tagged first, then a
+   lane caught a real platform regression and the fix forced a patch tag).
+   The mechanical gate is `bash scripts/lane_ledger.sh check --release` at
+   the promotion candidate — the master pre-push hook runs the same check —
+   which requires the develop push-gated lanes (linux battery, wine64,
+   c-testsuite, the `macos` cross BUILD) AND the release tier:
+   - `libcxx` — `scripts/remote_build.sh libcxx` (jit + exe + obj under
+     `-stdlib=libc++`, macOS's library on linux hardware);
+   - `darwin-suite` — `gh workflow run darwin-probe.yml -R derekbsnider/madc
+     --ref <candidate> -f suite_gate=true`, the FULL suite on both mac
+     runner arches, green on both (a failing test is fixed or carries a
+     `.darwin_skip` stating why it is out of the domain);
+   - `genuine-win` — the owner-hardware Windows run.
+   Record each green with `scripts/lane_ledger.sh record <lane> <tally>` at
+   the candidate. A stale or red row blocks; fix on develop and move the
+   candidate. Tag only content every lane has proven. The platform BUILDS
+   and packaging steps are in step 5.
 
    **Then tag the release**: `git tag vX.Y.Z` (from VERSION file)
    - If the tag already exists, skip tagging and warn the user
@@ -54,38 +65,61 @@ Merges develop into master, tags the release, and pushes.
 5. **Push to GitHub**:
    - Push master
    - Push tags: `git push --tags`
-   - If `gh auth status` succeeds, publish the GitHub Release for madc:
-     `gh release create vX.Y.Z --title "vX.Y.Z — <one-line theme>"
-     --notes-file docs/release-notes/vX.Y.Z-master.md --latest`
-     (if gh is not authed, note it in the report and continue)
    - **Every master promotion is THREE-PLATFORM, and the platform
-     suites GATE it** (owner rule, 2026-08-20). Assets upload only
-     after ALL THREE lanes are built, verified, and green — a Windows
-     or macOS regression BLOCKS the promotion and gets fixed first,
-     never recorded as a residue.
+     suites GATE it** (owner rule, 2026-08-20). The release publishes
+     only after ALL THREE lanes are built, verified, and green — a
+     Windows or macOS regression BLOCKS the promotion and gets fixed
+     first, never recorded as a residue.
      1. Linux: `bash scripts/package_release.sh` on the build container
         (rebuilds in the distribution configuration, runs the packed
-        suite against the exact packaged binary, restores the tree;
-        TRUNCATES `dist/SHA256SUMS`).
+        suite against the exact packaged binary, runs the PK4 install
+        gates, restores the tree; TRUNCATES the container's
+        `dist/SHA256SUMS`).
      2. Windows: `scripts/remote_build.sh release-win` (build +
         verify_pe_release), then the wine packed suite
         (`WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin'
         MADC_BIN=bin/madc-release-x86-64-windows.exe MADC_WRAPPER=wine
         MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh`) —
         must be green — then `bash scripts/package_release_windows.sh`
-        (appends to SHA256SUMS).
+        (appends to the container's SHA256SUMS).
      3. macOS: `scripts/remote_build.sh release-macos` (both arches +
-        verify_macho_release), then
-        `bash scripts/package_release_macos.sh` (appends to SHA256SUMS);
-        run the Mac battery (`ssh madc-mac`, `LC_ALL=C` — the alias in
-        ~/.ssh/config owns the DHCP-drifting address) when
-        the Mac is reachable — a darwin regression blocks too.
-     Pull `dist/` back via scp (NEVER `remote_build.sh sync` before the
-     pull — sync clobbers container `dist/`), then upload the SIX
-     assets:
-     `gh release upload vX.Y.Z dist/madc_*.deb dist/madc-*.rpm
-     dist/madc-*-windows-x86_64.zip dist/madc-*-macos-arm64.tar.gz
-     dist/madc-*-macos-x86_64.tar.gz dist/SHA256SUMS`
+        verify_macho_release — the container CROSS lane, the local
+        verification of the darwin build; its tarballs are never
+        uploaded), then `bash scripts/package_release_macos.sh`
+        (packages both, re-verifies, prints the stated mactar SKIP);
+        the EXECUTION proof is CI's (below): the two native mac jobs
+        run the Mac battery inside the PK4 mactar gate on the exact
+        tarball bytes. Run the owner-Mac battery (`ssh madc-mac`,
+        `LC_ALL=C` — the alias in ~/.ssh/config owns the DHCP-drifting
+        address) when the Mac is reachable as additional evidence — a
+        darwin regression blocks too.
+   - **Release-asset ownership (PK5 2026-09-01; macOS joined at the
+     darwin-host port D3, 2026-09-02): CI owns ALL SIX assets.** The
+     tag push triggers `.github/workflows/release.yml`, which builds
+     the .deb/.rpm/linux-tarball/win-zip on ubuntu and the two macOS
+     tarballs NATIVELY on GitHub's arm64 + Intel mac runners (pinned
+     inputs, self-frozen groves — release-equivalent to the container's
+     cross build by construction), smokes every one with the PK4
+     install gates (the mac ones with the Mac battery's PASS floor),
+     and attaches them (plus their SHA256SUMS lines) to the release —
+     creating it as a DRAFT if absent. The container-built copies above
+     exist to run the GATING suites and verifications; they are NOT
+     uploaded (two producers of one asset would desynchronize the
+     checksums).
+     1. Wait for the workflow run on the tag to go green:
+        `gh run list --workflow=release.yml` / `gh run watch <id>` —
+        a red run BLOCKS the promotion like any lane.
+     2. Publish the release with the real notes (the workflow may have
+        left a draft): if `gh release view vX.Y.Z` exists, use
+        `gh release edit vX.Y.Z --draft=false --latest
+        --title "vX.Y.Z — <one-line theme>"
+        --notes-file docs/release-notes/vX.Y.Z-master.md`; otherwise
+        `gh release create` with the same title/notes/`--latest`.
+     3. Confirm the asset set: `gh release view vX.Y.Z` lists SIX
+        assets + SHA256SUMS (deb, rpm, linux tarball, windows zip, two
+        macOS tarballs). Nothing is uploaded from the container — the
+        local `dist/` describes container bytes and stays local.
+     (If gh is not authed, note it in the report and continue.)
 
    (MIR needs nothing separate: it lives in-tree at `third_party/mir`,
    so the madc tag versions it — subtree migration 2026-08-11.)

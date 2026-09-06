@@ -63,6 +63,26 @@
 # text mode (gcc-parity-correct platform behavior); the .expect model is
 # per-line SUBSTRING match (grep -F), which tolerates the trailing \r —
 # fixtures stay LF, no normalization layer needed.
+#
+# MADC_EXE_FLAGS (env): extra flags for the EXE pass's native link only
+# (whitespace-split, placed before -o). The domain's AOT-lane posture, not
+# a per-test knob: on Apple targets a runtime-needing program fails at emit
+# without -static-libmadc (no libmadc dylib ships yet), so the darwin lane
+# runs with MADC_EXE_FLAGS=-static-libmadc. Empty on the default lane.
+#
+# MADC_EXE_ADVISORY (env): non-empty = the EXE pass REPORTS but does not gate
+# the exit status, and the summary names the reason (the value). For a domain
+# whose native-artifact lane is structurally incomplete for a stated reason —
+# darwin until the runtime dylib ships (D5): -static-libmadc cannot cover the
+# dialect runtime (Tier B), so every runtime-needing program fails at link —
+# while the JIT pass gates as usual. Never silent: the reason is printed on
+# the summary line every run. Empty (default) = the EXE lane gates.
+#
+# MADC_FAIL_DETAIL (env): N > 0 prints, under each FAIL line, the exit code
+# and the first N lines of the failing leg's stdout/stderr (and the first
+# unmet .expect line) as indented `  | ` lines. For lanes whose host cannot
+# be reached interactively (a CI runner: the log is all that comes back)
+# — the diagnostics travel with the verdict. 0 (default) = today's output.
 RUN_EXE=0
 RUN_OBJ=0
 BACKEND_FLAG=""
@@ -85,6 +105,16 @@ MADC="${MADC_BIN:-bin/madc}"
 # where the caller did not need to set MADC_BIN explicitly.
 export MADC_BIN="$MADC"
 MADC_WRAPPER="${MADC_WRAPPER:-}"
+MADC_EXE_FLAGS="${MADC_EXE_FLAGS:-}"
+MADC_FAIL_DETAIL="${MADC_FAIL_DETAIL:-0}"
+MADC_EXE_ADVISORY="${MADC_EXE_ADVISORY:-}"
+# detail <label> <text>: the first $MADC_FAIL_DETAIL lines of <text>, indented.
+detail() {
+    [ "$MADC_FAIL_DETAIL" -gt 0 ] || return 0
+    [ -n "$2" ] || return 0
+    printf '  | %s:\n' "$1"
+    printf '%s\n' "$2" | head -n "$MADC_FAIL_DETAIL" | sed 's/^/  |   /'
+}
 while [ $# -gt 0 ]; do
     case "$1" in
         --exe) RUN_EXE=1; shift ;;
@@ -239,10 +269,12 @@ for t in tests/*.mad; do
                 [ -z "$line" ] && continue
                 if ! grep -qF -- "$line" <<< "$out"; then
                     ok=0
+                    unmet="$line"
                     break
                 fi
             done < "$expect_err_file"
         fi
+        err=""
     else
         # stderr goes to a scratch file so an .expect_quiet fixture can
         # assert it is empty; without the fixture it is simply discarded.
@@ -268,6 +300,7 @@ for t in tests/*.mad; do
                     # Each expected line must appear somewhere in the output.
                     if ! grep -qF -- "$line" <<< "$out"; then
                         ok=0
+                        unmet="$line"
                         break
                     fi
                 done < "$expect_file"
@@ -277,6 +310,8 @@ for t in tests/*.mad; do
                 ok=0
             fi
         fi
+        err=""
+        [ "$MADC_FAIL_DETAIL" -gt 0 ] && [ -s "$errf" ] && err=$(head -n "$MADC_FAIL_DETAIL" "$errf")
         rm -f "$errf"
     fi
 
@@ -290,7 +325,14 @@ for t in tests/*.mad; do
             echo "FAIL: $t"
             FAIL=$((FAIL+1))
         fi
+        if [ "$MADC_FAIL_DETAIL" -gt 0 ]; then
+            printf '  | rc=%s\n' "$rc"
+            detail "stdout" "$out"
+            detail "stderr" "$err"
+            [ -n "${unmet:-}" ] && printf '  | unmet expect line: %s\n' "$unmet"
+        fi
     fi
+    unmet=""
 
     # OBJ pass: compile to ONE relocatable .o (-r, the gcc/ld -r shape —
     # a multi-TU --project program becomes one whole-program .o), then
@@ -369,7 +411,7 @@ for t in tests/*.mad; do
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
         # program's argv, so a trailing -o would never reach madc.
-        if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -o "$exe_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
+        if build_out=$($MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $MADC_EXE_FLAGS -o "$exe_path" "${flags[@]}" "$t" 2>&1); then
             # The produced ARTIFACT runs under the same wrapper as the
             # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
@@ -395,11 +437,16 @@ for t in tests/*.mad; do
             else
                 echo "FAIL(exe): $t"
                 EXE_FAIL=$((EXE_FAIL+1))
+                if [ "$MADC_FAIL_DETAIL" -gt 0 ]; then
+                    printf '  | exe rc=%s\n' "$exe_rc"
+                    detail "exe stdout" "$exe_out"
+                fi
             fi
             rm -f "$exe_path"
         else
             echo "FAIL(exe-build): $t"
             EXE_FAIL=$((EXE_FAIL+1))
+            detail "exe-build output" "$build_out"
         fi
     fi
 done
@@ -419,7 +466,11 @@ if [ -n "$MADC_SKIP_EXT" ]; then
 fi
 echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 if [ $RUN_EXE -eq 1 ]; then
-    echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
+    if [ -n "$MADC_EXE_ADVISORY" ]; then
+        echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests) — ADVISORY, not gating: $MADC_EXE_ADVISORY"
+    else
+        echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
+    fi
 fi
 if [ $RUN_OBJ -eq 1 ]; then
     echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
@@ -433,5 +484,5 @@ fi
 # piping a suite through `tail` — the verdict came from a line nobody read
 # instead of the exit code. A lane that did not run has a 0 counter, so these
 # are unconditional.
-[ $EXE_FAIL -eq 0 ] || exit 1
+[ $EXE_FAIL -eq 0 ] || [ -n "$MADC_EXE_ADVISORY" ] || exit 1
 [ $OBJ_FAIL -eq 0 ] || exit 1

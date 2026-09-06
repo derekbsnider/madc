@@ -290,6 +290,30 @@ else
 	sed -n '1,10p' "$D/vla.emit"
 fi
 
+# --- leg 5b: two ledger modules sharing a static-inline header pair --------
+# A madc-mode println/format program pulls rt_format AND rt_dump together;
+# both TUs carry rt_dump.h's static-inline helpers. With C internal linkage
+# dropped (the pre-fix front-end bug) the second module died at MIR load with
+# "func madc_dump_frame_col is prohibited for redefinition". The pair loading,
+# linking runtime-free, and running proves function statics stay TU-local
+# through the ledger (FuncDef::internal_linkage -> N_STATIC -> no export).
+cat > "$D/fmtpair.mad" <<'EOF'
+int main() { println("pair {}", 7); return 0; }
+EOF
+emit_and_inspect "$D/fmtpair.mad" fmtpair -static-libmadc
+fjit=$(run "$MADC" "$D/fmtpair.mad" 2>/dev/null)
+faot=$(run "$D/fmtpair" 2>/dev/null)
+if grep -q "prohibited for redefinition" "$D/fmtpair.emit"; then
+	fail "format+dump ledger pair: static-inline redefinition is back"
+	sed -n '1,6p' "$D/fmtpair.emit"
+elif [ $EMIT_RC -eq 0 ] && [ -z "$NEEDED" ] && [ -z "$UND" ] \
+   && [ -n "$faot" ] && [ "$fjit" = "$faot" ]; then
+	pass "format+dump ledger pair: statics stay module-local"
+else
+	fail "format+dump ledger pair (rc=$EMIT_RC needed='$NEEDED' und='$UND')"
+	sed -n '1,10p' "$D/fmtpair.emit"
+fi
+
 # --- leg 6: Tier-B refusal names the symbols ------------------------------
 # The JIT run first: a program that did not actually work would refuse for
 # reasons that have nothing to do with the ledger (the same

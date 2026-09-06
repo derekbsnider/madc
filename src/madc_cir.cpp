@@ -36,6 +36,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "madc_cir.h"
+#include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
@@ -69,6 +70,8 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
     // -g: stamp source locations on MIR insns and snapshot each function's
     // typed locals while compiling (consumed by cir_register_source_debug).
     opts->debug_info_p = madc_debug_info ? 1 : 0;
+    // -w: c2mir prints no warnings (its ignore_warnings_p; errors unaffected).
+    opts->ignore_warnings_p = madc_no_warnings ? 1 : 0;
     // -c/-o/-shared: gen captures relocatable object code instead of
     // publishing executable code (consumed by c2mir_get_native_object).
     opts->native_object_p = madc_object_mode ? 1 : 0;
@@ -794,6 +797,20 @@ static node_t cir_translate_guarded(c2m_ctx_t c2m, Program *prog,
 				    bool project_tu = false)
 {
     out_builder = NULL;
+    // Error-tolerant parse (§3.5): a tree with CONTAINED parse errors never
+    // translates — TokenError nodes are parse-tree citizens that do not
+    // lower ("prevent compilation", the owner ruling). The gate lives HERE,
+    // on the one translate entry every lane (run, object, project, freeze,
+    // emit) flows through. The per-error diagnostics were already rendered
+    // (CLI) or captured as data (IDE children under DiagnosticRenderMute);
+    // this is the one summary line, mute-aware like the renders it follows.
+    if (prog && prog->error_nodes > 0) {
+	if (!DiagnosticRenderMute::active)
+	    fprintf(stderr, "%s: %zu parse error(s) — compilation refused\n",
+		    source_name ? source_name : "<source>",
+		    prog->error_nodes);
+	return NULL;
+    }
     // Open the flavor's runtime BEFORE the tree build, not only at MIR link:
     // the builder's mangled-direct link tests (extern_symbol_can_link, the
     // facet-id extern recording) probe dlsym at CIR time, and under
@@ -1114,18 +1131,11 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// Ride the lazy interface (first-call generation) and eagerly gen only
 	// the CONSUMER's funcs, so the consumer keeps exactly the no-cache
 	// lane's gen-fatal surface and wall; cache bodies generate on demand.
-	// WIN64: the lazy first-call redirect is broken there (see the
-	// project-lane comment + wine reducer) — eager until the MIR win64
-	// lazy wrapper is fixed and proven.
-#ifdef _WIN32
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
-#else
 	MIR_link(ctx, MIR_set_lazy_gen_interface, cir_import_resolver);
 	for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it;
 	     it = DLIST_NEXT(MIR_item_t, it))
 	    if (it->item_type == MIR_func_item)
 		MIR_gen(ctx, it);
-#endif
     } else
 	MIR_link(ctx, MIR_set_gen_interface,
 		 madc_object_mode ? cir_object_import_resolver
@@ -1461,6 +1471,13 @@ int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
     g_jit_module = mod;
     auto _ex_t0 = std::chrono::steady_clock::now();	// --show-stats: execution
     int result = ((int (*)(int, char **))code)(argc, argv);
+    // Root-scope join (MT-1, the ruled Kotlin-scope semantic): main's return
+    // waits for every live task. MUST run HERE — before the session's
+    // teardown (MIR_finish unmaps the JIT code the task bodies ARE; the
+    // go_join reducer caught exactly that as a wild jump into an unmapped
+    // page) and inside the g_jit_module window so a task crash still
+    // symbolizes. Idempotent no-op when the program never spawned.
+    __madc_task_join_all();
     if (out_secs)
 	*out_secs = std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _ex_t0).count();
@@ -1859,7 +1876,7 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 // program still needing the madc runtime cannot link — no target libmadc
 // dylib exists — and the message names the fix. Returns true when the
 // emit must refuse. (The PE lanes used to share this refusal; W3.5's
-// libmadc_rt.dll lifted it — see cir_windows_import_dlls.)
+// libmadc-0.dll lifted it — see cir_windows_import_dlls.)
 static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
 				       const char *out_path)
 {
@@ -1877,16 +1894,17 @@ static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
 // ONE rule for the PE emit lanes (source image + object link): the
 // writer's import-attribution DLL order. A runtime-needing program
 // imports the madc surface (madc_puts, the madc_value_* bridge, __madc_*
-// helpers) from libmadc_rt.dll — the win64 twin of libmadc.so.0, staged
-// beside madc.exe (W3.5) — placed FIRST: specific before general, the
-// madcdl walk's rule, so madc-runtime names can never mis-attribute to a
-// base DLL. The base set (`other`) follows.
+// helpers) from libmadc-0.dll — the win64 twin of libmadc.so.0 (same
+// ABI number, mingw-style; renamed from libmadc_rt.dll in the packaging
+// arc), staged beside madc.exe (W3.5) — placed FIRST: specific before
+// general, the madcdl walk's rule, so madc-runtime names can never
+// mis-attribute to a base DLL. The base set (`other`) follows.
 static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 				    const std::vector<std::string> &other,
 				    std::vector<const char *> &libs)
 {
     if (have_madc && !drop_madc)
-	libs.push_back("libmadc_rt.dll");
+	libs.push_back("libmadc-0.dll");
     for (const std::string &l : other)
 	libs.push_back(l.c_str());
 }
@@ -1951,7 +1969,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	return false;
     cir_apple_extra_dylibs(imports, libs);
 #elif MADC_TARGET_WINDOWS_P
-    // PE: runtime-needing programs import from libmadc_rt.dll; the list
+    // PE: runtime-needing programs import from libmadc-0.dll; the list
     // flows to the writer as its import-attribution DLL order.
     cir_windows_import_dlls(have_madc, drop_madc, other, libs);
 #else
@@ -2063,18 +2081,47 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 	else
 	    needed.push_back(l);
     }
-    runpath = cir_selfexe_libdir();
-    if (!runpath.empty())
-	runpath += ":/usr/local/lib";
+    // Relocatable arm first: a produced binary placed in a relocatable
+    // install (tarball <root>/bin beside <root>/lib — madcide in the
+    // release tarball is the standing case) binds its OWN tree's runtime
+    // before the compiling madc's libdir or the system fallback. The
+    // token is the loader's, never the shell's: $ORIGIN on ELF,
+    // @executable_path on Mach-O. PE has no runpath (adjacency binds) —
+    // its value stays what it was, unread by the writer.
+#ifdef __APPLE__
+    runpath = "@executable_path/../lib:";
+#elif defined(_WIN32)
+    runpath = "";
+#else
+    runpath = "$ORIGIN/../lib:";
+#endif
+    runpath += cir_selfexe_libdir();
+    if (runpath.empty() || runpath[runpath.size() - 1] == ':')
+	runpath += "/usr/local/lib";
     else
-	runpath = "/usr/local/lib";
+	runpath += ":/usr/local/lib";
 }
+
+// THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
+// every native-emit lane enters madc_object_mode through this guard —
+// scoped, never one-shot. In-process callers exist (madc::build_native,
+// the IDE's build lane); a leaked flag would bring the caller's later
+// lazily-built JIT sessions up in object-capture mode. The CLI lanes are
+// unaffected (the process exits right after). Same save/restore shape as
+// DiagnosticRenderMute. Gate: scripts/check-object-mode-scope.sh — the
+// ctor below is the only place in src/ that sets the flag.
+struct ObjectModeScope
+{
+    bool prev;
+    ObjectModeScope() : prev(madc_object_mode) { madc_object_mode = true; }
+    ~ObjectModeScope() { madc_object_mode = prev; }
+};
 
 int madc_cir_emit_native(Program *prog, const char *source_name,
 			 MadcNativeKind kind, const char *out_path,
 			 const std::vector<std::string> &user_libs)
 {
-    madc_object_mode = true;	// one-shot CLI path; process exits after this
+    ObjectModeScope object_mode_scope;
 
     // Standalone executables skip the __madc_shim_* eval adapters (Pass
     // 0.74): nothing can host-call them, and dropping their madc_value_*
@@ -2170,7 +2217,13 @@ static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
     for (size_t i = 0; i < n_init; i++)
 	((cir_init_fn)inits[i])(argc, argv, environ);
     fflush(stdout);
-    return entry(argc, argv, environ);
+    int rc = entry(argc, argv, environ);
+    // Root-scope join (MT-1): same rule as CirJitSession::run_main. The
+    // loaded image is never unloaded, so the atexit copy WOULD be safe here
+    // — the explicit call keeps task output ordered before madc's own
+    // teardown. Idempotent no-op when nothing spawned.
+    __madc_task_join_all();
+    return rc;
 }
 
 int madc_cir_run_object(const char *path, int argc, char **argv)
@@ -2320,7 +2373,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	}
 	cir_apple_extra_dylibs(imports, libs);
 #elif MADC_TARGET_WINDOWS_P
-	// Same PE rule as cir_write_native_image: libmadc_rt.dll first
+	// Same PE rule as cir_write_native_image: libmadc-0.dll first
 	// when the runtime is needed, then the base DLL order (the one
 	// owner is cir_windows_import_dlls).
 	cir_windows_import_dlls(have_madc, drop_madc, other, libs);
@@ -3019,6 +3072,32 @@ void Program::forest_arena_record_aggregate(DataDefSTRUCT *sdd)
 		r.vgroup_count = (uint32_t)vgs.size();
 		for (size_t g = 0; g < vgs.size(); ++g)
 			forest_arena.add_payload(vgs[g]);
+		// --- v42: the flat vtable_slots list and the virtual_methods name set —
+		//     the parse-time polymorphic NAME state the groups were derived
+		//     from (see defrec). Word runs of interned names.
+		r.vslot_begin = (uint32_t)forest_arena.payload.size();
+		r.vslot_count = (uint32_t)cdd->vtable_slots.size();
+		for (size_t k = 0; k < cdd->vtable_slots.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->vtable_slots[k].c_str()));
+		r.vmeth_begin = (uint32_t)forest_arena.payload.size();
+		r.vmeth_count = 0;
+		for (std::map<std::string, bool>::const_iterator vm = cdd->virtual_methods.begin();
+		     vm != cdd->virtual_methods.end(); ++vm) {
+			if (!vm->second)
+				continue;
+			forest_arena.add_word(forest_arena.strings.intern(vm->first.c_str()));
+			++r.vmeth_count;
+		}
+		// --- v43: the friendship grants (see defrec) — word runs of the
+		//     befriended function and class NAMES, in declaration order.
+		r.friendfn_begin = (uint32_t)forest_arena.payload.size();
+		r.friendfn_count = (uint32_t)cdd->friend_function_names.size();
+		for (size_t k = 0; k < cdd->friend_function_names.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->friend_function_names[k].c_str()));
+		r.friendcls_begin = (uint32_t)forest_arena.payload.size();
+		r.friendcls_count = (uint32_t)cdd->friend_class_names.size();
+		for (size_t k = 0; k < cdd->friend_class_names.size(); ++k)
+			forest_arena.add_word(forest_arena.strings.intern(cdd->friend_class_names[k].c_str()));
 
 		// --- class-scope name maps (v20): type aliases, static member types,
 		//     static-const values. Resolve every type-id FIRST (lazy stamping
@@ -4521,6 +4600,21 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 		}
 	}
 
+	// 4b (v27): NAMESPACE ALIASES (Program::namespace_aliases) — a
+	// `namespace fs = std::filesystem;` inside a packed header must LOAD as
+	// it parsed: ns_id = the alias's qualified key, name_id = the canonical
+	// target. The flush re-adds the map entries verbatim.
+	for (std::map<std::string, std::string>::const_iterator
+	     ai = prog->namespace_aliases.begin();
+	     ai != prog->namespace_aliases.end(); ++ai, ++next) {
+		madc::dis::defrec r;
+		memset(&r, 0, sizeof(r));
+		r.kind    = madc::dis::DK_NSALIAS;
+		r.ns_id   = a.strings.intern(ai->first.c_str());
+		r.name_id = a.strings.intern(ai->second.c_str());
+		a.set_def_at(next, r);
+	}
+
 	// 5 (v25): USING-DECLARATION function imports — `namespace std {
 	// using ::abort; }` registers TWO surfaces ([namespace.udecl]): the
 	// namespace_map[ns][name] binding (first-wins) AND membership in
@@ -5351,7 +5445,8 @@ static void cir_ledger_serialize(const std::vector<cir_ledger_module> &ledger,
 
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache,
-		    const std::vector<cir_ledger_module> *ledger)
+		    const std::vector<cir_ledger_module> *ledger,
+		    bool progress)
 {
     // The type graph rides the parse-populated DefArena (v18): a Program that
     // parsed with forest_arena_enabled OFF would freeze a type-less container
@@ -5563,7 +5658,7 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 					   append ? 15 : 0))
 			    fprintf(stderr, "%s: mir cache: segment add "
 				    "failed — blob skipped\n", source_name);
-			else
+			else if (progress)
 			    fprintf(stderr, "%s: mir cache: %zu-byte module "
 				    "blob packed\n", source_name, mblob.size());
 		    }
@@ -5608,7 +5703,9 @@ int madc_cir_freeze(Program *prog, const char *source_name,
 		    }
 		    // Status to stderr: program stdout stays clean for the
 		    // --freeze-run child's output.
-		    if (prog->pack_recording)
+		    if (!progress)
+			;			// library Run verb: silent
+		    else if (prog->pack_recording)
 			fprintf(stderr, "Froze %s: %zu units, %zu records, "
 				"%zu tokens, %zu decl-index entries, "
 				"%zu branch macros -> %s%s\n",
@@ -5808,6 +5905,35 @@ static bool is_c_source_file(const std::string &path)
 	return path.size() >= 2 && path.compare(path.size() - 2, 2, ".c") == 0;
 }
 
+// Apply one manifest TU's language options to its Program — THE one rule,
+// shared by the --project build lane (project_parse_all) and the AST-1
+// project parse handles (internal_program_project_open): -I include dirs,
+// -D defines, the -stdlib flavor, and the std selection. An explicit
+// --std wins; a plain .c file defaults to gnu17 — gcc's actual default C
+// dialect (C17 base + GNU, no __STRICT_ANSI__) — so C++ keywords stay
+// usable as C identifiers AND glibc's feature gates (timercmp, strdup,
+// …) match plain gcc. False + err = unknown -stdlib flavor.
+bool apply_project_tu_options(::Program &prog, const ProjectTU &tu,
+			      std::string &err)
+{
+	for (const std::string &inc : tu.include_dirs)
+		prog.add_include_dir(inc);
+	for (const std::string &d : tu.defines)
+		prog.add_cli_define(d);
+	if (!tu.stdlib_option.empty()
+	 && !prog.set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
+		err = "unknown -stdlib flavor '" + tu.stdlib_option
+		    + "' (this madc was built with: "
+		    + prog.stdlib_flavor_names() + ")";
+		return false;
+	}
+	if (!tu.std_option.empty())
+		prog.set_language_standard_option("--std=" + tu.std_option);
+	else if (is_c_source_file(tu.file))
+		prog.set_language_standard_option("--std=gnu17");
+	return true;
+}
+
 struct CirParsedTU {
 	std::unique_ptr<Program> prog;
 	std::string name;
@@ -5850,25 +5976,12 @@ static bool project_parse_all(MadcEngine &engine,
 		prog->registration_policy.enable_forest_bind = forest_bind;
 		prog->forest_bind_path = forest_bind_path;
 		prog->class_pattern_live_capture = class_pattern_live_capture;
-		for (const std::string &inc : tu.include_dirs)
-			prog->add_include_dir(inc);
-		for (const std::string &d : tu.defines)
-			prog->add_cli_define(d);
-		if (!tu.stdlib_option.empty()
-		 && !prog->set_stdlib_flavor_option("-stdlib=" + tu.stdlib_option)) {
-			fprintf(stderr, "%s: unknown -stdlib flavor '%s' (this madc was built with: %s)\n",
-				tu.file.c_str(), tu.stdlib_option.c_str(),
-				prog->stdlib_flavor_names().c_str());
+		std::string opt_err;
+		if (!apply_project_tu_options(*prog, tu, opt_err)) {
+			fprintf(stderr, "%s: %s\n", tu.file.c_str(),
+				opt_err.c_str());
 			return false;
 		}
-		if (!tu.std_option.empty())
-			prog->set_language_standard_option("--std=" + tu.std_option);
-		else if (is_c_source_file(tu.file))
-			// No explicit -std and a .c file → gcc's actual default C
-			// dialect, gnu17 (C17 base + GNU, no __STRICT_ANSI__) — so
-			// C++ keywords stay usable as C identifiers AND glibc's
-			// feature gates (timercmp, strdup, …) match plain gcc.
-			prog->set_language_standard_option("--std=gnu17");
 
 		auto _tk0 = std::chrono::steady_clock::now();
 		double _fw0 = prog->_forest_work_seconds;
@@ -5991,22 +6104,10 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// checked every function; the entry and the TU inits below stay
 	// explicitly MIR_gen'd (their failure surface is unchanged). -g keeps
 	// the eager interface: source-debug registration reads machine code.
-	// WIN64: the lazy interface's first-call redirect is BROKEN on
-	// win64 — EXCEPTION_ACCESS_VIOLATION at the first lazily generated
-	// call (reducer: wine bin/madc-release-x86-64-windows.exe --project
-	// tests/testproject.cc.json crashes; the same run with -g, the eager
-	// interface, is byte-correct — caught by the v0.95.0 promotion
-	// gate's wine suite). Until the MIR win64 lazy wrapper is fixed and
-	// proven, win64 keeps the eager interface: pre-lever behavior,
-	// identical correctness, link wall only.
-#ifdef _WIN32
-	MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
-#else
 	MIR_link(ctx,
 		 madc_debug_info ? MIR_set_gen_interface
 				 : MIR_set_lazy_gen_interface,
 		 cir_import_resolver);
-#endif
 	if (madc_debug_info)
 		cir_register_source_debug(ctx);
 	auto _lk1 = std::chrono::steady_clock::now();
@@ -6162,7 +6263,7 @@ int madc_project_emit_native(MadcEngine &engine,
 		fprintf(stderr, "madc_project_emit_native: empty manifest\n");
 		return -1;
 	}
-	madc_object_mode = true;   // one-shot CLI path; process exits after
+	ObjectModeScope object_mode_scope;   // scoped like every emit lane
 
 	// Group before `parsed`: it must outlive the TU Programs (see
 	// madc_project_execute).
@@ -6304,11 +6405,38 @@ int madc_project_emit_native(MadcEngine &engine,
 	return ok ? 0 : -1;
 }
 
+// The C++ reverse-render's source pack: the retained token stream + the
+// recorded include directives, passed as data (mc11-ir.md). tu_file through
+// intern_file so the compare matches the spelling the TU's tokens carry.
+// Two consumers: the normal --emit=c++ lane below (post validity gate) and
+// the contained-error lane (no tree exists to gate — the echo IS the view).
+static void cir_emit_cxx_source(FILE *out, Program *prog,
+				const char *source_name)
+{
+    CirEmitSource si;
+    si.tokens = &prog->tokens;
+    si.tu_file = prog->intern_file(std::string(source_name ? source_name
+							   : ""));
+    si.includes = &prog->fidelity_include_directives;
+    si.trailing = &prog->_trailing_trivia;
+    cir_emit_cxx(out, si);
+}
+
 // Build the cir_node tree and render it as C source (no compile/run).
 // Used by `--emit=c11|mc11`.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 		  CirEmitLang lang)
 {
+    // Error-tolerant parse (§3.5): --emit=c++ is a SOURCE view, not a
+    // compilation — the retained tokens render exactly even when the parse
+    // contained errors (the debris keeps them), so this one lane stays
+    // available where every translating lane refuses at the gate. Exit
+    // nonzero all the same: the TU has errors (gcc-canon status).
+    if (lang == celCxx && prog && prog->error_nodes > 0) {
+	cir_emit_cxx_source(out, prog, source_name);
+	return 1;
+    }
+
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
 
@@ -6355,7 +6483,14 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
     if (lang == celC11 && getenv("MADC_XTEST_NO_SRET_LOWER") == NULL)
 	builder->emitc_lower_indirect_returns(tree);
 
-    cir_emit_c(out, tree, lang);
+    if (lang == celCxx) {
+	// The reverse-render reads the retained source via the shared pack
+	// above. The tree's role was the validity gate — never present an
+	// erroneous tree's echo as clean output.
+	cir_emit_cxx_source(out, prog, source_name);
+    }
+    else
+	cir_emit_c(out, tree, lang);
 
     cir_finish(c2m);
     c2mir_finish(ctx);

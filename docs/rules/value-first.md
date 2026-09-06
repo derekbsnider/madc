@@ -49,3 +49,18 @@ return a NEW value (substr, case transforms) return ring-lifetime
 onward or capture into a var immediately (the ctor copies), not to
 store as a raw pointer. When L3 lands these can gain value-returning
 overloads without breaking callers.
+
+## Why `var`, not `value`, in dialect source (owner rule 2026-08-31)
+
+Under `--std=madc` the parser resolves `var`, `value`, and `array` to the
+same carrier type (`madc_dialect_type_spelling` in `src/parser.cpp`), so
+the choice is purely a spelling — and the owner has ruled it several
+times: dialect code reads as madc, and `var` is madc's word. `array` is
+also fine in dialect code where it carries information — a variable
+that starts its life as an array (owner refinement, same day). `value`
+remains the C++-interop name (embedded-header signatures, engine
+source, `madc::value` in C++ hosts), where it is the correct spelling. Mixed spellings in one file made the dialect look like C++
+with a library; one spelling makes it a language. The mechanical
+conversion is safe by construction (alias), but the repo-wide sweep of
+`tests/` waits for a merge wave because only the full battery validates
+every touched test.

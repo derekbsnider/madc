@@ -46,6 +46,7 @@
 
 #include "madcdis/id_table.h"
 #include "madcdis/intern_table.h"
+#include "madcdis/text_buffer.h"
 #include "libmadc/value.h"
 
 namespace madc {
@@ -136,7 +137,7 @@ struct requirement
 struct entity
 {
     entity_id   id;
-    name_id     name;	// canonical spelling ("brass-lantern")
+    name_id     name;	// canonical spelling ("oil-lamp")
     madc::value bag;
 
     entity() : id(0), name(0) {}
@@ -164,6 +165,7 @@ class world
     std::vector<entity *>	    _owned;
     std::vector<link>		    _links;
     std::map<name_id, std::vector<name_id> > _implies;	// key -> keys it provides
+    std::map<entity_id, text_buffer> _texts;	// sparse text components
 
     world(const world &);		// identities are not copyable
     world &operator=(const world &);
@@ -271,6 +273,74 @@ public:
 	return out;
     }
     std::vector<link> all_links() const { return _links; }
+
+    // --- text component (Track 7.2 R4; Track 8.1 pulled forward): the
+    // hub's SECOND component kind — a piece-table buffer attached
+    // SPARSELY by entity id ("an editor buffer = entity with a
+    // piece-table component, natively" — design demand 7). Mutators
+    // mirror through mutation_context like every write; reads are const.
+    // RUNTIME-ONLY today: world_save does not carry it — a document's
+    // text persists in the document's own file, written by the
+    // application's save verb.
+    void text_load(entity_id id, const std::string &s)
+    {
+	_texts[id].load(s);
+    }
+    void text_insert(entity_id id, size_t off, const std::string &s)
+    {
+	_texts[id].insert(off, s);
+    }
+    void text_erase(entity_id id, size_t off, size_t len)
+    {
+	_texts[id].erase(off, len);
+    }
+    void text_replace(entity_id id, size_t off, size_t len,
+		      const std::string &s)
+    {
+	_texts[id].replace(off, len, s);
+    }
+    // History (madcide IDE-2): a checkpoint snapshots the buffer state
+    // with an OPAQUE application payload; undo restores the top snapshot
+    // and hands the payload back (false: no component or empty history).
+    // Both are writes — they mutate the component's state.
+    void text_checkpoint(entity_id id, const madc::value &meta)
+    {
+	_texts[id].checkpoint(meta);
+    }
+    bool text_undo(entity_id id, madc::value &meta_out)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.undo(meta_out);
+    }
+    // The redo-preserving forms (madcide v2): now_meta = the payload live
+    // on the document being LEFT, captured onto the opposite stack so
+    // redo/undo restore document + interaction state together.
+    bool text_undo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.undo(meta_out, now_meta);
+    }
+    bool text_redo(entity_id id, madc::value &meta_out,
+		   const madc::value &now_meta)
+    {
+	std::map<entity_id, text_buffer>::iterator it = _texts.find(id);
+	if ( it == _texts.end() )
+	    return false;
+	return it->second.redo(meta_out, now_meta);
+    }
+    // The component, or NULL when the entity has none. (Reads only —
+    // mutation goes through the verbs above.)
+    const text_buffer *text_of(entity_id id) const
+    {
+	std::map<entity_id, text_buffer>::const_iterator it = _texts.find(id);
+	return it == _texts.end() ? (const text_buffer *)0 : &it->second;
+    }
+    bool has_text(entity_id id) const { return _texts.count(id) != 0; }
 
     // --- key layering: `master` provides `granted` (and, transitively,
     // whatever `granted` provides). Folded at credential build; cycle-safe.

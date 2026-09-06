@@ -1,0 +1,33 @@
+// adventure pilot verb body: douse <thing>.
+// Eval-context bindings: w/actor/target = int64, arg/verb = const char*.
+long t = ui::resolve(w, actor, arg, "noun");
+var lit;
+if ( t )
+    ui::get(lit, w, t, "lit");
+if ( lit.is_null() || !lit.as_boolean() )
+    return "It isn't lit.";
+ui::set(w, t, "lit", false);
+long ws = ui::entity_by_name(w, "world-state");
+if ( ws )
+{
+    var tt;
+    ui::get(tt, w, ws, "turn");
+    long tn = tt.is_null() ? 0 : tt.as_integer();
+    ui::set(w, ws, "turn", tn + 1);
+}
+long lamp = ui::entity_by_name(w, "brass-lantern");
+if ( lamp )
+{
+    var ll;
+    ui::get(ll, w, lamp, "lit");
+    if ( !ll.is_null() && ll.as_boolean() )
+    {
+        var f;
+        ui::get(f, w, lamp, "fuel");
+        long fn = f.is_null() ? 0 : f.as_integer();
+        ui::set(w, lamp, "fuel", fn - 1);
+        if ( fn - 1 <= 0 )
+            ui::set(w, lamp, "lit", false);
+    }
+}
+return "Extinguished.";

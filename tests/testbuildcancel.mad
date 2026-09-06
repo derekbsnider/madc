@@ -1,0 +1,40 @@
+// MT-3b: an in-process build cancels DURING ITS PARSE. The builder task
+// runs madc::build_native on a large source (testmadcide.mad — thousands
+// of tokens); the lexer pump yields every 1024 tokens, main cancels the
+// builder's scope at that first yield, and the resumed pump aborts
+// CLEANLY: the build returns false with a "cancelled" diagnostic row —
+// never a throw through the lexer's frames, never an emitted artifact.
+// Deterministic by the FIFO substrate: spawn never switches; the yield
+// handshake pins exactly where the cancel lands.
+var tr;
+
+void builder()
+{
+    var diags;
+    bool ok = madc::build_native(diags, "tests/testmadcide.mad", "exe",
+				 "tmp/testbuildcancel_out");
+    long n = php::count(diags);
+    var m = "";
+    if ( n > 0 )
+    {
+	var r = diags[0];
+	m = format("{}", r["message"]);
+    }
+    tr = format("{}ok={} rows-pos={} cancelled-row={};", tr, ok ? 1 : 0,
+		n > 0 ? 1 : 0, m.index("cancelled") >= 0 ? 1 : 0);
+}
+
+int main()
+{
+    long s = madc::scope_begin();
+    go builder();
+    yield();			// builder runs to its first lexer yield
+    madc::scope_cancel(s);
+    try {
+	madc::scope_end(s);
+    } catch (const char *e) {
+	tr = format("{}end({});", tr, e);
+    }
+    println("tr={}", tr);
+    return 0;
+}

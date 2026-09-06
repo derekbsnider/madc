@@ -1,0 +1,23 @@
+// MT-2b: the joining main wrapper. Under --std=madc the user main emits as
+// __madc_main behind a synthesized `int main(...)` that (1) forwards the
+// REAL argc/argv through the mirror, (2) joins the task root scope at
+// MAIN'S END — before any teardown — in the JIT and native lanes alike.
+// main never yields, so the spawned workers run ONLY in that join drain;
+// their prints after main's own final print pin it (strict FIFO order).
+var tr;
+
+void worker(long id)
+{
+    tr = format("{}w{};", tr, id);
+    println("drain w{} tr={}", id, tr);
+}
+
+int main(int argc, char **argv)
+{
+    tr = format("{}m(argc={},{});", tr, argc, argv[1]);
+    go worker(1);
+    go worker(2);
+    tr = format("{}mend;", tr);
+    println("pre tr={}", tr);
+    return 0;
+}

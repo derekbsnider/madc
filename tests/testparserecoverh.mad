@@ -1,0 +1,38 @@
+// Error-tolerant parse (§3.5 slice A) through the parse-handle surfaces:
+// a broken buffer still opens, parse_check reports the contained error as
+// data, and — the motivating UX — the outline holds definitions BEFORE and
+// AFTER the broken region, and parse_enclosing answers past it. The
+// .expect_quiet fixture proves the recovery renders stay captured (the
+// DiagnosticRenderMute path): the child's diagnostics never reach stderr.
+int main()
+{
+    var src = "int before(int a) { return a + 1; }\n"
+              "int broken( { return 2; }\n"
+              "int after(int b) { return b * 2; }\n"
+              "int main() { return before(1) + after(2); }\n";
+
+    long h = madc::parse_open(src.c_str(), "broken.mad");
+    println("handle: {}", h > 0 ? 1 : 0);
+
+    var d;
+    madc::parse_check(d, h);
+    println("check rows: {}", php::count(d));
+    for ( var r : d )
+	println("  {}:{} {}", r["line"], r["column"], r["message"]);
+
+    var o;
+    madc::parse_outline(o, h);
+    println("outline: {}", php::count(o));
+    for ( var fn : o )
+	println("  {} {} @ {}", fn["kind"], fn["name"], fn["line"]);
+
+    var e;
+    madc::parse_enclosing(e, h, 3, 20);
+    if ( e.is_null() )
+	println("encl@3: none");
+    else
+	println("encl@3: {}", e["name"]);
+
+    madc::parse_close(h);
+    return 0;
+}

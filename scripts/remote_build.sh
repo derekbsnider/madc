@@ -331,7 +331,16 @@ for stage in $stages; do
 		#   MADC_SKIP_EXT      BOTH domains, so .win64_skip AND .wine64_skip
 		#                      fixtures apply (it is a whitespace-split LIST).
 		#   WINEDEBUG=-all     otherwise wine's chatter buries the summary.
-		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		#   </dev/null >/dev/null 2>&1 on the wineserver: a persistent
+		#                      server spawned by THIS stage (no server yet —
+		#                      a fresh container) inherits the ssh session's
+		#                      pipes and holds them open forever, so the
+		#                      stage never returns although the suite has
+		#                      printed its summary (9 hours lost on
+		#                      2026-09-03 after a power failure). When a
+		#                      server already runs, wineserver -p exits at
+		#                      once and the redirect is inert.
+		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'
@@ -341,9 +350,10 @@ for stage in $stages; do
 		;;
 	pull)
 		# Bring the container-built binaries back to the NAS: the two
-		# userlands are ABI-identical (Ubuntu glibc 2.39, g++ 13.3)
-		# and bin/madc links libmadc statically, so pulled binaries
-		# run directly. The QNAP never compiles (owner directive
+		# userlands are ABI-identical (Ubuntu glibc 2.39, g++ 13.3),
+		# so pulled binaries run directly. Since the PK2 default flip
+		# bin/madc is a THIN CLI — the libs block below is what makes
+		# a pulled compiler runnable at all, not just its emitted exes. The QNAP never compiles (owner directive
 		# 2026-07-23). --no-perms/--no-owner/--no-group: the QNAP ACL
 		# rejects chmod on temp files ("Bad address"). Pull only
 		# right after building the CURRENT tree state, and never
@@ -366,6 +376,24 @@ for stage in $stages; do
 			note_stage "pull madc-release" "$rc"
 			chmod +x "$LOCAL_MADC/bin/madc-release" 2>/dev/null
 		fi
+		# The RUNTIME LIBRARIES ride the pull too: a `madc -o` native
+		# executable links/loads against lib/libmadc.so (and the AOT
+		# link consumes the archives), so a stale NAS lib turns a
+		# freshly-pulled compiler into runtime symbol-lookup errors
+		# in the exes it produces (2026-08-26: bin/madcide undefined
+		# __php_file_get_contents — the lib was 3 days behind bin/madc).
+		rsync -az --no-perms --no-owner --no-group --links \
+			-e "ssh -p $PORT" \
+			"$REMOTE:/workspace/madc/lib/libmadc.so" \
+			"$REMOTE:/workspace/madc/lib/libmadc.so.0" \
+			"$REMOTE:/workspace/madc/lib/libmadc.a" \
+			"$REMOTE:/workspace/madc/lib/libmadc_rt.a" \
+			"$REMOTE:/workspace/madc/lib/release" \
+			"$LOCAL_MADC/lib/"
+		rc=$?
+		echo "pull libs rc=$rc"
+		note_stage "pull libs" "$rc"
+		chmod +x "$LOCAL_MADC/lib/libmadc.so" 2>/dev/null
 		;;
 	*)
 		echo "unknown stage: $stage" >&2

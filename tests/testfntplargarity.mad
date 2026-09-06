@@ -1,0 +1,61 @@
+// A FUNCTION-template call (`detail::make_sig<Ret, Args...>()`) as an
+// argument of an enclosing call: count_queued_call_arguments must know
+// `make_sig` names a function template ([temp.names] — its `<` opens a
+// template-argument list), or the arity scan miscounts and the enclosing
+// call reports "use of undeclared identifier 'chain'"
+// (Program::fn_template_bare_names, s141; reducer tmp/eh_red16).
+// Oracle: g++/clang++ print 42.
+
+#include <string>
+
+namespace outer {
+
+struct Sig {
+	long kind;
+	Sig(long k) : kind(k) {}
+};
+
+namespace detail {
+
+template <typename Ret, typename... Args>
+Sig make_sig()
+{
+	return Sig((long)sizeof...(Args));
+}
+
+} // namespace detail
+
+struct Eng {
+	Eng() : base(40) {}
+
+	template <typename Ret, typename... Args>
+	long reg(const std::string &name, Ret (*cb)(Args...));
+
+private:
+	long chain(const std::string &name, void *p, const Sig &sig);
+	long base;
+};
+
+long Eng::chain(const std::string &name, void *p, const Sig &sig)
+{
+	return base + sig.kind;
+}
+
+template <typename Ret, typename... Args>
+long Eng::reg(const std::string &name, Ret (*cb)(Args...))
+{
+	return chain(name,
+		     reinterpret_cast<void *>(cb),
+		     detail::make_sig<Ret, Args...>());
+}
+
+} // namespace outer
+
+static long mul(long a, long b) { return a * b; }
+
+int main()
+{
+	outer::Eng e;
+	printf("%ld\n", e.reg("m", mul));
+	return 0;
+}

@@ -36,6 +36,10 @@ int main()
     // fd_set + FD_* macros. `fd_set` is an anonymous-struct typedef in glibc
     // (no `struct fd_set` tag — `struct fd_set` is an incomplete type that gcc
     // rejects, "storage size isn't known"), so name it through the typedef.
+    // FD_ISSET is only specified as zero / non-zero: glibc normalizes it to
+    // 0/1 but Apple's __DARWIN_FD_ISSET returns the raw bit (32 for fd 5,
+    // 1<<31 for fd 63), and its result is an int in both — so the test
+    // prints the truth value through %d, never the raw value through %ld.
     fd_set rfds;
     FD_ZERO(&rfds);
     FD_SET(0, &rfds);
@@ -44,18 +48,18 @@ int main()
     FD_SET(64, &rfds);    // first bit in second slot
     FD_SET(1000, &rfds);  // bit in 16th slot
 
-    printf("FD_ISSET(0) = %ld\n",    FD_ISSET(0, &rfds));    // 1
-    printf("FD_ISSET(1) = %ld\n",    FD_ISSET(1, &rfds));    // 0
-    printf("FD_ISSET(5) = %ld\n",    FD_ISSET(5, &rfds));    // 1
-    printf("FD_ISSET(63) = %ld\n",   FD_ISSET(63, &rfds));   // 1
-    printf("FD_ISSET(64) = %ld\n",   FD_ISSET(64, &rfds));   // 1
-    printf("FD_ISSET(1000) = %ld\n", FD_ISSET(1000, &rfds)); // 1
+    printf("FD_ISSET(0) = %d\n",    FD_ISSET(0, &rfds) != 0);    // 1
+    printf("FD_ISSET(1) = %d\n",    FD_ISSET(1, &rfds) != 0);    // 0
+    printf("FD_ISSET(5) = %d\n",    FD_ISSET(5, &rfds) != 0);    // 1
+    printf("FD_ISSET(63) = %d\n",   FD_ISSET(63, &rfds) != 0);   // 1
+    printf("FD_ISSET(64) = %d\n",   FD_ISSET(64, &rfds) != 0);   // 1
+    printf("FD_ISSET(1000) = %d\n", FD_ISSET(1000, &rfds) != 0); // 1
 
     FD_CLR(5, &rfds);
-    printf("after FD_CLR(5): %ld\n", FD_ISSET(5, &rfds));    // 0
+    printf("after FD_CLR(5): %d\n", FD_ISSET(5, &rfds) != 0);    // 0
 
     FD_ZERO(&rfds);
-    printf("after FD_ZERO, 1000 set? %ld\n", FD_ISSET(1000, &rfds)); // 0
+    printf("after FD_ZERO, 1000 set? %d\n", FD_ISSET(1000, &rfds) != 0); // 0
 
     // select with zero timeout (no fds, should return 0 immediately)
     struct timeval *to = (struct timeval *) calloc(1, sizeof(struct timeval));

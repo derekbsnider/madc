@@ -2,7 +2,7 @@
 // `var`, `array`, or `madc::value`, no #include needed. Scalar assignment
 // retags the carrier; printf coerces through the text view (c_str /
 // madarray_cstr); `var` contrasts with `auto`: runtime-retaggable.
-value v;
+var v;
 v = "hello";
 printf("s=%s\n", v);
 v = 42;

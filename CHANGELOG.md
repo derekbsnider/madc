@@ -2,6 +2,1781 @@
 
 ## [Unreleased]
 
+## [v0.98.0] — 2026-09-06
+
+madc on macOS end to end — native builds, the full suite running on both Mac architectures (202 arm64 failures → the last root closed), and the C++ front-end wave the mac runners drove (templates, classes, namespaces, the Itanium class-call ABI) — plus the MIR aarch64 backend at x86-64 parity (128-bit SIMD, the AAPCS64/Apple ABI, a vector calling convention gated against the platform compilers), the libc++ `<list>` completion fix and the stdlib-flavor boundary, and the packaged install shape (thin CLI + shared libmadc, six CI-built release assets).
+
+### C++ front end — the darwin-suite wave: templates, classes, namespaces, overloads (D4 waves 2–7c, 2026-09-02/04)
+
+Running the full suite on GitHub's arm64 and Intel mac runners (below)
+exposed a front-end backlog that the libstdc++ lane never met — libc++
+spells the same library differently. Each fix is reduced, g++/clang++-
+oracled, and named by the clause it implements; every one of them
+also holds on linux.
+
+- **A `<` opens a template-argument-list by NAME LOOKUP ([temp.names]/3,
+  2026-09-04)** — the way gcc's `cp_parser_template_name` and clang's
+  `Sema::isTemplateName` decide it, never by the token before it.
+  `DelimDepth::angle_open_context` read any identifier before `<` as a
+  template-id head, so libstdc++ `<ratio>`'s `integral_constant<bool,
+  _R1::num < _R2::num>` opened an angle that never closed and swallowed
+  every header after it. `Program::class_member_lt_reading` /
+  `unqualified_name_lt_reading` are the one owner; every stream scan
+  now carries the Program handle, and `check-one-delim-tracker.sh`
+  fails on a copy without it (529d3824, d4b4a51c).
+- **Template deduction and identity** — a parameter deduced from two
+  arguments must deduce the SAME type ([temp.deduct.type]/2):
+  `std::string(20, 'x')` took the iterator-pair constructor with
+  `_InputIterator = int` (530187d7, one `deduce_scalar_arg` owner
+  02a76f49; `testdeductionconflict`); a SFINAE-constrained constructor
+  template is a candidate only when its constraint holds — the same
+  `std::string a(20, 'x')` died "no matching constructor" under the
+  darwin pack (636d30de); a DEPENDENT non-type default template
+  argument folds after substitution, so `template<class A, bool =
+  (A::num == 0)>` selects its `true` partial specialization (`2 1 2`,
+  madc printed `1 1 1` silently; 84e51a1d); an UNEVALUATED call to a
+  namespace function template forms its type under [temp.deduct]/8 —
+  explicit arguments, deduction, then each still-unbound parameter's
+  DEFAULT (libc++ 18's `__unwrap_range`; 0a353603); a template-argument
+  binding's identity distinguishes a reference from its pointer twin
+  (`forward<int&>` no longer answers for `forward<int*>`; 5357a30c); a
+  pointer-to-builtin template argument keys through the ONE builtin
+  table (`template<> struct N<int*>` was invisible; 06d72472); a
+  namespace function template's declarator is located ONCE by the
+  delimiter-aware locator (six first-occurrence name searches retired;
+  33beee8f, 92e9cc53); a class-pattern capture whose `decltype(...)`
+  operand is a placeholder stays per-instantiation (libc++
+  `__unwrap_iter_impl`; 327f4896). Together these close the libc++
+  `std::vector` copy chain (`__unwrap_range → make_pair → forward`) that
+  failed six darwin tests.
+- **Out-of-line and hidden-friend definitions** — an out-of-line
+  constructor definition attaches to the declared overload whose
+  parameter SIGNATURE it repeats (libc++ vector declares five
+  one-parameter constructors; the move constructor's body had attached
+  to the `initializer_list` one; bb1477ad); a template-head
+  hidden-friend operator DEFINITION inside a class is a namespace-scope
+  operator template ([class.friend], [temp.friend]) — `cout << setw(5)`
+  on libc++ had reached the raw C `<<` (da57f5d5); a restored class
+  carries its friendship grants (forest format 43; ef7ed6b9).
+- **Nested classes — the `<filesystem>` frontier (2026-09-04)** — a first
+  declaration and its definition are ONE object (`struct B; B *g;
+  struct B { int w; B(int); };` then `g->w`; d624d03e); a NESTED
+  class-head completes the declaration its owner's scope holds
+  (`struct A { struct B; B *link; struct B {...}; }` and the
+  out-of-line `class A::B { ... }`; 061bb0ca); `struct A::B : A { ... }`
+  is an out-of-line nested-class DEFINITION (a21e31cd); an out-of-line
+  member of a nested class — `P::I &P::I::next() { ... }`, libstdc++'s
+  `path::iterator::operator++()` — resolves through the class-rooted
+  chain ([class.qual]; ce331a34); `sizeof(O::N)` / `alignof(ns::T)` /
+  `sizeof(Box<O::N>)` take a qualified type-id (eca465e9;
+  `testsizeofqualified`, with its LLP64 `.win64_expect`).
+- **Two aggregates with one tag** — a same-tag aggregate from ANOTHER
+  scope never takes the bare key or the emitted identity a complete
+  aggregate already holds, in both definition orders, live and restored
+  (a user `class path` beside `std::filesystem::path`; 4b8dbb0c), and
+  the struct emitters dedup by ENTITY, not name (a8fbf20e).
+- **Namespaces and lookup** — namespace-alias-definition
+  ([namespace.alias]): `namespace fs = std::filesystem;` parses
+  (29aca401); a using-directive makes the nominated namespace's NESTED
+  namespaces nameable as qualifiers ([namespace.udir]/2: after `using
+  namespace lib;`, `fs::path` names `lib::fs::path`; 61153b26); a member
+  function named with explicit template arguments hides a
+  namespace-scope function of the same name ([basic.lookup.unqual] —
+  `bind<U>(...)` had bound `::bind` from `<sys/socket.h>` and emitted a
+  call to a function that does not exist, with no diagnostic; 4b032c94,
+  `testmemberhidesglobal`); the UFCS call-syntax fallback also fires
+  when the visible free set is arity-inviable ([over.match.viable]:
+  `count(m, k)` on libc++ reaches `m.count(k)`; ece8de40).
+- **Value categories in overload resolution** — an rvalue argument
+  prefers the `T&&` constructor over `const T&` ([over.ics.rank]/3.2.3)
+  and an lvalue cannot bind a concrete `T&&` at all: `B d(std::move(a))`
+  had selected the COPY constructor and the moved-from object kept its
+  resources (`testrvaluectorselect`: madc `3 3 3`, g++ == clang++
+  `3 3 -1`; 2ef73b51); a `return` of a local or a parameter ranks the
+  copy into the result object as an RVALUE ([class.copy.elision]/3 —
+  `C makec() { C c(5); return c; }` printed the copy constructor's mark
+  and a move-only class was not returnable at all; c85cefdb, the
+  parameter half 2455aafa after the ABI change below;
+  `testimplicitmovereturn`, `testparamimplicitmove`).
+- **Streams and wide types** — `wchar_t` / `char16_t` / `char32_t` are
+  DISTINCT fundamental types named by their C++ spelling (they were the
+  storage type itself, so `ctype<wchar_t>`'s specialization was
+  invisible and `__is_same(int, char_traits<wchar_t>::char_type)` was
+  true; ba0cbb09), a typedef never redeclares a C++ built-in and the
+  served C headers guard `wchar_t` with `#ifndef __cplusplus`
+  (29fbbb8f), scalar identity in overload scoring is a TYPE, not a
+  representation (`const wchar_t*` no longer binds an `int` instance;
+  7fa6b2e0); `long double` and `__int128` are their OWN types in the one
+  builtin-spelling table (`K<long double>` and `K<double>` had shared one
+  instantiation; ad75ed37); stream operator operands decay and the
+  generic inserter deduces — `std::cout << ca` (a `char[]`) printed
+  garbage and `std::wcout << L"x"` printed a pointer on libstdc++ and
+  libc++ alike (fb6f3537; the retained-template body route ranks the
+  same way, cf61e762); `sizeof(L"x")` measures target element units
+  (8, was 5; 9b2ee46c).
+- **Lambdas and access** — the closure's call operator is parsed by
+  `parseFunction` (declarators, defaults, packs, trailing return types
+  resolved with the parameters in scope; 6725ae40), and access control
+  judges a body by the MEMBER it is written in ([class.access]/2) — a
+  lambda inside libc++ 18's `basic_string` move constructor reads the
+  private `__r_` (77f54223). A constructor member initializer that
+  converts a DERIVED pointer to a BASE pointer member applies the
+  implicit upcast — secondary-base offset adjusted (`1 2 0` for g++'s
+  `2 2 1`, silent; c73f4496).
+- **Tokens keep their origin** — `TokenBase::clone_origin()` is the one
+  owner of "copy this token" (146 parser sites): `clone()` stamped every
+  copy with the CURRENT parse position, so an instantiated body carried
+  the call site's file and the pack lane filed a losing libc++
+  constructor instance as a user root. Gate `check-clone-origin.sh`
+  (360831da).
+- **Emission** — an aggregate's member destructor is declared with ONE
+  typed prototype shape whether madc-emitted or library-bound (libc++
+  `basic_filebuf`'s exported-and-parsed destructor conflicted;
+  28606840), and the referenced-function prototype sweep runs AGAIN
+  after the materialization fixpoint (a late-materialized body's
+  `memmove` call was implicit-int; 69427eb1). A class prvalue carried
+  as a c2mir struct value is the result object — no constructor runs
+  ([dcl.init] guaranteed elision; f413c761).
+
+### Class ABI — by-value class parameters and returns follow the Itanium rule (D4 wave 7, 2026-09-04)
+
+- **A by-value CLASS parameter is the callee's OWN object** — a class
+  "non-trivial for the purposes of calls" (a non-trivial copy or move
+  constructor, or a non-trivial destructor) is passed by INVISIBLE
+  REFERENCE: the caller copy/move-constructs the parameter object (a
+  prvalue argument IS it) and destroys it after the call. madc lowered
+  `void f(D d)` as a C struct by value — a bitwise image with no copy
+  constructor and no destructor: `f(a)` printed `f 1` where g++ and
+  clang print `f 101` then `~101` (silent, exit 0), a callee's `s += s`
+  on a by-value `std::string` freed the CALLER's buffer (double free,
+  SIGABRT), and a by-value class argument to a g++/clang-compiled
+  library callee was an ABI split (2466bbb9; `testclassparambyvalue`,
+  `teststringparambyvalue`).
+- **ONE predicate for both call directions** —
+  `class_nontrivial_for_calls` decides that such a class is RETURNED
+  through the hidden
+  result pointer (`__retbuf`) and PASSED by invisible reference; a
+  trivially copyable class travels as a plain C struct value both ways
+  (`std::pair` / `std::tuple` keep their native shape). Return had keyed
+  on "has a destructor" alone, so `H get() { return h; }` handed the
+  member's bytes back where g++ copy-constructs (`g 5` for `g 105`) and
+  `return static_cast<H&&>(h)` never ran the move constructor
+  (f974dec0; `testretuserctorclass`). With the parameter the callee's
+  own object, a returned by-value parameter is an implicitly movable
+  entity again: `H pass(H h) { return h; }` moves out (`b 1101`), and a
+  move-only class is returnable from its parameter (2455aafa).
+
+### libc++ `<list>`, qualified members, and the stdlib-flavor boundary (wave 12, 2026-09-05)
+
+- **A template-id named as a TEMPLATE ARGUMENT while a class body is in
+  flight instantiates after that body completes** ([temp.inst]/1 —
+  naming a specialization as a template argument never requires it
+  complete; C++ instantiates it at the first context that does). libc++
+  `<list>`'s `__list_node_pointer_traits` names `__list_node<T,void*>`
+  as an argument of its first typedef; madc instantiated it right there,
+  its base typedefs captured ephemeral placeholders from the
+  still-memberless traits class, and `->` through them refused —
+  `std::list` never worked under libc++ (the one remaining ROOT on
+  BOTH mac architectures at dispatch #12 — three tests, `testforeachiter`,
+  `testphpdumpiter`, `testptrcmpupcast`). The fix is the existing
+  shell-then-complete machinery reached from one more site
+  (`template_arg_resolve_depth`, `complete_deferred_arg_instantiations`),
+  plus the completeness demands C++ has that madc lacked — a type
+  trait's class operand, a base class, a static member read, the
+  [temp.names]/3 `<`-reading — as callers of the ONE
+  `complete_class_type_on_demand` owner (b49234a6; `testlistiter_libcxx`).
+- **`B::x` names the member of `*this`** — a qualified NON-STATIC data
+  member inside a member function is an implicit-this access at the
+  member's offset within the base subobject ([class.qual],
+  [expr.prim.id]/2). It lowered to the CONSTANT 0: `return B::x + 1;`
+  yielded 1 for 42 (silent, exit 0), and `base::__end_.__next_` (libc++
+  list) refused; a statement-leading `base::end.next = &n;` was read as
+  a declaration (18953bfd; `testqualbasemember`: `42 7 10` / `3`).
+- **std::string and `cout << value` across the flavor boundary** — under
+  `-stdlib=libc++` on the libstdc++-built linux madc, `println("[{}]",
+  s)` handed the script's libc++ string to a host helper that read it
+  with libstdc++'s layout (SIGSEGV); the format intrinsic now reads a
+  foreign-flavor string as bytes + length through the SCRIPT's own
+  `c_str()`/`size()`, the way the marshalling thunk already did
+  (94de04fe; `teststrargcoerce_libcxx`). `cout << value` resolved
+  mangled-direct to the host's inserter, whose libc++ `basic_ostream`
+  parameter no libstdc++ host can export (`import of undefined item`,
+  ten tests): when the script's flavor is not the host's
+  (`__MADC_HOST_LIBCPP__` vs `_LIBCPP_VERSION`) the fragment renders the
+  inserter SCRIPT-side, kind by kind through the carrier's own
+  predicates, so `std::hex` / `boolalpha` / `setprecision` apply
+  exactly as to the contained type (d2bf5a3c; `testvaluecout_libcxx`).
+- **The carrier completes its reader surface** — `is_boolean` /
+  `is_integer` / `is_real` / `is_bytes` / `is_instance` and `data()` (the
+  text payload, no copy; the length is `count()`) land as `madarray_*`
+  runtime entries, and every reader (`count`/`size`, the `as_*`/`is_*`
+  accessors, `substr`/`length`/`empty`/`at`/`data`, `c_str`, `==`/`!=`,
+  index) is a `const` method as `value.h` declares, so a `const value &`
+  can call them. Thread-safety: readers over one value, the C++
+  convention (d2bf5a3c).
+- **`testphpdumpiter` formally skipped on the libc++ domain** — its
+  map-of-map insert hits a separate, pre-existing libc++ gap in the
+  deferred-construction relowering of `allocator::construct` (KG Gap
+  `libcxx_nested_map_value_type_construct_relower` carries the reducer
+  and fix path); the other two `<list>` tests pass under libc++
+  (733ce20b). The linux libc++ lane went from its first run since
+  2026-08-16 (JIT 1286/14) to 1303/0/14skip on this wave.
+
+- **Templates: a dependent member template-id is one placeholder per
+  argument list.** `_Traits::template rebind_alloc<__node_type>` and
+  `rebind_alloc<__node_base>` in one class body shared a single dependent
+  placeholder (keyed by owner and member name; the second use overwrote the
+  first's argument recipe), so the class pattern captured from libc++
+  `__list_imp`'s dependent parse re-derived both as `allocator<__list_node_base>`,
+  every node pointer of a pattern-served `std::list` pointed at the base node,
+  and `push_back`'s `__node->__as_link()` had no such member — the darwin
+  forest pack's `<list>` failure (dispatch #13), invisible to a live parse,
+  which body-lanes `__list_imp`. The materializer now mints identity, canonical
+  spelling and recipe together, per argument list. Found and verified on the
+  build container without a Mac: the Linux-hosted cross madc freezing a `<list>`
+  TU and parsing the reducer against that pack; `scripts/forest_pack_darwin.sh`
+  gains a consumer PARSE leg (`scripts/forest_pack_consumers_darwin.txt`) so the
+  pack's semantics are gated where the pack is built.
+
+### C front end — headerless libc calls on Apple arm64, C23 `_FloatN` literals, the GNU vector extension (2026-09-01/05)
+
+- **An UNDECLARED variadic libc call adopts the pack's REAL prototype**
+  (GCC canon: the builtin's) — the dynamic-symbol fallback declared an
+  undeclared libc name as K&R `int printf()`, c2mir passed every
+  argument NAMED (registers), and a variadic callee on Apple arm64 reads
+  its variadic arguments from the STACK: every zero-include `printf(...)`
+  script printed addresses or died (112 arm64-only failures on the first
+  darwin run). `Program::forest_adopt_declared_function()` materializes
+  the bound forest's typed declaration for variadic callees in a
+  C-primitive shape, in the dialect AND the strict
+  `--std=c17/gnu11/c++17` modes, `__builtin_` twins included
+  (5393bf34, 3078d41e).
+- **C23 `_FloatN` literal suffixes lex as ONE literal** — `f16`/`f32`/
+  `f64`/`f128` and gcc's `bf16` (mingw's `avx512fp16intrin.h`, reached
+  from every `<windows.h>` TU, had split `0.0f16` into two tokens); one
+  `eat_real_suffix` replaces three hand-rolled copies (61dc1124;
+  `testfloatnsuffix`, `testfloatnsuffixbad`, gcc gnu2x oracle).
+- **The GNU vector extension, as gcc has it** — ANY vector expression
+  subscripts to its lane (`(a + b)[2]`, `(-a)[1]`, `(a == b)[0]`, a call
+  result; the `[` had fallen through to the lambda introducer) and the
+  built-in operators over a vector operand type as the vector
+  (ef156cac; `testgccvectorexprsubscript`); a vector comparison's type
+  is gcc's OPAQUE vector of SIGNED lanes — an unsigned compare produced
+  unsigned lanes (`(ua == ub)[0]` widened to 4294967295, silent) and a
+  double compare was rejected (15126633; `testgccvectorcmpresult`); a
+  vector shifted by a SCALAR count of any integer type compiles (`v8hu
+  << n`; 90990307; `testgccvectorshiftcount`).
+- **c2mir, two upstream reports** — a file-scope declaration WITH an
+  initializer is a definition even under `extern` (C17 6.9.2p1; `extern
+  const int a[] = {1,2,3}` had linked as an import; gcc's warning
+  wording adopted; upstream vnmakarov/mir#472; 0a2d3e8e,
+  `testexterninit`), and members of an ANONYMOUS union carry the
+  union's alias class — `v.ival = 0; v.fval = 1.5; return v.ival;`
+  returned 0 at `-O2` where gcc prints `3ff8000000000000` (upstream
+  mir#473, the Lobster `Value` type; 49741295). Both reported with
+  reducers by **aardappel**; the upstream PRs are held until after the
+  master release (owner directive 2026-09-05).
+- **Small C fixes the mac runners found** — `sizeof(*(p))`, the shape
+  Apple's `FD_ZERO` expands to, is an expression operand (c5a2dd79;
+  `testsizeofderefparen`, with its LLP64 `.win64_expect`); the embedded
+  `stddef.h` defines `NULL` unconditionally, gcc's own shape (a
+  freeze-order dependence dropped `NULL` from the darwin pack; 36c27de7);
+  a GNU `asm` label on a function declaration is its link symbol in the
+  forest record too (Apple's `stat __asm("_stat$INODE64")` had restored
+  as plain `stat`, so every `stat`/`readdir` on an Intel Mac ran the
+  32-bit-inode entry; ee7bfee5); `__builtin_nansl` materializes the
+  DOUBLE signaling-NaN pattern where `long double` is double (8fc5ed0d).
+
+### Target properties — `long double`, `va_list`, `long`/`long long`, plain `char` (2026-09-02/05)
+
+- **`long double` takes its size and alignment from the target** —
+  16/16 on x86-64 (Linux, Windows, Intel Mac), 8/8 on Apple arm64 where
+  `long double` IS `double`; the front end had folded `sizeof(long
+  double) = 16` and laid structs out 16-aligned on an M-series Mac
+  whose libc, c2mir and MIR all say 8 (1531060d). Tests whose CORRECT
+  output differs between the two Mac architectures carry a
+  `.darwin-arm64_expect` from clang on the Mac (fe48ecee).
+- **The `va_list` SHAPE is a target property** — Apple arm64's `va_list`
+  is a scalar `char *`; madc modelled the SysV x86-64 record on every
+  non-LLP64 target, so every `va_list` handed to libc read garbage
+  (`vprintf` printed `hA>   0`, `vsprintf` 0.00, a SIGBUS at an ASCII
+  address). `TargetVaList madc_target_va_list` joins the four target ABI
+  facts (fd487dc0, 0149306d).
+- **The darwin `long` / `long long` identity** — on Apple the headers
+  alias `int64_t` to `long long`, and a pinned builtin whose display
+  name is another type's source spelling on this target now carries its
+  target C spelling as canonical, so `template<> struct isL<long>` and
+  the use `isL<long>` key alike (`std::max` undefined import,
+  `testtypedefarg`; 603eff56).
+- **Plain `char` is UNSIGNED on the AAPCS64 linux target** — c2mir
+  declared it signed for every aarch64 flavor; `aarch64-linux-gnu-gcc`
+  and clang predefine `__CHAR_UNSIGNED__` there ((char)200 < 0 is false,
+  `CHAR_MAX` 255), Apple arm64 keeps it signed; found by the interop
+  pair's qemu stage (779bb654).
+
+### CLI — `-w` inhibits all warnings (2026-09-04)
+
+- **`madc -w file.mad`** silences c2mir's compile warnings, gcc's `-w`;
+  errors are unaffected. Added for a test that provokes a diagnostic on
+  purpose (`extern int c = 7;` warns by design in gcc, clang and now
+  c2mir) so the warning-census ratchet stays at its all-zero end state
+  through a `.flags` fixture instead of a per-test allowance
+  (b152299f; `docs/usage.md`).
+
+### MIR aarch64 — the floor reaches x86-64 parity: AAPCS64 ABI fixes and 128-bit SIMD (wave 8 + S1–S5, 2026-09-04/05)
+
+The darwin arm64 lane isolated nine arm64-only failures whose roots
+were the MIR aarch64 backend, not darwin (the vector and `__int128`
+shapes reproduce under qemu on linux-aarch64). Six were target-model
+gaps — c2mir's aarch64 ABI code, MIR's long-double canonicalization,
+madc's `va_list` shape; three were the fork's ≤16-byte vector support,
+implemented for x86-64 only. All nine are fixed (`third_party/mir` is
+ordinary madc source).
+
+- **c2mir aarch64 ABI (wave 8)** — `__int128` returns in `x0:x1`
+  (`MIR fatal error: wrong result type in proto`; 63a6dd6f,
+  `testint128`); a `_Complex` argument is a Homogeneous Floating-point
+  Aggregate passed in consecutive SIMD/FP registers (AAPCS64 C.1/C.2 —
+  libm's `conjf(1+1i)` returned `(1, 0)`; 93010447, `testbuiltinconjf`,
+  `testbuiltincomplexparts`); a REGISTER's type is canonicalized like
+  every other typed slot under `MIR_LD_IS_D` (hosts whose `long double`
+  is `double`: Apple arm64, MSVC — `i2d` "Got 'ldouble'"; 7d63083a,
+  `testcomplexretconv`); the `va_list` shape above (`testprintfdouble`).
+- **128-bit vectors on aarch64 (the SIMD arc, S1–S5)** — `MIR_T_V128` is
+  an FP-class value: a Q register with the 128-bit `long double`'s
+  shape — moves, memory, spills and the AAPCS64 call convention (S1,
+  d123c3b0); NEON lane arithmetic for the integer insns (`and`/`orr`/
+  `eor`, `add`/`sub` at every lane width, `mul` at 16 and 32 bits; S2,
+  715dc569); `fadd`/`fsub`/`fmul`/`fdiv` at `.4s` and `.2d` (S3,
+  43b4f307); compares (`cmeq`, `cmgt`, `fcmeq`, the ordered float
+  compares with operands swapped into the instruction NEON has) and
+  shifts (`ushl`/`sshl` with a broadcast or per-lane count; S4,
+  797d88b8); the call shims place a V128 like the 16-byte `long double`
+  (S5, 62e86e2d). A vector argument had travelled in `x` registers as 8
+  of its 16 bytes (`testgccvectorbitwisenot` printed `0 0 0 0`,
+  `testgccvectorlit` `24 0 0 0` — silent, exit 0) and any V128 memory
+  operand met a pattern table with no `vmov`. Every encoding was read
+  from an assembler oracle, never from memory — the table is checked
+  in as `third_party/mir/aarch64-neon-encodings.md`; the qemu loop
+  (`aarch64-linux-gnu-gcc -O0 -static` vs the aarch64 `c2m`, at `-O0`
+  and `-O2`) is the gate, the arm64 Mac the JIT check. Plan:
+  `docs/plans/2026-09-05-aarch64-simd-v128.md`.
+- **Two pre-existing shim defects found reading them** — the `ff_call`
+  shims indexed the interpreter's `MIR_val_t` array by `sizeof (long
+  double)` (16 on linux, 8 on Apple arm64 and MSVC — the wrong stride
+  for every argument after the first on those hosts; b70903ed), and the
+  Apple interp shim OR'd a stack FP argument's raw byte offset into the
+  instruction word instead of the scaled imm12 (75648579; upstream
+  carries the same line). The Apple interp shim also hands an
+  interpreted vararg function the CALLER's stack as its `va_list`
+  (fdaa33b4).
+
+### The vector and stack-argument calling conventions, gated against the platform compilers (2026-09-05)
+
+- **The lesson: the oracle compiles one side.** Every vector-ABI check
+  had compared c2m against c2m — a self-consistent caller and callee
+  agree whatever the layout, so the lane arithmetic was proven and the
+  ABI was not. With one half built by the platform compiler
+  (`tests/abi/libvecnative.c` as a shared object, `vec_ffcall.c` by
+  `c2m -eg`, `c2m -ei` and madc through `#load`) the vector convention
+  was wrong on x86-64, madc included — a vector through `...` printed
+  garbage (1073677189 for 19, exit 0), a ninth vector argument was
+  demoted to an integer block (loud), no 16-byte stack slot (`long
+  double` included) was ever 16-byte aligned, the vararg prologue saved
+  only the low eightbyte of `xmm0-7` — and on aarch64 everywhere:
+  c2mir's generic helpers passed every vector as `blk0:16` and returned
+  it through `x8`.
+- **ONE rule at the c2mir boundary** — `v128_reg_class_p`: a 128-bit
+  vector is a REGISTER-CLASS value at every call boundary (argument,
+  result, vararg, `va_arg`), never an aggregate block (e85f6c68); a
+  vector operand at a vararg position is a V128 argument in both
+  machinizers and the interpreter, the x86-64 `va_arg` gains its vector
+  arm and whole-register saves (464d0a4d); a 16-byte stack argument
+  occupies a 16-byte ALIGNED slot at the caller, the callee, the
+  `ff_call` shim and the `va_arg` overflow area — SysV 3.2.3 / 3.5.7
+  (4fbffc77; `testgccvectorvararg`, `testgccvectorargs9`); the aarch64
+  parameter gather falls through to the generic lane (4486c513).
+- **win64 keeps MS x64's rule** — a 16-byte vector is passed BY
+  REFERENCE in every argument and vararg position and returned in
+  `xmm0`, so the classifier keeps it a memory block there; verified
+  under wine against the pair built by `x86_64-w64-mingw32-gcc`
+  (7e0098d1).
+- **Apple packs non-variadic stack arguments at their natural size**
+  ("Writing ARM64 Code for Apple Platforms": the ninth and tenth `int`
+  of a ten-`int` call sit at `[sp+0]` and `[sp+4]`, a `char` takes one
+  byte, a `float` four; variadic arguments keep 8-byte slots) — MIR
+  used the generic 8-byte slot everywhere, so a clang-compiled caller
+  or callee with more than eight sub-8-byte integer arguments got a
+  silent wrong answer (`iapply10`: 788400285 for 385). ONE owner in
+  `mir-aarch64.h` (`stack_arg_slot_size` / `stack_arg_slot_start` /
+  `stack_arg_mem_type`) serves the machinizer's call site and callee,
+  `va_start`, and both shims (d1f6c853; plan
+  `docs/plans/2026-09-05-apple-arm64-stack-arg-packing.md`).
+- **`scripts/vector_abi_gate.sh` joins fulltest** — `c2m -eg`, `c2m -ei`
+  and madc must print byte-for-byte what the host compiler's own build
+  of the pair prints: 28 lines covering vectors declared, nine deep,
+  mixed with integers and a stack `long double`, through `...` with the
+  FP registers exhausted, callbacks receiving vectors, ten-`int` /
+  `char` / `short` / `float` / mixed packing probes in both directions
+  (0661a666, d1f6c853). The same pair runs under qemu against an
+  aarch64-gcc shared object and on the Mac against an Apple-clang
+  dylib; the interop output is byte-identical to the platform compiler
+  on x86-64, aarch64-linux and Apple.
+
+### Darwin-host build port — native macOS builds, CI-owned release assets (D0–D3, 2026-09-01/02)
+
+- **madc builds natively on macOS** (`make -C src release-macos` on a Mac):
+  a `DARWIN_HOST` posture in `src/Makefile` derives the brew llvm@18 /
+  Apple ld64 / xcrun SDK toolchain, every knob `?=`, and the container's
+  cross recipe stays byte-identical (`make -n -B` is the oracle). The
+  hosted binary **self-freezes** the darwin groves (phase-1 freezer link
+  → pack → `-sectcreate` link; producer == consumer), so no cross madc is
+  needed anywhere on the darwin path.
+- **Pinned inputs, not host conveniences:** the open darwin C headers
+  (`fetch_darwin_open_headers.sh`), the build container's exact libc++
+  18.1.3 header text + copyright (`fetch_libcxx_headers.sh`, sha256-pinned
+  deb), and zstd v1.5.5 built by the hosted MODE's own compiler line
+  (`stage_darwin_zstd.sh`, reading `CC`/`AR` through a new Makefile
+  `print-%` rule). Corpus parity with the container is EXACT on both
+  runner arches (prelude/predefined table/835 units identical).
+- **The freezer sees only the toolchain's include world:**
+  `--no-sysroot-includes` (`RegistrationPolicy::enable_sysroot_includes`,
+  cut at the one `Program::sys_include_paths()` view) keeps a host's real
+  SDK headers out of a shipped forest; `gcc_posture_filter.sh` normalizes
+  `__VERSION__` to the posture; the darwin prelude flattens at
+  `-D_FORTIFY_SOURCE=0` (this also fixed the `exec://` channel leg on
+  arm64). Reducer pair `tests/testsysrootinc` + `tests/testnosysrootinc`.
+- **release.yml builds all six assets:** the two macOS tarballs come from
+  GitHub's native mac runners (macos-14 arm64, macos-15-intel x86_64 —
+  the first x86_64 execution proof), each smoked by the new PK4 `mactar`
+  install gate (extract → run → `mac_battery` PASS floor → hidden
+  `libmadc_rt.a` negative control). `package_release_macos.sh` is
+  per-arch; `/promote` no longer attaches mac assets by hand.
+  `macho_exe_dylib_gate.sh` tool names are knobs.
+
+### The full madc suite on macOS — D4: from 202 arm64 failures to the last root closed, on GitHub's arm64 and Intel mac runners (2026-09-02/05)
+
+- **The lane** — `darwin-probe.yml` runs `scripts/run_tests.sh --exe`
+  against the release-shaped hosted binary on `macos-14` (arm64) and
+  `macos-15-intel` (x86_64), wall time stamped, `suite.log` + a sorted
+  `suite-failures.txt` uploaded; `suite_gate=false` is the measurement
+  mode. `run_tests.sh` gained three generic knobs, none per-test:
+  `MADC_EXE_FLAGS` (the darwin AOT lane links `-static-libmadc`),
+  `MADC_EXE_ADVISORY=<reason>` (the EXE pass reports but does not gate
+  while an Apple-target program that needs the dialect runtime cannot
+  link — no `libmadc` dylib until D5), and **`MADC_FAIL_DETAIL=N`** —
+  under each `FAIL` line the exit code and the first N lines of the
+  failing leg's stdout / stderr / build output as `  | ` lines, so a
+  runner nobody can reach interactively carries its own diagnosis
+  (95d3febe, eeba65de, dba876c5).
+- **Fixture domains, not per-test branches** — the darwin suite runs
+  `MADC_SKIP_EXT="darwin libcxx darwin-<arch>"`: the platform's stdlib
+  flavor IS libc++, so the `.libcxx_skip` fixtures apply exactly as on
+  the container's `-stdlib=libc++` lane; `.darwin_skip` states why a
+  test is linux-domain (glibc's `libc.so.6` by name, `int16_t`
+  redeclared with a signedness Apple's `<stdio.h>` already fixed);
+  `.darwin-arm64_expect` carries the arm64 oracle where the two Mac
+  architectures legitimately differ (`long double`); `.win64_expect`
+  did the same for LLP64 in the wine lane (ae3abdeb, fe48ecee,
+  75388cb5, e398fabd, 47ef432d).
+- **The measurements** (JIT pass/fail; each wave predicted its residue
+  before the run and the run confirmed it): first run arm64 1049/202,
+  Intel 1160/91 → #2 1147/100, 1183/64 → #3 1215/36, 1224/27 → #4
+  1227/23, 1236/14 → #5 1246/18, 1255/9 → #6 1256/12, 1265/3 → #9
+  1272/12, 1281/3 → #10 1279/6, 1283/3 → #11 1285/3, 1286/3 → #12
+  1287/3, 1288/3 (run 33972297886 @27947466). Intel's failures were a
+  strict subset of arm64's throughout; the arm64-only tail was the MIR
+  aarch64 floor (above). After #12 the residue on BOTH architectures
+  was the libc++ `<list>` trio, closed by wave 12; the run on the
+  release content: arm64 1293/0/0TO/24skip, Intel 1294/0/0TO/23skip. Plan and
+  per-wave triage: `docs/plans/2026-09-01-darwin-host-port.md`.
+- **The darwin-only classes** — the darwin arm64 predefined table
+  restates libc++'s alternate `std::string` layout
+  (`_LIBCPP_ABI_ALTERNATE_STRING_LAYOUT` is selected only under the
+  clang identity the GCC posture filter removes, so every string
+  crossing to Apple's
+  `libc++.dylib` read as garbage — `to_string` 26 bytes long, the
+  polyglot `php::`/`rust::` string publics empty; b03d6e4b,
+  `teststringabiinterop`); the posture filter drops `__BLOCKS__` (Apple's
+  SDK took its block branches and madc failed at the first `(^)`
+  declarator on every developer Mac; eeba65de); the embedded-header
+  precedence predicates ask the ONE provider-exists owner, so the pack
+  counts as a directory — libc++'s `<stddef.h>` wrapper unit wins over
+  the embedded copy on a Mac with NO headers on disk (`--std=c++17
+  #include <iostream>` from the shipped tarball; 4fbcae4d).
+- **Frozen-forest fidelity** — a forest-restored INCOMPLETE husk
+  completes on demand from its canonical identity (`std::istringstream
+  s("41")` with the darwin pack bound fell to the function-declaration
+  route; eight tests; b14a6e2c); a restored polymorphic class is the
+  parsed class — secondary vptr owners, flat vtable slot list, virtual
+  method set, and its bound methods' prototypes before the vtables that
+  take their addresses (forest format 42; 8211a7b2); friendship grants
+  freeze (format 43; ef7ed6b9).
+- **Owner-hardware parity** — every arm64 fix was verified on the
+  owner's M-series Mac with per-build cross binaries before the runner
+  measured it; the full arm64 Mac suite on the pre-wave-12 content read
+  1287/3/23skip, the runner's number exactly. Remaining darwin
+  residue: **D5**, the hosted-macos runtime dylib (`libmadc-0.dylib`)
+  that unlocks the native-emit lane and `madcide` in the mac tarball.
+
+### Packaging arc — the default install is the PACKAGED shape: thin CLI + shared libmadc, six CI-built assets (PK0–PK5, 2026-09-01)
+
+- **The flip (PK2)** — plain `./configure` builds the thin `madc` CLI
+  against the shared `libmadc` (monolithic via `--disable-shared`), and
+  `make release` produces the shipping product: thin `madc-release` +
+  the frozen forest packed INTO `lib/libmadc.so` (forest-discovery arm
+  2, the library image). PK0 measured the flip first: the shared shape
+  costs +0.37–0.49 ms median at cold start (hello 14.80 → 15.17 ms,
+  n=21 interleaved; callgrind Ir +3.3%) for a 150 KB CLI beside a
+  16.1 MB library. Per-mode library products (`lib/release/`,
+  `lib/debug/`, dev keeps `lib/`) extend the per-mode-names law to the
+  library the thin CLIs load at RUNTIME; cross/hosted modes stay
+  monolithic until their per-OS twins ship; the packed lane IS the
+  packaged shape, and the monolithic form keeps standing coverage
+  through the `madc-mono` fulltest vehicle + `mono_cli_gate.sh`
+  (f37031a2, 7c6e304d, 9ac61443, d86560b7, 03db8c0a).
+- **The C ABI is classified and gated (PK1)** — 1088 extern-C exports
+  audited: 94 ABI (every `madc_api.h` declaration), 33 contract-prefixed
+  internals + 8 allowlisted with dispositions, the rest by class.
+  `docs/adr/0003-c-abi-stance.md` records the stance — **C ABI stable,
+  C++ version-locked** (C++ embedding hosts rebuild per release; the
+  forest blob is version-locked to its library) — and
+  `check-c-abi-surface.sh` in fulltest, self-testing, pins the SONAME
+  `libmadc.so.0` until the `.so.1` promise era (b2d0ad83).
+- **madcide ships as a compiled binary in the packages (PK3/PK7)** —
+  compiled in-pipeline BY the release compiler (`bin/madc-release -o`,
+  the dogfood proof of the packaged shape) as `/usr/bin/madcide` with
+  `/usr/share/madcide/profiles`; the Windows zip ships `madcide.exe`
+  beside `bin/profiles/`; `resolve_profile_dir` searches the source
+  tree, then the installed layouts anchored on the running binary. The
+  deb is 10.1 MB — 2.6 MB smaller than the monolithic-era 0.95.2 deb.
+  The mac tarball states its gap: no venue can produce a runnable mac
+  madcide until the darwin runtime dylib (PK3-mac-runtime = D5) exists
+  (e0a2688a, 59d3c4e4).
+- **Relocatable installs and honest library names (PK3)** — native-emit
+  `DT_RUNPATH` gains the relocatable arm FIRST (`$ORIGIN/../lib` on
+  ELF, `@executable_path/../lib` on Mach-O; PE binds by adjacency), so
+  a produced binary in a release tarball binds its OWN tree's runtime;
+  linux gains `madc-<ver>-linux-x86_64.tar.gz` (rootless, the same
+  `stage()` the deb/rpm use, with an `ldd` proof that the staged
+  binaries bind the staged `lib/libmadc.so.0`); `libmadc_rt.dll` becomes
+  **`libmadc-0.dll`** — it IS the engine, the `.so.0` twin — and `_rt`
+  now means only the emitted-C archive `libmadc_rt.a`, which the linux
+  packages gain; `docs/man/madcide.1` and a fully-commented example
+  `docs/examples/madc.ini` ship in every package (829dce8f, 12df58fa,
+  12046f5d, a2bccb38).
+- **Install-then-run gates on the SHIPPED bytes (PK4)** —
+  `package_install_gate.sh` extracts the actual deb / rpm / tarball /
+  zip a user downloads and runs the installed binaries: `madc -v` must
+  show the forest served from the INSTALLED `libmadc.so.0`, `madcide`
+  must paint on a real pty from the installed profiles, every probe
+  with a negative control; six-artifact `SHA256SUMS` (d7825bde).
+- **The release workflow (PK5)** — `release.yml` builds, install-gate
+  smokes and attaches the Linux + Windows assets on a master-promotion
+  tag push (six burn-in rounds: `autoreconf` in a clean checkout, the
+  mingw-target zlib, the wine prefix booted before the PE build,
+  `WINEPATH` derived from the repo root, `libc++-18-dev` for the
+  one-flavor gate); run 33566595108 was the first green end-to-end,
+  and D3 (above) added the two native macOS tarballs, so CI owns all
+  six assets (b7a53b96 … 88fa4a60, 32f05a09). Plan:
+  `docs/plans/2026-09-01-packaging-arc.md`.
+
+### Release process — every platform lane's FULL suite gates master; gates, probes, infrastructure (2026-09-02/05)
+
+- **OWNER LAW (2026-09-04): no master release until EVERY platform lane
+  has run its full test suite green on the promoted content.** The lane
+  ledger gains a RELEASE tier: `lane_ledger.sh check --release` = the
+  develop push set PLUS `libcxx` (the linux `-stdlib=libc++` flavor
+  lane — macOS's library on linux hardware, previously not in the ledger
+  at all), `darwin-suite` (the full suite on BOTH mac runner arches, or
+  every failure a filed `.darwin_skip` with its reason) and
+  `genuine-win`; the pre-push hook runs `--promote` for develop and
+  `--release` for master, `/promote` step 3 runs it at the candidate. A
+  platform failure is fixed or formally skipped with a stated reason —
+  never carried as a residue. Same ruling: a g++-testsuite C++
+  conformance lane is planned as ROADMAP Track 2.12 and joins no gate
+  ("C++11 parity must not block releases";
+  `docs/plans/2026-09-04-cxx-conformance-lane.md`) (2630aca5;
+  `.claude/rules/branching.md`).
+- **Gates added or tightened** — `vector_abi_gate.sh` (above);
+  `check-clone-origin.sh` (every parser-side token copy is
+  `clone_origin()`); the one-scalar-deduction-step owner the
+  `check-fn-template-deduction-owner.sh` gate demanded (02a76f49);
+  `check-c-abi-surface.sh` dispositions for the new target-property
+  and `-w` engine globals (0149306d, b152299f);
+  `check-no-std-hardcoding.sh` now reads comments too (7beeb022); the
+  lazy-template-registry
+  marker on the `[temp.names]/3` existence reads (d4b4a51c).
+- **Env-gated probes, silent unless set** — `MADC_DECL_PROBE=<type>`
+  (the ctor-call branch's inputs in `parseDeclaration`; 44da4f8e),
+  `MADC_MTI_PROBE_CLASS` reports class-scope alias writes and
+  `MADC_DT_PROBE` the deduced-call return lane's gate inputs (4632b410),
+  `MADC_LAYOUT_PROBE` (every `compute_layout` run; 8211a7b2).
+- **Infrastructure** — the container's wine stage no longer inherits
+  the ssh session's pipes (`wineserver -p` held a green summary open for
+  nine hours; a6ab66c4); the aarch64-linux cross toolchain and the qemu
+  sysroot links the MIR loop needs are pinned in
+  `provision_container.sh` (dcd836b0); an `aislop` baseline over `src/`
+  is recorded (`docs/parity/aislop-baseline.txt`; 790c16b6) beside the
+  Rule #4 / Rule #7 one-owner cleanup plan (e2e49e5c).
+- **Tests** — 61 new integration tests since v0.97.0, each the reducer
+  of a fix above with its g++/clang++ (or platform-compiler) oracle;
+  `teststructinterop` prints `FD_ISSET` truth values (Apple returns the
+  raw bit; 9f144e11) and `testmemberhidesglobal` declares its own
+  `::bind` (mingw has no `<sys/socket.h>`; 624cb050).
+- **Validation (the merge-wave battery on the release content)**: linux
+  JIT 1308/0/9skip, EXE 1249/0, OBJ 1249/0, packed 1308/0/9skip,
+  headerless 1274/0/43skip; linux `-stdlib=libc++` JIT 1303/0/14skip,
+  EXE 1244/0, OBJ 1244/0; wine64 1251/0/0TO/66skip; c-testsuite
+  220/220, baseline empty; darwin full suite arm64 1293/0/0TO/24skip,
+  Intel 1294/0/0TO/23skip; owner M-series Mac 1293/0/0TO/24skip; genuine
+  Windows 1253/0/0TO/64skip.
+
+## [v0.97.0] — 2026-09-01
+
+The madcide interaction arc (the IdeSession gateway seam, the modes
+palette, the vi modal personality) and the carrier elegance arc
+(keyed literals, the `rows[]` append accessor, literal expressions,
+live-kind subscripts), plus c-testsuite conformance complete at
+220/220.
+
+- **The append accessor + literal EXPRESSIONS (2026-08-31)** — the ruled
+  row spelling lands: `rows[] = { "this": "that" };`. PHP's empty `[]`
+  is the APPEND slot (`madarray_append_slot` — the same operator= rows
+  every slot binds; non-carrier receivers refuse loudly), and a braced
+  list in EXPRESSION position re-spells against its target type: an
+  assignment rhs targets the assignee ([expr.ass]/9, any class/aggregate
+  target), a call argument searches the callee's overload set
+  (`rows.push({...})` finds `push(value&)`). The expression literal runs
+  the SAME list lowering as the declaration form (extracted
+  `carrier_list_elements`, kind-mix wall included), and the three
+  args-list parse loops (declaration, functional construction, forest
+  flush) consolidated into ONE reader (`parse_ctor_args_list`). Pinned
+  by testvalueappend (JIT + EXE + OBJ), testvalueappendmix,
+  testvalueappendbad. The madcide row builders collapsed onto the new
+  spelling (net −117 lines of ceremony), gated by testmadcide.
+- **A var INDEX dispatches on its LIVE kind (2026-08-31)** — `m[kn]`
+  keys when kn holds a string, indexes when it holds a number
+  (`madarray_value_slot`; the classification owner is now the enum
+  `madc_array_index_kind`). This closes a defect class, not just the
+  `.c_str()` ceremony: the old rule coerced a carrier index's POINTER
+  to the element index (address-as-index) and aborted keyed reads.
+  Deliberately not PHP's coercion table — `"8"` stays the string key
+  `"8"`; null/container indexes refuse loudly. Pinned in
+  testvalueinitkeyed (bare read == `.c_str()` read).
+- **Known gap (banked): carrier-armed ternaries** — `cond ? t :
+  t["file"]` and mixed scalar/carrier arms fail the c2mir check
+  ("incompatible pointer types in true and false parts"); reducer
+  tmp/terncarrier.mad. Its own lowering slice (a value temp assigned
+  per arm); the madcide sweep spells those two sites if/else meanwhile.
+- **KEYED value-literal elements (2026-08-31)** — `var m = { "a": 1,
+  "b": "two" };` completes the carrier's brace literal: a `key: value`
+  element assigns into the key's vivified slot through the registered
+  `operator=` rows — the SAME rows `m[key] = value` binds, so the
+  literal and the per-key spelling cannot drift. String keys vivify the
+  OBJECT kind, integer keys index the ARRAY kind (positional pushes and
+  integer keys mix in element order); a literal mixing the two kinds
+  refuses at compile time with the kinds named. (Bare var keys
+  initially stayed element indexes; superseded the same day by the
+  live-kind dispatch entry above.) Pinned by testvalueinitkeyed
+  (JIT + EXE + OBJ) and testvalueinitkeyedmix.
+- **Fixed: the associative-literal parser HANG class** — `{ "a": 1 }`
+  in declaration, assignment, and call-argument positions spun the
+  parser forever (parseExpression pushes a bare `:` back; every caller
+  loop re-popped the same token). Two walls: the brace-list/ctor-args
+  element loop refuses a terminator that is neither `,` nor the close,
+  and parseExpression refuses a `:` that HEADS a parse — killing the
+  class for every caller. gcc/clang (loud "expected '}'") are the
+  oracle. Reducers: testcolonheadexpr, (pre-feature) testvalueinitkeyed.
+- **Fixed (silent wrong answer): operand juxtaposition** — `{ "a" 1 }`
+  compiled to `{ 1 }`: the expression finalize returned the top operand
+  and silently dropped the rest. It now errors loudly ("Malformed
+  expression: N operands with no operator between them"); adjacent
+  string literals are untouched (lexer-level concatenation). Reducer:
+  testexprjuxtapose.
+- **c-testsuite COMPLETE: 220/220, baseline empty (2026-08-29)** — the
+  lane now runs in C mode (`--std=gnu11`, owner ruling: C tests are
+  measured in the mode the gcc/clang oracles use). Closing fixes: the C
+  enum TAG namespace (`enum TAG;` forward declarations; enum-typed
+  bit-fields take the enum's *underlying* signedness — zero-extend
+  non-negative enums, sign-extend negative ones, in every mode; gate
+  `testcenumtag`); flexible-array-member initialization extends the
+  object, never the shared struct type (`sizeof` stays the base size;
+  gate `testflexsizeof`); pointee-const type identity in the C
+  declaration grammar (`const char *` ≠ `char *` in `_Generic`,
+  lvalue conversion drops top-level qualifiers, const-transparent
+  member access; gate `testconstpointee` — the const campaign's C-mode
+  producer, `DataDefCONST`/`getConstType`). The merge battery then
+  caught and closed two more: the emitter's NINE pointer-peel walker
+  copies (a const level lost a star — SMAUG's `char * const *flagarray`
+  emitted one `*`) consolidated onto `dd_peel_pointers` with a fulltest
+  gate (`check-one-pointer-peel.sh`); and a latent dangling
+  `TopDecl.origin` — two parse arms passed STACK type tokens that
+  MC11-IR retains (mixed comma list `int f(int a), g(int a), a;`, C89
+  implicit-int `static f()`), now heap-minted (gate `testmixeddecl`).
+- **c-testsuite conformance burndown 198 → 218/220 (2026-08-28/29,
+  owner target 220)**: twenty C-conformance fixes across the lexer,
+  parser, and CIR emitter, each with its own gcc/clang-oracled gate
+  test in `tests/`. Highlights: C11 `_Generic` implemented (parse-time
+  selection); `#line` renumbers (with macro-expanded arguments) and
+  `__LINE__`/`__FILE__` work in `#if`; `##` placemarker semantics;
+  block-scope struct tag shadowing (shadow frames + unique emitted
+  identities); non-compound `switch` bodies and label-chained `case`;
+  the full C declarator family (fn-ptr returning fn-ptr, abstract
+  function-type parameters, qualifiers inside parameter brackets,
+  `enum` bodies as member types, array designators in compound
+  literals); `sizeof 0`; `&main` before its definition; and the
+  parse-side expression type view (usual arithmetic conversions, the
+  shift left-operand rule). Silent-wrong-answer finds fixed en route:
+  `*(union U*)p`, `***(expr)` under-deref, unsigned enum members,
+  member fn-ptr calls bound by name under a cast, positional nested
+  designators, `TokenVar::clone` minting typeless tokens. The two
+  remaining tests are blocked on the const-qualified-types campaign
+  and an owner decision on the lane's language mode (documented in
+  `docs/parity/c-testsuite-baseline.txt`).
+
+- **madcide rescue keybindings + texteditor promoted to tools/
+  (2026-08-29, owner directives)**: when no keybinding profile file
+  loads at startup, a baked-in pico-spelled RESCUE set (^S save
+  ^Q quit ^X discard ^G help ^P profile) binds through the same
+  `parse_keys`/`ui::tui_bind_keys` data path, the status line
+  announces the fallback, and the help pane projects the rescue set
+  itself — a broken install layout can no longer trap the session in
+  a bindingless editor (fatal exit only if even the rescue bind
+  fails); proven end-to-end on a pty with `profiles/` deleted. And
+  `examples/texteditor` moved to `tools/texteditor` — the IDE and the
+  texteditor share components; all includes, cwd-relative verb/check
+  literals, tests, docs, and gates follow.
+
+- **SMAUG restored + gated (2026-08-28, the smaug-fntypedef merge
+  wave)**: the real MadSMAUG 51-TU `--project` (upstream/smaug1.8 via
+  `compile_commands.json`) compiles, links, JIT-boots to "Realms of
+  Despair ready", and serves the login greeting with zero diagnostics
+  — restored from a SIGSEGV that shipped in every archived release
+  v0.69.0–v0.96.0. Root cause: a function declared THROUGH a function
+  typedef (`typedef void DO_FUN(...); DO_FUN do_x;` — SMAUG's
+  `DECLARE_DO_FUN`) registered an 8-byte storage VARIABLE plus a
+  `funcdef_map` dual identity; the July-31 construction-vtables arc's
+  `ctor_hidden_vbase_owner` probe read that storage as a `Method*` and
+  crashed. Invisible for months because the suite's SMAUG tests were
+  shaped reducers, never the artifact. Fixes: **parser** — a zero-star
+  function-typedef declarator declares a FUNCTION (C89 6.5.4.3), keyed
+  on the `consume_declarator_stars` owner; one star stays a pointer
+  variable (`tests/testc89fntypedef`). **CIR** — C-mode functions
+  never enter the ctor/vbase probe. **c2mir** — default-level warnings
+  match gcc's default: sign-only pointee argument mismatches and
+  ordered pointer-vs-null-zero compares go quiet (both stay errors
+  under `-pedantic`; `tests/testcwarnparity`). **Gate** —
+  `scripts/smaug_gate.sh` in fulltest boots the REAL SMAUG to its
+  ready line, two-sided (fails on v0.95.2, fails on any diagnostic,
+  skips loudly without the sibling checkout).
+
+## [v0.96.0] — 2026-08-28
+
+The variadic-class arc: madc compiles and runs its own C++ embedding
+example (`examples/embed_hello.cpp`) at g++ parity — plus libmadc
+embedding fixes and two forest-artifact fixes the push-gate battery
+surfaced.
+
+- **Forest artifact fixes: the packed/headerless lanes' two escapes
+  (2026-08-28, s141 battery gate)**: (1) a **rebound RANKED ctor now
+  stamps its registered `__oN` symbol on `local_emit_name`** — the
+  basic-class-pattern rebind (the forest's instance materialization
+  lane) registered every ctor overload under the right Variable name
+  but never stamped the FuncDef, so the FuncDef-only ctor emitters
+  (memberwise retbuf copy, shims, global construction) degraded to the
+  canonical `Class__Class` symbol: a by-value return of a struct with
+  a `std::vector` member called the DEFAULT ctor's symbol with copy
+  args and c2mir refused the compile ("too many arguments") under any
+  forest bind. Pre-existing at least back to v0.95.2 (the shipped rpm
+  fails the reducer identically); this arc's new sigchain tests were
+  the first suite coverage of the shape. Reducer:
+  `tests/testvecmembercopy.mad`. (2) a **missing-content husk
+  live-tokenizes by its CANONICAL PATH** — the fallback re-included a
+  husk unit by basename, and `<stat.h>` is ambiguous across the corpus
+  (bits/, linux/, sys/); the s140 corpus growth reordered the grove
+  lookup so a headerless `<sys/stat.h>` consumer tokenized linux's
+  stat.h and lost `__S_IFMT` (`teststat.mad` red in the headerless
+  lane, green at v0.95.2). The canonical path is unambiguous end to
+  end: exact unit match, bytes from disk or the pack's raw-source
+  slot. Diagnostics shipped: `MADC_COPY_PROBE` (memberwise-copy ctor
+  selection + every ctor-set push site).
+
+- **`bin/madc examples/embed_hello.cpp` compiles AND RUNS — the
+  variadic-class arc lands (2026-08-27, s141)**: madc now compiles its
+  own C++ embedding example end-to-end (the examples gate gains the
+  .cpp leg beside the .c one). Twelve fixes across the chain, each
+  reduced and g++/clang++-oracled, the load-bearing four: (1)
+  **variadic real-instantiation arming** at the three expression arms
+  that lacked it (`P<args>::member` reads via the unqualified, the
+  ns-qualified, and the address-of lanes) — the memberless opaque shell
+  silently answered 0 before; (2) **name lookup keeps the TEMPLATE**
+  ([temp.inst]): a fn-template instantiation's product parse no longer
+  clobbers `namespace_map[ns][name]`, which poisoned every later
+  dependent-pattern parse with the first shape's concrete callee (the
+  `__do_uninit_copy` cross-instantiation wall); (3) **enum pointees
+  keep their own conversion domain** in overload ranking — two distinct
+  scoped enums' pointers scored as an exact match (int-erased) and a
+  wrong-flavor concrete instance silently outranked instantiating the
+  right one; (4) **`explicit` is modeled** (FuncDef::is_explicit) and
+  the converting-ctor probe honors [over.ics.user] — an explicit ctor
+  no longer manufactures implicit conversions (the
+  __normal_iterator-by-value mis-bind). Also: [temp.arg.explicit]/3
+  excess explicit args bind a trailing type pack; fn-template names
+  inform call-arity scanning; per-element expansion of qualified
+  dependent member params (`typename map<Args>::low_type... args`);
+  enumerators are prvalues (reference binding materializes);
+  fn-pointer params mangle PF…E via a structural spelling owner;
+  class-nested enums resolve through class-qualified chains with one
+  spelling-identity owner. Thirteen new suite tests + the gate leg.
+
+- **libmadc embedding fixes (2026-08-27, s141)**: constructing a
+  `madc::engine` no longer hijacks the host's `std::cout`/`std::cerr`
+  for the process lifetime — guest iostream capture is now
+  invocation-scoped (every host iostream write after engine
+  construction silently vanished before; libmadc_cpp_smoke asserts
+  rdbuf identity and the `libmadc-smoke` lane joins `fulltest`, which
+  is also where the C smoke's stale `madc_value.kind` field — broken
+  ungated since the 32-byte value ABI — got caught and fixed).
+  Engine-registered host callbacks now flow into `eval_expression`'s
+  child program, so a policy-allowed `eval_expression("host_multiply(6,
+  7)")` works as the example documents; the example itself opts its
+  eval into `expression_policy` (the sandboxed default refuses calls)
+  and drops the stale `-lasmjit` build comment.
+
+- **Template core: the embed_hello chain (2026-08-27)**: five coupled
+  fixes, each reduced and g++-oracled. Braced-init-lists of CLASS
+  elements now take the initializer-list ctor when every element is
+  already the element class (`vector<value>{value(10), value(32)}` —
+  the libmadc `pgm.call` argument shape; previously the list fell to
+  plain overloading, deduced the range ctor with `_InputIterator` = the
+  element class, and died in tsubst). The [dcl.init.list]/3-4
+  elements-are-not-arguments filter now has one owner inside
+  `instantiate_member_ctor_template_for_construction` — the functional
+  `T{...}` sites were unguarded and minted the bogus deduction at parse
+  time. Member templates deduce from function-pointer arguments
+  (`Ret (*cb)(Args...)`, the `engine::register_function` host-callback
+  shape) with any pack arity, riding the one N-copy expansion; concrete
+  parameter viability gained a strict-then-relaxed second pass so a
+  string literal reaches `const std::string&` by user conversion
+  without ever stealing from an exact sibling; and an out-of-class
+  member-template definition on a plain class now attaches its body to
+  the declared member's pattern instead of silently freezing every call
+  on an undefined placeholder import. New tests: testinitlistclass,
+  testmembertplfnptr. `examples/embed_hello.cpp` is not fully served
+  yet: variadic class-template instantiation with a mixed fixed+pack
+  head (`detail::callback_adapter`) remains a mapped, reducer-backed
+  frontier.
+
+- **The running madc IS the compiler (owner ruling, 2026-08-27)**:
+  madcide's ^B never re-parses and never execs a madc binary — the
+  buffer's live parse handle is the compilation. New engine pair on
+  the parse-handle family: `madc::parse_build(diags, handle, kind,
+  out)` emits a native artifact ("exe"/"obj") from the handle's
+  existing cir-ready tree (a red parse never reaches the emitter;
+  build rows ride the out-param only — `parse_check` stays
+  parse-pure), and `madc::parse_run(handle)` forks at the post-parse
+  point: the child inherits the parsed tree, resets the cooperative
+  scheduler (new `__madc_task_atfork_child` + io-layer atfork hook;
+  the pre-existing fork-isolation eval children adopt the same reset),
+  hands the tree to the backend, and exits with the guest's own atexit
+  semantics; the parent reaps under the system(3) signal discipline
+  and returns the guest's status (or -1/-2/-3 for bad handle / red
+  parse / no fork). madcide's Build now compiles the SCREEN (unsaved
+  edits included — the on-disk file no longer builds); Run forks the
+  live parse behind a loud red-parse refusal; the `Run {madc} {path}`
+  row dies ({madc} substitution survives for manifest-declared
+  commands only). Four duplication families consolidated + gated at
+  birth (native_kind_of, parse_tree_backend_ready,
+  fork_child_runtime_reset, terminal_return_pause; new
+  check-live-build-owners.sh), and the battery's
+  child_status_exit_mapping gate caught the reap's hand-rolled
+  128+signal mapping — parse_run adopted `map_child_status`. New
+  testparserun + flipped testmadcide gates (the disk-broken/buffer-good
+  build SUCCEEDS; the buffer-broken/disk-good build fails with rows).
+
+- **Stdin joins the one scheduler poll (MT-4c, 2026-08-27)**: the tui's
+  input wait unifies with the cooperative scheduler — read_keys' 50ms
+  live-but-parked cadence retires. New `taskio::host_wait_readable(fd)`
+  parks the tui flow on stdin as an io waiter, so the scheduler makes
+  ONE blocking decision over {stdin, io waiters, timers}; a SYNTHETIC
+  wake (unfired, returns false) fires at the hook's blocking quiescent
+  point when other tasks got the CPU since the host parked — the old
+  ran→wake repaint seam moved into the one poll (and gated to WAITS:
+  the first spelling fired on zero-timeout probe calls and stole the
+  queue head mid-yield; the new unit leg caught it). EINTR on a wait
+  wakes the host so SIGWINCH reaches the resize check. Alongside (own
+  commit): `input_ready` adopts the POLLIN|POLLHUP|POLLERR
+  readable-progress triple, closing the fd_readable_progress_probe
+  duplication family with a negative-controlled fulltest gate
+  (check-fd-readable-progress.sh) and a terminal-death pty leg in the
+  smoke gate (a dead Linux pty polls POLLIN|POLLHUP, so the behavioral
+  leg pins termination rather than discriminating the POLLIN-only bug —
+  macOS ptys are the plausible HUP-only live shape). Three new
+  test_task_io host-wait legs; pty smoke/scroll, coop-parse interleave,
+  and madcide gates all green.
+
+- **madcide windows (IDE-9e, 2026-08-27)**: JOE's second axis — N
+  stacked windows over the buffer ring, each with its own status line
+  and caret. `^K O` splits (the new window duplicates the active one,
+  below it, focus staying — JOE), `^K N`/`^K P` cycle, `^K 0`/`^K 1`
+  kill-this/keep-only (JOE spells tw0/tw1 on Esc digits, but madcide's
+  Esc is chord-cancel + close-pane by construction, so the digits ride
+  ^K), `^K G`/`^K T` grow/shrink (sum-zero deltas from the even split,
+  min 3 rows). Two windows on one buffer keep separate carets; a stale
+  caret clamps through the one extracted owner (`clamp_caret_to` in the
+  shared editor core). Engine: edit nodes gain the `rows` height hint
+  and honor the `focus:1` autofocus hint — layout stays composer-owned
+  DATA (the model tree is the renderer contract; the GUI twin renders
+  the same rows), and the unhinted prompt shape is byte-identical.
+  Per-window status lines ride `compose_joe_statusline` (the formatted
+  half of the JOE status, split out; prompt/search/msg overlays stay on
+  the active window's line). Displaced keys: profile and theme leave
+  the key table for the ^T Options rows that already carried them
+  (Keymap/Scheme); outline → `^K I`, the AST views → `^K A` — owner
+  review requested in the plan doc beside the pending `^K ;` item.
+  Esc does not close windows (a window is layout, not a pane). New
+  test_tui_model partition case + six testmadcide gates; pty gates
+  re-run green. Residues: inactive windows compose plain snapshots (no
+  colour spans, no views, no selection); explode; horizontal splits.
+
+- **`scope { ... }` blocks + `await` keywords (MT-5, 2026-08-27)**: the
+  structure spellings, contextual under `--std=madc` only (the MT-1
+  error-shape rule — never reserved: a declared `scope`/`await` name
+  always wins and strict C/C++ modes are byte-identical).
+  `scope { ... }` is the structured-concurrency block: `go` inside
+  attaches (the Kotlin attachment), blocks nest, and the block's end
+  JOINS every member then rethrows the first member error — exactly
+  `madc::scope_end`'s contract, lowered by the CIR builder to the new
+  rt pair `__madc_scope_block_enter/exit` riding the MT-3 seams. A
+  throw ESCAPING the block quietly abandons the scope mid-unwind
+  (members cancelled and joined — parking there is safe, the in-flight
+  exception is per-context state; the in-flight error wins) through a
+  registration on the exception runtime's cleanup stack (new
+  `__madc_cleanup_remove`, the fourth conscious host-consumer
+  widening); a throw CAUGHT INSIDE the block never touches the scope
+  (the try-mark discipline). `return`/`goto` inside the block, and a
+  `break`/`continue` that would cross it (no loop/switch opened inside
+  encloses them), are refused at parse time; early-exit support is a
+  named residue. The handle is deliberately not spelled — cancellable
+  jobs keep the publics; `madc::cancelled()` serves polling.
+  `await <chan-expr>` is Go's `<-ch` as a keyword: blocks until a value
+  arrives, a closed drained channel yields the zero value; sugar over
+  THE one recv implementation through the thin extern-C machinery seat
+  `__madc_chan_await`. Two statement shapes ship — `v = await ch;` and
+  bare `await ch;` (the done-channel wait); the declaration-initializer
+  form and deeper expression positions refuse loud (they unlock with L3
+  value-by-value returns), and a scalar target refuses at parse time.
+  One construction owner (`Program::make_await_token`; new fulltest
+  gate `check-await-one-builder.sh`, negative-controlled). The `select`
+  KEYWORD is deferred by ruling: Go's `case v := <-ch:` grammar does
+  not transplant into a C statement grammar without inventing a non-Go
+  spelling — `madc::chan_select` + `await` cover fan-in. New tests:
+  `testscopekw` (six deterministic-schedule legs, quiet-stderr gate),
+  `testawait`, and three `.expect_err` refusal reducers;
+  testgoident/testgogate grow scope/await arms. Docs:
+  `docs/language/tasks.md` keywords section; design doc §MT-5.
+
+- **Structured task scopes + cancellation (MT-3, 2026-08-27)**: the
+  task surface gets Kotlin-shaped structure over Go's spelling. New
+  publics: `madc::scope_begin()` / `scope_end(h)` / `scope_cancel(h)` /
+  `madc::cancelled()`. `go` attaches the child to the spawner's
+  innermost OPEN scope (flat attachment; a member's initial context is
+  its scope; born cancelled into a cancelled scope; no open scope =
+  the pre-scope root semantics). `scope_end` is owner-only and
+  innermost-first (validated via `__madc_scope_end_check` before the
+  handle layer consumes the handle — the split exists for MT-5's
+  direct keyword lowering), JOINS all members unconditionally (a
+  cancel wake re-parks; nothing leaks), then rethrows the first member
+  error, else the cancelled literal, else returns. `scope_cancel` is a
+  transitive flag+wake walk (members + child scopes; the opener is
+  woken FLAGLESSLY — its cancellation lives in the chain and dies at
+  scope_end, a sticky opener flag would leak into the parent context).
+  Cancellation is cooperative and lands at the blocking verbs (chan
+  send/recv/select, `sleep_ms`, taskio readable) through THE one owner
+  `__madc_task_throw_if_cancelled` with eager waiter removal; a
+  delivered value always wins over a pending cancel; `yield()` is NOT
+  a cancellation point. Scoped tasks run under an SJLJ catch-all
+  trampoline: an uncaught error is captured into the scope, cancels
+  it, and rethrows at scope_end; root tasks keep Go's
+  abort-on-uncaught; a task dying with open scopes abandons them
+  (cancel+join+free) with a stderr warning. Cancellation is classified
+  by POINTER identity of `__madc_task_cancelled_text()` (a task
+  cancelled through a child scope's chain has no own flag and must not
+  read as scope failure). Consumers (MT-3b): tokenize/parse abort
+  cancelled work (the lexer pumps' C++ throw lands as a recorded
+  diagnostic — never the SJLJ throw, which would longjmp past lexer
+  frames; `Program::parse` sets a parser diagnostic and returns false
+  so §3.5 recovery never "recovers" a cancel), madcide's internal
+  builds get their Stop row back (the build task opens its own scope
+  published as the job handle; a pre-start flag covers the
+  spawn-to-first-run window; a stopped build reports "Build stopped"
+  with diags withheld), `Process::wait_or_kill(grace_ms)` waits
+  through a grace window then hard-kills (POSIX WNOHANG 20ms slices +
+  SIGKILL; the win arm reports terminate()'s 128+SIGTERM shape —
+  Windows has no SIGKILL, which the battery's win gate caught), and
+  ExecDataChannel::close() escalates through it once cancelled.
+  rt_except: the exception tag defines moved to rt_except.h (one
+  authoritative home), `__madc_exception_text` is THE renderer (four
+  Unhandled printers folded into `madc_print_unhandled`), and the
+  try-frame API is exposed as the third conscious host-consumer
+  widening. Pre-merge dupaudit: families `current_task_cancel_throw`,
+  `child_status_exit_mapping`, `scope_join_unlink` consolidated; new
+  fulltest gates `check-cancel-throw-owner.sh` +
+  `check-child-status-map-owner.sh` (negative-controlled). New tests:
+  `testgoscope` (deterministic 30-token schedule), `testbuildcancel`
+  (mid-parse cancel through the yield handshake), `testchancancel`
+  (SIGTERM-ignoring child, SIGKILL escalation gated by wall clock);
+  testmadcide native-build-stop gate. Docs: `docs/language/tasks.md`
+  scopes + cancellation; design doc §MT-3. Named residues: the emit
+  phase has no yield points (cancel lands at parse), cancellation
+  grain is declaration/1024 tokens, member-error rethrow is text-only,
+  no NonCancellable cleanup regions yet, main's own unended scopes
+  leak at exit.
+
+- **madcide internal builds + esc-any-pane (IDE-10c, 2026-08-27)**:
+  the ^B rows go INTERNAL (owner ruling: the IDE lives inside the
+  compiler — never shell out to a PATH `madc`). New engine publics:
+  `madc::build_native(diags, path, "exe"|"obj", outpath)` — the CLI's
+  AOT lane run in-process (child-Program parse, the same lexer-owned
+  file ingestion as `parse_open_file`, then `madc_cir_emit_native`;
+  diagnostics rows either way, a silent failure synthesizes one error
+  row) — and `madc::compiler_path()` (the running compiler's own
+  resolved executable; Run rows spawn a child OF SELF via the new
+  `{madc}` substitution in build_subst, resolved in the engine, never
+  by sh). Default ^B rows: Check / Build / Build object internal
+  (`bld-native` runs `build_native` in a go task — the parse phase
+  cooperates, failure rows land in the DIAGS pane), Run
+  `{madc} {path}` and Run native `./{base}` through the terminal
+  suspend path; no default Stop row (MT-3 owns in-process cancellation;
+  the exec:// capture pump machinery stays for manifest-declared
+  external commands). `madc_object_mode` now has ONE scoped entry —
+  `ObjectModeScope` in both emit lanes (pre-merge dupaudit family
+  `object_mode_emit_scoping`; new gate `check-object-mode-scope.sh` in
+  fulltest, negative-controlled) — so an in-process caller's later JIT
+  sessions never come up in object-capture mode. Esc backs out of ANY
+  pane (owner ruling; help/options/outline/diags/build — palette and
+  prompts already esc-cancelled). New `tests/testbuildnative.mad`; six
+  new testmadcide gates. Docs: `docs/language/eval.md` build surface;
+  plan doc §IDE-10c SHIPPED.
+
+- **madcide IDE controls — palettes, reclaimed keys, build/run/stop
+  (IDE-10a+10b, 2026-08-27)**: madcide grows its IDE layer (owner
+  rulings; docs/plans/2026-08-27-madcide-ide-controls.md). `joe.keys`
+  reclaims the WordStar diamond — **^P** file palette (VSCode
+  Quick-Open shape: open buffers then cwd source files, typed filter,
+  enter switches in place through `edit_file`), **^F** find, **^N**
+  open file, **^B** build palette — plus **^R** retype (new
+  `ui::tui_refresh` drops the delta-paint baseline; a diff against a
+  corrupted screen repairs nothing). ONE popup-list widget serves every
+  palette: the tui model's choice focusable gains LIST (one option per
+  row, selected reversed) and AUTOFOCUS (arrows/enter with no tab)
+  presentations as data-driven hints. The ^B palette's command rows are
+  DATA ({name, cmd, mode}; {path}/{base} substitution; manifest-declared
+  commands are the named later slice): capture rows stream into the
+  `[build]` buffer through an exec:// pump whose loop is the MT-4b
+  mixed select — {stop channel, byte readiness} — so the editor stays
+  live while a build streams and Stop fires even against a silent child
+  (new `DataChannel::cancel()` / `channel::cancel()`: exec SIGTERMs its
+  child so close() reaps promptly; quit sends the stop before the
+  drain). Terminal rows (Run / Run native) get the real terminal
+  (suspend → run → return-key pause → resume). Check stays in-process.
+  Engine seams: `__madc_task_fire_due` — `__madc_yield` now fires due
+  io waiters beside due timers (the same starvation asymmetry the
+  yield-head timer fix addressed); read_keys' unified cooperative wait
+  naps on a 50ms cadence while live-but-parked tasks exist, so build
+  output repaints without a keystroke (the MT-4c stdin-unification
+  retires the cadence). Pre-merge dupaudit: buffer-row shape
+  consolidated into `push_buffer_row` — the new gate's own count caught
+  a third site the by-hand audit missed; gates
+  `check-select-fire-owner.sh` + `check-madcide-single-owners.sh` in
+  fulltest. Battery: fulltest rc=0 + JIT 1171/0/0/9 (suite 1195) + EXE
+  1125/0.
+
+- **io/fd select — byte endpoints waitable beside value channels
+  (MT-4b, 2026-08-27)**: `madc::chan_readable(channel)` registers an
+  `exec://`-style byte endpoint as a `chan_select` case — "recv from a
+  task channel OR readline from a child process" is ONE wait (the IDE
+  event loop's tool-integration seat). A fired byte case reports
+  readiness with `out = null`; a DEAD endpoint (drained EOF, or
+  failed) disables like a closed-and-drained value channel, so `-1`
+  still terminates mixed fan-ins (registration re-probes
+  `poll_state()`, never the raw handle — a drained fd is still
+  POLLHUP-readable). Under live tasks a `madc::channel`
+  read/readline PARKS on the fd through the scheduler's new io-wait
+  seat instead of stalling every task (`__madc_task_io_wait_hook`
+  called from task_next_or_wait bounded by the earliest timer
+  deadline — the scheduler stays fd-blind, the join-hook precedent);
+  solo programs keep the plain blocking read. task_enqueue is now
+  IDEMPOTENT (`madc_task.queued`) — two io events waking one task per
+  round can neither double-run it nor truncate the ready queue. New
+  surfaces: `PollableDataChannel` + `pollable_surface`
+  (seekable_surface's twin; ProcessPipeChannel/ExecDataChannel expose
+  the READ side's CRT fd, uniform on win64 via `_open_osfhandle`) and
+  `channel::poll_state()/wait_readable()/read_wait_handle()`. The
+  select claim+wake discipline was consolidated into ONE owner
+  (`select_fire`) at the pre-merge dupaudit and gated
+  (`scripts/check-select-fire-owner.sh`, negative-controlled, in
+  fulltest); second audit finding recorded open in the KG
+  (`fd_readable_progress_probe`: ui_term's input_ready tests POLLIN
+  only). Tests: `tests/unit/test_task_io.cpp` (park-until-readable
+  through the hook, EOF-is-progress, the double-unpark belt) +
+  `tests/testgoselectio.mad` (phased deterministic mixed select —
+  matched its hand-computed schedule first run; JIT/exe/obj
+  byte-identical). Also caught: the tracked generated
+  `src/embedded_headers.cpp` had silently drifted since 2026-08-21
+  (every build regenerates it) — refreshed, byte-identical to the
+  build's copy. Battery: fulltest rc=0 (all gates) + JIT 1171/0/0/9
+  (suite 1195) + EXE 1125/0.
+
+- **Select + sleep on a pluggable time source (MT-4a, 2026-08-26)**:
+  `madc::chan_select(out, chans[])` — deterministic fan-in over value
+  channels (lowest-index-ready wins, documented deviation from Go's
+  randomization; closed-and-drained cases disable; `-1` + null when
+  every case is dead — the fan-in terminator), with the sudog-shaped
+  waiter discipline (first-fire group claim, husk skip, wake-once
+  guard, eager record removal). `madc::chan_try_recv` (1/0/-1) is the
+  nonblocking default-arm equivalent until MT-5's keywords.
+  `madc::sleep_ms(ms)` parks on the scheduler's TIME SOURCE — real
+  monotonic by default, VIRTUAL under `MADC_TASK_VTIME=1` (the clock
+  jumps to the earliest deadline when only sleepers remain: seconds of
+  madc-visible sleeping run in wall milliseconds, deterministically —
+  the recon's virtual-time test gate). One scheduling decision now
+  owns timers everywhere: a sleeper can neither starve behind busy
+  yielders nor read as a deadlock. Reducers `testgosleep` +
+  `testgoselect` pin complete hand-computed schedules byte-for-byte.
+
+- **Stage-2 cooperative parse — edit while it compiles (2026-08-26)**:
+  the compiler's front end now cooperates with the task scheduler:
+  `Program::parse_yield_point()` yields at every top-level declaration
+  and every ~1k lexed tokens when other tasks are runnable, re-binding
+  the parse-session ambients on resume (token pools, parse cursor,
+  render mute — the F2 static-actives audit's down payment); batch
+  compiles pay one ready-queue check per yield point. The tui input
+  wait hands runnable tasks the CPU between zero-timeout polls and
+  delivers `{event:"wake"}` when they drain. madcide spawns its parse
+  with the language's own `go` (the ruling's dogfood): typing stays
+  live while a C++ TU compiles, spans land on the wake; quit drains via
+  the new interim verbs `madc::task_drain()` / `task_live()` before
+  world teardown, and `ensure_phandle` carries a one-owner
+  store-or-close discipline for overlapping opens. Deterministic
+  interleave gate: `tests/unit/test_coop_parse.cpp` — two parses
+  interleaved at every yield point are byte-identical to serial, and
+  the yields are proven real. See the RULED/SHIPPED section in
+  `docs/plans/2026-08-26-madcide-staged-parse-and-state.md`.
+
+- **The joining main wrapper (MT-2b, 2026-08-26)**: in a `--std=madc`
+  TU that spawns, the user's `main` emits as `__madc_main` behind a
+  synthesized `int main(...)` wrapper (parameters mirrored, arguments
+  forwarded)
+  that drains the task root scope BEFORE returning — the join now runs
+  at MAIN'S END, before any teardown (atexit handlers, TLS/static
+  destructors), identically in the JIT, `-o` native, `-r` object, and
+  `-static-libmadc` lanes. The join callee is a ledger-safe dispatcher
+  (`src/rt/rt_task_join.c`): a program that never spawned no-ops
+  through a NULL hook, so static images link without the context
+  backend. Strict-mode mains are untouched (byte-identical emission).
+  `tests/testgojoin.mad` pins the drain schedule + argv forwarding.
+
+- **C internal linkage for `static` functions (2026-08-26)**: madc
+  dropped `static` from every file-scope function — all of them
+  emitted with external linkage. Two TUs with same-named statics
+  failed the native `.o` link ("multiple definition"), and the AOT
+  ledger's rt_format+rt_dump pair (both carrying `rt_dump.h`'s
+  static-inline helpers) made any `println` program under
+  `-static-libmadc` die at MIR load ("prohibited for redefinition").
+  Found validating MT-2b; pre-existing (baseline reproduces). Now the
+  parser records `FuncDef::internal_linkage` (the `vague_linkage`
+  sibling) and the CIR emits `N_STATIC`: the MIR item is never
+  exported, native objects bind it STB_LOCAL (matching gcc's `nm`
+  shape), and TU-local functions no longer get host-call shims.
+  Reducer `tests/testprojectstaticfn` (gcc oracle a=2 b=300, all
+  lanes); gate: `forest_ledger_gate.sh` leg 5b names the exact
+  pre-fix fatal.
+
+- **Value channels + task-local try/catch (MT-2, 2026-08-26)**: the
+  synchronization primitive `go` composes with —
+  `madc::chan_make(cap)` / `chan_send` / `chan_recv` / `chan_close` /
+  `chan_len`, following Go's contract: rendezvous at capacity 0,
+  buffered at N, a blocked sender refills the slot a recv frees,
+  close drains receivers to `false`+null and makes senders throw,
+  values copied through (share by communicating). Blocking operations
+  park the task; parking the last runnable flow aborts with a message
+  — deadlocks never hang. The future idiom is a capacity-1 channel
+  (`await` spelling arrives with MT-5). Also: exception state is now
+  PER-TASK — a `try` held across a `yield()` catches its own throw
+  whatever the interleaving (previously the shared SJLJ chain routed
+  one task's throw into another's `jmp_buf` — segfault), and the text
+  ring is deliberately immortal (glibc runs TLS destructors before
+  atexit handlers, where native artifacts drain their root scope).
+  See `docs/language/tasks.md`.
+
+- **Cooperative tasks — `go` and `yield` (MT-1, 2026-08-26)**: the
+  multitasking arc's first slice. `go f(args);` spawns the call as a
+  cooperative task on a stackful context; `yield()` reschedules;
+  scheduling is strict FIFO run-to-yield on one OS thread —
+  deterministic by construction, and the stated thread-safety
+  contract. `main`'s return joins the root scope (live tasks drain
+  before the program ends — the ruled Kotlin-scope semantic). Both
+  spellings are madc-dialect contextual statement heads claimed by the
+  UFCS error-shape rule: declared `go`/`yield` names always win, and
+  strict `--std=` modes are byte-identical. Arguments ride 8-byte
+  long/double/pointer slots, evaluated at spawn (Go semantics),
+  value-identical to a direct call; unsupported shapes are refused
+  with a message naming the later slice. Knobs: `MADC_TASK_STACK_KB`
+  (512 KiB default), `MADC_TASK_TRACE=1` (stderr scheduler trace).
+  See `docs/language/tasks.md`; design + 2026 industry recon in
+  `docs/plans/2026-08-26-madc-multitasking-{design,recon}.md`.
+  Channels, `select`, futures/`await`, and cancellation scopes are
+  MT-2/MT-3.
+
+- **char[] decays to TEXT at the format boundary (2026-08-26)**:
+  `println("{}", buf)` on a local `char buf[N]` printed one garbage
+  byte, silently — the format classifier saw the array's ELEMENT type
+  (a local's array-ness is a Variable flag) and passed the decayed
+  pointer to the char formatter. The classifier now applies C's own
+  array-to-pointer decay through the one decay owner
+  (`array_decay_pointer`): char arrays format as C strings exactly as
+  g++'s `std::format` does (oracle-matched), and a non-char array is
+  refused loud, matching `std::format`'s ill-formed treatment (it
+  previously printed the pointer as an integer). Reducers
+  `testcharbuftext` + `testcharbuftextintarr` joined the suite.
+
+- **madcide: multi-buffer + JOE's ^K E (AST-5 / IDE-8, 2026-08-26)**:
+  `^K E` prompts for a file and opens it as a new buffer (the previous
+  buffer stays open, invisible — JOE's model); the same path returns
+  to its buffer with caret/block restored; a missing path opens an
+  empty New File buffer. Buffer identity, caret, and block live in a
+  buffer table on the editor-state bag; per-document facts (path,
+  modified, read-only, parse handle, undo) stay on each document.
+  Switching recolours immediately from the lexical spans and defers
+  the full parse behind the next paint (`pending_parse` — now the ONE
+  paint-before-parse mechanism, startup included). THE CONSOLIDATION:
+  ten texteditor verb/check bodies each resolved "the document"
+  themselves (wrong buffer under multi-buffer); the subject-document
+  rule now has ONE owner (`verbs/_subject.madv`, prepended at bind),
+  gated by `scripts/check-one-subject-doc.sh` in fulltest.
+  **Owner review flagged:** `^K E` now means edit-file (JOE's own
+  binding); the parse/diagnostics refresh moved to `^K ;`.
+
+- **madcide: ^T options overlay (IDE-9d, 2026-08-26)**: JOE's ^T — a
+  pane of letter rows showing LIVE option values, each row firing its
+  action on enter: `D Tab width` (new — a real display option: the
+  value rides the edit node's hints into the model's byte→display-
+  column map, clamped 1..16), `S Scheme` (the theme prompt), `K
+  Keymap` (the joe/pico toggle, factored to one implementation). Bad
+  widths are refused with the reason. Bound to `^T` in the joe
+  profile.
+
+- **madc::lex_spans — colour right after lexing (staged parsing stage 1,
+  2026-08-26)**: madcide now shows syntax colour in its FIRST paint.
+  The new engine public classifies from lexing the buffer text alone
+  (keyword / number / string / comment — JOE's whole lexical
+  vocabulary): `skip_includes` lexes without ingesting headers, so it
+  costs milliseconds where a C++ parse costs seconds; the full parse's
+  spans (types, functions) replace the lexical rows when the handle
+  lands. One classifier serves both (`highlight_token_rows`, factored
+  out of `parse_spans`); one theme converter serves both madcide paths
+  (`spans_to_hspans`). Stage 2 (parse off the event loop — blocked
+  today by the front end's static active-owner state, two candidate
+  shapes banked) and stage 3 (editor state vs the IDE-cache artifact
+  kind) are designed in
+  `docs/plans/2026-08-26-madcide-staged-parse-and-state.md`.
+
+- **parse_spans: source-true coordinates under macro expansion
+  (2026-08-26)**: highlighting from SMAUG's `strip_grapple` onward
+  rendered string-cyan (owner report) — macro-expansion tokens carried
+  the invocation line with columns counted *through* the expansion
+  text, so `STRFREE`/`DISPOSE`'s message-string spans painted the
+  lines below, and real tokens after an invocation on the same line
+  inherited the inflated column. Synthesized pushback text (macro
+  expansions, `__FILE__`/`__LINE__`) now advances no column (it
+  freezes at the invocation end) and taints its tokens with the new
+  `tfSYNTHPOS` flag — auto-include define replacements (`NULL` →
+  `((void *)0)`, which painted a phantom `void` type + `0` number even
+  in plain source) are flagged at their own mint site — and
+  `parse_spans` emits no span for a flagged token (its leading-trivia
+  comments still fold). fight.c whole-file: 800+ line-overrunning
+  spans → 0. Reducer `tests/testspansmacro.mad` — the source text is
+  the oracle: every span must fit its physical line.
+
+- **tui: terminal scroll ops + cell-span repaints — JOE's scroll feel
+  (IDE-9c perf half, 2026-08-26)**: the renderer's frame diff is now
+  cell-granular (`tui_diff_spans`: per changed row, the first..last
+  differing cell) and shift-aware (`tui_diff_plan`: FNV-row-hash offset
+  scan finds the moved band, the shift is verified by SIMULATION and
+  taken only when its estimated emission cost wins; emitted as DECSTBM
+  + DL/IL — JOE's own dl/al — plus entering-row repaints), and a
+  normal-space span tail is finished by one EL (`row_paint_end`; the
+  inverse status fill is excluded — erase carries default attributes).
+  Intelligence lives in the model; `ui_term` still only moves bytes,
+  and `tui_dirty_rows` now delegates to the span diff (one comparison
+  loop). Measured on the scroll-gate document (24x80, 70 steps, new
+  meter `scripts/tui_scroll_bytes.py`): a scroll step 2,194 bytes/24
+  rows -> 126 bytes/3 rows, a caret move 113 -> 35 bytes, the session
+  total 61,869 -> 3,793 (16x; JOE 4.6 oracle: 2,252). The VT100
+  reconstruction gate + smoke gate pass on the new emission; six new
+  planner/EL unit cases.
+
+- **madcide: first paint before parse-on-load (2026-08-26)**: startup
+  showed a black screen for the whole document parse (~5s on the NAS
+  for a real C++ file — previously masked by parses that failed fast).
+  `run_ide` now renders the document immediately and the highlight
+  spans + enclosing-function seat repaint when the parse lands
+  (delta rows only). NAS: first paint 0.38s, was 3.5s blank.
+
+- **madcide: the JOE screen model (IDE-9a/9b) — status-as-data at the
+  TOP (2026-08-26)**: ONE inverse status row at the top of the screen,
+  rendered from the profile's format strings (`profiles/joe.status`,
+  JOE's own joerc `lmsg`/`rmsg` vocabulary shipped verbatim — rmsg's
+  first character is the fill between the halves). Supported seats:
+  `%n` name, `%m`/`%R` modified/read-only, `%r`/`%c` row/col with
+  width padding, `%o` offset, `%k` the pending chord echoed LIVE (a
+  new `ui::tui_pending` public + the model now emits repaint events
+  when a chord opens, extends, or cancels), `%x` the enclosing
+  context — madcide's AST-backed enclosing function, exact where JOE's
+  is a textual heuristic — and `%y` the active view name in JOE's
+  "(syntax)" seat. Unsupported joerc escapes render empty and light up
+  as their features land. The heading banner and the persistent menu
+  are gone (their facts moved into the status seats); prompts, the
+  search prompt, and messages overlay the status row; a transient
+  bottom startup hint (JOE's `-xmsg`) shows until the first keystroke.
+  Rows 1–22 are pure document, row 23 returns to content on the first
+  key. Under this work, fixed in its own commit: `perl::substr` with
+  an offset past the end of the text ABORTED the whole process
+  (`std::out_of_range`) where Perl yields undef — clamped, with a
+  real-perl-oracle reducer (`tests/testperlsubstrrange.mad`).
+
+- **madcide: loud startup failures + cwd-independent profiles
+  (2026-08-26)**: the keybinding-profile / theme directory now derives
+  from `__FILE__` (the profiles live beside `madcide_core.inc`), so
+  madcide works from any cwd — it previously found them only when
+  launched from the repository root, and the theme failure was SILENT
+  (a colourless editor with no explanation). A startup `load_theme`
+  failure and a zero parse handle now post status-line messages.
+
+- **madcide scroll corruption fixed (IDE-9c) — tab-aware display
+  projection in the TUI model (2026-08-26)**: scrolling a tab-indented
+  file left stale fragments of previous lines and DOUBLED brace-only
+  lines (the owner report). Root cause: a raw `\t` byte flowed document
+  → `tui_grid` cell → terminal, and a terminal expands a tab by MOVING
+  the cursor without erasing the skipped columns — grid columns and
+  screen columns desynchronized (the skips preserved old glyphs; the
+  row overflow wrapped trailing spaces onto the next row). Not an
+  erase-discipline defect: the painter already overwrites full rows.
+  Fix at the projection that owns byte↔column math: `paint_edit`
+  expands tabs to 8-column stops through `expand_line` — THE
+  byte→display-column map — and the caret, horizontal shift, selection,
+  and highlight spans all convert through it; `tui_grid::put` belts THE
+  CELL INVARIANT (a cell holds one printable byte occupying exactly one
+  terminal column; control bytes render as a visible `?`). The renderer
+  (`ui_term`) is untouched — it was faithful, the cells were wrong.
+  Gate: `scripts/tui_scroll_gate.sh` in fulltest — madcide on a real
+  pty scrolling a tab-indented document 70 steps, the screen
+  reconstructed by a VT100 interpreter with real tab-stop semantics,
+  every non-chrome row required to equal a tab-expanded document line,
+  plus a negative control. Pre-fix: 828 corrupted row observations;
+  post-fix: 0; joe 4.6 on the same input through the same interpreter:
+  0 (the JOE parity baseline).
+
+- **Braced-init-list call arguments ([over.ics.list] slice 1) — the
+  madcide in-process SIGSEGV fixed (2026-08-26)**: a braced list as a
+  call argument (`p.call("add", {V(10), V(32)}, &sum)`) had no parse at
+  all — the argument readers handed the bare `{` to `parseExpression`,
+  flattening the elements into separate arguments ("Too many
+  parameters" on a valid call) or returning a NULL the identifier arm
+  dereferenced (the KG-critical `parser_segv_braced_list_call_arg`;
+  madcide crashed in-process opening `examples/embed_hello.cpp`). The
+  fix re-spells a braced argument against the callee's parameter type
+  through ONE owner (`respell_braced_list_for_target`, extracted from
+  `TokenRETURN::parse` and adopted by it — class targets take the
+  functional form `T{...}`, non-class aggregates the compound literal
+  `(T){...}`); `TokenObjTemp` now records braced-ness so the existing
+  [dcl.init.list]/4 (initializer-list ctor) and /5 (the type IS
+  `std::initializer_list` — built from the backing array directly)
+  arms serve functional-form temporaries; `initializer_list_literal`
+  emits the backing array SIZED, which also fixes the latent decl-path
+  silent-wrong (`std::initializer_list<E> l = {...}` read garbage
+  elements in a later statement). `parseExpression` now refuses a `{`
+  head LOUDLY — the belt for every remaining unguarded context. Two
+  deeper defects found under it, fixed in their own commits: the c2mir
+  check guard treated the `N_ASSIGN` NULL context barrier like an
+  owning declaration, so nested compound literals in assignment
+  context skipped `check_initializer` — an UNSIZED nested array
+  literal's type was never completed (garbage past element `[0]`
+  through the whole madc pipeline from plain C; the uncast form
+  crashed gen) — stock-upstream, an upstream-PR candidate; and
+  `install-libmadc` never shipped `madc_typeid.h` though the installed
+  `madc_api.h` includes it (every fresh-install downstream parse
+  failed). Reducers: `tests/testinitlistarg.mad` (six-shape matrix,
+  g++ + clang++ oracle) and `tests/testnestedcomplit.mad`
+  (`--std=c17`, gcc + clang oracle). `examples/embed_hello.cpp` now
+  parses CLEAN through a parse handle (0 problems, 123 spans — full
+  madcide highlighting). Loud residues banked: a braced DECL-ctor
+  argument gets the belt error (needs a parse-time candidate-ctor
+  rule), and the embed_hello full-compile lane has two named tsubst /
+  member-type gaps.
+
+- **Error-tolerant parse, slice A (AST arc §3.5; owner rulings
+  2026-08-25)**: the parser CONTAINS each top-level error instead of
+  stopping at the first — record the diagnostic, restore the
+  statement-entry depths, resync via DelimDepth (`;` outside every
+  delimiter, or `}` at level ground), plant a `SkippedTokens` node, and
+  continue. gcc canon: report every top-level error, then refuse. The
+  vocabulary is one `TokenError` parse-tree class + the full eight-kind
+  `ErrorNodeKind` enum (`Missing{Expression,Statement,Declaration,
+  Identifier,Type,Token}` holes + `UnexpectedToken`/`SkippedTokens`
+  debris — all declared now per the owner ruling; slice A synthesizes
+  the debris kinds, interior hole synthesis is slice B+). ANY error
+  node gates translate: `cir_translate_guarded` (the one translate
+  entry) refuses on `Program::error_nodes > 0`, so run / eval /
+  `--emit=c11` / freeze / native all refuse uniformly, while the tree,
+  the parse-handle queries (`parse_check` now reports EVERY top-level
+  error; outline/enclosing/spans answer before AND after a broken
+  region — the mid-edit IDE state), and `--emit=c++` (a source view;
+  exit stays nonzero) remain alive. `record_parse_error` became THE
+  parse-error recording rule (recovery arms + the terminal cluster +
+  `parse_expression_unit` — three consumers, one owner). New reducers
+  `tests/testparserecover` (multi-error CLI, `.expect_err`) and
+  `tests/testparserecoverh` (handle queries over a broken buffer,
+  `.expect_quiet` gating the capture mute); testmadcide check pins
+  updated to the recovered-parse truth (2 rows — the slice-A cascade
+  granularity; statement-head hole synthesis is the named refinement).
+  This unlocks the tighter-than-save reparse cadence seats (§3.4:
+  error tolerance was the prerequisite; incremental reparse stays a
+  named seat behind it). The resync seeds a STREAM-TRUTH brace debt
+  (the consumed buffer range's unmatched `{`s), so a mid-body failure
+  syncs at the region's close and reports ONE error, like gcc. Also
+  banked: the madcide JOE look/feel recon (owner: REPLACE joe —
+  `docs/plans/2026-08-25-madcide-joe-lookfeel-recon.md`) with the
+  scroll-artifact defect report and the IDE-9a..9e seats.
+  Merge wave: fulltest green (units + gates) + JIT 1153/0/0/9 +
+  EXE 1108/0 (suite = 1177).
+
+- **Highlight spans, JOE-parity styles, and colour schemes (madcide
+  AST-2 / IDE-7)**: `tui_attr` became the style struct {fg, bg, flags}
+  speaking JOE's syntax vocabulary — `bold dim italic underline blink
+  inverse`, the 8 ANSI colours, `bg_*` — with bold-as-bright for the 16
+  effective foreground colours (owner directive: the VT-102 model; no
+  aixterm 90–97; 256/true-colour a named seat). Edit nodes carry
+  `spans` hints (`{s,e,c}` byte ranges + spec); spans and the selection
+  paint through the one extracted range-overlap rule (selection wins);
+  `emit_sgr` is the one reset-then-set SGR table with the historical
+  `\x1b[7m`/`\x1b[0m` spellings preserved — normal/reverse-only grids
+  stay byte-identical. `madc::parse_spans` classifies the handle's
+  RETAINED tokens (`madc_token_highlight_class` = the one classifier;
+  comments from trivia — handles arm `keep_trivia`, cost measured in
+  the noise; function names from the tree by head-line match). Colour
+  SCHEMES are theme files (`profiles/*.theme`, class-first multi-word
+  specs), swapped at runtime via `^K T` through the one prompt mode;
+  `default` + `classic` ship. Two lexer defects the span pins exposed
+  were fixed at their owners: compound-type-specifier heads stamped the
+  lookahead word's column (`pushback_reread` now rewinds + recounts
+  same-line re-reads), and the rejected lookahead ate the space in
+  `char *s` — which was silently corrupting the `--emit=c++` echo to
+  `char*s` (new `emitcxx_rt3.cpp` in the round-trip gate). New reducer
+  `tests/testparsespans`; testmadcide span + theme-swap pins; pty
+  colour smoke. Merge wave: fulltest 1151/0/0/9 + EXE 1107/0.
+
+- **Persistent parse handles (madcide AST-1 / IDE-6)**: the
+  compile-never-execute compiler-data machinery given a lifetime.
+  `madc::parse_open` / `parse_open_file` / `parse_refresh` (whole-TU) /
+  `parse_close`, with `parse_outline` / `parse_check` /
+  `parse_enclosing` (outline-at-offset: the innermost TU-own function
+  definition containing a position — TokenFunc head + the recorded
+  closing-brace `end_line`; outline rows gained `end_line`) served from
+  the RETAINED state — no re-parse per query. `madc::project_open` /
+  `project_tus` / `project_close` group a `compile_commands.json`
+  manifest's TUs, each parsed with its own manifest options —
+  `apply_project_tu_options` extracted as THE one -I/-D/-stdlib/--std
+  application rule (the parse-at-scale measurement itself surfaced the
+  phantom-diagnostic divergence its absence caused). madcide holds one
+  handle per buffer (opened at load); check/save/outline refresh
+  through one entry; the status line shows the enclosing function.
+  MEASURED (design doc §3.4): parse-on-load ~0.25 s (adventure, 11 madc
+  TUs) / ~0.5 s (open-adventure, 18k LOC C); largest-TU whole refresh
+  55–120 ms → **disk-cache NO-GO at current scale** (revisit above ~2 s
+  parse-on-load). Probed: the parser stops at the first error — the
+  error-tolerant-parse seat (owner's Missing*/UnexpectedToken/
+  SkippedTokens vocabulary) is banked as design doc §3.5, discussion
+  pending. Dupaudit: `handle_table<T>` = THE slot+1 handle-registry
+  rule (four hand-rolled copies consolidated: ui_sessions, ui_tuis, the
+  two parse registries), gated by `scripts/check-one-handle-table.sh`.
+  New reducer `tests/testparsehandle` + testmadcide status pins.
+  Merge wave: fulltest 1150/0/0/9 + EXE 1106/0.
+
+- **`--emit=c++` — the C++ reverse-render (madcide AST-4, owner-required)**:
+  `celCxx` joins the emit vocabulary through the one converter
+  (`c11|mc11|c++`). The render is the TU's RETAINED SOURCE (the MC11
+  rule's "path back to the original source"): the TU's own `#include`
+  directives as written (a new fidelity-mode lexer record — directives
+  are consumed at lex), then every TU token echoed in stream order
+  (trivia + the one spelling owner `madc_token_spelling`, now exposed
+  from the lexer), then the trailing trivia. The Phase-5 suppressions
+  are inherent to the shape: lowered machinery (synth ctor/dtor groups,
+  mangled call forms, `__madc_global_init`) exists only as tree nodes
+  and never enters the TU token stream. String literals now RE-ESCAPE
+  through the one new escape owner `madc_c_escape_string` (also fixing a
+  latent macro-arg re-lex bug: a cooked newline inside a string
+  macro-argument re-lexed unterminated; `cir_emit_c`'s N_STR adopted the
+  same owner — dupaudit family consolidated). `madc::emit` accepts
+  `"c++"`; madcide's `^K N` cycle adds the C++ view on C/C++-extension
+  buffers (the app's document-kind rule — a madc-dialect buffer has no
+  C++ respelling yet, the named cross-language seat). New fulltest gate
+  `scripts/emitcxx_roundtrip_gate.sh`: two reducers (strings/escapes/
+  class/macro/global; template/overloads/enum/refs) × g++ AND clang++ —
+  the render recompiles and runs byte-identically to the original; two
+  negative controls.
+- **The view seam (madcide AST-3, owner-pulled first)**: an editor
+  inherently separates what is DISPLAYED from what is STORED — the
+  document lens. `madcdis/doc_lens.h`'s `doc_map` is THE display↔stored
+  coordinate owner (copy segments `{disp, stored, len}` as data; strict
+  value codec; contract: 1:1 in copies, forward collapse in gaps,
+  gap-adjacent boundaries belong to the copy that ENDS there — the safe
+  put side; empty map = a wholly rendered view, answers 0), with
+  `ui::lens_to_display/lens_to_stored` as its dialect face and a
+  doctest battery (6 cases / 106 asserts) pinning the caret math.
+  `madc::emit(out, source, filename, target)` renders a buffer's
+  cir_node tree as a target language through the diagnostics/outline
+  child — byte-identical to CLI `--emit=`, whose target-name parse now
+  rides the ONE converter `cir_emit_lang_of()` (AST-4's `c++` grows in
+  exactly one place). madcide's `^K N` cycles read-only code views
+  original → MC11 → C11 over the one document: the rendered text is the
+  display (unsaved edits render), navigation runs in display space
+  through the one shared implementation (`nav_doc()` routing; the
+  renderer untouched — identity-lens byte-identity is structural, and
+  testvised/testlineed pin it), the stored caret parks and returns on
+  exit, and mutations/stored-space history refuse through the one
+  editable gate. Real-pty smoke covers the cycle (heading tags, the
+  lowering on screen, `^K ^N` ctrl-held continuation, original
+  restored). Scoped dupaudit: `view_active_predicate` (5 sites born on
+  the branch) consolidated into `view_name()`;
+  `emit_target_name_conversion` recorded consolidated.
+- **madcide v2 — a TOOL with the full JOE binding set (owner-directed)**:
+  relocated `examples/madcide` → `tools/madcide`; `profiles/joe.keys`
+  now carries the owner's complete basic-editing list (WordStar diamond
+  `^B^F^P^N` + `^A/^E` + `^Z/^X` words + `^U/^V` screens — motion
+  actions DELEGATE to the one shared movement implementation by
+  key-name; `^K U/^K V` file ends; `^K L` go to line; `^D/^Y/^W`
+  deletes; `^_` undo / `^^` REDO; blocks `^K B/K/C/M/Y` (begin/end
+  markers, copy/move/delete — replacing madcide's mark/cut/paste;
+  vised's Pico set untouched); `^K F` find + `^L` find next; `^K R`
+  insert file; `^K H` help = a projection of the loaded profile's own
+  lines; `^K Z` shell; `^K E` check). One prompt mode serves
+  find/goto-line/insert-file. Engine feeders: the key parser accepts
+  the punctuation controls 0x1c–0x1f (`^\ ^] ^^ ^_` were dropped
+  bytes); `text_buffer` grew REDO (two stacks; a checkpoint clears
+  redo; undo/redo carry the CURRENT payload so both directions restore
+  caret+modified with the document — `ui::text_redo`, four-argument
+  `ui::text_undo`) and word motion (`ui::text_word_left/right`);
+  `ui::tui_suspend/tui_resume` hand the terminal to a child process
+  and re-enter with a full repaint. A second chord convention, forced
+  by the pty probe: continuations are CTRL-insensitive (JOE's `^K ^Z`
+  == `^K Z`; `tui_bindings::cont_spelling`, the case-rule's sibling).
+  Real-pty smoke covers the whole loop including the shell round trip.
+- **madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer)**:
+  `examples/madcide/` — the buffer is the texteditor machinery (the
+  shared editor event core split into
+  `examples/texteditor/editor_events.inc`, included never forked); the
+  diagnostics pane and outline are PROJECTIONS of stored compiler data;
+  keybindings are PROFILES as data — JOE/WordStar `^K` chords by
+  default (owner-directed), the pico profile respelling the same
+  actions (`^k` is a chord prefix in one profile and CUT in the other).
+  The Phase-2 gate is pinned headlessly by `tests/testmadcide`: an
+  entry-lens edit undone restores text+caret+modified; a chosen
+  diagnostics/outline row moves the caret to its line; a profile swap
+  leaves the composed tree IDENTICAL.
+- **Bindings-as-data chord adapter (madcide IDE-1)**: the TUI key
+  adapter takes a per-profile table of key SEQUENCES → action names
+  (`ui::tui_bind_keys`; sequences any length, letter-case insensitive —
+  JOE's `^K S` == `^K s`; loud whole-table validation refuses
+  printable-headed and prefix-shadowing sequences). Bound sequences
+  resolve ahead of the built-in interpretation and arrive as
+  `{event:"action", action, seq}`; a no-table session is byte-identical
+  to before. One key-spelling owner, both directions, now in the model
+  (`tui_key_name`/`tui_key_from_name`); the pty smoke gate pins a chord
+  across read batches on a real terminal.
+- **Buffer history / undo on the text component (madcide IDE-2)**:
+  `ui::text_checkpoint(w, doc, meta)` / `ui::text_undo(meta_out, w,
+  doc)` — a checkpoint is a pieces-vector snapshot (the add buffer is
+  append-only, so snapshots stay valid) carrying an OPAQUE application
+  payload; the editors store `{caret, modified}` there, so undo
+  restores document and interaction state together. One coalesced edit
+  = one undo step. Runtime-only; `text_load` clears; redo is a seat.
+- **Compiler data as data (madcide IDE-3)**: `madc::diagnostics(out,
+  source[, filename])` and `madc::outline(out, source[, filename])` —
+  compile (NEVER execute) a buffer with the same front end `madc` runs,
+  in a policy-clamped child, returning structured rows
+  (`{severity, phase, message, file, line, column}` /
+  `{kind, name, line, column}`). Capture replaces rendering (a
+  thread-local render mute on the two diagnostic renderers; recording
+  is never muted). Pinned by `tests/testcompilerdata` (`.expect_quiet`
+  is the capture proof; the trap buffer's `main` pins that nothing
+  executes). FIXED en route (own commit): a later tokenize session's
+  tokens carried the PREVIOUS unit's stale ambient file:line — every
+  runtime-compile child diagnostic (and later `--project` TUs) now
+  reports its own positions, byte-matching the file-based oracle
+  (`tests/testprojecterrline`).
+- **The script-verb sibling, enforced (madcide IDE-5, the R3
+  residue)**: verb re-entrancy is a LATCH now — a body re-entering the
+  registry gets `action re-entered the registry (verbs do not re-enter
+  act)` as its nested result (`tests/testreenter`); code-entity
+  key-gating per the hub's Decided rule — `ui::bind_require_key` arms
+  the gate and keyless `bind_verb`/`bind_check` refuse loudly
+  (`tests/testbindgate`). Compile-once bodies re-scoped on a measured
+  blocker (the eval ctx bakes at compile); the runtime-bound-ctx design
+  is recorded in the plan doc as its own slice.
+- **The level-1 TUI provider + the visual editor (Track 7.2 R5)**: the
+  addressable-grid frontend, split model/target. `madcdis/tui_model.h`
+  (dependency-free, 100-assert unit battery) owns tree→grid layout —
+  heading/status bars, wrapped content, a flexible `edit` window with
+  caret/scroll/selection, a NAVIGABLE `choice` menu (the same tree line
+  mode numbers) — plus byte→key escape parsing, key→semantic-event
+  adaptation with printable-run coalescing (§7.5), and dirty-row
+  diffing. `madcdis/tui_provider.h` is the dat-style target registry;
+  `src/ui_term.cpp` is the built-in target — hand-rolled VT100/xterm by
+  owner decision (no ncurses/termbox2/notcurses dependency): raw
+  termios (IXON off), alternate screen, differential row repaint,
+  batched reads with a split-sequence grace poll, SIGWINCH → resize,
+  atexit terminal recovery; POSIX-gated (a Windows Console target is a
+  later provider). Script surface: `ui::tui_open/close/rows/cols/
+  render/event` — compose-as-data in, semantic event objects out. New
+  `edit` role; `node_text()` is the one content-else-label rule.
+  `examples/texteditor/vised.mad`: the visual editor — the SAME
+  document actions and the SAME w/q/q! script verbs as the line editor
+  (design success criterion 3), caret/mark/clipboard/search on the
+  editor-state bag. Gates: `tests/testvised` (headless semantic core),
+  `scripts/tui_smoke_gate.sh` in fulltest (a REAL pty drive of the
+  VT100 target with a negative control), test_tui_model.
+- **Availability CHECK bindings (Track 7.2 R5; design §2.9 /
+  invariant 5)**: a verb may carry a state-conditional availability
+  check — native fn or madc source (`ui::bind_check`) — evaluated by
+  the ONE `availability_of` behind BOTH `ui::affordances` (probe
+  invocations over the actor's context) and dispatch, so what
+  enumerates as disabled is exactly what `ui::act` refuses, with the
+  same reason. Script protocol: `"ok"` / reason text; an eval failure
+  disables loudly, never passes. Checks are read-only by stated
+  contract. DupFamily `lineed_readonly_gate` consolidated: the
+  read-only rule now lives ONCE in `checks/editable.madv`, bound to
+  c/i/a/d/w — the five pasted body checks are gone, the testlineed
+  transcript byte-identical. Pinned by `tests/testeditcheck` +
+  test_verbs' check cases.
+- **The line-mode text editor + the piece-table text component (Track
+  7.2 R4, line-mode scope)**: `madcdis/text_buffer.h` — the hub's SECOND
+  component kind (Track 8.1 pulled forward): an immutable loaded
+  snapshot + append-only adds + piece splits, the ed line model,
+  a mirrored-oracle unit battery (lockstep with std::string). Sparse
+  component column on `world`, writes through `mutation_context`.
+  Session surface: `ui::world_new` (empty session) + the `ui::text_*`
+  family (load/insert/erase/replace, text/size/line_count/line/
+  line_start/line_len/find). `php::file_get_contents` /
+  `php::file_put_contents` land as the whole-file pair (PHP parity;
+  pre-L3 union mapping documented in `<ns_php>`). The editor itself
+  (`examples/texteditor/`) is pure application: nine madc-source verbs
+  (p/c/i/a/d/f/w/q/q!) through the one registry, every edit a range op
+  composed from line spans (design doc §7.7); read-only and
+  modified-quit rules refuse in the bodies (§7.3, refusal form). Gate:
+  `tests/testlineed.mad` drives THE example through a pinned two-phase
+  transcript (writable + read-only) with empty stderr.
+- **Projection-as-data (Track 7.2 R2)**: a projection tree is ordinary
+  hub data — sparse value objects of `{ role, label, content, hints,
+  states[], actions[], subject, children[] }` (names, not ids), bridged
+  both ways by `uinode_to_value` / `value_to_uinode`. New `choice` role:
+  a menu whose children are its OPTIONS — the level-0 renderer typesets
+  them as a numbered menu in line mode; a selection-capable renderer
+  reads the SAME tree. New publics `ui::inspect_tree` (the generic
+  inspector projection as walkable data; a gate refusal arrives as a
+  status-role node) and `ui::render_tree` (typeset any value-shaped
+  tree an application composes) — `render_tree(inspect_tree(...))`
+  reproduces `render_inspect` byte-for-byte. Pinned by
+  `tests/testuitree.mad` + test_projection's choice/bridge cases.
+- **Ctx `const char *` eval/expression bindings work under `[]` and
+  unary `*`** (the last eval feeder gap, KG
+  `eval_ctx_charptr_deref_undeclared`): a host-installed binding's plain
+  reads bake to a string literal, but the subscript and deref tokens
+  embed the variable and bypassed the fold — "undeclared identifier" at
+  c2mir check. One fold owner now (`CirBuilder::baked_cstr_constant`)
+  applied in all read shapes; `&binding` stays a loud error (host memory
+  has no module-referenceable address). Pinned by
+  `tests/testevalctxderef.mad`. With this and the return fix below, eval
+  bodies have NO idiom restrictions left.
+- **Computed carrier text now survives function returns** (the
+  silent-empty eval-return gap, KG
+  `eval_wrapper_value_return_silent_empty` — and it was never
+  eval-specific: a plain `const char *f() { var a = ...; return
+  a.c_str(); }` read freed memory too, fully silently). Two
+  language-wide fixes: the value carrier's `c_str()`
+  (`madarray_cstr`) now COPIES string payloads into the thread-local
+  text ring instead of lending the payload pointer — c_str() is
+  uniformly the ring-lifetime text contract (value-first.md's pre-L3
+  return convention; deliberate divergence from `std::string::c_str()`)
+  — and `translate_return` lowers `return v;` (carrier operand,
+  char*-returning function) through `object_cstr_arg`, replacing an
+  incompatible-struct-return warning + garbage pointer. Eval bodies may
+  now return `a.c_str()`, a bare `var`, and accumulate with `+=` (the
+  "literals or format() only" restriction is lifted; `+=` was only
+  masked by the return gap). The eval wrapper-type spelling gained one
+  owner (`eval_body_wrapper_return_type`, external linkage — the typed
+  runtime-eval entries route through it). Pinned by
+  `tests/testevalreturn.mad` + `tests/testcstrreturn.mad` (both
+  `.expect_quiet`). Battery 1138/0/0/9; adventure parity 3 fragments +
+  94 whole logs byte-identical.
+- **The interaction engine is application-free (Rule #7 eviction) + the
+  interaction core lands (Track 7.2 R1+R3)**: the Phase 1 compiled
+  adventure catalog — game verbs, room projection, turn tick, and a
+  `decl.name == "go"` dispatch ladder living in
+  `include/madcdis/adventure.h` and hard-bound by `src/ns_ui.cpp` — is
+  DELETED, not relocated. The engine ships ZERO verbs. New interaction
+  core (`madcdis/interaction.h`): explicit `interaction_context`,
+  structured `invocation` (value arguments + entity handles — the seam
+  law), `availability`/`affordance`, `resolve_affordances`;
+  `ui::act` = interpret → invoke. ONE registry, TWO binding kinds:
+  native (compiled host fn) and **script-entity — a verb whose body is
+  madc SOURCE** (`ui::bind_verb`), executed through an injected eval
+  seam with identical gating/refusal/availability. New generic publics:
+  `ui::affordances` (truthful visible/enabled/reason from the same
+  keys+levels evaluator that gates execution), `ui::links`,
+  `ui::resolve`, `ui::has_key` — relation/property names are arguments,
+  never engine spellings. `ui::render_look`/`ui::turn_count` (application
+  vocabulary) removed. The pilot game is now genuinely an application:
+  eight madc-source verb bodies (`tests/adventure_verbs/*.madv`) +
+  a driver that composes its own look — transcripts reproduce the
+  reference shape with empty stderr. Gated forever:
+  `scripts/check-engine-app-purity.sh` (negative-controlled, fulltest).
+  Known eval feeder gaps found by the tracer: var/c_str() returns from
+  eval bodies came back empty (silent), and ctx `const char*` globals
+  broke under `[]`/`*` — both FIXED above.
+- **win64 rides MIR's lazy first-call gen interface again** (KG gap
+  `mir_win64_lazy_gen_wrapper` CLOSED): TWO stock-upstream defects in
+  the win64 lazy-wrapper machinery (`third_party/mir/mir-x86_64.c`),
+  both fixed at the thunk emitter. (1) **The actual v0.95.x crash**:
+  `_MIR_get_wrapper`'s win64 immediate offsets (2/12/22/31) describe
+  the pattern WITHOUT its two leading home-space spill instructions,
+  so `called_func`/`ctx`/`hook` were patched 10 bytes early — over the
+  spills and each other's slots — leaving every win64 wrapper corrupt
+  from byte 2; the first lazily generated call executed pointer bytes
+  as instructions (found by a scratch `MIR_DEBUG` thunk map + winedbg
+  byte dumps: every wrapper slot read `48 89 <heap ptr> 48 ba ...`).
+  Correct offsets: 12/22/32/41. (2) `_MIR_get_wrapper_end` called the
+  lazy-gen hook with RSP always ≡ 8 (mod 16) (`0x28` alignment
+  constant, not a multiple of 16) and spilled xmm0-3 into the callee's
+  32-byte shadow space — latent behind (1), fixed with `0x40` + spill
+  at `0x20..0x38(%rsp)`. Both upstream-PR candidates (owner review
+  gates). The two v0.95.1 `#ifdef _WIN32` eager fallbacks in
+  `madc_cir.cpp` are deleted; linux/macos object code unchanged.
+- **`&x` over a reference types as pointer-to-referent** (KG gap
+  `libcxx_fs_error_code_overload_shape` CLOSED): every
+  `parseAddressOfExpression` site computed `getPointerType(operand
+  type)`, one pointer level too deep for reference operands (`E& e` →
+  `&e` typed `E**`); codegen was already right, so single-candidate
+  calls worked while the six overloaded libc++ `<filesystem>` sets
+  (`__create_directory`/`__current_path`/`__last_write_time`, each
+  passing `&__ec` from an `error_code&` parameter) refused. ONE helper
+  (`Program::addressof_result_type`, [expr.unary.op]p3) now serves all
+  11 sites; reducer `tests/testaddrofrefoverload.mad` (g++/clang++
+  oracle); darwin pack baseline lowered 64 → 58 (both arches measured
+  at exactly 58).
+
 ## [v0.95.2] — 2026-08-23
 
 The v0.95 line's darwin-lane conformance patch — and the tag the six

@@ -1,0 +1,20 @@
+// The strict-mode twin of testimplicitlibcproto: under --std=c17 the pack's
+// producer config does not match this compile (the "multi-dialect
+// fall-through": headers are served as re-tokenized source), yet an UNDECLARED
+// libc call still adopts the pack's REAL prototype — GCC's builtin prototype
+// applies in every -std, and the zero-parameter variadic guess is ABI-wrong
+// wherever named and variadic arguments travel differently (Apple arm64:
+// every zero-include strict-mode printf read garbage in the first darwin
+// re-measure). __builtin_printf IS printf (GCC semantics) and adopts the same
+// prototype through the twin, emitted as printf.
+//
+// Lanes as for testimplicitlibcproto: the strong line rides the forest-bound
+// lanes (.headerless_expect, .darwin_expect); the dev lane's .expect asserts
+// only the common head.
+int main(void)
+{
+	int a = 1, b = 0;
+	printf("%d %d\n", a, b);
+	__builtin_printf("%d %d\n", b, a);
+	return 0;
+}

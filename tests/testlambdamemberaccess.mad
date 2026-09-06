@@ -1,0 +1,24 @@
+// A lambda written inside a member function has that member's access
+// ([class.access]/2: a local class of a member function may access the same
+// names the member function itself may access) — libc++'s basic_string move
+// constructor reads the private __r_ through `[](basic_string& __s) { ...
+// __s.__r_ ... }`. Before: "'p' is a private member of 'A'" — the hoisted
+// closure was judged as an outsider. Oracle g++ == clang++: 10 25
+#include <stdio.h>
+struct A {
+	A(int v) : p(v) {}
+	int twice() { return [](A &a) -> int { return a.p * 2; }(*this); }
+	int sq() const
+	{
+		auto f = [](const A &a) { return a.p * a.p; };
+		return f(*this);
+	}
+private:
+	int p;
+};
+int main()
+{
+	A a(5);
+	printf("%d %d\n", a.twice(), a.sq());
+	return 0;
+}

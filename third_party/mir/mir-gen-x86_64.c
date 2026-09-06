@@ -264,6 +264,11 @@ static int get_int_arg_reg_num (MIR_reg_t arg_reg) {
 }
 #endif
 
+/* A 16-byte argument passed in memory -- long double (x87 class) and the
+   128-bit vector (SSE class, no register left) -- occupies a 16-byte ALIGNED
+   stack slot on SysV x86-64 (3.2.3: the slot is aligned to the type). */
+static int stack_arg_16_p (MIR_type_t type) { return type == MIR_T_LD || type == MIR_T_V128; }
+
 static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *fp_arg_num,
                               MIR_insn_code_t *mov_code) {
   MIR_reg_t arg_reg;
@@ -374,11 +379,16 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       gen_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
       if (mode == MIR_OP_FLOAT)
         (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                      "passing float variadic arg (should be passed as double)");
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      /* a 128-bit vector through `...` is an SSE-class value like a double: the
+         next xmm register, or a 16-byte stack slot (SysV 3.2.3; gcc/clang) */
+      type = (mode == MIR_OP_DOUBLE    ? MIR_T_D
+              : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+              : mode == MIR_OP_VECTOR  ? MIR_T_V128
+                                       : MIR_T_I64);
     }
     if (xmm_args < 8 && (type == MIR_T_F || type == MIR_T_D || type == MIR_T_V128)) xmm_args++;
     ext_insn = NULL;
@@ -630,6 +640,14 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
                        : type == MIR_T_LD ? MIR_LDMOV
                        : type == MIR_T_V128 ? MIR_VMOV
                                           : MIR_MOV);
+#ifndef _WIN32
+      /* a 16-byte argument -- long double, a 128-bit vector -- takes a 16-byte
+         ALIGNED stack slot (SysV 3.2.3: a memory argument is aligned to its
+         type); after an odd number of eightbytes the caller pads one.  gcc's
+         callee reads it there; MIR's own callee (below) does too, and the
+         aligned movdqa a V128 stack store uses faults on an 8-byte slot. */
+      if (stack_arg_16_p (type)) arg_stack_size = (arg_stack_size + 15) / 16 * 16;
+#endif
       mem_op = _MIR_new_var_mem_op (ctx, mem_type, arg_stack_size, SP_HARD_REG, MIR_NON_VAR, 1);
       new_insn = MIR_new_insn (ctx, new_insn_code, mem_op, arg_op);
       gen_assert (prev_call_insn != NULL); /* call_insn should not be 1st after simplification */
@@ -1094,6 +1112,11 @@ static void target_machinize (gen_ctx_t gen_ctx) {
                        : type == MIR_T_LD ? MIR_LDMOV
                        : type == MIR_T_V128 ? MIR_VMOV
                                           : MIR_MOV);
+#ifndef _WIN32
+      /* the caller's 16-byte aligned slot for a 16-byte argument (see the
+         call side): the incoming argument area starts 16-byte aligned */
+      if (stack_arg_16_p (type)) mem_size = (mem_size + 15) / 16 * 16;
+#endif
       mem_op = _MIR_new_var_mem_op (ctx, mem_type,
                                     mem_size + 8 /* ret */
                                       + start_sp_from_bp_offset,
@@ -1434,11 +1457,15 @@ static void isave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
            _MIR_new_var_op (ctx, hard_reg));
 }
 
-static void dsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t hard_reg) {
+/* Save a WHOLE xmm argument register into its 16-byte register-save-area slot
+   (SysV 3.5.7: the save area holds the full XMM register; gcc uses movaps).
+   A movsd saved only the low eightbyte, so a 128-bit vector vararg read its
+   upper two lanes from whatever the slot held before. */
+static void vsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t hard_reg) {
   MIR_context_t ctx = gen_ctx->ctx;
 
-  gen_mov (gen_ctx, anchor, MIR_DMOV,
-           _MIR_new_var_mem_op (ctx, MIR_T_D, disp, SP_HARD_REG, MIR_NON_VAR, 1),
+  gen_mov (gen_ctx, anchor, MIR_VMOV,
+           _MIR_new_var_mem_op (ctx, MIR_T_V128, disp, SP_HARD_REG, MIR_NON_VAR, 1),
            _MIR_new_var_op (ctx, hard_reg));
 }
 
@@ -1531,14 +1558,14 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     isave (gen_ctx, anchor, offset + 24, CX_HARD_REG);
     isave (gen_ctx, anchor, offset + 32, R8_HARD_REG);
     isave (gen_ctx, anchor, offset + 40, R9_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 48, XMM0_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 64, XMM1_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 80, XMM2_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 96, XMM3_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 112, XMM4_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 128, XMM5_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 144, XMM6_HARD_REG);
-    dsave (gen_ctx, anchor, offset + 160, XMM7_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 48, XMM0_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 64, XMM1_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 80, XMM2_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 96, XMM3_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 112, XMM4_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 128, XMM5_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 144, XMM6_HARD_REG);
+    vsave (gen_ctx, anchor, offset + 160, XMM7_HARD_REG);
     bp_saved_reg_offset += reg_save_area_size;
   }
 #endif

@@ -29,6 +29,7 @@
 #include "madc_dl.h"
 #include "ns_common.h"
 #include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
+#include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "libmadc/sysinfo.h"
 
 extern "C" {
@@ -160,6 +161,33 @@ double madarray_as_real(void *ptr)
     }
 int64_t madarray_is_null(void *ptr)
     { return ((madc::value *)ptr)->is_null() ? 1 : 0; }
+// The rest of madc::value's kind predicates (value.h contract) — a script
+// walking mixed-shape data (a manifest's bare-string vs object TUs) must
+// ask the kind BEFORE a keyed access, which is a script error on scalars.
+int64_t madarray_is_string(void *ptr)
+    { return ((madc::value *)ptr)->is_string() ? 1 : 0; }
+int64_t madarray_is_object(void *ptr)
+    { return ((madc::value *)ptr)->is_object() ? 1 : 0; }
+int64_t madarray_is_array(void *ptr)
+    { return ((madc::value *)ptr)->is_array() ? 1 : 0; }
+int64_t madarray_is_boolean(void *ptr)
+    { return ((madc::value *)ptr)->is_boolean() ? 1 : 0; }
+int64_t madarray_is_integer(void *ptr)
+    { return ((madc::value *)ptr)->is_integer() ? 1 : 0; }
+int64_t madarray_is_real(void *ptr)
+    { return ((madc::value *)ptr)->is_real() ? 1 : 0; }
+int64_t madarray_is_bytes(void *ptr)
+    { return ((madc::value *)ptr)->is_bytes() ? 1 : 0; }
+int64_t madarray_is_instance(void *ptr)
+    { return ((madc::value *)ptr)->is_instance() ? 1 : 0; }
+// The payload bytes of a text kind (string / bytes): value.h's data(), no
+// copy, with the length count() answers — what the stream inserter's
+// script-side rendering (bits/value_stream) writes. Other kinds have none.
+const char *madarray_data(void *ptr)
+    {
+	const madc::value *v = (const madc::value *)ptr;
+	return v->is_string() || v->is_bytes() ? (const char *)v->data() : NULL;
+    }
 
 // Scalar (re)assignment surface for the intrinsic value/array carrier —
 // the native operator= family add_array_methods registers on ddARRAY.
@@ -230,18 +258,53 @@ void *madarray_index_slot(void *ptr, int64_t idx)
 	return NULL;	// unreachable: __madc_throw_cstr does not return
     }
 
-// Text view of a value for C varargs (printf "%s") — the coercion the CIR
-// builder applies to a value argument in a variadic call. String kind
-// returns the value's own payload (stable, value-owned). Other kinds
-// render through the ONE value->text owner (ns_common::value_to_string)
-// into a thread-local ring, so several value args in one call keep
-// distinct buffers (the inet_ntoa model; a pointer stays valid until its
-// slot recycles). Container kinds render a diagnostic tag, never crash.
+// `bag[v]` with a CARRIER index — dispatch on the INDEX's live kind
+// (owner 2026-08-31, the elegance ruling: `m[kn]` keys without .c_str()
+// ceremony): a string-kind index KEYS the object kind (madarray_key_slot),
+// integer/bool kinds INDEX the array kind, a real truncates (the numeric
+// subscript rule). Deliberately NOT PHP's coercion table: "8" stays the
+// string key "8", never index 8. A null or container-kind index refuses
+// loudly — indexing by nothing (or by a container) is a bug, never an
+// intent. Before this entry the compile-time index path coerced the
+// carrier's POINTER to the element index (a silent address-as-index).
+void *madarray_value_slot(void *ptr, void *idx)
+    {
+	const madc::value *iv = (const madc::value *)idx;
+	if ( iv->is_string() )
+	{
+	    std::string key((const char *)iv->data(), iv->size());
+	    return madarray_key_slot(ptr, key.c_str());
+	}
+	if ( iv->is_integer() || iv->is_boolean() || iv->is_real() )
+	    return madarray_index_slot(ptr, iv->as_integer());
+	__madc_throw_cstr(iv->is_null()
+	    ? "[var]: null index — a key is a string, an index an integer"
+	    : "[var]: index value must be a string (key) or a number (index)");
+	return NULL;	// unreachable: __madc_throw_cstr does not return
+    }
+
+// Text view of a value — the carrier's c_str() and the coercion the CIR
+// builder applies to a value in char*-consuming positions (varargs args,
+// char* returns). EVERY kind answers with RING-lifetime text (the
+// thread-local ring — the inet_ntoa model; a pointer stays valid until
+// its slot recycles): value-first.md's pre-L3 text-return convention.
+// String kind COPIES its payload into a slot — never the payload pointer
+// itself: a payload borrow dies with the value, so `return a.c_str();`
+// crossing a frame read freed memory (the silent-empty return gap; the
+// value's cleanup dtor runs before any caller-side copy). Deliberate,
+// documented divergence from std::string::c_str(). Other kinds render
+// through the ONE value->text owner (ns_common::value_to_string);
+// container kinds render a diagnostic tag, never crash. Several value
+// args in one call keep distinct slots.
 const char *madarray_cstr(void *ptr)
     {
 	const madc::value *v = (const madc::value *)ptr;
 	if (v->is_string())
-	    return (const char *)v->data();
+	{
+	    std::string &slot = ns_common::ring_slot();
+	    slot.assign((const char *)v->data(), v->size());
+	    return slot.c_str();
+	}
 	std::string &slot = ns_common::ring_slot();
 	if (v->is_null())
 	    slot.clear();
@@ -425,6 +488,21 @@ void *madarray_push_value(void *ptr, void *other)
 	return ptr;
     }
 
+// `arr[] = x` — PHP's empty append accessor (owner 2026-08-31): push one
+// null element and return ITS slot address, so the parser's registered
+// operator= rows land the RHS in the appended element — the index slot's
+// append twin (one assignment vocabulary for keyed, indexed, and appended
+// slots). Vivify/kind/freeze errors ride madarray_push_target. vector
+// storage: the slot stays valid until the array next grows, exactly the
+// index-slot contract the CIR consumes within one expression.
+void *madarray_append_slot(void *ptr)
+    {
+	std::vector<madc::value> &vec =
+	    madarray_push_target((madc::value *)ptr);
+	vec.push_back(madc::value());
+	return &vec.back();
+    }
+
 // `var v = {};` — an EMPTY brace list is an empty ARRAY, not a null
 // value: the braces spell a container. The declaration lowering calls
 // this once after construct; size() reads 0 and is_null() answers false.
@@ -549,6 +627,7 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
     struct c2mir_options opts;
     memset(&opts, 0, sizeof(opts));
     opts.message_file = stderr;
+    opts.ignore_warnings_p = madc_no_warnings ? 1 : 0; /* -w */
 
     CStringReader reader = {c_source.c_str(), 0, c_source.size()};
     int ok = c2mir_compile(ctx, &opts, c_string_getc, &reader,
@@ -596,6 +675,13 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
     }
 
     int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+
+    // Root-scope join (the ruled Kotlin-scope semantic): main's return waits
+    // for every live task. MUST run before MIR_gen_finish — task bodies are
+    // jitted MIR code. Idempotent no-op when the program never spawned; the
+    // atexit copy registered by the runtime then no-ops too (that copy is
+    // for native artifacts, whose process ends with the program).
+    __madc_task_join_all();
 
     MIR_gen_finish(ctx);
     c2mir_finish(ctx);

@@ -1,0 +1,33 @@
+#include <stdio.h>
+// [temp.deduct.type]/2: a template parameter deduced from two arguments must
+// deduce the SAME type. P = T for both parameters, A1 = int, A2 = char ->
+// deduction FAILS and the template is not a candidate at all; the non-template
+// overload is chosen. madc let the first argument's deduction win (T = int),
+// made the template viable, and instantiated its body for int — for the
+// constructor below that body is ill-formed (*a on an int), which g++ and
+// clang++ never instantiate. The libc++ shape: basic_string(_InputIterator,
+// _InputIterator) for std::string(20, 'x').
+template<class T> int pick(T a, T b) { return 1; }
+int pick(long a, char b) { return 2; }
+// [temp.deduct.call]/2: for a by-value P the top-level cv of A is ignored —
+// a const lvalue and a prvalue of the same type deduce the same T. No
+// non-template competitor here: the template alone must be viable.
+template<class T> int same(T a, T b) { return 1; }
+struct W {
+    template<class It> W(It a, It b) { int x = *a; (void)b; v = x; }  // never instantiated
+    W(unsigned long n, char c) { v = (int)n + c; }
+    int v;
+};
+struct Both {
+    template<class T> Both(T a, T b) { v = (int)(a + b); }            // consistent: viable, wins
+    Both(long a, long b) { v = -1; }
+    int v;
+};
+int main()
+{
+    W w(20, (char)3);
+    Both bb(4, 5);
+    const int ci = 9;
+    printf("%d %d %d %d\n", pick(20, (char)7), w.v, bb.v, same(ci, 2));
+    return 0;
+}

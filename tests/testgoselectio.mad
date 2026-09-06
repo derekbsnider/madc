@@ -1,0 +1,44 @@
+// MT-4b io select: a byte endpoint (exec://) selects beside value channels
+// — "recv from a task channel OR read from a child process" is ONE wait.
+// Deterministic by PHASING: each select has exactly one fireable case.
+//   Phase 1: only the byte case can fire (the value channel is empty, its
+//     feeder not yet spawned); sort's output readlines out after the fire
+//     and the drained EOF (readline -> false) kills the case.
+//   Phase 2: the byte case is DEAD (drained EOF disables it — the fd is
+//     still POLLHUP-readable, which is exactly the trap the registration
+//     dead-check exists for); the feeder's send fires the value case while
+//     the selector is PARKED (spawn does not switch).
+//   Phase 3: both cases dead -> -1, the fan-in terminator.
+var tr;
+
+void feeder(long c)
+{
+    var v = 7;
+    madc::chan_send(c, v);
+    madc::chan_close(c);
+}
+
+int main()
+{
+    madc::channel sorter("exec://sort");
+    sorter.write("banana\napple\ncherry\n");
+    sorter.close_write();
+    long c = madc::chan_make(1);
+    var cases;
+    cases[0] = c;
+    cases[1] = madc::chan_readable(sorter);
+    var got;
+    long idx = madc::chan_select(got, cases);
+    tr = format("{}p1={};", tr, idx);
+    var line;
+    while ( sorter.readline(line) )
+	tr = format("{}b={};", tr, line);
+    tr = format("{}beof;", tr);
+    go feeder(c);
+    idx = madc::chan_select(got, cases);
+    tr = format("{}p2={},v={};", tr, idx, got);
+    idx = madc::chan_select(got, cases);
+    tr = format("{}p3={};", tr, idx);
+    println("end tr={}", tr);
+    return 0;
+}

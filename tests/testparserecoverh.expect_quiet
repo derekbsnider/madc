@@ -1,0 +1,2 @@
+recovery renders stay captured: the child's contained-error diagnostics and
+the translate gate's summary are mute-aware — stderr must be EMPTY.

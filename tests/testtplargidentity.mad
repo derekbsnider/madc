@@ -1,0 +1,27 @@
+// Template-argument identity of the platform integer types: an explicit
+// specialization written `isL<long>` must be the one a use `isL<long>` finds,
+// through a typedef chain too, and a user template deduced or explicitly
+// bound to `unsigned long` must instantiate as that type. On Apple targets
+// int64_t is `long long` (a distinct type), so a display-name round trip of
+// the 64-bit builtins used to turn `long` into `long long` on the way to the
+// key (darwin D4: isL<long> false, std::max<size_type> undefined import).
+// Oracle: g++ and clang++ print the same on every target.
+namespace ns { typedef long myint; typedef myint myint2; typedef unsigned long myuint; }
+template<class T> struct isL  { static const bool value = false; };
+template<> struct isL<long>   { static const bool value = true; };
+template<class T> struct isUL { static const bool value = false; };
+template<> struct isUL<unsigned long> { static const bool value = true; };
+template<class T> struct isLL { static const bool value = false; };
+template<> struct isLL<long long> { static const bool value = true; };
+template<class T> const T &mymax(const T &a, const T &b) { return a < b ? b : a; }
+int main()
+{
+    unsigned long a = 4, b = 9;
+    long c = -3, d = 7;
+    __builtin_printf("%d %d %d | %d %d | %d | %lu %ld %lu\n",
+	isL<long>::value, isL<ns::myint>::value, isL<ns::myint2>::value,
+	isUL<unsigned long>::value, isUL<ns::myuint>::value,
+	isLL<long long>::value,
+	mymax<unsigned long>(a, b), mymax(c, d), mymax(a, b));
+    return 0;
+}

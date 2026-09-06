@@ -46,6 +46,23 @@ void madcdis_mapwrite_trap_hit(const char *key)
 }
 } }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
+#include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
+
+// Stage-2 cooperative parse: yield-point cadence for the token pumps (a
+// power of two — the pump check is one mask-and-compare). ~1k tokens is
+// well under a millisecond, far finer than the ~10ms slice budget the
+// stage-2 ruling set; parse_yield_point itself no-ops without live tasks.
+enum { LEX_YIELD_GRAIN = 1024 };
+
+// MT-3b: a cancelled task's tokenize aborts CLEANLY at its next yield
+// point — a C++ throw the pump's own catch(const char *) handler records
+// as a lexer diagnostic (tokenize returns NULL). Never the SJLJ cancel
+// throw here: it would longjmp past the lexer's C++ frames.
+static void lex_abort_if_task_cancelled(void)
+{
+	if (__madc_task_cancelled())
+		throw "tokenize cancelled (task cancellation)";
+}
 
 // --show-stats: RAII accumulator for time spent loading source into the lex
 // stream (file read / embedded-header copy). Adds its lifetime, in seconds, to
@@ -857,7 +874,19 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    throw "Unterminated wide string";
 	}
 	source.get();
-	return make_str(bytes, prefix != "u8");
+	{
+	    TokenBase *stok = make_str(bytes, prefix != "u8");
+	    // Piece extent includes the encoding prefix (L"..."/u8"...").
+	    if ( source.line() == row )
+	    {
+		TokenStr::SrcPiece pc;
+		pc.line = row;
+		pc.col = col - 1 - (int32_t)prefix.size();
+		pc.len = source.column() - pc.col;
+		((TokenStr *)stok)->src_pieces.push_back(pc);
+	    }
+	    return stok;
+	}
     }
 
     uint32_t cp = 0;
@@ -883,8 +912,8 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
     // dd_platform_wchar()), U'' -> char32_t (uint32), u'' -> char16_t
     // (uint16), u8'' -> char8_t (uint8).
-    ti->setDataType(prefix == "U" ? static_cast<DataDef *>(&ddUINT32)
-		  : prefix == "u" ? static_cast<DataDef *>(&ddUINT16)
+    ti->setDataType(prefix == "U" ? dd_char32()
+		  : prefix == "u" ? dd_char16()
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
 		  : dd_platform_wchar());
     return ti;
@@ -1520,6 +1549,10 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
 		rt->file = origin->file;
 		rt->line = origin->line;
 		rt->column = origin->column;
+		// The replacement spelling is not the source's bytes at the
+		// origin position (`NULL` -> `((void *)0)`): coordinate
+		// consumers (parse_spans) must skip these (tfSYNTHPOS).
+		rt->setFlag(tfSYNTHPOS);
 	    }
 	    replacement.push_back(rt);
 	}
@@ -2095,7 +2128,7 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
-static std::string token_spelling(TokenBase *tb);
+std::string madc_token_spelling(TokenBase *tb);  // fwd (the one spelling owner, defined below)
 
 static std::string stringify_macro_arg(const std::string &raw)
 {
@@ -2178,6 +2211,13 @@ static std::string expand_function_macro_body(
 	macro_replacement_tokens(macro);
     std::string expanded;
     expanded.reserve(macro.body.size());
+    // True immediately after a ## was consumed: the next token is the paste's
+    // RIGHT operand. If that operand substitutes to EMPTY (a placemarker,
+    // C11 6.10.3.3), the paste result is the left operand alone — a space
+    // must keep the FOLLOWING body token from gluing to it in this
+    // string-based expansion (`A ## B+` with empty B re-lexed `+`+`+` as
+    // `++` — c-testsuite 00202).
+    bool after_paste = false;
     for ( size_t i = 0; i < tokens.size(); )
     {
 	const MacroReplacementToken &token = tokens[i];
@@ -2207,6 +2247,7 @@ static std::string expand_function_macro_body(
 	    ++i;
 	    while ( i < tokens.size() && macro_token_space(tokens[i]) )
 		++i;
+	    after_paste = true;
 	    continue;
 	}
 	if ( token.kind == MacroReplacementToken::rtIdentifier )
@@ -2216,14 +2257,17 @@ static std::string expand_function_macro_body(
 		expanded_params.find(name);
 	    if ( value != expanded_params.end() )
 	    {
-		if ( macro_param_use_is_raw(tokens, i) )
-		    expanded += raw_params[name];
-		else
-		    expanded += value->second;
+		const std::string &sub = macro_param_use_is_raw(tokens, i)
+		    ? raw_params[name] : value->second;
+		expanded += sub;
+		if ( after_paste && sub.empty() )
+		    expanded += ' ';	// placemarker: separate the next token
+		after_paste = false;
 		++i;
 		continue;
 	    }
 	}
+	after_paste = false;
 	if ( token.kind == MacroReplacementToken::rtComment )
 	    expanded += ' ';
 	else
@@ -2442,6 +2486,11 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
 	}
 	else
 	    prev->str += next->str;
+	// the merged literal keeps every piece's SOURCE extent — the span
+	// classifier paints one row per piece, not one mis-anchored blob.
+	prev->src_pieces.insert(prev->src_pieces.end(),
+				next->src_pieces.begin(),
+				next->src_pieces.end());
 	// the merged literal lives in `prev` (already in the stream); refresh its
 	// rec spelling to the concatenated bytes so its ROM stays self-describing.
 	prev->rec.spelling_id = strpool.intern(prev->str);
@@ -2545,6 +2594,16 @@ void Program::_tokenizer_init()
     try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
+    // A fresh tokenize session: newly created tokens must not inherit the
+    // ambient parse position of whatever unit ran before. getRealToken's
+    // backstop stamps a token from THIS Program's source only when the
+    // ctor stamp is 0 — a runtime-compile child (or a later --project TU)
+    // otherwise keeps the previous unit's stale nonzero position on every
+    // token (madcide IDE-3 found it: every child diagnostic carried the
+    // HOST program's last line).
+    TokenBase::_parse_file = NULL;
+    TokenBase::_parse_line = 0;
+    TokenBase::_parse_column = 0;
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
@@ -2646,6 +2705,15 @@ void Program::_tokenizer_init()
     define_map["__madc__"] = "1";
     define_map["__MADC__"] = "1";
     define_map["__MADC_VERSION__"] = "\"" MADC_VERSION_STR "\"";
+    // The stdlib flavor madc ITSELF was built against — a build fact a dialect
+    // fragment compares against the script's (_LIBCPP_VERSION / __GLIBCXX__)
+    // to render a std::-typed convenience script-side when the two differ
+    // (bits/value_stream: a libc++ script on a libstdc++ host cannot bind the
+    // host's ostream inserter — the stream object is the script flavor's).
+    // madc_mangle_host_stdlib() is the same fact for the builder.
+#if defined(_LIBCPP_VERSION)
+    define_map["__MADC_HOST_LIBCPP__"] = "1";
+#endif
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
@@ -2709,9 +2777,11 @@ void Program::_tokenizer_init()
     // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
     // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
     // it as `((void)(ap))`).
-    // va_list is the real __madc_va_list_tag[1] array type, so va_end is a
-    // no-op cast (an array lvalue cannot be assigned) and va_copy copies the
-    // one element — the same bodies the embedded stdarg.h macros use.
+    // va_end is a no-op cast whatever the shape. va_copy follows the TARGET's
+    // va_list shape (madc_target_va_list, datadef.h): the SysV array copies
+    // its one element; the AAPCS64 record and the scalar `char *` are plain
+    // assignments. The embedded stdarg.h's va_copy expands to this builtin,
+    // so the shape has one owner.
     {
 	MacroDef m;
 	m.params = {"__ap"};
@@ -2721,7 +2791,8 @@ void Program::_tokenizer_init()
     {
 	MacroDef m;
 	m.params = {"__dest", "__src"};
-	m.body = "((__dest)[0] = (__src)[0])";
+	m.body = madc_target_va_list == TargetVaList::SysVTagArray
+	    ? "((__dest)[0] = (__src)[0])" : "((__dest) = (__src))";
 	macro_map["__builtin_va_copy"] = m;
     }
     // Report the GCC version that compiled madc itself.
@@ -3069,11 +3140,22 @@ void Program::_tokenizer_init()
 	// would leave the exponent bytes uninitialized now that `long double` is
 	// genuinely 16 bytes wide. (It read as the double pattern plus stack
 	// garbage while long double was still mapped to double.)
+	// Where the TARGET's long double IS double (Apple arm64: sizeof 8), the
+	// pattern is the double one in a long double-typed union — gcc/clang
+	// there print nansl 7ff4000000000000; the x87 pair written into an
+	// 8-byte union would overrun it (darwin D4: testsignalingnan printed
+	// 0000a000000000000000 on an M-series Mac). sizeof(long double) is
+	// the target's, read off the compiler building this madc for it
+	// (the DataDefLDOUBLE rule).
 	MacroDef nansl;
 	nansl.params = {"__tag"};
-	nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
-		     " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
-		     " __u.__l; }))";
+	if ( sizeof(long double) == 8 )
+	    nansl.body = "(__extension__ ({ union { unsigned long long __i; long double __l; } __u;"
+			 " __u.__i = 0x7ff4000000000000ULL; __u.__l; }))";
+	else
+	    nansl.body = "(__extension__ ({ union { unsigned long long __i[2]; long double __l; } __u;"
+			 " __u.__i[0] = 0xa000000000000000ULL; __u.__i[1] = 0x7fffULL;"
+			 " __u.__l; }))";
 	macro_map["__builtin_nansl"] = nansl;
     }
     {
@@ -3246,11 +3328,10 @@ bool Program::include_already_seen(const std::string &path)
 
 std::string Program::current_source_directory()
 {
-    std::string cur_fname(source.fname());
-    size_t slash_pos = cur_fname.rfind('/');
-    if ( slash_pos == std::string::npos )
-	return "";
-    return cur_fname.substr(0, slash_pos + 1);
+    // host_path_dirname: on a Windows host the user spells the source
+    // path with '\' (cmd/PowerShell tab-completion), and a bare rfind('/')
+    // returned "" — every relative #include then resolved from cwd.
+    return madc::detail::host_path_dirname(source.fname());
 }
 
 // Phase 6 (--forest-bind): open the grove container once, on the first system
@@ -4073,9 +4154,15 @@ void Program::forest_bind_include(uint32_t unit)
 	  && live_header.compare(live_header.size() - madh_suffix.size(),
 				 madh_suffix.size(), madh_suffix) == 0 )
 	    live_header.erase(live_header.size() - madh_suffix.size());
-	size_t slash = live_header.find_last_of("/\\");
-	if ( slash != std::string::npos )
-	    live_header.erase(0, slash + 1);
+	// Re-include the EXACT unit by its canonical path, never its basename.
+	// A basename is ambiguous across the corpus (<stat.h> names glibc's
+	// bits/stat.h, linux/stat.h AND sys/stat.h) and resolves by grove
+	// lookup order — a corpus reshuffle flipped bits/stat.h's fallback
+	// onto linux/stat.h, silently dropping __S_IFMT for every headerless
+	// consumer of <sys/stat.h>. An absolute spelling passes through
+	// resolve_include_path verbatim, and read_resolved_include serves it
+	// from disk or the pack's raw-source slot. An embedded unit's name
+	// has no directory and is already the include spelling.
 	if ( live_header.empty() )
 	    Throw << "Frozen missing-content unit has no live include spelling: "
 		  << unit_name << flush;
@@ -4250,7 +4337,40 @@ const char *const *Program::sys_include_paths() const
     // Minimal C list when detection produced nothing (no compiler at build time).
     if ( !f->paths || !f->paths[0] )
 	return madc_fallback_include_paths;
-    return f->paths;
+    if ( registration_policy.enable_sysroot_includes )
+	return f->paths;
+    // The toolchain-only view (registration_policy.enable_sysroot_includes ==
+    // false): the compiler reports its search list in a fixed order — the
+    // C++ stdlib dirs, then its own builtin (compiler-owned) dir, then the
+    // sysroot's C dirs and frameworks — so "everything up to and including the
+    // compiler-owned dir" IS the set of roots the toolchain owns, and what
+    // follows is the host's C library / SDK. Cached per flavor, NULL-terminated
+    // like the table it views. A table with no compiler-owned slot cannot be
+    // cut honestly: refuse loudly rather than guess a position.
+    if ( _toolchain_paths_flavor == f && !_toolchain_paths.empty() )
+	return _toolchain_paths.data();
+    const char *owned = f->compiler_owned_dir ? f->compiler_owned_dir : "";
+    _toolchain_paths.clear();
+    bool cut = false;
+    for ( int i = 0; f->paths[i]; ++i )
+    {
+	_toolchain_paths.push_back(f->paths[i]);
+	if ( *owned && strcmp(f->paths[i], owned) == 0 )
+	{
+	    cut = true;
+	    break;
+	}
+    }
+    if ( !cut )
+    {
+	_toolchain_paths.clear();
+	throw std::runtime_error("--no-sysroot-includes: this build's system include table has no "
+				 "compiler-owned dir to cut at (flavor '" + std::string(f->name ? f->name : "")
+				 + "'); cannot separate toolchain roots from sysroot roots");
+    }
+    _toolchain_paths.push_back((const char *)0);
+    _toolchain_paths_flavor = f;
+    return _toolchain_paths.data();
 }
 
 bool Program::posix_compat_enabled() const
@@ -4526,7 +4646,14 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	return incfile; // not found — will fail at open
     }
 
-    // "file.h": current source directory, then -I paths
+    // "file.h": current source directory, then -I paths — then the WHOLE
+    // <...> chain. C11 6.10.2p3: a quoted include whose quoted-specific
+    // search fails "is reprocessed as if it read #include <...>", and gcc
+    // does exactly that (an installed header's #include "libmadc/options.h"
+    // resolves via the /usr/local/include root after the includer-relative
+    // candidate misses). Delegating keeps the system chain ONE owner; it
+    // also makes the not-found error name the UNDOUBLED spelling instead
+    // of includer_dir + incfile.
     std::string cur_dir = current_source_directory();
     if ( !cur_dir.empty() )
     {
@@ -4535,15 +4662,7 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	if ( probe.good() )
 	    return local;
     }
-    for ( size_t i = 0; i < include_paths.size(); ++i )
-    {
-	std::string &dir = include_paths[i];
-	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
-	std::ifstream probe(candidate.c_str());
-	if ( probe.good() )
-	    return candidate;
-    }
-    return cur_dir.empty() ? incfile : cur_dir + incfile;
+    return resolve_include_path(incfile, /*is_system=*/true);
 }
 
 // Is this source file one that came from a system/toolchain include directory
@@ -4684,8 +4803,9 @@ bool Program::embedded_wins_include_next(const std::string &incfile)
 	    return true;    // reached the slot before any real provider
 	std::string candidate = search[i]
 	    + (search[i].empty() || search[i].back() == '/' ? "" : "/") + incfile;
-	std::ifstream probe(candidate.c_str());
-	if ( probe.good() )
+	// On disk or in the pack — the same provider test resolve_include_next_path
+	// applies, and the one embedded_header_outranked applies from the top.
+	if ( resolved_include_provider_exists(candidate) )
 	    return false;   // a real directory between here and the slot wins
     }
     return true;   // slot not reached in the list — preserve the old order
@@ -5508,14 +5628,22 @@ void Program::add_datatypes()
 
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
+    // int64_t/uint64_t follow the target's int64 ALIAS spelling (datadef.h
+    // TargetInt64Alias): the distinct long-long-shaped dds on darwin (the
+    // host exports mangle x/y there), the pinned ddINT64/ddUINT64
+    // everywhere else. Same function-static process-fixed binding contract
+    // as tkWCHAR_T below. These rows OVERRIDE the static tkINT64/tkUINT64
+    // pair, whose compile-time ddINT64 binding cannot follow the target.
+    static TokenDataType tkINT64_T("int64_t", *dd_platform_longlong());
+    static TokenDataType tkUINT64_T("uint64_t", *dd_platform_ulonglong());
     // wchar_t is target-shaped (int32 LP64 / uint16 LLP64). Function-static:
     // binds the model at the FIRST Program's add_datatypes — fine while the
     // model is fixed per process (hosted modes); a per-Program --target flip
     // would need these statics revisited.
     static TokenDataType tkWCHAR_T("wchar_t", *dd_platform_wchar());
     static TokenDataType tkCHAR8_T("char8_t", ddUINT8);
-    static TokenDataType tkCHAR16_T("char16_t", ddUINT16);
-    static TokenDataType tkCHAR32_T("char32_t", ddUINT32);
+    static TokenDataType tkCHAR16_T("char16_t", *dd_char16());
+    static TokenDataType tkCHAR32_T("char32_t", *dd_char32());
     static TokenDataType tkMAX_ALIGN_T("max_align_t", ddMAX_ALIGN_T);
     // _Float16 rides the same nearest-supported approximation the other
     // _FloatN spellings use (MIR has no half-float): declarations parse;
@@ -5542,12 +5670,12 @@ void Program::add_datatypes()
     datatype_map[tkINT16.str] = &tkINT16;
     datatype_map[tkINT24.str] = &tkINT24;
     datatype_map[tkINT32.str] = &tkINT32;
-    datatype_map[tkINT64.str] = &tkINT64;
+    datatype_map[tkINT64_T.str] = &tkINT64_T;
     datatype_map[tkUINT8.str] = &tkUINT8;
     datatype_map[tkUINT16.str] = &tkUINT16;
     datatype_map[tkUINT24.str] = &tkUINT24;
     datatype_map[tkUINT32.str] = &tkUINT32;
-    datatype_map[tkUINT64.str] = &tkUINT64;
+    datatype_map[tkUINT64_T.str] = &tkUINT64_T;
     datatype_map[tkFLOAT.str] = &tkFLOAT;
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
     // `array` is madc-dialect-only (slice V1): explicit C/C++ standards
@@ -5571,12 +5699,22 @@ void Program::add_datatypes()
     // madc dialect or an explicit C++ mode at/after their introducing standard;
     // in explicit C modes the real header typedef supplies them (retire-
     // embedded-shims principle — do not preempt the real header).
+    // Registered here as KEYWORDS (TokenDataType::keyword): the typedef
+    // paths refuse to redeclare them, the way g++/clang++ do.
     if ( cpp_keyword_active(STD_CPP98) )
+    {
+	tkWCHAR_T.keyword = true;
 	datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    }
     if ( cpp_keyword_active(STD_CPP20) )
+    {
+	tkCHAR8_T.keyword = true;
 	datatype_map[tkCHAR8_T.str] = &tkCHAR8_T;
+    }
     if ( cpp_keyword_active(STD_CPP11) )
     {
+	tkCHAR16_T.keyword = true;
+	tkCHAR32_T.keyword = true;
 	datatype_map[tkCHAR16_T.str] = &tkCHAR16_T;
 	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
     }
@@ -5853,8 +5991,7 @@ TokenBase *Program::_getToken()
 		{
 		    size_t sp = word.find(' ');
 		    std::string path = (sp != std::string::npos) ? word.substr(2, sp - 2) : word.substr(2);
-		    size_t slash = path.rfind('/');
-		    std::string base = (slash != std::string::npos) ? path.substr(slash + 1) : path;
+		    std::string base = madc::detail::host_path_basename(path);
 		    if ( base == "madc" && sp != std::string::npos )
 		    {
 			std::string args = word.substr(sp + 1);
@@ -5915,6 +6052,17 @@ TokenBase *Program::_getToken()
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // Fidelity mode: record the directive AS WRITTEN, paired
+		    // with the writing file — the reverse-render (--emit=c++)
+		    // re-emits a TU's own directives in place of the expanded
+		    // header machinery. Recorded pre-resolution: a once-only
+		    // skip still wrote the line.
+		    if ( keep_trivia )
+			fidelity_include_directives.push_back(std::make_pair(
+			    std::string(source.fname()),
+			    std::string("#") + directive + " "
+			    + (delim == '<' ? "<" : "\"") + incfile
+			    + (delim == '<' ? ">" : "\"")));
 		    // posix/<name> is a compiler-internal storage namespace. A
 		    // user include must name the public native header; otherwise a
 		    // supplement could be served without its required real provider.
@@ -6435,8 +6583,49 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "line" )
 		{
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    // C11 6.10.4: `#line N ["file"]` — the digit sequence
+		    // (after macro expansion, p5: `#line line` is legal) sets
+		    // the FOLLOWING line's presumed number; the optional
+		    // string renames the presumed file. The old handler
+		    // discarded the directive entirely, so __LINE__ and
+		    // diagnostics kept physical numbering (c-testsuite 00152).
+		    std::string raw;
+		    while ( source.good() && !source.eof()
+			 && source.peek() != '\n' && source.peek() != '\r' )
+			raw += source.get();
+		    std::string arg = expandIfMacros(raw);
+		    size_t p = 0;
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    long lineno = 0;
+		    bool have_digits = false;
+		    while ( p < arg.size() && isdigit((unsigned char)arg[p]) )
+		    {
+			lineno = lineno * 10 + (arg[p] - '0');
+			++p;
+			have_digits = true;
+		    }
+		    while ( p < arg.size() && (arg[p] == ' ' || arg[p] == '\t') )
+			++p;
+		    std::string newname;
+		    bool have_name = false;
+		    if ( p < arg.size() && arg[p] == '"' )
+		    {
+			++p;
+			while ( p < arg.size() && arg[p] != '"' )
+			    newname += arg[p++];
+			have_name = true;
+		    }
+		    // Consume the terminator here so the renumbering starts
+		    // exactly at the next physical line.
+		    if ( source.peek() == '\r' )
 			source.get();
+		    if ( source.peek() == '\n' )
+			source.get();
+		    if ( have_digits )
+			source.setpos((int)lineno, 0);
+		    if ( have_name )
+			source.fname(newname.c_str());
 		    return getToken();
 		}
 		if ( directive == "ifdef" || directive == "ifndef" )
@@ -6694,7 +6883,22 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return make_str(word);
+	    {
+		TokenBase *stok = make_str(word);
+		// Source extent of this piece (see TokenStr::SrcPiece): from
+		// the opening quote through the closing quote, single-line
+		// only — a line-spanning literal (scanner-tolerated) keeps no
+		// piece and the consumer falls back.
+		if ( source.line() == row )
+		{
+		    TokenStr::SrcPiece pc;
+		    pc.line = row;
+		    pc.col = col - 1;
+		    pc.len = source.column() - pc.col;
+		    ((TokenStr *)stok)->src_pieces.push_back(pc);
+		}
+		return stok;
+	    }
 	case '\'':
 	    word = "";
 	    row = source.line();
@@ -6810,6 +7014,90 @@ TokenBase *Program::_getToken()
 			}
 		    }
 		    return true;
+		};
+		// ONE eater for the real-literal type suffixes, shared by the
+		// hex-float, scientific and decimal paths (three hand-rolled
+		// copies would drift): classic f/F -> float and l/L -> long
+		// double, the DFP d/dd spellings (eaten, type left alone —
+		// the pre-existing posture), and the C23 _FloatN family
+		// f16/f32/f64/f128 plus gcc's bf16, which ride the SAME
+		// nearest-supported approximation as the _Float16/_Float32
+		// TYPE spellings (add_datatypes): f16/f32/bf16 -> float,
+		// f64 -> double, f128 -> long double. mingw's
+		// avx512fp16intrin.h spells `0.0f16`; the old one-char
+		// eaters left `16` behind as a second operand (loud since
+		// the s149b juxtaposition wall — the win release pack's
+		// ledger build of rt_posix_time.c was the first to hit it).
+		// A width that is not a _FloatN width is pushed back WHOLE,
+		// so invalid spellings keep today's two-token diagnosis; a
+		// _FloatN imaginary keeps the plain f-suffix complex-float
+		// posture (the eat_imag_suffix call sites are unchanged).
+		char real_type_suffix = 0;
+		DataDef *real_suffix_dd = nullptr;
+		auto eat_real_suffix = [&](std::string &lt) {
+		    real_type_suffix = 0;
+		    real_suffix_dd = nullptr;
+		    if ( !source.good() )
+			return;
+		    int c = source.peek();
+		    if ( c == 'b' || c == 'B' )
+		    {
+			// bf16/BF16 only; 'b' alone never starts a suffix —
+			// restore every consumed char on a mismatch.
+			std::string got;
+			got += (char)source.get();
+			for ( const char *want = "f16"; *want && source.good(); want++ )
+			{
+			    if ( tolower(source.peek()) != *want )
+				break;
+			    got += (char)source.get();
+			}
+			if ( got.size() == 4 )
+			{
+			    lt += got;
+			    real_type_suffix = 'f';
+			    real_suffix_dd = &ddFLOAT;
+			}
+			else
+			    source.pushback(got);
+			return;
+		    }
+		    if ( c == 'f' || c == 'F' )
+		    {
+			real_type_suffix = (char)c;
+			lt += (char)source.get();
+			if ( source.good() && isdigit(source.peek()) )
+			{
+			    std::string w;
+			    while ( source.good() && isdigit(source.peek())
+				 && w.size() < 3 )
+				w += (char)source.get();
+			    if ( w == "16" || w == "32" )
+				real_suffix_dd = &ddFLOAT;
+			    else if ( w == "64" )
+				real_suffix_dd = &ddDOUBLE;
+			    else if ( w == "128" )
+				real_suffix_dd = &ddLDOUBLE;
+			    if ( real_suffix_dd )
+				lt += w;
+			    else
+				source.pushback(w);
+			}
+			return;
+		    }
+		    if ( c == 'l' || c == 'L' )
+		    {
+			real_type_suffix = (char)c;
+			lt += (char)source.get();
+			return;
+		    }
+		    if ( c == 'd' || c == 'D' )
+		    {
+			lt += (char)source.get();
+			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+			    lt += (char)source.get();
+			return;
+		    }
 		};
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
 		// like ul/ULL/Lu) and set type accordingly. With sizeof(int)=4,
@@ -6968,22 +7256,7 @@ TokenBase *Program::_getToken()
 			    while ( source.good() && isdigit(source.peek()) )
 				lit_text += (char)source.get();
 			}
-		    char real_type_suffix = 0;
-		    if ( source.good() )
-		    {
-			int c = source.peek();
-			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-			{
-			    real_type_suffix = (char)c;
-			    lit_text += (char)source.get();
-			}
-			else if ( c == 'd' || c == 'D' )
-			{
-			    lit_text += (char)source.get();
-			    if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
-				lit_text += (char)source.get();
-			}
-		    }
+		    eat_real_suffix(lit_text);
 		    if ( eat_imag_suffix() )
 		    {
 			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
@@ -6998,7 +7271,9 @@ TokenBase *Program::_getToken()
 		    }
 		    {
 			TokenReal *tr = (TokenReal *)make_real(strtold(lit_text.c_str(), NULL));
-			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			if ( real_suffix_dd )
+			    tr->setDataType(real_suffix_dd);
+			else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
@@ -7067,16 +7342,7 @@ TokenBase *Program::_getToken()
 			    lit_text += (char)source.get();
 			while ( source.good() && isdigit(source.peek()) )
 			    lit_text += (char)source.get();
-			char real_type_suffix = 0;
-			if ( source.good() )
-			{
-			    int c = source.peek();
-			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-			    {
-				real_type_suffix = (char)c;
-				lit_text += (char)source.get();
-			    }
-			}
+			eat_real_suffix(lit_text);
 			long double num = strtold(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
@@ -7090,7 +7356,9 @@ TokenBase *Program::_getToken()
 			    return tr;
 			}
 			TokenReal *tr = (TokenReal *)make_real(num);
-			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			if ( real_suffix_dd )
+			    tr->setDataType(real_suffix_dd);
+			else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
@@ -7135,25 +7403,11 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && isdigit(source.peek()) )
 			lit_text += (char)source.get();
 		}
-		// C float literal suffixes (f/F, l/L). Preserve the spelling and stamp
-		// the TokenReal type below; macro prescan and later lowering both need
-		// the suffix to survive rather than silently widening it to double.
-		char real_type_suffix = 0;
-		if ( source.good() )
-		{
-		    int c = source.peek();
-		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-		    {
-			real_type_suffix = (char)c;
-			lit_text += (char)source.get();
-		    }
-		    else if ( c == 'd' || c == 'D' )
-		    {
-			lit_text += (char)source.get();
-			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
-			    lit_text += (char)source.get();
-		    }
-		}
+		// C float literal suffixes (f/F, l/L, the _FloatN family).
+		// Preserve the spelling and stamp the TokenReal type below;
+		// macro prescan and later lowering both need the suffix to
+		// survive rather than silently widening it to double.
+		eat_real_suffix(lit_text);
 		long double num = strtold(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
@@ -7172,7 +7426,9 @@ TokenBase *Program::_getToken()
 		    // its width survives into c2mir (it self-determines arithmetic type).
 		    // Without this `1.0f` lowered as a double, which silently widened
 		    // mixed float/float-_Complex arithmetic to double precision.
-		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+		    if ( real_suffix_dd )
+			tr->setDataType(real_suffix_dd);
+		    else if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
 			tr->setDataType(&ddFLOAT);
 		    // An `L` literal is a long double, the same way `f` is a float:
 		    // the suffix is the only thing that says so, and without this the
@@ -7486,7 +7742,7 @@ TokenBase *Program::_getToken()
 				case TokenType::ttTab:   expanded_arg += '\t'; break;
 				case TokenType::ttEOL:   expanded_arg += '\n'; break;
 				default:
-				    expanded_arg += token_spelling(at);
+				    expanded_arg += madc_token_spelling(at);
 				    break;
 			    }
 			}
@@ -7528,12 +7784,12 @@ TokenBase *Program::_getToken()
 		    const char *fn = source.fname();
 		    quoted += (fn ? fn : "<unknown>");
 		    quoted += "\"";
-		    source.pushback(quoted);
+		    source.pushback_macro(quoted, "");
 		    return getToken();
 		}
 		if ( word == "__LINE__" )
 		{
-		    source.pushback(std::to_string(source.line()));
+		    source.pushback_macro(std::to_string(source.line()), "");
 		    return getToken();
 		}
 		// _Pragma("...") — the token form of #pragma (C99, C++11), routed
@@ -7648,12 +7904,20 @@ TokenBase *Program::_getToken()
 			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
 		    };
 		    int counter = compound_type_specifier_flag(word);
-		    // Accumulate subsequent type-specifier keywords
-		    auto read_word = [&]() -> std::string {
+		    // Accumulate subsequent type-specifier keywords.
+		    // ws_count reports the whitespace consumed BEFORE the
+		    // word: a rejected lookahead must give it back (as one
+		    // normalized space), or the column count AND the next
+		    // token's leading trivia lose it (`char *s` -> `char*s`).
+		    auto read_word = [&](int &ws_count) -> std::string {
+			ws_count = 0;
 			while ( source.good()
 			     && (source.peek() == ' ' || source.peek() == '\t'
 			      || source.peek() == '\n' || source.peek() == '\r') )
+			{
 			    source.get();
+			    ++ws_count;
+			}
 			std::string w;
 			while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 			    w += source.get();
@@ -7663,14 +7927,16 @@ TokenBase *Program::_getToken()
 		    std::vector<std::string> consumed;
 		    while ( true )
 		    {
-			std::string w = read_word();
+			int ws_count = 0;
+			std::string w = read_word(ws_count);
 			int flag = compound_type_specifier_flag(w);
 			if ( flag )
 			{
 			    counter += flag;
 			    consumed.push_back(w);
 			}
-			else if ( define_map.find(w) != define_map.end() )
+			else if ( !w.empty()
+			       && define_map.find(w) != define_map.end() )
 			{
 			    int expanded_flags = 0;
 			    if ( expansion_is_compound_type_specifiers(define_map[w], expanded_flags) )
@@ -7686,9 +7952,13 @@ TokenBase *Program::_getToken()
 			}
 			else
 			{
-			    // Not a type specifier — push it back
+			    // Not a type specifier — push it back, and give
+			    // back consumed whitespace even when NO word
+			    // followed it.
 			    if ( !w.empty() )
 				source.pushback_reread(std::string(" ") + w);
+			    else if ( ws_count > 0 )
+				source.pushback_reread(std::string(" "));
 			    break;
 			}
 		    }
@@ -7747,12 +8017,15 @@ TokenBase *Program::_getToken()
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
 			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("long long", ddINT64);
+			    // `long long` is target-shaped like plain `long`
+			    // above: distinct from long (mangles x) on the
+			    // LP64 darwin model, ddINT64 everywhere else.
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_longlong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("long long", *dd_platform_longlong());
 			case TS_UNSIGNED + TS_LONG + TS_LONG:
 			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
-			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return make_datatype(dd->name.c_str(), *dd); }
-			    return make_datatype("unsigned long long", ddUINT64);
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(dd_platform_ulonglong()); return make_datatype(dd->name.c_str(), *dd); }
+			    return make_datatype("unsigned long long", *dd_platform_ulonglong());
 			case TS_INT128:
 			case TS_SIGNED + TS_INT128:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return make_datatype(dd->name.c_str(), *dd); }
@@ -8091,6 +8364,26 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    out += word;
 		    ++ti;
 		}
+	    }
+	    else if ( word == "__LINE__" )
+	    {
+		// Predefined macros live in getToken's builtin arm, not in
+		// define_map — the string expander needs its own arm or a
+		// `#if N != __LINE__` / `#line line` operand stays an
+		// identifier and evaluates as 0 (c-testsuite 00152). The
+		// define_map probe above ran first, so a user #define of
+		// the name still wins, matching getToken's order.
+		out += std::to_string(source.line());
+		changed = true;
+		++ti;
+	    }
+	    else if ( word == "__FILE__" )
+	    {
+		out += '"';
+		out += source.fname() ? source.fname() : "<unknown>";
+		out += '"';
+		changed = true;
+		++ti;
 	    }
 	    else
 	    {
@@ -9063,9 +9356,19 @@ TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
     std::string pending_trivia;   // full-fidelity: leading whitespace/comments
+    size_t synth_mark = source.synth_reads();
 
 	while ( (tb=getToken()) )
 	{
+	    if ( source.synth_reads() != synth_mark )
+	    {
+		// Some byte of this read came from SYNTHESIZED pushback text
+		// (macro expansion, __FILE__/__LINE__): the token's line and
+		// column name the invocation site, not source bytes of its
+		// own spelling. Coordinate consumers (parse_spans) skip it.
+		tb->setFlag(tfSYNTHPOS);
+		synth_mark = source.synth_reads();
+	    }
 	    if ( tb->line == 0 )
 		tb->line = source.line(); //_line;
 	    if ( tb->column == 0 )
@@ -9093,18 +9396,27 @@ TokenBase *Program::getRealToken()
     return NULL;
 }
 
-// Best-effort source spelling of a lex-time token. NOTE: numeric literals store
-// the parsed value, not the original text (0x1F -> "31"), and string escapes are
-// not preserved — true byte-faithful reconstruction needs tokens to retain raw
-// source text (a follow-on). Sufficient to demonstrate trivia retention on plain
-// source. Keywords/identifiers/types/comments are all TokenIdent-derived.
-static std::string token_spelling(TokenBase *tb)
+// Best-effort source spelling of a lex-time token — the ONE token-spelling
+// owner (declared in madc.h; reconstruct_source and the --emit=c++
+// reverse-render both read it). NOTE: numeric literals store the parsed
+// value, not the original text (0x1F -> "31"), and string escapes are not
+// preserved — true byte-faithful reconstruction needs tokens to retain raw
+// source text (a follow-on). Sufficient to demonstrate trivia retention on
+// plain source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+std::string madc_token_spelling(TokenBase *tb)
 {
     switch ( tb->type() )
     {
 	case TokenType::ttString:
 	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
-		return std::string("\"") + ti->spelling() + "\"";
+	    {
+		// Re-escape the cooked value so the literal RE-LEXES to the
+		// same bytes (macro-arg re-lex, --dump-source round trips,
+		// the --emit=c++ render recompiles) — the ONE escape rule.
+		std::string sv = ti->spelling();
+		return "\"" + madc_c_escape_string(sv.data(), sv.size())
+		     + "\"";
+	    }
 	    return std::string();
 	case TokenType::ttVariable:
 	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
@@ -9145,6 +9457,61 @@ static std::string token_spelling(TokenBase *tb)
     }
 }
 
+// THE token highlight classifier (declared in madc.h beside the spelling
+// owner — madcide AST-2): presentation KIND by the token's lexed type.
+// Keywords and datatypes are their own TokenType subtrees, so plain
+// identifiers are what remains under tkIdent. Comments never reach the
+// token stream (they are leading trivia) — the span query derives them.
+HighlightClass madc_token_highlight_class(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttKeyword:  return HighlightClass::hcKeyword;
+	case TokenType::ttDataType: return HighlightClass::hcType;
+	case TokenType::ttInteger:
+	case TokenType::ttReal:	    return HighlightClass::hcNumber;
+	case TokenType::ttString:
+	case TokenType::ttChar:	    return HighlightClass::hcString;
+	default:
+	    break;
+    }
+    if ( tb->id() == TokenID::tkIdent )
+	return HighlightClass::hcIdent;
+    return HighlightClass::hcNone;
+}
+
+// THE C-string-literal escape rule (declared in madc.h; dupaudit family
+// c_string_literal_escape): the cooked bytes as a double-quoted literal's
+// BODY. Canonical escapes; octal for non-printables (octal caps at 3
+// digits — hex is maximal-munch and would swallow following hex digits).
+// The token-spelling owner above and cir_emit_c's N_STR case both read it.
+std::string madc_c_escape_string(const char *s, size_t len)
+{
+    std::string out;
+    for ( size_t i = 0; s && i < len; ++i )
+    {
+	unsigned char c = (unsigned char)s[i];
+	switch ( c )
+	{
+	    case '"':  out += "\\\""; break;
+	    case '\\': out += "\\\\"; break;
+	    case '\n': out += "\\n"; break;
+	    case '\t': out += "\\t"; break;
+	    case '\r': out += "\\r"; break;
+	    default:
+		if ( c >= 0x20 && c <= 0x7e )
+		    out += (char)c;
+		else
+		{
+		    char buf[8];
+		    snprintf(buf, sizeof(buf), "\\%03o", c);
+		    out += buf;
+		}
+	}
+    }
+    return out;
+}
+
 // Reconstruct source text from the token stream (full-fidelity mode): each
 // token's leading trivia followed by its spelling. Requires keep_trivia to have
 // been set before tokenizing.
@@ -9154,7 +9521,7 @@ std::string Program::reconstruct_source()
     for ( TokenBase *tb : tokens )
     {
 	out += tb->leading_trivia;
-	out += token_spelling(tb);
+	out += madc_token_spelling(tb);
     }
     out += _trailing_trivia;   // whitespace/comments after the last token
     return out;
@@ -9376,6 +9743,8 @@ bool madc_show_file_error(const char *fname, int row, int col)
 
 int throwbuf::sync()
 {
+    if ( DiagnosticRenderMute::active )
+	throw std::exception();	// captured as data — render nothing
     cerr << endl;
     if ( _tb )
     {
@@ -9470,8 +9839,8 @@ TokenProgram *Program::tokenize(const char *fname)
 
     if ( !file )
     {
-	set_error(Program::DiagnosticPhase::lexer, "Failed to open file", fname, 0, 0);
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      "Failed to open file", fname, 0, 0);
 	return NULL;
     }
 
@@ -9503,36 +9872,51 @@ TokenProgram *Program::tokenize(const char *fname)
 
     try
     {
+	// Stage-2: yield every LEX_YIELD_GRAIN tokens (the token pump's
+	// chunk grain — sub-millisecond slices; the check is one counter
+	// compare, and parse_yield_point itself no-ops without tasks).
+	uint32_t pump = 0;
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
 	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
+		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
         }
     }
     catch(const char *err_msg)
     {
-	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)", fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->spelling() + '\'', fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	set_error(Program::DiagnosticPhase::lexer, std::string("unexpected token type ") + std::to_string((int)tb->type()), fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
 	print_unrendered_diagnostic();
 	return NULL;
     }
@@ -9585,41 +9969,48 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     try
     {
+	// Stage-2: the same yield grain as tokenize() — this is the pump
+	// the IDE's parse handles ride (parse_open -> tokenize_buffer).
+	uint32_t pump = 0;
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
 	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
+		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
 	}
     }
     catch(const char *err_msg)
     {
-	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)",
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("use of undeclared identifier '") + ti->spelling() + '\'',
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	set_error(Program::DiagnosticPhase::lexer,
-		  std::string("unexpected token type ") + std::to_string((int)tb->type()),
-		  fname, source.line(), source.column());
-	print_last_diagnostic(error());
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
 	return NULL;
     }
     catch(std::exception &e)
     {
 	if ( !last_error.has_error )
-	    set_error(Program::DiagnosticPhase::lexer,
-		      Throw.str().empty() ? e.what() : Throw.str(),
-		      fname, source.line(), source.column());
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
 	print_unrendered_diagnostic();
 	return NULL;
     }

@@ -1,0 +1,11 @@
+// A NON-char array at the format boundary decays to its element pointer
+// and must be REFUSED loud (std::format: only void* has a formatter;
+// formatting int[4] is ill-formed in real C++ — g++/clang++ canon).
+// Before the decay fix this silently printed the pointer as an integer.
+int main()
+{
+    int a[4];
+    a[0] = 1;
+    println("{}", a);
+    return 0;
+}

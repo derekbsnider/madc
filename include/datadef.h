@@ -32,6 +32,12 @@ extern thread_local int madc_opt_level;
 // registers a GDB-JIT debug object after link so gdb can break/step/inspect
 // JIT'd code. Overrides madc_opt_level for MIR gen.
 extern thread_local bool madc_debug_info;
+// `-w` (gcc: inhibit all warning messages): c2mir's compile warnings are not
+// printed. For a program that provokes a diagnostic ON PURPOSE (a test whose
+// construct warns in gcc and clang too, e.g. `extern int c = 7;`), the way to
+// say so -- the warning census ratchet stays at zero without a per-test
+// allowance. Errors are unaffected.
+extern thread_local bool madc_no_warnings;
 // True only while the production parser is building an isolated class pattern.
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
@@ -67,6 +73,31 @@ extern TargetOS madc_target_os;
 inline bool target_windows()
 { return madc_target_os == TargetOS::Windows; }
 
+// The C spelling the TARGET's own headers give the 64-bit exact-width
+// aliases (int64_t and family) — the fourth target property, same shape
+// and same one-owner rule as the three above. glibc spells them `long`
+// (int64_t IS long: one identity, Itanium l); Apple and mingw spell them
+// `long long` (Itanium x). The first property where darwin diverges from
+// Linux: LP64 + LongLong (Apple) needs `long long` DISTINCT from `long`
+// so mangled-direct resolution reaches the host's x-spelled exports while
+// plain long stays l. Defined beside the data-model owner.
+enum class TargetInt64Alias { Long, LongLong };
+extern TargetInt64Alias madc_target_int64_alias;
+inline bool target_int64_is_longlong()
+{ return madc_target_int64_alias == TargetInt64Alias::LongLong; }
+
+// The TARGET's va_list SHAPE — the fifth target property, same shape and same
+// one-owner rule. SysV x86-64: the struct __va_list_tag[1] array gcc, glibc
+// and c2mir share. AAPCS64 (linux-aarch64): the five-field record. A SCALAR
+// `char *` on win64 (vadefs.h) and on Apple arm64 (every vararg on the
+// stack). Program::builtin_va_list_type() mints the type from this and the
+// lexer's __builtin_va_copy body follows it; nothing else re-tests _WIN32 or
+// __APPLE__ for it. Defined beside the data-model owner.
+enum class TargetVaList { SysVTagArray, AAPCS64Struct, Scalar };
+extern TargetVaList madc_target_va_list;
+inline bool target_scalar_va_list()
+{ return madc_target_va_list == TargetVaList::Scalar; }
+
 // The TARGET-shaped C types whose width the data model decides (task #46b).
 // LP64: `long` IS int64 (ddINT64/ddUINT64) and wchar_t is the 4-byte int32
 // shape — unchanged identities. LLP64: `long`/`unsigned long` are the
@@ -78,7 +109,24 @@ inline bool target_windows()
 class DataDef;
 DataDef *dd_platform_long();
 DataDef *dd_platform_ulong();
+// wchar_t / char16_t / char32_t are DISTINCT fundamental types on every
+// target (never a typedef of their storage type): the target-shaped
+// DataDefPlatformWCHAR singleton (int32 storage on LP64, uint16 on LLP64)
+// and the fixed DataDefCHAR16 / DataDefCHAR32 singletons, typeid-pinned
+// (MADC_TYPEID_PLATFORM_WCHAR / CHAR16 / CHAR32). Their NAME is the C++
+// spelling, so every identity former (template keys, __is_same, the
+// mangler's w / Ds / Di) sees the distinct type without a spelling
+// carve-out.
 DataDef *dd_platform_wchar();
+DataDef *dd_char16();
+DataDef *dd_char32();
+// `long long` / `unsigned long long`: ddINT64/ddUINT64 everywhere EXCEPT
+// the LP64-with-longlong-int64-alias target (darwin), where they are the
+// distinct 8-byte DataDefPlatformLONGLONG/ULONGLONG singletons (typeid
+// pins MADC_TYPEID_PLATFORM_LONGLONG/ULONGLONG) so the mangler emits x/y
+// while plain long keeps l/m.
+DataDef *dd_platform_longlong();
+DataDef *dd_platform_ulonglong();
 
 // Kind-accessor forward declarations (DataDef::as_*() below). FuncDef and its
 // override live in madc.h.
@@ -343,6 +391,11 @@ public:
     virtual DataDefCONST         *as_const_dd()    { return NULL; }
     virtual DataDefCArray        *as_carray_dd()   { return NULL; }
     virtual DataDefENUM          *as_enum_dd()     { return NULL; }
+    // An enumeration's underlying type (fixed base or the computed one),
+    // NULL for every non-enum. Exists as a DataDef virtual because layout
+    // code (DataDefSTRUCT::allocateBitField) needs it where DataDefENUM is
+    // still an incomplete type.
+    virtual DataDef              *enum_underlying(){ return NULL; }
     virtual DataDefTemplateParam *as_template_param_dd() { return NULL; }
     virtual DataDefFPTR          *as_fptr_dd()     { return NULL; }
     virtual DataDefSIMD          *as_simd_dd()     { return NULL; }
@@ -367,6 +420,13 @@ public:
     // spelling). Itanium mangling encodes canonical types, never typedef
     // names. Defined in src/madc_mangle.cpp.
     std::string mangle_scalar_spelling() const;
+    // The one DataType -> target C spelling table behind it: "long" /
+    // "unsigned long" for the 64-bit rows on LP64, the `long long` forms on
+    // LLP64, "" for a DataType that is not a plain scalar. No alias guard:
+    // the type model asks it for the PINNED builtins whose display name is
+    // not this target's spelling of the type (see
+    // madc_stamp_primitive_type_ids). Defined in src/madc_mangle.cpp.
+    std::string target_scalar_spelling() const;
     // Strict-equality (===) type-domain identity: do two types share one
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
@@ -1001,9 +1061,17 @@ public:
 	bool alias_like_int =
 	    dd.rawtype() == DataType::dtINT32
 	    && !is_builtin_signed_integer_name(dd.name);
-	info.is_unsigned = dd.is_unsigned()
-	    || dd.rawtype() == DataType::dtBOOL
-	    || alias_like_int;
+	// An enum-typed bit-field's signedness is the enum's UNDERLYING
+	// type's (gcc/clang: all-non-negative enumerators -> unsigned int ->
+	// zero-extend; a negative enumerator -> int -> sign-extend). The
+	// name heuristic below cannot see the negative case — it treats
+	// every non-builtin-named int32 as unsigned.
+	if ( DataDef *eu = dd.enum_underlying() )
+	    info.is_unsigned = eu->is_unsigned();
+	else
+	    info.is_unsigned = dd.is_unsigned()
+		|| dd.rawtype() == DataType::dtBOOL
+		|| alias_like_int;
 	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
 	// SysV counts only bytes actually occupied; Microsoft already reserved
@@ -1122,6 +1190,12 @@ public:
     // zero-length-array struct (`char x[0];`) keeps size 0 exactly like
     // g++/clang++ in C++ mode; pure-C callers keep the GNU empty-struct-0
     // extension by default.
+    // A first declaration with no body yet (`struct S;`, or an elaborated-
+    // type-specifier that first-declares S): the object a later definition
+    // completes IN PLACE — one type, declared then defined. The class parser
+    // adds its own class-shape checks (no methods / ctors / bases) on top.
+    bool is_incomplete_placeholder() const
+    { return !is_complete && size == 0 && members.empty(); }
     void finalize(bool cpp_min_object_size = false)
     {
 	endBitFieldRun();
@@ -1390,7 +1464,7 @@ public:
     bool is_unique_public_nonvirtual_base(DataDefCLASS *b, size_t *off) const;
     // Collect all (transitive) virtual bases, deduped, in canonical order.
     void collect_vbases(std::vector<DataDefCLASS *> &out,
-			std::set<DataDefCLASS *> &seen) const;
+			std::set<DataDefCLASS *> &seen, int depth = 0) const;
     // Virtual function table
     std::vector<std::string> vtable_slots; // method names in vtable slot order
     std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
@@ -1426,6 +1500,10 @@ public:
     };
     std::vector<VtableGroup> vtable_groups;
     void build_vtable_groups(); // defined in parser.cpp; run after compute_layout
+    // The inverse of build_vtable_groups' secondary arm: refill the layout-time
+    // secondary_vptr_owners from RESTORED vtable_groups (frozen forest: the
+    // groups are frozen, the owners list is not). Defined in parser.cpp.
+    void secondary_vptr_owners_from_groups();
     // Resolve a virtual method name to its (group, in-group slot). Returns false if
     // not a virtual method of any group.
     bool find_vslot(const std::string &m, size_t &group, int &slot) const {
@@ -1539,6 +1617,34 @@ class DataDefPlatformLONG:  public DataDef { public:
 	DataDefPlatformLONG():  DataDef("long", 4, DataType::dtINT32) {} };
 class DataDefPlatformULONG: public DataDef { public:
 	DataDefPlatformULONG(): DataDef("unsigned long", 4, DataType::dtUINT32) {} };
+// Platform `long long` / `unsigned long long` — the darwin mirror of the
+// pair above (LP64 target whose headers alias int64_t to long long): full
+// 8-byte i64 rank, but a DISTINCT identity whose NAME feeds the Itanium
+// mangler ('x'/'y'; the subclass typeid exempts them from the
+// mangle_scalar_spelling desugar, which would say 'l' on LP64). NEVER
+// instantiate directly: dd_platform_longlong()/dd_platform_ulonglong()
+// (parser.cpp) are the one owner — everywhere else they return
+// ddINT64/ddUINT64 and these classes go uninstantiated.
+class DataDefPlatformLONGLONG:  public DataDef { public:
+	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
+class DataDefPlatformULONGLONG: public DataDef { public:
+	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
+// wchar_t / char16_t / char32_t (datadef.h decls above): distinct
+// fundamental types whose STORAGE is an integer DataType (so every width /
+// codegen consumer treats them as that integer, which IS the ABI) but whose
+// identity is their own — the NAME feeds template keys, __is_same and the
+// Itanium mangler (w / Ds / Di). NEVER instantiate directly:
+// dd_platform_wchar() / dd_char16() / dd_char32() (parser.cpp) are the one
+// owner. wchar_t is target-shaped (int32 on LP64, uint16 on LLP64 — the
+// accessor decides at first use, after the data model is known).
+class DataDefPlatformWCHAR: public DataDef { public:
+	DataDefPlatformWCHAR(): DataDef("wchar_t", target_llp64() ? 2 : 4,
+					target_llp64() ? DataType::dtUINT16
+						       : DataType::dtINT32) {} };
+class DataDefCHAR16: public DataDef { public:
+	DataDefCHAR16(): DataDef("char16_t", 2, DataType::dtUINT16) {} };
+class DataDefCHAR32: public DataDef { public:
+	DataDefCHAR32(): DataDef("char32_t", 4, DataType::dtUINT32) {} };
 // 128-bit integers: SysV x86-64 ABI alignment is 16 (the base alignment()
 // caps simple types at 8, which is correct for every other scalar except
 // long double — see DataDefLDOUBLE below).
@@ -1556,14 +1662,23 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // used to lex straight to ddDOUBLE, so sizeof said 8, printf("%Lg") read 80 bits
 // off the varargs stack and printed nan, and the mangler emitted Itanium `e`
 // for a value passed as a double.
+// The size and alignment are the TARGET's, read off the compiler building
+// this madc for it (a hosted madc runs where it was built for; the cross
+// builds compile with -target): 16/16 on x86-64 (x87 extended), 16/16 on
+// Linux aarch64 (IEEE quad), 8/8 on Apple arm64 where long double IS
+// double. c2mir sizes TP_LDOUBLE the same way (sizeof (mir_ldouble)), so
+// the front end and the backend agree by construction; a baked 16 made madc
+// fold sizeof(long double) = 16 and lay structs out 16-aligned on an Apple
+// M-series Mac whose libc, c2mir and MIR all say 8 (darwin D4:
+// testlongdouble, testldblalign, testcomplexretconv, testsignalingnan).
 class DataDefLDOUBLE:   public DataDef { public:
-	DataDefLDOUBLE(): DataDef("long double", 16, DataType::dtLDOUBLE) {}
+	DataDefLDOUBLE(): DataDef("long double", sizeof(long double), DataType::dtLDOUBLE) {}
 	// SysV x86-64 alignment IS 16 as the comment above has always said —
 	// but the base alignment() caps simple types at 8, so without this
 	// override struct layout placed long double members on 8-byte
 	// boundaries (parse-time sizeof folded 24 for a struct c2mir lays
-	// out as 32 — gcc/clang: 32).
-	virtual size_t alignment() const override { return 16; } };
+	// out as 32 — gcc/clang: 32). Apple arm64: alignof(long double) = 8.
+	virtual size_t alignment() const override { return alignof(long double); } };
 
 // generic pointer-to-type — tracks what the pointer points to
 // pointers are 64-bit integers at the ABI level (stored in Gp registers)
@@ -1663,6 +1778,23 @@ public:
     virtual size_t alignment() const override { return base_type->alignment(); }
     virtual int gcc_type_class() const override { return base_type->gcc_type_class(); }
     virtual DataDefCONST *as_const_dd() override { return this; }
+    // The as_*_dd() accessors forward like the predicates do — a consumer
+    // that asks is_struct() and then as_struct_dd() must get one coherent
+    // view (a NULL here after a true predicate was the 00216 member-access
+    // SIGSEGV once declarations began minting const pointees). Only
+    // as_const_dd() answers self; unqualified() is the peel.
+    virtual DataDefSTRUCT        *as_struct_dd() override   { return base_type->as_struct_dd(); }
+    virtual DataDefCLASS         *as_class_dd() override    { return base_type->as_class_dd(); }
+    virtual DataDefCOMPLEX       *as_complex_dd() override  { return base_type->as_complex_dd(); }
+    virtual DataDefPTR           *as_pointer_dd() override  { return base_type->as_pointer_dd(); }
+    virtual DataDefREF           *as_reference_dd() override{ return base_type->as_reference_dd(); }
+    virtual DataDefCArray        *as_carray_dd() override   { return base_type->as_carray_dd(); }
+    virtual DataDefENUM          *as_enum_dd() override     { return base_type->as_enum_dd(); }
+    virtual DataDefTemplateParam *as_template_param_dd() override { return base_type->as_template_param_dd(); }
+    virtual DataDefFPTR          *as_fptr_dd() override     { return base_type->as_fptr_dd(); }
+    virtual DataDefSIMD          *as_simd_dd() override     { return base_type->as_simd_dd(); }
+    virtual FuncDef              *as_funcdef_dd() override  { return base_type->as_funcdef_dd(); }
+    virtual DataDef              *enum_underlying() override{ return base_type->enum_underlying(); }
     virtual DataDef *unqualified() override { return base_type ? base_type : this; }
     virtual const DataDef *unqualified() const override { return base_type ? base_type : this; }
 };
@@ -1792,6 +1924,7 @@ public:
 	}
     }
     virtual DataDefENUM *as_enum_dd() override { return this; }
+    virtual DataDef *enum_underlying() override { return underlying; }
 };
 
 class DataDefCOMPLEX : public DataDefSTRUCT
@@ -2003,6 +2136,11 @@ public:
     // typedef itself vs. defers the `*` to each use site.
     bool ptr_syntax;
     DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd), ptr_syntax(true) {}
+    // The STRUCTURAL C++ spelling `Ret (*)(P1,P2)` built from `target` —
+    // every DataDefFPTR is NAMED "funcptr", so any spelling-consumer that
+    // falls back to the name (the Itanium mangle in particular, which must
+    // encode PF…E) needs this instead. Defined in parser.cpp.
+    std::string structural_spelling() const;
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual bool is_function() const override { return true; }
     virtual bool is_numeric()  const override { return true; }

@@ -1,0 +1,6 @@
+Which way?
+  1. Go north
+  2. Go east
+refused role=status haskids=no
+granted role=group haskids=yes
+roundtrip=identical

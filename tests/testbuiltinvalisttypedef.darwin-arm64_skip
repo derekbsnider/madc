@@ -1,0 +1,1 @@
+Apple arm64's va_list is the scalar `char *` (the target's va_list shape, madc_target_va_list): `ap = 0` is a legal pointer assignment there, so the array-shape diagnostic this compile-error test expects cannot fire — the same reason as the win64 skip.

@@ -1,0 +1,7 @@
+// The ENTRY TU — long enough that a stale ambient position from
+// this unit is visibly wrong for the next TU.
+int main()
+{
+	println("never reached: TU b fails to compile");
+	return 0;
+}

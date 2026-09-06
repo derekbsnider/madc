@@ -1,0 +1,29 @@
+// std::string by value: the parameter is a distinct object — mutating it never
+// touches the caller's string, and it is destroyed after the call (no leak, no
+// double free). Long strings (heap-allocated) make aliasing observable.
+#include <string>
+#include <stdio.h>
+
+void shout(std::string s)
+{
+	s += "!";
+	printf("%s\n", s.c_str());
+}
+
+std::string twice(std::string s)
+{
+	s += s;
+	return s;
+}
+
+int main()
+{
+	std::string a(20, 'x');
+	shout(a);
+	printf("%s %zu\n", a.c_str(), a.size());
+	shout("literal-converted-to-string");
+	std::string t = twice(a);
+	printf("%zu %zu\n", a.size(), t.size());
+	shout(std::string("rvalue string that is long"));
+	return 0;
+}

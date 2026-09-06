@@ -393,8 +393,11 @@ static void print_usage(const char *prog)
 "\n"
 "Input / mode:\n"
 "  <file>                  compile and JIT-run a single source file\n"
-"  --project <db.json>     build from a compile_commands.json: compile each\n"
-"                          translation unit, link the modules, run the entry\n"
+"  --project <prj.json>    build from a project manifest: compile each\n"
+"                          translation unit, link the modules, run the entry.\n"
+"                          Two shapes by top-level JSON kind: an OBJECT is the\n"
+"                          native manifest (tus/entry/output — what madcide\n"
+"                          writes), an ARRAY is a compile_commands.json import\n"
 "  <file.json>             a .json source is treated as a project manifest\n"
 "                          (implicit --project; gcc/clang-style by extension)\n"
 "  <file.o>...             execute madc-compiled relocatable objects (-c/-r\n"
@@ -448,6 +451,11 @@ static void print_usage(const char *prog)
 "                          container's AOT ledger segment, so -static-libmadc\n"
 "                          programs carry it (repeatable; the build's list is\n"
 "                          scripts/ledger_sources.txt)\n"
+"  --no-sysroot-includes   resolve <...> only from the toolchain's own roots\n"
+"                          (the C++ stdlib dirs + the compiler's builtin dir)\n"
+"                          and the embedded headers — never the host's C\n"
+"                          library / SDK dirs. The freezer's posture: a frozen\n"
+"                          forest is the header-less consumer's corpus\n"
 "  --run-frozen[=<file>]   thaw + compile + run a frozen container; with no\n"
 "                          value, load the blob appended to this executable.\n"
 "                          Remaining arguments become the program's argv\n"
@@ -485,6 +493,7 @@ static void print_usage(const char *prog)
 "                          c2mir, execute) to stderr after the run\n"
 "  -g                      debug info: gdb can break/step/inspect the JIT'd\n"
 "                          program (forces -O0, no inlining, spill-all)\n"
+"  -w                      inhibit all warning messages (gcc -w)\n"
 "  -v, --verbose           verbose / debug output\n"
 "  -h, -?, --help          show this help\n"
 "  -V, --version           print the madc version (and the cross target, if\n"
@@ -644,6 +653,10 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-g") == 0) {
             madc_debug_info = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "-w") == 0) {
+            // gcc vocabulary: inhibit all warning messages (c2mir's included).
+            madc_no_warnings = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "-c") == 0) {
             // gcc vocabulary: compile to a relocatable native .o, do not run.
             compile_object = true;
@@ -795,6 +808,15 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--freeze-run") == 0) {
             freeze_run = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-sysroot-includes") == 0) {
+            // Hermetic system-include resolution (darwin-host port D2): the
+            // toolchain-only view of the include table, so a FREEZE on a host
+            // that carries a real SDK produces the same corpus as one that
+            // does not (the header-less consumer's). Rides the engine too so
+            // --project translation units inherit it.
+            engine.registration_policy.enable_sysroot_includes = false;
+            prog->registration_policy.enable_sysroot_includes = false;
+            filearg = i + 1;
         } else if (strncmp(argv[i], "--pack-forest=", 14) == 0) {
             madc_pack_forest_path = argv[i] + 14;
             filearg = i + 1;
@@ -890,11 +912,9 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {
             // Render the cir_node tree (MC11-IR) as C source; do not run.
             const char *lang = argv[i] + 7;
-            if (strcmp(lang, "c11") == 0)       emit_lang = celC11;
-            else if (strcmp(lang, "mc11") == 0) emit_lang = celMC11;
-            else {
+            if (!cir_emit_lang_of(lang, emit_lang)) {
                 std::cerr << "Unknown --emit target: " << lang
-                          << " (c11|mc11)" << std::endl;
+                          << " (" << CIR_EMIT_TARGETS << ")" << std::endl;
                 return 1;
             }
             do_emit = true;
@@ -1048,7 +1068,7 @@ int main(int argc, char **argv)
     if ( project_manifest )
     {
         std::string err;
-        if ( !read_compile_commands(project_manifest, manifest, err) )
+        if ( !read_project_manifest(project_manifest, manifest, err) )
         {
             std::cerr << "madc --project: " << err << std::endl;
             return 1;
@@ -1362,6 +1382,9 @@ int main(int argc, char **argv)
     {
 	if ( dump_source )
 	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
+	if ( do_emit && emit_lang == celCxx )
+	    prog->keep_trivia = true;   // the C++ reverse-render echoes TU
+					// statements from the retained tokens
 	if ( freeze_path )
 	    prog->pack_recording = true;   // B4a: record grove payload v2 during lex+parse
 	if ( freeze_path || freeze_run )
@@ -1790,10 +1813,7 @@ int main(int argc, char **argv)
 	    {
 		// gcc semantics: strip the directory and extension, land the
 		// artifact in the current directory (foo.mad -> foo.o / foo.so).
-		outpath = argv[filearg];
-		size_t slash = outpath.rfind('/');
-		if ( slash != std::string::npos )
-		    outpath = outpath.substr(slash + 1);
+		outpath = madc::detail::host_path_basename(argv[filearg]);
 		size_t dot = outpath.rfind('.');
 		if ( dot != std::string::npos && dot > 0 )
 		    outpath = outpath.substr(0, dot);

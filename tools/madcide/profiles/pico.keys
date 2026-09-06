@@ -1,0 +1,32 @@
+# madcide keybinding profile: Pico-style single chords — the SAME action
+# vocabulary as joe.keys respelled onto the subset that fits one chord.
+# The adapter is data all the way down; a swap is one ui::tui_bind_keys
+# call. (No ^h/^i/^j/^m: those bytes ARE backspace/tab/enter. Arrows,
+# home/end, pgup/pgdn serve motion here — the diamond is JOE's.)
+^s save
+^q quit
+^x discard
+^g help
+^w find
+^l findnext
+^b mark
+^n bend
+^k blockdel
+^u blockcopy
+^v blockmove
+^z undo
+^^ redo
+^e check
+^o outline
+^p profile
+^y delline
+^d delword
+^t gotoline
+^r insertfile
+# The project window (^F here: ^P is this profile's keymap toggle; the
+# JOE diamond is not pico's) + its @project keys as DATA (the baked
+# defaults add esc/backspace).
+^f project
+@project ins projadd
+@project del projdel
+@project enter projopen

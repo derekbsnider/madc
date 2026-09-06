@@ -1,0 +1,19 @@
+// lineed verb: c N TEXT — replace line N (a range edit composed from the
+// line's span). §7.3's read-only rule is the shared availability check
+// (checks/editable.madv) — dispatch refuses before this body runs.
+// `doc` = the subject document, resolved by the prepended _subject.madv
+long n = php::intval(arg);
+if ( n < 1 )
+    return "c needs a line number.";
+long off = ui::text_line_start(w, doc, n);
+if ( off < 0 )
+    return "No such line.";
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+if ( arg[i] == ' ' )
+    i = i + 1;
+long len = ui::text_line_len(w, doc, n);
+ui::text_replace(w, doc, off, len, arg + i);
+ui::set(w, doc, "modified", true);
+return format("{}: {}", n, arg + i);

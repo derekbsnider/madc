@@ -1,0 +1,4 @@
+// Project-mode test: same-named static functions in two TUs (internal
+// linkage). The real build is driven by testprojectstaticfn.cc.json via the
+// --project flag in testprojectstaticfn.flags. This file is an ignored
+// positional.

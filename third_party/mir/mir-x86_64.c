@@ -47,7 +47,10 @@ struct x86_64_va_list {
 void *va_arg_builtin (void *p, uint64_t t) {
   struct x86_64_va_list *va = p;
   MIR_type_t type = t;
-  int fp_p = type == MIR_T_F || type == MIR_T_D;
+  /* the SSE class: float, double and the 128-bit vector (__m128) -- each xmm
+     register is saved in a 16-byte slot of the register save area */
+  int fp_p = type == MIR_T_F || type == MIR_T_D || MIR_vector_type_p (type);
+  int size16_p = type == MIR_T_LD || MIR_vector_type_p (type);
   void *a;
 
   if (fp_p && va->fp_offset <= 160) {
@@ -57,8 +60,13 @@ void *va_arg_builtin (void *p, uint64_t t) {
     a = (char *) va->reg_save_area + va->gp_offset;
     va->gp_offset += 8;
   } else {
+    /* a 16-byte argument takes a 16-byte ALIGNED slot of the overflow area
+       (SysV 3.5.7 step 7: the alignment of the type, 16 for long double and
+       __m128) */
+    if (size16_p)
+      va->overflow_arg_area = (uint64_t *) (((uint64_t) va->overflow_arg_area + 15) / 16 * 16);
     a = va->overflow_arg_area;
-    va->overflow_arg_area += type == MIR_T_LD ? 2 : 1;
+    va->overflow_arg_area += size16_p ? 2 : 1;
   }
   return a;
 }
@@ -84,6 +92,17 @@ void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
     if (res != NULL) memcpy (res, &u, s);
     return;
   case 2:
+    /* Register-exhaustion demotion (SysV): the caller passes the block in
+       XMM registers only when EVERY eightbyte fits (mir-gen-x86_64.c
+       machinize: fp_arg_num and fp_arg_num+1 both available), otherwise the
+       WHOLE block goes to the overflow area and the fp counter is left for
+       later smaller args.  The fp save area is 128 bytes at offsets
+       48..176, one 16-byte slot per XMM, so a one-eightbyte block needs
+       fp_offset <= 160 and a two-eightbyte block fp_offset <= 144.  This
+       case had NO check (cases 1/3/4 have theirs), so the 9th SSE eightbyte
+       of a vararg call read past the save area (c-testsuite 00204: the
+       fifth float-pair struct printed garbage).  */
+    if (va->fp_offset + (size > 8 ? 32 : 16) > 176) break;
     u[0].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
     va->fp_offset += 16;
     if (size > 8) {
@@ -479,58 +498,62 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
 
     if ((MIR_T_I8 <= type && type <= MIR_T_U64) || type == MIR_T_P || type == MIR_T_RBLK) {
       if (n_iregs < max_iregs) {
-        gen_mov (code, (uint32_t) ((i + nres) * sizeof (long double)), iregs[n_iregs++], TRUE);
+        gen_mov (code, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), iregs[n_iregs++], TRUE);
 #ifdef _WIN32
         n_xregs++;
 #endif
       } else {
-        gen_ldst (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)), TRUE);
+        gen_ldst (code, sp_offset, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), TRUE);
         sp_offset += 8;
       }
     } else if (type == MIR_T_F || type == MIR_T_D) {
       if (n_xregs < max_xregs) {
-        gen_movxmm (code, (uint32_t) ((i + nres) * sizeof (long double)), n_xregs++,
+        gen_movxmm (code, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), n_xregs++,
                     type == MIR_T_F, TRUE);
 #ifdef _WIN32
-        gen_mov (code, (uint32_t) ((i + nres) * sizeof (long double)), iregs[n_iregs++], TRUE);
+        gen_mov (code, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), iregs[n_iregs++], TRUE);
 #endif
       } else {
-        gen_ldst (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)), type == MIR_T_D);
+        gen_ldst (code, sp_offset, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), type == MIR_T_D);
         sp_offset += 8;
       }
     } else if (type == MIR_T_V128) {
       if (n_xregs < max_xregs) {
-        gen_movv128 (code, (uint32_t) ((i + nres) * sizeof (long double)), n_xregs++, TRUE);
+        gen_movv128 (code, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), n_xregs++, TRUE);
       } else {
-        uint32_t offset = (uint32_t) ((i + nres) * sizeof (long double));
+        uint32_t offset = (uint32_t) ((i + nres) * sizeof (MIR_val_t));
 
+        /* a 16-byte stack argument takes a 16-byte ALIGNED slot (SysV 3.2.3);
+           the area below starts 16-byte aligned at the call */
+        sp_offset = (sp_offset + 15) / 16 * 16;
         gen_ldst (code, sp_offset, offset, TRUE);
         gen_ldst (code, sp_offset + 8, offset + 8, TRUE);
         sp_offset += 16;
       }
     } else if (type == MIR_T_LD) {
-      gen_ldst80 (code, sp_offset, (uint32_t) ((i + nres) * sizeof (long double)));
+      sp_offset = (sp_offset + 15) / 16 * 16; /* a 16-byte aligned slot, as above */
+      gen_ldst80 (code, sp_offset, (uint32_t) ((i + nres) * sizeof (MIR_val_t)));
       sp_offset += 16;
     } else if (MIR_blk_type_p (type)) {
       qwords = (uint32_t) ((arg_descs[i].size + 7) / 8);
 #ifndef _WIN32
       if (type == MIR_T_BLK + 1 && n_iregs + qwords <= max_iregs) {
         assert (qwords <= 2);
-        gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE);   /* r12 = block addr */
+        gen_mov (code, (i + nres) * sizeof (MIR_val_t), 12, TRUE);   /* r12 = block addr */
         gen_mov2 (code, 0, iregs[n_iregs], TRUE);                      /* arg_reg = mem[r12] */
         if (qwords == 2) gen_mov2 (code, 8, iregs[n_iregs + 1], TRUE); /* arg_reg = mem[r12 + 8] */
         n_iregs += qwords; /* an all-INTEGER block consumes no SSE registers */
         continue;
       } else if (type == MIR_T_BLK + 2 && n_xregs + qwords <= max_xregs) {
         assert (qwords <= 2);
-        gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE); /* r12 = block addr */
+        gen_mov (code, (i + nres) * sizeof (MIR_val_t), 12, TRUE); /* r12 = block addr */
         gen_movxmm2 (code, 0, n_xregs, TRUE);                        /* xmm = mem[r12] */
         if (qwords == 2) gen_movxmm2 (code, 8, n_xregs + 1, TRUE);   /* xmm = mem[r12 +  8] */
         n_xregs += qwords;
         continue;
       } else if (type == MIR_T_BLK + 3 && n_iregs < max_iregs && n_xregs < max_xregs) {
         assert (qwords == 2);
-        gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE); /* r12 = block addr */
+        gen_mov (code, (i + nres) * sizeof (MIR_val_t), 12, TRUE); /* r12 = block addr */
         gen_mov2 (code, 0, iregs[n_iregs], TRUE);                    /* arg_reg = mem[r12] */
         n_iregs++;
         gen_movxmm2 (code, 8, n_xregs, TRUE); /* xmm = mem[r12 + 8] */
@@ -538,18 +561,18 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         continue;
       } else if (type == MIR_T_BLK + 4 && n_iregs < max_iregs && n_xregs < max_xregs) {
         assert (qwords == 2);
-        gen_mov (code, (i + nres) * sizeof (long double), 12, TRUE); /* r12 = block addr */
+        gen_mov (code, (i + nres) * sizeof (MIR_val_t), 12, TRUE); /* r12 = block addr */
         gen_movxmm2 (code, 0, n_xregs, TRUE);                        /* xmm = mem[r12] */
         n_xregs++;
         gen_mov2 (code, 8, iregs[n_iregs], TRUE); /* arg_reg = mem[r12 + 8] */
         n_iregs++;
         continue;
       }
-      gen_blk_mov (code, sp_offset, (i + nres) * sizeof (long double), qwords);
+      gen_blk_mov (code, sp_offset, (i + nres) * sizeof (MIR_val_t), qwords);
       sp_offset += qwords * 8;
 #else
       if (qwords <= 1) {
-        gen_mov (code, (uint32_t) ((i + nres) * sizeof (long double)), 12,
+        gen_mov (code, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), 12,
                  TRUE); /* r12 = mem[disp + rbx] */
         if (n_iregs < max_iregs) {
           gen_mov2 (code, 0, iregs[n_iregs++], TRUE); /* arg_reg = mem[r12] */
@@ -561,7 +584,7 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
         }
       } else {
         /* r12 = mem[disp + rbx]; mem[rsp+blk_offset + nw] = r10 = mem[r12 + nw]; */
-        gen_blk_mov (code, blk_offset, (uint32_t) ((i + nres) * sizeof (long double)), qwords);
+        gen_blk_mov (code, blk_offset, (uint32_t) ((i + nres) * sizeof (MIR_val_t)), qwords);
         if (n_iregs < max_iregs) {
           gen_add (code, blk_offset, iregs[n_iregs++]); /* arg_reg = sp + blk_offset */
           n_xregs++;
@@ -602,15 +625,15 @@ void *_MIR_get_ff_call (MIR_context_t ctx, size_t nres, MIR_type_t *res_types, s
   for (size_t i = 0; i < nres; i++) {
     if (((MIR_T_I8 <= res_types[i] && res_types[i] <= MIR_T_U64) || res_types[i] == MIR_T_P)
         && n_iregs < 2) {
-      gen_mov (code, (uint32_t) (i * sizeof (long double)), n_iregs++ == 0 ? 0 : 2,
+      gen_mov (code, (uint32_t) (i * sizeof (MIR_val_t)), n_iregs++ == 0 ? 0 : 2,
                FALSE); /* rax or rdx */
     } else if ((res_types[i] == MIR_T_F || res_types[i] == MIR_T_D) && n_xregs < 2) {
-      gen_movxmm (code, (uint32_t) (i * sizeof (long double)), n_xregs++, res_types[i] == MIR_T_F,
+      gen_movxmm (code, (uint32_t) (i * sizeof (MIR_val_t)), n_xregs++, res_types[i] == MIR_T_F,
                   FALSE);
     } else if (res_types[i] == MIR_T_V128 && n_xregs < 2) {
-      gen_movv128 (code, (uint32_t) (i * sizeof (long double)), n_xregs++, FALSE);
+      gen_movv128 (code, (uint32_t) (i * sizeof (MIR_val_t)), n_xregs++, FALSE);
     } else if (res_types[i] == MIR_T_LD && n_fregs < 2) {
-      gen_st80 (code, (uint32_t) (i * sizeof (long double)));
+      gen_st80 (code, (uint32_t) (i * sizeof (MIR_val_t)));
     } else {
       MIR_get_error_func (ctx) (MIR_ret_error,
                                 "x86-64 can not handle this combination of return values");
@@ -779,7 +802,10 @@ void *_MIR_get_wrapper (MIR_context_t ctx, MIR_item_t called_func, void *hook_ad
     0x49, 0xba, 0,    0,    0,    0, 0, 0, 0, 0, /* movabs <hook_address>,%r10*/
     0xe9, 0,    0,    0,    0,                   /* 0x0: jmp rel32 */
   };
-  size_t call_func_offset = 2, ctx_offset = 12, hook_offset = 22, rel32_offset = 31;
+  /* Immediate offsets account for the two leading home-space spill
+     instructions (10 bytes) — patching at the spill-less offsets corrupts
+     the wrapper from byte 2 and leaves the hook/rel32 slots unpatched. */
+  size_t call_func_offset = 12, ctx_offset = 22, hook_offset = 32, rel32_offset = 41;
 #endif
   uint8_t *addr;
   VARR (uint8_t) * code;
@@ -850,18 +876,20 @@ void *_MIR_get_wrapper_end (MIR_context_t ctx) {
     0x48, 0x89, 0xe5,                   /*mov %rsp,%rbp */
     0x48, 0x89, 0xe0,                   /*mov    %rsp,%rax */
     0x48, 0x83, 0xe0, 0x0f,             /*and    $0xf,%rax */
-    0x48, 0x05, 0x28, 0,    0,    0,    /*add    $0x40,%rax */
+    /* 0x40 = 32B callee shadow space at (%rsp) + 32B xmm save above it; must
+       stay a multiple of 16 so the hook call below is 16-aligned. */
+    0x48, 0x05, 0x40, 0,    0,    0,    /*add    $0x40,%rax */
     0x48, 0x29, 0xc4,                   /*sub    %rax,%rsp -- aligned now */
-    0x66, 0x0f, 0xd6, 0x04, 0x24,       /*movq   %xmm0,(%rsp) */
-    0x66, 0x0f, 0xd6, 0x4c, 0x24, 0x08, /*movq   %xmm1,0x8(%rsp) */
-    0x66, 0x0f, 0xd6, 0x54, 0x24, 0x10, /*movq   %xmm2,0x10(%rsp) */
-    0x66, 0x0f, 0xd6, 0x5c, 0x24, 0x18, /*movq   %xmm3,0x18(%rsp) */
+    0x66, 0x0f, 0xd6, 0x44, 0x24, 0x20, /*movq   %xmm0,0x20(%rsp) */
+    0x66, 0x0f, 0xd6, 0x4c, 0x24, 0x28, /*movq   %xmm1,0x28(%rsp) */
+    0x66, 0x0f, 0xd6, 0x54, 0x24, 0x30, /*movq   %xmm2,0x30(%rsp) */
+    0x66, 0x0f, 0xd6, 0x5c, 0x24, 0x38, /*movq   %xmm3,0x38(%rsp) */
     0x41, 0xff, 0xd2,                   /*callq  *%r10              */
     0x49, 0x89, 0xc2,                   /*mov    %rax,%r10          */
-    0xf3, 0x0f, 0x7e, 0x04, 0x24,       /*movq (%rsp),%xmm0*/
-    0xf3, 0x0f, 0x7e, 0x4c, 0x24, 0x08, /*movq 0x8(%rsp),%xmm1*/
-    0xf3, 0x0f, 0x7e, 0x54, 0x24, 0x10, /*movq 0x10(%rsp),%xmm2*/
-    0xf3, 0x0f, 0x7e, 0x5c, 0x24, 0x18, /*movq 0x18(%rsp),%xmm3*/
+    0xf3, 0x0f, 0x7e, 0x44, 0x24, 0x20, /*movq 0x20(%rsp),%xmm0*/
+    0xf3, 0x0f, 0x7e, 0x4c, 0x24, 0x28, /*movq 0x28(%rsp),%xmm1*/
+    0xf3, 0x0f, 0x7e, 0x54, 0x24, 0x30, /*movq 0x30(%rsp),%xmm2*/
+    0xf3, 0x0f, 0x7e, 0x5c, 0x24, 0x38, /*movq 0x38(%rsp),%xmm3*/
     0x48, 0x89, 0xec,                   /*mov    %rbp,%rsp */
     0x5d,                               /*pop    %rbp */
     0x58,                               /*pop    %rax               */

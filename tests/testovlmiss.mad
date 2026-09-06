@@ -11,7 +11,7 @@
 #include <stdio.h>
 
 struct Sink {
-    bool take(value &v) { printf("take value\n"); return true; }
+    bool take(var &v) { printf("take value\n"); return true; }
 };
 
 int main()

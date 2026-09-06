@@ -21,7 +21,7 @@
 // `initialize` was queued into __madc_global_init) — `value gnum(7);`
 // compiled, exited 0, and read NULL. The collect_global_ctors carrier
 // arm now emits the same class_ctor_call a local gets.
-value gnum(7);
+var gnum(7);
 
 int main()
 {
@@ -32,23 +32,23 @@ int main()
 	cout << "null:" << value() << ":" << endl;
 
 	// Parens direct-init declarations, one per ctor overload.
-	value v(7);
+	var v(7);
 	cout << v << endl;
-	value s("hi");
+	var s("hi");
 	cout << s << endl;
-	value d(2.5);
+	var d(2.5);
 	cout << d << endl;
-	value b(true);
+	var b(true);
 	cout << b << endl;
-	value e;
+	var e;
 	cout << "e:" << e << ":" << endl;
 
 	// Copy ctor from another carrier — kind preserved.
-	value c(s);
+	var c(s);
 	cout << c << endl;
 
 	// Copy-init from a temporary.
-	value w = value(42);
+	var w = value(42);
 	cout << w << endl;
 
 	// A temporary as a call argument keeps its kind AND its payload.

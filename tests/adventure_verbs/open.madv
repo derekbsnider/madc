@@ -1,0 +1,55 @@
+// adventure pilot verb body: open <thing> — the entity-attached condition
+// case: a `requires` key on the target is checked against the invoker's
+// effective credentials (carried grants included) via ui::has_key.
+// Eval-context bindings: w/actor/target = int64, arg/verb = const char*.
+long t = ui::resolve(w, actor, arg, "noun");
+if ( t == 0 )
+    return "You can't open that.";
+var c;
+ui::get(c, w, t, "closed");
+if ( c.is_null() )
+    return "You can't open that.";
+if ( !c.as_boolean() )
+    return "It is already open.";
+var need;
+ui::get(need, w, t, "requires");
+if ( !need.is_null() )
+{
+    if ( !ui::has_key(w, actor, need.c_str()) )
+    {
+        var r;
+        ui::get(r, w, t, "refusal");
+        if ( r.is_null() )
+            return "It is locked.";
+        return format("{}", r);
+    }
+}
+ui::set(w, t, "closed", false);
+var s;
+ui::get(s, w, t, "short");
+if ( s.is_null() )
+    ui::name_of(s, w, t);
+long ws = ui::entity_by_name(w, "world-state");
+if ( ws )
+{
+    var tt;
+    ui::get(tt, w, ws, "turn");
+    long tn = tt.is_null() ? 0 : tt.as_integer();
+    ui::set(w, ws, "turn", tn + 1);
+}
+long lamp = ui::entity_by_name(w, "brass-lantern");
+if ( lamp )
+{
+    var lit;
+    ui::get(lit, w, lamp, "lit");
+    if ( !lit.is_null() && lit.as_boolean() )
+    {
+        var f;
+        ui::get(f, w, lamp, "fuel");
+        long fn = f.is_null() ? 0 : f.as_integer();
+        ui::set(w, lamp, "fuel", fn - 1);
+        if ( fn - 1 <= 0 )
+            ui::set(w, lamp, "lit", false);
+    }
+}
+return format("{} swings open.", php::ucfirst(s));

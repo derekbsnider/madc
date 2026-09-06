@@ -12,6 +12,8 @@
 # straight back into this file), and no dependency on the C++ runtime. A
 # runtime piece that cannot meet that is Tier B and refuses loudly at emit.
 all src/rt/rt_except.c
+all src/rt/rt_bos.c
+all src/rt/rt_task_join.c
 all src/rt/rt_vla.c
 all src/rt/rt_dump.c
 all src/rt/rt_format.c

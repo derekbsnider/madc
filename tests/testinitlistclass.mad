@@ -1,0 +1,32 @@
+// A braced-init-list of CLASS elements takes the initializer-list ctor
+// ([dcl.init.list]/3-4; g++/clang++ are the oracle): `vector<W>{W(1),
+// W(2)}` — elements already of the element class need no slot conversion,
+// so the backing array serves them (find_initializer_list_ctor's
+// exact-class widening). Before it, the list fell to plain ctor
+// overloading, deduced the range ctor with _InputIterator = W (a candidate
+// g++'s _RequireInputIter SFINAEs away), and died in tsubst on
+// iterator_traits<W>::iterator_category — the embed_hello pgm.call shape
+// ({value(10), value(32)} into const vector<value>&).
+// The conversion-into-slot half (vector<string>{"a","b"}) remains the
+// recorded task-#56 residue and still declines to its loud path.
+
+#include <vector>
+#include <cstdio>
+
+struct W {
+	long x;
+	W(long v) : x(v) {}
+	W(const W &o) : x(o.x) {}
+};
+
+long take(const std::vector<W> &v)
+{
+	return (long)v.size();
+}
+
+int main()
+{
+	long r = take({W(1), W(2)});
+	printf("r=%ld\n", r);
+	return r == 2 ? 0 : 1;
+}

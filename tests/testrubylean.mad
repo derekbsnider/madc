@@ -3,10 +3,10 @@
 int main()
 {
 	println("{}", ruby::squeeze("aaabbbccc"));
-	value s = "mississippi";
+	var s = "mississippi";
 	println("{}", ruby::squeeze(s));
 	println("{}", ruby::capitalize("hELLO"));
-	value r = "ruby";
+	var r = "ruby";
 	println("{}", ruby::capitalize(r));
 	println("{}", ruby::tr("hello", "el", "ip"));
 	println("{}", ruby::tr(r, "ur", "UR"));

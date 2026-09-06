@@ -18,7 +18,7 @@ int main(void)
 		madc_program_destroy(pgm);
 		return 2;
 	}
-	if ( result.kind != MADC_VALUE_INTEGER || result.integer_value != 42 )
+	if ( result.type_id != MADC_VALUE_INTEGER || result.integer_value != 42 )
 	{
 		madc_value_clear(&result);
 		madc_program_destroy(pgm);
@@ -35,7 +35,7 @@ int main(void)
 		madc_program_destroy(pgm);
 		return 4;
 	}
-	if ( result.kind != MADC_VALUE_INTEGER || result.integer_value != 9 )
+	if ( result.type_id != MADC_VALUE_INTEGER || result.integer_value != 9 )
 	{
 		madc_value_clear(&result);
 		madc_program_destroy(pgm);

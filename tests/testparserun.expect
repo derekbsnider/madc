@@ -1,0 +1,6 @@
+guest ran
+parse-run: rc=7
+parse-build: exe=1 obj=1 rows=0
+artifact: rc-nonzero=1 ran=1
+bogus-kind: ok=0 rows-pos=1 handle-pure=1
+refusals: bad=-1 red-run=-2 red-build=0 red-rows-pos=1

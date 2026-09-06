@@ -251,50 +251,21 @@ TokenBase *token_from_id(TokenID ti)
 
 static DataDef *builtin_datadef_from_spelling(const std::string &s)
 {
-    if ( s == "void" ) return &ddVOID;
-    if ( s == "bool" ) return &ddBOOL;
-    if ( s == "_Bool" ) return &ddBOOL;
-    if ( s == "char" ) return &ddCHAR;
-    if ( s == "signed char" ) return &ddINT8;
-    if ( s == "unsigned char" ) return &ddUINT8;
-    if ( s == "short" || s == "short int" || s == "signed short"
-      || s == "signed short int" ) return &ddINT16;
-    if ( s == "unsigned short" || s == "unsigned short int" ) return &ddUINT16;
-    if ( s == "int" || s == "signed" || s == "signed int" ) return &ddINT32;
-    if ( s == "unsigned" || s == "unsigned int" ) return &ddUINT32;
-    if ( s == "long" || s == "long int" || s == "signed long"
-      || s == "signed long int" || s == "long long" || s == "long long int"
-      || s == "signed long long" || s == "signed long long int" ) return &ddINT64;
-    if ( s == "unsigned long" || s == "unsigned long int"
-      || s == "unsigned long long" || s == "unsigned long long int" ) return &ddUINT64;
-    if ( s == "__int128" || s == "signed __int128" ) return &ddINT128;
-    if ( s == "unsigned __int128" ) return &ddUINT128;
-    if ( s == "float" || s == "_Float16" || s == "_Float32" ) return &ddFLOAT;
-    if ( s == "double" || s == "long double"
-      || s == "_Float64" || s == "_Float128"
-      || s == "_Float32x" || s == "_Float64x" ) return &ddDOUBLE;
-    if ( s == "int8_t" ) return &ddINT8;
-    if ( s == "int16_t" ) return &ddINT16;
-    if ( s == "int32_t" ) return &ddINT32;
-    if ( s == "int64_t" ) return &ddINT64;
-    if ( s == "uint8_t" ) return &ddUINT8;
-    if ( s == "uint16_t" ) return &ddUINT16;
-    if ( s == "uint32_t" ) return &ddUINT32;
-    if ( s == "uint64_t" ) return &ddUINT64;
-    if ( s == "size_t" ) return &ddUINT64;
-    if ( s == "ptrdiff_t" ) return &ddINT64;
-    if ( s == "wchar_t" ) return &ddINT32;
-    if ( s == "char16_t" ) return &ddUINT16;
-    if ( s == "char32_t" ) return &ddUINT32;
-    if ( s == "max_align_t" ) return &ddMAX_ALIGN_T;
-    if ( s == "LPSTR" ) return &ddLPSTR;
-    if ( s == "array" ) return &ddARRAY;
-    // Dialect twins of `array` (slice V1) — a producer tokenizing under
-    // STD_MADC serializes these as datatype tokens; restore is a codec,
-    // not a language gate, so they map unconditionally like `array`.
-    if ( s == "value" ) return &ddARRAY;
-    if ( s == "var" ) return &ddARRAY;
-    if ( s == "auto" ) return &ddAUTO;
+    // The ONE builtin-spelling -> canonical-DataDef table is
+    // Program::resolve_builtin_type_spelling. This codec used to carry a
+    // full private copy, and the copy drifted: it restored a serialized
+    // `wchar_t` token as ddINT32 and `char16_t` as ddUINT16 after those
+    // became distinct dds, and it disagreed with the owner on __int128 —
+    // a frozen token stream re-entering the parser with a different type
+    // identity than the same text lexed live. Adopt the owner.
+    if ( DataDef *dd = Program::resolve_builtin_type_spelling(s) )
+	return dd;
+    // The codec's ONE exception, deliberately outside the owner (which
+    // gates the dialect spellings by language_std): a producer tokenizing
+    // under STD_MADC serializes `array` / `value` / `var` as datatype
+    // tokens (slice V1); restore is a codec, not a language gate, so they
+    // map unconditionally to the carrier.
+    if ( s == "array" || s == "value" || s == "var" ) return &ddARRAY;
     return NULL;
 }
 

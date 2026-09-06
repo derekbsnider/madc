@@ -417,6 +417,16 @@ class CirBuilder {
 	// translate_module pre-scan; the aliases it emits early are recorded below so
 	// the source-order Pass 0 skips re-emitting them.
 	std::map<std::string, Program::TopDecl *> m_combined_typedef_alias;
+	// Emitted struct identity -> the aggregate that owns it (beside the
+	// name set the emitters thread through): the dedup reads it to tell a
+	// same-spelling twin from a different entity (struct_emission_deduped).
+	std::map<std::string, DataDefSTRUCT *> m_emitted_struct_owner;
+	void claim_emitted_struct(std::set<std::string> &emitted_structs,
+				  DataDefSTRUCT *sdd);
+	std::string distinct_emitted_identity(
+		DataDefSTRUCT *sdd, const std::set<std::string> &emitted_structs);
+	bool struct_emission_deduped(const std::set<std::string> &emitted_structs,
+				     DataDefSTRUCT *sdd);
 	std::set<std::string> m_hoisted_combined_aliases;
 	// The C identifier to EMIT for a typedef alias `alias` of type `dd`: normally
 	// the bare alias itself, but for an ambiguous alias (above) backed by a struct
@@ -572,10 +582,37 @@ class CirBuilder {
 	// inline_builtin_kind "forward") — transparent for TYPE questions;
 	// NULL when fw is not such a call. See cir_builder.cpp.
 	TokenBase *identity_forward_operand(TokenCallFunc *fw);
+	// Itanium "non-trivial for the purposes of calls": a non-trivial
+	// copy/move constructor or destructor. The ONE predicate behind the
+	// two positional ABI owners below. See cir_builder.cpp.
+	bool class_nontrivial_for_calls(DataDefCLASS *cdd);
 	// The class that, returned by value, must use the __retbuf ABI (a
-	// non-trivial class needing a dtor). NULL for trivial structs (native
-	// struct return). See cir_builder.cpp.
+	// class non-trivial for the purposes of calls). NULL for a trivially
+	// copyable class (native struct return). See cir_builder.cpp.
 	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// The PARAMETER twin of class_return_via_retbuf: the class `dd` denotes
+	// IF passed BY VALUE crosses the call by INVISIBLE REFERENCE (Itanium
+	// ABI; [class.temporary], [expr.call]): a class non-trivial for the
+	// purposes of calls — a non-trivial copy or move constructor, or a
+	// non-trivial destructor. The CALLER copy/move-constructs the parameter
+	// object and destroys it; the callee's parameter is `struct T *`. NULL
+	// for a trivially copyable class (a plain C struct by value) and for
+	// pointers/references. See cir_builder.cpp.
+	DataDefCLASS *class_param_via_invisible_ref(DataDef *dd);
+	// True when a NAMED variable is a by-value class PARAMETER passed by
+	// invisible reference: pointer-stored inside the callee (a value read
+	// derefs, member access arrows, its object address is the variable's
+	// value). Answers from the recipe method's real parameter list under
+	// two-tree tsubst, like the reference-parameter deref arm.
+	bool param_is_invisible_ref(const class Variable &v);
+	// True when a NAMED variable holds the object's ADDRESS rather than the
+	// object itself (pointer/reference typed, or an invisible-reference
+	// parameter). The single addressing rule every object receiver shares.
+	bool var_is_pointer_stored(const class Variable &v);
+	// `arg` is a by-value result of class `cls` carried as a c2mir struct
+	// value (a natively returned class: no destructor, no __retbuf) — the
+	// prvalue IS the result object; see the definition.
+	bool native_class_value_result(TokenBase *arg, DataDefCLASS *cls);
 	// The single function-signature owner for the __retbuf decision: reject
 	// pointer/reference/multi returns, then classify the returned value type.
 	DataDefCLASS *function_retbuf_class(class FuncDef *fd);
@@ -647,6 +684,11 @@ class CirBuilder {
 	// Coerce an object with a c_str() method to const char* for a char*-expecting
 	// call.
 	node_t object_cstr_arg(TokenBase *arg);
+	// The baked READ of a host-installed `const char *` scope binding
+	// (eval/expression ctx): the bound text as a string literal, or NULL
+	// when the variable is not such a binding. One owner for the fold —
+	// the plain-read, subscript-base, and deref arms all use it.
+	node_t baked_cstr_constant(Variable &var, TokenBase *origin);
 	// True when object_cstr_arg would really produce a char* for this operand
 	// (the class has a resolvable c_str()) rather than falling back to the raw
 	// object — the one test, for callers that cannot use that fallback.
@@ -663,6 +705,16 @@ class CirBuilder {
 	// matching object value is passed as-is; a convertible scalar/pointer is
 	// materialized into a scope-local temporary first.
 	node_t object_arg_value(TokenBase *arg, DataDefCLASS *target);
+	// The class-object VALUE (a c2mir struct lvalue/value) an argument
+	// denotes for class `target`: a matching object as-is, a convertible
+	// scalar/pointer/other-class materialized into a scope-local temporary
+	// (class_object_temp). object_arg_value's value half; also the
+	// functional-cast `T(x)` expression value.
+	node_t class_object_value(TokenBase *arg, DataDefCLASS *target);
+	// A cleanup-tagged scope-local temporary of class `target` constructed
+	// from `arg` (copy / move / converting constructor by overload
+	// resolution — class_ctor_call); returns the temp's lvalue.
+	node_t class_object_temp(TokenBase *arg, DataDefCLASS *target);
 
 	enum class RefArgValueForm {
 		ReferentValue,
@@ -712,11 +764,29 @@ class CirBuilder {
 	// lowered by array_list_init_call.
 	node_t array_decl_ctor_call(TokenDecl *sdcl);
 	// The carrier's brace-list initializer: default construction plus one
-	// registered `push` per element ({} = madarray_make_array, an empty
-	// ARRAY). carrier_push_def_for classifies an element expression's type
-	// onto the push row the registry (add_array_methods) binds for it.
+	// registered `push` per positional element ({} = madarray_make_array,
+	// an empty ARRAY) and one slot ASSIGNMENT per keyed element
+	// (`{ "a": 1 }` — carrier_slot_call + the registered operator= row,
+	// the same lane `m[key] = value` binds). carrier_row_def_for
+	// classifies an element expression's type onto the named row the
+	// registry (add_array_methods / assign_ops) binds for it;
+	// carrier_push_def_for / carrier_assign_def_for name the two rows.
 	node_t array_list_init_call(TokenDecl *sdcl);
+	// The ONE list-literal element lowering behind array_list_init_call
+	// AND the expression literal (translate_expr's carrier ObjTemp
+	// branch): the kind-mix wall, the empty-{} madarray_make_array
+	// call, then per element one registered push (positional) or one
+	// slot assignment (keyed). `recv` supplies a FRESH receiver-address
+	// node per use (a node must not appear twice in the tree). Appends
+	// statements to `stmts`; returns NULL on success or the error node.
+	node_t carrier_list_elements(const std::function<node_t()> &recv,
+				     const std::vector<TokenBase *> &cargs,
+				     const std::vector<TokenBase *> &ckeys,
+				     TokenBase *origin,
+				     std::vector<node_t> &stmts);
+	FuncDef *carrier_row_def_for(const char *opname, DataDef *ad);
 	FuncDef *carrier_push_def_for(DataDef *ad);
+	FuncDef *carrier_assign_def_for(DataDef *ad);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
@@ -1274,6 +1344,11 @@ public:
 					std::string &size_sym,
 					std::string &ctor_sym,
 					std::string &dtor_sym);
+	// The script flavor's c_str()/size() view of one of its strings (the
+	// thunk's and the format intrinsic's shared owner).
+	bool script_string_view_syms(class DataDefCLASS *scr,
+				     std::string &cstr_sym,
+				     std::string &size_sym);
 	std::map<std::string, std::string> m_flvmar_thunks;	// callee sym -> thunk ("" = miss)
 	std::vector<node_t> m_flvmar_defs;
 	int m_flvmar_counter = 0;
@@ -1424,6 +1499,15 @@ public:
 	// The declared type behind a positional initializer slot (array element
 	// / struct member); NULL when unknown.
 	DataDef *init_slot_type(DataDef *dd, size_t idx);
+	// Emission hygiene: braces around a SCALAR initializer are a gcc
+	// warning but a c2mir CHECK ERROR — unwrap them type-directedly
+	// before init_value emits the list. The list walk is positional and
+	// STOPS at the first flat expression landing on an aggregate slot
+	// (brace elision, C11 6.7.9p20 — positions stop mapping to members);
+	// unhandled shapes emit unchanged.
+	TokenBase *unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd);
+	void unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
+				       DataDef *dd);
 	// Compile-time (re,im) fold of an integer-complex constant expression,
 	// and the {re, im} brace list it emits into a static initializer.
 	bool int_complex_const_fold(TokenBase *tb, long &re, long &im);
@@ -1456,6 +1540,15 @@ public:
 		// register on x86-64 SysV. Never spell that placement here.
 		bool ret_addr;
 	};
+	// The ONE param-shape owner for an output extern proto: a class
+	// reference -> void*, a pointer -> its pointee shape, a by-value class
+	// passed by invisible reference -> `struct X *` (class_param_via_
+	// invisible_ref, in lock-step with param_decl), a trivially copyable
+	// class -> the struct tag by value, else the native scalar specs.
+	ExternParam native_param_shape(DataDef *dd, bool refp);
+	void native_func_shape(FuncDef *fd, bool &ret_ptr,
+			       std::vector<c2mir_node_code_t> &ret_specs,
+			       std::vector<ExternParam> &params);
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning
@@ -1719,15 +1812,23 @@ public:
 	node_t class_tag_ref(DataDef *dd, TokenBase *origin = NULL);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
+	// Value category of a constructor argument, as far as the tree says
+	// (see the definition): feeds the T&& preference in select_ctor_overload.
+	enum CtorArgCategory { cacUnknown, cacLvalue, cacRvalue };
+	CtorArgCategory ctor_arg_value_category(TokenBase *arg);
+	// implicit_move: argument 0 is a `return` operand naming a local or a
+	// parameter ([class.copy.elision]/3) — ranked as an rvalue.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
-			       const std::vector<TokenBase *> &ctor_args);
+			       const std::vector<TokenBase *> &ctor_args,
+			       bool implicit_move = false);
 	// select_ctor_overload + copy-time member-template ctor recovery: when
 	// selection misses (or lands on the declaration-only placeholder),
 	// instantiate the class's member-template ctor for THESE argument types
 	// (idempotent, memoized) and re-select. The placement-new lambda's dance,
 	// shared by every construction-emission site.
 	class FuncDef *select_or_instantiate_ctor(DataDefCLASS *cdd,
-			       const std::vector<TokenBase *> &ctor_args);
+			       const std::vector<TokenBase *> &ctor_args,
+			       bool implicit_move = false);
 	// [dcl.init.list]/3-4 — LIST-initialization of a class that has an
 	// initializer-list constructor: the WHOLE braced list is ONE
 	// std::initializer_list<E> argument and only initializer-list ctors are
@@ -2068,6 +2169,20 @@ public:
 	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
+	// MT-1 `go f(args);` — spawn thunk + site block (src/rt/rt_task.c).
+	node_t translate_go(TokenBase *tb);
+	// One linkonce thunk per (callee symbol, slot shape), deduped here and
+	// flushed into the module after the host-call shims (Pass 0.745).
+	std::set<std::string> m_go_thunk_names;
+	std::vector<node_t> m_go_thunk_defs;
+	// MT-2b: under --std=madc the user's main emits as __madc_main and a
+	// synthesized `int main(...)` wrapper joins the task root scope at
+	// MAIN'S END (before ANY teardown — glibc runs TLS destructors before
+	// the atexit list). ONE predicate drives BOTH the var_emit_name rename
+	// and the wrapper emission, so they can never disagree.
+	bool main_wraps_task_join(const Variable &v) const;
+	node_t main_task_join_wrapper(class TokenFunc *tf, class FuncDef *fd);
+	node_t m_main_wrapper_def = NULL;
 	node_t translate_throw_call(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
 	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in

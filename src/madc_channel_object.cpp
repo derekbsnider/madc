@@ -1,6 +1,8 @@
 #include "madcdis/channel.h"
 #include "madc_datachannel_internal.h"
+#include "madc_task_io.h"
 #include "ns_common.h"
+#include "rt/rt_task.h"
 
 #include <cstring>
 
@@ -66,11 +68,29 @@ void open_channel_state(ChannelState *s, const char *uri, const char *mode)
 		s->failed = true;
 }
 
+// MT-4b: when the cooperative runtime has live tasks, park on the poll
+// handle until the read can make progress instead of blocking the whole OS
+// thread under them (the scheduler's io-wait seat wakes us). Solo programs
+// (nothing spawned) keep the plain blocking read — zero new overhead. This
+// object layer is the deepest layer PROVABLY on the scheduler's thread
+// (single-thread cooperative contract); the pipe channel itself is also
+// read by process pump helper threads, which must never park.
+void park_until_readable(ChannelState *s)
+{
+	if ( __madc_task_live() <= 0 )
+		return;
+	PollableDataChannel *pollable = pollable_surface(s->channel.get());
+	if ( !pollable )
+		return;
+	taskio::wait_readable(pollable->read_poll_handle());
+}
+
 // Pull one chunk into pending; false only on a read error (EOF sets s->eof).
 bool fill_pending(ChannelState *s)
 {
 	char buffer[4096];
 	std::size_t count = 0;
+	park_until_readable(s);
 	if ( !s->channel->read(buffer, sizeof(buffer), count, &s->last_error) )
 	{
 		s->failed = true;
@@ -138,6 +158,7 @@ int64_t channel::read(void *buffer, int64_t capacity)
 	if ( s->eof )
 		return 0;
 	std::size_t count = 0;
+	park_until_readable(s);
 	if ( !s->channel->read(buffer, static_cast<std::size_t>(capacity),
 			       count, &s->last_error) )
 	{
@@ -279,6 +300,52 @@ void channel::close()
 		s->channel->close();
 		s->channel.reset();
 	}
+}
+
+// Readiness probes (MT-4b) — the select scan's three-state contract
+// (chan_poll_recv's shape): 1 = progress now, 0 = would wait, -1 = dead.
+int64_t channel::poll_state()
+{
+	ChannelState *s = state(impl_);
+	if ( !s->pending.empty() )
+		return 1;
+	if ( s->failed )
+		return -1;
+	if ( !s->channel || s->eof )
+		return -1;
+	PollableDataChannel *pollable = pollable_surface(s->channel.get());
+	if ( !pollable )
+		return 1;	// memory/file reads never block
+	return taskio::poll_readable(pollable->read_poll_handle()) ? 1 : 0;
+}
+
+int64_t channel::read_wait_handle()
+{
+	ChannelState *s = state(impl_);
+	if ( !s->channel )
+		return -1;
+	PollableDataChannel *pollable = pollable_surface(s->channel.get());
+	return pollable
+		? static_cast<int64_t>(pollable->read_poll_handle()) : -1;
+}
+
+bool channel::wait_readable()
+{
+	for ( ;; )
+	{
+		int64_t st = poll_state();
+		if ( st != 0 )
+			return st == 1;
+		taskio::wait_readable(
+			static_cast<intptr_t>(read_wait_handle()));
+	}
+}
+
+void channel::cancel()
+{
+	ChannelState *s = state(impl_);
+	if ( s->channel )
+		s->channel->cancel();
 }
 
 } // namespace madc

@@ -22,7 +22,10 @@ static inline MIR_reg_t target_nth_loc (MIR_reg_t loc, MIR_type_t type MIR_UNUSE
 static inline int target_call_used_hard_reg_p (MIR_reg_t hard_reg, MIR_type_t type) {
   assert (hard_reg <= MAX_HARD_REG);
   if (hard_reg <= SP_HARD_REG) return !(hard_reg >= R19_HARD_REG && hard_reg <= R28_HARD_REG);
-  return type == MIR_T_LD || !(hard_reg >= V8_HARD_REG && hard_reg <= V15_HARD_REG);
+  /* V8-V15 are callee-saved in their low 64 bits only (AAPCS64 6.1.2): a 128-bit
+     value there -- a long double or a vector -- is call-used. */
+  return type == MIR_T_LD || MIR_vector_type_p (type)
+         || !(hard_reg >= V8_HARD_REG && hard_reg <= V15_HARD_REG);
 }
 
 /* Stack layout (sp refers to the last reserved stack slot address)
@@ -79,11 +82,27 @@ static MIR_insn_code_t get_ext_code (MIR_type_t type) {
   }
 }
 
+/* fp_class_type_p and stack_arg_16_p -- the SIMD/FP argument class and the
+   16-byte stack slot -- live in mir-aarch64.h: the call shims (mir-aarch64.c)
+   read the same two predicates. */
+
+/* The argument type of a call operand BEYOND the prototype (a vararg): its
+   value mode decides.  A 128-bit vector is a SIMD/FP-class value like a double
+   (AAPCS64 C.1: a Short Vector takes the next V register, or a 16-byte aligned
+   stack slot; Apple puts every vararg on the stack, 16-byte aligned) -- the
+   default I64 arm would pass its low 8 bytes in an X register. */
+static MIR_type_t vararg_value_type (MIR_op_mode_t mode) {
+  return (mode == MIR_OP_DOUBLE    ? MIR_T_D
+          : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+          : mode == MIR_OP_VECTOR  ? MIR_T_V128
+                                   : MIR_T_I64);
+}
+
 static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *fp_arg_num,
                               MIR_insn_code_t *mov_code) {
   MIR_reg_t arg_reg;
 
-  if (arg_type == MIR_T_F || arg_type == MIR_T_D || arg_type == MIR_T_LD) {
+  if (fp_class_type_p (arg_type)) {
     switch (*fp_arg_num) {
     case 0:
     case 1:
@@ -96,7 +115,7 @@ static MIR_reg_t get_arg_reg (MIR_type_t arg_type, size_t *int_arg_num, size_t *
     default: arg_reg = MIR_NON_VAR; break;
     }
     (*fp_arg_num)++;
-    *mov_code = arg_type == MIR_T_F ? MIR_FMOV : arg_type == MIR_T_D ? MIR_DMOV : MIR_LDMOV;
+    *mov_code = get_move_code (arg_type);
   } else { /* including BLK, RBLK: */
     switch (*int_arg_num) {
     case 0:
@@ -237,7 +256,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   MIR_func_t func = curr_func_item->u.func;
   MIR_proto_t proto = call_insn->ops[0].u.ref->u.proto;
   size_t nargs, nops = MIR_insn_nops (ctx, call_insn), start = proto->nres + 2;
-  size_t int_arg_num = 0, fp_arg_num = 0, mem_size = 0, blk_offset = 0, qwords;
+  size_t int_arg_num = 0, fp_arg_num = 0, mem_size = 0, blk_offset = 0, qwords, slot_size;
   MIR_type_t type, mem_type;
   MIR_op_mode_t mode;
   MIR_var_t *arg_vars = NULL;
@@ -274,12 +293,12 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       gen_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                  || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
       if (mode == MIR_OP_FLOAT)
         (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                      "passing float variadic arg (should be passed as double)");
       if (mode == MIR_OP_LDOUBLE && __SIZEOF_LONG_DOUBLE__ == 8) mode = MIR_OP_DOUBLE;
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      type = vararg_value_type (mode);
     }
     gen_assert (!MIR_all_blk_type_p (type) || call_insn->ops[i].mode == MIR_OP_VAR_MEM);
     if (type == MIR_T_RBLK && i == start) continue; /* hidden arg */
@@ -287,12 +306,14 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     if (i - start == nargs) int_arg_num = fp_arg_num = 8;
 #endif
     if (MIR_blk_type_p (type) && (qwords = (call_insn->ops[i].u.var_mem.disp + 7) / 8) <= 2) {
-      if (int_arg_num + qwords > 8) blk_offset += qwords * 8;
+      if (int_arg_num + qwords > 8) blk_offset = stack_arg_slot_start (blk_offset, 8) + qwords * 8;
       int_arg_num += qwords;
     } else if (get_arg_reg (type, &int_arg_num, &fp_arg_num, &new_insn_code) == MIR_NON_VAR) {
-      if (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 && blk_offset % 16 != 0)
-        blk_offset = (blk_offset + 15) / 16 * 16;
-      blk_offset += type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 16 : 8;
+      /* the slot's size and alignment by type and position (stack_arg_slot_size,
+         mir-aarch64.h): 8 bytes, 16 for a 16-byte type, on Apple a non-variadic
+         char / short / int / float at its natural size */
+      slot_size = stack_arg_slot_size (type, i - start >= nargs);
+      blk_offset = stack_arg_slot_start (blk_offset, slot_size) + slot_size;
     }
   }
   blk_offset = (blk_offset + 15) / 16 * 16;
@@ -312,7 +333,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     } else {
       mode = call_insn->ops[i].value_mode;  // ??? smaller ints
       if (mode == MIR_OP_LDOUBLE && __SIZEOF_LONG_DOUBLE__ == 8) mode = MIR_OP_DOUBLE;
-      type = mode == MIR_OP_DOUBLE ? MIR_T_D : mode == MIR_OP_LDOUBLE ? MIR_T_LD : MIR_T_I64;
+      type = vararg_value_type (mode);
     }
     ext_insn = NULL;
     if ((ext_code = get_ext_code (type)) != MIR_INVALID_INSN) { /* extend arg if necessary */
@@ -349,7 +370,8 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
                                                    MIR_NON_VAR, 1));
             gen_add_insn_before (gen_ctx, call_insn, new_insn);
           }
-        } else { /* pass on stack w/o address: */
+        } else { /* pass on stack w/o address: 8-byte aligned qwords */
+          mem_size = stack_arg_slot_start (mem_size, 8);
           gen_blk_mov (gen_ctx, call_insn, mem_size, SP_HARD_REG, 0, arg_op.u.var_mem.base, qwords,
                        int_arg_num);
           call_insn->ops[i]
@@ -398,13 +420,14 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
       gen_add_insn_before (gen_ctx, call_insn, new_insn);
       call_insn->ops[i] = arg_reg_op;
     } else { /* put arguments on the stack */
-      if (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 && mem_size % 16 != 0)
-        mem_size = (mem_size + 15) / 16 * 16;
-      mem_type = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD ? type : MIR_T_I64;
-      new_insn_code = (type == MIR_T_F    ? MIR_FMOV
-                       : type == MIR_T_D  ? MIR_DMOV
-                       : type == MIR_T_LD ? MIR_LDMOV
-                                          : MIR_MOV);
+      /* the slot's size, alignment and access width (stack_arg_slot_size /
+         stack_arg_mem_type, mir-aarch64.h): 8 bytes, 16 for a 16-byte type, and
+         on Apple a non-variadic char / short / int / float packed at its natural
+         size -- the store is that narrow */
+      slot_size = stack_arg_slot_size (type, i - start >= nargs);
+      mem_size = stack_arg_slot_start (mem_size, slot_size);
+      mem_type = stack_arg_mem_type (type, i - start >= nargs);
+      new_insn_code = get_move_code (type);
       mem_op = get_new_hard_reg_mem_op (gen_ctx, mem_type, mem_size, SP_HARD_REG, &insn1, &insn2);
       if (type != MIR_T_RBLK) {
         new_insn = MIR_new_insn (ctx, new_insn_code, mem_op, arg_op);
@@ -422,7 +445,7 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
       next_insn = DLIST_NEXT (MIR_insn_t, new_insn);
       create_new_bb_insns (gen_ctx, prev_insn, next_insn, call_insn);
       call_insn->ops[i] = mem_op;
-      mem_size += type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16 ? 16 : 8;
+      mem_size += slot_size;
       if (ext_insn != NULL) gen_add_insn_after (gen_ctx, curr_prev_call_insn, ext_insn);
       curr_prev_call_insn = new_insn;
     }
@@ -436,13 +459,10 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     ret_reg_op = call_insn->ops[i + 2];
     gen_assert (ret_reg_op.mode == MIR_OP_VAR);
     type = proto->res_types[i];
-    float_p = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD;
+    float_p = fp_class_type_p (type);
     if (float_p && n_vregs < 8) {
-      new_insn = MIR_new_insn (ctx,
-                               type == MIR_T_F   ? MIR_FMOV
-                               : type == MIR_T_D ? MIR_DMOV
-                                                 : MIR_LDMOV,
-                               ret_reg_op, _MIR_new_var_op (ctx, V0_HARD_REG + n_vregs));
+      new_insn = MIR_new_insn (ctx, get_move_code (type), ret_reg_op,
+                               _MIR_new_var_op (ctx, V0_HARD_REG + n_vregs));
       n_vregs++;
     } else if (!float_p && n_iregs < 8) {
       new_insn
@@ -782,7 +802,8 @@ static int target_valid_mem_offset_p (gen_ctx_t gen_ctx MIR_UNUSED, MIR_type_t t
   case MIR_T_P:
 #endif
   case MIR_T_F: scale = 4; break;
-  case MIR_T_LD: scale = 16; break;
+  case MIR_T_LD:
+  case MIR_T_V128: scale = 16; break;
   default: scale = 8; break;
   }
   return offset >= 0 && offset % scale == 0 && offset / scale < (1 << 12);
@@ -797,7 +818,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
   MIR_var_t var;
   MIR_reg_t ret_reg, arg_reg;
   MIR_op_t ret_reg_op, arg_reg_op, mem_op, temp_op;
-  size_t i, int_arg_num, fp_arg_num, mem_size, qwords;
+  size_t i, int_arg_num, fp_arg_num, mem_size, qwords, slot_size;
 
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
@@ -834,6 +855,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
           gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, R8_HARD_REG),
                    _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
         }
+        mem_size = stack_arg_slot_start (mem_size, 8); /* 8-byte aligned qwords */
         gen_add_insn_before (gen_ctx, anchor,
                              MIR_new_insn (ctx, MIR_ADD,
                                            _MIR_new_var_op (ctx, i + MAX_HARD_REG + 1),
@@ -856,15 +878,16 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, R8_HARD_REG),
                  _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
       }
-      mem_type = type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD ? type : MIR_T_I64;
-      if (type == MIR_T_LD) mem_size = (mem_size + 15) / 16 * 16;
-      new_insn_code = (type == MIR_T_F    ? MIR_FMOV
-                       : type == MIR_T_D  ? MIR_DMOV
-                       : type == MIR_T_LD ? MIR_LDMOV
-                                          : MIR_MOV);
+      /* the parameter's slot mirrors the call site's (stack_arg_slot_size /
+         stack_arg_mem_type, mir-aarch64.h): on Apple a packed char / short / int
+         / float is read with a load of its own width, extended by its type */
+      slot_size = stack_arg_slot_size (type, FALSE);
+      mem_type = stack_arg_mem_type (type, FALSE);
+      mem_size = stack_arg_slot_start (mem_size, slot_size);
+      new_insn_code = get_move_code (type);
       mem_op = new_hard_reg_mem_op (gen_ctx, anchor, mem_type, mem_size, R8_HARD_REG);
       gen_mov (gen_ctx, anchor, new_insn_code, _MIR_new_var_op (ctx, i + MAX_HARD_REG + 1), mem_op);
-      mem_size += type == MIR_T_LD ? 16 : 8;
+      mem_size += slot_size;
     }
   }
   alloca_p = FALSE;
@@ -939,9 +962,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         gen_delete_insn (gen_ctx, insn);
       }
     } else if (code == MIR_VA_START) {
-#if !defined(__APPLE__)
       MIR_op_t treg_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
-#endif
       MIR_op_t prev_sp_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
       MIR_op_t va_op = insn->ops[0];
       MIR_reg_t va_reg;
@@ -964,15 +985,15 @@ static void target_machinize (gen_ctx_t gen_ctx) {
       /* __stack: prev_sp = mem64[fp + 16] */
       gen_mov (gen_ctx, insn, MIR_MOV, prev_sp_op,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, FP_HARD_REG, MIR_NON_VAR, 1));
-#if defined(__APPLE__)
-      gen_mov (gen_ctx, insn, MIR_MOV,
-               _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, va_reg, MIR_NON_VAR, 1), prev_sp_op);
-#else
-      /* mem64[va_reg].__stack = prev_sp + mem_size */
-      new_insn = MIR_new_insn (ctx, MIR_ADD, treg_op, prev_sp_op, MIR_new_int_op (ctx, mem_size));
+      /* mem64[va_reg].__stack = prev_sp + the named stack arguments' area rounded
+         up to 8: the first anonymous argument's slot (AAPCS64 B.4; Apple's own
+         va_start -- a packed ninth int leaves a 4-byte tail the list skips) */
+      new_insn = MIR_new_insn (ctx, MIR_ADD, treg_op, prev_sp_op,
+                               MIR_new_int_op (ctx, stack_arg_slot_start (mem_size, 8)));
       gen_add_insn_before (gen_ctx, insn, new_insn);
       gen_mov (gen_ctx, insn, MIR_MOV,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, va_reg, MIR_NON_VAR, 1), treg_op);
+#if !defined(__APPLE__)
       /* __gr_top: mem64[va_reg].__gr_top = prev_sp */
       gen_mov (gen_ctx, insn, MIR_MOV,
                _MIR_new_var_mem_op (ctx, MIR_T_I64, 8, va_reg, MIR_NON_VAR, 1), prev_sp_op);
@@ -1012,10 +1033,8 @@ static void target_machinize (gen_ctx_t gen_ctx) {
       for (i = 0; i < func->nres; i++) {
         assert (insn->ops[i].mode == MIR_OP_VAR);
         res_type = func->res_types[i];
-        if ((res_type == MIR_T_F || res_type == MIR_T_D || res_type == MIR_T_LD) && n_vregs < 8) {
-          new_insn_code = res_type == MIR_T_F   ? MIR_FMOV
-                          : res_type == MIR_T_D ? MIR_DMOV
-                                                : MIR_LDMOV;
+        if (fp_class_type_p (res_type) && n_vregs < 8) {
+          new_insn_code = get_move_code (res_type);
           ret_reg = V0_HARD_REG + n_vregs++;
         } else if (n_iregs < 8) {
           new_insn_code = MIR_MOV;
@@ -1250,11 +1269,13 @@ struct pattern {
      mf - memory of float
      md - memory of double
      mld - memory of long double
+     mv - memory of a 128-bit vector (MIR_T_V128; a Q register, like mld)
 
        memory with immediate offset:
      Mf - memory of float
      Md - memory of double
      Mld - memory of long double
+     Mv - memory of a 128-bit vector (imm12 scaled by 16)
      I -- immediate as 3th op for arithmetic insn (12-bit unsigned with possible 12-bit LSL)
      Iu -- immediate for arithmetic insn roundup to 16
      SR -- any immediate for right 64-bit shift (0-63)
@@ -1379,6 +1400,105 @@ static const struct pattern patterns[] = {
   {MIR_LDMOV, "mld r", "3ca00800:ffe00c00 vd1 m"},     /* str Qd,[Rn,Rm{,#4}] */
   {MIR_LDMOV, "r Mld", "3dc00000:ffc00000 vd0 M"},     /* ldr Qd,[Rn,{,#imm12}] */
   {MIR_LDMOV, "Mld r", "3d800000:ffc00000 vd1 M"},     /* str Qd,[Rn,Rm{,#imm12}] */
+
+  /* 128-bit vector (MIR_T_V128): the LD-in-Q register shape with NEON lane
+     arithmetic.  Every word is from aarch64-neon-encodings.md (assembled with
+     aarch64-linux-gnu-as, never from memory).  Q-form arrangements: size bits
+     [23:22] = 00 .16b, 01 .8h, 10 .4s, 11 .2d; float sz bit 22 = 0 .4s, 1 .2d. */
+  {MIR_VMOV, "r r", "4ea01c00:ffe0fc00 vd0 vm1 vn1"}, /* mov Vd.16b,Vn.16b (orr) */
+  {MIR_VMOV, "r mv", "3ce00800:ffe00c00 vd0 m"},      /* ldr Qd,[Rn,Rm{,#4}] */
+  {MIR_VMOV, "mv r", "3ca00800:ffe00c00 vd1 m"},      /* str Qd,[Rn,Rm{,#4}] */
+  {MIR_VMOV, "r Mv", "3dc00000:ffc00000 vd0 M"},      /* ldr Qd,[Rn{,#imm12*16}] */
+  {MIR_VMOV, "Mv r", "3d800000:ffc00000 vd1 M"},      /* str Qd,[Rn{,#imm12*16}] */
+
+  {MIR_VAND, "r r r", "4e201c00:ffe0fc00 vd0 vn1 vm2"}, /* and Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VOR, "r r r", "4ea01c00:ffe0fc00 vd0 vn1 vm2"},  /* orr Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VXOR, "r r r", "6e201c00:ffe0fc00 vd0 vn1 vm2"}, /* eor Vd.16b,Vn.16b,Vm.16b */
+
+  {MIR_VADDI8, "r r r", "4e208400:ffe0fc00 vd0 vn1 vm2"},  /* add Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VADDI16, "r r r", "4e608400:ffe0fc00 vd0 vn1 vm2"}, /* add Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VADDI32, "r r r", "4ea08400:ffe0fc00 vd0 vn1 vm2"}, /* add Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VADDI64, "r r r", "4ee08400:ffe0fc00 vd0 vn1 vm2"}, /* add Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VSUBI8, "r r r", "6e208400:ffe0fc00 vd0 vn1 vm2"},  /* sub Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VSUBI16, "r r r", "6e608400:ffe0fc00 vd0 vn1 vm2"}, /* sub Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VSUBI32, "r r r", "6ea08400:ffe0fc00 vd0 vn1 vm2"}, /* sub Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VSUBI64, "r r r", "6ee08400:ffe0fc00 vd0 vn1 vm2"}, /* sub Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VMULI16, "r r r", "4e609c00:ffe0fc00 vd0 vn1 vm2"}, /* mul Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VMULI32, "r r r", "4ea09c00:ffe0fc00 vd0 vn1 vm2"}, /* mul Vd.4s,Vn.4s,Vm.4s */
+
+  {MIR_VADDF32, "r r r", "4e20d400:ffe0fc00 vd0 vn1 vm2"}, /* fadd Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VADDF64, "r r r", "4e60d400:ffe0fc00 vd0 vn1 vm2"}, /* fadd Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VSUBF32, "r r r", "4ea0d400:ffe0fc00 vd0 vn1 vm2"}, /* fsub Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VSUBF64, "r r r", "4ee0d400:ffe0fc00 vd0 vn1 vm2"}, /* fsub Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VMULF32, "r r r", "6e20dc00:ffe0fc00 vd0 vn1 vm2"}, /* fmul Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VMULF64, "r r r", "6e60dc00:ffe0fc00 vd0 vn1 vm2"}, /* fmul Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VDIVF32, "r r r", "6e20fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VDIVF64, "r r r", "6e60fc00:ffe0fc00 vd0 vn1 vm2"}, /* fdiv Vd.2d,Vn.2d,Vm.2d */
+
+  /* Compares produce all-ones / zero lanes (the interpreter's convention). */
+  {MIR_VEQI8, "r r r", "6e208c00:ffe0fc00 vd0 vn1 vm2"},  /* cmeq Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VEQI16, "r r r", "6e608c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VEQI32, "r r r", "6ea08c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VEQI64, "r r r", "6ee08c00:ffe0fc00 vd0 vn1 vm2"}, /* cmeq Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VGTI8, "r r r", "4e203400:ffe0fc00 vd0 vn1 vm2"},  /* cmgt Vd.16b,Vn.16b,Vm.16b (signed) */
+  {MIR_VGTI16, "r r r", "4e603400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VGTI32, "r r r", "4ea03400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VGTI64, "r r r", "4ee03400:ffe0fc00 vd0 vn1 vm2"}, /* cmgt Vd.2d,Vn.2d,Vm.2d */
+  {MIR_VEQF32, "r r r", "4e20e400:ffe0fc00 vd0 vn1 vm2"}, /* fcmeq Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VEQF64, "r r r", "4e60e400:ffe0fc00 vd0 vn1 vm2"}, /* fcmeq Vd.2d,Vn.2d,Vm.2d */
+  /* fcmeq Vd,Vn,Vm; not Vd.16b,Vd.16b */
+  {MIR_VNEF32, "r r r", "4e20e400:ffe0fc00 vd0 vn1 vm2; 6e205800:fffffc00 vd0 vn0"},
+  {MIR_VNEF64, "r r r", "4e60e400:ffe0fc00 vd0 vn1 vm2; 6e205800:fffffc00 vd0 vn0"},
+  /* a < b is b > a: fcmgt Vd,Vm(op2),Vn(op1); a <= b is fcmge with the same swap. */
+  {MIR_VLTF32, "r r r", "6ea0e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmgt Vd.4s,Vop2.4s,Vop1.4s */
+  {MIR_VLTF64, "r r r", "6ee0e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmgt Vd.2d,Vop2.2d,Vop1.2d */
+  {MIR_VLEF32, "r r r", "6e20e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmge Vd.4s,Vop2.4s,Vop1.4s */
+  {MIR_VLEF64, "r r r", "6e60e400:ffe0fc00 vd0 vn2 vm1"}, /* fcmge Vd.2d,Vop2.2d,Vop1.2d */
+
+  /* Lane-count shifts: NEON shifts each lane by the SIGNED low byte of the
+     count lane (a negative count shifts right), so a left shift is ushl on the
+     counts as given and a right shift is ushl / sshl on the negated counts
+     (V16, a fixed temp). Counts of lane-width or more give 0 / the sign fill --
+     what C defines is in range; a count >= 128 (UB in C) is not modelled. */
+  {MIR_VLSHVI8, "r r r", "6e204400:ffe0fc00 vd0 vn1 vm2"},  /* ushl Vd.16b,Vn.16b,Vm.16b */
+  {MIR_VLSHVI16, "r r r", "6e604400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.8h,Vn.8h,Vm.8h */
+  {MIR_VLSHVI32, "r r r", "6ea04400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.4s,Vn.4s,Vm.4s */
+  {MIR_VLSHVI64, "r r r", "6ee04400:ffe0fc00 vd0 vn1 vm2"}, /* ushl Vd.2d,Vn.2d,Vm.2d */
+  /* neg V16.T,Vop2.T; ushl Vd.T,Vop1.T,V16.T */
+  {MIR_VURSHVI8, "r r r", "6e20b800:fffffc00 hd10 vn2; 6e204400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI16, "r r r", "6e60b800:fffffc00 hd10 vn2; 6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI32, "r r r", "6ea0b800:fffffc00 hd10 vn2; 6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHVI64, "r r r", "6ee0b800:fffffc00 hd10 vn2; 6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  /* neg V16.T,Vop2.T; sshl Vd.T,Vop1.T,V16.T */
+  {MIR_VRSHVI8, "r r r", "6e20b800:fffffc00 hd10 vn2; 4e204400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI16, "r r r", "6e60b800:fffffc00 hd10 vn2; 4e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI32, "r r r", "6ea0b800:fffffc00 hd10 vn2; 4ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHVI64, "r r r", "6ee0b800:fffffc00 hd10 vn2; 4ee04400:ffe0fc00 vd0 vn1 hm10"},
+
+  /* Scalar-count shifts: the count is the low 64 bits of the count vector
+     (mir-interp.c). umov X9,Vop2.d[0]; [neg X9,X9;] dup V16.T,W9|X9;
+     ushl|sshl Vd.T,Vop1.T,V16.T -- X9 and V16 are the fixed temps. */
+  {MIR_VLSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e020c00:fffffc00 hd10 hn9; 6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VLSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e040c00:fffffc00 hd10 hn9; 6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VLSHI64, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; 4e080c00:fffffc00 hd10 hn9; 6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e020c00:fffffc00 hd10 hn9;"
+   "6e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e040c00:fffffc00 hd10 hn9;"
+   "6ea04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VURSHI64, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e080c00:fffffc00 hd10 hn9;"
+   "6ee04400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHI16, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e020c00:fffffc00 hd10 hn9;"
+   "4e604400:ffe0fc00 vd0 vn1 hm10"},
+  {MIR_VRSHI32, "r r r",
+   "4e083c00:fffffc00 hd9 vn2; cb0003e0:ffe0ffe0 hd9 hm9; 4e040c00:fffffc00 hd10 hn9;"
+   "4ea04400:ffe0fc00 vd0 vn1 hm10"},
 
   {MIR_EXT8, "r r", "93401c00:fffffc00 rd0 rn1"},  /* sxtb rd, wn */
   {MIR_EXT16, "r r", "93403c00:fffffc00 rd0 rn1"}, /* sxth rd, wn */
@@ -2000,6 +2120,11 @@ static int pattern_match_p (gen_ctx_t gen_ctx, const struct pattern *pat, MIR_in
         type2 = MIR_T_BOUND;
         scale = 16;
         break;
+      case 'v':
+        type = MIR_T_V128;
+        type2 = MIR_T_BOUND;
+        scale = 16;
+        break;
       case 'u':
       case 's':
         u_p = ch == 'u';
@@ -2328,7 +2453,8 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         case MIR_T_I64:
         case MIR_T_U64:
         case MIR_T_D: dsize = 8; break;
-        case MIR_T_LD: dsize = 16; break;
+        case MIR_T_LD:
+        case MIR_T_V128: dsize = 16; break;
         default: assert (FALSE);
         }
         gen_assert (op.u.var_mem.disp % dsize == 0);

@@ -1,0 +1,22 @@
+// `.field = value` designators inside a NESTED brace (c-testsuite 00216,
+// `guv2 = {{.b = 7, .a = 8}}`): read_struct_lit now carries a type cursor
+// (slot member types via the same conservative rules as the emitter), so
+// nested designators place by NAME instead of silently filling positional
+// slots. The union case reads back through the named twin member.
+// Oracle: gcc/clang print u=8 v=7 / c=6 d=9.
+typedef unsigned char u8;
+struct S { u8 a, b; u8 c[2]; };
+union UV {
+    struct { u8 a, b; };
+    struct S s;
+};
+union UV guv2 = {{.b = 7, .a = 8}};
+struct P { u8 x; struct S s; };
+struct P gp = { 1, {.b = 9, .a = 6} };
+
+int main()
+{
+    printf("u=%d v=%d\n", guv2.s.a, guv2.s.b);
+    printf("c=%d d=%d\n", gp.s.a, gp.s.b);
+    return 0;
+}

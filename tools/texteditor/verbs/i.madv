@@ -1,0 +1,18 @@
+// lineed verb: i N TEXT — insert a new line before line N. The read-only
+// rule is the shared availability check (checks/editable.madv).
+// `doc` = the subject document, resolved by the prepended _subject.madv
+long n = php::intval(arg);
+if ( n < 1 )
+    return "i needs a line number.";
+long off = ui::text_line_start(w, doc, n);
+if ( off < 0 )
+    return "No such line.";
+long i = 0;
+while ( arg[i] != 0 && arg[i] != ' ' )
+    i = i + 1;
+if ( arg[i] == ' ' )
+    i = i + 1;
+var t = format("{}\n", arg + i);
+ui::text_insert(w, doc, off, t.c_str());
+ui::set(w, doc, "modified", true);
+return "Inserted.";

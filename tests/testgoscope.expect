@@ -1,0 +1,1 @@
+end tr=p1live2;w1a;w2a;w1b;w2b;p1joined0;w3a;w4a;w3b;w4b;p2in;p2out;stuck-park;boom-up;p3(boom);p3b(42);sl1up;p4(madc: task cancelled);sl2up;p5cancel;p5(madc: task cancelled);snd-park;p5b(madc: task cancelled);p6op1;poll1;p6(madc: task cancelled);p6after0;p7a(scope_end: not the innermost open scope);p7b(scope_end: bad scope handle);p7c(scope_cancel: bad scope handle);

@@ -1,0 +1,16 @@
+// An undeclared libc call adopts the pack's REAL prototype (GCC: the builtin's),
+// never the zero-parameter variadic guess: `int printf()` is ABI-wrong wherever
+// variadic and named arguments travel differently (Apple arm64 puts every
+// variadic argument on the stack). The emitted C is the observable that does
+// not depend on the host ABI being forgiving.
+//
+// Lanes: the strong assertion (`extern int printf(char *p0, ...);`) rides the
+// forest-bound lanes — .headerless_expect (the packed binary with no headers on
+// disk) and .darwin_expect (the mac runner) — because the library the pack IS
+// is what gets adopted. The dev lane (bin/madc, live headers, no container
+// bound) still falls to the guess; its .expect asserts only the common head.
+int main()
+{
+	printf("%d %d %d %d %d\n", 1, 2, 3, 9, 4);
+	return 0;
+}

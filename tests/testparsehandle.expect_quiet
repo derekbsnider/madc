@@ -1,0 +1,1 @@
+compile-never-execute capture proof: the parse-handle surfaces must print nothing to stderr

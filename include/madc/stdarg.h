@@ -39,14 +39,12 @@ typedef __builtin_va_list __gnuc_va_list;
 
 #define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
-// va_copy follows the target's va_list shape (Program::builtin_va_list_type):
-// SysV array-of-struct copies the one element; win64's scalar `char *`
-// (mingw/MSVC vadefs.h) is a plain assignment.
-#ifdef _WIN32
-#define va_copy(dest, src) ((dest) = (src))
-#else
-#define va_copy(dest, src) ((dest)[0] = (src)[0])
-#endif
+// va_copy follows the target's va_list shape (madc_target_va_list, the same
+// owner Program::builtin_va_list_type reads): the compiler-defined
+// __builtin_va_copy macro carries the right body — the SysV array copies its
+// one element, the AAPCS64 record and the scalar `char *` (win64, Apple
+// arm64) are plain assignments.
+#define va_copy(dest, src) __builtin_va_copy(dest, src)
 
 // The v*printf family is NOT declared here. <stdarg.h> owns the va_* machinery
 // and nothing else — gcc's and clang's own stdarg.h declare zero stdio

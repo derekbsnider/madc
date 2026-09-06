@@ -153,7 +153,7 @@ int main()
 	// every primitive, so one expansion serves a printing dump and a
 	// capturing one.
 	printf("--- captured\n");
-	value cap = php::print_r(ms, true);
+	var cap = php::print_r(ms, true);
 	printf("%s", cap.c_str());
 
 	printf("--- raw pointer iterator\n");

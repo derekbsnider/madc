@@ -1,0 +1,6 @@
+free|open|true|
+act1=[The door swings wide.]
+barred|open|false|The door is barred.
+act2=[The door is barred.]
+again|open|true|
+act3=[The door swings wide.]

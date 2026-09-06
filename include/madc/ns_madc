@@ -65,6 +65,218 @@ namespace madc {
     void context_set_string(value &ctx, const char *key, const char *v);
     void context_set_array(value &ctx, const char *key, value &v);
 
+    // Compiler data as data: compile (NEVER execute) `source` with the
+    // same front end bin/madc runs, in a policy-clamped child, and return
+    // the compiler's own structured data as a value array. `filename` is
+    // the display name diagnostics carry (default "<source>").
+    //   diagnostics rows: { severity, phase, message, file, line, column }
+    //       (severity "error"/"warning"; empty array = a clean buffer)
+    //   outline rows:     { kind, name, line, column, end_line } for the
+    //       buffer's OWN definitions, source order (kind: "function"
+    //       today; classes/globals are a named extension seat; end_line
+    //       = the closing brace's line)
+    // Nothing in the buffer runs; diagnostics are captured, not printed.
+    // Thread contract: each call owns its child program — the runtime-eval
+    // machinery's confinement.
+    value &diagnostics(value &out, const char *source);
+    value &diagnostics(value &out, const char *source, const char *filename);
+    value &outline(value &out, const char *source);
+    value &outline(value &out, const char *source, const char *filename);
+
+    // The render query (the view seam's code views): parse `source` in the
+    // same policy-clamped child and render its cir_node tree (MC11-IR) as
+    // `target` — the --emit= vocabulary ("c11" | "mc11"). `out` becomes
+    // the rendered text (string kind). False = unknown target, or a buffer
+    // that does not parse/translate (diagnostics captured, not printed).
+    // Nothing in the buffer runs. Thread contract: each call owns its
+    // child program — the runtime-eval machinery's confinement.
+    bool emit(value &out, const char *source, const char *filename,
+	      const char *target);
+
+    // Persistent parse handles: the compiler-data surfaces above given a
+    // LIFETIME. parse_open compiles (NEVER executes) `source` in a child
+    // that stays live behind an int64 handle (>= 1; parse errors do not
+    // fail the open — they are the handle's state); parse_open_file opens
+    // a TU from disk through the lexer's own file ingestion (0 = the path
+    // is unreadable); parse_refresh whole-TU re-parses the handle with
+    // new text; parse_close frees it (handles are never reused within a
+    // run). Queries read the RETAINED state — no re-parse per query:
+    //   parse_outline / parse_check: the outline / diagnostics row shapes
+    //       above, from the last (re)parse.
+    //   parse_enclosing: the INNERMOST of the TU's own function
+    //       definitions containing (line, column) — a { kind, name, line,
+    //       column, end_line } object, or an empty value when none (the
+    //       status line's query).
+    // A project handle groups a compile_commands.json manifest's TUs:
+    // project_open parses every TU on open with the manifest entry's own
+    // -I/-D/--std options — project diagnostics match the --project
+    // build (0 = unreadable manifest; a TU whose file cannot be read, or
+    // whose options are refused, carries handle 0 in the rows);
+    // project_tus returns { file, handle } rows; project_close closes the
+    // project's TU handles with it.
+    // Thread contract: a handle is confined to the thread/program that
+    // opened it — the runtime-eval machinery's confinement.
+    int64_t parse_open(const char *source, const char *filename);
+    int64_t parse_open_file(const char *path);
+    bool parse_refresh(int64_t handle, const char *source);
+    bool parse_close(int64_t handle);
+    value &parse_outline(value &out, int64_t handle);
+    value &parse_check(value &out, int64_t handle);
+    value &parse_enclosing(value &out, int64_t handle, int64_t line,
+			   int64_t column);
+    //   parse_spans: highlight classification rows for the TU's OWN
+    //       tokens from the retained state — { line, column, length,
+    //       class } in source coordinates (1-based line; column = the
+    //       span's START, 0-based — note diagnostics columns elsewhere
+    //       are end-anchored); class names: keyword, ident, number,
+    //       string, comment (from retained trivia), type, function (an
+    //       identifier the tree defines as a function, on its head
+    //       line). Data, not styling: a theme maps names to colours.
+    value &parse_spans(value &out, int64_t handle);
+    // The live-tree build/run pair (the running madc IS the compiler —
+    // ^B never re-parses, never execs a madc binary):
+    //   parse_build: emit a native artifact from the handle's EXISTING
+    //       parsed tree — the buffer the handle was last (re)parsed
+    //       from, unsaved edits included, is what compiles. kind: "exe"
+    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       gets diagnostics rows either way (a false always carries at
+    //       least one error row; a handle whose parse has error rows
+    //       never reaches the emitter). Build rows ride out_diags only —
+    //       parse_check stays parse-pure. True = the artifact was
+    //       written. The emit phase runs without yield points (it
+    //       briefly blocks a cooperative scheduler).
+    //   parse_run: run the handle's parsed tree in a fork() child (the
+    //       child inherits the tree, hands it to the backend, runs main
+    //       with argv[0] = the handle's filename; stdio is INHERITED —
+    //       suspend a tui first). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = it never ran:
+    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
+    //       no fork on this platform (win64). ^C reaches the guest
+    //       alone while it runs (the system(3) discipline).
+    // Thread contract: the runtime-eval confinement — a handle is used
+    // only from the thread/program that opened it.
+    bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		     const char *outpath);
+    int64_t parse_run(int64_t handle);
+    //   lex_spans: the classes LEXING alone answers (keyword, number,
+    //       string, comment — plus what the lexer's own maps know),
+    //       from the buffer text only: no includes ingested, header
+    //       macros stay unexpanded identifiers, no handle, no retained
+    //       state. Milliseconds where a full C++ parse is seconds —
+    //       the first-paint colour source; the parse handle's spans
+    //       replace these when the parse lands (staged parsing stage 1,
+    //       docs/plans/2026-08-26-madcide-staged-parse-and-state.md).
+    value &lex_spans(value &out, const char *text, const char *filename);
+    int64_t project_open(const char *manifest);
+    value &project_tus(value &out, int64_t handle);
+    bool project_close(int64_t handle);
+    // The project build/run pair (^B correlation: with a manifest open,
+    // Build = the --project build):
+    //   project_build: the --project AOT lane IN-PROCESS — every TU
+    //       compiled with its manifest options, ONE MIR-assembled native
+    //       image ("exe"; "obj" = per-TU objects, so an explicit outpath
+    //       with more than one TU is refused — the CLI's rule). Empty
+    //       outpath = a.out ("exe") / per-TU naming ("obj"). out_diags
+    //       gets rows either way; a false always carries at least one
+    //       error row — per-TU DETAIL comes from a project CHECK
+    //       (project_open + parse_check per TU), run one first. The
+    //       whole call has no yield points (it blocks a cooperative
+    //       scheduler for the build's duration).
+    //   project_run: the --project JIT lane in a fork() child (parse,
+    //       link, run the entry; stdio INHERITED — suspend a tui first;
+    //       ^C reaches the guest alone). Returns the guest's exit status
+    //       (128+signal on a signal death); negative = never ran: -1
+    //       unreadable manifest, -2 empty manifest, -3 fork/spawn
+    //       failed. Windows: a child OF SELF runs the --project lane
+    //       (no fork; the frozen-project twin of parse_run's
+    //       --run-frozen is a named residue).
+    // Thread contract: the runtime-eval confinement.
+    bool project_build(value &out_diags, const char *manifest,
+		       const char *kind, const char *outpath);
+    int64_t project_run(const char *manifest);
+
+    // The build surface (madcide IDE-10c): the CLI's AOT lane run
+    // IN-PROCESS — parse `path` in a child Program (relative #includes
+    // resolve as the CLI's do), emit a native artifact at `outpath`.
+    // kind: "exe" = PIE executable (the CLI -o default), "obj" =
+    // relocatable object (-r -o). out_diags gets diagnostics rows (the
+    // diagnostics() shape) either way; a failure ALWAYS carries at least
+    // one error row. True = the artifact was written. The parse phase
+    // cooperates with `go` tasks; the emit phase runs without yield
+    // points (it briefly blocks a cooperative scheduler).
+    // Thread contract: the runtime-eval confinement — each call owns
+    // its child Program.
+    bool build_native(value &out_diags, const char *path, const char *kind,
+		      const char *outpath);
+    // The running compiler's own resolved executable path — "run this
+    // program" spawns a child OF SELF, never a PATH madc. Stable for the
+    // process lifetime; "" = the platform probe failed. Concurrent reads
+    // are safe.
+    const char *compiler_path();
+
+    // Value channels between cooperative tasks (MT-2; the Go contract —
+    // src/madc_task_chan.cpp carries the full semantics). capacity 0 =
+    // rendezvous; send/recv PARK the running task and are the blocking
+    // verbs `go` composes with. recv returns false only when the channel
+    // is closed AND drained (out becomes null); send on a closed channel
+    // and close of a closed channel throw (catch (const char *)). Values
+    // are COPIED through the channel — share by communicating.
+    int64_t chan_make(int64_t capacity);
+    bool chan_send(int64_t chan, value &v);
+    bool chan_recv(value &out, int64_t chan);
+    void chan_close(int64_t chan);
+    int64_t chan_len(int64_t chan);
+
+    // Fan-in select (MT-4; recv side — send cases and the keyword arrive
+    // with MT-5): `chans` = array of handles; parks until a case can
+    // receive; returns the fired index with the value in `out`.
+    // DETERMINISTIC: the lowest-index ready case wins. Closed-and-drained
+    // cases are disabled; -1 + null when every case is dead (the fan-in
+    // terminator). try_recv is the default-arm equivalent: 1 = got a
+    // value, 0 = would block, -1 = closed and drained.
+    int64_t chan_select(value &out, value &chans);
+    int64_t chan_try_recv(value &out, int64_t chan);
+
+    // Park this task for `ms` milliseconds of SCHEDULER time (real
+    // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
+    // jumps when only sleepers remain, so timed tests run instantly).
+    void sleep_ms(int64_t ms);
+
+    // Drain the task root scope NOW: run ready tasks until none remain
+    // live (idempotent; a no-op when nothing was spawned). The interim
+    // structured-join verb until MT-3 scopes land — for tearing down
+    // resources a still-running task writes to (main's end joins anyway,
+    // but only AFTER your teardown code ran). task_live = the live
+    // spawned-but-unfinished count (diagnostics; a poll loop's guard).
+    void task_drain();
+    int64_t task_live();
+
+    // Structured scopes + cancellation (MT-3; Kotlin's ownership over
+    // Go's spelling). scope_begin opens a scope and makes it this task's
+    // innermost: every `go` between begin and end attaches to it (no open
+    // scope = the root scope main's end drains — the pre-scope
+    // semantics). scope_end JOINS: it blocks until every attached task —
+    // and, transitively, every task of scopes opened inside — has
+    // finished, then throws the FIRST uncaught member error (as text,
+    // catch (const char *)), else throws "madc: task cancelled" when the
+    // scope was cancelled, else returns. Only the opening task may end a
+    // scope, innermost-first. A member's uncaught error CANCELS its
+    // siblings (the failed-child rule); the error rethrows at the join.
+    // scope_cancel requests cancellation of the scope's whole subtree
+    // (any task may call it; returns immediately): every member's NEXT
+    // blocking verb — chan send/recv/select, sleep_ms, channel reads —
+    // throws "madc: task cancelled" (sticky; a task spawned into a
+    // cancelled scope is born cancelled; cleanup after cancellation must
+    // not use blocking verbs). yield() is NOT a cancellation point;
+    // compute loops poll cancelled() — true when this task, or any scope
+    // it currently has open, is cancel-requested.
+    // Thread contract: single scheduler thread, cooperative (the task
+    // runtime's contract); handles are task-runtime-global.
+    int64_t scope_begin();
+    void scope_end(int64_t scope);
+    void scope_cancel(int64_t scope);
+    bool cancelled();
+
     // Line input, value-first: read one '\n'-terminated line from stdin
     // into a string-kind value (newline consumed, not stored). Returns
     // false only when NOTHING was read (clean EOF) — a final unterminated
@@ -104,9 +316,23 @@ namespace madc {
     // not streamable (a stderr notice, nothing written — C++ gives
     // std::vector no operator<< either, and the kind is only known at run
     // time). Present only when <ostream>/<iostream> precedes this header,
-    // the same guard model as the std::string conveniences above. Resolves
-    // mangled-direct to the real madc::operator<< (src/madc_value.cpp).
+    // the same guard model as the std::string conveniences above.
+    //
+    // The inserter's two RENDERINGS live in bits/value_stream (the lexer
+    // injects it in madc mode at the ostream guard's completion): the
+    // mangled-direct declaration when the script's stdlib flavor is the
+    // host's, an inline body compiled in the script's flavor when it is not.
+    // This twin is the strict-mode opt-in and repeats only the DECLARATION —
+    // under a flavor mismatch it would re-declare a function the fragment
+    // DEFINES, and the emitted C carried the symbol twice with different
+    // types (the libcxx_gate's strict-C11 check on testiomanip) — so it steps
+    // aside exactly when the fragment renders the body; the predicate is the
+    // fragment's (the lexer's __MADC_HOST_LIBCPP__ vs the script's
+    // _LIBCPP_VERSION).
+#if (defined(_LIBCPP_VERSION) && defined(__MADC_HOST_LIBCPP__)) \
+ || (!defined(_LIBCPP_VERSION) && !defined(__MADC_HOST_LIBCPP__))
     std::ostream &operator<<(std::ostream &os, const value &v);
+#endif
 #endif
 
     // The system object (Python `sys` convention — include this header
@@ -161,10 +387,38 @@ namespace madc {
 	bool close_write();
 	void close();
 
+	// Readiness (MT-4b): poll_state() = 1 when read/readline makes
+	// progress NOW (buffered text, readable bytes, or the one EOF/error
+	// observation a read surfaces), 0 = it would wait, -1 = dead
+	// (failed, closed, or EOF fully drained). Channels with no waitable
+	// read side (memory, file) always report 1 — their reads never
+	// block. wait_readable() parks the calling task until progress is
+	// possible (true) or the channel is dead (false). read_wait_handle()
+	// is the raw poll handle for event-loop plumbing (a CRT fd; -1 =
+	// not waitable).
+	int64_t poll_state();
+	bool wait_readable();
+	int64_t read_wait_handle();
+
+	// Abandon the transfer NOW (stop-this-build): tear down the
+	// endpoint without waiting for graceful completion — an exec://
+	// child is SIGTERMed — so a following close() returns promptly.
+	void cancel();
+
     private:
 	channel(const channel &);
 	channel &operator=(const channel &);
 
 	void *impl_;
     };
+
+    // Byte-endpoint select case (MT-4b): register a channel whose READ
+    // readiness selects beside value channels in chan_select. The case
+    // FIRES with out = null when read/readline would make progress — the
+    // script then reads from the channel object it holds. A dead endpoint
+    // (EOF drained, or failed) DISABLES like a closed-and-drained value
+    // channel. Register once and reuse the handle; the channel object must
+    // outlive it. Throws when the channel has no waitable read side
+    // (memory/file reads never block, so there is nothing to wait on).
+    int64_t chan_readable(channel &c);
 }

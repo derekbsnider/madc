@@ -117,6 +117,7 @@ image, the libmadc image, `<exe>.forest` / `<lib>.forest` sidecars,
 |--------|--------|
 | `-v`, `--verbose` | tokenizer / parser / lowering trace |
 | `-g` | debug info: gdb can break, step, and inspect the JIT'd program (forces `-O0`) |
+| `-w` | inhibit all warning messages (gcc `-w`); errors are unaffected |
 | `--show-stats` | read/lex/parse/c2mir/execute timing and size stats on stderr |
 | `-O0` … `-O3` | JIT optimization level |
 

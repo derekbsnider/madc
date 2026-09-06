@@ -12,6 +12,16 @@
 
 namespace madc {
 
+#ifndef _WIN32
+// Map a reaped waitpid status to the process-facing exit shape (128+signal
+// for a killed child) — THE one owner (dupaudit family
+// child_status_exit_mapping; gate: check-child-status-map-owner.sh).
+// Defined in madc_process.cpp; Process::wait / wait_or_kill and the
+// fork-Run reap (parse_run) all route through it. -1 = neither exited nor
+// signaled.
+int map_child_status(int child_status);
+#endif
+
 struct ProcessOptions
 {
 	std::vector<std::string> args;
@@ -39,6 +49,13 @@ public:
 
 	bool close_stdin(error *err = nullptr);
 	bool wait(error *err = nullptr);
+
+	// Reap with an escalation deadline (MT-3b): poll for exit up to
+	// grace_ms, then hard-kill (SIGKILL / TerminateProcess) and reap.
+	// The cancelled-channel close path — a child that ignored
+	// terminate()'s SIGTERM must not hang the caller forever. Prefer
+	// wait() everywhere a child is EXPECTED to exit on its own.
+	bool wait_or_kill(int grace_ms, error *err = nullptr);
 
 	bool started() const;
 	bool exited() const;

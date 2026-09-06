@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testprojecterrline_a.mad","command":"madc -c testprojecterrline_a.mad"},
+  {"directory":"tests","file":"testprojecterrline_b.mad","command":"madc -c testprojecterrline_b.mad"}
+]

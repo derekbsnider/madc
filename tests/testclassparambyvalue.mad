@@ -1,0 +1,61 @@
+// A by-value CLASS parameter is the callee's OWN object (Itanium ABI: a class
+// that is non-trivial for the purposes of calls is passed by invisible
+// reference — the caller copy/move-constructs the parameter object and
+// destroys it after the call). The oracle is g++ == clang++.
+#include <stdio.h>
+
+int copies = 0, moves = 0, live = 0, dtors = 0;
+
+struct D {
+	int n;
+	D(int v) : n(v) { live++; }
+	D(const D &o) : n(o.n + 100) { copies++; live++; }
+	D(D &&o) : n(o.n + 1000) { moves++; live++; }
+	~D() { live--; dtors++; }
+};
+
+void f(D d)
+{
+	d.n += 5;			// mutates the PARAMETER, never the caller's object
+	printf("f %d\n", d.n);
+}
+
+int sum(D a, D b) { return a.n + b.n; }
+
+// A class with only a destructor: the implicit copy constructor copies the
+// members, and the parameter object is still destroyed.
+int rd = 0;
+struct R {
+	int k;
+	~R() { rd++; }
+};
+void h(R r) { printf("h %d\n", r.k); }
+
+// Trivially copyable: stays a plain by-value struct (Itanium: passed in
+// registers / by value).
+struct P { int x; int y; };
+int g(P p) { p.x += 10; return p.x + p.y; }
+
+// Each call sits in its own block: the parameter object is destroyed by the
+// caller at the end of the full-expression (g++), and madc's materialized
+// temporaries carry a scope-exit cleanup — the block end is where both agree
+// (the temporaries' lifetime model is KG Gap
+// temporaries_scope_lived_not_full_expression, not this ABI's).
+int main()
+{
+	D a(1);
+	{ f(a); }			// lvalue: copy constructor -> f 106; a untouched
+	printf("a %d copies %d live %d\n", a.n, copies, live);
+	{ f(D(7)); }			// prvalue: the temporary IS the parameter -> f 12, no copy
+	printf("copies %d moves %d live %d\n", copies, moves, live);
+	{ f(static_cast<D &&>(a)); }	// xvalue: move constructor -> f 1006
+	printf("copies %d moves %d live %d\n", copies, moves, live);
+	{ printf("sum %d\n", sum(a, D(2))); }
+	printf("dtors %d live %d\n", dtors, live);
+	R r; r.k = 3;
+	{ h(r); }
+	printf("rd %d\n", rd);
+	P p; p.x = 1; p.y = 2;
+	printf("g %d p.x %d\n", g(p), p.x);
+	return 0;
+}

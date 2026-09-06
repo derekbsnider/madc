@@ -288,10 +288,15 @@ struct cir_ledger_module
 // (--freeze-mir-cache; blob failure never fails the freeze).
 // `ledger` (non-empty) packs the AOT ledger segment — the C-lane runtime
 // modules a -static-libmadc emit merges into the produced image (S5).
-// Returns 0 on success, -1 on failure.
+// `progress` gates the SUCCESS status lines only ("Froze ...", "mir
+// cache: ... packed") — CLI lanes keep them; the library Run verb
+// (parse_run's win freeze arm) passes false so an IDE Run stays clean.
+// Warnings and errors print regardless. Returns 0 on success, -1 on
+// failure.
 int madc_cir_freeze(Program *prog, const char *source_name,
 		    const char *out_path, bool append, bool mir_cache = false,
-		    const std::vector<cir_ledger_module> *ledger = NULL);
+		    const std::vector<cir_ledger_module> *ledger = NULL,
+		    bool progress = true);
 
 // Compile the AOT ledger sources (--freeze-ledger=, one per call site entry;
 // scripts/ledger_sources.txt is the canonical list) into MIR modules with

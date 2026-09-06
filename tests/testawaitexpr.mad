@@ -1,0 +1,14 @@
+// MT-5 refusal reducer: `await` in general EXPRESSION position (a call
+// argument here) is statement-level in this slice — the CIR builder
+// refuses it loud, naming the supported forms. General expression
+// position unlocks with L3 value-by-value returns.
+void take(var x)
+{
+}
+
+int main()
+{
+    long c = madc::chan_make(1);
+    take(await c);
+    return 0;
+}

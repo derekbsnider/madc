@@ -1,0 +1,9 @@
+p|go|||go|true|true|
+p|take|||take|true|true|
+p|drop|||drop|true|true|
+p|open|||open|true|true|
+p|light|||light|true|true|
+p|douse|||douse|true|true|
+p|inventory|||inventory|true|true|
+p|edit|||edit|true|false|Only a builder may reshape the world.
+b|edit|||edit|true|true|

@@ -1,6 +1,7 @@
 #include <stdio.h>
 
-typedef __WCHAR_TYPE__ wchar_t;
+// wchar_t is a keyword of the dialect (and of C++): redeclaring it with a
+// typedef is ill-formed there (g++: "redeclaration of C++ built-in type").
 wchar_t x[] = L"Ä";
 const wchar_t ws[] = L"foo";
 

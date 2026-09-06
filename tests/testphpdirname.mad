@@ -1,0 +1,33 @@
+// php::dirname — zend_dirname parity (real PHP 8 is the oracle; owner
+// law php-parity). POSIX: '/' is the one separator. The win64 domain
+// twin (.win64_expect) carries the WINDOWS-HOST outputs, where '\'
+// separates too and a drive prefix ("C:") survives — PHP's IS_SLASH is
+// a build-platform property, never an input mode. levels defaults to 1;
+// PHP 8's ValueError on levels < 1 maps pre-L3 to a loud stderr refusal
+// + "". Ring-lifetime returns print immediately; the subject is never
+// mutated (PHP string functions return a NEW string).
+int main()
+{
+    println("d01={}", php::dirname("/usr/local/lib"));
+    println("d02={}", php::dirname("/usr/local/lib///"));
+    println("d03={}", php::dirname("/usr"));
+    println("d04={}", php::dirname("/"));
+    println("d05={}", php::dirname("///"));
+    println("d06={}", php::dirname("usr"));
+    println("d07={}", php::dirname("."));
+    println("d08={}", php::dirname(".."));
+    println("d09=[{}]", php::dirname(""));
+    println("d10={}", php::dirname("a/b/c", 2));
+    println("d11={}", php::dirname("/a/b/c/d", 3));
+    println("d12={}", php::dirname("a/b", 5));
+    println("d13={}", php::dirname("a\\b"));
+    println("d14={}", php::dirname("C:\\x\\y"));
+    println("d15={}", php::dirname("C:\\"));
+    println("d16={}", php::dirname("c:foo"));
+    var p = "/e/f/g";
+    println("d17={}", php::dirname(p));
+    println("d18={}", php::dirname(p, 2));
+    println("d19=[{}]", php::dirname("/a/b", 0));
+    println("d20={}", p);
+    return 0;
+}

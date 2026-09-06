@@ -77,7 +77,25 @@ enum
      * fails LOUDLY instead of silently re-widening every `long`. */
     MADC_TYPEID_PLATFORM_LONG  = 35,
     MADC_TYPEID_PLATFORM_ULONG = 36,
-    MADC_TYPEID_PRIMITIVE_LAST = 36,
+    /* Platform `long long` / `unsigned long long` (the darwin mirror of
+     * 35/36): distinct 8-byte dds minted by dd_platform_longlong()/
+     * dd_platform_ulonglong() ONLY where the target is LP64 yet aliases
+     * int64_t to long long (Apple). Everywhere else the accessors return
+     * ddINT64/ddUINT64 (slots 10/15) and these slots resolve NULL — the
+     * same reserved-slot rule as 35/36. */
+    MADC_TYPEID_PLATFORM_LONGLONG  = 37,
+    MADC_TYPEID_PLATFORM_ULONGLONG = 38,
+    /* wchar_t / char16_t / char32_t: DISTINCT types on EVERY target ([basic.
+     * fundamental]: wchar_t is not a typedef; Itanium w / Ds / Di). Minted
+     * by dd_platform_wchar() (target-shaped: int32 storage on LP64, uint16 on
+     * LLP64), dd_char16(), dd_char32(). Never NULL — unlike 35-38 these have
+     * no "the accessor returns a pinned dd here" arm; before they existed,
+     * wchar_t WAS ddINT32 and a wchar_t-bound template argument spelled
+     * int32_t, so ctype<wchar_t>'s specialization was invisible to it. */
+    MADC_TYPEID_PLATFORM_WCHAR = 39,
+    MADC_TYPEID_CHAR16         = 40,
+    MADC_TYPEID_CHAR32         = 41,
+    MADC_TYPEID_PRIMITIVE_LAST = 41,
 
     MADC_TYPEID_PRIMITIVE_END  = 0x100,
     MADC_TYPEID_SYSTEM_BASE    = 0x100

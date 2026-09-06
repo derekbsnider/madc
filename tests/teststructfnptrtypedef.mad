@@ -1,0 +1,37 @@
+// `typedef struct S * (*fty)();` — a fn-ptr declarator in a struct-tag
+// typedef list (c-testsuite 00089): the typedef-struct arm adopts
+// parse_fnptr_member_tail (the one `( * name ) ( params )` owner), and
+// the fn-ptr alias must NOT re-register the tag in struct_map. The call
+// chain `go()()->member()` then exercises "a call result of fn-ptr type
+// invoked again calls the VALUE" — both the grouping-close path
+// (statement position) and the argument-position path.
+// Oracle: gcc/clang print a=7 b=7.
+static int zero()
+{
+    return 7;
+}
+
+struct S {
+    int (*zerofunc)();
+} s;
+
+static struct S *anon()
+{
+    return &s;
+}
+
+typedef struct S * (*fty)();
+
+static fty go()
+{
+    return &anon;
+}
+
+int main()
+{
+    s.zerofunc = &zero;
+    struct S *r = go()();
+    printf("a=%d\n", r->zerofunc());
+    printf("b=%d\n", go()()->zerofunc());
+    return 0;
+}

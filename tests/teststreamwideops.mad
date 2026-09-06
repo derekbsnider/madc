@@ -1,0 +1,27 @@
+// Stream inserters with ARRAY and WIDE operands, and sizeof of string literals.
+// Three defects of one family: (1) the free-operator path typed a fixed-array
+// operand as its bare ELEMENT (no [conv.array] decay), so `cout << ca` bound
+// operator<<(ostream&, char) and printed garbage; (2) the generic inserter
+// operator<<(basic_ostream<_CharT,_Traits>&, const _CharT*) was matched with
+// its RAW parameter spelling — the lhs-deduced binding never substituted —
+// so every wide stream fell to the member operator<<(const void*) and printed
+// a POINTER for `wcout << L"x"` and `wcout << (const wchar_t*)q`; (3) both
+// sizeof arms measured a wide literal's 4-byte payload in bytes (sizeof(L"x")
+// read 5). Oracle: g++ and clang++ print arr ok / 1 1 1 1 / warr ok / ptr ok /
+// lit ok.
+#include <iostream>
+int main()
+{
+    char ca[] = "arr ok";
+    wchar_t wa[] = L"warr ok";
+    const wchar_t *q = L"ptr ok";
+    std::cout << ca << std::endl;
+    std::cout << (int)(sizeof("x") == 2) << " "
+	<< (int)(sizeof(L"x") == 2 * sizeof(wchar_t)) << " "
+	<< (int)(sizeof(wa) == 8 * sizeof(wchar_t)) << " "
+	<< (int)(sizeof(ca) == 7) << std::endl;
+    std::wcout << wa << std::endl;
+    std::wcout << q << std::endl;
+    std::wcout << L"lit ok" << std::endl;
+    return 0;
+}

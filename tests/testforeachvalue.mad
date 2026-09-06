@@ -22,7 +22,7 @@ int main()
 
 	// The element keeps its kind: string kinds have a countable length,
 	// the integer kind throws — through the SAME loop variable.
-	for ( value v : a )
+	for ( var v : a )
 	{
 		try {
 			printf("len=%lld str=%s\n", v.count(), v);
@@ -32,15 +32,15 @@ int main()
 	}
 
 	// The element is a COPY: mutating it must not touch the source.
-	for ( value v : a )
+	for ( var v : a )
 		v = "clobbered";
-	for ( value v : a )
+	for ( var v : a )
 		printf("intact=%s\n", v);
 
 	// An empty array iterates zero times; a value element still compiles.
 	array e;
 	long visited = 0;
-	for ( value v : e )
+	for ( var v : e )
 		visited = visited + 1;
 	printf("empty visited=%ld\n", visited);
 	return 0;

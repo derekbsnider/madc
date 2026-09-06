@@ -21,9 +21,13 @@
 #   - /workspace/madc — the git tree (MIR included at third_party/mir),
 #     restored by scripts/remote_build.sh sync (or a clone).
 #   - /workspace/zstd — the per-target static zstd builds the hosted darwin
-#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1);
-#     the darwin twins rebuild from that tree by hand if lost, the win64 one
-#     is staged below.
+#     AND hosted-windows modes link (forest-carriers S1; windows lane W4.1).
+#     The tree itself is the v1.5.5 clone; its three archives ARE staged
+#     below (win64 here, the darwin twins via scripts/stage_darwin_zstd.sh
+#     once the SDK is present).
+#   Staged here (self-healing, fetch scripts own them): the darwin open C
+#   headers, the pinned libc++ text + copyright (/workspace/libcxx-headers —
+#   the mac packager's ONE copyright source), the UCRT libstdc++ stage.
 set -u
 
 CHECK_ONLY=0
@@ -39,7 +43,11 @@ CHECK_ONLY=0
 #            the standard library madc's second ABI flavor targets
 # codec      zstd: the forest / PCH container codec (HAVE_ZSTD)
 # storage    madcdat backends configure probes for
-# cross      qemu-user-static: runs aarch64-linux artifacts on x86-64
+# cross      qemu-user-static: runs aarch64-linux artifacts on x86-64;
+#            gcc/g++-aarch64-linux-gnu: the cross toolchain + sysroot that
+#            builds an aarch64 c2m and the gcc oracle for it (the qemu loop
+#            for MIR aarch64 work -- the 2026-07-25 install was never pinned
+#            here and a container rebuild silently lost it)
 # gdb: parser-crash attribution — a stack-overflow SIGSEGV's recursion cycle
 # is visible in three backtrace frames (how the libc++ <string> allocator
 # CRTP loop was found, 2026-07-28); the built-in handler prints raw
@@ -67,11 +75,15 @@ PKGS_codec="libzstd-dev zlib1g-dev"
 # without it configure reports xqdbm=0 and the build quietly loses a
 # backend (and its unit-test surface) versus the pre-crash config.
 PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
-PKGS_cross="qemu-user-static"
+PKGS_cross="qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
 # rpm supplies rpmbuild for scripts/package_release.sh (.rpm leg); dpkg-deb
 # is part of the base image but rpm is not — its absence 127'd the v0.69.0
 # promote's package build after a container rebuild dropped the apt layer.
-PKGS_package="rpm"
+# cpio + unzip: scripts/package_install_gate.sh (PK4) extracts the shipped
+# artifact bytes — rpm2cpio|cpio for the .rpm, unzip for the Windows zip;
+# zip is the win packager's own dependency. All three would read as green
+# if lost (the gate only runs at package time), so they are pinned here.
+PKGS_package="rpm cpio zip unzip zstd"
 # winlane: the windows release lane (Track 6.4). The -posix flavor is
 # deliberate — winpthreads provides the pthread/std::thread surface madc
 # uses. wine64 is the interim/isolation runner for cross-built PE binaries
@@ -97,9 +109,10 @@ ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package
 # versioned name we invoke).
 BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
-      qemu-aarch64-static
+      qemu-aarch64-static aarch64-linux-gnu-gcc aarch64-linux-gnu-g++
       x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine
-      php"
+      php
+      rpmbuild rpm2cpio cpio zip unzip"
 
 report() {
 	local missing=0
@@ -111,6 +124,18 @@ report() {
 			missing=1
 		fi
 	done
+	# The aarch64 sysroot paths c2m's std_libs dlopen under qemu-user
+	# (-L /usr/aarch64-linux-gnu): Debian's cross libc lives in .../lib only,
+	# while c2m (and glibc's loader) spell /lib64 and /lib/aarch64-linux-gnu.
+	# Two links make both resolve (staged below); without them every JIT
+	# import fails ("can not load symbol memcpy").
+	if [ -e /usr/aarch64-linux-gnu/lib64/libc.so.6 ] \
+	   && [ -e /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu/libc.so.6 ]; then
+		printf '  ok      aarch64 sysroot lib64 + multiarch links\n'
+	else
+		printf '  MISSING aarch64 sysroot lib64 / multiarch links (staged below)\n'
+		missing=1
+	fi
 	# The SDK is not ours to install, but its absence silently downgrades the
 	# darwin gates to skips — so always say whether it is there.
 	local sdk="${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}"
@@ -133,6 +158,15 @@ report() {
 		printf '  MISSING darwin open headers — scripts/fetch_darwin_open_headers.sh stages them\n'
 		missing=1
 	fi
+	# The pinned libc++ header text + copyright (darwin-host port D2b/D3):
+	# the mac packager ships THIS stage's copyright — its one source.
+	local lhome="${LIBCXX_HEADERS_HOME:-/workspace/libcxx-headers}"
+	if [ -f "$lhome/.PROVENANCE" ] && [ -s "$lhome/copyright" ]; then
+		printf '  ok      pinned libc++ stage (%s)\n' "$(cat "$lhome/.PROVENANCE")"
+	else
+		printf '  MISSING pinned libc++ stage (%s) — scripts/fetch_libcxx_headers.sh stages it\n' "$lhome"
+		missing=1
+	fi
 	# The win64 zstd stage (W4.1): the hosted-windows MODE links it, and its
 	# absence fails that build loudly at link — but report it here so a lost
 	# stage is visible before a build is attempted.
@@ -143,6 +177,18 @@ report() {
 		printf '  MISSING win64 zstd stage (%s) — staged below from /workspace/zstd\n' "$wzstd"
 		missing=1
 	fi
+	# The darwin zstd twins (forest-carriers S1): the hosted-<arch>-macos
+	# MODEs link them; ONE recipe, scripts/stage_darwin_zstd.sh.
+	local a dzstd
+	for a in arm64 x86-64; do
+		dzstd="${DARWIN_ZSTD_DIR:-/workspace/zstd}/libzstd-$a-macos.a"
+		if [ -f "$dzstd" ]; then
+			printf '  ok      darwin zstd stage (%s)\n' "$dzstd"
+		else
+			printf '  MISSING darwin zstd stage (%s) — scripts/stage_darwin_zstd.sh %s (needs the SDK)\n' "$dzstd" "$a"
+			missing=1
+		fi
+	done
 	return $missing
 }
 
@@ -160,8 +206,18 @@ echo "provision_container: installing"
 # One transaction: a partial install is harder to reason about than a failure.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $ALL || exit 1
 
+# aarch64-linux sysroot links (see report): idempotent.
+if [ -d /usr/aarch64-linux-gnu/lib ]; then
+	echo "provision_container: linking the aarch64 sysroot lib64 + multiarch paths"
+	sudo ln -sfn lib /usr/aarch64-linux-gnu/lib64 || exit 1
+	sudo ln -sfn . /usr/aarch64-linux-gnu/lib/aarch64-linux-gnu || exit 1
+fi
+
 echo "provision_container: staging darwin open headers (W0.5 prelude input)"
 bash "$(dirname "$0")/fetch_darwin_open_headers.sh" || exit 1
+
+echo "provision_container: staging the pinned libc++ text + copyright (darwin-host port D2b)"
+bash "$(dirname "$0")/fetch_libcxx_headers.sh" || exit 1
 
 echo "provision_container: staging UCRT-flavor libstdc++ (windows lane W1)"
 bash "$(dirname "$0")/build_win_ucrt_libstdcxx.sh" || exit 1
@@ -184,6 +240,17 @@ if [ ! -f "$WZSTD_A" ]; then
 	# never leave a target-flavored libzstd.a in lib/ for another target's
 	# build to pick up stale
 	rm -f /workspace/zstd/lib/libzstd.a
+fi
+
+# darwin zstd twins (forest-carriers S1 / darwin-host D3): the hosted MODE's
+# own CC/AR build them, which needs the owner-supplied SDK — without it the
+# report above already says MISSING; do not turn that into a provisioning
+# failure here.
+if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
+	for a in arm64 x86-64; do
+		echo "provision_container: staging darwin zstd ($a)"
+		bash "$(dirname "$0")/stage_darwin_zstd.sh" "$a" || exit 1
+	done
 fi
 
 echo "provision_container: verifying"

@@ -1,0 +1,20 @@
+#!/../bin/madc
+// perl::substr range semantics — the REAL perl 5 oracle:
+//   substr("hello", 1, 3)  -> "ell"
+//   substr("hello", 5, 2)  -> ""     (offset == length: empty, defined)
+//   substr("hello", 9, 1)  -> undef  (offset PAST the end: undef — the
+//                                     lean carrier maps undef to ""; the
+//                                     pre-fix code let std::string::substr
+//                                     THROW out_of_range and ABORT the
+//                                     whole process on this input)
+//   substr("hello", -3, 2) -> "ll"
+//   substr("hello", 2, -1) -> "ll"
+int main()
+{
+    println("a:{}", perl::substr("hello", 1, 3));
+    println("b:{}", perl::substr("hello", 5, 2));
+    println("c:{}", perl::substr("hello", 9, 1));
+    println("d:{}", perl::substr("hello", -3, 2));
+    println("e:{}", perl::substr("hello", 2, -1));
+    return 0;
+}

@@ -9,10 +9,10 @@
 
 // Range-for over a value& PARAMETER (the container-address unwrap in
 // the foreach lowering — a reference must not decay-load).
-long sum_ref(value &arr)
+long sum_ref(var &arr)
 {
 	long total = 0;
-	for ( value x : arr )
+	for ( var x : arr )
 		total = total + x.as_integer();
 	return total;
 }
@@ -20,7 +20,7 @@ long sum_ref(value &arr)
 // Carrier methods AND std::println {} on a value& PARAMETER — the
 // reference-to-carrier unwrap lanes (carrier_behind, the format
 // classifier).
-long ref_scan(value &text)
+long ref_scan(var &text)
 {
 	// empty() on a value& receiver rides the carrier exemption, not the
 	// std::string size()==0 rewrite.

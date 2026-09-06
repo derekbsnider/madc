@@ -1,0 +1,28 @@
+// `int (* (*p)(int a, int b))(int c, int d) = f1;` — a fn-ptr declarator
+// whose RETURN type is itself a fn-ptr (c-testsuite 00124): the fn-ptr
+// declaration arm stashes the nested inner declarator and re-enters itself
+// one level per pass (recursion via the stream, the spiral-stash technique),
+// and fnptr_decl_pieces recurses on a DataDefFPTR return so the emitted
+// declarator keeps the full C spiral instead of degrading the return type
+// to a generic 64-bit integer.
+// Oracle: gcc/clang print r=0 s=5 n=1.
+int f2(int c, int b)
+{
+    return c - b;
+}
+
+int (* f1(int a, int b))(int c, int b)
+{
+    if (a != b)
+        return f2;
+    return 0;
+}
+
+int main()
+{
+    int (* (*p)(int a, int b))(int c, int d) = f1;
+    printf("r=%d\n", (*(*p)(0, 2))(2, 2));
+    printf("s=%d\n", p(1, 3)(9, 4));
+    printf("n=%d\n", p(2, 2) == 0);
+    return 0;
+}

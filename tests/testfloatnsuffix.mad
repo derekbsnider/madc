@@ -1,0 +1,17 @@
+// C23 _FloatN literal suffixes (f16/f32/f64/f128 + gcc's bf16) lex as ONE
+// literal (decimal, scientific, and hex-float paths all share
+// eat_real_suffix) and ride the nearest-supported approximation the
+// _Float16/_Float32 TYPE spellings use: f16/f32/bf16 -> float,
+// f64 -> double, f128 -> long double.
+// Oracle: gcc 13 -std=gnu2x accepts all of these and prints the same
+// VALUES; sizeof(0.5f16) diverges by design (gcc: 2 — real _Float16;
+// madc: 4 — the documented nearest-supported posture, the same one the
+// _Float16 type spelling carries in add_datatypes).
+// Motivating consumer: mingw's avx512fp16intrin.h spells `0.0f16`
+// inside the winnt.h -> x86intrin.h chain, so the win release pack's
+// AOT-ledger build must parse it (it was the first thing the s149b
+// juxtaposition wall caught there).
+printf("%g %g %g %Lg %g\n", (double)0.5f16, (double)1.25f32, 2.5f64, 3.5f128, (double)4.5bf16);
+printf("%d %d %d %d\n", (int)sizeof(0.5f16), (int)sizeof(1.25f32), (int)sizeof(2.5f64), (int)sizeof(1e2f32));
+printf("%g %g\n", (double)1e2f16, (double)0x1.8p1f16);
+printf("%g %g\n", (double)1.5F16, (double)2.5F64);

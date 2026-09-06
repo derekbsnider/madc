@@ -1,0 +1,34 @@
+// A hidden-friend operator TEMPLATE defined inside a class is a namespace-scope
+// function template ([class.friend], [temp.friend]) found by ADL — libc++
+// spells every <iomanip> manipulator inserter this way (__iom_t5 = setw).
+// Its body reads the private member it was befriended for.
+// Oracle g++ / clang++: tag5 | w7 | ok
+#include <iostream>
+
+class Tag {
+	int n;
+public:
+	Tag(int v) : n(v) {}
+	template<class C, class T>
+	friend std::basic_ostream<C, T>& operator<<(std::basic_ostream<C, T>& os, const Tag& t)
+	{
+		return os << "tag" << t.n;
+	}
+};
+
+struct Width {
+	int w;
+	template<class C, class T>
+	friend std::basic_ostream<C, T>& operator<<(std::basic_ostream<C, T>& os, const Width& x)
+	{
+		os << "w" << x.w;
+		return os;
+	}
+};
+
+int main()
+{
+	Width wd = {7};
+	std::cout << Tag(5) << " | " << wd << " | " << "ok" << std::endl;
+	return 0;
+}

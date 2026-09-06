@@ -1,7 +1,9 @@
 #!/usr/bin/env madc
 #include <iostream>
 using namespace std;
-// Mini SMAUG-like test — exercises all Phase A/B/C features
+// Mini SMAUG-SHAPED skeleton — exercises the Phase A/B/C constructs reduced
+// from SMAUG. NOT the real SMAUG: scripts/smaug_gate.sh (in fulltest) boots
+// the actual MadSMAUG 51-TU --project to its ready line.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

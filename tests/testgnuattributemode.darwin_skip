@@ -1,0 +1,1 @@
+redeclares int16_t/int32_t/int64_t with a different signedness than Apple's <stdio.h> (via <sys/_types/_int16_t.h> etc.) already typedefs; clang on macOS rejects the same source (typedef redefinition with different types) — glibc's <stdio.h> declares none of them, so the test is linux-domain

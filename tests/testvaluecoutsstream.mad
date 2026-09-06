@@ -7,7 +7,7 @@
 int main()
 {
 	std::ostringstream os;
-	value v = 3.5;
+	var v = 3.5;
 	os << v;
 	cout << os.str() << endl;
 	return 0;

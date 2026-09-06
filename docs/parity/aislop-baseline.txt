@@ -1,0 +1,72 @@
+# aislop baseline — src/ scanned 2026-09-02 on the build container (aislop 0.16.0, `npx aislop@latest scan ./src --json`; full JSON = tmp/aislop-baseline.json, 4.5 MB, not committed).
+# Rule #4/#7 cleanup plan P1 (docs/plans/2026-09-02-rule4-rule7-cleanup.md). Format: <count> <key>.
+# score 32 (Critical); files scanned 80; diagnostics 5754; engines: format=0 (skipped), lint=0 (skipped), code-quality=250, ai-slop=5503, security=1
+#
+# HOUSE-CONVENTION rules (not defects here — the repo mandates NULL, DBG(cout ...) diagnostics and C-style casts in C++11 code; to be disabled in .aislop/config.yml before any ratchet):
+3107 rule ai-slop/cpp-null-literal
+1338 rule ai-slop/cpp-c-style-cast
+547 rule ai-slop/cpp-iostream-leftover
+400 rule ai-slop/cpp-endl-in-stream
+# SIGNAL rules (362 findings; the ratchet's population):
+181 rule complexity/function-too-long
+79 rule ai-slop/cpp-manual-delete
+46 rule complexity/too-many-params
+16 rule complexity/file-too-large
+14 rule ai-slop/todo-stub
+12 rule ai-slop/cpp-define-constant
+7 rule complexity/deep-nesting
+6 rule ai-slop/unreachable-code
+1 rule security/shell-injection
+# per-file totals (all rules) / signal-only:
+2628/134 file parser.cpp
+1246/75 file cir_builder.cpp
+432/22 file lexer.cpp
+365/41 file madc_cir.cpp
+222/11 file cir_freeze.cpp
+97/11 file madc_program.cpp
+78/4 file madc.cpp
+73/23 file cir_dump.cpp
+60/0 file madc_value.cpp
+55/3 file madc_c_api.cpp
+47/1 file ns_php.cpp
+43/0 file madc_mir_backend.cpp
+41/1 file madcdis_snapshot.cpp
+34/5 file ns_ui.cpp
+32/3 file madc_process.cpp
+31/1 file madc_posix_io.cpp
+30/1 file pch.cpp
+27/0 file va_helpers.cpp
+25/3 file madc_task_chan.cpp
+20/2 file cir_format.cpp
+19/1 file madc_config_file.cpp
+19/0 file madc_dl.cpp
+18/0 file ns_perl.cpp
+14/0 file ns_python.cpp
+14/1 file ui_term.cpp
+11/0 file madc_crash.cpp
+11/0 file ns_js.cpp
+10/0 file madc_socket_channel.cpp
+9/1 file cir_emit_c.cpp
+7/7 file madcdis_storage.cpp
+6/0 file ns_common.cpp
+5/0 file ns_rust.cpp
+4/0 file libc_signatures.cpp
+4/0 file rt_dump_value.cpp
+2/2 file cir_freeze.h
+1/1 file cir_builder.h
+1/1 file madc_mangle.cpp
+1/1 file madcdat_storage_bdb.cpp
+1/1 file madcdat_storage_gdbm.cpp
+1/1 file madcdat_storage_qdbm.cpp
+1/1 file madcdat_storage_sqlite.cpp
+1/1 file rt/rt_format.c
+1/1 file cir_node.h
+1/1 file madc_channel_object.cpp
+1/0 file madc_config.cpp
+1/0 file madc_globals.cpp
+1/0 file madc_project.cpp
+1/0 file ns_madc.cpp
+1/0 file ns_ruby.cpp
+1/0 file rt_format_value.cpp
+# NOTE: security/shell-injection = parser.cpp madc_system(), the extern-C runtime shim behind the LANGUAGE's system() call — by design, not an injection in madc (scoped aislop-ignore-line when the config lands).
+# NOTE: zero ai-slop duplicated-helper findings — the detector does not reach C++; semantic duplication stays with /dupaudit + DupFamily nodes.

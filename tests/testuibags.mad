@@ -19,7 +19,7 @@ int main()
 	var travel;
 	ui::get(travel, w, start, "travel");
 	long n = 0;
-	for ( value r : travel )
+	for ( var r : travel )
 	{
 		if ( n == 0 )
 		{
@@ -50,7 +50,7 @@ int main()
 	var held;
 	ui::contents(held, w, bld);
 	printf("held=%lld\n", held.count());
-	for ( value h : held )
+	for ( var h : held )
 		printf("- %s\n", h.c_str());
 
 	long lamp = ui::entity_by_name(w, "LAMP");

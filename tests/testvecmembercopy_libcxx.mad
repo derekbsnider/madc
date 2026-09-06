@@ -1,0 +1,28 @@
+// -stdlib=libc++ twin of testvecmembercopy: the by-value return of a struct
+// with a std::vector member copies the vector through libc++'s
+// __uninitialized_allocator_copy, whose __unwrap_range names its result type
+// through a DEFAULTED template parameter `_Unwrapped = decltype(std::__unwrap_iter(
+// std::declval<_Iter>()))`; the unevaluated-call return lane resolved it to the
+// int64 placeholder and the dispatch to __uninitialized_allocator_copy_impl found
+// no viable overload (darwin: undefined MIR import / `lvalue required as unary &`
+// at vector:387). Oracle: clang++ -stdlib=libc++ == g++ print n=1.
+#include <vector>
+
+struct S {
+	std::vector<int> v;
+	S() {}
+};
+
+static S make()
+{
+	S s;
+	s.v.push_back(1);
+	return s;
+}
+
+int main()
+{
+	S a = make();
+	printf("n=%d\n", (int)a.v.size());
+	return 0;
+}

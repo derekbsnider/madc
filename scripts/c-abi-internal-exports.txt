@@ -1,0 +1,57 @@
+# c-abi-internal-exports.txt — extern-C exports of libmadc.so that are
+# INTERNAL: not part of the C ABI (docs/adr/0003-c-abi-stance.md), but
+# classified so scripts/check-c-abi-surface.sh can prove the surface
+# complete. Field 1 = symbol (exact match); the rest of the line is the
+# disposition. A NEW export belongs in madc_api.h (ABI), under a
+# machinery prefix (__madc_*), or here WITH a disposition — never
+# unlisted.
+#
+# madc_-prefixed internals: engine globals + runtime entries wearing
+# the contract prefix. Rename to __madc_* is a .so.1-era item — the
+# forest ledger packs symbol names, so a rename has artifact blast
+# radius and rides a deliberate slice, not this gate.
+madc_active_project_types	engine global: --project TU type census
+madc_cell_alloc	value-cell runtime entry (CIR-emitted refcount cells)
+madc_cell_alloc_dtor	value-cell runtime entry
+madc_cell_of	value-cell runtime entry
+madc_cell_refcount	value-cell runtime entry
+madc_cell_release	value-cell runtime entry
+madc_cell_retain	value-cell runtime entry
+madc_class_pattern_capture_active	engine global: forest class-pattern capture flag
+madc_debug_info	engine global: debug-info emission flag
+madc_default_stdlib_flavor	engine global: stdlib flavor default
+madc_dlclose	#load/dlopen runtime entry
+madc_dlopen	#load/dlopen runtime entry
+madc_dlsym	#load/dlopen runtime entry
+madc_jit_symbolize	JIT debug: symbolize helper
+madc_no_eval_shims	engine global: eval shim policy flag
+madc_no_warnings	engine global: -w (inhibit warnings) flag
+madc_object_mode	engine global: object-mode flag
+madc_opt_level	engine global: optimization level
+madc_pack_forest_path	engine global: forest pack path override
+madc_printstr	print runtime entry (CIR-emitted)
+madc_putd	print runtime entry (CIR-emitted)
+madc_putf	print runtime entry (CIR-emitted)
+madc_puti	print runtime entry (CIR-emitted)
+madc_puts	print runtime entry (CIR-emitted)
+madc_putu	print runtime entry (CIR-emitted)
+madc_static_libmadc	engine global: -static-libmadc flag
+madc_stdlib_flavors	engine global: stdlib flavor set
+madc_stdlib_probe_standin_libs	engine global: stdlib probe stand-ins
+madc_system	system(3) runtime entry (CIR-emitted)
+madc_target_bitfield_abi	engine global: target ABI facts
+madc_target_data_model	engine global: target ABI facts
+madc_target_int64_alias	engine global: target ABI facts
+madc_target_os	engine global: target ABI facts
+madc_target_va_list	engine global: target ABI facts
+madc_verbose	engine global: -v/--verbose flag (DBG)
+#
+# Misc unprefixed internals (visibility-trim candidates, .so.1 era):
+debug_node	MIR debug helper
+default_mem_protect	MIR JIT page-protection default
+get_argv	engine global: program argv access
+get_int_basic_type	parser type helper
+va_arg_builtin	MIR interpreter varargs builtin
+va_block_arg_builtin	MIR interpreter varargs builtin
+va_end_interp_builtin	MIR interpreter varargs builtin
+va_start_interp_builtin	MIR interpreter varargs builtin

@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <sstream>
 #include <stack>
@@ -27,9 +28,12 @@
 // the child-rusage metering. win64 has no fork; the isolation contract
 // there is an open design arc (in-process vs subprocess reframing,
 // 2026-08-12) — until its spawn backend lands, requesting it fails loudly
-// at invocation time.
+// at invocation time. signal/errno serve the fork-Run lane's system(3)
+// wait discipline (parse_run).
 #include <sys/resource.h>
 #include <sys/wait.h>
+#include <csignal>
+#include <cerrno>
 #endif
 
 extern thread_local bool madc_verbose;
@@ -43,6 +47,10 @@ extern thread_local bool madc_verbose;
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
+#include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
+#include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper)
+#include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
+#include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
 namespace madc {
@@ -1066,24 +1074,6 @@ std::string build_eval_body_wrapper_source(const std::string &source,
     return wrapped.str();
 }
 
-const char *eval_body_wrapper_return_type(madc::program::native_type return_type)
-{
-    switch ( return_type )
-    {
-	case madc::program::native_type::boolean:
-	    return "bool";
-	case madc::program::native_type::integer:
-	    return "int";
-	case madc::program::native_type::real:
-	    return "double";
-	case madc::program::native_type::c_string:
-	    return "char *";
-	case madc::program::native_type::void_type:
-	    break;
-	    }
-    return NULL;
-}
-
 bool is_valid_expression_binding_name(const std::string &identifier)
 {
     if ( identifier.empty() )
@@ -1991,6 +1981,41 @@ private:
     std::string path;
 };
 
+// Scoped iostream capture for one libmadc API entry: bind the process-global
+// std::cout/std::cerr into the engine's owned capture buffers only while
+// engine work (compile / guest run) is in flight, and restore the HOST's
+// stream buffers on exit. The engine construction used to perform this bind
+// once for the life of the process, which silently swallowed the host's own
+// iostream output from the moment a madc::engine existed (std::cout.rdbuf()
+// changed identity across `madc::engine eng;` — the libmadc_cpp_smoke
+// assertion). Non-resetting and nest-safe: buffers are created if absent,
+// content accumulates across nested entries (invoke_with_limits clears them
+// per invocation for the output-limit accounting), and an inner scope saves
+// the outer scope's binding.
+class iostream_capture_scope
+{
+public:
+    explicit iostream_capture_scope(MadcEngine &eng)
+	: saved_out(std::cout.rdbuf()), saved_err(std::cerr.rdbuf())
+    {
+	eng.ensure_capture_buffers();
+	if ( std::streambuf *ob = eng.capture_output_rdbuf() )
+	    std::cout.rdbuf(ob);
+	if ( std::streambuf *eb = eng.capture_error_rdbuf() )
+	    std::cerr.rdbuf(eb);
+    }
+
+    ~iostream_capture_scope()
+    {
+	std::cout.rdbuf(saved_out);
+	std::cerr.rdbuf(saved_err);
+    }
+
+private:
+    std::streambuf *saved_out;
+    std::streambuf *saved_err;
+};
+
 // In-process CPU/resident metrics live in madc_posix_io
 // (process_cpu_microseconds / process_resident_bytes — the detail owners);
 // what remains here is the CHILD-rusage metering of the POSIX-only
@@ -2487,6 +2512,37 @@ bool install_runtime_eval_scope_globals(Program &pgm,
 
 } // namespace
 
+// ONE owner for the eval wrapper's return-type spelling per typed form
+// (build_eval_body_wrapper_source's partner). External linkage: the typed
+// runtime-eval entries in parser.cpp route through it too — never a raw
+// string at a call site.
+const char *eval_body_wrapper_return_type(madc::program::native_type return_type)
+{
+    switch ( return_type )
+    {
+	case madc::program::native_type::boolean:
+	    return "bool";
+	case madc::program::native_type::integer:
+	    return "int";
+	case madc::program::native_type::real:
+	    return "double";
+	case madc::program::native_type::c_string:
+	    // The body's text crosses the wrapper's frame boundary as a
+	    // BORROW: the carrier's c_str() (and the coercion the CIR builder
+	    // applies to `return <value>;` in a char*-returning function)
+	    // hand back RING-lifetime text — value-first.md's pre-L3 return
+	    // convention — which outlives the wrapper's locals. Their cleanup
+	    // dtors run before the marshalling shim copies the result, so a
+	    // payload borrow here read freed memory (the silent-empty
+	    // eval-return gap). An owning `value` wrapper awaits L3
+	    // (value-by-value returns are not implemented).
+	    return "char *";
+	case madc::program::native_type::void_type:
+	    break;
+	    }
+    return NULL;
+}
+
 // One host-callback registration as stored by program/engine impls. `entry`
 // is the address the trampoline's import resolves to (the deduced form's
 // typed adapter, or the explicit form's callback itself); `bound` carries
@@ -2590,8 +2646,9 @@ struct program::impl
     impl()
 	: eng(&owned_engine)
     {
-	eng->capture_output_to_buffer();
-	eng->capture_error_to_buffer();
+	// Guest output capture is INVOCATION-scoped (iostream_capture_scope
+	// at each API entry) — never bound here for the process lifetime,
+	// which hijacked the HOST's std::cout/std::cerr.
 	reset_program();
     }
 
@@ -2732,6 +2789,7 @@ struct program::impl
     bool compile_loaded_file(const std::string &path)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	TokenProgram *tp = pgm->tokenize(path.c_str());
 	if ( !tp )
 	{
@@ -2758,6 +2816,7 @@ struct program::impl
 			       const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !pgm->load_buffer(ensure_trailing_newline(source), display_file) )
 	{
 	    sync_public_errors();
@@ -2873,6 +2932,7 @@ struct program::impl
     bool exec_file_with_display(const std::string &path, const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	reset_program();
 	if ( !compile_loaded_file(path) )
 	{
@@ -2961,6 +3021,10 @@ struct program::impl
 
 	if ( pid == 0 )
 	{
+	    // A forked child inherits the parent's cooperative-scheduler
+	    // state but none of its flows — reset before any script runs
+	    // (rt_task.h fork discipline).
+	    __madc_task_atfork_child();
 	    int report_fd = dup(child_report.fd());
 	    if ( dup2(child_stdout.fd(), STDOUT_FILENO) < 0
 	      || dup2(child_stderr.fd(), STDERR_FILENO) < 0 )
@@ -3125,6 +3189,7 @@ struct program::impl
 				  value *result)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return call(eval_entry_name(), std::vector<value>(), result);
@@ -3149,6 +3214,7 @@ struct program::impl
 				  const std::string &display_file)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return exec_compiled_with_display(display_file, display_file);
@@ -3459,6 +3525,7 @@ struct program::impl
 			 const std::string &virtual_filename)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	std::string validation_error;
 	std::string effective_expression = expression;
 	std::map<std::string, value> effective_bindings;
@@ -3489,6 +3556,13 @@ struct program::impl
 	expr_program.set_invoke_limits(current_invoke_limits);
 	expr_program._impl->current_expression_context = current_expression_context;
 	expr_program._impl->active_expression_bindings = effective_bindings;
+	// Host callbacks flow into the expression child exactly as they flow
+	// into any program created from the engine — the registration
+	// contract ("every program created from this engine can call it").
+	// The CALL itself is still gated by expression_policy
+	// (allow_function_calls + allowed_functions), enforced above; the
+	// child's next reset_program installs these into host_callback_regs.
+	expr_program._impl->host_callbacks = host_callbacks;
 	bool ok = expr_program._impl->with_temp_source(build_expression_input(effective_expression),
 						       virtual_filename,
 						       &impl::compile_expression_with_display,
@@ -3653,6 +3727,9 @@ struct program::impl
     bool invoke_with_limits(const std::string &op_name,
 			    const std::function<bool()> &fn)
     {
+	// Belt for entries that reach a guest run without an outer API-entry
+	// scope (get_global/set_global): nest-safe, same buffers.
+	iostream_capture_scope io_capture(*eng);
 	engine().clear_output_buffer();
 	engine().clear_error_buffer();
 	invoke_snapshot before = capture_invoke_snapshot();
@@ -3738,6 +3815,7 @@ struct program::impl
     bool load_object(const std::string &path)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( !pgm )
 	    return fail_runtime("program::load_object has no program");
 	if ( !pgm->load_object(path) )
@@ -3877,6 +3955,10 @@ struct program::impl
 
 	if ( pid == 0 )
 	{
+	    // A forked child inherits the parent's cooperative-scheduler
+	    // state but none of its flows — reset before any script runs
+	    // (rt_task.h fork discipline).
+	    __madc_task_atfork_child();
 	    int report_fd = dup(child_report.fd());
 	    if ( dup2(child_stdout.fd(), STDOUT_FILENO) < 0
 	      || dup2(child_stderr.fd(), STDERR_FILENO) < 0 )
@@ -4010,6 +4092,7 @@ struct program::impl
     bool call(const std::string &name, const std::vector<value> &args, value *result)
     {
 	verbose_scope vs(eng->verbose);
+	iostream_capture_scope io_capture(*eng);
 	if ( should_fork_invocation() )
 	    return call_in_child(name, args, result);
 	return invoke_with_limits("call", [this, &name, &args, result]() -> bool {
@@ -4510,6 +4593,1066 @@ bool internal_program_runtime_eval_source(::Program &self,
     return true;
 }
 
+// ---- compiler-data internals (madcide IDE-3) -----------------------------
+// Compile (NEVER execute) source in a runtime-eval child Program and hand
+// back the compiler's OWN structured data as values — the meta-level: the
+// IDE's diagnostics pane and outline are projections of this. One shared
+// child pipeline: tokenize + parse + the compile gate, the same front end
+// bin/madc runs, with the child's error stream pointed at a sink so
+// capture replaces printing. Thread contract: the runtime-eval machinery's
+// confinement — each call owns its child, no shared mutable state.
+
+// The parse-only half of the child front end (the caller owns the render
+// mute): madc::emit renders from the parsed tree — the emitter runs its
+// own translate — while diagnostics/outline add the compile gate below.
+// True = tokenize + parse completed.
+static bool parse_source_child_frontend(::Program &self, ::Program &child,
+					const std::string &source_text,
+					const std::string &display_name)
+{
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    std::string normalized_source = ensure_trailing_newline(source_text);
+    TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
+    if ( !tp )
+	return false;
+    return child.parse(tp);
+}
+
+static void compile_source_child_frontend(::Program &self, ::Program &child,
+					  const std::string &source_text,
+					  const std::string &display_name)
+{
+    // Capture replaces rendering: recording into child.diagnostics is
+    // untouched; print_diagnostic and throwbuf::sync render nothing while
+    // the mute is up. (A per-Program error_stream would not do — with an
+    // engine attached, Program::error() is the ENGINE's stream by design.)
+    DiagnosticRenderMute mute;
+    if ( !parse_source_child_frontend(self, child, source_text, display_name) )
+	return;
+    child.compile();
+}
+
+// The row builders, shared by the per-query surfaces below and the
+// persistent parse handles (AST-1): one rendering of the compiler's
+// structured data, whether the child lives for one call or for a
+// handle's lifetime.
+static void diagnostic_rows_from_child(::Program &child, madc::value &out)
+{
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
+    {
+	const ::Program::Diagnostic &d = child.diagnostics[i];
+	std::map<std::string, madc::value> f;
+	f["severity"] = value(std::string(child.diagnostic_severity_name(d.severity)));
+	f["phase"] = value(std::string(child.diagnostic_phase_name(d.phase)));
+	f["message"] = value(d.message);
+	f["file"] = value(d.file);
+	f["line"] = value((int64_t)d.line);
+	f["column"] = value((int64_t)d.column);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+}
+
+// The TU-own-definitions filter, shared by every per-TU query (outline,
+// enclosing): prelude fragments and header tokens carry their own file
+// names and stay out. Null = not a function definition of THIS TU.
+static TokenFunc *tu_own_function(TokenBase *tb,
+				  const std::string &display_name)
+{
+    TokenFunc *tf = tb ? tb->as_func_tok() : (TokenFunc *)0;
+    if ( !tf || !tf->file || display_name != tf->file )
+	return (TokenFunc *)0;
+    return tf;
+}
+
+static void outline_rows_from_child(::Program &child,
+				    const std::string &display_name,
+				    madc::value &out)
+{
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i], display_name);
+	if ( !tf )
+	    continue;
+	std::map<std::string, madc::value> f;
+	f["kind"] = value(std::string("function"));
+	f["name"] = value(tf->var.name);
+	f["line"] = value((int64_t)tf->line);
+	f["column"] = value((int64_t)tf->column);
+	f["end_line"] = value((int64_t)tf->end_line);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+}
+
+bool internal_program_source_diagnostics(::Program &self,
+					 const std::string &source_text,
+					 madc::value &out,
+					 const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    diagnostic_rows_from_child(child, out);
+    return true;
+}
+
+bool internal_program_source_outline(::Program &self,
+				     const std::string &source_text,
+				     madc::value &out,
+				     const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    compile_source_child_frontend(self, child, source_text, display_name);
+    outline_rows_from_child(child, display_name, out);
+    return true;
+}
+
+// The render query (madcide AST-3 code views): parse the buffer in a
+// child and render its cir_node tree as `target` — the cir_emit_lang_of
+// vocabulary, the SAME one --emit= speaks — into a string value. False =
+// unknown target, or a buffer that does not parse/translate; diagnostics
+// stay captured under the mute, never printed. Nothing runs.
+bool internal_program_source_emit(::Program &self,
+				  const std::string &source_text,
+				  const std::string &target,
+				  madc::value &out,
+				  const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    CirEmitLang lang;
+    if ( !cir_emit_lang_of(target.c_str(), lang) )
+	return false;
+    ::Program child(self.engine);
+    // The C++ reverse-render echoes the retained tokens: full-fidelity
+    // lexing (trivia + the include-directive record) for that target only.
+    if ( lang == celCxx )
+	child.keep_trivia = true;
+    DiagnosticRenderMute mute;
+    if ( !parse_source_child_frontend(self, child, source_text, display_name) )
+	return false;
+    detail::StringCapture cap;
+    if ( !detail::open_string_capture(cap) )
+	return false;
+    int rc = madc_cir_emit(&child, display_name.c_str(), cap.f, lang);
+    std::string text = detail::finish_string_capture(cap);
+    if ( rc != 0 )
+	return false;
+    out = value(text);
+    return true;
+}
+
+// Does the child carry at least one ERROR-severity diagnostic? The
+// build lane's silent-failure belt: a failed build must return rows
+// that SAY why (see internal_program_build_native).
+static bool child_has_error_row(::Program &child)
+{
+    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
+	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
+	    return true;
+    return false;
+}
+
+// ONE owner for the build-surface kind vocabulary ("exe" | "obj") — the
+// path lane and the live-handle lane must never drift (a new kind lands
+// here once). False = unknown name; the caller owns the diagnostic.
+static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
+{
+    if ( kind_name == "exe" )
+    {
+	kind = mnkPieExecutable;	// the CLI -o default
+	return true;
+    }
+    if ( kind_name == "obj" )
+    {
+	kind = mnkObject;		// relocatable .o (-r -o)
+	return true;
+    }
+    return false;
+}
+
+// ONE owner for "may this retained tree reach the backend": a tokenize
+// that never produced a TU, or a parse that recorded error rows, is an
+// incomplete tree — parse_build and parse_run both refuse on it.
+static bool parse_tree_backend_ready(::Program &child)
+{
+    return child.tkProgram && !child_has_error_row(child);
+}
+
+// The build surface (madcide IDE-10c): the CLI's AOT lane — tokenize +
+// parse a FILE in a child Program (the lexer owns file ingestion and the
+// TU's relative #includes, exactly as parse_open_file), then
+// madc_cir_emit_native — run IN-PROCESS. kind: "exe" = PIE executable
+// (the CLI -o default), "obj" = relocatable .o (-r -o). Diagnostics come
+// back as rows either way; a failure with nothing recorded (a backend
+// refusal prints to stderr, not into Program::diagnostics — the named
+// backend-diagnostics-as-data residue) gets one synthesized error row so
+// the caller never sees a silent false. True = the artifact was written.
+// Thread contract: the runtime-eval confinement — the call owns its
+// child; the emit phase has no yield points (it blocks a cooperative
+// scheduler for its duration — the named backend-yield residue).
+bool internal_program_build_native(::Program &self, const std::string &path,
+				   const std::string &kind_name,
+				   madc::value &out,
+				   const std::string &outpath)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    ::Program child(self.engine);
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    bool ok = false;
+    {
+	// Capture replaces rendering (the compile_source_child_frontend
+	// contract); recording into child.diagnostics is untouched.
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	struct stat sb;
+	if ( kind_ok
+	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
+	{
+	    kind_ok = false;
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "cannot read source file", path.c_str());
+	}
+	if ( kind_ok )
+	{
+	    TokenProgram *tp = child.tokenize(path.c_str());
+	    if ( tp && child.parse(tp) )
+		ok = madc_cir_emit_native(&child, path.c_str(), kind,
+					  outpath.c_str(),
+					  std::vector<std::string>()) == 0;
+	}
+	if ( !ok && !child_has_error_row(child) )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "build failed with no recorded diagnostic"
+			    " (backend output goes to stderr)",
+			    path.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    return ok;
+}
+
+// ---- persistent parse handles (madcide AST-1 / IDE-6) --------------------
+// The compile-never-execute child machinery above, given a LIFETIME: a
+// handle owns a live child Program whose parsed state serves outline /
+// diagnostics / enclosing-at-position queries WITHOUT re-running the
+// front end per query; refresh is a whole-TU re-parse (the design's
+// first cadence — incremental reparse is a named later lever). Handle
+// discipline = handle_table (slot+1, no reuse). Thread contract: the
+// runtime-eval confinement — a handle is used only from the
+// thread/program that opened it; these accessors are the future
+// per-context seam.
+
+struct parse_tu_state
+{
+    ::Program *child;
+    std::string display_name;
+    parse_tu_state() : child((::Program *)0) {}
+    ~parse_tu_state() { delete child; }
+};
+
+// Every parse handle's child starts here — the one init for the three
+// handle constructors (open-from-text, open-from-file, refresh): IDE
+// fidelity (comment spans ride leading trivia), and on Windows the
+// forest arena records DURING the parse — Run has no fork there, so
+// parse_run freezes the tree for a child madc (design (b), owner ruling
+// 2026-08-28), and the arena is the freezable type graph: it must exist
+// before tokenize, exactly like the CLI's --freeze-run lane.
+static void parse_handle_child_init(::Program &child)
+{
+    child.keep_trivia = true;
+#ifdef _WIN32
+    child.forest_arena_enabled = true;
+#endif
+}
+
+static handle_table<parse_tu_state> &parse_tu_handles()
+{
+    static handle_table<parse_tu_state> handles;
+    return handles;
+}
+
+static parse_tu_state *parse_tu_get(int64_t handle)
+{
+    return parse_tu_handles().get(handle);
+}
+
+int64_t internal_program_parse_open(::Program &self,
+				    const std::string &source_text,
+				    const std::string &display_name)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    parse_tu_state *st = new parse_tu_state();
+    st->display_name = display_name;
+    st->child = new ::Program(self.engine);
+    parse_handle_child_init(*st->child);
+    compile_source_child_frontend(self, *st->child, source_text,
+				  display_name);
+    return parse_tu_handles().open(st);
+}
+
+// File-open core: the lexer owns SOURCE ingestion (tokenize(path) reads
+// the file with its own error paths, and resolves the TU's relative
+// #includes exactly as the CLI does). When `tu` is given (the project
+// handle), the manifest TU's language options apply to the child the
+// same way the --project build lane applies them — IDE diagnostics must
+// match the build. 0 = unreadable path or refused options; a file that
+// reads but does not parse still opens — its state is the diagnostics.
+static int64_t parse_open_file_with(::Program &self, const std::string &path,
+				    const ProjectTU *tu)
+{
+    struct stat sb;
+    if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
+	return 0;
+    self.clear_diagnostics();
+    self.clear_error();
+    parse_tu_state *st = new parse_tu_state();
+    st->display_name = path;
+    st->child = new ::Program(self.engine);
+    parse_handle_child_init(*st->child);
+    st->child->registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    if ( tu )
+    {
+	std::string opt_err;
+	if ( !apply_project_tu_options(*st->child, *tu, opt_err) )
+	{
+	    delete st;
+	    return 0;
+	}
+    }
+    {
+	DiagnosticRenderMute mute;
+	TokenProgram *tp = st->child->tokenize(path.c_str());
+	if ( tp && st->child->parse(tp) )
+	    st->child->compile();
+    }
+    return parse_tu_handles().open(st);
+}
+
+int64_t internal_program_parse_open_file(::Program &self,
+					 const std::string &path)
+{
+    return parse_open_file_with(self, path, (const ProjectTU *)0);
+}
+
+bool internal_program_parse_refresh(::Program &self, int64_t handle,
+				    const std::string &source_text)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    self.clear_diagnostics();
+    self.clear_error();
+    // Whole-TU re-parse: a Program is not resettable, so refresh is a
+    // fresh child in the same slot — the handle's identity survives.
+    delete st->child;
+    st->child = new ::Program(self.engine);
+    parse_handle_child_init(*st->child);
+    compile_source_child_frontend(self, *st->child, source_text,
+				  st->display_name);
+    return true;
+}
+
+bool internal_program_parse_close(int64_t handle)
+{
+    return parse_tu_handles().close(handle);
+}
+
+bool internal_program_parse_outline(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    outline_rows_from_child(*st->child, st->display_name, out);
+    return true;
+}
+
+bool internal_program_parse_diagnostics(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    diagnostic_rows_from_child(*st->child, out);
+    return true;
+}
+
+// Outline-at-position (the status line's query): the INNERMOST of the
+// TU's own function definitions whose [line .. end_line] range contains
+// the position — start bound (line, column) inclusive, end bound the
+// closing brace's line (a caret on that line counts as inside; no end
+// column is recorded). Innermost = the latest-starting match, so a
+// definition nested inside another wins. True with an EMPTY out = a
+// valid handle with no enclosing definition; false = a bad handle.
+bool internal_program_parse_enclosing(int64_t handle, int64_t line,
+				      int64_t column, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    TokenFunc *best = (TokenFunc *)0;
+    ::Program &child = *st->child;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					st->display_name);
+	if ( !tf )
+	    continue;
+	if ( (int64_t)tf->line > line
+	  || ((int64_t)tf->line == line && (int64_t)tf->column > column) )
+	    continue;
+	if ( (int64_t)tf->end_line < line )
+	    continue;
+	if ( !best || tf->line > best->line
+	  || (tf->line == best->line && tf->column > best->column) )
+	    best = tf;
+    }
+    if ( !best )
+	return true;
+    std::map<std::string, madc::value> f;
+    f["kind"] = value(std::string("function"));
+    f["name"] = value(best->var.name);
+    f["line"] = value((int64_t)best->line);
+    f["column"] = value((int64_t)best->column);
+    f["end_line"] = value((int64_t)best->end_line);
+    out = value::make_object(f);
+    return true;
+}
+
+// One highlight row: source coordinates + the classification NAME (the
+// value boundary; a theme maps names to colours downstream).
+static madc::value highlight_row(long line, long col, long len,
+				 const char *cls)
+{
+    std::map<std::string, madc::value> f;
+    f["line"] = value((int64_t)line);
+    f["column"] = value((int64_t)col);
+    f["length"] = value((int64_t)len);
+    f["class"] = value(std::string(cls));
+    return value::make_object(f);
+}
+
+// Comment rows from ONE token's leading trivia (the handles' fidelity
+// mode). The trivia's END is anchored by the token's recorded position:
+// its first line = token.line - (newlines in the trivia); every line
+// after a newline starts at column 0 exactly. Only the FIRST segment's
+// column base comes from the previous token's end — exact unless
+// consumed-at-lex text (an #include directive line) sat between them;
+// that drift is bounded to the one segment and resyncs at this token.
+// A block comment emits one row per line it covers.
+static void trivia_comment_rows(const std::string &tr, long line, long col,
+				std::vector<madc::value> &rows)
+{
+    size_t i = 0;
+    while ( i < tr.size() )
+    {
+	char ch = tr[i];
+	if ( ch == '\n' )
+	{
+	    ++line;
+	    col = 0;
+	    ++i;
+	    continue;
+	}
+	bool line_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '/';
+	bool block_c = ch == '/' && i + 1 < tr.size() && tr[i + 1] == '*';
+	if ( !line_c && !block_c )
+	{
+	    ++col;
+	    ++i;
+	    continue;
+	}
+	long seg_col = col;
+	long seg_len = 0;
+	bool done = false;
+	while ( i < tr.size() && !done )
+	{
+	    if ( tr[i] == '\n' )
+	    {
+		if ( seg_len > 0 )
+		    rows.push_back(highlight_row(line, seg_col, seg_len,
+						 "comment"));
+		seg_len = 0;
+		if ( line_c )
+		    done = true;	// the newline stays for the outer loop
+		else
+		{
+		    ++line;
+		    col = 0;
+		    seg_col = 0;
+		    ++i;
+		}
+		continue;
+	    }
+	    ++seg_len;
+	    ++col;
+	    ++i;
+	    if ( block_c && seg_len >= 2 && tr[i - 1] == '/'
+	      && tr[i - 2] == '*' )
+		done = true;		// consumed the closing */
+	}
+	if ( seg_len > 0 )
+	    rows.push_back(highlight_row(line, seg_col, seg_len, "comment"));
+    }
+}
+
+// The highlight-span query (madcide AST-2 / IDE-7): classification rows
+// for the TU's OWN tokens, from the handle's RETAINED stream — data, not
+// styling (a theme maps class names to colours; the compiler never
+// styles). Rows: { line, column, length, class } in source coordinates —
+// the app owns the buffer text and converts to byte offsets. Length is
+// the render spelling's length (exact for identifiers/keywords/types;
+// a literal written non-canonically can drift cosmetically — a
+// lex-recorded token extent is the named refinement). An identifier the
+// tree defines as a function, on that definition's head line, classifies
+// as "function" (head-line name match; the exact name-token feeder is
+// the named refinement).
+// THE span classifier (one implementation, two feeders): walk a child's
+// retained token stream and emit {line, column, length, class} rows for
+// the TU's own tokens. parse_spans feeds it a PARSED child (fn_heads
+// carries the tree's function-head knowledge); lex_spans feeds it a
+// lex-only child (empty fn_heads — no tree, no type/function classes
+// beyond what lexing knows).
+static void highlight_token_rows(::Program &child,
+				 const std::string &display_name,
+				 const std::map<long, std::set<std::string> > &fn_heads,
+				 std::vector<madc::value> &rows)
+{
+    long prev_line = 1;
+    long prev_end_col = 0;
+    for ( TokenBase *t : child.tokens )
+    {
+	if ( !t || !t->file || display_name != t->file )
+	    continue;
+	if ( !t->leading_trivia.empty() )
+	{
+	    const std::string &tr = t->leading_trivia;
+	    long nl = 0;
+	    for ( size_t k = 0; k < tr.size(); ++k )
+		if ( tr[k] == '\n' )
+		    ++nl;
+	    long first_line = (long)t->line - nl;
+	    trivia_comment_rows(tr, first_line,
+				first_line == prev_line ? prev_end_col : 0,
+				rows);
+	}
+	// A macro-expansion token's spelling occupies no source bytes — its
+	// line/column name the invocation site (tfSYNTHPOS). Its leading
+	// trivia (real source, folded above) still anchors; the token itself
+	// emits no span, and the cursor must not advance to its position.
+	if ( t->is_synthetic_position() )
+	    continue;
+	// A string token paints from its LEX-RECORDED source extents (one
+	// row per concatenated piece): the cooked spelling cannot recover
+	// source geometry — escapes shrink it, and adjacent-literal
+	// concatenation merges lines (embed_hello.c painted one 85-byte
+	// span from col 0 across the pieces). Pieceless string tokens
+	// (pack-image, synthesized) keep the spelling fallback below.
+	if ( TokenStr *ts = t->as_str_tok() )
+	{
+	    if ( !ts->src_pieces.empty() )
+	    {
+		for ( const TokenStr::SrcPiece &pc : ts->src_pieces )
+		    rows.push_back(highlight_row(pc.line, pc.col, pc.len,
+						 "string"));
+		const TokenStr::SrcPiece &lastp = ts->src_pieces.back();
+		prev_line = lastp.line;
+		prev_end_col = lastp.col + lastp.len;
+		continue;
+	    }
+	}
+	HighlightClass hc = madc_token_highlight_class(t);
+	std::string sp = madc_token_spelling(t);
+	if ( hc == HighlightClass::hcIdent )
+	{
+	    std::map<long, std::set<std::string> >::const_iterator fh =
+		fn_heads.find((long)t->line);
+	    if ( fh != fn_heads.end() && fh->second.count(sp) )
+		hc = HighlightClass::hcFunction;
+	}
+	if ( hc != HighlightClass::hcNone && !sp.empty() )
+	{
+	    // Token stamps are END-anchored (the repo's diagnostic
+	    // convention); a span's contract is START + length.
+	    long start = (long)t->column - (long)sp.size();
+	    if ( start < 0 )
+		start = 0;
+	    rows.push_back(highlight_row((long)t->line, start,
+					 (long)sp.size(),
+					 highlight_class_name(hc)));
+	}
+	prev_line = (long)t->line;	// lexed spellings are single-line
+	prev_end_col = (long)t->column;	// the stamp IS the end
+    }
+    // A comment after the LAST token lives in the trailing trivia, not on
+    // any token; the cursor the loop left is its exact anchor.
+    if ( !child._trailing_trivia.empty() )
+	trivia_comment_rows(child._trailing_trivia, prev_line, prev_end_col,
+			    rows);
+}
+
+bool internal_program_parse_spans(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::map<long, std::set<std::string> > fn_heads;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+	if ( TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					     st->display_name) )
+	    fn_heads[(long)tf->line].insert(tf->var.name);
+    std::vector<madc::value> rows;
+    highlight_token_rows(child, st->display_name, fn_heads, rows);
+    out = value::make_array(rows);
+    return true;
+}
+
+// Build from the LIVE parse (OWNER RULING 2026-08-27 — the running madc
+// IS the compiler): emit a native artifact from the handle's EXISTING
+// cir-ready tree. No fresh parse, no child Program from a path — the
+// buffer the handle was (re)parsed from, unsaved edits included, is what
+// compiles. A handle whose parse carries error rows never reaches the
+// emitter (an incomplete tree must not hit the backend): false, with the
+// handle's own rows. Build diagnostics ride `out` only — the handle's
+// retained state stays THE PARSE (parse_check is parse-pure), so the
+// recorded rows are snapshotted and restored around the emit. The same
+// silent-failure belt as the path lane: a false always carries at least
+// one error row. Thread contract: the runtime-eval confinement — the
+// emit phase has no yield points (the named backend-yield residue).
+bool internal_program_parse_build(int64_t handle,
+				  const std::string &kind_name,
+				  madc::value &out,
+				  const std::string &outpath)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    if ( !parse_tree_backend_ready(child) )
+    {
+	diagnostic_rows_from_child(child, out);
+	return false;
+    }
+    std::vector<::Program::Diagnostic> saved = child.diagnostics;
+    bool ok = false;
+    {
+	// Capture replaces rendering (the compile_source_child_frontend
+	// contract); ObjectModeScope lives inside the emit lane itself.
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	if ( kind_ok )
+	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
+				      kind, outpath.c_str(),
+				      std::vector<std::string>()) == 0;
+	if ( !ok && !child_has_error_row(child) )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "build failed with no recorded diagnostic"
+			    " (backend output goes to stderr)",
+			    st->display_name.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    child.diagnostics = saved;	// the handle keeps only its parse state
+    child.clear_error();	// (it was green on entry — see the gate)
+    return ok;
+}
+
+// The fork-Run seam (OWNER RULING 2026-08-27): run the handle's
+// ALREADY-PARSED tree in a fork() child. The child inherits the tree by
+// COW, resets the cooperative scheduler (__madc_task_atfork_child — the
+// parent's queues/timers/waiters must never wake in it), hands the tree
+// to c2mir → MIR (madc_cir_execute, the CLI's own run entry), and leaves
+// via exit() so the GUEST's atexit semantics and stdio flush run; the
+// parent's own atexit hooks are pid-guarded (ui_term) or neutralized by
+// the reset (task join). stdio is INHERITED — the caller owns the
+// terminal handoff (madcide suspends the tui BEFORE calling). The parent
+// ignores SIGINT/SIGQUIT from before the fork until the reap and the
+// child restores their default dispositions — the system(3) discipline,
+// so ^C reaches the guest alone.
+// Returns the guest's exit status (128+signal on a signal death);
+// negative = it never ran: -1 bad handle, -2 the handle's parse has
+// error rows (an incomplete tree must not reach the backend), -3 fork
+// (or the win freeze/spawn) failed.
+//
+// Windows arm — design (b), OWNER RULING 2026-08-28 (benchmarked in
+// docs/plans/2026-08-27-madcide-ide-controls.md §Benchmarks): no fork,
+// so the handle's ALREADY-PARSED tree is FROZEN to a temp container
+// (the forest arena recorded at parse time — parse_handle_child_init;
+// LOADED == parsed, never a re-parse) and run by a fresh child madc via
+// --run-frozen — the CLI's --freeze-run pipeline as a library verb. The
+// MIR cache rides so the child skips c2mir, the measured per-Run
+// dominator. stdio is INHERITED (Process::run_and_wait's contract) —
+// the caller owns the terminal handoff exactly as on POSIX. Cosmetic
+// residue: the guest's argv[0] is the container path (--run-frozen's
+// argv shape), not the display name.
+int64_t internal_program_parse_run(int64_t handle)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return -1;
+    ::Program &child = *st->child;
+    if ( !parse_tree_backend_ready(child) )
+	return -2;
+#ifdef _WIN32
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child's console
+    std::cerr.flush();
+    std::string snapshot_path;
+    int tfd = madc::detail::make_temp_file("madc_run", snapshot_path);
+    if ( tfd < 0 )
+	return -3;
+    close(tfd);
+    if ( madc_cir_freeze(&child, st->display_name.c_str(),
+			 snapshot_path.c_str(), false,
+			 /*mir_cache=*/true, /*ledger=*/NULL,
+			 /*progress=*/false) != 0 )
+    {
+	std::remove(snapshot_path.c_str());
+	return -3;
+    }
+    std::string selfexe = madc_self_exe_path();
+    std::vector<std::string> cargv;
+    cargv.push_back(selfexe);				// the madc argv[0]
+    cargv.push_back("--run-frozen=" + snapshot_path);
+    madc::error rerr;
+    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
+    std::remove(snapshot_path.c_str());
+    return rc < 0 ? -3 : rc;
+#else
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child
+    std::cerr.flush();
+    struct sigaction ign, old_int, old_quit;
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &ign, &old_int);
+    sigaction(SIGQUIT, &ign, &old_quit);
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+	__madc_task_atfork_child();
+	signal(SIGINT, SIG_DFL);	// CLI parity: the guest starts
+	signal(SIGQUIT, SIG_DFL);	// with default dispositions
+	std::string argv0 = st->display_name;
+	char *guest_argv[2];
+	guest_argv[0] = &argv0[0];
+	guest_argv[1] = (char *)0;
+	int rc = madc_cir_execute(&child, st->display_name.c_str(), 1,
+				  guest_argv);
+	// The CLI's own mapping: negative = infrastructure failure -> 1.
+	exit(rc < 0 ? 1 : (rc & 0xff));
+    }
+    int64_t status = -3;
+    if ( pid > 0 )
+    {
+	int ws = 0;
+	pid_t r;
+	do
+	    r = waitpid(pid, &ws, 0);
+	while ( r < 0 && errno == EINTR );
+	if ( r == pid )
+	{
+	    // THE status mapper (child_status_exit_mapping owner) —
+	    // its -1 (neither exited nor signaled) folds into -3.
+	    int mapped = map_child_status(ws);
+	    if ( mapped >= 0 )
+		status = mapped;
+	}
+    }
+    sigaction(SIGINT, &old_int, (struct sigaction *)0);
+    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
+    return status;
+#endif
+}
+
+// Lexical spans (staged parsing, stage 1): the classes lexing alone can
+// answer — keyword / number / string / comment (JOE's whole vocabulary)
+// — from the buffer text ONLY. skip_includes lexes the TU without
+// ingesting headers (their macros stay unexpanded identifiers — the
+// lexical truth), so this is milliseconds where a C++ parse is seconds;
+// the full parse's spans REPLACE these when it lands (type / function
+// join then). No handle, no retained state — lex, classify, discard.
+bool internal_program_lex_spans(::Program &self,
+				const std::string &source_text,
+				const std::string &display_name,
+				madc::value &out)
+{
+    out = value();
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program child(self.engine);
+    child.keep_trivia = true;		// comment spans ride leading trivia
+    child.skip_includes = true;		// lex ONLY the buffer text
+    // tokenize_buffer's empty-name rule, mirrored so the token-file
+    // filter below matches what the tokens were stamped with.
+    std::string disp = display_name.empty() ? "<memory>" : display_name;
+    {
+	DiagnosticRenderMute mute;
+	child.tokenize_buffer(source_text, disp);
+    }
+    std::map<long, std::set<std::string> > no_heads;
+    std::vector<madc::value> rows;
+    highlight_token_rows(child, disp, no_heads, rows);
+    out = value::make_array(rows);
+    return true;
+}
+
+// ---- project handles (the cc.json manifest grouped as TU handles) -------
+// Same registry discipline (handle_table), separate id space. Opening a
+// project parses every TU (parse-on-load — the AST-1 measurement's
+// subject); a TU whose file cannot be read, or whose manifest options
+// are refused, carries handle 0 in the rows (visible, not fatal).
+
+struct parse_project_state
+{
+    std::vector<std::string> files;
+    std::vector<int64_t> tus;
+};
+
+static handle_table<parse_project_state> &parse_project_handles()
+{
+    static handle_table<parse_project_state> handles;
+    return handles;
+}
+
+static parse_project_state *parse_project_get(int64_t handle)
+{
+    return parse_project_handles().get(handle);
+}
+
+int64_t internal_program_project_open(::Program &self,
+				      const std::string &manifest_path)
+{
+    ProjectManifest manifest;
+    std::string err;
+    if ( !read_project_manifest(manifest_path, manifest, err) )
+	return 0;
+    parse_project_state *ps = new parse_project_state();
+    for ( size_t i = 0; i < manifest.tus.size(); ++i )
+    {
+	const ProjectTU &tu = manifest.tus[i];
+	ps->files.push_back(tu.file);
+	// The manifest TU's -I/-D/--std options ride into the child —
+	// project-handle diagnostics match the --project build.
+	ps->tus.push_back(parse_open_file_with(self, tu.file, &tu));
+    }
+    return parse_project_handles().open(ps);
+}
+
+bool internal_program_project_tus(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_project_state *ps = parse_project_get(handle);
+    if ( !ps )
+	return false;
+    std::vector<madc::value> rows;
+    for ( size_t i = 0; i < ps->files.size(); ++i )
+    {
+	std::map<std::string, madc::value> f;
+	f["file"] = value(ps->files[i]);
+	f["handle"] = value(ps->tus[i]);
+	rows.push_back(value::make_object(f));
+    }
+    out = value::make_array(rows);
+    return true;
+}
+
+bool internal_program_project_close(int64_t handle)
+{
+    // Closing the member TU handles is this consumer's own step (see
+    // handle_table.h); the slot rule is the table's.
+    parse_project_state *ps = parse_project_get(handle);
+    if ( !ps )
+	return false;
+    for ( size_t i = 0; i < ps->tus.size(); ++i )
+	if ( ps->tus[i] > 0 )
+	    internal_program_parse_close(ps->tus[i]);
+    return parse_project_handles().close(handle);
+}
+
+// The project build (madcide ^B correlation, design doc 2026-08-31:
+// "with a manifest open, Build = the --project build"): the CLI's
+// --project AOT lane (madc_project_emit_native — every TU compiled with
+// its manifest options, ONE MIR-assembled native image) run IN-PROCESS.
+// kind vocabulary = native_kind_of (the one owner; "obj" over multiple
+// TUs takes per-TU naming, so an explicit outpath with it is refused —
+// the CLI's own rule). Diagnostics come back as rows; the lane's TU
+// children live inside the emit call, so a failure's detail is the
+// named backend-diagnostics-as-data residue — the caller runs a project
+// CHECK first (project_open + per-TU parse_check) for real rows, and a
+// false here always carries at least one error row saying that.
+// Thread contract: the runtime-eval confinement; the whole call runs
+// without yield points (it blocks a cooperative scheduler — the
+// project-scale instance of the named backend-yield residue).
+bool internal_program_project_build(::Program &self,
+				    const std::string &manifest_path,
+				    const std::string &kind_name,
+				    madc::value &out,
+				    const std::string &outpath)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    // A synthesized-diagnostics carrier: the emit lane's TU children are
+    // its own; this Program only holds the pre-emit refusals + the belt.
+    ::Program synth(self.engine);
+    bool ok = false;
+    {
+	DiagnosticRenderMute mute;
+	MadcNativeKind kind = mnkPieExecutable;
+	bool kind_ok = native_kind_of(kind_name, kind);
+	if ( !kind_ok )
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "unknown build kind '" + kind_name
+			    + "' (expected \"exe\" or \"obj\")");
+	ProjectManifest manifest;
+	std::string err;
+	if ( kind_ok && !read_project_manifest(manifest_path, manifest, err) )
+	{
+	    kind_ok = false;
+	    synth.set_error(::Program::DiagnosticPhase::compiler, err,
+			    manifest_path.c_str());
+	}
+	if ( kind_ok && kind == mnkObject && !outpath.empty()
+	  && manifest.tus.size() > 1 )
+	{
+	    kind_ok = false;
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "cannot combine an output path with \"obj\" over"
+			    " multiple translation units (per-TU naming)",
+			    manifest_path.c_str());
+	}
+	if ( kind_ok )
+	    ok = madc_project_emit_native(*self.engine, manifest, kind,
+					  outpath.empty()
+					      ? (kind == mnkObject
+						     ? (const char *)0
+						     : "a.out")
+					      : outpath.c_str(),
+					  std::vector<std::string>(),
+					  self.registration_policy.enable_forest_bind,
+					  self.forest_bind_path) == 0;
+	if ( !ok && !child_has_error_row(synth) )
+	    synth.set_error(::Program::DiagnosticPhase::compiler,
+			    "project build failed with no recorded diagnostic"
+			    " (run a project check for per-TU rows; backend"
+			    " output goes to stderr)",
+			    manifest_path.c_str());
+    }
+    diagnostic_rows_from_child(synth, out);
+    return ok;
+}
+
+// The project Run (madcide ^B correlation): the --project JIT lane
+// (madc_project_execute — parse every TU with its manifest options,
+// link the modules, run the entry) in a fork() child — parse_run's fork
+// seam, project-wide. stdio is INHERITED (the caller owns the terminal
+// handoff); ^C reaches the guest alone (the system(3) discipline).
+// Returns the guest's exit status (128+signal on a signal death);
+// negative = it never ran: -1 unreadable manifest, -2 empty manifest,
+// -3 fork/spawn failed.
+// Windows arm: no fork — a child OF SELF runs the --project lane
+// (madc_self_exe_path + Process::run_and_wait, design (b)'s
+// child-of-self shape; the frozen-project twin of parse_run's
+// --run-frozen optimization is a named residue).
+int64_t internal_program_project_run(::Program &self,
+				     const std::string &manifest_path)
+{
+    ProjectManifest manifest;
+    std::string err;
+    if ( !read_project_manifest(manifest_path, manifest, err) )
+	return -1;
+    if ( manifest.tus.empty() )
+	return -2;
+#ifdef _WIN32
+    (void)self;
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child's console
+    std::cerr.flush();
+    std::string selfexe = madc_self_exe_path();
+    if ( selfexe.empty() )
+	return -3;
+    std::vector<std::string> cargv;
+    cargv.push_back(selfexe);
+    cargv.push_back("--project");
+    cargv.push_back(manifest_path);
+    madc::error rerr;
+    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
+    return rc < 0 ? -3 : rc;
+#else
+    fflush(NULL);		// parent's buffered output must not
+    std::cout.flush();		// duplicate into the child
+    std::cerr.flush();
+    struct sigaction ign, old_int, old_quit;
+    memset(&ign, 0, sizeof(ign));
+    ign.sa_handler = SIG_IGN;
+    sigaction(SIGINT, &ign, &old_int);
+    sigaction(SIGQUIT, &ign, &old_quit);
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+	__madc_task_atfork_child();
+	signal(SIGINT, SIG_DFL);	// CLI parity: the guest starts
+	signal(SIGQUIT, SIG_DFL);	// with default dispositions
+	std::string argv0 = manifest_path;
+	char *guest_argv[2];
+	guest_argv[0] = &argv0[0];
+	guest_argv[1] = (char *)0;
+	int rc = madc_project_execute(*self.engine, manifest, 1, guest_argv,
+				      self.registration_policy.enable_forest_bind,
+				      self.forest_bind_path);
+	// The CLI's own mapping: negative = infrastructure failure -> 1.
+	exit(rc < 0 ? 1 : (rc & 0xff));
+    }
+    int64_t status = -3;
+    if ( pid > 0 )
+    {
+	int ws = 0;
+	pid_t r;
+	do
+	    r = waitpid(pid, &ws, 0);
+	while ( r < 0 && errno == EINTR );
+	if ( r == pid )
+	{
+	    // THE status mapper (child_status_exit_mapping owner) —
+	    // its -1 (neither exited nor signaled) folds into -3.
+	    int mapped = map_child_status(ws);
+	    if ( mapped >= 0 )
+		status = mapped;
+	}
+    }
+    sigaction(SIGINT, &old_int, (struct sigaction *)0);
+    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
+    return status;
+#endif
+}
+
 bool internal_program_runtime_eval_expression(::Program &self,
 					      const std::string &expression,
 					      madc::value &result,
@@ -4807,8 +5950,8 @@ struct engine::impl
 
     impl()
     {
-	eng.capture_output_to_buffer();
-	eng.capture_error_to_buffer();
+	// Guest output capture is INVOCATION-scoped (iostream_capture_scope
+	// at each program API entry) — see program::impl's ctor note.
     }
 
     ~impl()

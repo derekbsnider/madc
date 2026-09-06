@@ -4,14 +4,14 @@
 // TU — zero includes.
 int main()
 {
-	value s = "hello\n";
+	var s = "hello\n";
 	println("chomp={}", perl::chomp(s));
 	println("[{}]", s);
 	println("chop={}", perl::chop(s));
 	println("[{}]", s);
 
 	println("{}", perl::lc("HeLLo"));
-	value m = "MiXeD";
+	var m = "MiXeD";
 	println("{}", perl::lc(m));
 	println("{}", perl::uc(m));
 	println("{}", perl::ucfirst("world"));
@@ -19,7 +19,7 @@ int main()
 	println("{}", perl::reverse("abc"));
 	println("{}", perl::reverse(m));
 	println("[{}]", perl::substr("hello world", 6, 5));
-	value t = "perl text";
+	var t = "perl text";
 	println("[{}]", perl::substr(t, 0, 4));
 	// the subjects were never mutated
 	println("[{}]", m);
@@ -30,10 +30,10 @@ int main()
 	perl::push(a, "two");
 	perl::push(a, "three");
 	println("{}", perl::join("|", a));
-	value last;
+	var last;
 	perl::pop(last, a);
 	println("last={} scalar={}", last, perl::scalar(a));
-	value head;
+	var head;
 	perl::shift(head, a);
 	println("head={} scalar={}", head, perl::scalar(a));
 	return 0;

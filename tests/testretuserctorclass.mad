@@ -1,0 +1,41 @@
+// A class with a user copy/move constructor and NO destructor is still
+// "non-trivial for the purposes of calls" (Itanium C++ ABI): returned by
+// value it travels through the hidden result pointer and a named return
+// operand is COPY/MOVE-CONSTRUCTED into the result — never bit-copied.
+// (A parameter is never NRVO-elided either: see testparamimplicitmove.)
+// Oracle: g++ == clang++.
+#include <stdio.h>
+
+int copies = 0, moves = 0;
+
+struct H {
+	int v;
+	H(int x) : v(x) {}
+	H(const H &o) : v(o.v + 100) { copies++; }
+	H(H &&o) : v(o.v + 1000) { moves++; }
+};
+
+struct Box {
+	H h;
+	Box(int x) : h(x) {}
+	H get() { return h; }			// a MEMBER: copy constructor
+	H take() { return static_cast<H &&>(h); }	// xvalue: move constructor
+};
+
+H pick(bool first)
+{
+	H a(1), b(2);
+	return first ? a : b;			// no NRVO for a conditional: copy
+}
+
+int main()
+{
+	Box box(5);
+	H g = box.get();
+	printf("g %d copies %d moves %d\n", g.v, copies, moves);
+	H t = box.take();
+	printf("t %d copies %d moves %d\n", t.v, copies, moves);
+	H p = pick(false);
+	printf("p %d copies %d moves %d\n", p.v, copies, moves);
+	return 0;
+}

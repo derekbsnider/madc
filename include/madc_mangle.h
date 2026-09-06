@@ -169,6 +169,14 @@ void madc_mangle_set_stdlib_llvm(const std::string &abi_ns); // _LIBCPP_ABI_NAME
 // flavor). The HOST's flavor is the stdlib madc itself was built against —
 // GNU cxx11 — a build fact, not a parse fact.
 MangleStdlib madc_mangle_active_stdlib();
+// The HOST's flavor: the stdlib madc itself was built against — a build fact
+// (_LIBCPP_VERSION at compile time), never a parse fact.
+MangleStdlib madc_mangle_host_stdlib();
+// The script's flavor is not the host's: the marshalling boundary's gate
+// (CirBuilder::flavor_marshal_candidate), the format intrinsic's std::string
+// operand (cir_format.cpp); the lexer's __MADC_HOST_LIBCPP__ is the same fact
+// for a dialect fragment's script-side rendering (bits/value_stream).
+bool madc_mangle_flavor_differs();
 
 // Scoped remint under the HOST flavor (task #69 flavor-ABI marshalling):
 // host-implemented namespace publics export host-flavor symbols only, so the

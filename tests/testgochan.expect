@@ -1,0 +1,2 @@
+main tr=closedrecv;sendclosed(send on closed channel);reclose(close of closed channel);m;p0;L1;c0;c100;rz;p1;p2;pclose;mgot7;
+consumer tr=closedrecv;sendclosed(send on closed channel);reclose(close of closed channel);m;p0;L1;c0;c100;rz;p1;p2;pclose;mgot7;c200;cdone;

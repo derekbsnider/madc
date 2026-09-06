@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -561,7 +562,11 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 41 };
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 44 };	// v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
+	// v43: defrec friendfn/friendcls runs — the friendship grants
+	// (friend_function_names / friend_class_names), parse-time access
+	// state a restored class never carried (hoisted hidden-friend bodies
+	// were refused their private reads under the pack).
 enum : uint32_t { CIR_FOREST_CONFIG_STDLIB_MASK = 0xfffe0000u };
 enum : uint32_t { CIR_FOREST_ANCHOR_NONE = 0xffffffffu };  // B4 grove-entry hook
 
@@ -1181,6 +1186,12 @@ struct CirRestoredNsBind
 	// redundancy) stay bind-only: the live mirror grows no sets.
 	bool ov_member;
 };
+// v27: a namespace alias (Program::namespace_aliases entry).
+struct CirRestoredNsAlias
+{
+	const char *alias;		// the alias's qualified key
+	const char *target;		// the canonical target namespace
+};
 
 // A restored file-scope FREE-FUNCTION declaration (RC2): the reconstructed
 // FuncDef (forest-owned, declaration-only) under its call name.
@@ -1297,6 +1308,14 @@ struct CirRestoredFuncDefaults
 struct CirMaterializeFilter
 {
 	bool active = false;
+	// exact: ONLY the names declared_bound marks true (plus what an admitted
+	// record's references pull in) materialize; an UNINDEXED record — the
+	// derived entity a closure filter keeps unconditionally — is skipped
+	// too. The on-demand shape: a TU with no bound closure asking for one
+	// library prototype (forest_adopt_declared_function) must not pay the
+	// whole derived population. Monotone with the rest: a later non-exact
+	// filter (a bound closure) WIDENS an installed exact one and re-runs.
+	bool exact = false;
 	std::unordered_map<std::string, bool> declared_bound;
 };
 
@@ -1374,6 +1393,7 @@ class CirFrozenForest
 	std::vector<CirRestoredGlobal> _restored_globals;
 	std::vector<CirRestoredNsLink> _restored_nslinks;	// v25: inline-ns links
 	std::vector<CirRestoredNsBind> _restored_nsbinds;	// v25: using-decl fn imports
+	std::vector<CirRestoredNsAlias> _restored_nsaliases;	// v27: namespace aliases
 	std::vector<CirRestoredDeferredBody> _restored_defbodies;	// v26
 	// RC2: restored free-function declarations, built by materialize_from_arena
 	// from the DF_IS_FREE_FUNC DK_FUNC records.
@@ -1425,6 +1445,12 @@ class CirFrozenForest
 	// container). materialize_for installs it on the first generation and
 	// UNIONS later, wider filters in (S2 incremental materialization).
 	CirMaterializeFilter _mat_filter;
+	// The derived-type UNRESOLVED census (the -v diagnostic the pack
+	// degradation gate ratchets on) names each id ONCE per forest: a
+	// widened re-pass (materialize_for growing by a name) re-walks every
+	// derived slot and would otherwise re-report the same ids — the gate
+	// then reads a doubled count as a regression that never happened.
+	std::set<uint32_t> _derived_unresolved_reported;
 	// S2 (R4-lite): what earlier generations already EMITTED, so a later,
 	// wider filter re-runs the passes without duplicating. _mat_done_slots
 	// covers the arena-slot-keyed walks (typedef / ns-surface / enum-record
@@ -1596,6 +1622,8 @@ public:
 	{ return _restored_nslinks; }		// v25
 	const std::vector<CirRestoredNsBind> &restored_nsbinds() const
 	{ return _restored_nsbinds; }		// v25
+	const std::vector<CirRestoredNsAlias> &restored_nsaliases() const
+	{ return _restored_nsaliases; }	// v27
 	const std::vector<CirRestoredDeferredBody> &restored_defbodies() const
 	{ return _restored_defbodies; }		// v26
 	// RC2: the restored free-function declarations. Valid after

@@ -1,0 +1,15 @@
+// &S::f where f is a static member FUNCTION: a function designator, not a
+// static data member. The address-of arm's class branch only probed data
+// members and threw "'f' is not a static data member" (s141; reducer
+// tmp/eh_red11). Oracle: g++/clang++ print 42.
+
+struct S {
+	static long f(long x) { return x + 1; }
+};
+
+int main()
+{
+	long (*p)(long) = &S::f;
+	printf("%ld\n", p(41));
+	return 0;
+}

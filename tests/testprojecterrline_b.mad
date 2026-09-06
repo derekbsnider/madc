@@ -1,0 +1,2 @@
+// TU with an error on line 2 of THIS file:
+long broken() { return undeclared_name_b; }

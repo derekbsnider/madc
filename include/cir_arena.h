@@ -112,6 +112,11 @@ enum DefKind : uint32_t {
 			// The flush rebuilds the entry (var = the restored method
 			// Variable) so the EXISTING materialize-and-lower fixpoint
 			// re-runs the one live derivation on first ODR-use.
+	DK_NSALIAS,	// v27: a NAMESPACE ALIAS (Program::namespace_aliases): ns_id = the
+			// alias's own qualified key ("n::d", bare "fs" at global scope),
+			// name_id = the canonical target namespace. The flush re-adds the
+			// map entry verbatim, so `namespace fs = std::filesystem;` in a
+			// packed header binds exactly as the live parse left it.
 };
 
 // Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a
@@ -323,6 +328,30 @@ struct defrec {
 	// split into two words like constvalrec's value.
 	uint32_t carray_count_lo;
 	uint32_t carray_count_hi;
+	// CLASS polymorphic NAME state (v42): the flat inheritance-merged
+	// vtable_slots list (word run of name ids, slot order) and the
+	// virtual_methods name set (word run of name ids). Both are parse-time
+	// state build_vtable_groups and the override/dispatch predicates read;
+	// only the DERIVED groups were frozen, so a restored class answered
+	// vtable_slot("~$deleting") < 0 (no deleting dtor synthesized, no
+	// dispatch through `delete p`) and is_virtual_method() false (a
+	// consumer-side derived class never saw the override).
+	uint32_t vslot_begin;	// word run: DataDefCLASS::vtable_slots name ids
+	uint32_t vslot_count;
+	uint32_t vmeth_begin;	// word run: DataDefCLASS::virtual_methods keys
+	uint32_t vmeth_count;
+	// (v43) The friendship GRANTS ([class.friend]) — parse-time name
+	// state the access check reads (function_is_friend_of /
+	// friend_class_names). Never frozen before: a hidden-friend operator
+	// TEMPLATE hoisted from a restored class (libc++ <iomanip>'s
+	// __iom_t5 inserter) instantiated its body against the restored
+	// class and the body's `__x.__n_` read was refused as private, so
+	// the instantiation failed silently and the call fell to the raw C
+	// `<<` (testiomanip on the darwin runner, pack-bound only).
+	uint32_t friendfn_begin;	// word run: DataDefCLASS::friend_function_names
+	uint32_t friendfn_count;
+	uint32_t friendcls_begin;	// word run: DataDefCLASS::friend_class_names
+	uint32_t friendcls_count;
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

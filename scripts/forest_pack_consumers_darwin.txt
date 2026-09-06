@@ -1,0 +1,6 @@
+# Programs that must PARSE and lower from the darwin forest pack on the build
+# container (scripts/forest_pack_darwin.sh, consumer parse leg): one test
+# basename per line. Each is a libc++ construct whose completion ORDER differs
+# when the class templates are served from the pack instead of a live parse.
+testlistiter_libcxx      # the libc++ <list> node completion site (darwin dispatch #13)
+testforeachiter          # range-for over std::list / std::map under libc++

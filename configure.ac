@@ -79,18 +79,20 @@ esac
 WITH_FOREST="$with_forest"
 AC_SUBST([WITH_FOREST])
 
-# Link shape (forest-carriers plan S4, configure axis 1): monolithic (default)
-# links libmadc statically into the CLI — the single-binary, no-installation
-# shape. --enable-shared links the CLI against the shared libmadc instead (the
-# "thin CLI" of a packaged install): one libmadc image serves the CLI and every
+# Link shape (forest-carriers plan S4, configure axis 1; DEFAULT FLIPPED by the
+# packaging arc PK2 — docs/plans/2026-09-01-packaging-arc.md, owner ruling
+# 2026-08-31): shared (default) links the CLI against the shared libmadc — the
+# "thin CLI" of a packaged install: one libmadc image serves the CLI and every
 # embedding host, and in the embedded forest carrier the container rides that
-# LIBRARY image, so hosts get the groves for free. libmadc.so is built either
-# way; this axis decides what the CLI links against.
+# LIBRARY image, so hosts get the groves for free. --disable-shared links
+# libmadc statically into the CLI instead — the single-binary, no-installation
+# shape, a first-class OPTIONAL form (gated by mono_cli_gate.sh). libmadc.so is
+# built either way; this axis decides what the CLI links against.
 AC_ARG_ENABLE([shared],
-    [AS_HELP_STRING([--enable-shared],
-        [link the madc CLI against the shared libmadc (thin CLI) instead of linking libmadc statically (default: no)])],
+    [AS_HELP_STRING([--disable-shared],
+        [link libmadc statically into the madc CLI (the monolithic single-binary form) instead of the default thin CLI against the shared libmadc])],
     [enable_shared_cli="$enableval"],
-    [enable_shared_cli=no])
+    [enable_shared_cli=yes])
 case "$enable_shared_cli" in
     yes) ENABLE_SHARED_CLI=1 ;;
     no)  ENABLE_SHARED_CLI=0 ;;

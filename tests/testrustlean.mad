@@ -6,10 +6,10 @@ int main()
 	println("[{}]", rust::trim("  r  "));
 	println("[{}]", rust::trim_start("  r  "));
 	println("[{}]", rust::trim_end("  r  "));
-	value s = " pad ";
+	var s = " pad ";
 	println("[{}]", rust::trim(s));
 	println("{}", rust::replace("foo bar foo", "foo", "baz"));
-	value f = "a-b";
+	var f = "a-b";
 	println("{}", rust::replace(f, "-", "+"));
 	println("{}", rust::repeat("ab", 3));
 
@@ -18,7 +18,7 @@ int main()
 	rust::push(a, "y");
 	rust::push(a, "z");
 	println("{}", rust::join(a, "-"));
-	value e;
+	var e;
 	rust::first(e, a);
 	println("first={}", e);
 	rust::last(e, a);

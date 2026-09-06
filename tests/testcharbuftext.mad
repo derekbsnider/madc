@@ -1,0 +1,37 @@
+// char[] at TEXT boundaries: a fixed char array used as a VALUE decays
+// ([conv.array]) — println/format classify it as a C string (std::format's
+// own char-array behavior; g++/clang++ canon), never as its element char,
+// which passed the decayed POINTER to the char formatter and printed one
+// garbage byte, silently. Also pins the value-boundary shapes that were
+// already green (assign, subscript store, compare, in-function assign) and
+// the non-decaying full-subscript element (still a char).
+struct Rec { char name[8]; };
+void assign_in_fn(var &out)
+{
+    char buf[16];
+    strncpy(buf, "world", 15);
+    buf[15] = 0;
+    out = buf;
+}
+int main()
+{
+    char buf[16];
+    strncpy(buf, "hello", 15);
+    buf[15] = 0;
+    println("direct=[{}]", buf);
+    Rec r;
+    strncpy(r.name, "world", 7);
+    r.name[7] = 0;
+    println("member=[{}]", r.name);
+    println("elem={:c}", buf[0]);
+    var b;
+    b["k"] = buf;
+    println("bk=[{}]", b["k"]);
+    var v;
+    v = buf;
+    if ( v == buf ) println("eq: yes"); else println("eq: no");
+    var o;
+    assign_in_fn(o);
+    println("fnassign=[{}]", o);
+    return 0;
+}

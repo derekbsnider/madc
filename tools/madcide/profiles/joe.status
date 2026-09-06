@@ -1,0 +1,18 @@
+# madcide status-line format (IDE-9a) — JOE's joerc vocabulary, shipped
+# with joerc's own default strings. lmsg renders left-justified, rmsg
+# right-justified; rmsg's FIRST character (after "rmsg ") is the FILL
+# between the two halves.
+#
+# Supported seats today: %n name · %m "(Modified) " · %R "(Read only) "
+# · %r row / %c col (digits width-pad: %4r) · %o byte offset · %k the
+# pending chord (chord echo) · %x the enclosing context (madcide renders
+# its AST-backed enclosing function here — exact where JOE's is a
+# textual backward heuristic) · %y the active VIEW name in JOE's
+# "(syntax)" seat · %% a literal percent.
+#
+# Unsupported joerc escapes render EMPTY and light up as their features
+# land (%T overtype, %W wordwrap, %I autoindent, %X rectangle, %M macro,
+# %S shell, ...). \i..\l attribute escapes are consumed — the row
+# renders inverse whole-line; intra-line styling is a named seat.
+lmsg \i%k%T%W%I%X %n %m%y%R %M %x
+rmsg  %S Row %4r Col %3c

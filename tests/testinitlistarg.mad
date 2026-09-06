@@ -1,0 +1,95 @@
+#!/../bin/madc
+// Braced-init-list CALL ARGUMENTS ([over.ics.list]): the whole `{...}` is ONE
+// argument converted to the parameter's type — here std::initializer_list<E>.
+//
+// madc had no parse for the shape at all: the argument readers handed the
+// bare `{` to parseExpression (which has no brace-head reading), so the
+// list's elements flattened into SEPARATE arguments ("Too many parameters"
+// on a valid call), and when another argument FOLLOWED the list the NULL
+// parse return crashed the identifier arm (SIGSEGV — the madcide in-process
+// crash on examples/embed_hello.cpp, 2026-08-26). The fix re-spells the
+// braced list against the callee's parameter type through the ONE re-spell
+// owner (respell_braced_list_for_target — the TokenRETURN convention), and
+// TokenObjTemp carries braced-ness so [dcl.init.list]/4-/5 fire for the
+// functional form `T{...}` in expression position too.
+//
+// The backing array is emitted SIZED ((E[N]){...}): c2mir mis-sized an
+// UNSIZED array literal nested in a struct literal in assignment context
+// (elements past [0] read garbage) — fixed in c2mir as well; both layers
+// are pinned (this file and testnestedcomplit.c).
+//
+// Oracle (g++ 13 and clang++, -std=c++17):
+//   42 / 2 42 / 2 42 / 42 / 3 24 / 7
+#include <initializer_list>
+#include <cstdio>
+
+struct V { long v; V(long x) : v(x) {} };
+
+struct P {
+	long call(const char *n, std::initializer_list<V> args, V *out)
+	{
+		long t = 0;
+		for (const V *p = args.begin(); p != args.end(); ++p)
+			t += p->v;
+		out->v = t;
+		return (long)args.size();
+	}
+	long only(std::initializer_list<V> args)
+	{
+		long t = 0;
+		for (const V *p = args.begin(); p != args.end(); ++p)
+			t += p->v;
+		return t;
+	}
+};
+
+// free function, plain element type, mid-position list
+long fsum(const char *n, std::initializer_list<long> args, long *out)
+{
+	long t = 0;
+	for (const long *p = args.begin(); p != args.end(); ++p)
+		t += *p;
+	*out = t;
+	return (long)args.size();
+}
+
+int main()
+{
+	P p;
+
+	// the CRASH shape: method call, braced list MID-position, class
+	// elements, a trailing argument after the list
+	V sum(0);
+	long n = p.call("add", {V(10L), V(32L)}, &sum);
+	printf("%ld\n", sum.v);
+
+	// free function, plain long elements, trailing argument
+	long fs = 0;
+	long fn = fsum("add", {10L, 32L}, &fs);
+	printf("%ld %ld\n", fn, fs);
+
+	// the EXPLICIT functional spelling — the same TokenObjTemp the
+	// re-spell produces, written by hand
+	V sum2(0);
+	long n2 = p.call("add", std::initializer_list<V>{V(10L), V(32L)}, &sum2);
+	printf("%ld %ld\n", n2, sum2.v);
+
+	// the FLATTEN shape: the braced list as the ONLY argument used to
+	// count as two arguments ("Too many parameters" on a valid call)
+	printf("%ld\n", p.only({V(20L), V(22L)}));
+
+	// declared initializer_list read in a LATER statement — the latent
+	// decl-path twin (the backing array must stay valid, [dcl.init.list]/6)
+	std::initializer_list<long> l = {7L, 8L, 9L};
+	long t = 0;
+	for (const long *q = l.begin(); q != l.end(); ++q)
+		t += *q;
+	printf("%ld %ld\n", (long)l.size(), t);
+
+	// single-element list
+	long one = 0;
+	fsum("one", {7L}, &one);
+	printf("%ld\n", one);
+
+	return 0;
+}

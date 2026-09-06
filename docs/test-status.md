@@ -1,6 +1,863 @@
 # Test Status
 
-> **Current (2026-08-23, v0.95.1 — the v0.95 binary-shipping patch):**
+> **Current (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
+> D4 burndown waves 1–7c + the MIR aarch64 floor wave 8 + the SIMD arc
+> S1–S5 + the vector calling convention + Apple stack-argument packing
+> + wave 12, the libc++ `<list>` completion site):** FULL merge-wave
+> battery on the wave-12 code content 1ae4650f (b49234a6 18953bfd 94de04fe
+> d2bf5a3c 733ce20b 1ae4650f on 606907f1; the candidate e7b628e1 adds only the
+> genuine-Windows stage fix scripts/win_suite.sh + testiomanip.win_skip, so
+> six ledger rows were re-stamped there from the 1ae4650f runs, each row
+> saying so; tmp/logs/w12-battery5.log): fulltest rc=0 (every gate in the chain,
+> vector_abi_gate OK x3 lanes, forest_bind_gate 29/29, tsubst flag-on
+> gate ok, warning ratchet at baseline) with JIT **1308 passed / 0 failed / 0 timed out / 9 skipped**, native
+> EXE **1249/0**, OBJ **1249/0**, packed **1308/0/0/9**,
+> headerless **1274/0/0/43** (linux pack 68 = baseline); the libc++
+> flavor lane — its first full run since 2026-08-16 — JIT **1303/0/0TO/14skip**,
+> EXE **1244/0**, OBJ **1244/0** (5 `.libcxx_skip` fixtures,
+> testphpdumpiter among them for the nested-map construct relowering gap);
+> wine64 domain **1251/0/0TO/66skip** on the freshly rebuilt PE (verify_pe_release
+> OK, win64 pack 68 = baseline); the same PE on genuine Windows 11 through
+> the W0.2 channel (`scripts/win_suite.sh`, now staging tools/ + examples/)
+> **1253/0/0TO/64skip** (tmp/logs/w12-win-suite2.log; the first run 1247/6/1TO was
+> six stage gaps, classified standalone); c-testsuite
+> **220/220, baseline empty** (`--std=gnu11`); macOS cross release both arches 835 units,
+> darwin pack 48 = baseline, verify_macho OK; the darwin FULL suite on
+> GitHub's mac runners (dispatch #14, run 33993568362, suite_gate=true):
+> arm64 **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64
+> Mac full suite **1293/0/0TO/24skip**. New reducers in wave 12:
+> testlistiter_libcxx, testqualbasemember, testvaluecout_libcxx,
+> teststrargcoerce_libcxx; the darwin pack gains a consumer PARSE leg
+> (scripts/forest_pack_consumers_darwin.txt) on the container. Every lane is recorded in docs/lane-status.tsv
+> at this content (`lane_ledger.sh check --release` green).
+>
+> **Previous (2026-09-01, v0.97.0 — the s148–s149c merge wave: madcide
+> gateway seam + vi modal personality + carrier literal ergonomics):**
+> FULL push-gate battery on merged content @d8bf72f4 (+docs-only
+> follow-ups): fulltest rc=0 (all gates) with JIT **1247 passed / 0
+> failed / 0 timed out / 9 skipped**, native EXE **1193/0**, OBJ
+> **1193/0**, packed **1247/0/0/9**, headerless **1220/0/0/36**;
+> wine64 domain **1197/0/0/59** on the freshly rebuilt PE; macOS
+> arm64 hardware battery **8/3** leg-for-leg parity (standing
+> known-opens only; degradation leg zero losses); c-testsuite
+> **220/220 baseline EMPTY** (`--std=gnu11`). New in this wave:
+> testvalueappend/+mix/+bad, testvalueinitkeyed(+mix),
+> testcolonheadexpr, testexprjuxtapose; the var-over-value sweep
+> converted 57 test files to the `var` spelling. darwin pack baseline
+> 58 → 64 with a stated reason (the juxtaposition wall made a
+> pre-existing instantiation-body misparse loud; fix banked as KG Gap
+> instantiation_body_templateid_ctor_call).
+>
+> **Previous (2026-08-28, SMAUG restored + gated —
+> feature/smaug-fntypedef merge wave):** the real MadSMAUG 51-TU
+> `--project` (upstream/smaug1.8 via compile_commands.json) compiles,
+> links, JIT-boots to "Realms of Despair ready", and serves the full
+> login greeting with ZERO diagnostics — restored from a SIGSEGV
+> shipped in every archived release v0.69.0–v0.96.0 (a function
+> declared THROUGH a function typedef — SMAUG's `DECLARE_DO_FUN` —
+> registered as an 8-byte storage variable whose ->data the July-31
+> ctor_hidden_vbase_owner probe read as a Method*). Fixes, each with
+> a reducer: parser — a zero-star fn-typedef declarator declares a
+> FUNCTION, one star stays a pointer variable (testc89fntypedef);
+> CIR — C-mode functions never enter the ctor/vbase probe; c2mir —
+> default warnings match gcc's default (sign-only pointee args,
+> ptr-vs-null-zero ordered compares; testcwarnparity, .expect_quiet).
+> `scripts/smaug_gate.sh` now boots the REAL SMAUG inside fulltest,
+> two-sided (~10 s; skips loudly without the sibling checkout). FULL
+> push-gate battery on final content @6ea621f2: fulltest rc=0 (all
+> gates incl. smaug_gate) + JIT **1201 passed / 0 failed / 0 timed
+> out / 9 skipped** + EXE **1152 / 0** + OBJ **1152 / 0** + release
+> rc=0 + packed **1201 / 0** + headerless **1174 / 0 / 36 skipped**.
+>
+> **Previous (2026-08-28, the variadic-class arc —
+> feature/variadic-class-tpl merge wave):** `bin/madc
+> examples/embed_hello.cpp` compiles AND RUNS at g++ parity; the
+> examples gate carries both legs. Twelve arc fixes (ns-map clobber
+> [temp.inst], enum-pointee conversion domain, FuncDef::is_explicit,
+> const&-param prvalue misclass, tid-pack inst_key memo, engine
+> iostream-capture scoping, eval-child host callbacks, ...) plus the
+> battery gate's three catches, each own-committed with a reducer:
+> the [tsubst-alias] probe takes the drift gate's allowed-exception
+> marker; a REBOUND ranked ctor stamps its `__oN` symbol on
+> local_emit_name (pre-existing ≥v0.95.2 — the packed/headerless
+> memberwise-copy "too many arguments" wall; tests/testvecmembercopy);
+> a missing-content HUSK live-tokenizes by CANONICAL PATH, not
+> basename (`<stat.h>` grove-order ambiguity dropped `__S_IFMT` for
+> masked `<sys/stat.h>` consumers — teststat red headerless since the
+> s140 corpus growth). Sixteen new suite tests. FULL push-gate battery
+> on final content @e41acd91: fulltest rc=0 (all gates) + JIT **1199
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1225) + EXE
+> **1150 passed / 0 failed** + OBJ **1150 passed / 0 failed** +
+> release rc=0 + packed **1199 / 0** + headerless **1172 / 0 / 36
+> skipped**.
+>
+> **Previous (2026-08-27, the embed_hello template chain —
+> feature/embed-hello-tsubst2 merge wave):** five coupled template-core
+> fixes on the `bin/madc examples/embed_hello.cpp` diagnosis chain, each
+> reduced + g++-oracled: (1) `find_initializer_list_ctor` accepts a
+> CLASS element type when every element is ALREADY that class —
+> `vector<W>{W(1), W(2)}` (the pgm.call({value,value}) shape) takes the
+> initializer-list ctor like g++ instead of falling to plain overloading
+> (which deduced the range ctor with _InputIterator = W, a candidate
+> g++'s _RequireInputIter SFINAEs away, and died in tsubst on
+> iterator_traits<W>::iterator_category — the banked bail); the
+> conversion-into-slot half (vector<string>{"a","b"}) stays the task-#56
+> residue. (2) [dcl.init.list]/3-4 has ONE owner: the filter moved into
+> instantiate_member_ctor_template_for_construction (new
+> list_initialization param) — the two TokenObjTemp sites were UNGUARDED
+> and minted the bogus range-ctor husk at parse time. (3)
+> fn_template_deduce_fnptr_param deduces a TID-classified pack inside a
+> fn-ptr parameter (`Ret (*cb)(Args...)`, engine::register_function's
+> shape), any element count; a multi-element tid pack aliases into the
+> pack_param/pack_elems channel and rides THE one N-copy expansion. (4)
+> concrete-param viability is two-pass: strict over every candidate,
+> then relaxed (named CLASS params stop vetoing — [over.ics.user]) only
+> when none matched; arithmetic/pointer arms stay strict in both passes.
+> (5) attach_outofclass_member_template_def: an out-of-class
+> member-template definition on a PLAIN class attaches its body to the
+> declared member's pattern (libmadc/engine.h) — before it, the call
+> SILENTLY froze on the placeholder (undefined MIR import). NEW
+> env-gated probes per the repo idiom (MADC_SUBST_PROBE deriv/rebuild,
+> MADC_FNPTR_PROBE, FNTPL exit tags, the MTB inj dump, MADC_OOL_PROBE).
+> NEW tests: testinitlistclass, testmembertplfnptr (both --std=c++17,
+> g++-pinned). STILL OPEN toward embed_hello (reducers in container
+> tmp/eh_red*.cpp): detail::callback_adapter's variadic CLASS-template
+> instantiation (mixed fixed+pack head) is a SILENT-WRONG frontier —
+> sizeof... in a class-pack member folds 0 (eh_red6), a qualified static
+> call through Adapter<R,A...> evaluates 0 (eh_red7) — the class-side
+> twin of the fn-side N-copy machinery; plus the implicit-copy
+> deferred-construction pack arm (eh_red1: vector<V> with NO user copy
+> ctor bails LOUD at elem-formal-mismatch) and const-ref operator[]
+> member typing (eh_red8's first form). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1183 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1209) + EXE **1134 passed / 0 failed** +
+> OBJ **1134 passed / 0 failed**.
+>
+> **Previous (2026-08-27, the running madc IS the compiler —
+> feature/parse-build-run merge wave):** the OWNER RULING lands: ^B
+> never re-parses and never execs a madc binary — the buffer's LIVE
+> parse handle IS the compilation. NEW engine pair on the parse-handle
+> family: `madc::parse_build(diags, h, "exe"|"obj", out)` emits a
+> native artifact from the handle's EXISTING cir-ready tree
+> (madc_cir_emit_native — no fresh parse, no child Program from a
+> path; a red parse never reaches the emitter; build rows ride the
+> out-param only, the handle's recorded diagnostics snapshot/restore so
+> parse_check stays parse-pure) and `madc::parse_run(h)` = fork() at
+> the post-parse point (the child inherits the tree COW, resets the
+> cooperative scheduler — NEW `__madc_task_atfork_child` + io-layer
+> hook clearing waiters/host — hands the tree to madc_cir_execute, and
+> leaves via exit() so the GUEST's atexit semantics run; parent
+> ignores SIGINT/SIGQUIT until the reap, child restores defaults — the
+> system(3) discipline; returns the guest's status via
+> map_child_status, or -1 bad handle / -2 red parse / -3 no fork).
+> The tui atexit recovery is pid-guarded; the pre-existing
+> fork-isolation eval children adopt the same scheduler reset (latent:
+> a parked parent queue could schedule in the child). madcide: Build
+> refreshes the handle from the SCREEN text and emits from it (the
+> disk does not compile — the message inverts to "live buffer: unsaved
+> edits compile"), Run = run_buffer (red-parse refusal LOUD into the
+> diags pane → suspend → parse_run → THE return pause → resume);
+> the `Run {madc} {path}` row is DEAD ({madc} substitution survives
+> for manifest commands only); the choose dispatcher routes bld- verbs
+> by PREFIX. Dupaudit: 4 families consolidated+gated at birth —
+> native_kind_of, parse_tree_backend_ready, fork_child_runtime_reset
+> (fork-site count == atfork-reset count; NEW
+> check-live-build-owners.sh), terminal_return_pause (the pause-owner
+> marker joins check-madcide-single-owners.sh) — and the BATTERY's
+> child_status_exit_mapping gate caught parse_run's hand-rolled
+> 128+WTERMSIG (adopted map_child_status, now shared via
+> madcdis/process.h). NEW testparserun (fork-run rc passthrough +
+> inherited stdout, build exe+obj twice from ONE handle, artifact
+> runs, parse-pure handle, -1/-2 refusals; win64/wine64 skips);
+> testmadcide gates flip to the ruling (run-internal, run-headless,
+> live-buffer-build/native-build-fail inverse pair, run-refused-red).
+> win64 cross build green (g_starting reset under the !_WIN32 guard).
+> Battery on final content: fulltest green (52 unit binaries, all
+> gates incl. the new one) + JIT **1181 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1207) + EXE **1132 passed / 0 failed** +
+> OBJ **1132 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-4c stdin unification —
+> feature/mt4c-stdin-unification merge wave):** the tui's input wait
+> joins the ONE scheduler poll; read_keys' 50ms live-but-parked cadence
+> RETIRES. NEW `taskio::host_wait_readable(fd)`: the tui flow (the main
+> task) parks on stdin as an io waiter, so task_next_or_wait's hook
+> makes one blocking decision over {stdin, io waiters} bounded by the
+> earliest timer. true = the fd fired (read keys); false = a SYNTHETIC
+> wake — rt counts task switches (`__madc_task_switch_count`), the host
+> records the count at park, and the hook's BLOCKING quiescent point
+> (never a zero-timeout probe: a yield-head fire_due probing the hook
+> must not steal the CPU from still-running tasks — the unit leg's
+> failing trace caught exactly that; gate = timeout_ms != 0) wakes the
+> host UNFIRED when switches advanced: the read_keys ran→wake seam
+> moved into the one poll. Order: zero-timeout probe pass (real
+> readiness wins) → synthetic wake (a pending repaint beats blocking) →
+> the blocking poll; EINTR on a WAIT wakes the host (SIGWINCH reaches
+> the resize check). The runnable-yield and zero-live-blocking arms are
+> untouched. Own prior commit: `input_ready` adopts the
+> POLLIN|POLLHUP|POLLERR readable-progress triple — DupFamily
+> fd_readable_progress_probe goes open→GATED (NEW
+> check-fd-readable-progress.sh in fulltest, negative-controlled; the
+> smoke gate grows a terminal-death leg, tui_eof_pty.py — SIGHUP
+> ignored in the child so the WAIT is what gets tested; NOTE: a dead
+> Linux pty polls POLLIN|POLLHUP so the behavioral leg cannot
+> discriminate the POLLIN-only bug here — macOS ptys are the plausible
+> HUP-only live shape; the mechanism gate is the enforcement). NEW unit
+> legs: test_task_io +3 (readable-now; the fd firing beats the
+> synthetic wake — probe-pass-first; activity with no fd = synthetic,
+> unfired). Validation: test_task_io 7/7, test_coop_parse 50/50
+> interleave, pty smoke(+EOF leg)/scroll gates, testmadcide, MT io
+> tests — green. Battery on final content: fulltest rc=0 (all gates,
+> the two new ones included) + JIT **1180 passed / 0 failed / 0 timed
+> out / 9 skipped** (suite = 1206) + EXE **1131 passed / 0 failed** +
+> OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, IDE-9e windows —
+> feature/ide9e-windows merge wave):** madcide grows JOE's second axis:
+> N STACKED windows over the AST-5 buffer ring, each with its OWN
+> status line and caret (^K O split). The engine was ALREADY per-slot
+> everywhere that mattered (paint_edit keeps scroll/hshift per edit
+> slot; the cursor paints only on the focused slot; multiple edit
+> nodes compose) — the ONE gap was height partitioning, closed as DATA
+> per the lineage north star: an edit node's `hints["rows"]` fixes its
+> height, edit nodes honor the `focus:1` autofocus hint (the choice
+> arm's seat), and the unhinted prompt shape stays byte-identical
+> (unit negative control). madcide: `windows` bag rows
+> {bufidx, caret, grow} + winat (fewer than two rows = the single
+> compose, byte-identical); the ACTIVE window's live state IS the es
+> state, rows hold snapshots (the buffer-row save/restore shape one
+> level up); window rows own the caret while split — two windows on
+> ONE buffer keep separate carets, stale ones clamp through THE one
+> extracted owner `clamp_caret_to` (dupaudit family caret_clamp_rule:
+> 3 sites folded); per-window status = compose_joe_statusline (the
+> formatted half split out; prompt/search/msg overlays stay on the
+> active line). Verbs: splitw/nextw/prevw/killwin/onlywin/groww/
+> shrinkw; sum-zero grow deltas, min 3 rows; the active window
+> composes UNHINTED (flexible) so panes keep taking rows from the
+> bottom. KEYS — JOE-exact seats reclaimed: ^K O/N/P/G/T + ^K 0/^K 1
+> (Esc-prefixed bindings CANNOT exist — the chord machinery hard-codes
+> Esc as cancel); displaced: profile/theme leave the key table (the ^T
+> Options pane already carries Keymap/Scheme rows), outline → ^K I,
+> AST views → ^K A (⚠️ owner review requested beside the pending ^K ;
+> item). Esc does NOT close windows (layout, not a pane). NEW tests:
+> test_tui_model rows-hint partition case (+negative control);
+> testmadcide +6 gates (rebind probe, split tree shape, per-window
+> caret round-trip, stale-caret clamp both consumers, grow, onlywin),
+> byte-exact first run; pty smoke/scroll gates green (joe.keys blast
+> radius). Residues: inactive windows uncoloured/no views/no
+> selection; explode; horizontal splits (the GUI twin's seat). Battery
+> on final content: fulltest rc=0 (all gates) + JIT **1180 passed /
+> 0 failed / 0 timed out / 9 skipped** (suite = 1206) + EXE **1131
+> passed / 0 failed** + OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-5 scope/await keywords —
+> feature/mt5-keywords merge wave):** the structure spellings land as
+> CONTEXTUAL keywords under `--std=madc` (the MT-1 error-shape rule —
+> never reserved; declared names win, strict modes byte-identical).
+> **`scope { ... }`**: the structured-concurrency block — `go` inside
+> attaches, the block's end joins every member and rethrows the first
+> member error (madc::scope_end's contract); lowered to the NEW rt pair
+> `__madc_scope_block_enter/exit` riding the MT-3 seams. A throw
+> ESCAPING the block quietly abandons the scope mid-unwind (members
+> cancelled + JOINED — parking mid-unwind is safe, the in-flight
+> exception is per-context state; the error wins) via a cleanup-stack
+> registration; NEW `__madc_cleanup_remove` (rt_except.c, the FOURTH
+> conscious host-consumer widening — top-pop is wrong when an enclosing
+> try's body locals registered above the entry). The try MARK
+> discipline gives nesting for free: a throw caught INSIDE the block
+> never touches the scope. return/goto in the block, and
+> break/continue that would CROSS it (no loop/switch opened inside —
+> RAII parse_loop_depth guards in the four loop parsers; records tagged
+> with cur_func_name so lambda bodies are never misjudged), are parse
+> errors; early-exit support = named residue. **`await ch`**: Go's
+> `<-ch` — blocks, closed-and-drained yields the ZERO value; sugar over
+> THE one recv via the extern-C machinery seat `__madc_chan_await`.
+> Two shapes ship: `v = await ch;` (claimed at STATEMENT level — the
+> value carrier's operator= machinery resolves assignment inside the
+> ladder first) and bare `await ch;` (statement head — the identifier
+> dispatch otherwise swallowed the two-identifier shape SILENTLY);
+> decl-init + deeper positions refuse loud (L3 unlocks them); scalar
+> targets refuse at parse time. ONE construction owner
+> (Program::make_await_token — the draft's 3 inline copies folded by
+> the pre-merge dupaudit; NEW gate check-await-one-builder.sh,
+> negative-controlled; shared eligibility test =
+> contextual_name_unclaimed). `select` keyword DEFERRED by ruling
+> (Go's case grammar doesn't transplant; chan_select + await cover
+> fan-in). NEW tests: testscopekw (six deterministic-schedule legs +
+> expect_quiet), testawait (assign/bare/closed-zero/parked recv),
+> testscopereturn + testawaitexpr + testawaittarget (.expect_err
+> refusal reducers); testgoident/testgogate grow scope/await arms.
+> Battery on final content: fulltest rc=0 (all gates) + JIT **1180
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1206) + EXE
+> **1131 passed / 0 failed** + OBJ **1131 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-3 structured scopes + cancellation —
+> feature/mt3-scopes-cancel merge wave):** tasks get Kotlin-shaped
+> structure over Go's spelling. NEW publics: `madc::scope_begin()` /
+> `scope_end(h)` / `scope_cancel(h)` / `cancelled()`. `go` attaches the
+> child to the spawner's innermost OPEN scope (flat attachment; born
+> cancelled into a cancelled scope); `scope_end` is owner-only +
+> innermost-first (validated via `__madc_scope_end_check` BEFORE the
+> handle is consumed), JOINS all members unconditionally, then rethrows
+> the first member error (else the cancelled literal, else returns).
+> `scope_cancel` = transitive flag+wake (members + child scopes; the
+> opener woken FLAGLESSLY — its cancellation lives in the chain and
+> dies at scope_end). Cancellation is cooperative and lands at the
+> blocking verbs (chan send/recv/select, sleep_ms, taskio readable)
+> through THE one owner `__madc_task_throw_if_cancelled` with eager
+> waiter removal; a delivered value always wins over a pending cancel;
+> `yield()` is NOT a cancellation point. Scoped tasks run under an SJLJ
+> catch-all trampoline: an uncaught error cancels the scope and
+> rethrows at scope_end; root tasks keep Go's abort-on-uncaught.
+> Consumers (MT-3b): tokenize/parse abort cancelled work (lexer pump
+> C++ throw → recorded diagnostic; parse loop set_error after
+> parse_yield_point), madcide's internal builds get Stop back (the
+> build task's own scope = the job handle; "buildstopreq" covers the
+> spawn window; a stopped build reports "Build stopped", diags
+> withheld), `Process::wait_or_kill(grace_ms)` = grace-then-SIGKILL
+> (the win arm reports terminate()'s 128+SIGTERM shape — Windows has
+> no SIGKILL; the battery's win gate caught the first spelling),
+> ExecDataChannel close() escalates when cancelled. rt_except: tags
+> moved to rt_except.h, `__madc_exception_text` = THE renderer (four
+> Unhandled printers folded), try-frame API exposed as the third
+> conscious host-consumer widening. Pre-merge dupaudit: families
+> current_task_cancel_throw + child_status_exit_mapping +
+> scope_join_unlink consolidated; NEW gates check-cancel-throw-owner.sh
+> + check-child-status-map-owner.sh (negative-controlled). NEW tests:
+> testgoscope (deterministic 30-token schedule), testbuildcancel
+> (mid-parse cancel), testchancancel (SIGTERM-ignoring child, SIGKILL
+> escalation by wall clock); testmadcide native-build-stop gate.
+> Battery on final content: fulltest green (the win gate re-validated
+> after the one-line win-arm fix) + JIT **1175 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1201) + EXE **1129 passed /
+> 0 failed** + OBJ **1129 passed / 0 failed**. Named residues: the
+> emit phase has no yield points (cancel lands at parse);
+> declaration/1024-token grain; member-error rethrow is text-only; no
+> NonCancellable regions; main's own unended scopes leak at exit.
+>
+> **Previous (2026-08-27, IDE-10c internal builds + esc-any-pane —
+> feature/ide10c-internal-builds merge wave):** the ^B rows go INTERNAL
+> (owner ruling: the IDE lives inside the compiler — never shell out to
+> a PATH madc). NEW engine publics: `madc::build_native(diags, path,
+> "exe"|"obj", outpath)` = the CLI's AOT lane in-process (child-Program
+> parse + `madc_cir_emit_native`; diagnostics rows either way, a silent
+> failure synthesizes one error row) and `madc::compiler_path()` (Run
+> rows spawn a child OF SELF via {madc} in build_subst). Default rows:
+> Check / Build / Build object internal, Run `{madc} {path}`, Run
+> native `./{base}`; no default Stop (MT-3 owns in-process cancel; the
+> exec:// pump stays for manifest commands). `madc_object_mode` now has
+> ONE scoped entry (`ObjectModeScope`, both emit lanes — pre-merge
+> dupaudit family object_mode_emit_scoping; NEW gate
+> check-object-mode-scope.sh, negative-controlled, whose first run
+> caught the marker matching a comment). Esc backs out of ANY pane.
+> Ring-lifetime trap hit again: const char* params held across
+> build_subst's ring calls rotted — var& params per the banked
+> prescription. NEW test `tests/testbuildnative.mad` (+2 helper TUs):
+> exe/obj clean builds, the artifact RUNS, positioned error rows,
+> unknown-kind/unreadable-path rows, post-emit eval proves the
+> object-mode restore; testmadcide +6 gates (default-row shape, esc,
+> {madc} subst, in-process build clean + failure rows in the diags
+> pane). Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1172 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1198)
+> + EXE **1126 passed / 0 failed** + OBJ **1126 passed / 0 failed**.
+>
+> **Previous (2026-08-27, IDE-10a+10b palettes + build controls —
+> feature/ide10a-palette merge wave):** madcide becomes an IDE: ^P file
+> palette + ^B build palette on ONE popup-list widget (the model's
+> choice focusable gains LIST + AUTOFOCUS presentations, data-driven
+> hints), joe.keys reclaims the WordStar diamond (^P/^F/^N/^B) + ^R
+> retype (`ui::tui_refresh` — the delta-paint baseline drops so the
+> next render rewrites the viewport). Builds stream into the [build]
+> buffer through an exec:// pump whose loop is the MT-4b mixed select
+> ({stop chan, byte readiness}; NEW `channel::cancel()` SIGTERMs so
+> Stop and quit are prompt — a stopped `sleep 5` build returns in
+> milliseconds); Run rows get the REAL terminal (suspend/resume).
+> Engine: `__madc_task_fire_due` (yield fires due io beside timers —
+> the timer-starvation reasoning applied to fds) + read_keys' unified
+> cooperative wait (build output repaints without a keystroke). NEW
+> gates: check-select-fire-owner + check-madcide-single-owners (whose
+> count caught a third buffer-row site the by-hand audit missed);
+> test_tui_model +2 (list/autofocus), test_task_io +1 (fire_due),
+> testmadcide +palette/build gates (whole test 1.7s incl. the stop
+> path). Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1171 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1195)
+> + EXE **1125 passed / 0 failed**.
+>
+> **Previous (2026-08-27, MT-4b io/fd select —
+> feature/mt4b-io-select merge wave):** byte endpoints select beside
+> value channels: `madc::chan_readable(channel)` registers an
+> `exec://` endpoint as a `chan_select` case (fires with out = null on
+> readable progress; drained-EOF/failed endpoints DISABLE, so `-1`
+> still terminates mixed fan-ins), and reads under live tasks PARK on
+> the fd through the scheduler's new io-wait seat
+> (`__madc_task_io_wait_hook` in task_next_or_wait — the scheduler
+> stays fd-blind; task_enqueue now idempotent). `select_fire` is THE
+> one claim+wake owner (pre-merge dupaudit consolidation), gated by
+> NEW `check-select-fire-owner.sh` (negative-controlled, in fulltest).
+> NEW tests: `tests/unit/test_task_io.cpp` (park-until-readable, EOF
+> is progress, double-unpark belt) + `tests/testgoselectio.mad`
+> (phased deterministic mixed select — matched the hand-computed
+> schedule first run; JIT/exe/obj byte-identical). Battery on final
+> content: fulltest rc=0 (all gates) + JIT **1171 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1195) + EXE **1125 passed / 0
+> failed**.
+>
+> **Previous (2026-08-26, MT-4a select + time —
+> feature/mt4-select-time merge wave):** `madc::chan_select`
+> (deterministic lowest-index fan-in; husk/wake-once discipline),
+> `madc::chan_try_recv` (1/0/-1), and `madc::sleep_ms` on the
+> pluggable time source (virtual under `MADC_TASK_VTIME=1` — the
+> clock jumps deadlines; `tests/unit/test_rt_vtime.cpp` pins 10
+> madc-seconds in <1s wall, deadline order). One scheduling decision
+> (task_next_or_wait) owns timers at every pick-next site. NEW tests
+> `testgosleep` + `testgoselect` — both pin complete hand-computed
+> schedules that matched byte-for-byte on first run, JIT and native
+> lanes. Battery on final content: fulltest rc=0 (all gates) + JIT
+> **1170 passed / 0 failed / 0 timed out / 9 skipped** (suite = 1194)
+> + EXE **1124 passed / 0 failed**.
+>
+> **Previous (2026-08-26, stage-2 cooperative parse —
+> feature/stage2-coop-parse merge wave):** the front end cooperates
+> with the task scheduler: `parse_yield_point()` at every top-level
+> decl + every ~1k lexed tokens (ambients re-bound on resume; batch
+> compiles pay one queue check), the tui input wait yields to runnable
+> tasks and delivers `{event:"wake"}` on drain, and madcide spawns its
+> parse with the language's own `go` — typing stays live while a C++
+> TU compiles. NEW gates: `tests/unit/test_coop_parse.cpp` (the
+> deterministic interleave gate — two parses interleaved at every
+> yield are byte-identical to serial, yields proven real) + wake
+> transparency cases in test_tui_model (319/319). tui_scroll_gate
+> (madcide's real pty loop with the spawned parse) PASS; testmadcide
+> byte-stable; quit-mid-parse drain probe rc 0. Battery on final
+> content: fulltest rc=0 (all gates) + JIT **1168 passed / 0 failed /
+> 0 timed out / 9 skipped** (suite = 1192) + EXE **1122 passed / 0
+> failed**.
+>
+> **Previous (2026-08-26, MT-2b joining main wrapper + static-fn internal
+> linkage — feature/mt2b-main-join merge wave):** a spawning
+> `--std=madc` TU's main now emits as `__madc_main` behind a
+> synthesized joining wrapper — the task root scope drains at MAIN'S
+> END (before atexit/TLS teardown) identically in the JIT / `-o` /
+> `-r` / `-static-libmadc` lanes; the join callee is the NEW
+> ledger-safe dispatcher `rt_task_join.c`. Pure programs keep their
+> unwrapped runtime-free main (the battery's `test_native_shared`
+> purity probe caught the first cut and forced the parse-time
+> `_uses_go_spawn` gate). FOUND + FIXED in its own commit: madc dropped
+> C internal linkage from every file-scope `static` function (ld
+> "multiple definition" on two-object links; the ledger's
+> rt_format+rt_dump static-inline pair fataled any `println` program
+> under `-static-libmadc` — pre-existing, baseline reproduces). NEW
+> tests `testgojoin` (argv forwarding + the drain schedule, all lanes)
+> + `testprojectstaticfn` (gcc oracle a=2 b=300; nm STB_LOCAL); NEW
+> gate: `forest_ledger_gate.sh` leg 5b names the exact pre-fix fatal.
+> Battery on final content: fulltest rc=0 (all gates) + JIT **1168
+> passed / 0 failed / 0 timed out / 9 skipped** (suite = 1192) + EXE
+> **1122 passed / 0 failed**.
+>
+> **Previous (2026-08-26, MT-2 channels + task-local exceptions —
+> feature/mt2-task-except merge wave):** value channels land
+> (`madc::chan_*`, Go's contract; scheduler park/unpark; loud deadlock
+> aborts) and the SJLJ exception state switches per-task (a `try`
+> across a `yield` catches its own throw — the pre-fix build SEGFAULTS
+> on the reducer, negative-controlled). The text ring is now immortal:
+> glibc runs TLS dtors before atexit, where the native lane drains its
+> root scope — testgochan's EXE lane caught the double free
+> (gdb-backtraced to `__madc_fmt_take_cstr`). NEW tests `testgotry` +
+> `testgochan` (both pin complete hand-computed schedules, byte-exact
+> on first success; suite = 1190); all 19 exception-family neighbors
+> green. One battery red was the mtime-poison trap (stale win64
+> `rt_task.o` — clock skew; purged, banked). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1166 passed / 0 failed / 0 timed
+> out / 9 skipped**; EXE lane spot-green on the task family.
+>
+> **Previous (2026-08-26, cooperative tasks MT-1 —
+> feature/mt1-substrate merge wave):** `go f(args);` + `yield()` land
+> on the stackful cooperative substrate (`src/rt/rt_task.c`; FIFO
+> run-to-yield, deterministic; root-scope join in
+> `CirJitSession::run_main` + atexit for native artifacts). NEW tests:
+> `testgo` (the complete deterministic schedule pinned byte-for-byte,
+> spawn through post-main join), `testgoident` (declared names win —
+> the error-shape negative control), `testgogate` (strict gnu17 mode
+> byte-identical), `tests/unit/test_rt_task.cpp` (4 cases, exact FIFO
+> interleavings). Suite = 1188. TWO GATES CAUGHT REAL DEFECTS in the
+> new code before merge: i64-spec-spelling (slot spec bypassed
+> `append_i64`) and the win64 archive gate (mingw `GetCurrentFiber`
+> TIB intrinsic vs `-Werror=array-bounds`; fallback removed,
+> Wine-verified). Battery on final content: fulltest rc=0 (all gates)
+> + JIT **1164 passed / 0 failed / 0 timed out / 9 skipped**; EXE lane
+> spot-green on all three go tests (the atexit join path).
+>
+> **Previous (2026-08-26, char[]-text boundary —
+> feature/charbuf-text-boundary merge wave):** a fixed char array at
+> the `{}` format boundary now DECAYS ([conv.array]) and formats as a
+> C string (g++ std::format oracle matched: variable, struct member,
+> and full-subscript element shapes); a non-char array is refused loud
+> exactly as std::format's ill-formed treatment (previously the
+> pointer printed as an integer, silently). The one decay owner
+> (`array_decay_pointer`) now feeds the classifier. Reducers
+> `testcharbuftext` (+ EXE lane green) and `testcharbuftextintarr`
+> (expect_err) joined (suite = 1185). Battery on final content:
+> fulltest rc=0 (all gates) + JIT **1161 passed / 0 failed / 0 timed
+> out / 9 skipped**. KG Gap `madc_char_array_text_boundary` CLOSED.
+>
+> **Previous (2026-08-26, AST-5 multi-buffer —
+> feature/ast5-multibuffer merge wave):** madcide gains JOE's `^K E`
+> multi-buffer (buffer table on the editor-state bag; per-doc facts
+> stay doc-scoped; switch restores caret/block and recolours from
+> lexical spans with the parse deferred behind the paint), and the
+> subject-document rule collapses from ten .madv copies to ONE owner
+> (`verbs/_subject.madv`) gated by NEW
+> `scripts/check-one-subject-doc.sh` in fulltest (negative control
+> verified). `testmadcide` grew the editfile flow (new / back with
+> caret restore / same-path switch); no new test files (suite = 1183,
+> unchanged). Battery on final content: fulltest rc=0 (all gates, the
+> new gate GREEN) + JIT **1159 passed / 0 failed / 0 timed out / 9
+> skipped**; release rebuilt + NAS binaries pulled.
+>
+> **Previous (2026-08-26, lex_spans — feature/lex-spans merge wave):**
+> `madc::lex_spans` classifies from lexing the buffer alone
+> (skip_includes; the classifier factored out of `parse_spans`), and
+> madcide's first paint now carries colour (pty probe: colour SGR in
+> the first drain window on a header-heavy C++ file). Reducer
+> `testlexspans.mad` joined (suite = 1183). Battery: fulltest rc=0
+> (all gates) + JIT **1159 passed / 0 failed / 0 timed out / 9
+> skipped**.
+>
+> **Previous (2026-08-26, span-coordinate truth —
+> feature/span-coordinate-truth merge wave):** macro-expansion tokens
+> no longer emit highlight spans (`tfSYNTHPOS`), and synthesized
+> pushback text advances no source column — the SMAUG fight.c
+> "everything turns blue at strip_grapple" smear (spans overrunning
+> their physical lines by hundreds of columns) is fixed at the Source/
+> lexer layer. Reducer `testspansmacro.mad` joined (suite = 1182).
+> Battery on final content (lexer blast radius): fulltest rc=0 (all
+> gates) + JIT **1158 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1113/0**.
+>
+> **Previous (2026-08-26, IDE-9c perf half — feature/ide9c-scroll-perf
+> merge wave):** the renderer's frame diff is cell-granular
+> (`tui_diff_spans`; `tui_dirty_rows` delegates) and shift-aware
+> (`tui_diff_plan`: shift verified by SIMULATION, cost-gated, emitted
+> as DECSTBM + DL/IL) with EL finishing normal-space span tails.
+> Measured (new meter `scripts/tui_scroll_bytes.py`, 24x80, 70 steps):
+> scroll step 2,194 B/24 rows → 126 B/3 rows; caret step 113 → 35 B;
+> session total 61,869 → 3,793 B (JOE 4.6 oracle 2,252). The win64
+> archive gate caught an LLP64 truncation in the new FNV hash
+> (`unsigned long` is 32-bit on Win64 — `uint64_t` fix). Wave battery
+> on final content: fulltest rc=0 (all gates) + JIT **1157 passed / 0
+> failed / 0 timed out / 9 skipped** + 48/48 unit binaries
+> (test_tui_model 21 cases / 303 asserts; suite = 1181, unchanged).
+>
+> **Previous (2026-08-26, Track 7.2 IDE-9 session — three merges):**
+> (1) the IDE-9c scroll corruption is FIXED (raw `\t` bytes in grid
+> cells desynchronized grid/screen columns — tabs now expand at the
+> document→grid projection through THE byte→display-column map; the
+> `put()` cell-invariant belt renders control bytes `?`); the NEW
+> `scripts/tui_scroll_gate.sh` joined fulltest (madcide on a real pty,
+> VT100 screen reconstruction with true tab-stop semantics + negative
+> control; pre-fix 828 corrupted rows / post-fix 0 / joe 4.6 same-input
+> oracle 0). (2) madcide loud startup failures: `profile_dir` derives
+> from `__FILE__` (any cwd), theme/parse-handle failures post status
+> messages. (3) IDE-9a/9b JOE screen model: ONE top status row from
+> profile-owned joerc `lmsg`/`rmsg` formats (`profiles/joe.status`),
+> `%k` chord echo LIVE (`ui::tui_pending` + chord repaint events),
+> banner+menu dropped, prompts overlay, transient bottom hint. Under
+> it: `perl::substr` past-end offset ABORTED the process — clamped to
+> Perl's undef→empty (real-perl oracle,
+> `tests/testperlsubstrrange.mad`). Wave-2 battery: fulltest green
+> (units + all gates) + JIT **1157 passed / 0 failed / 0 timed out / 9
+> skipped** + EXE lane **1112/0** (suite = 1181; testperlsubstrrange
+> joined). test_tui_model: 16 cases / 280+ asserts (tab expansion +
+> chord repaint cases joined).
+>
+> **Previous (2026-08-26, braced-init-list call arguments /
+> [over.ics.list] slice 1 — feature/braced-list-call-args-claude merge
+> wave):** the braced-list call-argument SIGSEGV
+> (`parser_segv_braced_list_call_arg`, the madcide in-process crash) is
+> FIXED: a `{`-headed argument re-spells against the callee's parameter
+> type through THE re-spell owner (`respell_braced_list_for_target`,
+> extracted from `TokenRETURN::parse`; both call readers adopt it,
+> hidden-`__this` aware); `TokenObjTemp` carries braced-ness so the
+> existing [dcl.init.list]/4+/5 CIR arms serve functional-form
+> temporaries; `initializer_list_literal` emits SIZED backing arrays
+> (also fixes the latent decl-path garbage-elements silent-wrong);
+> `parseExpression` refuses a `{` HEAD loudly (the belt). TWO deeper
+> finds fixed in their own commits: the c2mir check guard treated
+> `N_ASSIGN`'s NULL context barrier like an owning declaration (nested
+> unsized array literal = garbage past `[0]` from plain C, uncast form
+> crashed gen — stock-upstream, PR candidate; c2mir interp + bootstrap
+> suites green) and `install-libmadc` never shipped `madc_typeid.h`
+> (installed `madc_api.h` includes it). New reducers
+> `tests/testinitlistarg.mad` (six shapes, g++/clang++ oracle) and
+> `tests/testnestedcomplit.mad` (`--std=c17`, gcc/clang oracle).
+> `examples/embed_hello.cpp` parses CLEAN through a parse handle (0
+> problems, 123 spans). Loud residues banked (KG):
+> `braced_list_decl_ctor_argument`, `embed_hello_full_compile_residues`.
+> Merge-wave battery: authoritative Linux fulltest green (units +
+> gates) + JIT **1156 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1111/0** (suite = 1180; testinitlistarg +
+> testnestedcomplit joined; testquotedincfallback's first wave).
+>
+> **Previous (2026-08-25, error-tolerant parse slice A / arc doc §3.5 —
+> feature/error-tolerant-parse-claude merge wave):** the parser CONTAINS
+> each top-level error (record → restore entry depths → DelimDepth
+> resync seeded with STREAM-TRUTH brace debt, so a mid-body failure
+> syncs at the region's close → `SkippedTokens` node → continue) and
+> reports EVERY top-level error before refusing — gcc canon. One
+> `TokenError` class + all eight `ErrorNodeKind` kinds (owner ruling);
+> `Program::error_nodes` gates translate at `cir_translate_guarded`
+> (run/eval/emit-c11/freeze/native all refuse); `--emit=c++` stays a
+> source view (renders the retained echo, exit nonzero). Parse handles
+> serve broken trees: `parse_check` reports every contained error;
+> outline/enclosing/spans answer before AND after a broken region
+> (testparserecoverh, `.expect_quiet` gating the capture mute;
+> testparserecover pins the 3-error CLI cascade via `.expect_err`).
+> Three dupaudit families consolidated + gated
+> (`check-one-parse-error-recorder.sh`, 3 markers + negative controls):
+> `record_frontend_error` (10 inlined copies, incl. the lexer's
+> tokenize/tokenize_buffer clusters), `record_throw_diagnostic` (5 —
+> throwbuf::sync renders but never records), and
+> `restore_parse_scope_depths` (3, incl. derive-lazy-catch which the
+> gate itself caught). Unit predicates updated: "accepted"/"rejected"
+> now means a CLEAN parse (`error_nodes == 0` — the gate's predicate).
+> Merge-wave battery: authoritative Linux fulltest green (units +
+> gates) + JIT **1153 passed / 0 failed / 0 timed out / 9 skipped** +
+> EXE lane **1108/0** (suite = 1177; testparserecover +
+> testparserecoverh joined).
+>
+> **Previous (2026-08-25, spans/styles/schemes / AST-2 —
+> feature/madcide-ast2-claude merge wave):** highlight spans as
+> edit-node hints painted through the ONE range-overlap rule (selection
+> wins); `tui_attr` = the style struct speaking JOE's vocabulary with
+> bold-as-bright (owner: VT-102 ANSI); `emit_sgr` = the one
+> reset-then-set SGR table with the historical 7m/0m spellings — the
+> no-colour stream is byte-identical (testvised/testlineed pinned).
+> `madc::parse_spans` classifies the handle's retained tokens (one
+> classifier; comments from trivia — handles arm keep_trivia, cost in
+> the noise); colour SCHEMES = profiles/*.theme swapped via ^K T.
+> Two lexer defects the pins exposed were fixed at their owners
+> (pushback_reread column rewind; the `char *s` lookahead space —
+> a live --emit=c++ fidelity leak; emitcxx_rt3 joined the gate).
+> Merge-wave battery: authoritative Linux fulltest **1151 passed / 0
+> failed / 0 timed out / 9 skipped** (testparsespans joined) + EXE lane
+> **1107/0**; pty colour smoke green (33/32/1;34/7m/0m).
+>
+> **Previous (2026-08-25, persistent parse handles / AST-1 —
+> feature/madcide-ast1-claude merge wave):** the compiler-data child
+> machinery given a LIFETIME. `madc::parse_open/open_file/refresh/close`
+> + `parse_outline/parse_check/parse_enclosing` (outline-at-offset from
+> TokenFunc + `end_line`; outline rows gained `end_line`) answer from
+> RETAINED state; `project_open/tus/close` parse a cc.json manifest's
+> TUs each with its own options (`apply_project_tu_options` = THE one
+> -I/-D/--std rule, extracted; its absence in the handle path was a
+> phantom-diagnostic divergence the measurement itself caught). madcide:
+> one handle per buffer, one refresh entry, enclosing-function status
+> line. MEASURED: parse-on-load ~0.25 s (adventure) / ~0.5 s
+> (open-adventure C 18k LOC); largest-TU refresh 55–120 ms → disk-cache
+> NO-GO at current scale (§3.4); error-tolerant parse banked as §3.5
+> (discussion pending). Dupaudit: `handle_table<T>` (4 copies → 1,
+> GATED by `check-one-handle-table.sh`, in-battery OK); tu_own_function.
+> Merge-wave battery: authoritative Linux fulltest **1150 passed / 0
+> failed / 0 timed out / 9 skipped** (testparsehandle joined) + EXE lane
+> **1106/0**.
+>
+> **Previous (2026-08-25, --emit=c++ / AST-4 slice 1 —
+> feature/madcide-ast4-claude merge wave):** the C++ reverse-render
+> (owner-required). `celCxx` through the one converter; the render =
+> the TU's RETAINED SOURCE (recorded `#include` directives + whole-TU
+> token echo via the exposed one spelling owner + trailing trivia;
+> `CirEmitSource` passes it as data). String literals re-escape through
+> the NEW one owner `madc_c_escape_string` (`cir_emit_c` N_STR adopted
+> it — dupaudit family consolidated same-session; also fixed a latent
+> macro-arg re-lex bug). `madc::emit` accepts `"c++"`; madcide's `^K N`
+> adds the C++ view on C/C++-extension buffers (the app's document-kind
+> rule). Two probe-driven deviations recorded in the design doc §3.3
+> (whole-TU echo, no compiler-side dialect refusal). Merge-wave battery:
+> authoritative Linux fulltest **1149 passed / 0 failed / 0 timed out /
+> 9 skipped** + EXE lane **1105/0**; NEW fulltest gate
+> `emitcxx_roundtrip_gate` (2 reducers × g++ AND clang++, behavioral
+> byte-compare, two negative controls — in-battery OK); testmadcide
+> extended with the .cpp-buffer view world (all pins matched first run).
+>
+> **Previous (2026-08-25, the view seam / AST-3 —
+> feature/madcide-ast3-claude merge wave):** the madcide AST arc's
+> first slice, owner-pulled ("build the view seam"). Engine:
+> `madcdis/doc_lens.h` `doc_map` — the ONE display↔stored coordinate
+> owner (copy segments as data, strict codec; gap-adjacent boundaries
+> belong to the copy that ENDS there; empty map = 0) with
+> `ui::lens_to_display/lens_to_stored` as its dialect face;
+> `madc::emit(out, source, filename, target)` — the render query
+> (diagnostics/outline child + `madc_cir_emit` through the existing
+> StringCapture owner; byte-identical to CLI `--emit=`), target names
+> through the ONE converter `cir_emit_lang_of()` the CLI now shares.
+> App: madcide `^K N` cycles read-only code views original→MC11→C11
+> over the one document (lens applied at composition; view-buffer
+> entity so the one navigation implementation works in display space;
+> `nav_doc()` routing; renderer untouched — identity-lens
+> byte-identity structural). Scoped dupaudit: view_active_predicate
+> (5 sites born on-branch) consolidated into `view_name()`;
+> emit_target_name_conversion recorded. Merge-wave battery:
+> authoritative Linux fulltest **1149 passed / 0 failed / 0 timed out
+> / 9 skipped** (suite unchanged — testmadcide extended in place with
+> the view battery: enter/exit pins, lens hints, display-space find,
+> refusals, byte-identical exit; the tail byte-count re-proves the
+> stored document never moved), EXE lane **1105/0**; NEW unit battery
+> test_doc_lens **6 cases / 106 asserts** (identity, concealed,
+> synthetic, codec + add negative controls); real-pty view smoke 5/5;
+> testvised/testlineed byte-identity green.
+>
+> **Previous (2026-08-25, madcide v2 — feature/madcide-v2-claude merge
+> wave):** the owner's FULL JOE binding set on the relocated tool
+> (`tools/madcide`; work order = the plan doc's "Owner review" section,
+> items 1+2 — item 3, the AST arc, awaits the owner brainstorm).
+> Engine feeders: tui_keyparse 0x1c–0x1f (`^\ ^] ^^ ^_`); text_buffer
+> REDO (two stacks, `now_meta`-carrying pair, checkpoint clears redo) +
+> word motion; `tui_target::suspend/resume` + `ui::tui_suspend/resume`
+> (one enter/leave_grid_mode implementation for all four callers); the
+> ctrl-insensitive CONTINUATION convention (`^K ^Z` == `^K Z`,
+> `tui_bindings::cont_spelling` — forced live by the pty probe). App:
+> motion delegation by key-name to the one shared edit_key; block model
+> mark+bend; one prompt mode (find/goto-line/insert-file) + `^L`
+> find-next; help pane = the loaded profile projected; `^K Z` shell
+> verified on a real pty (suspend → shell on the tty → resume, full
+> repaint). Scoped dupaudit: find_wrap_rule + block_refusal_message
+> consolidated same-session. Merge-wave battery: authoritative Linux
+> fulltest **1149 passed / 0 failed / 0 timed out / 9 skipped** (suite
+> unchanged — testmadcide extended in place with the v2 pins, every
+> edit undone so the tail byte-count proves the round trips), EXE lane
+> **1105/0**; unit batteries test_tui_model 206 asserts (punctuation
+> controls, ctrl continuations), test_text_buffer 192 (redo, word
+> motion); trailers 558/0; purity/dialect-lean/write-path/adventure
+> parity green in-battery.
+>
+> **Previous (2026-08-25, madcide / hub Phase 2 — feature/madcide-claude
+> merge wave):** the madc IDE and its feeders
+> (docs/plans/2026-08-25-madcide-phase2.md). Bindings-as-data chords
+> (`ui::tui_bind_keys` — key sequences → action names, per-profile,
+> JOE/WordStar default per the owner; the `action` event; one
+> key-spelling owner both directions in the model); buffer history/undo
+> on the text component (`ui::text_checkpoint`/`text_undo`, pieces
+> snapshots + opaque payload); compiler data as data
+> (`madc::diagnostics`/`madc::outline` — compile-never-execute child,
+> capture replaces rendering via `DiagnosticRenderMute`); the R3
+> sibling enforced (re-entrancy latch, `ui::bind_require_key`
+> code-entity gating; compile-once re-scoped on the baked-ctx blocker);
+> `tools/madcide` (relocated from examples/ 2026-08-25 — a tool, not an
+> example) over the shared `editor_events.inc` split
+> (testvised/testlineed byte-identical). FIXED en route (own commit):
+> stale ambient token position — eval-child and `--project` TU2+
+> diagnostics now carry their OWN file:line (byte-matching the
+> file-based oracle). Merge-wave battery: authoritative Linux fulltest
+> **1149 passed / 0 failed / 0 timed out / 9 skipped** (suite +5:
+> testmadcide — the Phase-2 gate headless, all three clauses;
+> testcompilerdata — structured diagnostics/outline, `.expect_quiet` =
+> the capture proof; testprojecterrline — the position-fix reducer,
+> `.expect_err`; testreenter; testbindgate), EXE lane **1105/0** (of
+> 1149 JIT-passing); tui_smoke_gate green in-battery, now pinning a
+> bound chord across read batches on the real pty; unit batteries:
+> test_tui_model 174 asserts (chords), test_text_buffer 145 (history),
+> test_verbs 69 (re-entrancy latch); adventure parity + purity +
+> write-path + dialect-lean gates green in-battery; madcide AND vised
+> verified end-to-end on real ptys.
+>
+> **Previous (2026-08-25, Track 7.2 R5 — feature/tui-provider-claude
+> merge wave):** the level-1 TUI: `madcdis/tui_model.h` (the
+> dependency-free grid/focus/key model) + `madcdis/tui_provider.h` (the
+> target seam) + `src/ui_term.cpp` (the hand-rolled VT100/xterm target —
+> owner-decided over vendoring ncurses/termbox2/notcurses) +
+> `ui::tui_open/close/rows/cols/render/event`; availability CHECK
+> bindings (`ui::bind_check`, both kinds, ONE evaluator behind
+> affordances and dispatch — design invariant 5; DupFamily
+> lineed_readonly_gate consolidated into `checks/editable.madv`); and
+> `tools/texteditor/vised.mad`, the visual editor over the SAME
+> document actions and w/q/q! script verbs as the line editor (design
+> success criteria 3 + 4). Merge-wave battery: authoritative Linux
+> fulltest **1144 passed / 0 failed / 0 timed out / 9 skipped** (suite
+> +2: testeditcheck — one state rule flips enumeration and dispatch
+> together; testvised — the headless semantic core over the exact
+> tui_event value objects; both `.expect_quiet`), EXE lane **1101/0**
+> (of 1144 JIT-passing); NEW fulltest gate `tui_smoke_gate.sh` — the
+> VT100 target on a REAL pty (alt-screen discipline, drawing,
+> attributes, cursor, the exact semantic event stream incl. coalescing
+> and resize) plus a negative-control program that must fail the
+> harness; unit batteries incl. test_tui_model (NEW, 100 asserts),
+> test_verbs (65 — the check cases), test_interaction (31); adventure
+> parity + purity + write-path + dialect-lean gates green in-battery;
+> testlineed byte-identical across the check consolidation.
+>
+> **Previous (2026-08-25, Track 7.2 R4 line-mode scope —
+> feature/texteditor-claude merge wave):** the piece-table text
+> component (`madcdis/text_buffer.h`, the hub's second component kind)
+> + `ui::world_new` + the `ui::text_*` family +
+> `php::file_get_contents`/`file_put_contents` + the line-mode editor
+> (`tools/texteditor/`, nine script verbs through the one registry).
+> Merge-wave battery: authoritative Linux fulltest
+> **1142 passed / 0 failed / 0 timed out / 9 skipped** (suite +2:
+> testuitext — the component surface, line-composed range edits;
+> testlineed — the §7.7 two-phase transcript gate, writable then
+> read-only, `.expect_quiet`), EXE lane **1099/0** (of 1142
+> JIT-passing); unit batteries incl. test_text_buffer (mirrored
+> std::string oracle, 128 asserts) and test_verbs (42 asserts, the
+> mutation-context text case); adventure parity + purity +
+> write-path + dialect-lean gates green in-battery.
+>
+> **Previous (2026-08-24, eval gaps closed + Track 7.2 R2):** computed
+> carrier text survives function returns — `madarray_cstr` string kind
+> rings a COPY (the pre-L3 c_str contract, uniformly) and
+> `translate_return` coerces a carrier operand for char*-returning
+> functions through `object_cstr_arg` — ctx `const char *` bindings
+> bake to literals in EVERY read shape (`baked_cstr_constant`, one fold
+> owner: plain read + subscript + deref) — and R2 projection-as-data is
+> EXECUTED (`choice` role, uinode↔value bridges,
+> ui::inspect_tree/render_tree; test_projection at 67 asserts).
+> Authoritative Linux fulltest
+> **1140 passed / 0 failed / 0 timed out / 9 skipped** (suite grew +4:
+> testevalreturn — all six eval-body return shapes incl. `+=`;
+> testcstrreturn — the plain-function twin; testevalctxderef — ctx
+> bindings under `[]`/`*`; testuitree — the R2 gate: script-composed
+> choice tree → numbered menu, inspect_tree as walkable data,
+> render_tree∘inspect_tree ≡ render_inspect; all `.expect_quiet`);
+> Colossal Cave Adventure parity **3 fragments + 94 whole logs
+> byte-identical** in-battery; check-engine-app-purity OK; all gates +
+> ratchets green. Eval bodies have NO idiom restrictions left.
+>
+> **Previous (2026-08-24, the Rule #7 eviction — interaction core +
+> script-entity verbs, @67a901c7 on
+> feature/ui-interaction-rework-claude):** the merge-wave battery:
+> authoritative Linux fulltest **1136 passed / 0 failed / 0 timed out /
+> 9 skipped** (suite grew +1: testaffordances, the pinned affordance
+> enumeration probe); ALL unit batteries green (test_verbs reworked to
+> the seam-law contract + the script binding kind, 37 asserts;
+> test_interaction NEW, 31 asserts); Colossal Cave Adventure parity
+> **3 fragments + 94 whole logs byte-identical**; NEW gate
+> `check-engine-app-purity.sh` OK (negative-controlled) beside
+> `check-hub-write-path.sh`; warning/tsubst/trailer ratchets green.
+> The pilot transcripts (testadventure, testadventurebuilder) run
+> entirely on madc-SOURCE verbs (`tests/adventure_verbs/*.madv`)
+> through the generic registry with EMPTY stderr, and an EXE-lane spot
+> check (`bin/madc -o` of testadventure) reproduces the full transcript
+> natively — runtime eval works under AOT. `include/madcdis/adventure.h`
+> is deleted; the engine ships zero verbs.
+>
+> **Previous (2026-08-24, win64 lazy wrapper fixed + addressof-reference
+> typing):** the merge-wave battery at @f626e7b3 content: authoritative
+> Linux fulltest **1135 passed / 0 failed / 0 timed out / 9 skipped**;
+> EXE **1092/0**, OBJ **1092/0** (of 1135 JIT-passing); release, packed
+> (**1135/0/0/9**) and headerless (**1108/0/0/36**) green; linux pack
+> gate at the **93/93** baseline with hard-zero load counters. Wine
+> packed suite on the LAZY-interface exe (both v0.95.1 eager guards
+> deleted): **1092 passed / 0 failed / 0 timed out / 52 skipped** —
+> green run 5; runs 1–4 each had 1–2 wine-console flake-class
+> singletons (seven distinct names, every one individually
+> rc=0-correct; distribution matches the eager era — evidence in KG gap
+> `wine_suite_flake_class`). MIR c2mir-gen-test AND c2mir-gen-test3
+> both **1143/2286/0 (exact baseline)** after the mir-x86_64.c edits.
+> Darwin packs: arm64 AND x86-64 both at **58** pack errors (six
+> `<filesystem>` overload refusals fixed at the `&reference` typing
+> origin; baseline lowered 64 → 58). Suite grew +1
+> (testaddrofrefoverload — the addressof-reference reducer).
+>
+> **Previous (2026-08-23, v0.95.1 — the v0.95 binary-shipping patch):**
 > the three-platform promotion gate's wine suite caught the v0.95.0
 > win64 `--project` regression (all six project tests:
 > EXCEPTION_ACCESS_VIOLATION at the first lazily generated call; MIR's

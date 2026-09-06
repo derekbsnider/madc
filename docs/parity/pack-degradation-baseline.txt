@@ -59,21 +59,99 @@
 #          closure drop (linux 1 -> 0, win64 3 -> 0): those dropped records
 #          were the long-double-bearing ones, so the container now carries
 #          MORE than it did. Gated by forest_bind_gate [ldouble].
-93 linux pack-errors
-55 linux dk-none
+68 linux pack-errors
+45 linux dk-none
 0 linux closure-drops
-93 win64 pack-errors
-55 win64 dk-none
+68 win64 pack-errors
+46 win64 dk-none
 0 win64 closure-drops
-# darwin raised 58 -> 64 (2026-08-23, v0.95.x): the six new entries are ONE
-# class — "no matching overload ... (std::__1::__fs::filesystem::path...,
-# error_code**)" in libc++ <filesystem> — surfaced by the strict
-# no-viable-overload refusal (this branch deleted the silent wrong-function
-# fallback those six constructs had been binding through; verified by
-# rebuilding the pre-branch pack: exactly 58 with these six absent and every
-# other class count identical). Consumers fall back to live parse; correctness
-# is strictly better (loud beats silently wrong). Burndown: teach the overload
-# ranker the error_code& binding shape these calls need (KG Gap
-# libcxx_fs_error_code_overload_shape).
-64 darwin pack-errors
+# darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
+# overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
+# strict no-viable-overload refusal replaced their silent wrong-function
+# fallback) are FIXED at the type's origin: '&x' over a reference-typed
+# operand now types as pointer-to-referent (Program::addressof_result_type,
+# [expr.unary.op]p3), so `__f(__p, &__ec)` from an `error_code& __ec`
+# parameter ranks as error_code* and binds the right overload. Reducer:
+# tests/testaddrofrefoverload.mad (g++/clang++ oracle). KG Gap
+# libcxx_fs_error_code_overload_shape CLOSED.
+#
+# darwin 58 -> 64 (2026-09-01, the 2026-08-23 precedent again): six
+# "Malformed expression: 2 operands with no operator between them" —
+# the s149b operand-juxtaposition wall made a PRE-EXISTING
+# instantiation-body misparse LOUD. The shape: re-parsing a saved
+# pattern body containing `TemplateId<...>()(args)` (libc++
+# `__murmur2_or_cityhash<size_t>()(&__u, sizeof(__u))` in
+# __functional/hash.h __scalar_hash<_Tp,2>::operator(), and five
+# unique_ptr instantiation bodies) mis-consumes the empty ctor parens,
+# leaving the TYPE and the parenthesized call-args as two stranded
+# operands; the instantiated type name even absorbs the UNSUBSTITUTED
+# defaulted non-type arg (…_sizeof__Size_P8). Before the wall this
+# SILENTLY resolved to the top operand — the grove body computed
+# sizeof(__u) instead of the hash — so loud-plus-fallback is strictly
+# better than what 58 was hiding. Burndown item: fix the
+# instantiation-body re-parse of TemplateId<...>()(args) at the
+# template machinery layer, then lower this to 58. Repro: a darwin
+# cross-freeze of `#include <memory>` (bin/madc-arm64-macos
+# --freeze-append) shows the hash.h entry; the six appear in the full
+# manifest freeze. KG Gap: instantiation_body_templateid_ctor_call.
+# darwin, NATIVE self-freeze (darwin-host port D2, 2026-09-02): 54. Same
+# libc++ text (pinned: scripts/fetch_libcxx_headers.sh), same 835 units with
+# identical token counts — the 10-error gap is the CROSS freezer's own: its
+# undeclared-identifier fallback probes the BUILD HOST's dynamic symbols, and
+# the Linux host has no __atomic_is_lock_free (libatomic is not loaded) where
+# libSystem does; ten __atomic_base<T>::is_lock_free instantiations are error
+# husks in a container-frozen forest and resolve in a natively frozen one (KG
+# Gap cross_freeze_host_dlsym_leak). The baseline stays the CROSS number
+# while the container lane is canonical; a native lane reports IMPROVED.
+# darwin 64 -> 66 (2026-09-02, darwin-host D4 wave 2): the long/long long
+# IDENTITY fix (ddINT64/ddUINT64 carry their target C spelling as canonical
+# where their display name is another type's source spelling; the class-scope
+# typedef arm compares the source spelling to the dd's IDENTITY spelling, not
+# its display name). Measured by freezing the same corpus with the pre-fix
+# freezer (a HEAD worktree) and the post-fix one and diffing the error
+# histograms: ONE line differs — `__atomic_is_lock_free` 10 -> 12. That is the
+# cross-freezer dlsym leak documented above (KG Gap cross_freeze_host_dlsym_leak),
+# reached by two more instantiations: __atomic_base<long>::is_lock_free and
+# __atomic_base<unsigned long>::is_lock_free are now DISTINCT from the
+# long long ones instead of aliasing them, exactly as the type model says.
+# A native darwin freeze (libSystem has the symbol) reports lower. Every
+# other class is byte-identical to the 64 run.
+# linux 93 -> 68, dk-none 55 -> 45; darwin 66 -> 52 (2026-09-02, darwin-host
+# D4 wave 3, the wchar_t identity slice — five commits): wchar_t/char16_t/
+# char32_t are DISTINCT dds (the ctype<wchar_t> facet class: 4 linux + 6
+# darwin); the served C headers' wchar_t typedef is guarded #ifndef
+# __cplusplus (embedded stddef.h; the darwin prelude generator restores
+# Apple's guard the -x c flatten resolved away) and a typedef may not
+# redeclare a keyword type — the shadow that keyed every DERIVED wchar_t
+# spelling int32_t* (basic_ostream<int32_t, char_traits<wchar_t>>,
+# numpunct_int32_t, the reverse_iterator shared by basic_string_view<wchar_t>
+# and vector<int>: mixed wide keys linux 87 -> 0, darwin 113 -> 0); the
+# overload scorer compares scalar identity, not rawtype; and an explicit
+# specialization on a pointer to a builtin (N<int*>) keys through the one
+# builtin table. win64 measured by its own release-win pack run in the wave-3
+# battery (2026-09-03): 93 -> 68 pack-errors, dk-none 55 -> 46 — the same
+# libstdc++ corpus as linux (mingw ships 13.2), the same classes cleared.
+# darwin 49 -> 52 within the same wave (the 64 -> 66 precedent again): once
+# the one builtin table names long double and __int128 by their own dds,
+# hash<long double>, hash<__int128> and hash<unsigned __int128> stop
+# aliasing hash<double> / hash<long> / hash<unsigned long> and instantiate
+# their OWN bodies — the 16-byte `__scalar_hash<_Tp, 2>` partial
+# specialization (hash.h:273), whose `__murmur2_or_cityhash<size_t>()(...)`
+# is the KNOWN instantiation-body misparse (KG Gap
+# instantiation_body_templateid_ctor_call, 5 -> 8 instances). The three new
+# instances are correct type identity meeting an old burndown item, not a
+# new class; every other line is identical to the 49 run. The cross freezer
+# gives long double the Linux host's 16 bytes — a native darwin arm64 freeze
+# (8-byte long double) reports one fewer.
+# darwin 52 -> 48 (2026-09-03, darwin-host D4 wave 6 close-out): the four
+# "'X' is a private member of 'X'" entries are FIXED at the access rule —
+# a lambda (a hoisted nested function) written inside a member has that
+# member's access ([class.access]/2; access_context_class walks the compound
+# chain to the enclosing member), so libc++ bodies whose mem-init lambdas
+# read private members (basic_string's move constructor `__s.__r_`) now
+# freeze. Every other class is identical to the 52 run; the four "Expecting
+# ] in lambda expression" lines are the capture forms madc does not parse
+# yet (`[=]`, `[this]`, named captures — KG Gap lambda_capture_forms), the
+# next lambda burndown item. Reducer: tests/testlambdamemberaccess.mad.
+48 darwin pack-errors
 1 darwin mir-blob-skips

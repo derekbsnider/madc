@@ -1,10 +1,10 @@
 #!/bin/bash
-# gen_win_rt_exports.sh — generate libmadc_rt.dll's .def export list from the
+# gen_win_rt_exports.sh — generate libmadc-0.dll's .def export list from the
 # ONE mingw-stdio map owner (third_party/mir/mir-mingw-stdio.h).
 #
 # The map's symbols are statically-linked libmingwex/oldnames code that PE
 # ld auto-excludes from --export-all-symbols, yet AOT images must import
-# them from libmadc_rt.dll (they exist in no system DLL, or only in the
+# them from libmadc-0.dll (they exist in no system DLL, or only in the
 # wrong long-double flavor). Generated at build time from the map table, so
 # the two can never drift: name = the first quoted string of each entry,
 # exported symbol = the entry's final identifier (plain-name rows become

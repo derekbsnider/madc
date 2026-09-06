@@ -50,6 +50,21 @@
 #error "undefined or unsupported generation target for C"
 #endif
 
+/* The target's va_list is a SCALAR -- `char *`: win64 (vadefs.h) and Apple
+   arm64 (every vararg on the stack, Apple's ABI keeps the AAPCS64 record out)
+   -- rather than a record (SysV x86-64's __va_list_tag[1], AAPCS64's
+   five-field struct).  A scalar va_list lives in a register pseudo, so the
+   va_start / va_arg intrinsics, which take the list's ADDRESS, spill it with
+   MIR_ADDR first (the arms below).  ONE target fact, read by both arms; the
+   old `_WIN32` spelling was the HOST, and left the Apple arm64 madc handing
+   vprintf the address of its 24-byte SysV record instead of the char *
+   (dispatch #9: teststdiobuiltinredirects, testprintfdouble). */
+#if MIR_TARGET_WINDOWS_P || (MIR_TARGET_APPLE_P && MIR_TARGET_IS_AARCH64)
+#define SCALAR_VA_LIST_P 1
+#else
+#define SCALAR_VA_LIST_P 0
+#endif
+
 #ifndef C2M_TARGET_MS_BITFIELD_LAYOUT
 #define C2M_TARGET_MS_BITFIELD_LAYOUT 0
 #endif
@@ -298,6 +313,15 @@ struct arr_type {
 struct vector_type {
   struct type *el_type;
   mir_size_t size, nel;
+  /* gcc's TYPE_VECTOR_OPAQUE -- the type of a vector COMPARISON's result.  Its
+     lanes are the signed integer of the operand lane's size (c-typeck.cc
+     build_binary_op -> build_opaque_vector_type); it converts implicitly to
+     ANY vector type of the same size (vector_types_convertible_p: assignment,
+     initialization, argument, return, the conditional operator), and it is a
+     binary-operator operand beside any vector with the same lane count, class
+     and size (vector_types_compatible_elements_p).  clang's default
+     -flax-vector-conversions=integer accepts the same programs.  */
+  unsigned int opaque_p : 1;
 };
 
 struct func_type {
@@ -6016,6 +6040,27 @@ static int standard_integer_type_p (const struct type *type) {
           && type->u.basic_type <= TP_UINT128);
 }
 
+/* Two integer types differing ONLY in signedness (int vs unsigned — the
+   int* vs socklen_t* argument shape).  gcc diagnoses sign-only pointee
+   mismatches under -Wpointer-sign (enabled by -Wall / -pedantic), not by
+   default; the char family was already default-exempt here (char_type_p) —
+   this is the same rule for the remaining integer ranks, whose
+   signed/unsigned pairs are ADJACENT in enum basic_type (order is fixed by
+   the comment on the enum). */
+static int sign_diff_only_type_p (const struct type *t1, const struct type *t2) {
+  enum basic_type b1, b2, lo;
+  if (t1->mode != TM_BASIC || t2->mode != TM_BASIC) return FALSE;
+  b1 = t1->u.basic_type;
+  b2 = t2->u.basic_type;
+  if (b1 == b2) return FALSE;
+  if (char_type_p (t1) && char_type_p (t2)) return TRUE;
+  lo = b1 < b2 ? b1 : b2;
+  if (lo != TP_SHORT && lo != TP_INT && lo != TP_LONG && lo != TP_LLONG
+      && lo != TP_INT128)
+    return FALSE;
+  return (b1 > b2 ? b1 - b2 : b2 - b1) == 1;
+}
+
 static int integer_type_p (const struct type *type) {
   return standard_integer_type_p (type) || type->mode == TM_ENUM;
 }
@@ -6067,6 +6112,32 @@ static int v64_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
 
 static int v128_vector_type_p (c2m_ctx_t c2m_ctx, struct type *type) {
   return type->mode == TM_VECTOR && raw_type_size (c2m_ctx, type) == 16;
+}
+
+/* A 128-bit vector crosses a CALL as a REGISTER-CLASS value -- SysV x86-64: the
+   SSE class (an xmm register, or a 16-byte aligned stack slot when none is
+   left, never demoted to an INTEGER block); AAPCS64: a Short Vector (v[NSRN],
+   or a 16-byte aligned stack slot); the result in xmm0 / v0; the same through
+   `...` -- although c2mir keeps every vector memory-backed inside a function
+   (aggregate_type_p / memory_value_type_p).  This is the one predicate every
+   call-boundary site reads: argument prototypes, call operands, the parameter
+   gather, results, returns and va_arg.  (win64 differs -- MS x64 passes an
+   __m128 BY REFERENCE; the x86-64 ABI code keeps its own shape there and the
+   vararg read stays on the block path, see va_block_type_p.) */
+static int v128_reg_class_p (c2m_ctx_t c2m_ctx, struct type *type) {
+#if defined(_WIN32)
+  /* MS x64: "__m128 types, arrays, and strings are never passed by immediate
+     value; a pointer is passed to memory allocated by the caller" -- a 16-byte
+     vector is a memory-value BLOCK at the call boundary (MIR's win64 block
+     convention passes exactly that pointer, and va_block_arg reads it), and
+     only the RETURN rides xmm0 (process_ret_type's classification).  The
+     register-class lane would put it in an xmm register. */
+  (void) c2m_ctx;
+  (void) type;
+  return FALSE;
+#else
+  return v128_vector_type_p (c2m_ctx, type);
+#endif
 }
 
 static mir_size_t vector_lane_size (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -6223,9 +6294,19 @@ static int memory_value_type_p (const struct type *type) {
    the value's memory).  win64-mingw long double qualifies (by-reference in
    varargs, see memory_value_type_p); SysV long double stays on the scalar
    path (its value lives directly in the overflow area). */
-static int va_block_type_p (const struct type *type) {
+static int va_block_type_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *type) {
 #if defined(_WIN32) && defined(__GNUC__)
   if (type->mode == TM_BASIC && type->u.basic_type == TP_LDOUBLE) return TRUE;
+#endif
+#if !defined(_WIN32)
+  /* A 128-bit vector vararg is a register-class SCALAR (v128_reg_class_p): its
+     16 bytes sit in the SSE / SIMD register save area or a 16-byte aligned
+     stack slot and MIR_VA_ARG (va_arg_builtin's vector arm) finds them.  The
+     block path read it as a two-eightbyte AGGREGATE -- two xmm slots on
+     x86-64, the GP area on aarch64: garbage lanes against gcc / clang and
+     against MIR's own caller.  win64 stays on the block path: MS x64 passes
+     an __m128 vararg BY REFERENCE, which is what its va_block_arg reads. */
+  if (v128_reg_class_p (c2m_ctx, type)) return FALSE;
 #endif
   return aggregate_type_p (type);
 }
@@ -6539,10 +6620,40 @@ static int compatible_types_p (struct type *type1, struct type *type2, int ignor
   return TRUE;
 }
 
+/* gcc's vector_types_convertible_p, the opaque arm: a vector comparison's
+   result (struct vector_type::opaque_p) converts implicitly to any vector type
+   of the same size -- assignment, initialization, argument passing, return, the
+   conditional operator.  Two named vector types stay strictly compatible
+   (compatible_types_p), as in gcc without -flax-vector-conversions. */
+static int opaque_vector_convertible_p (c2m_ctx_t c2m_ctx, struct type *type1,
+                                        struct type *type2) {
+  return (vector_type_p (type1) && vector_type_p (type2)
+          && (type1->u.vector_type->opaque_p || type2->u.vector_type->opaque_p)
+          && raw_type_size (c2m_ctx, type1) == raw_type_size (c2m_ctx, type2));
+}
+
+/* gcc's vector_types_compatible_elements_p: two vectors are binary-operator
+   operands when their element types are the same, or one is opaque and the
+   lanes agree in count, class (integer / floating) and size. */
+static int opaque_vector_compatible_elements_p (c2m_ctx_t c2m_ctx, struct type *type1,
+                                                struct type *type2) {
+  struct type *el1, *el2;
+
+  if (!vector_type_p (type1) || !vector_type_p (type2)) return FALSE;
+  if (!type1->u.vector_type->opaque_p && !type2->u.vector_type->opaque_p) return FALSE;
+  if (type1->u.vector_type->nel != type2->u.vector_type->nel) return FALSE;
+  el1 = type1->u.vector_type->el_type;
+  el2 = type2->u.vector_type->el_type;
+  return (raw_type_size (c2m_ctx, el1) == raw_type_size (c2m_ctx, el2)
+          && integer_type_p (el1) == integer_type_p (el2)
+          && floating_type_p (el1) == floating_type_p (el2));
+}
+
 static int compatible_integer_vector_types_p (c2m_ctx_t c2m_ctx, struct type *type1,
                                               struct type *type2) {
   return supported_integer_vector_type_p (c2m_ctx, type1)
-         && compatible_types_p (type1, type2, TRUE);
+         && (compatible_types_p (type1, type2, TRUE)
+             || opaque_vector_compatible_elements_p (c2m_ctx, type1, type2));
 }
 
 static int compatible_integer_shift_count_vector_types_p (c2m_ctx_t c2m_ctx,
@@ -6636,8 +6747,15 @@ static struct type *integer_shift_vector_type (c2m_ctx_t c2m_ctx, struct type *t
                                                struct expr *expr2) {
   if (compatible_integer_vector_types_p (c2m_ctx, type1, type2)) return type1;
   if (compatible_integer_shift_count_vector_types_p (c2m_ctx, type1, type2)) return type1;
-  if (supported_integer_vector_type_p (c2m_ctx, type1)
-      && scalar_fits_integer_vector_lane_p (c2m_ctx, type1, type2, expr2))
+  /* vector << scalar: the scalar is the shift COUNT, not a lane value -- an
+     integer of ANY type (gcc c-typeck.cc build_binary_op, LSHIFT_EXPR /
+     RSHIFT_EXPR: `code0 == VECTOR_TYPE && code1 == INTEGER_TYPE` keeps type0
+     with the count unconverted; clang agrees).  The lane-fit test stays for a
+     scalar LEFT operand, which IS broadcast into the lanes.  EXPR2 is unused:
+     the count's value never decides the type. */
+  (void) expr2;
+  if (supported_integer_vector_type_p (c2m_ctx, type1) && integer_type_p (type2)
+      && !vector_type_p (type2))
     return type1;
   if (supported_integer_vector_type_p (c2m_ctx, type2)
       && scalar_fits_integer_vector_lane_p (c2m_ctx, type2, type1, expr1))
@@ -6645,16 +6763,18 @@ static struct type *integer_shift_vector_type (c2m_ctx_t c2m_ctx, struct type *t
   return NULL;
 }
 
+static struct type *vector_cmp_result_type (c2m_ctx_t c2m_ctx, struct type *vector_type);
+
 static struct type *integer_cmp_vector_type (c2m_ctx_t c2m_ctx, node_code_t code,
                                              struct type *type1, struct type *type2,
                                              struct expr *expr1, struct expr *expr2) {
   struct type *res = integer_bin_op_vector_type (c2m_ctx, type1, type2, expr1, expr2);
 
-  if (res != NULL) return res;
-  if (code == N_EQ || code == N_NE || code == N_LT || code == N_LE || code == N_GT
-      || code == N_GE)
-    return int128_bin_op_vector_type (c2m_ctx, type1, type2);
-  return NULL;
+  if (res == NULL
+      && (code == N_EQ || code == N_NE || code == N_LT || code == N_LE || code == N_GT
+          || code == N_GE))
+    res = int128_bin_op_vector_type (c2m_ctx, type1, type2);
+  return res == NULL ? NULL : vector_cmp_result_type (c2m_ctx, res);
 }
 
 static int scalar_fits_v128_float_lane_p (c2m_ctx_t c2m_ctx, struct type *vector_type,
@@ -6683,17 +6803,26 @@ static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type 
 static mir_size_t vector_el_count (c2m_ctx_t c2m_ctx, struct type *type);
 static mir_ullong round_up_power_of_two (mir_ullong value);
 
-static struct type *signed_integer_vector_type_for_vector (c2m_ctx_t c2m_ctx,
-                                                           struct type *vector_type) {
-  struct type el_type;
+/* The type of a vector comparison over VECTOR_TYPE's lanes: gcc's opaque vector
+   of the SIGNED integer of the lane's size (struct vector_type::opaque_p), for
+   integer and floating operand lanes alike, an unsigned operand included.  A
+   lane read back is -1 or 0, so `long long x = (ua == ub)[0]` and
+   `(ua == ub)[0] < 0` agree with gcc and clang; typing the integer result as
+   the OPERAND vector widened an all-ones lane to 4294967295 and ordered it
+   above zero, and typing the double result as a `long` vector made it
+   unassignable to `long long` lanes. */
+static struct type *vector_cmp_result_type (c2m_ctx_t c2m_ctx, struct type *vector_type) {
+  struct type el_type, *res;
   mir_size_t lane_size = vector_lane_size (c2m_ctx, vector_type);
 
   init_type (&el_type);
   el_type.mode = TM_BASIC;
-  el_type.u.basic_type = get_int_basic_type (lane_size);
-  return create_vector_type_with_nel (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
-                                      vector_el_count (c2m_ctx, vector_type),
-                                      vector_type->pos_node);
+  el_type.u.basic_type = lane_size == 16 ? TP_INT128 : get_int_basic_type (lane_size);
+  res = create_vector_type_with_nel (c2m_ctx, &el_type, raw_type_size (c2m_ctx, vector_type),
+                                     vector_el_count (c2m_ctx, vector_type),
+                                     vector_type->pos_node);
+  res->u.vector_type->opaque_p = TRUE;
+  return res;
 }
 
 static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *type1,
@@ -6701,7 +6830,7 @@ static struct type *v128_float_cmp_vector_type (c2m_ctx_t c2m_ctx, struct type *
   struct type *vector_type = v128_float_bin_op_vector_type (c2m_ctx, type1, type2);
 
   if (vector_type == NULL) return NULL;
-  return signed_integer_vector_type_for_vector (c2m_ctx, vector_type);
+  return vector_cmp_result_type (c2m_ctx, vector_type);
 }
 
 static int same_size_vector_cast_p (c2m_ctx_t c2m_ctx, struct type *to_type,
@@ -6808,6 +6937,7 @@ static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type 
   vector_type->el_type = create_type (c2m_ctx, el_type);
   vector_type->size = size;
   vector_type->nel = nel;
+  vector_type->opaque_p = FALSE;
   res->pos_node = pos_node;
   res->mode = TM_VECTOR;
   res->u.vector_type = vector_type;
@@ -8738,7 +8868,9 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
       error (c2m_ctx, POS (assign_node), "%s", msg);
     }
   } else if (left->mode == TM_VECTOR) {
-    if (right->mode != TM_VECTOR || !compatible_types_p (left, right, TRUE)) {
+    if (right->mode != TM_VECTOR
+        || !(compatible_types_p (left, right, TRUE)
+             || opaque_vector_convertible_p (c2m_ctx, left, right))) {
       msg = (code == N_CALL ? "incompatible argument type for vector type parameter"
              : code != N_RETURN ? "incompatible types in assignment to vector"
                                 : "incompatible return-expr type in function returning a vector");
@@ -8757,7 +8889,7 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
         msg = (code == N_CALL     ? "incompatible pointer types of argument and parameter"
                : code == N_RETURN ? "incompatible pointer types of return-expr and function result"
                                   : "incompatible pointer types in assignment");
-        int sign_diff_p = char_type_p (left->u.ptr_type) && char_type_p (right->u.ptr_type);
+        int sign_diff_p = sign_diff_only_type_p (left->u.ptr_type, right->u.ptr_type);
         if (!sign_diff_p || c2m_options->pedantic_p)
           (c2m_options->pedantic_p && !sign_diff_p ? error : warning) (c2m_ctx, POS (assign_node),
                                                                        "%s", msg);
@@ -10623,7 +10755,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       }
     } else if ((t1->mode == TM_PTR && integer_type_p (t2))
                || (t2->mode == TM_PTR && integer_type_p (t1))) {
-      warning (c2m_ctx, POS (r), "comparison of integer with a pointer");
+      /* A pointer against a NULL POINTER CONSTANT (integer constant zero):
+         equality is standard C, and gcc diagnoses the ordered form only
+         under -Wextra ("ordered comparison of pointer with integer zero") —
+         default-silent either way (SMAUG magic.c `weath >= 0`).  A nonzero
+         or non-constant integer keeps the default warning, as gcc does. */
+      if (c2m_options->pedantic_p
+          || !(t1->mode == TM_PTR ? null_const_p (e2, t2) : null_const_p (e1, t1)))
+        warning (c2m_ctx, POS (r), "comparison of integer with a pointer");
     } else {
       error (c2m_ctx, POS (r), "invalid types of comparison operands");
     }
@@ -11003,7 +11142,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                && t2->u.tag_type == t3->u.tag_type) {
       *e->type = *t2;
     } else if (t2->mode == TM_VECTOR && t3->mode == TM_VECTOR
-               && compatible_types_p (t2, t3, TRUE)) {
+               && (compatible_types_p (t2, t3, TRUE)
+                   || opaque_vector_convertible_p (c2m_ctx, t2, t3))) {
       *e->type = *t2;
     } else if ((t2->mode == TM_PTR && null_const_p (e3, t3))
                || (t3->mode == TM_PTR && null_const_p (e2, t2))) {
@@ -11153,10 +11293,21 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
          n_spec_index >= 0 && (n = VARR_GET (node_t, context_stack, n_spec_index)) != NULL
          && n->code != N_SPEC_DECL;
          n_spec_index--);
-    if (n_spec_index < (int) VARR_LENGTH (node_t, context_stack) - 1
-        && (n_spec_index < 0
-            || !get_compound_literal (VARR_GET (node_t, context_stack, n_spec_index + 1), &addr_p)
-            || addr_p))
+    /* Skip check_initializer only when an owning declaration processes this
+       literal's initializer itself (see check_decl): a found N_SPEC_DECL whose
+       initializer IS this literal (directly, n_spec_index == LENGTH-1, or
+       through a cast/addr chain that get_compound_literal recognizes, unless
+       address-taken).  A walk that stopped at a NULL context barrier (an
+       assignment operand -- see case N_ASSIGN passing a NULL context) or ran
+       off the stack found NO owning declaration, so the initializer must be
+       checked HERE: treating the barrier like a found N_SPEC_DECL left a
+       nested unsized array literal's type incomplete -- (struct IL){(long
+       long *)(long long []){10, 32}, 2} in assignment context read garbage
+       past element 0, and the uncast form crashed in gen.  */
+    if (n_spec_index < 0 || VARR_GET (node_t, context_stack, n_spec_index) == NULL
+        || (n_spec_index < (int) VARR_LENGTH (node_t, context_stack) - 1
+            && (!get_compound_literal (VARR_GET (node_t, context_stack, n_spec_index + 1), &addr_p)
+                || addr_p)))
       check_initializer (c2m_ctx, NULL, &t1, list,
                          curr_scope == top_scope || decl->decl_spec.static_p
                            || decl->decl_spec.thread_local_p,
@@ -12404,6 +12555,8 @@ struct gen_ctx {
   HTAB (reg_var_t) * reg_var_tab;
   int reg_free_mark;
   MIR_label_t continue_label, break_label;
+  int call_arg_vararg_p; /* the call argument being lowered sits past the callee's
+                            declared parameters (or the callee is unprototyped) */
   op_t top_gen_last_op;
   op_t stmtexpr_last_val;    /* the op the marked stmtexpr_last_expr produced —
                                 read by N_STMTEXPR instead of top_gen_last_op,
@@ -12445,6 +12598,7 @@ struct gen_ctx {
 #define one_op gen_ctx->one_op
 #define minus_one_op gen_ctx->minus_one_op
 #define curr_func gen_ctx->curr_func
+#define call_arg_vararg_p gen_ctx->call_arg_vararg_p
 #define slow_code_part gen_ctx->slow_code_part
 #define reg_var_tab gen_ctx->reg_var_tab
 #define reg_free_mark gen_ctx->reg_free_mark
@@ -12817,6 +12971,23 @@ static void add_union_member_conflicts (c2m_ctx_t c2m_ctx, struct type *type,
       MIR_add_alias_conflict (ctx, union_alias, alias);
     break;
   }
+}
+
+/* The OUTERMOST anonymous union a member is declared inside (NULL if none):
+   the member's storage overlaps every other member of that union, so its
+   accesses belong to the union's alias class.  An anonymous struct on the
+   way changes nothing (its members do not overlap); an anonymous union
+   nested in another anonymous union is covered by the outer one. */
+static struct type *enclosing_anon_union_type (decl_t decl) {
+  struct type *res = NULL;
+
+  for (node_t m = decl->containing_unnamed_anon_struct_union_member; m != NULL;) {
+    decl_t md = m->attr;
+
+    if (md->decl_spec.type->mode == TM_UNION) res = md->decl_spec.type;
+    m = md->containing_unnamed_anon_struct_union_member;
+  }
+  return res;
 }
 
 static MIR_alias_t get_type_alias (c2m_ctx_t c2m_ctx, struct type *type) {
@@ -14585,8 +14756,11 @@ static op_t gen_int128_vector_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirab
   op_t src1 = materialize_int128_vector_node (c2m_ctx, node1, type1);
   op_t src2 = materialize_int128_vector_node (c2m_ctx, node2, type2);
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
-  MIR_type_t high_type = signed_integer_type_p (type->u.vector_type->el_type) ? MIR_T_I64
-                                                                              : MIR_T_U64;
+  /* the comparison's signedness is the OPERANDS' -- the result type is gcc's
+     opaque signed vector (vector_cmp_result_type) */
+  struct type *cmp_type = int128_vector_type_p (c2m_ctx, type1) ? type1 : type2;
+  int signed_p = signed_integer_type_p (cmp_type->u.vector_type->el_type);
+  MIR_type_t high_type = signed_p ? MIR_T_I64 : MIR_T_U64;
   op_t low1 = get_new_temp (c2m_ctx, MIR_T_U64);
   op_t high1 = get_new_temp (c2m_ctx, high_type);
   op_t low2 = get_new_temp (c2m_ctx, MIR_T_U64);
@@ -14614,7 +14788,6 @@ static op_t gen_int128_vector_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirab
     op_t eq_high = get_new_temp (c2m_ctx, MIR_T_I64);
     op_t cmp_low = get_new_temp (c2m_ctx, MIR_T_I64);
     op_t low_if_eq = get_new_temp (c2m_ctx, MIR_T_I64);
-    int signed_p = signed_integer_type_p (type->u.vector_type->el_type);
     MIR_insn_code_t high_cmp
       = (r->code == N_LT || r->code == N_LE ? (signed_p ? MIR_LT : MIR_ULT)
                                              : (signed_p ? MIR_GT : MIR_UGT));
@@ -14845,43 +15018,50 @@ static op_t gen_v128_i32_cmp_op (c2m_ctx_t c2m_ctx, node_t r, op_t *desirable_de
   struct type *type = ((struct expr *) r->attr)->type;
   struct type *type1 = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
   struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+  /* The comparison's lane width and SIGNEDNESS are the operands' (a scalar
+     operand is broadcast to the other's lanes); the result TYPE is gcc's
+     opaque signed vector (vector_cmp_result_type) and only shapes the
+     destination -- an unsigned `>` must not become a signed cmgt. */
+  struct type *cmp_type = vector_type_p (type1) ? type1 : type2;
   op_t op1 = val_gen (c2m_ctx, NL_HEAD (r->u.ops));
   op_t op2 = val_gen (c2m_ctx, NL_EL (r->u.ops, 1));
   op_t dest = desirable_dest != NULL ? *desirable_dest : vector_temp (c2m_ctx, type);
   op_t cmp_dest, all_ones;
 
   if (code == N_EQ || code == N_NE) {
-    if (v128_i32_packed_eq_vector_type_p (c2m_ctx, type)) {
+    if (v128_i32_packed_eq_vector_type_p (c2m_ctx, cmp_type)) {
       if (code == N_EQ)
-        return emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type),
-                                     op1, type1, op2, type2, type, dest);
-      cmp_dest = vector_temp (c2m_ctx, type);
-      emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, type), op1,
-                            type1, op2, type2, type, cmp_dest);
-      all_ones = const_integer_vector (c2m_ctx, type, -1);
-      return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type,
-                                   dest);
+        return emit_v128_i32_bin_op (c2m_ctx,
+                                     get_v128_i32_packed_eq_insn_code (c2m_ctx, cmp_type), op1,
+                                     type1, op2, type2, cmp_type, dest);
+      cmp_dest = vector_temp (c2m_ctx, cmp_type);
+      emit_v128_i32_bin_op (c2m_ctx, get_v128_i32_packed_eq_insn_code (c2m_ctx, cmp_type), op1,
+                            type1, op2, type2, cmp_type, cmp_dest);
+      all_ones = const_integer_vector (c2m_ctx, cmp_type, -1);
+      return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, cmp_type, all_ones, cmp_type,
+                                   cmp_type, dest);
     }
-    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, cmp_type, dest);
   }
 
-  if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, type))
-    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, type, dest);
+  if (!v128_i32_packed_cmp_vector_type_p (c2m_ctx, cmp_type))
+    return emit_v128_i32_lane_cmp_op (c2m_ctx, code, op1, type1, op2, type2, cmp_type, dest);
 
   if (code == N_GT)
-    return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, dest);
+    return emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, cmp_type, dest);
   if (code == N_LT)
-    return emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, type, dest);
+    return emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, cmp_type, dest);
 
-  cmp_dest = vector_temp (c2m_ctx, type);
+  cmp_dest = vector_temp (c2m_ctx, cmp_type);
   if (code == N_LE) {
-    emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, type, cmp_dest);
+    emit_v128_i32_gt_op (c2m_ctx, op1, type1, op2, type2, cmp_type, cmp_dest);
   } else {
     assert (code == N_GE);
-    emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, type, cmp_dest);
+    emit_v128_i32_gt_op (c2m_ctx, op2, type2, op1, type1, cmp_type, cmp_dest);
   }
-  all_ones = const_integer_vector (c2m_ctx, type, -1);
-  return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, type, all_ones, type, type, dest);
+  all_ones = const_integer_vector (c2m_ctx, cmp_type, -1);
+  return emit_v128_i32_bin_op (c2m_ctx, MIR_VXOR, cmp_dest, cmp_type, all_ones, cmp_type,
+                               cmp_type, dest);
 }
 
 static op_t emit_v128_i32_arith_op (c2m_ctx_t c2m_ctx, node_code_t code, op_t op1,
@@ -15704,8 +15884,18 @@ static op_t complex_temp (c2m_ctx_t c2m_ctx, enum basic_type bt);
 static op_t complex_to_complex (c2m_ctx_t c2m_ctx, op_t op, enum basic_type from_bt,
                                 enum basic_type to_bt);
 
-static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *ret_type) {
-  return aggregate_type_p (ret_type);
+static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
+  /* a 128-bit vector result rides v0 / xmm0 (v128_reg_class_p), never the
+     hidden result pointer */
+  return aggregate_type_p (ret_type) && !v128_reg_class_p (c2m_ctx, ret_type);
+}
+
+/* The MIR type of an argument on the generic lane: a memory-value type travels
+   as a block -- except the 128-bit vector, a register-class value. */
+static MIR_type_t MIR_UNUSED simple_arg_mir_type (c2m_ctx_t c2m_ctx, struct type *arg_type) {
+  return (memory_value_type_p (arg_type) && !v128_reg_class_p (c2m_ctx, arg_type)
+            ? MIR_T_BLK
+            : get_mir_type (c2m_ctx, arg_type));
 }
 
 static void MIR_UNUSED simple_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
@@ -15784,6 +15974,14 @@ static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
     MIR_op_t im_op = VARR_GET (MIR_op_t, call_ops, call_ops_start + 3);
     complex_store (c2m_ctx, res, ct, 0, new_op (NULL, re_op));
     complex_store (c2m_ctx, res, ct, imag_off, new_op (NULL, im_op));
+  } else if (v128_reg_class_p (c2m_ctx, ret_type)) {
+    /* the V128 result register into the memory-backed result slot the call
+       lowering reserved for a memory-value type returned in registers */
+    assert (res.mir_op.mode == MIR_OP_MEM);
+    emit2 (c2m_ctx, MIR_VMOV,
+           MIR_new_mem_op (c2m_ctx->ctx, MIR_T_V128, res.mir_op.u.mem.disp, res.mir_op.u.mem.base,
+                           res.mir_op.u.mem.index, res.mir_op.u.mem.scale),
+           VARR_GET (MIR_op_t, call_ops, call_ops_start + 2));
   }
   return res;
 }
@@ -15807,7 +16005,10 @@ static void MIR_UNUSED simple_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_t
     VARR_PUSH (MIR_op_t, ret_ops, re.mir_op);
     VARR_PUSH (MIR_op_t, ret_ops, im.mir_op);
   } else if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
-    VARR_PUSH (MIR_op_t, ret_ops, val.mir_op);
+    /* a memory-backed vector value is returned in a V128 register */
+    VARR_PUSH (MIR_op_t, ret_ops,
+               v128_reg_class_p (c2m_ctx, ret_type) ? force_v128_reg (c2m_ctx, val).mir_op
+                                                    : val.mir_op);
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
     var = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_I8, 0, ret_addr_reg, 0, 1));
@@ -15844,7 +16045,7 @@ static void MIR_UNUSED simple_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name
     VARR_PUSH (MIR_var_t, arg_vars, var);
     return;
   }
-  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
+  type = simple_arg_mir_type (c2m_ctx, arg_type);
   var.name = name;
   var.type = type;
   if (type == MIR_T_BLK) var.size = type_size (c2m_ctx, arg_type);
@@ -15867,9 +16068,11 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
                                addr.mir_op.u.reg, 0, 1));
     return;
   }
-  type = memory_value_type_p (arg_type) ? MIR_T_BLK : get_mir_type (c2m_ctx, arg_type);
+  type = simple_arg_mir_type (c2m_ctx, arg_type);
   if (type != MIR_T_BLK) {
-    VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
+    /* a memory-backed vector argument is loaded into a V128 register operand */
+    VARR_PUSH (MIR_op_t, call_ops,
+               type == MIR_T_V128 ? force_v128_reg (c2m_ctx, arg).mir_op : arg.mir_op);
   } else {
     assert (arg.mir_op.mode == MIR_OP_MEM);
     arg = mem_to_address (c2m_ctx, arg, TRUE);
@@ -15879,12 +16082,28 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
   }
 }
 
-static int MIR_UNUSED simple_gen_gather_arg (c2m_ctx_t c2m_ctx MIR_UNUSED,
-                                             const char *name MIR_UNUSED,
-                                             struct type *arg_type MIR_UNUSED,
-                                             decl_t param_decl MIR_UNUSED,
+/* A 128-bit vector parameter arrives in a register (v128_reg_class_p): move it
+   into the parameter's memory-backed frame home, the shape every vector
+   consumer reads.  The one gather for x86-64 and the generic lane. */
+static int MIR_UNUSED v128_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name,
+                                           struct type *arg_type, decl_t param_decl) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t var;
+
+  if (!v128_reg_class_p (c2m_ctx, arg_type)) return FALSE;
+  var = new_op (param_decl, MIR_new_alias_mem_op (ctx, MIR_T_V128, param_decl->offset,
+                                                  MIR_reg (ctx, FP_NAME, curr_func->u.func), 0, 1,
+                                                  get_type_alias (c2m_ctx, arg_type), 0));
+  emit2 (c2m_ctx, MIR_VMOV, var.mir_op,
+         MIR_new_reg_op (ctx, get_reg_var (c2m_ctx, MIR_T_UNDEF, name, NULL).reg));
+  return TRUE;
+}
+
+static int MIR_UNUSED simple_gen_gather_arg (c2m_ctx_t c2m_ctx, const char *name,
+                                             struct type *arg_type, decl_t param_decl,
                                              void *arg_info MIR_UNUSED) {
-  return FALSE;
+  return v128_gen_gather_arg (c2m_ctx, name, arg_type, param_decl);
 }
 
 /* Can be used by target functions */
@@ -18550,11 +18769,20 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     decl = def_node->attr;
     op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, r->code == N_DEREF_FIELD, NULL, NULL);
     t = get_mir_type (c2m_ctx, decl->decl_spec.type);
+    /* A member reached through an ANONYMOUS union shares storage with that
+       union's other members, so the access carries the UNION's alias class
+       (get_type_alias registers the member-class conflicts), exactly as a
+       named-union access does.  With the member type's own class instead,
+       `struct { union { long long ival; double fval; }; } v; v.fval = 1.5;
+       return v.ival;` read the stale ival at -O2 (GVN saw two non-conflicting
+       classes) -- upstream vnmakarov/mir#473. */
+    struct type *anon_union_type = enclosing_anon_union_type (decl);
     if (r->code == N_FIELD) {
       assert (op1.mir_op.mode == MIR_OP_MEM);
       alias = (op1.mir_op.u.mem.alias != 0 && MIR_alias_name (ctx, op1.mir_op.u.mem.alias)[0] == 'U'
                  ? op1.mir_op.u.mem.alias
-                 : get_type_alias (c2m_ctx, e->type));
+               : anon_union_type != NULL ? get_type_alias (c2m_ctx, anon_union_type)
+                                         : get_type_alias (c2m_ctx, e->type));
       op1.mir_op
         = MIR_new_alias_mem_op (ctx, t, op1.mir_op.u.mem.disp + decl->offset, op1.mir_op.u.mem.base,
                                 op1.mir_op.u.mem.index, op1.mir_op.u.mem.scale, alias,
@@ -18568,7 +18796,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         = MIR_new_alias_mem_op (ctx, t, decl->offset, op1.mir_op.u.reg, 0, 1,
                                 get_type_alias (c2m_ctx, left->type->u.ptr_type->mode == TM_UNION
                                                            ? left->type->u.ptr_type
-                                                           : e->type),
+                                                         : anon_union_type != NULL ? anon_union_type
+                                                                                   : e->type),
                                 decl->decl_spec.type->antialias);
     }
     res = new_op (decl, op1.mir_op);
@@ -19131,28 +19360,29 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1 = get_new_temp (c2m_ctx, MIR_T_I64);
       op2 = val_gen (c2m_ctx, NL_HEAD (args->u.ops));
       if (op2.mir_op.mode == MIR_OP_MEM) {
-#ifndef _WIN32
+#if !SCALAR_VA_LIST_P
         if (op2.mir_op.u.mem.type == MIR_T_UNDEF)
 #endif
           op2 = mem_to_address (c2m_ctx, op2, FALSE);
       }
-#ifdef _WIN32
+#if SCALAR_VA_LIST_P
       else if (op2.mir_op.mode == MIR_OP_REG) {
-        /* MIR_VA_ARG takes the va_list's ADDRESS.  win64's scalar va_list
-           (char *) lives in a register pseudo — take its address with
-           MIR_ADDR (the same mechanism gen N_ADDR uses; the generator then
-           binds the pseudo to a stack slot).  Passing the register itself
-           made the machinized code dereference ap's uninitialized VALUE
-           (madc win-lane crash, 2026-08-12).  This branch is win-only: on
-           SysV va_list is an ARRAY, so a REG here already holds its decayed
-           ADDRESS — an extra MIR_ADDR double-indirects and corrupts va_arg
-           (caught by the native probe battery). */
+        /* MIR_VA_ARG takes the va_list's ADDRESS.  A scalar va_list (char *:
+           win64 vadefs.h, Apple arm64) lives in a register pseudo — take its
+           address with MIR_ADDR (the same mechanism gen N_ADDR uses; the
+           generator then binds the pseudo to a stack slot).  Passing the
+           register itself made the machinized code dereference ap's
+           uninitialized VALUE (madc win-lane crash, 2026-08-12).  This
+           branch is scalar-only: on SysV / AAPCS64 va_list is an ARRAY or a
+           record, so a REG here already holds its decayed ADDRESS — an extra
+           MIR_ADDR double-indirects and corrupts va_arg (caught by the
+           native probe battery). */
         op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
         emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op2.mir_op);
         op2 = addr;
       }
 #endif
-      if (va_block_type_p (type)) {
+      if (va_block_type_p (c2m_ctx, type)) {
         if (desirable_dest == NULL) {
           /* A struct/union va_arg used as an rvalue (no destination object)
              still needs storage to receive the aggregate; allocate a frame
@@ -19185,6 +19415,36 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
           res.mir_op = MIR_new_mem_op (ctx, get_mir_type (c2m_ctx, type), 0, res.mir_op.u.reg, 0, 1);
         else /* present the freshly allocated buffer as the aggregate lvalue */
           res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
+      } else if (v128_reg_class_p (c2m_ctx, type)) {
+        /* A 128-bit vector vararg: MIR_VA_ARG hands back the ADDRESS of its 16
+           bytes (the SSE / SIMD register save area, or a 16-byte aligned stack
+           slot -- va_arg_builtin's vector arm); copy the value into the
+           destination, or into a fresh 16-byte temporary presented as the
+           memory-backed vector rvalue every vector consumer reads. */
+        op_t val = get_new_temp (c2m_ctx, MIR_T_V128);
+
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VA_ARG, op1.mir_op, op2.mir_op,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, 0, 0, 1)));
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VMOV, val.mir_op,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, op1.mir_op.u.reg, 0, 1)));
+        if (desirable_dest == NULL) {
+          res = get_new_temp (c2m_ctx, MIR_T_I64);
+          MIR_append_insn (ctx, curr_func,
+                           MIR_new_insn (ctx, MIR_ALLOCA, res.mir_op, MIR_new_int_op (ctx, 16)));
+        } else {
+          assert (desirable_dest->mir_op.mode == MIR_OP_MEM);
+          res = mem_to_address (c2m_ctx, *desirable_dest, TRUE);
+        }
+        MIR_append_insn (ctx, curr_func,
+                         MIR_new_insn (ctx, MIR_VMOV,
+                                       MIR_new_mem_op (ctx, MIR_T_V128, 0, res.mir_op.u.reg, 0, 1),
+                                       val.mir_op));
+        if (desirable_dest != NULL)
+          res = *desirable_dest;
+        else
+          res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.reg, 0, 1);
       } else {
         MIR_append_insn (ctx, curr_func,
                          MIR_new_insn (ctx, MIR_VA_ARG, op1.mir_op, op2.mir_op,
@@ -19204,15 +19464,15 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     } else if (va_start_p) {
       op1 = val_gen (c2m_ctx, NL_HEAD (args->u.ops));
       if (op1.mir_op.mode == MIR_OP_MEM) {
-#ifndef _WIN32
+#if !SCALAR_VA_LIST_P
         if (op1.mir_op.u.mem.type == MIR_T_UNDEF)
 #endif
           op1 = mem_to_address (c2m_ctx, op1, FALSE);
       }
-#ifdef _WIN32
+#if SCALAR_VA_LIST_P
       else if (op1.mir_op.mode == MIR_OP_REG) {
-        /* win64 scalar va_list in a register: MIR_VA_START needs its ADDRESS —
-           see the va_arg twin above (win-only for the same reason). */
+        /* scalar va_list in a register: MIR_VA_START needs its ADDRESS — see
+           the va_arg twin above (scalar-only for the same reason). */
         op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
         emit2 (c2m_ctx, MIR_ADDR, addr.mir_op, op1.mir_op);
         op1 = addr;
@@ -19230,6 +19490,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         struct type *arg_type;
         e = arg->attr;
         arg_type = e->type;
+        /* Read by the target's call-arg lowering: a vararg position keeps the
+           shape the callee's va_arg reads (aarch64 keeps _Complex varargs as
+           a block; the HFA split is for declared parameters). */
+        call_arg_vararg_p = param == NULL;
         assert (param != NULL || NL_HEAD (param_list->u.ops) == NULL
                 || func_type->u.func_type->dots_p);
         if (param != NULL) {
@@ -19326,16 +19590,28 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     const char *name;
 
     decl = (decl_t) r->attr;
+    /* C17 6.9.2p1: a file-scope object declaration WITH an initializer is an
+       external DEFINITION even when it also says `extern` -- gcc, clang and
+       MSVC all define the object (gcc/clang warn).  Upstream vnmakarov/mir#472:
+       c2mir emitted an import for it and dropped the initializer, so the
+       object was defined nowhere (`import of undefined item`) or, with a
+       definition in another unit, its initializer silently ignored. */
+    int extern_def_p
+      = (declarator != NULL && declarator->code == N_DECL && decl->decl_spec.extern_p
+         && decl->scope == top_scope && decl->decl_spec.type->mode != TM_FUNC
+         && !decl->decl_spec.typedef_p && !decl->asm_p && initializer->code != N_IGNORE);
     if (declarator != NULL && declarator->code != N_IGNORE && decl->u.item == NULL) {
       id = NL_HEAD (declarator->u.ops);
       name = (decl->scope != top_scope && decl->decl_spec.static_p
                 ? get_func_static_var_name (c2m_ctx, id->u.s.s, decl)
                 : id->u.s.s);
+      if (extern_def_p)
+        warning (c2m_ctx, POS (id), "'%s' initialized and declared 'extern'", id->u.s.s);
       if (decl->asm_p) {
       } else if (decl->used_p && decl->scope != top_scope && decl->decl_spec.linkage == N_STATIC) {
         decl->u.item = MIR_new_forward (ctx, name);
         move_item_forward (c2m_ctx, decl->u.item);
-      } else if (decl->used_p && decl->decl_spec.linkage != N_IGNORE) {
+      } else if (decl->used_p && decl->decl_spec.linkage != N_IGNORE && !extern_def_p) {
         if (symbol_find (c2m_ctx, S_REGULAR, id,
                          decl->decl_spec.linkage == N_EXTERN ? top_scope : decl->scope, &sym)
             && (decl->u.item = get_ref_item (c2m_ctx, sym.def_node, name)) == NULL) {
@@ -19348,7 +19624,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         if (decl->scope != top_scope) move_item_forward (c2m_ctx, decl->u.item);
       }
       if (declarator->code == N_DECL && decl->decl_spec.type->mode != TM_FUNC
-          && !decl->decl_spec.typedef_p && !decl->decl_spec.extern_p && !decl->asm_p) {
+          && !decl->decl_spec.typedef_p && (!decl->decl_spec.extern_p || extern_def_p)
+          && !decl->asm_p) {
         if (initializer->code == N_IGNORE) {
           if (decl->scope != top_scope && decl->decl_spec.static_p) {
             decl->u.item = MIR_new_bss (ctx, name, raw_type_size (c2m_ctx, decl->decl_spec.type));

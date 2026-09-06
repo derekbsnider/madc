@@ -1,0 +1,42 @@
+// The carrier's KEYED list elements (owner 2026-08-31):
+// `var m = { "a": 1, "b": "two" }` assigns each keyed element into the
+// key's vivified slot through the registered operator= rows — the SAME
+// rows `m[key] = value` binds — so the literal and per-key assignment
+// cannot drift. Key-vs-index semantics are the slot call's
+// (madc_array_index_kind, one owner): a STRING key vivifies the OBJECT
+// kind (the map), an INTEGER key indexes the ARRAY kind (the vector,
+// like ix[3] = ...). The kinds never mix in one literal — a string key
+// beside a positional/indexed element refuses at compile time
+// (tests/testvalueinitkeyedmix.mad pins the refusal).
+int main()
+{
+	// all string-keyed -> the OBJECT kind (key_slot vivifies null)
+	var m = { "a": 1, "b": "two", "c": 2.5, "d": true };
+	println("m: a={} b={} c={} d={} n={}",
+		m["a"], m["b"], m["c"], m["d"], m.size());
+	// integer keys are INDEXES -> the ARRAY kind; positional pushes
+	// and integer keys mix freely (both array-kind, element order)
+	var ix = { 7, "eight", 3: "three" };
+	println("ix: 0={} 1={} 3={} n={}", ix[0], ix[1], ix[3], ix.size());
+	// var-carried key AND value expressions: a CARRIER key dispatches
+	// on its LIVE kind (madarray_value_slot, owner 2026-08-31) — a
+	// string-kind var KEYS, no .c_str() ceremony; the spelled-out
+	// .c_str() form stays equivalent.
+	var kv = "val";
+	var kn = "kn";
+	var m2 = { kn: kv, "sum": 2 + 3 };
+	println("m2: kn={} sum={}", m2["kn"], m2["sum"]);
+	println("m2 bare-read: {} cstr-read: {}", m2[kn], m2[kn.c_str()]);
+	// an integer-kind var index INDEXES (the array kind), and a
+	// runtime-kind key in a literal rides the same dispatch
+	var i1 = 1;
+	println("ix[i1]={}", ix[i1]);
+	var m3 = { kn.c_str(): kv };
+	println("m3: kn={}", m3["kn"]);
+	// the literal matches the per-key spelling it lowers through
+	var m4;
+	m4["a"] = 1;
+	m4["b"] = "two";
+	println("same: {}", m4["a"] == m["a"] && m4["b"] == m["b"] ? 1 : 0);
+	return 0;
+}

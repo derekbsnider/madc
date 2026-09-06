@@ -4,15 +4,15 @@
 int main()
 {
 	println("{}", python::title("hello world"));
-	value p = "python text";
+	var p = "python text";
 	println("{}", python::title(p));
 	println("{}", python::swapcase("MiXeD"));
-	value m = "AbC";
+	var m = "AbC";
 	println("{}", python::swapcase(m));
 	println("[{}]", python::center("ab", 6, "*"));
 	println("[{}]", python::ljust("ab", 6, "*"));
 	println("[{}]", python::rjust("ab", 6, "*"));
-	value n = "42";
+	var n = "42";
 	println("{}", python::zfill(n, 5));
 	println("{}", python::zfill("7", 3));
 	println("{}", python::replace("aaa", "a", "b"));

@@ -1,0 +1,36 @@
+// R4 engine-half probe: the piece-table text component through the
+// session surface — world_new (no world file), line queries, and range
+// edits composed FROM line spans (the line editor's shape: a line command
+// lowers to replace/insert/erase over the component's byte ranges).
+int main()
+{
+    long w = ui::world_new();
+    long d = ui::create(w, "doc");
+    ui::text_load(w, d, "alpha\nbeta\ngamma\n");
+    printf("lines=%ld size=%ld\n", ui::text_line_count(w, d),
+	   ui::text_size(w, d));
+    var l;
+    ui::text_line(l, w, d, 2);
+    printf("line2=[%s]\n", l);
+
+    long off = ui::text_line_start(w, d, 2);
+    long len = ui::text_line_len(w, d, 2);
+    ui::text_replace(w, d, off, len, "BETA!");
+    var t;
+    ui::text(t, w, d);
+    printf("text=[%s]", t);
+
+    ui::text_insert(w, d, ui::text_line_start(w, d, 1), "zero\n");
+    off = ui::text_line_start(w, d, 3);
+    len = ui::text_line_len(w, d, 3);
+    ui::text_erase(w, d, off, len + 1);
+    ui::text(t, w, d);
+    printf("edited=[%s]", t);
+
+    printf("find=%ld notfound=%ld nocomp=%ld\n",
+	   ui::text_find(w, d, 0, "gamma"),
+	   ui::text_find(w, d, 0, "delta"),
+	   ui::text_size(w, ui::create(w, "bare")));
+    ui::world_close(w);
+    return 0;
+}

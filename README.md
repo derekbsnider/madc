@@ -211,82 +211,80 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.95.2** (the v0.95 line's download tag:
-the win64 `--project` fix and the darwin clang-lane conformance, both
-caught by the three-platform promotion gate before any asset shipped). The v0.95 line is
-the `ui::` data-hub namespace with its proof: **Colossal Cave
-Adventure fully playable as a pure madc project** (11 translation units, one `class Game` extern,
-byte-identical to the original C game across all 94 reference
-transcripts — a permanent test gate). `ui::` gives a madc program
-worlds, entity bags behind one hub write path, projections as the
-access decision, verbs, and `ui::prompt` — see
-[docs/language/ns-ui.md](docs/language/ns-ui.md). Around it: the
-zero-include dialect contract (bare scripts need no `#include`, no
-`std::`; array literals `var ds = { a, b, c };` with chainable
-`.push()`), lean `value`/`char*` primaries for all 57
-std::string-only polyglot functions, and the cold-startup arc — the
-packed 11-TU project launch fell from 829 ms to the ~150 ms class
-(dev binary 1.9 s → ~0.3 s). Just before it, v0.93.0 made call-heavy
-FP code ~2.8× faster (donut.c now beats gcc -O0) and v0.94.0 hardened
-MIR codegen with three community-attributed fixes.
+The current release is **v0.98.0** — the macOS full-suite release. The
+entire integration suite now runs natively on both of GitHub's mac
+runner architectures and is green (arm64 **1293/0/0TO/24skip**, Intel
+**1294/0/0TO/23skip**), the end of a seven-wave burndown that only running
+the real suite on the platform could drive: by-value class parameters
+are the callee's own object (the Itanium invisible-reference and
+`__retbuf` rules, so copy/move constructors and destructors run exactly
+as g++ and clang run them), `wchar_t`/`char16_t`/`char32_t` are
+distinct types, `long double` and `va_list` take their shape from the
+target, nested-class and namespace-alias forms parse, and template
+argument deduction and `<` reading follow the standard's name-lookup
+rules. libc++'s `std::list` works (a template-id named as a template
+argument now instantiates after the class body that names it), and
+`cout << value` and `println` of a `std::string` cross the stdlib
+flavor boundary. The MIR floor gained 128-bit SIMD (`MIR_T_V128`) on
+x86-64 and aarch64 with NEON code generation, and the vector calling
+convention, Apple's stack-argument packing and aarch64-linux's unsigned
+`char` are gated against the platform compiler by compiling one half of
+a probe pair natively. `-w` silences compile warnings, gcc-style.
+Process: every platform lane's FULL suite now gates a master release
+(`scripts/lane_ledger.sh check --release`: the libc++ flavor lane, the
+darwin suite on both arches, genuine Windows), all driven and recorded
+from the build container.
 
-Branch state: v0.95.2 is released on `develop` and promoted to
-`master`, with public binaries published for Linux (deb/rpm),
-Windows x86-64, and macOS (Apple Silicon + Intel).
+Branch state: v0.98.0 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger the same day, with public binaries
+built by CI for Linux (deb/rpm/tarball), Windows x86-64, and macOS
+(Apple Silicon + Intel).
 
-Latest validated results:
+Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
 
-- Linux JIT: **1134 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1091/0**, OBJ lane **1091/0**; packed suite **1134/0/0/9**
+- Linux JIT: **1308 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1249/0**, OBJ lane
+  **1249/0**; packed suite **1308/0/0/9**; headerless (no headers on
+  disk anywhere) **1274/0/0/43**
+- libc++ flavor lane (`-stdlib=libc++` on linux — macOS's library): JIT
+  **1303/0/0TO/14skip**, EXE **1244/0**, OBJ **1244/0**
+- macOS, the FULL suite on GitHub's native mac runners: arm64
+  **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64 Mac
+  **1293/0/0TO/24skip**; both arches packed at 835 units with the Mach-O release
+  verifier green
+- Windows: packed Win64 under persistent Wine **1251/0/0TO/66skip**; the same PE on
+  genuine Windows 11 **1253/0/0TO/64skip**
+- c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
-- all three pack lanes green under the degradation gate: Linux and Win64 at
-  93 tolerated pack parse errors with zero load-side losses, macOS at 58 per
-  arch, and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1107/0/0/36**,
-  Win64 **1011/0/0/52** (v0.92.1 gate run; re-validated at promotion) —
-  the only lanes that can see an artifact fail to serve a standard
-  header from its own frozen corpus
-- macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
-  leg-for-leg parity with the shipped v0.82.0 binary (re-run as a negative
-  control on the same host); the three are standing known-opens (groves
-  `os.str()` husk, the value intrinsic, the exec:// channel), not
-  regressions; both arches packed at 835 units with the Mach-O release
-  verifier green
-- packed Win64 under persistent Wine **1091/0/0/52** (the v0.95.1 gate
-  run — the v0.95.0 win64 `--project` regression fixed before any asset
-  shipped); on genuine Windows 11 (v0.92.1 run) all seven battery legs
-  pass, including compiling a C translation unit on a host with no
-  toolchain installed
+- the vector ABI gate: 28 lines identical to the host compiler on c2m
+  generated code, the interpreter, and madc (x86-64 in fulltest; aarch64
+  under qemu and on the Mac in the arc's own stages)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.98.0](docs/release-notes/v0.98.0.md) — the macOS full-suite
+  release: the whole suite green on both mac runner arches after the
+  darwin burndown (by-value class ABI, distinct wide char types,
+  target-shaped long double / va_list, libc++ `<list>`); 128-bit SIMD
+  in MIR on x86-64 + aarch64 with the vector ABI gated against the
+  platform compiler; Apple stack-argument packing; `-w`; every
+  platform lane's full suite gates master.
+- [v0.97.0](docs/release-notes/v0.97.0.md) — the madcide interaction
+  arc (gateway seam, modes palette, the vi modal personality as
+  profile data) + the carrier elegance arc (keyed literals, `rows[] =`
+  append, literal expressions, live-kind subscripts); c-testsuite
+  220/220 COMPLETE.
+- [v0.96.0](docs/release-notes/v0.96.0.md) — the variadic-class arc:
+  `bin/madc examples/embed_hello.cpp` compiles and RUNS; libmadc
+  embedding fixes; two forest-artifact fixes (ranked-ctor symbol
+  stamp, husk canonical-path re-include).
 - [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
   darwin clang-lane conformance (override sweep) + the six assets.
 - [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
   first-call crash fixed (lazy-gen gated to eager on win64).
-- [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
-  Colossal Cave Adventure fully playable (94/94 logs byte-identical);
-  cold startup 829 ms → ~150 ms class; the zero-include contract.
-- [v0.94.0](docs/release-notes/v0.94.0.md) — upstream-community MIR
-  hardening: -O2 wrong-code loop-PHI fold, spill-table bound, aarch64 gate.
-- [v0.93.0](docs/release-notes/v0.93.0.md) — FP codegen at gcc speed: the
-  upstream MIR convert false-dependency fixed; donut.c beats gcc -O0.
-- [v0.92.1](docs/release-notes/v0.92.1.md) — the binary-shipping patch:
-  two win64 fixes from the new three-platform promotion gate; six assets.
-- [v0.92.0](docs/release-notes/v0.92.0.md) — bare `cout << value` (zero
-  includes) + std::format/print/println as always-included intrinsics.
-- [v0.91.0](docs/release-notes/v0.91.0.md) — `<iomanip>` manipulator objects:
-  setprecision/setw/setfill; plain structs in free-operator resolution.
-- [v0.90.0](docs/release-notes/v0.90.0.md) — `value(N)` constructs:
-  temporaries, direct-init, loop headers; c2mir stmt-expr value fix.
-- [v0.89.0](docs/release-notes/v0.89.0.md) — `php::array_push` as one
-  overloaded name returning the new count; numeric overload grading fixed.
-- [v0.88.0](docs/release-notes/v0.88.0.md) — `cout << value` streams exactly
-  as the contained type would; two pre-existing gaps found and recorded.
-- [v0.87.0](docs/release-notes/v0.87.0.md) — `for (value v : a)`: the loop
-  element can be the carrier itself, kind-preserving, copy semantics.
+
+Older release notes live in [docs/release-notes/](docs/release-notes/).
 
 ## Building from source
 

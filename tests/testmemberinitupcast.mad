@@ -1,0 +1,20 @@
+// A member initializer (and an assignment) converting a derived pointer to a
+// NON-PRIMARY base pointer must adjust the address. Oracle g++ == clang++:
+//   2 2 1
+#include <stdio.h>
+struct A { int a; };
+struct B { int b; };
+struct D : A, B { int d; };
+struct It {
+	B *p;
+	It(D *q) : p(q) {}
+};
+int main()
+{
+	D d;
+	d.a = 1; d.b = 2; d.d = 3;
+	It it(&d);
+	B *bp = &d;
+	printf("%d %d %d\n", it.p->b, bp->b, it.p == bp);
+	return 0;
+}

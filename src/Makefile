@@ -56,7 +56,8 @@ else ifeq ($(MODE),cross-arm64-macos)
 BIN = ../bin/madc-arm64-macos
 else ifeq ($(MODE),hosted-arm64-macos)
 # madc-on-macOS (Route 1): FULL madc binaries cross-COMPILED for Apple
-# hosts (clang-18 + SDK + ld64.lld). Host == target: JIT + native Mach-O
+# hosts (LLVM 18 clang + SDK; ld64.lld cross, Apple ld64 native — the
+# DARWIN_HOST posture below). Host == target: JIT + native Mach-O
 # AOT both live; no MADC_CROSS_TARGET. Ships unstripped -O2 (stripping
 # invalidates the linker signature; re-signer is Phase 3 of the plan).
 BIN = ../bin/madc-hosted-arm64-macos
@@ -131,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -188,6 +189,77 @@ endif
 # the hosted binaries carry (the darwin grove cross-FREEZER must parse
 # identical text to what the hosted consumer would live-parse; forest-carriers
 # plan S1). DARWIN_ARCH names the target arch as spelled in binary/lib names.
+# --- darwin BUILD-HOST posture (darwin-host port D1,
+# docs/plans/2026-09-01-darwin-host-port.md). The hosted-*-macos MODEs are
+# ONE mode with two toolchain postures: CROSS (the container — apt clang-18
+# by versioned name, ld64.lld, the owner-staged SDK, the /workspace stages)
+# and NATIVE (a Mac — brew llvm@18 for exact 18.x parity with the
+# container's compiler, Apple ld64, the SDK xcrun names, brew zstd).
+# DARWIN_HOST=1 selects native and defaults ON when the build host IS
+# darwin; every knob stays ?=-overridable (command line beats all). With
+# DARWIN_HOST unset the spellings below are byte-for-byte the cross ones —
+# the container recipe is the oracle (make -n -B text identical).
+# The shell-derived defaults use the $(origin) guard: ?= would make them
+# recursive and re-run brew/xcrun on every expansion.
+HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
+# The host arch in DARWIN_ARCH spelling (binary/lib names say x86-64).
+HOST_DARWIN_ARCH := $(subst x86_64,x86-64,$(HOST_ARCH))
+ifeq ($(HOST_OS),Darwin)
+DARWIN_HOST ?= 1
+# Xcode's /usr/bin/make is GNU Make 3.81 (2006): it loses MIR's c2mir obj dir
+# (measured, D0 round 3). The build-host userland is brew gnubin, PATH-first.
+ifneq (,$(filter 3.%,$(MAKE_VERSION)))
+$(error GNU make $(MAKE_VERSION) cannot build madc on a darwin host: brew install make coreutils gnu-sed grep, then put $$(brew --prefix make)/libexec/gnubin (and the other three) first on PATH)
+endif
+endif
+ifeq ($(DARWIN_HOST),1)
+ifeq ($(origin DARWIN_LLVM_PREFIX),undefined)
+DARWIN_LLVM_PREFIX := $(shell brew --prefix llvm@18 2>/dev/null)
+endif
+ifeq ($(origin MACOS_SDK),undefined)
+MACOS_SDK := $(shell xcrun --show-sdk-path 2>/dev/null)
+endif
+# brew zstd is the darwin-host PROBE default; an explicit DARWIN_ZSTD_DIR
+# (the pinned v1.5.5 stage scripts/stage_darwin_zstd.sh writes — what the
+# shipped artifact links) wins: the hosted block below derives INC/LIB from it.
+ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
+ifeq ($(origin DARWIN_ZSTD_PREFIX),undefined)
+DARWIN_ZSTD_PREFIX := $(shell brew --prefix zstd 2>/dev/null)
+endif
+endif
+DARWIN_CLANG ?= $(DARWIN_LLVM_PREFIX)/bin/clang
+DARWIN_CLANGXX ?= $(DARWIN_LLVM_PREFIX)/bin/clang++
+DARWIN_AR ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-ar
+DARWIN_STRIP ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-strip
+DARWIN_OTOOL ?= $(DARWIN_LLVM_PREFIX)/bin/llvm-otool
+# Apple ld64 is the native linker (ad-hoc signs arm64, -sectcreate native);
+# lld stays the CROSS linker. Empty, not undefined — ?= below must not refill.
+DARWIN_LD_FLAGS ?=
+# The served C++ world must be the EXACT header text the container serves
+# (apt libc++-18-dev 18.1.3): brew's llvm@18 is 18.1.8 and its text drifts —
+# the first native self-freeze measured 837 units / 54 pack parse errors
+# against the 835 / 64 baseline, with groves referencing constructs madc has
+# not met (basic_string::__align_it). scripts/fetch_libcxx_headers.sh stages
+# the pinned package's tree (its LIBCXX_HEADERS_HOME knob, read here too);
+# the 18.1.8 corpus stays an explicit opt-in
+# (LLVM_LIBCXX_INC=$(brew --prefix llvm@18)/include/c++/v1) for conformance probes.
+LLVM_LIBCXX_INC ?= $(or $(LIBCXX_HEADERS_HOME),/workspace/libcxx-headers)/include/c++/v1
+# brew zstd for the native PROBE build. Layout differs from the per-target
+# stage dir (DARWIN_ZSTD_DIR: lib/zstd.h + libzstd-<arch>-macos.a), hence the
+# header-dir / archive split; the stage dir, when named, owns both below.
+ifeq ($(origin DARWIN_ZSTD_DIR),undefined)
+DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_PREFIX)/include
+DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_PREFIX)/lib/libzstd.a
+endif
+endif
+# The CROSS spellings (the container): versioned apt names, ld64.lld.
+DARWIN_CLANG ?= clang-18
+DARWIN_CLANGXX ?= clang++-18
+DARWIN_AR ?= llvm-ar-18
+DARWIN_STRIP ?= llvm-strip-18
+DARWIN_OTOOL ?= llvm-otool-18
+DARWIN_LD_FLAGS ?= -fuse-ld=lld
 MACOS_SDK ?= /workspace/sdk/MacOSX.sdk
 MACOS_MINOS ?= 12
 # The tree the embedded C prelude is FLATTENED from — open-licensed by
@@ -198,7 +270,9 @@ MACOS_MINOS ?= 12
 # with the SDK", its licensed purpose); pointing THIS variable at the SDK
 # is for the never-shipped oracle diff only — gen_darwin_prelude.sh stamps
 # non-open input and verify_macho_release.sh refuses to release it.
-DARWIN_PRELUDE_SYSROOT ?= /workspace/darwin-open-headers/sysroot-any-darwin-any
+# DARWIN_OPEN_HEADERS_HOME is the fetch script's own location knob (one
+# owner): a darwin build host stages under $HOME and both sides read it.
+DARWIN_PRELUDE_SYSROOT ?= $(or $(DARWIN_OPEN_HEADERS_HOME),/workspace/darwin-open-headers)/sysroot-any-darwin-any
 # Apple-target C++ header search, made EXPLICIT. `--sysroot`/`-isysroot` alone
 # is not enough: when the build host has its own libc++ installed (we install
 # libc++-18-dev for the Linux -stdlib=libc++ lane), clang puts its OWN
@@ -238,8 +312,9 @@ DARWIN_PRELUDE_TARGET = arm64-apple-macos$(MACOS_MINOS)
 MADC_LINKLIBS_STANDIN = 1
 endif
 # --- hosted-on-macOS MODEs (Route 1, docs/plans/2026-07-25-madc-on-macos-plan.md).
-# The darwin toolchain: clang-18 against the owner's staged SDK, linking with
-# ld64.lld. libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
+# The darwin toolchain: the DARWIN_* knobs above — cross: clang-18 against the
+# owner's staged SDK, linking with ld64.lld; native: brew llvm@18 + Apple ld64.
+# libmir comes from a darwin-HOST variant build (no MIR_TARGET knobs:
 # host detection through the darwin compiler turns MIR_TARGET_APPLE_P on
 # natively, making the Mach-O writer the native writer). madcdat is forced off:
 # its storage backends' headers do not exist in the SDK.
@@ -256,10 +331,20 @@ DARWIN_PRELUDE_TARGET = $(HOSTED_DARWIN_TARGET)
 # -fuse-ld=lld is a LINK flag and rides $(LIBS) below, not the driver: on a
 # compile-only invocation clang warns "argument unused during compilation"
 # once per TU, which is every object in the mode.
-CC  = clang-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
-CXX_BASE = clang++-18 -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CC  = $(DARWIN_CLANG) -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
+CXX_BASE = $(DARWIN_CLANGXX) -target $(HOSTED_DARWIN_TARGET) --sysroot $(MACOS_SDK)
 CXX = $(CXX_BASE) $(DARWIN_CXX_ISYS)
-AR  = llvm-ar-18
+AR  = $(DARWIN_AR)
+# Loud, at parse time: a missing compiler otherwise surfaces as the generators'
+# silent failure ("No rule to make target .../embedded_headers.cpp").
+ifeq (,$(shell command -v $(firstword $(DARWIN_CLANG)) 2>/dev/null))
+$(error hosted darwin MODE: compiler '$(DARWIN_CLANG)' not found — container: apt clang-18; darwin host: brew install llvm@18 — or set DARWIN_LLVM_PREFIX / DARWIN_CLANG)
+endif
+# The served C++ headers likewise: a missing -isystem dir is SILENT for clang,
+# and the freeze would then fail far downstream with "file not found <string>".
+ifeq (,$(wildcard $(LLVM_LIBCXX_INC)/__config))
+$(error hosted darwin MODE: served libc++ headers not found at $(LLVM_LIBCXX_INC) — container: apt libc++-18-dev; darwin host: bash scripts/fetch_libcxx_headers.sh — or set LLVM_LIBCXX_INC)
+endif
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 # The configure-probed host packages (madcdat backends) do not exist in the
@@ -270,14 +355,16 @@ MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
 HAVE_MADCDAT = 0
 FEATURE_DEFINES =
 DARWIN_ZSTD_DIR ?= /workspace/zstd
-OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_DIR)/lib
-OPTIONAL_LIBS = $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
+DARWIN_ZSTD_INC ?= $(DARWIN_ZSTD_DIR)/lib
+DARWIN_ZSTD_LIB ?= $(DARWIN_ZSTD_DIR)/libzstd-$(DARWIN_ARCH)-macos.a
+OPTIONAL_CPPFLAGS = -DHAVE_ZSTD -I$(DARWIN_ZSTD_INC)
+OPTIONAL_LIBS = $(DARWIN_ZSTD_LIB)
 MADC_STORAGE_DB_OFILES =
 # darwin link facts: dl*/pthread live in libSystem (no -ldl), executables
 # export their globals to dlsym without -rdynamic, and --whole-archive is
 # spelled -force_load <archive> (two ld64 args: the bare archive path that
 # follows WHOLE_ARCHIVE_BEGIN on the link line is its operand).
-LIBS = -fuse-ld=lld -lz -lm $(OPTIONAL_LIBS)
+LIBS = $(DARWIN_LD_FLAGS) -lz -lm $(OPTIONAL_LIBS)
 WHOLE_ARCHIVE_BEGIN = -Wl,-force_load
 WHOLE_ARCHIVE_END =
 endif
@@ -402,7 +489,7 @@ endif
 # the hosted binary carries the same spelling (inert on a run-only Mac —
 # the packed groves serve C++ there).
 ifdef DARWIN_PRELUDE_TARGET
-HOSTTAB_CXX = clang++-18 -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
+HOSTTAB_CXX = $(DARWIN_CLANGXX) -target $(DARWIN_PRELUDE_TARGET) --sysroot $(MACOS_SDK) -nostdinc++ -isystem $(LLVM_LIBCXX_INC)
 MADC_SYS_INCLUDE_PREFIX_MAP = $(MACOS_SDK)=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 export MADC_SYS_INCLUDE_PREFIX_MAP
 # Per-mode include-table source (embedded_headers.cpp precedent): the hosted
@@ -447,7 +534,7 @@ HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE
 ifdef DARWIN_PRELUDE_TARGET
 DARWIN_PRELUDE_DIR = $(OBJDIR)/darwin_prelude
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
-EMBED_GEN := $(shell mkdir -p $(OBJDIR) && MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && CLANG="$(DARWIN_CLANG)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_darwin_prelude.sh $(DARWIN_PRELUDE_TARGET) $(DARWIN_PRELUDE_SYSROOT) $(DARWIN_PRELUDE_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(DARWIN_PRELUDE_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else ifdef WIN_EMBED_FALLBACKS
 WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
@@ -515,6 +602,15 @@ $(PICOBJDIR)/madc_config.o: $(CONFIG_AXIS_STAMP)
 # when the shape changes (make would otherwise see bin/madc newer than every
 # prerequisite and skip it — the .libmode / .forest-shape precedent).
 ENABLE_SHARED_CLI ?= 0
+# The packaged (thin-CLI) link shape is a HOST shape today: the per-OS
+# shared-library products (madc.dll, madc.dylib) land with the PK3
+# packaging twins. Cross and hosted modes therefore always link
+# monolithic, whatever configure's host default says — without this pin
+# the PK2 default flip would point their $(BIN) at a foreign-format
+# lib/libmadc-$(MODE).so nothing ships yet.
+ifneq (,$(filter cross-% hosted-%,$(MODE)))
+ENABLE_SHARED_CLI = 0
+endif
 LINK_SHAPE_STAMP = $(OBJDIR)/.link-shape-$(ENABLE_SHARED_CLI)
 $(LINK_SHAPE_STAMP):
 	@mkdir -p $(OBJDIR)
@@ -533,6 +629,34 @@ $(LINK_SHAPE_STAMP):
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
 CROSS_MADC_BIN = ../bin/madc-$(DARWIN_ARCH)-macos
+# The FREEZER — the madc that parses the darwin groves into $(DARWIN_FOREST_BIN).
+# Cross (the container): the same-arch cross madc, built by the recursive make
+# in the rules below. Native (darwin-host port D2): a darwin host whose arch
+# IS the target's freezes with the hosted binary ITSELF — phase 1 links the
+# same objects with no forest section ($(OBJDIR)/madc-freezer, never a
+# product), runs it to write the standalone container, phase 2 is the
+# ordinary $(BIN) link with -sectcreate. Producer == consumer exactly (the
+# cross model can only argue it: same tree, same embedded text, same target
+# keys). A cross-arch hosted build on a darwin host has no freezer of its own
+# (the cross MODE is a Linux-shaped binary): refuse loudly unless the caller
+# names a same-arch madc of this tree (DARWIN_FREEZER=…, e.g. one running
+# under Rosetta) or builds forest-less.
+ifeq ($(DARWIN_HOST),1)
+ifeq ($(HOST_DARWIN_ARCH),$(DARWIN_ARCH))
+DARWIN_SELF_FREEZE ?= 1
+endif
+endif
+ifeq ($(DARWIN_SELF_FREEZE),1)
+DARWIN_FREEZER = $(OBJDIR)/madc-freezer
+else ifeq ($(DARWIN_HOST),1)
+ifneq ($(WITH_FOREST),none)
+ifeq ($(origin DARWIN_FREEZER),undefined)
+$(error hosted-$(DARWIN_ARCH)-macos on a $(HOST_ARCH) darwin host has no same-arch freezer (the cross MODE is Linux-hosted): build on a $(DARWIN_ARCH) Mac, pass DARWIN_FREEZER=<same-arch madc of this tree>, or configure --with-forest=none)
+endif
+endif
+else
+DARWIN_FREEZER = $(CROSS_MADC_BIN)
+endif
 ifeq ($(WITH_FOREST),embedded)
 FOREST_EMBED_DEP = $(DARWIN_FOREST_BIN)
 FOREST_EMBED_LDFLAGS = -Wl,-sectcreate,__MADC,__forest,$(DARWIN_FOREST_BIN)
@@ -560,6 +684,7 @@ LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
 # Thin-CLI gate vehicle (rule far below, with the other link rules).
 THIN_CLI = $(BINDIR)/madc-thin
+MONO_CLI = $(BINDIR)/madc-mono
 # The emitted-C freestanding runtime archive (macos-release-lane W3): ONLY
 # the dual-build C-lane sources (scripts/ledger_sources.txt stays the one
 # list owner — the same membership rule that keeps those strict C11 with no
@@ -575,6 +700,18 @@ ifneq (,$(filter cross-% hosted-%,$(MODE)))
 LIBMADC_STATIC = $(LIBDIR)/libmadc-$(MODE).a
 LIBMADC_SHARED = $(LIBDIR)/libmadc-$(MODE).so
 LIBMADC_RT = $(LIBDIR)/libmadc_rt-$(MODE).a
+endif
+# Host modes each need THEIR OWN shared-library product (per-mode-names
+# law, build.md — extended to the library by the PK2 thin-CLI flip): the
+# thin CLIs of dev, debug and release resolve lib/... at RUNTIME, so one
+# shared path would let a dev rebuild swap an unpacked -O0 library under
+# bin/madc-release, and a release pack hand the dev CLI a packed image
+# (which also flips forest-discovery arm 2 under every dev-binary gate).
+# Dev keeps lib/ — the standing dev surface (thin vehicles, gates, the
+# QNAP pull); debug and release own lib/$(MODE)/.
+ifneq (,$(filter release debug,$(MODE)))
+LIBMADC_SHARED = $(LIBDIR)/$(MODE)/libmadc.so
+LIBMADC_RT = $(LIBDIR)/$(MODE)/libmadc_rt.a
 endif
 # Objects for the library: everything except the main() driver
 LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
@@ -613,6 +750,12 @@ else
 DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
 endif
 
+
+# Introspection: `make -s [MODE=<mode>] print-VAR` echoes VAR's EXPANDED value.
+# Build-side scripts (scripts/stage_darwin_zstd.sh reads CC/AR of a hosted
+# MODE) consume the ONE definition instead of restating a compiler line.
+print-%:
+	@echo '$($*)'
 all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
@@ -636,6 +779,10 @@ install-libmadc: libmadc
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_VERSION) libmadc.so.$(MADC_SOVERSION)
 	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_SOVERSION) libmadc.so
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
+	# madc_api.h includes "madc_typeid.h" (the one typeid vocabulary), so the
+	# installed header did not compile downstream without it — the same hole
+	# madc_pch.h closes below. It is self-contained (no includes).
+	$(INSTALL_DATA) ../include/madc_typeid.h $(DESTDIR)$(includedir)/madc_typeid.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
 	@for h in $(MADCDISHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdis/; done
 	# madcdis/snapshot.h names PchCompression in its PUBLIC signatures, so the
@@ -734,18 +881,33 @@ machogate: cross-arm64-macos cross-x86-64-macos
 # kept the forest bytes and the arm64 ad-hoc signature (llvm-strip re-signs
 # when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
 # side's job (W2, scripts/mac_battery.sh).
+# Per-arch release step — ONE implementation for both origins: build the
+# hosted binary, strip into the release-named twin, verify the strip kept the
+# forest bytes + the arm64 signature. The verify READER is the host bin/madc
+# on the container (its freeze-context hash must match the tree that froze
+# the groves — the version string rides the predefined-macro table — so
+# release-macos rebuilds it first); a darwin host has no host-MODE madc, so
+# the unstripped hosted binary reads its own container. A darwin host
+# releases its OWN arch only (the freezer is the binary itself — see the
+# self-freeze block); the container does both, SEQUENTIALLY (the per-mode
+# generated tables share src/ file paths — never parallelize across arches).
+ifeq ($(DARWIN_HOST),1)
+MACHO_READER = bin/madc-hosted-$*-macos
+RELEASE_MACOS_ARCHES = $(HOST_DARWIN_ARCH)
+else
+MACHO_READER = bin/madc
+RELEASE_MACOS_ARCHES = arm64 x86-64
+endif
+release-%-macos:
+	$(MAKE) hosted-$*-macos
+	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
+	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
+
 release-macos:
-	# verify_macho_release.sh reads the packed forests back through the
-	# HOST bin/madc, whose freeze-context hash must match the tree that
-	# froze them (the version string rides the predefined-macro table) —
-	# so the dev binary is rebuilt first. No-op when already current.
+ifneq ($(DARWIN_HOST),1)
 	$(MAKE)
-	$(MAKE) hosted-arm64-macos
-	$(MAKE) hosted-x86-64-macos
-	llvm-strip-18 -o ../bin/madc-release-arm64-macos ../bin/madc-hosted-arm64-macos
-	llvm-strip-18 -o ../bin/madc-release-x86-64-macos ../bin/madc-hosted-x86-64-macos
-	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-arm64-macos obj/hosted-arm64-macos/forest.bin
-	cd .. && bash scripts/verify_macho_release.sh bin/madc-release-x86-64-macos obj/hosted-x86-64-macos/forest.bin
+endif
+	for a in $(RELEASE_MACOS_ARCHES); do $(MAKE) release-$$a-macos || exit 1; done
 	cd .. && bash scripts/macho_exe_dylib_gate.sh
 
 # madc hosted on macOS (Route 1): full madc binaries for the Macs. The
@@ -772,7 +934,7 @@ $(MIRBUILD)/hosted-x86-64-macos/libmir.a: FORCE
 # forest packing is the W4 workstream, so this mode builds the dev forest
 # shape (silent live parse). Run validation: wine + scripts/win_run.sh.
 hosted-x86-64-windows:
-	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc_rt.dll
+	$(MAKE) MODE=hosted-x86-64-windows ../bin/madc-hosted-x86-64-windows.exe ../lib/libmadc_rt-hosted-x86-64-windows.a ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/libmadc-0.dll
 
 # win64-HOST MIR variant lib: built BY the mingw compiler (CC carries the
 # UCRT posture + specs swap), so host detection selects the _WIN32 arms
@@ -809,15 +971,15 @@ release-windows:
 # lib/libmadc.so — and the same strip-before-pack ordering applies to it (the
 # install step therefore must NOT re-strip it; see install below).
 ifeq ($(ENABLE_SHARED_CLI),1)
-PACK_IMAGE_ARG = --image lib/libmadc.so
+PACK_IMAGE_ARG = --image lib/release/libmadc.so
 else
 PACK_IMAGE_ARG =
 endif
 release:
-	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release $(LIBMADC_SHARED)
+	$(MAKE) MODE=release $(LIBMADC_STATIC) ../bin/madc-release ../lib/release/libmadc.so ../lib/release/libmadc_rt.a
 	strip ../bin/madc-release
 ifeq ($(ENABLE_SHARED_CLI),1)
-	strip --strip-unneeded ../lib/libmadc.so
+	strip --strip-unneeded ../lib/release/libmadc.so
 endif
 ifeq ($(WITH_FOREST),embedded)
 	cd .. && bash scripts/forest_pack.sh $(PACK_IMAGE_ARG) bin/madc-release
@@ -829,8 +991,8 @@ endif
 # as the distribution packages (scripts/package_release.sh): the stripped
 # release binary as plain `madc`, the runtime as libmadc.so.0 + dev symlink
 # (madc -o output DT_NEEDs the soname), the man page. Depends on `release`
-# so lib/libmadc.so is guaranteed to be the -O2 release flavor (.libmode
-# stamp) and bin/madc-release is stripped + forest-packed.
+# so lib/release/libmadc.so IS the -O2 release flavor by path (per-mode lib
+# dirs) and bin/madc-release is stripped + forest-packed.
 PREFIX ?= /usr/local
 INSTALL_LIBDIR ?= $(PREFIX)/lib
 install: release
@@ -839,12 +1001,12 @@ install: release
 	install -m 755 ../bin/madc-release $(DESTDIR)$(PREFIX)/bin/madc
 ifeq ($(WITH_FOREST),sidecar)
 ifeq ($(ENABLE_SHARED_CLI),1)
-	install -m 644 ../lib/libmadc.so.forest $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0.forest
+	install -m 644 ../lib/release/libmadc.so.forest $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0.forest
 else
 	install -m 644 ../bin/madc-release.forest $(DESTDIR)$(PREFIX)/bin/madc.forest
 endif
 endif
-	install -m 644 ../lib/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
+	install -m 644 ../lib/release/libmadc.so $(DESTDIR)$(INSTALL_LIBDIR)/libmadc.so.0
 # A packed library carries the container as trailing bytes; strip rewrites the
 # ELF image and would discard them (the same law as the packed binary), so the
 # thin-CLI shape strips at release time, BEFORE the pack, and never here.
@@ -869,8 +1031,10 @@ clean:
 	rm -f $(MADDAT_ARCHIVE)
 	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
+	rm -rf $(LIBDIR)/release $(LIBDIR)/debug
 	rm -f $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
 	rm -f $(THIN_CLI)
+	rm -f $(MONO_CLI)
 	rm -f $(PROCESS_FIXTURE)
 	rm -f sys_include_paths.cpp
 	rm -f predefined_macros.cpp
@@ -894,17 +1058,22 @@ test: $(TESTBINS)
 		fi; \
 	done
 
-fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
+fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/run_tests.sh
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-clone-origin.sh
+	@cd .. && bash scripts/check-one-pointer-peel.sh
 	@cd .. && bash scripts/check-one-macro-expander.sh
 	@cd .. && bash scripts/check-one-aggregate-layout.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
+	@cd .. && bash scripts/check-one-handle-table.sh
+	@cd .. && bash scripts/check-one-parse-error-recorder.sh
+	@cd .. && bash scripts/check-one-subject-doc.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
@@ -918,8 +1087,22 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/check-dependent-type-query-owner.sh
 	@cd .. && bash scripts/check-datachannel-write-owner.sh
 	@cd .. && bash scripts/check-datachannel-cloexec-owner.sh
+	@cd .. && bash scripts/check-select-fire-owner.sh
+	@cd .. && bash scripts/check-madcide-single-owners.sh
+	@cd .. && bash scripts/check-madcide-seam.sh
+	@cd .. && bash scripts/check-object-mode-scope.sh
+	@cd .. && bash scripts/check-cancel-throw-owner.sh
+	@cd .. && bash scripts/check-child-status-map-owner.sh
+	@cd .. && bash scripts/check-await-one-builder.sh
+	@cd .. && bash scripts/check-fd-readable-progress.sh
+	@cd .. && bash scripts/check-live-build-owners.sh
+	@cd .. && bash scripts/embed_examples_gate.sh
+	@cd .. && bash scripts/smaug_gate.sh
+	$(MAKE) libmadc-smoke
 	@cd .. && bash scripts/check-one-error-composer.sh
 	@cd .. && bash scripts/check-libc-alias-signatures.sh
+	@cd .. && bash scripts/check-c-abi-surface.sh
+	@cd .. && bash scripts/mono_cli_gate.sh
 	@cd .. && bash scripts/check-storage-seam-adoption.sh
 	@cd .. && bash scripts/check-rule-trailers.sh
 	@cd .. && bash scripts/warn_census.sh --check
@@ -931,6 +1114,9 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/adventure_roundtrip_gate.sh
 	@cd .. && bash scripts/adventure_parity.sh
 	@cd .. && bash scripts/check-hub-write-path.sh
+	@cd .. && bash scripts/check-engine-app-purity.sh
+	@cd .. && bash scripts/tui_smoke_gate.sh
+	@cd .. && bash scripts/tui_scroll_gate.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
@@ -943,7 +1129,9 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) test
 	@cd .. && bash scripts/forest_pack_gate.sh --selftest
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
 	@cd .. && bash scripts/sret_abi_gate.sh
+	@cd .. && bash scripts/vector_abi_gate.sh
 	@cd .. && bash scripts/emitc_sret_gate.sh
+	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh
 	@cd .. && bash scripts/libcxx_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
@@ -993,6 +1181,13 @@ CLI_RPATH = -Wl,-rpath,@loader_path/../lib
 else
 CLI_RPATH = -Wl,-rpath,'$$ORIGIN/../lib'
 endif
+# debug/release thin CLIs load THEIR mode's library (per-mode lib dirs
+# above); the extra $ORIGIN/../lib entry keeps an INSTALLED binary
+# working in the flat $(PREFIX)/{bin,lib} layout, where ldconfig or the
+# plain lib dir serves the soname.
+ifneq (,$(filter release debug,$(MODE)))
+CLI_RPATH = -Wl,-rpath,'$$ORIGIN/../lib/$(MODE)' -Wl,-rpath,'$$ORIGIN/../lib'
+endif
 # Link inputs per shape. Monolithic force-includes the WHOLE static archive:
 # runtime helpers are resolved by dlsym(RTLD_DEFAULT), so plain archive
 # semantics would drop those objects. The thin CLI links the shared library
@@ -1022,6 +1217,14 @@ endif
 $(THIN_CLI): $(OBJDIR)/madc.o $(LIBMADC_SHARED)
 	$(CXX) -o $@ $(OBJDIR)/madc.o -L$(LIBDIR) -lmadc $(CLI_RPATH) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
+# Monolithic vehicle, the thin one's mirror (packaging arc PK2): the SAME
+# madc.o whole-archived against the static libmadc, so the single-binary
+# OPTIONAL form stays link-proven in a default (shared) tree without
+# reconfiguring it — mono_cli_gate.sh runs it. In a --disable-shared tree
+# bin/madc already IS this shape.
+$(MONO_CLI): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch
 # (the same skew per-mode obj trees prevent for objects). The stamp file
@@ -1043,20 +1246,20 @@ $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 # re-archived alone so `cc emitted.c -lmadc_rt` links without the full
 # runtime. No separate source list — membership is ledger_sources.txt's.
 $(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
-	mkdir -p $(LIBDIR)
+	mkdir -p $(dir $@)
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
-	mkdir -p $(LIBDIR)
+	mkdir -p $(dir $@)
 	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 # A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
 # the build tree needs that name too or a thin CLI / host binary cannot load
-# from lib/ (the install tree ships the real file under the soname and the
-# .so as the dev symlink — same names, mirrored). Host modes only: a cross
+# from its lib dir (the install tree ships the real file under the soname and
+# the .so as the dev symlink — same names, mirrored). Host modes only: a cross
 # mode's foreign .so must never claim the host soname.
-ifeq ($(LIBMADC_SHARED),$(LIBDIR)/libmadc.so)
-	ln -sf libmadc.so $(LIBDIR)/libmadc.so.$(MADC_SOVERSION)
+ifeq (,$(filter cross-% hosted-%,$(MODE)))
+	ln -sf libmadc.so $(dir $@)libmadc.so.$(MADC_SOVERSION)
 endif
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
@@ -1154,26 +1357,29 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 ../bin/libwinpthread-1.dll: $(WIN_UCRT_LIBSTDCXX)/bin/libwinpthread-1.dll
 	cp -p $< $@
 
-# libmadc_rt.dll (W3.5): the win64 twin of libmadc.so — the runtime
-# provider AOT images (madc -o prog.exe) import madc_puts / the
-# madc_value_* bridge / the __madc_* helpers from, and the DLL half of
-# the external-link story (the import lib serves
-# `x86_64-w64-mingw32-gcc prog.o -lmadc_rt.dll`). Whole-archive: loaded
-# programs reference these symbols, the DLL itself does not, so plain
-# archive semantics would drop their objects. --export-all-symbols (in
-# LIBS) is the export surface — plain names, the darwin flat-bind
-# analogue. Staged in bin/ beside madc.exe: the PE loader's app-dir rule
-# serves madc.exe's own LoadLibrary probe, wine, win_run.sh's
-# adjacent-DLL shipping, and the release zip alike.
+# libmadc-0.dll (W3.5; renamed from libmadc_rt.dll in the packaging arc
+# — this is the FULL engine, the win64 twin of libmadc.so.0, and the
+# ABI number in the name is the soname twin, mingw-style like its
+# neighbors libstdc++-6/libwinpthread-1; _rt now means ONLY the tiny
+# emitted-C archive): the runtime provider AOT images (madc -o
+# prog.exe) import madc_puts / the madc_value_* bridge / the __madc_*
+# helpers from, and the DLL half of the external-link story (the
+# import lib serves `x86_64-w64-mingw32-gcc prog.o -lmadc.dll`).
+# Whole-archive: loaded programs reference these symbols, the DLL
+# itself does not, so plain archive semantics would drop their objects.
+# --export-all-symbols (in LIBS) is the export surface — plain names,
+# the darwin flat-bind analogue. Staged in bin/ beside madc.exe: the PE
+# loader's app-dir rule serves madc.exe's own LoadLibrary probe, wine,
+# win_run.sh's adjacent-DLL shipping, and the release zip alike.
 # The .def rides the link: PE ld auto-excludes libmingwex/oldnames code
 # from --export-all-symbols, but AOT images import the mingw-stdio map's
 # surface (__mingw_printf family, *l math, dirent) from THIS DLL — the
 # .def re-adds exactly the map's names, generated from the one map owner
 # so the lists can never drift. --export-all-symbols stays on the line:
 # with a .def present ld would otherwise export ONLY the .def names.
-../bin/libmadc_rt.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
-	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc_rt.def $(MIRDIR)/mir-int128-helper.h
-	$(CXX) -shared -o $@ $(OBJDIR)/libmadc_rt.def -Wl,--out-implib,../lib/libmadc_rt.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
+	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
+	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
@@ -1183,11 +1389,19 @@ endif
 # prelude manifest, or the pack script changed (file-mtime prerequisites —
 # the classic if-changed pattern).
 ifdef HOSTED_DARWIN_TARGET
+ifeq ($(DARWIN_SELF_FREEZE),1)
+# Native self-freeze, phase 1: the hosted binary without its forest section —
+# the $(BIN) link minus $(FOREST_EMBED_LDFLAGS). Lives in the mode's obj tree;
+# nothing ships it. Relinks when the objects do, which re-freezes the groves.
+$(DARWIN_FREEZER): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(LINK_SHAPE_STAMP)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(CLI_LINK) $(CXXFLAGS) $(DEFINES) $(LIBS)
+else ifneq ($(DARWIN_HOST),1)
 $(CROSS_MADC_BIN): FORCE
 	@$(MAKE) MODE=cross-$(DARWIN_ARCH)-macos $(CROSS_MADC_BIN)
+endif
 
-$(DARWIN_FOREST_BIN): $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
-	bash ../scripts/forest_pack_darwin.sh $(CROSS_MADC_BIN) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
+$(DARWIN_FOREST_BIN): $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST ../scripts/forest_pack_darwin.sh ../scripts/forest_pack_headers_darwin.txt $(RT_LEDGER_INPUTS)
+	bash ../scripts/forest_pack_darwin.sh $(DARWIN_FREEZER) $(DARWIN_PRELUDE_DIR)/.MANIFEST $@
 endif
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)

@@ -5,7 +5,7 @@
 // capture immediately.
 int main()
 {
-	value vs = "  hello  ";
+	var vs = "  hello  ";
 	println("{}", php::trim(vs));
 	println("{}", php::trim("  x  "));
 	println("[{}]", php::ltrim(vs));
@@ -14,11 +14,11 @@ int main()
 	println("{}", php::lcfirst("Hello"));
 	println("{}", php::str_repeat("ab", 3));
 	println("{}", php::str_replace("l", "L", "hello"));
-	value hay = "hello";
+	var hay = "hello";
 	println("{}", php::str_replace("l", "L", hay));
 	println("{}", php::str_pad("7", 3, "0"));
 	println("{}", php::str_word_count("one two  three"));
-	value words = "a b c d";
+	var words = "a b c d";
 	println("{}", php::str_word_count(words));
 	println("{}", php::nl2br("a\nb"));
 	println("{}", php::str_rot13("abc"));
@@ -32,13 +32,13 @@ int main()
 	php::array_push(a, 42);
 	println("{}", php::implode(",", a));
 
-	value got;
+	var got;
 	php::array_get(got, a, 1);
 	println("got={}", got);
-	value popped;
+	var popped;
 	php::array_pop(popped, a);
 	println("popped={} count={}", popped, php::count(a));
-	value first;
+	var first;
 	php::array_shift(first, a);
 	println("first={} count={}", first, php::count(a));
 

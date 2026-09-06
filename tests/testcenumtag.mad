@@ -1,0 +1,48 @@
+/* C enum TAG namespace (c-testsuite 00170/00218): a forward `enum efoo;`
+   registers an incomplete DataDefENUM in c_enum_tag_map (the C tag
+   namespace — the bare tag never becomes a type name); uses before the
+   definition (parameter, return type) capture that dd and the definition
+   completes it IN PLACE. An enum-typed bit-field's signedness is the
+   enum's UNDERLYING type's: all-non-negative enumerators -> unsigned int
+   -> zero-extend (b.code holding 149 reads back 149, not -107); a
+   negative enumerator -> int -> sign-extend (nb.n holding -1 reads -1,
+   not 255 — the old name-heuristic treated every non-builtin-named int32
+   as unsigned).
+   Oracle: gcc/clang -std=gnu11 print a=1 b=149 c=-1 d=1 e=4. */
+#include <stdio.h>
+
+enum efoo;
+
+struct fwd_user {
+    int (*fmember)(enum efoo x);
+};
+
+extern enum efoo it_real_fn(void);
+
+enum efoo { ONE = 148, TWO };
+
+enum efoo it_real_fn(void) { return TWO; }
+
+struct bits {
+    enum efoo code : 8;
+    unsigned pad : 1;
+};
+
+enum eneg { NEG = -1, POS = 1 };
+struct nbits {
+    enum eneg n : 8;
+};
+
+int main()
+{
+    struct bits b;
+    struct nbits nb;
+    b.code = TWO;
+    printf("a=%d\n", b.code == TWO);
+    printf("b=%d\n", (int)b.code);
+    nb.n = NEG;
+    printf("c=%d\n", (int)nb.n);
+    printf("d=%d\n", it_real_fn() == TWO);
+    printf("e=%d\n", (int)sizeof(enum efoo));
+    return 0;
+}

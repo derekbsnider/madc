@@ -1,0 +1,33 @@
+#include <stdio.h>
+// An out-of-line member definition of a NESTED class: the declarator's
+// nested-name-specifier is a class chain (`P::I::next`), resolved by looking
+// each name up in the scope the previous one denotes ([class.qual]) — the
+// libstdc++ <filesystem> shape `path::iterator::operator++()`.
+struct P {
+    struct I {
+	int v;
+	I &next();
+	int get() const;
+	I &operator++();
+	struct J { int w; int twice() const; };
+    };
+    I first;
+    static int total;
+};
+int P::total = 0;
+P::I &P::I::next() { ++v; ++P::total; return *this; }
+int P::I::get() const { return v; }
+P::I &P::I::operator++() { v += 10; return *this; }
+int P::I::J::twice() const { return w * 2; }
+namespace ns { struct O { struct N { int q; int dbl() const; }; }; }
+int ns::O::N::dbl() const { return q * 2; }
+int main()
+{
+    P p; p.first.v = 1;
+    p.first.next().next();
+    ++p.first;
+    P::I::J j; j.w = 21;
+    ns::O::N n; n.q = 4;
+    printf("%d %d %d %d %d\n", p.first.get(), P::total, j.twice(), n.dbl(), (int)sizeof(P::I::J));
+    return 0;
+}

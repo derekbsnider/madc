@@ -1,0 +1,41 @@
+/* Nine 16-byte vector arguments: the ninth exhausts the eight vector argument
+   registers (SysV xmm0-7, AAPCS64 v0-v7) and goes to the stack as a 16-byte
+   aligned VECTOR value — never an integer-class block — and the same with the
+   integer registers exhausted too (seven longs first: on x86-64 the seventh is
+   already on the stack, so the vector slot after it is padded to 16). A vector
+   return in xmm0 / v0. Oracle: gcc == clang. */
+int printf(const char *, ...);
+typedef int v4si __attribute__((vector_size(16)));
+typedef double v2df __attribute__((vector_size(16)));
+
+v4si sum9(v4si a, v4si b, v4si c, v4si d, v4si e, v4si f, v4si g, v4si h, v4si i)
+{
+    return a + b + c + d + e + f + g + h + i;
+}
+v4si mixed(int x, v4si a, long y, v4si b, int z)
+{
+    v4si k = {x, (int) y, z, x + z};
+    return (a - b) + k;
+}
+v4si stackmix(long a1, long a2, long a3, long a4, long a5, long a6, long a7,
+              v4si v1, v4si v2, v4si v3, v4si v4, v4si v5, v4si v6, v4si v7, v4si v8, v4si v9, long a8)
+{
+    v4si k = {(int) (a1 + a2), (int) (a3 + a4), (int) (a5 + a6 + a7), (int) a8};
+    return v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + k;
+}
+v2df dsum9(v2df a, v2df b, v2df c, v2df d, v2df e, v2df f, v2df g, v2df h, v2df i)
+{
+    return a + b + c + d + e + f + g + h + i;
+}
+static void pv(const char *tag, v4si v) { printf("%s %d %d %d %d\n", tag, v[0], v[1], v[2], v[3]); }
+int main(void)
+{
+    v4si one = {1, 1, 1, 1}, b = {10, 20, 30, 40};
+    v2df h = {0.5, 1.5}, r;
+    pv("sum9", sum9(one, one, one, one, one, one, one, one, b));
+    pv("mixed", mixed(7, b, 11, one, 13));
+    pv("stackmix", stackmix(1, 2, 3, 4, 5, 6, 7, one, one, one, one, one, one, one, one, b, 9));
+    r = dsum9(h, h, h, h, h, h, h, h, h);
+    printf("dsum9 %.1f %.1f\n", r[0], r[1]);
+    return 0;
+}

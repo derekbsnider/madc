@@ -1,0 +1,2 @@
+present = the JIT run must produce empty stderr (tree composition,
+rendering, and the data walk are diagnostics-clean).

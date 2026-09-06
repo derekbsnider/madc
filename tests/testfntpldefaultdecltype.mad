@@ -1,0 +1,69 @@
+// libc++ 18's pre-C++20 __unwrap_range shape: a namespace function template
+// with a DEFAULTED template parameter whose default is the decltype of an
+// UNEVALUATED call to a sibling template — `class U = decltype(ns::unwrap(dval<I>()))`
+// — where the sibling's own declared return is decltype(Tmpl<I>::staticfn(...))
+// and Tmpl<I> is itself a defaulted parameter (__unwrap_iter's _Impl). The
+// unevaluated call's type comes from the return-type lane, which never filled
+// [temp.deduct]/8 defaults and resolved only template-id decltype operands, so
+// the call kept the placeholder's int64 and P<U, U> became P<int64_t, int64_t>
+// (libc++: __unwrap_range -> pair<int64,int64>, then no viable
+// __uninitialized_allocator_copy_impl for every std::vector copy under libc++).
+// Oracle g++ == clang++: 3 4 1.
+#include <stdio.h>
+
+template <class T> struct rr { typedef T type; };
+template <class T> struct rr<T&> { typedef T type; };
+template <class T> struct rr<T&&> { typedef T type; };
+template <class T> typename rr<T>::type&& dval();
+
+namespace ns {
+
+template <class T>
+inline typename rr<T>::type&& mv(T&& t) { return static_cast<typename rr<T>::type&&>(t); }
+
+template <class A, class B>
+struct P {
+	A first;
+	B second;
+	P(const A& a, const B& b) : first(a), second(b) {}
+};
+
+template <class T1, class T2>
+P<typename rr<T1>::type, typename rr<T2>::type> mkp(T1&& t1, T2&& t2)
+{
+	return P<typename rr<T1>::type, typename rr<T2>::type>(t1, t2);
+}
+
+template <class I>
+struct Impl {
+	static I unw(I i) { return i; }
+};
+
+template <class I, class Im = Impl<I> >
+decltype(Im::unw(dval<I>())) unwrap(I i)
+{
+	return Im::unw(i);
+}
+
+template <class I, class U = decltype(ns::unwrap(dval<I>())) >
+P<U, U> unwrap_range(I f, I l)
+{
+	return ns::mkp(ns::unwrap(ns::mv(f)), ns::unwrap(ns::mv(l)));
+}
+
+template <class I>
+int span(I f, I l)
+{
+	auto r = ns::unwrap_range(f, l);
+	return (int)(r.second - r.first);
+}
+
+}
+
+int main()
+{
+	int arr[4] = { 3, 4, 5, 6 };
+	auto r = ns::unwrap_range(arr + 0, arr + 1);
+	printf("%d %d %d\n", *r.first, *r.second, ns::span(arr + 2, arr + 3));
+	return 0;
+}

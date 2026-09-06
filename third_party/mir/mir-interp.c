@@ -2444,12 +2444,16 @@ static void call (MIR_context_t ctx, MIR_val_t *bp, MIR_op_t *insn_arg_ops, code
       } else {
         mode = insn_arg_ops[i].value_mode;
         mir_assert (mode == MIR_OP_INT || mode == MIR_OP_UINT || mode == MIR_OP_FLOAT
-                    || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE);
+                    || mode == MIR_OP_DOUBLE || mode == MIR_OP_LDOUBLE || mode == MIR_OP_VECTOR);
         if (mode == MIR_OP_FLOAT)
           (*MIR_get_error_func (ctx)) (MIR_call_op_error,
                                        "passing float variadic arg (should be passed as double)");
+        /* a 128-bit vector through `...` keeps its type: the ff_call shim
+           places it like a declared V128 argument (an SSE / SIMD register or a
+           16-byte stack slot) -- the I64 arm passed its low 8 bytes */
         call_arg_descs[i].type = (mode == MIR_OP_DOUBLE    ? MIR_T_D
                                   : mode == MIR_OP_LDOUBLE ? MIR_T_LD
+                                  : mode == MIR_OP_VECTOR  ? MIR_T_V128
                                                            : MIR_T_I64);
       }
     }
@@ -2681,6 +2685,14 @@ static void interp (MIR_context_t ctx, MIR_item_t func_item, va_list va, MIR_val
       break;
     }
   }
+#if defined(__APPLE__) && defined(__aarch64__)
+  /* The Apple interp shim (mir-aarch64.c) appends the CALLER's stack pointer,
+     advanced past the named stack arguments, after the declared arguments of a
+     vararg function: every Apple vararg lives on the caller's stack, so the
+     interpreted function's va_list starts there, not where the declared slots
+     end (a 16-byte vector slot's alignment padding would sit in between). */
+  if (func->vararg_p) va = va_arg (va, char *);
+#endif
 #if VA_LIST_IS_ARRAY_P
   interp_arr_varg (ctx, func_item, results, nargs, arg_vals, va);
 #else

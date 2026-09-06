@@ -1,7 +1,8 @@
-// madc embedded <ns_ui> — the data-hub projection surface (Track 7
-// Phase 1). Declaration-only: the ui:: publics below resolve
-// mangled-direct (Itanium symbols) to the real namespace ui
-// implementations in the host, src/ns_ui.cpp (cpp-first-api.md).
+// madc embedded <ns_ui> — the generic interaction/session surface
+// (Track 7 Phase 1; reworked in Track 7.2 R1). Declaration-only: the
+// ui:: publics below resolve mangled-direct (Itanium symbols) to the
+// real namespace ui implementations in the host, src/ns_ui.cpp
+// (cpp-first-api.md).
 //
 // VALUE-FIRST: typed in madc's `value` carrier, int64_t handles, and
 // const char* — this header deliberately includes nothing. Rendered
@@ -9,11 +10,16 @@
 // parameters (the <ns_madc> convention; value-by-value returns are a
 // standing carrier open).
 //
-// Phase 1 surface: handle-based world sessions over the tagged world
-// format, session credentials (keys + per-domain levels), level-0
-// projections, and verb dispatch. The Phase 1 session layer binds the
-// compiled adventure catalog named by the world file's %verb lines;
-// pluggable catalogs and stored views arrive with later phases.
+// GENERIC BY LAW (Rule #7): the engine ships no verbs and no
+// application vocabulary. A world's %verb lines DECLARE actions and
+// their gating (keys/levels/refusal — data); the application attaches
+// verb BODIES as madc source via bind_verb (the script-entity binding
+// kind — bodies execute through the same registry, gating, and
+// structured invocation as native host bindings). Relation and property
+// names in the graph reads below are arguments. Two substrate
+// conventions are fixed by this session layer and documented here:
+// containment is the `in` relation; a carried entity confers a key via
+// its `grants` bag property.
 
 namespace ui {
     // ---- interaction (the prompt handler) ------------------------------
@@ -33,6 +39,45 @@ namespace ui {
     bool    world_save(int64_t w, const char *path);
     void    world_close(int64_t w);
 
+    // An EMPTY session — no world file, no declarations. For
+    // applications whose data is not authored world content (an editor's
+    // documents are files it opens itself). Same handle space, registry,
+    // and lifecycle as world_open.
+    int64_t world_new();
+
+    // Attach a madc-source BODY to a verb name (the script-entity
+    // binding kind). Gating comes from the world's %verb declaration of
+    // the same name when present; an undeclared name binds ungated. The
+    // body is compiled as an eval unit per invocation with the
+    // invocation's fields as top-level names — `w` (session handle),
+    // `actor`, `target` (entity ids), `arg` (the raw argument text),
+    // `verb` (the action's spelling) — and returns the player-facing
+    // text. Bodies run inside ui::act: they must not re-enter act and
+    // must not open or close worlds — ENFORCED: a nested act on the same
+    // world is refused with "action re-entered the registry (verbs do
+    // not re-enter act)", which the outer body receives as that call's
+    // result text (queued follow-up invocations are a held seat).
+    void bind_verb(int64_t w, const char *name, const char *source);
+
+    // Code-entity key-gating (the hub's Decided rule: defining or
+    // editing code entities is itself key-gated). Arms the gate:
+    // every LATER bind_verb/bind_check on this session requires `key`
+    // (cumulative; satisfied through the same keys+levels credentials
+    // as every condition — ui::session_grant and key implications
+    // apply). Unset = open. A refused bind is loud on stderr and binds
+    // nothing.
+    void bind_require_key(int64_t w, const char *key);
+
+    // Attach a madc-source availability CHECK to a bound verb — the
+    // state-conditional half of availability ("read-only document
+    // disables the edit verbs"). The body runs with the same context
+    // fields as a verb body and answers "ok" for available or the
+    // refusal reason otherwise; the SAME evaluation gates ui::act and
+    // answers ui::affordances, so enumeration and dispatch can never
+    // disagree. Check bodies are READ-ONLY by contract: no mutation, no
+    // ui::act, no session lifecycle.
+    void bind_check(int64_t w, const char *name, const char *source);
+
     // Entity lookup by canonical name (0 = absent).
     int64_t entity_by_name(int64_t w, const char *name);
 
@@ -51,21 +96,60 @@ namespace ui {
     void session_grant(int64_t w, const char *key);
     void session_level(int64_t w, const char *domain, int64_t level);
 
-    // Level-0 projections, rendered to text in a string-kind value.
-    // render_inspect is gated by the world's `%require inspect` line —
+    // The keys+levels evaluator, surfaced: does the actor's EFFECTIVE
+    // credential set (session grants + carried grants + implications)
+    // hold this key? Entity-attached conditions in application verbs
+    // check through here.
+    bool has_key(int64_t w, int64_t actor, const char *key);
+
+    // The generic entity inspector projection, rendered to text in a
+    // string-kind value. Gated by the world's `%require inspect` line —
     // projection selection IS the access decision.
-    value &render_look(value &out, int64_t w, int64_t actor);
     value &render_inspect(value &out, int64_t w, int64_t target);
 
+    // The SAME inspect projection as DATA: out = the value tree — sparse
+    // objects of { role, label, content, hints, states[], actions[],
+    // subject, children[] }, role/states/actions spelled by name. A gate
+    // refusal arrives as a status-role node, so tree consumers handle it
+    // with the same walk.
+    value &inspect_tree(value &out, int64_t w, int64_t target);
+
+    // Typeset a value-shaped projection tree (the inspect_tree schema;
+    // every field optional) through the level-0 renderer — applications
+    // compose projections as ordinary data and hand them here. A
+    // `choice` node's children render as a numbered menu in line mode;
+    // a selection-capable renderer reads the SAME tree. Typesetting
+    // only: the tree arrives already access-filtered.
+    value &render_tree(value &out, int64_t w, value &tree);
+
     // Verb dispatch: the driver sends the verb word and the rest of the
-    // line; target resolution, gating, execution, and the turn tick
-    // happen host-side. The result text is player-facing; an empty
-    // result means the verb is unknown (the driver phrases that).
+    // line; act interprets that into a structured invocation and
+    // executes it through the registry (gating included). The result
+    // text is player-facing; an empty result means the verb is unknown
+    // (the driver phrases that).
     value &act(value &out, int64_t w, int64_t actor, const char *verb,
 	       const char *rest);
 
-    // The world clock (the `world-state` turn counter; 0 when absent).
-    int64_t turn_count(int64_t w);
+    // Affordance enumeration for the actor's current context: out = an
+    // array of {action, target, provider, label, visible, enabled,
+    // reason} objects — every registered action with its truthful
+    // availability from the same keys+levels evaluator that gates
+    // execution. A frontend may hide or disable from this; it never
+    // grants.
+    value &affordances(value &out, int64_t w, int64_t actor);
+
+    // ---- generic graph reads (relation/property names are data) --------
+    // Keyed-link enumeration: out = array of {key, target} objects for
+    // the `rel` links FROM `from`, in link order (key "" when unkeyed;
+    // target = the linked entity's canonical name).
+    value &links(value &out, int64_t w, int64_t from, const char *rel);
+
+    // Word -> entity over the actor's current scope (carried,
+    // co-located, focus — the resolution order): matches the canonical
+    // name or the `alias_prop` bag property (the application's
+    // vocabulary, passed as data). 0 = no match.
+    int64_t resolve(int64_t w, int64_t actor, const char *word,
+		    const char *alias_prop);
 
     // ---- entity bag access (E2, the Adventure feeder wave) -------------
     // Reads copy OUT of the world and never vivify its bags; writes route
@@ -89,4 +173,127 @@ namespace ui {
     void set(int64_t w, int64_t entity, const char *key, double v);
     // Move `entity` into `dest`'s containment (dest 0 = out of the world).
     void move(int64_t w, int64_t entity, int64_t dest);
+
+    // ---- text component (R4): a piece-table buffer attached to an
+    // entity — the hub's second component kind. Offsets and lengths are
+    // BYTES; lines are 1-based, length excluding the '\n'; an empty
+    // buffer has zero lines and a trailing unterminated span is a line.
+    // Writes route through the hub's mutation context. Document
+    // properties (path, modified, read_only) are application bag keys —
+    // never touched here. Size/line/find reads answer -1 when the entity
+    // has no text component (or the query is out of range).
+    void text_load(int64_t w, int64_t entity, const char *text);
+    void text_insert(int64_t w, int64_t entity, int64_t off, const char *text);
+    void text_erase(int64_t w, int64_t entity, int64_t off, int64_t len);
+    void text_replace(int64_t w, int64_t entity, int64_t off, int64_t len,
+		      const char *text);
+    value  &text(value &out, int64_t w, int64_t entity);
+    int64_t text_size(int64_t w, int64_t entity);
+    int64_t text_line_count(int64_t w, int64_t entity);
+    value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
+    int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
+    int64_t text_find(int64_t w, int64_t entity, int64_t from,
+		      const char *needle);
+    // Word motion (JOE ^Z/^X): a word byte is [A-Za-z0-9_].
+    // text_word_right = the offset just past the end of the next word;
+    // text_word_left = the offset of the first byte of the previous
+    // word; both clamp, -1 = no text component.
+    int64_t text_word_left(int64_t w, int64_t entity, int64_t from);
+    int64_t text_word_right(int64_t w, int64_t entity, int64_t from);
+    // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
+    // mutation, carrying an OPAQUE application payload (store the caret
+    // there — it rides with the state it belongs to); one semantic edit,
+    // one checkpoint. text_undo restores the newest snapshot and hands
+    // the payload back (false: no component or nothing to undo). History
+    // is runtime-only like the component; text_load clears it.
+    // The four-argument undo and text_redo are the redo-preserving pair:
+    // now_meta = the payload live on the document being LEFT (its caret),
+    // captured onto the opposite stack so undo/redo restore document +
+    // interaction state together. A checkpoint (a new edit) clears redo;
+    // the three-argument undo is the legacy destructive form (clears
+    // redo too).
+    void text_checkpoint(int64_t w, int64_t entity, value &meta);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity);
+    bool text_undo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
+    bool text_redo(value &meta_out, int64_t w, int64_t entity,
+		   value &now_meta);
+
+    // The view seam's coordinate map (the document lens): a display
+    // ("what is painted") <-> stored ("the document truth") byte map
+    // riding as DATA — an array of {disp, stored, len} copy-segment
+    // rows. Stored bytes outside every segment are CONCEALED (markdown
+    // formatting chars, folds); display bytes outside every segment are
+    // SYNTHETIC (rendered views, decoration). These are the ONE
+    // projection owner's dialect face — never re-derive caret math per
+    // view. Contract: 1:1 inside a copy segment (caret ends included);
+    // strictly inside a gap collapses FORWARD to the next segment;
+    // past the end lands just after the last image; an EMPTY map (a
+    // wholly rendered view) answers 0. -1 = malformed map / negative
+    // offset.
+    int64_t lens_to_display(value &map, int64_t stored);
+    int64_t lens_to_stored(value &map, int64_t display);
+
+    // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
+    // provider seam (the built-in target is the dependency-free
+    // VT100/xterm one; richer providers register beside it). The loop:
+    // compose the projection as data -> tui_render -> tui_event ->
+    // apply. The SAME value-shaped tree render_tree typesets
+    // sequentially presents on the grid — a `choice` menu becomes
+    // NAVIGABLE (arrows move the selection, enter chooses), an `edit`
+    // node becomes a scrolled document window whose caret/selection ride
+    // its hints ({caret, sel_start, sel_end} — byte offsets).
+    //
+    // tui_open: 0 with the reason on stderr when no target can serve
+    // (no tty, none registered, one already open). tui_event blocks for
+    // the next semantic event object:
+    //   {event:"text", text}          a coalesced printable run
+    //   {event:"key", key}            "up","enter","^s",... for the app
+    //   {event:"choose", option, action}  option is 1-based — the same
+    //       number the level-0 menu prints
+    //   {event:"action", action, seq}  a bound key sequence completed
+    //       (empty action = unbound miss; seq says which)
+    //   {event:"focus"} {event:"resize"}  recompose and re-render
+    // and returns false at end of input. Render before the first event;
+    // tab cycles focus between the tree's choice/edit nodes.
+    //
+    // tui_bind_keys installs a keybinding PROFILE: a value object mapping
+    // key sequences to action names ({"^k s": "save", ...} — sequences
+    // are space-separated key spellings, the same names key events carry;
+    // chords any length; letters in sequences are case-insensitive, the
+    // JOE ^K S == ^K s convention). Bound sequences resolve ahead of the built-in
+    // key handling; a profile swap is one call (the table replaces the
+    // previous one; an empty object clears). False + stderr on an invalid
+    // table: unknown spelling, a printable-HEADED sequence (it would
+    // swallow typing), or a sequence shadowing a shorter binding.
+    //
+    // tui_validate_keys answers whether a table WOULD bind — the same
+    // validation as tui_bind_keys, with no tui handle and a SILENT
+    // verdict (the caller composes its own refusal message). The
+    // gateway seam leans on it: the session layer validates profile
+    // data; only the TUI client binds.
+    int64_t tui_open();
+    void    tui_close(int64_t t);
+    int64_t tui_rows(int64_t t);
+    int64_t tui_cols(int64_t t);
+    void    tui_render(int64_t t, int64_t w, value &tree);
+    bool    tui_bind_keys(int64_t t, value &table);
+    bool    tui_validate_keys(value &table);
+    bool    tui_event(value &out, int64_t t, int64_t w);
+    // Hand the terminal back to run a child process (JOE ^K Z shell):
+    // tui_suspend restores the screen and modes as found; tui_resume
+    // re-enters grid mode, re-reads the size, and forces the next
+    // tui_render to repaint every row. Pair them around the child; do
+    // not render or read events while suspended.
+    bool    tui_suspend(int64_t t);
+    bool    tui_resume(int64_t t);
+    // JOE's ^R retype: the terminal's contents can no longer be trusted
+    // (external writes on the tty) — reset the delta-paint basis so the
+    // NEXT tui_render repaints every row from scratch.
+    void    tui_refresh(int64_t t);
+    // The chord entered so far (canonical spelling, "^k") — empty when
+    // none is pending. A status line's chord-echo seat (JOE's %k) reads
+    // it at compose time.
+    void    tui_pending(value &out, int64_t t);
 }

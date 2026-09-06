@@ -308,7 +308,11 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *bad_tp = bad_prog->tokenize(bad_path.c_str());
 	CHECK(bad_tp != nullptr);
 	REQUIRE(bad_tp != nullptr);
-	CHECK_FALSE(bad_prog->parse(bad_tp));
+	// Error-tolerant parse (arc doc 3.5): rejection means NOT a clean
+	// parse — the error may be CONTAINED (parse true, error_nodes > 0).
+	bool bad_clean = bad_prog->parse(bad_tp)
+			 && bad_prog->error_nodes == 0;
+	CHECK_FALSE(bad_clean);
 
 	unlink(good_path.c_str());
 	unlink(bad_path.c_str());
@@ -333,7 +337,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	unlink(path.c_str());
     }
@@ -419,7 +426,10 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *restricted_tp = restricted_prog->tokenize(restricted_path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog->parse(restricted_tp));
+	// Rejection = not a clean parse (arc doc 3.5 containment).
+	bool restricted_clean = restricted_prog->parse(restricted_tp)
+				&& restricted_prog->error_nodes == 0;
+	CHECK_FALSE(restricted_clean);
 
 	engine.registration_policy.enable_core_functions = true;
 	std::unique_ptr<Program> host_prog = engine.create_program();
@@ -477,14 +487,19 @@ TEST_SUITE("Program isolation") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK_FALSE(prog->load_file(path.c_str()));
 	CHECK(prog->last_error.has_error);
-	REQUIRE(prog->diagnostics.size() == 1);
+	// Error-tolerant parse (arc doc 3.5): recovery reports EVERY
+	// top-level error, so the list can hold follow-ons after the real
+	// one. diagnostics[0] carries the structured info for the FIRST
+	// error; last_error reflects the LAST recorded one.
+	REQUIRE(prog->diagnostics.size() >= 1);
+	CHECK(prog->error_nodes > 0);
 	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
 	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::parser);
 	CHECK(prog->last_error.file == path);
-	CHECK(prog->last_error.message.find("undeclared identifier") != std::string::npos);
 	CHECK(prog->diagnostics[0].message.find("undeclared identifier") != std::string::npos);
-	CHECK(prog->last_error.line > 0);
-	CHECK(prog->last_error.column > 0);
+	CHECK(prog->diagnostics[0].file == path);
+	CHECK(prog->diagnostics[0].line > 0);
+	CHECK(prog->diagnostics[0].column > 0);
 
 	unlink(path.c_str());
     }
@@ -1612,7 +1627,14 @@ TEST_SUITE("type table (typeid) identity layer") {
         CHECK(MADC_TYPEID_BUILTIN_VA_LIST == 34);
         CHECK(MADC_TYPEID_PLATFORM_LONG == 35);
         CHECK(MADC_TYPEID_PLATFORM_ULONG == 36);
-        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 36);
+        CHECK(MADC_TYPEID_PLATFORM_LONGLONG == 37);
+        CHECK(MADC_TYPEID_PLATFORM_ULONGLONG == 38);
+        // wchar_t / char16_t / char32_t: distinct fundamental types on EVERY
+        // target (never NULL, unlike the model-conditional slots 35-38).
+        CHECK(MADC_TYPEID_PLATFORM_WCHAR == 39);
+        CHECK(MADC_TYPEID_CHAR16 == 40);
+        CHECK(MADC_TYPEID_CHAR32 == 41);
+        CHECK(MADC_TYPEID_PRIMITIVE_LAST == 41);
         CHECK(MADC_TYPEID_PRIMITIVE_LAST < MADC_TYPEID_PRIMITIVE_END);
         CHECK(MADC_TYPEID_PRIMITIVE_END == 0x100);
         CHECK(MADC_TYPEID_SYSTEM_BASE == 0x100);
@@ -1666,7 +1688,42 @@ TEST_SUITE("type table (typeid) identity layer") {
             madc_target_data_model = TargetDataModel::LP64;
             CHECK(dd_platform_long() == &ddINT64);
             CHECK(dd_platform_ulong() == &ddUINT64);
-            CHECK(dd_platform_wchar() == &ddINT32);
+            // wchar_t is a DISTINCT type over int32 storage on LP64 — never
+            // the storage dd itself (a wchar_t-bound template argument used
+            // to spell "int32_t" and miss every ctype<wchar_t> spec).
+            {
+                DataDef *w = dd_platform_wchar();
+                REQUIRE(w != (DataDef *)NULL);
+                CHECK(w != &ddINT32);
+                CHECK(w->name == "wchar_t");
+                CHECK(w->size == 4);
+                CHECK(w->rawtype() == DataType::dtINT32);
+                CHECK(w->is_integer());
+                // subclass typeid exempts it from the DataType desugar — the
+                // NAME ("wchar_t" -> 'w') stays authoritative in mangled symbols
+                CHECK(w->mangle_scalar_spelling() == "");
+                CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_WCHAR) == w);
+                DataDef *c16 = dd_char16();
+                DataDef *c32 = dd_char32();
+                REQUIRE(c16 != (DataDef *)NULL);
+                REQUIRE(c32 != (DataDef *)NULL);
+                CHECK(c16 != &ddUINT16);
+                CHECK(c32 != &ddUINT32);
+                CHECK(c16->name == "char16_t");
+                CHECK(c32->name == "char32_t");
+                CHECK(c16->size == 2);
+                CHECK(c32->size == 4);
+                CHECK(c16->is_unsigned());
+                CHECK(c32->is_unsigned());
+                CHECK(c16->mangle_scalar_spelling() == "");
+                CHECK(c32->mangle_scalar_spelling() == "");
+                CHECK(madc_primitive_for_slot(MADC_TYPEID_CHAR16) == c16);
+                CHECK(madc_primitive_for_slot(MADC_TYPEID_CHAR32) == c32);
+                // the three are pairwise distinct identities
+                CHECK(w != c16);
+                CHECK(w != c32);
+                CHECK(c16 != c32);
+            }
             CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == (DataDef *)NULL);
             CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == (DataDef *)NULL);
             madc_target_data_model = TargetDataModel::LLP64;
@@ -1690,7 +1747,20 @@ TEST_SUITE("type table (typeid) identity layer") {
             CHECK(pu->mangle_scalar_spelling() == "");
             CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_LONG) == pl);
             CHECK(madc_primitive_for_slot(MADC_TYPEID_PLATFORM_ULONG) == pu);
-            CHECK(dd_platform_wchar() == &ddUINT16);
+            // The wchar_t singleton binds the model at its FIRST use and is
+            // process-fixed thereafter (the lexer's tkWCHAR_T contract): a
+            // mid-process flip does not re-mint it. The LLP64 SHAPE is the
+            // constructor's own reading of the model: 2-byte unsigned short
+            // storage (mingw/MSVC), still named wchar_t.
+            CHECK(dd_platform_wchar() == madc_primitive_for_slot(MADC_TYPEID_PLATFORM_WCHAR));
+            {
+                DataDefPlatformWCHAR w2;
+                CHECK(w2.name == "wchar_t");
+                CHECK(w2.size == 2);
+                CHECK(w2.rawtype() == DataType::dtUINT16);
+                CHECK(w2.is_unsigned());
+                CHECK(w2.mangle_scalar_spelling() == "");
+            }
         }
         // long double IS backed now (114b13a8), so its slot is pinned: an
         // unpinned primitive mints a PROJECT id the record walk never writes,

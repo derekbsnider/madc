@@ -1,0 +1,24 @@
+// madc::parse_run runs the LIVE handle's tree in a child on EVERY
+// platform — one contract, two arms: POSIX forks at post-parse (the
+// child inherits the tree by COW); Windows freezes the handle's forest
+// arena to a temp container and runs it in a fresh madc --run-frozen
+// child (design (b), owner ruling 2026-08-28 — LOADED == parsed, the
+// MIR cache rides). Gates BOTH arms: the guest's stdout is inherited
+// and its exit status comes back. The artifact half of this surface
+// (parse_build + run-the-exe) stays in testparserun, which is
+// POSIX-domain; THIS test runs on every domain.
+
+int main()
+{
+    var src = "int main() { println(\"frozen guest ran\"); return 5; }";
+    long h = madc::parse_open(src.c_str(), "frozen_guest.mad");
+    if ( h == 0 )
+    {
+	println("open failed");
+	return 1;
+    }
+    long rc = madc::parse_run(h);
+    println("parse-run: rc={}", rc);
+    madc::parse_close(h);
+    return 0;
+}

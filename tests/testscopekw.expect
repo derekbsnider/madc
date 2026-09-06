@@ -1,0 +1,6 @@
+t1 tr=m1;w1;w2; live=0
+t2 tr=m2;s1a;boom;caught(worker exploded); live=0
+t3 tr=m3;s2a;caught(opener failed); live=0
+t4 tr=caught(inner);m4;w3; live=0
+t5 tr=inner;w4;w5;mid;w6; live=0
+t6 i=1

@@ -1,0 +1,102 @@
+// MT-5 keywords: `scope { ... }` — the structured-concurrency block over
+// the MT-3 seams. Cooperative scheduling is strict FIFO run-to-yield —
+// DETERMINISTIC by contract — so each accumulated trace pins its schedule
+// whole (the testgoscope shape). Covered here: (1) the block joins its
+// members; (2) a member error cancels siblings and rethrows at the block
+// end; (3) a throw ESCAPING the block abandons the scope mid-unwind
+// (children cancelled + joined, catch lands outside, chain clean); (4) a
+// throw CAUGHT INSIDE the block leaves the scope live; (5) nesting — the
+// inner block joins only its own members (the outer's earlier spawn runs
+// first during that join: FIFO); (6) break bound to a loop opened INSIDE
+// the block is legal (crossing break/return/goto are parse errors —
+// testscopereturn pins the message).
+var tr;
+
+void w(long id)
+{
+    tr = format("{}w{};", tr, id);
+}
+
+void boomer()
+{
+    tr = format("{}boom;", tr);
+    throw "worker exploded";
+}
+
+void sleeper(long id)
+{
+    tr = format("{}s{}a;", tr, id);
+    madc::sleep_ms(30);
+    tr = format("{}s{}b-NEVER;", tr, id);
+}
+
+int main()
+{
+    scope {
+	go w(1);
+	go w(2);
+	tr = format("{}m1;", tr);
+    }
+    println("t1 tr={} live={}", tr, madc::task_live());
+
+    tr = "";
+    try {
+	scope {
+	    go sleeper(1);
+	    go boomer();
+	    tr = format("{}m2;", tr);
+	}
+	tr = format("{}NEVER;", tr);
+    } catch (const char *e) {
+	tr = format("{}caught({});", tr, e);
+    }
+    println("t2 tr={} live={}", tr, madc::task_live());
+
+    tr = "";
+    try {
+	scope {
+	    go sleeper(2);
+	    tr = format("{}m3;", tr);
+	    throw "opener failed";
+	}
+    } catch (const char *e) {
+	tr = format("{}caught({});", tr, e);
+    }
+    println("t3 tr={} live={}", tr, madc::task_live());
+
+    tr = "";
+    scope {
+	try {
+	    throw "inner";
+	} catch (const char *e) {
+	    tr = format("{}caught({});", tr, e);
+	}
+	go w(3);
+	tr = format("{}m4;", tr);
+    }
+    println("t4 tr={} live={}", tr, madc::task_live());
+
+    tr = "";
+    scope {
+	go w(4);
+	scope {
+	    go w(5);
+	    tr = format("{}inner;", tr);
+	}
+	tr = format("{}mid;", tr);
+	go w(6);
+    }
+    println("t5 tr={} live={}", tr, madc::task_live());
+
+    scope {
+	long i = 0;
+	while ( i < 3 )
+	{
+	    if ( i == 1 )
+		break;
+	    i = i + 1;
+	}
+	println("t6 i={}", i);
+    }
+    return 0;
+}

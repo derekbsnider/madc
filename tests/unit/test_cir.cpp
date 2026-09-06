@@ -170,7 +170,13 @@ static bool parse_accepts_with_std(Program::LanguageStd language_std,
     TokenProgram *tp = prog->tokenize_buffer(source, "<std-mode-test>");
     if (!tp)
 	return false;
-    return prog->parse(tp);
+    if (!prog->parse(tp))
+	return false;
+    // Error-tolerant parse (arc doc 3.5): parse() returns true with
+    // CONTAINED errors so IDE queries can serve the broken tree.
+    // ACCEPTANCE here means a clean parse — no contained error nodes
+    // (the same predicate the translate gate applies).
+    return prog->error_nodes == 0;
 }
 
 TEST_CASE("auto-includes are limited to madc mode") {

@@ -28,7 +28,15 @@ typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #undef __need_ptrdiff_t
 #endif
 #ifdef __need_wchar_t
+// C++ has wchar_t as a KEYWORD ([lex.key]); gcc's stddef.h and clang's
+// __stddef_wchar_t.h both guard this typedef with #ifndef __cplusplus. An
+// unguarded typedef here redeclared the built-in type as `int` in every C++
+// TU, and the alias shadowed the keyword's identity (wchar_t* keyed as
+// int32_t*: libc++'s basic_string_view<wchar_t>::const_iterator shared one
+// reverse_iterator class with vector<int>'s).
+#ifndef __cplusplus
 typedef __WCHAR_TYPE__ wchar_t;
+#endif
 #undef __need_wchar_t
 #endif
 #ifdef __need_NULL
@@ -59,16 +67,27 @@ typedef __WINT_TYPE__ wint_t;
 #ifndef __MADC_STDDEF_H
 #define __MADC_STDDEF_H 1
 
-#ifndef NULL
+// UNCONDITIONAL, like the __need arm and gcc's own stddef.h ("in case
+// <stdio.h> has defined it"): an `#ifndef NULL` guard made this arm's
+// definition depend on what ran earlier in the TU — invisible live, fatal
+// frozen. The darwin pack's canonical order puts the flattened prelude
+// (which defines NULL) before this unit, so the freeze recorded a stddef.h
+// unit with NO NULL, and a TU whose only route to NULL is the bare-name
+// auto-include (`c.next = NULL;`, zero includes) had none (darwin D4:
+// testphpdumpptr, testprojectwiden). The pack's stddef.h is the freestanding
+// header for the auto-include, so it must PRODUCE NULL, not merely leave it
+// produced.
+#undef NULL
 #define NULL ((void *)0)
-#endif
 
 #define offsetof(type, member) ((__SIZE_TYPE__)&((type *)0)->member)
 
 // Target-shaped via the seeded __*_TYPE__ macros — see the __need arm above.
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef __SIZE_TYPE__ size_t;
+#ifndef __cplusplus	/* a keyword in C++ — see the __need_wchar_t arm */
 typedef __WCHAR_TYPE__ wchar_t;
+#endif
 
 // C11 max_align_t. The members' natural alignments (long long, long double)
 // give the platform's strictest fundamental alignment on both x86-64 (16,

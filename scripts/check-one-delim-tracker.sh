@@ -81,6 +81,49 @@ if [ -n "$behavior_hits" ]; then
 fi
 n=$(printf '%s' "$hits" | grep -c . )
 
+# --- the Program handle on every STREAM scan ---------------------------------
+# DelimDepth decides whether a `<` opens a template-argument-list by NAME
+# LOOKUP ([temp.names]/3 — DelimDepth::lt_reads_as_less_than, the reading gcc's
+# cp_parser_template_name and clang's Sema::isTemplateName give), and lookup
+# needs the Program. A scan that walks the live token stream (nextToken /
+# peekToken in the same function) sits at a parse position where lookup is
+# valid, so a tracker it drives itself (a direct `x.update(...)`) must be
+# constructed with the handle: `DelimDepth x(this)` in a Program member,
+# `DelimDepth x(&pgm)` in a static helper. A bare `DelimDepth x;` driven
+# directly in such a function is a copy of the token-only rule — the shape the
+# 2026-09-04 base-clause splitter bug lived in: the dependent-name rule landed
+# in delimStepStream, the argument splitter built its own tracker, called
+# update() itself and never saw it. Trackers fed only through delim_scan_step
+# (index scans over stored token runs) or delimStepStream (which sets the
+# handle) are not this shape.
+stream_hits=$(perl -e '
+  open(my $fh, "<", "src/parser.cpp") or die;
+  my @lines = <$fh>; my ($in, %bare, %direct, $stream, $head) = (0);
+  sub flush {
+    if ($stream) {
+      for my $nm (sort keys %bare) {
+        print "src/parser.cpp:$bare{$nm}: bare DelimDepth $nm driven directly in a stream scan\n" if $direct{$nm};
+      }
+    }
+    %bare = (); %direct = (); $stream = 0;
+  }
+  for my $i (0..$#lines) {
+    my $l = $lines[$i];
+    if ($l =~ /^[A-Za-z_].*\(/ && $l !~ /;\s*$/) { flush(); $in = 1; $head = $l; }
+    next unless $in;
+    $bare{$1} = $i + 1 if $l =~ /^\s*DelimDepth\s+([A-Za-z_]\w*)\s*;/;
+    for my $nm (keys %bare) { $direct{$nm} = 1 if $l =~ /\b$nm\.update\s*\(/; }
+    $stream = 1 if $l =~ /\b(nextToken|peekToken)\s*\(/;
+    if ($l =~ /^\}/) { flush(); $in = 0; }
+  }')
+if [ -n "$stream_hits" ]; then
+	echo "REGRESSION — a stream scan drives a DelimDepth it built WITHOUT the Program handle."
+	echo "Construct it with the Program (DelimDepth d(this) / DelimDepth d(&pgm)) so the"
+	echo "[temp.names]/3 lookup reading of '<' reaches it. See .claude/rules/delimiter-tracking.md"
+	printf '%s\n' "$stream_hits" | sed 's/^/  /'
+	exit 1
+fi
+
 echo "one-delim-tracker ratchet: $n hand-rolled delimiter-depth locals (baseline $BASELINE, target 0)"
 
 if [ "$n" -gt "$BASELINE" ]; then

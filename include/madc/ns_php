@@ -37,6 +37,10 @@ extern "C" {
     int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_file_exists(value *);
     int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_file_get_contents(value *, const char *);
+    int64_t __php_file_get_contents_vpath(value *, value *);
+    int64_t __php_file_put_contents_cstr(const char *, const char *);
+    int64_t __php_file_put_contents_value(const char *, value *);
     int64_t __php_intval(value *);
     int64_t __php_intval_cstr(const char *);
     int64_t __php_array_search(const char *, array *);
@@ -72,6 +76,8 @@ extern "C" {
     const char *__php_number_format_sep(int64_t, const char *);
     const char *__php_wordwrap_cstr(const char *, int64_t, const char *);
     const char *__php_wordwrap_value(value *, int64_t, const char *);
+    const char *__php_dirname_cstr(const char *, int64_t);
+    const char *__php_dirname_value(value *, int64_t);
     const char *__php_implode_cstr(const char *, array *);
     value *__php_array_pop_value(value *, array *);
     value *__php_array_shift_value(value *, array *);
@@ -119,6 +125,19 @@ namespace php {
     // no stat-cache emulation, madc answers the live filesystem).
     bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
     bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+
+    // file_get_contents — the whole file as a string-kind value, binary-
+    // faithful (PHP parity). PHP's string|false union takes the pre-L3
+    // carrier mapping: contents arrive in OUT, the bool return is the
+    // false channel (false = failure, out untouched).
+    bool file_get_contents(value &out, const char *filename) { return __php_file_get_contents(&out, filename) != 0; }
+    bool file_get_contents(value &out, value &filename) { return __php_file_get_contents_vpath(&out, &filename) != 0; }
+
+    // file_put_contents — create/truncate + write; BYTES WRITTEN, with
+    // PHP's int|false mapped to -1 for the false channel (pre-L3).
+    // Scalar data coerces to its text; containers answer -1.
+    int64_t file_put_contents(const char *filename, const char *data) { return __php_file_put_contents_cstr(filename, data); }
+    int64_t file_put_contents(const char *filename, value &data) { return __php_file_put_contents_value(filename, &data); }
     // PHP parity (base 10): longest digit prefix converts; int passes
     // through, real truncates, bool 1/0, containers 0.
     int64_t intval(value &v) { return __php_intval(&v); }
@@ -158,6 +177,16 @@ namespace php {
     const char *number_format(int64_t number, const char *separator) { return __php_number_format_sep(number, separator); }
     const char *wordwrap(value &s, int64_t width, const char *brk) { return __php_wordwrap_value(&s, width, brk); }
     const char *wordwrap(const char *s, int64_t width, const char *brk) { return __php_wordwrap_cstr(s, width, brk); }
+    // PHP parity (zend_dirname): the parent path, `levels` times up
+    // (levels defaults to 1; PHP 8's ValueError on levels < 1 maps
+    // pre-L3 to a loud stderr refusal + ""). "." when no separator;
+    // trailing separators trimmed; on a WINDOWS HOST '\' separates too
+    // and a drive prefix survives. Ring-lifetime return (the c_str
+    // contract): pass onward or capture immediately.
+    const char *dirname(value &path) { return __php_dirname_value(&path, 1); }
+    const char *dirname(value &path, int64_t levels) { return __php_dirname_value(&path, levels); }
+    const char *dirname(const char *path) { return __php_dirname_cstr(path, 1); }
+    const char *dirname(const char *path, int64_t levels) { return __php_dirname_cstr(path, levels); }
     // PHP parity signature: implode(separator, array) -> the joined text.
     const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
     // Value-out element returns (the python::format out-param shape,

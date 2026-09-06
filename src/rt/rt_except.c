@@ -28,19 +28,14 @@
 #define MADC_RT_TLS _Thread_local
 #endif
 
-// Exception type tags (matches madc DataType values where possible)
-#define MADC_EXCEPT_NONE    0
-#define MADC_EXCEPT_INT     1
-#define MADC_EXCEPT_DOUBLE  2
-#define MADC_EXCEPT_CSTR    3
-// A thrown CLASS OBJECT with no string form. The payload is the object's
-// address; no catch clause matches it by tag (the parser assigns class clauses
-// this same value precisely so they stay unmatchable — real per-type class
-// dispatch needs RTTI, a separate track), so it reaches catch(...) or the
-// unhandled path. Deliberately NOT matchable by catch(SomeClass&): one tag
-// cannot tell two class types apart, and a wrong match is worse than none.
-#define MADC_EXCEPT_CLASS   4
-#define MADC_EXCEPT_ANY     99  // catch(...)
+// Exception type tags live in rt_except.h (the one authoritative home).
+// MADC_EXCEPT_CLASS: a thrown CLASS OBJECT with no string form. The payload
+// is the object's address; no catch clause matches it by tag (the parser
+// assigns class clauses this same value precisely so they stay unmatchable —
+// real per-type class dispatch needs RTTI, a separate track), so it reaches
+// catch(...) or the unhandled path. Deliberately NOT matchable by
+// catch(SomeClass&): one tag cannot tell two class types apart, and a wrong
+// match is worse than none.
 
 // Per-object cleanup entry — linked list, pushed at construction time
 struct MadcCleanupEntry {
@@ -73,6 +68,39 @@ struct MadcException {
 static MADC_RT_TLS struct MadcTryContext *madc_try_stack = NULL;
 static MADC_RT_TLS struct MadcException madc_current_exception = {0};
 static MADC_RT_TLS struct MadcCleanupEntry *madc_cleanup_stack = NULL;
+
+// --- Per-execution-context state switch (rt_except.h documents the design
+// decision). The three statics above are per-CONTEXT, not merely per-thread:
+// the cooperative task runtime saves/restores them at every switch so a try
+// held across a yield() keeps its own chain. A zero-filled buffer restores
+// as the empty state (fresh task). Plain memcpy — ledger-safe C11.
+
+struct MadcExceptState {
+    struct MadcTryContext *try_stack;
+    struct MadcException exception;
+    struct MadcCleanupEntry *cleanup_stack;
+};
+
+unsigned long __madc_except_state_size(void)
+{
+    return (unsigned long)sizeof(struct MadcExceptState);
+}
+
+void __madc_except_state_save(void *buf)
+{
+    struct MadcExceptState *s = (struct MadcExceptState *)buf;
+    s->try_stack = madc_try_stack;
+    s->exception = madc_current_exception;
+    s->cleanup_stack = madc_cleanup_stack;
+}
+
+void __madc_except_state_restore(const void *buf)
+{
+    const struct MadcExceptState *s = (const struct MadcExceptState *)buf;
+    madc_try_stack = s->try_stack;
+    madc_current_exception = s->exception;
+    madc_cleanup_stack = s->cleanup_stack;
+}
 
 // --- Runtime functions called from JIT code ---
 
@@ -196,6 +224,41 @@ void __madc_cleanup_pop(void)
     }
 }
 
+// Remove ONE entry wherever it sits in the stack, no destructor call
+// (rt_except.h documents the widening). Top-pop is not enough for a host
+// frame whose registration outlives entries pushed BELOW it and is exited
+// while entries pushed ABOVE it are still live — the MT-5 scope block's
+// normal exit is exactly that shape (an enclosing lexical try's body
+// locals register above the scope's entry and stay until the try ends).
+// O(depth) walk; the stack is short-lived and shallow by construction.
+void __madc_cleanup_remove(void *entry)
+{
+    struct MadcCleanupEntry *e = (struct MadcCleanupEntry *)entry;
+    struct MadcCleanupEntry **link = &madc_cleanup_stack;
+    while ( *link )
+    {
+	if ( *link == e )
+	{
+	    *link = e->prev;
+	    if ( e->heap_alloc )
+		free(e);
+	    return;
+	}
+	link = &(*link)->prev;
+    }
+}
+
+// Print the unhandled-exception line. The ONE formatting owner is
+// __madc_exception_text (below) — the same renderer MT-3's scope error
+// capture reads, so an aborted print and a captured scope error always
+// agree on the text.
+static void madc_print_unhandled(void)
+{
+    char buf[256];
+    __madc_exception_text(buf, sizeof(buf));
+    fprintf(stderr, "Unhandled exception: %s\n", buf);
+}
+
 // Throw an integer exception
 void __madc_throw_int(int64_t val)
 {
@@ -205,7 +268,7 @@ void __madc_throw_int(int64_t val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %ld\n", (long)val);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -223,7 +286,7 @@ void __madc_throw_double(double val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %f\n", val);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -241,7 +304,7 @@ void __madc_throw_cstr(const char *val)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: %s\n", val ? val : "(null)");
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
@@ -260,13 +323,50 @@ void __madc_throw_object(const void *obj)
     if ( !madc_try_stack )
     {
 	__madc_cleanup_unwind_to(NULL);
-	fprintf(stderr, "Unhandled exception: class object at %p\n", obj);
+	madc_print_unhandled();
 	abort();
     }
     ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
     __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
+}
+
+// Render the in-flight exception as one line of text (MT-3: the scope
+// error capture; also THE renderer behind every "Unhandled exception"
+// print — one formatting owner). Returns the byte length written
+// (truncated to cap-1), 0 when no exception is in flight.
+unsigned long __madc_exception_text(char *buf, unsigned long cap)
+{
+    int n = 0;
+    if ( !buf || cap == 0 )
+	return 0;
+    switch ( madc_current_exception.type )
+    {
+    case MADC_EXCEPT_INT:
+	n = snprintf(buf, cap, "%ld", (long)madc_current_exception.int_val);
+	break;
+    case MADC_EXCEPT_DOUBLE:
+	n = snprintf(buf, cap, "%f", madc_current_exception.double_val);
+	break;
+    case MADC_EXCEPT_CSTR:
+	n = snprintf(buf, cap, "%s", madc_current_exception.str_val
+					 ? madc_current_exception.str_val
+					 : "(null)");
+	break;
+    case MADC_EXCEPT_CLASS:
+	n = snprintf(buf, cap, "class object at %p",
+		     madc_current_exception.obj_val);
+	break;
+    default:
+	buf[0] = '\0';
+	return 0;
+    }
+    if ( n < 0 )
+	n = 0;
+    if ( (unsigned long)n >= cap )
+	n = (int)(cap - 1);
+    return (unsigned long)n;
 }
 
 // Get exception type tag

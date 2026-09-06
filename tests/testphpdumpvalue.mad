@@ -22,11 +22,11 @@ struct Holder
 
 void scalar_kinds()
 {
-	value vnull;			// default-constructed: kind null
-	value vbool = true;
-	value vint = 42;
-	value vreal = 2.5;
-	value vstr = "hi";
+	var vnull;			// default-constructed: kind null
+	var vbool = true;
+	var vint = 42;
+	var vreal = 2.5;
+	var vstr = "hi";
 
 	// print_r of a scalar is the value ALONE — no type, no newline. The
 	// markers make the empty renderings (null, false) visible.
@@ -87,7 +87,7 @@ void captured()
 	// first argument of every primitive, including the runtime walk's.
 	array a;
 	php::array_push(a, "alpha");
-	value s = php::print_r(a, true);
+	var s = php::print_r(a, true);
 	printf("[cap]\n");
 	printf("%s", s);
 	printf("[end]\n");

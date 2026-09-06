@@ -1,0 +1,32 @@
+#include <stdio.h>
+// A nested class declared in its owner and defined later — in the owner's body
+// or out of line with a qualified class-head — is ONE type ([class.pre]; gcc
+// cp_parser_class_head looks the head name up in the nested-name-specifier's
+// scope and completes that type): the owner's pointer member typed against the
+// declaration reads the completed members, whichever class-key each side used.
+struct A {
+    int v;
+    struct B;                 // struct-key declaration in A's scope
+    B *link;
+    class K;                  // class-key declaration
+    K *kp;
+    struct B { int w; B(int y) : w(y) {} };   // in-class, class-shaped body
+    A(int x) : v(x), link(0), kp(0) {}
+};
+class A::K { public: int z; K(int a) : z(a) {} };   // out of line, class-key head
+struct O {
+    struct N;
+    N *first;
+    O() : first(0) {}
+};
+class O::N : public O { public: int w; N(int y) : w(y) {} };   // out of line, base clause
+int main()
+{
+    A a(1);
+    A::B b(4); a.link = &b;
+    A::K k(6); a.kp = &k;
+    printf("%d %d %d\n", a.v, a.link->w, a.kp->z);
+    O::N n(5); O o; o.first = &n;
+    printf("%d %d\n", o.first->w, (int)(n.first == 0));   // the base subobject is there
+    return 0;
+}

@@ -1,0 +1,13 @@
+// Error-tolerant parse, slice A (§3.5): the parser contains each top-level
+// error (SkippedTokens debris + diagnostic), resyncs via DelimDepth, and
+// CONTINUES — gcc canon: report every top-level error, then refuse (the
+// translate gate: error_nodes > 0 never reaches c2mir). Three independent
+// errors, each reported at its own site; exit nonzero (.expect_err).
+struct S {
+    int x
+};
+int f(int %) { return 1; }
+class C : Q {
+};
+int ok() { return 5; }
+int main() { return ok(); }

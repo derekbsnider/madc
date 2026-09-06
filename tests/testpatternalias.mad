@@ -1,0 +1,28 @@
+// A class-scope alias `using A = decltype(f(declval<It>()))` inside a class
+// template partial specialization: its type depends on It and must be
+// resolved per instantiation — never captured once as a concrete type by the
+// parse-once class pattern (the second instantiation takes the pattern lane).
+// libc++ __unwrap_iter_impl<_Iter,true>::_ToAddressT is this shape.
+// Oracle g++ / clang++: 1 2 3
+#include <stdio.h>
+
+template<class T> T* addr_of(T* p) { return p; }
+template<class T> T declv();
+
+template<class It, bool = true> struct Impl;
+
+template<class It>
+struct Impl<It, true> {
+	using A = decltype(addr_of(declv<It>()));
+	static A un(It i) { return addr_of(i); }
+};
+
+int main()
+{
+	int x = 1; long y = 2; short z = 3;
+	int *p = Impl<int*>::un(&x);
+	long *q = Impl<long*>::un(&y);
+	short *r = Impl<short*>::un(&z);
+	printf("%d %ld %d\n", *p, *q, (int)*r);
+	return 0;
+}

@@ -73,7 +73,8 @@ enum class TokenType {
 	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript,
 	ttStructLit,
 	ttTypedefDecl,	// typedef declaration (preserves source order in AST)
-	ttStructDef	// standalone struct/union definition (preserves source order in AST)
+	ttStructDef,	// standalone struct/union definition (preserves source order in AST)
+	ttError		// contained parse error (TokenError) — never translates
 };
 
 enum class TokenID {
@@ -104,22 +105,110 @@ enum class TokenID {
   tk3NotEq,                   // !== strict not-equal (STD_MADC dialect)
   tkFRIEND,                   // C++ `friend` declaration specifier
   tkExplicitDtor,             // explicit/pseudo destructor call: obj.~T() / ptr->~T()
-  tkCPPKEYWORD                // generic reserved C++ keyword (version-gated); the
+  tkCPPKEYWORD,               // generic reserved C++ keyword (version-gated); the
 			      // spelling distinguishes it. Used for reserved words
 			      // that the parser still recognizes by spelling (via
 			      // contextual_identifier_name) rather than a dedicated
 			      // dispatch token — so they are reserved (not bare
 			      // identifiers) without proliferating one class each.
+  tkGO, tkYIELD,              // madc-dialect cooperative tasks (MT-1): `go
+			      // <call-expr>;` spawn and `yield;`/`yield();`.
+			      // CONTEXTUAL statement heads under STD_MADC only
+			      // (never keyword_map-reserved — real libstdc++
+			      // headers use `yield` as an identifier), claimed
+			      // by the UFCS error-shape rule: they fire only
+			      // where the statement was otherwise ill-formed.
+  tkSCOPE, tkAWAIT            // madc-dialect structure spellings (MT-5), the
+			      // same contextual discipline as tkGO/tkYIELD:
+			      // `scope { ... }` structured-concurrency block
+			      // and `await <chan-expr>` channel receive.
 };
 
 enum class TokenAssoc {
     taNone, taLeftToRight, taRightToLeft
 };
 
+// Highlight classification (madcide AST-2 / IDE-7): what KIND of thing a
+// lexed token is, for presentation. The one classifier is
+// madc_token_highlight_class (lexer.cpp — the token-vocabulary owner);
+// names cross the value boundary via highlight_class_name. A theme (app
+// data) maps these names to colours — the compiler never styles.
+enum class HighlightClass : unsigned char
+{
+    hcNone = 0,		// operators / punctuation — unstyled
+    hcKeyword,
+    hcIdent,
+    hcNumber,
+    hcString,		// string AND char literals
+    hcComment,		// from leading trivia (keep_trivia mode)
+    hcType,		// datatype spellings (tkDeclare)
+    hcFunction		// an identifier the tree knows as a function name
+};
+
+inline const char *highlight_class_name(HighlightClass c)
+{
+    switch ( c )
+    {
+	case HighlightClass::hcNone:	 return "none";
+	case HighlightClass::hcKeyword:	 return "keyword";
+	case HighlightClass::hcIdent:	 return "ident";
+	case HighlightClass::hcNumber:	 return "number";
+	case HighlightClass::hcString:	 return "string";
+	case HighlightClass::hcComment:	 return "comment";
+	case HighlightClass::hcType:	 return "type";
+	case HighlightClass::hcFunction: return "function";
+    }
+    return "none";
+}
+
+// Error-node vocabulary (error-tolerant parse, 2026-08-25 owner ruling —
+// design doc 2026-08-25-madcide-ast-arc-design.md §3.5). One TokenError
+// class carries the whole vocabulary; the KIND is data (enum-over-strings).
+// Two families:
+//   Holes  (Missing*): zero-width, SYNTHESIZED where the grammar required
+//          something — the tree stays structurally complete and queryable.
+//   Debris (UnexpectedToken, SkippedTokens): REAL source tokens set aside,
+//          spellings/positions/trivia retained — the source view stays exact.
+// ANY error node present gates translate (Program::error_nodes > 0 refuses
+// at cir_translate_guarded — "prevent compilation" is the owner ruling).
+// The full vocabulary is declared up front to prevent drift; synthesis
+// sites grow into it incrementally (slice A emits only the debris kinds).
+enum class ErrorNodeKind : unsigned char
+{
+    MissingExpression = 0,
+    MissingStatement,
+    MissingDeclaration,
+    MissingIdentifier,
+    MissingType,
+    MissingToken,
+    UnexpectedToken,
+    SkippedTokens
+};
+
+inline const char *error_node_kind_name(ErrorNodeKind k)
+{
+    switch ( k )
+    {
+	case ErrorNodeKind::MissingExpression:  return "MissingExpression";
+	case ErrorNodeKind::MissingStatement:   return "MissingStatement";
+	case ErrorNodeKind::MissingDeclaration: return "MissingDeclaration";
+	case ErrorNodeKind::MissingIdentifier:  return "MissingIdentifier";
+	case ErrorNodeKind::MissingType:        return "MissingType";
+	case ErrorNodeKind::MissingToken:       return "MissingToken";
+	case ErrorNodeKind::UnexpectedToken:    return "UnexpectedToken";
+	case ErrorNodeKind::SkippedTokens:      return "SkippedTokens";
+    }
+    return "ErrorNode";
+}
+
 
 // Token flags
 typedef enum : uint16_t { tfBRACKETED	=    1,
 			  tfOVERLOADED  =    2,
+			  tfSYNTHPOS	=    4,	// minted from synthesized pushback text
+						// (macro expansion, __FILE__/__LINE__):
+						// line/column name the invocation site,
+						// not source bytes of this spelling
 			} tokflag_t;
 
 // TokenRec — the flat, POD, serializable per-token DATA record (Phase 2 of
@@ -200,11 +289,35 @@ public:
     static void *operator new(std::size_t sz);
     static void  operator delete(void *p);
     virtual TokenBase *clone() { return new TokenBase(_token); }
+    // A copy that keeps WHERE the original came from. clone() builds a fresh
+    // token, and the constructor stamps it with the CURRENT parse position —
+    // right for a macro-expansion replacement (the expansion site is its
+    // location; the lexer's clones), wrong for every copy the parser makes of
+    // a template pattern, a default argument, or a call argument: those are
+    // the same source text from the same place, and an instantiation is
+    // attributed to the pattern's definition ([temp.inst]; gcc's instantiated
+    // decl carries the pattern's DECL_SOURCE_LOCATION, clang's the template's
+    // SourceLocation). A pattern copy stamped with the call site's file read
+    // as USER code to the builder's root/library split and was emitted
+    // unconditionally — the darwin pack lowering an unselected libc++
+    // basic_string constructor instance whose body could not link.
+    TokenBase *clone_origin()
+    {
+	TokenBase *c = clone();
+	if ( c )
+	{
+	    c->file = file;
+	    c->line = line;
+	    c->column = column;
+	}
+	return c;
+    }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
     virtual void setFlag(tokflag_t f) { _flags |= f; }
     virtual bool is_bracketed() const { return (_flags & tfBRACKETED) ? true : false;  }
     virtual bool is_overloaded() const { return (_flags & tfOVERLOADED) ? true : false; }
+    bool is_synthetic_position() const { return (_flags & tfSYNTHPOS) ? true : false; }
     virtual bool is_operator() const { return false; }
     virtual bool is_constant() const { return false; }
     virtual bool is_real()     const { return false; }
@@ -372,6 +485,42 @@ public:
 };
 
 // addition operator +
+// Usual arithmetic conversions (C11 6.3.1.8) — the parse-side VALUE view
+// shared by the binary arithmetic operators' datadef() overrides: a real
+// operand wins (wider real first), otherwise the wider integer wins and at
+// equal width unsigned wins. Types below the int promotion floor, pointer/
+// function/complex operands, and NULL children answer NULL so each
+// operator's own arms and the ddINT default keep their existing behavior.
+// (Runtime codegen types via c2mir regardless; this view feeds parse-time
+// consumers — _Generic selection, overload ranking, sizeof-of-expression.)
+static inline DataDef *usual_arithmetic_result(DataDef *ld, DataDef *rd)
+{
+    if ( !ld || !rd )
+	return NULL;
+    if ( ld->is_pointer() || rd->is_pointer()
+      || ld->is_function() || rd->is_function()
+      || ld->is_complex() || rd->is_complex() )
+	return NULL;
+    if ( !ld->is_numeric() || !rd->is_numeric() )
+	return NULL;
+    bool lr = ld->is_real(), rr = rd->is_real();
+    if ( lr || rr )
+    {
+	if ( lr && rr )
+	    return ld->size >= rd->size ? ld : rd;
+	return lr ? ld : rd;
+    }
+    DataDef *w = ld;
+    if ( rd->size > w->size
+      || (rd->size == w->size && rd->is_unsigned() && !w->is_unsigned()) )
+	w = rd;
+    if ( w->size < ddINT.size )
+	return NULL;	// below the promotion floor: both promote to int
+    if ( w->size == ddINT.size && !w->is_unsigned() )
+	return NULL;	// plain int — the caller default already
+    return w;
+}
+
 class TokenAdd: public TokenOperator
 {
 public:
@@ -382,10 +531,19 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator+ on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Each child's datadef() exactly ONCE: these overrides recurse into
+	// operator children, so re-asking per predicate made one query on an
+	// N-deep `a+b+c+...` chain cost 4^N (c-testsuite 00205 — a J-
+	// interpreter initializer of ~50-add chains — HUNG the compiler;
+	// callgrind: 59% TokenAdd::datadef'2). Same rule in every operator
+	// override below.
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_pointer() ) return ld;
+	if ( rd && rd->is_pointer() ) return rd;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -411,15 +569,19 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator- on a class object
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
 	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
-	if ( left && left->datadef() && left->datadef()->is_pointer() )
+	if ( ld && ld->is_pointer() )
 	{
-	    if ( right && right->datadef() && right->datadef()->is_pointer() )
+	    if ( rd && rd->is_pointer() )
 		return TokenOperator::datadef();
-	    return left->datadef();
+	    return ld;
 	}
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -444,15 +606,17 @@ public:
     // global-abs family).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	if ( right && right->datadef() && right->datadef()->is_unsigned() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_real() )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_integer()
-	  && _datatype && right->datadef()->size > _datatype->size )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd && rd->is_unsigned() )
+	    return rd;
+	if ( rd && rd->is_complex() )
+	    return rd;
+	if ( rd && rd->is_real() )
+	    return rd;
+	if ( rd && rd->is_integer()
+	  && _datatype && rd->size > _datatype->size )
+	    return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -468,8 +632,12 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator* on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -485,8 +653,12 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator/ on a class object
-	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	// Children queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( ld && ld->is_complex() ) return ld;
+	if ( rd && rd->is_complex() ) return rd;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -552,7 +724,9 @@ public:
 	// An assignment-as-expression evaluates to the assigned LHS
 	// value, so its type is the LHS's type — required for
 	// `*(end = ptr + N)` where `end` is `char *`.
-	if ( left && left->datadef() ) return left->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *ld = left ? left->datadef() : NULL;
+	if ( ld ) return ld;
 	return TokenOperator::datadef();
     }
     virtual inline int precedence()   const override { return 14; }
@@ -701,10 +875,12 @@ public:
     // propagate a complex operand — ~z is the complex conjugate (GNU).
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	if ( right && right->datadef() && right->datadef()->is_integer() && right->datadef() != &ddINT )
-	    return right->datadef();
-	if ( right && right->datadef() && right->datadef()->is_complex() )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd && rd->is_integer() && rd != &ddINT )
+	    return rd;
+	if ( rd && rd->is_complex() )
+	    return rd;
 	return TokenOperator::datadef();
     }
     virtual inline int precedence()   const override { return 2; }
@@ -732,6 +908,19 @@ public:
     virtual TokenID id() const override { return TokenID::tkBand; }
     virtual TokenBase *clone() override { return new TokenBand(); }
     virtual inline int precedence() const override { return 8; }
+    // C11 6.5.10: the usual arithmetic conversions type a bitwise operator
+    // exactly as they type the additive ones (TokenAdd's rule; children
+    // queried ONCE) — the wider / unsigned integer, and a SIMD operand's
+    // vector. The bare TokenOperator default (`int`) typed `(a & b)[i]` as a
+    // scalar, so the `[` fell through to the lambda introducer.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // logical and operator &&
@@ -752,6 +941,15 @@ public:
     virtual TokenID id() const override { return TokenID::tkBor; }
     virtual TokenBase *clone() override { return new TokenBor(); }
     virtual inline int precedence() const override { return 10; }
+    // C11 6.5.12 — the usual arithmetic conversions, TokenBand's rule.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // logical or operator ||
@@ -772,6 +970,15 @@ public:
     virtual TokenID id() const override { return TokenID::tkXor; }
     virtual TokenBase *clone() override { return new TokenXor(); }
     virtual inline int precedence() const override { return 9; }
+    // C11 6.5.11 — the usual arithmetic conversions, TokenBand's rule.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left  ? left->datadef()  : NULL;
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // ternary operator ? (if)
@@ -898,8 +1105,26 @@ class TokenBSL: public TokenMultiOp
 {
     public: TokenBSL() : TokenMultiOp("<<") {}
     virtual TokenID id() const override { return TokenID::tkBSL; }
-    virtual TokenBase *clone() override { return new TokenBSL(); }
+    virtual TokenBase *clone() override { TokenBSL *to = new TokenBSL(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence() const override { return 5; }
+    // C99 6.5.7#3: a shift's type is the PROMOTED LEFT operand's — the
+    // right operand never participates (unlike the usual arithmetic
+    // conversions; c-testsuite 00200). resolved_type keeps overloaded
+    // operator<< (iostreams) authoritative.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left ? left->datadef() : NULL;
+	// a vector's shift is the vector (gcc's vector extension) — the width
+	// test below would read a 4-byte vector as a promoted int
+	if ( ld && ld->is_simd() )
+	    return ld;
+	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
+	  && (ld->size > ddINT.size
+	   || (ld->size == ddINT.size && ld->is_unsigned())) )
+	    return ld;
+	return TokenOperator::datadef();
+    }
 };
 
 // bitwise shift right >>
@@ -907,8 +1132,23 @@ class TokenBSR: public TokenMultiOp
 {
     public: TokenBSR() : TokenMultiOp(">>") {}
     virtual TokenID id() const override { return TokenID::tkBSR; }
-    virtual TokenBase *clone() override { return new TokenBSR(); }
+    virtual TokenBase *clone() override { TokenBSR *to = new TokenBSR(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence() const override { return 5; }
+    // C99 6.5.7#3 — see TokenBSL (operator>> stays via resolved_type).
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	DataDef *ld = left ? left->datadef() : NULL;
+	// a vector's shift is the vector (gcc's vector extension) — the width
+	// test below would read a 4-byte vector as a promoted int
+	if ( ld && ld->is_simd() )
+	    return ld;
+	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
+	  && (ld->size > ddINT.size
+	   || (ld->size == ddINT.size && ld->is_unsigned())) )
+	    return ld;
+	return TokenOperator::datadef();
+    }
 };
 
 // namespace operator ::
@@ -961,8 +1201,10 @@ class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator('
     // (notably brace-less while/for bodies like `++p, ++i;`). Without this,
     // parseExpression stopped at the first comma and the rest was dropped.
     virtual DataDef *datadef() const override {
-	if ( right && right->datadef() )
-	    return right->datadef();
+	// Child queried ONCE (the TokenAdd exponential-recursion rule).
+	DataDef *rd = right ? right->datadef() : NULL;
+	if ( rd )
+	    return rd;
 	return TokenOperator::datadef();
     }
 };
@@ -1021,6 +1263,12 @@ public:
     // (gcc canon: a too-large literal warns + truncates; wide values otherwise
     // arise from >64-bit constant folding).
     uint32_t wide_handle = 0;
+    // The parser's stand-in for a call it could not resolve inside a
+    // dependent (tsubst-pattern) or class-pattern CAPTURE parse — a `0`
+    // typed int64 where a call belongs. Anything that would bake this
+    // token's TYPE into a retained pattern (a `decltype(...)` alias in a
+    // class template body) must treat it as poison, never as a constant.
+    bool dependent_call_placeholder = false;
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
     TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
@@ -1037,7 +1285,7 @@ public:
     virtual double dval() const override    { return (double)_token; }
     virtual TokenType type() const override { return TokenType::ttInteger; }
     virtual TokenID   id()   const override { return TokenID::tkInt; }
-    virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; return c; }
+    virtual TokenBase *clone() override     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; c->wide_handle = wide_handle; c->dependent_call_placeholder = dependent_call_placeholder; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) override { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
     virtual TokenInt *as_int_tok() override { return this; }
@@ -1188,6 +1436,17 @@ class TokenStr: public TokenIdent
 public:
     std::string str;
     bool wide;
+    // Source extent of each concatenated literal PIECE (line, start column
+    // of the opening quote/prefix, RAW source length including the quotes),
+    // recorded at lex. The highlight-span classifier's anchor: the cooked
+    // `str` cannot recover source geometry — escapes shrink it, and C
+    // adjacent-literal concatenation merges several source lines into one
+    // token (one 85-byte span painted from line 30 col 0 was madcide's
+    // embed_hello.c mis-highlight). Empty for tokens with no source
+    // (pack-image materialization, synthesized literals) — consumers fall
+    // back to the spelling-derived extent.
+    struct SrcPiece { int32_t line, col, len; };
+    std::vector<SrcPiece> src_pieces;
     TokenStr() : wide(false) {}
     TokenStr(const char *k, bool w = false) : TokenIdent(k), str(k ? k : ""), wide(w) {}
     TokenStr(std::string k, bool w = false) : TokenIdent(k), str(k), wide(w) {}
@@ -1197,7 +1456,7 @@ public:
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const override { return TokenType::ttString; }
     virtual TokenID   id()   const override { return TokenID::tkStr; }
-    virtual TokenBase *clone() override     { return new TokenStr(str, wide); }
+    virtual TokenBase *clone() override     { TokenStr *t = new TokenStr(str, wide); t->src_pieces = src_pieces; return t; }
     virtual TokenStr *as_str_tok() override { return this; }
 };
 
@@ -1325,12 +1584,102 @@ public:
     }
     virtual TokenLabel *as_label_tok() override { return this; }
 };
+
+// madc-dialect `go <call-expr>;` (MT-1): spawn the call as a cooperative
+// task. CONTEXTUAL statement head under STD_MADC (never keyword_map-reserved
+// — see tkGO in the TokenID enum), built by Program::parse_go_statement via
+// the UFCS error-shape rule. Carries the parsed, resolved call; the CIR
+// builder lowers it to a per-site thunk + __madc_go (src/rt/rt_task.c).
+class TokenGO: public TokenBase
+{
+public:
+    TokenBase *call;
+    TokenGO() : call(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkGO; }
+    virtual TokenBase *clone()
+ override    {
+	TokenGO *t = new TokenGO();
+	if ( call )
+	    t->call = call->clone();
+	return t;
+    }
+};
+
+// madc-dialect `yield;` / `yield();` (MT-1): reschedule the current
+// cooperative task. Contextual twin of TokenGO (same gating and error-shape
+// rule); lowers to a __madc_yield() call.
+class TokenYIELD: public TokenBase
+{
+public:
+    TokenYIELD() {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkYIELD; }
+    virtual TokenBase *clone() override { return new TokenYIELD(); }
+};
+
+// madc-dialect `scope { ... }` (MT-5): a structured-concurrency block —
+// `go` inside attaches to it; the block's end joins every member and
+// rethrows the first member error (madc::scope_end's contract). Contextual
+// statement head under STD_MADC (same gating and error-shape rule as
+// TokenGO); the CIR builder lowers it to the __madc_scope_block_enter /
+// __madc_scope_block_exit pair (src/rt/rt_task.c). return / break /
+// continue / goto that would exit the block are refused at parse time.
+class TokenSCOPE: public TokenBase
+{
+public:
+    TokenBase *body;                       // the compound block
+    TokenSCOPE() : body(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkSCOPE; }
+    virtual TokenBase *clone() override
+    {
+	TokenSCOPE *t = new TokenSCOPE();
+	if ( body )
+	    t->body = body->clone();
+	return t;
+    }
+};
+
+// madc-dialect `await <chan-expr>` (MT-5): receive from a value channel —
+// Go's `<-ch` (blocks; closed-and-drained yields the zero value). Claimed
+// in the expression ladder's undeclared-identifier position (error-shape
+// rule) and consumed at STATEMENT level in slice 1: bare `await ch;`
+// (target NULL — receive and discard) and `v = await ch;` (parseExprStmt
+// extracts the value-typed target). The CIR builder lowers it to
+// __madc_chan_await(&target|NULL, handle) — the extern-C machinery seat
+// over THE ONE recv implementation — and refuses any other position loud.
+class TokenAWAIT: public TokenBase
+{
+public:
+    TokenBase *chan;                       // the channel-handle expression
+    TokenBase *target;                     // resolved value-typed lvalue
+					   // (NULL = receive and discard)
+    TokenAWAIT() : chan(NULL), target(NULL) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual TokenID id() const override { return TokenID::tkAWAIT; }
+    virtual TokenBase *clone() override
+    {
+	TokenAWAIT *t = new TokenAWAIT();
+	if ( chan )
+	    t->chan = chan->clone();
+	if ( target )
+	    t->target = target->clone();
+	return t;
+    }
+};
 class TokenCASE: public TokenKeyword
 {
 public:
     TokenBase *value;                          // case constant expression
     TokenBase *range_high;                     // GNU case range: case LOW ... HIGH
     std::vector<TokenBase *> statements;       // statements until next case/default/}
+    // Non-empty for a label NESTED inside a statement of the switch body
+    // (Duff's device: `case 7:` inside a do-while). The statement stays in
+    // its enclosing structure with a TokenLabel of this name in place, and
+    // the switch dispatch emits `case V: goto <name>;` — restructuring the
+    // body into per-case buckets would gut the enclosing loop/if.
+    std::string in_place_label;
     TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const override { return TokenID::tkCASE; }
     virtual TokenBase *clone() override { return new TokenCASE(); }
@@ -1521,6 +1870,18 @@ class TokenObjTemp: public TokenBase
 public:
     DataDefCLASS *obj_class;
     std::vector<TokenBase *> ctor_args;
+    // Which spelling opened the argument list survives to construction
+    // ([dcl.init.list]/3-4): the braced form `T{...}` list-initializes (an
+    // initializer-list ctor takes the WHOLE list as one argument; a class
+    // that IS std::initializer_list builds from the backing array directly),
+    // the paren form `T(...)` never does. TokenDecl::ctor_args_braced is the
+    // declaration path's twin of this flag.
+    bool braced = false;
+    // KEYED carrier-literal elements (`{"a": 1}` in expression position,
+    // owner 2026-08-31): PARALLEL to ctor_args, NULL = positional — the
+    // TokenDecl::ctor_arg_keys convention. Populated only for a braced
+    // list whose obj_class is the carrier (ddARRAY).
+    std::vector<TokenBase *> ctor_arg_keys;
     TokenObjTemp(DataDefCLASS *c) : TokenBase() { obj_class = c; _datatype = (DataDef *)c; }
     virtual TokenID id() const override { return TokenID::tkObjTemp; }
     virtual DataDef *datadef() const override { return (DataDef *)obj_class; }
@@ -1649,7 +2010,8 @@ public:
     TokenBREAK() : TokenKeyword("break") {}
     virtual TokenID id() const override { return TokenID::tkBREAK; }
     virtual TokenBase *clone() override { return new TokenBREAK(); }
-    virtual TokenBase *parse(Program &pgm) override { return this; }
+    // Out-of-line (parser.cpp): the MT-5 scope-block crossing check.
+    virtual TokenBase *parse(Program &pgm) override;
 };
 
 class TokenCONT: public TokenKeyword
@@ -1658,7 +2020,8 @@ public:
     TokenCONT() : TokenKeyword("continue") {}
     virtual TokenID id() const override { return TokenID::tkCONT;  }
     virtual TokenBase *clone() override { return new TokenCONT();  }
-    virtual TokenBase *parse(Program &pgm) override { return this; }
+    // Out-of-line (parser.cpp): the MT-5 scope-block crossing check.
+    virtual TokenBase *parse(Program &pgm) override;
 };
 
 

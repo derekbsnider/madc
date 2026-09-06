@@ -1450,13 +1450,20 @@ static MIR_proto_t create_proto (MIR_context_t ctx, const char *name, size_t nre
     MIR_get_error_func (ctx) (MIR_alloc_error, "Not enough memory for creation of proto %s", name);
   proto->name = get_ctx_str (ctx, name);
   proto->res_types = (MIR_type_t *) ((char *) proto + sizeof (struct MIR_proto));
-  if (nres != 0) memcpy (proto->res_types, res_types, nres * sizeof (MIR_type_t));
+  /* The proto's result and argument types are canonicalized like the func's
+     (create_func) and like every register (new_func_reg): with MIR_LD_IS_D a
+     raw MIR_T_LD here met the canonical D register of a call's result or
+     argument operand -- "in instruction 'call': unexpected operand mode for
+     operand #3. Got 'double', expected 'ldouble'" (a _Complex long double
+     result or argument on arm64-macos). */
+  for (size_t i = 0; i < nres; i++) proto->res_types[i] = canon_type (res_types[i]);
   proto->nres = (uint32_t) nres;
   proto->vararg_p = vararg_p != 0;
   VARR_CREATE (MIR_var_t, proto->args, ctx->alloc, nargs);
   for (size_t i = 0; i < nargs; i++) {
     arg = args[i];
     arg.name = get_ctx_str (ctx, arg.name);
+    arg.type = canon_type (arg.type);
     VARR_PUSH (MIR_var_t, proto->args, arg);
   }
   return proto;
@@ -1637,6 +1644,14 @@ static MIR_reg_t new_func_reg (MIR_context_t ctx, MIR_func_t func, MIR_type_t ty
 
   if (func == NULL)
     MIR_get_error_func (ctx) (MIR_reg_type_error, "func can not be NULL for new reg creation");
+  /* MIR_LD_IS_D canonizes MIR_T_LD to MIR_T_D on data, proto results, func
+     vars and memory operands -- and create_insn turns the LD insn codes into
+     their D twins.  A REGISTER was the one typed slot left out: a front end
+     that asks for an ldouble reg on an 8-byte-long-double host (c2mir's
+     _Complex long double return, arm64-macos) got an LD-typed reg fed to an
+     i2d, and the type check refused it ("Got 'ldouble', expected 'double'",
+     testcomplexretconv).  One rule for every slot. */
+  type = canon_type (type);
   if (!MIR_reg_type_p (type))
     MIR_get_error_func (ctx) (MIR_reg_type_error, "wrong type for var %s: got '%s'", name,
                               type_str (ctx, type));

@@ -1,0 +1,28 @@
+// A class returned NATIVELY (no destructor, so c2mir's struct return carries
+// the result object) that declares user copy/move constructors: `C b = make(5)`
+// is the result object itself ([dcl.init] guaranteed elision — no constructor
+// runs), and the prvalue bound to a reference parameter is materialized.
+// Before: c2mir `lvalue required as unary & operand` — the move constructor was
+// handed `&make(5)`. Oracle g++ == clang++: 5 / 7 / 1 / 9 / 0
+#include <stdio.h>
+static int copies = 0;
+struct C {
+	int n;
+	C(int v) : n(v) {}
+	C(const C &o) : n(o.n) { ++copies; }
+	C(C &&o) : n(o.n) { o.n = -1; }
+};
+C make(int v) { C c(v); return c; }
+int use(const C &x) { return x.n; }
+int main()
+{
+	C b = make(5);
+	printf("%d\n", b.n);
+	printf("%d\n", use(make(7)));
+	C e(make(1));
+	printf("%d\n", e.n);
+	C f = C(make(9));
+	printf("%d\n", f.n);
+	printf("%d\n", copies);
+	return 0;
+}

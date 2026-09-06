@@ -1,0 +1,18 @@
+// [temp.class.spec]: an explicit specialization on a POINTER to a builtin
+// must be found by every use, however the pointee is spelled. The
+// specialization written `int*` keyed its core through the lexer's
+// literal-typing dd ("int") while a use site — spelled from the
+// declared-type canonical dd — keyed "int32_t*": two keys for one type,
+// the specialization invisible, the primary instantiated silently (v = 0).
+// Oracle: g++ and clang++ print 1 2 3 2 0.
+template <class T> struct N { enum { v = 0 }; };
+template <> struct N<wchar_t*> { enum { v = 1 }; };
+template <> struct N<int*> { enum { v = 2 }; };
+template <> struct N<unsigned long*> { enum { v = 3 }; };
+typedef int *ip;
+int main()
+{
+    __builtin_printf("%d %d %d %d %d\n", N<wchar_t*>::v, N<int*>::v,
+	N<unsigned long*>::v, N<ip>::v, N<int>::v);
+    return 0;
+}

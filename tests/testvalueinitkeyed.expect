@@ -1,0 +1,7 @@
+m: a=1 b=two c=2.5 d=true n=4
+ix: 0=7 1=eight 3=three n=4
+m2: kn=val sum=5
+m2 bare-read: val cstr-read: val
+ix[i1]=eight
+m3: kn=val
+same: 1

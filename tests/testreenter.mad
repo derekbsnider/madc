@@ -1,0 +1,22 @@
+// R3 sibling design: verb re-entrancy is ENFORCED, not just stated. A
+// script verb body that calls ui::act again on the same world gets the
+// stable refusal as that nested call's result — loudly, never a nested
+// dispatch — and the latch clears for the next top-level act.
+int main()
+{
+    long w = ui::world_new();
+    long es = ui::create(w, "session");
+    ui::bind_verb(w, "inner", "return \"inner ran\";");
+    ui::bind_verb(w, "outer",
+	"value nested;\n"
+	"ui::act(nested, w, actor, \"inner\", \"\");\n"
+	"return format(\"outer saw: {}\", nested);\n");
+
+    var out;
+    ui::act(out, w, es, "outer", "");
+    println("outer: {}", out);
+    ui::act(out, w, es, "inner", "");
+    println("direct: {}", out);
+    ui::world_close(w);
+    return 0;
+}

@@ -1,0 +1,18 @@
+// A using-directive nominates a namespace whose NESTED namespace is then
+// named as a qualifier ([namespace.udir]/2): after `using namespace lib;`,
+// `fs::path` names lib::fs::path — in a declaration and in an expression.
+// Oracle g++ / clang++: 1 5 9
+#include <stdio.h>
+namespace lib { namespace fs {
+	class path { public: int m; path() : m(1) {} };
+	int depth(int d) { return d + 4; }
+} }
+using namespace lib;
+
+int main()
+{
+	fs::path p;
+	int d = fs::depth(p.m);
+	printf("%d %d %d\n", p.m, d, fs::depth(d));
+	return 0;
+}

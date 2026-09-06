@@ -1,0 +1,1 @@
+genuine Windows runs the packed PE HEADERLESS (no toolchain on the box): <iomanip> is the documented pack-corpus block — the same reason as testiomanip.headerless_skip (wine runs on the container, where the staged mingw headers are on disk)

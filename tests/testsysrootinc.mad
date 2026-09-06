@@ -1,0 +1,17 @@
+// Positive control for --no-sysroot-includes (tests/testnosysrootinc.mad): the
+// SAME program without the flag. <sys/sysinfo.h> is a glibc header that lives
+// only in the sysroot's C dirs (no embedded twin, not in the C++ stdlib dirs),
+// so it resolves here and must NOT resolve under the flag.
+// No <stdio.h>: on linux madc's embedded C headers are a SUPPLEMENT, not a
+// provider (glibc's own header is the one that resolves), so under the flag
+// stdio.h would fail first and mask the header this pair is about. The
+// always-available println intrinsic keeps the program include-free apart
+// from the sysroot-only header.
+#include <sys/sysinfo.h>
+int main()
+{
+	struct sysinfo s;
+	int ok = sysinfo(&s) == 0;
+	println("sysroot header resolved: {}", ok);
+	return 0;
+}

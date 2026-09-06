@@ -1,0 +1,8 @@
+# madcide "classic" scheme: the bright/bold look. Same vocabulary as
+# default.theme; swap with ^K T (theme names are file names).
+keyword bold white
+type bold cyan
+string bold green
+number bold magenta
+comment green
+function bold yellow

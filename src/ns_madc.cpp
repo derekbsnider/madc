@@ -67,10 +67,9 @@ void sys_populate_args(int argc, char **argv)
     sys.path = value::make_array();
     if ( argc > 0 && argv && argv[0] )
     {
-	std::string a0(argv[0]);
-	size_t sl = a0.rfind('/');
-	if ( sl != std::string::npos && sl > 0 )
-	    sys.path.array().push_back(value(a0.substr(0, sl)));
+	std::string dir = madc::detail::host_path_dirname(argv[0]);
+	if ( dir.size() > 1 )	// ">1": a bare root separator stays off the path
+	    sys.path.array().push_back(value(dir.substr(0, dir.size() - 1)));
     }
     sys.path.array().push_back(value("."));
 }
@@ -187,6 +186,110 @@ double eval_double_ctx(const char *source, value &ctx)
 	{ std::string s = source ? source : ""; return madc_runtime_eval_double_ctx(&s, &ctx); }
 value &eval_string_ctx(value &out, const char *source, value &ctx)
 	{ std::string s = source ? source : "", r; madc_runtime_eval_string_ctx(&r, &s, &ctx); out = value(r); return out; }
+
+// Compiler data as data (madcide IDE-3): compile-NEVER-execute a source
+// buffer in a child Program and return the compiler's own structured
+// data as a value array — the meta-level surface an IDE's diagnostics
+// pane and outline project. The <ns_madc> declarations carry the row
+// shapes and the thread contract.
+value &diagnostics(value &out, const char *source)
+	{ std::string s = source ? source : "", f; madc_source_diagnostics(&out, &s, &f); return out; }
+value &diagnostics(value &out, const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; madc_source_diagnostics(&out, &s, &f); return out; }
+value &outline(value &out, const char *source)
+	{ std::string s = source ? source : "", f; madc_source_outline(&out, &s, &f); return out; }
+value &outline(value &out, const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; madc_source_outline(&out, &s, &f); return out; }
+// The render query (the view seam's code views): parse the buffer in the
+// same child and render its cir_node tree as `target` (the --emit=
+// vocabulary). The <ns_madc> declaration carries the contract.
+bool emit(value &out, const char *source, const char *filename,
+	  const char *target)
+	{ std::string s = source ? source : "", f = filename ? filename : "", t = target ? target : ""; return madc_source_emit(&out, &s, &f, &t); }
+
+// Persistent parse handles (madcide AST-1): the compiler-data surfaces
+// above given a LIFETIME — open a live parse per TU, refresh it whole
+// on save/check, query outline / check / enclosing from the RETAINED
+// state without re-running the front end. The <ns_madc> declarations
+// carry the row shapes and the thread contract.
+int64_t parse_open(const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_parse_open(&s, &f); }
+int64_t parse_open_file(const char *path)
+	{ std::string p = path ? path : ""; return madc_parse_open_file(&p); }
+bool parse_refresh(int64_t handle, const char *source)
+	{ std::string s = source ? source : ""; return madc_parse_refresh(handle, &s); }
+bool parse_close(int64_t handle)
+	{ return madc_parse_close(handle); }
+value &parse_outline(value &out, int64_t handle)
+	{ madc_parse_outline(&out, handle); return out; }
+value &parse_check(value &out, int64_t handle)
+	{ madc_parse_diagnostics(&out, handle); return out; }
+value &parse_enclosing(value &out, int64_t handle, int64_t line,
+		       int64_t column)
+	{ madc_parse_enclosing(&out, handle, line, column); return out; }
+value &parse_spans(value &out, int64_t handle)
+	{ madc_parse_spans(&out, handle); return out; }
+
+// The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
+// madc IS the compiler; ^B never re-parses, never execs a madc):
+// parse_build emits a native artifact from the handle's EXISTING parsed
+// tree; parse_run runs that tree in a fork() child. The <ns_madc>
+// declarations carry the contracts.
+bool parse_build(value &out_diags, int64_t handle, const char *kind,
+		 const char *outpath)
+	{
+	    std::string k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_parse_build(&out_diags, handle, &k, &o);
+	}
+int64_t parse_run(int64_t handle)
+	{ return madc_parse_run(handle); }
+
+// The build surface (madcide IDE-10c): the CLI's AOT lane run IN-PROCESS —
+// the IDE lives inside the compiler and never shells out to a PATH madc.
+// The <ns_madc> declaration carries the contract (kinds, row shape).
+bool build_native(value &out_diags, const char *path, const char *kind,
+		  const char *outpath)
+	{
+	    std::string p = path ? path : "", k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_build_native(&out_diags, &p, &k, &o);
+	}
+
+// The running compiler's own resolved executable path (madcide IDE-10c:
+// "run this program" spawns a child OF SELF — never a PATH madc). Stable
+// for the process lifetime (C++11 static init; immutable after — safe
+// for concurrent readers); empty string = the platform probe failed.
+const char *compiler_path()
+	{
+	    static const std::string p = madc_self_exe_path();
+	    return p.c_str();
+	}
+value &lex_spans(value &out, const char *text, const char *filename)
+	{
+	    std::string src = text ? text : "";
+	    std::string disp = filename ? filename : "";
+	    madc_lex_spans(&out, &src, &disp);
+	    return out;
+	}
+int64_t project_open(const char *manifest)
+	{ std::string m = manifest ? manifest : ""; return madc_project_open(&m); }
+value &project_tus(value &out, int64_t handle)
+	{ madc_project_tus(&out, handle); return out; }
+bool project_close(int64_t handle)
+	{ return madc_project_close(handle); }
+// The project build/run pair (madcide ^B correlation, owner design doc
+// 2026-08-31: with a manifest open, Build = the --project build). The
+// <ns_madc> declarations carry the contracts.
+bool project_build(value &out_diags, const char *manifest, const char *kind,
+		   const char *outpath)
+	{
+	    std::string m = manifest ? manifest : "", k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_project_build(&out_diags, &m, &k, &o);
+	}
+int64_t project_run(const char *manifest)
+	{ std::string m = manifest ? manifest : ""; return madc_project_run(&m); }
 
 // Context builders. Kind-safe via value_object_for_write: a null ctx
 // vivifies to kind::object; any other non-object kind degrades to a

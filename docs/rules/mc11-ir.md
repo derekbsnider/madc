@@ -57,3 +57,31 @@ This was dictated by the project owner on 2026-05-29 as a fixed architectural
 decision. Do not re-open "should the cir_node tree be lowered or high-level" —
 it is deliberately both, by deriving from `node_t` while carrying its
 originating tokens.
+
+## Why a token copy keeps its origin (2026-09-04)
+
+`TokenBase::clone()` and its 118 overrides construct a fresh token, and the
+TokenBase constructor stamps it with the static `_parse_file/_line/_column` —
+the position of the token the parser last consumed. Every parser-side copy of a
+template pattern, a default argument, a call argument or a substitution run was
+therefore attributed to wherever the parser happened to be at copy time. The
+consequence was not cosmetic: the builder's root/library split classifies a
+function body by its file, so an instantiated member-template body attributed
+to the user's `.mad` was a ROOT — emitted unconditionally — while the same body
+attributed to the header was a library function emitted only on reference.
+Live parses got the header by accident (the last token consumed before the
+injection came from enable_if.h); the darwin pack lane got the user file, and
+lowered an unselected libc++ `basic_string` constructor instance whose helper
+called a never-instantiated member template: an undefined import on both mac
+arches (dispatch #8). Two earlier fixes had met the same stamping and patched
+around it locally by redirecting `_parse_*` across a clone loop (class-template
+instantiation, the lazy pattern capture); the member-template injection had
+neither — the rule lived in N places.
+
+gcc locates an instantiation at the template's definition (the instantiated
+decl carries the pattern's DECL_SOURCE_LOCATION); clang the same (the
+template's SourceLocation). A macro-expanded token, by contrast, is located at
+its expansion site (gcc's primary location) — so the lexer's replacement clones
+stay bare, and `src/lexer.cpp` is the gate's one exempt file. The two
+`_parse_*` redirects remain: they still attribute the tokens those loops
+SYNTHESIZE (`new TokenIdent(mangled)`, concrete type tokens) to the template.

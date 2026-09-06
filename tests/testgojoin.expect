@@ -1,0 +1,3 @@
+pre tr=m(argc=2,wrapper);mend;
+drain w1 tr=m(argc=2,wrapper);mend;w1;
+drain w2 tr=m(argc=2,wrapper);mend;w1;w2;

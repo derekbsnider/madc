@@ -1,0 +1,9 @@
+# madcide "vivid" scheme: the original colourful look (the pre-JOE-parity
+# default) — every class gets a colour, including the AST-backed function
+# class JOE doesn't have. Swap with ^K T.
+keyword yellow
+type green
+string red
+number magenta
+comment cyan
+function bold blue

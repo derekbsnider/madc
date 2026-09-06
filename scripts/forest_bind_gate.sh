@@ -1515,10 +1515,124 @@ sb_bind=$(timeout 60 "$BIN" --forest-bind="$sb_snap" tmp/fbgate_silbody_consumer
 rm -f "$sb_snap" "$sb_gcc"
 echo "forest_bind_gate: [silbody] OK — address-referenced static-inline sibling materializes through the bind, output == live == g++"
 
+# --- case: secvptr — a class with a SECONDARY polymorphic base restored from the
+#     grove, whose INLINE ctor is loaded and emitted. The struct emitter names
+#     the secondary vptr fields from the layout-time secondary_vptr_owners list;
+#     the ctor stamps them from vtable_groups. Only the groups are frozen, so a
+#     restored class refills the list from them (secondary_vptr_owners_from_groups).
+#     Without the refill the bound `struct C` lacked `__vptr_16` and the loaded
+#     ctor's stamp of it was a c2mir "struct has no member" error (libc++
+#     basic_iostream<char>, the darwin-host istringstream family). `pb->fb()`
+#     dispatches through the secondary vptr, so a wrong stamp is a wrong answer.
+cat > tmp/fbgate_secvptr.h <<'EOF'
+#ifndef FBGATE_SECVPTR_H
+#define FBGATE_SECVPTR_H
+struct FbgA { long a; FbgA() : a(1) {} virtual ~FbgA() {} virtual int fa() { return 10; } };
+struct FbgB { long b; FbgB() : b(2) {} virtual ~FbgB() {} virtual int fb() { return 20; } };
+struct FbgC : FbgA, FbgB { long c; FbgC() : c(3) {} int fb() { return 21; } };
+#endif
+EOF
+cat > tmp/fbgate_secvptr_producer.cpp <<'EOF'
+#include <fbgate_secvptr.h>
+int main() { FbgC x; return x.fa(); }
+EOF
+cat > tmp/fbgate_secvptr_consumer.cpp <<'EOF'
+#include <fbgate_secvptr.h>
+#include <cstdio>
+int main()
+{
+    FbgC x;
+    FbgB *pb = &x;
+    printf("fb=%d fa=%d sum=%ld sz=%d\n", pb->fb(), x.fa(), x.a + x.b + x.c, (int)sizeof(FbgC));
+    return 0;
+}
+EOF
+run_case secvptr "fb=21 fa=10 sum=6 sz=40"
+
+# --- case: friendgrant — a class whose PRIVATE member is read by its hidden-friend
+#     operators (one plain, one a TEMPLATE-HEAD friend), restored from the grove.
+#     The friendship grants (friend_function_names / friend_class_names) are
+#     parse-time access state; before v43 they were never frozen, so a hoisted
+#     hidden-friend body instantiated against the restored class was refused its
+#     private read, the instantiation failed silently, and the operator fell to
+#     the raw C operator (libc++ <iomanip>'s __iom_t5 inserter, testiomanip on
+#     the darwin runner — pack-bound only). Both operators must bind and answer
+#     exactly as live and g++ do.
+cat > tmp/fbgate_friendgrant.h <<'EOF'
+#ifndef FBGATE_FRIENDGRANT_H
+#define FBGATE_FRIENDGRANT_H
+class FbfA {
+	int n;
+public:
+	FbfA(int v) : n(v) {}
+	friend int operator+(const FbfA &a, int k) { return a.n + k; }
+	template <class T>
+	friend T operator*(const FbfA &a, T k) { return a.n * k; }
+};
+#endif
+EOF
+cat > tmp/fbgate_friendgrant_producer.cpp <<'EOF'
+#include <fbgate_friendgrant.h>
+int main() { FbfA a(1); return a + 1; }
+EOF
+cat > tmp/fbgate_friendgrant_consumer.cpp <<'EOF'
+#include <fbgate_friendgrant.h>
+#include <cstdio>
+int main()
+{
+    FbfA a(7);
+    printf("plus=%d times=%d\n", a + 1, a * 2);
+    return 0;
+}
+EOF
+run_case friendgrant "plus=8 times=14"
+
+# --- case: patternalias — a class template partial specialization whose
+#     class-scope alias is `decltype` of a call on the template parameter
+#     (`using A = decltype(addr_of(declv<It>()))` — libc++'s
+#     __unwrap_iter_impl<_Iter,true>::_ToAddressT), frozen from the grove and
+#     instantiated by the consumer for NEW arguments. The freezer's class-pattern
+#     CAPTURE parse resolved that decltype against the placeholder `It`, the
+#     deduction failed, and the alias was captured as a CONCRETE int64 — so every
+#     pattern materialization (the frozen exemplar and each consumer
+#     instantiation) typed `A` as long long: c2mir `invalid operand types of -`
+#     in std::vector copies on the darwin runner (4 tests). Live and g++ agree
+#     on the per-instantiation type; the bound consumer must too.
+cat > tmp/fbgate_patternalias.h <<'EOF'
+#ifndef FBGATE_PATTERNALIAS_H
+#define FBGATE_PATTERNALIAS_H
+template<class T> T* fbpa_addr_of(T* p) { return p; }
+template<class T> T fbpa_declv();
+template<class It, bool = true> struct FbpaImpl;
+template<class It>
+struct FbpaImpl<It, true> {
+	using A = decltype(fbpa_addr_of(fbpa_declv<It>()));
+	static A un(It i) { return fbpa_addr_of(i); }
+};
+#endif
+EOF
+cat > tmp/fbgate_patternalias_producer.cpp <<'EOF'
+#include <fbgate_patternalias.h>
+int main() { char c = 'x'; char *p = FbpaImpl<char*>::un(&c); return *p == 'x' ? 0 : 1; }
+EOF
+cat > tmp/fbgate_patternalias_consumer.cpp <<'EOF'
+#include <fbgate_patternalias.h>
+#include <cstdio>
+int main()
+{
+    int x = 1; long y = 2;
+    int *p = FbpaImpl<int*>::un(&x);
+    long *q = FbpaImpl<long*>::un(&y);
+    printf("%d %ld\n", *p, *q);
+    return 0;
+}
+EOF
+run_case patternalias "1 2"
+
 # NOTE: this tally is hand-maintained, and that bit me — the [ldouble] case ran
 # and passed while the summary still said 25/25, so the line UNDERSTATED
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 26/26 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++"
+echo "forest_bind_gate: GREEN 29/29 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
 exit 0

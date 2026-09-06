@@ -181,4 +181,64 @@ int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx);
 double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx);
 void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ctx);
 
+// ---- madc:: compiler-data internals (defined in src/parser.cpp) --------
+// Compile-never-execute a source buffer in a child Program; the compiler's
+// own structured data comes back as a value ARRAY (madcide IDE-3):
+// diagnostics = {severity, phase, message, file, line, column} rows,
+// outline = {kind, name, line, column, end_line} rows for the buffer's
+// own definitions. result = madc::value*, source/filename = std::string*.
+void *madc_source_diagnostics(void *result, void *source, void *filename);
+void *madc_source_outline(void *result, void *source, void *filename);
+// madc::emit — parse a buffer in the same child and render its cir_node
+// tree as `target` (the --emit= vocabulary: "c11"|"mc11"). result =
+// madc::value* (string kind), source/filename/target = std::string*.
+// False = unknown target or a buffer that does not parse/translate.
+bool madc_source_emit(void *result, void *source, void *filename,
+		      void *target);
+// madc::build_native — the CLI's AOT lane in-process (madcide IDE-10c):
+// parse a FILE in a child Program, emit a native artifact. kind = "exe"
+// (PIE executable, the -o default) | "obj" (relocatable .o). result =
+// madc::value* (diagnostics rows, same shape as madc_source_diagnostics —
+// a failure always carries at least one error row); path/kind/outpath =
+// std::string*. True = the artifact was written.
+bool madc_build_native(void *result, void *path, void *kind, void *outpath);
+
+// ---- madc:: persistent parse handles (madcide AST-1) --------------------
+// The same child machinery given a LIFETIME: open/refresh/close, with
+// outline / diagnostics / enclosing-at-position served from the retained
+// parsed state; a project handle groups a cc.json manifest's TUs. Handles
+// are int64 (>= 1; 0 = failure); result = madc::value*, strings =
+// std::string*.
+int64_t madc_parse_open(void *source, void *filename);
+int64_t madc_parse_open_file(void *path);
+bool madc_parse_refresh(int64_t handle, void *source);
+bool madc_parse_close(int64_t handle);
+void *madc_parse_outline(void *result, int64_t handle);
+void *madc_parse_diagnostics(void *result, int64_t handle);
+void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column);
+void *madc_parse_spans(void *result, int64_t handle);
+// The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
+// madc IS the compiler): madc_parse_build emits a native artifact from
+// the handle's EXISTING parsed tree (no re-parse; kind/outpath =
+// std::string*, result = diagnostics rows — a false always carries an
+// error row); madc_parse_run runs that tree in a fork() child and
+// returns the guest's exit status (negative = never ran: -1 bad handle,
+// -2 parse errors, -3 fork failed / no fork on this platform).
+bool madc_parse_build(void *result, int64_t handle, void *kind,
+		      void *outpath);
+int64_t madc_parse_run(int64_t handle);
+void *madc_lex_spans(void *result, void *source, void *filename);
+int64_t madc_project_open(void *manifest_path);
+void *madc_project_tus(void *result, int64_t handle);
+bool madc_project_close(int64_t handle);
+// The project build/run pair (madcide ^B correlation): the --project
+// AOT lane in-process (result = diagnostics rows; a false always
+// carries an error row) and the --project JIT lane in a fork child
+// (negative = never ran: -1 unreadable manifest, -2 empty, -3 fork/
+// spawn failed).
+bool madc_project_build(void *result, void *manifest_path, void *kind,
+			void *outpath);
+int64_t madc_project_run(void *manifest_path);
+
 #endif // __NS_COMMON_H

@@ -1,0 +1,27 @@
+/* Mixed function/variable comma declaration list (c-testsuite 00121):
+   `int f(int x), g(int x), a;` — after a prototype continuation, the
+   trailing variable declarator re-enters parseDeclaration with a HEAP
+   type token, never a stack local: parseDeclaration records that token
+   as TopDecl.origin and MC11-IR keeps originating tokens for the life
+   of the tree, so a stack token is a dangling origin the CIR emitter
+   reads later (the crash surfaced only when an unrelated edit shifted
+   the stack layout). Same rule at the C89 implicit-int `static f()` arm.
+   Oracle: gcc/clang -std=gnu11 print a=23 b=3.5. */
+#include <stdio.h>
+
+int f(int x), g(int x), a;
+float fx(), fy(), b;
+
+int main()
+{
+    a = f(2) + g(3);
+    b = fx() + fy();
+    printf("a=%d\n", a);
+    printf("b=%.1f\n", b);
+    return 0;
+}
+
+int f(int x) { return x * 10; }
+int g(int x) { return x; }
+float fx() { return 1.5f; }
+float fy() { return 2.0f; }

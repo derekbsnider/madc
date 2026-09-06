@@ -1,0 +1,10 @@
+// MT-5 refusal reducer: `await` assigns into the value carrier only (a
+// channel carries values; chan_recv's out is `value &`) — a scalar target
+// is refused at parse time with the shape named.
+int main()
+{
+    long c = madc::chan_make(1);
+    long p;
+    p = await c;
+    return 0;
+}

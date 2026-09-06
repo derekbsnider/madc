@@ -41,7 +41,10 @@ static const MIR_reg_t TEMP_LDOUBLE_HARD_REG2 = V17_HARD_REG;
 
 static inline int target_hard_reg_type_ok_p (MIR_reg_t hard_reg, MIR_type_t type) {
   assert (hard_reg <= MAX_HARD_REG);
-  return MIR_fp_type_p (type) ? hard_reg >= V0_HARD_REG : hard_reg < V0_HARD_REG;
+  /* The 128-bit vector is an FP-class value: it lives in the SIMD/FP file as a
+     Q register -- the shape the 128-bit long double already has there. */
+  return MIR_fp_type_p (type) || MIR_vector_type_p (type) ? hard_reg >= V0_HARD_REG
+                                                          : hard_reg < V0_HARD_REG;
 }
 
 static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
@@ -57,5 +60,62 @@ static inline int target_fixed_hard_reg_p (MIR_reg_t hard_reg) {
 }
 
 static int target_locs_num (MIR_reg_t loc, MIR_type_t type) {
-  return loc > MAX_HARD_REG && type == MIR_T_LD ? 2 : 1;
+  return loc > MAX_HARD_REG && (type == MIR_T_LD || MIR_vector_type_p (type)) ? 2 : 1;
+}
+
+/* The SIMD/FP argument class: F, D, LD and the 128-bit vector -- AAPCS64 C.1
+   allocates a Short Vector exactly like a floating-point value (v[NSRN]).
+   Read by the machinizer (mir-gen-aarch64.c) and the call shims
+   (mir-aarch64.c): one owner for both directions of every call. */
+static inline int fp_class_type_p (MIR_type_t type) {
+  return type == MIR_T_F || type == MIR_T_D || type == MIR_T_LD || MIR_vector_type_p (type);
+}
+
+/* A 16-byte, 16-byte-aligned stack argument slot -- and a Q register in the
+   register file: the 128-bit long double and every vector.  (With MIR_LD_IS_D
+   the long double is 8 bytes and MIR_T_LD is canonicalized away before it
+   reaches here; the predicate is written per type so Apple's 8-byte long
+   double never shares the vector's slot.) */
+static inline int stack_arg_16_p (MIR_type_t type) {
+  return (type == MIR_T_LD && __SIZEOF_LONG_DOUBLE__ == 16) || MIR_vector_type_p (type);
+}
+
+/* The stack slot of a scalar argument: its byte size, which is also its
+   alignment.  AAPCS64 C.12-C.14 give every stack argument at least 8 bytes
+   (16 for a 16-byte type); Apple's arm64 ABI ("Writing ARM64 Code for Apple
+   Platforms": function arguments may consume stack slots that are not
+   multiples of 8 bytes) packs a NON-variadic argument at its natural size and
+   alignment -- a char takes one byte, a short two, an int or a float four --
+   while a variadic one keeps the 8-byte slot Apple's va_arg advances by.  A
+   block (composite) keeps its 8-byte alignment on both.  One owner for the
+   machinizer's call site and callee (mir-gen-aarch64.c) and both call shims
+   (mir-aarch64.c): a MIR caller and a MIR callee agree with each other under
+   any rule, only the platform compiler on the other side can tell. */
+static inline size_t stack_arg_slot_size (MIR_type_t type, int vararg_p) {
+  if (stack_arg_16_p (type)) return 16;
+#if defined(__APPLE__)
+  if (!vararg_p) {
+    if (type == MIR_T_I8 || type == MIR_T_U8) return 1;
+    if (type == MIR_T_I16 || type == MIR_T_U16) return 2;
+    if (type == MIR_T_I32 || type == MIR_T_U32 || type == MIR_T_F) return 4;
+  }
+#else
+  (void) vararg_p;
+#endif
+  return 8;
+}
+
+/* where a slot of the given size starts: the running offset rounded up to the
+   slot's alignment, which is its size */
+static inline size_t stack_arg_slot_start (size_t offset, size_t slot_size) {
+  return (offset + slot_size - 1) / slot_size * slot_size;
+}
+
+/* The memory type of the slot's load or store: the argument's own type for the
+   SIMD/FP class and for a slot narrower than 8 bytes (a packed Apple char /
+   short / int, read and written at that width, a load extending by the
+   type), an 8-byte integer otherwise. */
+static inline MIR_type_t stack_arg_mem_type (MIR_type_t type, int vararg_p) {
+  if (fp_class_type_p (type) || stack_arg_slot_size (type, vararg_p) < 8) return type;
+  return MIR_T_I64;
 }

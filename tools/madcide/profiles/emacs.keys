@@ -1,0 +1,42 @@
+# madcide keybinding profile: Emacs-style — the same action vocabulary
+# as joe.keys respelled onto Emacs's CONTROL chords (C-x families
+# included; the chord grammar is the same data joe's ^K uses).
+#
+# HONEST SUBSET (the two engine gaps, named): Meta has no key spelling
+# yet (an ESC prefix cancels a pending chord), so the M- seats (M-v,
+# M-w, M-x, M-g g) wait on a meta spelling; C-SPC (set-mark) has no
+# NUL spelling, so the region pair is incomplete — mark stays unbound
+# rather than squatting a fake seat. Region selection here is
+# mark..caret live (no `bend` in this set), which IS the Emacs region
+# model.
+#
+# File and exit
+^x ^s save
+^x ^c quit
+^x ^f editfile
+^x b editfile
+# Buffers/project: C-x C-b (list-buffers) raises the project window.
+^x ^b project
+# Search
+^s find
+# Editing
+^k delline
+^w blockdel
+^d del
+^_ undo
+# Movement
+^a home
+^e end
+^v pgdn
+# Repaint (C-l recenter's closest seat)
+^l refresh
+# Windows: C-x 2 / 1 / 0 / o — the direct Emacs seats.
+^x 2 splitw
+^x 1 onlywin
+^x 0 killwin
+^x o nextw
+# The project window's keys (@project scope — profile data; the baked
+# defaults add esc/backspace).
+@project ins projadd
+@project del projdel
+@project enter projopen

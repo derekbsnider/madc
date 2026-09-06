@@ -1,0 +1,20 @@
+// The embedded <stddef.h> must not typedef wchar_t in C++ — gcc's stddef.h
+// and clang's __stddef_wchar_t.h guard that typedef with #ifndef __cplusplus.
+// Unguarded, the alias shadowed the keyword's identity in every DERIVED
+// spelling: bare `wchar_t` went through the builtin table, `wchar_t*` resolved
+// the alias and keyed int32_t*, so libc++'s basic_string_view<wchar_t>::
+// const_iterator shared ONE reverse_iterator class with vector<int>'s (the
+// pack froze basic_ostream<int32_t, char_traits<wchar_t>> the same way).
+// Oracle: g++ and clang++ print 1 2 1 1.
+#include <stddef.h>
+template <class T> struct N { enum { v = 0 }; };
+template <> struct N<wchar_t*> { enum { v = 1 }; };
+template <> struct N<int*> { enum { v = 2 }; };
+typedef wchar_t *wp;
+struct S { typedef wchar_t *swp; };
+int main()
+{
+    __builtin_printf("%d %d %d %d\n", N<wchar_t*>::v, N<int*>::v, N<wp>::v,
+	N<S::swp>::v);
+    return 0;
+}

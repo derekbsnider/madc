@@ -1,7 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-08-23 (v0.94.0 on
-`develop`, v0.92.1 promoted on `master`). **This file is forward-looking:**
+Master plan linking all workstreams. Updated 2026-09-01 (v0.97.0 on
+`develop`, v0.95.2 promoted on `master`). **This file is forward-looking:**
 release history lives in [CHANGELOG.md](../../CHANGELOG.md) and
 [docs/release-notes/](../release-notes/), and the authoritative live snapshot
 in `claude_status.json`. Completed work appears here only as a status cell in
@@ -35,27 +35,46 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **develop = v0.95.0** (2026-08-23): the `ui::` data-hub surface (Track 7
-  Phase 1) + Colossal Cave Adventure fully playable as a pure madc
-  `--project` program (94/94 reference logs byte-identical, a fulltest
-  gate) + the cold-startup arc (packed 11-TU launch 829 ms → ~150 ms
-  class) + the zero-include dialect contract + lean polyglot primaries.
-  v0.94.0 was the MIR hardening wave (upstream #467 fixed by us, PRs
-  #468/#466 adopted with contributor attribution); v0.93.0 fixed the
-  x86-64 scalar-convert false dependency (donut.c now beats gcc -O0).
-  Upstream wave 2 submitted: vnmakarov/mir issue #469 + PRs #470/#471 —
-  awaiting review.
-- **master = v0.92.1** (promoted 2026-08-20 with six assets: deb, rpm, macOS
-  arm64 + x86_64, Windows zip, SHA256SUMS). Every master promotion is
+- **develop = v0.98.0** (2026-09-06): the macOS full-suite release — the
+  darwin full-suite lane (GitHub's arm64 + Intel mac runners) green on
+  both arches (1293/0/0TO/24skip / 1294/0/0TO/23skip) after the seven-wave D4
+  burndown; the SIMD floor (MIR_T_V128, NEON) + the vector calling
+  convention gated against the host compiler; Apple stack-argument
+  packing; the libc++ `<list>` completion site; the stdlib flavor
+  boundary for `cout << value` / `println(std::string)`; `-w`; the
+  owner law that every platform lane's FULL suite gates master
+  (`lane_ledger.sh check --release`, release tier: libcxx, darwin-suite,
+  genuine-win — all driven from the container). v0.97.0 was the madcide
+  interaction arc + carrier literal ergonomics; v0.96.0 the
+  variadic-class arc.
+- **previous develop lines:** v0.96.0 (2026-08-28) the variadic-class arc —
+  `bin/madc examples/embed_hello.cpp` compiles AND RUNS at g++ parity
+  (both embedding-example legs are a fulltest gate); libmadc embedding
+  fixes (invocation-scoped guest iostream capture, eval-child host
+  callbacks); two forest-artifact fixes the push-gate battery caught
+  (rebound ranked ctors stamp `local_emit_name`; missing-content husks
+  re-include by canonical path). v0.95.x was the `ui::` data-hub
+  surface (Track 7 Phase 1) + Colossal Cave Adventure as a pure madc
+  `--project` program + the cold-startup arc + the zero-include
+  dialect contract; v0.94.0 the MIR hardening wave; v0.93.0 the x86-64
+  scalar-convert false-dependency fix. Upstream wave 2 submitted:
+  vnmakarov/mir issue #469 + PRs #470/#471 — awaiting review.
+- **master = v0.95.2** (promoted 2026-08-23; six CI-owned assets: deb, rpm,
+  linux tarball, Windows zip, macOS arm64 + x86_64) — the v0.98.0 promotion
+  follows this release once `lane_ledger.sh check --release` is green at it. Every master promotion is
   three-platform gated (`.claude/commands/promote.md` step 5).
-- **Baselines (v0.95.0):** counts in [docs/test-status.md](../test-status.md)
-  (JIT 1134/0/0TO/9skip; EXE/OBJ + packed + headerless per the v0.95.0
-  merge-wave battery), MIR c2mir-gen-test 1143/2286/0, Wine + Mac lanes
-  re-validated at promotion.
+- **Baselines (v0.98.0):** counts in [docs/test-status.md](../test-status.md)
+  (linux JIT 1308 passed / 0 failed / 0 timed out / 9 skipped; EXE 1249/0, OBJ 1249/0, packed 1308/0/0/9,
+  headerless 1274/0/0/43; libc++ flavor lane 1303/0/0TO/14skip; wine64 1251/0/0TO/66skip;
+  genuine Windows 1253/0/0TO/64skip; the darwin FULL suite on GitHub's mac runners
+  arm64 1293/0/0TO/24skip / Intel 1294/0/0TO/23skip; c-testsuite 220/220, baseline empty) — every
+  lane recorded in docs/lane-status.tsv at the promoted content.
 - **Standing opens:** `value` std::string ingestion; std::vformat phase 2;
-  the darwin known-opens (exec:// silent-empty output, the value intrinsic,
-  groves os.str()); no macOS full-suite lane (the wine-lane equivalent on Mac
-  hardware is the successor arc); Windows C-lane policy (task #58); front-end
+  the libc++ nested-map construct relowering (KG Gap
+  libcxx_nested_map_value_type_construct_relower — testphpdumpiter carries a
+  .libcxx_skip with the reason); the darwin mac-battery known-open (the
+  include-free value intrinsic, 10/1 on both runner arches); Windows C-lane
+  policy (task #58); front-end
   `__attribute__((cleanup))` on locals.
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity
   reached ~97.9% and ~475 integration tests passed. Retained only as the
@@ -74,7 +93,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — `cir_node` (MC11-IR) → c2mir → MIR correctness** | ongoing | **Promote gate MET** (2026-08-12, torture class-(a) burndown complete; stamp in [failset-classification.md](../parity/failset-classification.md)) and develop→master promotions resumed. Remains the standing correctness workstream: class-(b) GNU extensions, new-feature parity, and the reducer-per-fix discipline continue on it | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Floor LANDED in-tree (v0.98.0)** — MIR `MIR_T_V128` on x86-64 and aarch64 (NEON lane arithmetic, compares, shifts), the c2mir `vector_size` / `ext_vector_type` front-end, and the 128-bit vector CALLING CONVENTION on SysV, AAPCS64, Apple and win64 gated against the host compiler (`scripts/vector_abi_gate.sh`, 28 lines, in fulltest). Open: wider vectors (256/512-bit), upstreaming to vnmakarov/mir (held until the master promotion). History: branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
 | 1.7 | **Cold JIT startup toward tinycc latency** | ongoing | **In progress** — packed Adventure has landed positional auto-include filtering, lazy MIR generation, shared forest/prelude state, lazy MEMBER hydration, demand-driven derived restore, and c2mir registry pages (@`ad9be08d`, another −2.06% Ir). Remaining measured work: re-attribute host STL/string allocation after the arena; the zstd spine/arena raw-vs-compressed size trade needs owner direction | [cold-jit-startup.md](2026-08-22-cold-jit-startup.md) |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
@@ -121,6 +140,7 @@ class-(b) GNU extensions, and reimplementing eval/exec + REPL on MIR.
 | 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 | 2.10 | **Single-name local instantiations (flattened→Itanium-mangled)** | 1-2 wk | **Planned** | — |
 | 2.11 | **Self-host: madc compiles its own C++11 source** (ultimate dogfood) | large | **Planned (2026-06-26)** — feature audit done | failure-driven `selfhost` harness |
+| 2.12 | **C++11 conformance measured by a third-party suite** — gcc's g++ testsuite (`g++.dg` + `g++.old-deja` `dg-do run` tests with no target clause or `target c++11`: ~2330) driven by the existing gcc-torture runner, ratcheted against a baseline | 1-2 wk to first measurement | **Planned (2026-09-04)** — a ROADMAP GOAL, never a push or release gate (owner ruling); the metric is class-(a) C++11 failures → 0 | [2026-09-04-cxx-conformance-lane.md](2026-09-04-cxx-conformance-lane.md) |
 
 **2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
 **2.7 remaining:** exceptions are SCALAR-ONLY (int/double/cstr/`catch(...)`).
@@ -316,9 +336,9 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.2 | macOS SIMD (NEON) | 2-3 wk | **Complete** (v0.98.0: MIR_T_V128 on aarch64 — NEON lane arithmetic, compares, shifts; the vector calling convention on AAPCS64 and Apple gated against the host compiler by `scripts/vector_abi_gate.sh`; Apple stack-argument packing) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port (a working Windows build + release artifacts) | large | **Complete** (shipped in the v0.82.0 three-platform release; current: Wine 1061/0, genuine Windows 1010/0). Follow-ups: GitHub-Actions release automation, C-lane policy (task #58) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
+| 6.4 | Windows port (a working Windows build + release artifacts) | large | **Complete** (shipped in the v0.82.0 three-platform release; current: wine64 1251/0/0TO/66skip, genuine Windows 1253/0/0TO/64skip — a release-tier lane driven from the container over the W0.2 channel). Follow-ups: GitHub-Actions release automation, C-lane policy (task #58) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 
@@ -338,7 +358,7 @@ reference for levels/negotiation/WCAG detail.*
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 7.1 | Hub projections + value-typed semantic IR + Level 0 (text) + access model (keys/levels) + verb registry + `ui::prompt` | 3-5 wk | **DONE — v0.95.0**: the text-adventure pilot is fully playable (94/94 logs byte-identical, gated); surface documented in [docs/language/ns-ui.md](../language/ns-ui.md) | [phase 1](2026-08-20-track7-phase1-text-adventure.md) |
-| 7.2 | Level 1 — curses/terminal backend (pulls 8.1's piece table forward as a component type) | 3-4 wk | Planned; gate = madcide first light | [design](2026-08-20-data-hub-projection-rendering.md) |
+| 7.2 | Level 1 terminal backend + interaction rework (pulled 8.1's piece table forward as a component type) | 3-4 wk | **DONE — 2026-08-25** (R1–R5: interaction core, projection-as-data, script-entity verbs + availability checks, the line + visual editors over one action set; the target is the HAND-ROLLED VT100/xterm provider — owner-decided over vendoring curses — behind the `tui_provider` seam); madcide (8.x) now unblocked | [plan](2026-08-24-ui-interaction-rework-and-texteditor.md) |
 | 7.3 | Reactivity — compiler-tracked deps + per-connection projection instances + semantic-diff wire | 2-3 wk | Planned | [design](2026-08-20-data-hub-projection-rendering.md) |
 | 7.4 | Level 2 — 2D graphics (Skia/Cairo) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 | 7.5 | Level 3 — Web backend (semantic diffs over WebSocket + thin JS) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
@@ -360,11 +380,12 @@ no new parser syntax; `render { }` blocks are a later ergonomic layer
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Planned — pulled forward with 7.2 as a hub component type (madcide = 7.2's gate) | [madc-ide.md](madc-ide.md) |
-| 8.2 | libmadcedit curses rendering | 2-3 wk | Blocked on 7.2 | [madc-ide.md](madc-ide.md) |
-| 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Future | [madc-ide.md](madc-ide.md) |
-| 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Blocked on 8.2 | [madc-ide.md](madc-ide.md) |
-| 8.5 | Advanced — find/replace, split views, go-to-def | Ongoing | Future | [madc-ide.md](madc-ide.md) |
+| 8.0 | madcide v1 — the hub-doc Phase-2 gate: buffer + undo through the entry lens, diagnostics/outline panes as projections of live compiler data (`madc::diagnostics`/`outline`), keybinding profiles as data (JOE/WordStar `^K` chords default, owner-directed; configurable via `ui::tui_bind_keys`) | — | **DONE — 2026-08-25** (`tools/madcide` — relocated from examples/ per the owner's tool-not-example ruling; wave 1149/0/0/9 + EXE 1105/0) | [plan](2026-08-25-madcide-phase2.md) |
+| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Largely subsumed: piece table + undo shipped as the hub text component (7.2/8.0); remaining = the reusable-library packaging question | [madc-ide.md](madc-ide.md) |
+| 8.2 | libmadcedit curses rendering | 2-3 wk | Subsumed by the 7.2 TUI provider (hand-rolled VT100 target behind the seam) | [madc-ide.md](madc-ide.md) |
+| 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Profiles-as-data SHIPPED (8.0: joe/pico; more profiles = data files); highlighting = a projection-hints design, Future | [madc-ide.md](madc-ide.md) |
+| 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Unblocked by 8.0 (diagnostics pane shipped; file tree/tabs/build integration next) | [madc-ide.md](madc-ide.md) |
+| 8.5 | Advanced — find/replace, split views, go-to-def | Ongoing | Future (find shipped in 8.0; go-to-def wants the outline's deeper walk) | [madc-ide.md](madc-ide.md) |
 
 **Dependencies:** 7.1-7.2 (rendering Level 0-1). Config via TOML + madc scripts.
 
@@ -437,17 +458,15 @@ run in parallel.
      └── Parser dereference & subscript unification
          Unblocks: PCH transition, parser resilience
 
- ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
- ║   └── pilot: madcide (pulls 8.1's piece table forward)
-
-13.  Track 8.1  libmadcedit core                         [3-4 wk]
-     ├── Piece table, cursor, undo/redo, CUA keybindings
-     └── Requires: Level 0 rendering (step 11b)
-
-14.  Track 8.2  libmadcedit curses + syntax highlight    [4-6 wk]
-     └── Requires: Level 1 rendering (step 12b)
+ ║── Track 7.2  Rendering: Level 1 terminal backend      [DONE 2026-08-25]
+ ║   └── R1–R5 shipped (VT100 provider, checks, lined+vised editors)
+ ║── Track 8.0  madcide v1 (hub Phase 2 gate)            [DONE 2026-08-25]
+ ║   └── tools/madcide: undo through the entry lens, diagnostics/
+ ║       outline panes over madc::diagnostics/outline, keybinding
+ ║       profiles as data (JOE ^K chords default); 8.1/8.2 subsumed
 
 15.  Track 8.4  madcide shell                            [3-4 wk]
+     ├── File tree, tabs, build integration (8.0 = the editor + panes)
      └── Self-hosting milestone: edit madc in madcide
 
 16.  Track 3.2  PCH transition                           [2-3 wk]
@@ -477,7 +496,7 @@ run in parallel.
 
 25.  Track 5A.9   Federated query planner                [4-6 wk]
 
-26.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
+26.  Track 6.2  macOS SIMD (NEON)                       [DONE v0.98.0]
 
 27.  Track 4.4  Node.js integration                      [4-6 wk]
      Track 4.5  Rust bindings                            [2-3 wk]
@@ -525,6 +544,7 @@ SMAUG target terminal, web, and GUI from the same game code.
 | **ADR 0001 — CIR/c2mir backend (why c2mir, not direct-MIR)** | [../adr/0001-cir-c2mir-backend.md](../adr/0001-cir-c2mir-backend.md) |
 | Code Cleanup | [code-cleanup.md](code-cleanup.md) |
 | C++ Support | [cpp-support.md](cpp-support.md) |
+| C++ conformance lane — g++ testsuite, C++11 parity as a roadmap goal (never a gate) | [2026-09-04-cxx-conformance-lane.md](2026-09-04-cxx-conformance-lane.md) |
 | Cross-Cutting Insights | [cross-cutting-insights.md](cross-cutting-insights.md) |
 | Data Storage & Federation (legacy) | [data-storage-federation.md](data-storage-federation.md) |
 | madcdis Core Substrate | [madcdis-plan.md](madcdis-plan.md) |

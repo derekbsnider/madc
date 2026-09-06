@@ -1,0 +1,65 @@
+// A namespace function template whose leading decltype RETURN names a static
+// member with the template's OWN name — `decltype(Impl<I>::unwrap(I())) unwrap(I i)`.
+// The instantiation's declarator locator ran a first-occurrence name search, so
+// the `unwrap(` inside the decltype operand was taken as the declarator and
+// `(I())` as its parameter list: no argument deduced against it, the call kept
+// the placeholder's int64 return, and `*r.first` was "cannot dereference
+// non-pointer type". Oracle g++ == clang++: 3 4 1.
+#include <stdio.h>
+
+template <class T> struct rr { typedef T type; };
+template <class T> struct rr<T&> { typedef T type; };
+template <class T> struct rr<T&&> { typedef T type; };
+template <class T> typename rr<T>::type&& dval();
+
+namespace ns {
+
+template <class T>
+inline typename rr<T>::type&& mv(T&& t) { return static_cast<typename rr<T>::type&&>(t); }
+
+template <class A, class B>
+struct P {
+	A first;
+	B second;
+	P(const A& a, const B& b) : first(a), second(b) {}
+};
+
+template <class T1, class T2>
+P<typename rr<T1>::type, typename rr<T2>::type> mkp(T1&& t1, T2&& t2)
+{
+	return P<typename rr<T1>::type, typename rr<T2>::type>(t1, t2);
+}
+
+template <class I>
+struct Impl {
+	static I unwrap(I i) { return i; }
+};
+
+template <class I>
+decltype(Impl<I>::unwrap(I())) unwrap(I i)
+{
+	return Impl<I>::unwrap(i);
+}
+
+template <class I>
+auto unwrap_range(I f, I l)
+{
+	return ns::mkp(ns::unwrap(ns::mv(f)), ns::unwrap(ns::mv(l)));
+}
+
+template <class I>
+int span(I f, I l)
+{
+	auto r = ns::unwrap_range(f, l);
+	return (int)(r.second - r.first);
+}
+
+}
+
+int main()
+{
+	int arr[4] = { 3, 4, 5, 6 };
+	auto r = ns::unwrap_range(arr + 0, arr + 1);
+	printf("%d %d %d\n", *r.first, *r.second, ns::span(arr + 2, arr + 3));
+	return 0;
+}

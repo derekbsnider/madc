@@ -1,0 +1,14 @@
+/* MT-1/MT-5 strict-mode gate (the test3eqgate shape): under an explicit C
+ * standard, `go`, `yield`, `scope`, and `await` are ordinary identifiers —
+ * the madc-dialect contextual claims (go_statement_enabled == STD_MADC
+ * only) must never fire; strict modes stay byte-identical. */
+extern int printf(const char *, ...);
+int main(void)
+{
+	int go = 1;
+	int yield = 2;
+	int scope = 3;
+	int await = 4;
+	printf("%d\n", go + yield + scope + await);
+	return 0;
+}

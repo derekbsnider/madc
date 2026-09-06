@@ -149,13 +149,197 @@ int main()
 `context_set_real` adds doubles; every expression and unit form has a
 `_ctx` twin (`eval_int_ctx`, `eval_expression_double_ctx`, …).
 
+## Compiler Data (diagnostics and outline)
+
+The compiler's own structured data, as values — compile (NEVER execute)
+a source buffer with the same front end `madc` runs, in a
+policy-clamped child, and read what it found. Diagnostics are CAPTURED,
+not printed (nothing reaches stderr); nothing in the buffer runs. This
+is the meta-level surface an IDE projects (`tools/madcide`'s
+diagnostics pane and outline), and it serves any tool that wants
+compile results as data — a linter, a doc generator, a test harness.
+
+```c
+value d;
+madc::diagnostics(d, source, "buffer.mad");
+// rows: { severity, phase, message, file, line, column }
+// severity "error"/"warning"; an empty array = a clean buffer
+
+value o;
+madc::outline(o, source, "buffer.mad");
+// rows: { kind, name, line, column, end_line } for the buffer's OWN
+// definitions, source order (kind: "function" today; classes/globals
+// are a named extension seat; end_line = the closing brace's line)
+```
+
+`filename` is the display name diagnostics carry (default `<source>`).
+Positions match what a file-based compile of the same text reports.
+
+### The render query (`madc::emit`)
+
+The same child, one step further: parse the buffer and render its
+`cir_node` tree (MC11-IR) as a target language — the `--emit=`
+vocabulary, byte-identical to what `madc --emit=<target> file` prints.
+This is what feeds an editor's code views (`tools/madcide`'s `^K A`).
+
+```c
+value text;
+if ( madc::emit(text, source, "buffer.mad", "c11") )   // or "mc11", "c++"
+    print("{}", text);
+// false = unknown target, or a buffer that does not parse/translate
+// (diagnostics captured, never printed); nothing in the buffer runs
+```
+
+The `"c++"` target is the REVERSE render: the TU's retained source — its
+own `#include` directives as written, then the token echo (trivia
+preserved; string escapes re-escaped so the render re-lexes). For a
+C/C++ buffer the render recompiles under g++/clang++ and behaves
+identically (`scripts/emitcxx_roundtrip_gate.sh` pins it in fulltest).
+madc-dialect constructs pass through unrespelled — cross-language
+respelling is a named future seat. Macro uses echo expanded; numeric
+literals canonicalize where the original text was not retained.
+
+### Persistent parse handles
+
+The same compiler-data machinery given a LIFETIME (madcide AST-1): a
+handle owns a live parse per TU, so outline / diagnostics / the
+enclosing-definition query answer from RETAINED state — no re-parse per
+query. Refresh is a whole-TU re-parse (an IDE refreshes on check/save;
+composition reads what the last refresh retained).
+
+The parse is error-tolerant (AST arc §3.5 slice A): each top-level error
+is contained (diagnostic recorded, region set aside, resync, continue),
+so `parse_check` reports EVERY top-level error and the outline /
+enclosing / spans queries keep answering for the definitions before AND
+after a broken region — the mid-edit IDE state. A tree with contained
+errors never compiles: every translating surface (run, eval, `--emit=c11`,
+freeze, native) refuses; `--emit=c++` — a source view — still renders.
+
+```c
+long h = madc::parse_open(source, "buffer.mad");  // >= 1; a buffer with
+                                                  // errors still opens —
+                                                  // its state IS the rows
+madc::parse_refresh(h, new_source);               // whole-TU re-parse
+value o, d, e;
+madc::parse_outline(o, h);                        // the outline rows above
+madc::parse_check(d, h);                          // the diagnostics rows
+madc::parse_enclosing(e, h, line, column);
+// the INNERMOST of the TU's own function definitions containing
+// (line, column) — { kind, name, line, column, end_line }, or an empty
+// value when none (madcide's status line)
+value hl;
+madc::parse_spans(hl, h);
+// highlight classification rows for the TU's OWN tokens:
+// { line, column, length, class } — 1-based line, column = the span's
+// START (0-based); classes: keyword, ident, number, string, comment
+// (handles retain trivia — the IDE's fidelity mode), type, function
+// (an identifier the tree defines as a function, on its head line).
+// Data, not styling: a theme (app data) maps class names to colours.
+madc::parse_close(h);                             // handles never reuse
+
+long hf = madc::parse_open_file("src/tu.c");      // the lexer's own file
+                                                  // ingestion; relative
+                                                  // #includes resolve as
+                                                  // the CLI's do; 0 =
+                                                  // unreadable path
+```
+
+A project handle groups a `compile_commands.json` manifest's TUs and
+parses every one on open, each with its OWN manifest options
+(-I/-D/--std, the `.c` → gnu17 default) — project diagnostics match the
+`--project` build:
+
+```c
+long p = madc::project_open("proj.cc.json");      // 0 = unreadable manifest
+value tus;
+madc::project_tus(tus, p);                        // rows: { file, handle }
+                                                  // (handle 0 = that file
+                                                  // unreadable / options
+                                                  // refused)
+madc::project_close(p);                           // closes its TU handles
+```
+
+Thread contract: a handle is confined to the thread/program that opened
+it — the runtime-eval machinery's confinement.
+
+### The build surface (`madc::build_native`)
+
+The CLI's AOT lane run in-process (madcide IDE-10c: the IDE lives inside
+the compiler and never shells out to a PATH `madc`): parse a FILE in a
+child Program — the same lexer-owned file ingestion as
+`parse_open_file` — then emit a native artifact through the CLI's own
+emit seat.
+
+```c
+value diags;
+bool ok = madc::build_native(diags, "prog.mad", "exe", "prog");
+                                                  // "exe" = PIE executable
+                                                  // (the CLI -o default);
+                                                  // "obj" = relocatable .o
+                                                  // (-r -o). diags gets
+                                                  // diagnostics rows either
+                                                  // way; a failure ALWAYS
+                                                  // carries >=1 error row.
+var self = madc::compiler_path();                 // the running compiler's
+                                                  // own executable — spawn
+                                                  // children OF SELF, never
+                                                  // a PATH madc
+```
+
+The parse phase cooperates with `go` tasks (an IDE stays live while it
+builds); the emit phase has no yield points yet (a brief block — the
+named backend-yield residue). Backend refusals after a clean front end
+still print to stderr (backend-diagnostics-as-data is the other named
+residue); the synthesized error row keeps the failure loud either way.
+
+### Build/run the LIVE parse (`madc::parse_build`, `madc::parse_run`)
+
+The owner ruling (2026-08-27): the running madc IS the compiler — a
+program the process has already parsed is never re-parsed and never
+handed to any madc binary. The parse-handle family carries the pair:
+
+```c
+long h = madc::parse_open(text, "buffer.mad");    // the live tree —
+                                                  // (re)parsed from the
+                                                  // BUFFER, unsaved edits
+                                                  // included
+value diags;
+bool ok = madc::parse_build(diags, h, "exe", "prog");
+                                                  // emit from h's EXISTING
+                                                  // tree ("exe" | "obj");
+                                                  // a red parse never
+                                                  // reaches the emitter;
+                                                  // build rows ride diags
+                                                  // only — parse_check
+                                                  // stays parse-pure
+long rc = madc::parse_run(h);                     // fork(): the child
+                                                  // inherits the parsed
+                                                  // tree, hands it to the
+                                                  // backend, runs main;
+                                                  // returns the guest's
+                                                  // exit status (128+sig
+                                                  // on a signal death).
+                                                  // negative = never ran:
+                                                  // -1 bad handle, -2 red
+                                                  // parse, -3 no fork
+                                                  // (win64)
+```
+
+`parse_run` inherits stdio — a tui suspends first (madcide's Run row
+does exactly that). While the guest runs, `^C` reaches it alone (the
+`system(3)` signal discipline); the child starts on a fresh cooperative
+scheduler and its own atexit semantics. `madc::build_native` (the
+path form above) remains the from-a-FILE lane for scripts with no open
+handle; madcide's ^B rows ride the handle pair exclusively.
+
 ## Security
 
 Embedding hosts control the whole surface: full-unit eval is gated by
 the engine's runtime-eval policy, function calls inside expressions by
 the expression policy, and call-site scope capture by the scope-access
 hooks. A host that grants none of them still gets pure-arithmetic
-expression eval. The `madc` CLI enables everything.
+expression eval. The `madc` CLI enables everything. The compiler-data
+publics run under the same runtime-eval child policy.
 
 ## Files
 

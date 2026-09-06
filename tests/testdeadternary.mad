@@ -1,0 +1,34 @@
+// A LITERAL-constant ternary condition prunes the dead arm at emission
+// (c-testsuite 00213): the dead arm may be legal only as skipped code — a
+// statement expression whose last statement is a labeled while fails
+// c2mir's stmt-expr value check if emitted at all. The live arm keeps its
+// side effects; the dead arm's never run.
+// Oracle: gcc/clang print t=2 t=1 v=5 h=1.
+static int hits = 0;
+static int live(void)
+{
+    hits++;
+    return 5;
+}
+
+int main()
+{
+    unsigned long timeout = 2;
+    do {
+        (1 ?
+         printf("t=%ld\n", timeout) :
+         ({
+          int i = 1;
+          while (1)
+            while (i--)
+              some_label:
+                printf("error\n");
+          goto some_label;
+          })
+        );
+        timeout--;
+    } while (timeout);
+    int v = 0 ? 99 : live();
+    printf("v=%d h=%d\n", v, hits);
+    return 0;
+}

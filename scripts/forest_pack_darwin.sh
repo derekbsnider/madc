@@ -1,15 +1,18 @@
 #!/bin/bash
-# forest_pack_darwin.sh — cross-freeze the darwin standard-header groves into
-# a standalone forest container for the hosted-*-macos binaries
+# forest_pack_darwin.sh — freeze the darwin standard-header groves into a
+# standalone forest container for the hosted-*-macos binaries
 # (forest-carriers plan S1, docs/plans/2026-07-25-forest-carriers-plan.md).
 #
-#   bash scripts/forest_pack_darwin.sh <cross-madc> <prelude-manifest> <out.bin>
+#   bash scripts/forest_pack_darwin.sh <freezer-madc> <prelude-manifest> <out.bin>
 #
-# The FREEZER is the Linux-hosted cross madc for the same Apple target
-# (bin/madc-{arm64,x86-64}-macos): it embeds the identical darwin prelude
-# text the hosted binary carries and parses with the target's type facts,
-# so LOADED == parsed holds across the cross-freeze (same source tree, same
-# embedded text, same target keys -> same context hash + config word).
+# The FREEZER is a madc of THIS tree for the same Apple target. On the build
+# container it is the Linux-hosted cross madc (bin/madc-{arm64,x86-64}-macos):
+# it embeds the identical darwin prelude text the hosted binary carries and
+# parses with the target's type facts, so LOADED == parsed holds across the
+# cross-freeze (same source tree, same embedded text, same target keys ->
+# same context hash + config word). On a darwin build host it is the hosted
+# binary ITSELF, linked once without its forest section (the Makefile's
+# self-freeze arm, darwin-host port D2) — producer == consumer exactly.
 #
 # The container is written as a STANDALONE file and embedded at hosted link
 # time via -Wl,-sectcreate,__MADC,__forest (src/Makefile hosted MODEs): lld
@@ -32,11 +35,18 @@ MANIFEST="$2"
 OUT="$3"
 
 if [ -z "$CROSS" ] || [ -z "$MANIFEST" ] || [ -z "$OUT" ]; then
-    echo "usage: $0 <cross-madc> <prelude-manifest> <out.bin>" >&2
+    echo "usage: $0 <freezer-madc> <prelude-manifest> <out.bin>" >&2
     exit 2
 fi
 if [ ! -x "$CROSS" ]; then
-    echo "Error: cross madc '$CROSS' not found/executable" >&2
+    echo "Error: freezer madc '$CROSS' not found/executable" >&2
+    exit 1
+fi
+# GNU timeout: the container has it; a darwin build host gets it from brew
+# coreutils (gnubin `timeout`, or `gtimeout`). Every run stays capped.
+TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+if [ -z "$TIMEOUT" ]; then
+    echo "forest_pack_darwin: needs GNU timeout (brew install coreutils on a Mac)" >&2
     exit 1
 fi
 if [ ! -f "$MANIFEST" ]; then
@@ -45,7 +55,7 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 
 # AOT ledger (forest-carriers S5): the SAME C-lane runtime sources, compiled
-# by THIS cross madc — so the modules carry darwin-target MIR — and packed as
+# by THIS freezer madc — so the modules carry darwin-target MIR — and packed as
 # one more container segment. This is what makes -static-libmadc work on
 # Mach-O at all: there is no libmadc dylib to fall back to, so a hosted madc
 # whose container has no ledger can never emit a try/catch program.
@@ -92,7 +102,13 @@ ulimit -t 900
 # why this is redirect-then-cat and never `| tee`. The log lands beside the
 # container (a build product, caller-relative like every path here).
 PACK_LOG="$OUT.freeze.log"
-if ! timeout 900 "$CROSS" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
+# --no-sysroot-includes: the frozen corpus is the HEADER-LESS consumer's — the
+# embedded prelude serves C, libc++ comes from the pinned tree, and the host's
+# SDK (if the build host has one: a Mac does, the container does not) must not
+# answer a `__has_include` or an #include_next inside the groves. The first
+# native self-freeze froze the runner's real <sys/_types/_mbstate_t.h> into a
+# shipped forest through exactly that probe (darwin-host port D2, round 3).
+if ! "$TIMEOUT" 900 "$CROSS" --no-config --no-sysroot-includes --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$OUT" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_darwin: FAILED - freeze-append exited nonzero" >&2
     exit 1
@@ -104,7 +120,7 @@ cat "$PACK_LOG"
 # #include of that name would silently live-parse (the G2 silent-degradation
 # class this gate exists to catch).
 DUMP="$OUT.dump.txt"
-timeout 120 "$CROSS" --dump-forest="$OUT" > "$DUMP"
+"$TIMEOUT" 120 "$CROSS" --dump-forest="$OUT" > "$DUMP"
 if ! grep -q '^forest	units=' "$DUMP"; then
     rm -f "$OUT"
     echo "forest_pack_darwin: FAILED - packed image has no forest directory" >&2
@@ -143,12 +159,14 @@ done <<<"$LEDGER_SOURCES"
 # (find_unit_path_tail); the gate accepts either form, literally rather than
 # through an interpolated regex.
 #
-# There is no --load-log here, and that is structural, not an omission: this is
-# a CROSS freeze, so the build container cannot execute the consumer that would
-# materialize the container. Darwin's consumer half runs where the artifact
-# runs — scripts/mac_battery.sh's forest-degradation leg, on a Mac, against the
-# exact shipped binary. That is the same split task #60 (the macOS headerless
-# cell) exists to close.
+# There is no --load-log here, and that is structural, not an omission: on the
+# build container this is a CROSS freeze, so the consumer that would
+# materialize the container cannot run. Darwin's consumer half runs where the
+# artifact runs — scripts/mac_battery.sh's forest-degradation leg (3c), on a
+# Mac, against the exact shipped binary; the darwin-host release gate
+# (.github/workflows/darwin-probe.yml) runs that battery on the runner right
+# after a native self-freeze. That is the same split task #60 (the macOS
+# headerless cell) exists to close.
 #
 # A gate failure drops the container, as the inlined loops did: leaving a
 # known-degraded $OUT on disk invites a later make step to consume it.
@@ -159,5 +177,45 @@ if ! bash "$(dirname "$0")/forest_pack_gate.sh" --profile darwin \
     echo "forest_pack_darwin: FAILED — container dropped (see gate output above)" >&2
     exit 1
 fi
+
+# Consumer PARSE leg: the freezer madc can parse and lower a program against
+# the container it just wrote (--forest-bind + --emit=c11 — no execution, so
+# it runs on the Linux build container as well as on a darwin host). The
+# darwin lane's failures that live in the pack's SEMANTICS (a pack-served
+# class template completing in a different order than a live parse — the
+# libc++ <list> node class reaching `__node->__as_link()` as an incomplete
+# shell, dispatch #13 of the darwin-host port) used to be visible only on a
+# Mac; each consumer named in forest_pack_consumers_darwin.txt must parse and
+# emit rc=0 from the pack here. The list is data (test basenames, one per
+# line, # comments); an empty list or a missing test fails — never a vacuous
+# pass.
+CONSUMERS="$(dirname "$0")/forest_pack_consumers_darwin.txt"
+TESTS_DIR="$(dirname "$0")/../tests"
+consumer_count=0
+while IFS= read -r consumer; do
+    consumer="${consumer%%#*}"
+    consumer="$(echo "$consumer" | tr -d '[:space:]')"
+    [ -n "$consumer" ] || continue
+    consumer_count=$((consumer_count + 1))
+    if [ ! -f "$TESTS_DIR/$consumer.mad" ]; then
+        rm -f "$OUT"
+        echo "forest_pack_darwin: FAILED — consumer $consumer.mad is not in tests/ (the list names a test that no longer exists)" >&2
+        exit 1
+    fi
+    if ! "$TIMEOUT" 120 "$CROSS" --forest-bind="$OUT" --no-sysroot-includes \
+            --emit=c11 "$TESTS_DIR/$consumer.mad" > /dev/null 2> "$OUT.consumer.$consumer.err"; then
+        echo "forest_pack_darwin: FAILED — consumer $consumer does not parse against the pack:" >&2
+        grep -E 'error|Error' "$OUT.consumer.$consumer.err" | head -5 >&2
+        rm -f "$OUT"
+        exit 1
+    fi
+    rm -f "$OUT.consumer.$consumer.err"
+done < "$CONSUMERS"
+if [ "$consumer_count" -eq 0 ]; then
+    rm -f "$OUT"
+    echo "forest_pack_darwin: FAILED — $CONSUMERS names no consumer (the parse leg would be vacuous)" >&2
+    exit 1
+fi
+echo "forest_pack_darwin: consumer parse leg OK ($consumer_count program(s) parsed from the pack)"
 
 echo "forest_pack_darwin: OK ($(grep -c '^unit	' "$DUMP") units in $OUT for $(basename "$CROSS"))"
