@@ -211,57 +211,65 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.97.0** — the madcide interaction arc and
-the carrier elegance arc. madcide gains its session/client seam
-(`class IdeSession` + a TUI client over the facts/keytable protocol —
-the first slice of the IDE-as-API-gateway architecture), a ^N modes
-palette, and a full **vi modal personality** as pure profile data
-(`profiles/neovim.keys`: @normal/@insert scopes, counts,
-operator+motion grammar, the `:` command line, showmode/showcmd). The
-dialect completes its literal story: keyed literals
-(`var m = { "a": 1 }`), PHP's append accessor (`rows[] = expr`), brace
-literals as expressions (`rows[] = { "act": "colon" };`,
-`rows.push({...})`), and subscripts that dispatch on a var index's
-live kind (`m[kn]` keys by string, indexes by number) — closing a
-silent address-as-index defect and deleting over a hundred lines of
-row-building ceremony from madcide itself. c-testsuite conformance is
-COMPLETE at 220/220 (`--std=gnu11`), and two new parser walls turned
-formerly-silent wrong answers (the associative-literal hang class,
-operand juxtaposition) into loud refusals.
+The current release is **v0.98.0** — the macOS full-suite release. The
+entire integration suite now runs natively on both of GitHub's mac
+runner architectures and is green (arm64 **1293/0/0TO/24skip**, Intel
+**1294/0/0TO/23skip**), the end of a seven-wave burndown that only running
+the real suite on the platform could drive: by-value class parameters
+are the callee's own object (the Itanium invisible-reference and
+`__retbuf` rules, so copy/move constructors and destructors run exactly
+as g++ and clang run them), `wchar_t`/`char16_t`/`char32_t` are
+distinct types, `long double` and `va_list` take their shape from the
+target, nested-class and namespace-alias forms parse, and template
+argument deduction and `<` reading follow the standard's name-lookup
+rules. libc++'s `std::list` works (a template-id named as a template
+argument now instantiates after the class body that names it), and
+`cout << value` and `println` of a `std::string` cross the stdlib
+flavor boundary. The MIR floor gained 128-bit SIMD (`MIR_T_V128`) on
+x86-64 and aarch64 with NEON code generation, and the vector calling
+convention, Apple's stack-argument packing and aarch64-linux's unsigned
+`char` are gated against the platform compiler by compiling one half of
+a probe pair natively. `-w` silences compile warnings, gcc-style.
+Process: every platform lane's FULL suite now gates a master release
+(`scripts/lane_ledger.sh check --release`: the libc++ flavor lane, the
+darwin suite on both arches, genuine Windows), all driven and recorded
+from the build container.
 
-Branch state: v0.97.0 is released on `develop`; v0.95.2 remains the
-`master` promotion, with public binaries published for Linux
-(deb/rpm), Windows x86-64, and macOS (Apple Silicon + Intel).
+Branch state: v0.98.0 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger the same day, with public binaries
+built by CI for Linux (deb/rpm/tarball), Windows x86-64, and macOS
+(Apple Silicon + Intel).
 
-Latest validated results (the v0.97.0 merge-wave battery):
+Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
 
-- Linux JIT: **1247 passed / 0 failed / 0 timed out / 9 skipped**
-- native EXE lane **1193/0**, OBJ lane **1193/0**; packed suite **1247/0/0/9**
+- Linux JIT: **1308 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1249/0**, OBJ lane
+  **1249/0**; packed suite **1308/0/0/9**; headerless (no headers on
+  disk anywhere) **1274/0/0/43**
+- libc++ flavor lane (`-stdlib=libc++` on linux — macOS's library): JIT
+  **1303/0/0TO/14skip**, EXE **1244/0**, OBJ **1244/0**
+- macOS, the FULL suite on GitHub's native mac runners: arm64
+  **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64 Mac
+  **1293/0/0TO/24skip**; both arches packed at 835 units with the Mach-O release
+  verifier green
+- Windows: packed Win64 under persistent Wine **1251/0/0TO/66skip**; the same PE on
+  genuine Windows 11 **1253/0/0TO/64skip**
+- c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
-- c-testsuite conformance: **220/220, baseline empty** (C mode,
-  `--std=gnu11`)
-- all three pack lanes green under the degradation gate: Linux and Win64 at
-  93 tolerated pack parse errors with zero load-side losses, macOS at 64 per
-  arch (six entries raised with a stated reason: the new juxtaposition wall
-  made a pre-existing instantiation-body misparse LOUD — the fix is banked),
-  and every listed header verified present as a container unit
-- headerless (no headers on disk anywhere): Linux **1220/0/0/36** —
-  the only lane that can see an artifact fail to serve a standard
-  header from its own frozen corpus
-- macOS on real Apple-Silicon hardware: **8 passed / 3 failed** — exact
-  leg-for-leg parity with the standing known-opens (groves `os.str()`
-  husk, the value intrinsic, the exec:// channel), not regressions;
-  both arches packed at 835 units with the Mach-O release verifier
-  green and the degradation leg at zero admitted-record losses
-- packed Win64 under persistent Wine **1197/0/0/59** on the freshly
-  rebuilt PE; on genuine Windows 11 (v0.92.1 run) all seven battery
-  legs pass, including compiling a C translation unit on a host with
-  no toolchain installed
+- the vector ABI gate: 28 lines identical to the host compiler on c2m
+  generated code, the interpreter, and madc (x86-64 in fulltest; aarch64
+  under qemu and on the Mac in the arc's own stages)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.98.0](docs/release-notes/v0.98.0.md) — the macOS full-suite
+  release: the whole suite green on both mac runner arches after the
+  darwin burndown (by-value class ABI, distinct wide char types,
+  target-shaped long double / va_list, libc++ `<list>`); 128-bit SIMD
+  in MIR on x86-64 + aarch64 with the vector ABI gated against the
+  platform compiler; Apple stack-argument packing; `-w`; every
+  platform lane's full suite gates master.
 - [v0.97.0](docs/release-notes/v0.97.0.md) — the madcide interaction
   arc (gateway seam, modes palette, the vi modal personality as
   profile data) + the carrier elegance arc (keyed literals, `rows[] =`
@@ -275,9 +283,6 @@ Latest validated results (the v0.97.0 merge-wave battery):
   darwin clang-lane conformance (override sweep) + the six assets.
 - [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
   first-call crash fixed (lazy-gen gated to eager on win64).
-- [v0.95.0](docs/release-notes/v0.95.0.md) — the `ui::` namespace +
-  Colossal Cave Adventure fully playable (94/94 logs byte-identical);
-  cold startup 829 ms → ~150 ms class; the zero-include contract.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 

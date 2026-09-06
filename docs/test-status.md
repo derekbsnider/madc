@@ -1,6 +1,37 @@
 # Test Status
 
-> **Current (2026-09-01, v0.97.0 — the s148–s149c merge wave: madcide
+> **Current (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
+> D4 burndown waves 1–7c + the MIR aarch64 floor wave 8 + the SIMD arc
+> S1–S5 + the vector calling convention + Apple stack-argument packing
+> + wave 12, the libc++ `<list>` completion site):** FULL merge-wave
+> battery on the wave-12 code content 1ae4650f (b49234a6 18953bfd 94de04fe
+> d2bf5a3c 733ce20b 1ae4650f on 606907f1; the candidate e7b628e1 adds only the
+> genuine-Windows stage fix scripts/win_suite.sh + testiomanip.win_skip, so
+> six ledger rows were re-stamped there from the 1ae4650f runs, each row
+> saying so; tmp/logs/w12-battery5.log): fulltest rc=0 (every gate in the chain,
+> vector_abi_gate OK x3 lanes, forest_bind_gate 29/29, tsubst flag-on
+> gate ok, warning ratchet at baseline) with JIT **1308 passed / 0 failed / 0 timed out / 9 skipped**, native
+> EXE **1249/0**, OBJ **1249/0**, packed **1308/0/0/9**,
+> headerless **1274/0/0/43** (linux pack 68 = baseline); the libc++
+> flavor lane — its first full run since 2026-08-16 — JIT **1303/0/0TO/14skip**,
+> EXE **1244/0**, OBJ **1244/0** (5 `.libcxx_skip` fixtures,
+> testphpdumpiter among them for the nested-map construct relowering gap);
+> wine64 domain **1251/0/0TO/66skip** on the freshly rebuilt PE (verify_pe_release
+> OK, win64 pack 68 = baseline); the same PE on genuine Windows 11 through
+> the W0.2 channel (`scripts/win_suite.sh`, now staging tools/ + examples/)
+> **1253/0/0TO/64skip** (tmp/logs/w12-win-suite2.log; the first run 1247/6/1TO was
+> six stage gaps, classified standalone); c-testsuite
+> **220/220, baseline empty** (`--std=gnu11`); macOS cross release both arches 835 units,
+> darwin pack 48 = baseline, verify_macho OK; the darwin FULL suite on
+> GitHub's mac runners (dispatch #14, run 33993568362, suite_gate=true):
+> arm64 **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64
+> Mac full suite **1293/0/0TO/24skip**. New reducers in wave 12:
+> testlistiter_libcxx, testqualbasemember, testvaluecout_libcxx,
+> teststrargcoerce_libcxx; the darwin pack gains a consumer PARSE leg
+> (scripts/forest_pack_consumers_darwin.txt) on the container. Every lane is recorded in docs/lane-status.tsv
+> at this content (`lane_ledger.sh check --release` green).
+>
+> **Previous (2026-09-01, v0.97.0 — the s148–s149c merge wave: madcide
 > gateway seam + vi modal personality + carrier literal ergonomics):**
 > FULL push-gate battery on merged content @d8bf72f4 (+docs-only
 > follow-ups): fulltest rc=0 (all gates) with JIT **1247 passed / 0

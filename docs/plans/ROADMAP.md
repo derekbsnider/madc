@@ -35,7 +35,19 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **develop = v0.96.0** (2026-08-28): the variadic-class arc —
+- **develop = v0.98.0** (2026-09-06): the macOS full-suite release — the
+  darwin full-suite lane (GitHub's arm64 + Intel mac runners) green on
+  both arches (1293/0/0TO/24skip / 1294/0/0TO/23skip) after the seven-wave D4
+  burndown; the SIMD floor (MIR_T_V128, NEON) + the vector calling
+  convention gated against the host compiler; Apple stack-argument
+  packing; the libc++ `<list>` completion site; the stdlib flavor
+  boundary for `cout << value` / `println(std::string)`; `-w`; the
+  owner law that every platform lane's FULL suite gates master
+  (`lane_ledger.sh check --release`, release tier: libcxx, darwin-suite,
+  genuine-win — all driven from the container). v0.97.0 was the madcide
+  interaction arc + carrier literal ergonomics; v0.96.0 the
+  variadic-class arc.
+- **previous develop lines:** v0.96.0 (2026-08-28) the variadic-class arc —
   `bin/madc examples/embed_hello.cpp` compiles AND RUNS at g++ parity
   (both embedding-example legs are a fulltest gate); libmadc embedding
   fixes (invocation-scoped guest iostream capture, eval-child host
@@ -47,17 +59,22 @@ high-level" — the answer is both.**
   dialect contract; v0.94.0 the MIR hardening wave; v0.93.0 the x86-64
   scalar-convert false-dependency fix. Upstream wave 2 submitted:
   vnmakarov/mir issue #469 + PRs #470/#471 — awaiting review.
-- **master = v0.92.1** (promoted 2026-08-20 with six assets: deb, rpm, macOS
-  arm64 + x86_64, Windows zip, SHA256SUMS). Every master promotion is
+- **master = v0.95.2** (promoted 2026-08-23; six CI-owned assets: deb, rpm,
+  linux tarball, Windows zip, macOS arm64 + x86_64) — the v0.98.0 promotion
+  follows this release once `lane_ledger.sh check --release` is green at it. Every master promotion is
   three-platform gated (`.claude/commands/promote.md` step 5).
-- **Baselines (v0.95.0):** counts in [docs/test-status.md](../test-status.md)
-  (JIT 1134/0/0TO/9skip; EXE/OBJ + packed + headerless per the v0.95.0
-  merge-wave battery), MIR c2mir-gen-test 1143/2286/0, Wine + Mac lanes
-  re-validated at promotion.
+- **Baselines (v0.98.0):** counts in [docs/test-status.md](../test-status.md)
+  (linux JIT 1308 passed / 0 failed / 0 timed out / 9 skipped; EXE 1249/0, OBJ 1249/0, packed 1308/0/0/9,
+  headerless 1274/0/0/43; libc++ flavor lane 1303/0/0TO/14skip; wine64 1251/0/0TO/66skip;
+  genuine Windows 1253/0/0TO/64skip; the darwin FULL suite on GitHub's mac runners
+  arm64 1293/0/0TO/24skip / Intel 1294/0/0TO/23skip; c-testsuite 220/220, baseline empty) — every
+  lane recorded in docs/lane-status.tsv at the promoted content.
 - **Standing opens:** `value` std::string ingestion; std::vformat phase 2;
-  the darwin known-opens (exec:// silent-empty output, the value intrinsic,
-  groves os.str()); no macOS full-suite lane (the wine-lane equivalent on Mac
-  hardware is the successor arc); Windows C-lane policy (task #58); front-end
+  the libc++ nested-map construct relowering (KG Gap
+  libcxx_nested_map_value_type_construct_relower — testphpdumpiter carries a
+  .libcxx_skip with the reason); the darwin mac-battery known-open (the
+  include-free value intrinsic, 10/1 on both runner arches); Windows C-lane
+  policy (task #58); front-end
   `__attribute__((cleanup))` on locals.
 - **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity
   reached ~97.9% and ~475 integration tests passed. Retained only as the
@@ -76,7 +93,7 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — `cir_node` (MC11-IR) → c2mir → MIR correctness** | ongoing | **Promote gate MET** (2026-08-12, torture class-(a) burndown complete; stamp in [failset-classification.md](../parity/failset-classification.md)) and develop→master promotions resumed. Remains the standing correctness workstream: class-(b) GNU extensions, new-feature parity, and the reducer-per-fix discipline continue on it | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
-| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **In progress (raise the floor)** — branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Floor LANDED in-tree (v0.98.0)** — MIR `MIR_T_V128` on x86-64 and aarch64 (NEON lane arithmetic, compares, shifts), the c2mir `vector_size` / `ext_vector_type` front-end, and the 128-bit vector CALLING CONVENTION on SysV, AAPCS64, Apple and win64 gated against the host compiler (`scripts/vector_abi_gate.sh`, 28 lines, in fulltest). Open: wider vectors (256/512-bit), upstreaming to vnmakarov/mir (held until the master promotion). History: branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
 | 1.7 | **Cold JIT startup toward tinycc latency** | ongoing | **In progress** — packed Adventure has landed positional auto-include filtering, lazy MIR generation, shared forest/prelude state, lazy MEMBER hydration, demand-driven derived restore, and c2mir registry pages (@`ad9be08d`, another −2.06% Ir). Remaining measured work: re-attribute host STL/string allocation after the arena; the zstd spine/arena raw-vs-compressed size trade needs owner direction | [cold-jit-startup.md](2026-08-22-cold-jit-startup.md) |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
@@ -319,9 +336,9 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | **Complete** (v0.45.0 hosted binaries; v0.76.0 public tarballs) | [macos-arm64-port.md](macos-arm64-port.md) |
-| 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on Track 1.6 (raise MIR) | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.2 | macOS SIMD (NEON) | 2-3 wk | **Complete** (v0.98.0: MIR_T_V128 on aarch64 — NEON lane arithmetic, compares, shifts; the vector calling convention on AAPCS64 and Apple gated against the host compiler by `scripts/vector_abi_gate.sh`; Apple stack-argument packing) | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer + aarch64 cross-gen) | 4-6 wk | **Complete** (v0.76.0: `-o` for C and C++; deferred residue: `libmadc.dylib`, in-process `.o` loader) | [2026-08-07-macos-release-lane-plan.md](2026-08-07-macos-release-lane-plan.md) |
-| 6.4 | Windows port (a working Windows build + release artifacts) | large | **Complete** (shipped in the v0.82.0 three-platform release; current: Wine 1061/0, genuine Windows 1010/0). Follow-ups: GitHub-Actions release automation, C-lane policy (task #58) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
+| 6.4 | Windows port (a working Windows build + release artifacts) | large | **Complete** (shipped in the v0.82.0 three-platform release; current: wine64 1251/0/0TO/66skip, genuine Windows 1253/0/0TO/64skip — a release-tier lane driven from the container over the W0.2 channel). Follow-ups: GitHub-Actions release automation, C-lane policy (task #58) | [2026-08-12-windows-release-lane.md](2026-08-12-windows-release-lane.md) |
 
 **Dependencies:** 1.3 (IR) dramatically reduces 6.1 effort.
 
@@ -479,7 +496,7 @@ run in parallel.
 
 25.  Track 5A.9   Federated query planner                [4-6 wk]
 
-26.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
+26.  Track 6.2  macOS SIMD (NEON)                       [DONE v0.98.0]
 
 27.  Track 4.4  Node.js integration                      [4-6 wk]
      Track 4.5  Rust bindings                            [2-3 wk]

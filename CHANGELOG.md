@@ -2,6 +2,427 @@
 
 ## [Unreleased]
 
+## [v0.98.0] — 2026-09-06
+
+madc on macOS end to end — native builds, the full suite running on both Mac architectures (202 arm64 failures → the last root closed), and the C++ front-end wave the mac runners drove (templates, classes, namespaces, the Itanium class-call ABI) — plus the MIR aarch64 backend at x86-64 parity (128-bit SIMD, the AAPCS64/Apple ABI, a vector calling convention gated against the platform compilers), the libc++ `<list>` completion fix and the stdlib-flavor boundary, and the packaged install shape (thin CLI + shared libmadc, six CI-built release assets).
+
+### C++ front end — the darwin-suite wave: templates, classes, namespaces, overloads (D4 waves 2–7c, 2026-09-02/04)
+
+Running the full suite on GitHub's arm64 and Intel mac runners (below)
+exposed a front-end backlog that the libstdc++ lane never met — libc++
+spells the same library differently. Each fix is reduced, g++/clang++-
+oracled, and named by the clause it implements; every one of them
+also holds on linux.
+
+- **A `<` opens a template-argument-list by NAME LOOKUP ([temp.names]/3,
+  2026-09-04)** — the way gcc's `cp_parser_template_name` and clang's
+  `Sema::isTemplateName` decide it, never by the token before it.
+  `DelimDepth::angle_open_context` read any identifier before `<` as a
+  template-id head, so libstdc++ `<ratio>`'s `integral_constant<bool,
+  _R1::num < _R2::num>` opened an angle that never closed and swallowed
+  every header after it. `Program::class_member_lt_reading` /
+  `unqualified_name_lt_reading` are the one owner; every stream scan
+  now carries the Program handle, and `check-one-delim-tracker.sh`
+  fails on a copy without it (529d3824, d4b4a51c).
+- **Template deduction and identity** — a parameter deduced from two
+  arguments must deduce the SAME type ([temp.deduct.type]/2):
+  `std::string(20, 'x')` took the iterator-pair constructor with
+  `_InputIterator = int` (530187d7, one `deduce_scalar_arg` owner
+  02a76f49; `testdeductionconflict`); a SFINAE-constrained constructor
+  template is a candidate only when its constraint holds — the same
+  `std::string a(20, 'x')` died "no matching constructor" under the
+  darwin pack (636d30de); a DEPENDENT non-type default template
+  argument folds after substitution, so `template<class A, bool =
+  (A::num == 0)>` selects its `true` partial specialization (`2 1 2`,
+  madc printed `1 1 1` silently; 84e51a1d); an UNEVALUATED call to a
+  namespace function template forms its type under [temp.deduct]/8 —
+  explicit arguments, deduction, then each still-unbound parameter's
+  DEFAULT (libc++ 18's `__unwrap_range`; 0a353603); a template-argument
+  binding's identity distinguishes a reference from its pointer twin
+  (`forward<int&>` no longer answers for `forward<int*>`; 5357a30c); a
+  pointer-to-builtin template argument keys through the ONE builtin
+  table (`template<> struct N<int*>` was invisible; 06d72472); a
+  namespace function template's declarator is located ONCE by the
+  delimiter-aware locator (six first-occurrence name searches retired;
+  33beee8f, 92e9cc53); a class-pattern capture whose `decltype(...)`
+  operand is a placeholder stays per-instantiation (libc++
+  `__unwrap_iter_impl`; 327f4896). Together these close the libc++
+  `std::vector` copy chain (`__unwrap_range → make_pair → forward`) that
+  failed six darwin tests.
+- **Out-of-line and hidden-friend definitions** — an out-of-line
+  constructor definition attaches to the declared overload whose
+  parameter SIGNATURE it repeats (libc++ vector declares five
+  one-parameter constructors; the move constructor's body had attached
+  to the `initializer_list` one; bb1477ad); a template-head
+  hidden-friend operator DEFINITION inside a class is a namespace-scope
+  operator template ([class.friend], [temp.friend]) — `cout << setw(5)`
+  on libc++ had reached the raw C `<<` (da57f5d5); a restored class
+  carries its friendship grants (forest format 43; ef7ed6b9).
+- **Nested classes — the `<filesystem>` frontier (2026-09-04)** — a first
+  declaration and its definition are ONE object (`struct B; B *g;
+  struct B { int w; B(int); };` then `g->w`; d624d03e); a NESTED
+  class-head completes the declaration its owner's scope holds
+  (`struct A { struct B; B *link; struct B {...}; }` and the
+  out-of-line `class A::B { ... }`; 061bb0ca); `struct A::B : A { ... }`
+  is an out-of-line nested-class DEFINITION (a21e31cd); an out-of-line
+  member of a nested class — `P::I &P::I::next() { ... }`, libstdc++'s
+  `path::iterator::operator++()` — resolves through the class-rooted
+  chain ([class.qual]; ce331a34); `sizeof(O::N)` / `alignof(ns::T)` /
+  `sizeof(Box<O::N>)` take a qualified type-id (eca465e9;
+  `testsizeofqualified`, with its LLP64 `.win64_expect`).
+- **Two aggregates with one tag** — a same-tag aggregate from ANOTHER
+  scope never takes the bare key or the emitted identity a complete
+  aggregate already holds, in both definition orders, live and restored
+  (a user `class path` beside `std::filesystem::path`; 4b8dbb0c), and
+  the struct emitters dedup by ENTITY, not name (a8fbf20e).
+- **Namespaces and lookup** — namespace-alias-definition
+  ([namespace.alias]): `namespace fs = std::filesystem;` parses
+  (29aca401); a using-directive makes the nominated namespace's NESTED
+  namespaces nameable as qualifiers ([namespace.udir]/2: after `using
+  namespace lib;`, `fs::path` names `lib::fs::path`; 61153b26); a member
+  function named with explicit template arguments hides a
+  namespace-scope function of the same name ([basic.lookup.unqual] —
+  `bind<U>(...)` had bound `::bind` from `<sys/socket.h>` and emitted a
+  call to a function that does not exist, with no diagnostic; 4b032c94,
+  `testmemberhidesglobal`); the UFCS call-syntax fallback also fires
+  when the visible free set is arity-inviable ([over.match.viable]:
+  `count(m, k)` on libc++ reaches `m.count(k)`; ece8de40).
+- **Value categories in overload resolution** — an rvalue argument
+  prefers the `T&&` constructor over `const T&` ([over.ics.rank]/3.2.3)
+  and an lvalue cannot bind a concrete `T&&` at all: `B d(std::move(a))`
+  had selected the COPY constructor and the moved-from object kept its
+  resources (`testrvaluectorselect`: madc `3 3 3`, g++ == clang++
+  `3 3 -1`; 2ef73b51); a `return` of a local or a parameter ranks the
+  copy into the result object as an RVALUE ([class.copy.elision]/3 —
+  `C makec() { C c(5); return c; }` printed the copy constructor's mark
+  and a move-only class was not returnable at all; c85cefdb, the
+  parameter half 2455aafa after the ABI change below;
+  `testimplicitmovereturn`, `testparamimplicitmove`).
+- **Streams and wide types** — `wchar_t` / `char16_t` / `char32_t` are
+  DISTINCT fundamental types named by their C++ spelling (they were the
+  storage type itself, so `ctype<wchar_t>`'s specialization was
+  invisible and `__is_same(int, char_traits<wchar_t>::char_type)` was
+  true; ba0cbb09), a typedef never redeclares a C++ built-in and the
+  served C headers guard `wchar_t` with `#ifndef __cplusplus`
+  (29fbbb8f), scalar identity in overload scoring is a TYPE, not a
+  representation (`const wchar_t*` no longer binds an `int` instance;
+  7fa6b2e0); `long double` and `__int128` are their OWN types in the one
+  builtin-spelling table (`K<long double>` and `K<double>` had shared one
+  instantiation; ad75ed37); stream operator operands decay and the
+  generic inserter deduces — `std::cout << ca` (a `char[]`) printed
+  garbage and `std::wcout << L"x"` printed a pointer on libstdc++ and
+  libc++ alike (fb6f3537; the retained-template body route ranks the
+  same way, cf61e762); `sizeof(L"x")` measures target element units
+  (8, was 5; 9b2ee46c).
+- **Lambdas and access** — the closure's call operator is parsed by
+  `parseFunction` (declarators, defaults, packs, trailing return types
+  resolved with the parameters in scope; 6725ae40), and access control
+  judges a body by the MEMBER it is written in ([class.access]/2) — a
+  lambda inside libc++ 18's `basic_string` move constructor reads the
+  private `__r_` (77f54223). A constructor member initializer that
+  converts a DERIVED pointer to a BASE pointer member applies the
+  implicit upcast — secondary-base offset adjusted (`1 2 0` for g++'s
+  `2 2 1`, silent; c73f4496).
+- **Tokens keep their origin** — `TokenBase::clone_origin()` is the one
+  owner of "copy this token" (146 parser sites): `clone()` stamped every
+  copy with the CURRENT parse position, so an instantiated body carried
+  the call site's file and the pack lane filed a losing libc++
+  constructor instance as a user root. Gate `check-clone-origin.sh`
+  (360831da).
+- **Emission** — an aggregate's member destructor is declared with ONE
+  typed prototype shape whether madc-emitted or library-bound (libc++
+  `basic_filebuf`'s exported-and-parsed destructor conflicted;
+  28606840), and the referenced-function prototype sweep runs AGAIN
+  after the materialization fixpoint (a late-materialized body's
+  `memmove` call was implicit-int; 69427eb1). A class prvalue carried
+  as a c2mir struct value is the result object — no constructor runs
+  ([dcl.init] guaranteed elision; f413c761).
+
+### Class ABI — by-value class parameters and returns follow the Itanium rule (D4 wave 7, 2026-09-04)
+
+- **A by-value CLASS parameter is the callee's OWN object** — a class
+  "non-trivial for the purposes of calls" (a non-trivial copy or move
+  constructor, or a non-trivial destructor) is passed by INVISIBLE
+  REFERENCE: the caller copy/move-constructs the parameter object (a
+  prvalue argument IS it) and destroys it after the call. madc lowered
+  `void f(D d)` as a C struct by value — a bitwise image with no copy
+  constructor and no destructor: `f(a)` printed `f 1` where g++ and
+  clang print `f 101` then `~101` (silent, exit 0), a callee's `s += s`
+  on a by-value `std::string` freed the CALLER's buffer (double free,
+  SIGABRT), and a by-value class argument to a g++/clang-compiled
+  library callee was an ABI split (2466bbb9; `testclassparambyvalue`,
+  `teststringparambyvalue`).
+- **ONE predicate for both call directions** —
+  `class_nontrivial_for_calls` decides that such a class is RETURNED
+  through the hidden
+  result pointer (`__retbuf`) and PASSED by invisible reference; a
+  trivially copyable class travels as a plain C struct value both ways
+  (`std::pair` / `std::tuple` keep their native shape). Return had keyed
+  on "has a destructor" alone, so `H get() { return h; }` handed the
+  member's bytes back where g++ copy-constructs (`g 5` for `g 105`) and
+  `return static_cast<H&&>(h)` never ran the move constructor
+  (f974dec0; `testretuserctorclass`). With the parameter the callee's
+  own object, a returned by-value parameter is an implicitly movable
+  entity again: `H pass(H h) { return h; }` moves out (`b 1101`), and a
+  move-only class is returnable from its parameter (2455aafa).
+
+### libc++ `<list>`, qualified members, and the stdlib-flavor boundary (wave 12, 2026-09-05)
+
+- **A template-id named as a TEMPLATE ARGUMENT while a class body is in
+  flight instantiates after that body completes** ([temp.inst]/1 —
+  naming a specialization as a template argument never requires it
+  complete; C++ instantiates it at the first context that does). libc++
+  `<list>`'s `__list_node_pointer_traits` names `__list_node<T,void*>`
+  as an argument of its first typedef; madc instantiated it right there,
+  its base typedefs captured ephemeral placeholders from the
+  still-memberless traits class, and `->` through them refused —
+  `std::list` never worked under libc++ (the one remaining ROOT on
+  BOTH mac architectures at dispatch #12 — three tests, `testforeachiter`,
+  `testphpdumpiter`, `testptrcmpupcast`). The fix is the existing
+  shell-then-complete machinery reached from one more site
+  (`template_arg_resolve_depth`, `complete_deferred_arg_instantiations`),
+  plus the completeness demands C++ has that madc lacked — a type
+  trait's class operand, a base class, a static member read, the
+  [temp.names]/3 `<`-reading — as callers of the ONE
+  `complete_class_type_on_demand` owner (b49234a6; `testlistiter_libcxx`).
+- **`B::x` names the member of `*this`** — a qualified NON-STATIC data
+  member inside a member function is an implicit-this access at the
+  member's offset within the base subobject ([class.qual],
+  [expr.prim.id]/2). It lowered to the CONSTANT 0: `return B::x + 1;`
+  yielded 1 for 42 (silent, exit 0), and `base::__end_.__next_` (libc++
+  list) refused; a statement-leading `base::end.next = &n;` was read as
+  a declaration (18953bfd; `testqualbasemember`: `42 7 10` / `3`).
+- **std::string and `cout << value` across the flavor boundary** — under
+  `-stdlib=libc++` on the libstdc++-built linux madc, `println("[{}]",
+  s)` handed the script's libc++ string to a host helper that read it
+  with libstdc++'s layout (SIGSEGV); the format intrinsic now reads a
+  foreign-flavor string as bytes + length through the SCRIPT's own
+  `c_str()`/`size()`, the way the marshalling thunk already did
+  (94de04fe; `teststrargcoerce_libcxx`). `cout << value` resolved
+  mangled-direct to the host's inserter, whose libc++ `basic_ostream`
+  parameter no libstdc++ host can export (`import of undefined item`,
+  ten tests): when the script's flavor is not the host's
+  (`__MADC_HOST_LIBCPP__` vs `_LIBCPP_VERSION`) the fragment renders the
+  inserter SCRIPT-side, kind by kind through the carrier's own
+  predicates, so `std::hex` / `boolalpha` / `setprecision` apply
+  exactly as to the contained type (d2bf5a3c; `testvaluecout_libcxx`).
+- **The carrier completes its reader surface** — `is_boolean` /
+  `is_integer` / `is_real` / `is_bytes` / `is_instance` and `data()` (the
+  text payload, no copy; the length is `count()`) land as `madarray_*`
+  runtime entries, and every reader (`count`/`size`, the `as_*`/`is_*`
+  accessors, `substr`/`length`/`empty`/`at`/`data`, `c_str`, `==`/`!=`,
+  index) is a `const` method as `value.h` declares, so a `const value &`
+  can call them. Thread-safety: readers over one value, the C++
+  convention (d2bf5a3c).
+- **`testphpdumpiter` formally skipped on the libc++ domain** — its
+  map-of-map insert hits a separate, pre-existing libc++ gap in the
+  deferred-construction relowering of `allocator::construct` (KG Gap
+  `libcxx_nested_map_value_type_construct_relower` carries the reducer
+  and fix path); the other two `<list>` tests pass under libc++
+  (733ce20b). The linux libc++ lane went from its first run since
+  2026-08-16 (JIT 1286/14) to 1303/0/14skip on this wave.
+
+- **Templates: a dependent member template-id is one placeholder per
+  argument list.** `_Traits::template rebind_alloc<__node_type>` and
+  `rebind_alloc<__node_base>` in one class body shared a single dependent
+  placeholder (keyed by owner and member name; the second use overwrote the
+  first's argument recipe), so the class pattern captured from libc++
+  `__list_imp`'s dependent parse re-derived both as `allocator<__list_node_base>`,
+  every node pointer of a pattern-served `std::list` pointed at the base node,
+  and `push_back`'s `__node->__as_link()` had no such member — the darwin
+  forest pack's `<list>` failure (dispatch #13), invisible to a live parse,
+  which body-lanes `__list_imp`. The materializer now mints identity, canonical
+  spelling and recipe together, per argument list. Found and verified on the
+  build container without a Mac: the Linux-hosted cross madc freezing a `<list>`
+  TU and parsing the reducer against that pack; `scripts/forest_pack_darwin.sh`
+  gains a consumer PARSE leg (`scripts/forest_pack_consumers_darwin.txt`) so the
+  pack's semantics are gated where the pack is built.
+
+### C front end — headerless libc calls on Apple arm64, C23 `_FloatN` literals, the GNU vector extension (2026-09-01/05)
+
+- **An UNDECLARED variadic libc call adopts the pack's REAL prototype**
+  (GCC canon: the builtin's) — the dynamic-symbol fallback declared an
+  undeclared libc name as K&R `int printf()`, c2mir passed every
+  argument NAMED (registers), and a variadic callee on Apple arm64 reads
+  its variadic arguments from the STACK: every zero-include `printf(...)`
+  script printed addresses or died (112 arm64-only failures on the first
+  darwin run). `Program::forest_adopt_declared_function()` materializes
+  the bound forest's typed declaration for variadic callees in a
+  C-primitive shape, in the dialect AND the strict
+  `--std=c17/gnu11/c++17` modes, `__builtin_` twins included
+  (5393bf34, 3078d41e).
+- **C23 `_FloatN` literal suffixes lex as ONE literal** — `f16`/`f32`/
+  `f64`/`f128` and gcc's `bf16` (mingw's `avx512fp16intrin.h`, reached
+  from every `<windows.h>` TU, had split `0.0f16` into two tokens); one
+  `eat_real_suffix` replaces three hand-rolled copies (61dc1124;
+  `testfloatnsuffix`, `testfloatnsuffixbad`, gcc gnu2x oracle).
+- **The GNU vector extension, as gcc has it** — ANY vector expression
+  subscripts to its lane (`(a + b)[2]`, `(-a)[1]`, `(a == b)[0]`, a call
+  result; the `[` had fallen through to the lambda introducer) and the
+  built-in operators over a vector operand type as the vector
+  (ef156cac; `testgccvectorexprsubscript`); a vector comparison's type
+  is gcc's OPAQUE vector of SIGNED lanes — an unsigned compare produced
+  unsigned lanes (`(ua == ub)[0]` widened to 4294967295, silent) and a
+  double compare was rejected (15126633; `testgccvectorcmpresult`); a
+  vector shifted by a SCALAR count of any integer type compiles (`v8hu
+  << n`; 90990307; `testgccvectorshiftcount`).
+- **c2mir, two upstream reports** — a file-scope declaration WITH an
+  initializer is a definition even under `extern` (C17 6.9.2p1; `extern
+  const int a[] = {1,2,3}` had linked as an import; gcc's warning
+  wording adopted; upstream vnmakarov/mir#472; 0a2d3e8e,
+  `testexterninit`), and members of an ANONYMOUS union carry the
+  union's alias class — `v.ival = 0; v.fval = 1.5; return v.ival;`
+  returned 0 at `-O2` where gcc prints `3ff8000000000000` (upstream
+  mir#473, the Lobster `Value` type; 49741295). Both reported with
+  reducers by **aardappel**; the upstream PRs are held until after the
+  master release (owner directive 2026-09-05).
+- **Small C fixes the mac runners found** — `sizeof(*(p))`, the shape
+  Apple's `FD_ZERO` expands to, is an expression operand (c5a2dd79;
+  `testsizeofderefparen`, with its LLP64 `.win64_expect`); the embedded
+  `stddef.h` defines `NULL` unconditionally, gcc's own shape (a
+  freeze-order dependence dropped `NULL` from the darwin pack; 36c27de7);
+  a GNU `asm` label on a function declaration is its link symbol in the
+  forest record too (Apple's `stat __asm("_stat$INODE64")` had restored
+  as plain `stat`, so every `stat`/`readdir` on an Intel Mac ran the
+  32-bit-inode entry; ee7bfee5); `__builtin_nansl` materializes the
+  DOUBLE signaling-NaN pattern where `long double` is double (8fc5ed0d).
+
+### Target properties — `long double`, `va_list`, `long`/`long long`, plain `char` (2026-09-02/05)
+
+- **`long double` takes its size and alignment from the target** —
+  16/16 on x86-64 (Linux, Windows, Intel Mac), 8/8 on Apple arm64 where
+  `long double` IS `double`; the front end had folded `sizeof(long
+  double) = 16` and laid structs out 16-aligned on an M-series Mac
+  whose libc, c2mir and MIR all say 8 (1531060d). Tests whose CORRECT
+  output differs between the two Mac architectures carry a
+  `.darwin-arm64_expect` from clang on the Mac (fe48ecee).
+- **The `va_list` SHAPE is a target property** — Apple arm64's `va_list`
+  is a scalar `char *`; madc modelled the SysV x86-64 record on every
+  non-LLP64 target, so every `va_list` handed to libc read garbage
+  (`vprintf` printed `hA>   0`, `vsprintf` 0.00, a SIGBUS at an ASCII
+  address). `TargetVaList madc_target_va_list` joins the four target ABI
+  facts (fd487dc0, 0149306d).
+- **The darwin `long` / `long long` identity** — on Apple the headers
+  alias `int64_t` to `long long`, and a pinned builtin whose display
+  name is another type's source spelling on this target now carries its
+  target C spelling as canonical, so `template<> struct isL<long>` and
+  the use `isL<long>` key alike (`std::max` undefined import,
+  `testtypedefarg`; 603eff56).
+- **Plain `char` is UNSIGNED on the AAPCS64 linux target** — c2mir
+  declared it signed for every aarch64 flavor; `aarch64-linux-gnu-gcc`
+  and clang predefine `__CHAR_UNSIGNED__` there ((char)200 < 0 is false,
+  `CHAR_MAX` 255), Apple arm64 keeps it signed; found by the interop
+  pair's qemu stage (779bb654).
+
+### CLI — `-w` inhibits all warnings (2026-09-04)
+
+- **`madc -w file.mad`** silences c2mir's compile warnings, gcc's `-w`;
+  errors are unaffected. Added for a test that provokes a diagnostic on
+  purpose (`extern int c = 7;` warns by design in gcc, clang and now
+  c2mir) so the warning-census ratchet stays at its all-zero end state
+  through a `.flags` fixture instead of a per-test allowance
+  (b152299f; `docs/usage.md`).
+
+### MIR aarch64 — the floor reaches x86-64 parity: AAPCS64 ABI fixes and 128-bit SIMD (wave 8 + S1–S5, 2026-09-04/05)
+
+The darwin arm64 lane isolated nine arm64-only failures whose roots
+were the MIR aarch64 backend, not darwin (the vector and `__int128`
+shapes reproduce under qemu on linux-aarch64). Six were target-model
+gaps — c2mir's aarch64 ABI code, MIR's long-double canonicalization,
+madc's `va_list` shape; three were the fork's ≤16-byte vector support,
+implemented for x86-64 only. All nine are fixed (`third_party/mir` is
+ordinary madc source).
+
+- **c2mir aarch64 ABI (wave 8)** — `__int128` returns in `x0:x1`
+  (`MIR fatal error: wrong result type in proto`; 63a6dd6f,
+  `testint128`); a `_Complex` argument is a Homogeneous Floating-point
+  Aggregate passed in consecutive SIMD/FP registers (AAPCS64 C.1/C.2 —
+  libm's `conjf(1+1i)` returned `(1, 0)`; 93010447, `testbuiltinconjf`,
+  `testbuiltincomplexparts`); a REGISTER's type is canonicalized like
+  every other typed slot under `MIR_LD_IS_D` (hosts whose `long double`
+  is `double`: Apple arm64, MSVC — `i2d` "Got 'ldouble'"; 7d63083a,
+  `testcomplexretconv`); the `va_list` shape above (`testprintfdouble`).
+- **128-bit vectors on aarch64 (the SIMD arc, S1–S5)** — `MIR_T_V128` is
+  an FP-class value: a Q register with the 128-bit `long double`'s
+  shape — moves, memory, spills and the AAPCS64 call convention (S1,
+  d123c3b0); NEON lane arithmetic for the integer insns (`and`/`orr`/
+  `eor`, `add`/`sub` at every lane width, `mul` at 16 and 32 bits; S2,
+  715dc569); `fadd`/`fsub`/`fmul`/`fdiv` at `.4s` and `.2d` (S3,
+  43b4f307); compares (`cmeq`, `cmgt`, `fcmeq`, the ordered float
+  compares with operands swapped into the instruction NEON has) and
+  shifts (`ushl`/`sshl` with a broadcast or per-lane count; S4,
+  797d88b8); the call shims place a V128 like the 16-byte `long double`
+  (S5, 62e86e2d). A vector argument had travelled in `x` registers as 8
+  of its 16 bytes (`testgccvectorbitwisenot` printed `0 0 0 0`,
+  `testgccvectorlit` `24 0 0 0` — silent, exit 0) and any V128 memory
+  operand met a pattern table with no `vmov`. Every encoding was read
+  from an assembler oracle, never from memory — the table is checked
+  in as `third_party/mir/aarch64-neon-encodings.md`; the qemu loop
+  (`aarch64-linux-gnu-gcc -O0 -static` vs the aarch64 `c2m`, at `-O0`
+  and `-O2`) is the gate, the arm64 Mac the JIT check. Plan:
+  `docs/plans/2026-09-05-aarch64-simd-v128.md`.
+- **Two pre-existing shim defects found reading them** — the `ff_call`
+  shims indexed the interpreter's `MIR_val_t` array by `sizeof (long
+  double)` (16 on linux, 8 on Apple arm64 and MSVC — the wrong stride
+  for every argument after the first on those hosts; b70903ed), and the
+  Apple interp shim OR'd a stack FP argument's raw byte offset into the
+  instruction word instead of the scaled imm12 (75648579; upstream
+  carries the same line). The Apple interp shim also hands an
+  interpreted vararg function the CALLER's stack as its `va_list`
+  (fdaa33b4).
+
+### The vector and stack-argument calling conventions, gated against the platform compilers (2026-09-05)
+
+- **The lesson: the oracle compiles one side.** Every vector-ABI check
+  had compared c2m against c2m — a self-consistent caller and callee
+  agree whatever the layout, so the lane arithmetic was proven and the
+  ABI was not. With one half built by the platform compiler
+  (`tests/abi/libvecnative.c` as a shared object, `vec_ffcall.c` by
+  `c2m -eg`, `c2m -ei` and madc through `#load`) the vector convention
+  was wrong on x86-64, madc included — a vector through `...` printed
+  garbage (1073677189 for 19, exit 0), a ninth vector argument was
+  demoted to an integer block (loud), no 16-byte stack slot (`long
+  double` included) was ever 16-byte aligned, the vararg prologue saved
+  only the low eightbyte of `xmm0-7` — and on aarch64 everywhere:
+  c2mir's generic helpers passed every vector as `blk0:16` and returned
+  it through `x8`.
+- **ONE rule at the c2mir boundary** — `v128_reg_class_p`: a 128-bit
+  vector is a REGISTER-CLASS value at every call boundary (argument,
+  result, vararg, `va_arg`), never an aggregate block (e85f6c68); a
+  vector operand at a vararg position is a V128 argument in both
+  machinizers and the interpreter, the x86-64 `va_arg` gains its vector
+  arm and whole-register saves (464d0a4d); a 16-byte stack argument
+  occupies a 16-byte ALIGNED slot at the caller, the callee, the
+  `ff_call` shim and the `va_arg` overflow area — SysV 3.2.3 / 3.5.7
+  (4fbffc77; `testgccvectorvararg`, `testgccvectorargs9`); the aarch64
+  parameter gather falls through to the generic lane (4486c513).
+- **win64 keeps MS x64's rule** — a 16-byte vector is passed BY
+  REFERENCE in every argument and vararg position and returned in
+  `xmm0`, so the classifier keeps it a memory block there; verified
+  under wine against the pair built by `x86_64-w64-mingw32-gcc`
+  (7e0098d1).
+- **Apple packs non-variadic stack arguments at their natural size**
+  ("Writing ARM64 Code for Apple Platforms": the ninth and tenth `int`
+  of a ten-`int` call sit at `[sp+0]` and `[sp+4]`, a `char` takes one
+  byte, a `float` four; variadic arguments keep 8-byte slots) — MIR
+  used the generic 8-byte slot everywhere, so a clang-compiled caller
+  or callee with more than eight sub-8-byte integer arguments got a
+  silent wrong answer (`iapply10`: 788400285 for 385). ONE owner in
+  `mir-aarch64.h` (`stack_arg_slot_size` / `stack_arg_slot_start` /
+  `stack_arg_mem_type`) serves the machinizer's call site and callee,
+  `va_start`, and both shims (d1f6c853; plan
+  `docs/plans/2026-09-05-apple-arm64-stack-arg-packing.md`).
+- **`scripts/vector_abi_gate.sh` joins fulltest** — `c2m -eg`, `c2m -ei`
+  and madc must print byte-for-byte what the host compiler's own build
+  of the pair prints: 28 lines covering vectors declared, nine deep,
+  mixed with integers and a stack `long double`, through `...` with the
+  FP registers exhausted, callbacks receiving vectors, ten-`int` /
+  `char` / `short` / `float` / mixed packing probes in both directions
+  (0661a666, d1f6c853). The same pair runs under qemu against an
+  aarch64-gcc shared object and on the Mac against an Apple-clang
+  dylib; the interop output is byte-identical to the platform compiler
+  on x86-64, aarch64-linux and Apple.
+
 ### Darwin-host build port — native macOS builds, CI-owned release assets (D0–D3, 2026-09-01/02)
 
 - **madc builds natively on macOS** (`make -C src release-macos` on a Mac):
@@ -32,6 +453,184 @@
   `libmadc_rt.a` negative control). `package_release_macos.sh` is
   per-arch; `/promote` no longer attaches mac assets by hand.
   `macho_exe_dylib_gate.sh` tool names are knobs.
+
+### The full madc suite on macOS — D4: from 202 arm64 failures to the last root closed, on GitHub's arm64 and Intel mac runners (2026-09-02/05)
+
+- **The lane** — `darwin-probe.yml` runs `scripts/run_tests.sh --exe`
+  against the release-shaped hosted binary on `macos-14` (arm64) and
+  `macos-15-intel` (x86_64), wall time stamped, `suite.log` + a sorted
+  `suite-failures.txt` uploaded; `suite_gate=false` is the measurement
+  mode. `run_tests.sh` gained three generic knobs, none per-test:
+  `MADC_EXE_FLAGS` (the darwin AOT lane links `-static-libmadc`),
+  `MADC_EXE_ADVISORY=<reason>` (the EXE pass reports but does not gate
+  while an Apple-target program that needs the dialect runtime cannot
+  link — no `libmadc` dylib until D5), and **`MADC_FAIL_DETAIL=N`** —
+  under each `FAIL` line the exit code and the first N lines of the
+  failing leg's stdout / stderr / build output as `  | ` lines, so a
+  runner nobody can reach interactively carries its own diagnosis
+  (95d3febe, eeba65de, dba876c5).
+- **Fixture domains, not per-test branches** — the darwin suite runs
+  `MADC_SKIP_EXT="darwin libcxx darwin-<arch>"`: the platform's stdlib
+  flavor IS libc++, so the `.libcxx_skip` fixtures apply exactly as on
+  the container's `-stdlib=libc++` lane; `.darwin_skip` states why a
+  test is linux-domain (glibc's `libc.so.6` by name, `int16_t`
+  redeclared with a signedness Apple's `<stdio.h>` already fixed);
+  `.darwin-arm64_expect` carries the arm64 oracle where the two Mac
+  architectures legitimately differ (`long double`); `.win64_expect`
+  did the same for LLP64 in the wine lane (ae3abdeb, fe48ecee,
+  75388cb5, e398fabd, 47ef432d).
+- **The measurements** (JIT pass/fail; each wave predicted its residue
+  before the run and the run confirmed it): first run arm64 1049/202,
+  Intel 1160/91 → #2 1147/100, 1183/64 → #3 1215/36, 1224/27 → #4
+  1227/23, 1236/14 → #5 1246/18, 1255/9 → #6 1256/12, 1265/3 → #9
+  1272/12, 1281/3 → #10 1279/6, 1283/3 → #11 1285/3, 1286/3 → #12
+  1287/3, 1288/3 (run 33972297886 @27947466). Intel's failures were a
+  strict subset of arm64's throughout; the arm64-only tail was the MIR
+  aarch64 floor (above). After #12 the residue on BOTH architectures
+  was the libc++ `<list>` trio, closed by wave 12; the run on the
+  release content: arm64 1293/0/0TO/24skip, Intel 1294/0/0TO/23skip. Plan and
+  per-wave triage: `docs/plans/2026-09-01-darwin-host-port.md`.
+- **The darwin-only classes** — the darwin arm64 predefined table
+  restates libc++'s alternate `std::string` layout
+  (`_LIBCPP_ABI_ALTERNATE_STRING_LAYOUT` is selected only under the
+  clang identity the GCC posture filter removes, so every string
+  crossing to Apple's
+  `libc++.dylib` read as garbage — `to_string` 26 bytes long, the
+  polyglot `php::`/`rust::` string publics empty; b03d6e4b,
+  `teststringabiinterop`); the posture filter drops `__BLOCKS__` (Apple's
+  SDK took its block branches and madc failed at the first `(^)`
+  declarator on every developer Mac; eeba65de); the embedded-header
+  precedence predicates ask the ONE provider-exists owner, so the pack
+  counts as a directory — libc++'s `<stddef.h>` wrapper unit wins over
+  the embedded copy on a Mac with NO headers on disk (`--std=c++17
+  #include <iostream>` from the shipped tarball; 4fbcae4d).
+- **Frozen-forest fidelity** — a forest-restored INCOMPLETE husk
+  completes on demand from its canonical identity (`std::istringstream
+  s("41")` with the darwin pack bound fell to the function-declaration
+  route; eight tests; b14a6e2c); a restored polymorphic class is the
+  parsed class — secondary vptr owners, flat vtable slot list, virtual
+  method set, and its bound methods' prototypes before the vtables that
+  take their addresses (forest format 42; 8211a7b2); friendship grants
+  freeze (format 43; ef7ed6b9).
+- **Owner-hardware parity** — every arm64 fix was verified on the
+  owner's M-series Mac with per-build cross binaries before the runner
+  measured it; the full arm64 Mac suite on the pre-wave-12 content read
+  1287/3/23skip, the runner's number exactly. Remaining darwin
+  residue: **D5**, the hosted-macos runtime dylib (`libmadc-0.dylib`)
+  that unlocks the native-emit lane and `madcide` in the mac tarball.
+
+### Packaging arc — the default install is the PACKAGED shape: thin CLI + shared libmadc, six CI-built assets (PK0–PK5, 2026-09-01)
+
+- **The flip (PK2)** — plain `./configure` builds the thin `madc` CLI
+  against the shared `libmadc` (monolithic via `--disable-shared`), and
+  `make release` produces the shipping product: thin `madc-release` +
+  the frozen forest packed INTO `lib/libmadc.so` (forest-discovery arm
+  2, the library image). PK0 measured the flip first: the shared shape
+  costs +0.37–0.49 ms median at cold start (hello 14.80 → 15.17 ms,
+  n=21 interleaved; callgrind Ir +3.3%) for a 150 KB CLI beside a
+  16.1 MB library. Per-mode library products (`lib/release/`,
+  `lib/debug/`, dev keeps `lib/`) extend the per-mode-names law to the
+  library the thin CLIs load at RUNTIME; cross/hosted modes stay
+  monolithic until their per-OS twins ship; the packed lane IS the
+  packaged shape, and the monolithic form keeps standing coverage
+  through the `madc-mono` fulltest vehicle + `mono_cli_gate.sh`
+  (f37031a2, 7c6e304d, 9ac61443, d86560b7, 03db8c0a).
+- **The C ABI is classified and gated (PK1)** — 1088 extern-C exports
+  audited: 94 ABI (every `madc_api.h` declaration), 33 contract-prefixed
+  internals + 8 allowlisted with dispositions, the rest by class.
+  `docs/adr/0003-c-abi-stance.md` records the stance — **C ABI stable,
+  C++ version-locked** (C++ embedding hosts rebuild per release; the
+  forest blob is version-locked to its library) — and
+  `check-c-abi-surface.sh` in fulltest, self-testing, pins the SONAME
+  `libmadc.so.0` until the `.so.1` promise era (b2d0ad83).
+- **madcide ships as a compiled binary in the packages (PK3/PK7)** —
+  compiled in-pipeline BY the release compiler (`bin/madc-release -o`,
+  the dogfood proof of the packaged shape) as `/usr/bin/madcide` with
+  `/usr/share/madcide/profiles`; the Windows zip ships `madcide.exe`
+  beside `bin/profiles/`; `resolve_profile_dir` searches the source
+  tree, then the installed layouts anchored on the running binary. The
+  deb is 10.1 MB — 2.6 MB smaller than the monolithic-era 0.95.2 deb.
+  The mac tarball states its gap: no venue can produce a runnable mac
+  madcide until the darwin runtime dylib (PK3-mac-runtime = D5) exists
+  (e0a2688a, 59d3c4e4).
+- **Relocatable installs and honest library names (PK3)** — native-emit
+  `DT_RUNPATH` gains the relocatable arm FIRST (`$ORIGIN/../lib` on
+  ELF, `@executable_path/../lib` on Mach-O; PE binds by adjacency), so
+  a produced binary in a release tarball binds its OWN tree's runtime;
+  linux gains `madc-<ver>-linux-x86_64.tar.gz` (rootless, the same
+  `stage()` the deb/rpm use, with an `ldd` proof that the staged
+  binaries bind the staged `lib/libmadc.so.0`); `libmadc_rt.dll` becomes
+  **`libmadc-0.dll`** — it IS the engine, the `.so.0` twin — and `_rt`
+  now means only the emitted-C archive `libmadc_rt.a`, which the linux
+  packages gain; `docs/man/madcide.1` and a fully-commented example
+  `docs/examples/madc.ini` ship in every package (829dce8f, 12df58fa,
+  12046f5d, a2bccb38).
+- **Install-then-run gates on the SHIPPED bytes (PK4)** —
+  `package_install_gate.sh` extracts the actual deb / rpm / tarball /
+  zip a user downloads and runs the installed binaries: `madc -v` must
+  show the forest served from the INSTALLED `libmadc.so.0`, `madcide`
+  must paint on a real pty from the installed profiles, every probe
+  with a negative control; six-artifact `SHA256SUMS` (d7825bde).
+- **The release workflow (PK5)** — `release.yml` builds, install-gate
+  smokes and attaches the Linux + Windows assets on a master-promotion
+  tag push (six burn-in rounds: `autoreconf` in a clean checkout, the
+  mingw-target zlib, the wine prefix booted before the PE build,
+  `WINEPATH` derived from the repo root, `libc++-18-dev` for the
+  one-flavor gate); run 33566595108 was the first green end-to-end,
+  and D3 (above) added the two native macOS tarballs, so CI owns all
+  six assets (b7a53b96 … 88fa4a60, 32f05a09). Plan:
+  `docs/plans/2026-09-01-packaging-arc.md`.
+
+### Release process — every platform lane's FULL suite gates master; gates, probes, infrastructure (2026-09-02/05)
+
+- **OWNER LAW (2026-09-04): no master release until EVERY platform lane
+  has run its full test suite green on the promoted content.** The lane
+  ledger gains a RELEASE tier: `lane_ledger.sh check --release` = the
+  develop push set PLUS `libcxx` (the linux `-stdlib=libc++` flavor
+  lane — macOS's library on linux hardware, previously not in the ledger
+  at all), `darwin-suite` (the full suite on BOTH mac runner arches, or
+  every failure a filed `.darwin_skip` with its reason) and
+  `genuine-win`; the pre-push hook runs `--promote` for develop and
+  `--release` for master, `/promote` step 3 runs it at the candidate. A
+  platform failure is fixed or formally skipped with a stated reason —
+  never carried as a residue. Same ruling: a g++-testsuite C++
+  conformance lane is planned as ROADMAP Track 2.12 and joins no gate
+  ("C++11 parity must not block releases";
+  `docs/plans/2026-09-04-cxx-conformance-lane.md`) (2630aca5;
+  `.claude/rules/branching.md`).
+- **Gates added or tightened** — `vector_abi_gate.sh` (above);
+  `check-clone-origin.sh` (every parser-side token copy is
+  `clone_origin()`); the one-scalar-deduction-step owner the
+  `check-fn-template-deduction-owner.sh` gate demanded (02a76f49);
+  `check-c-abi-surface.sh` dispositions for the new target-property
+  and `-w` engine globals (0149306d, b152299f);
+  `check-no-std-hardcoding.sh` now reads comments too (7beeb022); the
+  lazy-template-registry
+  marker on the `[temp.names]/3` existence reads (d4b4a51c).
+- **Env-gated probes, silent unless set** — `MADC_DECL_PROBE=<type>`
+  (the ctor-call branch's inputs in `parseDeclaration`; 44da4f8e),
+  `MADC_MTI_PROBE_CLASS` reports class-scope alias writes and
+  `MADC_DT_PROBE` the deduced-call return lane's gate inputs (4632b410),
+  `MADC_LAYOUT_PROBE` (every `compute_layout` run; 8211a7b2).
+- **Infrastructure** — the container's wine stage no longer inherits
+  the ssh session's pipes (`wineserver -p` held a green summary open for
+  nine hours; a6ab66c4); the aarch64-linux cross toolchain and the qemu
+  sysroot links the MIR loop needs are pinned in
+  `provision_container.sh` (dcd836b0); an `aislop` baseline over `src/`
+  is recorded (`docs/parity/aislop-baseline.txt`; 790c16b6) beside the
+  Rule #4 / Rule #7 one-owner cleanup plan (e2e49e5c).
+- **Tests** — 61 new integration tests since v0.97.0, each the reducer
+  of a fix above with its g++/clang++ (or platform-compiler) oracle;
+  `teststructinterop` prints `FD_ISSET` truth values (Apple returns the
+  raw bit; 9f144e11) and `testmemberhidesglobal` declares its own
+  `::bind` (mingw has no `<sys/socket.h>`; 624cb050).
+- **Validation (the merge-wave battery on the release content)**: linux
+  JIT 1308/0/9skip, EXE 1249/0, OBJ 1249/0, packed 1308/0/9skip,
+  headerless 1274/0/43skip; linux `-stdlib=libc++` JIT 1303/0/14skip,
+  EXE 1244/0, OBJ 1244/0; wine64 1251/0/0TO/66skip; c-testsuite
+  220/220, baseline empty; darwin full suite arm64 1293/0/0TO/24skip,
+  Intel 1294/0/0TO/23skip; owner M-series Mac 1293/0/0TO/24skip; genuine
+  Windows 1253/0/0TO/64skip.
 
 ## [v0.97.0] — 2026-09-01
 

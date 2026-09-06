@@ -1538,6 +1538,112 @@ SDK/cross facts).
   THE DARWIN RESIDUE STAYS ONE ARC: libc++ <list> (owner scope). Dispatch #12
   (not yet run) now measures wave 11 (expect arm64 3 = the <list> tests, Intel 3).**
 
+  **WAVE 12 LANDED — THE libc++ <list> COMPLETION SITE + THE FLAVOR-BOUNDARY GAPS
+  (2026-09-05, five commits on 606907f1, content e7b628e1).** The owner's
+  directive (2026-09-05): the <list> fix is the top priority, and it is ONE
+  completion site on the existing shell-then-complete machinery, not a new
+  phase. b49234a6 (templates): a class template-id named as a TEMPLATE
+  ARGUMENT while a class body is in flight — the parse lane's explicit and
+  defaulted argument resolution, the class-pattern serve's argument
+  resolution (instantiate_pattern_template, the trace's actual path for the
+  traits class), the whole of an alias-template use
+  (Program::template_arg_resolve_depth) — becomes the pending shell the
+  bodyless-template arm mints instead of parsing its body inside that body
+  ([temp.inst]/1: a template argument never requires the specialization
+  complete), and the enclosing instantiation completes its deferred arguments
+  the moment its class is complete (complete_deferred_arg_instantiations,
+  both lanes); a class or function body parse and every demand replay run at
+  depth 0. The deferral's blast radius on the default lane was closed by the
+  completeness demands C++ has and madc lacked, each a caller of the ONE
+  existing owner complete_class_type_on_demand: a type trait's class operand,
+  a base class (legacy base clause + class-pattern serve), a static member
+  read (the qualified constant fold — libstdc++ _Head_base's default argument
+  `__empty_not_final<_Head>::value` selected the bodyless primary when it
+  stayed unfolded: testcastarrow — and the expression-position static
+  member), the [temp.names]/3 `<`-reading; a MEMBER class template keeps the
+  eager path (its pending record replays by the bare name without the owner:
+  `__alloc_traits<A,T>::rebind<T>` in a class pattern, testfreezerun).
+  MADC_MTI_PROBE_CLASS=__list on tmp/w7list.mad now shows the traits'
+  __node_pointer / __base_pointer / __link_pointer resolving to real pointer
+  types and no opaque-member placeholder. 18953bfd (expressions) — the
+  residue the fixed chain exposed at list:790 / list:992
+  (`base::__end_.__next_->__as_node()`, `__f->__prev_ = base::__end_.__prev_`):
+  the shared class-qualified expression resolver lowered a qualified
+  NON-STATIC data member to the CONSTANT 0 typed as the member (a SILENT wrong
+  value; a member chain on it refused), and `base::end.next = ...` at
+  statement start was read as a declaration; now an implicit-this TokenMember
+  at DataDefCLASS::base_offset_of(scope) + the member offset, and `.` `->` `[`
+  after a statement-leading qualified-id read as the object expression they
+  are (tests/testqualbasemember.mad: g++ == clang++ `42 7 10` / `3`). The
+  libcxx lane's FIRST run since 2026-08-16 (JIT 1286/14) found the flavor
+  boundary's two other gaps, both fixed: 94de04fe (format) — `println` of a
+  std::string handed the libstdc++-built host a libc++ string to read with
+  the host layout (SIGSEGV at (nil), teststrargcoerce); a foreign-flavor
+  std::string argument now goes as bytes + length through the SCRIPT class's
+  c_str()/size() (CirBuilder::script_string_view_syms, split out of the
+  marshalling thunk; madc_mangle_host_stdlib / madc_mangle_flavor_differs
+  make the host flavor a build fact instead of three `active == mstdlibLlvm`
+  reads). d2bf5a3c (value) — ten `cout << value` tests imported the
+  libc++-mangled host inserter, a symbol a libstdc++ host cannot export and a
+  stream cannot marshal: bits/value_stream now carries two renderings of the
+  one public, the mangled-direct declaration when the script flavor is the
+  host's (`_LIBCPP_VERSION` vs the lexer's new build-fact macro
+  `__MADC_HOST_LIBCPP__`) and an inline body compiled in the SCRIPT flavor
+  otherwise, forwarding each kind to the stream's own inserter through the
+  carrier's predicates (the carrier gained value.h's remaining kind
+  predicates and data(); every carrier reader is a const method as value.h
+  declares); the container refusal is madc::value_not_streamable_notice, one
+  text for both. Twins gate the linux default lane: tests/testlistiter_libcxx,
+  testvaluecout_libcxx, teststrargcoerce_libcxx (+ testqualbasemember). Under
+  -stdlib=libc++ testforeachiter and testptrcmpupcast PASS; testphpdumpiter
+  reaches a PRE-EXISTING libc++ gap behind them (733ce20b, formally skipped
+  on the libc++ domain with the reason): the map-of-map insert
+  `std::map<int, std::map<int,int> > mm; std::map<int,int> &r = mm[1];
+  r[7] = 70;` bails in the parse-once deferred-construction relowering of
+  libc++'s allocator::construct (a pair<const int,int> element meets a
+  selected ctor formal of int64: [RELOWER-UNSUP] elem-formal-mismatch,
+  `tsubst: class deferred-construction object argument pack` at
+  __memory/allocator.h:172) — fails at 779bb654 too; the same reducer under
+  libstdc++ fails on the explicit map COPY instead (stl_tree.h:1804
+  `_M_copy<__as_lvalue>(__x, __roan)`: "Too many parameters", an explicit
+  template argument on a member function template picking the wrong
+  overload) while `mm[1][7]` works there. KG Gap
+  libcxx_nested_map_value_type_construct_relower is the next fix (fix path
+  in the node); the fixture goes with it. Lanes at e7b628e1: linux battery
+  jit 1308/0/9skip exe 1249/0 obj 1249/0 packed 1308/0/9skip headerless 1274/0/43skip, fulltest rc=0 every gate GREEN (tmp/logs/w12-battery5.log); libcxx lane jit 1303/0/14skip exe 1244/0 obj 1244/0 (first full green run since 2026-08-16); wine64 1251/0/66skip, verify_pe_release OK 234 units, win64 pack 68 = baseline; c-testsuite 220/220, baseline empty; macos
+  cross cross release both arches 836 units, darwin pack 48 = baseline both, consumer PARSE leg OK both, verify_macho OK both, macho_exe_dylib_gate OK; the full arm64 Mac suite 1293/0/0TO/24skip (the owner's arm64 Mac, staged cross release-arm64-macos; the <list> trio + twins 8/0/1skip); the genuine-Windows suite
+  (scripts/win_suite.sh over the W0.2 channel) 1253/0/0TO/64skip (scripts/win_suite.sh over the W0.2 channel; the first run 1247/6/1TO was six stage gaps, fixed in e7b628e1); dispatch #13
+  (run 33990281895, `suite_gate=true`, on the candidate pushed as
+  feature/wave12-libcxx-list-claude so it ran beside the battery): arm64 1293/0/24skip, Intel 1294/0/23skip (run 33993568362, suite_gate=true — GREEN on both arches, the first zero-failure darwin full suite).
+  Every release-tier lane is driven from here — none waits on owner hardware.
+  DISPATCH #13 (run 33990281895, on 733ce20b) came back RED on both arches with
+  the trio still failing — a DIFFERENT error: list:1275 `no member named
+  '__as_link'`. Reproduced on the build container without a Mac: the
+  Linux-hosted cross madc (the darwin freezer) parsing against the darwin pack
+  (`bin/madc-arm64-macos --forest-bind=obj/hosted-arm64-macos/forest.bin
+  --no-sysroot-includes --emit=c11 tests/testlistiter_libcxx.mad`), then a
+  two-minute fast loop (freeze a <cstdio>/<string>/<list> TU with
+  --freeze-append, consume the reducer from it). The probe chain
+  (MADC_MTI_PROBE_CLASS=__list_imp / rebind_alloc, MADC_CLASS_PATTERN_PROBE):
+  on the pack path `__list_imp` is PATTERN-served, and the captured pattern's
+  `__node_allocator` re-derived as allocator<__list_node_BASE> — because in the
+  dependent parse the two member template-ids `__rebind_alloc<__alloc_traits,
+  __node_type>` and `__rebind_alloc<__alloc_traits, __node_base>` shared ONE
+  placeholder (materialize_dependent_member_type keyed it by owner + member
+  name; the callers patched the argument recipe onto the shared object, last
+  writer wins) — so every `__node_pointer` pointed at the base node and
+  push_back's `__node->__as_link()` had no such member; the live linux parse
+  never pattern-serves __list_imp (body lane), which is why the libcxx lane was
+  green. Two earlier hypotheses were verified WRONG by the same loop and
+  reverted (a member-access completeness demand; the pattern's alphabetical
+  alias order). 1ae4650f (templates): a dependent member template-id is one
+  placeholder PER ARGUMENT LIST — identity, canonical spelling and derivation
+  recipe minted together in the materializer, the callers hand the arguments
+  in. The darwin pack's SEMANTICS now have a container-side gate:
+  scripts/forest_pack_darwin.sh's consumer PARSE leg parses every program in
+  scripts/forest_pack_consumers_darwin.txt from the pack it just wrote.
+  Dispatch #14 on the re-cut candidate: arm64 1293/0/24skip, Intel 1294/0/23skip (run 33993568362, suite_gate=true — GREEN on both arches, the first zero-failure darwin full suite).**
+
   **WAVE 10 LANDED — THE VECTOR CALLING CONVENTION (2026-09-05, s156; plan
   docs/plans/2026-09-05-aarch64-simd-v128.md, section "The vector calling
   convention"). Opening S5 showed that every vector-ABI gate so far had compared
