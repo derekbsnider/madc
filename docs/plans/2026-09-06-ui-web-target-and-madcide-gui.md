@@ -364,6 +364,9 @@ No per-platform code above the vendored library.
    mapping (fixes the Windows `-l` gap) + keyword gating + `#load` as sugar +
    native lowering (link-time / startup-time) + reducers (§3.6). Retire
    `#load` and update the rules/docs that name it.
+   **PLAN (2026-09-06):** [2026-09-06-import-module-binding-plan.md](2026-09-06-import-module-binding-plan.md)
+   — eight tasks with anchors, code and gates; branch
+   `feature/import-module-binding-claude`.
 1. **Spike** (throwaway, one day): the vendored library built on the
    container, a `.mad` that says `import madcwebview;` and shows a window
    with "hello" under `xvfb-run`; the mac and Windows twins (proves the
