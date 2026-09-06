@@ -59,9 +59,9 @@ high-level" — the answer is both.**
   dialect contract; v0.94.0 the MIR hardening wave; v0.93.0 the x86-64
   scalar-convert false-dependency fix. Upstream wave 2 submitted:
   vnmakarov/mir issue #469 + PRs #470/#471 — awaiting review.
-- **master = v0.95.2** (promoted 2026-08-23; six CI-owned assets: deb, rpm,
-  linux tarball, Windows zip, macOS arm64 + x86_64) — the v0.98.0 promotion
-  follows this release once `lane_ledger.sh check --release` is green at it. Every master promotion is
+- **master = v0.98.0** (promoted 2026-09-06 with every platform lane's FULL
+  suite green at the candidate — `lane_ledger.sh check --release` 7/7; six
+  CI-owned assets: deb, rpm, linux tarball, Windows zip, macOS arm64 + x86_64). Every master promotion is
   three-platform gated (`.claude/commands/promote.md` step 5).
 - **Baselines (v0.98.0):** counts in [docs/test-status.md](../test-status.md)
   (linux JIT 1308 passed / 0 failed / 0 timed out / 9 skipped; EXE 1249/0, OBJ 1249/0, packed 1308/0/0/9,

@@ -235,10 +235,9 @@ Process: every platform lane's FULL suite now gates a master release
 darwin suite on both arches, genuine Windows), all driven and recorded
 from the build container.
 
-Branch state: v0.98.0 is released on `develop`; the `master` promotion
-follows the release-tier lane ledger the same day, with public binaries
-built by CI for Linux (deb/rpm/tarball), Windows x86-64, and macOS
-(Apple Silicon + Intel).
+Branch state: v0.98.0 is released on `develop` and promoted to `master`
+(tag v0.98.0, 2026-09-06) with public binaries built by CI for Linux
+(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
 
