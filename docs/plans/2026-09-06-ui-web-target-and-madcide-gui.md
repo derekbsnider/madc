@@ -381,7 +381,9 @@ No per-platform code above the vendored library.
    browser is a client. Presence colours join with gateway slice 4.
 5. Later, by demand: embedded terminal panel (tui_grid → DOM grid), Track
    7.3 semantic diff + virtualized editor windows, Android/iOS bodies for the
-   vendored library (an app shell hosting the compiled program).
+   vendored library (C/C++ app shells — NDK `NativeActivity` + JNI-driven
+   WebView with the embedded Java shim on Android, the Objective-C runtime
+   from C++ on iOS; §6).
 
 The ROADMAP rows: 7.5 = this target (absorbing 7.6); 8.6 = madcide GUI
 mode; 1.8 = `import`.
@@ -395,7 +397,25 @@ mode; 1.8 = `import`.
 - Server-side sockets in madcdis for the `ws` target.
 - Per-target binding policy for a program that mixes JIT and AOT (the
   frozen-project / `--run-frozen` twins).
-- Mobile hosting: Android needs a Java/Kotlin activity, iOS a host app; both
-  are app shells around libmadc + the compiled program. Out of scope now;
-  the requirement that nothing above the library names a platform is what
-  keeps the door open.
+- Mobile hosting (owner 2026-09-06: C/C++, not Java/Kotlin — RULED
+  direction). **Android**: the NDK's `NativeActivity` (API 9+; the manifest
+  names our `.so` through `android.app.lib_name`, entry
+  `ANativeActivity_onCreate`) makes the app shell pure C/C++ — no Java or
+  Kotlin SOURCE anywhere in madc or in an app. The one caveat: the Android
+  WebView has no NDK API; it is a framework class driven from C++ through
+  JNI (`activity->env` / `->clazz`, on the UI thread the activity callbacks
+  already run on), and receiving the JS→native bridge requires a Java
+  callback object (`addJavascriptInterface` / `WebMessageCallback` /
+  `WebViewClient` are all Java types). So the Android body of
+  `libmadcwebview` carries a few-dozen-line Java SHIM compiled ONCE to dex
+  and embedded in the library artifact (loaded at runtime through the
+  platform class loader) — a fixed part of the library, never something an
+  application writes. JIT is permitted on Android (app processes may map
+  executable memory), so both the JIT and the compiled form work there.
+  **iOS**: pure C++ over the Objective-C runtime (`objc_msgSend` — the same
+  technique the desktop wrapper's Cocoa backend uses for WKWebView on
+  macOS; `UIApplicationMain` is a C function), no Swift; compiled form only
+  (no JIT on iOS). Packaging for both (manifest / Info.plist, per-ABI
+  libraries, signing) is a build-scripts concern driven from our Makefile,
+  not Gradle or Xcode projects. Out of scope now; the requirement that
+  nothing above the library names a platform is what keeps the door open.
