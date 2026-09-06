@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Development dependencies
+
+- Provision WebKitGTK 6.0 development files, Xvfb and xauth for platform-webview
+  probes; `provision_container.sh --check` verifies the binaries and pkg-config
+  metadata. No web provider or vendored library is added in this slice.
+
 ### `import` — the module binding (slice 0 of the web-target arc, 2026-09-06)
 
 - **`import name [as ns];` binds a module — its interface AND its library —

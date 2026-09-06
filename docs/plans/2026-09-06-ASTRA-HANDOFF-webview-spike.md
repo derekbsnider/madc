@@ -124,4 +124,252 @@ into `make -C src` rules.
 
 ## Findings
 
-(to be filled in by the spike)
+### Verdict — Astra, 2026-09-06
+
+**The platform-webview approach works on Linux and Windows. macOS execution
+is BLOCKED by connectivity. Slice 2 is not cleared across all lanes:** the
+Mac still needs its window test, and the spike found compiler binding gaps
+that must be closed before relying on the proposed interface in native output.
+
+All commands below run in `/workspace/madc` **on the build container**, reached
+from the NAS with `ssh -p 2299 dev@localhost`. Times measure the probe process,
+including its intentional five-second display interval, excluding compilation,
+SSH and staging unless stated otherwise.
+
+| Lane | Verdict, exact invocation and measured evidence | Interface requirement |
+|---|---|---|
+| Linux / WebKitGTK 6.0 / Xvfb | **GO** — `bash tmp/spike/run-linux.sh`: `MADC_MEM_LIMIT=0 LD_LIBRARY_PATH=/workspace/madc/tmp/spike timeout -k 3 40 xvfb-run -a bin/madc tmp/spike/hello.mad`, with `ulimit -t 30`. Exit **0**, **5.440 s**; DOM reply below and `SPIKE_DESTROYED`. | Alias probe uses an unboxed `long long` handle; callbacks have the real pointer signatures. No interface header required for this probe. |
+| macOS / WKWebView | **BLOCKED (SSH timeout)** — `ssh -o BatchMode=yes -o ConnectTimeout=8 derek@192.168.1.65 uname -a`, issued from the container, failed after **8.218 s**; the NAS's `ssh ... madc-mac uname -a` also timed out. No execution time or window evidence exists. Both dylibs cross-built: arm64 **1.478 s**, x86_64 **1.521 s**, deployment target **13.3**. | Same `hello.mad` and callback ABI prepared; neither a native Mac build nor execution was verified. |
+| Windows / WebView2 / WSL interop | **GO** — `bash tmp/spike/run-win.sh`, which calls `timeout -k 3 60 bash scripts/win_run.sh tmp/spike/win-bin/winlaunch.exe tmp/spike/win-bin/madc.exe tmp/spike/hello.mad` with `MADC_WIN_KEEP=1 MADC_WIN_TIMEOUT=50`. The WSL-launched supervisor runs `madc.exe hello.mad`; child PID **48600**, **Session 1**, exit **0**, **5.375 s**. Its own HWND screenshot shows the title and heading, and the DOM reply matches Linux. | Same source, unboxed handle and typed callbacks. Supervisor puts the child in a Windows Job Object with a 30-second CPU cap and enforces a 40-second wall cap. |
+
+The common source has SHA-256
+`420ecd5c1bc653509024c28c08123bcf5aa07f67aa735ef697b9f09cd8a8c568`.
+Both successful lanes printed:
+
+```text
+DOM ["hello from madc","complete",true,"native-init"]
+SPIKE_DESTROYED
+```
+
+The DOM payload reads the heading's `innerText`, document readiness, positive
+layout width and a value injected with `webview_init`. It proves page execution,
+layout, native-to-JS initialization and JS-to-native callback delivery. The
+callback calls `webview_return`, then uses `webview_dispatch` to terminate on
+the UI thread. The promise response itself is not separately asserted.
+
+Windows evidence: `tmp/spike/webview-window.png` (visually inspected),
+`windows.log`, and retained Windows stage
+`C:/Users/Public/madcwin/run.856851.4116/`. The screenshot uses
+`PrintWindow(HWND, ..., PW_RENDERFULLCONTENT)` and verifies that the HWND
+belongs to the tested child. An earlier screen-region capture was occluded
+by another application and was discarded as evidence. Linux evidence:
+`tmp/spike/linux-jit.log`. These scratch artifacts are present on the NAS and
+container; no third-party source or probe code is committed.
+
+### Build recipes and dependencies
+
+Source: [webview/webview tag 0.12.0](https://github.com/webview/webview/tree/0.12.0),
+commit `3ab4b5d722438fc8a13e6ca830c5e2372d19a01d`, cloned under
+`tmp/spike/webview`. Its MIT notice remains in that scratch clone. No subtree
+or production provider was added.
+
+**Linux:** installed `libwebkitgtk-6.0-dev xvfb xauth` after `apt-get update`.
+Actual versions: `pkg-config --modversion webkitgtk-6.0 gtk4` reports
+**2.52.6 / 4.14.5**. The provisioning change is committed in
+`scripts/provision_container.sh`, including a `pkg-config --exists` check.
+`xauth` is explicit because `xvfb-run` requires it on minimal installs.
+
+`python3 tmp/spike/build-linux.py` invokes `g++ -std=c++11 -O2 -fPIC -shared
+-DWEBVIEW_BUILD_SHARED -Itmp/spike/webview/core/include
+tmp/spike/webview/core/src/webview.cc -o tmp/spike/libmadcwebview.so`, followed
+by the argv returned by `pkg-config --cflags --libs webkitgtk-6.0 gtk4`, and
+`-ldl`. Build time **1.688 s**. Equivalent response-file recipe:
+
+```sh
+pkg-config --cflags --libs webkitgtk-6.0 gtk4 > tmp/spike/linux-pkg.flags
+g++ -std=c++11 -O2 -fPIC -shared -DWEBVIEW_BUILD_SHARED -Itmp/spike/webview/core/include tmp/spike/webview/core/src/webview.cc -o tmp/spike/libmadcwebview.so @tmp/spike/linux-pkg.flags -ldl
+```
+
+For a future CMake build, explicitly set `WEBVIEW_WEBKITGTK_API=6.0`;
+upstream's preferred API defaults to 4.1. The spike used the compiler directly
+to give the library its required name without modifying upstream files.
+
+**Windows:** upstream CMake fetched the pinned **Microsoft.Web.WebView2
+1.0.1150.38** SDK from NuGet into
+`tmp/spike/build-win/_deps/microsoft_web_webview2-src`. The built-in loader
+does **not** eliminate the need for `WebView2.h`. Configuration used:
+
+```sh
+cmake -S tmp/spike/webview -B tmp/spike/build-win -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_CXX_STANDARD=14 -DWEBVIEW_BUILD_DOCS=OFF -DWEBVIEW_BUILD_TESTS=OFF -DWEBVIEW_BUILD_EXAMPLES=OFF -DWEBVIEW_BUILD_STATIC_LIBRARY=OFF -DWEBVIEW_USE_COMPAT_MINGW=ON
+```
+
+`bash tmp/spike/build-win.sh` builds from the `tmp/spike` directory:
+
+```sh
+x86_64-w64-mingw32-g++-posix -std=c++14 -O2 -shared -DWEBVIEW_BUILD_SHARED -static-libgcc -static-libstdc++ -Iwebview/core/include -Iwebview/compatibility/mingw/include -Ibuild-win/_deps/microsoft_web_webview2-src/build/native/include webview/core/src/webview.cc -o madcwebview.dll -ladvapi32 -lole32 -lshell32 -lshlwapi -luser32 -lversion
+```
+
+Build time **3.293 s**. `EventToken.h` comes from upstream's MinGW
+compatibility include directory. The PE import inspection confirms **no
+WebView2Loader.dll dependency**. It does import `libwinpthread-1.dll` and
+MSVCRT; libgcc/libstdc++ are static in this throwaway DLL. This is not a
+decision to change madc's UCRT packaging policy. The stage includes the
+packed madc PE, its adjacent `libstdc++-6.dll` and `libwinpthread-1.dll`, and
+`madcwebview.dll`; `win_run.sh` already copies adjacent DLLs by convention.
+
+**macOS:** `bash tmp/spike/build-mac.sh` cross-builds both architectures with
+the owner's existing SDK. The arm64 command is below; the second replaces
+`arm64` with `x86_64` in the target and output filename:
+
+```sh
+clang++-18 --target=arm64-apple-macos13.3 -isysroot /workspace/sdk/MacOSX.sdk -fuse-ld=lld -nostdinc++ -isystem /workspace/sdk/MacOSX.sdk/usr/include/c++/v1 -std=c++11 -O2 -dynamiclib -DWEBVIEW_BUILD_SHARED -Itmp/spike/webview/core/include tmp/spike/webview/core/src/webview.cc -o tmp/spike/libmadcwebview-arm64.dylib -Wl,-install_name,@rpath/libmadcwebview.dylib -framework WebKit -ldl
+```
+
+`llvm-otool-18 -L` confirms WebKit, Objective-C runtime, libSystem and libc++
+dependencies and the `@rpath/libmadcwebview.dylib` install name. Stage the
+selected architecture as `libmadcwebview.dylib`. A **12.0** cross build failed
+on `__isPlatformVersionAtLeast`: upstream's availability test for macOS 13.3
+needs the Darwin compiler-rt helper, absent from this cross toolchain. The
+13.3 deployment target folds that check and supports the recorded owner Mac
+(15.3.2). This is a spike constraint, not a new minimum for madc. Slice 2 must
+provide the helper or deliberately choose its deployment target.
+
+The proposed **native Mac** recipe is `clang++ -std=c++11 -O2 -dynamiclib
+-mmacosx-version-min=13.3 -DWEBVIEW_BUILD_SHARED
+-Itmp/spike/webview/core/include tmp/spike/webview/core/src/webview.cc
+-o tmp/spike/libmadcwebview.dylib
+-Wl,-install_name,@rpath/libmadcwebview.dylib -framework WebKit -ldl`.
+It has **not** been run. Run the common `.mad` on the logged-in Mac with
+`DYLD_LIBRARY_PATH` pointing at that directory, `LC_ALL=C`, `ulimit -t 30`
+and an external 40-second watchdog (macOS has no stock `timeout` here).
+
+### Interface findings and native-output checks
+
+1. **The supplied `var w` sample is invalid for an opaque C handle.**
+   `var` boxes the integer and unprototyped calls coerce it to text. The
+   emitted C contains `webview_set_title(madarray_cstr(&w), ...)`, not the
+   pointer returned by `webview_create`. Scratch `hello-boxed.mad` and
+   `hello.c` preserve this observation. The alias probe stores the bits in
+   `long long`, as required by the existing unprototyped-call convention.
+   The real interface should declare `typedef void *webview_t` and return
+   that pointer from `webview_create`; native handles likewise return pointers.
+2. **Typed callbacks work.** No callback adapter was needed: the `.mad`
+   functions use `void callback(const char *id, const char *request, void *arg)`
+   for `webview_bind`, and `void callback(void *w, void *arg)` for
+   `webview_dispatch`. The interface must preserve these function-pointer
+   types, `const char *` strings, integer error returns/enums and
+   `const webview_version_info_t *` for `webview_version`. Treat callback
+   strings as borrowed during the call and keep the user argument alive.
+   All probe state and callbacks are confined to the UI thread; dispatch is
+   the cross-thread entry for a future provider.
+3. **Linux needs a different address-space policy for this workload.** With
+   the corrected handle but default `MADC_MEM_LIMIT=4096`, creation reports
+   an allocation failure and the watchdog exits **124 after 40.010 s**
+   (`linux-guard.log`). With `MADC_MEM_LIMIT=0`, the same program succeeds.
+   Keep wall/CPU limits; do not raise the global compiler default on the
+   strength of this spike. EGL/software-rendering and absent session/a11y
+   bus warnings remained nonfatal on the successful Xvfb runs.
+4. **Alias-form native execution is NO-GO for the tested statement calls.**
+   `bash tmp/spike/run-linux-exe.sh` compiles in **0.037 s**, but the ELF fails
+   immediately (exit **127**, **0.040 s**) on undefined `webview_terminate`.
+   Expression-first `webview_create` has a runtime module slot; statement
+   calls emit bare external symbols instead. This is a compiler gap, not a
+   reason to put extra `DT_NEEDED` entries or preload workarounds in the provider.
+5. **A typed, global C interface works in JIT and native execution.**
+   `bash tmp/spike/run-linux-typed.sh` runs `hello-typed.mad` under Xvfb:
+   JIT exit **0**, **5.358 s**; `bin/madc -lmadcwebview -o
+   tmp/spike/hello-typed-linux tmp/spike/hello-typed.mad` compiles in **0.032 s**;
+   its native execution exits **0**, **5.303 s**, with the same DOM and
+   destruction markers. This variant uses global `extern "C"` prototypes
+   from `webview-global.h` and an explicit library link. It proves the
+   typed ABI; it does not clear the failing alias native path.
+6. **Wrapping C prototypes in a namespace fails independently.**
+   `namespace wv { extern "C" { ... } }` asks MIR for
+   `__ns_wv_webview_create` and its siblings, although the library exports
+   their C names. A cast on the first alias lookup also fails independently:
+   `(void *)wv::webview_create(...)` says the member does not exist. Neither
+   should be hidden behind wrapper functions in slice 2.
+
+### Small reproducers and layer attribution
+
+`tmp/spike/probe-seam.sh` reproduces the compiler issues without GTK or a
+display. It builds this scratch library as `libspikeseam.so`:
+
+```c
+#include <stdio.h>
+int spike_answer(void) { return 42; }
+void spike_mark(void) { puts("SEAM_MARK"); }
+```
+
+`seam-statement.mad`:
+
+```c
+import spikeseam as seam;
+int main() {
+    seam::spike_mark();
+    println("SEAM_ANSWER {}", seam::spike_answer());
+    return 0;
+}
+```
+
+With `LD_LIBRARY_PATH=/workspace/madc/tmp/spike`, JIT prints `SEAM_MARK`
+and `SEAM_ANSWER 42`. `bin/madc -o tmp/spike/seam-statement
+tmp/spike/seam-statement.mad` succeeds, then executing the ELF fails with
+undefined `spike_mark`. `seam-cast.mad` instead makes its first call
+`long long answer = (long long)seam::spike_answer();`; parsing rejects the member.
+
+**Layer chain:** statement/cast/expression → namespace member resolution →
+`FuncDef` module identity → CIR callee lowering → native imports. Searches
+`rg -n 'dlopen_map|stamp_dynamic_module_member|find_namespace_member' src/parser.cpp`
+and the emitted C show differing resolution owners. `parseStatement` (~69986)
+consumes the namespace qualifier and re-enters under `QualifiedCalleeScope`;
+the fallback can resolve globally without module metadata. The expression
+arm (~37705) and address-of arm (~29811) each mint/stamp/cache a dynamic
+member; the primary/cast operand (~28729) only reads `find_namespace_member`.
+Consolidate this rule at namespace lookup rather than patching the emitter.
+
+`seam-linkage.cpp` isolates the declaration issue:
+
+```cpp
+namespace seam { extern "C" int spike_answer(void); }
+int main() { return seam::spike_answer() == 42 ? 0 : 1; }
+```
+
+**Layer chain:** namespace declaration → internal/external symbol identity →
+CIR import. `parseDeclaration` (~68938) chooses `namespace_function_symbol`;
+the declaration-only external storage alias (~69132) is assigned for C++
+linkage only. Fix C linkage at declaration/registration, with namespace
+redeclaration coverage, rather than teaching the loader invented names.
+
+**Oracles:** `gcc -S -fverbose-asm -O0` on `seam-oracle.c` shows calls to
+`spike_mark@PLT` and `spike_answer@PLT`; GCC and Clang executables print the
+two expected lines. `g++ -S -fverbose-asm -O0 seam-linkage.cpp` calls
+`spike_answer@PLT`, and both g++ and clang++ executables exit 0. madc
+`-lspikeseam seam-linkage.cpp` requests undefined `__ns_seam_spike_answer`.
+Logs and assembly are under `tmp/spike/`. These are the **next compiler
+prerequisites**, not fixes claimed by this spike: shared lookup consolidation
+and linkage/redeclaration semantics need their own reducers, commits and
+compiler merge-wave validation. No `src/` or `include/` file was edited.
+
+### Hand-back state
+
+- Branch `feature/webview-spike-astra` starts at develop
+  `f7a770abfd5b72af51de033d2f8094ff0d164e3d`. The container remained on its
+  existing `69414e99` content (identical committed `src/`, `include/` and MIR
+  to develop); its uncommitted generated headers and changelog were preserved.
+  Existing build outputs were used; SHA-256 provenance is in
+  `tmp/spike/build-inventory.log`. No sync overwrote either workspace.
+- Kept changes: provisioning, this Findings section, status hand-back and
+  applicable roadmap/changelog mirrors. `bash -n` and the staged provisioning
+  script's `--check` pass; the latter reports all dependencies present.
+  No full suite or merge was performed for this throwaway probe; previous
+  suite totals and lane ledger are unchanged.
+- KG updated: Feature `ui_web_target`; Gap
+  `dynamic_module_member_lookup_paths_diverge`; Gap
+  `namespace_extern_c_external_symbol_spelling`; DupFamily
+  `dynamic_module_namespace_member_resolution`. The family is recon only,
+  with no consolidation or new compiler gate claimed.
+- Next: obtain Mac connectivity and execute the common probe; close the two
+  compiler gaps in a bounded pre-provider slice; then turn the measured
+  build/interface requirements into slice 2. No provider or `tui_model`
+  implementation was started.
