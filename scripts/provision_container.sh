@@ -101,8 +101,11 @@ PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-m
 # the captures). Without it the next reader can only compare against a comment.
 # Nothing madc BUILDS needs it, which is why its absence would read as green.
 PKGS_oracle="php-cli"
+# Platform webview spike / GUI lane: GTK4 WebKit development headers and a
+# headless X server. xauth is required by xvfb-run, including minimal installs.
+PKGS_webview="libwebkitgtk-6.0-dev xvfb xauth"
 
-ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane $PKGS_oracle"
+ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane $PKGS_oracle $PKGS_webview"
 
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
@@ -111,7 +114,7 @@ BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
       qemu-aarch64-static aarch64-linux-gnu-gcc aarch64-linux-gnu-g++
       x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine
-      php
+      php Xvfb xvfb-run xauth
       rpmbuild rpm2cpio cpio zip unzip"
 
 report() {
@@ -124,6 +127,12 @@ report() {
 			missing=1
 		fi
 	done
+	if pkg-config --exists webkitgtk-6.0; then
+		printf '  ok      WebKitGTK 6.0 development files\n'
+	else
+		printf '  MISSING WebKitGTK 6.0 development files\n'
+		missing=1
+	fi
 	# The aarch64 sysroot paths c2m's std_libs dlopen under qemu-user
 	# (-L /usr/aarch64-linux-gnu): Debian's cross libc lives in .../lib only,
 	# while c2m (and glibc's loader) spell /lib64 and /lib/aarch64-linux-gnu.
