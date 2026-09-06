@@ -140,20 +140,22 @@ into `make -C src` rules.
 
 ### Verdict — Astra, 2026-09-06
 
-**The platform-webview approach works on Linux and Windows. macOS execution
-is BLOCKED on GUI-session availability (SSH connectivity has been restored). Slice 2 is not cleared across all lanes:** the
-Mac still needs its window test, and the spike found compiler binding gaps
-that must be closed before relying on the proposed interface in native output.
+**The platform-webview approach works on Linux, Windows, and macOS (Intel).
+Slice 1 is complete.** The spike found two compiler binding gaps that must
+be closed before relying on the proposed interface in native output and
+starting the provider. The Intel desktop run supersedes the earlier Mac
+connectivity and GUI-session blockers; ARM runtime success is not claimed.
 
-All commands below run in `/workspace/madc` **on the build container**, reached
-from the NAS with `ssh -p 2299 dev@localhost`. Times measure the probe process,
+Unless a Mac or Windows stage is specified, commands below run in
+`/workspace/madc` **on the build container**, reached from the NAS with
+`ssh -p 2299 dev@localhost`. Times measure the probe process,
 including its intentional five-second display interval, excluding compilation,
 SSH and staging unless stated otherwise.
 
 | Lane | Verdict, exact invocation and measured evidence | Interface requirement |
 |---|---|---|
 | Linux / WebKitGTK 6.0 / Xvfb | **GO** — `bash tmp/spike/run-linux.sh`: `MADC_MEM_LIMIT=0 LD_LIBRARY_PATH=/workspace/madc/tmp/spike timeout -k 3 40 xvfb-run -a bin/madc tmp/spike/hello.mad`, with `ulimit -t 30`. Exit **0**, **5.440 s**; DOM reply below and `SPIKE_DESTROYED`. | Alias probe uses an unboxed `long long` handle; callbacks have the real pointer signatures. No interface header required for this probe. |
-| macOS / WKWebView | **BLOCKED (GUI session)** — after the owner restored SSH, `ssh madc-mac 'env LC_ALL=C python3 /Users/derek/tmp/webview-spike-astra/run-mac.py'` built natively in **1.500 s**, then the common probe hung inside `webview_create` and was killed after **40.091 s** (child **−9**, CPU cap 30 s). No window or DOM reply. A native C++ control hangs at the same AppKit call. See the continuation below. | Same `hello.mad` SHA and callback ABI; native build verified, successful GUI execution still pending. |
+| macOS / WKWebView / Intel | **GO** — `ssh madc-mac-x86 'env LC_ALL=C python3 /Users/derek.snider/tmp/webview-spike-astra/run-mac-intel.py'`: native build **2.653 s**; child PID **7040**, exit **0**, **6.861 s**, CPU cap 30 s / wall cap 40 s. CoreGraphics reports its **480×320** window **2571** on-screen; same DOM reply and `SPIKE_DESTROYED`. Screenshot capture failed; no screenshot claimed. | Same `hello.mad` SHA, unboxed handle and typed callbacks. macOS **15.7.4**, SSH and desktop account UID **501**. |
 | Windows / WebView2 / WSL interop | **GO** — `bash tmp/spike/run-win.sh`, which calls `timeout -k 3 60 bash scripts/win_run.sh tmp/spike/win-bin/winlaunch.exe tmp/spike/win-bin/madc.exe tmp/spike/hello.mad` with `MADC_WIN_KEEP=1 MADC_WIN_TIMEOUT=50`. The WSL-launched supervisor runs `madc.exe hello.mad`; child PID **48600**, **Session 1**, exit **0**, **5.375 s**. Its own HWND screenshot shows the title and heading, and the DOM reply matches Linux. | Same source, unboxed handle and typed callbacks. Supervisor puts the child in a Windows Job Object with a 30-second CPU cap and enforces a 40-second wall cap. |
 
 The common source has SHA-256
@@ -290,8 +292,9 @@ The SSH account is `derek` (UID **502**), while the desktop console belongs
 to another account. `launchctl managername` returns `Background`, querying
 `gui/502` reports an unsupported action, and `launchctl asuser 502` is denied
 with “Operation not permitted.” A GUI-session mismatch is the current
-hypothesis. The owner was asked to switch the desktop to `derek`; a new
-window/DOM run is required before changing the lane to GO.
+hypothesis. The earlier request to switch the desktop is superseded by the
+owner's clarification: this ARM Mac is Jane's and SSH-only. Do not run
+further GUI probes there. The Intel run below completes the desktop lane.
 
 Evidence on both the Mac stage and NAS `tmp/spike`: `mac.log`,
 `mac-diagnostic.log`, `mac-madc-sample.txt`, `mac-control.log`,
@@ -301,6 +304,42 @@ watchdogs. The native dylib SHA-256 is
 the tested arm64 madc package binary is
 `10ab6bab19d1106e69beeb0f0a724b0dad6e704200d01bd07e5f247231b63c03`.
 The original connectivity timeout remains historical evidence only.
+
+### Intel Mac completion — 2026-09-06
+
+The owner's `madc-mac-x86` alias connects to
+`derek.snider@192.168.1.201`, macOS **15.7.4**, x86_64. SSH and console
+both belong to UID **501**. `launchctl managername` still says `Background`,
+but the actual window and callback run succeeds: that label alone does not
+diagnose GUI availability.
+
+The existing Apple clang **17.0.0** initially fails to find `<algorithm>`:
+its default C++ include directory contains only three residual headers.
+The SDK contains the complete headers. `run-mac-intel.py` obtains its path
+with `xcrun --show-sdk-path` and supplies the SDK and C++ include path
+explicitly. The exact successful build, from the isolated stage
+`/Users/derek.snider/tmp/webview-spike-astra`, is:
+
+```sh
+clang++ -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.2.sdk -nostdinc++ -isystem /Library/Developer/CommandLineTools/SDKs/MacOSX26.2.sdk/usr/include/c++/v1 -std=c++11 -O2 -dynamiclib -mmacosx-version-min=13.3 -DWEBVIEW_BUILD_SHARED -Icore/include core/src/webview.cc -o libmadcwebview.dylib -Wl,-install_name,@rpath/libmadcwebview.dylib -framework WebKit -ldl
+```
+
+Native build time is **2.653 s**. No tooling installation or sudo was needed.
+The same `.mad` runs with `DYLD_LIBRARY_PATH` pointing at that stage. It
+returns `DOM ["hello from madc","complete",true,"native-init"]`, then
+`SPIKE_DESTROYED`, and exits **0** after **6.861 s**. The watchdog queries
+`CGWindowListCopyWindowInfo` for this child PID only and observes window
+**2571**, layer **0**, **480×320**, `kCGWindowIsOnscreen=True`.
+`screencapture` returns **1**, “could not create image from window”;
+window metadata plus DOM read-back are the evidence, not a captured image.
+
+The native dylib SHA-256 is
+`80db55d66e486e68b80bc900fb507639daaadf08599cdb3c986f2f614cab1ebd`;
+the tested x86_64 packed madc binary is
+`b281dc0ae346443638f1f327e588fc66fc66b8929425e4f5233a3dd5c2de7dd0`.
+NAS evidence: `tmp/spike/mac-intel.log`, `mac-intel-child.log`,
+`mac-intel-header-failure.log`, and `run-mac-intel.py`; staged source and
+binaries remain on the Intel Mac. All probe children exited or were reaped.
 
 ### Interface findings and native-output checks
 
@@ -428,7 +467,6 @@ compiler merge-wave validation. No `src/` or `include/` file was edited.
   `namespace_extern_c_external_symbol_spelling`; DupFamily
   `dynamic_module_namespace_member_resolution`. The family is recon only,
   with no consolidation or new compiler gate claimed.
-- Next: obtain a usable Mac GUI session and complete the common probe; close the two
-  compiler gaps in a bounded pre-provider slice; then turn the measured
-  build/interface requirements into slice 2. No provider or `tui_model`
+- Next: close the two compiler gaps in a bounded pre-provider slice;
+  then turn the measured build/interface requirements into slice 2. No provider or `tui_model`
   implementation was started.
