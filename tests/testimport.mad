@@ -1,0 +1,18 @@
+// import (alias form): `import c as libc;` binds the C runtime under a
+// namespace with NO platform spelling in the source — the module map picks
+// libc.so.6 / libSystem.B.dylib / ucrtbase.dll per target. Members resolve
+// by name at first call through __madc_dl_member (the same lowering in JIT,
+// exe and obj — this test has NO exe_skip). `import` is contextual: the
+// identifier `import` stays an identifier off the directive position.
+import c as libc;
+
+int main()
+{
+    int import = 3;
+    println("abs(-42): {}", libc::abs(-42));
+    println("abs(100): {}", libc::abs(100));
+    var num = "999";
+    println("atoi: {}", libc::atoi(num));
+    println("import={}", import);
+    return 0;
+}

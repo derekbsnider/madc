@@ -1718,6 +1718,7 @@ protected:
     std::set<std::string> _inherited_disabled_macros;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
+    int _last_token_line = 0;		// see last_token_line()
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
 			    bool recount = true, bool synthesized = false)
@@ -1798,6 +1799,14 @@ public:
     bool eof()  { return _pushback.empty() && _gpos >= _buf.size(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
+    // The line of the last non-trivia token the lexer minted from THIS
+    // source (getRealToken stamps it); 0 before the first. The import
+    // directive-position test reads it: `import` heads a logical line iff no
+    // real token of this source sits on the current line. Per-Source so an
+    // #include's serving (a different Source) never disturbs the includer's
+    // answer.
+    int last_token_line() const { return _last_token_line; }
+    void note_token_line(int line) { _last_token_line = line; }
     int get()
     {
 	if ( !_pushback.empty() )
@@ -4200,6 +4209,11 @@ public:
     std::vector<std::string> loaded_lib_paths;	// library names actually dlopen'd
 						// (#load / -l) — the link-environment
 						// closure a frozen forest re-loads
+    // import (module form): the TARGET spellings of the modules whose library
+    // must join a native artifact's link closure (DT_NEEDED / load command /
+    // PE import); madc.cpp appends them to the link line after the parse. The
+    // alias form resolves at run time and never lands here.
+    std::vector<std::string> module_link_libs;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5455,6 +5469,13 @@ public:
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);
+	// import (C++20 [cpp.pre] made whole; docs/language/import.md): the
+	// directive-position test, the directive reader, and the binder it
+	// shares with #load until that retires.
+	bool import_directive_position();
+	TokenBase *tokenize_import_directive();
+	void bind_module_namespace(const std::string &ns, const std::string &spelling,
+				   bool link_form);
 	void tokenize_embedded_header_text(const std::string &name,
 					 const std::string &text,
 					 bool protocol_visit);
