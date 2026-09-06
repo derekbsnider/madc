@@ -19,7 +19,7 @@
 - Shell hygiene: one simple command per Bash call, no `&&` chains; scripts are fine.
 - Build/test on the container only: `scripts/remote_build.sh sync build`, `scripts/remote_build.sh unittest`, `TESTS='<globs>' scripts/remote_build.sh tests-all` (JIT + exe + obj on the subset). Every test run capped (the runner does it). One heavy container job at a time.
 - Targeted tests per commit; `make -C src fulltest` + the battery ONCE at the merge wave (`scripts/remote_build.sh battery`, then `wine`, `c-testsuite`, `macos` per the push gate `scripts/lane_ledger.sh check --promote`).
-- No platform spelling (`.so`, `.dll`, `.dylib`, `lib` prefix) anywhere except `src/madc_modules.cpp` (the ONE owner) and the artifact-naming macro `MADC_DSO_SUFFIX` (out of scope).
+- No platform spelling (`.so`, `.dll`, `.dylib`, `lib` prefix) anywhere except `src/madc_modules.cpp` (the ONE owner) and the artifact-naming macro `MADC_DSO_SUFFIX` (out of scope). *(Task 8's `/dupaudit` reported the macro as the family's one DIFFERING site — no `.dll` arm, so a Windows-hosted `-shared` output was named `.so` — and it was folded into the owner: `madc_target_dso_suffix(madc_target_os)` names the artifact; the macro is deleted.)*
 - `import` is recognized ONLY when `cpp_keyword_active(STD_CPP20)` (madc dialect, C++20 and later) AND the word is the first token on its logical line AND it is followed by `<`, `"` or an identifier. `int import = 3;` keeps compiling everywhere (contextual — the hard-reservation trap is a recorded KG lesson: 49 tests broke).
 - Code style: tabs, C++11, `DBG()` for debug output, `Throw <<` for user-facing errors (never gated behind DBG).
 - Thread-safety contract for every new runtime state: stated in a comment at the definition.
