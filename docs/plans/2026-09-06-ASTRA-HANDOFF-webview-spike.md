@@ -51,10 +51,18 @@ Do not build the provider; do not vendor for keeps; do not touch `tui_model`.
   session 1). WebView2 is UNSUPPORTED in Session 0 / non-interactive logins —
   the spike must PROVE a window appears through this path, never assume it.
   Evergreen WebView2 runtime 152.0.4191.66 is installed.
-- **Mac:** owner's Mac (ssh alias `madc-mac`; macOS 15.3.2, console user
-  logged in; bash 3.2, no `timeout`, use `LC_ALL=C`). The darwin cross madc
-  is built on the container (`scripts/remote_build.sh release-macos`);
-  binaries do not execute on Linux.
+- **Macs — two, with different roles (owner 2026-09-06):** the arm64 Mac
+  behind ssh alias `madc-mac` (192.168.1.65, macOS 15.3.2) is **Jane's and in
+  use** — ssh only, NO desktop access: use it for a build/link check of the
+  library at most, never for a window test. The **desktop (window) leg runs
+  on the owner's x86 (Intel) MacBook**, which the owner controls: ssh alias
+  `madc-mac-x86` (derek.snider@192.168.1.201, in the container's
+  `~/.ssh/config`; confirm the key is authorized before that leg). On any Mac:
+  bash 3.2, no `timeout`, `export LC_ALL=C` in every remote command. The
+  Intel Mac means the x86-64 darwin artifacts (`bin/madc-x86-64-macos` /
+  `madc-release-x86-64-macos`, `scripts/remote_build.sh release-macos`
+  builds both arches on the container); darwin binaries do not execute on
+  Linux.
 
 ## The library
 
@@ -99,7 +107,7 @@ declare.
 | Lane | How | Pass |
 |------|-----|------|
 | Linux (container) | `xvfb-run -a bin/madc tmp/spike/hello.mad` after provisioning webkitgtk-6.0 + xvfb; a `webview_dispatch`'d terminate (or a bound JS callback) ends the run | exit 0 within the timeout; a screenshot via `xwd`/`import` (ImageMagick) or a DOM read-back through a bound callback proves the page rendered |
-| macOS (owner's Mac) | build the library with clang against WebKit.framework; run the same `.mad` with the darwin madc (or a native `-o` build) | a window appears on the console session; exit 0 |
+| macOS (the owner's x86 MacBook — NOT `madc-mac`, which is Jane's and desktop-less) | build the library with clang against WebKit.framework on that Mac; run the same `.mad` with the x86-64 darwin madc (or a native `-o` build) | a window appears on the console session; exit 0 |
 | Windows (WSL channel) | build the DLL with the mingw toolchain on the container (WebView2 loader bundled), stage it beside the packed PE the way `win_run.sh` stages, run through the channel | a window appears in the desktop session (screenshot via PowerShell `System.Drawing` or the owner's eyes); or a documented NO with the Session-0 evidence |
 
 Report ONE line per lane: **GO** / **NO-GO** / **BLOCKED (reason)**, the
@@ -127,7 +135,7 @@ into `make -C src` rules.
 ### Verdict — Astra, 2026-09-06
 
 **The platform-webview approach works on Linux and Windows. macOS execution
-is BLOCKED by connectivity. Slice 2 is not cleared across all lanes:** the
+is BLOCKED on GUI-session availability (SSH connectivity has been restored). Slice 2 is not cleared across all lanes:** the
 Mac still needs its window test, and the spike found compiler binding gaps
 that must be closed before relying on the proposed interface in native output.
 
@@ -139,7 +147,7 @@ SSH and staging unless stated otherwise.
 | Lane | Verdict, exact invocation and measured evidence | Interface requirement |
 |---|---|---|
 | Linux / WebKitGTK 6.0 / Xvfb | **GO** — `bash tmp/spike/run-linux.sh`: `MADC_MEM_LIMIT=0 LD_LIBRARY_PATH=/workspace/madc/tmp/spike timeout -k 3 40 xvfb-run -a bin/madc tmp/spike/hello.mad`, with `ulimit -t 30`. Exit **0**, **5.440 s**; DOM reply below and `SPIKE_DESTROYED`. | Alias probe uses an unboxed `long long` handle; callbacks have the real pointer signatures. No interface header required for this probe. |
-| macOS / WKWebView | **BLOCKED (SSH timeout)** — `ssh -o BatchMode=yes -o ConnectTimeout=8 derek@192.168.1.65 uname -a`, issued from the container, failed after **8.218 s**; the NAS's `ssh ... madc-mac uname -a` also timed out. No execution time or window evidence exists. Both dylibs cross-built: arm64 **1.478 s**, x86_64 **1.521 s**, deployment target **13.3**. | Same `hello.mad` and callback ABI prepared; neither a native Mac build nor execution was verified. |
+| macOS / WKWebView | **BLOCKED (GUI session)** — after the owner restored SSH, `ssh madc-mac 'env LC_ALL=C python3 /Users/derek/tmp/webview-spike-astra/run-mac.py'` built natively in **1.500 s**, then the common probe hung inside `webview_create` and was killed after **40.091 s** (child **−9**, CPU cap 30 s). No window or DOM reply. A native C++ control hangs at the same AppKit call. See the continuation below. | Same `hello.mad` SHA and callback ABI; native build verified, successful GUI execution still pending. |
 | Windows / WebView2 / WSL interop | **GO** — `bash tmp/spike/run-win.sh`, which calls `timeout -k 3 60 bash scripts/win_run.sh tmp/spike/win-bin/winlaunch.exe tmp/spike/win-bin/madc.exe tmp/spike/hello.mad` with `MADC_WIN_KEEP=1 MADC_WIN_TIMEOUT=50`. The WSL-launched supervisor runs `madc.exe hello.mad`; child PID **48600**, **Session 1**, exit **0**, **5.375 s**. Its own HWND screenshot shows the title and heading, and the DOM reply matches Linux. | Same source, unboxed handle and typed callbacks. Supervisor puts the child in a Windows Job Object with a 30-second CPU cap and enforces a 40-second wall cap. |
 
 The common source has SHA-256
@@ -234,14 +242,59 @@ needs the Darwin compiler-rt helper, absent from this cross toolchain. The
 (15.3.2). This is a spike constraint, not a new minimum for madc. Slice 2 must
 provide the helper or deliberately choose its deployment target.
 
-The proposed **native Mac** recipe is `clang++ -std=c++11 -O2 -dynamiclib
+The verified **native Mac** recipe is `clang++ -std=c++11 -O2 -dynamiclib
 -mmacosx-version-min=13.3 -DWEBVIEW_BUILD_SHARED
 -Itmp/spike/webview/core/include tmp/spike/webview/core/src/webview.cc
 -o tmp/spike/libmadcwebview.dylib
 -Wl,-install_name,@rpath/libmadcwebview.dylib -framework WebKit -ldl`.
-It has **not** been run. Run the common `.mad` on the logged-in Mac with
-`DYLD_LIBRARY_PATH` pointing at that directory, `LC_ALL=C`, `ulimit -t 30`
-and an external 40-second watchdog (macOS has no stock `timeout` here).
+It was run after SSH recovery with Apple clang **17.0.0**, taking **1.500 s**.
+A second build targeting **12.0** also succeeds (**1.389 s**); the missing
+availability helper is specific to the container cross toolchain. The staged
+`run-mac.py` sets `DYLD_LIBRARY_PATH`, `LC_ALL=C`, a 30-second CPU limit and
+a 40-second wall watchdog (macOS has no stock `timeout` here).
+
+### Mac continuation after SSH recovery — 2026-09-06
+
+The owner restored `192.168.1.65`, and the trusted NAS `madc-mac` alias now
+connects. The container's direct SSH route reports host-key verification
+failure; that check was not bypassed. Staging and execution used the NAS.
+The isolated stage is `/Users/derek/tmp/webview-spike-astra`, containing the
+same `hello.mad`, the current arm64 package and the natively built dylib.
+`madc --version` succeeds in **0.021 s**.
+
+The GUI run produces no DOM reply or on-screen window and times out.
+A one-second `sample` trace identifies:
+
+```text
+webview_create
+  cocoa_wkwebview_engine::cocoa_wkwebview_engine
+    -[NSApplication run]
+      CFRunLoopRunSpecific / mach_msg2_trap
+```
+
+A native control compiled with Apple clang uses the upstream C declarations,
+prints and flushes `CONTROL_BEFORE_CREATE`, calls `webview_create(0, NULL)`,
+then would print the pointer and destroy it. It likewise never returns from
+creation; the capped diagnostic run terminates after **9.226 s**, including
+its stack sample. `clang++ -S -fverbose-asm -O0 mac-control.cpp` confirms the
+ordinary `_webview_create` call with `w0=0`, `x1=0`. This isolates the hang
+from madc's ABI/lowering; it does not by itself prove an upstream bug.
+
+The SSH account is `derek` (UID **502**), while the desktop console belongs
+to another account. `launchctl managername` returns `Background`, querying
+`gui/502` reports an unsupported action, and `launchctl asuser 502` is denied
+with “Operation not permitted.” A GUI-session mismatch is the current
+hypothesis. The owner was asked to switch the desktop to `derek`; a new
+window/DOM run is required before changing the lane to GO.
+
+Evidence on both the Mac stage and NAS `tmp/spike`: `mac.log`,
+`mac-diagnostic.log`, `mac-madc-sample.txt`, `mac-control.log`,
+`mac-control.s`, `mac-sample.txt`, `mac-build12.log`, and the two Python
+watchdogs. The native dylib SHA-256 is
+`847f69b1d496db3bf586c534022205458499ac48ae353622878c95a29136daa3`;
+the tested arm64 madc package binary is
+`10ab6bab19d1106e69beeb0f0a724b0dad6e704200d01bd07e5f247231b63c03`.
+The original connectivity timeout remains historical evidence only.
 
 ### Interface findings and native-output checks
 
@@ -369,7 +422,7 @@ compiler merge-wave validation. No `src/` or `include/` file was edited.
   `namespace_extern_c_external_symbol_spelling`; DupFamily
   `dynamic_module_namespace_member_resolution`. The family is recon only,
   with no consolidation or new compiler gate claimed.
-- Next: obtain Mac connectivity and execute the common probe; close the two
+- Next: obtain a usable Mac GUI session and complete the common probe; close the two
   compiler gaps in a bounded pre-provider slice; then turn the measured
   build/interface requirements into slice 2. No provider or `tui_model`
   implementation was started.
