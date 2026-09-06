@@ -67,8 +67,12 @@ inline bool target_microsoft_bitfields()
 // one" question, and never re-test _WIN32 at a consumer. This is what decides
 // whether the POSIX compatibility layer (docs/plans/2026-08-13-posix-target-
 // surface.md) is even eligible, so it must follow the target and not the host.
-// Defined beside the data-model owner.
-enum class TargetOS { Posix, Windows };
+// Posix = ELF hosts (Linux, the BSDs); Darwin = Mach-O (macOS/iOS) — POSIX
+// for the compat question (target_windows() stays the one non-POSIX test),
+// distinct for LIBRARY SPELLING, which src/madc_modules.cpp decides from this
+// enum (the one owner) and never from a host #ifdef at a call site; Windows
+// = PE. Defined beside the data-model owner.
+enum class TargetOS { Posix, Darwin, Windows };
 extern TargetOS madc_target_os;
 inline bool target_windows()
 { return madc_target_os == TargetOS::Windows; }
@@ -147,6 +151,13 @@ class FuncDef;
 // The one self-exe discovery point: readlink(/proc/self/exe) on Linux,
 // _NSGetExecutablePath on macOS.
 std::string madc_self_exe_path();
+
+// The relocatable install's library directory beside the running executable:
+// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with
+// /usr/local/lib). Empty when the executable is unresolvable. The one owner
+// of that shape — the native lanes' runpath and the module opener both read
+// it.
+std::string madc_self_lib_dir();
 
 // Resolved absolute path of the IMAGE that contains libmadc's own code: the
 // shared library when the CLI/host links libmadc dynamically, the executable

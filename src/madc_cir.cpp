@@ -2008,18 +2008,6 @@ bool CirJitSession::emit_native_executable(const char *out_path,
     return cir_write_native_image(ctx, out_path, needed, runpath, kind);
 }
 
-// bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
-// installed madc pairs with /usr/local/lib — both go on the produced
-// binary's library search path so it works from either layout.
-static std::string cir_selfexe_libdir(void)
-{
-    std::string d = madc_self_exe_path();
-    size_t slash = d.rfind('/');
-    if (slash == std::string::npos)
-	return std::string();
-    return d.substr(0, slash) + "/../lib";
-}
-
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
 // single-TU and --project native-emit entries.
 // DT_NEEDED: the madc runtime (its dependency closure brings libmir's
@@ -2095,7 +2083,10 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 #else
     runpath = "$ORIGIN/../lib:";
 #endif
-    runpath += cir_selfexe_libdir();
+    // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
+    // installed madc pairs with /usr/local/lib — both go on the produced
+    // binary's library search path so it works from either layout.
+    runpath += madc_self_lib_dir();
     if (runpath.empty() || runpath[runpath.size() - 1] == ':')
 	runpath += "/usr/local/lib";
     else
