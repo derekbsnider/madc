@@ -57,9 +57,10 @@ Do not build the provider; do not vendor for keeps; do not touch `tui_model`.
   library at most, never for a window test. The **desktop (window) leg runs
   on the owner's x86 (Intel) MacBook**, which the owner controls: ssh alias
   `madc-mac-x86` (derek.snider@192.168.1.201, in the dev box's `~/.ssh/config`
-  beside `madc-mac`; the dev box's public key must be in that account's
-  `authorized_keys` — a probe on 2026-09-06 was refused, the owner authorizes
-  it). On any Mac:
+  beside `madc-mac`; key authorized and probed 2026-09-06: x86_64, macOS
+  15.7.4, derek.snider logged in on the console — a GUI session exists for
+  ssh-launched windows — CommandLineTools at /Library/Developer/
+  CommandLineTools, WebKit.framework present). On any Mac:
   bash 3.2, no `timeout`, `export LC_ALL=C` in every remote command. The
   Intel Mac means the x86-64 darwin artifacts (`bin/madc-x86-64-macos` /
   `madc-release-x86-64-macos`, `scripts/remote_build.sh release-macos`
