@@ -33,6 +33,15 @@
   alias form (owner ruling: like `#pragma`, for tooling and fixtures — you
   spell the file, you own the platform); it is sugar over the same binder.
   `--no-auto-load` applies to both.
+- The merge-wave `/dupaudit` folded the family's two remaining sites into
+  the owner: the host macro `MADC_DSO_SUFFIX` is deleted (a Windows-hosted or
+  cross madc named a `-shared` output `.so`; the artifact now takes the
+  TARGET's suffix), and the native cover analysis / Mach-O load list read
+  `madc_spelled_library_p`. The Windows default-scope DLL walk (the JIT's
+  symbol walk, the native cover set and the PE import order) is ONE list in
+  the dl seam — the two copies had drifted on `ws2_32.dll`, so Winsock names
+  the PE writer attributed were unresolvable under the JIT. Gate:
+  `scripts/check-one-library-spelling.sh` (fulltest, negative controls).
 - Reducers: `tests/testimport.mad` (alias form, value-first, all lanes),
   `tests/testimportiface.mad` (`--std=c++20`, interface form: `M_PI` proves
   the interface arrived, `sqrt` the library), `tests/testimportiface_neg.mad`
