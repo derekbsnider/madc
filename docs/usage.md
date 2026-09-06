@@ -47,9 +47,9 @@ cout << "hypot(3,4) = " << hypot(3.0, 4.0) << endl;
 | `-stdlib=libstdc++`\|`libc++` | C++ standard-library flavor (clang's spelling). Replaces the C++ include search list, as clang does. |
 | `-D<name>[=value]` | define a macro |
 | `-I<dir>` | add an include search directory |
-| `-l<name>` | JIT: `dlopen` `lib<name>.so` globally so its symbols resolve. AOT: becomes a `DT_NEEDED` dependency. |
+| `-l<name>` | bind a library (spelled for the target by the module map: `-lm` → `libm.so.6` / `libSystem.B.dylib` / `ucrtbase.dll`; bare names follow `lib<name>.so` / `.dylib` / `<name>.dll`). JIT: opened globally so its symbols resolve. AOT: a `DT_NEEDED` / load command / PE import. See [language/import.md](language/import.md). |
 | `--no-embedded-headers` | disable the baked-in headers; use real system headers only |
-| `--no-auto-load` | ignore `#load` directives; link explicitly via `-l` |
+| `--no-auto-load` | do not act on `import` / `#load` library bindings; link explicitly via `-l` |
 
 ## Multi-file projects
 

@@ -5,7 +5,9 @@
 1. Create the header file in `include/madc/` (e.g., `stdlib.h`).
 2. Use `#define` for constants — these are processed by the existing
    preprocessor.
-3. Use `#load "libname.so" as ns;` if the header needs a shared library.
+3. If the header's functions live in a shared library, add a module row
+   in `src/madc_modules.cpp` (name, interface header, per-OS image) so
+   scripts `import <module>;` — a header never spells a library file name.
 4. Functions are available via dlsym fallback — no explicit registration
    needed.
 5. Run `make -C src` — `scripts/gen_embedded_headers.sh` regenerates

@@ -91,12 +91,15 @@ of the emitted program. The source can include the library's normal header and
 call its API directly.
 
 For cases that genuinely require runtime loading or an isolated namespace,
-madc also provides `#load`, `dlopen`, `dlsym`, and `dlcall`:
+madc also provides `import name as ns;` (the C++20 `import` made whole —
+interface and library, spelled for the target by the module map, so no
+`.so` / `.dylib` / `.dll` appears in the source), `dlopen`, `dlsym`, and
+`dlcall`:
 
 ```c
-#load "libfoo.so" as foo;
+import c as libc;
 
-foo::some_function();
+libc::abs(-42);
 ```
 
 This makes madc useful for native API exploration, systems utilities,

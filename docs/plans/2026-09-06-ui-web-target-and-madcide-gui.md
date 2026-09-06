@@ -30,7 +30,11 @@ is unchanged; the GUI is a client of the session it describes.
   by `-l` on the command line. The owner asked whether the C++20 Modules
   `import` or a madc-specific convention fits; the answer adopted is §3.1:
   `import` as the C++20 module import made whole (interface AND binding), and
-  `#load` retires.
+  `#load` retires. **Amended by the owner during slice 0 (2026-09-06):
+  `#load` stays as the LOW-LEVEL directive underneath the alias form (like
+  `#pragma`, for tooling and fixtures — the file spelled verbatim, the author
+  owning the platform); `import` is the language form. It is three lines over
+  the shared binder.**
 
 ## 2. Recon
 
@@ -186,9 +190,10 @@ binding is the shape both need.
   the binding is what the standard leaves to CMake. Blast radius today: no
   identifier `import` anywhere in the suite.
 - **`#load` becomes sugar over the same resolver on day one** (one
-  implementation, no parallel path), and RETIRES once its one test and the
-  docs/rules have moved — `remove-cruft-promptly`. `--no-auto-load` becomes
-  the JIT-side spelling of the "link" policy.
+  implementation, no parallel path). Owner ruling 2026-09-06: it STAYS as the
+  low-level verbatim-file directive (tooling / fixtures; `vector_abi_gate.sh`
+  binds a freshly built `.so` by absolute path with it) — not retired.
+  `--no-auto-load` is the JIT-side spelling of the "link" policy for both.
 
 **Invariants check** (`docs/plans/madc-vision-and-invariants.md`): I3 —
 no target or standard named outside the enum (the binding policy hangs off
@@ -362,8 +367,15 @@ No per-platform code above the vendored library.
 
 0. **`import` slice** (prerequisite): resolver + module map + the one name
    mapping (fixes the Windows `-l` gap) + keyword gating + `#load` as sugar +
-   native lowering (link-time / startup-time) + reducers (§3.6). Retire
-   `#load` and update the rules/docs that name it.
+   native lowering (link-time / startup-time) + reducers (§3.6). `#load`
+   stays as the low-level directive (owner 2026-09-06); the rules/docs that
+   name it present `import` as the language form.
+   **LANDED (2026-09-06, `feature/import-module-binding-claude`):** module
+   map + spelling owner (d1884c85), `-l` through it (66d0d4c2),
+   `__madc_dl_member` (def479f5), alias-form lowering in every lane
+   (00265630), the directive (b2b201bb), native link closure (7d63f2e5);
+   docs at `docs/language/import.md`. `#load` kept as the low-level directive
+   (owner ruling above).
    **PLAN (2026-09-06):** [2026-09-06-import-module-binding-plan.md](2026-09-06-import-module-binding-plan.md)
    — eight tasks with anchors, code and gates; branch
    `feature/import-module-binding-claude`.

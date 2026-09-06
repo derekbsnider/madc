@@ -4,6 +4,8 @@
 
 **Goal:** `import name [as alias];` binds a module — its interface (declarations) AND its library — with no platform spelling in any source, on the JIT and in native artifacts; `#load` retires; `-l` maps through the same resolver (fixing the Windows-less suffix rule).
 
+> **OWNER RULING DURING EXECUTION (2026-09-06):** `#load` is NOT retired. It stays as the low-level directive underneath the alias form — like `#pragma`, for tooling and fixtures: the file is spelled verbatim, the author owns the platform (the vector ABI gate binding a freshly built `.so` by absolute path is the standing use). It is three lines over the shared binder, so it costs nothing. Task 7's "delete the `#load` arm / `git rm tests/testdlopen.*`" steps are therefore NOT executed; the docs/grammar/rules present `import` as the language form and `#load` as the low-level one. Everything else in Task 7 stands.
+
 **Architecture:** One data-driven module map + ONE platform-spelling owner (`src/madc_modules.cpp`) serve three consumers: the lexer's `import` directive (recognized at the start of a logical line, C++20's own rule, gated by `--std=`), the `-l` flag, and the native lanes' link closure. Alias-form members (`libc::abs`) lower to a runtime-resolved indirect call through a per-member slot and the runtime helper `__madc_dl_member(lib, member)` — one lowering for JIT, exe, obj and `--emit=c11` — replacing the JIT-only `__dl_` import thunks. Interface-form modules link (JIT: open RTLD_GLOBAL; native: the library joins the link closure).
 
 **Tech Stack:** C++11 (madc), c2mir node API (`node1/2/3/4`, `N_COND`, `N_ASSIGN`, `N_CAST`, `N_CALL`, `N_SPEC_DECL`), doctest, `scripts/run_tests.sh` fixtures, `scripts/remote_build.sh` (the container builds and tests; the NAS never does).

@@ -33,8 +33,18 @@
 Program          ::= Shebang? TopLevelPart*
 
 TopLevelPart     ::= PreprocessorDirective
+                   | ImportDirective
                    | ExternalDeclaration
                    | Statement                       /* madc dialect: script mode */
+
+/* C++20 [cpp.pre] made whole (madc dialect + C++20 and later): a module's
+   interface AND its library bind; `import` is a directive only at the head of
+   a logical line followed by a module name, '<' or '"' — an identifier
+   elsewhere. Header-unit spellings are served as the include. */
+ImportDirective  ::= 'import' ( ModuleName ( 'as' Identifier )?
+                              | '<' HeaderName '>'
+                              | StringLiteral ) ';'
+ModuleName       ::= Identifier ( '.' Identifier )*
 
 Shebang          ::= '#!' NotLineBreak* LineBreak
 
@@ -54,8 +64,9 @@ PreprocessorDirective
 
 IncludeDirective ::= '#include' ( '<' HeaderName '>' | StringLiteral )
 
-/* madc dialect: dlopen a shared library and expose its exports under a
-   namespace (RTLD_GLOBAL — unprefixed calls also resolve). */
+/* madc dialect, low-level (tooling / fixtures — like #pragma): bind a shared
+   library by its VERBATIM file spelling under a namespace; programs use
+   ImportDirective, which spells the library for the target. */
 LoadDirective    ::= '#load' StringLiteral 'as' Identifier ';'
 
 DefineDirective  ::= '#define' Identifier
