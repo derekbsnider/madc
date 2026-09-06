@@ -70,8 +70,11 @@
 ```cpp
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
-bool madc_verbose = false;
+
+thread_local bool madc_verbose = false;	// the prologue every tests/unit file uses
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include <string>
 #include "datadef.h"
 #include "madc_modules.h"
 
