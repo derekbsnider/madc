@@ -1906,14 +1906,26 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // name the worlds. Itanium-mangled imports are the C++ world, whose
 // darwin install name is libc++ — a target-platform constant with the
 // same standing as the writer's own libSystem spelling.
+//
+// A USER library (-l / import, arriving in `other` as its target spelling)
+// is a real load command too: the base entries there are cover stems for
+// the runtime-need analysis (libc++, libsystem_, libSystem — no .dylib
+// suffix) and never load commands, and libSystem.B.dylib (the `c` / `m`
+// module rows) is dyld's implicit world. Everything else spelled .dylib
+// loads. One owner for both Mach-O writers (image + object link).
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
+				   const std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
 	if (s.compare(0, 2, "_Z") == 0) {
 	    libs.push_back("/usr/lib/libc++.1.dylib");
-	    return;
+	    break;
 	}
+    for (const std::string &l : other)
+	if (l.size() > 6 && l.compare(l.size() - 6, 6, ".dylib") == 0
+	    && l != "libSystem.B.dylib" && l.compare(0, 6, "libc++") != 0)
+	    libs.push_back(l.c_str());
 }
 #endif
 
@@ -1954,7 +1966,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // import flat across the load list (mir-debug.h).
     if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
 	return false;
-    cir_apple_extra_dylibs(imports, libs);
+    cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
     // PE: runtime-needing programs import from libmadc-0.dll; the list
     // flows to the writer as its import-attribution DLL order.
@@ -2052,12 +2064,15 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 #endif
     // User libraries arrive as TARGET spellings (the CLI resolves -l<name>
     // through madc_modules before it gets here); a raw -l<name> word from a
-    // caller that still forwards one resolves through the same owner.
+    // caller that still forwards one resolves through the same owner. Once
+    // each: `-lm` / `import m;` names libm.so.6, which the base set above
+    // already carries on ELF — a repeated DT_NEEDED is noise the linker
+    // would never emit.
     for (const std::string &l : user_libs) {
-	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back(madc_module_library_spelling(l.substr(2)));
-	else
-	    needed.push_back(l);
+	std::string spelling = l.compare(0, 2, "-l") == 0
+			       ? madc_module_library_spelling(l.substr(2)) : l;
+	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
+	    needed.push_back(spelling);
     }
     // Relocatable arm first: a produced binary placed in a relocatable
     // install (tarball <root>/bin beside <root>/lib — madcide in the
@@ -2352,7 +2367,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
-	cir_apple_extra_dylibs(imports, libs);
+	cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
 	// Same PE rule as cir_write_native_image: libmadc-0.dll first
 	// when the runtime is needed, then the base DLL order (the one
@@ -6378,7 +6393,15 @@ int madc_project_emit_native(MadcEngine &engine,
 						tu.stdlib_option);
 				break;
 			}
-		cir_native_link_env(flavor, user_libs, needed, runpath);
+		// import (module form): every TU's bound modules join the
+		// closure beside the -l spellings, once each.
+		std::vector<std::string> all_libs(user_libs);
+		for (CirParsedTU &pt : parsed)
+			for (const std::string &l : pt.prog->module_link_libs)
+				if (std::find(all_libs.begin(), all_libs.end(), l)
+				    == all_libs.end())
+					all_libs.push_back(l);
+		cir_native_link_env(flavor, all_libs, needed, runpath);
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
 					    kind);
 	}

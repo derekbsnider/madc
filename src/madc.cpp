@@ -1420,6 +1420,11 @@ int main(int argc, char **argv)
 	bool parse_ok = prog->parse(tp);
 	gettimeofday(&_ps1, NULL);
 	double _fw_ps1 = prog->_forest_work_seconds;
+	// import (module form): the modules' TARGET spellings join the native
+	// link closure exactly as -l spellings do (verbatim entries — the same
+	// image the JIT binder opened).
+	for ( const std::string &l : prog->module_link_libs )
+	    cc_link_args.push_back(l);
 
 	// --show-stats: report input volume, token-stream traffic, and phase timing
 	// (read / lex / parse / c2mir-compile / execution, with tokens-per-second).
