@@ -123,11 +123,6 @@ static void cir_register_source_debug(MIR_context_t ctx)
 // MIR_link by the session/one-shot build paths (same single-threaded session
 // discipline as the fatal-containment state below).
 static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
-// #load'd namespace functions (task #67): the Program's __dl_<ns>_<member>
-// import-name -> dlsym'd-address table, set around MIR_link exactly like the
-// host-callback registrations above — dlsym(RTLD_DEFAULT) can never find
-// these madc-synthesized names.
-static thread_local const std::map<std::string, void *> *cir_active_dl_syms = NULL;
 
 // The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
 //
@@ -200,12 +195,6 @@ static void *cir_import_resolver(const char *name)
 	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
-    if (cir_active_dl_syms) {
-	std::map<std::string, void *>::const_iterator it =
-	    cir_active_dl_syms->find(name);
-	if (it != cir_active_dl_syms->end())
-	    return it->second;
-    }
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -1082,7 +1071,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
-	cir_active_dl_syms = NULL;
 	teardown();
 	return false;
     }
@@ -1118,7 +1106,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	cir_ledger_pull(ctx, prog);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
-    cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
     // Object mode never reads import addresses (cir_object_import_resolver),
     // so it needs no runtime loaded — its DT_NEEDED comes from
     // cir_native_link_env. prog == NULL is the frozen lane, which recreates
@@ -1142,7 +1129,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 		 madc_object_mode ? cir_object_import_resolver
 				  : cir_import_resolver);
     cir_active_host_regs = NULL;
-    cir_active_dl_syms = NULL;
     mc_lap("MIR_link");
     if (madc_debug_info) {
 	// -g: JIT lane registers the GDB-JIT object; object mode attaches

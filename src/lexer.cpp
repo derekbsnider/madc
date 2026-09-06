@@ -6476,6 +6476,7 @@ TokenBase *Program::_getToken()
 				      << " — auto-load off, bound to global scope" << std::endl);
 		    }
 		    dlopen_map[ns_name] = handle;
+		    dl_library_spelling[ns_name] = libname;	// the alias-form lowering's LIB (verbatim here)
 		    namespace_variables_for_write(ns_name); // create empty namespace
 		    return getToken();
 		}

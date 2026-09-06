@@ -1,1 +1,0 @@
-__dl_<ns>_<member> imports are JIT-link artifacts resolved from the live #load handle (Program::dl_symbol_map); no ELF library exports these madc-synthesized names, so a native artifact cannot link them. Native #load support is a follow-on.

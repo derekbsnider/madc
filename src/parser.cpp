@@ -27423,6 +27423,23 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 }
 
 // add a function definition
+// import (alias form): mark a freshly registered namespace member as a
+// dynamic-module member so the CIR builder lowers its calls to the
+// runtime-resolved shape ((long (*)())(slot ?: __madc_dl_member(LIB, MEMBER)))
+// in every lane. The library spelling is the one the binder recorded for the
+// namespace (dl_library_spelling); the parse-time dlsym above stays the early
+// diagnostic ("is this member exported at all"), never the bound address.
+void Program::stamp_dynamic_module_member(Variable *var, const std::string &ns,
+					  const std::string &member)
+{
+    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( !fd )
+	return;
+    std::map<std::string, std::string>::const_iterator it = dl_library_spelling.find(ns);
+    fd->dyn_module_library = it != dl_library_spelling.end() ? it->second : ns;
+    fd->dyn_module_member = member;
+}
+
 Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const std::string &emit_symbol)
 {
     variable_map_iter vmi;
@@ -29808,7 +29825,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 			std::string func_id = "__dl_" + aname + "_" + member_name;
 			ns_var = addFunction(func_id,
 			    datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-			dl_symbol_map[func_id] = sym;
+			stamp_dynamic_module_member(ns_var, aname, member_name);
 			namespace_variables_for_write(aname)[member_name] = ns_var;
 		    }
 		}
@@ -37709,7 +37726,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    (fVOIDFUNC)sym);
 			if ( !var )
 			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
-			dl_symbol_map[func_id] = sym;
+			stamp_dynamic_module_member(var, ns_name, member_name);
 			// Cache the resolved symbol for the next qualified call.
 			namespace_variables_for_write(ns_name)[member_name] = var;
 			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
