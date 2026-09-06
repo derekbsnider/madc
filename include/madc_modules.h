@@ -29,6 +29,12 @@ struct MadcModuleSpec {
 
 const MadcModuleSpec *madc_module_find(const std::string &name);
 const char *madc_target_dso_suffix(TargetOS os);
+// True when `name` already carries SOME target's library suffix (libc.so.6,
+// libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem
+// (libc++, libsystem_: the darwin cover prefixes) or a module name. The one
+// "is this spelled?" test for consumers that read recorded spellings of any
+// platform (the native cover analysis).
+bool madc_spelled_library_p(const std::string &name);
 std::string madc_module_library_spelling(const std::string &name, TargetOS os);
 std::string madc_module_library_spelling(const std::string &name);	// for madc_target_os
 

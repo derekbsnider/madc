@@ -1803,7 +1803,10 @@ int main(int argc, char **argv)
 	    {
 		kind = mnkShared;
 		explicit_out = generic_output_path;
-		dflt_suffix = MADC_DSO_SUFFIX;
+		// The artifact is the TARGET's: its default suffix comes from
+		// the one library-suffix owner (a Windows-hosted or cross
+		// madc names a shared output .dll / .dylib, never .so).
+		dflt_suffix = madc_target_dso_suffix(madc_target_os);
 	    }
 	    else
 	    {

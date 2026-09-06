@@ -167,16 +167,6 @@ std::string madc_self_lib_dir();
 // madc_self_exe_path() to know whether a distinct library carrier exists.
 std::string madc_self_lib_path();
 
-// Host shared-library suffix for native shared-ARTIFACT naming (the -shared
-// output's default extension). Library NAME spelling — -l<name>, import — is
-// src/madc_modules.cpp's (madc_target_dso_suffix keyed on TargetOS), never
-// this host macro.
-#ifdef __APPLE__
-#define MADC_DSO_SUFFIX ".dylib"
-#else
-#define MADC_DSO_SUFFIX ".so"
-#endif
-
 // The native-emit TARGET is an Apple/Mach-O platform: either an emit-only
 // cross madc configured for one (MADC_CROSS_APPLE) or a madc hosted on one
 // (native target == host). Orthogonal to MADC_CROSS_TARGET, which gates the

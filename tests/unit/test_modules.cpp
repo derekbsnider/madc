@@ -66,6 +66,17 @@ TEST_CASE("module rows: interface presence")
 	CHECK(empty == nullptr);
 }
 
+TEST_CASE("spelled library: any target's suffix marks an already-spelled name")
+{
+	CHECK(madc_spelled_library_p("libc.so.6"));
+	CHECK(madc_spelled_library_p("libfoo.so"));
+	CHECK(madc_spelled_library_p("libSystem.B.dylib"));
+	CHECK(madc_spelled_library_p("ucrtbase.dll"));
+	CHECK(!madc_spelled_library_p("libc++"));	// a darwin cover stem
+	CHECK(!madc_spelled_library_p("libsystem_"));
+	CHECK(!madc_spelled_library_p("m"));
+}
+
 TEST_CASE("dso suffix per OS")
 {
 	CHECK(std::string(madc_target_dso_suffix(TargetOS::Posix))   == ".so");

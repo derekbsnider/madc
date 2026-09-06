@@ -1697,9 +1697,7 @@ static bool cir_import_covered(const char *name,
     // outright). RTLD_NOLOAD: these libraries are already mapped — we are
     // interrogating them, never loading anything new.
     for (const std::string &c : covers) {
-	if (c.find(".so") == std::string::npos
-	    && c.find(".dylib") == std::string::npos
-	    && c.find(".dll") == std::string::npos)
+	if (!madc_spelled_library_p(c))
 	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
 			// prefix cover, handled by the dladdr pass below
 	void *h = madcdl_probe_loaded(c.c_str());
@@ -1923,7 +1921,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	    break;
 	}
     for (const std::string &l : other)
-	if (l.size() > 6 && l.compare(l.size() - 6, 6, ".dylib") == 0
+	if (madc_spelled_library_p(l)
 	    && l != "libSystem.B.dylib" && l.compare(0, 6, "libc++") != 0)
 	    libs.push_back(l.c_str());
 }
@@ -2038,17 +2036,16 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libsystem_");
     needed.push_back("libSystem");
 #elif defined(_WIN32)
-    // Hosted win64: the process's own runtime DLLs, in the madcdl walk's
-    // order (specific before general — first provider wins). This list is
-    // BOTH the cover set for the runtime-need analysis AND the PE writer's
-    // import-attribution list (PE binds two-level: every import names its
-    // DLL; the writer probes these in order).
+    // Hosted win64: the process's own runtime DLLs, in the madcdl
+    // default-scope walk's order (specific before general — first provider
+    // wins). ONE list, owned by the dl seam (madcdl_default_scope_modules):
+    // it is the JIT's symbol walk, the cover set for the runtime-need
+    // analysis AND the PE writer's import-attribution list (PE binds
+    // two-level: every import names its DLL; the writer probes these in
+    // order). A second copy here had already drifted (ws2_32.dll).
     (void)flavor;
-    needed.push_back("libstdc++-6.dll");
-    needed.push_back("libwinpthread-1.dll");
-    needed.push_back("ucrtbase.dll");
-    needed.push_back("kernel32.dll");
-    needed.push_back("ws2_32.dll");
+    for (const char *const *m = madcdl_default_scope_modules(); *m; m++)
+	needed.push_back(*m);
 #else
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
