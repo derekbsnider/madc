@@ -18,6 +18,7 @@
 #include <deque>
 #include <queue>
 #include <stack>
+#include <mutex>
 #include <stdint.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -27,6 +28,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// __madc_dl_member: madc_module_open (the import binder's opener)
 #include "ns_common.h"
 #include "rt/rt_except.h"	// __madc_throw_cstr (madarray_count raises script errors)
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
@@ -48,6 +50,50 @@ extern "C" {
 void *__madc_get_stdout(void) { return (void *)stdout; }
 void *__madc_get_stdin(void)  { return (void *)stdin; }
 void *__madc_get_stderr(void) { return (void *)stderr; }
+
+// import (alias form): the runtime half of a dynamic-module member call.
+// The CIR builder lowers `ns::member(args)` for a namespace bound by
+// `import name as ns;` to a per-member slot resolved on first call:
+//   ((long (*)()) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER))))(args)
+// — the same lowering in every lane (JIT, exe, obj, --emit=c11), replacing
+// the JIT-only __dl_<ns>_<member> import thunks. LIB is the TARGET
+// spelling the module map chose at compile time. Never returns NULL: a
+// library or member that cannot be resolved raises a script exception.
+//
+// THREAD-SAFETY CONTRACT: the handle cache is guarded by its own mutex;
+// concurrent first calls on one slot may both resolve (the loader
+// refcounts; dlsym is idempotent) — the slot store is a benign race on a
+// pointer-sized value, the same as any lazily-bound PLT.
+void *__madc_dl_member(const char *lib, const char *member)
+{
+	static std::mutex cache_lock;
+	static std::map<std::string, void *> handles;
+	void *h = NULL;
+	{
+		std::lock_guard<std::mutex> g(cache_lock);
+		std::map<std::string, void *>::iterator it = handles.find(lib);
+		if (it != handles.end())
+			h = it->second;
+	}
+	if (!h) {
+		std::string err;
+		h = madc_module_open(lib, err);
+		if (!h) {
+			std::string msg = std::string("import: cannot load '") + lib + "': " + err;
+			__madc_throw_cstr(msg.c_str());
+		}
+		std::lock_guard<std::mutex> g(cache_lock);
+		handles[lib] = h;
+	}
+	void *sym = madcdl_sym(h, member);
+	if (!sym) {
+		const char *e = madcdl_error();
+		std::string msg = std::string("import: '") + member + "' is not exported by '" + lib
+				  + "'" + (e ? std::string(": ") + e : std::string());
+		__madc_throw_cstr(msg.c_str());
+	}
+	return sym;
+}
 
 void madc_puti(int64_t i)    { std::cout << i << std::endl; }
 void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
