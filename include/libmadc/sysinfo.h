@@ -21,7 +21,7 @@ namespace madc {
 struct SysInfo
 {
     value argv;                  // script-mutable; [0] = script path
-    value path;                  // script-mutable; future #load/eval search seed
+    value path;                  // script-mutable; future import/eval search seed
     const char *const platform;  // immutable fact: "linux" / "darwin" / ...
     const char *const version;   // immutable fact: MADC_VERSION_STR
     const char *const hostname;  // immutable fact: eager gethostname()

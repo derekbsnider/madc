@@ -20,9 +20,9 @@ madc_cell_retain	value-cell runtime entry
 madc_class_pattern_capture_active	engine global: forest class-pattern capture flag
 madc_debug_info	engine global: debug-info emission flag
 madc_default_stdlib_flavor	engine global: stdlib flavor default
-madc_dlclose	#load/dlopen runtime entry
-madc_dlopen	#load/dlopen runtime entry
-madc_dlsym	#load/dlopen runtime entry
+madc_dlclose	script dlopen()/dlsym() runtime entry
+madc_dlopen	script dlopen()/dlsym() runtime entry
+madc_dlsym	script dlopen()/dlsym() runtime entry
 madc_jit_symbolize	JIT debug: symbolize helper
 madc_no_eval_shims	engine global: eval shim policy flag
 madc_no_warnings	engine global: -w (inhibit warnings) flag

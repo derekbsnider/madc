@@ -563,6 +563,11 @@ class CirBuilder {
 				     const Program::HostCallbackReg &reg);
 	void synth_host_trampolines(Program *prog,
 				    std::vector<node_t> &func_def_nodes);
+	// import (alias form): the callee expression of `ns::member(args)` for
+	// a namespace bound to a dynamic module — a per-member slot resolved on
+	// first use through __madc_dl_member, cast to the K&R fn-ptr type.
+	node_t dyn_module_callee(FuncDef *fd, const std::string &callee_name,
+				 TokenBase *origin);
 	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
 				     TokenBase *origin);
 

@@ -11,7 +11,7 @@ to C source:
 Source (.mad / .c / .cpp / .h)
     |
     v src/lexer.cpp        — tokenize into a flat token stream
-    |                        (#include, #load, preprocessor directives)
+    |                        (#include, import, #load, preprocessor directives)
     |
     v src/parser.cpp       — parse tokens into the TokenBase AST;
     |                        namespace / struct / class / template resolution
@@ -55,7 +55,7 @@ See `docs/rules/mc11-ir.md` for the full definition and the reasoning.
 | File | Role |
 |------|------|
 | `src/madc.cpp` | CLI entry point: flags, mode selection, resource guards |
-| `src/lexer.cpp` | Tokenizer; `#include`, `#load`, preprocessor handling |
+| `src/lexer.cpp` | Tokenizer; `#include`, the `import` directive (and the low-level `#load`), preprocessor handling |
 | `src/parser.cpp` | AST construction; overload resolution, template capture and instantiation (parse-once tsubst), namespace and class semantics |
 | `src/cir_builder.cpp` | AST → `cir_node` lowering; construction/destruction assembly, vtables, exceptions |
 | `src/cir_emit_c.cpp` | `--emit=c11` / `--emit=mc11` source renderers |
@@ -148,9 +148,14 @@ One tree serves every output:
 - Undeclared C functions fall back to `dlsym(RTLD_DEFAULT)` resolution with
   variadic calling; embedded headers declare real return types where it
   matters (see `.claude/rules/embedded-headers.md`).
-- `#load "lib.so" as ns;` dlopens with `RTLD_LAZY | RTLD_GLOBAL` and creates
-  a namespace with lazy symbol resolution; `-lfoo` loads `libfoo.so`
-  globally for JIT runs and becomes a `DT_NEEDED` dependency in AOT mode.
+- `import name [as ns];` binds a module — its interface (an embedded header)
+  and its library, spelled for the TARGET by the module map
+  (`src/madc_modules.cpp`, the one owner of `.so` / `.dylib` / `.dll`): the
+  JIT opens it `RTLD_GLOBAL`; a native artifact gets a `DT_NEEDED` / load
+  command / PE import; alias-form members (`ns::f(...)`) resolve at run time
+  through `__madc_dl_member` in every lane. `-lfoo` is the build-line
+  spelling of the same binding; `#load "<file>" as ns;` the low-level
+  verbatim-file one (tooling / fixtures). See `docs/language/import.md`.
 - C++ symbols resolve mangled-direct (Itanium) against whichever stdlib
   flavor is active; `extern "C"` exports exist only as the C-host API of
   `libmadc` and for compiler-emitted runtime machinery.

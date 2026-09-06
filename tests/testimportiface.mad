@@ -1,0 +1,17 @@
+// import (interface form) under --std=c++20: `import m;` tokenizes the
+// module's interface (<math.h>: M_PI is a MACRO no fallback can supply) and
+// links libm by the target's spelling; `import <stdio.h>;` is the C++20
+// header-unit spelling (approximated as the include). `int import` stays an
+// identifier: `import` is a directive only at the start of a logical line
+// followed by a module name, '<' or '"'.
+import <stdio.h>;
+import m;
+
+int main()
+{
+    int import = 3;
+    printf("pi=%.5f\n", M_PI);
+    printf("sqrt=%g\n", sqrt(16.0));
+    printf("import=%d\n", import);
+    return 0;
+}

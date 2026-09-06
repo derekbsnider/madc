@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+### `import` — the module binding (slice 0 of the web-target arc, 2026-09-06)
+
+- **`import name [as ns];` binds a module — its interface AND its library —
+  with no platform spelling in the source, on the JIT and in native
+  artifacts** (`docs/language/import.md`). C++20's `import` made whole: the
+  standard leaves *which library* to the build system; madc's module map
+  answers it. `import m;` tokenizes `<math.h>` then binds libm; `import c as
+  libc;` binds the C runtime under a namespace whose members resolve by name
+  at first call; `import <stdio.h>;` / `import "h";` are the header-unit
+  spellings (served as the include). Available in the madc dialect and
+  `--std=c++20` and later; recognized ONLY in directive position (the first
+  token of a logical line followed by a module name, `<` or `"`), so `int
+  import = 3;` keeps compiling everywhere.
+- **One platform-spelling owner** (`src/madc_modules.cpp`): a module row
+  names the real runtime image per target OS (`c` / `m` → `libc.so.6` /
+  `libm.so.6`, `libSystem.B.dylib`, `ucrtbase.dll`); a bare name follows the
+  linker's rule (`lib<name>.so` / `.dylib` / `<name>.dll`); paths and
+  already-spelled names pass verbatim. `-l<name>` resolves through it too —
+  which fixes `-l` spelling `lib<name>.so` on the win64 target (the host
+  macro `MADC_DSO_SUFFIX` had no `.dll` arm). `TargetOS` gains `Darwin`.
+- **Alias-form members lower to a runtime-resolved indirect call in EVERY
+  lane** — `((long (*)())(slot ? slot : (slot = __madc_dl_member(LIB,
+  MEMBER))))(args)`, the dlcall shape — replacing the JIT-only
+  `__dl_<ns>_<member>` import thunks: `tests/testdlopen` passes natively for
+  the first time (its `exe_skip` is gone). Module-form libraries join the
+  native link closure once each (DT_NEEDED / Mach-O load command / PE
+  import), in the single-TU and `--project` lanes.
+- `#load "<file>" as ns;` stays as the low-level directive underneath the
+  alias form (owner ruling: like `#pragma`, for tooling and fixtures — you
+  spell the file, you own the platform); it is sugar over the same binder.
+  `--no-auto-load` applies to both.
+- The merge-wave `/dupaudit` folded the family's two remaining sites into
+  the owner: the host macro `MADC_DSO_SUFFIX` is deleted (a Windows-hosted or
+  cross madc named a `-shared` output `.so`; the artifact now takes the
+  TARGET's suffix), and the native cover analysis / Mach-O load list read
+  `madc_spelled_library_p`. The Windows default-scope DLL walk (the JIT's
+  symbol walk, the native cover set and the PE import order) is ONE list in
+  the dl seam — the two copies had drifted on `ws2_32.dll`, so Winsock names
+  the PE writer attributed were unresolvable under the JIT. Gate:
+  `scripts/check-one-library-spelling.sh` (fulltest, negative controls).
+- Reducers: `tests/testimport.mad` (alias form, value-first, all lanes),
+  `tests/testimportiface.mad` (`--std=c++20`, interface form: `M_PI` proves
+  the interface arrived, `sqrt` the library), `tests/testimportiface_neg.mad`
+  (negative control), `tests/testnoautoload.mad` migrated to `import m;`;
+  `tests/unit/test_modules.cpp` pins the spelling rule per OS.
+
 ## [v0.98.0] — 2026-09-06
 
 madc on macOS end to end — native builds, the full suite running on both Mac architectures (202 arm64 failures → the last root closed), and the C++ front-end wave the mac runners drove (templates, classes, namespaces, the Itanium class-call ABI) — plus the MIR aarch64 backend at x86-64 parity (128-bit SIMD, the AAPCS64/Apple ABI, a vector calling convention gated against the platform compilers), the libc++ `<list>` completion fix and the stdlib-flavor boundary, and the packaged install shape (thin CLI + shared libmadc, six CI-built release assets).

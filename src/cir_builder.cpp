@@ -6971,11 +6971,11 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			 && is_class_object_value(arg))
 			// No declared formal — a varargs tail (`printf("%s", s)`;
 			// an is_varargs FuncDef's LAST parameter is the varargs
-			// MARKER, so the tail starts at size()-1) or a #load'd
-			// zero-declared-param external (`libc::atoi(num)`): a
+			// MARKER, so the tail starts at size()-1) or an import-bound
+			// zero-declared-param member (`libc::atoi(num)`): a
 			// class-object value whose class has c_str() (a madc
 			// string) auto-coerces to const char* — the documented
-			// #load convention (task #67). Classes without c_str keep
+			// import alias-form convention. Classes without c_str keep
 			// their previous lowering (object_cstr_arg falls back to
 			// translate_expr); plain C structs never reach here
 			// (is_class_object_value is user-class-gated).
@@ -22217,43 +22217,53 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// local_emit_name), not the source name.
 				FuncDef *cdf = NULL;
 				std::string callee_name = call_target_emit_name(tcf, &cdf);
-				// A builtin registered with a host thunk (system, the
-				// dlfcn family) carries the thunk's extern-C symbol in
-				// FuncDef::emit_symbol, so call_target_emit_name already
-				// produced the thunk name; the extern proto comes from
-				// the referenced_funcs pass like any other builtin's.
-				// (The old name-keyed "system" swap through
-				// external_symbol_map is subsumed.)
-				// c2mir intrinsics (e.g. __builtin_va_start) are
-				// recognized by name and lowered in-place; emitting an
-				// extern prototype for one shadows the intrinsic and
-				// turns it into an undefined external symbol at MIR-link.
-				// So skip the proto for them. (__builtin_va_arg has its
-				// own translation path above.)
-				if (!is_c2mir_builtin_call_name(tcf->var.name))
-					referenced_funcs.insert(callee_name);
-				// #92 family: a DECLARATION-ONLY callee emitting under
-				// its Itanium export (_Znwm and the other tracked
-				// global allocation operators are the shape that
-				// exposed it) gets NO typed proto from any pass —
-				// c2mir's implicit decl then types the call integer
-				// ("returning integer without cast for pointer
-				// result" inside materialized <new> bodies).
-				// Register the typed extern from the resolved
-				// FuncDef, exactly like the class-member emit_symbol
-				// binds do (the flush dedupes against typed_proto_syms).
-				if (cdf && cdf->declaration_only
-				    && callee_name.compare(0, 2, "_Z") == 0) {
-					bool op_ret_ptr = false;
-					std::vector<c2mir_node_code_t> op_ret_specs;
-					std::vector<ExternParam> op_params;
-					native_func_shape(cdf, op_ret_ptr,
-							  op_ret_specs, op_params);
-					need_output_extern(callee_name.c_str(),
-							   op_ret_ptr, op_params,
-							   op_ret_specs);
+				if (cdf && !cdf->dyn_module_member.empty()) {
+					// import (alias form): a dynamic-module member has
+					// no symbol of its own — the callee is the slot-
+					// resolved pointer (dyn_module_callee); no proto and
+					// no referenced_funcs entry (there is nothing to
+					// declare: the old __dl_<ns>_<member> import was the
+					// JIT-only shim this replaces).
+					func_id = dyn_module_callee(cdf, callee_name, tb);
+				} else {
+					// A builtin registered with a host thunk (system, the
+					// dlfcn family) carries the thunk's extern-C symbol in
+					// FuncDef::emit_symbol, so call_target_emit_name already
+					// produced the thunk name; the extern proto comes from
+					// the referenced_funcs pass like any other builtin's.
+					// (The old name-keyed "system" swap through
+					// external_symbol_map is subsumed.)
+					// c2mir intrinsics (e.g. __builtin_va_start) are
+					// recognized by name and lowered in-place; emitting an
+					// extern prototype for one shadows the intrinsic and
+					// turns it into an undefined external symbol at MIR-link.
+					// So skip the proto for them. (__builtin_va_arg has its
+					// own translation path above.)
+					if (!is_c2mir_builtin_call_name(tcf->var.name))
+						referenced_funcs.insert(callee_name);
+					// #92 family: a DECLARATION-ONLY callee emitting under
+					// its Itanium export (_Znwm and the other tracked
+					// global allocation operators are the shape that
+					// exposed it) gets NO typed proto from any pass —
+					// c2mir's implicit decl then types the call integer
+					// ("returning integer without cast for pointer
+					// result" inside materialized <new> bodies).
+					// Register the typed extern from the resolved
+					// FuncDef, exactly like the class-member emit_symbol
+					// binds do (the flush dedupes against typed_proto_syms).
+					if (cdf && cdf->declaration_only
+					    && callee_name.compare(0, 2, "_Z") == 0) {
+						bool op_ret_ptr = false;
+						std::vector<c2mir_node_code_t> op_ret_specs;
+						std::vector<ExternParam> op_params;
+						native_func_shape(cdf, op_ret_ptr,
+								  op_ret_specs, op_params);
+						need_output_extern(callee_name.c_str(),
+								   op_ret_ptr, op_params,
+								   op_ret_specs);
+					}
+					func_id = id(callee_name.c_str(), tb);
 				}
-				func_id = id(callee_name.c_str(), tb);
 			}
 			// A by-value NON-TRIVIAL class-returning call uses the same __retbuf
 			// ABI: materialize a cleanup-tagged temp of the class, emit the void
@@ -28601,6 +28611,64 @@ void CirBuilder::synth_call_shims(Program *prog,
 		node_t shim = synth_call_shim_var(prog, fv);
 		if (shim) func_def_nodes.push_back(shim);
 	}
+}
+
+// -----------------------------------------------------------------------
+// import (alias form): the callee of `ns::member(args)` for a namespace
+// bound to a dynamic module (FuncDef::dyn_module_member set by the parser's
+// stamp_dynamic_module_member). One per-member slot
+//   static void *<callee>_slot;
+// resolved on first use through the runtime helper and cast to the K&R
+// unprototyped fn-ptr type, exactly the dlcall lowering's shape:
+//   (long (*)()) (slot ? slot : (slot = __madc_dl_member(LIB, MEMBER)))
+// so every lane (JIT, exe, obj, --emit=c11) performs the real call through
+// the pointer. Replaces the JIT-only __dl_<ns>_<member> import (an address
+// only cir_import_resolver's per-link table knew and no native artifact
+// could link — tests/testdlopen's old exe_skip). LIB is the TARGET spelling
+// the module map chose at compile time; MEMBER the source member name.
+// -----------------------------------------------------------------------
+node_t CirBuilder::dyn_module_callee(FuncDef *fd, const std::string &callee_name,
+				     TokenBase *origin)
+{
+	std::string slot = callee_name + "_slot";
+	if (!m_output_externs.count(slot)) {
+		// `static void *SLOT;` rides the extern-declaration flush: the
+		// same map, the same splice into the unit's top level, the same
+		// referenced-surface filter (cond_mark_sym keys it by the slot
+		// name the call below references). Operand layout mirrors
+		// need_output_extern's proto: specs, declarator, three ignores
+		// (the last is the absent initializer).
+		node_t specs = list();
+		append(specs, simple(N_STATIC));
+		append(specs, simple(N_VOID));
+		node_t sd = simple(N_SPEC_DECL, origin);
+		append(sd, node1(N_SHARE, specs));
+		append(sd, node2(N_DECL, id(slot.c_str(), origin),
+				 node1(N_LIST, pointer())));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		m_output_externs[slot] = sd;
+	}
+	need_output_extern("__madc_dl_member", true,
+			   { { {N_CHAR}, true }, { {N_CHAR}, true } });
+	// N_STR len counts the terminating NUL (the str() contract every other
+	// literal mint follows: strlen + 1).
+	node_t args = list();
+	append(args, str(fd->dyn_module_library.c_str(),
+			 fd->dyn_module_library.size() + 1, origin));
+	append(args, str(fd->dyn_module_member.c_str(),
+			 fd->dyn_module_member.size() + 1, origin));
+	node_t resolve = node2(N_CALL, id("__madc_dl_member", origin), args, origin);
+	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
+	node_t pick = node3(N_COND, id(slot.c_str(), origin),
+			    id(slot.c_str(), origin), assign, origin);
+	node_t fdecl = list();
+	append(fdecl, pointer());
+	append(fdecl, node1(N_FUNC, list()));
+	node_t fptr_t = node2(N_TYPE, i64_list(origin),
+			      node2(N_DECL, ignore(), fdecl));
+	return node2(N_CAST, fptr_t, pick, origin);
 }
 
 // -----------------------------------------------------------------------

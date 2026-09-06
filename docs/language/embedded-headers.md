@@ -74,7 +74,7 @@ never auto-served.
 
 Functions need no explicit registration: an unresolved call tries
 `dlsym(RTLD_DEFAULT, name)`, so anything in the process's loaded
-libraries (libc always; anything brought in by `-l` or `#load`) is
+libraries (libc always; anything brought in by `-l` or `import`) is
 callable. The call's convention is built from the actual argument
 types; string arguments auto-coerce to `const char*`. Embedded headers
 declare real return types where it matters (`strcmp` returns `int`,

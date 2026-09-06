@@ -302,6 +302,14 @@ public:
     std::string function_display_name;
     std::string namespace_name;
     std::string inline_builtin_kind;
+    // import (alias form): a member of a namespace bound to a dynamic module
+    // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
+    // the CIR builder lowers every call to a runtime-resolved indirect call
+    // (__madc_dl_member(dyn_module_library, dyn_module_member)) — one
+    // lowering for JIT and native. dyn_module_library is the TARGET
+    // spelling the module map chose (madc_modules).
+    std::string dyn_module_library;
+    std::string dyn_module_member;
     // TRUE when this FuncDef is a BUILTIN-STYLE registration (the
     // builtin_registry core/process/dlfcn loops — the caller passes the
     // intent into Program::addFunction). An explicit source (re)declaration
@@ -439,7 +447,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1710,6 +1718,7 @@ protected:
     std::set<std::string> _inherited_disabled_macros;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
+    int _last_token_line = 0;		// see last_token_line()
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
 			    bool recount = true, bool synthesized = false)
@@ -1790,6 +1799,14 @@ public:
     bool eof()  { return _pushback.empty() && _gpos >= _buf.size(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
+    // The line of the last non-trivia token the lexer minted from THIS
+    // source (getRealToken stamps it); 0 before the first. The import
+    // directive-position test reads it: `import` heads a logical line iff no
+    // real token of this source sits on the current line. Per-Source so an
+    // #include's serving (a different Source) never disturbs the includer's
+    // answer.
+    int last_token_line() const { return _last_token_line; }
+    void note_token_line(int line) { _last_token_line = line; }
     int get()
     {
 	if ( !_pushback.empty() )
@@ -2400,11 +2417,11 @@ public:
 	bool enable_core_functions = true;
 	bool enable_process_functions = true;
 	bool enable_dlfcn_functions = true;
-	// When false, a #load directive does not dlopen its named library; the
-	// namespace is bound to the global symbol scope instead, so the symbols
-	// must be provided explicitly (e.g. via `madc -l<lib>` or the host). Lets
-	// a build make all linking explicit. (enable_dlfcn_functions=false is the
-	// stricter sandbox knob that forbids #load outright.)
+	// When false, an `import` / #load does not open its library; the
+	// namespace is bound to the program's own symbol scope instead, so the
+	// symbols must be provided explicitly (e.g. via `madc -l<lib>` or the
+	// host). Lets a build make all linking explicit. (enable_dlfcn_functions
+	// =false is the stricter sandbox knob that forbids the binding outright.)
 	bool enable_auto_library_loading = true;
 	bool enable_runtime_eval_source_scope_access = true;
 	bool enable_runtime_eval_expression_scope_access = true;
@@ -4184,14 +4201,19 @@ public:
     bool parsing_defaulted_member_template_constructor;
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
-    // #load'd namespace functions (task #67): __dl_<ns>_<member> import name
-    // -> the dlsym'd host address. The MIR import resolver consults this
-    // per-link (cir_active_dl_syms) — dlsym(RTLD_DEFAULT) cannot see symbols
-    // private to a #load'd handle, and the import name is madc-synthesized.
-    std::map<std::string, void *> dl_symbol_map;
+    // import/#load: namespace -> the TARGET library spelling it is bound to
+    // (what the alias-form call lowering passes to __madc_dl_member; the
+    // member resolves at run time in every lane, so no per-link address
+    // table exists any more).
+    std::map<std::string, std::string> dl_library_spelling;
     std::vector<std::string> loaded_lib_paths;	// library names actually dlopen'd
 						// (#load / -l) — the link-environment
 						// closure a frozen forest re-loads
+    // import (module form): the TARGET spellings of the modules whose library
+    // must join a native artifact's link closure (DT_NEEDED / load command /
+    // PE import); madc.cpp appends them to the link line after the parse. The
+    // alias form resolves at run time and never lands here.
+    std::vector<std::string> module_link_libs;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5358,6 +5380,11 @@ public:
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;
+    // import (alias form): mark a freshly registered namespace member as a
+    // dynamic-module member (FuncDef::dyn_module_library/member) so the CIR
+    // builder lowers its calls to the runtime-resolved shape.
+    void stamp_dynamic_module_member(Variable *var, const std::string &ns,
+				     const std::string &member);
     bool is_dynamic_symbol_fallback_enabled() const;
     bool is_runtime_eval_source_scope_access_enabled() const;
     bool is_runtime_eval_expression_scope_access_enabled() const;
@@ -5442,6 +5469,13 @@ public:
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);
+	// import (C++20 [cpp.pre] made whole; docs/language/import.md): the
+	// directive-position test, the directive reader, and the binder it
+	// shares with the low-level #load (verbatim file spelling).
+	bool import_directive_position();
+	TokenBase *tokenize_import_directive();
+	void bind_module_namespace(const std::string &ns, const std::string &spelling,
+				   bool link_form);
 	void tokenize_embedded_header_text(const std::string &name,
 					 const std::string &text,
 					 bool protocol_visit);

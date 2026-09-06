@@ -77,15 +77,22 @@ identifiers auto-include their headers — see
 directories, `-D<name>[=v]` defines macros, `-E` preprocesses only, and
 `-dM` prints the effective macro table.
 
-## `#load`
+## Library binding — `import`, and the low-level `#load`
+
+Programs bind a library with `import name [as ns];` — a module's interface
+and library, spelled for the target by the module map, so no `.so` /
+`.dylib` / `.dll` appears in the source — see [import.md](import.md).
+
+`#load` is the low-level directive underneath it, kept for tooling and
+fixtures the way `#pragma` is: you spell the exact file, you own the
+platform.
 
 ```text
-#load "libfoo.so" as foo;
-// foo::function_name() now available via dlsym
+#load "/tmp/build/libfoo.so" as foo;
+// foo::function_name() now resolves by name at first call
 ```
 
-Loads a shared library via `dlopen` with `RTLD_LAZY | RTLD_GLOBAL`. The
-`RTLD_GLOBAL` flag makes all symbols globally visible, so loaded
-functions are also callable without the namespace prefix through the
-dlsym fallback. `--no-auto-load` disables `#load` processing (link
-explicitly with `-l` instead).
+It binds the named file verbatim through the same machinery `import` uses
+(opened `RTLD_GLOBAL` on the JIT, so unprefixed calls resolve through the
+dlsym fallback too; namespace members lower to the same runtime-resolved
+call in every lane). `--no-auto-load` applies to both directives.

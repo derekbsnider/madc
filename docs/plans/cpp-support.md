@@ -92,6 +92,7 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
 | References — numeric `T&` | params lower to `T*` |
 | Streams | `cout <<` chains, `cin >>`, manipulators via wrappers |
 | `nullptr`, range-for over containers, user `namespace { }` blocks | namespace-block parsing added this session |
+| **Modules — the `import` directive (C++20)** | `import <h>;` / `import "h";` (header units, served as the include) and `import name [as ns];` (interface + library through the module map, JIT and native) landed 2026-09-06 (`docs/language/import.md`). `export module` / module interface units / BMI: open. |
 
 ### C++ — broken or missing (the work)
 | Feature | Symptom (evidence) | Roadmap item |

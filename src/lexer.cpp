@@ -29,6 +29,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// import: the module map + the one library-spelling owner
 #include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
@@ -1584,6 +1585,149 @@ void Program::tokenize_synthetic_system_include(const std::string &header,
 		push_token_with_literal_concat(itb);
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+}
+
+// import — C++20 [cpp.pre] made whole (docs/language/import.md; design:
+// docs/plans/2026-09-06-ui-web-target-and-madcide-gui.md §3.1). `import` is
+// an identifier with special meaning in DIRECTIVE POSITION only: the first
+// token of a logical line, followed by a module name, '<' or '"'. Never a
+// reserved word (`int import = 3;` compiles); never active in C or before
+// C++20 (the madc dialect reserves the full C++ keyword set, so it is on
+// there).
+//
+// The position test. The gates come first so a non-directive `import` costs
+// nothing; horizontal whitespace after the word is consumed only to look at
+// the next char and is given back (one normalized space — the compound
+// type-specifier scan's convention) when this is NOT a directive.
+bool Program::import_directive_position()
+{
+    if ( !cpp_keyword_active(STD_CPP20) )
+	return false;
+    if ( source.line() == source.last_token_line() )
+	return false;
+    int ws = 0;
+    while ( source.peek() == ' ' || source.peek() == '\t' )
+    {
+	source.get();
+	++ws;
+    }
+    int c = source.peek();
+    bool directive = c == '<' || c == '"' || isalpha(c) || c == '_';
+    if ( !directive && ws > 0 )
+	source.pushback_reread(" ");
+    return directive;
+}
+
+// import <header>;  import "header";  import module [as alias];
+// Header-unit spellings are served as the include (a header unit's
+// declarations plus, as the documented approximation, its macros): the
+// directive text is pushed back for the ONE #include reader — synthesized
+// text with a newline, so pushback_reread's frozen-cursor drain leaves the
+// includer's line and column counters untouched. The module form binds the
+// library FIRST, then serves the interface (the registry row's embedded
+// header) the same way; the alias form binds the library only.
+TokenBase *Program::tokenize_import_directive()
+{
+    auto skip_ws = [this]() {
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+    };
+    auto finish_semicolon = [this, &skip_ws]() {
+	skip_ws();
+	if ( source.peek() != ';' )
+	    Throw << "import: expected ';'" << flush;
+	source.get();
+    };
+    skip_ws();
+    int c = source.peek();
+    if ( c == '<' || c == '"' )
+    {
+	char close = c == '<' ? '>' : '"';
+	source.get();
+	std::string header;
+	while ( source.good() && !source.eof() && source.peek() != close
+	     && source.peek() != '\n' && source.peek() != '\r' )
+	    header += source.get();
+	if ( source.peek() != close )
+	    Throw << "import: unterminated header name" << flush;
+	source.get();
+	finish_semicolon();
+	source.pushback_reread(std::string("#include ") + (close == '>' ? "<" : "\"")
+			       + header + (close == '>' ? ">" : "\"") + "\n");
+	return getToken();
+    }
+    std::string name;
+    while ( source.good() && !source.eof()
+	 && (isalnum(source.peek()) || source.peek() == '_' || source.peek() == '.') )
+	name += source.get();
+    if ( name.empty() )
+	Throw << "import: expected a module name, '<' or '\"'" << flush;
+    skip_ws();
+    std::string alias;
+    if ( isalpha(source.peek()) )
+    {
+	std::string kw;
+	while ( source.good() && !source.eof() && isalpha(source.peek()) )
+	    kw += source.get();
+	if ( kw != "as" )
+	    Throw << "import: expected 'as' or ';' after module name '" << name << "'" << flush;
+	skip_ws();
+	while ( source.good() && !source.eof()
+	     && (isalnum(source.peek()) || source.peek() == '_') )
+	    alias += source.get();
+	if ( alias.empty() )
+	    Throw << "import: expected an alias after 'as'" << flush;
+    }
+    finish_semicolon();
+    if ( !is_dynamic_library_loading_enabled() )
+	Throw << "import: library binding is disabled by registration policy" << flush;
+    const MadcModuleSpec *row = madc_module_find(name);
+    std::string spelling = madc_module_library_spelling(name);
+    if ( alias.empty() && !(row && row->interface) )
+	Throw << "import: module '" << name << "' has no interface; bind it with"
+	      << " `import " << name << " as <alias>;`" << flush;
+    bind_module_namespace(alias, spelling, /*link_form=*/alias.empty());
+    DBG(std::cout << "import " << name << (alias.empty() ? std::string() : " as " + alias)
+		  << " -> " << spelling << std::endl);
+    if ( alias.empty() )
+	source.pushback_reread(std::string("#include <") + row->interface + ">\n");
+    return getToken();
+}
+
+// The binder shared by `import` and the low-level `#load`. JIT: open the
+// spelled library into the default symbol scope (madc_module_open: beside the
+// running binary's ../lib first, then the loader's own search) — or, under
+// --no-auto-load or in an emit-only cross madc, bind to the program's own
+// scope: the library is linked, not loaded. A namespace (alias form) records
+// the spelling the member lowering passes to __madc_dl_member; the link form
+// records it for the native link closure (module_link_libs).
+void Program::bind_module_namespace(const std::string &ns, const std::string &spelling,
+				    bool link_form)
+{
+    void *handle = NULL;
+#ifndef MADC_CROSS_TARGET
+    if ( is_auto_library_loading_enabled() )
+    {
+	std::string err;
+	handle = madc_module_open(spelling, err);
+	if ( !handle )
+	    Throw << "import: cannot load '" << spelling << "': " << err << flush;
+	loaded_lib_paths.push_back(spelling);	// the frozen-forest link closure
+    }
+#endif
+    if ( !handle )
+	handle = madcdl_open_self();
+    DBG(std::cout << "bind module " << spelling
+		  << (ns.empty() ? std::string() : " as " + ns)
+		  << (link_form ? " (link form)" : "") << std::endl);
+    if ( link_form )
+	module_link_libs.push_back(spelling);
+    if ( !ns.empty() )
+    {
+	dlopen_map[ns] = handle;
+	dl_library_spelling[ns] = spelling;
+	namespace_variables_for_write(ns);	// create the (empty) namespace
+    }
 }
 
 void Program::tokenize_embedded_header_text(const std::string &name,
@@ -6453,30 +6597,10 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == ';' )
 			source.get();
-		    // dlopen the library — unless auto-library-loading is off, in
-		    // which case the named library is NOT loaded; the namespace is
-		    // bound to the global symbol scope (dlopen(NULL)) so its symbols
-		    // come from explicit linking (`madc -l<lib>` / the host) instead.
-		    void *handle;
-		    if ( is_auto_library_loading_enabled() )
-		    {
-			handle = madcdl_open_global(libname.c_str());
-			if ( !handle )
-			{
-			    std::string err = "Failed to load library: " + libname + ": " + madcdl_error();
-			    Throw << err.c_str() << flush;
-			}
-			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
-			loaded_lib_paths.push_back(libname);
-		    }
-		    else
-		    {
-			handle = madcdl_open_self();
-			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
-				      << " — auto-load off, bound to global scope" << std::endl);
-		    }
-		    dlopen_map[ns_name] = handle;
-		    namespace_variables_for_write(ns_name); // create empty namespace
+		    // #load "spelling" as ns; — the low-level directive (tooling /
+		    // fixtures, like #pragma): the import binder with the file spelled
+		    // VERBATIM — you name the file, you own the platform. testdlopen.
+		    bind_module_namespace(ns_name, libname, /*link_form=*/false);
 		    return getToken();
 		}
 		if ( directive == "define" )
@@ -8069,6 +8193,12 @@ TokenBase *Program::_getToken()
 			    break;
 		    }
 		}
+		// C++20 [cpp.pre]: `import` is a DIRECTIVE when it heads a logical
+		// line and a module name, '<' or '"' follows; an identifier
+		// otherwise (`int import = 3;` compiles). Gated: the madc dialect
+		// and C++20+ only; never in C or earlier C++.
+		if ( word == "import" && import_directive_position() )
+		    return tokenize_import_directive();
 		if ( (kmi=keyword_map.find(sid)) != keyword_map.end() )
 		    return (*kmi)->clone();
 		// C++ alternative-token operators (and/or/not/...): empty in C
@@ -9386,6 +9516,7 @@ TokenBase *Program::getRealToken()
 	    default:
 		if ( keep_trivia && !pending_trivia.empty() )
 		    tb->leading_trivia = std::move(pending_trivia);
+		source.note_token_line(tb->line);	// import's directive-position test
 		return tb;
 	}
     }

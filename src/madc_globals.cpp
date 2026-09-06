@@ -57,6 +57,17 @@ std::string madc_self_exe_path()
 #endif
 }
 
+// <exe dir>/../lib beside the running executable (see datadef.h). The
+// separator rule is host_path_dirname's — the one owner, both separators on
+// Windows.
+std::string madc_self_lib_dir()
+{
+	std::string dir = madc::detail::host_path_dirname(madc_self_exe_path());
+	if (dir.empty())
+		return std::string();
+	return dir + "../lib";
+}
+
 // Resolved absolute path of the image holding libmadc's code (see datadef.h).
 // This function itself is the probe symbol: it is compiled into libmadc, so
 // dladdr maps it to libmadc.so / madc.dylib in the shared shape and to the
