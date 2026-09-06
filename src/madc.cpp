@@ -27,6 +27,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
 #include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
@@ -616,7 +617,7 @@ int main(int argc, char **argv)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
-    std::vector<std::string> link_libs;   // -l<name>: dlopen lib<name>.so (RTLD_GLOBAL)
+    std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
     bool emit_shared = false;             // -shared: emit an ET_DYN .so, no run
@@ -891,22 +892,16 @@ int main(int argc, char **argv)
             show_version = true;
             filearg = i + 1;
         } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
-            // -l<name>: dlopen a shared library so its symbols are resolvable by
-            // the import resolver at link time (e.g. -lcrypt). Like a linker's
-            // -l, but it dlopen()s lib<name>.so / .dylib (RTLD_GLOBAL). A name
-            // containing '/' or ending in the host suffix is used verbatim.
-            std::string lib(argv[i] + 2);
-            const std::string dso_sfx = MADC_DSO_SUFFIX;
-            if ( lib.find('/') == std::string::npos
-              && (lib.size() < dso_sfx.size()
-                  || lib.compare(lib.size() - dso_sfx.size(), dso_sfx.size(),
-                                 dso_sfx) != 0) )
-            {
-                lib = "lib" + lib + dso_sfx;
-                cc_link_args.push_back(argv[i]);   // AOT: forward as -l<name>
-            }
-            else
-                cc_link_args.push_back(lib);       // AOT: verbatim path input
+            // -l<name>: bind a library so its symbols resolve at link time
+            // (e.g. -lcrypt). The NAME is a module or bare library name; the
+            // TARGET spelling comes from the ONE owner (madc_modules): a
+            // registry row's real image (-lm -> libm.so.6 / libSystem.B.dylib
+            // / ucrtbase.dll), else lib<name>.<dso> (<name>.dll on Windows),
+            // else the verbatim path/spelling. JIT: opened RTLD_GLOBAL below.
+            // AOT: the spelling joins the link closure (DT_NEEDED / load
+            // command / PE import) verbatim, so every lane agrees on the image.
+            std::string lib = madc_module_library_spelling(argv[i] + 2);
+            cc_link_args.push_back(lib);
             link_libs.push_back(lib);
             filearg = i + 1;
         } else if (strncmp(argv[i], "--emit=", 7) == 0) {

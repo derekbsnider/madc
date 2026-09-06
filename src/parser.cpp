@@ -17885,11 +17885,12 @@ TargetBitFieldABI madc_target_bitfield_abi =
 #endif
 
 // Same host-derived default, same reassignment story as its two siblings: this
-// is the ONE place _WIN32 decides the target's OS personality. The Apple arm
-// reads the TARGET predicate (datadef.h), so the Linux-hosted darwin cross
-// madc is Darwin here too — its library spellings must be Mach-O's.
+// is the ONE place the build's target predicates (datadef.h: an emit-only
+// cross madc configured for the OS, or a madc hosted on it) decide the
+// target's OS personality — so the Linux-hosted darwin cross madc is Darwin
+// here too, and its library spellings are Mach-O's.
 TargetOS madc_target_os =
-#ifdef _WIN32
+#if MADC_TARGET_WINDOWS_P
 	TargetOS::Windows;
 #elif MADC_TARGET_APPLE_P
 	TargetOS::Darwin;

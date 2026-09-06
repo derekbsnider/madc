@@ -35,6 +35,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
@@ -2063,9 +2064,12 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
+    // User libraries arrive as TARGET spellings (the CLI resolves -l<name>
+    // through madc_modules before it gets here); a raw -l<name> word from a
+    // caller that still forwards one resolves through the same owner.
     for (const std::string &l : user_libs) {
 	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back("lib" + l.substr(2) + MADC_DSO_SUFFIX);
+	    needed.push_back(madc_module_library_spelling(l.substr(2)));
 	else
 	    needed.push_back(l);
     }
