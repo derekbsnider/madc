@@ -1905,12 +1905,16 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // darwin install name is libc++ — a target-platform constant with the
 // same standing as the writer's own libSystem spelling.
 //
-// A USER library (-l / import, arriving in `other` as its target spelling)
-// is a real load command too: the base entries there are cover stems for
-// the runtime-need analysis (libc++, libsystem_, libSystem — no .dylib
-// suffix) and never load commands, and libSystem.B.dylib (the `c` / `m`
-// module rows) is dyld's implicit world. Everything else spelled .dylib
-// loads. One owner for both Mach-O writers (image + object link).
+// A USER library (-l / import, arriving in `other` as its TARGET spelling —
+// a .dylib name) is a real load command too. Everything else in `other` is
+// cover-analysis input, never a load command: a hosted-darwin madc's stems
+// (libc++, libsystem_, libSystem), a Linux-hosted cross madc's HOST ELF
+// images (libstdc++.so.6, libm.so.6, libc.so.6 — the process the analysis
+// runs in), and libSystem.B.dylib (the `c` / `m` module rows), which is
+// dyld's implicit world. So the test is "spelled for Darwin", asked of the
+// owner per target — an any-target test let the cross madc's ELF cover set
+// leak into a pure-C image as three load commands (macho_exe_dylib_gate
+// [A] caught it). One owner for both Mach-O writers (image + object link).
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 				   const std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
@@ -1920,10 +1924,20 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
 	}
-    for (const std::string &l : other)
-	if (madc_spelled_library_p(l)
-	    && l != "libSystem.B.dylib" && l.compare(0, 6, "libc++") != 0)
-	    libs.push_back(l.c_str());
+    for (const std::string &l : other) {
+	if (!madc_spelled_library_p(l, TargetOS::Darwin))
+	    continue;
+	// The WORLD's libraries share this list with the user's: libSystem is
+	// dyld's implicit load, and the C++ runtime is the import-class rule's
+	// above — the active flavor's link set spells it by full install path
+	// (/usr/lib/libc++.1.dylib), so the family test is on the BASENAME (a
+	// whole-string prefix test let it through: a pure-C image grew a libc++
+	// load command and a C++ image carried two).
+	std::string base = madc::detail::host_path_basename(l);
+	if (base.compare(0, 9, "libSystem") == 0 || base.compare(0, 6, "libc++") == 0)
+	    continue;
+	libs.push_back(l.c_str());
+    }
 }
 #endif
 

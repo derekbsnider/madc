@@ -46,11 +46,16 @@ static bool carries_dso_suffix(const std::string &name, const char *sfx)
 	return name.find(std::string(sfx) + ".") != std::string::npos;
 }
 
+bool madc_spelled_library_p(const std::string &name, TargetOS os)
+{
+	return carries_dso_suffix(name, madc_target_dso_suffix(os));
+}
+
 bool madc_spelled_library_p(const std::string &name)
 {
 	static const TargetOS all[] = { TargetOS::Posix, TargetOS::Darwin, TargetOS::Windows };
 	for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++)
-		if (carries_dso_suffix(name, madc_target_dso_suffix(all[i])))
+		if (madc_spelled_library_p(name, all[i]))
 			return true;
 	return false;
 }

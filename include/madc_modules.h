@@ -35,6 +35,11 @@ const char *madc_target_dso_suffix(TargetOS os);
 // "is this spelled?" test for consumers that read recorded spellings of any
 // platform (the native cover analysis).
 bool madc_spelled_library_p(const std::string &name);
+// The per-target form: spelled for THIS os (libfoo.dylib is a Darwin
+// spelling; libm.so.6 is not). A Linux-hosted darwin cross madc runs its
+// cover analysis over the HOST's ELF images, so a Mach-O writer asking
+// "which of these are the target's user libraries" must ask per target.
+bool madc_spelled_library_p(const std::string &name, TargetOS os);
 std::string madc_module_library_spelling(const std::string &name, TargetOS os);
 std::string madc_module_library_spelling(const std::string &name);	// for madc_target_os
 

@@ -75,6 +75,14 @@ TEST_CASE("spelled library: any target's suffix marks an already-spelled name")
 	CHECK(!madc_spelled_library_p("libc++"));	// a darwin cover stem
 	CHECK(!madc_spelled_library_p("libsystem_"));
 	CHECK(!madc_spelled_library_p("m"));
+	// Per target: a Mach-O writer asking "the target's user libraries" must
+	// not see the Linux-hosted cross madc's own ELF cover set as Darwin's.
+	CHECK(madc_spelled_library_p("libfoo.dylib", TargetOS::Darwin));
+	CHECK(!madc_spelled_library_p("libm.so.6", TargetOS::Darwin));
+	CHECK(!madc_spelled_library_p("libstdc++.so.6", TargetOS::Darwin));
+	CHECK(madc_spelled_library_p("libm.so.6", TargetOS::Posix));
+	CHECK(!madc_spelled_library_p("ucrtbase.dll", TargetOS::Posix));
+	CHECK(madc_spelled_library_p("ucrtbase.dll", TargetOS::Windows));
 }
 
 TEST_CASE("dso suffix per OS")
