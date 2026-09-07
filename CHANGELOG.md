@@ -20,6 +20,10 @@
   event, a presentation-only recompose like `wake`) only when the view nears the
   rendered window's edge, so typing never round-trips and there is no
   scroll↔recompose loop. Small documents emit every line as before.
+- The recompose preserves the scroll position (saved/restored across the DOM
+  swap, which would otherwise reset `scrollTop` to 0) and follows the caret only
+  when it actually moved — so mouse-wheel/scrollbar scrolling stays where the
+  user put it and keyboard nav/typing still scroll the caret into view.
 
 ### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
 
