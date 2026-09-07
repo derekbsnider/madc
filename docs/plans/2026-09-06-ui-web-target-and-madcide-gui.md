@@ -392,6 +392,18 @@ No per-platform code above the vendored library.
    `feature/webview-provider-build-astra`; [typed API, recipes and validation](../building-webview.md).
    Claude owns the compiler binding fixes and engine. The shared interface is
    upstream's global C API, generated verbatim in types; no engine wrappers.
+   **Binding fixes landed (Claude, 2026-09-07):** `cc848ea8` (`extern "C"`
+   inside a namespace keeps the C name, frozen into the pack) and `6cb90e4d`
+   (one module-member lookup owner; statement/cast/`::ns::` routes). Review
+   residues carried into the engine half's plan: (a) a relocatable `.o` from
+   an `import` TU carries no module dependency — the `--obj` loader lane
+   needs the module list recorded in the object (a note section) or passed
+   explicitly (`-lmadcwebview`), so the GUI stage runs JIT + EXE only;
+   (b) the memory guard is `RLIMIT_AS`, which WebKit's address-space
+   reservations trip — the stage lifts it per process, but a user program
+   importing a GUI module needs a compiler-decided policy (liberal default;
+   the trip names the knob), e.g. the guard lifts when a module row is
+   marked GUI, or the guard moves off address space.
 3. **madcide GUI mode**: layout hints in `compose_ide_tree`, the workbench
    CSS, `@gui` theme sections, status bar items, output panel for requests,
    the `--gui` flag. Gate: the headless `testmadcide` event battery unchanged

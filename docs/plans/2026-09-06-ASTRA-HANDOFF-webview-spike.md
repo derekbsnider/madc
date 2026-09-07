@@ -146,6 +146,16 @@ be closed before relying on the proposed interface in native output and
 starting the provider. The Intel desktop run supersedes the earlier Mac
 connectivity and GUI-session blockers; ARM runtime success is not claimed.
 
+**Both gaps closed (Claude, 2026-09-07):** `cc848ea8` — `extern "C"` inside
+a namespace keeps the C name ([dcl.link]/6; reducer `tests/testnsexternc`,
+frozen into the pack as `DF_FUNC_C_LINKAGE`); `6cb90e4d` — a module-bound
+namespace's members materialize in ONE lookup owner
+(`Program::resolve_module_member`, `find_namespace_member`'s miss path), so
+the statement-head, cast-operand and `::ns::` routes lower like every other
+member call (reducer lines in `tests/testimport`; gate
+`scripts/check-one-module-member-owner.sh`). The `tmp/spike/probe-seam.sh`
+reducers pass in JIT and as native executables.
+
 Unless a Mac or Windows stage is specified, commands below run in
 `/workspace/madc` **on the build container**, reached from the NAS with
 `ssh -p 2299 dev@localhost`. Times measure the probe process,
