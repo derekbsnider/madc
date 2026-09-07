@@ -3715,48 +3715,39 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // modified/read-only badges, and the view name all render in the
     // status line's %n / %m / %R / %y seats.
     var ed;
+    compose_edit_node(ed, w, es, nav, caret);
+    // ONE read-modify-write of the edit node's hints: every hint below
+    // lands on this local and it is written back ONCE, after the region
+    // block. A var assignment is a deep copy, and with the highlight
+    // spans aboard (4841 rows on madcide_core.inc) each of the former
+    // three RMW passes cost two ~3 ms copies per composed keystroke
+    // (measured 2026-09-07).
+    var eh = ed["hints"];
     if ( viewing )
     {
 	var vw;
 	view_name(vw, w, es);
-	var ed2;
-	compose_edit_node(ed2, w, es, nav, caret);
-	var h;
-	h = ed2["hints"];
-	h["view"] = vw;
+	eh["view"] = vw;
 	var vm;
 	ui::get(vm, w, es, "vmap");
-	h["map"] = vm;
-	ed2["hints"] = h;
-	ed = ed2;
+	eh["map"] = vm;
     }
     else
     {
-	compose_edit_node(ed, w, es, nav, caret);
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
 	// the hints — stored-space only (a view shows a render), computed
-	// at (re)parse, just attached here. Same RMW as the view hints.
+	// at (re)parse, just attached here.
 	var hs;
 	ui::get(hs, w, es, "hspans");
 	if ( !hs.is_null() && php::count(hs) > 0 )
-	{
-	    var h2;
-	    h2 = ed["hints"];
-	    h2["spans"] = hs;
-	    ed["hints"] = h2;
-	}
+	    eh["spans"] = hs;
     }
 
     // The display tab width (IDE-9d ^T option) rides the edit node's
     // hints like the caret — the model owns the expansion math.
     long tabw = es_int(w, es, "tabwidth", 0);
     if ( tabw > 0 )
-    {
-	var ht;
-	ht = ed["hints"];
-	ht["tabwidth"] = tabw;
-	ed["hints"] = ht;
-    }
+	eh["tabwidth"] = tabw;
 
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
     // state read of the buffer's parse handle — stored-space only (a
@@ -3789,12 +3780,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // status are stamped here, before the multi-window branch's own
     // read-modify-write of ed["hints"] preserves the region.
     {
-	var eh = ed["hints"];
 	eh["region"] = "editor";
 	var bufs;
 	ui::get(bufs, w, es, "buffers");
 	if ( !bufs.is_null() && php::count(bufs) > 1 )
 	    eh["tabs"] = 1;
+	// With two-plus windows the active window carries the focus hint
+	// (the multi-window branch below composes the others); it rides
+	// the same single write-back.
+	if ( window_count(w, es) >= 2 )
+	    eh["focus"] = 1;
 	ed["hints"] = eh;
     }
     {
@@ -3828,10 +3823,6 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	ui::get(ws, w, es, "windows");
 	var bufs;
 	ui::get(bufs, w, es, "buffers");
-	var hf;
-	hf = ed["hints"];
-	hf["focus"] = 1;
-	ed["hints"] = hf;
 	long i = 0;
 	for ( var wr : ws )
 	{
