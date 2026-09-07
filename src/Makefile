@@ -136,8 +136,9 @@ CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
-# MODE blocks — hosted-darwin modes embed a generated SDK prelude alongside
-# include/madc/ and write a per-mode file instead of src/embedded_headers.cpp.
+# MODE blocks — EVERY mode (host and cross) writes a per-mode file into the
+# obj tree ($(OBJDIR)/embedded_headers.cpp); src/embedded_headers.cpp is a
+# committed #error STUB, never the real table (check-embedded-headers-stub.sh).
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
 # madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
@@ -540,7 +541,13 @@ WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
 EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_win_header_fallbacks.sh $(WIN_MINGW_HEADERS) $(WIN_EMBED_FALLBACK_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(WIN_EMBED_FALLBACK_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else
-EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+# Host (no foreign header world): the include/madc/-only table, generated
+# into the obj tree like every other mode — never src/embedded_headers.cpp,
+# which is now a committed #error STUB (check-embedded-headers-stub.sh). A
+# failed gen REMOVES the .cpp so the build stops loudly rather than baking a
+# stale/empty table (the G2 silent-header-degradation class).
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_embedded_headers.sh "" $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 endif
 # Forest carrier shape (--with-forest= configure axis; forest-carriers S3).
 # Applies to the PRODUCT modes (release + hosted darwin): what the build
@@ -1080,6 +1087,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
+	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
@@ -1326,14 +1334,18 @@ $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
-# Target modes with an extra header root compile the PER-MODE
-# embedded_headers.cpp (generated at parse time into the obj tree, EMBED_GEN
-# above) — never src/embedded_headers.cpp, which stays the committed
-# include/madc/-only table for host builds.
+# EVERY mode now compiles the generated PER-MODE embedded_headers.cpp from
+# the obj tree (EMBED_GEN above sets EMBEDDED_HEADERS_CPP for host and cross
+# alike) — never src/embedded_headers.cpp, which is a committed #error stub.
 ifdef EMBEDDED_HEADERS_CPP
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+# The PIC twin (libmadc.so) must ALSO read the generated obj-tree table, not
+# the src/ #error stub the generic $(PICOBJDIR)/%.o:%.cpp rule would pick.
+$(PICOBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
+	@mkdir -p $(PICOBJDIR)
+	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 endif
 
 # Per-mode include-table source (see SYS_INCLUDES_CPP above): same shape as
