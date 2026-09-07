@@ -21430,6 +21430,76 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
     attach_engine(eng);
 }
 
+// The single owner of the `--std=` spelling → LanguageStd mapping. The
+// recognizer below iterates it; the source-free accessors
+// (supported_c_standard_names / supported_cpp_standard_names, read by the
+// capability manifest) collect the `canonical` rows. Adding a standard is one
+// row here — the recognizer accepts it AND the manifest lists it, with no
+// second copy to drift. `canonical` marks the spelling the manifest advertises;
+// non-canonical rows are accepted aliases (`c90`→c89, `c`→c11, `c++`/`cpp`→c++11,
+// `cppNN`) that the manifest omits. `family`: 'c' = C, 'p' = C++, 'm' = the madc
+// dialect (STD_MADC — a dialect, not a standard, so it is in neither list).
+namespace {
+struct LanguageStdRow {
+	const char *name;
+	Program::LanguageStd std;
+	bool canonical;
+	char family;
+};
+const LanguageStdRow kLanguageStdTable[] = {
+	{ "madc",  Program::STD_MADC,  true,  'm' },
+	{ "c78",   Program::STD_C78,   true,  'c' },
+	{ "c86",   Program::STD_C86,   true,  'c' },
+	{ "c88",   Program::STD_C88,   true,  'c' },
+	{ "c89",   Program::STD_C89,   true,  'c' },
+	{ "c90",   Program::STD_C89,   false, 'c' },	// alias of c89
+	{ "c94",   Program::STD_C94,   true,  'c' },
+	{ "c95",   Program::STD_C95,   true,  'c' },
+	{ "c99",   Program::STD_C99,   true,  'c' },
+	{ "c11",   Program::STD_C11,   true,  'c' },
+	{ "c",     Program::STD_C11,   false, 'c' },	// alias of c11
+	{ "c17",   Program::STD_C17,   true,  'c' },
+	{ "c23",   Program::STD_C23,   true,  'c' },
+	{ "c++98", Program::STD_CPP98, true,  'p' },
+	{ "cpp98", Program::STD_CPP98, false, 'p' },
+	{ "c++03", Program::STD_CPP03, true,  'p' },
+	{ "cpp03", Program::STD_CPP03, false, 'p' },
+	{ "c++11", Program::STD_CPP11, true,  'p' },
+	{ "cpp11", Program::STD_CPP11, false, 'p' },
+	{ "c++",   Program::STD_CPP11, false, 'p' },	// alias of c++11
+	{ "cpp",   Program::STD_CPP11, false, 'p' },
+	{ "c++14", Program::STD_CPP14, true,  'p' },
+	{ "cpp14", Program::STD_CPP14, false, 'p' },
+	{ "c++17", Program::STD_CPP17, true,  'p' },
+	{ "cpp17", Program::STD_CPP17, false, 'p' },
+	{ "c++20", Program::STD_CPP20, true,  'p' },
+	{ "cpp20", Program::STD_CPP20, false, 'p' },
+	{ "c++23", Program::STD_CPP23, true,  'p' },
+	{ "cpp23", Program::STD_CPP23, false, 'p' },
+	{ "c++26", Program::STD_CPP26, true,  'p' },
+	{ "cpp26", Program::STD_CPP26, false, 'p' },
+};
+
+std::vector<std::string> collect_std_names(char family)
+{
+	std::vector<std::string> names;
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && row.family == family )
+			names.push_back(row.name);
+	return names;
+}
+}	// namespace
+
+std::vector<std::string> Program::supported_c_standard_names()
+{
+	return collect_std_names('c');
+}
+
+std::vector<std::string> Program::supported_cpp_standard_names()
+{
+	return collect_std_names('p');
+}
+
 bool Program::set_language_standard(const std::string &standard)
 {
     // GNU dialects map onto their base standard with the gnu_dialect
@@ -21450,49 +21520,13 @@ bool Program::set_language_standard(const std::string &standard)
 	return true;
     }
     gnu_dialect = false;
-    if ( standard == "madc" )
-	language_std = STD_MADC;
-    else if ( standard == "c78" )
-	language_std = STD_C78;
-    else if ( standard == "c86" )
-	language_std = STD_C86;
-    else if ( standard == "c88" )
-	language_std = STD_C88;
-    else if ( standard == "c89" || standard == "c90" )
-	language_std = STD_C89;
-    else if ( standard == "c94" )
-	language_std = STD_C94;
-    else if ( standard == "c95" )
-	language_std = STD_C95;
-    else if ( standard == "c99" )
-	language_std = STD_C99;
-    else if ( standard == "c" || standard == "c11" )
-	language_std = STD_C11;
-    else if ( standard == "c17" )
-	language_std = STD_C17;
-    else if ( standard == "c23" )
-	language_std = STD_C23;
-    else if ( standard == "c++98" || standard == "cpp98" )
-	language_std = STD_CPP98;
-    else if ( standard == "c++03" || standard == "cpp03" )
-	language_std = STD_CPP03;
-    else if ( standard == "c++" || standard == "cpp"
-	   || standard == "c++11" || standard == "cpp11" )
-	language_std = STD_CPP11;
-    else if ( standard == "c++14" || standard == "cpp14" )
-	language_std = STD_CPP14;
-    else if ( standard == "c++17" || standard == "cpp17" )
-	language_std = STD_CPP17;
-    else if ( standard == "c++20" || standard == "cpp20" )
-	language_std = STD_CPP20;
-    else if ( standard == "c++23" || standard == "cpp23" )
-	language_std = STD_CPP23;
-    else if ( standard == "c++26" || standard == "cpp26" )
-	language_std = STD_CPP26;
-    else
-	return false;
-
-    return true;
+    for ( const LanguageStdRow &row : kLanguageStdTable )
+	if ( standard == row.name )
+	{
+	    language_std = row.std;
+	    return true;
+	}
+    return false;
 }
 
 bool Program::set_language_standard_option(const std::string &arg)
