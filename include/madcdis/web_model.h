@@ -189,6 +189,22 @@ class web_model
 	op["key"] = key;
 	op["parent"] = parent;
 	op["class"] = web_class_of(r, n.role);
+	// Slice 3 layout hints (madcide GUI): `region` docks a node into a
+	// workbench slot (rail/sidebar/editor/panel/statusbar), `popup`
+	// floats it as an overlay, `tabs` asks the editor group for a tab
+	// strip. Additive op fields the page places by; a node without the
+	// hint carries none — byte-identical to the pre-slice-3 ops (the
+	// test_web_model negative control). The class stays the ROLE; the
+	// region is a SEPARATE data attribute, never a new role.
+	{
+	    std::string region = hint_str(n.hints, "region");
+	    if ( !region.empty() )
+		op["region"] = region;
+	    if ( hint_of(n.hints, "popup", 0) )
+		op["popup"] = true;
+	    if ( hint_of(n.hints, "tabs", 0) )
+		op["tabs"] = true;
+	}
 	bool recurse = true;
 	if ( n.role == r.heading )
 	{
