@@ -517,12 +517,6 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["event"] = madc::value(std::string("snapshot"));
 	    fields["text"] = madc::value(e.text);
 	    break;
-	case madc::hub::tui_event_kind::scroll:
-	    // A DOM frontend scrolled its viewport; the renderer's window
-	    // moved (web_model owns the top line). Recompose only — no
-	    // document change (the grid target never emits it).
-	    fields["event"] = madc::value(std::string("scroll"));
-	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:
 	    fields["event"] = madc::value(std::string("focus"));

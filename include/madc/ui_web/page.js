@@ -12,9 +12,6 @@
   var nodes = new Map();            // key -> element
   var visited = new Set();          // keys seen since the last "root" op
   var lastRows = 0, lastCols = 0;
-  var lastCaretSig = null;          // focused caret sig at the last scroll-in
-  var pendingCaret = null;          // focused edit's caret {line,col} this apply
-  var pendingCaretEl = null;        // the focused edit element this apply
 
   function post(obj) {
     if (typeof window.madc === 'function') {
@@ -135,55 +132,11 @@
       for (var i = 0; i < opts.length; i++)
         el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
     } else if (cls === 'edit') {
-      // Virtualized (native-scroll windowing — the CodeMirror / react-window /
-      // TanStack Virtual model). The engine emits only a WINDOW of lines
-      // ([op.top, op.top+N)) plus the document line count (op.total). The
-      // native `overflow:auto` container (el) is the SOLE owner of scrollTop:
-      // it holds three PERSISTENT children — a top spacer, the line layer, a
-      // bottom spacer — whose heights always sum to total*lineHeight. So the
-      // scrollHeight is constant and the browser keeps scrollTop for free.
-      // Each compose mutates ONLY the spacer heights and the line-layer
-      // children; it NEVER clears `el` and NEVER writes `el.scrollTop` (that
-      // is what caused the reset/restore/feedback-loop jiggle). Line numbers
-      // stay ABSOLUTE (op.top + local index) so renderLine's caret/selection
-      // matching is unchanged.
-      var vtop = el._vtop, vlines = el._vlines, vbot = el._vbot;
-      if (!vlines) {
-        el.textContent = '';                 // ONE-TIME init only
-        vtop = document.createElement('div'); vtop.className = 'v-top';
-        vlines = document.createElement('div'); vlines.className = 'v-lines';
-        vbot = document.createElement('div'); vbot.className = 'v-bot';
-        el.appendChild(vtop); el.appendChild(vlines); el.appendChild(vbot);
-        el._vtop = vtop; el._vlines = vlines; el._vbot = vbot;
-        ensureScrollListener(el);
-      }
+      el.textContent = '';
       if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
-      var top = op.top || 0;
       var lines = op.lines || [];
-      var total = (op.total != null) ? op.total : (top + lines.length);
-      // Rebuild ONLY the inner line layer (the spacers persist and keep
-      // scrollHeight >= scrollTop, so clearing vlines never clamps scrollTop).
-      vlines.textContent = '';
       for (var l = 0; l < lines.length; l++)
-        vlines.appendChild(renderLine(lines[l], top + l,
-                                      op.focus ? op.caret : null, op.sel));
-      // The rendered line height (measured once) sizes the spacers so the
-      // scrollbar spans the whole document.
-      if (!el._lineH && vlines.firstChild)
-        el._lineH = vlines.firstChild.getBoundingClientRect().height;
-      var lh = el._lineH || 0;
-      if (lh > 0) {
-        vtop.style.height = (top * lh) + 'px';
-        var below = total - top - lines.length;
-        vbot.style.height = (below > 0 ? below * lh : 0) + 'px';
-      }
-      el._winTop = top;
-      el._winCount = lines.length;
-      el._total = total;
-      el._key = op.key;
-      // The focused edit's caret — madcApply scrolls it into view ONLY when it
-      // moved (a keyboard/edit gesture), never on a scroll-driven recompose.
-      if (op.focus && op.caret) { pendingCaret = op.caret; pendingCaretEl = el; }
+        el.appendChild(renderLine(lines[l], l, op.focus ? op.caret : null, op.sel));
     }
     // group / separator / node: structure only — children carry it.
   }
@@ -197,45 +150,7 @@
     });
   }
 
-  // A virtualized edit REPORTS viewport scrolls so the engine can move its
-  // window (web_model owns the top line, like the grid model's _scroll). The
-  // handler is strictly READ-ONLY: it reads scrollTop and posts a request when
-  // the view nears the rendered window's edge — it NEVER writes scrollTop (the
-  // cardinal rule of native-scroll windowing; writing it here is what looped).
-  // The engine echoes a new window; because the container's scrollHeight is
-  // constant (persistent spacers) and we never touch scrollTop, the native
-  // position is preserved for free — no reset, no restore, no loop.
-  // rAF bound to window: WebKit throws "Illegal invocation" on a detached
-  // requestAnimationFrame, so bind it (setTimeout is the fallback).
-  var raf = window.requestAnimationFrame
-    ? window.requestAnimationFrame.bind(window)
-    : function (f) { setTimeout(f, 16); };
-
-  function ensureScrollListener(el) {
-    if (el._scrollBound) return;
-    el._scrollBound = true;
-    var pending = false;
-    el.addEventListener('scroll', function () {
-      if (pending) return;
-      pending = true;
-      raf(function () {
-        pending = false;
-        var lh = el._lineH || 0;
-        if (lh <= 0) return;
-        var visTop = el.scrollTop / lh;
-        var visRows = el.clientHeight / lh;
-        var winTop = el._winTop || 0;
-        var winEnd = winTop + (el._winCount || 0);
-        var MARGIN = 2;
-        if (visTop < winTop + MARGIN || visTop + visRows > winEnd - MARGIN)
-          post({ kind: 'scroll', key: el._key, top: Math.max(0, Math.floor(visTop)) });
-      });
-    });
-  }
-
   window.madcApply = function (ops) {
-    pendingCaret = null;                    // set by the focused edit's applyNode
-    pendingCaretEl = null;
     for (var i = 0; i < ops.length; i++) {
       var op = ops[i];
       if (op.op === 'root') visited = new Set();
@@ -243,25 +158,12 @@
       else if (op.op === 'end') prune();
     }
     kb.focus();
-    // Scroll the caret into view ONLY when it actually moved (a keyboard/edit
-    // gesture) — never on a scroll-driven recompose, so mouse-wheel/scrollbar
-    // scrolling is left exactly where the user put it. Pure arithmetic against
-    // the native scroll position (no measurement, no fighting): a no-op when
-    // the caret is already visible. This is the ONLY place we write scrollTop.
-    if (pendingCaretEl && pendingCaret) {
-      var sig = pendingCaretEl._key + '#' + pendingCaret.line + ':' + pendingCaret.col;
-      if (sig !== lastCaretSig) {
-        var lh = pendingCaretEl._lineH || 0;
-        if (lh > 0) {
-          var cy = pendingCaret.line * lh;
-          var vTop = pendingCaretEl.scrollTop;
-          var vH = pendingCaretEl.clientHeight;
-          if (cy < vTop) pendingCaretEl.scrollTop = cy;
-          else if (cy + lh > vTop + vH) pendingCaretEl.scrollTop = cy + lh - vH;
-        }
-        lastCaretSig = sig;
-      }
-    }
+    // Keyboard navigation must move the viewport, not just the caret: the
+    // edit div is overflow:auto, so a caret past the fold is off-screen until
+    // its element is scrolled into view. `nearest` is a no-op when the caret
+    // is already visible (mouse-wheel scrolling is undisturbed).
+    var car = document.querySelector('.caret');
+    if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   // ---- input: raw keys in the TUI vocabulary, printable runs as text ----

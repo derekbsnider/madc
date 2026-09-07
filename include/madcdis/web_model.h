@@ -108,23 +108,11 @@ class web_model
     size_t _rows, _cols;		// last reported viewport facts
     std::string _snapshot;		// last snapshot text (test seam)
 
-    // Presentation state, owned HERE exactly as the grid model owns its
-    // per-slot scroll window (tui_model _scroll / design §7.2): the top
-    // VISIBLE document line of each edit, keyed by the edit's node key so a
-    // split view (two edits) keeps two windows. The caret at the last
-    // compose, so a scroll-driven recompose (caret unchanged) shows the
-    // scrolled region instead of snapping back to the caret.
-    std::map<std::string, size_t> _scroll;
-    std::map<std::string, long> _last_caret;
-
     // A node op that carries a focus flag, patched after end_compose()
     // (the flag reads the CLAMPED focus, as the grid paints the caret).
     struct slot_op { size_t op; size_t slot; };
 
     static const long default_tab_stop = 8;
-    // Lines rendered beyond the visible window on each side, so mouse-wheel
-    // scrolling has slack before the page must round-trip for a new window.
-    static const size_t web_overscan = 8;
 
     // One highlight-span row of an edit node's hints["spans"], validated
     // as the grid model validates it (byte range non-empty, a class name).
@@ -161,36 +149,18 @@ class web_model
 	}
     }
 
-    // Line start byte offsets; starts.size() is the document's line count.
-    // Matches the grid model (paint_edit): a trailing newline yields a final
-    // empty line, so every byte offset — the caret-at-EOF position included —
-    // belongs to exactly one line.
-    static void line_starts(const std::string &text, std::vector<size_t> &starts)
-    {
-	starts.push_back(0);
-	for ( size_t i = 0; i < text.size(); ++i )
-	    if ( text[i] == '\n' )
-		starts.push_back(i + 1);
-    }
-
-    // A WINDOW of the edit node's text as the line-DOM: rows [emit_top,
-    // emit_top + count) (clamped to the document), one { t, s } per line
-    // with the spans that overlap it ([start-in-line, len, class]). Emitting
-    // a window, not the whole document, is the virtualization: a large file
-    // composes in O(window), not O(document).
+    // The edit node's text as the line-DOM: one row per line, each with
+    // the spans that overlap it ([start-in-line, len, class]).
     static nlohmann::json edit_lines(const std::string &text,
-				     const std::vector<doc_span> &spans,
-				     const std::vector<size_t> &starts,
-				     size_t emit_top, size_t count)
+				     const std::vector<doc_span> &spans)
     {
 	nlohmann::json lines = nlohmann::json::array();
-	size_t end_line = emit_top + count;
-	if ( end_line > starts.size() )
-	    end_line = starts.size();
-	for ( size_t li = emit_top; li < end_line; ++li )
+	size_t ls = 0;
+	for ( size_t i = 0; i <= text.size(); ++i )
 	{
-	    size_t ls = starts[li];
-	    size_t le = li + 1 < starts.size() ? starts[li + 1] - 1 : text.size();
+	    if ( i < text.size() && text[i] != '\n' )
+		continue;
+	    const size_t le = i;		// [ls, le) is one line
 	    nlohmann::json row = nlohmann::json::object();
 	    row["t"] = text.substr(ls, le - ls);
 	    nlohmann::json s = nlohmann::json::array();
@@ -209,6 +179,7 @@ class web_model
 	    }
 	    row["s"] = s;
 	    lines.push_back(row);
+	    ls = i + 1;
 	}
 	return lines;
     }
@@ -354,44 +325,7 @@ class web_model
 	    long rows = hint_of(n.hints, "rows", 0);
 	    std::vector<doc_span> spans;
 	    read_spans(n.hints, spans);
-
-	    // Viewport clip (virtualization): emit only a WINDOW of lines,
-	    // not the whole document — the same window model the grid renderer
-	    // owns (tui_model paint_edit). Presentation state (the top visible
-	    // line) lives HERE, keyed by node key. The window height is the
-	    // edit's rows hint if set, else the viewport-rows fact the page
-	    // reports; the caret is kept in view ONLY when it moved, so a
-	    // scroll-driven recompose shows the scrolled region.
-	    std::vector<size_t> starts;
-	    line_starts(text, starts);
-	    size_t total = starts.size();
-	    size_t base = rows > 0 ? (size_t)rows : _rows;
-	    if ( base < 1 )
-		base = 1;
-	    size_t cbytes = caret < 0 ? 0
-			  : ((size_t)caret > text.size() ? text.size() : (size_t)caret);
-	    size_t caret_line = 0;
-	    while ( caret_line + 1 < total && starts[caret_line + 1] <= cbytes )
-		++caret_line;
-	    size_t &top = _scroll[key];
-	    std::map<std::string, long>::iterator lc = _last_caret.find(key);
-	    bool caret_moved = lc == _last_caret.end() || lc->second != caret;
-	    if ( caret_moved )
-	    {
-		if ( caret_line < top )
-		    top = caret_line;
-		if ( caret_line >= top + base )
-		    top = caret_line - base + 1;
-	    }
-	    size_t max_top = total > base ? total - base : 0;
-	    if ( top > max_top )
-		top = max_top;
-	    _last_caret[key] = caret;
-	    size_t emit_top = top > web_overscan ? top - web_overscan : 0;
-	    size_t emit_count = base + 2 * web_overscan;
-	    op["lines"] = edit_lines(text, spans, starts, emit_top, emit_count);
-	    op["top"] = (long)emit_top;
-	    op["total"] = (long)total;
+	    op["lines"] = edit_lines(text, spans);
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -495,24 +429,6 @@ public:
 	    _rows = (size_t)ri->get<long>();
 	    _cols = (size_t)ci->get<long>();
 	    keys.push_back(tui_keyev(tui_key::resize));
-	}
-	else if ( kind == "scroll" )
-	{
-	    // Not a key: the page moved a viewport (mouse-wheel / scrollbar).
-	    // Presentation state, owned HERE like the grid model's _scroll:
-	    // set the edit's top VISIBLE line (by node key) and report ONE
-	    // scroll event so the loop recomposes the new window. The next
-	    // compose honors this top because the caret did not move.
-	    nlohmann::json::const_iterator ti = j.find("top");
-	    nlohmann::json::const_iterator kk = j.find("key");
-	    if ( ti == j.end() || !ti->is_number_integer() || ti->get<long>() < 0
-	      || kk == j.end() || !kk->is_string() )
-		return none;
-	    _scroll[kk->get<std::string>()] = (size_t)ti->get<long>();
-	    tui_event e;
-	    e.kind = tui_event_kind::scroll;
-	    none.push_back(e);
-	    return none;
 	}
 	else if ( kind == "snapshot" )
 	{

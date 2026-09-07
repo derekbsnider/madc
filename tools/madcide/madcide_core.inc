@@ -3321,8 +3321,8 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     // already parked its handle/spans on the bag; recompose only. Before
     // anything else: a wake is not a user gesture (it must not clear the
     // message seat or disturb a pending prompt).
-    if ( kind == "wake" || kind == "scroll" )
-	return true;	// presentation-only: recompose, disturb no modal/message
+    if ( kind == "wake" )
+	return true;
     // Display-vs-stored routing (the view seam): navigation, find, and the
     // caret run over the NAV target — the view buffer while a view is up.
     // Document semantics (save, check, outline, the mutation gates) stay
