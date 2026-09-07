@@ -349,7 +349,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 11 | Targeted tests per change; `make -C src fulltest` once per merge wave |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 18 | Targeted tests per change; `make -C src fulltest` once per merge wave — and the merge wave is a COMPLETE feature: bank every slice + known-open fix before the multi-hour push-gate lanes |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -374,10 +374,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **35 rules, 1023 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **35 rules, 1032 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~414 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1459 lines.**
+- **Grand total loaded by Claude Code per turn: ~1468 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
