@@ -36,6 +36,10 @@ struct MadcModuleSpec {
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name);
+// The row whose TARGET spelling (for madc_target_os) is `spelling`, or NULL
+// for a bare library that has no row — the object loader reads spellings
+// out of __madc_module_deps and asks which of them carry row flags.
+const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling);
 const char *madc_target_dso_suffix(TargetOS os);
 // True when `name` already carries SOME target's library suffix (libc.so.6,
 // libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem

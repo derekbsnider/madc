@@ -26,6 +26,14 @@ const MadcModuleSpec *madc_module_find(const std::string &name)
 	return NULL;
 }
 
+const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling)
+{
+	for (int i = 0; madc_modules[i].name; i++)
+		if (spelling == madc_module_library_spelling(madc_modules[i].name))
+			return &madc_modules[i];
+	return NULL;
+}
+
 const char *madc_target_dso_suffix(TargetOS os)
 {
 	switch (os) {

@@ -13,7 +13,7 @@
 #   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
-#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe).
+#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
 #   exe       bash scripts/run_tests.sh --exe
@@ -251,7 +251,7 @@ for stage in $stages; do
 		# lifts it itself at run start (import madcwebview — the module
 		# row's GUI flag), so the stage needs no memory override of its own.
 		# CPU and wall caps stay.
-		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 120 xvfb-run -a bash scripts/run_tests.sh --exe"
+		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 180 xvfb-run -a bash scripts/run_tests.sh --exe --obj"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.

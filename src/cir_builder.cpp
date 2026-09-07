@@ -30594,6 +30594,43 @@ node_t CirBuilder::translate_module(Program *prog)
 		cond_mark_sym(kv.second, kv.first);
 	}
 
+	// import (module form): the unit CARRIES its module list — every TARGET
+	// spelling the module map chose for this TU, NUL-separated and double-
+	// NUL-terminated, as a LOCAL data symbol (static: N objects merge
+	// without a clash; each keeps its own table). The single-object loader
+	// reads it BEFORE loading and opens each spelling, so a .o built from
+	// `import madcwebview;` runs with no -l on the command line — the
+	// precedent is MSVC's .drectve / Rust's #[link] / D's pragma(lib): the
+	// object names what it needs (KG Gap obj_lane_module_dependency,
+	// DECIDED 2026-09-07). Emitted in every native mode (harmless data in an
+	// executable, which also carries NEEDED) and printed by --emit=c11 as
+	//   static const char __madc_module_deps[] = "libm.so.6\0...";
+	// A referenced-surface filter never drops it: it is the object's
+	// manifest, not a declaration.
+	if (m_prog && !m_prog->module_link_libs.empty()) {
+		std::string table;
+		for (const std::string &l : m_prog->module_link_libs) {
+			table += l;
+			table.push_back('\0');
+		}
+		node_t specs = list();
+		append(specs, simple(N_STATIC));
+		append(specs, simple(N_CONST));
+		append(specs, simple(N_CHAR));
+		node_t adecl = list();
+		append(adecl, node3(N_ARR, ignore(), list(), ignore()));
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, specs));
+		append(sd, node2(N_DECL, id("__madc_module_deps"), adecl));
+		append(sd, ignore());
+		append(sd, ignore());
+		// The N_STR len counts every byte incl. the terminating NULs (the
+		// str() contract: strlen + 1 for a plain literal; here the table's
+		// own NULs plus the array's closing one).
+		append(sd, str(table.c_str(), table.size() + 1));
+		append(top_list, sd);
+	}
+
 	// Pass 1: forward prototypes for every user function. Emitted AFTER the
 	// struct/class definitions (Pass 0 / 0.5) — so a by-value struct param or
 	// return in a prototype sees the complete type — and BEFORE the deferred

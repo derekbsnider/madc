@@ -121,3 +121,19 @@ TEST_CASE("module rows: the GUI flag")
 	REQUIRE(m);
 	CHECK(m->flags == 0);
 }
+
+// The object loader reads SPELLINGS out of __madc_module_deps and asks which
+// carry row flags: the lookup by the target's spelling is the inverse of
+// madc_module_library_spelling for the rows, NULL for a bare library.
+TEST_CASE("module rows: lookup by the target spelling")
+{
+	const MadcModuleSpec *web = madc_module_find_spelled(
+		madc_module_library_spelling("madcwebview"));
+	REQUIRE(web);
+	CHECK(std::string(web->name) == "madcwebview");
+	const MadcModuleSpec *m = madc_module_find_spelled(madc_module_library_spelling("m"));
+	REQUIRE(m);
+	CHECK(std::string(m->name) == "m");
+	CHECK(!madc_module_find_spelled("libnosuchthing.so"));
+	CHECK(!madc_module_find_spelled(""));
+}

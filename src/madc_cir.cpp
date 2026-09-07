@@ -32,6 +32,7 @@
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
+#include "madc_modules.h"	// madc_module_open — the object's module list opens through the one seam
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
@@ -2234,10 +2235,66 @@ static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
     return rc;
 }
 
+// An object's module list (__madc_module_deps: the TARGET spellings its
+// `import`s chose, NUL-separated, double-NUL-terminated — emitted by the
+// CIR builder's extern flush) is opened into the default symbol scope
+// BEFORE the object loads, since the loader resolves imports at load. One
+// MIR_object_read per object, read through the builder API (find the
+// symbol, take its section bytes); a merged image carries every input's
+// table, unused at run time. Explicit -l spellings (the runner's run_flags)
+// opened earlier and stay an override. False + stderr on the first spelling
+// that will not open (the object and the spelling named); an object with no
+// table (no import, or one built before the table existed) passes.
+static bool cir_open_object_module_deps(const unsigned char *bytes, size_t size,
+					const char *display)
+{
+    MIR_object_t obj = MIR_object_create();
+    if (!obj)
+	return true;	// no builder on this host: nothing to read, load decides
+    char err[256];
+    if (MIR_object_read(obj, bytes, size, err, sizeof err) != 0) {
+	MIR_object_destroy(obj);
+	return true;	// the loader reports the real read error itself
+    }
+    int sec = 0;
+    uint64_t value = 0, dsize = 0;
+    bool ok = true;
+    if (MIR_object_find_symbol(obj, "__madc_module_deps", &sec, &value, &dsize)) {
+	const void *sb = NULL;
+	size_t slen = 0;
+	if (MIR_object_section_bytes(obj, sec, &sb, &slen) && sb
+	    && value < slen && value + dsize <= slen) {
+	    const char *p = (const char *)sb + value;
+	    const char *end = p + dsize;
+	    while (p < end && *p) {
+		std::string spelling(p, strnlen(p, (size_t)(end - p)));
+		std::string derr;
+		if (!madc_module_open(spelling, derr)) {
+		    fprintf(stderr, "madc: %s: import: cannot load '%s': %s\n",
+			    display, spelling.c_str(), derr.c_str());
+		    ok = false;
+		    break;
+		}
+		// The object lane has no parse to record a GUI module on: the
+		// row behind the spelling says it, and the armed memory guard
+		// lifts here exactly as the drivers lift it after a parse.
+		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+		if (row && (row->flags & MADC_MODULE_GUI))
+		    madc_lift_memory_guard("a GUI module row in the object's module list");
+		p += spelling.size() + 1;
+	    }
+	}
+    }
+    MIR_object_destroy(obj);
+    return ok;
+}
+
 int madc_cir_run_object(const char *path, int argc, char **argv)
 {
     std::vector<unsigned char> bytes;
     if (!cir_read_file(path, bytes))
+	return 1;
+    if (!cir_open_object_module_deps(bytes.data(), bytes.size(), path))
 	return 1;
 
     char err[256];
@@ -2265,6 +2322,12 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
     for (const std::string &p : paths) {
 	std::vector<unsigned char> bytes;
 	if (!cir_read_file(p.c_str(), bytes)) {
+	    MIR_object_destroy(obj);
+	    return NULL;
+	}
+	// Each input's module list opens before the merge (a run needs the
+	// libraries; a link records nothing from them and loses nothing by it).
+	if (!cir_open_object_module_deps(bytes.data(), bytes.size(), p.c_str())) {
 	    MIR_object_destroy(obj);
 	    return NULL;
 	}
