@@ -158,6 +158,12 @@
       else if (op.op === 'end') prune();
     }
     kb.focus();
+    // Keyboard navigation must move the viewport, not just the caret: the
+    // edit div is overflow:auto, so a caret past the fold is off-screen until
+    // its element is scrolled into view. `nearest` is a no-op when the caret
+    // is already visible (mouse-wheel scrolling is undisturbed).
+    var car = document.querySelector('.caret');
+    if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   // ---- input: raw keys in the TUI vocabulary, printable runs as text ----
