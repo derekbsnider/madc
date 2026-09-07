@@ -1082,6 +1082,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-dialect-lean.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-module-member-owner.sh
+	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-autoinclude-position.sh
 	@cd .. && bash scripts/check-cross-mode-compiles.sh
 	@cd .. && bash scripts/check-i64-spec-spelling.sh
