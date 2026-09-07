@@ -56,6 +56,21 @@ static bool check_guard_key(const char *key, bool seen, const std::string &text,
 	return false;
 }
 
+// Both readers (an explicit file, the lookup chain) validate the guard keys
+// through this one step after the file parsed: a value the knob parser
+// refuses fails the load loudly, as a bad count did.
+static bool check_guard_keys(const config_settings &out, std::ostream &err)
+{
+	const std::string &path = out.source_path;
+	if (!check_guard_key("cpu-limit", out.has_cpu_limit, out.cpu_limit,
+			     "seconds", path, err))
+		return false;
+	if (!check_guard_key("mem-limit", out.has_mem_limit, out.mem_limit,
+			     "megabytes", path, err))
+		return false;
+	return true;
+}
+
 }   // namespace
 
 std::vector<std::string> config_search_paths()
@@ -70,13 +85,7 @@ bool config_parse_file(const std::string &path, config_settings &out,
 	register_madc_keys(cf, out);
 	bool ok = cf.parse_file(path, err);
 	out.source_path = cf.source_path();
-	if (ok && !check_guard_key("cpu-limit", out.has_cpu_limit, out.cpu_limit,
-				   "seconds", path, err))
-		ok = false;
-	if (ok && !check_guard_key("mem-limit", out.has_mem_limit, out.mem_limit,
-				   "megabytes", path, err))
-		ok = false;
-	return ok;
+	return ok && check_guard_keys(out, err);
 }
 
 bool config_file_supported()
@@ -109,7 +118,7 @@ bool config_load(const char *explicit_path, config_settings &out,
 	register_madc_keys(cf, out);
 	bool ok = cf.load(explicit_path, err);
 	out.source_path = cf.source_path();
-	return ok;
+	return ok && check_guard_keys(out, err);
 #endif
 }
 
