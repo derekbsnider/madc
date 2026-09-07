@@ -113,10 +113,7 @@ void shift_hspans(long w, long es, long off, long delta)
 	}
 	if ( e > s )
 	{
-	    var nr;
-	    nr["s"] = s;
-	    nr["e"] = e;
-	    nr["c"] = r["c"];
+	    var nr = { "s": s, "e": e, "c": r["c"] };
 	    out.push(nr);
 	}
     }
@@ -254,8 +251,7 @@ long clamped_caret(long w, long es, long doc)
 // interaction state together.
 void edit_meta(var &m, long w, long es, long doc, long caret)
 {
-    var p;
-    p["caret"] = caret;
+    var p = { "caret": caret };
     var mod;
     ui::get(mod, w, doc, "modified");
     // Through a bool VARIABLE: a bare `a && b` is int-typed (C), and the
@@ -446,9 +442,7 @@ bool search_key(long w, long es, long doc, long caret, var &ev)
 void compose_heading(var &head, long w, long es, long doc,
 		     const char *label)
 {
-    var h;
-    h["role"] = "heading";
-    h["label"] = label;
+    var h = { "role": "heading", "label": label };
     var m;
     ui::get(m, w, doc, "modified");
     if ( !es_flag(w, es, "editable") )
@@ -467,13 +461,11 @@ void compose_heading(var &head, long w, long es, long doc,
 // live mark..caret rule unchanged.
 void compose_edit_node(var &ed, long w, long es, long doc, long caret)
 {
-    var e;
-    e["role"] = "edit";
+    var e = { "role": "edit" };
     var t;
     ui::text(t, w, doc);
     e["content"] = t;
-    var hints;
-    hints["caret"] = caret;
+    var hints = { "caret": caret };
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
     long send = bend >= 0 ? bend : caret;
@@ -495,8 +487,7 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
 void compose_status(var &status, long w, long es, long doc, long caret,
 		    const char *idle_suffix)
 {
-    var st;
-    st["role"] = "status";
+    var st = { "role": "status" };
     var msg;
     ui::get(msg, w, es, "msg");
     var pr;
@@ -529,26 +520,19 @@ void compose_status(var &status, long w, long es, long doc, long caret,
 // dispatch to the same script verbs (criterion 4's choice tree).
 void compose_menu(var &menu)
 {
-    var save;
-    save["role"] = "item";
-    save["content"] = "Save";
+    var save = { "role": "item", "content": "Save" };
     var sa = {};
     sa.push("w");
     save["actions"] = sa;
-    var find;
-    find["role"] = "item";
-    find["content"] = "Find";
+    var find = { "role": "item", "content": "Find" };
     var fa = {};
     fa.push("f");
     find["actions"] = fa;
-    var quit;
-    quit["role"] = "item";
-    quit["content"] = "Quit";
+    var quit = { "role": "item", "content": "Quit" };
     var qa = {};
     qa.push("q");
     quit["actions"] = qa;
-    var mn;
-    mn["role"] = "choice";
+    var mn = { "role": "choice" };
     var opts = {};
     opts.push(save);
     opts.push(find);

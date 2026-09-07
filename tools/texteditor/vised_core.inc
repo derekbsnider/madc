@@ -109,8 +109,7 @@ void compose_tree(var &root, long w, long es, long doc)
     var menu;
     compose_menu(menu);
 
-    var r;
-    r["role"] = "group";
+    var r = { "role": "group" };
     var kids = {};
     kids.push(head);
     kids.push(ed);

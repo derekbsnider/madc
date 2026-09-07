@@ -898,8 +898,7 @@ void status_expand(var &out, long w, long es, long doc, long caret,
 // last) — a different editor personality places the same row elsewhere.
 bool compose_overlay_row(var &row, long w, long es)
 {
-    var st;
-    st["role"] = "content";
+    var st = { "role": "content" };
     var pr;
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
@@ -943,8 +942,7 @@ bool compose_overlay_row(var &row, long w, long es)
 void compose_joe_statusline(var &status, long w, long es, long doc,
 			    long caret, var &fnctx)
 {
-    var st;
-    st["role"] = "status";
+    var st = { "role": "status" };
     var lm;
     ui::get(lm, w, es, "lmsg");
     if ( lm.is_null() || strlen(lm.c_str()) == 0 )
@@ -987,11 +985,8 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
     // them into a justified item bar; the TUI reads the combined `content`
     // string above (the fill between them is a terminal real-estate detail).
     // No new seat logic — one expansion, two renderings.
-    var items;
-    items["left"] = lout;
-    items["right"] = rout;
-    var sh;
-    sh["items"] = items;
+    var items = { "left": lout, "right": rout };
+    var sh = { "items": items };
     st["hints"] = sh;
     status = st;
 }
@@ -1192,9 +1187,7 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	// enter belongs to the prompt — route it through the same
 	// @prompt data as the key, or a prompt opened from a focused
 	// pane row (tabwidth, theme, keymap) can never commit.
-	var ke;
-	ke["event"] = "key";
-	ke["key"] = "enter";
+	var ke = { "event": "key", "key": "enter" };
 	var ca;
 	if ( scoped_action(ca, w, es, "prompt", ke) && ca == "pcommit" )
 	    return finish_prompt(w, es, doc, caret);
@@ -1232,12 +1225,10 @@ bool block_range(var &r, long w, long es, long caret)
     long e = bend >= 0 ? bend : caret;
     if ( bend < 0 && es_flag(w, es, "selblock") )
 	e = mark;	// two-point personality: no end yet = no block
-    var b;
-    b["lo"] = mark < e ? mark : e;
-    b["hi"] = mark < e ? e : mark;
+    long lo = mark < e ? mark : e;
+    long hi = mark < e ? e : mark;
+    var b = { "lo": lo, "hi": hi };
     r = b;
-    long lo = b["lo"].as_integer();
-    long hi = b["hi"].as_integer();
     if ( mark < 0 || lo >= hi )
     {
 	ui::set(w, es, "msg", "No block (^K B, ^K K).");
@@ -2200,9 +2191,7 @@ bool project_event(long w, long es, long doc, var &ev)
     if ( kind == "choose" )
     {
 	var a;
-	var ke;
-	ke["event"] = "key";
-	ke["key"] = "enter";
+	var ke = { "event": "key", "key": "enter" };
 	if ( !scoped_action(a, w, es, "project", ke) )
 	    return true;
 	if ( a == "projopen" )
@@ -2465,9 +2454,7 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
     if ( kind == "choose" )
     {
 	var a;
-	var ke;
-	ke["event"] = "key";
-	ke["key"] = "enter";
+	var ke = { "event": "key", "key": "enter" };
 	if ( !scoped_action(a, w, es, "modes", ke) )
 	    return true;
 	if ( a == "modesopen" )
@@ -2822,10 +2809,7 @@ void run_buffer(long w, long es, long doc)
     long h = es_int(w, doc, "phandle", 0);
     if ( h == 0 )
 	return;			// ensure_phandle already said why
-    var rq;
-    rq["kind"] = "run";
-    rq["doc"] = doc;
-    rq["pause"] = 1;
+    var rq = { "kind": "run", "doc": doc, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -2835,10 +2819,7 @@ void run_buffer(long w, long es, long doc)
 // before the full-repaint resume.
 void run_in_terminal(long w, long es, const char *cmd)
 {
-    var rq;
-    rq["kind"] = "cmd";
-    rq["cmd"] = cmd;
-    rq["pause"] = 1;
+    var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3006,9 +2987,7 @@ void run_project(long w, long es, long doc)
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
     }
-    var rq;
-    rq["kind"] = "projrun";
-    rq["pause"] = 1;
+    var rq = { "kind": "projrun", "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3227,9 +3206,7 @@ void cycle_view(long w, long es, long doc)
 // No return-key pause — leaving the shell IS the gesture.
 void open_shell(long w, long es)
 {
-    var rq;
-    rq["kind"] = "shell";
-    rq["pause"] = 0;
+    var rq = { "kind": "shell", "pause": 0 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3571,9 +3548,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	    // the CLIENT's to perform (it owns refresh); the session only
 	    // parks the request. Headless sessions have no terminal
 	    // pushed; the action is safely inert there, as it always was.
-	    var rq;
-	    rq["kind"] = "refresh";
-	    rq["pause"] = 0;
+	    var rq = { "kind": "refresh", "pause": 0 };
 	    term_request(w, es, rq);
 	    return true;
 	}
@@ -3640,9 +3615,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	// the dispatcher synthesizes the key event. One movement
 	// implementation. (IDE-10a reclaimed ^B/^F/^P/^N from the
 	// WordStar diamond — real arrow keys serve motion.)
-	var ke;
-	ke["event"] = "key";
-	ke["key"] = a;
+	var ke = { "event": "key", "key": a };
 	if ( edit_key(w, es, nav, caret, ke) )
 	    return true;
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
@@ -3877,13 +3850,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var wst;
 		compose_joe_statusline(wst, w, es, wdoc, wcaret, wfn);
 		kids.push(wst);
-		var wed;
-		wed["role"] = "edit";
+		var wed = { "role": "edit" };
 		var wt;
 		ui::text(wt, w, wdoc);
 		wed["content"] = wt;
-		var wh;
-		wh["caret"] = wcaret;
+		var wh = { "caret": wcaret };
 		long wrows = base + wr["grow"].as_integer();
 		if ( wrows < window_min_rows() )
 		    wrows = window_min_rows();
@@ -4123,8 +4094,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(ovl);
     else if ( es_int(w, es, "hint", 0) != 0 )
     {
-	var hn;
-	hn["role"] = "content";
+	var hn = { "role": "content" };
 	hn["content"] =
 	    " madcide ** ^K Q exits / ^K H shows the loaded profile's help **";
 	kids.push(hn);
@@ -4138,8 +4108,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     ui::get(gt, w, es, "gui_theme");
     if ( !gt.is_null() && php::count(gt) > 0 )
     {
-	var rh;
-	rh["theme"] = gt;
+	var rh = { "theme": gt };
 	r["hints"] = rh;
     }
     root = r;
@@ -4384,9 +4353,7 @@ bool IdeSession::vi_exec(long doc, const char *a, long n)
 			// loop below makes ring-returning calls
     for ( long i = 0; i < n; i = i + 1 )
     {
-	var e;
-	e["event"] = "action";
-	e["action"] = an;
+	var e = { "event": "action", "action": an };
 	if ( !apply_ide_event(doc, e) )
 	    return false;
     }
