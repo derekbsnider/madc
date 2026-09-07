@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Platform webview library (slice 2 build half, 2026-09-07)
+
+- Optional `madcwebview` platform library: webview/webview 0.12.0 as a MIT
+  subtree, generated typed C interface through `import madcwebview`, and Make
+  targets for WebKitGTK 6.0, Windows/UCRT WebView2, and both Darwin arches
+  (library deployment target 13.3). The bounded `remote_build.sh gui` stage
+  checks DOM callbacks and shutdown in JIT/native execution under Xvfb.
+- Remote build stages follow their invoking worktree, preserve remote host
+  configuration, and support explicit local/remote checkout roots.
+- Fixed upstream webview GTK window sizing reporting an invalid-argument
+  error after a successful resize; all four size hints have GUI coverage.
+
 ### Development dependencies
 
 - Provision WebKitGTK 6.0 development files, Xvfb and xauth for platform-webview

@@ -57,6 +57,12 @@ TEST_CASE("module rows: interface presence")
 	const MadcModuleSpec *m = madc_module_find("m");
 	REQUIRE(m != nullptr);
 	CHECK(std::string(m->interface) == "math.h");
+	const MadcModuleSpec *webview = madc_module_find("madcwebview");
+	REQUIRE(webview != nullptr);
+	CHECK(std::string(webview->interface) == "webview.h");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Posix) == "libmadcwebview.so");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Darwin) == "libmadcwebview.dylib");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Windows) == "madcwebview.dll");
 	const MadcModuleSpec *c = madc_module_find("c");
 	REQUIRE(c != nullptr);
 	CHECK(c->interface == nullptr);

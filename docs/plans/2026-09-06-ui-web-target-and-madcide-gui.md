@@ -388,6 +388,10 @@ No per-platform code above the vendored library.
    + the embedded page + the target-generic surface. Reducer:
    `tools/texteditor/vised.mad` renders and edits in a window; doctest for
    `web_model`; the `gui` lane stage.
+   **Library/build half (Astra, 2026-09-07):** implemented on
+   `feature/webview-provider-build-astra`; [typed API, recipes and validation](../building-webview.md).
+   Claude owns the compiler binding fixes and engine. The shared interface is
+   upstream's global C API, generated verbatim in types; no engine wrappers.
 3. **madcide GUI mode**: layout hints in `compose_ide_tree`, the workbench
    CSS, `@gui` theme sections, status bar items, output panel for requests,
    the `--gui` flag. Gate: the headless `testmadcide` event battery unchanged

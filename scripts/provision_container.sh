@@ -59,7 +59,7 @@ CHECK_ONLY=0
 # ~20 s under -stdlib=libc++ vs ~1.3 s default, and --show-stats accounts
 # for only 2.3 s of it, so the remaining ~17 s is invisible without a
 # profiler.
-PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-config gdb valgrind"
+PKGS_base="build-essential g++-13 autoconf ccache make git rsync python3 pkg-config gdb valgrind curl"
 # libc++-18-dev / libc++abi-18-dev are NOT darwin-only tooling: libc++ is a
 # standard library (Apple, Android NDK, FreeBSD, and clang on Linux all use
 # it), so madc's libc++ ABI flavor is developed and gated HERE, on Linux,
@@ -110,7 +110,7 @@ ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package
 # The binaries that actually have to exist afterwards — the check the build and
 # the gates really depend on (a package can install and still not provide the
 # versioned name we invoke).
-BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind
+BINS="g++ gcc make autoconf ccache python3 rsync nm gdb valgrind curl
       clang clang++ clang-18 clang++-18 ld64.lld-18 llvm-ar-18 llvm-nm-18 llvm-objdump-18 llvm-otool-18
       qemu-aarch64-static aarch64-linux-gnu-gcc aarch64-linux-gnu-g++
       x86_64-w64-mingw32-gcc x86_64-w64-mingw32-g++ x86_64-w64-mingw32-objdump wine

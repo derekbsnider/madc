@@ -1,0 +1,17 @@
+// Valid upstream size hints must return success, including GTK4's no-op MAX.
+import madcwebview;
+
+int main()
+{
+	webview_t w = webview_create(0, 0);
+	if (!w) return 1;
+	int failed = 0;
+	for (int hint = WEBVIEW_HINT_NONE; hint <= WEBVIEW_HINT_FIXED; hint++) {
+		webview_error_t result = webview_set_size(w, 480, 320, (webview_hint_t)hint);
+		if (result != WEBVIEW_ERROR_OK) failed++;
+	}
+	if (webview_destroy(w) != WEBVIEW_ERROR_OK) return 2;
+	if (failed) return 3;
+	println("GUI_SIZE_HINTS_OK");
+	return 0;
+}

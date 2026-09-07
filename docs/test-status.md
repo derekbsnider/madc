@@ -1,5 +1,15 @@
 # Test Status
 
+> **Separate GUI inventory (2026-09-07, Astra slice2 library/build branch):**
+> `tests/gui/webview.mad` checks the upstream typed C API, handles, version,
+> DOM/layout, initialization, JS promise acknowledgement and destruction;
+> `tests/gui/webview_size.mad` covers all four size hints. `remote_build.sh gui`
+> runs the existing fixture runner with `MADC_TEST_DIR=tests/gui` under Xvfb.
+> **2/2 JIT, 2/2 EXE**, no failures/timeouts, including the final build with
+> madcdat/all storage backends enabled. These tests are outside `tests/*.mad`;
+> the default suite counts and lane ledger below have not been revalidated.
+> Recipes and contract: [building-webview.md](building-webview.md).
+
 > **Current (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
 > D4 burndown waves 1–7c + the MIR aarch64 floor wave 8 + the SIMD arc
 > S1–S5 + the vector calling convention + Apple stack-argument packing

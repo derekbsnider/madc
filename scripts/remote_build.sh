@@ -13,6 +13,9 @@
 #   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
+#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe).
+#             MADC_GUI_MEM_LIMIT sets this stage's MADC_MEM_LIMIT (default 0);
+#             ordinary compiler runs keep their existing memory guard.
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -57,7 +60,23 @@
 REMOTE="dev@localhost"
 PORT=2299
 SSH="ssh -p $PORT $REMOTE"
-LOCAL_MADC=/workspace/madc
+# A linked worktree must never sync over another agent's checkout.
+LOCAL_MADC="${MADC_LOCAL_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+REMOTE_MADC="${MADC_REMOTE_ROOT:-$LOCAL_MADC}"
+# Paths enter remote shell command strings below. Reject shell syntax and
+# whitespace rather than trying to quote a second shell's program text.
+for root in "$LOCAL_MADC" "$REMOTE_MADC"; do
+	if [[ ! "$root" =~ ^/[a-zA-Z0-9_./-]+$ ]] || [ "$root" = / ]; then
+		echo "remote_build: checkout path must be an absolute path without whitespace or shell syntax: $root" >&2
+		exit 2
+	fi
+done
+SYNC_GIT_EXCLUDES=()
+if [ -f "$LOCAL_MADC/.git" ]; then
+	# The linked-worktree gitfile points at the NAS, not the remote host.
+	# Keep the remote checkout's own Git metadata (needed by validation gates).
+	SYNC_GIT_EXCLUDES=(--exclude=/.git)
+fi
 
 # ALWAYS keep a full transcript, whether or not the caller redirects.
 #
@@ -160,7 +179,7 @@ for stage in $stages; do
 		echo "=== sync ==="
 		# bin/ obj/ lib/ tmp/ dist/ are excluded from the transfer, so the
 		# directories themselves never arrive — make sure they exist.
-		$SSH "mkdir -p /workspace/madc/bin /workspace/madc/obj /workspace/madc/lib /workspace/madc/tmp /workspace/madc/dist"
+		$SSH "mkdir -p $REMOTE_MADC/bin $REMOTE_MADC/obj $REMOTE_MADC/lib $REMOTE_MADC/tmp $REMOTE_MADC/dist"
 		# HOST-PROBED generated sources must NEVER cross the tunnel.
 		# They are written by probing the LOCAL compiler ($CXX -E -v for
 		# the include search list and stdlib flavor table, $CXX -dM -E
@@ -187,13 +206,16 @@ for stage in $stages; do
 		# src/config.mk — the WRONG PATH. The pattern is anchored to the
 		# transfer root; excluded = rsync neither sends nor deletes it,
 		# so the container keeps its own.
-		rsync -az --delete \
+		rsync -az --delete "${SYNC_GIT_EXCLUDES[@]}" \
 			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
 			--exclude=/config.mk \
-			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:/workspace/madc/"
+			--exclude=/configure --exclude=/config.status --exclude=/config.log \
+			--exclude=/include/config.h --exclude=/include/config.h.in \
+			--exclude=/Makefile --exclude=/libmadc.pc \
+			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:$REMOTE_MADC/"
 		rc=$?
 		echo "sync madc rc=$rc"
 		note_stage "sync madc" "$rc"
@@ -208,17 +230,27 @@ for stage in $stages; do
 		# configure writes ROOT config.mk (never src/config.mk — the old
 		# guard tested a path that never exists, re-running configure on
 		# every build stage and masking the sync-stomp trap above).
-		run_remote "configure" "cd /workspace/madc; test -f config.mk || ./configure"
-		run_remote "build madc" "make -C /workspace/madc/src -j20"
+		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure || autoreconf -fi; test -f config.mk -a -f include/config.h || ./configure"
+		run_remote "build madc" "make -C $REMOTE_MADC/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
 		# .so's DT_NEEDED resolves through must exist on this side.
-		run_remote "soname link" "ln -sf libmadc.so /workspace/madc/lib/libmadc.so.0"
+		run_remote "soname link" "ln -sf libmadc.so $REMOTE_MADC/lib/libmadc.so.0"
 		;;
 	unittest)
-		run_remote "unittest" "make -C /workspace/madc/src -j20 test"
+		run_remote "unittest" "make -C $REMOTE_MADC/src -j20 test"
 		;;
 	fulltest)
-		run_remote "fulltest" "make -C /workspace/madc/src -j20 fulltest"
+		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
+		;;
+	gui)
+		gui_mem=${MADC_GUI_MEM_LIMIT:-0}
+		if [[ ! "$gui_mem" =~ ^[0-9]+$ ]]; then
+			echo 'MADC_GUI_MEM_LIMIT must be a non-negative integer (MB, 0 = unlimited)' >&2
+			note_stage gui 2
+			continue
+		fi
+		echo "GUI policy: MADC_MEM_LIMIT=$gui_mem MB (override with MADC_GUI_MEM_LIMIT)"
+		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_MEM_LIMIT=$gui_mem MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 120 xvfb-run -a bash scripts/run_tests.sh --exe"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
@@ -228,7 +260,7 @@ for stage in $stages; do
 			echo "stage 'tests' needs TESTS='<glob> [glob...]'" >&2
 			note_stage "tests" 1
 		else
-			run_remote "tests" "cd /workspace/madc; bash scripts/run_tests.sh $TESTS"
+			run_remote "tests" "cd $REMOTE_MADC; bash scripts/run_tests.sh $TESTS"
 		fi
 		;;
 	tests-all)
@@ -238,16 +270,16 @@ for stage in $stages; do
 			echo "stage 'tests-all' needs TESTS='<glob> [glob...]'" >&2
 			note_stage "tests-all" 1
 		else
-			run_remote "tests jit" "cd /workspace/madc; bash scripts/run_tests.sh $TESTS"
-			run_remote "tests exe" "cd /workspace/madc; bash scripts/run_tests.sh --exe $TESTS"
-			run_remote "tests obj" "cd /workspace/madc; bash scripts/run_tests.sh --obj $TESTS"
+			run_remote "tests jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh $TESTS"
+			run_remote "tests exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe $TESTS"
+			run_remote "tests obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj $TESTS"
 		fi
 		;;
 	exe)
-		run_remote "exe" "cd /workspace/madc; bash scripts/run_tests.sh --exe"
+		run_remote "exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe"
 		;;
 	obj)
-		run_remote "obj" "cd /workspace/madc; bash scripts/run_tests.sh --obj"
+		run_remote "obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj"
 		;;
 	libcxx)
 		# The PARITY lane: the whole suite under the alternate stdlib
@@ -255,30 +287,30 @@ for stage in $stages; do
 		# behaves like the default flavor" is MEASURED — a flavor-specific
 		# fixture proves only that one fixture works. Out-of-scope tests
 		# carry tests/<base>.libcxx_skip with a reason.
-		run_remote "libcxx jit" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++"
-		run_remote "libcxx exe" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --exe"
-		run_remote "libcxx obj" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++ --obj"
+		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
+		run_remote "libcxx exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --exe"
+		run_remote "libcxx obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --obj"
 		;;
 	libcxxjit)
 		# JIT leg only — the per-batch lane checkpoint; the EXE/OBJ legs
 		# move to session end / pre-merge (they are ~2/3 of the lane's
 		# wall time and rarely flip for front-end work).
-		run_remote "libcxx jit" "cd /workspace/madc; bash scripts/run_tests.sh --stdlib=libc++"
+		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
 		;;
 	release)
-		run_remote "release" "make -C /workspace/madc/src -j20 release"
+		run_remote "release" "make -C $REMOTE_MADC/src -j20 release"
 		;;
 	release-macos)
 		# The two arches build SEQUENTIALLY inside the target (shared
 		# per-arch generated tables); -j parallelizes within each.
-		run_remote "release-macos" "make -C /workspace/madc/src -j20 release-macos"
-		run_remote "package-macos" "cd /workspace/madc; bash scripts/package_release_macos.sh"
+		run_remote "release-macos" "make -C $REMOTE_MADC/src -j20 release-macos"
+		run_remote "package-macos" "cd $REMOTE_MADC; bash scripts/package_release_macos.sh"
 		mkdir -p "$LOCAL_MADC/dist"
 		rsync -az --no-perms --no-owner --no-group \
 			-e "ssh -p $PORT" \
 			--include='madc-*-macos-*.tar.gz' --include='SHA256SUMS' \
 			--exclude='*' \
-			"$REMOTE:/workspace/madc/dist/" "$LOCAL_MADC/dist/"
+			"$REMOTE:$REMOTE_MADC/dist/" "$LOCAL_MADC/dist/"
 		rc=$?
 		echo "pull macos tarballs rc=$rc"
 		note_stage "pull macos tarballs" "$rc"
@@ -291,10 +323,10 @@ for stage in $stages; do
 		# is not a guarantee — `headerless-win` validated an EIGHT-HOUR-OLD
 		# madc-release-x86-64-windows.exe and reported 1010/1, a failure
 		# that belonged to a binary the fix under test was never built into.
-		run_remote "packed" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
+		run_remote "packed" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
 		;;
 	headerless)
-		run_remote "headerless" "make -C /workspace/madc/src -j20 release; cd /workspace/madc; bash scripts/headerless_suite.sh"
+		run_remote "headerless" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/headerless_suite.sh"
 		;;
 	headerless-win)
 		# The win64 profile of the same lane: the shipped PE under wine
@@ -304,21 +336,21 @@ for stage in $stages; do
 		# The profile is an ENV knob; a positional argument is a
 		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
 		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
-		run_remote "headerless-win" "make -C /workspace/madc/src -j20 release-windows; cd /workspace/madc; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		run_remote "headerless-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
 		;;
 	release-win)
 		# The stripped, forest-packed PE the Windows zip ships — the
 		# artifact headerless-win and package_release_windows.sh both
 		# consume. It had no stage of its own, so the only way to refresh
 		# it was to remember the make target.
-		run_remote "release-win" "make -C /workspace/madc/src -j20 release-windows"
+		run_remote "release-win" "make -C $REMOTE_MADC/src -j20 release-windows"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is
 		# one spelling to remember, and it lives here because the mingw
 		# toolchain exists ONLY on the container — a toolchain query on the
 		# NAS answers "absent" for things that are installed.
-		run_remote "win build" "make -C /workspace/madc/src -j20 hosted-x86-64-windows"
+		run_remote "win build" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows"
 		;;
 	wine)
 		# The Win64 DOMAIN suite. Every argument here was re-derived from
@@ -340,13 +372,13 @@ for stage in $stages; do
 		#                      2026-09-03 after a power failure). When a
 		#                      server already runs, wineserver -p exits at
 		#                      once and the redirect is inert.
-		run_remote "wine" "cd /workspace/madc; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		run_remote "wine" "cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'
 		# is not expressible through the stage loop, so scan all lanes here
 		# and select with WARN_LANES=... when a subset is wanted.
-		run_remote "warnscan" "cd /workspace/madc; bash scripts/warn_scan_lanes.sh ${WARN_LANES:-}"
+		run_remote "warnscan" "cd $REMOTE_MADC; bash scripts/warn_scan_lanes.sh ${WARN_LANES:-}"
 		;;
 	pull)
 		# Bring the container-built binaries back to the NAS: the two
@@ -361,15 +393,15 @@ for stage in $stages; do
 		echo "=== pull ==="
 		rsync -az --no-perms --no-owner --no-group \
 			-e "ssh -p $PORT" \
-			"$REMOTE:/workspace/madc/bin/madc" "$LOCAL_MADC/bin/madc"
+			"$REMOTE:$REMOTE_MADC/bin/madc" "$LOCAL_MADC/bin/madc"
 		rc=$?
 		echo "pull madc rc=$rc"
 		note_stage "pull madc" "$rc"
 		chmod +x "$LOCAL_MADC/bin/madc" 2>/dev/null
-		if $SSH "test -f /workspace/madc/bin/madc-release"; then
+		if $SSH "test -f $REMOTE_MADC/bin/madc-release"; then
 			rsync -az --no-perms --no-owner --no-group \
 				-e "ssh -p $PORT" \
-				"$REMOTE:/workspace/madc/bin/madc-release" \
+				"$REMOTE:$REMOTE_MADC/bin/madc-release" \
 				"$LOCAL_MADC/bin/madc-release"
 			rc=$?
 			echo "pull madc-release rc=$rc"
@@ -384,11 +416,11 @@ for stage in $stages; do
 		# __php_file_get_contents — the lib was 3 days behind bin/madc).
 		rsync -az --no-perms --no-owner --no-group --links \
 			-e "ssh -p $PORT" \
-			"$REMOTE:/workspace/madc/lib/libmadc.so" \
-			"$REMOTE:/workspace/madc/lib/libmadc.so.0" \
-			"$REMOTE:/workspace/madc/lib/libmadc.a" \
-			"$REMOTE:/workspace/madc/lib/libmadc_rt.a" \
-			"$REMOTE:/workspace/madc/lib/release" \
+			"$REMOTE:$REMOTE_MADC/lib/libmadc.so" \
+			"$REMOTE:$REMOTE_MADC/lib/libmadc.so.0" \
+			"$REMOTE:$REMOTE_MADC/lib/libmadc.a" \
+			"$REMOTE:$REMOTE_MADC/lib/libmadc_rt.a" \
+			"$REMOTE:$REMOTE_MADC/lib/release" \
 			"$LOCAL_MADC/lib/"
 		rc=$?
 		echo "pull libs rc=$rc"
