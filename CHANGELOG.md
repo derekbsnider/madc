@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+### Web target — the engine half (slice 2, 2026-09-07)
+
+- **`ui::open(target)`** — the target-generic session surface: `"term"` is
+  the grid frontend (the `tui_*` names are its spellings over the same
+  handles) and `ui_web::target()` the WEB target: the same value tree in a
+  window through the platform webview, the same semantic events back. The
+  loop, the event objects and keybinding profiles are one vocabulary on
+  every target (`docs/language/ns-ui.md`).
+- **One input owner set, shared by both models**: the chord/key owner
+  `key_resolver` (`madcdis/keys.h`), the focus/navigation owner `focus_state`
+  (`madcdis/ui_focus.h`), the keys → events loop `ui_apply_keys`
+  (`madcdis/ui_input.h`) and the event vocabulary (`madcdis/ui_events.h`)
+  leave `tui_model`; `web_model` (`madcdis/web_model.h`) composes keyed DOM
+  operations through the repo's one JSON owner and turns page input into
+  the TUI's events through the same owners. Gate `check-one-key-owner.sh`.
+- **Script-hosted targets**: `ui::register_host` / `ui::post_event` — a
+  fragment registers a typed table of C callbacks (open / close / eval /
+  run); `<ns_ui_web>` is the web host over the typed `madcwebview`
+  interface with ONE embedded page (`ui_web/page.js` applier + input relay,
+  `page.css`); `ui::eval_page` is the test seam (`snapshot` events).
+  `tests/testuihostfake.mad` proves the seam without a display in every
+  lane; `tests/gui/ui_web_hello.mad` and `ui_web_edit.mad` drive a real
+  window under Xvfb (JIT, exe, `.o`). `vised.mad <file> --web` edits in a
+  window.
+- **Compiler fixes found on the way**: the auto-include scan's
+  declaration-head guard no longer treats `const` / `static` / `extern` as
+  declaring the next word (`const string s`, `static ui::ui_host_ops o`
+  pull their header; a word the TU declares stays excluded); `static
+  ns::T x` resolves through the declared-type resolver; a namespace-
+  qualified type is a C-style cast target (`(ns::S *)v`); a dialect
+  fragment's own `println` / `stderr` mentions pull the intrinsic and C-
+  header providers — resolved to closure BEFORE tokenizing and placed by
+  the one order table (lex order stays parse order; `namespace X {` is a
+  definition, never a pull; a sibling namespace fragment is pulled only by
+  a qualified `X::` use). Reducers `testautoincludedeclhead`,
+  `teststaticqualtype`, `testcastqualtype`; `testautoincludens` and
+  `testnsmadcorder` pin the order rule.
+
+### Resource guards default off (owner ruling 2026-09-07)
+
+- madc arms NO guard by default. `MADC_MEM_LIMIT` / `MADC_CPU_LIMIT` and
+  the `madc.ini` keys `mem-limit` / `cpu-limit` read `off` | `auto` | `<N>`
+  through one knob parser (`src/madc_guards.cpp`); `auto` = 4096 MB + 128
+  MB per `--project` TU for memory and off for CPU; the test runner exports
+  `auto` for every test process (a new generic `tests/<base>.env` fixture
+  lets one test say otherwise). An armed memory guard is a SOFT limit that
+  a program importing a GUI module row (`madcwebview`, flag
+  `MADC_MODULE_GUI`) lifts at run start — in the JIT, `--project` and `.o`
+  lanes alike; the GUI stage needs no memory override.
+- The `madc.ini` guard keys are validated on BOTH config readers: the
+  CLI's lookup (`config_load`) shares `check_guard_keys` with the
+  explicit-file reader, so `mem-limit = 8G` refuses with its reason
+  everywhere (`forest_config_gate` [bad-int] caught the one-reader gap).
+
+### Objects carry their module list; lazy module rows
+
+- A relocatable `.o` from a TU with module-form `import`s records the
+  target spellings in `__madc_module_deps`; `madc file.o` opens them before
+  load (`MIR_object_section_bytes` joins the in-tree MIR object API). Gate
+  `check-object-module-deps.sh`; the GUI stage runs its `.o` lane.
+- Lazy rows (`MADC_MODULE_LAZY` on `madcwebview`): the interface form binds
+  nothing at parse and links nothing; functions are typed first-call slots;
+  `madc::module_available(name)` answers whether the library exists, and the
+  web target refuses at `open` with the reason instead of failing at parse.
+
 ### Platform webview library (slice 2 build half, 2026-09-07)
 
 - Optional `madcwebview` platform library: webview/webview 0.12.0 as a MIT

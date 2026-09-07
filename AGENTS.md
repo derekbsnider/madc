@@ -108,7 +108,14 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `check-one-library-spelling.sh`); a module-bound namespace's members
    materialize in `Program::resolve_module_member()` — reached only
    through `find_namespace_member()`'s miss path (gated by
-   `check-one-module-member-owner.sh`).
+   `check-one-module-member-owner.sh`); the ui INPUT owners are
+   `key_resolver` (`include/madcdis/keys.h` — chords, key spelling),
+   `focus_state` (`include/madcdis/ui_focus.h` — focus slot, choice
+   selection, tab/arrow/enter) and the keys → events loop `ui_apply_keys`
+   (`include/madcdis/ui_input.h`), consumed by BOTH `tui_model` and
+   `web_model` (gated by `check-one-key-owner.sh`); a module row's
+   flags (`MADC_MODULE_GUI`, `MADC_MODULE_LAZY`) are module-map DATA in
+   `src/madc_modules.cpp`, never a name test.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit

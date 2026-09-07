@@ -105,3 +105,36 @@ TEST_CASE("module open: an unopenable spelling reports an error and NULL")
 	CHECK(h == nullptr);
 	CHECK(!err.empty());
 }
+
+// The row flags are module-map DATA the drivers act on: a GUI library lifts
+// an armed memory guard at run start (owner ruling 2026-09-07); the C runtime
+// rows carry no flag.
+TEST_CASE("module rows: the GUI flag")
+{
+	const MadcModuleSpec *web = madc_module_find("madcwebview");
+	REQUIRE(web);
+	CHECK((web->flags & MADC_MODULE_GUI) != 0);
+	CHECK((web->flags & MADC_MODULE_LAZY) != 0);	// optional: binds at first call
+	const MadcModuleSpec *c = madc_module_find("c");
+	REQUIRE(c);
+	CHECK((c->flags & MADC_MODULE_GUI) == 0);
+	const MadcModuleSpec *m = madc_module_find("m");
+	REQUIRE(m);
+	CHECK(m->flags == 0);
+}
+
+// The object loader reads SPELLINGS out of __madc_module_deps and asks which
+// carry row flags: the lookup by the target's spelling is the inverse of
+// madc_module_library_spelling for the rows, NULL for a bare library.
+TEST_CASE("module rows: lookup by the target spelling")
+{
+	const MadcModuleSpec *web = madc_module_find_spelled(
+		madc_module_library_spelling("madcwebview"));
+	REQUIRE(web);
+	CHECK(std::string(web->name) == "madcwebview");
+	const MadcModuleSpec *m = madc_module_find_spelled(madc_module_library_spelling("m"));
+	REQUIRE(m);
+	CHECK(std::string(m->name) == "m");
+	CHECK(!madc_module_find_spelled("libnosuchthing.so"));
+	CHECK(!madc_module_find_spelled(""));
+}

@@ -19,15 +19,32 @@
 #include <string>
 #include "datadef.h"	// TargetOS, madc_target_os
 
+// Row flags — module-map DATA the drivers act on (never a name test).
+enum {
+	MADC_MODULE_GUI  = 1u << 0,	// a windowing library: an armed memory guard
+					// lifts at run start (WebKit reserves address
+					// space far beyond any program budget)
+	MADC_MODULE_LAZY = 1u << 1,	// an OPTIONAL library: the interface form binds
+					// its functions at first CALL through typed
+					// slots (no open at parse, no link entry), so a
+					// program compiles and runs without it and asks
+					// madc::module_available before using it
+};
+
 struct MadcModuleSpec {
 	const char *name;
 	const char *interface;	// embedded header name, or NULL (interface-less)
 	const char *posix;	// ELF runtime image spelling (the real soname)
 	const char *darwin;	// Mach-O install name (bare file name)
 	const char *windows;	// PE module name
+	unsigned flags;		// MADC_MODULE_* bits
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name);
+// The row whose TARGET spelling (for madc_target_os) is `spelling`, or NULL
+// for a bare library that has no row — the object loader reads spellings
+// out of __madc_module_deps and asks which of them carry row flags.
+const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling);
 const char *madc_target_dso_suffix(TargetOS os);
 // True when `name` already carries SOME target's library suffix (libc.so.6,
 // libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem

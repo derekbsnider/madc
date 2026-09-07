@@ -28663,6 +28663,18 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const std::string &callee_name
 	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
 	node_t pick = node3(N_COND, id(slot.c_str(), origin),
 			    id(slot.c_str(), origin), assign, origin);
+	if (fd->dyn_module_typed) {
+		// A lazy row's interface prototype: the slot is called through a
+		// pointer of the DECLARED type — return and parameters as the
+		// header spelled them (fnptr_decl_pieces, the one fn-ptr type
+		// renderer) — so struct returns, enums and callbacks travel as
+		// they do through a direct call.
+		node_t tspecs = list();
+		node_t tdecl = list();
+		fnptr_decl_pieces(fd, true, tspecs, tdecl, std::vector<carray_dim_t>());
+		node_t typed_t = node2(N_TYPE, tspecs, node2(N_DECL, ignore(), tdecl));
+		return node2(N_CAST, typed_t, pick, origin);
+	}
 	node_t fdecl = list();
 	append(fdecl, pointer());
 	append(fdecl, node1(N_FUNC, list()));
@@ -30592,6 +30604,52 @@ node_t CirBuilder::translate_module(Program *prog)
 		// while a kept node references its symbol (its param/return types
 		// would otherwise pin dead struct webs).
 		cond_mark_sym(kv.second, kv.first);
+	}
+
+	// import (module form): the unit CARRIES its module list — every TARGET
+	// spelling the module map chose for this TU, NUL-separated and double-
+	// NUL-terminated, as a LOCAL data symbol (static: N objects merge
+	// without a clash; each keeps its own table). The single-object loader
+	// reads it BEFORE loading and opens each spelling, so a .o built from
+	// `import madcwebview;` runs with no -l on the command line — the
+	// precedent is MSVC's .drectve / Rust's #[link] / D's pragma(lib): the
+	// object names what it needs (KG Gap obj_lane_module_dependency,
+	// DECIDED 2026-09-07). Emitted in every native mode (harmless data in an
+	// executable, which also carries NEEDED) and printed by --emit=c11 as
+	//   static const char __madc_module_deps[] = "libm.so.6\0...";
+	// A referenced-surface filter never drops it: it is the object's
+	// manifest, not a declaration.
+	// A LAZY row's spelling joins the list with a '?' prefix: OPTIONAL — the
+	// loader lifts the memory guard for a GUI row and opens what it can, but
+	// never fails on it (the program asked madc::module_available itself).
+	if (m_prog && (!m_prog->module_link_libs.empty()
+		       || !m_prog->module_optional_libs.empty())) {
+		std::string table;
+		for (const std::string &l : m_prog->module_link_libs) {
+			table += l;
+			table.push_back('\0');
+		}
+		for (const std::string &l : m_prog->module_optional_libs) {
+			table += "?";
+			table += l;
+			table.push_back('\0');
+		}
+		node_t specs = list();
+		append(specs, simple(N_STATIC));
+		append(specs, simple(N_CONST));
+		append(specs, simple(N_CHAR));
+		node_t adecl = list();
+		append(adecl, node3(N_ARR, ignore(), list(), ignore()));
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, specs));
+		append(sd, node2(N_DECL, id("__madc_module_deps"), adecl));
+		append(sd, ignore());
+		append(sd, ignore());
+		// The N_STR len counts every byte incl. the terminating NULs (the
+		// str() contract: strlen + 1 for a plain literal; here the table's
+		// own NULs plus the array's closing one).
+		append(sd, str(table.c_str(), table.size() + 1));
+		append(top_list, sd);
 	}
 
 	// Pass 1: forward prototypes for every user function. Emitted AFTER the

@@ -404,6 +404,19 @@ No per-platform code above the vendored library.
    importing a GUI module needs a compiler-decided policy (liberal default;
    the trip names the knob), e.g. the guard lifts when a module row is
    marked GUI, or the guard moves off address space.
+   **Engine half LANDED (Claude, 2026-09-07, `feature/web-provider-engine-
+   claude`, [plan](2026-09-07-web-provider-engine-plan.md)):** the shared
+   input owners (`keys.h` key_resolver, `ui_focus.h` focus_state,
+   `ui_input.h` ui_apply_keys, `ui_events.h`) out of `tui_model`;
+   `web_model`; `ui::open(target)` with the grid and DOM frontends and one
+   event-value owner; the script-hosted target seam (`register_host` /
+   `post_event`, `tests/testuihostfake.mad`); `<ns_ui_web>` + one embedded
+   page (`ui_web/page.js|css`); `ui::eval_page` + `snapshot` events;
+   `tests/gui/ui_web_hello.mad` and `ui_web_edit.mad` green under Xvfb in
+   JIT, exe and `.o`; `vised --web`. Both residues closed: (a) the object
+   carries `__madc_module_deps` (Task 9); (b) guards default off, soft
+   limit, the `MADC_MODULE_GUI` row lifts (Task 8). Lazy rows
+   (`MADC_MODULE_LAZY`, Task 10) make the web target optional at parse.
 3. **madcide GUI mode**: layout hints in `compose_ide_tree`, the workbench
    CSS, `@gui` theme sections, status bar items, output panel for requests,
    the `--gui` flag. Gate: the headless `testmadcide` event battery unchanged

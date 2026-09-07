@@ -27505,6 +27505,27 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 // in every lane. The library spelling is the one the binder recorded for the
 // namespace (dl_library_spelling); the parse-time dlsym above stays the early
 // diagnostic ("is this member exported at all"), never the bound address.
+// A prototype declared while a LAZY module row's interface is being served
+// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
+// wrap): the function has no symbol of its own in this program — every call
+// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
+// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
+// Free functions only: a class member is never a module export.
+void Program::stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+					  DataDefCLASS *owner_class,
+					  const TokenBase *proto_end)
+{
+    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
+	return;
+    std::unordered_map<const TokenBase *, std::string>::const_iterator it =
+	_lazy_module_tokens.find(proto_end);
+    if ( it == _lazy_module_tokens.end() )
+	return;
+    fd->dyn_module_library = it->second;
+    fd->dyn_module_member = name;
+    fd->dyn_module_typed = true;
+}
+
 void Program::stamp_dynamic_module_member(Variable *var, const std::string &ns,
 					  const std::string &member)
 {
@@ -39097,17 +39118,27 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    bool shape_ok = j > 0;
 			    if ( shape_ok && !typename_head )
 			    {
-				// Bare spelling: only a registered template's
-				// id + a member chain — plain names stay with
-				// the sibling arms (and a non-template `<` is
-				// less-than, never scanned as a list).
+				// Bare spelling: a registered template's id + a
+				// member chain, or a NAMESPACE head + a member
+				// chain (`(ns::S *)v`, `(ui::ui_host_ops *)p` —
+				// before this the qualified type fell to the
+				// expression parser, which reported it "not a
+				// member of namespace"). Plain unqualified names
+				// stay with the sibling arms (and a non-template
+				// `<` is less-than, never scanned as a list). The
+				// range resolver below answers both shapes through
+				// the one declared-type resolver, non-consumingly;
+				// its completeness rule keeps a qualified VALUE
+				// (`(ns::value)`) an expression.
 				std::string tid_name =
 				    peek1->type() == TokenType::ttDataType
 					? ((TokenDataType *)peek1)->spelling()
 					: ((TokenIdent *)peek1)->spelling();
-				shape_ok = saw_tid && chain > 0
-				    && (find_template(tid_name)
-				     || find_template_alias(tid_name));
+				shape_ok = chain > 0
+				    && ((saw_tid && (find_template(tid_name)
+						  || find_template_alias(tid_name)))
+				     || (!saw_tid && peek1->type() == TokenType::ttIdentifier
+					 && !resolve_namespace_name_in_scope(tid_name).empty()));
 			    }
 			    if ( shape_ok )
 				shape_ok = tokens.size() > j && tokens[j]
@@ -51245,14 +51276,19 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	    if ( tdmi != pgm.datatype_map.end() )
-	    {
-		TokenBase *type_tb = pgm.nextToken();
-		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    // The declared-type resolver is the ONE owner of what an identifier
+	    // denotes in a type position — a typedef name, a namespace-qualified
+	    // type (`static ui::ui_host_ops ops`), a template-id, a class-member
+	    // type chain — exactly as `const` and a plain declaration head ask
+	    // it. The flat-map probe only decides the fallback default below.
+	    TokenStream::Pos type_saved = pgm.tokens.savepos();
+	    TokenBase *type_tb = pgm.nextToken();
+	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    if ( dt || tdmi != pgm.datatype_map.end() )
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
-	    }
 	    else
 	    {
+		pgm.tokens = type_saved;
 		// C89 implicit int: `static funcname(...)` — treat as int
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
@@ -65638,6 +65674,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -65708,6 +65745,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }

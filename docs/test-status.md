@@ -1,6 +1,41 @@
 # Test Status
 
-> **Current (2026-09-07, the s159 merge wave — slice 2's BUILD half of the
+> **Current (2026-09-07, the s160 merge wave — slice 2's ENGINE half of the
+> web-target arc on `feature/web-provider-engine-claude`
+> ([plan](plans/2026-09-07-web-provider-engine-plan.md), 12 tasks, one
+> trailer'd commit each): the shared ui input owners out of `tui_model`
+> (`keys.h` key_resolver, `ui_focus.h` focus_state, `ui_input.h`
+> ui_apply_keys, `ui_events.h`), `web_model`, `ui::open(target)` with the
+> grid and DOM frontends and one event-value owner, the script-hosted target
+> seam (`register_host` / `post_event`), `<ns_ui_web>` + one embedded page,
+> `ui::eval_page`, `vised --web`; guards default off (`src/madc_guards.cpp`,
+> the runner's `auto`, the `.env` fixture, the GUI row lift); objects carry
+> `__madc_module_deps` (`MIR_object_section_bytes`); lazy module rows; and
+> four compiler fixes the work exposed (the auto-include declaration-head
+> guard, `static ns::T`, `(ns::S *)` casts, fragment intrinsics)):**
+> FULL develop-set battery on the final content: fulltest rc=0 with JIT
+> **1320 passed / 0 failed / 0 timed out / 9 skipped**, native EXE **1261/0**, OBJ **1261/0**, packed
+> **1320/0/0/9**, headerless **1286/0/0/43**; new gates
+> `check-one-key-owner.sh` (three rules) and `check-object-module-deps.sh`
+> green; `forest_config_gate` green after 2ecc0e53 (the guard keys are
+> validated on BOTH config readers — the first wave's only red was
+> `mem-limit = 8G` accepted through `config_load`); wine64 **1261/0/0TO/68skip** (verify_pe_release OK, 234 units; +2 `win64_skip`: `testautoincludedeclhead` — the LP64 size_t typedef shape, `testguardsoff` — POSIX `RLIMIT_AS`); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK, macho_exe_dylib_gate OK, package-macos rc=0. New reducers (+8 →
+> 1320 JIT-run tests): `testuiopenterm`, `testuihostfake`,
+> `testguardsoff` (+`.env`), `testimportobjdeps`, `testimportlazy`,
+> `testautoincludedeclhead`, `teststaticqualtype`, `testcastqualtype`; unit
+> binaries `test_keys` (6), `test_web_model` (5), `test_guards` (2). The
+> **GUI inventory** — `tests/gui/webview.mad`, `webview_size.mad`,
+> `ui_web_hello.mad` (the first window: open, the page's first resize,
+> render, `madcSnapshot()`), `ui_web_edit.mad` (a chord, a typed run, tab /
+> right / enter through the page's real key path, the line-DOM snapshot) —
+> run by `remote_build.sh gui` under Xvfb in **JIT, EXE and OBJ** (the `.o`
+> lane opens the object's module list): **4/4 JIT, 4/4 EXE, 4/4 OBJ** (tmp/logs/gui-s160.log).
+> Release-tier lanes (libcxx, darwin-suite, genuine-win) re-run at the next
+> master promotion.
+>
+>
+> **Previous (2026-09-07, the s159 merge wave — slice 2's BUILD half of the
 > web-target arc (Astra: webview/webview 0.12.0 subtree, the typed
 > `madcwebview` interface generated from upstream's C API, per-platform
 > `libmadcwebview` recipes, the `gui` stage) + the two `import` binding gaps

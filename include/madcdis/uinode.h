@@ -60,6 +60,21 @@ inline std::string node_text(const uinode &n)
     return text.empty() ? prose::text_of(n.label) : text;
 }
 
+// An integer hint by name, default when the bag is not an object, lacks the
+// key, or holds another kind — the ONE hint reader every renderer applies
+// (caret / sel_start / sel_end / tabwidth / rows / focus / list, and the
+// s / e fields of a highlight-span row).
+inline long hint_of(const madc::value &hints, const char *key, long dflt)
+{
+    if ( !hints.is_object() )
+	return dflt;
+    const std::map<std::string, madc::value> &o = hints.as_object();
+    std::map<std::string, madc::value>::const_iterator it = o.find(key);
+    if ( it == o.end() || !it->second.is_integer() )
+	return dflt;
+    return (long)it->second.as_integer();
+}
+
 // The standard role vocabulary, interned once per world namespace. The
 // spellings are the registry; applications may intern further roles — the
 // vocabulary is extensible by construction (design demand: never a closed

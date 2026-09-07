@@ -1,0 +1,29 @@
+// A namespace-QUALIFIED type as a C-style cast target: `(ns::S *)v`,
+// `(ns::T)x`, nested namespaces, a fragment's type (`ui::ui_host_ops`).
+// g++/clang++ accept every cast below; madc read the qualified name as an
+// expression and reported "'S' is not a member of namespace 'ns'". The
+// same resolver the declaration head uses answers the cast probe.
+namespace ns {
+    struct S { int a; };
+    typedef long T;
+    namespace inner { struct Q { int q; }; }
+    int value = 40;
+}
+
+int main()
+{
+    ns::S s = { 41 };
+    void *v = &s;
+    println("{}", ((ns::S *)v)->a + 1);
+    double d = 3.75;
+    println("{}", (ns::T)d);
+    ns::inner::Q q = { 9 };
+    void *qv = &q;
+    println("{}", ((ns::inner::Q *)qv)->q);
+    ui::ui_host_ops ops = { 0, 0, 0, 0 };
+    void *ov = &ops;
+    println("{}", ((ui::ui_host_ops *)ov)->run == 0 ? "null run" : "set");
+    // Not a cast: a qualified VALUE in parens stays an expression.
+    println("{}", (ns::value) + 6);
+    return 0;
+}

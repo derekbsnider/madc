@@ -1,0 +1,19 @@
+registered -> yes
+duplicate -> no
+term taken -> no
+fake open: madc
+open -> yes
+rows x cols -> 24 x 80
+bind -> yes
+pushed heading: yes
+pushed choice: yes
+event text hi
+event focus
+event action save ^k s
+event focus
+event choose 2 q
+event resize
+rows x cols after resize -> 40 x 100
+pending -> []
+fake close
+pushed 1 times
