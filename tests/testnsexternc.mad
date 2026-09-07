@@ -1,0 +1,27 @@
+// [dcl.link]/6: a function declared `extern "C"` INSIDE a namespace has C
+// language linkage — its external symbol is the unqualified name, the
+// namespace never enters it. Declaration form (puts/abs bind to libc's
+// symbols) and definition form (sys::c_named is emitted as `c_named`, so the
+// global `extern "C"` redeclaration names the same function). Oracle: g++
+// and clang++ on tmp/nsexternc-oracle.cpp emit `call puts@PLT` / `call abs@PLT`
+// and define `c_named`; madc used to import `__ns_sys_puts` (MIR: import of
+// undefined item) — the namespace-scoped registration key leaked into the
+// symbol. Reducer for KG Gap namespace_extern_c_external_symbol_spelling.
+namespace sys {
+	extern "C" {
+		int puts(const char *);
+		int abs(int);
+	}
+	extern "C" int c_named(int v) { return v * 2; }
+}
+
+extern "C" int c_named(int);
+
+int main()
+{
+	sys::puts("extern C in namespace");
+	println("abs {}", sys::abs(-5));
+	println("c_named {}", sys::c_named(21));
+	println("global c_named {}", c_named(4));
+	return 0;
+}

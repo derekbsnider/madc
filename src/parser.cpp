@@ -24495,11 +24495,16 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 		&& fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
 	    // A CONCRETE declaration-only C++ namespace function binds its
 	    // external Itanium symbol through storage_alias_name. A template
-	    // placeholder never gets an alias on the live path.
+	    // placeholder never gets an alias on the live path. C language
+	    // linkage ([dcl.link]/6, FuncDef::c_linkage from the frozen
+	    // DF_FUNC_C_LINKAGE) binds the UNQUALIFIED name — the live
+	    // registration's rule (parseFunction), reproduced here.
 	    if ( !tmpl_placeholder && pf.fd->declaration_only
 	      && !pf.fd->namespace_name.empty() )
-		fv->storage_alias_name = namespace_cpp_function_symbol(
-		    pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+		fv->storage_alias_name = pf.fd->c_linkage
+		    ? pf.fd->function_display_name
+		    : namespace_cpp_function_symbol(
+			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
 	    std::vector<NamespaceFnOverload> &ovset =
 		namespace_fn_overload_sets[ovkey];
 	    bool known = false;
@@ -69134,6 +69139,28 @@ fnptr_decl_arm_head:
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
+	    // [dcl.link]/6: C language linkage ignores the namespace — the
+	    // external symbol is the UNQUALIFIED name, for a declaration and a
+	    // definition alike (g++/clang++: `namespace seam { extern "C" int
+	    // f(); }` + `seam::f()` emit `call f`; a body defines `f`). The
+	    // registration keeps its namespace-scoped key (`__ns_seam_f`, the
+	    // lookup identity); the emitted symbol rides storage_alias_name,
+	    // the same contract an asm label uses — and an explicit asm label
+	    // still wins. Without this the builder imported the internal key
+	    // itself (MIR: "import of undefined item __ns_seam_spike_answer").
+	    // The source identity is stamped too so the pack's restore
+	    // (register_forest_func) rebinds the member under its namespace
+	    // with the C alias: std::__once_proxy, __gnu_cxx::wcstold and the
+	    // __cxxabiv1 entries are exactly this shape in the system headers.
+	    else if ( namespace_function && fd && !is_c_mode()
+		   && current_linkage == LinkageSpec::C )
+	    {
+		fd->c_linkage = true;
+		fd->function_display_name = source_id;
+		fd->namespace_name = current_namespace();
+		if ( ns_var->storage_alias_name.empty() )
+		    ns_var->storage_alias_name = source_id;
+	    }
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking
