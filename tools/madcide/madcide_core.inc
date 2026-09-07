@@ -2538,6 +2538,23 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
     out = php::str_replace("{madc}", self.c_str(), s3.c_str());
 }
 
+// The [build] buffer if it already exists, else 0 — a NON-creating lookup
+// for read-only callers (the composer's live-build panel), so composition
+// never mints a buffer as a side effect.
+long build_doc_if_any(long w, long es)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long n = php::count(bufs);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = bufs[i];
+	if ( r["path"] == "[build]" )
+	    return r["doc"].as_integer();
+    }
+    return 0;
+}
+
 // The [build] buffer: found-or-created in the buffer table WITHOUT
 // switching to it (the pump appends in the background; ^P reaches it).
 long build_doc(long w, long es)
@@ -4068,6 +4085,28 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    box["hints"] = bh;
 	}
 	kids.push(box);
+    }
+
+    // The live-build output panel (slice 3 Task 6): while a build streams,
+    // dock the [build] buffer's output as a panel region in the workbench
+    // (VS Code's Output shape). ADDITIVE and gated on buildlive — the TUI
+    // ignores region:panel and reaches [build] via ^P, and a drained build
+    // (buildlive == 0) composes no panel, so the terminal shape and every
+    // testmadcide compose-shape assertion are unchanged. Non-creating
+    // lookup: composition never mints a buffer.
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	long bdoc = build_doc_if_any(w, es);
+	if ( bdoc != 0 )
+	{
+	    var bt;
+	    ui::text(bt, w, bdoc);
+	    var panel = { "role": "content" };
+	    panel["content"] = bt;
+	    var ph = { "region": "panel" };
+	    panel["hints"] = ph;
+	    kids.push(panel);
+	}
     }
 
     // The bottom message line (JOE's msgbuf): prompts, the search
