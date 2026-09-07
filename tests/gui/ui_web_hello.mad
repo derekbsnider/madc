@@ -1,0 +1,51 @@
+// The web target end to end under Xvfb: open a window through <ns_ui_web>,
+// render a tree, take the page's text through the snapshot seam, close.
+// No editor, no keys. The first resize event is the page's ready signal
+// (evals before the page loaded are dropped by the platform view), so the
+// render and the snapshot request follow it.
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("GUI_OPEN {} {}", ui::rows(t) > 0 ? "rows" : "norows", ui::cols(t) > 0 ? "cols" : "nocols");
+    var head;
+    head["role"] = "heading";
+    head["label"] = "madc";
+    head["content"] = "hello from the web target";
+    var body;
+    body["role"] = "content";
+    body["content"] = "one tree, two targets";
+    var status;
+    status["role"] = "status";
+    status["content"] = "Ln 1";
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(head);
+    kids.push(body);
+    kids.push(status);
+    root["children"] = kids;
+    var ev;
+    int resized = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    resized++;
+	    ui::render(t, w, root);
+	    ui::eval_page(t, "madcSnapshot()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("GUI_SNAPSHOT {}", ev["text"]);
+	    break;
+	}
+    }
+    println("GUI_RESIZED {}", resized > 0 ? "yes" : "no");
+    ui::close(t);
+    ui::world_close(w);
+    println("GUI_CLOSED");
+    return 0;
+}

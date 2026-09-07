@@ -1,0 +1,36 @@
+/* ui_web/page.css — the web target's default look: a monospace grid of
+   bars, wrapped content, an editor line-DOM and a choice bar, dark by
+   default with madc's own accent (not a clone of any editor). Theme
+   sections (@gui) arrive with slice 3. */
+html, body { margin: 0; padding: 0; height: 100%; background: #1b1d24; color: #d9dbe4; }
+body { font: 14px/1.35 "DejaVu Sans Mono", "Menlo", "Consolas", monospace; overflow: hidden; }
+#root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#kb { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
+#measure { position: absolute; visibility: hidden; white-space: pre; }
+.node { flex: 0 0 auto; }
+.node.group { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.heading, .status { display: flex; justify-content: space-between; padding: 1px 8px; background: #3b4a6b; color: #f2f4ff; }
+.status { background: #2d3448; }
+.content { white-space: pre-wrap; padding: 0 8px; }
+.item { padding: 0 8px 0 24px; }
+.action { padding: 0 8px; color: #9fc2ff; }
+.list .label { padding: 0 8px; color: #9aa0b4; }
+.separator { height: 1.35em; }
+.edit { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; tab-size: 8; }
+.edit .line { white-space: pre; min-height: 1.35em; }
+.caret { background: #d9dbe4; color: #1b1d24; }
+.sel { background: #4a5a80; }
+.c-kw { color: #8fb4ff; }
+.c-str { color: #a8d08d; }
+.c-cmt { color: #8a8f9f; font-style: italic; }
+.c-num { color: #f0c674; }
+.c-pp { color: #c8a2ff; }
+.c-type { color: #7ed3d3; }
+.c-fn { color: #e0b070; }
+.choice { display: flex; flex-wrap: wrap; padding: 1px 8px; gap: 0 4px; }
+.choice .label { color: #9aa0b4; margin-right: 8px; }
+.choice .opt { padding: 0 6px; }
+.choice .opt.sel { background: #d9dbe4; color: #1b1d24; }
+.choice.focus .opt.sel { background: #ffd479; }
+.choice.list { flex-direction: column; gap: 0; }
+.choice.list .opt { padding-left: 24px; }

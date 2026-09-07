@@ -1,0 +1,91 @@
+// madc embedded <ns_ui_web> — the WEB target host (design §3.2 of
+// docs/plans/2026-09-06-ui-web-target-and-madcide-gui.md): the platform
+// webview (WebKitGTK / WKWebView / WebView2) through the typed madcwebview
+// module interface. Pulled in by any mention of ui_web:: (auto-include); it
+// registers itself as ui target "web" at startup — a file-scope static's
+// dynamic initializer, before main. The engine (src/ns_ui.cpp, web_model)
+// never names a platform library: this fragment is the ONE place that does,
+// through the module map (`import madcwebview;`). The page it shows is the
+// engine's (ui_web/page.js + page.css, embedded); the host only hosts.
+//
+// THREAD CONTRACT: a host is confined to the thread that opened it; the
+// page's bound callback runs inside webview_run on that same thread;
+// webview_dispatch is the only cross-thread door and nothing here uses it.
+import madcwebview;
+
+namespace ui_web {
+    // The host state the engine sees only as an opaque handle.
+    struct host {
+	webview_t view;
+	void *ctx;		// the engine session — ui::post_event's key
+	int posted;		// events posted during the current run()
+    };
+
+    // The ONE bound callback: the page calls window.madc(json) -> here. The
+    // request is the call's argument array (["{...}"]); the engine's door
+    // unwraps the one string argument.
+    void on_event(const char *id, const char *req, void *arg)
+    {
+	host *h = (host *)arg;
+	ui::post_event(h->ctx, req);
+	h->posted++;
+	webview_return(h->view, id, 0, "null");
+	webview_terminate(h->view);	// run() returns; the engine drains the event
+    }
+
+    void *open(const char *title, const char *page, void *ctx)
+    {
+	host *h = (host *)malloc(sizeof(host));
+	if ( !h )
+	    return 0;
+	h->view = webview_create(0, 0);
+	if ( !h->view )
+	{
+	    println(stderr, "ui_web: webview_create failed (no display?)");
+	    free(h);
+	    return 0;
+	}
+	h->ctx = ctx;
+	h->posted = 0;
+	webview_set_title(h->view, title);
+	webview_set_size(h->view, 960, 640, WEBVIEW_HINT_NONE);
+	webview_bind(h->view, "madc", on_event, h);
+	webview_set_html(h->view, page);
+	return h;
+    }
+
+    void close(void *hv)
+    {
+	host *h = (host *)hv;
+	webview_unbind(h->view, "madc");
+	webview_destroy(h->view);
+	free(h);
+    }
+
+    // Script text into the page; 0 = accepted. Evals before the first run()
+    // are the platform view's to drop (the page has not loaded yet): the
+    // first resize event is the page's ready signal — render after it.
+    int64_t eval(void *hv, const char *js)
+    {
+	host *h = (host *)hv;
+	return webview_eval(h->view, js) == WEBVIEW_ERROR_OK ? 0 : 1;
+    }
+
+    // Run the platform loop until the page posts ONE event (on_event
+    // terminates the loop), then return 0; the loop ending with nothing
+    // posted means the window closed: 1.
+    int64_t run(void *hv)
+    {
+	host *h = (host *)hv;
+	h->posted = 0;
+	if ( webview_run(h->view) != WEBVIEW_ERROR_OK )
+	    return 1;
+	return h->posted ? 0 : 1;
+    }
+
+    // The name a program hands ui::open.
+    const char *target() { return "web"; }
+}
+
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run };
+static bool __ui_web_registered = ui::register_host("web", &__ui_web_ops);

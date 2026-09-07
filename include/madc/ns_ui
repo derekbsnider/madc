@@ -348,4 +348,10 @@ namespace ui {
     // for the session `ctx` that open() received. Callable from inside
     // run(); the engine queues it and run() returns.
     void post_event(void *ctx, const char *json);
+    // Script text into a page-hosted target: the test seam — the page's
+    // madcSnapshot() posts its rendered text back as {event:"snapshot",
+    // text}. False on the grid frontend or a bad handle. Evals before the
+    // page has loaded are dropped by the platform view: the first resize
+    // event is the page's ready signal.
+    bool    eval_page(int64_t t, const char *js);
 }

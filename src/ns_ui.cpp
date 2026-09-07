@@ -83,6 +83,10 @@ namespace madc {
     bool getline(value &out);
     value &eval_string_ctx(value &out, const char *source, value &ctx);
 }
+// The embedded include/madc/** files (scripts/gen_embedded_headers.sh):
+// the DOM frontend reads its page from them (include/madc.h declares this
+// for the lexer; ns_ui.cpp does not include the compiler's header).
+const std::string *find_embedded_header(const std::string &name);
 
 // A script-hosted ui TARGET (the web target is one, a test fake is
 // another): a table of C function pointers a madc fragment fills and
@@ -184,6 +188,9 @@ struct ui_frontend
     virtual bool resume() { return false; }
     // Forget what is on the surface so the NEXT render repaints all.
     virtual void refresh() {}
+    // Script text into a page-hosted surface (the test seam); a grid has
+    // no page: false.
+    virtual bool eval_page(const char *) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -280,11 +287,26 @@ struct ui_dom_frontend : ui_frontend
     ui_dom_frontend(const std::string &target, const ui::ui_host_ops *o)
 	: ops(o), host((void *)0), name(target) {}
 
+    // The ONE embedded page: the applier + input relay (ui_web/page.js) and
+    // the default look (ui_web/page.css), baked in with the headers
+    // (scripts/gen_embedded_headers.sh). The page knows the DOM ops and the
+    // key spellings — never an editor or an action.
     static std::string page_html()
     {
-	// The embedded page arrives with the web fragment (Task 6); a
-	// host with no page shows an empty document.
-	return std::string();
+	const std::string *js = find_embedded_header("ui_web/page.js");
+	const std::string *css = find_embedded_header("ui_web/page.css");
+	std::string html = "<!doctype html><html><head><meta charset=\"utf-8\">"
+			   "<style>";
+	if ( css )
+	    html += *css;
+	html += "</style></head><body><div id=\"root\"></div>"
+		"<span id=\"measure\">M</span>"
+		"<input id=\"kb\" autofocus autocomplete=\"off\" spellcheck=\"false\">"
+		"<script>";
+	if ( js )
+	    html += *js;
+	html += "</script></body></html>";
+	return html;
     }
     bool open(size_t &r, size_t &c)
     {
@@ -333,6 +355,10 @@ struct ui_dom_frontend : ui_frontend
     }
     void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
     const std::string &pending_chord() const { return model.pending_chord(); }
+    bool eval_page(const char *js)
+    {
+	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
+    }
 };
 
 // The live DOM frontends — post_event's key is a `ctx` a host hands back,
@@ -1324,7 +1350,25 @@ void post_event(void *ctx, const char *json)
 	fprintf(stderr, "ui::post_event: not an open script-hosted ui session\n");
 	return;
     }
-    f->inbound.push_back(std::string(json ? json : ""));
+    std::string text = json ? json : "";
+    // A host may hand the page call's ARGUMENT ARRAY verbatim (the webview
+    // bind convention — `["{...}"]`): the event object is its one string.
+    if ( !text.empty() && text[0] == '[' )
+    {
+	nlohmann::json args = nlohmann::json::parse(text, nullptr, false);
+	if ( args.is_array() && !args.empty() && args[0].is_string() )
+	    text = args[0].get<std::string>();
+    }
+    f->inbound.push_back(text);
+}
+
+// Script text into a page-hosted target — the test seam (`madcSnapshot()`
+// posts the rendered text back as a snapshot event). False on the grid
+// frontend, a bad handle, or a host that refused the text.
+bool eval_page(int64_t t, const char *js)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->eval_page(js);
 }
 
 int64_t rows(int64_t t)

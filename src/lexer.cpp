@@ -1284,6 +1284,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"rust", "ns_rust"},
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
+	{"ui_web", "ns_ui_web"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1375,6 +1376,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_rust",
 	"ns_madc",
 	"ns_ui",
+	"ns_ui_web",
 	NULL
     };
 

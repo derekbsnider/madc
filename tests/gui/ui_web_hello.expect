@@ -1,0 +1,6 @@
+GUI_OPEN rows cols
+GUI_SNAPSHOT madc hello from the web target
+one tree, two targets
+Ln 1
+GUI_RESIZED yes
+GUI_CLOSED
