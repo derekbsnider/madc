@@ -65,7 +65,7 @@ See `docs/rules/mc11-ir.md` for the full definition and the reasoning.
 | `src/madc_project.cpp` | `--project compile_commands.json` multi-TU driver |
 | `src/madc_mangle.cpp` | Itanium name mangling (both stdlib flavors) |
 | `src/madc_api.cpp`, `src/madc_c_api.cpp` | `libmadc` embedding APIs (C++ first, C shim over it) |
-| `src/embedded_headers.cpp` | Headers from `include/madc/` baked into the binary |
+| `src/embedded_headers.cpp` | **`#error` stub** — the real table (`include/madc/` baked in) is generated into `obj/<mode>/embedded_headers.cpp` at build |
 | `src/madc_value.cpp` | `MadValue` / `MadArray` — the mixed-type array runtime |
 | `src/ns_php.cpp`, `ns_perl.cpp`, `ns_python.cpp`, `ns_ruby.cpp`, `ns_js.cpp`, `ns_rust.cpp`, `ns_madc.cpp`, `ns_common.cpp` | The multi-language utility namespaces |
 | `src/madcdat_storage*.cpp` | Optional madcdat storage drivers (BDB/GDBM/QDBM/SQLite) |

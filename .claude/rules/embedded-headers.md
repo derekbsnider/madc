@@ -10,8 +10,11 @@
    scripts `import <module>;` — a header never spells a library file name.
 4. Functions are available via dlsym fallback — no explicit registration
    needed.
-5. Run `make -C src` — `scripts/gen_embedded_headers.sh` regenerates
-   automatically.
+5. Run `make -C src` — `scripts/gen_embedded_headers.sh` regenerates the
+   table automatically INTO the object tree (`obj/<mode>/embedded_headers.cpp`);
+   the build compiles that. `src/embedded_headers.cpp` is a committed `#error`
+   STUB — never edit it or commit generated content there (gated by
+   `scripts/check-embedded-headers-stub.sh`).
 
 ## Declare real return types — never rely on the fallback for signed int
 
