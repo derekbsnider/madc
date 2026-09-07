@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### madcide GUI — the web editor is virtualized (2026-09-07)
+
+- The web target re-rendered the WHOLE document DOM every keystroke, so a large
+  file (madcide_core.inc, 4557 lines) was ludicrously slow while small files
+  were fine: `web_model::edit_lines` emitted a JSON line-object for every line
+  (with an O(spans) overlap scan each) and `page.js` rebuilt every `.line` div
+  per compose — O(document) on both sides, every keystroke.
+- The web renderer now owns a per-edit scroll window, exactly as the grid
+  renderer already does (`tui_model::paint_edit` + `_scroll`). `web_model` keeps
+  the top visible line per edit node (keyed by node key, so a split view keeps
+  two windows), keeps the caret in view only when it moved, and emits only the
+  window `[top, top+window)` plus `top`/`total` geometry — an O(window) compose.
+  `page.js` renders that window between two spacer divs sized to the off-window
+  lines, so the native scrollbar spans the whole document while the DOM holds
+  only the window; a scroll listener reports viewport scrolls (a new `scroll`
+  event, a presentation-only recompose like `wake`) only when the view nears the
+  rendered window's edge, so typing never round-trips and there is no
+  scroll↔recompose loop. Small documents emit every line as before.
+
 ### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
 
 - A source-free `madc --capabilities=json` prints a versioned JSON manifest of
