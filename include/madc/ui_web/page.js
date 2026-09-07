@@ -13,7 +13,8 @@
   var visited = new Set();          // keys seen since the last "root" op
   var lastRows = 0, lastCols = 0;
   var lastCaretSig = null;          // focused caret sig at the last scroll-in
-  var pendingCaretSig = null;       // focused caret sig this compose (per apply)
+  var pendingCaret = null;          // focused edit's caret {line,col} this apply
+  var pendingCaretEl = null;        // the focused edit element this apply
 
   function post(obj) {
     if (typeof window.madc === 'function') {
@@ -134,63 +135,55 @@
       for (var i = 0; i < opts.length; i++)
         el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
     } else if (cls === 'edit') {
-      // Virtualized: the engine emits only a WINDOW of lines ([op.top,
-      // op.top+N)) plus the document line count (op.total). We render the
-      // window between two spacer divs sized to the off-window lines, so the
-      // native scrollbar spans the whole document while the DOM holds only
-      // the visible window (O(window), not O(document)). Line numbers stay
-      // ABSOLUTE (op.top + local index), so renderLine's caret/selection
+      // Virtualized (native-scroll windowing — the CodeMirror / react-window /
+      // TanStack Virtual model). The engine emits only a WINDOW of lines
+      // ([op.top, op.top+N)) plus the document line count (op.total). The
+      // native `overflow:auto` container (el) is the SOLE owner of scrollTop:
+      // it holds three PERSISTENT children — a top spacer, the line layer, a
+      // bottom spacer — whose heights always sum to total*lineHeight. So the
+      // scrollHeight is constant and the browser keeps scrollTop for free.
+      // Each compose mutates ONLY the spacer heights and the line-layer
+      // children; it NEVER clears `el` and NEVER writes `el.scrollTop` (that
+      // is what caused the reset/restore/feedback-loop jiggle). Line numbers
+      // stay ABSOLUTE (op.top + local index) so renderLine's caret/selection
       // matching is unchanged.
-      // Preserve the scroll position across the DOM swap: clearing the
-      // container empties it, so the browser would clamp scrollTop to 0 and
-      // NOT restore it — a scroll-driven recompose would snap to the top.
-      // A given document line sits at line*lineHeight regardless of the
-      // window offset, so the same scrollTop shows the same lines.
-      var savedScroll = el.scrollTop;
-      el.textContent = '';
+      var vtop = el._vtop, vlines = el._vlines, vbot = el._vbot;
+      if (!vlines) {
+        el.textContent = '';                 // ONE-TIME init only
+        vtop = document.createElement('div'); vtop.className = 'v-top';
+        vlines = document.createElement('div'); vlines.className = 'v-lines';
+        vbot = document.createElement('div'); vbot.className = 'v-bot';
+        el.appendChild(vtop); el.appendChild(vlines); el.appendChild(vbot);
+        el._vtop = vtop; el._vlines = vlines; el._vbot = vbot;
+        ensureScrollListener(el);
+      }
       if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
       var top = op.top || 0;
       var lines = op.lines || [];
       var total = (op.total != null) ? op.total : (top + lines.length);
-      // The focused edit's caret signature — so madcApply scrolls the caret
-      // into view ONLY when it actually moved (a keyboard/edit gesture), never
-      // on a scroll-driven recompose (which must leave the view where the user
-      // scrolled it).
-      if (op.focus && op.caret)
-        pendingCaretSig = op.key + '#' + op.caret.line + ':' + op.caret.col;
-      var topSpacer = document.createElement('div');
-      topSpacer.className = 'vspacer';
-      el.appendChild(topSpacer);
-      var firstLine = null;
-      for (var l = 0; l < lines.length; l++) {
-        var ln = renderLine(lines[l], top + l, op.focus ? op.caret : null, op.sel);
-        el.appendChild(ln);
-        if (!firstLine) firstLine = ln;
-      }
-      var bottomSpacer = document.createElement('div');
-      bottomSpacer.className = 'vspacer';
-      el.appendChild(bottomSpacer);
-      // The REAL rendered line height (one layout read per compose, over the
-      // small windowed DOM) makes the spacers and the scroll math agree.
-      var lh = firstLine ? firstLine.getBoundingClientRect().height : (el._lineH || 0);
+      // Rebuild ONLY the inner line layer (the spacers persist and keep
+      // scrollHeight >= scrollTop, so clearing vlines never clamps scrollTop).
+      vlines.textContent = '';
+      for (var l = 0; l < lines.length; l++)
+        vlines.appendChild(renderLine(lines[l], top + l,
+                                      op.focus ? op.caret : null, op.sel));
+      // The rendered line height (measured once) sizes the spacers so the
+      // scrollbar spans the whole document.
+      if (!el._lineH && vlines.firstChild)
+        el._lineH = vlines.firstChild.getBoundingClientRect().height;
+      var lh = el._lineH || 0;
       if (lh > 0) {
-        topSpacer.style.height = (top * lh) + 'px';
+        vtop.style.height = (top * lh) + 'px';
         var below = total - top - lines.length;
-        bottomSpacer.style.height = (below > 0 ? below * lh : 0) + 'px';
-        el._lineH = lh;
+        vbot.style.height = (below > 0 ? below * lh : 0) + 'px';
       }
       el._winTop = top;
       el._winCount = lines.length;
       el._total = total;
       el._key = op.key;
-      ensureScrollListener(el);
-      // Restore the scroll position now that the spacers give the container
-      // its full scrollHeight (the clamp is gone). Record what we set: this
-      // programmatic write fires a scroll event, and the listener must NOT
-      // treat it as a user scroll (that would re-post -> recompose -> restore
-      // -> ... a feedback loop that pins the wheel in place = "jiggle").
-      el.scrollTop = savedScroll;
-      el._modelScrollTop = el.scrollTop;
+      // The focused edit's caret — madcApply scrolls it into view ONLY when it
+      // moved (a keyboard/edit gesture), never on a scroll-driven recompose.
+      if (op.focus && op.caret) { pendingCaret = op.caret; pendingCaretEl = el; }
     }
     // group / separator / node: structure only — children carry it.
   }
@@ -204,13 +197,14 @@
     });
   }
 
-  // A virtualized edit reports viewport scrolls so the engine can move its
-  // window (web_model owns the top line, like the grid model's _scroll). We
-  // post ONLY when the view nears the rendered window's edge: the overscan
-  // buffer covers small scrolls and the caret's scrollIntoView nudges, so
-  // typing never round-trips and there is no scroll<->recompose feedback
-  // loop. The engine echoes a new window; the native scroll position is
-  // preserved across the DOM swap because the total height is stable.
+  // A virtualized edit REPORTS viewport scrolls so the engine can move its
+  // window (web_model owns the top line, like the grid model's _scroll). The
+  // handler is strictly READ-ONLY: it reads scrollTop and posts a request when
+  // the view nears the rendered window's edge — it NEVER writes scrollTop (the
+  // cardinal rule of native-scroll windowing; writing it here is what looped).
+  // The engine echoes a new window; because the container's scrollHeight is
+  // constant (persistent spacers) and we never touch scrollTop, the native
+  // position is preserved for free — no reset, no restore, no loop.
   // rAF bound to window: WebKit throws "Illegal invocation" on a detached
   // requestAnimationFrame, so bind it (setTimeout is the fallback).
   var raf = window.requestAnimationFrame
@@ -228,10 +222,6 @@
         pending = false;
         var lh = el._lineH || 0;
         if (lh <= 0) return;
-        // Skip the scroll event our own restore fired (else post -> recompose
-        // -> restore -> post loops as a jiggle). A real wheel/scrollbar move
-        // changes scrollTop by far more than 1px away from what we set.
-        if (Math.abs(el.scrollTop - (el._modelScrollTop || 0)) < 1) return;
         var visTop = el.scrollTop / lh;
         var visRows = el.clientHeight / lh;
         var winTop = el._winTop || 0;
@@ -244,7 +234,8 @@
   }
 
   window.madcApply = function (ops) {
-    pendingCaretSig = null;                 // set by the focused edit's applyNode
+    pendingCaret = null;                    // set by the focused edit's applyNode
+    pendingCaretEl = null;
     for (var i = 0; i < ops.length; i++) {
       var op = ops[i];
       if (op.op === 'root') visited = new Set();
@@ -252,15 +243,24 @@
       else if (op.op === 'end') prune();
     }
     kb.focus();
-    // Keyboard navigation must move the viewport to follow the caret, but a
-    // scroll-driven recompose must NOT: scrolling into view only when the
-    // focused caret actually moved keeps mouse-wheel / scrollbar scrolling
-    // from snapping back to the caret. `nearest` is a no-op when the caret is
-    // already visible.
-    if (pendingCaretSig !== lastCaretSig) {
-      var car = document.querySelector('.caret');
-      if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      lastCaretSig = pendingCaretSig;
+    // Scroll the caret into view ONLY when it actually moved (a keyboard/edit
+    // gesture) — never on a scroll-driven recompose, so mouse-wheel/scrollbar
+    // scrolling is left exactly where the user put it. Pure arithmetic against
+    // the native scroll position (no measurement, no fighting): a no-op when
+    // the caret is already visible. This is the ONLY place we write scrollTop.
+    if (pendingCaretEl && pendingCaret) {
+      var sig = pendingCaretEl._key + '#' + pendingCaret.line + ':' + pendingCaret.col;
+      if (sig !== lastCaretSig) {
+        var lh = pendingCaretEl._lineH || 0;
+        if (lh > 0) {
+          var cy = pendingCaret.line * lh;
+          var vTop = pendingCaretEl.scrollTop;
+          var vH = pendingCaretEl.clientHeight;
+          if (cy < vTop) pendingCaretEl.scrollTop = cy;
+          else if (cy + lh > vTop + vH) pendingCaretEl.scrollTop = cy + lh - vH;
+        }
+        lastCaretSig = sig;
+      }
     }
   };
 
