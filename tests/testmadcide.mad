@@ -203,12 +203,17 @@ int main()
     var stline = php::trim(tree["children"][0]["content"]);
     println("status-fn: {}", stline);
 
-    // -- AST-2: themed highlight spans ride the edit node's hints —
-    //    computed at reparse from the handle's retained state. The
-    //    JOE-parity default theme (2026-08-26) leaves `function` (and
-    //    idents) unthemed like joe's default.jcf, so the fn heads and
-    //    the line-2 `add` CALL all skip; the themed rows are the 5
-    //    `long` types + 2 `return` keywords, bold.
+    // -- AST-2: highlight spans ride the edit node's hints — computed at
+    //    reparse from the handle's retained state. Each classified span
+    //    carries the SEMANTIC class `cls`; the JOE style spec `c` rides
+    //    only when the theme styles the class (slice 3.1,
+    //    web_syntax_span_class_flow — a class the theme omits still
+    //    colours on the web, the TUI skips it). The JOE-parity default
+    //    theme (2026-08-26) leaves `function` unthemed like joe's
+    //    default.jcf, so the 2 fn heads (add, twice) carry cls with an
+    //    EMPTY `c` (the TUI skips them); plain idents (the line-2 `add`
+    //    CALL) are dropped at the converter. n=9 = 5 `long` types + 2
+    //    `return` keywords (bold) + the 2 unthemed fn heads.
     var shl = tree["children"][1]["hints"]["spans"];
     println("spans: n={} first={}..{} {} second={}..{} {}",
 	    php::count(shl), shl[0]["s"], shl[0]["e"], shl[0]["c"],

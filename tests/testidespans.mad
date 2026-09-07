@@ -1,0 +1,40 @@
+// Slice 3.1 (web_syntax_span_class_flow): spans_to_hspans is the ONE
+// converter feeding both renderers. It stamps the SEMANTIC class `cls`
+// (the portable fact the web renders as `.c-<cls>`) on EVERY classified
+// span, and the TUI's JOE style spec `c` only when the theme styles that
+// class — so the TUI is unchanged (it reads `c`, skips a row without it)
+// while the web colours a class the TUI theme omits. A plain identifier
+// (styled by no renderer) is dropped. Oracle: the design contract
+// (docs/plans/2026-09-07-madcide-gui-plan.md; the @gui theming §).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_spans.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_theme(w, es, "default");	// keyword/type bold, no `function` line
+
+    // The full parse promotes the head name `id` to `function`; default
+    // theme has no function line, so that span carries cls but no c.
+    long h = ensure_phandle(w, es, doc);
+    refresh_spans(w, es, doc, h);
+    var hs;
+    ui::get(hs, w, es, "hspans");
+
+    long idents = 0;
+    for ( var sp : hs )
+    {
+	var c = sp["c"];
+	if ( format("{}", sp["cls"]) == "ident" )
+	    idents++;
+	println("span cls={} c={}", sp["cls"], c.is_null() ? "-" : c.c_str());
+    }
+    println("idents={}", idents);
+    return 0;
+}
