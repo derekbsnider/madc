@@ -38,6 +38,28 @@
 - `#load "<file>" as ns;` stays as the low-level directive underneath the
   alias form (owner ruling: like `#pragma`, for tooling and fixtures — you
   spell the file, you own the platform); it is sugar over the same binder.
+- **Every route to an alias-form member goes through ONE lookup owner**
+  (2026-09-07, found by the webview spike): a module-bound namespace's
+  members are the library's exports, materialized on first lookup inside
+  `find_namespace_member` (`Program::resolve_module_member`). A
+  STATEMENT-position call (`libc::puts("x");`) used to slip past the two
+  qualified sites that carried the fallback, register a bare `puts` through
+  the unqualified dlsym fallback, run on the JIT by accident (`RTLD_GLOBAL`)
+  and fail to link natively; a cast operand (`(long long)libc::abs(-7)`)
+  reported "not a member". Both, and `::libc::abs`, now lower like every
+  other member call. Gate: `scripts/check-one-module-member-owner.sh`.
+
+### Language linkage
+
+- **`extern "C"` inside a namespace keeps the C name** ([dcl.link]/6,
+  2026-09-07): `namespace sys { extern "C" int puts(const char *); }` +
+  `sys::puts(...)` binds libc's `puts`, and a body declared that way is
+  defined under its unqualified name — the namespace-scoped registration
+  key (`__ns_sys_puts`) no longer leaks into the emitted symbol (MIR: "import
+  of undefined item"). The fact is frozen into the header pack
+  (`DF_FUNC_C_LINKAGE`, forest format v45), where `std::__once_proxy`,
+  `__gnu_cxx::wcstold` and the `__cxxabiv1` block have this shape.
+  Reducer `tests/testnsexternc`.
   `--no-auto-load` applies to both.
 - The merge-wave `/dupaudit` folded the family's two remaining sites into
   the owner: the host macro `MADC_DSO_SUFFIX` is deleted (a Windows-hosted or

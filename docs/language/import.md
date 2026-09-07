@@ -38,9 +38,11 @@ import c as libc;
 
 int main()
 {
-    println(format("abs(-42): {}", libc::abs(-42)));   // 42
+    println("abs(-42): {}", libc::abs(-42));            // 42
     var num = "999";
-    println(format("atoi: {}", libc::atoi(num)));      // 999
+    println("atoi: {}", libc::atoi(num));               // 999
+    libc::puts("a statement-position call");            // the same member call
+    long long a = (long long)libc::abs(-7);             // as a cast operand
     return 0;
 }
 ```
@@ -48,8 +50,12 @@ int main()
 A member has no declared signature: it is called with the actual argument
 types (the variadic convention; string values coerce to `const char *`) and
 returns a 64-bit integer. Use the module form or a real header when you need
-typed prototypes. The member must be exported by the library — an unknown
-member is a compile-time diagnostic (`dlsym failed for 'x' in 'ns'`).
+typed prototypes. A member resolves the same way wherever the qualified name
+appears — as an expression operand, as a whole statement, under a cast, or
+spelled `::libc::abs` — because the namespace's members ARE the library's
+exports, materialized by the one lookup. The member must be exported by the
+library — an unknown member is a compile-time diagnostic (`'x' is not a
+member of namespace 'ns': libc.so.6 exports no such symbol`).
 
 ### Header units — `import <h>;` / `import "h";`
 
