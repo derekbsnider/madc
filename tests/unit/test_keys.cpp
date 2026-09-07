@@ -1,10 +1,11 @@
-// Unit battery for madcdis/keys.h — the ONE key owner shared by every ui
-// model (the web-provider engine plan, Task 1): key spelling in both
-// directions, the bindings table's whole-table validation and JOE chord
-// conventions, and the chord resolver (key_resolver) — standing alone, and
-// riding tui_model::apply_keys (the grid model consumes the resolver; the
-// coalescing of a printable run AROUND a chord is the model's §7.5 contract
-// and is asserted through the model on purpose).
+// Unit battery for the shared ui INPUT owners — madcdis/keys.h (the web-
+// provider engine plan, Task 1) and madcdis/ui_focus.h (Task 2): key
+// spelling in both directions, the bindings table's whole-table validation
+// and JOE chord conventions, the chord resolver (key_resolver) standing
+// alone and riding tui_model::apply_keys (the grid model consumes the
+// resolver; the coalescing of a printable run AROUND a chord is the model's
+// §7.5 contract and is asserted through the model on purpose), and the
+// focus/navigation owner (focus_state) standing alone.
 // Plan: docs/plans/2026-09-07-web-provider-engine-plan.md.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
@@ -17,6 +18,7 @@ thread_local bool madc_verbose = false;
 #include <vector>
 
 #include "madcdis/keys.h"
+#include "madcdis/ui_focus.h"
 #include "madcdis/tui_model.h"	// the consumer, for the through-the-model chord cases
 
 using madc::hub::tui_key;
@@ -29,6 +31,9 @@ using madc::hub::tui_key_name;
 using madc::hub::tui_key_from_name;
 using madc::hub::key_step;
 using madc::hub::key_resolver;
+using madc::hub::focusable;
+using madc::hub::focus_state;
+using madc::hub::name_id;
 
 TEST_CASE("key spelling — one owner, both directions")
 {
@@ -326,4 +331,94 @@ TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
     ev = m.apply_keys(keys);
     REQUIRE(ev.size() == 1u);
     CHECK(ev[0].kind == tui_event_kind::wake);
+}
+
+TEST_CASE("focus_state — tab cycles, arrows select, enter chooses, keys ride through")
+{
+    focus_state f;
+    f.begin_compose();
+    focusable menu;
+    menu.k = focusable::kind::choice;
+    menu.option_count = 3;
+    menu.option_actions.assign(3, (name_id)0);
+    menu.option_actions[1] = 42;
+    CHECK(f.add(menu) == 0u);
+    focusable ed;
+    ed.k = focusable::kind::edit;
+    CHECK(f.add(ed) == 1u);
+    f.end_compose();
+    REQUIRE(f.count() == 2u);
+    CHECK(f.focus() == 0u);
+    CHECK(f.has_focus_slot());
+    CHECK(f.on_choice());
+    CHECK(f.selection_of(0) == 0u);		// never moved
+
+    tui_event e;
+    CHECK(f.navigate(tui_keyev(tui_key::right), e));
+    CHECK(e.kind == tui_event_kind::focus);
+    CHECK(f.selection_of(0) == 1u);
+    e = tui_event();
+    CHECK(f.navigate(tui_keyev(tui_key::enter), e));
+    CHECK(e.kind == tui_event_kind::choose);
+    CHECK(e.option == 1u);
+    CHECK(e.action == 42u);
+    e = tui_event();
+    CHECK(!f.navigate(tui_keyev(tui_key::del), e));	// the application's key
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(e.key == tui_key::del);
+    CHECK(e.choice_focused);
+    CHECK(e.option == 1u);
+    e = tui_event();
+    CHECK(f.navigate(tui_keyev(tui_key::left), e));	// wraps: 1 -> 0
+    CHECK(f.selection_of(0) == 0u);
+    CHECK(f.navigate(tui_keyev(tui_key::up), e));	// wraps: 0 -> 2
+    CHECK(f.selection_of(0) == 2u);
+    e = tui_event();
+    CHECK(f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::focus);
+    CHECK(f.focus() == 1u);
+    CHECK(!f.on_choice());
+    e = tui_event();
+    CHECK(!f.navigate(tui_keyev(tui_key::up), e));	// an edit: arrows are the application's
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(e.key == tui_key::up);
+    CHECK(!e.choice_focused);
+    e = tui_event();
+    CHECK(!f.navigate(tui_keyev(tui_key::enter), e));
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(f.navigate(tui_keyev(tui_key::tab), e));	// cycles back
+    CHECK(f.focus() == 0u);
+
+    // A recompose keeps focus and selection; a shrunken menu clamps the
+    // selection to its last row; a vanished slot resets focus to 0.
+    f.begin_compose();
+    focusable small;
+    small.k = focusable::kind::choice;
+    small.option_count = 2;
+    small.option_actions.assign(2, (name_id)0);
+    f.add(small);
+    f.end_compose();
+    CHECK(f.focus() == 0u);
+    CHECK(f.selection_of(0) == 1u);		// 2 clamped to the last row
+    f.set_focus(5);
+    f.begin_compose();
+    f.add(small);
+    f.end_compose();
+    CHECK(f.focus() == 0u);
+    // The autofocus hint lands the focus where compose says.
+    f.begin_compose();
+    f.add(small);
+    f.set_focus(f.count());			// the slot about to be added
+    f.add(ed);
+    f.end_compose();
+    CHECK(f.focus() == 1u);
+    CHECK(!f.on_choice());
+    // One focusable: tab is the application's key.
+    f.begin_compose();
+    f.add(small);
+    f.end_compose();
+    e = tui_event();
+    CHECK(!f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(e.choice_focused);
 }

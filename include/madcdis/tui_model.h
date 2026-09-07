@@ -9,9 +9,12 @@
 //   - layout: the same semantic tree the level-0 renderer linearizes,
 //     composed onto a rows×cols grid (heading/status bars, wrapped
 //     content, a flexible `edit` window, a `choice` menu bar);
-//   - focus and selection: choice options are NAVIGABLE here (the same
-//     tree line mode numbers — design success criterion 4); focus cycles
-//     across choice/edit nodes;
+//   - focus and selection: choice options are NAVIGABLE (the same tree
+//     line mode numbers — design success criterion 4); focus cycles across
+//     choice/edit nodes — compose DISCOVERS the focusables here, the focus
+//     slot, the per-choice selection and the tab/arrow/enter rules are the
+//     shared owner's (madcdis/ui_focus.h focus_state), consumed by this
+//     model and the DOM model alike;
 //   - the input adapter: raw terminal bytes → keys (tui_keyparse: CSI/SS3
 //     escape parsing with an explicit flush for the bare-ESC pause) and
 //     keys → SEMANTIC events, coalescing printable runs into one text
@@ -48,6 +51,8 @@
 #include "madcdis/uinode.h"
 #include "madcdis/render_text.h"	// wrap_text — the one wrap owner
 #include "madcdis/keys.h"		// tui_key, spelling, tui_bindings, key_resolver
+#include "madcdis/ui_events.h"	// tui_event_kind, tui_event
+#include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
 
 namespace madc {
 namespace hub {
@@ -569,46 +574,6 @@ public:
     }
 };
 
-// ----------------------------------------------------------------- the events
-// What the application receives: SEMANTIC units, never raw terminal
-// events. The target/model pair owns which keys become navigation
-// (consumed here, re-render signalled) and which reach the application.
-enum class tui_event_kind : unsigned char
-{
-    none = 0,
-    text,	// a coalesced printable run — one semantic insertion
-    key,	// a non-printable key for the application to interpret
-    choose,	// enter on the focused choice's selected option
-    focus,	// focus or menu selection moved: recompose and repaint
-    resize,	// the surface changed size: recompose and repaint
-    action,	// a bound key sequence completed (empty name = unbound miss)
-    wake	// cooperative background tasks drained: recompose (the
-		// application re-checks its pending state, e.g. a spawned
-		// parse's completion)
-};
-
-struct tui_event
-{
-    tui_event_kind kind;
-    std::string	   text;	// text: the run
-    tui_key	   key;		// key: which one (ctrl -> `ch`)
-    char	   ch;
-    size_t	   option;	// choose: 0-based option index;
-				// key: the focused choice's 0-based selection
-				// (valid only when choice_focused)
-    bool	   choice_focused; // key: a focused choice existed — `option`
-				// carries its selection (read-only presentation
-				// state, the tui_pending precedent), so the
-				// application can act on the focused row for
-				// keys the widget does not consume (ins/del)
-    name_id	   action;	// choose: the option's first action; 0 = none
-    std::string	   action_name;	// action: the bound name ("" = unbound)
-    std::string	   seq;		// action: the canonical sequence spelling
-
-    tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0) {}
-};
-
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
 // (events are interpreted against the focusables the last compose
@@ -618,20 +583,13 @@ struct tui_event
 class tui_model
 {
 public:
-    struct focusable
-    {
-	enum class kind : unsigned char { choice, edit };
-	kind k;
-	size_t option_count;			// choice: how many options
-	std::vector<name_id> option_actions;	// choice: first action each
-	focusable() : k(kind::choice), option_count(0) {}
-    };
+    // The focusable vocabulary is the shared focus owner's (madcdis/
+    // ui_focus.h); the model's spelling stays for its consumers.
+    typedef madc::hub::focusable focusable;
 
 private:
     tui_grid _grid;
-    std::vector<focusable> _focusables;
-    size_t _focus;
-    std::map<size_t, size_t> _selection;	// per choice slot
+    focus_state _focus_st;			// focus slot + per-choice selection + navigation
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
     key_resolver _keys;			// the ONE chord/key owner (madcdis/keys.h)
@@ -749,7 +707,7 @@ private:
 	    //   focus:1 — autofocus: arrows/enter land on this choice
 	    //             without a tab cycle (a palette is modal while
 	    //             up; when its node vanishes, focus resets).
-	    size_t slot = _focusables.size();
+	    size_t slot = _focus_st.count();
 	    focusable f;
 	    f.k = focusable::kind::choice;
 	    f.option_count = n.children.size();
@@ -757,9 +715,9 @@ private:
 		f.option_actions.push_back(n.children[i].actions.empty()
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
-	    _focusables.push_back(f);
+	    _focus_st.add(f);
 	    if ( hint_of(n.hints, "focus", 0) )
-		_focus = slot;
+		_focus_st.set_focus(slot);
 	    size_t sel = selection_of(slot);
 	    if ( hint_of(n.hints, "list", 0) )
 	    {
@@ -806,7 +764,7 @@ private:
 	{
 	    edit_slot e;
 	    e.line_index = lines.size();
-	    e.slot = _focusables.size();
+	    e.slot = _focus_st.count();
 	    e.text = prose::text_of(n.content);
 	    e.caret = hint_of(n.hints, "caret", 0);
 	    e.sel_start = hint_of(n.hints, "sel_start", -1);
@@ -822,7 +780,7 @@ private:
 	    // The same autofocus hint the choice arm honors (IDE-9e: the
 	    // active window's edit node carries it).
 	    if ( hint_of(n.hints, "focus", 0) )
-		_focus = e.slot;
+		_focus_st.set_focus(e.slot);
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -850,7 +808,7 @@ private:
 	    edits.push_back(e);
 	    focusable f;
 	    f.k = focusable::kind::edit;
-	    _focusables.push_back(f);
+	    _focus_st.add(f);
 	}
 	else if ( n.role == r.list && !n.label.is_null() )
 	{
@@ -992,7 +950,7 @@ private:
 		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
 				   e.sel_start, e.sel_end,
 				   tui_attr::reverse());
-	    if ( li == caret_line && e.slot == _focus )
+	    if ( li == caret_line && e.slot == _focus_st.focus() )
 	    {
 		_grid.cursor_row = top_row + k;
 		_grid.cursor_col = caret_col - shift;
@@ -1002,22 +960,14 @@ private:
     }
 
 public:
-    tui_model() : _focus(0) {}
+    tui_model() {}
 
     const tui_grid &grid() const { return _grid; }
-    const std::vector<focusable> &focusables() const { return _focusables; }
-    size_t focus_slot() const { return _focus; }
-    size_t selection_of(size_t slot) const
-    {
-	std::map<size_t, size_t>::const_iterator it = _selection.find(slot);
-	size_t sel = it == _selection.end() ? 0 : it->second;
-	if ( slot < _focusables.size()
-	  && _focusables[slot].k == focusable::kind::choice
-	  && _focusables[slot].option_count > 0
-	  && sel >= _focusables[slot].option_count )
-	    sel = _focusables[slot].option_count - 1;
-	return sel;
-    }
+    // Focus and selection are the shared owner's (madcdis/ui_focus.h);
+    // the model's spellings forward.
+    const std::vector<focusable> &focusables() const { return _focus_st.focusables(); }
+    size_t focus_slot() const { return _focus_st.focus(); }
+    size_t selection_of(size_t slot) const { return _focus_st.selection_of(slot); }
 
     // Compose the tree onto a rows×cols grid. Edit heights are DATA
     // (IDE-9e): a node hinted rows:N is FIXED at N; among the unhinted,
@@ -1030,12 +980,11 @@ public:
 			    size_t rows, size_t cols)
     {
 	_grid.resize(rows, cols);
-	_focusables.clear();
+	_focus_st.begin_compose();
 	std::vector<line_out> lines;
 	std::vector<edit_slot> edits;
 	walk(r, tree, cols, lines, edits);
-	if ( _focus >= _focusables.size() )
-	    _focus = 0;
+	_focus_st.end_compose();
 
 	size_t fixed = lines.size();
 	size_t hinted_sum = 0, unhinted = 0;
@@ -1155,70 +1104,27 @@ public:
 		out.push_back(e);
 		continue;
 	    }
-	    const bool on_choice = _focus < _focusables.size()
-		&& _focusables[_focus].k == focusable::kind::choice
-		&& _focusables[_focus].option_count > 0;
 	    if ( k.kind == tui_key::resize )
 	    {
 		tui_event e;
 		e.kind = tui_event_kind::resize;
 		out.push_back(e);
+		continue;
 	    }
-	    else if ( k.kind == tui_key::wake )
+	    if ( k.kind == tui_key::wake )
 	    {
 		tui_event e;
 		e.kind = tui_event_kind::wake;
 		out.push_back(e);
+		continue;
 	    }
-	    else if ( k.kind == tui_key::tab && _focusables.size() > 1 )
-	    {
-		_focus = (_focus + 1) % _focusables.size();
-		tui_event e;
-		e.kind = tui_event_kind::focus;
-		out.push_back(e);
-	    }
-	    else if ( on_choice && (k.kind == tui_key::left
-				 || k.kind == tui_key::up
-				 || k.kind == tui_key::right
-				 || k.kind == tui_key::down) )
-	    {
-		size_t n = _focusables[_focus].option_count;
-		size_t sel = selection_of(_focus);
-		if ( k.kind == tui_key::left || k.kind == tui_key::up )
-		    sel = (sel + n - 1) % n;
-		else
-		    sel = (sel + 1) % n;
-		_selection[_focus] = sel;
-		tui_event e;
-		e.kind = tui_event_kind::focus;
-		out.push_back(e);
-	    }
-	    else if ( on_choice && k.kind == tui_key::enter )
-	    {
-		size_t sel = selection_of(_focus);
-		tui_event e;
-		e.kind = tui_event_kind::choose;
-		e.option = sel;
-		e.action = _focusables[_focus].option_actions[sel];
-		out.push_back(e);
-	    }
-	    else
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::key;
-		e.key = k.kind;
-		e.ch = k.ch;
-		if ( on_choice )
-		{
-		    // The key rides through with the focused choice's live
-		    // selection: keys the widget does not consume (ins/del)
-		    // can act on the focused row without the selection ever
-		    // leaving the model (presentation state stays here).
-		    e.choice_focused = true;
-		    e.option = selection_of(_focus);
-		}
-		out.push_back(e);
-	    }
+	    // The focus/navigation owner (madcdis/ui_focus.h): tab cycles,
+	    // arrows move a focused choice's selection, enter chooses; any
+	    // other key is the application's and rides through with the
+	    // focused choice's live selection.
+	    tui_event e;
+	    _focus_st.navigate(k, e);
+	    out.push_back(e);
 	}
 	if ( !run.empty() )
 	{
