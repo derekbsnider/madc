@@ -5040,6 +5040,10 @@ public:
     bool skip_includes;		// --emit-function: lex without processing #include
     std::set<std::string> pending_auto_include_headers;
     std::set<std::string> pending_auto_include_identifiers;
+    // Identifiers this TU declares in a declarator position (after a type
+    // or a struct/class/enum tag keyword): the auto-include scan never
+    // answers for them again — the TU provides the name itself.
+    std::set<std::string> auto_include_declared_words;
     bool suppress_auto_include_scan;
     struct AotDataRef {
 	uint32_t label_id;

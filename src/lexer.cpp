@@ -1454,10 +1454,20 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     if ( suppress_auto_include_scan )
 	return false;
 
+    // A word this TU DECLARES never auto-includes — not at the declaration
+    // and not at any later mention: the TU provides the name itself
+    // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
+    // strlen(...)`; pulling <stddef.h> in as well would redeclare it).
+    if ( auto_include_declared_words.count(word) )
+	return false;
     // `typedef unsigned long size_t;` and similar declaration heads are
-    // defining the identifier, not using the standard header surface.
-    // Auto-including here injects the embedded header in the middle of
-    // the declarator and leaves a duplicate alias token behind.
+    // defining the identifier, not using the standard header surface: a
+    // word that follows a TYPE (or a struct/class/enum tag keyword) is the
+    // declarator. A decl-specifier that PRECEDES the type — const, static,
+    // extern, register, typedef, restrict — says nothing about the word
+    // after it, which is the type itself or a qualifier of it (`const
+    // string s`, `static ui::ui_host_ops ops`): that word is a USE and
+    // must scan, or the header it names never arrives.
     for ( auto it = tokens.rbegin(); positional && it != tokens.rend(); ++it )
     {
 	TokenBase *t = *it;
@@ -1468,14 +1478,11 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 	if ( tt == TokenType::ttDataType
 	  || tid == TokenID::tkSTRUCT
 	  || tid == TokenID::tkCLASS
-	  || tid == TokenID::tkENUM
-	  || tid == TokenID::tkCONST
-	  || tid == TokenID::tkEXTERN
-	  || tid == TokenID::tkSTATIC
-	  || tid == TokenID::tkREGISTER
-	  || tid == TokenID::tkTYPEDEF
-	  || tid == TokenID::tkRESTRICT )
+	  || tid == TokenID::tkENUM )
+	{
+	    auto_include_declared_words.insert(word);
 	    return false;
+	}
 	// An identifier in member-access position (`G.player.set`, `p->set`)
 	// or qualified by anything other than `std` (`ui::set`,
 	// `madc::getline`) cannot denote the std-header surface — matching
@@ -2760,6 +2767,7 @@ void Program::_tokenizer_init()
     include_guard_by_file.clear();
     pending_auto_include_headers.clear();
     pending_auto_include_identifiers.clear();
+    auto_include_declared_words.clear();
     suppress_auto_include_scan = false;
     pending_no_strict_aliasing = false;
     while ( !_pack_stack.empty() )
