@@ -113,6 +113,7 @@ properties (`path`, `modified`, `read_only`) are application bag keys.
 | `text_line(out, w, e, n)` | Line `n`'s text (empty when absent) |
 | `text_line_start(w, e, n)` | Line `n`'s byte offset (−1 when absent) |
 | `text_line_len(w, e, n)` | Line `n`'s length sans `'\n'` (−1 when absent) |
+| `text_line_of(w, e, off)` | The 1-based line containing byte `off` (indexed; `off == size` after a terminated last line answers `line_count + 1`, the phantom line; −1 = no component) |
 | `text_find(w, e, from, needle)` | First occurrence at/after `from` (−1 = none) |
 | `text_word_left(w, e, from)` / `text_word_right(w, e, from)` | Word motion (JOE `^Z`/`^X` duals over `[A-Za-z0-9_]`): the previous word's first byte / just past the next word's end (−1 = no component) |
 | `text_checkpoint(w, e, meta)` | Snapshot the buffer BEFORE a mutation, with an opaque payload |

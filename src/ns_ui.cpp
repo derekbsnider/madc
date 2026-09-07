@@ -1203,6 +1203,19 @@ int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
     return -1;
 }
 
+// The 1-based line containing byte `off` (clamped into the document; a
+// negative offset reads as 0). off == size after a terminated last line
+// is line_count + 1 — the empty line past the content the editor calls
+// the phantom line. One indexed lookup, so a caret's line is O(log lines)
+// — never a walk over text_line_start.
+int64_t text_line_of(int64_t w, int64_t entity, int64_t off)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b )
+	return -1;
+    return (int64_t)b->line_of(off < 0 ? 0 : (size_t)off);
+}
+
 int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);

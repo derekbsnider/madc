@@ -4,4 +4,5 @@ text=[alpha
 BETA!
 edited=[zero
 alpha
+line_of: 1 1 2 4 nocomp=-1
 find=11 notfound=-1 nocomp=-1

@@ -52,16 +52,14 @@ bool has_phantom_line(long w, long doc)
 }
 
 // The 1-based line containing byte offset `off` (1 on an empty document;
-// total+1 on the phantom line).
+// total+1 on the phantom line). ONE indexed engine lookup — the same
+// answer the newline count gives: the phantom position (offset == size
+// after a terminated last line) is one past the last content line. This
+// used to walk text_line_start once per line, and each of those rescanned
+// the document: quadratic per call, three calls per composed keystroke.
 long line_of(long w, long doc, long off)
 {
-    long total = ui::text_line_count(w, doc);
-    long line = 1;
-    while ( line < total && ui::text_line_start(w, doc, line + 1) <= off )
-	line = line + 1;
-    if ( off >= ui::text_size(w, doc) && has_phantom_line(w, doc) )
-	line = total + 1;
-    return line;
+    return ui::text_line_of(w, doc, off);
 }
 
 // Line start for column math: the phantom line starts at the document's

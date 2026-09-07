@@ -193,6 +193,10 @@ namespace ui {
     value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
     int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
+    // The 1-based line containing byte `off` (off == size after a
+    // terminated last line = line_count + 1, the phantom line); -1 = no
+    // component. Indexed — the caret-line lookup, never a per-line walk.
+    int64_t text_line_of(int64_t w, int64_t entity, int64_t off);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
     // Word motion (JOE ^Z/^X): a word byte is [A-Za-z0-9_].
