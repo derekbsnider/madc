@@ -146,6 +146,31 @@ void resolve_profile_dir(var &dir)
 // cases is what makes a scope case-sensitive: the vi @normal alphabet's
 // a/A, i/I, o/O). Later lines overwrite earlier per (scope, key), which
 // is how the baked defaults merge under a profile's own respellings.
+// The ONE scoped-line rule (`@scope name value`): scope is the word after
+// '@' up to the first space; value is the LAST space-separated token; name
+// is everything between. False = not a scoped line, or malformed. Shared by
+// parse_keys (@scope key -> action, the modal key tables) and load_theme
+// (@gui prop -> CSS value) so the two sections cannot drift — later lines
+// win at the caller. profile_line already stripped comments/blanks.
+bool scope_line_parts(var &line, var &scope, var &name, var &value)
+{
+    const char *ls = line.c_str();
+    if ( ls[0] != '@' )
+	return false;
+    const char *sp1 = strchr(ls, ' ');
+    if ( sp1 == 0 )
+	return false;
+    scope = perl::substr(line, 1, sp1 - ls - 1);
+    var rest = php::trim(sp1 + 1);
+    const char *rs = rest.c_str();
+    const char *sp2 = strrchr(rs, ' ');
+    if ( sp2 == 0 )
+	return false;
+    value = php::trim(sp2 + 1);
+    name = php::trim(perl::substr(rest, 0, sp2 - rs));
+    return true;
+}
+
 void parse_keys(var &table, var &scopes, const char *text)
 {
     var t;
@@ -161,17 +186,11 @@ void parse_keys(var &table, var &scopes, const char *text)
 	const char *ls = line.c_str();
 	if ( ls[0] == '@' )
 	{
-	    const char *sp1 = strchr(ls, ' ');
-	    if ( sp1 == 0 )
+	    var scope;
+	    var key;
+	    var action;
+	    if ( !scope_line_parts(line, scope, key, action) )
 		continue;
-	    var scope = perl::substr(line, 1, sp1 - ls - 1);
-	    var rest = php::trim(sp1 + 1);
-	    const char *rs = rest.c_str();
-	    const char *sp2 = strrchr(rs, ' ');
-	    if ( sp2 == 0 )
-		continue;
-	    var action = php::trim(sp2 + 1);
-	    var key = php::trim(perl::substr(rest, 0, sp2 - rs));
 	    var one = sc[scope.c_str()];
 	    if ( one.is_null() )
 	    {
@@ -394,6 +413,7 @@ bool load_theme(long w, long es, const char *name)
     if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, tname)) )
 	return false;
     var th;
+    var gth;			// the @gui scope: CSS custom properties
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -403,6 +423,19 @@ bool load_theme(long w, long es, const char *name)
 	if ( !profile_line(line, lines, i) )
 	    continue;
 	const char *ls = line.c_str();
+	// A scoped line (@gui prop value): the web target's colours/fonts as
+	// CSS custom properties, through the ONE scope_line_parts rule the
+	// key tables use. The unscoped JOE-vocabulary lines below still feed
+	// the TUI theme unchanged — one file, two renderings, later lines win.
+	if ( ls[0] == '@' )
+	{
+	    var scope;
+	    var prop;
+	    var val;
+	    if ( scope_line_parts(line, scope, prop, val) && scope == "gui" )
+		gth[prop.c_str()] = val;
+	    continue;
+	}
 	const char *sp = strchr(ls, ' ');
 	if ( sp == 0 )
 	    continue;
@@ -412,6 +445,7 @@ bool load_theme(long w, long es, const char *name)
 	th[cls.c_str()] = spec;
     }
     ui::set(w, es, "theme", th);
+    ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
     ui::set(w, es, "scheme", tname);
     return true;
 }
@@ -4042,6 +4076,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(hn);
     }
     r["children"] = kids;
+    // The @gui theme (slice 3): the loaded scheme's CSS custom properties
+    // ride the root group's hints; web_model emits them and the page applies
+    // them as `--` variables. A hint the TUI ignores. Empty scope = nothing
+    // attached (the JOE default look).
+    var gt;
+    ui::get(gt, w, es, "gui_theme");
+    if ( !gt.is_null() && php::count(gt) > 0 )
+    {
+	var rh;
+	rh["theme"] = gt;
+	r["hints"] = rh;
+    }
     root = r;
 }
 

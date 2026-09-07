@@ -204,6 +204,26 @@ class web_model
 		op["popup"] = true;
 	    if ( hint_of(n.hints, "tabs", 0) )
 		op["tabs"] = true;
+	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
+	    // bag of CSS custom-property name -> value strings; emit them so
+	    // the page applies them as `--name` variables. String values only
+	    // (a colour / font spec); other kinds are ignored.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ti = ho.find("theme");
+		if ( ti != ho.end() && ti->second.is_object() )
+		{
+		    nlohmann::json theme = nlohmann::json::object();
+		    const std::map<std::string, madc::value> &tv = ti->second.as_object();
+		    for ( std::map<std::string, madc::value>::const_iterator vi = tv.begin();
+			  vi != tv.end(); ++vi )
+			if ( vi->second.is_string() )
+			    theme[vi->first] = vi->second.as_string();
+		    if ( !theme.empty() )
+			op["theme"] = theme;
+		}
+	    }
 	}
 	bool recurse = true;
 	if ( n.role == r.heading )

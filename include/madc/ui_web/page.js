@@ -36,6 +36,14 @@
     // the class is set deterministically each compose cycle (the parent's
     // own op reset its className first, region'd children re-add it).
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
+    // properties on the document root, so the workbench CSS reads them via
+    // var(--name, fallback). The composer attaches it to the root group.
+    if (op.theme) {
+      for (var tk in op.theme)
+        if (Object.prototype.hasOwnProperty.call(op.theme, tk))
+          document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
+    }
     var parent = op.parent ? nodes.get(op.parent) : null;
     (parent || root).appendChild(el);   // pre-order arrival keeps sibling order
     if (op.region && parent) parent.classList.add('workbench');
