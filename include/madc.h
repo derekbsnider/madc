@@ -5424,7 +5424,16 @@ public:
     // setter ahead of x's C declaration.
     Variable *decl_init_self = NULL;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
-    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
+    // THE namespace-member lookup. A namespace bound to a dynamic module
+    // (`import name as ns;` / `#load`) has the library's exports for members:
+    // the miss path materializes one through resolve_module_member, so every
+    // route into the namespace sees the same registration. `diag` non-NULL
+    // (a qualified `ns::m` site): a policy denial or an unexported member is
+    // reported at that token; NULL (a lookup walk): the miss is silent.
+    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name,
+				    TokenBase *diag = NULL);
+    Variable *resolve_module_member(const std::string &ns_name, const std::string &member_name,
+				    TokenBase *diag);
     std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
     std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
