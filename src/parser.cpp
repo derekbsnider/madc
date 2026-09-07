@@ -39097,17 +39097,27 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    bool shape_ok = j > 0;
 			    if ( shape_ok && !typename_head )
 			    {
-				// Bare spelling: only a registered template's
-				// id + a member chain — plain names stay with
-				// the sibling arms (and a non-template `<` is
-				// less-than, never scanned as a list).
+				// Bare spelling: a registered template's id + a
+				// member chain, or a NAMESPACE head + a member
+				// chain (`(ns::S *)v`, `(ui::ui_host_ops *)p` —
+				// before this the qualified type fell to the
+				// expression parser, which reported it "not a
+				// member of namespace"). Plain unqualified names
+				// stay with the sibling arms (and a non-template
+				// `<` is less-than, never scanned as a list). The
+				// range resolver below answers both shapes through
+				// the one declared-type resolver, non-consumingly;
+				// its completeness rule keeps a qualified VALUE
+				// (`(ns::value)`) an expression.
 				std::string tid_name =
 				    peek1->type() == TokenType::ttDataType
 					? ((TokenDataType *)peek1)->spelling()
 					: ((TokenIdent *)peek1)->spelling();
-				shape_ok = saw_tid && chain > 0
-				    && (find_template(tid_name)
-				     || find_template_alias(tid_name));
+				shape_ok = chain > 0
+				    && ((saw_tid && (find_template(tid_name)
+						  || find_template_alias(tid_name)))
+				     || (!saw_tid && peek1->type() == TokenType::ttIdentifier
+					 && !resolve_namespace_name_in_scope(tid_name).empty()));
 			    }
 			    if ( shape_ok )
 				shape_ok = tokens.size() > j && tokens[j]
