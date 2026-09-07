@@ -4,6 +4,11 @@
 // by name at first call through __madc_dl_member (the same lowering in JIT,
 // exe and obj — this test has NO exe_skip). `import` is contextual: the
 // identifier `import` stays an identifier off the directive position.
+// Every route to a member goes through the ONE lookup owner: an expression
+// operand, a STATEMENT head (`libc::puts(...);` — this used to register a
+// bare `puts` through the unqualified dlsym fallback, which the JIT resolved
+// by accident and no native artifact could link), a cast operand, and the
+// global-qualified `::libc::abs` spelling.
 import c as libc;
 
 int main()
@@ -13,6 +18,10 @@ int main()
     println("abs(100): {}", libc::abs(100));
     var num = "999";
     println("atoi: {}", libc::atoi(num));
+    libc::puts("statement-position member call");
+    long long cast_abs = (long long)libc::abs(-7);
+    println("cast abs(-7): {}", cast_abs);
+    println("global-qualified abs(-9): {}", ::libc::abs(-9));
     println("import={}", import);
     return 0;
 }

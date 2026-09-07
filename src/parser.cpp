@@ -24495,11 +24495,16 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 		&& fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
 	    // A CONCRETE declaration-only C++ namespace function binds its
 	    // external Itanium symbol through storage_alias_name. A template
-	    // placeholder never gets an alias on the live path.
+	    // placeholder never gets an alias on the live path. C language
+	    // linkage ([dcl.link]/6, FuncDef::c_linkage from the frozen
+	    // DF_FUNC_C_LINKAGE) binds the UNQUALIFIED name — the live
+	    // registration's rule (parseFunction), reproduced here.
 	    if ( !tmpl_placeholder && pf.fd->declaration_only
 	      && !pf.fd->namespace_name.empty() )
-		fv->storage_alias_name = namespace_cpp_function_symbol(
-		    pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+		fv->storage_alias_name = pf.fd->c_linkage
+		    ? pf.fd->function_display_name
+		    : namespace_cpp_function_symbol(
+			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
 	    std::vector<NamespaceFnOverload> &ovset =
 		namespace_fn_overload_sets[ovkey];
 	    bool known = false;
@@ -26529,7 +26534,8 @@ std::vector<std::string> Program::inline_namespace_descendants(
     return pending;
 }
 
-Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
+Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name,
+					 TokenBase *diag)
 {
     activate_forest_function_family(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
@@ -26559,7 +26565,77 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
 		return vmi->second;
 	}
     }
-    return NULL;
+    // A namespace bound to a dynamic module: its members are the library's
+    // exports, materialized here on first lookup — the ONE owner below.
+    return resolve_module_member(ns_name, member_name, diag);
+}
+
+// import (alias form) / #load: the members of a namespace bound to a dynamic
+// module ARE the library's exports. This is the ONE owner that materializes a
+// member — find_namespace_member's miss path — so every route into the
+// namespace sees the same registration: the qualified `ns::m` expression, the
+// statement-head `ns::m(...)` override (QualifiedCalleeScope), a postfix/cast
+// head, `::ns::m`, a using-directive walk. The member registers as the
+// `__dl_<ns>_<m>` Variable with the int64 K&R signature (the call lowers to
+// the slot-resolved indirect call, CirBuilder::dyn_module_callee), stamped
+// with its module identity (stamp_dynamic_module_member) and cached in the
+// namespace map. Before this owner two qualified sites carried the fallback
+// and the statement head drifted to the UNQUALIFIED dlsym fallback, which
+// registered a BARE symbol the JIT resolved by accident (RTLD_GLOBAL) and no
+// native artifact could link — `seam::spike_mark();` as a whole statement
+// (KG Gap dynamic_module_member_lookup_paths_diverge). `diag` non-NULL: a
+// registration-policy denial or an unexported member is reported at that
+// token; NULL (a lookup walk) misses silently — the caller reports its own
+// "not a member". Gate: scripts/check-one-module-member-owner.sh.
+Variable *Program::resolve_module_member(const std::string &ns_name,
+					 const std::string &member_name,
+					 TokenBase *diag)
+{
+    std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
+    if ( dli == dlopen_map.end() )
+	return NULL;
+    if ( !is_dynamic_symbol_fallback_enabled() )
+    {
+	if ( diag )
+	    Throw(diag) << "dynamic symbol fallback is disabled by registration policy" << flush;
+	return NULL;
+    }
+    if ( !is_dynamic_symbol_allowed(member_name) )
+    {
+	if ( diag )
+	    Throw(diag) << "dynamic symbol '" << member_name
+			<< "' is not allowed by registration policy" << flush;
+	return NULL;
+    }
+    void *sym = madcdl_sym(dli->second, member_name.c_str());
+    if ( !sym )
+    {
+	if ( diag )
+	{
+	    std::map<std::string, std::string>::const_iterator li =
+		dl_library_spelling.find(ns_name);
+	    Throw(diag) << "'" << member_name << "' is not a member of namespace '"
+			<< ns_name << "': "
+			<< (li != dl_library_spelling.end() ? li->second : ns_name)
+			<< " exports no such symbol (" << madcdl_error() << ")" << flush;
+	}
+	return NULL;
+    }
+    std::string func_id = "__dl_" + ns_name + "_" + member_name;
+    Variable *var = addFunction(func_id, datatype_vec_t{DataType::dtINT64},
+				(fVOIDFUNC)sym);
+    if ( !var )
+    {
+	if ( diag )
+	    Throw(diag) << "Failed to register dynamic module member '"
+			<< ns_name << "::" << member_name << "'" << flush;
+	return NULL;
+    }
+    stamp_dynamic_module_member(var, ns_name, member_name);
+    namespace_variables_for_write(ns_name)[member_name] = var;
+    DBG(cout << "resolve_module_member() " << ns_name << "::" << member_name
+	     << " at " << (uint64_t)sym << endl);
+    return var;
 }
 
 std::string Program::canonical_nested_namespace(const std::string &parent,
@@ -28726,7 +28802,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			return parsePostfixChainFrom(sval,
 						     postfix_expr_variable(sval));
 	    }
-	    Variable *nsv = find_namespace_member(ns_name, member);
+	    Variable *nsv = find_namespace_member(ns_name, member, member_tb);
 	    if ( !nsv )
 		Throw(member_tb) << "'" << member << "' is not a member of '" << ns_name << "'" << flush;
 	    TokenBase *r = new TokenVar(*nsv);
@@ -29808,28 +29884,10 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	}
 	else
 	{
-	    ns_var = find_namespace_member(aname, member_name);
-	    if ( !ns_var )
-	    {
-		std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
-		if ( dli != dlopen_map.end() )
-		{
-		    if ( !is_dynamic_symbol_fallback_enabled() )
-			Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-		    if ( !is_dynamic_symbol_allowed(member_name) )
-			Throw(member_tb) << "dynamic symbol '" << member_name
-					 << "' is not allowed by registration policy" << flush;
-		    void *sym = madcdl_sym(dli->second, member_name.c_str());
-		    if ( sym )
-		    {
-			std::string func_id = "__dl_" + aname + "_" + member_name;
-			ns_var = addFunction(func_id,
-			    datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-			stamp_dynamic_module_member(ns_var, aname, member_name);
-			namespace_variables_for_write(aname)[member_name] = ns_var;
-		    }
-		}
-	    }
+	    // A module-bound namespace's member materializes inside the
+	    // lookup (resolve_module_member, find_namespace_member's miss
+	    // path); member_tb makes a policy denial / unexported member loud.
+	    ns_var = find_namespace_member(aname, member_name, member_tb);
 	    if ( !ns_var )
 		Throw(member_tb) << "'" << member_name
 				 << "' is not a member of namespace '"
@@ -37702,37 +37760,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
+		    // A module-bound namespace's member materializes inside
+		    // the lookup (resolve_module_member, find_namespace_member's
+		    // miss path); member_tb makes a policy denial / unexported
+		    // member loud at the member token.
 		    Variable *ns_member = find_namespace_member(ns_name,
-								 member_name);
+								 member_name,
+								 member_tb);
 		    if ( !ns_member )
-		    {
-			// try dlsym fallback if this namespace was loaded via #load
-			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
-			if ( dli == dlopen_map.end() )
-			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-			if ( !is_dynamic_symbol_fallback_enabled() )
-			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-			if ( !is_dynamic_symbol_allowed(member_name) )
-			    Throw(member_tb) << "dynamic symbol '" << member_name
-					     << "' is not allowed by registration policy" << flush;
-			void *sym = madcdl_sym(dli->second, member_name.c_str());
-			if ( !sym )
-			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << madcdl_error() << flush;
-			// create function with int64 return, no declared params (variadic-like)
-			// actual args are passed through at compile time
-			std::string func_id = "__dl_" + ns_name + "_" + member_name;
-			var = addFunction(func_id,
-			    datatype_vec_t{DataType::dtINT64},
-			    (fVOIDFUNC)sym);
-			if ( !var )
-			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
-			stamp_dynamic_module_member(var, ns_name, member_name);
-			// Cache the resolved symbol for the next qualified call.
-			namespace_variables_for_write(ns_name)[member_name] = var;
-			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
-		    }
-		    else
-			var = ns_member;
+			Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+		    var = ns_member;
 		// Cross-namespace seed clash: namespace_map[ns][name] can hold a
 		// placeholder seed from a DIFFERENT namespace (observed: qualified
 		// std::get resolving to the std::ranges::get niebloid seed). When the
@@ -40971,7 +41008,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(member_tb ? member_tb : name_tb)
 				<< "Expecting identifier after namespace '::'" << flush;
 			std::string member_name = contextual_identifier_name(member_tb);
-			var = find_namespace_member(gname, member_name);
+			var = find_namespace_member(gname, member_name, member_tb);
 			if ( !var )
 			    Throw(member_tb) << "'" << member_name
 					     << "' is not a member of namespace '"
@@ -69134,6 +69171,28 @@ fnptr_decl_arm_head:
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
+	    // [dcl.link]/6: C language linkage ignores the namespace — the
+	    // external symbol is the UNQUALIFIED name, for a declaration and a
+	    // definition alike (g++/clang++: `namespace seam { extern "C" int
+	    // f(); }` + `seam::f()` emit `call f`; a body defines `f`). The
+	    // registration keeps its namespace-scoped key (`__ns_seam_f`, the
+	    // lookup identity); the emitted symbol rides storage_alias_name,
+	    // the same contract an asm label uses — and an explicit asm label
+	    // still wins. Without this the builder imported the internal key
+	    // itself (MIR: "import of undefined item __ns_seam_spike_answer").
+	    // The source identity is stamped too so the pack's restore
+	    // (register_forest_func) rebinds the member under its namespace
+	    // with the C alias: std::__once_proxy, __gnu_cxx::wcstold and the
+	    // __cxxabiv1 entries are exactly this shape in the system headers.
+	    else if ( namespace_function && fd && !is_c_mode()
+		   && current_linkage == LinkageSpec::C )
+	    {
+		fd->c_linkage = true;
+		fd->function_display_name = source_id;
+		fd->namespace_name = current_namespace();
+		if ( ns_var->storage_alias_name.empty() )
+		    ns_var->storage_alias_name = source_id;
+	    }
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking

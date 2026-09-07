@@ -3747,6 +3747,7 @@ void CirFrozenForest::materialize_pass()
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+		fd->c_linkage        = (r.flags & madc::dis::DF_FUNC_C_LINKAGE) != 0;
 		fd->noexcept_spec    = (r.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
 				     : (r.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
 				     : FuncDef::NxNone;

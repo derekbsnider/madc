@@ -447,7 +447,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -576,6 +576,14 @@ public:
     // the AOT-ledger pull — the rt_dump.h static-inline pair). `static`
     // wins over vague linkage: internal linkage is never vague.
     bool internal_linkage;
+    // C language linkage declared INSIDE a namespace ([dcl.link]/6): the
+    // external symbol is the unqualified name — namespaces never enter it
+    // (g++: `namespace seam { extern "C" int f(); }` + `seam::f()` emits
+    // `call f`). The registration keeps its namespace-scoped key for lookup;
+    // the emitted symbol rides Variable::storage_alias_name (the asm-label
+    // contract). Frozen as DF_FUNC_C_LINKAGE so the pack restore re-derives
+    // the C name, never the Itanium one (std::__once_proxy, __cxxabiv1::*).
+    bool c_linkage;
     bool is_multi_return() const { return return_types.size() > 1; }
     virtual FuncDef *as_funcdef_dd() override { return this; }
 };
@@ -5416,7 +5424,16 @@ public:
     // setter ahead of x's C declaration.
     Variable *decl_init_self = NULL;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
-    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
+    // THE namespace-member lookup. A namespace bound to a dynamic module
+    // (`import name as ns;` / `#load`) has the library's exports for members:
+    // the miss path materializes one through resolve_module_member, so every
+    // route into the namespace sees the same registration. `diag` non-NULL
+    // (a qualified `ns::m` site): a policy denial or an unexported member is
+    // reported at that token; NULL (a lookup walk): the miss is silent.
+    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name,
+				    TokenBase *diag = NULL);
+    Variable *resolve_module_member(const std::string &ns_name, const std::string &member_name,
+				    TokenBase *diag);
     std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
     std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);

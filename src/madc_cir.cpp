@@ -3204,6 +3204,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->is_varargs)       r.flags |= madc::dis::DF_IS_VARARGS;
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
+	if (fd->c_linkage)        r.flags |= madc::dis::DF_FUNC_C_LINKAGE;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->noexcept_spec == FuncDef::NxTrue)

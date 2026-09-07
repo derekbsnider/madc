@@ -1,4 +1,7 @@
 abs(-42): 42
 abs(100): 100
 atoi: 999
+statement-position member call
+cast abs(-7): 7
+global-qualified abs(-9): 9
 import=3
