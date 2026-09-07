@@ -27,6 +27,7 @@
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
+#include "madc_modules.h"	// module_available: the module map + the one dl seam
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -460,3 +461,17 @@ void *__madc_context_set_array_runtime(void *ctx, void *key, void *value)
 }
 
 }
+
+namespace madc {
+// Is a module's library available on this system? Opens the module map's
+// spelling through the one dl seam (madc_module_open — beside the running
+// binary first, then the loader's search) and keeps it open; false when it
+// cannot be opened. The lazy-row contract's question (madc_modules.h).
+bool module_available(const char *name)
+{
+    if ( !name || !*name )
+	return false;
+    std::string err;
+    return madc_module_open(madc_module_library_spelling(name), err) != NULL;
+}
+} // namespace madc

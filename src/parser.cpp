@@ -27505,6 +27505,27 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 // in every lane. The library spelling is the one the binder recorded for the
 // namespace (dl_library_spelling); the parse-time dlsym above stays the early
 // diagnostic ("is this member exported at all"), never the bound address.
+// A prototype declared while a LAZY module row's interface is being served
+// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
+// wrap): the function has no symbol of its own in this program — every call
+// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
+// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
+// Free functions only: a class member is never a module export.
+void Program::stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+					  DataDefCLASS *owner_class,
+					  const TokenBase *proto_end)
+{
+    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
+	return;
+    std::unordered_map<const TokenBase *, std::string>::const_iterator it =
+	_lazy_module_tokens.find(proto_end);
+    if ( it == _lazy_module_tokens.end() )
+	return;
+    fd->dyn_module_library = it->second;
+    fd->dyn_module_member = name;
+    fd->dyn_module_typed = true;
+}
+
 void Program::stamp_dynamic_module_member(Variable *var, const std::string &ns,
 					  const std::string &member)
 {
@@ -65653,6 +65674,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -65723,6 +65745,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }

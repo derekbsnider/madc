@@ -310,6 +310,11 @@ public:
     // spelling the module map chose (madc_modules).
     std::string dyn_module_library;
     std::string dyn_module_member;
+    // The slot form with the REAL prototype: a lazy module row's interface
+    // function (dyn_module_library/member set by parseFunction under the
+    // lazy pragma) is called through a pointer of its declared type, not
+    // the alias form's K&R `long (*)()`.
+    bool dyn_module_typed;
     // TRUE when this FuncDef is a BUILTIN-STYLE registration (the
     // builtin_registry core/process/dlfcn loops — the caller passes the
     // intent into Program::addFunction). An explicit source (re)declaration
@@ -447,7 +452,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -4222,9 +4227,23 @@ public:
     // PE import); madc.cpp appends them to the link line after the parse. The
     // alias form resolves at run time and never lands here.
     std::vector<std::string> module_link_libs;
+    // LAZY module rows this TU imported (the interface form): not linked,
+    // not opened at parse — recorded so the object's module list can carry
+    // them as OPTIONAL entries (the loader lifts the guard for a GUI row and
+    // opens what it can without failing).
+    std::vector<std::string> module_optional_libs;
     // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
     // madcwebview;`): the driver lifts an armed memory guard before running.
     bool bound_gui_module;
+    // LEX-time state: between `#pragma madc module_begin("<spelling>")` and
+    // `module_end` (the import directive's synthetic wrap of a LAZY row's
+    // interface) every emitted token is tagged with the spelling
+    // (_lazy_module_tokens, identity-keyed). parseFunction reads the tag off
+    // a prototype's own `;` token — a token-identity fact, so the auto-
+    // include injector's later reordering of the stream cannot move a
+    // fragment INTO the range (a time-based marker did exactly that).
+    std::string lazy_module_spelling;
+    std::unordered_map<const TokenBase *, std::string> _lazy_module_tokens;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {
@@ -5402,6 +5421,9 @@ public:
     // import (alias form): mark a freshly registered namespace member as a
     // dynamic-module member (FuncDef::dyn_module_library/member) so the CIR
     // builder lowers its calls to the runtime-resolved shape.
+    void stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+				     DataDefCLASS *owner_class,
+				     const TokenBase *proto_end);
     void stamp_dynamic_module_member(Variable *var, const std::string &ns,
 				     const std::string &member);
     bool is_dynamic_symbol_fallback_enabled() const;

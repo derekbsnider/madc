@@ -38,6 +38,14 @@ namespace ui_web {
 
     void *open(const char *title, const char *page, void *ctx)
     {
+	// The module row is LAZY: this fragment compiles and runs on a system
+	// without the library; the first call would raise — refuse here with
+	// the reason instead (design §3.2).
+	if ( !madc::module_available("madcwebview") )
+	{
+	    println(stderr, "ui_web: the madcwebview library is not available on this system");
+	    return 0;
+	}
 	host *h = (host *)malloc(sizeof(host));
 	if ( !h )
 	    return 0;

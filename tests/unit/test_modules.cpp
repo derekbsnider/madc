@@ -114,6 +114,7 @@ TEST_CASE("module rows: the GUI flag")
 	const MadcModuleSpec *web = madc_module_find("madcwebview");
 	REQUIRE(web);
 	CHECK((web->flags & MADC_MODULE_GUI) != 0);
+	CHECK((web->flags & MADC_MODULE_LAZY) != 0);	// optional: binds at first call
 	const MadcModuleSpec *c = madc_module_find("c");
 	REQUIRE(c);
 	CHECK((c->flags & MADC_MODULE_GUI) == 0);

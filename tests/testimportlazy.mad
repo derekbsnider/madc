@@ -1,0 +1,18 @@
+// A LAZY module row (madcwebview): `import madcwebview;` serves the typed
+// interface and binds NOTHING at parse — no library open, no link entry —
+// so this program compiles and runs on a system without the library. Its
+// functions are first-call slots through pointers of their declared types
+// (the GUI stage's tests call them for real, in JIT, exe and .o); here the
+// program only asks the availability question, whose answer varies per
+// system and goes to stderr, and pins the deterministic parts.
+import madcwebview;
+
+int main()
+{
+    println("lazy import: parsed");
+    println("no such module: {}", madc::module_available("no_such_module_xyz") ? "available" : "absent");
+    println(stderr, "madcwebview: {}", madc::module_available("madcwebview") ? "available" : "absent");
+    const webview_version_info_t *v = 0;	// the interface's types are declared
+    println("interface types: {}", v == 0 ? "declared" : "?");
+    return 0;
+}

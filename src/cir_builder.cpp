@@ -28663,6 +28663,18 @@ node_t CirBuilder::dyn_module_callee(FuncDef *fd, const std::string &callee_name
 	node_t assign = node2(N_ASSIGN, id(slot.c_str(), origin), resolve, origin);
 	node_t pick = node3(N_COND, id(slot.c_str(), origin),
 			    id(slot.c_str(), origin), assign, origin);
+	if (fd->dyn_module_typed) {
+		// A lazy row's interface prototype: the slot is called through a
+		// pointer of the DECLARED type — return and parameters as the
+		// header spelled them (fnptr_decl_pieces, the one fn-ptr type
+		// renderer) — so struct returns, enums and callbacks travel as
+		// they do through a direct call.
+		node_t tspecs = list();
+		node_t tdecl = list();
+		fnptr_decl_pieces(fd, true, tspecs, tdecl, std::vector<carray_dim_t>());
+		node_t typed_t = node2(N_TYPE, tspecs, node2(N_DECL, ignore(), tdecl));
+		return node2(N_CAST, typed_t, pick, origin);
+	}
 	node_t fdecl = list();
 	append(fdecl, pointer());
 	append(fdecl, node1(N_FUNC, list()));
@@ -30607,9 +30619,18 @@ node_t CirBuilder::translate_module(Program *prog)
 	//   static const char __madc_module_deps[] = "libm.so.6\0...";
 	// A referenced-surface filter never drops it: it is the object's
 	// manifest, not a declaration.
-	if (m_prog && !m_prog->module_link_libs.empty()) {
+	// A LAZY row's spelling joins the list with a '?' prefix: OPTIONAL — the
+	// loader lifts the memory guard for a GUI row and opens what it can, but
+	// never fails on it (the program asked madc::module_available itself).
+	if (m_prog && (!m_prog->module_link_libs.empty()
+		       || !m_prog->module_optional_libs.empty())) {
 		std::string table;
 		for (const std::string &l : m_prog->module_link_libs) {
+			table += l;
+			table.push_back('\0');
+		}
+		for (const std::string &l : m_prog->module_optional_libs) {
+			table += "?";
 			table += l;
 			table.push_back('\0');
 		}

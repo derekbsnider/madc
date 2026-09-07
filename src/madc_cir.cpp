@@ -2267,21 +2267,25 @@ static bool cir_open_object_module_deps(const unsigned char *bytes, size_t size,
 	    const char *p = (const char *)sb + value;
 	    const char *end = p + dsize;
 	    while (p < end && *p) {
-		std::string spelling(p, strnlen(p, (size_t)(end - p)));
+		std::string entry(p, strnlen(p, (size_t)(end - p)));
+		p += entry.size() + 1;
+		// '?' marks an OPTIONAL entry (a lazy module row): it may be absent.
+		bool optional = !entry.empty() && entry[0] == '?';
+		std::string spelling = optional ? entry.substr(1) : entry;
+		// The object lane has no parse to record a GUI module on: the
+		// row behind the spelling says it, and the armed memory guard
+		// lifts here exactly as the drivers lift it after a parse — BEFORE
+		// the library opens (its own load reserves address space).
+		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+		if (row && (row->flags & MADC_MODULE_GUI))
+		    madc_lift_memory_guard("a GUI module row in the object's module list");
 		std::string derr;
-		if (!madc_module_open(spelling, derr)) {
+		if (!madc_module_open(spelling, derr) && !optional) {
 		    fprintf(stderr, "madc: %s: import: cannot load '%s': %s\n",
 			    display, spelling.c_str(), derr.c_str());
 		    ok = false;
 		    break;
 		}
-		// The object lane has no parse to record a GUI module on: the
-		// row behind the spelling says it, and the armed memory guard
-		// lifts here exactly as the drivers lift it after a parse.
-		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
-		if (row && (row->flags & MADC_MODULE_GUI))
-		    madc_lift_memory_guard("a GUI module row in the object's module list");
-		p += spelling.size() + 1;
 	    }
 	}
     }

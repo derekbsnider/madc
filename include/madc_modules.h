@@ -21,9 +21,14 @@
 
 // Row flags — module-map DATA the drivers act on (never a name test).
 enum {
-	MADC_MODULE_GUI = 1u << 0,	// a windowing library: an armed memory guard
+	MADC_MODULE_GUI  = 1u << 0,	// a windowing library: an armed memory guard
 					// lifts at run start (WebKit reserves address
 					// space far beyond any program budget)
+	MADC_MODULE_LAZY = 1u << 1,	// an OPTIONAL library: the interface form binds
+					// its functions at first CALL through typed
+					// slots (no open at parse, no link entry), so a
+					// program compiles and runs without it and asks
+					// madc::module_available before using it
 };
 
 struct MadcModuleSpec {

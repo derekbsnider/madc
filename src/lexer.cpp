@@ -1467,7 +1467,12 @@ static bool fragment_may_pull_header(const char *header)
     if ( !header )
 	return false;
     std::string h(header);
-    if ( h.compare(0, 5, "bits/") == 0 )
+    // A sibling dialect fragment (ns_madc from <ns_ui_web>'s
+    // madc::module_available) is a zero-include surface too — an EMBEDDED
+    // extensionless file. The C++ system headers are extensionless as well
+    // (<string>, <vector>) and are never embedded: a fragment's `getline`
+    // must not pull <string> (madcide paid the whole libstdc++ parse for it).
+    if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
 	return true;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
 }
@@ -1733,6 +1738,22 @@ TokenBase *Program::tokenize_import_directive()
     if ( alias.empty() && !(row && row->interface) )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
+    // A LAZY row's interface form binds nothing at parse and joins no link
+    // closure: its interface is served between the synthetic module markers,
+    // so every prototype in it becomes a typed first-call slot against the
+    // row's spelling (parseFunction + CirBuilder::dyn_module_callee). The
+    // program compiles and runs without the library and asks
+    // madc::module_available before using it. The alias form keeps the
+    // eager binding (a namespace needs the exports to answer member lookups).
+    if ( alias.empty() && row && (row->flags & MADC_MODULE_LAZY) )
+    {
+	module_optional_libs.push_back(spelling);	// the object's manifest: optional
+	DBG(std::cout << "import " << name << " -> " << spelling << " (lazy)" << std::endl);
+	source.pushback_reread(std::string("#pragma madc module_begin(\"") + spelling
+			       + "\")\n#include <" + row->interface + ">\n"
+			       + "#pragma madc module_end\n");
+	return getToken();
+    }
     bind_module_namespace(alias, spelling, /*link_form=*/alias.empty());
     DBG(std::cout << "import " << name << (alias.empty() ? std::string() : " as " + alias)
 		  << " -> " << spelling << std::endl);
@@ -2712,6 +2733,8 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     if ( pack_protocol_unit )	// __need serving: the includer owns this token
 	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
+    if ( !lazy_module_spelling.empty() )	// inside a LAZY row's interface
+	_lazy_module_tokens[tb] = lazy_module_spelling;
 }
 
 // Pin queued #pragma pack ops to the first real token emitted after the
@@ -2827,6 +2850,9 @@ void Program::_tokenizer_init()
     suppress_auto_include_scan = false;
     auto_include_fragment_scan = false;
     bound_gui_module = false;
+    module_optional_libs.clear();
+    lazy_module_spelling.clear();
+    _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
@@ -9428,6 +9454,55 @@ void Program::handle_pragma_body()
 	}
 	// discard trailing tokens via the lexer (handles a
 	// multi-line /* */ comment on this line)
+	consume_directive_line_tail();
+    }
+    else if ( pragma == "madc" )
+    {
+	// `#pragma madc module_begin("<spelling>")` / `module_end` — the import
+	// directive's synthetic wrap of a LAZY module row's interface (never
+	// written by hand): the prototypes between them bind at first call.
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	std::string what;
+	while ( source.good() && !source.eof()
+	     && (isalnum(source.peek()) || source.peek() == '_') )
+	    what += source.get();
+	if ( what == "module_begin" )
+	{
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    std::string spelling;
+	    if ( source.peek() == '(' )
+	    {
+		source.get();
+		if ( source.peek() == '"' )
+		{
+		    source.get();
+		    while ( source.good() && !source.eof() && source.peek() != '"' )
+			spelling += source.get();
+		    if ( source.peek() == '"' )
+			source.get();
+		}
+		if ( source.peek() == ')' )
+		    source.get();
+	    }
+	    if ( spelling.empty() )
+		Throw << "#pragma madc module_begin: expected (\"<library spelling>\")" << flush;
+	    // Lexing runs ahead of parsing (the whole TU lexes first, then the
+	    // auto-include injector reorders the stream), so the range is a
+	    // TOKEN-IDENTITY fact: every token emitted from here to module_end
+	    // carries the spelling (_lazy_module_tokens) and parseFunction reads
+	    // it off the prototype's own token.
+	    lazy_module_spelling = spelling;
+	    DBG(std::cout << "#pragma madc module_begin(" << spelling << ")" << std::endl);
+	}
+	else if ( what == "module_end" )
+	{
+	    lazy_module_spelling.clear();
+	    DBG(std::cout << "#pragma madc module_end" << std::endl);
+	}
+	else
+	    Throw << "#pragma madc: unknown directive '" << what << "'" << flush;
 	consume_directive_line_tail();
     }
     else if ( pragma == "prefer" )
