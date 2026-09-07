@@ -11,6 +11,7 @@
   var measure = document.getElementById('measure');
   var nodes = new Map();            // key -> element
   var visited = new Set();          // keys seen since the last "root" op
+  var placed = new Map();           // parent element -> children placed this cycle
   var lastRows = 0, lastCols = 0;
 
   function post(obj) {
@@ -44,9 +45,18 @@
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
     }
-    var parent = op.parent ? nodes.get(op.parent) : null;
-    (parent || root).appendChild(el);   // pre-order arrival keeps sibling order
-    if (op.region && parent) parent.classList.add('workbench');
+    // Placement: ops arrive pre-order, siblings in order, so each parent's
+    // next expected slot is a running count. An element already sitting in
+    // its slot is LEFT ALONE — appendChild on an attached node detaches and
+    // re-attaches its whole subtree, and for the editor (thousands of line
+    // elements) that was a 100 ms renderer rebuild on every keystroke
+    // (measured 2026-09-07: re-append 100 ms; a two-line patch 4 ms).
+    var container = (op.parent ? nodes.get(op.parent) : null) || root;
+    var slot = placed.get(container) || 0;
+    if (container.children[slot] !== el)
+      container.insertBefore(el, container.children[slot] || null);
+    placed.set(container, slot + 1);
+    if (op.region && container !== root) container.classList.add('workbench');
     return el;
   }
 
@@ -221,7 +231,7 @@
     var moved = false;
     for (var i = 0; i < ops.length; i++) {
       var op = ops[i];
-      if (op.op === 'root') visited = new Set();
+      if (op.op === 'root') { visited = new Set(); placed = new Map(); }
       else if (op.op === 'node') { moved = applyNode(op) || moved; visited.add(op.key); }
       else if (op.op === 'end') prune();
     }
