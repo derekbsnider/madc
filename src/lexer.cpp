@@ -1353,6 +1353,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
 {
     static const char *preferred_order[] = {
+	"bits/std_format",	// the dialect intrinsics precede everything they serve
 	"stddef.h",
 	"stdint.h",
 	"float.h",
@@ -1444,6 +1445,31 @@ static bool is_trivia_token(const TokenBase *t)
 	|| tt == TokenType::ttEOL || tt == TokenType::ttComment;
 }
 
+// A dialect FRAGMENT: an extensionless file under include/madc/ (ns_*,
+// bits/*) — madc code, the same set scripts/check-dialect-lean.sh holds to
+// zero includes. Every other embedded file (a .h stub, a page asset) is a
+// declaration or data surface.
+static bool embedded_dialect_fragment_p(const std::string &name)
+{
+    size_t slash = name.rfind('/');
+    std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
+    return !base.empty() && base.find('.') == std::string::npos;
+}
+
+// What a fragment's own mention may pull in: the dialect's intrinsic
+// providers (bits/*: zero-include fragments) and the C headers (.h). A C++
+// system header (<string>, <iostream>, ...) is never pulled by a fragment —
+// that is the dialect-lean line a fragment must not cross.
+static bool fragment_may_pull_header(const char *header)
+{
+    if ( !header )
+	return false;
+    std::string h(header);
+    if ( h.compare(0, 5, "bits/") == 0 )
+	return true;
+    return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
+}
+
 bool Program::auto_include_standard_identifier(const std::string &word,
 					       bool positional)
 {
@@ -1480,7 +1506,9 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 	  || tid == TokenID::tkCLASS
 	  || tid == TokenID::tkENUM )
 	{
-	    auto_include_declared_words.insert(word);
+	    // A fragment's declarators are the fragment's, not the TU's.
+	    if ( !auto_include_fragment_scan )
+		auto_include_declared_words.insert(word);
 	    return false;
 	}
 	// An identifier in member-access position (`G.player.set`, `p->set`)
@@ -1509,6 +1537,12 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
+	return false;
+    // Inside a dialect fragment only the intrinsic and C-header providers
+    // answer (fragment_may_pull_header) — a fragment's `println(stderr,
+    // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
+    // <string>.
+    if ( auto_include_fragment_scan && !fragment_may_pull_header(header) )
 	return false;
 
     // Host policy must not be bypassed by the auto-include convenience: the
@@ -1751,7 +1785,14 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_record_edge(name);
 	Source saved = std::move(source);
 	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-	suppress_auto_include_scan = true;
+	bool saved_fragment_scan = auto_include_fragment_scan;
+	// A dialect FRAGMENT is madc code and may lean on the dialect's
+	// intrinsics (print / println / format) and the C headers: its mentions
+	// keep scanning, restricted to those providers
+	// (auto_include_standard_identifier). Every other embedded header is a
+	// declaration surface — no scan, as before.
+	auto_include_fragment_scan = embedded_dialect_fragment_p(name);
+	suppress_auto_include_scan = !auto_include_fragment_scan;
 	source = Source();
 	source.fname(name.c_str());
 	{ ReadTimer _rt(_read_seconds); source.str(text); }
@@ -1781,6 +1822,7 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_unit_stack.pop_back();
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	auto_include_fragment_scan = saved_fragment_scan;
 	if ( protocol_visit )
 		pack_protocol_serving_end(protocol_saved);
 	mark_embedded_include_flag(name);
@@ -1885,8 +1927,14 @@ void Program::inject_pending_auto_includes()
 						    source.fname(),
 						    auto_include_user_units);
 
+    // A fragment tokenized in one batch may queue its own providers (a
+    // dialect fragment's `println` pulls bits/std_format); they form the
+    // NEXT batch, and a prerequisite must precede what needs it — so every
+    // batch after the first moves to the head of the auto-include range.
+    size_t batch_no = 0;
     while ( !pending_auto_include_headers.empty() )
     {
+	size_t batch_start = tokens.size();
 	std::set<std::string> batch;
 	batch.swap(pending_auto_include_headers);
 	std::vector<std::string> ordered = ordered_auto_include_headers(batch);
@@ -1961,6 +2009,8 @@ void Program::inject_pending_auto_includes()
 			    entry.tokens.size());
 	    }
 	}
+	if ( batch_no++ > 0 && tokens.size() > batch_start )
+	    tokens.move_tail_to(batch_start, include_start);
     }
 
     // The prelude's synthetic includes complete under suppression, so the
@@ -2769,6 +2819,7 @@ void Program::_tokenizer_init()
     pending_auto_include_identifiers.clear();
     auto_include_declared_words.clear();
     suppress_auto_include_scan = false;
+    auto_include_fragment_scan = false;
     pending_no_strict_aliasing = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();

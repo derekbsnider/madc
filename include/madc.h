@@ -5045,6 +5045,10 @@ public:
     // answers for them again — the TU provides the name itself.
     std::set<std::string> auto_include_declared_words;
     bool suppress_auto_include_scan;
+    // Tokenizing a dialect FRAGMENT (an extensionless include/madc/ file):
+    // the scan stays on, restricted to the intrinsic (bits/*) and C-header
+    // providers — never a C++ system header (the dialect-lean line).
+    bool auto_include_fragment_scan;
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;
