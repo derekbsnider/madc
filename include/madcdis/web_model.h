@@ -236,6 +236,26 @@ class web_model
 	       || n.role == r.item )
 	{
 	    op["text"] = node_text(n);
+	    // The status bar as items (slice 3 Task 5): a status node whose
+	    // hints carry {items:{left,right}} renders a justified item bar;
+	    // the page prefers items when present, else the single `text`.
+	    if ( n.role == r.status && n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ii = ho.find("items");
+		if ( ii != ho.end() && ii->second.is_object() )
+		{
+		    const std::map<std::string, madc::value> &iv = ii->second.as_object();
+		    nlohmann::json items = nlohmann::json::object();
+		    std::map<std::string, madc::value>::const_iterator l = iv.find("left");
+		    std::map<std::string, madc::value>::const_iterator rr = iv.find("right");
+		    if ( l != iv.end() && l->second.is_string() )
+			items["left"] = l->second.as_string();
+		    if ( rr != iv.end() && rr->second.is_string() )
+			items["right"] = rr->second.as_string();
+		    op["items"] = items;
+		}
+	    }
 	}
 	else if ( n.role == r.action )
 	{

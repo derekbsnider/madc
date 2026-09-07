@@ -110,7 +110,15 @@
       el.appendChild(span('label', op.label || ''));
       el.appendChild(span('text', op.text || ''));
     } else if (cls === 'status' || cls === 'content' || cls === 'item') {
-      text(el, op.text);
+      if (cls === 'status' && op.items) {
+        // The status bar as a justified item pair (slice 3): .status is
+        // already flex space-between, so a left and a right span sit apart.
+        el.textContent = '';
+        el.appendChild(span('sb-left', op.items.left || ''));
+        el.appendChild(span('sb-right', op.items.right || ''));
+      } else {
+        text(el, op.text);
+      }
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {

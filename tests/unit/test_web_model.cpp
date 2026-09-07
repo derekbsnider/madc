@@ -393,3 +393,42 @@ TEST_CASE("compose — a node without layout hints carries no region/popup/tabs 
 	CHECK(ops[i].find("tabs") == ops[i].end());
     }
 }
+
+TEST_CASE("compose — a status node with items renders a left/right item bar")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    uinode status(r.status);
+    status.content = madc::value(std::string("Ln 1        Row 2"));  // TUI string
+    std::map<std::string, madc::value> items;
+    items["left"] = madc::value(std::string("Ln 1"));
+    items["right"] = madc::value(std::string("Row 2"));
+    std::map<std::string, madc::value> h;
+    h["items"] = madc::value::make_object(items);
+    status.hints = madc::value::make_object(h);
+    root.add(status);
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+    const nlohmann::json *st = node_by_key(ops, "0.0");
+    REQUIRE(st);
+    CHECK((*st)["class"] == "status");
+    CHECK((*st)["text"] == "Ln 1        Row 2");	// the TUI combined string
+    REQUIRE((*st).contains("items"));
+    CHECK((*st)["items"]["left"] == "Ln 1");
+    CHECK((*st)["items"]["right"] == "Row 2");
+
+    // A status without items carries none (negative control).
+    web_model m2;
+    uinode root2(r.group);
+    uinode plain(r.status);
+    plain.content = madc::value(std::string("just text"));
+    root2.add(plain);
+    nlohmann::json ops2 = nlohmann::json::parse(m2.compose(r, root2), nullptr, false);
+    const nlohmann::json *st2 = node_by_key(ops2, "0.0");
+    REQUIRE(st2);
+    CHECK((*st2)["text"] == "just text");
+    CHECK((*st2).find("items") == (*st2).end());
+}

@@ -972,6 +972,17 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	gap = 1;
     st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),
 			   rout);
+    // The status bar as discrete items (slice 3 Task 5): the SAME expanded
+    // halves (lout left, rout right) ride the hints so the web target lays
+    // them into a justified item bar; the TUI reads the combined `content`
+    // string above (the fill between them is a terminal real-estate detail).
+    // No new seat logic — one expansion, two renderings.
+    var items;
+    items["left"] = lout;
+    items["right"] = rout;
+    var sh;
+    sh["items"] = items;
+    st["hints"] = sh;
     status = st;
 }
 
