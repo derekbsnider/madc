@@ -12,6 +12,8 @@
   var nodes = new Map();            // key -> element
   var visited = new Set();          // keys seen since the last "root" op
   var lastRows = 0, lastCols = 0;
+  var lastCaretSig = null;          // focused caret sig at the last scroll-in
+  var pendingCaretSig = null;       // focused caret sig this compose (per apply)
 
   function post(obj) {
     if (typeof window.madc === 'function') {
@@ -139,11 +141,23 @@
       // the visible window (O(window), not O(document)). Line numbers stay
       // ABSOLUTE (op.top + local index), so renderLine's caret/selection
       // matching is unchanged.
+      // Preserve the scroll position across the DOM swap: clearing the
+      // container empties it, so the browser would clamp scrollTop to 0 and
+      // NOT restore it — a scroll-driven recompose would snap to the top.
+      // A given document line sits at line*lineHeight regardless of the
+      // window offset, so the same scrollTop shows the same lines.
+      var savedScroll = el.scrollTop;
       el.textContent = '';
       if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
       var top = op.top || 0;
       var lines = op.lines || [];
       var total = (op.total != null) ? op.total : (top + lines.length);
+      // The focused edit's caret signature — so madcApply scrolls the caret
+      // into view ONLY when it actually moved (a keyboard/edit gesture), never
+      // on a scroll-driven recompose (which must leave the view where the user
+      // scrolled it).
+      if (op.focus && op.caret)
+        pendingCaretSig = op.key + '#' + op.caret.line + ':' + op.caret.col;
       var topSpacer = document.createElement('div');
       topSpacer.className = 'vspacer';
       el.appendChild(topSpacer);
@@ -170,6 +184,9 @@
       el._total = total;
       el._key = op.key;
       ensureScrollListener(el);
+      // Restore the scroll position now that the spacers give the container
+      // its full scrollHeight (the clamp is gone).
+      el.scrollTop = savedScroll;
     }
     // group / separator / node: structure only — children carry it.
   }
@@ -219,6 +236,7 @@
   }
 
   window.madcApply = function (ops) {
+    pendingCaretSig = null;                 // set by the focused edit's applyNode
     for (var i = 0; i < ops.length; i++) {
       var op = ops[i];
       if (op.op === 'root') visited = new Set();
@@ -226,12 +244,16 @@
       else if (op.op === 'end') prune();
     }
     kb.focus();
-    // Keyboard navigation must move the viewport, not just the caret: the
-    // edit div is overflow:auto, so a caret past the fold is off-screen until
-    // its element is scrolled into view. `nearest` is a no-op when the caret
-    // is already visible (mouse-wheel scrolling is undisturbed).
-    var car = document.querySelector('.caret');
-    if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // Keyboard navigation must move the viewport to follow the caret, but a
+    // scroll-driven recompose must NOT: scrolling into view only when the
+    // focused caret actually moved keeps mouse-wheel / scrollbar scrolling
+    // from snapping back to the caret. `nearest` is a no-op when the caret is
+    // already visible.
+    if (pendingCaretSig !== lastCaretSig) {
+      var car = document.querySelector('.caret');
+      if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      lastCaretSig = pendingCaretSig;
+    }
   };
 
   // ---- input: raw keys in the TUI vocabulary, printable runs as text ----
