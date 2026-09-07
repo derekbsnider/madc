@@ -12,6 +12,22 @@ page covers the command line; the language itself is documented under
 
 Run `madc --help` for the complete, always-current option list.
 
+## Machine-readable capabilities
+
+Tooling can query the compiler without supplying a source file:
+
+```bash
+madc --capabilities=json
+```
+
+The response is a versioned JSON manifest. It reports the compiler version and
+target, accepted C/C++ standard floors, project-mode support, execution and
+native-output modes, CIR emission targets, introspection surfaces, and the
+public `libmadc`/C API boundary. Cross-built artifacts report `emit-only` and
+`jit: false`; the manifest describes that artifact rather than the host that
+queried it. Unknown formats are rejected so consumers do not silently parse a
+different schema.
+
 ## Running programs
 
 ```bash

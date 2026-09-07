@@ -34,6 +34,7 @@
 #include "madc_pch.h"
 #include "madc_config.h"  // madc.ini reader (forest-carriers S6)
 #include "cir_emit_c.h"   // CirEmitLang
+#include "madc_capabilities.h" // --capabilities=json
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
@@ -502,6 +503,8 @@ static void print_usage(const char *prog)
 "  -h, -?, --help          show this help\n"
 "  -V, --version           print the madc version (and the cross target, if\n"
 "                          this artifact has one) and exit\n"
+"  --capabilities=json     print the build's machine-readable capability\n"
+"                          manifest and exit (no source file required)\n"
 "\n"
 "Configuration file (optional; CLI > environment > madc.ini > defaults):\n"
 "  --config=<file>         read this madc.ini instead of searching; a file\n"
@@ -628,6 +631,7 @@ int main(int argc, char **argv)
     bool emit_relocatable = false;        // -r: relocatable link output — ONE .o (gcc/ld -r), no run
     bool show_help = false;               // --help / -h / -?
     bool show_version = false;            // --version / -V
+    bool show_capabilities = false;       // --capabilities=json
     bool show_stats = false;               // --show-stats: print input/token traffic counters
     const char *freeze_path = NULL;       // --freeze= / --freeze-append=: forest container out
     bool freeze_append = false;           // --freeze-append=: placement 2 (append to binary)
@@ -895,6 +899,13 @@ int main(int argc, char **argv)
                 || strcmp(argv[i], "-V") == 0) {
             show_version = true;
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--capabilities=json") == 0) {
+            show_capabilities = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--capabilities", 14) == 0) {
+            std::cerr << "Unknown capabilities format: " << argv[i]
+                      << " (json)" << std::endl;
+            return 1;
         } else if (strncmp(argv[i], "-l", 2) == 0 && argv[i][2] != '\0') {
             // -l<name>: bind a library so its symbols resolve at link time
             // (e.g. -lcrypt). The NAME is a module or bare library name; the
@@ -966,6 +977,12 @@ int main(int argc, char **argv)
     if ( show_help )
     {
         print_usage(argv[0]);
+        return 0;
+    }
+
+    if ( show_capabilities )
+    {
+        madc_print_capabilities_json();
         return 0;
     }
 
