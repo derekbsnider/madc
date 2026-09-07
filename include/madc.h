@@ -5515,7 +5515,8 @@ public:
     // head, member access, non-std qualifier) for callers feeding names
     // that have no stream position (the `#pragma prefer` char-level read).
     bool auto_include_standard_identifier(const std::string &word,
-					  bool positional = true);
+					  bool positional = true,
+					  bool qualified_use = false);
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);
@@ -5629,6 +5630,7 @@ public:
     // first one gets dropped by parser exStack semantics.
     void push_token_with_literal_concat(TokenBase *tb);
     void pin_pending_pack_ops(TokenBase *tb);
+    void queue_fragment_prerequisites(std::set<std::string> &batch);
 
     // for debugging
     void printt(TokenBase *);

@@ -1453,32 +1453,47 @@ static bool is_trivia_token(const TokenBase *t)
 // declaration or data surface.
 static bool embedded_dialect_fragment_p(const std::string &name)
 {
+    // The repo's layout IS the rule: `ns_*` at the top of include/madc/ and
+    // the files under bits/. "Extensionless" alone is not it — a cross
+    // prelude dir embeds libc++'s own headers (`string`, `__atomic/...`),
+    // which are C++ declaration surfaces, never dialect fragments (the
+    // darwin pack build tripped its check gate when they were scanned).
     size_t slash = name.rfind('/');
+    std::string dir = slash == std::string::npos ? std::string() : name.substr(0, slash);
     std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
-    return !base.empty() && base.find('.') == std::string::npos;
+    if ( base.empty() || base.find('.') != std::string::npos )
+	return false;
+    if ( dir.empty() )
+	return base.compare(0, 3, "ns_") == 0;
+    return dir == "bits";
 }
 
 // What a fragment's own mention may pull in: the dialect's intrinsic
 // providers (bits/*: zero-include fragments) and the C headers (.h). A C++
 // system header (<string>, <iostream>, ...) is never pulled by a fragment —
 // that is the dialect-lean line a fragment must not cross.
-static bool fragment_may_pull_header(const char *header)
+static bool fragment_may_pull_header(const char *header, bool qualified_use)
 {
     if ( !header )
 	return false;
     std::string h(header);
     // A sibling dialect fragment (ns_madc from <ns_ui_web>'s
     // madc::module_available) is a zero-include surface too — an EMBEDDED
-    // extensionless file. The C++ system headers are extensionless as well
-    // (<string>, <vector>) and are never embedded: a fragment's `getline`
-    // must not pull <string> (madcide paid the whole libstdc++ parse for it).
+    // extensionless file — but only a QUALIFIED use (`madc::x`) names it:
+    // bits/value_stream DEFINES `namespace madc {`, and reading that as a
+    // pull gave every iostream program the sys object (and the darwin
+    // -static-libmadc gate a madarray_destruct the ledger never carried).
+    // The C++ system headers are extensionless as well (<string>, <vector>)
+    // and are never embedded: a fragment's `getline` must not pull <string>
+    // (madcide paid the whole libstdc++ parse for it).
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
-	return true;
+	return qualified_use;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
 }
 
 bool Program::auto_include_standard_identifier(const std::string &word,
-					       bool positional)
+					       bool positional,
+					       bool qualified_use)
 {
     if ( skip_includes )
 	return false;
@@ -1518,6 +1533,22 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 		auto_include_declared_words.insert(word);
 	    return false;
 	}
+	// `namespace X {` DEFINES X — never a use of the ns_X surface; `using
+	// namespace X;` is a use (the token before `namespace` says which).
+	if ( tid == TokenID::tkNAMESPACE )
+	{
+	    bool using_directive = false;
+	    for ( ++it; it != tokens.rend(); ++it )
+	    {
+		if ( is_trivia_token(*it) )
+		    continue;
+		using_directive = (*it)->id() == TokenID::tkUSING;
+		break;
+	    }
+	    if ( !using_directive )
+		return false;
+	    break;	// `using namespace X;` — a use; fall through to the lookup
+	}
 	// An identifier in member-access position (`G.player.set`, `p->set`)
 	// or qualified by anything other than `std` (`ui::set`,
 	// `madc::getline`) cannot denote the std-header surface — matching
@@ -1549,7 +1580,7 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // answer (fragment_may_pull_header) — a fragment's `println(stderr,
     // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
     // <string>.
-    if ( auto_include_fragment_scan && !fragment_may_pull_header(header) )
+    if ( auto_include_fragment_scan && !fragment_may_pull_header(header, qualified_use) )
 	return false;
 
     // Host policy must not be bypassed by the auto-include convenience: the
@@ -1935,6 +1966,101 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
     pending_auto_include_identifiers.clear();
 }
 
+// The identifiers a dialect fragment's TEXT mentions (code only — `//` and
+// `/* */` comments and string literals skipped), fed through the ordinary
+// auto-include scan in FRAGMENT mode so the provider gate applies (the
+// intrinsics' bits/* fragments, sibling ns_* fragments, the C headers —
+// never a C++ system header). Whatever it queues joins `batch` and is
+// itself scanned, to closure. Positional=false: a fragment's own
+// declarators never suppress (they are recorded for nothing here either).
+void Program::queue_fragment_prerequisites(std::set<std::string> &batch)
+{
+    std::set<std::string> scanned;
+    bool saved_fragment_scan = auto_include_fragment_scan;
+    bool saved_suppress = suppress_auto_include_scan;
+    auto_include_fragment_scan = true;
+    suppress_auto_include_scan = false;
+    for ( bool grew = true; grew; )
+    {
+	grew = false;
+	std::vector<std::string> todo;
+	for ( std::set<std::string>::const_iterator it = batch.begin();
+	      it != batch.end(); ++it )
+	    if ( !scanned.count(*it) && embedded_dialect_fragment_p(*it) )
+		todo.push_back(*it);
+	for ( size_t ti = 0; ti < todo.size(); ++ti )
+	{
+	    scanned.insert(todo[ti]);
+	    const std::string *text = find_embedded_header(todo[ti]);
+	    if ( !text )
+		continue;
+	    const std::string &t = *text;
+	    std::string prev_word, prev_prev_word;
+	    for ( size_t i = 0; i < t.size(); )
+	    {
+		char c = t[i];
+		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
+		{
+		    while ( i < t.size() && t[i] != '\n' )
+			++i;
+		    continue;
+		}
+		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
+		{
+		    size_t e = t.find("*/", i + 2);
+		    i = e == std::string::npos ? t.size() : e + 2;
+		    continue;
+		}
+		if ( c == '"' || c == '\'' )
+		{
+		    char q = c;
+		    ++i;
+		    while ( i < t.size() && t[i] != q )
+			i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
+		    ++i;
+		    continue;
+		}
+		if ( isalpha((unsigned char)c) || c == '_' )
+		{
+		    size_t b = i;
+		    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
+			++i;
+		    std::string word = t.substr(b, i - b);
+		    // A word right after `namespace` is a definition (`namespace
+		    // madc {`), unless `using namespace`; a namespace surface is
+		    // pulled only by a QUALIFIED use — `word ::`.
+		    size_t k = i;
+		    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
+			++k;
+		    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
+		    if ( prev_word == "namespace" && prev_prev_word != "using" )
+		    {
+			prev_prev_word = prev_word;
+			prev_word = word;
+			continue;
+		    }
+		    prev_prev_word = prev_word;
+		    prev_word = word;
+		    auto_include_standard_identifier(word, false, qualified);
+		    continue;
+		}
+		++i;
+	    }
+	}
+	if ( !pending_auto_include_headers.empty() )
+	{
+	    for ( std::set<std::string>::const_iterator pi
+		    = pending_auto_include_headers.begin();
+		  pi != pending_auto_include_headers.end(); ++pi )
+		if ( batch.insert(*pi).second )
+		    grew = true;
+	    pending_auto_include_headers.clear();
+	}
+    }
+    auto_include_fragment_scan = saved_fragment_scan;
+    suppress_auto_include_scan = saved_suppress;
+}
+
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
@@ -1954,16 +2080,18 @@ void Program::inject_pending_auto_includes()
 						    source.fname(),
 						    auto_include_user_units);
 
-    // A fragment tokenized in one batch may queue its own providers (a
-    // dialect fragment's `println` pulls bits/std_format); they form the
-    // NEXT batch, and a prerequisite must precede what needs it — so every
-    // batch after the first moves to the head of the auto-include range.
-    size_t batch_no = 0;
     while ( !pending_auto_include_headers.empty() )
     {
-	size_t batch_start = tokens.size();
 	std::set<std::string> batch;
 	batch.swap(pending_auto_include_headers);
+	// A dialect fragment's PREREQUISITES join the batch BEFORE anything is
+	// tokenized (queue_fragment_prerequisites), so the order table places
+	// them ahead of the fragment and lex order stays parse order — the
+	// preprocessor state a fragment's guards read (`_GLIBCXX_STRING` after
+	// <string>) is decided at lex time, so tokens must never be reordered
+	// afterwards (moving a later batch to the head broke exactly that:
+	// ns_madc's std::string conveniences parsed before <string>).
+	queue_fragment_prerequisites(batch);
 	std::vector<std::string> ordered = ordered_auto_include_headers(batch);
 	for ( std::vector<std::string>::const_iterator hi = ordered.begin();
 	      hi != ordered.end(); ++hi )
@@ -2036,8 +2164,6 @@ void Program::inject_pending_auto_includes()
 			    entry.tokens.size());
 	    }
 	}
-	if ( batch_no++ > 0 && tokens.size() > batch_start )
-	    tokens.move_tail_to(batch_start, include_start);
     }
 
     // The prelude's synthetic includes complete under suppression, so the
