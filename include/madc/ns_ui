@@ -319,4 +319,33 @@ namespace ui {
     bool    resume(int64_t t);
     void    refresh(int64_t t);
     void    pending(value &out, int64_t t);
+
+    // ---- script-hosted targets (the web target is one; a test fake is
+    // another). A host is a table of C function pointers a madc fragment
+    // fills and registers ONCE under a target name (dynamic init of a
+    // file-scope static is the idiom). The engine calls them on the
+    // opening thread only: open(title, page, ctx) builds the surface
+    // and returns the host's own handle (0 = cannot serve here — no
+    // display); close(host); eval(host, js) runs script text in the page
+    // (0 = ok); run(host) runs the host's loop until ONE event was posted
+    // through post_event, then returns 0 — nonzero = the host ended (the
+    // window closed). LAYOUT CONTRACT with src/ns_ui.cpp — the same four
+    // pointers in the same order, append-only, keep both in sync.
+    typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
+    typedef void  (*ui_host_close_fn)(void *host);
+    typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
+    typedef int64_t (*ui_host_run_fn)(void *host);
+    struct ui_host_ops {
+	ui_host_open_fn  open;
+	ui_host_close_fn close;
+	ui_host_eval_fn  eval;
+	ui_host_run_fn   run;
+    };
+    bool register_host(const char *target, const ui_host_ops *ops);
+    // The host's ONE inbound door: the page's event object (JSON text —
+    // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
+    // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..})
+    // for the session `ctx` that open() received. Callable from inside
+    // run(); the engine queues it and run() returns.
+    void post_event(void *ctx, const char *json);
 }

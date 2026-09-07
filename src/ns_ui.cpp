@@ -38,8 +38,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -55,6 +57,7 @@
 #include "madcdis/render_text.h"
 #include "madcdis/tui_model.h"
 #include "madcdis/tui_provider.h"
+#include "madcdis/web_model.h"
 #include "madcdis/world_text.h"
 
 using madc::hub::world;
@@ -79,6 +82,30 @@ using madc::hub::affordance_gatherer;
 namespace madc {
     bool getline(value &out);
     value &eval_string_ctx(value &out, const char *source, value &ctx);
+}
+
+// A script-hosted ui TARGET (the web target is one, a test fake is
+// another): a table of C function pointers a madc fragment fills and
+// registers ONCE under a target name. LAYOUT CONTRACT with the script-side
+// declaration in include/madc/ns_ui (namespace ui) — the same four
+// pointers in the same order, append-only, keep both in sync. The engine
+// calls them on the opening thread only (design §3.7).
+namespace ui {
+    typedef void *(*ui_host_open_fn)(const char *title, const char *page,
+				     void *ctx);
+    typedef void  (*ui_host_close_fn)(void *host);
+    typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
+    typedef int64_t (*ui_host_run_fn)(void *host);
+    struct ui_host_ops
+    {
+	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
+				// post_event's key; 0 = cannot serve here
+	ui_host_close_fn close;
+	ui_host_eval_fn	 eval;	// run script text in the page; 0 = ok
+	ui_host_run_fn	 run;	// run the host's loop until ONE event was
+				// posted, then return 0; nonzero = the host
+				// ended (the window closed)
+    };
 }
 
 namespace {
@@ -227,6 +254,94 @@ struct ui_grid_frontend : ui_frontend
     }
     void refresh() { painted = madc::hub::tui_grid(); }
 };
+
+// The script-hosted target registry: name -> the host's ops table (the
+// fragment's static lives for the program; the engine never copies it).
+// Populated by dynamic initialization before main, read by ui::open.
+std::map<std::string, const ui::ui_host_ops *> &ui_hosts()
+{
+    static std::map<std::string, const ui::ui_host_ops *> hosts;
+    return hosts;
+}
+
+// The DOM frontend (level 3): web_model over a script-hosted target. The
+// host runs the platform loop; the page posts one JSON object per event
+// through the host's bound callback -> ui::post_event(ctx, json), which
+// lands in `inbound`; read_events drains one object through the model
+// into the SAME semantic events the grid emits. The page text is the
+// engine's (Task 6 embeds it); the host only shows it.
+struct ui_dom_frontend : ui_frontend
+{
+    madc::hub::web_model	 model;
+    const ui::ui_host_ops	*ops;
+    void			*host;		// the host's own handle
+    std::deque<std::string>	 inbound;	// posted, not yet applied
+    std::string			 name;		// the target name (title)
+    ui_dom_frontend(const std::string &target, const ui::ui_host_ops *o)
+	: ops(o), host((void *)0), name(target) {}
+
+    static std::string page_html()
+    {
+	// The embedded page arrives with the web fragment (Task 6); a
+	// host with no page shows an empty document.
+	return std::string();
+    }
+    bool open(size_t &r, size_t &c)
+    {
+	const std::string page = page_html();
+	host = ops->open("madc", page.c_str(), (void *)this);
+	if ( !host )
+	{
+	    fprintf(stderr, "ui::open: target '%s' cannot serve here\n",
+		    name.c_str());
+	    return false;
+	}
+	r = model.rows();
+	c = model.cols();
+	return true;
+    }
+    void close()
+    {
+	if ( !host )
+	    return;
+	if ( ops->close )
+	    ops->close(host);
+	host = (void *)0;
+    }
+    void render(ui_session *s, madc::value &tree)
+    {
+	std::string ops_json =
+	    model.compose(s->r, madc::hub::value_to_uinode(s->w, tree));
+	if ( ops->eval )
+	    ops->eval(host, ("madcApply(" + ops_json + ")").c_str());
+    }
+    bool read_events()
+    {
+	while ( inbound.empty() )
+	    if ( ops->run(host) != 0 )
+		return false;		// the host ended: input is over
+	std::string json = inbound.front();
+	inbound.pop_front();
+	queue = model.apply_input(json);
+	next_event = 0;
+	return true;
+    }
+    void size(size_t &r, size_t &c)
+    {
+	r = model.rows();
+	c = model.cols();
+    }
+    void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
+    const std::string &pending_chord() const { return model.pending_chord(); }
+};
+
+// The live DOM frontends — post_event's key is a `ctx` a host hands back,
+// and a host is script code: an unknown key is refused, never followed.
+std::set<ui_dom_frontend *> &ui_dom_live()
+{
+    static std::set<ui_dom_frontend *> live;
+    return live;
+}
 
 handle_table<ui_frontend> &ui_frontends()
 {
@@ -1135,15 +1250,27 @@ int64_t open(const char *target)
     if ( name.empty() )
 	name = "term";
     ui_frontend *f = (ui_frontend *)0;
+    ui_dom_frontend *dom = (ui_dom_frontend *)0;
     if ( name == "term" )
 	f = new ui_grid_frontend();
     else
     {
-	fprintf(stderr, "ui::open: unknown target '%s'\n", name.c_str());
-	return 0;
+	std::map<std::string, const ui_host_ops *>::const_iterator it =
+	    ui_hosts().find(name);
+	if ( it == ui_hosts().end() )
+	{
+	    fprintf(stderr, "ui::open: unknown target '%s'\n", name.c_str());
+	    return 0;
+	}
+	dom = new ui_dom_frontend(name, it->second);
+	f = dom;
     }
+    if ( dom )
+	ui_dom_live().insert(dom);
     if ( !f->open(f->rows, f->cols) )
     {
+	if ( dom )
+	    ui_dom_live().erase(dom);
 	delete f;
 	return 0;
     }
@@ -1156,7 +1283,48 @@ void close(int64_t t)
     if ( !f )
 	return;
     f->close();
+    ui_dom_live().erase(dynamic_cast<ui_dom_frontend *>(f));
     ui_frontends().close(t);
+}
+
+// ---- script-hosted targets ---------------------------------------------
+// Register a host under a target name (a fragment's dynamic initializer
+// does this once, before main). False + stderr on a missing table, a
+// table without open/run, or a name already taken — the first
+// registration wins, so a program cannot swap the web target's host from
+// under the engine.
+bool register_host(const char *target, const ui_host_ops *ops)
+{
+    std::string name = target ? target : "";
+    if ( name.empty() || !ops || !ops->open || !ops->run )
+    {
+	fprintf(stderr, "ui::register_host: '%s' needs a name and a table with open and run\n",
+		name.c_str());
+	return false;
+    }
+    if ( name == "term" || ui_hosts().count(name) )
+    {
+	fprintf(stderr, "ui::register_host: target '%s' is already registered\n",
+		name.c_str());
+	return false;
+    }
+    ui_hosts()[name] = ops;
+    return true;
+}
+
+// The host's ONE inbound door: the page's event object (JSON text) for
+// the session `ctx` its open() received. Callable from inside run(); the
+// engine queues it and run() returns to let read_events drain it. An
+// unknown `ctx` (a closed session, a stray pointer) is refused loudly.
+void post_event(void *ctx, const char *json)
+{
+    ui_dom_frontend *f = (ui_dom_frontend *)ctx;
+    if ( !f || !ui_dom_live().count(f) )
+    {
+	fprintf(stderr, "ui::post_event: not an open script-hosted ui session\n");
+	return;
+    }
+    f->inbound.push_back(std::string(json ? json : ""));
 }
 
 int64_t rows(int64_t t)
