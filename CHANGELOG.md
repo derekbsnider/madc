@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### madcide GUI mode — the web target's first customer (slice 3, 2026-09-07)
+
+- `madc tools/madcide/madcide.mad <file> --gui` opens madcide in a window
+  through the Level-3 web target. ONE client loop and ONE composer serve
+  both the terminal and the window; the target is a flag (`--gui`, else the
+  terminal). A machine without the webview library refuses at open with the
+  reason (the lazy module row).
+- The composer stamps additive LAYOUT HINTS the terminal ignores and the
+  window honours: `region` (rail / sidebar / editor / panel / statusbar),
+  `tabs` (the editor tab-strip marker), `popup` (floating palettes and
+  dialogs). `web_model` emits them as DOM-op fields and the page lays a
+  workbench grid; a popup floats as an overlay. The terminal composition is
+  byte-identical (the hints are keys `tui_model` never reads).
+- The status bar renders as discrete left/right items in the window (the
+  same expanded JOE seats the terminal shows as one string). `@gui` theme
+  sections in `profiles/*.theme` become CSS custom properties (bg / fg /
+  accent / font) through the ONE `@scope` rule the key tables use
+  (`scope_line_parts`, shared by `parse_keys` and `load_theme`). While a
+  build streams, its output docks as a panel region (the VS Code Output
+  shape); interactive Run and the shell still use the terminal until the
+  embedded terminal lands.
+- Gates: the headless `testmadcide` composition clauses pass unchanged (one
+  composer), `check-madcide-seam.sh` holds (the session touches no handle),
+  and the GUI stage runs `tests/gui/madcide_{workbench,theme,render}.mad`
+  under Xvfb in JIT, exe and obj. New reducers: `testidehints`,
+  `testidetheme`, `testidestatus`, `testidepanel`; a `hint_str` string-hint
+  reader beside `hint_of`.
+
 ### Web target — the engine half (slice 2, 2026-09-07)
 
 - **`ui::open(target)`** — the target-generic session surface: `"term"` is
