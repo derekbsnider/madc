@@ -421,6 +421,17 @@ No per-platform code above the vendored library.
    CSS, `@gui` theme sections, status bar items, output panel for requests,
    the `--gui` flag. Gate: the headless `testmadcide` event battery unchanged
    (one composer), plus the GUI lane's DOM-snapshot fixtures.
+   **LANDED (2026-09-07, `feature/madcide-gui-claude`, [plan](2026-09-07-madcide-gui-plan.md)):**
+   region/tabs/popup layout hints the terminal ignores (`hint_str` beside
+   `hint_of`); `web_model` + the page render the workbench grid and float
+   popups; `@gui` theme sections as CSS custom properties (the `@scope`
+   rule shared via `scope_line_parts`); the status bar as left/right items;
+   the live-build output panel (`region:panel`); the `--gui` flag over a
+   target-generic `run_ide` (one loop, one composer, `check-madcide-seam`
+   green). GUI fixtures `tests/gui/madcide_{workbench,theme,render}.mad`;
+   headless `testide{hints,theme,status,panel}`. Interactive Run / shell in
+   a window await the embedded terminal (item 5); the buffer-named editor
+   tab strip is a later refinement.
 4. **The remote target** (`ws`): server-side channel + the same JSON; a
    browser is a client. Presence colours join with gateway slice 4.
 5. Later, by demand: embedded terminal panel (tui_grid → DOM grid), Track

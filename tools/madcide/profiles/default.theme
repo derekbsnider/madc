@@ -13,3 +13,10 @@ type bold
 string cyan
 number cyan
 comment green
+
+# @gui (slice 3): the web target's workbench colours/fonts as CSS custom
+# properties (the @scope rule; the TUI ignores these). One file, two
+# renderings. A property left out keeps the page's default.
+@gui bg #1b1d24
+@gui fg #d9dbe4
+@gui accent #7aa2f7

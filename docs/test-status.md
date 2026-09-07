@@ -1,6 +1,34 @@
 # Test Status
 
-> **Current (2026-09-07, the s160 merge wave — slice 2's ENGINE half of the
+> **Current (2026-09-07, the s161 merge wave — slice 3, madcide GUI mode
+> on `feature/madcide-gui-claude`
+> ([plan](plans/2026-09-07-madcide-gui-plan.md), 9 tasks, one trailer'd
+> commit each): the web target's first customer — the `--gui` flag over ONE
+> target-generic client loop (`run_ide` speaks `ui::open/render/event/…`,
+> not `tui_*`) and ONE composer (`compose_ide_tree` stamps additive
+> `region`/`tabs`/`popup` layout hints the terminal ignores and `web_model`
+> renders as a workbench grid, with popups floated); `@gui` theme sections
+> as CSS custom properties through the shared `@scope` rule
+> (`scope_line_parts`, one owner for `parse_keys` and `load_theme`); the
+> status bar as left/right items; the live-build output panel
+> (`region:panel`); `hint_str` beside `hint_of`. Two recorded carrier gaps
+> were fixed en route (fix-what-you-find): a qualified struct tag at the
+> statement head (`struct ns::S x`) and `var == number` equality (a silent
+> wrong answer)):** FULL develop-set battery on the final content
+> (fab56d7c): fulltest rc=0 (every gate incl. `check-madcide-seam`,
+> `check-one-key-owner`, `check-object-module-deps`, `forest_config_gate`)
+> with JIT **1326 passed / 0 failed / 0 timed out / 9 skipped**, native EXE **1267/0**, OBJ **1267/0**,
+> packed **1326/0/0/9**, headerless **1292/0/0/43**. The GUI stage —
+> `tests/gui/webview{,_size}`, `ui_web_{hello,edit}`, and the slice-3
+> `madcide_{workbench,theme,render}` — runs under Xvfb in JIT, exe and obj:
+> **7/7 JIT, 7/7 EXE, 7/7 OBJ**. New headless reducers: `testidehints`, `testidetheme`,
+> `testidestatus`, `testidepanel`, `teststructqualtag`, `testvareqnum`
+> (+6 → 1326 JIT-run tests). wine64 **1267/0/0TO/68skip** (verify_pe_release OK, 234 units);
+> c-testsuite **220/220**; macOS cross release both arches 836 units, verify_macho OK both, macho_exe_dylib_gate OK, package-macos rc=0.
+> Release-tier lanes (libcxx, darwin-suite, genuine-win) re-run at the next
+> master promotion.
+>
+> **Previous (2026-09-07, the s160 merge wave — slice 2's ENGINE half of the
 > web-target arc on `feature/web-provider-engine-claude`
 > ([plan](plans/2026-09-07-web-provider-engine-plan.md), 12 tasks, one
 > trailer'd commit each): the shared ui input owners out of `tui_model`

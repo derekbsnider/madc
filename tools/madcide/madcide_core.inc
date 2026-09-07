@@ -146,6 +146,31 @@ void resolve_profile_dir(var &dir)
 // cases is what makes a scope case-sensitive: the vi @normal alphabet's
 // a/A, i/I, o/O). Later lines overwrite earlier per (scope, key), which
 // is how the baked defaults merge under a profile's own respellings.
+// The ONE scoped-line rule (`@scope name value`): scope is the word after
+// '@' up to the first space; value is the LAST space-separated token; name
+// is everything between. False = not a scoped line, or malformed. Shared by
+// parse_keys (@scope key -> action, the modal key tables) and load_theme
+// (@gui prop -> CSS value) so the two sections cannot drift — later lines
+// win at the caller. profile_line already stripped comments/blanks.
+bool scope_line_parts(var &line, var &scope, var &name, var &value)
+{
+    const char *ls = line.c_str();
+    if ( ls[0] != '@' )
+	return false;
+    const char *sp1 = strchr(ls, ' ');
+    if ( sp1 == 0 )
+	return false;
+    scope = perl::substr(line, 1, sp1 - ls - 1);
+    var rest = php::trim(sp1 + 1);
+    const char *rs = rest.c_str();
+    const char *sp2 = strrchr(rs, ' ');
+    if ( sp2 == 0 )
+	return false;
+    value = php::trim(sp2 + 1);
+    name = php::trim(perl::substr(rest, 0, sp2 - rs));
+    return true;
+}
+
 void parse_keys(var &table, var &scopes, const char *text)
 {
     var t;
@@ -161,17 +186,11 @@ void parse_keys(var &table, var &scopes, const char *text)
 	const char *ls = line.c_str();
 	if ( ls[0] == '@' )
 	{
-	    const char *sp1 = strchr(ls, ' ');
-	    if ( sp1 == 0 )
+	    var scope;
+	    var key;
+	    var action;
+	    if ( !scope_line_parts(line, scope, key, action) )
 		continue;
-	    var scope = perl::substr(line, 1, sp1 - ls - 1);
-	    var rest = php::trim(sp1 + 1);
-	    const char *rs = rest.c_str();
-	    const char *sp2 = strrchr(rs, ' ');
-	    if ( sp2 == 0 )
-		continue;
-	    var action = php::trim(sp2 + 1);
-	    var key = php::trim(perl::substr(rest, 0, sp2 - rs));
 	    var one = sc[scope.c_str()];
 	    if ( one.is_null() )
 	    {
@@ -394,6 +413,7 @@ bool load_theme(long w, long es, const char *name)
     if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, tname)) )
 	return false;
     var th;
+    var gth;			// the @gui scope: CSS custom properties
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -403,6 +423,19 @@ bool load_theme(long w, long es, const char *name)
 	if ( !profile_line(line, lines, i) )
 	    continue;
 	const char *ls = line.c_str();
+	// A scoped line (@gui prop value): the web target's colours/fonts as
+	// CSS custom properties, through the ONE scope_line_parts rule the
+	// key tables use. The unscoped JOE-vocabulary lines below still feed
+	// the TUI theme unchanged — one file, two renderings, later lines win.
+	if ( ls[0] == '@' )
+	{
+	    var scope;
+	    var prop;
+	    var val;
+	    if ( scope_line_parts(line, scope, prop, val) && scope == "gui" )
+		gth[prop.c_str()] = val;
+	    continue;
+	}
 	const char *sp = strchr(ls, ' ');
 	if ( sp == 0 )
 	    continue;
@@ -412,6 +445,7 @@ bool load_theme(long w, long es, const char *name)
 	th[cls.c_str()] = spec;
     }
     ui::set(w, es, "theme", th);
+    ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
     ui::set(w, es, "scheme", tname);
     return true;
 }
@@ -938,6 +972,17 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	gap = 1;
     st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),
 			   rout);
+    // The status bar as discrete items (slice 3 Task 5): the SAME expanded
+    // halves (lout left, rout right) ride the hints so the web target lays
+    // them into a justified item bar; the TUI reads the combined `content`
+    // string above (the fill between them is a terminal real-estate detail).
+    // No new seat logic — one expansion, two renderings.
+    var items;
+    items["left"] = lout;
+    items["right"] = rout;
+    var sh;
+    sh["items"] = items;
+    st["hints"] = sh;
     status = st;
 }
 
@@ -2493,9 +2538,10 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
     out = php::str_replace("{madc}", self.c_str(), s3.c_str());
 }
 
-// The [build] buffer: found-or-created in the buffer table WITHOUT
-// switching to it (the pump appends in the background; ^P reaches it).
-long build_doc(long w, long es)
+// The [build] buffer if it already exists, else 0 — a NON-creating lookup
+// for read-only callers (the composer's live-build panel), so composition
+// never mints a buffer as a side effect.
+long build_doc_if_any(long w, long es)
 {
     var bufs;
     ui::get(bufs, w, es, "buffers");
@@ -2506,6 +2552,16 @@ long build_doc(long w, long es)
 	if ( r["path"] == "[build]" )
 	    return r["doc"].as_integer();
     }
+    return 0;
+}
+
+// The [build] buffer: found-or-created in the buffer table WITHOUT
+// switching to it (the pump appends in the background; ^P reaches it).
+long build_doc(long w, long es)
+{
+    long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
+    if ( existing != 0 )
+	return existing;
     long nd = open_buffer_doc(w, es, "[build]");
     push_buffer_row(w, es, nd, "[build]");
     return nd;
@@ -3741,6 +3797,29 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var status;
     compose_joe_statusline(status, w, es, nav, caret, fnctx);
 
+    // Layout regions (slice 3, madcide GUI): the edit node is the editor
+    // group (a tab strip when more than one buffer is open), the status
+    // line is the status bar. These are ADDITIVE hint keys the grid model
+    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
+    // so the terminal composition is byte-identical; web_model lays a
+    // region'd node into the workbench grid. The active window's ed and
+    // status are stamped here, before the multi-window branch's own
+    // read-modify-write of ed["hints"] preserves the region.
+    {
+	var eh = ed["hints"];
+	eh["region"] = "editor";
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	if ( !bufs.is_null() && php::count(bufs) > 1 )
+	    eh["tabs"] = 1;
+	ed["hints"] = eh;
+    }
+    {
+	var sh = status["hints"];
+	sh["region"] = "statusbar";
+	status["hints"] = sh;
+    }
+
     var r = { "role": "group" };
     var kids = {};
     // IDE-9e: with two-plus windows, each window is its own status line +
@@ -3980,7 +4059,48 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 						    : "(clean)" };
 	}
 	box["children"] = items;
+	// The pane's workbench slot (slice 3) is madcide's OWN presentation
+	// policy for its OWN panes, expressed as DATA — a docked side view, a
+	// bottom panel, or a floating popup — never a name test in general
+	// machinery. A `popup` hint floats the choice as an overlay; a
+	// `region` hint docks it. Both are hints the grid model ignores.
+	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
+			  "build": "panel", "project": "popup",
+			  "modes": "popup", "help": "popup",
+			  "options": "popup" };
+	var slot = pane_slot[pane.c_str()];
+	if ( !slot.is_null() )
+	{
+	    var bh = box["hints"];
+	    if ( slot == "popup" )
+		bh["popup"] = 1;
+	    else
+		bh["region"] = slot;
+	    box["hints"] = bh;
+	}
 	kids.push(box);
+    }
+
+    // The live-build output panel (slice 3 Task 6): while a build streams,
+    // dock the [build] buffer's output as a panel region in the workbench
+    // (VS Code's Output shape). ADDITIVE and gated on buildlive — the TUI
+    // ignores region:panel and reaches [build] via ^P, and a drained build
+    // (buildlive == 0) composes no panel, so the terminal shape and every
+    // testmadcide compose-shape assertion are unchanged. Non-creating
+    // lookup: composition never mints a buffer.
+    if ( es_int(w, es, "buildlive", 0) != 0 )
+    {
+	long bdoc = build_doc_if_any(w, es);
+	if ( bdoc != 0 )
+	{
+	    var bt;
+	    ui::text(bt, w, bdoc);
+	    var panel = { "role": "content" };
+	    panel["content"] = bt;
+	    var ph = { "region": "panel" };
+	    panel["hints"] = ph;
+	    kids.push(panel);
+	}
     }
 
     // The bottom message line (JOE's msgbuf): prompts, the search
@@ -4000,6 +4120,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(hn);
     }
     r["children"] = kids;
+    // The @gui theme (slice 3): the loaded scheme's CSS custom properties
+    // ride the root group's hints; web_model emits them and the page applies
+    // them as `--` variables. A hint the TUI ignores. Empty scope = nothing
+    // attached (the JOE default look).
+    var gt;
+    ui::get(gt, w, es, "gui_theme");
+    if ( !gt.is_null() && php::count(gt) > 0 )
+    {
+	var rh;
+	rh["theme"] = gt;
+	r["hints"] = rh;
+    }
     root = r;
 }
 

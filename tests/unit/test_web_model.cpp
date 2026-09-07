@@ -320,3 +320,115 @@ TEST_CASE("apply_input — malformed or unknown input yields no events and never
     CHECK(m.apply_input("{\"kind\":\"snapshot\"}").empty());
     CHECK(m.last_snapshot().empty());
 }
+
+// A workbench tree: a status group with region "statusbar", an editor
+// group with region "editor" + a tab strip, and a docked sidebar plus a
+// floating popup. web_model emits region/tabs/popup as additive op fields
+// the page places by (slice 3, madcide GUI plan Task 2).
+static uinode regioned(world &w, const char *region, bool tabs = false,
+		       bool popup = false)
+{
+    roles r = roles::standard(w);
+    uinode g(r.group);
+    std::map<std::string, madc::value> h;
+    if ( region )
+	h["region"] = madc::value(std::string(region));
+    if ( tabs )
+	h["tabs"] = madc::value((int64_t)1);
+    if ( popup )
+	h["popup"] = madc::value((int64_t)1);
+    g.hints = madc::value::make_object(h);
+    return g;
+}
+
+TEST_CASE("compose — region / tabs / popup are additive op fields")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    root.add(regioned(w, "statusbar"));		// 0.0
+    root.add(regioned(w, "editor", true));	// 0.1 (tab strip)
+    root.add(regioned(w, "sidebar"));		// 0.2 (docked)
+    root.add(regioned(w, NULL, false, true));	// 0.3 (floating popup)
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+
+    const nlohmann::json *sb = node_by_key(ops, "0.0");
+    REQUIRE(sb);
+    CHECK((*sb)["region"] == "statusbar");
+    CHECK((*sb).find("tabs") == (*sb).end());	// no tab strip on the bar
+    CHECK((*sb).find("popup") == (*sb).end());
+
+    const nlohmann::json *ed = node_by_key(ops, "0.1");
+    REQUIRE(ed);
+    CHECK((*ed)["region"] == "editor");
+    CHECK((*ed)["tabs"] == true);
+
+    const nlohmann::json *side = node_by_key(ops, "0.2");
+    REQUIRE(side);
+    CHECK((*side)["region"] == "sidebar");
+
+    const nlohmann::json *pop = node_by_key(ops, "0.3");
+    REQUIRE(pop);
+    CHECK((*pop)["popup"] == true);
+    CHECK((*pop).find("region") == (*pop).end());
+}
+
+TEST_CASE("compose — a node without layout hints carries no region/popup/tabs (negative control)")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, editor_tree(w, 3)),
+					       nullptr, false);
+    REQUIRE(!ops.is_discarded());
+    for ( size_t i = 0; i < ops.size(); ++i )
+    {
+	if ( ops[i].value("op", "") != "node" )
+	    continue;
+	CHECK(ops[i].find("region") == ops[i].end());
+	CHECK(ops[i].find("popup") == ops[i].end());
+	CHECK(ops[i].find("tabs") == ops[i].end());
+    }
+}
+
+TEST_CASE("compose — a status node with items renders a left/right item bar")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    uinode status(r.status);
+    status.content = madc::value(std::string("Ln 1        Row 2"));  // TUI string
+    std::map<std::string, madc::value> items;
+    items["left"] = madc::value(std::string("Ln 1"));
+    items["right"] = madc::value(std::string("Row 2"));
+    std::map<std::string, madc::value> h;
+    h["items"] = madc::value::make_object(items);
+    status.hints = madc::value::make_object(h);
+    root.add(status);
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+    const nlohmann::json *st = node_by_key(ops, "0.0");
+    REQUIRE(st);
+    CHECK((*st)["class"] == "status");
+    CHECK((*st)["text"] == "Ln 1        Row 2");	// the TUI combined string
+    REQUIRE((*st).contains("items"));
+    CHECK((*st)["items"]["left"] == "Ln 1");
+    CHECK((*st)["items"]["right"] == "Row 2");
+
+    // A status without items carries none (negative control).
+    web_model m2;
+    uinode root2(r.group);
+    uinode plain(r.status);
+    plain.content = madc::value(std::string("just text"));
+    root2.add(plain);
+    nlohmann::json ops2 = nlohmann::json::parse(m2.compose(r, root2), nullptr, false);
+    const nlohmann::json *st2 = node_by_key(ops2, "0.0");
+    REQUIRE(st2);
+    CHECK((*st2)["text"] == "just text");
+    CHECK((*st2).find("items") == (*st2).end());
+}

@@ -27,9 +27,26 @@
       el.dataset.key = op.key;
       nodes.set(op.key, el);
     }
-    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '');
+    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
+                   (op.popup ? ' popup' : '') + (op.tabs ? ' has-tabs' : '');
+    // Slice 3 workbench: a `region` node docks into a grid slot (the
+    // page's own CSS placement, keyed by data-region), and a parent that
+    // holds region'd children becomes the workbench grid. Pre-order means
+    // the parent element already exists when a region'd child arrives, so
+    // the class is set deterministically each compose cycle (the parent's
+    // own op reset its className first, region'd children re-add it).
+    if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
+    // properties on the document root, so the workbench CSS reads them via
+    // var(--name, fallback). The composer attaches it to the root group.
+    if (op.theme) {
+      for (var tk in op.theme)
+        if (Object.prototype.hasOwnProperty.call(op.theme, tk))
+          document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
+    }
     var parent = op.parent ? nodes.get(op.parent) : null;
     (parent || root).appendChild(el);   // pre-order arrival keeps sibling order
+    if (op.region && parent) parent.classList.add('workbench');
     return el;
   }
 
@@ -93,7 +110,15 @@
       el.appendChild(span('label', op.label || ''));
       el.appendChild(span('text', op.text || ''));
     } else if (cls === 'status' || cls === 'content' || cls === 'item') {
-      text(el, op.text);
+      if (cls === 'status' && op.items) {
+        // The status bar as a justified item pair (slice 3): .status is
+        // already flex space-between, so a left and a right span sit apart.
+        el.textContent = '';
+        el.appendChild(span('sb-left', op.items.left || ''));
+        el.appendChild(span('sb-right', op.items.right || ''));
+      } else {
+        text(el, op.text);
+      }
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {

@@ -383,6 +383,22 @@ int64_t madarray_eq_value(void *ptr, void *other)
     { return *(const madc::value *)ptr == *(const madc::value *)other; }
 int64_t madarray_ne_value(void *ptr, void *other)
     { return !(*(const madc::value *)ptr == *(const madc::value *)other); }
+// The number kinds go through the SAME contract (madc::value::operator==,
+// strict kind) by building the operand as a value: `v == 5` is true only
+// for an integer-kind 5, `v == 5.0` only for the real, `v == true` only
+// for the boolean — never a second comparison rule beside value.h's.
+int64_t madarray_eq_int(void *ptr, int64_t i)
+    { return *(const madc::value *)ptr == madc::value(i); }
+int64_t madarray_eq_real(void *ptr, double d)
+    { return *(const madc::value *)ptr == madc::value(d); }
+int64_t madarray_eq_bool(void *ptr, int64_t b)
+    { return *(const madc::value *)ptr == madc::value(b != 0); }
+int64_t madarray_ne_int(void *ptr, int64_t i)
+    { return !madarray_eq_int(ptr, i); }
+int64_t madarray_ne_real(void *ptr, double d)
+    { return !madarray_eq_real(ptr, d); }
+int64_t madarray_ne_bool(void *ptr, int64_t b)
+    { return !madarray_eq_bool(ptr, b); }
 
 // First byte position of needle[0..n) in hay[0..len): memchr rides the
 // libc vectorized scan, memcmp confirms. No allocations, portable (no

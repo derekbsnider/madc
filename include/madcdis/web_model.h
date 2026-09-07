@@ -189,6 +189,42 @@ class web_model
 	op["key"] = key;
 	op["parent"] = parent;
 	op["class"] = web_class_of(r, n.role);
+	// Slice 3 layout hints (madcide GUI): `region` docks a node into a
+	// workbench slot (rail/sidebar/editor/panel/statusbar), `popup`
+	// floats it as an overlay, `tabs` asks the editor group for a tab
+	// strip. Additive op fields the page places by; a node without the
+	// hint carries none — byte-identical to the pre-slice-3 ops (the
+	// test_web_model negative control). The class stays the ROLE; the
+	// region is a SEPARATE data attribute, never a new role.
+	{
+	    std::string region = hint_str(n.hints, "region");
+	    if ( !region.empty() )
+		op["region"] = region;
+	    if ( hint_of(n.hints, "popup", 0) )
+		op["popup"] = true;
+	    if ( hint_of(n.hints, "tabs", 0) )
+		op["tabs"] = true;
+	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
+	    // bag of CSS custom-property name -> value strings; emit them so
+	    // the page applies them as `--name` variables. String values only
+	    // (a colour / font spec); other kinds are ignored.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ti = ho.find("theme");
+		if ( ti != ho.end() && ti->second.is_object() )
+		{
+		    nlohmann::json theme = nlohmann::json::object();
+		    const std::map<std::string, madc::value> &tv = ti->second.as_object();
+		    for ( std::map<std::string, madc::value>::const_iterator vi = tv.begin();
+			  vi != tv.end(); ++vi )
+			if ( vi->second.is_string() )
+			    theme[vi->first] = vi->second.as_string();
+		    if ( !theme.empty() )
+			op["theme"] = theme;
+		}
+	    }
+	}
 	bool recurse = true;
 	if ( n.role == r.heading )
 	{
@@ -200,6 +236,26 @@ class web_model
 	       || n.role == r.item )
 	{
 	    op["text"] = node_text(n);
+	    // The status bar as items (slice 3 Task 5): a status node whose
+	    // hints carry {items:{left,right}} renders a justified item bar;
+	    // the page prefers items when present, else the single `text`.
+	    if ( n.role == r.status && n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ii = ho.find("items");
+		if ( ii != ho.end() && ii->second.is_object() )
+		{
+		    const std::map<std::string, madc::value> &iv = ii->second.as_object();
+		    nlohmann::json items = nlohmann::json::object();
+		    std::map<std::string, madc::value>::const_iterator l = iv.find("left");
+		    std::map<std::string, madc::value>::const_iterator rr = iv.find("right");
+		    if ( l != iv.end() && l->second.is_string() )
+			items["left"] = l->second.as_string();
+		    if ( rr != iv.end() && rr->second.is_string() )
+			items["right"] = rr->second.as_string();
+		    op["items"] = items;
+		}
+	    }
 	}
 	else if ( n.role == r.action )
 	{

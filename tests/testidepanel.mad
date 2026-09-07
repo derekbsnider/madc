@@ -1,0 +1,63 @@
+// Slice 3 Task 6: the live-build output panel. While a build streams
+// (buildlive != 0), compose_ide_tree docks the [build] buffer's output as
+// a region:panel node in the workbench (the VS Code Output shape). It is
+// additive and gated on buildlive — a drained build composes no panel, so
+// the terminal shape is unchanged (testmadcide's compose-shape assertions
+// stay green). This drives the state directly (no async pump): the panel
+// appears only while a build is live and carries its output.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+long find_panel(var &tree)
+{
+    var kids = tree["children"];
+    long n = php::count(kids);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var k = kids[i];
+	if ( !k["hints"].is_null() && k["hints"]["region"] == "panel" )
+	    return i;
+    }
+    return -1;
+}
+
+int main()
+{
+    const char *path = "madc_ide_panel.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    IdeSession S;
+    S.attach(w, es);
+
+    // No build live: no panel node (the terminal shape).
+    var t0;
+    S.compose_ide_tree(t0, doc);
+    println("no-build: panel-index={}", find_panel(t0));
+
+    // A live build: seed the [build] buffer and the buildlive flag directly
+    // (the pump's effect), then compose — the panel docks with the output.
+    long bdoc = build_doc(w, es);
+    append_build_line(w, es, bdoc, "=== echo hello ===");
+    append_build_line(w, es, bdoc, "hello from the build");
+    ui::set(w, es, "buildlive", 1);
+    var t1;
+    S.compose_ide_tree(t1, doc);
+    long pi = find_panel(t1);
+    println("build-live: panel-present={}", pi >= 0 ? 1 : 0);
+    var panel = t1["children"][pi];
+    var pc = panel["content"];
+    println("panel-has-output={}", pc.index("hello from the build") >= 0 ? 1 : 0);
+
+    // Drained: the panel is gone again (shape restored).
+    ui::set(w, es, "buildlive", 0);
+    var t2;
+    S.compose_ide_tree(t2, doc);
+    println("drained: panel-index={}", find_panel(t2));
+    return 0;
+}

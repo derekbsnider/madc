@@ -392,6 +392,34 @@ exist on this system; `tools/texteditor/vised.mad <file> --web` is the
 worked example (`tests/gui/ui_web_hello.mad` / `ui_web_edit.mad` are the
 suite's, under Xvfb in JIT, exe and `.o`).
 
+### The workbench (madcide GUI mode)
+
+`madc tools/madcide/madcide.mad <file> --gui` is the web target's first
+customer. ONE client loop and ONE composer serve the terminal and the
+window alike; the target is the `--gui` flag. The composer stamps additive
+LAYOUT HINTS the terminal ignores (its "unknown hints are ignored" rule)
+and the window honours:
+
+| Hint | On | The window |
+|------|----|-----------|
+| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar` |
+| `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
+| `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
+| `items` (`{left,right}`) | the status node | the status bar's justified item pair (the same JOE seats the terminal shows as one string) |
+| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope |
+
+The renderers read `region` through `hint_str` (the string twin of
+`hint_of`), so a node without a hint carries none — the terminal tree is
+byte-identical. `@gui prop value` lines in `profiles/*.theme` feed the
+web colours/fonts through the ONE `@scope` rule the key tables use
+(`scope_line_parts`, shared by `parse_keys` and `load_theme`); the
+unscoped JOE-vocabulary lines still feed the terminal — one file, two
+renderings. While a build streams, its output docks as the `panel` region
+(the VS Code Output shape); interactive Run and the shell use the terminal
+until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
+render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
+`--gui` loop is a manual gate.
+
 ## Thread contract
 
 Per `.claude/rules/thread-safety.md`: a session and every world

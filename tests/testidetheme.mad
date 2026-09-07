@@ -1,0 +1,48 @@
+// Slice 3 Task 4: `@gui` theme sections. load_theme reads the web target's
+// colours/fonts (the @scope rule, one scope_line_parts owner shared with
+// parse_keys) into a `gui_theme` bag, while the unscoped JOE-vocabulary
+// lines still feed the TUI `theme` unchanged — one file, two renderings.
+// The composer attaches the gui_theme to the root's hints. Oracle: the
+// profile files' own @gui/unscoped lines (design §3.4).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_theme.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+
+    // default scheme: the unscoped lines populate `theme`, the @gui lines
+    // a SEPARATE gui_theme bag.
+    load_theme(w, es, "default");
+    var th;
+    ui::get(th, w, es, "theme");
+    var gt;
+    ui::get(gt, w, es, "gui_theme");
+    println("default: keyword={} gui-bg={} gui-accent={} gui-count={}",
+	    th["keyword"], gt["bg"], gt["accent"], php::count(gt));
+
+    // the composer attaches gui_theme to the root hints.
+    IdeSession S;
+    S.attach(w, es);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var rt = tree["hints"]["theme"];
+    println("root-theme: accent={} present={}", rt["accent"],
+	    tree["hints"]["theme"].is_null() ? 0 : 1);
+
+    // a scheme swap replaces the vars (vivid's warmer accent); an unscoped
+    // class still lands in `theme`.
+    load_theme(w, es, "vivid");
+    ui::get(gt, w, es, "gui_theme");
+    ui::get(th, w, es, "theme");
+    println("vivid: gui-accent={} function-class={}", gt["accent"], th["function"]);
+    return 0;
+}

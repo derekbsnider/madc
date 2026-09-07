@@ -1,0 +1,3 @@
+default: keyword=bold gui-bg=#1b1d24 gui-accent=#7aa2f7 gui-count=3
+root-theme: accent=#7aa2f7 present=1
+vivid: gui-accent=#f0a35e function-class=bold blue
