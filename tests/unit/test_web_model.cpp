@@ -64,11 +64,13 @@ static uinode editor_tree(world &w, long caret, long sel_start = -1,
     std::map<std::string, madc::value> row;
     row["s"] = madc::value((int64_t)0);
     row["e"] = madc::value((int64_t)2);
-    row["c"] = madc::value(std::string("kw"));
+    row["cls"] = madc::value(std::string("keyword"));
     std::vector<madc::value> spans;
     spans.push_back(madc::value::make_object(row));
-    std::map<std::string, madc::value> bad;		// malformed: skipped
+    std::map<std::string, madc::value> bad;		// TUI-only (c, no cls): the web skips it
     bad["s"] = madc::value((int64_t)3);
+    bad["e"] = madc::value((int64_t)5);
+    bad["c"] = madc::value(std::string("bold"));
     spans.push_back(madc::value::make_object(bad));
     h["spans"] = madc::value::make_array(spans);
     edit.hints = madc::value::make_object(h);
@@ -130,7 +132,7 @@ TEST_CASE("compose — keyed DOM ops: root, one node per tree node, end")
     REQUIRE(edit);
     CHECK((*edit)["class"] == "edit");
     nlohmann::json want_lines = nlohmann::json::parse(
-	"[{\"t\":\"ab\",\"s\":[[0,2,\"kw\"]]},{\"t\":\"cd\",\"s\":[]}]");
+	"[{\"t\":\"ab\",\"s\":[[0,2,\"keyword\"]]},{\"t\":\"cd\",\"s\":[]}]");
     CHECK((*edit)["lines"] == want_lines);
     CHECK((*edit)["caret"] == nlohmann::json{ {"line", 1}, {"col", 0} });
     CHECK((*edit)["sel"].is_null());
@@ -174,7 +176,7 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     std::map<std::string, madc::value> row;
     row["s"] = madc::value((int64_t)2);
     row["e"] = madc::value((int64_t)6);
-    row["c"] = madc::value(std::string("str"));
+    row["cls"] = madc::value(std::string("string"));
     std::vector<madc::value> spans;
     spans.push_back(madc::value::make_object(row));
     std::map<std::string, madc::value> h;
@@ -186,7 +188,7 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     const nlohmann::json *e2 = node_by_key(ops, "0");
     REQUIRE(e2);
     CHECK((*e2)["lines"] == nlohmann::json::parse(
-	"[{\"t\":\"abc\",\"s\":[[2,1,\"str\"]]},{\"t\":\"def\",\"s\":[[0,2,\"str\"]]}]"));
+	"[{\"t\":\"abc\",\"s\":[[2,1,\"string\"]]},{\"t\":\"def\",\"s\":[[0,2,\"string\"]]}]"));
     CHECK((*e2)["caret"] == nlohmann::json{ {"line", 1}, {"col", 3} });
 
     size_t line, col;

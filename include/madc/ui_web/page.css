@@ -23,13 +23,17 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .edit .line { white-space: pre; min-height: 1.35em; }
 .caret { background: #d9dbe4; color: #1b1d24; }
 .sel { background: #4a5a80; }
-.c-kw { color: #8fb4ff; }
-.c-str { color: #a8d08d; }
-.c-cmt { color: #8a8f9f; font-style: italic; }
-.c-num { color: #f0c674; }
-.c-pp { color: #c8a2ff; }
-.c-type { color: #7ed3d3; }
-.c-fn { color: #e0b070; }
+/* Syntax highlight: the web's OWN styling vocabulary, keyed by the span's
+   SEMANTIC class (`.c-<class>`, the highlight_class_name names). Each colour
+   reads an @gui custom property so a theme overrides it (@gui syn-keyword
+   #...); omit it and this default holds. A plain identifier carries no class
+   and stays unstyled. */
+.c-keyword  { color: var(--syn-keyword,  #8fb4ff); }
+.c-string   { color: var(--syn-string,   #a8d08d); }
+.c-comment  { color: var(--syn-comment,  #8a8f9f); font-style: italic; }
+.c-number   { color: var(--syn-number,   #f0c674); }
+.c-type     { color: var(--syn-type,     #7ed3d3); }
+.c-function { color: var(--syn-function, #e0b070); }
 .choice { display: flex; flex-wrap: wrap; padding: 1px 8px; gap: 0 4px; }
 .choice .label { color: #9aa0b4; margin-right: 8px; }
 .choice .opt { padding: 0 6px; }

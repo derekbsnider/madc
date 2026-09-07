@@ -493,30 +493,40 @@ void load_status(long w, long es, const char *name)
 }
 
 // Highlight spans onto the bag (AST-2): the engine's classification rows
-// (source coordinates) through the THEME (class -> colour name),
-// converted to the byte-offset { s, e, c } rows the edit node's hints
-// speak. ONE converter, two feeders: parse_spans (refresh_spans, the
+// (source coordinates) converted to the byte-offset rows the edit node's
+// hints speak. Each row carries the SEMANTIC class `cls` (the portable
+// fact the web renders as `.c-<cls>`) and, when the THEME styles that
+// class, the TUI's JOE style spec `c` too — one converter, two
+// renderings (a class the theme omits still colours on the web; the TUI
+// skips it). ONE converter, two feeders: parse_spans (refresh_spans, the
 // full-parse state) and lex_spans (colour at load before the parse
-// lands). Like the status line, spans go stale with edits until the
-// next check/save. An unthemed class (or a stale line) skips.
+// lands). Like the status line, spans go stale with edits until the next
+// check/save. A plain identifier (styled by no renderer) or a stale line
+// skips.
 void spans_to_hspans(long w, long es, long doc, var &rows)
 {
     var hs = {};
     var th;
     ui::get(th, w, es, "theme");
-    if ( !th.is_null() )
+    for ( var r : rows )
     {
-	for ( var r : rows )
-	{
-	    var c = th[r["class"].c_str()];
-	    if ( c.is_null() )
-		continue;
-	    long ls = ui::text_line_start(w, doc, r["line"].as_integer());
-	    if ( ls < 0 )
-		continue;
-	    long s = ls + r["column"].as_integer();
-	    hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
-	}
+	var cls = r["class"];
+	if ( cls == "ident" )
+	    continue;			// a plain identifier: styled by no renderer
+	long ls = ui::text_line_start(w, doc, r["line"].as_integer());
+	if ( ls < 0 )
+	    continue;			// a stale line (edited since the parse)
+	long s = ls + r["column"].as_integer();
+	// The SEMANTIC class is the portable fact BOTH renderers read. The
+	// web styles it as `.c-<cls>` (its own CSS / @gui vocabulary), so it
+	// rides on EVERY classified span. The TUI's JOE style spec `c` is a
+	// null unless the theme styles this class (tui_model skips a row whose
+	// `c` is not a style string) — ONE converter, two renderings, neither
+	// renderer's vocabulary leaking into the other's.
+	var c;
+	if ( !th.is_null() )
+	    c = th[cls.c_str()];
+	hs[] = { "s": s, "e": s + r["length"].as_integer(), "cls": cls, "c": c };
     }
     ui::set(w, es, "hspans", hs);
 }

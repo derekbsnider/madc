@@ -20,7 +20,7 @@
 //   {"op":"node","key":"0.2","parent":"0","class":"heading",
 //    "label":"...","text":"..."}                           create-or-update
 //   {"op":"node","key":"0.3","parent":"0","class":"edit","lines":[
-//      {"t":"line text","s":[[start,len,"kw"],...]}, ...],
+//      {"t":"line text","s":[[start,len,"keyword"],...]}, ...],
 //    "caret":{"line":3,"col":7},"sel":[[l,c],[l,c]]|null,
 //    "tabwidth":8,"focus":true}
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
@@ -114,9 +114,13 @@ class web_model
 
     static const long default_tab_stop = 8;
 
-    // One highlight-span row {s, e, c} of an edit node's hints["spans"],
-    // validated as the grid model validates it (byte range non-empty, a
-    // class NAME); the class rides to the page as the span's CSS class.
+    // One highlight-span row of an edit node's hints["spans"], validated
+    // as the grid model validates it (byte range non-empty, a class name).
+    // The web reads the SEMANTIC class `cls` (the portable fact the span
+    // carries) and renders it as the CSS class `c-<cls>` — its own styling
+    // vocabulary (page.css / the @gui theme). The sibling `c` field is the
+    // TUI's JOE style spec, which the web ignores; a row with only `c`
+    // (a TUI-only styling) carries no `cls` and is skipped here.
     struct doc_span { long start, end; std::string cls; };
 
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
@@ -135,7 +139,7 @@ class web_model
 	    ds.start = hint_of(row, "s", -1);
 	    ds.end = hint_of(row, "e", -1);
 	    const std::map<std::string, madc::value> &ro = row.as_object();
-	    std::map<std::string, madc::value>::const_iterator ci = ro.find("c");
+	    std::map<std::string, madc::value>::const_iterator ci = ro.find("cls");
 	    if ( ds.start < 0 || ds.end <= ds.start
 	      || ci == ro.end() || !ci->second.is_string()
 	      || ci->second.as_string().empty() )
@@ -302,7 +306,7 @@ class web_model
 	{
 	    // The editable region: the SAME hints the grid model reads
 	    // (caret / sel_start / sel_end byte offsets, tabwidth, rows,
-	    // focus, spans rows {s, e, c}) — rendered as the line-DOM.
+	    // focus, spans rows {s, e, cls}) — rendered as the line-DOM.
 	    size_t slot = _focus.count();
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);
