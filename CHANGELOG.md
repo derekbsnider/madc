@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+### Web editor: per-keystroke cost proportional to the change (2026-09-07)
+
+- **Measured first, on the real file** (madcide_core.inc, 4557 lines, 4841
+  spans, dev build): a keystroke at mid-document cost ~840 ms — and the
+  handoff's diagnosis (the web renderer) was not the largest term.
+  `text_buffer::line_span` rescanned the piece table per call and the editor's
+  `line_of` walked it once per line, three times per composed keystroke and
+  once per caret motion: compose 433 ms + motion 135 ms, on BOTH targets.
+  text_buffer now keeps a lazily rebuilt newline index (`line_count` /
+  `line_span` O(1), new `line_of` O(log n)); `ui::text_line_of` is the
+  caret-line lookup as one engine call, and the editor's `line_of` is that
+  call. Compose 433 → 35 ms, motion 135 → 0.05 ms, the parse's span
+  conversion 1576 → 413 ms.
+- `web_model::edit_lines` clipped every span against every line (22M
+  comparisons, 140 ms): rows are start-sorted once and swept with an active
+  set. Render 165 → 55 ms, identical line-DOM.
+- **Bug**: `shift_hspans` rebuilt every span row as `{s, e, c}` on each edit,
+  dropping the semantic `cls` slice 3.1 added — the web lost all syntax
+  colour on the first keystroke until the next reparse. It now copies the row
+  and moves only its geometry (reducer `tests/testidespanshift.mad`).
+- **The editor line-DOM is incremental.** web_model keeps the rows it last
+  emitted per edit key (its diff basis, as tui_model keeps the painted grid)
+  and each compose sends ONE splice `{at, del, ins}` — nothing for a caret
+  move; full `lines` only on a key's first paint, after `ui::refresh` (now
+  honoured by the DOM frontend) or after the page's `resync`. `nlines` rides
+  every edit op; the page holds its rows and the caret/selection it drew,
+  splices in place, re-renders only lines whose caret/selection state
+  changed, and posts `{"kind":"resync"}` when its count disagrees (heals the
+  platform dropping the first render before the page loaded). The caret is
+  scrolled into view only when it moved. Native scrolling untouched; the
+  whole document stays in the DOM. Nav render 55 → 10 ms, wire 296 KB →
+  ~700 B. Shape from CodeMirror 6 / Monaco / Ace (in-process) and Neovim's
+  `grid_line` / xi-editor's line cache (thin client) — madc is the latter.
+- The page placed every existing node with `appendChild` each cycle; on the
+  attached editor that is a 100 ms subtree rebuild in WebKit. A node is now
+  placed only when it is not already in its slot. Page apply + layout per
+  keystroke 105 → 4 ms (full paint 125 ms once). `content-visibility: auto`
+  per line was tried and made it five times slower on WebKitGTK 2.52 —
+  reverted, noted.
+- `compose_ide_tree` wrote the edit node's hints through three
+  read-modify-write passes (six deep copies of the span rows); now one read
+  and one write-back. Compose 33 → 23 ms, tree byte-identical.
+- New tests: `test_text_buffer` (line index lockstep vs a string oracle,
+  `line_of` incl. the phantom line), `test_web_model` (the span sweep; the
+  incremental protocol: full/unchanged/caret/edit/Enter/append/delete/moved
+  key/resync/reset), `testuitext` (`text_line_of`), `testidespanshift`, and
+  `tests/gui/ui_web_patch.mad` (the real page under Xvfb through navigation,
+  typing, Enter, Backspace and a forced desync).
+- Recorded, not fixed here (KG Gaps): a local `var &r = o["h"]` reference to
+  a carrier slot lowers its initializer as an integer and crashes (by-ref
+  PARAMETERS work); dialect code compares key names / event kinds as strings
+  because `ui::event` converts the engine's enums to names at the boundary;
+  the carrier's deep-copy cost (~23 ms of compose) is a copy-on-write
+  decision for the owner.
+
 ### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
 
 - A source-free `madc --capabilities=json` prints a versioned JSON manifest of
