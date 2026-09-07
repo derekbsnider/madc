@@ -212,6 +212,9 @@ for stage in $stages; do
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
 			--exclude=/config.mk \
+			--exclude=/configure --exclude=/config.status --exclude=/config.log \
+			--exclude=/include/config.h --exclude=/include/config.h.in \
+			--exclude=/Makefile --exclude=/libmadc.pc \
 			-e "ssh -p $PORT" "$LOCAL_MADC/" "$REMOTE:$REMOTE_MADC/"
 		rc=$?
 		echo "sync madc rc=$rc"
@@ -227,7 +230,7 @@ for stage in $stages; do
 		# configure writes ROOT config.mk (never src/config.mk — the old
 		# guard tested a path that never exists, re-running configure on
 		# every build stage and masking the sync-stomp trap above).
-		run_remote "configure" "cd $REMOTE_MADC; test -f config.mk || ./configure"
+		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure || autoreconf -fi; test -f config.mk -a -f include/config.h || ./configure"
 		run_remote "build madc" "make -C $REMOTE_MADC/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
 		# .so's DT_NEEDED resolves through must exist on this side.
