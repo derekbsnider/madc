@@ -34,3 +34,38 @@ body { font: 14px/1.35 "DejaVu Sans Mono", "Menlo", "Consolas", monospace; overf
 .choice.focus .opt.sel { background: #ffd479; }
 .choice.list { flex-direction: column; gap: 0; }
 .choice.list .opt { padding-left: 24px; }
+
+/* Slice 3 — the madcide workbench. A group holding region'd children lays
+   them into a grid: an optional left rail, a docked sidebar spanning the
+   two upper rows, the editor filling, a bottom panel, and the status bar
+   across the foot. Empty columns (no rail node) collapse to zero width. */
+.node.group.workbench {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  grid-template-rows: 1fr auto auto;
+  grid-template-areas:
+    "rail sidebar editor"
+    "rail sidebar panel"
+    "statusbar statusbar statusbar";
+  flex: 1 1 auto; min-height: 0;
+}
+.workbench > [data-region="rail"]      { grid-area: rail; background: #22252f; }
+.workbench > [data-region="sidebar"]   { grid-area: sidebar; min-width: 12em;
+                                         border-right: 1px solid #2d3448;
+                                         overflow: auto; }
+.workbench > [data-region="editor"]    { grid-area: editor; min-height: 0;
+                                         overflow: auto; }
+.workbench > [data-region="panel"]     { grid-area: panel; max-height: 40vh;
+                                         border-top: 1px solid #2d3448;
+                                         overflow: auto; }
+.workbench > [data-region="statusbar"] { grid-area: statusbar; }
+/* A floating pane (palette / quick pick / prompt): out of the grid flow,
+   centered near the top, above the workbench. */
+.node.popup {
+  position: fixed; top: 15%; left: 50%; transform: translateX(-50%);
+  min-width: 24em; max-width: 80%; max-height: 60%; overflow: auto;
+  z-index: 10; background: #2a2f3e; border: 1px solid #4a5a80;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+/* The editor's tab-strip marker (the buffer-named strip is a later slice). */
+.edit.has-tabs { border-top: 2px solid #4a5a80; }

@@ -27,9 +27,18 @@
       el.dataset.key = op.key;
       nodes.set(op.key, el);
     }
-    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '');
+    el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
+                   (op.popup ? ' popup' : '') + (op.tabs ? ' has-tabs' : '');
+    // Slice 3 workbench: a `region` node docks into a grid slot (the
+    // page's own CSS placement, keyed by data-region), and a parent that
+    // holds region'd children becomes the workbench grid. Pre-order means
+    // the parent element already exists when a region'd child arrives, so
+    // the class is set deterministically each compose cycle (the parent's
+    // own op reset its className first, region'd children re-add it).
+    if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
     var parent = op.parent ? nodes.get(op.parent) : null;
     (parent || root).appendChild(el);   // pre-order arrival keeps sibling order
+    if (op.region && parent) parent.classList.add('workbench');
     return el;
   }
 
