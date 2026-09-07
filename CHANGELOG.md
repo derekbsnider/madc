@@ -33,8 +33,12 @@
   ns::T x` resolves through the declared-type resolver; a namespace-
   qualified type is a C-style cast target (`(ns::S *)v`); a dialect
   fragment's own `println` / `stderr` mentions pull the intrinsic and C-
-  header providers, ordered before the fragment. Reducers
-  `testautoincludedeclhead`, `teststaticqualtype`, `testcastqualtype`.
+  header providers — resolved to closure BEFORE tokenizing and placed by
+  the one order table (lex order stays parse order; `namespace X {` is a
+  definition, never a pull; a sibling namespace fragment is pulled only by
+  a qualified `X::` use). Reducers `testautoincludedeclhead`,
+  `teststaticqualtype`, `testcastqualtype`; `testautoincludens` and
+  `testnsmadcorder` pin the order rule.
 
 ### Resource guards default off (owner ruling 2026-09-07)
 
