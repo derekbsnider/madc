@@ -185,8 +185,12 @@
       el._key = op.key;
       ensureScrollListener(el);
       // Restore the scroll position now that the spacers give the container
-      // its full scrollHeight (the clamp is gone).
+      // its full scrollHeight (the clamp is gone). Record what we set: this
+      // programmatic write fires a scroll event, and the listener must NOT
+      // treat it as a user scroll (that would re-post -> recompose -> restore
+      // -> ... a feedback loop that pins the wheel in place = "jiggle").
       el.scrollTop = savedScroll;
+      el._modelScrollTop = el.scrollTop;
     }
     // group / separator / node: structure only — children carry it.
   }
@@ -224,6 +228,10 @@
         pending = false;
         var lh = el._lineH || 0;
         if (lh <= 0) return;
+        // Skip the scroll event our own restore fired (else post -> recompose
+        // -> restore -> post loops as a jiggle). A real wheel/scrollbar move
+        // changes scrollTop by far more than 1px away from what we set.
+        if (Math.abs(el.scrollTop - (el._modelScrollTop || 0)) < 1) return;
         var visTop = el.scrollTop / lh;
         var visRows = el.clientHeight / lh;
         var winTop = el._winTop || 0;
