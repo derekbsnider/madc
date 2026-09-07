@@ -14,6 +14,7 @@
 static const MadcModuleSpec madc_modules[] = {
 	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
 	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
+	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll" },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 

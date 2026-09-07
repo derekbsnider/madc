@@ -759,6 +759,8 @@ print-%:
 all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
+include webview.mk
+
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
 
@@ -1060,6 +1062,7 @@ test: $(TESTBINS)
 
 fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/run_tests.sh
+	@python3 ../scripts/gen_webview_header.py --check
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
