@@ -1,0 +1,62 @@
+// Upstream C API through the production typed module interface.
+// All state and callbacks belong to the UI thread. Callback text is borrowed.
+import madcwebview;
+
+struct Probe {
+	webview_t view;
+	int replies;
+	int failed;
+};
+
+void stop_loop(webview_t w, void *arg)
+{
+	webview_terminate(w);
+}
+
+void report_dom(const char *id, const char *request, void *arg)
+{
+	Probe *probe = (Probe *)arg;
+	probe->replies++;
+	println("GUI_DOM {}", request);
+	if (webview_return(probe->view, id, 0, "\"ack\"") != WEBVIEW_ERROR_OK)
+		probe->failed = 1;
+}
+
+void report_ack(const char *id, const char *request, void *arg)
+{
+	Probe *probe = (Probe *)arg;
+	probe->replies++;
+	println("GUI_ACK {}", request);
+	if (webview_return(probe->view, id, 0, "null") != WEBVIEW_ERROR_OK)
+		probe->failed = 1;
+	if (webview_dispatch(probe->view, stop_loop, 0) != WEBVIEW_ERROR_OK)
+		probe->failed = 1;
+}
+
+int main()
+{
+	const webview_version_info_t *version = webview_version();
+	if (!version || version->version.major != 0 || version->version.minor != 12 || version->version.patch != 0)
+		return 1;
+	println("GUI_VERSION {}", version->version_number);
+	Probe probe;
+	probe.replies = 0;
+	probe.failed = 0;
+	probe.view = webview_create(0, 0);
+	if (!probe.view) return 2;
+	if (!webview_get_window(probe.view) || !webview_get_native_handle(probe.view, WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET))
+		return 3;
+	if (webview_set_title(probe.view, "madc webview reducer") != WEBVIEW_ERROR_OK) return 4;
+	if (webview_set_size(probe.view, 480, 320, WEBVIEW_HINT_NONE) != WEBVIEW_ERROR_OK) return 5;
+	if (webview_bind(probe.view, "report_dom", report_dom, &probe) != WEBVIEW_ERROR_OK) return 6;
+	if (webview_bind(probe.view, "report_ack", report_ack, &probe) != WEBVIEW_ERROR_OK) return 7;
+	if (webview_init(probe.view, "window.nativeInit='native-init';") != WEBVIEW_ERROR_OK) return 8;
+	if (webview_set_html(probe.view, "<!doctype html><html><body><h1>hello from madc</h1><script>window.addEventListener('load',async()=>{const h=document.querySelector('h1');const ack=await report_dom(h.innerText,document.readyState,h.getBoundingClientRect().width>0,window.nativeInit);await report_ack(ack);});</script></body></html>") != WEBVIEW_ERROR_OK) return 9;
+	if (webview_run(probe.view) != WEBVIEW_ERROR_OK) return 10;
+	if (webview_unbind(probe.view, "report_dom") != WEBVIEW_ERROR_OK) return 11;
+	if (webview_unbind(probe.view, "report_ack") != WEBVIEW_ERROR_OK) return 12;
+	if (webview_destroy(probe.view) != WEBVIEW_ERROR_OK) return 13;
+	if (probe.replies != 2 || probe.failed) return 14;
+	println("GUI_DESTROYED");
+	return 0;
+}

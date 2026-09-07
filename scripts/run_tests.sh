@@ -158,6 +158,14 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 
+# A separate fixture directory uses the same runner (GUI, etc.).
+TEST_DIR="${MADC_TEST_DIR:-tests}"
+if ! compgen -G "$TEST_DIR/*.mad" >/dev/null; then
+    echo "No .mad tests in $TEST_DIR" >&2
+    exit 1
+fi
+if [ "$TEST_DIR" != tests ]; then echo "TEST DIRECTORY: $TEST_DIR (not the default suite)"; fi
+
 PASS=0
 FAIL=0
 TIMEOUTS=0
@@ -169,11 +177,12 @@ OBJ_FAIL=0
 SELECTED=0
 STDLIB_SKIPPED=0
 DOMAIN_SKIPPED=0
-for t in tests/*.mad; do
+for t in "$TEST_DIR"/*.mad; do
+    [ -f "$t" ] || continue
     base=$(basename "$t" .mad)
     # A .helper fixture marks a compilation unit owned by another test
     # (content = one line naming the owner) — never run standalone.
-    [ -f "tests/$base.helper" ] && continue
+    [ -f "${TEST_DIR}/$base.helper" ] && continue
     if [ -n "$TEST_GLOBS" ]; then
         keep=0
         for g in $TEST_GLOBS; do
@@ -183,14 +192,14 @@ for t in tests/*.mad; do
     fi
     SELECTED=$((SELECTED+1))
 
-    input_file="tests/$base.input"
-    argv_file="tests/$base.argv"
-    expect_file="tests/$base.expect"
-    expect_err_file="tests/$base.expect_err"
-    expect_quiet_file="tests/$base.expect_quiet"
-    flags_file="tests/$base.flags"
-    mir_skip_file="tests/$base.mir_skip"
-    timeout_file="tests/$base.timeout"
+    input_file="${TEST_DIR}/$base.input"
+    argv_file="${TEST_DIR}/$base.argv"
+    expect_file="${TEST_DIR}/$base.expect"
+    expect_err_file="${TEST_DIR}/$base.expect_err"
+    expect_quiet_file="${TEST_DIR}/$base.expect_quiet"
+    flags_file="${TEST_DIR}/$base.flags"
+    mir_skip_file="${TEST_DIR}/$base.mir_skip"
+    timeout_file="${TEST_DIR}/$base.timeout"
 
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
@@ -201,7 +210,7 @@ for t in tests/*.mad; do
     # Flavored lane: a test structurally out of scope for THIS stdlib flavor
     # (content = one line saying why). Only consulted when --stdlib= selected a
     # flavor, so the default lane is untouched.
-    if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "tests/$base.$STDLIB_SKIP_EXT""_skip" ]; then
+    if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "${TEST_DIR}/$base.$STDLIB_SKIP_EXT""_skip" ]; then
         SKIP=$((SKIP+1))
         STDLIB_SKIPPED=$((STDLIB_SKIPPED+1))
         continue
@@ -213,7 +222,7 @@ for t in tests/*.mad; do
     # untouched.
     domain_skip=0
     for skip_ext in $MADC_SKIP_EXT; do
-        if [ -f "tests/$base.$skip_ext""_skip" ]; then
+        if [ -f "${TEST_DIR}/$base.$skip_ext""_skip" ]; then
             domain_skip=1
             break
         fi
@@ -226,12 +235,12 @@ for t in tests/*.mad; do
 
     # Execution-domain expect VARIANT: a test whose CORRECT output differs on
     # the domain (e.g. sizeof(long)-derived values on win64, oracle =
-    # mingw-gcc) carries tests/<base>.<domain>_expect; the first domain in
+    # mingw-gcc) carries ${TEST_DIR}/<base>.<domain>_expect; the first domain in
     # MADC_SKIP_EXT order wins. Only consulted on a domain run, so the
     # default lane never sees it.
     for skip_ext in $MADC_SKIP_EXT; do
-        if [ -f "tests/$base.$skip_ext""_expect" ]; then
-            expect_file="tests/$base.$skip_ext""_expect"
+        if [ -f "${TEST_DIR}/$base.$skip_ext""_expect" ]; then
+            expect_file="${TEST_DIR}/$base.$skip_ext""_expect"
             break
         fi
     done
@@ -351,15 +360,15 @@ for t in tests/*.mad; do
     domain_obj_skip=0
     domain_exe_skip=0
     for skip_ext in $MADC_SKIP_EXT; do
-        if [ -f "tests/$base.${skip_ext}_obj_skip" ]; then
+        if [ -f "${TEST_DIR}/$base.${skip_ext}_obj_skip" ]; then
             domain_obj_skip=1
         fi
-        if [ -f "tests/$base.${skip_ext}_exe_skip" ]; then
+        if [ -f "${TEST_DIR}/$base.${skip_ext}_exe_skip" ]; then
             domain_exe_skip=1
         fi
     done
     if [ $RUN_OBJ -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ] && [ ! -f "tests/$base.obj_skip" ] \
+       && [ ! -f "${TEST_DIR}/$base.exe_skip" ] && [ ! -f "${TEST_DIR}/$base.obj_skip" ] \
        && [ $domain_obj_skip -eq 0 ] && [ $domain_exe_skip -eq 0 ]; then
         obj_path="/tmp/madc_test_obj_${base}.o"
         run_flags=()
@@ -402,11 +411,11 @@ for t in tests/*.mad; do
         fi
     fi
 
-    # EXE pass: compile to native and run. tests/foo.exe_skip marks a test
+    # EXE pass: compile to native and run. ${TEST_DIR}/foo.exe_skip marks a test
     # as structurally JIT-only (freeze re-exec machinery, in-process host
     # callbacks) — skipped here, not counted as an exe failure.
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ] && [ ! -f "$expect_err_file" ] \
-       && [ ! -f "tests/$base.exe_skip" ] && [ $domain_exe_skip -eq 0 ]; then
+       && [ ! -f "${TEST_DIR}/$base.exe_skip" ] && [ $domain_exe_skip -eq 0 ]; then
         exe_path="/tmp/madc_test_exe_${base}"
         # -o BEFORE the fixture flags: a positional .json manifest (project
         # auto-detect) ends madc's flag parsing — everything after it is the
@@ -454,7 +463,7 @@ if [ -n "$TEST_GLOBS" ]; then
     # Never let a filtered run read as a full one. A subset that says
     # only "N passed" is indistinguishable from the suite at a glance,
     # and that is exactly how a partial run gets quoted as a baseline.
-    echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls tests/*.mad | wc -l) tests; NOT a suite baseline)"
+    echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
 fi
 if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes

@@ -13,6 +13,9 @@
 #   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
+#   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe).
+#             MADC_GUI_MEM_LIMIT sets this stage's MADC_MEM_LIMIT (default 0);
+#             ordinary compiler runs keep their existing memory guard.
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -235,6 +238,16 @@ for stage in $stages; do
 		;;
 	fulltest)
 		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
+		;;
+	gui)
+		gui_mem=${MADC_GUI_MEM_LIMIT:-0}
+		if [[ ! "$gui_mem" =~ ^[0-9]+$ ]]; then
+			echo 'MADC_GUI_MEM_LIMIT must be a non-negative integer (MB, 0 = unlimited)' >&2
+			note_stage gui 2
+			continue
+		fi
+		echo "GUI policy: MADC_MEM_LIMIT=$gui_mem MB (override with MADC_GUI_MEM_LIMIT)"
+		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_MEM_LIMIT=$gui_mem MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 120 xvfb-run -a bash scripts/run_tests.sh --exe"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
