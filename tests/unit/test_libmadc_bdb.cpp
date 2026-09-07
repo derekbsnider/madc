@@ -32,6 +32,10 @@ struct StorageProbe
     double ratio;
 };
 
+// The probe builders are used only by the BDB tests below, which are
+// themselves #ifdef HAVE_BDB; guard the helpers the same way so the TU
+// compiles clean under -Werror=unused-function when BDB is absent.
+#ifdef HAVE_BDB
 namespace {
 
 void assign_short_name(StorageProbe &p, const std::string &name)
@@ -76,6 +80,7 @@ StorageProbe make_probe(int64_t id,
 }
 
 } // namespace
+#endif // HAVE_BDB
 
 namespace madc {
 
