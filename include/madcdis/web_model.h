@@ -48,6 +48,7 @@
 // Thread contract: a plain value object; confined with the frontend that
 // owns it (the C++ standard-library convention).
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -122,7 +123,15 @@ class web_model
     // TUI's JOE style spec, which the web ignores; a row with only `c`
     // (a TUI-only styling) carries no `cls` and is skipped here.
     struct doc_span { long start, end; std::string cls; };
+    static bool span_before(const doc_span &a, const doc_span &b)
+    {
+	return a.start < b.start;
+    }
 
+    // Rows come out sorted by start (stable: rows with one start keep
+    // their order) — the sweep in edit_lines relies on it. The composers
+    // already hand them over in source order, so the sort is a contract,
+    // not a cost.
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -147,15 +156,24 @@ class web_model
 	    ds.cls = ci->second.as_string();
 	    out.push_back(ds);
 	}
+	std::stable_sort(out.begin(), out.end(), span_before);
     }
 
     // The edit node's text as the line-DOM: one row per line, each with
-    // the spans that overlap it ([start-in-line, len, class]).
+    // the spans that overlap it ([start-in-line, len, class]). ONE sweep
+    // over start-sorted spans: a cursor admits a span into the ACTIVE set
+    // on the line that holds its start, and the set drops it after the
+    // line that holds its end — O(lines + spans + spans that cross a line
+    // boundary). The earlier form tested every span against every line;
+    // on a 4557-line, 4841-span document that was 22M comparisons — 140 ms
+    // of a 165 ms render — per keystroke (measured 2026-09-07).
     static nlohmann::json edit_lines(const std::string &text,
 				     const std::vector<doc_span> &spans)
     {
 	nlohmann::json lines = nlohmann::json::array();
 	size_t ls = 0;
+	size_t next = 0;		// the first span not yet admitted
+	std::vector<size_t> active;	// admitted spans still reaching ahead
 	for ( size_t i = 0; i <= text.size(); ++i )
 	{
 	    if ( i < text.size() && text[i] != '\n' )
@@ -163,20 +181,28 @@ class web_model
 	    const size_t le = i;		// [ls, le) is one line
 	    nlohmann::json row = nlohmann::json::object();
 	    row["t"] = text.substr(ls, le - ls);
+	    while ( next < spans.size() && (size_t)spans[next].start < le )
+		active.push_back(next++);
 	    nlohmann::json s = nlohmann::json::array();
-	    for ( size_t k = 0; k < spans.size(); ++k )
+	    size_t keep = 0;
+	    for ( size_t k = 0; k < active.size(); ++k )
 	    {
-		size_t a = spans[k].start < 0 ? 0 : (size_t)spans[k].start;
-		size_t b = (size_t)spans[k].end;
+		const doc_span &sp = spans[active[k]];
+		size_t a = (size_t)sp.start;
+		size_t b = (size_t)sp.end;
 		if ( a < ls )
 		    a = ls;
 		if ( b > le )
 		    b = le;
-		if ( a >= b )
-		    continue;
-		s.push_back(nlohmann::json::array(
-		    { (long)(a - ls), (long)(b - a), spans[k].cls }));
+		if ( a < b )
+		    s.push_back(nlohmann::json::array(
+			{ (long)(a - ls), (long)(b - a), sp.cls }));
+		// A span reaching past this line's newline has more to
+		// give on the next line; one ending at or before it is done.
+		if ( (size_t)sp.end > le + 1 )
+		    active[keep++] = active[k];
 	    }
+	    active.resize(keep);
 	    row["s"] = s;
 	    lines.push_back(row);
 	    ls = i + 1;

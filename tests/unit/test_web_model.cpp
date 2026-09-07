@@ -200,6 +200,87 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     CHECK(col == 0u);
 }
 
+// An edit node over `text` with the given {s, e, cls} rows, in that order.
+static uinode spanned_edit(const roles &r, const char *text,
+			   const std::vector<std::vector<long> > &rows,
+			   const std::vector<const char *> &classes)
+{
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    std::vector<madc::value> spans;
+    for ( size_t i = 0; i < rows.size(); ++i )
+    {
+	std::map<std::string, madc::value> row;
+	row["s"] = madc::value((int64_t)rows[i][0]);
+	row["e"] = madc::value((int64_t)rows[i][1]);
+	row["cls"] = madc::value(std::string(classes[i]));
+	spans.push_back(madc::value::make_object(row));
+    }
+    std::map<std::string, madc::value> h;
+    h["spans"] = madc::value::make_array(spans);
+    edit.hints = madc::value::make_object(h);
+    return edit;
+}
+
+TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans clip per line")
+{
+    world w;
+    roles r = roles::standard(w);
+    // Lines [0,8) [9,17) [18,26) and the empty line after the trailing
+    // newline. `a` spans three lines, `b` nests inside line 1, `c` starts
+    // on line 1 and reaches past the end of the text.
+    const char *text = "abcdefgh\nijklmnop\nqrstuvwx\n";
+    std::vector<std::vector<long> > rows;
+    rows.push_back(std::vector<long>{ 0, 20 });
+    rows.push_back(std::vector<long>{ 2, 5 });
+    rows.push_back(std::vector<long>{ 7, 30 });
+    std::vector<const char *> classes;
+    classes.push_back("a");
+    classes.push_back("b");
+    classes.push_back("c");
+    nlohmann::json want = nlohmann::json::parse(
+	"[{\"t\":\"abcdefgh\",\"s\":[[0,8,\"a\"],[2,3,\"b\"],[7,1,\"c\"]]},"
+	"{\"t\":\"ijklmnop\",\"s\":[[0,8,\"a\"],[0,8,\"c\"]]},"
+	"{\"t\":\"qrstuvwx\",\"s\":[[0,2,\"a\"],[0,8,\"c\"]]},"
+	"{\"t\":\"\",\"s\":[]}]");
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(
+	m.compose(r, spanned_edit(r, text, rows, classes)));
+    const nlohmann::json *e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"] == want);
+
+    // Rows arriving out of start order emit the same line-DOM: the model
+    // orders by start (stably), a contract of the sweep.
+    std::vector<std::vector<long> > shuffled;
+    shuffled.push_back(rows[2]);
+    shuffled.push_back(rows[0]);
+    shuffled.push_back(rows[1]);
+    std::vector<const char *> shuffled_cls;
+    shuffled_cls.push_back("c");
+    shuffled_cls.push_back("a");
+    shuffled_cls.push_back("b");
+    web_model m2;
+    ops = nlohmann::json::parse(
+	m2.compose(r, spanned_edit(r, text, shuffled, shuffled_cls)));
+    e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"] == want);
+
+    // A span ending exactly after a newline gives the next line nothing.
+    std::vector<std::vector<long> > tail;
+    tail.push_back(std::vector<long>{ 5, 9 });
+    std::vector<const char *> tail_cls;
+    tail_cls.push_back("d");
+    web_model m3;
+    ops = nlohmann::json::parse(
+	m3.compose(r, spanned_edit(r, text, tail, tail_cls)));
+    e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"][0]["s"] == nlohmann::json::parse("[[5,3,\"d\"]]"));
+    CHECK((*e)["lines"][1]["s"] == nlohmann::json::parse("[]"));
+}
+
 TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's input")
 {
     world w;
