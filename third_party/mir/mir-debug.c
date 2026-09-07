@@ -1378,6 +1378,22 @@ int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64
   return 0;
 }
 
+int MIR_object_section_bytes (MIR_object_t obj, int sec, const void **bytes, size_t *len) {
+  const dwbuf_t *b;
+  if (obj == NULL) return 0;
+  if (sec == MIR_OBJ_SEC_TEXT)
+    b = &obj->text;
+  else if (sec == MIR_OBJ_SEC_DATA)
+    b = &obj->data;
+  else if (sec == MIR_OBJ_SEC_ADDRPOOL)
+    b = &obj->pool;
+  else
+    return 0;
+  if (bytes != NULL) *bytes = b->p;
+  if (len != NULL) *len = b->len;
+  return 1;
+}
+
 int MIR_object_add_init (MIR_object_t obj, const char *name) {
   if (obj == NULL || name == NULL) return -1;
   /* the initializer is typically a per-TU static (STB_LOCAL) -- scan the
