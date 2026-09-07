@@ -1,16 +1,34 @@
 # Test Status
 
-> **Separate GUI inventory (2026-09-07, Astra slice2 library/build branch):**
-> `tests/gui/webview.mad` checks the upstream typed C API, handles, version,
-> DOM/layout, initialization, JS promise acknowledgement and destruction;
-> `tests/gui/webview_size.mad` covers all four size hints. `remote_build.sh gui`
-> runs the existing fixture runner with `MADC_TEST_DIR=tests/gui` under Xvfb.
-> **2/2 JIT, 2/2 EXE**, no failures/timeouts, including the final build with
-> madcdat/all storage backends enabled. These tests are outside `tests/*.mad`;
-> the default suite counts and lane ledger below have not been revalidated.
-> Recipes and contract: [building-webview.md](building-webview.md).
-
-> **Current (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
+> **Current (2026-09-07, the s159 merge wave — slice 2's BUILD half of the
+> web-target arc (Astra: webview/webview 0.12.0 subtree, the typed
+> `madcwebview` interface generated from upstream's C API, per-platform
+> `libmadcwebview` recipes, the `gui` stage) + the two `import` binding gaps
+> the spike found (cc848ea8 `extern "C"` inside a namespace keeps the C name;
+> 6cb90e4d one module-member lookup owner):** FULL develop-set battery on
+> `integrate/webview-build-wave` (content 7a06703f; ledger rows at 9ecd4e18,
+> docs-only on top): fulltest rc=0 (every gate, incl. the new
+> `check-one-module-member-owner.sh` and `gen_webview_header.py --check`) with
+> JIT **1312 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1253/0**, OBJ **1253/0**, packed **1312/0/0/9**, headerless **1278/0/0/43**
+> (pack drops 1335 = the s158 census); wine64 **1255/0/0TO/66skip** on the
+> rebuilt PE (verify_pe_release OK, 234 units); c-testsuite **220/220**
+> (`--std=gnu11`); macOS cross release both arches 836 units, verify_macho
+> OK, macho_exe_dylib_gate OK, package-macos rc=0. New reducers:
+> `testnsexternc` (+1 → 1312 JIT-run tests); `testimport` gains the
+> statement-position, cast-operand and `::libc::abs` member calls. The
+> **separate GUI inventory** — `tests/gui/webview.mad` (typed C API, handles,
+> version, DOM/layout, init, JS promise acknowledgement, destruction) and
+> `tests/gui/webview_size.mad` (all four size hints), run by `remote_build.sh
+> gui` through the same fixture runner with `MADC_TEST_DIR=tests/gui` under
+> Xvfb (`MADC_MEM_LIMIT=0` for that stage only) — **2/2 JIT, 2/2 EXE**
+> (tmp/logs/gui-s159.log). GUI tests live outside `tests/*.mad` and are not in
+> the default counts; recipes and contract:
+> [building-webview.md](building-webview.md). Release-tier lanes (libcxx,
+> darwin-suite, genuine-win) are unchanged from v0.98.0 and re-run at the
+> next master promotion.
+>
+> **Previous (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
 > D4 burndown waves 1–7c + the MIR aarch64 floor wave 8 + the SIMD arc
 > S1–S5 + the vector calling convention + Apple stack-argument packing
 > + wave 12, the libc++ `<list>` completion site):** FULL merge-wave
