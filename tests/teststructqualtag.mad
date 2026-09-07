@@ -1,0 +1,21 @@
+// A QUALIFIED tag in an elaborated-type-specifier at STATEMENT position
+// ([dcl.type.elab]): `struct ns::S x;` at file scope, at block scope, and
+// through a typedef. TokenSTRUCT::parse used to read `ns` as a tag of this
+// scope (minting an incomplete struct ns) and die on the `::` with
+// "Expecting identifier after type"; the statement head now hands a tag
+// followed by `::` to the shared elaborated-specifier resolver that TYPE
+// positions already use. Oracle: g++ and clang++ print 5 6 5 7.
+namespace ns { struct S { int a; }; }
+namespace outer { namespace inner { struct T { int b; }; } }
+
+struct ns::S plain = { 5 };
+typedef struct ns::S alias;
+
+int main()
+{
+    struct ns::S local = { 6 };
+    alias *p = &plain;
+    struct outer::inner::T deep = { 7 };
+    println("{} {} {} {}", plain.a, local.a, p->a, deep.b);
+    return 0;
+}

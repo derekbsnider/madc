@@ -43052,10 +43052,31 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
-	dmi = find_visible_struct_tag(tag->spelling());
+	// The tag's aggregate, however the tag is spelled. A QUALIFIED tag —
+	// `struct ns::S x;` / `struct A::B local = { 6 };` at statement
+	// position ([dcl.type.elab]: an elaborated-type-specifier with a
+	// nested-name-specifier) — read `ns` as the qualifier's HEAD, not as
+	// a tag of this scope: never mint it. The shared elaborated-
+	// specifier resolver (resolve_declared_type_token, the arm TYPE
+	// positions already take for `struct A::B`) consumes the `::` chain
+	// and answers the aggregate; the declaration then continues exactly
+	// like the unqualified `struct tag variable;` arm below.
+	DataDef *tag_dd = NULL;
+	if ( tn->id() == TokenID::tkNS )
+	{
+	    TokenDataType *qtdt = pgm.resolve_declared_type_token(tag, true, true);
+	    if ( !qtdt )
+		pgm.Throw(tag) << "Unknown qualified " << aggregate_kw << " tag "
+			       << tag->spelling() << flush;
+	    if ( !do_typedef )
+		return pgm.parseDeclaration(qtdt);
+	    tag_dd = &qtdt->definition;
+	}
+	else
+	    dmi = find_visible_struct_tag(tag->spelling());
 
 	// plain forward declaration: struct tag;
-	if ( tn->id() == TokenID::tkSemi )
+	if ( !tag_dd && tn->id() == TokenID::tkSemi )
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
@@ -43080,13 +43101,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 
 	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
-	if ( dmi == pgm.struct_map.end() )
+	if ( !tag_dd && dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
+	if ( !tag_dd )
+	    tag_dd = dmi->second;
 	// typedef struct tag alias — a C declarator LIST like every other
 	// typedef arm (`typedef struct _X X, *PX;` — winnt.h's dominant
 	// shape for previously-defined tags). Each declarator restarts from
@@ -43099,7 +43122,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    TokenBase *node = NULL;
 	    while ( true )
 	    {
-		DataDef *alias_dd = dmi->second;
+		DataDef *alias_dd = tag_dd;
 		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 		{
 		    pgm.nextToken();
@@ -43184,7 +43207,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !alias_dd->is_pointer() && !alias_dd->as_fptr_dd() )
 		    {
 			pgm.pack_tap_struct(alias_name);	// B4a tap
-			pgm.struct_map.set(alias_name, dmi->second);
+			pgm.struct_map.set(alias_name, tag_dd);
 		    }
 		    record_typedef(alias_name, alias_dd, tdt, tn);
 		    if ( node && !pgm.compounds.empty() )
@@ -43204,7 +43227,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	string tname(aggregate_kw);
 	tname.append(" ");
 	tname.append(tag->spelling());
-	tdt = new TokenDataType(tname.c_str(), *dmi->second);
+	tdt = new TokenDataType(tname.c_str(), *tag_dd);
 	return pgm.parseDeclaration(tdt);
     }
 
