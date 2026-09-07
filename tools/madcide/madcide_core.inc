@@ -2559,15 +2559,9 @@ long build_doc_if_any(long w, long es)
 // switching to it (the pump appends in the background; ^P reaches it).
 long build_doc(long w, long es)
 {
-    var bufs;
-    ui::get(bufs, w, es, "buffers");
-    long n = php::count(bufs);
-    for ( long i = 0; i < n; i = i + 1 )
-    {
-	var r = bufs[i];
-	if ( r["path"] == "[build]" )
-	    return r["doc"].as_integer();
-    }
+    long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
+    if ( existing != 0 )
+	return existing;
     long nd = open_buffer_doc(w, es, "[build]");
     push_buffer_row(w, es, nd, "[build]");
     return nd;
