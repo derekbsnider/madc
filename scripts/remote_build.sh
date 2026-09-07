@@ -230,7 +230,11 @@ for stage in $stages; do
 		# configure writes ROOT config.mk (never src/config.mk — the old
 		# guard tested a path that never exists, re-running configure on
 		# every build stage and masking the sync-stomp trap above).
-		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure || autoreconf -fi; test -f config.mk -a -f include/config.h || ./configure"
+		# configure is GENERATED on the build host (never synced), so a
+		# configure.ac edit on the NAS must regenerate it there: the
+		# freshness test, not a bare existence test — rsync -a keeps
+		# configure.ac's source mtime, so `-nt` is the right question.
+		run_remote "configure" "set -e; cd $REMOTE_MADC; test -x configure -a configure -nt configure.ac || autoreconf -fi; test -f config.mk -a -f include/config.h -a config.mk -nt configure || ./configure"
 		run_remote "build madc" "make -C $REMOTE_MADC/src -j20"
 		# lib/ is excluded from sync; the soname link the emitted
 		# .so's DT_NEEDED resolves through must exist on this side.
