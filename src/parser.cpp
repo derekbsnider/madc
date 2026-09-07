@@ -51245,14 +51245,19 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	    if ( tdmi != pgm.datatype_map.end() )
-	    {
-		TokenBase *type_tb = pgm.nextToken();
-		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    // The declared-type resolver is the ONE owner of what an identifier
+	    // denotes in a type position — a typedef name, a namespace-qualified
+	    // type (`static ui::ui_host_ops ops`), a template-id, a class-member
+	    // type chain — exactly as `const` and a plain declaration head ask
+	    // it. The flat-map probe only decides the fallback default below.
+	    TokenStream::Pos type_saved = pgm.tokens.savepos();
+	    TokenBase *type_tb = pgm.nextToken();
+	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    if ( dt || tdmi != pgm.datatype_map.end() )
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
-	    }
 	    else
 	    {
+		pgm.tokens = type_saved;
 		// C89 implicit int: `static funcname(...)` — treat as int
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
