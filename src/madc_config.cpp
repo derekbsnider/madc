@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "madc_config.h"
+#include "madc_guards.h"	// madc_guard_knob_parse — the one knob parser
 #include "madc_config_file.h"
 
 namespace madc {
@@ -36,10 +37,23 @@ void register_madc_keys(cfg::config_file &cf, config_settings &out)
 	cf.accept_text("stdlib", out.stdlib_option, &out.has_stdlib);
 	cf.accept_path("forest", out.forest);
 	cf.accept_path_list("include", out.include_dirs);
-	cf.accept_count("cpu-limit", out.cpu_limit_secs, &out.has_cpu_limit,
-			"seconds");
-	cf.accept_count("mem-limit", out.mem_limit_mb, &out.has_mem_limit,
-			"megabytes");
+	cf.accept_text("cpu-limit", out.cpu_limit, &out.has_cpu_limit);
+	cf.accept_text("mem-limit", out.mem_limit, &out.has_mem_limit);
+}
+
+// The guard knobs read `off`, `auto` or a whole number — the guards' ONE
+// parser (madc_guard_knob_parse) says which; a value it refuses is a config
+// error at parse time (loud, before anything runs), as a bad count was.
+static bool check_guard_key(const char *key, bool seen, const std::string &text,
+			    const char *units, const std::string &path,
+			    std::ostream &err)
+{
+	MadcGuardKnob knob;
+	if (!seen || madc_guard_knob_parse(text, knob))
+		return true;
+	err << path << ": " << key << " needs a whole number of " << units
+	    << ", 'off' or 'auto' (got '" << text << "')" << std::endl;
+	return false;
 }
 
 }   // namespace
@@ -56,6 +70,12 @@ bool config_parse_file(const std::string &path, config_settings &out,
 	register_madc_keys(cf, out);
 	bool ok = cf.parse_file(path, err);
 	out.source_path = cf.source_path();
+	if (ok && !check_guard_key("cpu-limit", out.has_cpu_limit, out.cpu_limit,
+				   "seconds", path, err))
+		ok = false;
+	if (ok && !check_guard_key("mem-limit", out.has_mem_limit, out.mem_limit,
+				   "megabytes", path, err))
+		ok = false;
 	return ok;
 }
 

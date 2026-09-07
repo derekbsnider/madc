@@ -28,6 +28,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
+#include "madc_guards.h"	// the resource guards (install + the GUI lift)
 #include "madc_crash.h"	// fault reporter + guard-handler writers (own TU: windows.h vs tokens.h)
 #include "madc_posix_io.h"	// cross-platform temporary file owner (--freeze-run)
 #include "madcdis/process.h"	// Process::run_and_wait (--freeze-run re-exec)
@@ -64,145 +65,9 @@ double time_diff(struct timeval x , struct timeval y)
 	return diff;
 }
 
-// Resource guards — deliberately LIBERAL by default: madc is a developer
-// CLI that also RUNS the program, and gcc/clang-style tools impose no
-// self-limits. Tight limits are an embedding host's / sandbox's choice
-// (set the env knobs); the defaults must never throttle legitimate work:
-//   MADC_CPU_LIMIT=<secs>   (default 0 = disabled) — any finite default
-//                            eventually kills a legitimate long-running
-//                            program with SIGXCPU, so CPU is opt-in only
-//   MADC_MEM_LIMIT=<MB>     (default 4096, +128/TU in --project mode;
-//                            0 disables) — virtual address space
-//                            (RLIMIT_AS), so includes JIT mappings and
-//                            dlopen()'d shared libs. Kept armed so a
-//                            pathological alloc trips as a loud, clean
-//                            bad_alloc instead of swapping the host to
-//                            death.
-// Soft = limit, hard = limit+slop so the process can't extend itself.
-// Every trip must name its knob (never-silent): SIGXCPU via
-// cpu_guard_handler, ENOMEM/bad_alloc via mem_guard_new_handler.
-#ifndef _WIN32
-static rlim_t env_rlim(const char *env_name, rlim_t fallback)
-{
-    if ( const char *env = getenv(env_name) ) {
-        char *end = NULL;
-        long v = strtol(env, &end, 10);
-        if ( end != env && v >= 0 ) return (rlim_t)v;
-    }
-    return fallback;
-}
-
-// Armed with the RLIMIT_AS guard: when operator new first fails, say WHY
-// (our own guard, and its knob) before the normal bad_alloc unwind —
-// otherwise the failure surfaces as a bare std::bad_alloc with no
-// actionable cause. An OOM handler must not allocate, so the message goes
-// out via the crash handler's write(2) plumbing.
-// Guarded to match the ONE place it is armed (the !__APPLE__ RLIMIT_AS arm
-// below): darwin does not enforce RLIMIT_AS, so on Apple targets this handler
-// is never installed and a definition here is simply unused.
-#ifndef __APPLE__
-static rlim_t madc_mem_guard_mb = 0;
-
-static void mem_guard_new_handler(void)
-{
-    std::set_new_handler(NULL);	// print once; let bad_alloc propagate
-    char buf[192];
-    int n = snprintf(buf, sizeof(buf),
-                     "madc: memory allocation failed with the MADC_MEM_LIMIT=%llu"
-                     " MB address-space guard active; raise it or set"
-                     " MADC_MEM_LIMIT=0 to disable\n",
-                     (unsigned long long)madc_mem_guard_mb);
-    madc_crash_write_formatted(buf, n, sizeof(buf));
-    throw std::bad_alloc();
-}
-#endif // !__APPLE__
-
-// Armed with the (opt-in) RLIMIT_CPU guard: the default SIGXCPU disposition
-// kills silently, which reads as a mystery death instead of the guard doing
-// its job — name the knob first, then die with the real signal status.
-static rlim_t madc_cpu_guard_secs = 0;
-
-static void cpu_guard_handler(int sig)
-{
-    char buf[160];
-    int n = snprintf(buf, sizeof(buf),
-                     "madc: CPU time exceeded the MADC_CPU_LIMIT=%llu s guard;"
-                     " raise it or unset it to disable\n",
-                     (unsigned long long)madc_cpu_guard_secs);
-    madc_crash_write_formatted(buf, n, sizeof(buf));
-    struct sigaction dfl;
-    memset(&dfl, 0, sizeof(dfl));
-    dfl.sa_handler = SIG_DFL;
-    sigaction(sig, &dfl, NULL);
-    raise(sig);
-}
-#endif // !_WIN32
-
-static void install_resource_guards(size_t project_tus,
-                                    const madc::config_settings &cfg)
-{
-#ifdef _WIN32
-    // Windows has no setrlimit. The JobObject equivalents
-    // (JOB_OBJECT_LIMIT_PROCESS_MEMORY, PerProcessUserTimeLimit) kill the
-    // process WITHOUT the nameable-knob message the POSIX guards guarantee,
-    // so the guards are documented no-ops here — the same posture as
-    // darwin's RLIMIT_AS below. A JobObject-based guard that still names
-    // its knob is a W-lane residual.
-    (void)project_tus;
-    (void)cfg;
-#else
-    // Precedence for both guards: environment > madc.ini > baked default
-    // (neither has a CLI flag, so the CLI layer of the rule is vacuous here).
-    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT",
-                               cfg.has_cpu_limit ? (rlim_t)cfg.cpu_limit_secs : 0);
-    if ( cpu_secs > 0 ) {
-        struct rlimit rl;
-        rl.rlim_cur = cpu_secs;
-        rl.rlim_max = cpu_secs + 1;
-        if ( setrlimit(RLIMIT_CPU, &rl) != 0 )
-            perror("setrlimit(RLIMIT_CPU)");
-        else {
-            madc_cpu_guard_secs = cpu_secs;
-            struct sigaction sa;
-            memset(&sa, 0, sizeof(sa));
-            sa.sa_handler = cpu_guard_handler;
-            sigaction(SIGXCPU, &sa, NULL);
-        }
-    }
-
-    // A --project build holds every TU's parsed state simultaneously (by
-    // design: all Programs live until the shared MIR module runs), so its
-    // legitimate address-space need scales with the manifest, not with any
-    // single file. Give each TU a 128 MB allowance on top of the single-file
-    // default: SMAUG's 51-TU manifest measures ~2.9 GB peak VA (~57 MB/TU),
-    // so 128 keeps ~2x headroom while a true runaway still trips.
-    // MADC_MEM_LIMIT — or a madc.ini mem-limit key — overrides the computed
-    // default verbatim (an explicitly configured ceiling is a ceiling; it does
-    // not silently grow with the manifest).
-    rlim_t default_mb = cfg.has_mem_limit
-                      ? (rlim_t)cfg.mem_limit_mb
-                      : 4096 + (project_tus > 1 ? 128 * (rlim_t)project_tus : 0);
-    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", default_mb);
-#ifdef __APPLE__
-    // darwin does not enforce RLIMIT_AS (setrlimit rejects finite values
-    // with EINVAL) — the address-space guard is a no-op there. The CPU
-    // guard above still applies; a mach-based memory guard is a P3 item.
-    (void)mem_mb;
-#else
-    if ( mem_mb > 0 ) {
-        struct rlimit rl;
-        rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
-        rl.rlim_max = rl.rlim_cur;
-        if ( setrlimit(RLIMIT_AS, &rl) != 0 )
-            perror("setrlimit(RLIMIT_AS)");
-        else {
-            madc_mem_guard_mb = mem_mb;
-            std::set_new_handler(mem_guard_new_handler);
-        }
-    }
-#endif // !__APPLE__
-#endif // !_WIN32
-}
+// Resource guards: src/madc_guards.cpp (owner ruling 2026-09-07 — no guard
+// arms by default; knobs off|auto|N; an armed memory guard is a soft limit a
+// GUI module row lifts at run start).
 
 // Walk backwards from a line to include preceding comment block.
 static int find_comment_start(const std::vector<std::string> &lines, int func_line)
@@ -514,17 +379,19 @@ static void print_usage(const char *prog)
 "    stdlib = libc++      default C++ stdlib flavor (a -stdlib= on the CLI wins)\n"
 "    forest = <file>      frozen forest container (discovery arm 5)\n"
 "    include = <dir>      extra include dir, repeatable, searched after -I\n"
-"    cpu-limit = <secs>   MADC_CPU_LIMIT default (0 = off)\n"
-"    mem-limit = <MB>     MADC_MEM_LIMIT default (0 = off)\n"
+"    cpu-limit = off|auto|<secs>  MADC_CPU_LIMIT default (auto = off)\n"
+"    mem-limit = off|auto|<MB>    MADC_MEM_LIMIT default\n"
 "  Relative paths resolve against the config file's own directory; ~/ works.\n"
 "\n"
 "Environment:\n"
-"  MADC_CPU_LIMIT=<secs>   arm an RLIMIT_CPU guard (default: off — madc also\n"
-"                          runs the program, so no finite default is safe;\n"
-"                          intended for embedding hosts and sandboxes)\n"
-"  MADC_MEM_LIMIT=<MB>     address-space guard (RLIMIT_AS, covers JIT\n"
-"                          mappings); default 4096 MB + 128 MB per --project\n"
-"                          TU; 0 disables. Trips name the knob.\n"
+"  MADC_CPU_LIMIT=off|auto|<secs>  RLIMIT_CPU guard (default off; auto is\n"
+"                          off too — madc also runs the program, so no finite\n"
+"                          default is safe; for embedding hosts and sandboxes)\n"
+"  MADC_MEM_LIMIT=off|auto|<MB>    address-space guard (RLIMIT_AS, a SOFT\n"
+"                          limit covering JIT mappings); default off; auto =\n"
+"                          4096 MB + 128 MB per --project TU (the test runner\n"
+"                          asks for auto). A program that imports a GUI module\n"
+"                          lifts it at run start. Trips name the knob.\n"
 "  MADC_FOREST=<file>      frozen forest container to bind when no earlier\n"
 "                          discovery arm (binary image, libmadc image,\n"
 "                          <exe>.forest / <lib>.forest sidecars) carries one;\n"
@@ -1073,7 +940,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    install_resource_guards(manifest.tus.size(), config);
+    madc_install_resource_guards(manifest.tus.size(), config);
 
     // Embedded-forest default (Phase 4): with no explicit forest flag, bind
     // system #includes from the blob appended to this executable —
@@ -1423,6 +1290,11 @@ int main(int argc, char **argv)
 	double _fw_ps0 = prog->_forest_work_seconds;
 	bool parse_ok = prog->parse(tp);
 	gettimeofday(&_ps1, NULL);
+	// A GUI module row bound at parse (`import madcwebview;`) lifts an armed
+	// memory guard before the program runs: WebKit's address-space
+	// reservations dwarf any sane program budget (owner ruling 2026-09-07).
+	if ( parse_ok && prog->bound_gui_module )
+	    madc_lift_memory_guard("a GUI module row was imported");
 	double _fw_ps1 = prog->_forest_work_seconds;
 	// import (module form): the modules' TARGET spellings join the native
 	// link closure exactly as -l spellings do (verbatim entries — the same

@@ -19,12 +19,20 @@
 #include <string>
 #include "datadef.h"	// TargetOS, madc_target_os
 
+// Row flags — module-map DATA the drivers act on (never a name test).
+enum {
+	MADC_MODULE_GUI = 1u << 0,	// a windowing library: an armed memory guard
+					// lifts at run start (WebKit reserves address
+					// space far beyond any program budget)
+};
+
 struct MadcModuleSpec {
 	const char *name;
 	const char *interface;	// embedded header name, or NULL (interface-less)
 	const char *posix;	// ELF runtime image spelling (the real soname)
 	const char *darwin;	// Mach-O install name (bare file name)
 	const char *windows;	// PE module name
+	unsigned flags;		// MADC_MODULE_* bits
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name);

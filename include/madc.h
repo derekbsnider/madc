@@ -4222,6 +4222,9 @@ public:
     // PE import); madc.cpp appends them to the link line after the parse. The
     // alias form resolves at run time and never lands here.
     std::vector<std::string> module_link_libs;
+    // A module row flagged MADC_MODULE_GUI was bound by this TU (`import
+    // madcwebview;`): the driver lifts an armed memory guard before running.
+    bool bound_gui_module;
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	struct ReplacementToken {

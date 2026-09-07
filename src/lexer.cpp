@@ -1726,6 +1726,10 @@ TokenBase *Program::tokenize_import_directive()
 	Throw << "import: library binding is disabled by registration policy" << flush;
     const MadcModuleSpec *row = madc_module_find(name);
     std::string spelling = madc_module_library_spelling(name);
+    // The row's flags are module-map DATA (Rule 7): a GUI module lifts the
+    // memory guard at run start — recorded here, acted on by the driver.
+    if ( row && (row->flags & MADC_MODULE_GUI) )
+	bound_gui_module = true;
     if ( alias.empty() && !(row && row->interface) )
 	Throw << "import: module '" << name << "' has no interface; bind it with"
 	      << " `import " << name << " as <alias>;`" << flush;
@@ -2822,6 +2826,7 @@ void Program::_tokenizer_init()
     auto_include_declared_words.clear();
     suppress_auto_include_scan = false;
     auto_include_fragment_scan = false;
+    bound_gui_module = false;
     pending_no_strict_aliasing = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();

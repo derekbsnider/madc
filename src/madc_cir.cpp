@@ -25,6 +25,7 @@
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include "madc_guards.h"	// the GUI memory-guard lift after the project parse
 #include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
 
@@ -6042,6 +6043,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
+	// A GUI module row bound by any TU lifts an armed memory guard before
+	// the program runs (the single-TU driver does the same after its parse).
+	for (const CirParsedTU &pt : parsed)
+		if (pt.prog && pt.prog->bound_gui_module) {
+			madc_lift_memory_guard("a GUI module row was imported");
+			break;
+		}
 
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().

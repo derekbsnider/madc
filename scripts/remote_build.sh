@@ -14,7 +14,7 @@
 #   unittest  make -C src test
 #   fulltest  make -C src fulltest
 #   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe).
-#             MADC_GUI_MEM_LIMIT sets this stage's MADC_MEM_LIMIT (default 0);
+#             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
@@ -247,14 +247,11 @@ for stage in $stages; do
 		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
 		;;
 	gui)
-		gui_mem=${MADC_GUI_MEM_LIMIT:-0}
-		if [[ ! "$gui_mem" =~ ^[0-9]+$ ]]; then
-			echo 'MADC_GUI_MEM_LIMIT must be a non-negative integer (MB, 0 = unlimited)' >&2
-			note_stage gui 2
-			continue
-		fi
-		echo "GUI policy: MADC_MEM_LIMIT=$gui_mem MB (override with MADC_GUI_MEM_LIMIT)"
-		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_MEM_LIMIT=$gui_mem MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 120 xvfb-run -a bash scripts/run_tests.sh --exe"
+		# The runner exports the memory guard's `auto`; a GUI-module test
+		# lifts it itself at run start (import madcwebview — the module
+		# row's GUI flag), so the stage needs no memory override of its own.
+		# CPU and wall caps stay.
+		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 120 xvfb-run -a bash scripts/run_tests.sh --exe"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.

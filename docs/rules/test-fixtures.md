@@ -135,3 +135,16 @@ forbids, and every new helper file would have needed a seventh, eighth,
 … edit. The marker moves the fact onto the test it describes (one
 fixture file, co-located, contents name the owner) and every enumerator
 consults it the same way it consults the other fixtures.
+
+## The `.env` fixture (2026-09-07)
+
+madc arms no resource guard by default (owner ruling 2026-09-07); the suites'
+caps are the RUNNER's to ask for, so `scripts/run_tests.sh` exports
+`MADC_MEM_LIMIT=auto` once and every test process inherits it. A test whose
+point is the unguarded behaviour (`tests/testguardsoff.mad` allocates and
+touches 6 GB of address space) needs the opposite for itself only — a
+per-test environment. `tests/<base>.env` holds whitespace-split `NAME=value`
+pairs that the runner hands to `env(1)` in front of every invocation of that
+test (JIT, exe and obj alike), exactly as `.argv` and `.input` shape the
+other two ends of the process. No `MADC_TEST_ENV_<name>` switch, no per-test
+branch: the fixture file is the convention.

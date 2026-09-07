@@ -12,10 +12,10 @@
 // first (NULL = interface-less: the alias form's variadic member convention
 // is all there is).
 static const MadcModuleSpec madc_modules[] = {
-	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
-	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll" },
-	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll" },
-	{ NULL, NULL, NULL, NULL, NULL }
+	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
+	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
+	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI },
+	{ NULL, NULL, NULL, NULL, NULL, 0 }
 };
 
 const MadcModuleSpec *madc_module_find(const std::string &name)

@@ -74,9 +74,9 @@ TEST_CASE("every key parses, with comments, a section header and quotes") {
 	CHECK(cfg.include_dirs[0] == "/abs/one");
 	CHECK(cfg.include_dirs[1] == "/abs/two");
 	CHECK(cfg.has_cpu_limit);
-	CHECK(cfg.cpu_limit_secs == 90);
+	CHECK(cfg.cpu_limit == "90");
 	CHECK(cfg.has_mem_limit);
-	CHECK(cfg.mem_limit_mb == 8192);	// quotes are syntax, not content
+	CHECK(cfg.mem_limit == "8192");	// quotes are syntax, not content
 	unlink(path.c_str());
 }
 
@@ -89,9 +89,9 @@ TEST_CASE("an explicit 0 is a value, not an absence") {
 	std::ostringstream err;
 	REQUIRE(madc::config_parse_file(path, cfg, err));
 	CHECK(cfg.has_cpu_limit);
-	CHECK(cfg.cpu_limit_secs == 0);
+	CHECK(cfg.cpu_limit == "0");
 	CHECK(cfg.has_mem_limit);
-	CHECK(cfg.mem_limit_mb == 0);
+	CHECK(cfg.mem_limit == "0");
 	unlink(path.c_str());
 }
 
@@ -101,7 +101,7 @@ TEST_CASE("keys are case-insensitive, values are not") {
 	std::ostringstream err;
 	REQUIRE(madc::config_parse_file(path, cfg, err));
 	CHECK(cfg.std_option == "c99");
-	CHECK(cfg.mem_limit_mb == 512);
+	CHECK(cfg.mem_limit == "512");
 	unlink(path.c_str());
 }
 
@@ -176,7 +176,20 @@ TEST_CASE("an empty value is an error, not an empty setting") {
 }
 
 // Trailing junk is refused rather than silently truncated: `mem-limit = 8G`
-// must say so, not arm an 8 MB guard.
+// must say so, not arm an 8 MB guard. The guard keys read off|auto|N through
+// the guards' one knob parser (madc_guards.h), still at config-parse time.
+TEST_CASE("a guard key reads off, auto or a whole number") {
+	std::string path = write_ini("knobs", "cpu-limit = off\nmem-limit = AUTO\n");
+	madc::config_settings cfg;
+	std::ostringstream err;
+	REQUIRE(madc::config_parse_file(path, cfg, err));
+	CHECK(cfg.has_cpu_limit);
+	CHECK(cfg.cpu_limit == "off");
+	CHECK(cfg.has_mem_limit);
+	CHECK(cfg.mem_limit == "AUTO");
+	unlink(path.c_str());
+}
+
 TEST_CASE("a non-numeric limit is an error") {
 	std::string path = write_ini("badint", "mem-limit = 8G\n");
 	madc::config_settings cfg;

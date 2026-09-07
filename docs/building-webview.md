@@ -83,12 +83,14 @@ native handles, page text/layout, initialization, both callback signatures,
 the promise returned by `webview_return`, and destruction. The size reducer
 checks each defined size hint. Neither requires Internet page content.
 
-The stage sets **`MADC_MEM_LIMIT=0` only for its test process**: WebKit's
-virtual address reservations exceed madc's ordinary 4096 MB guard. Set
-`MADC_GUI_MEM_LIMIT=<MB>` to choose a finite GUI limit; invalid values fail
-before testing. The stage prints the selected policy, caps CPU time at
-30 seconds and wall time at 120 seconds; individual tests retain runner
-timeouts. Ordinary madc invocations retain their default memory guard.
+**Memory policy (owner ruling 2026-09-07):** madc arms no resource guard by
+default; the test runner asks for the memory guard's `auto` (4096 MB + 128 MB
+per `--project` TU) for every test process. WebKit's virtual address
+reservations exceed that, so the `madcwebview` module row carries the GUI
+flag and a program that imports it lifts the (soft) guard at run start — the
+GUI stage needs no memory override of its own. It still caps CPU time at 30
+seconds and wall time at 120 seconds; individual tests retain runner
+timeouts.
 
 `MADC_TEST_DIR` is a generic fixture-runner input; it defaults to `tests`.
 GUI tests do not change the default suite's inventory or baseline. A
