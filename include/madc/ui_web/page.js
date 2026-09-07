@@ -102,6 +102,76 @@
     return line;
   }
 
+  // The caret / selection state one line carries, as a comparable key:
+  // two lines with equal keys and equal rows render identically, so a
+  // line whose key did not change is left alone.
+  function deco(lineNo, caret, sel) {
+    var d = '';
+    if (caret && caret.line === lineNo) d = 'c' + caret.col;
+    if (sel) {
+      var l0 = sel[0][0], l1 = sel[1][0];
+      if (lineNo >= l0 && lineNo <= l1)
+        d += '|s' + (lineNo === l0 ? sel[0][1] : 0) + '-' + (lineNo === l1 ? sel[1][1] : 'e');
+    }
+    return d;
+  }
+
+  // The editor line-DOM is applied INCREMENTALLY (web_model keeps the rows
+  // it last emitted per key and sends ONE splice): the element holds its
+  // rows (el._rows) and the caret and selection it drew (el._caret,
+  // el._sel), with one line element per row. The container is cleared only
+  // for a full paint, so native scrolling is never disturbed; a keystroke
+  // touches the spliced lines and the lines whose caret / selection state
+  // changed — nothing else. Returns true when the caret moved (or the node
+  // was painted in full), the one case the caret is scrolled into view.
+  function applyEdit(el, op) {
+    if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
+    var caret = op.focus ? op.caret : null;
+    var sel = op.sel || null;
+    if (op.lines) {
+      // Full paint: this key's first render, or the first after a resync.
+      el.textContent = '';
+      el._rows = op.lines;
+      for (var l = 0; l < el._rows.length; l++)
+        el.appendChild(renderLine(el._rows[l], l, caret, sel));
+      el._caret = caret; el._sel = sel;
+      return true;
+    }
+    var rows = el._rows || [];
+    var patch = op.patch || null;
+    var ins = patch ? patch.ins.length : 0, del = patch ? patch.del : 0;
+    // What the page holds must be the engine's basis: the row count it
+    // expects before the splice, and one line element per row. Otherwise
+    // ask for a full paint (a render the platform dropped before the page
+    // loaded, a lost eval) — the thin client requests what it lacks.
+    if (op.nlines == null || rows.length !== op.nlines - ins + del ||
+        el.children.length !== rows.length) {
+      post({ kind: 'resync' });
+      return false;
+    }
+    var oldCaret = el._caret || null, oldSel = el._sel || null;
+    var at = patch ? patch.at : 0;
+    if (patch) {
+      var ref = el.children[at + del] || null;   // the line after the splice
+      for (var d = 0; d < del; d++) el.removeChild(el.children[at]);
+      for (var k = 0; k < ins; k++)
+        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel), ref);
+      rows = rows.slice(0, at).concat(patch.ins, rows.slice(at + del));
+      el._rows = rows;
+    }
+    // Every other line kept its row; re-render the ones whose caret /
+    // selection state changed (its old index is its new index shifted
+    // past the splice).
+    for (var j = 0; j < rows.length; j++) {
+      if (patch && j >= at && j < at + ins) continue;
+      var i = j < at ? j : j - ins + del;
+      if (deco(i, oldCaret, oldSel) !== deco(j, caret, sel))
+        el.replaceChild(renderLine(rows[j], j, caret, sel), el.children[j]);
+    }
+    el._caret = caret; el._sel = sel;
+    return !!caret && (!oldCaret || oldCaret.line !== caret.line || oldCaret.col !== caret.col);
+  }
+
   function applyNode(op) {
     var el = elementFor(op);
     var cls = op['class'];
@@ -132,13 +202,10 @@
       for (var i = 0; i < opts.length; i++)
         el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
     } else if (cls === 'edit') {
-      el.textContent = '';
-      if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
-      var lines = op.lines || [];
-      for (var l = 0; l < lines.length; l++)
-        el.appendChild(renderLine(lines[l], l, op.focus ? op.caret : null, op.sel));
+      return applyEdit(el, op);
     }
     // group / separator / node: structure only — children carry it.
+    return false;
   }
 
   function prune() {
@@ -151,17 +218,20 @@
   }
 
   window.madcApply = function (ops) {
+    var moved = false;
     for (var i = 0; i < ops.length; i++) {
       var op = ops[i];
       if (op.op === 'root') visited = new Set();
-      else if (op.op === 'node') { applyNode(op); visited.add(op.key); }
+      else if (op.op === 'node') { moved = applyNode(op) || moved; visited.add(op.key); }
       else if (op.op === 'end') prune();
     }
     kb.focus();
     // Keyboard navigation must move the viewport, not just the caret: the
     // edit div is overflow:auto, so a caret past the fold is off-screen until
-    // its element is scrolled into view. `nearest` is a no-op when the caret
-    // is already visible (mouse-wheel scrolling is undisturbed).
+    // its element is scrolled into view — ONLY when the caret moved (or an
+    // editor was painted in full): a recompose that left the caret where it
+    // was (a resize, a wake) never pulls a wheel-scrolled view back to it.
+    if (!moved) return;
     var car = document.querySelector('.caret');
     if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };

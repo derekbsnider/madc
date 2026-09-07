@@ -1,0 +1,162 @@
+// The incremental editor line-DOM in the REAL page (web_model's per-key
+// basis + page.js applyEdit): after the first full paint every render
+// sends one splice, or nothing for a caret move, and the page patches its
+// line elements in place. Driven through the page's real key path
+// (synthetic KeyboardEvent / InputEvent dispatches) over a four-line
+// document: a navigation keystroke (no line work — the two caret lines
+// re-render), typed text (one row replaced), Enter (one row becomes two),
+// Backspace over the break (two rows become one), then a FORCED desync
+// (the page's held rows emptied behind the engine's back) that the page
+// must heal through a resync — the thin client asking for the paint it
+// lacks. The snapshot after each step is the page's own text: it must
+// equal the document the application holds, so a patch that drifted from
+// a full paint shows here. The element's line count and the page's row
+// count are probed too, so the DOM and the rows stay one-to-one.
+var doc = "one\ntwo\nthree\nfour";
+long caret = 0;
+
+void compose(var &tree)
+{
+    var head = { "role": "heading", "label": "patch", "content": "demo" };
+    var hints = { "caret": caret };
+    var edit = { "role": "edit", "content": doc, "hints": hints };
+    var kids = {};
+    kids.push(head);
+    kids.push(edit);
+    var root = { "role": "group", "children": kids };
+    tree = root;
+}
+
+// The page's text plus its line-element and row counts, as one snapshot.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var ed=document.querySelector('.edit');"
+	"var ls=[];ed.querySelectorAll('.line').forEach(function(l){ls.push(l.textContent);});"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:ls.join('|')+' lines='+ed.children.length+' rows='+(ed._rows?ed._rows.length:-1)}));})()");
+}
+
+// A named key through the page's keydown path (the JS is assembled from
+// brace-free parts so the intrinsic format sees only one placeholder).
+void key(long t, const char *name)
+{
+    const char *pre = "(function(){var kb=document.getElementById('kb');"
+		      "kb.dispatchEvent(new KeyboardEvent('keydown',{key:'";
+    const char *post = "'}));})()";
+    var js = format("{}{}{}", pre, name, post);
+    ui::eval_page(t, js.c_str());
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("PATCH open");
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);		// the first paint: full
+	    if ( stage == 0 )
+	    {
+		stage = 1;
+		probe(t);
+	    }
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("PATCH {} snapshot {}", stage, ev["text"]);
+	    if ( stage == 1 )
+	    {
+		stage = 2;
+		key(t, "ArrowDown");		// navigation: no line change
+	    }
+	    else if ( stage == 2 )
+	    {
+		stage = 3;
+		ui::eval_page(t, "(function(){var kb=document.getElementById('kb');"
+			      "kb.value='X';kb.dispatchEvent(new InputEvent('input',{data:'X'}));})()");
+	    }
+	    else if ( stage == 3 )
+	    {
+		stage = 4;
+		key(t, "Enter");		// one row becomes two
+	    }
+	    else if ( stage == 4 )
+	    {
+		stage = 5;
+		key(t, "Backspace");		// joins the split line back
+	    }
+	    else if ( stage == 5 )
+	    {
+		stage = 6;
+		// Desync the page behind the engine's back: it holds no rows
+		// while the engine's basis says four lines. The next render
+		// carries no lines and no patch; the page must refuse it with
+		// a resync, and the focus event that follows repaints in full.
+		ui::eval_page(t, "(function(){var ed=document.querySelector('.edit');"
+			      "ed._rows=[];ed.textContent='';})()");
+		compose(tree);
+		ui::render(t, w, tree);
+		probe(t);			// sees the emptied editor
+	    }
+	    else if ( stage == 6 )
+		stage = 7;			// the healed paint's probe is next
+	    else
+		break;
+	}
+	else if ( ev["event"] == "key" )
+	{
+	    // The application's own edit model over `doc` — enough for
+	    // ArrowDown / Enter / Backspace on this transcript.
+	    var k = ev["key"];
+	    long len = strlen(doc.c_str());
+	    if ( k == "down" )
+		caret = 4;			// the start of "two"
+	    else if ( k == "enter" )
+	    {
+		doc = format("{}\n{}", perl::substr(doc, 0, caret),
+			     perl::substr(doc, caret, len - caret));
+		caret = caret + 1;
+	    }
+	    else if ( k == "backspace" )
+	    {
+		doc = format("{}{}", perl::substr(doc, 0, caret - 1),
+			     perl::substr(doc, caret, len - caret));
+		caret = caret - 1;
+	    }
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "text" )
+	{
+	    long len = strlen(doc.c_str());
+	    doc = format("{}{}{}", perl::substr(doc, 0, caret), ev["text"],
+			 perl::substr(doc, caret, len - caret));
+	    caret = caret + 1;
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "focus" )
+	{
+	    // The resync's focus: recompose + render paints in full.
+	    println("PATCH {} resync", stage);
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("PATCH closed");
+    return 0;
+}

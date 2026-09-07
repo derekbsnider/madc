@@ -19,8 +19,8 @@
 //   {"op":"root"}                                          reset marker
 //   {"op":"node","key":"0.2","parent":"0","class":"heading",
 //    "label":"...","text":"..."}                           create-or-update
-//   {"op":"node","key":"0.3","parent":"0","class":"edit","lines":[
-//      {"t":"line text","s":[[start,len,"keyword"],...]}, ...],
+//   {"op":"node","key":"0.3","parent":"0","class":"edit","nlines":2,
+//    "lines":[{"t":"line text","s":[[start,len,"keyword"],...]}, ...],
 //    "caret":{"line":3,"col":7},"sel":[[l,c],[l,c]]|null,
 //    "tabwidth":8,"focus":true}
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
@@ -33,6 +33,27 @@
 // application's compose, as on the TUI); offsets in the edit node are BYTE
 // offsets turned into line/col, as the grid model reads them.
 //
+// THE EDIT NODE IS INCREMENTAL (the thin-client shape — Neovim's grid_line
+// redraws "a continuous part of a row" and the rest "should remain
+// unchanged"; xi-editor rewrites the frontend's line cache with copy/ins
+// runs): the model keeps the rows it last emitted per edit key — its diff
+// BASIS, as tui_model keeps the painted grid — and each compose sends
+// work proportional to what changed, never the document:
+//   "lines":[rows]   the full line-DOM: this key's FIRST paint, or the
+//                    first after reset_surface() (ui::refresh) / a resync
+//   "patch":{"at":i,"del":d,"ins":[rows]}
+//                    rows [i, i+d) of what the page holds are replaced by
+//                    `ins` — ONE splice from the common prefix to the
+//                    common suffix (one edited line = at:i del:1 ins:1)
+//   neither          no line changed (a caret move, a resize, a wake)
+//   "nlines":N       ALWAYS: the row count the page must hold after this
+//                    op — the page checks its own count against it and
+//                    posts {"kind":"resync"} on disagreement
+// The caret / sel / focus fields ride every edit op; the page re-renders
+// only the lines whose caret or selection state changed. A key that
+// leaves the tree drops its basis (the page prunes the element the same
+// way), so the two sides forget together.
+//
 // INPUT. The page posts ONE JSON object per event through the target's
 // bound callback:
 //   {"kind":"key","key":"^k"}              a key in tui_key_name spelling
@@ -42,6 +63,14 @@
 //   {"kind":"snapshot","text":"..."}       the test seam's DOM text: kept
 //                                          for last_snapshot(), reported
 //                                          as ONE snapshot event (text)
+//   {"kind":"resync"}                      the page's line-DOM disagrees
+//                                          with the model's basis (a render
+//                                          the platform dropped before the
+//                                          page loaded, a lost eval): every
+//                                          basis is forgotten and ONE focus
+//                                          event asks the application to
+//                                          recompose — the next compose
+//                                          paints every edit node in full
 // apply_input() turns each into zero or more tui_event objects; a malformed
 // or unknown object yields none and never throws.
 //
@@ -50,6 +79,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -109,6 +139,27 @@ class web_model
     size_t _rows, _cols;		// last reported viewport facts
     std::string _snapshot;		// last snapshot text (test seam)
 
+    // One line of an edit node's line-DOM as the model last emitted it:
+    // the text and its clipped spans [start-in-line, len, class]. The
+    // per-key vector of these is the diff basis (see the header).
+    struct span_ref
+    {
+	long a, len;
+	std::string cls;
+	bool operator==(const span_ref &o) const
+	{
+	    return a == o.a && len == o.len && cls == o.cls;
+	}
+    };
+    struct edit_row
+    {
+	std::string t;
+	std::vector<span_ref> s;
+	bool operator==(const edit_row &o) const { return t == o.t && s == o.s; }
+    };
+    std::map<std::string, std::vector<edit_row> > _basis;	// edit key -> rows
+    std::set<std::string> _seen;		// edit keys this compose visited
+
     // A node op that carries a focus flag, patched after end_compose()
     // (the flag reads the CLAMPED focus, as the grid paints the caret).
     struct slot_op { size_t op; size_t slot; };
@@ -167,10 +218,10 @@ class web_model
     // boundary). The earlier form tested every span against every line;
     // on a 4557-line, 4841-span document that was 22M comparisons — 140 ms
     // of a 165 ms render — per keystroke (measured 2026-09-07).
-    static nlohmann::json edit_lines(const std::string &text,
-				     const std::vector<doc_span> &spans)
+    static std::vector<edit_row> edit_rows(const std::string &text,
+					   const std::vector<doc_span> &spans)
     {
-	nlohmann::json lines = nlohmann::json::array();
+	std::vector<edit_row> rows;
 	size_t ls = 0;
 	size_t next = 0;		// the first span not yet admitted
 	std::vector<size_t> active;	// admitted spans still reaching ahead
@@ -179,11 +230,10 @@ class web_model
 	    if ( i < text.size() && text[i] != '\n' )
 		continue;
 	    const size_t le = i;		// [ls, le) is one line
-	    nlohmann::json row = nlohmann::json::object();
-	    row["t"] = text.substr(ls, le - ls);
+	    edit_row row;
+	    row.t = text.substr(ls, le - ls);
 	    while ( next < spans.size() && (size_t)spans[next].start < le )
 		active.push_back(next++);
-	    nlohmann::json s = nlohmann::json::array();
 	    size_t keep = 0;
 	    for ( size_t k = 0; k < active.size(); ++k )
 	    {
@@ -195,19 +245,76 @@ class web_model
 		if ( b > le )
 		    b = le;
 		if ( a < b )
-		    s.push_back(nlohmann::json::array(
-			{ (long)(a - ls), (long)(b - a), sp.cls }));
+		{
+		    span_ref sr;
+		    sr.a = (long)(a - ls);
+		    sr.len = (long)(b - a);
+		    sr.cls = sp.cls;
+		    row.s.push_back(sr);
+		}
 		// A span reaching past this line's newline has more to
 		// give on the next line; one ending at or before it is done.
 		if ( (size_t)sp.end > le + 1 )
 		    active[keep++] = active[k];
 	    }
 	    active.resize(keep);
-	    row["s"] = s;
-	    lines.push_back(row);
+	    rows.push_back(row);
 	    ls = i + 1;
 	}
-	return lines;
+	return rows;
+    }
+
+    // Rows [from, to) as the page's row objects {"t": text, "s": [...]}.
+    static nlohmann::json rows_json(const std::vector<edit_row> &rows,
+				    size_t from, size_t to)
+    {
+	nlohmann::json out = nlohmann::json::array();
+	for ( size_t i = from; i < to && i < rows.size(); ++i )
+	{
+	    nlohmann::json row = nlohmann::json::object();
+	    row["t"] = rows[i].t;
+	    nlohmann::json s = nlohmann::json::array();
+	    for ( size_t k = 0; k < rows[i].s.size(); ++k )
+		s.push_back(nlohmann::json::array(
+		    { rows[i].s[k].a, rows[i].s[k].len, rows[i].s[k].cls }));
+	    row["s"] = s;
+	    out.push_back(row);
+	}
+	return out;
+    }
+
+    // The edit node's line-DOM against this key's basis: the full rows
+    // when there is none, else ONE splice from the common prefix to the
+    // common suffix — absent when nothing changed. The rows become the
+    // new basis either way.
+    void emit_edit_lines(nlohmann::json &op, const std::string &key,
+			 std::vector<edit_row> &rows)
+    {
+	op["nlines"] = (long)rows.size();
+	std::map<std::string, std::vector<edit_row> >::iterator bi = _basis.find(key);
+	if ( bi == _basis.end() )
+	    op["lines"] = rows_json(rows, 0, rows.size());
+	else
+	{
+	    const std::vector<edit_row> &old = bi->second;
+	    const size_t n0 = old.size(), n1 = rows.size();
+	    size_t p = 0;
+	    while ( p < n0 && p < n1 && old[p] == rows[p] )
+		++p;
+	    size_t q = 0;
+	    while ( q < n0 - p && q < n1 - p && old[n0 - 1 - q] == rows[n1 - 1 - q] )
+		++q;
+	    if ( p < n0 || p < n1 )
+	    {
+		nlohmann::json patch = nlohmann::json::object();
+		patch["at"] = (long)p;
+		patch["del"] = (long)(n0 - p - q);
+		patch["ins"] = rows_json(rows, p, n1 - q);
+		op["patch"] = patch;
+	    }
+	}
+	_seen.insert(key);
+	_basis[key].swap(rows);
     }
 
     void walk(const roles &r, const uinode &n, const std::string &key,
@@ -351,7 +458,8 @@ class web_model
 	    long rows = hint_of(n.hints, "rows", 0);
 	    std::vector<doc_span> spans;
 	    read_spans(n.hints, spans);
-	    op["lines"] = edit_lines(text, spans);
+	    std::vector<edit_row> doc_rows = edit_rows(text, spans);
+	    emit_edit_lines(op, key, doc_rows);
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -405,13 +513,26 @@ public:
 	ops.push_back(nlohmann::json{ {"op", "root"} });
 	std::vector<slot_op> slots;
 	_focus.begin_compose();
+	_seen.clear();
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
+	// An edit key that left the tree drops its basis — the page prunes
+	// the element after "end" by the same rule, so both sides forget.
+	for ( std::map<std::string, std::vector<edit_row> >::iterator bi = _basis.begin();
+	      bi != _basis.end(); )
+	    if ( _seen.count(bi->first) )
+		++bi;
+	    else
+		_basis.erase(bi++);
 	for ( size_t i = 0; i < slots.size(); ++i )
 	    ops[slots[i].op]["focus"] = slots[i].slot == _focus.focus();
 	ops.push_back(nlohmann::json{ {"op", "end"} });
 	return ops.dump();
     }
+
+    // Forget what the page holds: the NEXT compose paints every edit node
+    // in full (ui::refresh — the grid model's painted-grid reset).
+    void reset_surface() { _basis.clear(); }
 
     // One posted input object → zero or more semantic events, through the
     // shared adapter — the page's keys become the grid's events.
@@ -455,6 +576,18 @@ public:
 	    _rows = (size_t)ri->get<long>();
 	    _cols = (size_t)ci->get<long>();
 	    keys.push_back(tui_keyev(tui_key::resize));
+	}
+	else if ( kind == "resync" )
+	{
+	    // The page found its line-DOM out of step with the basis (a
+	    // render the platform dropped before the page loaded, a lost
+	    // eval): forget the bases and ask for a recompose — a focus
+	    // event, the application's "repaint" signal on every target.
+	    reset_surface();
+	    tui_event e;
+	    e.kind = tui_event_kind::focus;
+	    none.push_back(e);
+	    return none;
 	}
 	else if ( kind == "snapshot" )
 	{

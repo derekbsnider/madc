@@ -281,6 +281,169 @@ TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans cl
     CHECK((*e)["lines"][1]["s"] == nlohmann::json::parse("[]"));
 }
 
+// group -> [heading, edit(text, caret, one keyword span [0,2))]; `extra`
+// prepends a content node so the edit's key path shifts from 0.1 to 0.2.
+static uinode doc_tree(world &w, const char *text, long caret,
+		       bool extra = false, long span_end = 2)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    if ( extra )
+    {
+	uinode para(r.content);
+	para.content = madc::value(std::string("banner"));
+	root.add(para);
+    }
+    uinode head(r.heading);
+    head.label = madc::value(std::string("doc"));
+    root.add(head);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)caret);
+    std::map<std::string, madc::value> row;
+    row["s"] = madc::value((int64_t)0);
+    row["e"] = madc::value((int64_t)span_end);
+    row["cls"] = madc::value(std::string("keyword"));
+    std::vector<madc::value> spans;
+    spans.push_back(madc::value::make_object(row));
+    h["spans"] = madc::value::make_array(spans);
+    edit.hints = madc::value::make_object(h);
+    root.add(edit);
+    return root;
+}
+
+static const nlohmann::json *edit_op(const nlohmann::json &ops, const char *key = "0.1")
+{
+    const nlohmann::json *e = node_by_key(ops, key);
+    REQUIRE(e);
+    REQUIRE((*e)["class"] == "edit");
+    return e;
+}
+
+// The patch an edit op carries — asserted present first (a const lookup of
+// an absent key is a json assertion, not a test failure).
+static nlohmann::json patch_of(const nlohmann::json *e)
+{
+    REQUIRE(e->find("patch") != e->end());
+    return (*e)["patch"];
+}
+
+TEST_CASE("compose — the edit node is incremental: full first, then one splice, nothing for a caret move")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    // First paint: the full line-DOM and its count.
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    const nlohmann::json *e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK((*e)["lines"] == nlohmann::json::parse(
+	"[{\"t\":\"ab\",\"s\":[[0,2,\"keyword\"]]},{\"t\":\"cd\",\"s\":[]}]"));
+    CHECK(e->find("patch") == e->end());
+
+    // The same document again: neither lines nor a patch (a resize, a wake).
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK(e->find("lines") == e->end());
+    CHECK(e->find("patch") == e->end());
+
+    // A caret move: no line work; the caret field carries it.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 4)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK(e->find("patch") == e->end());
+    CHECK((*e)["caret"] == nlohmann::json{ {"line", 1}, {"col", 1} });
+
+    // A span change with the text unchanged is a line change too.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 4, false, 1)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":0,\"del\":1,\"ins\":[{\"t\":\"ab\",\"s\":[[0,1,\"keyword\"]]}]}"));
+
+    // One character typed into line 2: replace that one row.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncXd", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK((*e)["nlines"] == 2);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":1,\"del\":1,\"ins\":[{\"t\":\"cXd\",\"s\":[]}]}"));
+
+    // Enter inside line 2: one row becomes two.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\nc\nXd", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 3);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":1,\"del\":1,\"ins\":[{\"t\":\"c\",\"s\":[]},{\"t\":\"Xd\",\"s\":[]}]}"));
+
+    // A line appended at the end: an insertion with nothing deleted.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\nc\nXd\nef", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 4);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":3,\"del\":0,\"ins\":[{\"t\":\"ef\",\"s\":[]}]}"));
+
+    // The first line deleted. The keyword span rides the document's first
+    // byte, so the NEW first line "c" carries it while the old second line
+    // "c" did not: the common suffix is Xd/ef, and the splice replaces two
+    // old rows with the one re-spanned row.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "c\nXd\nef", 0, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 3);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":0,\"del\":2,\"ins\":[{\"t\":\"c\",\"s\":[[0,1,\"keyword\"]]}]}"));
+
+    // And a plain first-line deletion with no span in play: pure removal.
+    web_model m2;
+    ops = nlohmann::json::parse(m2.compose(r, doc_tree(w, "ab\ncd\nef", 0, false, 0)));
+    ops = nlohmann::json::parse(m2.compose(r, doc_tree(w, "cd\nef", 0, false, 0)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK(patch_of(e) == nlohmann::json::parse("{\"at\":0,\"del\":1,\"ins\":[]}"));
+}
+
+TEST_CASE("compose — an edit key that moves, a resync, and reset_surface paint in full again")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    const nlohmann::json *e = edit_op(ops);
+    REQUIRE(e->find("lines") != e->end());
+
+    // A node inserted before the editor moves its key (0.1 -> 0.2): a new
+    // key paints in full, and the old key's basis is dropped with it.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0, true)));
+    e = edit_op(ops, "0.2");
+    CHECK(e->find("lines") != e->end());
+    CHECK(node_by_key(ops, "0.1")->at("class") == "heading");
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") != e->end());		// 0.1 forgot — full again
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());		// and steady once more
+
+    // The page's resync: one focus event (the application recomposes), and
+    // the next compose paints every edit node in full.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"resync\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") != e->end());
+    CHECK((*e)["nlines"] == 2);
+
+    // ui::refresh's reset does the same.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    CHECK(edit_op(ops)->find("lines") == edit_op(ops)->end());
+    m.reset_surface();
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    CHECK(edit_op(ops)->find("lines") != edit_op(ops)->end());
+}
+
 TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's input")
 {
     world w;

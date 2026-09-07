@@ -355,6 +355,9 @@ struct ui_dom_frontend : ui_frontend
     }
     void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
     const std::string &pending_chord() const { return model.pending_chord(); }
+    // Forget what the page holds so the next render paints every edit
+    // node in full — the grid frontend's painted-grid reset.
+    void refresh() { model.reset_surface(); }
     bool eval_page(const char *js)
     {
 	return host && ops->eval && ops->eval(host, js ? js : "") == 0;

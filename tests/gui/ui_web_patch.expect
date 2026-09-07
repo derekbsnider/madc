@@ -1,0 +1,9 @@
+PATCH open
+PATCH 1 snapshot one|two|three|four lines=4 rows=4
+PATCH 2 snapshot one|two|three|four lines=4 rows=4
+PATCH 3 snapshot one|Xtwo|three|four lines=4 rows=4
+PATCH 4 snapshot one|X|two|three|four lines=5 rows=5
+PATCH 5 snapshot one|Xtwo|three|four lines=4 rows=4
+PATCH 6 resync
+PATCH 7 snapshot one|Xtwo|three|four lines=4 rows=4
+PATCH closed
