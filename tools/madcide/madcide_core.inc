@@ -3741,6 +3741,29 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var status;
     compose_joe_statusline(status, w, es, nav, caret, fnctx);
 
+    // Layout regions (slice 3, madcide GUI): the edit node is the editor
+    // group (a tab strip when more than one buffer is open), the status
+    // line is the status bar. These are ADDITIVE hint keys the grid model
+    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
+    // so the terminal composition is byte-identical; web_model lays a
+    // region'd node into the workbench grid. The active window's ed and
+    // status are stamped here, before the multi-window branch's own
+    // read-modify-write of ed["hints"] preserves the region.
+    {
+	var eh = ed["hints"];
+	eh["region"] = "editor";
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	if ( !bufs.is_null() && php::count(bufs) > 1 )
+	    eh["tabs"] = 1;
+	ed["hints"] = eh;
+    }
+    {
+	var sh = status["hints"];
+	sh["region"] = "statusbar";
+	status["hints"] = sh;
+    }
+
     var r = { "role": "group" };
     var kids = {};
     // IDE-9e: with two-plus windows, each window is its own status line +
@@ -3980,6 +4003,25 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 						    : "(clean)" };
 	}
 	box["children"] = items;
+	// The pane's workbench slot (slice 3) is madcide's OWN presentation
+	// policy for its OWN panes, expressed as DATA — a docked side view, a
+	// bottom panel, or a floating popup — never a name test in general
+	// machinery. A `popup` hint floats the choice as an overlay; a
+	// `region` hint docks it. Both are hints the grid model ignores.
+	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
+			  "build": "panel", "project": "popup",
+			  "modes": "popup", "help": "popup",
+			  "options": "popup" };
+	var slot = pane_slot[pane.c_str()];
+	if ( !slot.is_null() )
+	{
+	    var bh = box["hints"];
+	    if ( slot == "popup" )
+		bh["popup"] = 1;
+	    else
+		bh["region"] = slot;
+	    box["hints"] = bh;
+	}
 	kids.push(box);
     }
 

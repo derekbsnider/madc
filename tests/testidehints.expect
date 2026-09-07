@@ -1,0 +1,5 @@
+roles: status=status edit=edit
+region: status=statusbar editor=editor
+tabs: none
+pane: role=choice popup=yes
+caret-hint: 0
