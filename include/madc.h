@@ -5051,6 +5051,16 @@ public:
     }
     bool set_language_standard(const std::string &standard);
     bool set_language_standard_option(const std::string &arg);
+    // The canonical `--std=` spellings, no Program/source/config needed: the
+    // capability manifest (madc_capabilities.cpp) reads these instead of
+    // re-listing them. ONE table (parser.cpp) owns both the recognizer above
+    // and these accessors — a standard added there appears here for free, so
+    // the two can never drift (a hand-kept copy once dropped `c95`). The
+    // recognizer also accepts non-canonical aliases (`c90`, `c`, `c++`/`cpp`,
+    // `cppNN`) that these lists deliberately omit; STD_MADC is the dialect,
+    // not a standard, so it is excluded here too.
+    static std::vector<std::string> supported_c_standard_names();
+    static std::vector<std::string> supported_cpp_standard_names();
     bool aot_tracking;
     bool aot_skip_eval_shims;	// this build's artifact can never be host-called
 				// through the value ABI (standalone executable; any
