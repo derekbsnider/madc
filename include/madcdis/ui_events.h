@@ -35,8 +35,12 @@ enum class tui_event_kind : unsigned char
     wake,	// cooperative background tasks drained: recompose (the
 		// application re-checks its pending state, e.g. a spawned
 		// parse's completion)
-    snapshot	// a DOM frontend's page reported its rendered text (the
+    snapshot,	// a DOM frontend's page reported its rendered text (the
 		// test seam, madcSnapshot()): `text` carries it
+    scroll	// a DOM frontend scrolled its viewport (mouse-wheel /
+		// scrollbar): the renderer's presentation state moved, so
+		// recompose the visible window — no document change, and it
+		// must not disturb a prompt or the message seat (like wake)
 };
 
 struct tui_event

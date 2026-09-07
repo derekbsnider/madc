@@ -132,11 +132,44 @@
       for (var i = 0; i < opts.length; i++)
         el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
     } else if (cls === 'edit') {
+      // Virtualized: the engine emits only a WINDOW of lines ([op.top,
+      // op.top+N)) plus the document line count (op.total). We render the
+      // window between two spacer divs sized to the off-window lines, so the
+      // native scrollbar spans the whole document while the DOM holds only
+      // the visible window (O(window), not O(document)). Line numbers stay
+      // ABSOLUTE (op.top + local index), so renderLine's caret/selection
+      // matching is unchanged.
       el.textContent = '';
       if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
+      var top = op.top || 0;
       var lines = op.lines || [];
-      for (var l = 0; l < lines.length; l++)
-        el.appendChild(renderLine(lines[l], l, op.focus ? op.caret : null, op.sel));
+      var total = (op.total != null) ? op.total : (top + lines.length);
+      var topSpacer = document.createElement('div');
+      topSpacer.className = 'vspacer';
+      el.appendChild(topSpacer);
+      var firstLine = null;
+      for (var l = 0; l < lines.length; l++) {
+        var ln = renderLine(lines[l], top + l, op.focus ? op.caret : null, op.sel);
+        el.appendChild(ln);
+        if (!firstLine) firstLine = ln;
+      }
+      var bottomSpacer = document.createElement('div');
+      bottomSpacer.className = 'vspacer';
+      el.appendChild(bottomSpacer);
+      // The REAL rendered line height (one layout read per compose, over the
+      // small windowed DOM) makes the spacers and the scroll math agree.
+      var lh = firstLine ? firstLine.getBoundingClientRect().height : (el._lineH || 0);
+      if (lh > 0) {
+        topSpacer.style.height = (top * lh) + 'px';
+        var below = total - top - lines.length;
+        bottomSpacer.style.height = (below > 0 ? below * lh : 0) + 'px';
+        el._lineH = lh;
+      }
+      el._winTop = top;
+      el._winCount = lines.length;
+      el._total = total;
+      el._key = op.key;
+      ensureScrollListener(el);
     }
     // group / separator / node: structure only — children carry it.
   }
@@ -147,6 +180,41 @@
         if (el.parentNode) el.parentNode.removeChild(el);
         nodes['delete'](key);
       }
+    });
+  }
+
+  // A virtualized edit reports viewport scrolls so the engine can move its
+  // window (web_model owns the top line, like the grid model's _scroll). We
+  // post ONLY when the view nears the rendered window's edge: the overscan
+  // buffer covers small scrolls and the caret's scrollIntoView nudges, so
+  // typing never round-trips and there is no scroll<->recompose feedback
+  // loop. The engine echoes a new window; the native scroll position is
+  // preserved across the DOM swap because the total height is stable.
+  // rAF bound to window: WebKit throws "Illegal invocation" on a detached
+  // requestAnimationFrame, so bind it (setTimeout is the fallback).
+  var raf = window.requestAnimationFrame
+    ? window.requestAnimationFrame.bind(window)
+    : function (f) { setTimeout(f, 16); };
+
+  function ensureScrollListener(el) {
+    if (el._scrollBound) return;
+    el._scrollBound = true;
+    var pending = false;
+    el.addEventListener('scroll', function () {
+      if (pending) return;
+      pending = true;
+      raf(function () {
+        pending = false;
+        var lh = el._lineH || 0;
+        if (lh <= 0) return;
+        var visTop = el.scrollTop / lh;
+        var visRows = el.clientHeight / lh;
+        var winTop = el._winTop || 0;
+        var winEnd = winTop + (el._winCount || 0);
+        var MARGIN = 2;
+        if (visTop < winTop + MARGIN || visTop + visRows > winEnd - MARGIN)
+          post({ kind: 'scroll', key: el._key, top: Math.max(0, Math.floor(visTop)) });
+      });
     });
   }
 
