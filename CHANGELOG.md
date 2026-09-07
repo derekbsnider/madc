@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
+
+- A source-free `madc --capabilities=json` prints a versioned JSON manifest of
+  what the build accepts and produces: compiler version/target, the accepted
+  `--std=` C and C++ standards, project-mode support, execution and
+  native-output modes, CIR emit targets, introspection surfaces, and the
+  `libmadc` / C API boundary. It runs before any `madc.ini` lookup, like
+  `--version`, so tooling can query the compiler with nothing but the binary; a
+  cross artifact reports `emit-only` and `jit: false`. Shape from contributor
+  uhhidk's PR #7, reworked to the repo's rules.
+- Built with the in-tree `nlohmann::json` (`.dump(2)`), not hand-rolled
+  escaping (rule #4). The standards and emit-target lists are DERIVED, not
+  re-typed (rule #7): the `--std=` recognizer was refactored onto ONE canonical
+  table with source-free accessors (`Program::supported_c_standard_names()` /
+  `supported_cpp_standard_names()`), and emit targets split from
+  `CIR_EMIT_TARGETS` — so the manifest can never advertise a standard the
+  compiler rejects. It regains `c95`, which the original hand-kept list dropped.
+- Gate `capabilities_json_gate.sh` (fulltest) asserts schema 1, that every
+  advertised standard is accepted by `--std=` (and every alias/dialect the
+  manifest omits is still accepted, never leaked), that `emit_targets` equals
+  the `CIR_EMIT_TARGETS` macro, and that an unknown format is rejected — with a
+  built-in negative control (a bogus `--std=` must be refused).
+
+### `src/embedded_headers.cpp` generates into `obj/` for every mode (2026-09-07)
+
+- The tracked generated table had repeatedly drifted. Every build mode (host,
+  darwin, win) now generates the real table into
+  `obj/<mode>/embedded_headers.cpp` at Makefile parse time; the committed
+  `src/embedded_headers.cpp` is a `#error` stub, kept a stub by
+  `check-embedded-headers-stub.sh` (fulltest, two-way negative control). The
+  migration exposed the host+PIC (`libmadc.so`) path as the laggard — the
+  `#error` stub caught it loudly. Drift is now structurally impossible: the real
+  artifact lives only in gitignored `obj/`.
+
+### madcide slice 3.1 — live-window fixes + dialect-literals rule (2026-09-07)
+
+- Two web-target (`--gui`) live-window fixes the owner found: syntax colour now
+  flows to the window (`spans_to_hspans` stamps the semantic class on every
+  classified span; each renderer maps it in its own vocabulary, themeable via
+  `@gui`; functions colour on the web where they were bare), and the caret
+  scrolls into view on keyboard navigation past the fold.
+- New dialect-literals rule + `check-dialect-literals.sh` gate: dialect
+  production code (`tools/`) builds objects with literals (`var x = { "k": v }`)
+  rather than a bare `var x;` filled field-by-field; imperative key-assign stays
+  for mutation, computed keys, and integer indices. 30 `tools/` sites converted.
+
 ### madcide GUI mode — the web target's first customer (slice 3, 2026-09-07)
 
 - `madc tools/madcide/madcide.mad <file> --gui` opens madcide in a window
