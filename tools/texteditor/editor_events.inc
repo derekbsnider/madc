@@ -111,7 +111,14 @@ void shift_hspans(long w, long es, long off, long delta)
 	}
 	if ( e > s )
 	{
-	    var nr = { "s": s, "e": e, "c": r["c"] };
+	    // The row is the converter's (spans_to_hspans): carry it WHOLE
+	    // and move only its geometry. A field list here is a second copy
+	    // of the row shape — it silently dropped the semantic `cls` the
+	    // web renderer reads when slice 3.1 added it, killing the web's
+	    // colour on the first keystroke (tests/testidespanshift.mad).
+	    var nr = r;
+	    nr["s"] = s;
+	    nr["e"] = e;
 	    out.push(nr);
 	}
     }
