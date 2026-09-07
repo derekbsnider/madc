@@ -25714,6 +25714,25 @@ void Program::add_array_methods()
 	  "madarray_ne_cstr", true },
 	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
 	  "madarray_ne_value", true },
+	// The number kinds: `v == 5`, `v != 2.5`, `v == true`. Without these
+	// rows the comparison fell to c2mir's pointer-vs-integer compare and
+	// answered FALSE for an integer-kind 5 (a silent wrong answer, plus
+	// a warning nobody reads). The entries build a value of the operand
+	// and ask madc::value::operator== — one equality contract (strict
+	// kind: an integer-kind 5 is not the real 5.0, boolean is its own
+	// kind), never a second comparison rule.
+	{ "operator==", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_eq_int", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_eq_real", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_eq_bool", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_ne_int", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_ne_real", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_ne_bool", true },
 	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
 	  "madarray_append_cstr", false },
 	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
