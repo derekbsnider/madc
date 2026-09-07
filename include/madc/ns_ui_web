@@ -23,14 +23,17 @@ namespace ui_web {
 
     // The ONE bound callback: the page calls window.madc(json) -> here. The
     // request is the call's argument array (["{...}"]); the engine's door
-    // unwraps the one string argument.
+    // unwraps the one string argument. The loop stops ONCE per run: the
+    // platform delivers terminate through its own idle queue, so a second
+    // terminate for a second event in the same run would fire in a LATER
+    // run and end it with nothing posted — read as the window closing.
     void on_event(const char *id, const char *req, void *arg)
     {
 	host *h = (host *)arg;
 	ui::post_event(h->ctx, req);
-	h->posted++;
 	webview_return(h->view, id, 0, "null");
-	webview_terminate(h->view);	// run() returns; the engine drains the event
+	if ( h->posted++ == 0 )
+	    webview_terminate(h->view);	// run() returns; the engine drains the events
     }
 
     void *open(const char *title, const char *page, void *ctx)
