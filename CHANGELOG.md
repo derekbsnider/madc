@@ -51,6 +51,10 @@
   a program importing a GUI module row (`madcwebview`, flag
   `MADC_MODULE_GUI`) lifts at run start — in the JIT, `--project` and `.o`
   lanes alike; the GUI stage needs no memory override.
+- The `madc.ini` guard keys are validated on BOTH config readers: the
+  CLI's lookup (`config_load`) shares `check_guard_keys` with the
+  explicit-file reader, so `mem-limit = 8G` refuses with its reason
+  everywhere (`forest_config_gate` [bad-int] caught the one-reader gap).
 
 ### Objects carry their module list; lazy module rows
 
