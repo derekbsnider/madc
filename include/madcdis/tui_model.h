@@ -53,6 +53,7 @@
 #include "madcdis/keys.h"		// tui_key, spelling, tui_bindings, key_resolver
 #include "madcdis/ui_events.h"	// tui_event_kind, tui_event
 #include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
+#include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 
 namespace madc {
 namespace hub {
@@ -634,17 +635,6 @@ private:
 		      rows(0) {}
     };
 
-    static long hint_of(const madc::value &hints, const char *key, long dflt)
-    {
-	if ( !hints.is_object() )
-	    return dflt;
-	const std::map<std::string, madc::value> &o = hints.as_object();
-	std::map<std::string, madc::value>::const_iterator it = o.find(key);
-	if ( it == o.end() || !it->second.is_integer() )
-	    return dflt;
-	return (long)it->second.as_integer();
-    }
-
     void walk(const roles &r, const uinode &n, size_t cols,
 	      std::vector<line_out> &lines, std::vector<edit_slot> &edits)
     {
@@ -1049,91 +1039,12 @@ public:
     // presentation state — a focus event says "repaint"); enter on a
     // focused choice chooses; everything else reaches the application as
     // a key event. With no table installed, behavior is byte-identical
-    // to the pre-bindings adapter.
+    // to the pre-bindings adapter. The loop itself is the shared adapter
+    // ui_apply_keys (madcdis/ui_input.h) — the DOM model runs the same one.
     std::vector<tui_event> apply_keys(const std::vector<tui_keyev> &keys)
     {
-	std::vector<tui_event> out;
-	std::string run;
-	for ( size_t i = 0; i < keys.size(); ++i )
-	{
-	    const tui_keyev &k = keys[i];
-	    // The key owner FIRST (madcdis/keys.h): a pending chord consumes
-	    // the key; a bound head fires or opens a chord; everything else
-	    // is passthrough and the model's own rules below apply.
-	    key_step step = _keys.step(k);
-	    if ( step.k == key_step::kind::passthrough && k.kind == tui_key::ch )
-	    {
-		run += k.ch;
-		continue;
-	    }
-	    if ( !run.empty() )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::text;
-		e.text = run;
-		out.push_back(e);
-		run.clear();
-	    }
-	    if ( step.k == key_step::kind::pending
-		 || step.k == key_step::kind::cancelled )
-	    {
-		// A chord STARTED, extended or cancelled: the pending prefix is
-		// visible state — a status line echoing it (JOE's %k) needs a
-		// repaint event to show it live, or to clear it.
-		tui_event e;
-		e.kind = tui_event_kind::focus;
-		out.push_back(e);
-		continue;
-	    }
-	    if ( step.k == key_step::kind::action )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::action;
-		e.action_name = step.action_name;
-		e.seq = step.seq;
-		out.push_back(e);
-		continue;
-	    }
-	    if ( step.k == key_step::kind::transparent )
-	    {
-		// A resize or wake mid-chord passes through without disturbing
-		// the pending prefix.
-		tui_event e;
-		e.kind = k.kind == tui_key::resize ? tui_event_kind::resize
-						    : tui_event_kind::wake;
-		out.push_back(e);
-		continue;
-	    }
-	    if ( k.kind == tui_key::resize )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::resize;
-		out.push_back(e);
-		continue;
-	    }
-	    if ( k.kind == tui_key::wake )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::wake;
-		out.push_back(e);
-		continue;
-	    }
-	    // The focus/navigation owner (madcdis/ui_focus.h): tab cycles,
-	    // arrows move a focused choice's selection, enter chooses; any
-	    // other key is the application's and rides through with the
-	    // focused choice's live selection.
-	    tui_event e;
-	    _focus_st.navigate(k, e);
-	    out.push_back(e);
-	}
-	if ( !run.empty() )
-	{
-	    tui_event e;
-	    e.kind = tui_event_kind::text;
-	    e.text = run;
-	    out.push_back(e);
-	}
-	return out;
+	// The one adapter (madcdis/ui_input.h) over this model's two owners.
+	return ui_apply_keys(_keys, _focus_st, keys);
     }
 };
 

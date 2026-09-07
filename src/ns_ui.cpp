@@ -1203,6 +1203,13 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 	    // state (a spawned parse's completion) and recomposes.
 	    f["event"] = madc::value(std::string("wake"));
 	    break;
+	case madc::hub::tui_event_kind::snapshot:
+	    // A DOM frontend's page reported its rendered text (the test
+	    // seam); the grid target never emits it, the value shape is
+	    // the one vocabulary either way.
+	    f["event"] = madc::value(std::string("snapshot"));
+	    f["text"] = madc::value(e.text);
+	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:
 	    f["event"] = madc::value(std::string("focus"));

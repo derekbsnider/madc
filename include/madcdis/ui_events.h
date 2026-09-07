@@ -32,15 +32,17 @@ enum class tui_event_kind : unsigned char
     focus,	// focus or menu selection moved: recompose and repaint
     resize,	// the surface changed size: recompose and repaint
     action,	// a bound key sequence completed (empty name = unbound miss)
-    wake	// cooperative background tasks drained: recompose (the
+    wake,	// cooperative background tasks drained: recompose (the
 		// application re-checks its pending state, e.g. a spawned
 		// parse's completion)
+    snapshot	// a DOM frontend's page reported its rendered text (the
+		// test seam, madcSnapshot()): `text` carries it
 };
 
 struct tui_event
 {
     tui_event_kind kind;
-    std::string	   text;	// text: the run
+    std::string	   text;	// text: the run; snapshot: the page's text
     tui_key	   key;		// key: which one (ctrl -> `ch`)
     char	   ch;
     size_t	   option;	// choose: 0-based option index;
