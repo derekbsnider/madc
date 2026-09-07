@@ -296,4 +296,27 @@ namespace ui {
     // none is pending. A status line's chord-echo seat (JOE's %k) reads
     // it at compose time.
     void    tui_pending(value &out, int64_t t);
+
+    // ---- the target-generic surface (Level 3 arrives beside Level 1) ----
+    // open(target) names WHERE the tree is shown: "term" (the grid
+    // frontend — the tui_* names above are open("term")'s spellings over
+    // the same handles) or a registered script-hosted target (the web
+    // target, "web" — <ns_ui_web>). 0 + stderr reason when the target is
+    // unknown, cannot serve here (no tty, no display), or is already
+    // open. An empty name is the terminal. The loop is the same on every
+    // target: render(t, w, tree) -> event(ev, t, w) -> apply; the event
+    // objects are the ONE vocabulary tui_event documents. suspend /
+    // resume are terminal capabilities — a window answers false.
+    int64_t open(const char *target);
+    void    close(int64_t t);
+    int64_t rows(int64_t t);
+    int64_t cols(int64_t t);
+    void    render(int64_t t, int64_t w, value &tree);
+    bool    bind_keys(int64_t t, value &table);
+    bool    validate_keys(value &table);
+    bool    event(value &out, int64_t t, int64_t w);
+    bool    suspend(int64_t t);
+    bool    resume(int64_t t);
+    void    refresh(int64_t t);
+    void    pending(value &out, int64_t t);
 }

@@ -1,0 +1,40 @@
+// The target-generic ui surface (slice 2 of the web-target arc): ui::open
+// names WHERE a tree is shown; the tui_* names are the "term" target's
+// spellings over the same handles. Under the runner stdout is captured, so
+// the term target refuses (0 + a stderr reason) — the refusal paths, the
+// bad-handle answers and the handle-free validation are what a lane with
+// no terminal and no display can gate, in JIT, exe and obj alike.
+int main()
+{
+    long bad = ui::open("nosuch");
+    println("unknown target -> {}", bad);
+    long t = ui::open("term");
+    println("term without a tty -> {}", t);
+    long t2 = ui::tui_open();
+    println("tui_open without a tty -> {}", t2);
+    long t3 = ui::open("");
+    println("empty name is the terminal -> {}", t3);
+
+    var table;
+    table["^k s"] = "save";
+    table["^q"] = "quit";
+    println("validate -> {}", ui::validate_keys(table) ? "ok" : "bad");
+    println("tui_validate -> {}", ui::tui_validate_keys(table) ? "ok" : "bad");
+    table["g g"] = "goto";
+    println("validate printable head -> {}", ui::validate_keys(table) ? "ok" : "bad");
+
+    println("rows of a bad handle -> {}", ui::rows(99));
+    println("cols of a bad handle -> {}", ui::cols(99));
+    var ev;
+    println("event of a bad handle -> {}", ui::event(ev, 99, 1) ? "yes" : "no");
+    println("event out is null -> {}", ev.is_null() ? "yes" : "no");
+    var chord;
+    ui::pending(chord, 99);
+    println("pending of a bad handle -> [{}]", chord);
+    println("bind_keys on a bad handle -> {}", ui::bind_keys(99, table) ? "yes" : "no");
+    println("suspend on a bad handle -> {}", ui::suspend(99) ? "yes" : "no");
+    ui::close(99);
+    ui::refresh(99);
+    println("done");
+    return 0;
+}
