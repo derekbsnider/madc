@@ -1,6 +1,41 @@
 # Test Status
 
-> **Current (2026-09-07, the s161 merge wave — slice 3, madcide GUI mode
+> **Current (2026-09-08, the s165 merge wave — the madcide GUI chrome
+> milestone S0–S5 on `feature/web-editor-incremental-claude`
+> ([design](plans/2026-09-07-madcide-gui-chrome-and-modular-ui-design.md),
+> 23 trailer'd code commits): S0 resize-fill over a remote X display
+> (`GSK_RENDERER=cairo` default), the incremental web editor (a newline index
+> in `text_buffer`, one span sweep, ONE splice per keystroke), mouse caret /
+> drag-select through one caret model, the ui event vocabularies as enums
+> (`bits/ui_enums`), S5 the workbench's slots (a region's nodes stack; the
+> `^K O` split as JOE's window stack), S1 menus/commands as data
+> (`profiles/default.menu`, the `check-madcide-command-registry` gate), S2
+> the GTK4 native menu bar (`madcwebview_chrome` in libmadcwebview), S3 the
+> status bar as chrome (format seats as segments), S4 native file dialogs (a
+> request/response verb, `GtkFileDialog`, Save As), and five carrier fixes
+> found on the way (`var &r = o["h"]`, `6 == v` / `v == E::z`, `var ==
+> enum class`, the mixed conditional as a value prvalue, `var &` in a `%s`
+> position). Pre-merge `/dupaudit`: one live divergence fixed, three
+> `DupFamily` nodes recorded):** FULL develop-set battery on the final code
+> (0edc6150; the one later CODE_PATHS delta is the win64 fixture
+> `tests/testmadcide.win64_expect`, read only under that domain): fulltest
+> rc=0 (every gate incl. `check-madcide-command-registry`,
+> `check-madcide-seam`, `check-one-key-owner`, `check-dialect-lean` with
+> the `<bits/…>` positive control) with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**,
+> native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`: webview{,_size},
+> ui_web_{hello,edit,patch,pointer}, madcide_{workbench,theme,render,split,menu}):
+> **11/11 JIT, 11/11 EXE, 11/11 OBJ**. New headless reducers: `testidemenu`, `testidedialog`,
+> `testuienums`, `testvarrefslot`, `testvareqenum`, `testvarternary`,
+> `testvarrefcoerce`, `testidespanshift`; `testidehints` / `testidestatus` /
+> `testuihostfake` / `testmadcide` / `testvised` extended (+9 → 1335 JIT-run
+> tests). wine64 **1276/0/0TO/68skip** (verify_pe_release OK, 234 units; the
+> stale spans line of the win64 fixture converged — 85073b9c); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK
+> both, macho_exe_dylib_gate OK, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-07, the s161 merge wave — slice 3, madcide GUI mode
 > on `feature/madcide-gui-claude`
 > ([plan](plans/2026-09-07-madcide-gui-plan.md), 9 tasks, one trailer'd
 > commit each): the web target's first customer — the `--gui` flag over ONE
