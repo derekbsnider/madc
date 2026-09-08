@@ -459,15 +459,24 @@ changed. The host (`<ns_ui_web>`) walks it item by item into madc's
 extension of the webview library (`madcwebview_menu_begin` / `_add` /
 `_separator` / `_end`, declared in the embedded `webview.h` beside
 upstream's API; `src/madcwebview_chrome.cc` implements them in
-`libmadcwebview`): on GTK4 a `GtkPopoverMenuBar` over a `GMenu` model, the
-webview re-parented beneath it, each item an action under the `menu.`
-prefix — a single-key chord becomes the item's accelerator, a multi-key
-chord is shown in its label. Choosing an item posts
-`{"kind":"action","action":id}` back through the host's one door, so the
-session dispatches it exactly as it dispatches the chord. Win32 and Cocoa
-answer "unsupported" until their native menus land (the window keeps the
-page as it is). `ui_web::menu_activate(id)` fires an item by id — the test
-seam `tests/gui/madcide_menu.mad` drives.
+`libmadcwebview`) on every platform the library builds for: GTK4 draws a
+`GtkPopoverMenuBar` over a `GMenu` model, the webview re-parented beneath
+it, each item an action under the `menu.` prefix; Cocoa sets the
+application's main menu (the bar at the top of the screen; its first,
+application menu carries Quit as the window's own close — the close
+button's path, never `terminate:`); Win32 sets an `HMENU` bar on the window
+and reads `WM_COMMAND` through a subclass of the library's window
+procedure. One reading of the key spelling serves all three: a CONTROL key
+(`^s`) becomes the item's accelerator (a GTK accel, a Cocoa key equivalent,
+Win32's accelerator column), while a chord (`^k d`) or a bare key (`pgdn`,
+a letter) is shown beside the title and never bound — bound, it would fire
+on every such keystroke typed into the page; unbound, the page still
+delivers it to the engine, which resolves it as the terminal would.
+Choosing an item posts `{"kind":"action","action":id}` back through the
+host's one door, so the session dispatches it exactly as it dispatches the
+chord. `ui_web::menu_activate(id)` fires an item by id — the test seam
+`tests/gui/madcide_menu.mad` drives, under Xvfb on Linux and natively on
+the owner's Windows 11 box and Intel Mac.
 
 **Native file dialogs.** Open File and Save As are a request / response
 VERB between the session and its client, never a widget the session
@@ -476,12 +485,15 @@ draws: a client that can show native dialogs pushes the fact
 park a `filedialog` request — mode, title, the initial path — in the same
 slot the terminal requests ride; the client shows it (`ui::dialog`, the
 host's `dialog` op, `madcwebview_dialog_open` / `_save`: a `GtkFileDialog`
-on GTK 4.10+, asynchronous inside the platform loop) and the answer comes
+on GTK 4.10+, an `NSOpenPanel` / `NSSavePanel` sheet on the window on
+Cocoa, `IFileOpenDialog` / `IFileSaveDialog` on Win32 — asynchronous on
+each: the call returns once the dialog is up and the answer arrives later,
+inside the platform loop the host is already in) and the answer comes
 back as a `dialog` event the dispatcher applies — open edits the chosen
 file, save writes the buffer under the new path (its buffer row follows),
 `""` cancels. Without the fact (the terminal, a headless session) both
-commands keep JOE's prompts exactly as before, and a platform without a
-native dialog yet (Win32, Cocoa) falls back to the same prompts through
+commands keep JOE's prompts exactly as before, and a host that refuses the
+request (no window, a fake host) falls back to the same prompts through
 `IdeSession::dialog_fallback`. Paths are the one local workspace's; the
 URI scheme / authority addressing of the two-sided file model lands with
 the remote-transport arc. `tests/testidedialog.mad` pins the verb

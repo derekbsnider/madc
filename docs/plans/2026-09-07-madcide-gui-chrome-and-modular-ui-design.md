@@ -12,10 +12,11 @@ hint, the one-vocabulary registry gate); S2 the native menu bar (GTK4
 webview library; a selection is the chord's own action event); S3 the status
 bar as chrome (the JOE format's seats as discrete items); S4 native file
 dialogs (a core→client request/response verb; `GtkFileDialog`; the terminal
-keeps its prompts). Win32 / Cocoa native menu + dialogs, the DOM command
-palette, pane drag / persisted layout and the remote transport / multi-user
-arc are the follow-ups. Decision 5 (attach handshake + intersection
-capabilities) is adopted as principle; nothing built here violates it.
+keeps its prompts). The DOM command palette, pane drag / persisted layout
+and the remote transport / multi-user arc are the follow-ups (the Win32 /
+Cocoa native chrome landed as S7 below). Decision 5 (attach handshake +
+intersection capabilities) is adopted as principle; nothing built here
+violates it.
 
 **S6 — the owner's post-release round (2026-09-08,
 `feature/madcide-gui-prompts-claude`):** the prompts as dialogs (every
@@ -31,6 +32,29 @@ surface, the name leading, caption labels, accent pills, a key cap, the
 active window's header marked); and the `(^C aborts)` fix found on the way
 (a modal scope consults an action event's sequence; `@prompt ^c pcancel` is
 baked data). The terminal is byte-identical throughout.
+
+**S7 — the native chrome on Cocoa and Win32, and the library in the
+packages (2026-09-08, `feature/native-chrome-win-mac-claude`):** the SAME
+`madcwebview_chrome` C API the GTK side implements, now implemented on the
+other two platforms inside `libmadcwebview` — Cocoa sets the application's
+main menu (C++ over the ObjC runtime like the library itself; the first
+submenu is the application menu whose Quit is the window's `performClose:`,
+the close button's path) and shows `NSOpenPanel` / `NSSavePanel` as a sheet
+(a block completion, `-fblocks`); Win32 sets an `HMENU` bar and reads
+`WM_COMMAND` through a comctl32 subclass of the library's window procedure,
+and runs `IFileOpenDialog` / `IFileSaveDialog` from a message the subclass
+posts to itself so the call returns before the dialog runs. ONE reading of
+the key spelling serves the three arms (a control key is the accelerator; a
+chord or a bare key is shown, never bound — a bare key bound would fire on
+every keystroke typed into the page). The engine, the host fragment and
+the composed tree are unchanged: `ui::dialogs(t)` was already true on every
+platform, so Open File / Save As simply stop falling back to the prompts.
+The release targets build the library and the packagers ship it
+(`bin\madcwebview.dll`, `lib/libmadcwebview.dylib`, `lib/libmadcwebview.so`
+as a weak dependency) with the webview/webview notice. Evidence: the GUI
+stage under Xvfb (GTK), and `tests/gui/madcide_menu.mad` run natively on
+the owner's Windows 11 box (WebView2) and Intel Mac (WKWebView) against
+the staged sets.
 
 The text below is the design as proposed (2026-09-07), kept for its
 reasoning and citations.

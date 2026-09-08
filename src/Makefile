@@ -907,8 +907,11 @@ else
 MACHO_READER = bin/madc
 RELEASE_MACOS_ARCHES = arm64 x86-64
 endif
+# The platform webview library (webview.mk) rides the release of each arch:
+# package_release_macos.sh ships it as lib/libmadcwebview.dylib.
 release-%-macos:
 	$(MAKE) hosted-$*-macos
+	$(MAKE) webview-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
 	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
 
@@ -961,8 +964,11 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # pack script's verify legs (--dump-forest, --run-frozen, bind-cache
 # equivalence) run the EXACT shipped bytes under wine. The suite-facing
 # hosted exe stays live-parse; this is the packed product twin.
+# The platform webview library (webview.mk) rides the release too:
+# package_release_windows.sh ships bin/madcwebview.dll beside madc.exe.
 release-windows:
 	$(MAKE) hosted-x86-64-windows
+	$(MAKE) webview-windows
 	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
 	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe

@@ -70,6 +70,43 @@ owns callback state and must keep it alive until callbacks have finished.
 This is upstream's low-level library contract; the engine owns higher-level
 state and synchronization. Handles remain pointers, never boxed `var` values.
 
+## Native chrome — madc's extension of the library
+
+`src/madcwebview_chrome.h` declares madc's own C API beside upstream's — a
+native menu bar (`madcwebview_menu_begin` / `_add` / `_separator` / `_end`
+/ `_on_action` / `_activate`) and the platform's file dialogs
+(`madcwebview_dialog_open` / `_save`) — and `src/madcwebview_chrome.cc`
+implements it inside `libmadcwebview` on all three platforms;
+`scripts/gen_webview_header.py` appends the header to the embedded
+`include/madc/webview.h`, so `import madcwebview;` sees one interface.
+
+| Platform | Menu bar | File dialogs | Extra build inputs |
+|---|---|---|---|
+| GTK4 | `GtkPopoverMenuBar` over a `GMenu`; the webview re-parented under it | `GtkFileDialog` (GTK 4.10+) | — |
+| Cocoa | the application's main menu (`NSMenu` on `NSApp`); the first submenu is the application menu, its Quit the window's `performClose:` | `NSOpenPanel` / `NSSavePanel` as a sheet on the window | `-fblocks` (the completion handler is a block; the code stays C++ over the ObjC runtime like the library) |
+| Win32 | an `HMENU` bar (`SetMenu`); `WM_COMMAND` through a comctl32 subclass of the library's window procedure | `IFileOpenDialog` / `IFileSaveDialog` (COM), run from a message the subclass posts to itself | `-lcomctl32 -luuid` |
+
+One reading of the madc key spelling serves the three: a control key
+(`^s`) becomes the item's accelerator; a chord (`^k d`) or a bare key
+(`pgdn`, a letter) is shown beside the title and never bound (bound, it
+would fire on every such keystroke typed into the page). Every dialog call
+is asynchronous on every platform — it returns 0 once the dialog is up and
+the callback fires later, on the UI thread, inside the platform loop the
+host is already running (`webview_run`). `madcwebview_menu_activate(id)`
+fires an item as the user would — the test seam `tests/gui/madcide_menu.mad`
+drives it under Xvfb, and natively on the Windows and macOS staging sets.
+
+The release targets build the library beside the binaries
+(`release-windows` runs `webview-windows`; `release-<arch>-macos` runs
+`webview-<arch>-macos`; `package_release.sh` runs `libmadcwebview`), and
+the packagers ship it where the module loader looks — `bin\madcwebview.dll`
+beside `madc.exe` (the exe's directory), `lib/libmadcwebview.dylib` next to
+`bin/madc` (`<exedir>/../lib`), `lib/libmadcwebview.so` in the tarball and
+the deb/rpm libdir (the system search, `ldconfig`). On Linux it is a WEAK
+dependency (`Recommends: libwebkitgtk-6.0-4, libgtk-4-1`; the rpm excludes
+the library's own requires) — madc never loads it, only a program that
+imports it does. The webview/webview MIT notice ships beside it.
+
 ## GUI validation and memory policy
 
 ```sh

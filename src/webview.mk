@@ -2,9 +2,10 @@
 # targets below). It is not linked into libmadc or loaded by non-GUI programs.
 WEBVIEW_DIR = ../third_party/webview
 WEBVIEW_SOURCE = $(WEBVIEW_DIR)/core/src/webview.cc
-# madc's own extension of the library (the native menu bar, S2): compiled
-# beside upstream's source into the same shared object; its header is what
-# scripts/gen_webview_header.py appends to the embedded include/madc/webview.h.
+# madc's own extension of the library (the native chrome: menu bar + file
+# dialogs on GTK4 / Cocoa / Win32): compiled beside upstream's source into
+# the same shared object; its header is what scripts/gen_webview_header.py
+# appends to the embedded include/madc/webview.h.
 WEBVIEW_MADC_SOURCE = madcwebview_chrome.cc
 WEBVIEW_MADC_HEADER = madcwebview_chrome.h
 WEBVIEW_HEADERS = $(wildcard $(WEBVIEW_DIR)/core/include/*.h $(WEBVIEW_DIR)/core/include/webview/*.h $(WEBVIEW_DIR)/compatibility/mingw/include/*.h)
@@ -20,12 +21,16 @@ WEBVIEW_LIBRARY = ../bin/madcwebview.dll
 WEBVIEW_CXXFLAGS = -std=c++14 $(WEBVIEW_FLAGS) -I$(WEBVIEW_DIR)/compatibility/mingw/include -I$(WEBVIEW2_SDK_DIR)/build/native/include
 # Use the SAME UCRT C++/pthread runtime as madc; never introduce an MSVCRT
 # libstdc++ copy. win_ucrt_compat supplies the static-libgcc setjmp imports.
-WEBVIEW_LDFLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -ladvapi32 -lole32 -lshell32 -lshlwapi -luser32 -lversion -lpthread
+# comctl32: the window subclass the chrome reads WM_COMMAND through; uuid:
+# the file-dialog CLSIDs / IIDs (madcwebview_chrome.cc).
+WEBVIEW_LDFLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -ladvapi32 -lole32 -lshell32 -lshlwapi -luser32 -lversion -lcomctl32 -luuid -lpthread
 WEBVIEW_EXTRA = $(OBJDIR)/win_ucrt_compat.o $(WEBVIEW2_SDK_DIR)/.sha256
 else ifdef HOSTED_DARWIN_TARGET
 WEBVIEW_CXX = $(DARWIN_CLANGXX) -target $(subst x86-64,x86_64,$(DARWIN_ARCH))-apple-macos$(WEBVIEW_MACOS_MINOS) --sysroot $(MACOS_SDK) $(DARWIN_CXX_ISYS)
 WEBVIEW_LIBRARY = ../lib/webview/$(DARWIN_ARCH)-macos/libmadcwebview.dylib
-WEBVIEW_CXXFLAGS = -std=c++11 $(WEBVIEW_FLAGS)
+# -fblocks: the save/open panel's completion handler is a block (the chrome
+# is C++ over the ObjC runtime, like the library itself).
+WEBVIEW_CXXFLAGS = -std=c++11 $(WEBVIEW_FLAGS) -fblocks
 WEBVIEW_LDFLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/libmadcwebview.dylib -framework WebKit
 else
 WEBVIEW_LIBRARY = ../lib/libmadcwebview.so
