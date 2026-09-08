@@ -6,3 +6,7 @@ caret-hint: 0
 split: kids=5 regions=editor/editor/editor/editor rows-hint=yes
 split-msg: role=content region=none
 one-window: status=statusbar editor=editor
+prompt: content=Find (^C aborts): ab popup=1 label=Find input=ab dismiss=pcancel
+prompt-actions: other-inert=1 dismiss-ends=1
+confirm: content=Lose changes to this file (y,n,^C)? popup=1 label-same=1 choices=Yes=pyes No=pcancel dismiss=none
+confirm-button: prompt-off=1

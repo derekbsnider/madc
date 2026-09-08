@@ -100,5 +100,31 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
   z-index: 10; background: #2a2f3e; border: 1px solid #4a5a80;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
+/* The prompts as dialogs (S6). A quick input: the label above a field that
+   shows the text the core holds with a caret after it, and the two keys it
+   answers to beneath; a confirm: the question and its buttons, the first
+   answer the primary. Chrome text is proportional (--chrome-font); the
+   field itself keeps the editor's monospace so what is typed reads as it
+   will land. */
+.node.popup.quickinput, .node.popup.confirm {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  font: 13px/1.4 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  border-radius: 6px; overflow: visible;
+}
+.node.popup.quickinput { min-width: 34em; }
+.qi-label { color: #c9cde0; }
+.qi-input { display: flex; align-items: center; padding: 5px 9px; min-height: 1.35em;
+            background: var(--bg, #1b1d24); border: 1px solid var(--accent, #9fc2ff);
+            border-radius: 4px; font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            white-space: pre; }
+.qi-hint { color: #7d829a; font-size: 11px; }
+.node.popup.confirm { min-width: 28em; gap: 14px; }
+.cf-question { color: #f2f4ff; font-size: 14px; }
+.cf-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.cf-btn { font: inherit; padding: 4px 16px; border-radius: 4px; cursor: pointer;
+          border: 1px solid #4a5a80; background: #3b4a6b; color: #f2f4ff; }
+.cf-btn:hover { background: #4a5a80; }
+.cf-btn:first-child { background: var(--accent, #9fc2ff); border-color: var(--accent, #9fc2ff);
+                      color: #1b1d24; }
 /* The editor's tab-strip marker (the buffer-named strip is a later slice). */
 .edit.has-tabs { border-top: 2px solid #4a5a80; }

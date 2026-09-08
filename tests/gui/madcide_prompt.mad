@@ -1,0 +1,155 @@
+// S6 (madcide GUI): the prompts as dialogs in the window. A REAL session's
+// find prompt composes its bottom-line row with quick-input hints; the page
+// floats it as a QUICK INPUT (label, the input text the core holds with a
+// caret, the keys it answers to) near the top, centered, out of the foot's
+// flow. Typing travels the one input path (a text event) and the popup shows
+// the core's text. A press OUTSIDE the popup fires the composer's dismissal
+// — the scope's cancel by ACTION NAME, posted as a menu item would post —
+// and the prompt ends. The quit question on a dirty buffer is a CONFIRM
+// dialog: the JOE question and one button per answer the @confirm scope
+// binds (Yes = pyes, No = pcancel); clicking No posts pcancel and the
+// question ends with the buffer kept. Runs under Xvfb through remote_build
+// gui; the real page handlers and the real DOM run.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void ev_action(var &e, const char *a)
+{
+    var f;
+    f["event"] = "action";
+    f["event_code"] = ui::event_kind::action;
+    f["action"] = a;
+    f["seq"] = "";
+    e = f;
+}
+
+// The popup facts as one snapshot line: how many popups; a quick input's
+// label, text, caret, placement (top third, centered, parented by the foot
+// slot that takes no height for it); a confirm's question and buttons.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var pops=document.querySelectorAll('.node.popup');"
+	"var qi=document.querySelector('.node.popup.quickinput');"
+	"var cf=document.querySelector('.node.popup.confirm');"
+	"var rb=document.getElementById('root').getBoundingClientRect();"
+	"var txt='';"
+	"if(qi){var b=qi.getBoundingClientRect();"
+	"txt=' qi-label='+qi.querySelector('.qi-label').textContent"
+	"+' qi-input='+JSON.stringify(qi.querySelector('.qi-text').textContent)"
+	"+' caret='+(qi.querySelector('.qi-input .caret')?1:0)"
+	"+' top-third='+((b.top-rb.top)<rb.height/3?1:0)"
+	"+' centered='+(Math.abs((b.left+b.width/2)-(rb.left+rb.width/2))<2?1:0)"
+	"+' in-foot='+(qi.parentNode.dataset.slot==='foot'?1:0)"
+	"+' foot-h='+Math.round(qi.parentNode.getBoundingClientRect().height);}"
+	"if(cf){var bs=Array.prototype.map.call(cf.querySelectorAll('.cf-btn'),"
+	"function(b){return b.textContent+':'+b.dataset.action;});"
+	"txt=' question='+JSON.stringify(cf.querySelector('.cf-question').textContent)"
+	"+' buttons='+bs.join(',');}"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'popups='+pops.length+txt}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_prompt_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("PROMPT open");
+    var ev;
+    var e;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    ev_action(e, "find");		// ^K F: the find prompt opens
+	    S.apply_ide_event(doc, e);
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "text" || ev["event"] == "action" )
+	{
+	    if ( ev["event"] == "action" )
+		println("PROMPT action {}", ev["action"]);
+	    S.apply_ide_event(doc, ev);
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    if ( stage == 1 )
+	    {
+		println("PROMPT find-open: {}", ev["text"]);
+		stage = 2;
+		// Typing reaches the core through the page's one input path.
+		ui::eval_page(t, "window.madc(JSON.stringify({kind:'text',text:'abc'}))");
+	    }
+	    else if ( stage == 2 )
+	    {
+		println("PROMPT typed: {}", ev["text"]);
+		stage = 3;
+		// A press outside the popup — on the editor's first line.
+		ui::eval_page(t,
+		    "(function(){var ln=document.querySelector('.edit').firstElementChild;"
+		    "var r=ln.getBoundingClientRect();"
+		    "ln.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,"
+		    "clientX:r.left+3,clientY:r.top+r.height/2,button:0,buttons:1}));})()");
+	    }
+	    else if ( stage == 3 )
+	    {
+		println("PROMPT dismissed: {} prompt-off={}", ev["text"],
+			prompt_active(w, es) ? 0 : 1);
+		stage = 4;
+		ui::set(w, doc, "modified", true);
+		ev_action(e, "quit");		// ^K Q on a dirty buffer: the question
+		S.apply_ide_event(doc, e);
+		var tree;
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		probe(t);
+	    }
+	    else if ( stage == 4 )
+	    {
+		println("PROMPT confirm-open: {}", ev["text"]);
+		stage = 5;
+		// The No button, clicked as the user would.
+		ui::eval_page(t, "document.querySelector('.cf-btn[data-action=\"pcancel\"]').click()");
+	    }
+	    else
+	    {
+		var m;
+		ui::get(m, w, doc, "modified");
+		println("PROMPT answered: {} prompt-off={} modified={}", ev["text"],
+			prompt_active(w, es) ? 0 : 1, m.as_boolean() ? 1 : 0);
+		break;
+	    }
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("PROMPT closed");
+    return 0;
+}

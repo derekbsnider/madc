@@ -265,9 +265,12 @@ const char *modal_default_keys_text()
 // prompt's characters are its input) — the caller picks. False = the
 // scope binds nothing for this event. Sessions that never loaded a
 // profile (the headless harness) lazily seed the baked defaults.
-bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
+// The modal @scope tables — a loaded profile's, else the baked defaults
+// seeded lazily (sessions that never loaded a profile: the headless
+// harness). ONE reader for every consumer (the lookup below, the confirm
+// dialog's choices).
+void modal_keys(var &mk, long w, long es)
 {
-    var mk;
     ui::get(mk, w, es, "modekeys");
     if ( mk.is_null() )
     {
@@ -275,6 +278,12 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	parse_keys(t0, mk, modal_default_keys_text());
 	ui::set(w, es, "modekeys", mk);
     }
+}
+
+bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
+{
+    var mk;
+    modal_keys(mk, w, es);
     var sc = mk[scope];
     if ( sc.is_null() )
 	return false;
@@ -301,6 +310,33 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	return false;
     out = a;
     return true;
+}
+
+// The ACTION twin of scoped_action: a client fired one of a scope's
+// actions by NAME — a dialog button, a popup's dismissal (the menu-bar
+// rule: native chrome posts the action id, never a key). Accepted only
+// when the scope binds that name to some key, so a button can reach
+// exactly what a key can; any other action is not the scope's. False =
+// not an action event, or not this scope's.
+bool scope_action_named(var &out, long w, long es, const char *scope,
+			var &ev)
+{
+    var kind = ev["event_code"];
+    if ( !(kind == ui::event_kind::action) )
+	return false;
+    var mk;
+    modal_keys(mk, w, es);
+    var sc = mk[scope];
+    if ( sc.is_null() )
+	return false;
+    var nm = format("{}", ev["action"]);
+    for ( var a : sc )
+	if ( strcmp(a.c_str(), nm.c_str()) == 0 )
+	{
+	    out = nm;
+	    return true;
+	}
+    return false;
 }
 
 // The vi mode setter (defined with the vi machinery below — the loaders
@@ -1115,6 +1151,52 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 // plain row. This builds CONTENT from the editor state only; WHERE the
 // row goes is the screen model's decision (compose_ide_tree appends it
 // last) — a different editor personality places the same row elsewhere.
+// The confirm question's answers as a chrome-drawing client shows them
+// (the dialog's buttons): the @confirm scope's ACTIONS — profile data
+// binds their keys; this table gives each its title and the order a
+// dialog lays them. An action the scope does not bind gets no button, so
+// a profile that respells the question's keys keeps the dialog honest.
+void confirm_choices(var &out, long w, long es)
+{
+    var mk;
+    modal_keys(mk, w, es);
+    var sc = mk["confirm"];
+    var titles = {};
+    titles[] = { "action": "pyes", "label": "Yes" };
+    titles[] = { "action": "pcancel", "label": "No" };
+    var rows = {};
+    for ( var t : titles )
+    {
+	var want = t["action"];
+	bool bound = false;
+	if ( !sc.is_null() )
+	    for ( var a : sc )
+		if ( strcmp(a.c_str(), want.c_str()) == 0 )
+		    bound = true;
+	if ( bound )
+	    rows.push(t);
+    }
+    out = rows;
+}
+
+// A prompt row's hints for a window (S6, the prompts as GUI dialogs):
+// the same row the terminal shows as its bottom line carries, ADDITIVELY,
+// the quick-input data a chrome-drawing client renders as a floating
+// popup — `popup` (the overlay), `prompt` {label, input} (the core owns
+// the input text: keys reach it exactly as in the terminal, the client
+// only draws it — Neovim's ext_cmdline shape), `dismiss` (the action a
+// click outside the popup fires: the scope's cancel). The terminal reads
+// none of it (its "unknown hints are ignored" rule).
+void prompt_hints(var &st, var &label, var &input, bool dismiss)
+{
+    var qi = { "label": label, "input": input };
+    var h = { "popup": 1 };
+    if ( dismiss )
+	h["dismiss"] = "pcancel";
+    h["prompt"] = qi;
+    st["hints"] = h;
+}
+
 bool compose_overlay_row(var &row, long w, long es)
 {
     var st = { "role": "content" };
@@ -1127,12 +1209,23 @@ bool compose_overlay_row(var &row, long w, long es)
 	if ( pm == "confirm" )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
+	    // The question as a DIALOG in a window: the label and its
+	    // answers as buttons — each fires the scope's action by name
+	    // (scope_action_named), what its key does in the terminal.
+	    var ch;
+	    confirm_choices(ch, w, es);
+	    var cf = { "label": pr };
+	    cf["choices"] = ch;
+	    var h = { "popup": 1 };
+	    h["confirm"] = cf;
+	    st["hints"] = h;
 	    row = st;
 	    return true;
 	}
 	var pi;
 	ui::get(pi, w, es, "pinput");
 	st["content"] = format("{} (^C aborts): {}", pr, pi);
+	prompt_hints(st, pr, pi, true);
 	row = st;
 	return true;
     }
@@ -1141,6 +1234,8 @@ bool compose_overlay_row(var &row, long w, long es)
 	var sch;
 	ui::get(sch, w, es, "search");
 	st["content"] = format("Find (^C aborts): {}", sch);
+	var fl = "Find";
+	prompt_hints(st, fl, sch, false);	// its cancel is the search's own
 	row = st;
 	return true;
     }
@@ -1366,7 +1461,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
 // Every event while the prompt is up. The keys are @prompt/@confirm
 // profile data (the baked defaults: enter pcommit / esc pcancel /
 // backspace pdelchar; y pyes / n pcancel / esc pcancel) — this arm
-// dispatches the looked-up NAMES, never the keys themselves.
+// dispatches the looked-up NAMES, never the keys themselves. A window's
+// dialog reaches the same names as ACTION events (a confirm button, the
+// quick input's click-outside dismissal): scope_action_named admits an
+// action the scope binds; every other action stays what it was here —
+// a confirm cancels on it, a prompt ignores it.
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
@@ -1380,7 +1479,8 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	// (discard in the JOE profile), so any action cancels too.
 	// Unbound keys leave the question standing.
 	var a;
-	if ( scoped_action(a, w, es, "confirm", ev) )
+	if ( scoped_action(a, w, es, "confirm", ev)
+	  || scope_action_named(a, w, es, "confirm", ev) )
 	{
 	    if ( a == "pyes" )
 	    {
@@ -1419,10 +1519,15 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	    return finish_prompt(w, es, doc, caret);
 	return true;
     }
-    if ( kind != ui::event_kind::key )
-	return true;
     var a;
-    if ( !scoped_action(a, w, es, "prompt", ev) )
+    if ( kind == ui::event_kind::action )
+    {
+	if ( !scope_action_named(a, w, es, "prompt", ev) )
+	    return true;		// another command mid-prompt: inert
+    }
+    else if ( kind != ui::event_kind::key )
+	return true;
+    else if ( !scoped_action(a, w, es, "prompt", ev) )
 	return true;			// unbound keys are inert
     if ( a == "pcommit" )
 	return finish_prompt(w, es, doc, caret);	// false = a :q quit

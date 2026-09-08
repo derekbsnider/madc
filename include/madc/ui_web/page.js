@@ -143,6 +143,44 @@
     return e;
   }
 
+  // ---- the prompts as dialogs (S6) ---------------------------------------
+  // The core's prompt as a QUICK INPUT: the label, the input text the core
+  // holds (every key still travels the one input path — the page draws the
+  // text and a caret after it, it never edits), and the two keys every
+  // prompt answers to. The composer's `popup` hint floats the node.
+  function quickInput(el, p) {
+    el.classList.add('quickinput');
+    el.textContent = '';
+    el.appendChild(span('qi-label', p.label || ''));
+    var box = document.createElement('div');
+    box.className = 'qi-input';
+    box.appendChild(span('qi-text', p.input || ''));
+    box.appendChild(span('caret', ' '));
+    el.appendChild(box);
+    el.appendChild(span('qi-hint', 'Enter \u21B5 confirms \u00B7 Esc cancels'));
+  }
+
+  // A question as a DIALOG: the label and one button per answer; a button
+  // posts the action the composer named for it — what its key does in the
+  // terminal — through the same {kind:'action'} a menu item posts.
+  function confirmBox(el, c) {
+    el.classList.add('confirm');
+    el.textContent = '';
+    el.appendChild(span('cf-question', c.label || ''));
+    var row = document.createElement('div');
+    row.className = 'cf-buttons';
+    var choices = Array.isArray(c.choices) ? c.choices : [];
+    for (var i = 0; i < choices.length; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cf-btn';
+      b.dataset.action = choices[i].action || '';
+      b.textContent = choices[i].label || '';
+      row.appendChild(b);
+    }
+    el.appendChild(row);
+  }
+
   // A BYTE column in a row's UTF-8 text -> the index into the page's
   // decoded (UTF-16) string: one unit per code point below U+10000, two for
   // a four-byte sequence (a surrogate pair). The engine speaks bytes (its
@@ -293,6 +331,7 @@
       el.appendChild(span('label', op.label || ''));
       el.appendChild(span('text', op.text || ''));
     } else if (cls === 'status' || cls === 'content' || cls === 'item') {
+      el.classList.remove('quickinput', 'confirm');
       if (cls === 'status' && op.items) {
         // The status bar as chrome (S3): each side is a row of SEGMENTS —
         // the composer's expanded format seats {seat, label, text} — laid
@@ -302,9 +341,16 @@
         el.textContent = '';
         el.appendChild(segments('sb-left', op.items.left));
         el.appendChild(segments('sb-right', op.items.right));
+      } else if (op.prompt) {
+        quickInput(el, op.prompt);
+      } else if (op.confirm) {
+        confirmBox(el, op.confirm);
       } else {
         text(el, op.text);
       }
+      // A popup a press outside dismisses: the composer's action, kept on
+      // the element for the mousedown handler (data, never a key).
+      if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {
@@ -456,8 +502,34 @@
     post({ kind: 'pointer', phase: phase, key: ed.dataset.key, line: pos.line, col: pos.col });
   }
 
+  // A dialog button: its action by name, nothing else (no key, no editor
+  // knowledge — the composer named what the answer means).
+  root.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('.cf-btn') : null;
+    if (!b || !b.dataset.action) return;
+    e.preventDefault();
+    post({ kind: 'action', action: b.dataset.action });
+    kb.focus();
+  });
+
+  // A press OUTSIDE a popup that names a dismissal fires that action (the
+  // quick input's cancel) instead of reaching what is underneath.
+  function dismissTarget(target) {
+    var pops = document.querySelectorAll('.node.popup[data-dismiss]');
+    for (var i = 0; i < pops.length; i++)
+      if (!pops[i].contains(target)) return pops[i].dataset.dismiss;
+    return null;
+  }
+
   root.addEventListener('mousedown', function (e) {
     if (e.button !== 0) return;
+    var dismiss = dismissTarget(e.target);
+    if (dismiss) {
+      e.preventDefault();
+      post({ kind: 'action', action: dismiss });
+      kb.focus();
+      return;
+    }
     var ed = editOf(e.target);
     if (!ed) return;
     var r = ed.getBoundingClientRect();

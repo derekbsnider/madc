@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### madcide: the prompts as dialogs in the window (S6, 2026-09-08)
+
+- Every bottom-line prompt (find, go to line, insert file, theme, tab width,
+  the colon line, the project add) floats in the window as a QUICK INPUT —
+  the label over a field showing the text the core holds, a caret, the keys
+  it answers to — and the quit question on a dirty buffer is a CONFIRM
+  dialog with Yes / No buttons. The composer stamps the data additively on
+  the same row the terminal shows (`popup`, `prompt {label, input}`,
+  `confirm {label, choices}`, `dismiss`); the terminal is unchanged. A
+  button, and a press outside the quick input, posts the scope's ACTION by
+  name (`pyes`, `pcancel`) — the menu-bar rule — and the prompt arms admit
+  an action the `@confirm` / `@prompt` scope binds (`scope_action_named`);
+  every other command mid-prompt behaves as before. `web_model` emits the
+  fields; the page renders `.quickinput` / `.confirm`. Pinned by
+  `tests/testidehints.mad`, the web_model unit battery and
+  `tests/gui/madcide_prompt.mad`.
+
 ## [v0.99.0] — 2026-09-08
 
 madcide is a desktop application: the GUI chrome milestone (S0–S5) — a

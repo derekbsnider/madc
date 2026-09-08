@@ -81,5 +81,54 @@ int main()
     println("one-window: status={} editor={}",
 	    t4["children"][0]["hints"]["region"],
 	    t4["children"][1]["hints"]["region"]);
+
+    // The prompts as GUI dialogs (S6): the bottom-line prompt row keeps its
+    // terminal content string and ADDITIVELY carries popup + prompt {label,
+    // input} + dismiss (the action a press outside the popup fires); the
+    // confirm question carries popup + confirm {label, choices} — its
+    // answers are the @confirm scope's actions with titles, in dialog
+    // order — and no dismiss (a question is not answered by a stray press).
+    start_prompt(w, es, "Find", "find");
+    ui::set(w, es, "pinput", "ab");
+    var t5;
+    S.compose_ide_tree(t5, doc);
+    var k5 = t5["children"];
+    var prow = k5[php::count(k5) - 1];
+    var ph = prow["hints"];
+    println("prompt: content={} popup={} label={} input={} dismiss={}",
+	    prow["content"], ph["popup"], ph["prompt"]["label"],
+	    ph["prompt"]["input"], ph["dismiss"]);
+    // A window's dialog reaches the prompt by ACTION NAME: another command
+    // mid-prompt stays inert (as ever), the scope's cancel ends it.
+    var ea;
+    ea["event"] = "action";
+    ea["event_code"] = ui::event_kind::action;
+    ea["action"] = "save";
+    ea["seq"] = "";
+    S.apply_ide_event(doc, ea);
+    long still = prompt_active(w, es) ? 1 : 0;
+    ea["action"] = "pcancel";
+    S.apply_ide_event(doc, ea);
+    println("prompt-actions: other-inert={} dismiss-ends={}", still,
+	    prompt_active(w, es) ? 0 : 1);
+    start_confirm(w, es, "Lose changes to this file (y,n,^C)?", "q!");
+    var t6;
+    S.compose_ide_tree(t6, doc);
+    var k6 = t6["children"];
+    var crow = k6[php::count(k6) - 1];
+    var chs = crow["hints"]["confirm"]["choices"];
+    var cs = "";
+    for ( var c : chs )
+	cs = format("{}{}={} ", cs, c["label"], c["action"]);
+    println("confirm: content={} popup={} label-same={} choices={} dismiss={}",
+	    crow["content"], crow["hints"]["popup"],
+	    crow["hints"]["confirm"]["label"] == crow["content"] ? 1 : 0,
+	    php::trim(cs),
+	    crow["hints"]["dismiss"].is_null() ? "none" : "set");
+    // The dialog's No button: the scope's pcancel by name ends the question
+    // and keeps the buffer (the same as the n key).
+    ea["action"] = "pcancel";
+    S.apply_ide_event(doc, ea);
+    println("confirm-button: prompt-off={}", prompt_active(w, es) ? 0 : 1);
     return 0;
 }
