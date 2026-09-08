@@ -75,12 +75,39 @@ int main()
     var last3 = k3[php::count(k3) - 1];
     println("split-msg: role={} region={}", last3["role"],
 	    last3["hints"]["region"].is_null() ? "none" : "set");
+    // Every window's edit node carries its window index as `tag` — the
+    // identity a pointer event echoes, so a press picks the window even
+    // when both show the same document (this split does).
+    println("split-tags: active={} other={}", k3[1]["hints"]["tag"],
+	    k3[3]["hints"]["tag"]);
+    // A press in the other window's text (its tag, the same document as
+    // the subject) activates it; a press on a window's header — no text
+    // position, offset -1 — activates it and moves no caret.
+    ui::set(w, es, "caret", 5);
+    var pe;
+    pe["event"] = "pointer";
+    pe["event_code"] = ui::event_kind::pointer;
+    pe["phase"] = "down";
+    pe["phase_code"] = ui::pointer_phase::down;
+    pe["offset"] = 12;
+    pe["subject"] = doc;
+    pe["tag"] = 1;
+    S.apply_ide_event(doc, pe);
+    long win_after_text = es_int(w, es, "winat", -1);
+    long caret_after_text = es_int(w, es, "caret", -1);
+    pe["offset"] = -1;
+    pe["tag"] = 0;
+    S.apply_ide_event(doc, pe);
+    println("split-press: text-window={} text-caret={} header-window={} header-caret={}",
+	    win_after_text, caret_after_text, es_int(w, es, "winat", -1),
+	    es_int(w, es, "caret", -1));
     kill_window(w, es, doc, true);
     var t4;
     S.compose_ide_tree(t4, doc);
-    println("one-window: status={} editor={}",
+    println("one-window: status={} editor={} tag={}",
 	    t4["children"][0]["hints"]["region"],
-	    t4["children"][1]["hints"]["region"]);
+	    t4["children"][1]["hints"]["region"],
+	    t4["children"][1]["hints"]["tag"].is_null() ? "none" : "set");
 
     // The prompts as GUI dialogs (S6): the bottom-line prompt row keeps its
     // terminal content string and ADDITIVELY carries popup + prompt {label,

@@ -8,7 +8,12 @@
 // to one window the status returns to the status bar and the editor
 // flexes again. The probe reads geometry back from the live layout —
 // before this slice the unplaced nodes fell into the grid's empty rail
-// cell (auto-placement) beside the editor.
+// cell (auto-placement) beside the editor. A press picks the window (the
+// owner's mouse-click switch): a press in the OTHER window's text arrives
+// with that edit node's window tag (both windows show the same document
+// here, so the subject alone could not tell them apart) and activates it;
+// a press on a window's HEADER (its status line) arrives with no text
+// position and activates it, its caret kept.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
@@ -86,12 +91,49 @@ int main()
 	    ui::render(t, w, tree);
 	    probe(t);
 	}
+	else if ( ev["event"] == "pointer" )
+	{
+	    println("SPLIT pointer tag={} position={}", ev["tag"],
+		    ev["offset"].as_integer() < 0 ? "none" : "text");
+	    S.apply_ide_event(doc, ev);
+	    // A gesture clears the message seat; name the active window on
+	    // it so the foot keeps its one row for the probe.
+	    ui::set(w, es, "msg", format("Window {} active.",
+					 es_int(w, es, "winat", 0) + 1));
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
 	else if ( ev["event"] == "snapshot" )
 	{
 	    if ( stage == 1 )
 	    {
 		println("SPLIT two windows: {}", ev["text"]);
 		stage = 2;
+		// A press in the OTHER window's text: the second edit node's
+		// first line, through the page's real handlers.
+		ui::eval_page(t,
+		    "(function(){var s=document.querySelector('.workbench > [data-slot=\"editor\"]');"
+		    "var ln=s.children[3].firstElementChild;var r=ln.getBoundingClientRect();"
+		    "ln.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,"
+		    "clientX:r.left+3,clientY:r.top+r.height/2,button:0,buttons:1}));})()");
+	    }
+	    else if ( stage == 2 )
+	    {
+		println("SPLIT click other text: {}", ev["text"]);
+		stage = 3;
+		// A press on the FIRST window's header (now the inactive one).
+		ui::eval_page(t,
+		    "(function(){var s=document.querySelector('.workbench > [data-slot=\"editor\"]');"
+		    "var h=s.children[0];var r=h.getBoundingClientRect();"
+		    "h.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,"
+		    "clientX:r.left+10,clientY:r.top+r.height/2,button:0,buttons:1}));})()");
+	    }
+	    else if ( stage == 3 )
+	    {
+		println("SPLIT click header: {}", ev["text"]);
+		stage = 4;
 		kill_window(w, es, doc, true);	// "One window."
 		var tree;
 		S.compose_ide_tree(tree, doc);

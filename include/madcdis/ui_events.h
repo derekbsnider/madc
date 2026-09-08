@@ -75,12 +75,18 @@ struct tui_event
     std::string	   action_name;	// action: the bound name ("" = unbound)
     std::string	   seq;		// action: the canonical sequence spelling
     pointer_phase  phase;	// pointer: the gesture step
-    long	   offset;	// pointer: BYTE offset in the edit node's text
+    long	   offset;	// pointer: BYTE offset in the edit node's text;
+				// -1 = the press named no text position (the
+				// node itself — a window's header)
     entity_id	   subject;	// pointer: the entity the node projects (0 = none)
+    long	   tag;		// pointer: the application tag the node's
+				// hints carried (`tag`), echoed as data —
+				// a composer's own identity for the node
+				// (madcide: the window index); -1 = none
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
 		  option(0), choice_focused(false), action(0),
-		  phase(pointer_phase::down), offset(0), subject(0) {}
+		  phase(pointer_phase::down), offset(0), subject(0), tag(-1) {}
 };
 
 } // namespace hub

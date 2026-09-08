@@ -944,4 +944,35 @@ TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the 
     ev = m3.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":0,\"col\":0}");
     REQUIRE(ev.size() == 1u);
     CHECK(m3.focus_slot() == 0u);
+
+    // The node's `tag` hint (a composer's own identity — madcide's window
+    // index) is echoed on the event as data; a node without one echoes -1.
+    // A press with NO position (line and col both absent — a window's
+    // header) yields offset -1 and still focuses the node; one coordinate
+    // without the other is malformed.
+    CHECK(ev[0].tag == -1);
+    web_model m4;
+    uinode troot(r.group);
+    uinode tedit(r.edit);
+    tedit.content = madc::value(std::string("ab\ncd"));
+    tedit.subject = 7;
+    std::map<std::string, madc::value> th;
+    th["tag"] = madc::value((int64_t)1);
+    tedit.hints = madc::value::make_object(th);
+    troot.add(option(w, "Save", "w"));		// 0.0: a focusable-free item
+    troot.add(tedit);				// 0.1
+    m4.compose(r, troot);
+    ev = m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].tag == 1);
+    CHECK(ev[0].subject == 7u);
+    CHECK(ev[0].offset == 4);
+    ev = m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].offset == -1);
+    CHECK(ev[0].tag == 1);
+    CHECK(ev[0].subject == 7u);
+    CHECK(m4.focus_slot() == 0u);
+    CHECK(m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"col\":0}").empty());
 }

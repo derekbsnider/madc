@@ -56,8 +56,9 @@ class IdeSession
 					// headless harness, embedders)
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
-					// arm: the hit node's subject picks
-					// the window, edit_pointer places
+					// arm: the hit node's window tag
+					// (else its subject) picks the
+					// window, edit_pointer places
 	void compose_ide_tree(var &root, long doc);
 	bool vi_event(long doc, long nav, var &ev, bool &cont);
 					// the vi modes-as-scopes arm:
@@ -3734,27 +3735,38 @@ void toggle_pane(long w, long es, const char *name)
 	ui::set(w, es, "pane", name);
 }
 
-// The pointer arm (IDE-9e aware): the event names the document the hit
-// edit node projects (its subject). With two-plus windows a press in
-// another window activates it first — the first window showing that
-// buffer, in tree order (a split of ONE buffer shows it twice; a press
-// in its twin places the caret in the active one, same document). Then
-// the SHARED edit_pointer places the caret and, off a stored document,
-// the selection — a displayed view keeps the gesture to the caret, as
-// its mark/bend actions refuse.
+// The pointer arm (IDE-9e aware): a press picks the WINDOW first. The
+// event echoes the hit edit node's `tag` — the window index the composer
+// stamped on every window's edit node while split — the one answer when
+// two windows show the same buffer (the ^K O default duplicates the
+// active window); a client that carries no tag (a terminal's mouse
+// reporting later) is read by the projected subject: the first window
+// showing that document, in tree order. A press in another window
+// activates it (the owner's mouse-click switch); a press on a window's
+// HEADER arrives with no text position (offset -1) and activates only,
+// the window's own caret kept. Then the SHARED edit_pointer places the
+// caret and, off a stored document, the selection — a displayed view keeps
+// the gesture to the caret, as its mark/bend actions refuse.
 void IdeSession::pointer_event(long doc, long nav, var &ev)
 {
-    long subj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
-    long ad = doc;
-    if ( subj != 0 && subj != nav )
+    long idx = -1;
+    long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
+    if ( tag >= 0 && tag < window_count(w, es) )
+	idx = tag;
+    else
     {
-	long idx = window_showing(w, es, subj);
-	if ( idx >= 0 && idx != es_int(w, es, "winat", 0) )
-	{
-	    window_activate(w, es, doc, idx);
-	    ad = active_doc(w, es, doc);
-	}
+	long subj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
+	if ( subj != 0 && subj != nav )
+	    idx = window_showing(w, es, subj);
     }
+    long ad = doc;
+    if ( idx >= 0 && idx != es_int(w, es, "winat", 0) )
+    {
+	window_activate(w, es, doc, idx);
+	ad = active_doc(w, es, doc);
+    }
+    if ( ev["offset"].as_integer() < 0 )
+	return;			// the header: the window, no position
     long target = nav_doc(w, es, ad);
     edit_pointer(w, es, target, ev, target == ad);
 }
@@ -4311,8 +4323,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	long i = 0;
 	for ( var wr : ws )
 	{
+	    // Every window's edit node carries its WINDOW INDEX as the
+	    // node's `tag` — echoed on the pointer events the node yields, so
+	    // a press picks the window even when two windows show the same
+	    // document (the ^K O default), where the projected subject
+	    // cannot tell them apart.
 	    if ( i == at )
 	    {
+		var ah = ed["hints"];
+		ah["tag"] = i;
+		ed["hints"] = ah;
 		kids.push(status);
 		kids.push(ed);
 	    }
@@ -4334,7 +4354,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		ui::text(wt, w, wdoc);
 		wed["content"] = wt;
 		wed["subject"] = wdoc;
-		var wh = { "caret": wcaret, "region": "editor" };
+		var wh = { "caret": wcaret, "region": "editor", "tag": i };
 		long wrows = base + wr["grow"].as_integer();
 		if ( wrows < window_min_rows() )
 		    wrows = window_min_rows();

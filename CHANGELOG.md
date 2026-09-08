@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### madcide: a click picks the window (2026-09-08)
+
+- With two-plus windows, a press in another window's text activates it and
+  places the caret there, and a press on a window's header (its status
+  line) activates it with its caret kept — the owner's mouse-click switch
+  beside `^K N` / `^K P`. The ^K O split shows ONE document twice, so the
+  projected subject could not name the window; every window's edit node now
+  carries its window index as a `tag` hint, and the pointer event echoes the
+  hit node's tag as data (`tui_event::tag`, `{event:"pointer", …, tag}`).
+  A header press is a pointer with no text position (`line`/`col` omitted,
+  `offset` -1). `tests/gui/madcide_split.mad` drives both clicks in the
+  real page; `testidehints` pins the tags and the arm headless.
+
 ### madcide: the prompts as dialogs in the window (S6, 2026-09-08)
 
 - Every bottom-line prompt (find, go to line, insert file, theme, tab width,

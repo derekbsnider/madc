@@ -436,7 +436,9 @@
   // The page knows geometry, the engine knows the document: a press, a
   // drag and a release on an edit node are posted as the index of the line
   // element and the UTF-16 column the browser's caret hit test resolved to
-  // (in the TUI vocabulary's spirit — a fact about where, never what to do).
+  // (in the TUI vocabulary's spirit — a fact about where, never what to do);
+  // a press on a window's header posts the window's edit node with NO
+  // position (the engine's offset -1: activate, place nothing).
   // web_model turns them into a byte offset over the rows it emitted for
   // that key and the application places its caret and selection: ONE caret
   // model for mouse and keyboard. Native selection is suppressed — the
@@ -447,6 +449,18 @@
   function editOf(target) {
     for (var el = target; el && el !== root; el = el.parentNode)
       if (el.classList && el.classList.contains('edit')) return el;
+    return null;
+  }
+
+  // A window's HEADER is the status line heading its edit node in a stack
+  // (the composer's tree order: status, then edit): the edit element it
+  // heads, or null when the press was not on a header.
+  function headerOf(target) {
+    for (var el = target; el && el !== root; el = el.parentNode) {
+      if (!el.classList || !el.classList.contains('status')) continue;
+      var next = el.nextElementSibling;
+      return next && next.classList.contains('edit') ? next : null;
+    }
     return null;
   }
 
@@ -527,6 +541,15 @@
     if (dismiss) {
       e.preventDefault();
       post({ kind: 'action', action: dismiss });
+      kb.focus();
+      return;
+    }
+    // A press on a window's header: the window, at no text position — the
+    // engine activates it and leaves its caret where it was.
+    var hd = headerOf(e.target);
+    if (hd) {
+      e.preventDefault();
+      post({ kind: 'pointer', phase: 'down', key: hd.dataset.key });
       kb.focus();
       return;
     }

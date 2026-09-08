@@ -105,7 +105,14 @@
 //                                          (where the pointer is), the
 //                                          engine owns the document (what
 //                                          offset that is): no caret or
-//                                          selection logic lives in the page
+//                                          selection logic lives in the page.
+//                                          The node's `tag` hint rides the
+//                                          event as data (a composer's own
+//                                          identity for the node — madcide's
+//                                          window index); line and col may
+//                                          BOTH be omitted: a press on the
+//                                          node at no text position (its
+//                                          header) — offset -1
 // apply_input() turns each into zero or more tui_event objects; a malformed
 // or unknown object yields none and never throws.
 //
@@ -225,7 +232,9 @@ class web_model
 	std::vector<edit_row> rows;
 	size_t slot;
 	entity_id subject;
-	edit_basis() : slot(0), subject(0) {}
+	long tag;		// the node's `tag` hint (-1 = none): echoed on
+				// its pointer events as data
+	edit_basis() : slot(0), subject(0), tag(-1) {}
     };
     std::map<std::string, edit_basis> _basis;
     // The native menu the host draws (S2): the root's `menu` hint resolved
@@ -672,6 +681,7 @@ class web_model
 	    edit_basis &basis = _basis[key];
 	    basis.slot = slot;
 	    basis.subject = n.subject;
+	    basis.tag = hint_of(n.hints, "tag", -1);
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -824,19 +834,27 @@ public:
 	    pointer_phase phase;
 	    if ( pi == j.end() || !pi->is_string()
 	      || !pointer_phase_from_name(pi->get<std::string>(), phase)
-	      || ni == j.end() || !ni->is_string()
-	      || li == j.end() || !li->is_number_integer()
-	      || ci == j.end() || !ci->is_number_integer() )
+	      || ni == j.end() || !ni->is_string() )
+		return none;
+	    // The position is OPTIONAL as a pair: both present = a press at
+	    // a text position; both absent = a press on the node itself with
+	    // no position (a window's header — the application activates the
+	    // window and leaves its caret alone), reported as offset -1; one
+	    // without the other is malformed.
+	    const bool positioned = li != j.end() || ci != j.end();
+	    if ( positioned
+	      && (li == j.end() || !li->is_number_integer()
+		  || ci == j.end() || !ci->is_number_integer()) )
 		return none;
 	    std::map<std::string, edit_basis>::const_iterator bi =
 		_basis.find(ni->get<std::string>());
 	    if ( bi == _basis.end() )
 		return none;
 	    const std::vector<edit_row> &rows = bi->second.rows;
-	    long line = li->get<long>();
-	    long col = ci->get<long>();
-	    long offset = 0;
-	    if ( !rows.empty() )
+	    long line = positioned ? li->get<long>() : 0;
+	    long col = positioned ? ci->get<long>() : 0;
+	    long offset = positioned ? 0 : -1;
+	    if ( positioned && !rows.empty() )
 	    {
 		if ( line < 0 )
 		{
@@ -857,6 +875,7 @@ public:
 	    e.phase = phase;
 	    e.offset = offset;
 	    e.subject = bi->second.subject;
+	    e.tag = bi->second.tag;
 	    none.push_back(e);
 	    return none;
 	}
