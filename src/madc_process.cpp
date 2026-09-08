@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdio>	/* std::remove: cleanup_paths */
 #include <cstring>
 #include <fcntl.h>
 #include <map>

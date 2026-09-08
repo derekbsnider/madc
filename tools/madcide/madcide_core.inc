@@ -3198,7 +3198,10 @@ void build_pump(long w, long es, long bdoc, long stopc)
     if ( stopped )
 	append_build_line(w, es, bdoc, "[stopped]");
     else if ( xc >= 0 )
-	append_build_line(w, es, bdoc, format("[exit {}]", xc).c_str());
+    {
+	var xl = format("[exit {}]", xc);
+	append_build_line(w, es, bdoc, xl.c_str());
+    }
     else
 	append_build_line(w, es, bdoc, "[done]");
     ui::set(w, es, "buildlive", 0);
