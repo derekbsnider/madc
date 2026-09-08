@@ -214,57 +214,62 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.98.0** — the macOS full-suite release. The
-entire integration suite now runs natively on both of GitHub's mac
-runner architectures and is green (arm64 **1293/0/0TO/24skip**, Intel
-**1294/0/0TO/23skip**), the end of a seven-wave burndown that only running
-the real suite on the platform could drive: by-value class parameters
-are the callee's own object (the Itanium invisible-reference and
-`__retbuf` rules, so copy/move constructors and destructors run exactly
-as g++ and clang run them), `wchar_t`/`char16_t`/`char32_t` are
-distinct types, `long double` and `va_list` take their shape from the
-target, nested-class and namespace-alias forms parse, and template
-argument deduction and `<` reading follow the standard's name-lookup
-rules. libc++'s `std::list` works (a template-id named as a template
-argument now instantiates after the class body that names it), and
-`cout << value` and `println` of a `std::string` cross the stdlib
-flavor boundary. The MIR floor gained 128-bit SIMD (`MIR_T_V128`) on
-x86-64 and aarch64 with NEON code generation, and the vector calling
-convention, Apple's stack-argument packing and aarch64-linux's unsigned
-`char` are gated against the platform compiler by compiling one half of
-a probe pair natively. `-w` silences compile warnings, gcc-style.
-Process: every platform lane's FULL suite now gates a master release
-(`scripts/lane_ledger.sh check --release`: the libc++ flavor lane, the
-darwin suite on both arches, genuine Windows), all driven and recorded
-from the build container.
+The current release is **v0.99.0** — madcide is a desktop application.
+The GUI chrome milestone (S0–S5) turns the window that used to show the
+terminal's composed tree into real application chrome, through the ONE
+composer and the ONE client loop the terminal uses (the TUI is
+byte-identical): a native menu bar fed by one command/menu data file
+(`profiles/default.menu`, `[when]` clauses, a gate keeping profiles,
+dispatcher and menu on one action vocabulary); native Open / Save As
+dialogs as a core→client request/response verb (`GtkFileDialog` in the
+window, JOE's prompts everywhere else); a status bar of discrete,
+themeable items; the `^K O` split rendered as JOE's window stack in a
+slot-based workbench; a mouse that places the caret and drags a
+selection through the editor's one caret model; and a remote-display fix
+(GTK's GL renderer over a no-SHM TCP X connection paints black — the web
+target defaults to cairo). Underneath, the web editor became incremental
+(a keystroke moves work proportional to what changed; the wire dropped
+from ~296 KB to ~700 B), the ui event vocabularies became enums the
+compiler checks, and five carrier defects found on the way were fixed at
+their layer (`var &r = o["h"]`, `6 == v` / `v == E::z`, `var == enum
+class`, the mixed conditional as a value prvalue, `var &` in a `%s`
+position). `madc --capabilities=json` (reworked from PR #7, with credit
+to its author) ships too.
 
-Branch state: v0.98.0 is released on `develop` and promoted to `master`
-(tag v0.98.0, 2026-09-06) with public binaries built by CI for Linux
-(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
+Branch state: v0.99.0 is released on `develop` (2026-09-08; master holds
+v0.98.0 until the release-tier lanes — libc++, the darwin full suite on
+both mac runner arches, genuine Windows — re-run on this content for the
+promotion). v0.98.0's public binaries (Linux deb/rpm/tarball, Windows
+x86-64, macOS Apple Silicon + Intel) remain the latest published assets.
 
-Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
+Latest validated results (the v0.99.0 merge-wave battery, content 0edc6150 /
+85073b9c):
 
-- Linux JIT: **1308 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1249/0**, OBJ lane
-  **1249/0**; packed suite **1308/0/0/9**; headerless (no headers on
-  disk anywhere) **1274/0/0/43**
-- libc++ flavor lane (`-stdlib=libc++` on linux — macOS's library): JIT
-  **1303/0/0TO/14skip**, EXE **1244/0**, OBJ **1244/0**
-- macOS, the FULL suite on GitHub's native mac runners: arm64
-  **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64 Mac
-  **1293/0/0TO/24skip**; both arches packed at 835 units with the Mach-O release
-  verifier green
-- Windows: packed Win64 under persistent Wine **1251/0/0TO/66skip**; the same PE on
-  genuine Windows 11 **1253/0/0TO/64skip**
+- Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
+  **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
+  disk anywhere) **1301/0/0/43**
+- the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
+  split, menu bar): **11/11 JIT, 11/11 EXE, 11/11 OBJ**
+- Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
+  (`verify_pe_release` OK, 234 units)
 - c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
+- macOS cross release on both architectures: 836 units, Mach-O release
+  verifier and the exe/dylib gate green
+- release-tier lanes at v0.98.0 (re-run at the master promotion): libc++
+  flavor **1303/0/0TO/14skip**, the FULL suite on GitHub's mac runners
+  arm64 **1293/0/0TO/24skip** / Intel **1294/0/0TO/23skip**, genuine
+  Windows 11 **1253/0/0TO/64skip**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
-- the vector ABI gate: 28 lines identical to the host compiler on c2m
-  generated code, the interpreter, and madc (x86-64 in fulltest; aarch64
-  under qemu and on the Mac in the arc's own stages)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.99.0](docs/release-notes/v0.99.0.md) — madcide is a desktop
+  application: the GUI chrome milestone (native menu bar from one
+  command/menu data file, native file dialogs, status chrome, the JOE
+  split as a window stack, mouse caret/selection, the incremental web
+  editor, event enums) + five carrier fixes.
 - [v0.98.0](docs/release-notes/v0.98.0.md) — the macOS full-suite
   release: the whole suite green on both mac runner arches after the
   darwin burndown (by-value class ABI, distinct wide char types,
@@ -283,8 +288,6 @@ Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
   stamp, husk canonical-path re-include).
 - [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
   darwin clang-lane conformance (override sweep) + the six assets.
-- [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
-  first-call crash fixed (lazy-gen gated to eager on win64).
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 

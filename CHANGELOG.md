@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [v0.99.0] — 2026-09-08
+
+madcide is a desktop application: the GUI chrome milestone (S0–S5) — a
+native menu bar from one command/menu data file, native file dialogs, a
+status bar of discrete items, the JOE split as a window stack, mouse caret
+and selection, the incremental web editor, event enums — plus five carrier
+fixes found on the way.
+
 ### A `var &` in a `%s` position coerces like a `var` (2026-09-08)
 
 - `void f(var &v) { printf("%s\n", v); }` crashed MIR ("wrong type memory")
