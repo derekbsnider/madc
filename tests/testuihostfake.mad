@@ -1,0 +1,122 @@
+// A script-hosted ui target with NO display: a FAKE host records what the
+// engine pushes and answers canned page events. This is the seam the web
+// target rides (<ns_ui_web> registers the platform webview the same way) —
+// proved here in every lane with no window and no webview:
+// ui::register_host / post_event / open / render / bind_keys / event /
+// rows / cols / pending / close. The engine composes the tree into DOM
+// operations the host's eval receives; the host's run posts page events
+// the engine turns into the SAME semantic events the terminal emits.
+int pushed_heading = 0;
+int pushed_choice = 0;
+int pushed_count = 0;
+int step = 0;
+void *fake_ctx = 0;
+
+void *fake_open(const char *title, const char *page, void *ctx)
+{
+    fake_ctx = ctx;
+    println("fake open: {}", title);
+    return ctx;
+}
+
+void fake_close(void *host)
+{
+    println("fake close");
+}
+
+int64_t fake_eval(void *host, const char *js)
+{
+    pushed_count++;
+    if ( strstr(js, "\"class\":\"heading\"") )
+	pushed_heading = 1;
+    if ( strstr(js, "\"class\":\"choice\"") )
+	pushed_choice = 1;
+    return 0;
+}
+
+// The host's loop: each run posts ONE page event and returns; the eighth
+// run reports that the host ended (the window closed).
+int64_t fake_run(void *host)
+{
+    step++;
+    if ( step == 1 ) { ui::post_event(fake_ctx, "{\"kind\":\"text\",\"text\":\"hi\"}"); return 0; }
+    if ( step == 2 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"^k\"}"); return 0; }
+    if ( step == 3 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"s\"}"); return 0; }
+    if ( step == 4 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"right\"}"); return 0; }
+    if ( step == 5 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"enter\"}"); return 0; }
+    if ( step == 6 ) { ui::post_event(fake_ctx, "{\"kind\":\"resize\",\"rows\":40,\"cols\":100}"); return 0; }
+    if ( step == 7 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
+    return 1;
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run };
+static bool fake_registered = ui::register_host("fake", &fake_ops);
+
+int main()
+{
+    println("registered -> {}", fake_registered ? "yes" : "no");
+    println("duplicate -> {}", ui::register_host("fake", &fake_ops) ? "yes" : "no");
+    println("term taken -> {}", ui::register_host("term", &fake_ops) ? "yes" : "no");
+
+    long w = ui::world_new();
+    long t = ui::open("fake");
+    println("open -> {}", t > 0 ? "yes" : "no");
+    println("rows x cols -> {} x {}", ui::rows(t), ui::cols(t));
+    var table;
+    table["^k s"] = "save";
+    println("bind -> {}", ui::bind_keys(t, table) ? "yes" : "no");
+
+    var head;
+    head["role"] = "heading";
+    head["label"] = "Title";
+    head["content"] = "hello";
+    var save;
+    save["role"] = "item";
+    save["content"] = "Save";
+    var save_actions = {};
+    save_actions.push("w");
+    save["actions"] = save_actions;
+    var quit;
+    quit["role"] = "item";
+    quit["content"] = "Quit";
+    var quit_actions = {};
+    quit_actions.push("q");
+    quit["actions"] = quit_actions;
+    var menu;
+    menu["role"] = "choice";
+    var options = {};
+    options.push(save);
+    options.push(quit);
+    menu["children"] = options;
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(head);
+    kids.push(menu);
+    root["children"] = kids;
+    ui::render(t, w, root);
+    println("pushed heading: {}", pushed_heading ? "yes" : "no");
+    println("pushed choice: {}", pushed_choice ? "yes" : "no");
+
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "text" )
+	    println("event text {}", ev["text"]);
+	else if ( ev["event"] == "action" )
+	    println("event action {} {}", ev["action"], ev["seq"]);
+	else if ( ev["event"] == "choose" )
+	    println("event choose {} {}", ev["option"], ev["action"]);
+	else
+	    println("event {}", ev["event"]);
+    }
+    println("rows x cols after resize -> {} x {}", ui::rows(t), ui::cols(t));
+    var chord;
+    ui::pending(chord, t);
+    println("pending -> [{}]", chord);
+    ui::close(t);
+    ui::post_event(fake_ctx, "{}");		// after close: refused on stderr, nothing else
+    ui::world_close(w);
+    println("pushed {} times", pushed_count);
+    return 0;
+}

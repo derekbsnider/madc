@@ -122,7 +122,7 @@ void compose_tree(var &root, long w, long es, long doc)
 
 // The TUI loop: compose as data -> render -> one semantic event ->
 // apply, until a quit verb says stop.
-void run_visual(const char *path, bool ro)
+void run_visual(const char *path, bool ro, const char *target)
 {
     long w = ui::world_new();
     long doc = setup_editor(w, path, ro);
@@ -132,7 +132,10 @@ void run_visual(const char *path, bool ro)
 	return;
     }
     long es = ui::entity_by_name(w, "editor-state");
-    long t = ui::tui_open();
+    // The target-generic loop (compose-as-data -> render -> event -> apply):
+    // "term" is the grid frontend the tui_* names spell; the web target
+    // shows the same tree in a window.
+    long t = ui::open(target);
     if ( t == 0 )
 	return;
     bool run = true;
@@ -140,12 +143,12 @@ void run_visual(const char *path, bool ro)
     {
 	var tree;
 	compose_tree(tree, w, es, doc);
-	ui::tui_render(t, w, tree);
+	ui::render(t, w, tree);
 	var ev;
-	if ( !ui::tui_event(ev, t, w) )
+	if ( !ui::event(ev, t, w) )
 	    break;
 	run = apply_event(w, es, doc, ev);
     }
-    ui::tui_close(t);
+    ui::close(t);
     ui::world_close(w);
 }

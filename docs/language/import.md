@@ -93,6 +93,25 @@ either.
   per-member slot filled on first call by the runtime helper
   `__madc_dl_member`); no linker involvement, the same lowering `--emit=c11`
   prints.
+- **A relocatable `.o` carries its module list**: the unit records every
+  module-form library's target spelling in a local data symbol
+  `__madc_module_deps` (NUL-separated; `--emit=c11` prints it as
+  `static const char __madc_module_deps[] = "libm.so.6\0";`), and `madc
+  file.o` opens each spelling before loading — no `-l` on the command line
+  for an imported module (the MSVC `.drectve` / Rust `#[link]` shape; a
+  `.o` has no `DT_NEEDED`). An explicit `-l` still opens first and stays an
+  override; a `.o` built before the table existed loads as before. A lazy
+  row's spelling is listed with a `?` prefix — optional: the loader opens it
+  when it can and never fails on it.
+- **Lazy rows** (`madcwebview`): an OPTIONAL library's row is marked lazy —
+  the interface form binds nothing at parse and joins no link closure; each
+  declared function is a first-call slot through a pointer of its declared
+  type (`__madc_dl_member`, as the alias form, but typed). The program
+  compiles and runs on a machine without the library; ask
+  `madc::module_available("madcwebview")` before the first call (the web
+  target's `ui::open` does, and refuses with the reason). The alias form of
+  a lazy row keeps the eager binding — a namespace answers member lookups
+  from the exports.
 - **`--no-auto-load`**: do not act on `import` library bindings — nothing is
   opened; namespaces bind to the program's own symbol scope, so symbols come
   from explicit linking (`-l`, the host). `tests/testnoautoload.mad` pins it.

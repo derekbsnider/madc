@@ -150,8 +150,8 @@ unknown key is an error.
 
 | Variable | Effect |
 |----------|--------|
-| `MADC_CPU_LIMIT=<secs>` | arm an `RLIMIT_CPU` guard (default off — madc runs the program, so no finite default is safe) |
-| `MADC_MEM_LIMIT=<MB>` | address-space guard; default 4096 MB + 128 MB per `--project` TU; `0` disables |
+| `MADC_CPU_LIMIT=off\|auto\|<secs>` | `RLIMIT_CPU` guard; default off, and `auto` is off too (madc runs the program, so no finite default is safe) |
+| `MADC_MEM_LIMIT=off\|auto\|<MB>` | address-space guard (`RLIMIT_AS`, a soft limit); default **off**; `auto` = 4096 MB + 128 MB per `--project` TU (the test runner asks for `auto`); a program that imports a GUI module (`madcwebview`) lifts it at run start; `0` = `off`. The same spellings work for the `madc.ini` keys `mem-limit` / `cpu-limit`. |
 | `MADC_FOREST=<file>` | frozen forest container for the discovery chain |
 
 ## See also

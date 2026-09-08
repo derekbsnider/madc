@@ -25714,6 +25714,25 @@ void Program::add_array_methods()
 	  "madarray_ne_cstr", true },
 	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
 	  "madarray_ne_value", true },
+	// The number kinds: `v == 5`, `v != 2.5`, `v == true`. Without these
+	// rows the comparison fell to c2mir's pointer-vs-integer compare and
+	// answered FALSE for an integer-kind 5 (a silent wrong answer, plus
+	// a warning nobody reads). The entries build a value of the operand
+	// and ask madc::value::operator== — one equality contract (strict
+	// kind: an integer-kind 5 is not the real 5.0, boolean is its own
+	// kind), never a second comparison rule.
+	{ "operator==", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_eq_int", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_eq_real", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_eq_bool", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_ne_int", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_ne_real", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_ne_bool", true },
 	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
 	  "madarray_append_cstr", false },
 	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
@@ -27505,6 +27524,27 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 // in every lane. The library spelling is the one the binder recorded for the
 // namespace (dl_library_spelling); the parse-time dlsym above stays the early
 // diagnostic ("is this member exported at all"), never the bound address.
+// A prototype declared while a LAZY module row's interface is being served
+// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
+// wrap): the function has no symbol of its own in this program — every call
+// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
+// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
+// Free functions only: a class member is never a module export.
+void Program::stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+					  DataDefCLASS *owner_class,
+					  const TokenBase *proto_end)
+{
+    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
+	return;
+    std::unordered_map<const TokenBase *, std::string>::const_iterator it =
+	_lazy_module_tokens.find(proto_end);
+    if ( it == _lazy_module_tokens.end() )
+	return;
+    fd->dyn_module_library = it->second;
+    fd->dyn_module_member = name;
+    fd->dyn_module_typed = true;
+}
+
 void Program::stamp_dynamic_module_member(Variable *var, const std::string &ns,
 					  const std::string &member)
 {
@@ -39097,17 +39137,27 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    bool shape_ok = j > 0;
 			    if ( shape_ok && !typename_head )
 			    {
-				// Bare spelling: only a registered template's
-				// id + a member chain — plain names stay with
-				// the sibling arms (and a non-template `<` is
-				// less-than, never scanned as a list).
+				// Bare spelling: a registered template's id + a
+				// member chain, or a NAMESPACE head + a member
+				// chain (`(ns::S *)v`, `(ui::ui_host_ops *)p` —
+				// before this the qualified type fell to the
+				// expression parser, which reported it "not a
+				// member of namespace"). Plain unqualified names
+				// stay with the sibling arms (and a non-template
+				// `<` is less-than, never scanned as a list). The
+				// range resolver below answers both shapes through
+				// the one declared-type resolver, non-consumingly;
+				// its completeness rule keeps a qualified VALUE
+				// (`(ns::value)`) an expression.
 				std::string tid_name =
 				    peek1->type() == TokenType::ttDataType
 					? ((TokenDataType *)peek1)->spelling()
 					: ((TokenIdent *)peek1)->spelling();
-				shape_ok = saw_tid && chain > 0
-				    && (find_template(tid_name)
-				     || find_template_alias(tid_name));
+				shape_ok = chain > 0
+				    && ((saw_tid && (find_template(tid_name)
+						  || find_template_alias(tid_name)))
+				     || (!saw_tid && peek1->type() == TokenType::ttIdentifier
+					 && !resolve_namespace_name_in_scope(tid_name).empty()));
 			    }
 			    if ( shape_ok )
 				shape_ok = tokens.size() > j && tokens[j]
@@ -43021,10 +43071,31 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
-	dmi = find_visible_struct_tag(tag->spelling());
+	// The tag's aggregate, however the tag is spelled. A QUALIFIED tag —
+	// `struct ns::S x;` / `struct A::B local = { 6 };` at statement
+	// position ([dcl.type.elab]: an elaborated-type-specifier with a
+	// nested-name-specifier) — read `ns` as the qualifier's HEAD, not as
+	// a tag of this scope: never mint it. The shared elaborated-
+	// specifier resolver (resolve_declared_type_token, the arm TYPE
+	// positions already take for `struct A::B`) consumes the `::` chain
+	// and answers the aggregate; the declaration then continues exactly
+	// like the unqualified `struct tag variable;` arm below.
+	DataDef *tag_dd = NULL;
+	if ( tn->id() == TokenID::tkNS )
+	{
+	    TokenDataType *qtdt = pgm.resolve_declared_type_token(tag, true, true);
+	    if ( !qtdt )
+		pgm.Throw(tag) << "Unknown qualified " << aggregate_kw << " tag "
+			       << tag->spelling() << flush;
+	    if ( !do_typedef )
+		return pgm.parseDeclaration(qtdt);
+	    tag_dd = &qtdt->definition;
+	}
+	else
+	    dmi = find_visible_struct_tag(tag->spelling());
 
 	// plain forward declaration: struct tag;
-	if ( tn->id() == TokenID::tkSemi )
+	if ( !tag_dd && tn->id() == TokenID::tkSemi )
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
@@ -43049,13 +43120,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 
 	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
-	if ( dmi == pgm.struct_map.end() )
+	if ( !tag_dd && dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
+	if ( !tag_dd )
+	    tag_dd = dmi->second;
 	// typedef struct tag alias — a C declarator LIST like every other
 	// typedef arm (`typedef struct _X X, *PX;` — winnt.h's dominant
 	// shape for previously-defined tags). Each declarator restarts from
@@ -43068,7 +43141,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    TokenBase *node = NULL;
 	    while ( true )
 	    {
-		DataDef *alias_dd = dmi->second;
+		DataDef *alias_dd = tag_dd;
 		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 		{
 		    pgm.nextToken();
@@ -43153,7 +43226,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !alias_dd->is_pointer() && !alias_dd->as_fptr_dd() )
 		    {
 			pgm.pack_tap_struct(alias_name);	// B4a tap
-			pgm.struct_map.set(alias_name, dmi->second);
+			pgm.struct_map.set(alias_name, tag_dd);
 		    }
 		    record_typedef(alias_name, alias_dd, tdt, tn);
 		    if ( node && !pgm.compounds.empty() )
@@ -43173,7 +43246,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	string tname(aggregate_kw);
 	tname.append(" ");
 	tname.append(tag->spelling());
-	tdt = new TokenDataType(tname.c_str(), *dmi->second);
+	tdt = new TokenDataType(tname.c_str(), *tag_dd);
 	return pgm.parseDeclaration(tdt);
     }
 
@@ -51245,14 +51318,19 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	    if ( tdmi != pgm.datatype_map.end() )
-	    {
-		TokenBase *type_tb = pgm.nextToken();
-		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    // The declared-type resolver is the ONE owner of what an identifier
+	    // denotes in a type position — a typedef name, a namespace-qualified
+	    // type (`static ui::ui_host_ops ops`), a template-id, a class-member
+	    // type chain — exactly as `const` and a plain declaration head ask
+	    // it. The flat-map probe only decides the fallback default below.
+	    TokenStream::Pos type_saved = pgm.tokens.savepos();
+	    TokenBase *type_tb = pgm.nextToken();
+	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    if ( dt || tdmi != pgm.datatype_map.end() )
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
-	    }
 	    else
 	    {
+		pgm.tokens = type_saved;
 		// C89 implicit int: `static funcname(...)` — treat as int
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
@@ -65638,6 +65716,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -65708,6 +65787,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }

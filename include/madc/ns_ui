@@ -296,4 +296,62 @@ namespace ui {
     // none is pending. A status line's chord-echo seat (JOE's %k) reads
     // it at compose time.
     void    tui_pending(value &out, int64_t t);
+
+    // ---- the target-generic surface (Level 3 arrives beside Level 1) ----
+    // open(target) names WHERE the tree is shown: "term" (the grid
+    // frontend — the tui_* names above are open("term")'s spellings over
+    // the same handles) or a registered script-hosted target (the web
+    // target, "web" — <ns_ui_web>). 0 + stderr reason when the target is
+    // unknown, cannot serve here (no tty, no display), or is already
+    // open. An empty name is the terminal. The loop is the same on every
+    // target: render(t, w, tree) -> event(ev, t, w) -> apply; the event
+    // objects are the ONE vocabulary tui_event documents. suspend /
+    // resume are terminal capabilities — a window answers false.
+    int64_t open(const char *target);
+    void    close(int64_t t);
+    int64_t rows(int64_t t);
+    int64_t cols(int64_t t);
+    void    render(int64_t t, int64_t w, value &tree);
+    bool    bind_keys(int64_t t, value &table);
+    bool    validate_keys(value &table);
+    bool    event(value &out, int64_t t, int64_t w);
+    bool    suspend(int64_t t);
+    bool    resume(int64_t t);
+    void    refresh(int64_t t);
+    void    pending(value &out, int64_t t);
+
+    // ---- script-hosted targets (the web target is one; a test fake is
+    // another). A host is a table of C function pointers a madc fragment
+    // fills and registers ONCE under a target name (dynamic init of a
+    // file-scope static is the idiom). The engine calls them on the
+    // opening thread only: open(title, page, ctx) builds the surface
+    // and returns the host's own handle (0 = cannot serve here — no
+    // display); close(host); eval(host, js) runs script text in the page
+    // (0 = ok); run(host) runs the host's loop until ONE event was posted
+    // through post_event, then returns 0 — nonzero = the host ended (the
+    // window closed). LAYOUT CONTRACT with src/ns_ui.cpp — the same four
+    // pointers in the same order, append-only, keep both in sync.
+    typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
+    typedef void  (*ui_host_close_fn)(void *host);
+    typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
+    typedef int64_t (*ui_host_run_fn)(void *host);
+    struct ui_host_ops {
+	ui_host_open_fn  open;
+	ui_host_close_fn close;
+	ui_host_eval_fn  eval;
+	ui_host_run_fn   run;
+    };
+    bool register_host(const char *target, const ui_host_ops *ops);
+    // The host's ONE inbound door: the page's event object (JSON text —
+    // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
+    // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..})
+    // for the session `ctx` that open() received. Callable from inside
+    // run(); the engine queues it and run() returns.
+    void post_event(void *ctx, const char *json);
+    // Script text into a page-hosted target: the test seam — the page's
+    // madcSnapshot() posts its rendered text back as {event:"snapshot",
+    // text}. False on the grid frontend or a bad handle. Evals before the
+    // page has loaded are dropped by the platform view: the first resize
+    // event is the page's ready signal.
+    bool    eval_page(int64_t t, const char *js);
 }

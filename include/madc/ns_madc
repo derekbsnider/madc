@@ -284,6 +284,11 @@ namespace madc {
     // true with "". The std::getline(cin, string&) contract, carried by
     // the carrier.
     bool getline(value &out);
+    // Is a module's library available on this system? The module map's
+    // spelling is opened through the one dl seam (and stays open); false
+    // when it cannot be. A LAZY module row (madcwebview) compiles and
+    // runs without its library — ask this before the first call.
+    bool module_available(const char *name);
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes

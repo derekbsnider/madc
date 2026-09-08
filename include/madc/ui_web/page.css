@@ -1,0 +1,74 @@
+/* ui_web/page.css — the web target's default look: a monospace grid of
+   bars, wrapped content, an editor line-DOM and a choice bar, dark by
+   default with madc's own accent (not a clone of any editor). Theme
+   sections (@gui) set the custom properties below via var(--name, default),
+   so a scheme that omits one keeps the default look. */
+html, body { margin: 0; padding: 0; height: 100%;
+             background: var(--bg, #1b1d24); color: var(--fg, #d9dbe4); }
+body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+       overflow: hidden; }
+#root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#kb { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
+#measure { position: absolute; visibility: hidden; white-space: pre; }
+.node { flex: 0 0 auto; }
+.node.group { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.heading, .status { display: flex; justify-content: space-between; padding: 1px 8px; background: #3b4a6b; color: #f2f4ff; }
+.status { background: #2d3448; }
+.content { white-space: pre-wrap; padding: 0 8px; }
+.item { padding: 0 8px 0 24px; }
+.action { padding: 0 8px; color: var(--accent, #9fc2ff); }
+.list .label { padding: 0 8px; color: #9aa0b4; }
+.separator { height: 1.35em; }
+.edit { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; tab-size: 8; }
+.edit .line { white-space: pre; min-height: 1.35em; }
+.caret { background: #d9dbe4; color: #1b1d24; }
+.sel { background: #4a5a80; }
+.c-kw { color: #8fb4ff; }
+.c-str { color: #a8d08d; }
+.c-cmt { color: #8a8f9f; font-style: italic; }
+.c-num { color: #f0c674; }
+.c-pp { color: #c8a2ff; }
+.c-type { color: #7ed3d3; }
+.c-fn { color: #e0b070; }
+.choice { display: flex; flex-wrap: wrap; padding: 1px 8px; gap: 0 4px; }
+.choice .label { color: #9aa0b4; margin-right: 8px; }
+.choice .opt { padding: 0 6px; }
+.choice .opt.sel { background: #d9dbe4; color: #1b1d24; }
+.choice.focus .opt.sel { background: #ffd479; }
+.choice.list { flex-direction: column; gap: 0; }
+.choice.list .opt { padding-left: 24px; }
+
+/* Slice 3 — the madcide workbench. A group holding region'd children lays
+   them into a grid: an optional left rail, a docked sidebar spanning the
+   two upper rows, the editor filling, a bottom panel, and the status bar
+   across the foot. Empty columns (no rail node) collapse to zero width. */
+.node.group.workbench {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  grid-template-rows: 1fr auto auto;
+  grid-template-areas:
+    "rail sidebar editor"
+    "rail sidebar panel"
+    "statusbar statusbar statusbar";
+  flex: 1 1 auto; min-height: 0;
+}
+.workbench > [data-region="rail"]      { grid-area: rail; background: #22252f; }
+.workbench > [data-region="sidebar"]   { grid-area: sidebar; min-width: 12em;
+                                         border-right: 1px solid #2d3448;
+                                         overflow: auto; }
+.workbench > [data-region="editor"]    { grid-area: editor; min-height: 0;
+                                         overflow: auto; }
+.workbench > [data-region="panel"]     { grid-area: panel; max-height: 40vh;
+                                         border-top: 1px solid #2d3448;
+                                         overflow: auto; }
+.workbench > [data-region="statusbar"] { grid-area: statusbar; }
+/* A floating pane (palette / quick pick / prompt): out of the grid flow,
+   centered near the top, above the workbench. */
+.node.popup {
+  position: fixed; top: 15%; left: 50%; transform: translateX(-50%);
+  min-width: 24em; max-width: 80%; max-height: 60%; overflow: auto;
+  z-index: 10; background: #2a2f3e; border: 1px solid #4a5a80;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+/* The editor's tab-strip marker (the buffer-named strip is a later slice). */
+.edit.has-tabs { border-top: 2px solid #4a5a80; }

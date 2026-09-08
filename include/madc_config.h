@@ -43,9 +43,9 @@ struct config_settings
     bool has_stdlib = false;
     std::string forest;				// forest = <file>   -> discovery arm 5
     std::vector<std::string> include_dirs;	// include = <dir>   (repeatable)
-    unsigned long cpu_limit_secs = 0;		// cpu-limit = <secs>
-    bool has_cpu_limit = false;
-    unsigned long mem_limit_mb = 0;		// mem-limit = <MB>
+    std::string cpu_limit;			// cpu-limit = off|auto|<secs> (validated by
+    bool has_cpu_limit = false;			// the guards' one knob parser at parse)
+    std::string mem_limit;			// mem-limit = off|auto|<MB>
     bool has_mem_limit = false;
 };
 

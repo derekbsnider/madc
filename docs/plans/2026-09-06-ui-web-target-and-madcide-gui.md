@@ -404,10 +404,34 @@ No per-platform code above the vendored library.
    importing a GUI module needs a compiler-decided policy (liberal default;
    the trip names the knob), e.g. the guard lifts when a module row is
    marked GUI, or the guard moves off address space.
+   **Engine half LANDED (Claude, 2026-09-07, `feature/web-provider-engine-
+   claude`, [plan](2026-09-07-web-provider-engine-plan.md)):** the shared
+   input owners (`keys.h` key_resolver, `ui_focus.h` focus_state,
+   `ui_input.h` ui_apply_keys, `ui_events.h`) out of `tui_model`;
+   `web_model`; `ui::open(target)` with the grid and DOM frontends and one
+   event-value owner; the script-hosted target seam (`register_host` /
+   `post_event`, `tests/testuihostfake.mad`); `<ns_ui_web>` + one embedded
+   page (`ui_web/page.js|css`); `ui::eval_page` + `snapshot` events;
+   `tests/gui/ui_web_hello.mad` and `ui_web_edit.mad` green under Xvfb in
+   JIT, exe and `.o`; `vised --web`. Both residues closed: (a) the object
+   carries `__madc_module_deps` (Task 9); (b) guards default off, soft
+   limit, the `MADC_MODULE_GUI` row lifts (Task 8). Lazy rows
+   (`MADC_MODULE_LAZY`, Task 10) make the web target optional at parse.
 3. **madcide GUI mode**: layout hints in `compose_ide_tree`, the workbench
    CSS, `@gui` theme sections, status bar items, output panel for requests,
    the `--gui` flag. Gate: the headless `testmadcide` event battery unchanged
    (one composer), plus the GUI lane's DOM-snapshot fixtures.
+   **LANDED (2026-09-07, `feature/madcide-gui-claude`, [plan](2026-09-07-madcide-gui-plan.md)):**
+   region/tabs/popup layout hints the terminal ignores (`hint_str` beside
+   `hint_of`); `web_model` + the page render the workbench grid and float
+   popups; `@gui` theme sections as CSS custom properties (the `@scope`
+   rule shared via `scope_line_parts`); the status bar as left/right items;
+   the live-build output panel (`region:panel`); the `--gui` flag over a
+   target-generic `run_ide` (one loop, one composer, `check-madcide-seam`
+   green). GUI fixtures `tests/gui/madcide_{workbench,theme,render}.mad`;
+   headless `testide{hints,theme,status,panel}`. Interactive Run / shell in
+   a window await the embedded terminal (item 5); the buffer-named editor
+   tab strip is a later refinement.
 4. **The remote target** (`ws`): server-side channel + the same JSON; a
    browser is a client. Presence colours join with gateway slice 4.
 5. Later, by demand: embedded terminal panel (tui_grid → DOM grid), Track

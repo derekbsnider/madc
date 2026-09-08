@@ -304,6 +304,8 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"choose", option, action}` | 1-based index + action name | Enter on the selected option — the same number the line-mode menu prints |
 | `{event:"action", action, seq}` | bound name + the sequence | A bound key sequence completed (empty action = unbound miss) |
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
+| `{event:"wake"}` | — | Cooperative background tasks drained: recompose |
+| `{event:"snapshot", text}` | the page's rendered text | A web target's page answered `madcSnapshot()` (the test seam) |
 
 **Keybindings are data.** `tui_bind_keys` installs a whole profile: a
 value object mapping key SEQUENCES to action names
@@ -357,10 +359,75 @@ composed as a navigable `choice` whose chosen row moves the caret; its
 `^K H` help pane projects the loaded profile's own lines — help is data
 like the bindings).
 
+## Level-3 web target (the same tree in a window)
+
+`ui::open(target)` names WHERE a tree is shown; the loop is the same on
+every target — compose-as-data → `ui::render` → `ui::event` → apply — and
+the event objects are the ONE vocabulary tabled above. `"term"` is the grid
+frontend: the `tui_*` functions are `open("term")`'s spellings over the
+same handles (`tui_open()` IS `open("term")`), kept as the level-1 API.
+`ui_web::target()` (`"web"`) is the web target: the value tree rendered
+as a DOM through the platform's own webview (WebKitGTK / WKWebView /
+WebView2) by `<ns_ui_web>`, a madc fragment that does `import
+madcwebview;` — the engine never names a platform library. The window is
+a second frontend over the same models: `web_model` composes keyed DOM
+operations the embedded page applies, and turns the page's raw key
+spellings and printable runs back into the same semantic events the
+terminal emits — chords resolve in `key_resolver`, focus moves in
+`focus_state`, the keys → events loop is `ui_apply_keys`; no key ever
+means anything in JavaScript.
+
+| Function | Description |
+|----------|-------------|
+| `open(target)` | Handle (>0), or 0 with the reason on stderr: unknown target, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiled), already open |
+| `close(t)` / `rows(t)` / `cols(t)` | As the `tui_*` twins; a web target's rows/cols are the viewport in text cells, reported by the page |
+| `render(t, w, tree)` / `event(out, t, w)` | The one loop; `event` blocks until the page posts one event |
+| `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
+| `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
+| `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+
+`madc::module_available("madcwebview")` answers whether the window can
+exist on this system; `tools/texteditor/vised.mad <file> --web` is the
+worked example (`tests/gui/ui_web_hello.mad` / `ui_web_edit.mad` are the
+suite's, under Xvfb in JIT, exe and `.o`).
+
+### The workbench (madcide GUI mode)
+
+`madc tools/madcide/madcide.mad <file> --gui` is the web target's first
+customer. ONE client loop and ONE composer serve the terminal and the
+window alike; the target is the `--gui` flag. The composer stamps additive
+LAYOUT HINTS the terminal ignores (its "unknown hints are ignored" rule)
+and the window honours:
+
+| Hint | On | The window |
+|------|----|-----------|
+| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar` |
+| `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
+| `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
+| `items` (`{left,right}`) | the status node | the status bar's justified item pair (the same JOE seats the terminal shows as one string) |
+| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope |
+
+The renderers read `region` through `hint_str` (the string twin of
+`hint_of`), so a node without a hint carries none — the terminal tree is
+byte-identical. `@gui prop value` lines in `profiles/*.theme` feed the
+web colours/fonts through the ONE `@scope` rule the key tables use
+(`scope_line_parts`, shared by `parse_keys` and `load_theme`); the
+unscoped JOE-vocabulary lines still feed the terminal — one file, two
+renderings. While a build streams, its output docks as the `panel` region
+(the VS Code Output shape); interactive Run and the shell use the terminal
+until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
+render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
+`--gui` loop is a manual gate.
+
 ## Thread contract
 
 Per `.claude/rules/thread-safety.md`: a session and every world
 reached through it are confined to one thread (the script's).
+A ui frontend (grid or window) and its host are confined to the thread
+that opened them; a web target's page callback runs inside the host's
+loop on that thread (`webview_dispatch` is the only cross-thread door and
+is unused).
 `ui::prompt` operates on the process-global stdio streams under
 stdio's own locking — one prompting thread at a time is the supported
 shape.

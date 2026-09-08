@@ -7,3 +7,8 @@ string red
 number magenta
 comment cyan
 function bold blue
+
+# @gui workbench colours for the vivid scheme (a warmer accent).
+@gui bg #201a24
+@gui fg #ece4f0
+@gui accent #f0a35e

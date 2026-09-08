@@ -1,5 +1,5 @@
 // vised — the visual (TUI) text editor (Track 7.2 R5, design doc §7).
-// Usage: madc tools/texteditor/vised.mad <file> [ro]
+// Usage: madc tools/texteditor/vised.mad <file> [ro] [--web]
 // Run it from the repository root (the verb bodies load by relative
 // path). The SAME document actions as lined: typing/backspace/del/enter
 // edit at the caret; arrows/home/end/pgup/pgdn move it; ^B sets the
@@ -14,9 +14,22 @@ int main(int argc, char **argv)
 {
     if ( argc < 2 )
     {
-	printf("usage: vised <file> [ro]\n");
+	printf("usage: vised <file> [ro] [--web]\n");
 	return 1;
     }
-    run_visual(argv[1], argc > 2);
+    // The target is ONE flag: --web shows the same tree in a window through
+    // the web target (<ns_ui_web>, a lazy module row — a machine without
+    // the library refuses at open with the reason); the terminal is the
+    // default. `ro` opens the file read-only.
+    bool ro = false;
+    const char *target = "term";
+    for ( int i = 2; i < argc; i++ )
+    {
+	if ( strcmp(argv[i], "--web") == 0 )
+	    target = ui_web::target();
+	else if ( strcmp(argv[i], "ro") == 0 )
+	    ro = true;
+    }
+    run_visual(argv[1], ro, target);
     return 0;
 }

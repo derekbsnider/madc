@@ -6,6 +6,9 @@
 #   tests/foo.flags  — whitespace-split compiler flags prepended before
 #                      the source path
 #   tests/foo.input  — redirected to stdin if present
+#   tests/foo.env    — whitespace-split NAME=value pairs handed to env(1) ahead
+#                      of every invocation (the runner exports MADC_MEM_LIMIT=auto;
+#                      a test that must run unguarded says MADC_MEM_LIMIT=off here)
 #   tests/foo.argv   — each whitespace-separated word appended as argv
 #   tests/foo.expect — if present, the test must exit 0 AND produce
 #                      output that contains every line listed here as
@@ -154,6 +157,13 @@ MADC_SKIP_EXT="${MADC_SKIP_EXT:-}"
 # suite runs, which is what every pre-merge invocation does.
 TEST_GLOBS="$*"
 
+# The suites' resource cap is the RUNNER's to ask for (owner ruling 2026-09-07:
+# madc itself arms no guard by default): every test process runs under the
+# memory guard's `auto` (4096 MB + 128 MB per --project TU) unless the caller
+# chose otherwise. A GUI-module test lifts it itself at run start; a test that
+# must run unguarded says so in its .env fixture.
+export MADC_MEM_LIMIT="${MADC_MEM_LIMIT:-auto}"
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
@@ -198,6 +208,7 @@ for t in "$TEST_DIR"/*.mad; do
     expect_err_file="${TEST_DIR}/$base.expect_err"
     expect_quiet_file="${TEST_DIR}/$base.expect_quiet"
     flags_file="${TEST_DIR}/$base.flags"
+    env_file="${TEST_DIR}/$base.env"
     mir_skip_file="${TEST_DIR}/$base.mir_skip"
     timeout_file="${TEST_DIR}/$base.timeout"
 
@@ -247,7 +258,11 @@ for t in "$TEST_DIR"/*.mad; do
 
     args=()
     flags=()
+    envs=()
     [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
+    # Per-test environment: whitespace-split NAME=value pairs handed to env(1)
+    # ahead of every invocation of this test (JIT, exe, obj).
+    [ -f "$env_file" ] && read -r -a envs < "$env_file"
     [ -f "$argv_file" ] && read -r -a args < "$argv_file"
     # Per-test wall-clock cap (seconds); default 10. A `.timeout` fixture overrides
     # it for tests that legitimately need longer — e.g. a real-libstdc++-header
@@ -261,9 +276,9 @@ for t in "$TEST_DIR"/*.mad; do
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
+            out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>&1)
         else
-            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
+            out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
         ok=1
@@ -289,9 +304,9 @@ for t in "$TEST_DIR"/*.mad; do
         # assert it is empty; without the fixture it is simply discarded.
         errf="/tmp/madc_test_stderr_${base}_$$"
         if [ -f "$input_file" ]; then
-            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
+            out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>"$errf")
         else
-            out=$(timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
+            out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>"$errf")
         fi
         rc=$?
 
@@ -381,9 +396,9 @@ for t in "$TEST_DIR"/*.mad; do
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
         if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(env "${envs[@]}" timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(env "${envs[@]}" timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -424,9 +439,9 @@ for t in "$TEST_DIR"/*.mad; do
             # The produced ARTIFACT runs under the same wrapper as the
             # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
             fi
             exe_rc=$?
             exe_ok=1
