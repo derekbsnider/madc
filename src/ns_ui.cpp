@@ -55,6 +55,7 @@
 #include "madcdis/verbs.h"
 #include "madcdis/projection.h"
 #include "madcdis/render_text.h"
+#include "madcdis/term_screen.h"	// term_feed: the embedded Terminal's screen
 #include "madcdis/tui_model.h"
 #include "madcdis/tui_provider.h"
 #include "madcdis/web_model.h"
@@ -1237,6 +1238,33 @@ int64_t text_line_count(int64_t w, int64_t entity)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);
     return b ? (int64_t)b->line_count() : -1;
+}
+
+int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || !bytes || n < 0 )
+	return -1;
+    const std::string old_text = b->text();
+    madc::hub::term_screen scr;
+    madc::value col, esc, params;
+    get(col, w, entity, "termcol");
+    get(esc, w, entity, "termesc");
+    get(params, w, entity, "termparams");
+    // The first feed: the cursor sits at the end of whatever the text held.
+    scr.load(old_text, col.is_integer() ? (size_t)col.as_integer()
+					: old_text.size());
+    if ( esc.is_integer() )
+	scr.st = (madc::hub::term_screen::esc_state)(unsigned char)esc.as_integer();
+    if ( params.is_string() )
+	scr.params = params.as_string();
+    scr.feed(bytes, (size_t)n);
+    const std::string new_text = scr.text();
+    text_replace(w, entity, 0, (int64_t)old_text.size(), new_text.c_str());
+    set(w, entity, "termcol", (int64_t)scr.col);
+    set(w, entity, "termesc", (int64_t)(unsigned char)scr.st);
+    set(w, entity, "termparams", scr.params.c_str());
+    return (int64_t)new_text.size();
 }
 
 madc::value &text_line(madc::value &out, int64_t w, int64_t entity, int64_t n)

@@ -1727,6 +1727,45 @@ int main()
 	    rtxt.index("[exit 3]") >= 0 ? 1 : 0,
 	    es_int(w, es, "panel", 0), es_int(w, es, "buildlive", 0), msg);
     remove("madc_ide_run.mad");
+
+    // -- polish P3b-2: a CONSOLE program runs on a pty in the Terminal tab
+    //    with its keyboard: the prompt it prints arrives through the
+    //    bounded screen, the line typed while the terminal has focus goes
+    //    to the child (the tty echoes it), its answer and exit status end
+    //    the screen; ^] hands the keyboard back. (No manifest: the kind is
+    //    console.)
+    php::file_put_contents("madc_ide_tty.mad",
+	"#include <stdio.h>\n"
+	"int main() { char b[64]; println(\"name?\"); "
+	"if ( fgets(b, 64, stdin) ) printf(\"hi %s\", b); return 4; }\n");
+    edit_file(w, es, doc, "madc_ide_tty.mad");
+    long ttydoc = active_doc(w, es, doc);
+    run_buffer(w, es, ttydoc);
+    var ttab;
+    ui::get(ttab, w, es, "paneltab");
+    println("tty-start: live={} focus={} tab={}", es_int(w, es, "termlive", 0),
+	    es_int(w, es, "termfocus", 0), ttab);
+    // The keyboard returns with the scope's key (^] termunfocus, baked
+    // data) and the `terminal` command gives it back to the live program.
+    ev_key(e, "^]");
+    S.apply_ide_event(ttydoc, e);
+    println("tty-unfocus: focus={}", es_int(w, es, "termfocus", 0));
+    ev_action(e, "terminal", "");
+    S.apply_ide_event(ttydoc, e);
+    println("tty-refocus: focus={}", es_int(w, es, "termfocus", 0));
+    ev_text(e, "bob");			// the keyboard goes to the child…
+    S.apply_ide_event(ttydoc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(ttydoc, e);
+    madc::task_drain();			// …the program answers and ends
+    long ttdoc = term_doc_if_any(w, es);
+    var tty = "";
+    if ( ttdoc != 0 )
+	ui::text(tty, w, ttdoc);
+    println("tty-run: prompt={} answer={} exit={} live={}",
+	    tty.index("name?") >= 0 ? 1 : 0, tty.index("hi bob") >= 0 ? 1 : 0,
+	    tty.index("[exit 4]") >= 0 ? 1 : 0, es_int(w, es, "termlive", 0));
+    remove("madc_ide_tty.mad");
     S.panel(false);
 
     // :q on the now-clean buffer quits — false propagates out of the

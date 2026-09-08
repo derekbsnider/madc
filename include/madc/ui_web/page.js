@@ -89,7 +89,8 @@
       nodes.set(op.key, el);
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.tabs === true ? ' has-tabs' : '');
+                   (op.popup ? ' popup' : '') + (op.tabs === true ? ' has-tabs' : '') +
+                   (op.terminal ? ' terminal' : '');
     // A tab STRIP (madcide polish P3a): `tabs` as an array is the strip a
     // group carries as data — drawn as the group's first element, above the
     // children the composer docked into it; a tab click posts the tab's

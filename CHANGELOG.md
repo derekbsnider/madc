@@ -4,6 +4,15 @@
 
 ### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
 
+- The Terminal tab: a console program runs on a real pseudo-terminal
+  inside the window with its keyboard — prompts flush, the line you type
+  goes to it (the tty echoes it), its exit status ends the screen; `^]`
+  hands the keyboard back to the editor and a click in an editor does too;
+  View → Terminal, and the Shell, open a shell on it. The project kind
+  routes Run: console → the Terminal, gui → its own window with Output.
+  Engine: the process owner's `pty` option, the `pty://` scheme, `?pty` on
+  the run schemes, `ui::term_feed` (a bounded terminal screen) and
+  `ui::key_bytes` (the inverse of the terminal's key parser).
 - Run works in the window: the program runs in a child (the live parse
   forked — nothing execs) and its output streams into the Output tab,
   ending with its exit status; the project Run and a manifest command in

@@ -213,6 +213,10 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .tabstrip .tab.active { color: #f2f4ff; box-shadow: inset 0 -2px 0 var(--accent, #9fc2ff); }
 .workbench > .slot[data-slot="panel"] > .node.group { flex: 1 1 auto; min-height: 9em; overflow: auto; }
 .workbench > .slot[data-slot="panel"] .choice.list .opt { cursor: pointer; }
+/* The embedded Terminal's screen (polish P3b-2): the edit node over the
+   [terminal] buffer on a darker surface, its caret the program's cursor. */
+.edit.terminal { background: #0f1117; color: #d4d7e0; }
+.edit.terminal .caret { background: #9fc2ff; color: #0f1117; }
 .workbench > .slot[data-slot="panel"] .choice.list .opt:hover { background: #343b52; }
 /* The editor's tab-strip marker (the buffer-named strip is a later slice). */
 .edit.has-tabs { border-top: 2px solid #4a5a80; }

@@ -198,6 +198,16 @@ namespace ui {
     value  &text(value &out, int64_t w, int64_t entity);
     int64_t text_size(int64_t w, int64_t entity);
     int64_t text_line_count(int64_t w, int64_t entity);
+    // The embedded Terminal's screen (madcide polish P3b-2): fold `n`
+    // bytes a program wrote to its pty into the document's text through
+    // the bounded terminal screen (madcdis/term_screen.h — printables at
+    // the cursor, \r overwrite, \b, tabs, CSI K / 2J, every other escape
+    // sequence dropped). The document's text IS the screen (the completed
+    // lines + the cursor line); the cursor column and the escape parser's
+    // state ride the document's attributes (termcol, termesc, termparams)
+    // between feeds, so any pump can feed it chunk by chunk. Returns the
+    // new text size; -1 = no such document.
+    int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n);
     value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
     int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);

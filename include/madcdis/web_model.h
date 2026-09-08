@@ -847,6 +847,10 @@ class web_model
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;
+	    // The embedded Terminal's screen (madcide polish P3b-2): the page
+	    // styles it as a terminal (its own surface); nothing else differs.
+	    if ( hint_of(n.hints, "terminal", 0) )
+		op["terminal"] = true;
 	    slot_op so;
 	    so.op = ops.size();
 	    so.slot = slot;

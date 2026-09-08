@@ -122,7 +122,7 @@ same field. Gate: `scripts/verify_pe_release.sh` gains the subsystem read
 (console for madc.exe itself), and a wine-lane reducer emits a `-mwindows`
 program and reads its header back.
 
-## P3 — the bottom pane with tabs; Run routing — P3a + P3b-1 BUILT 2026-09-08, P3b-2 (the Terminal tab) next
+## P3 — the bottom pane with tabs; Run routing — P3a + P3b-1 + P3b-2 BUILT 2026-09-08
 
 **The shape.** VS Code's bottom tool window in our palette: a PANEL region
 that is optionally visible and holds TABS — **Problems** (the diagnostics

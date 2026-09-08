@@ -258,7 +258,8 @@ const char *modal_default_keys_text()
 	   "@modes v vimode\n"
 	   "@modes enter modesopen\n"
 	   "@modes esc modesclose\n"
-	   "@pane esc paneclose\n";
+	   "@pane esc paneclose\n"
+	   "@terminal ^] termunfocus\n";
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
@@ -3100,7 +3101,9 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
 // The [build] buffer if it already exists, else 0 — a NON-creating lookup
 // for read-only callers (the composer's live-build panel), so composition
 // never mints a buffer as a side effect.
-long build_doc_if_any(long w, long es)
+// ONE finder for a pseudo-buffer by its bracketed name ([build],
+// [terminal]) — non-creating: composition never mints a buffer.
+long buffer_doc_named(long w, long es, const char *name)
 {
     var bufs;
     ui::get(bufs, w, es, "buffers");
@@ -3108,10 +3111,15 @@ long build_doc_if_any(long w, long es)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == "[build]" )
+	if ( r["path"] == name )
 	    return r["doc"].as_integer();
     }
     return 0;
+}
+
+long build_doc_if_any(long w, long es)
+{
+    return buffer_doc_named(w, es, "[build]");
 }
 
 // The [build] buffer: found-or-created in the buffer table WITHOUT
@@ -3241,6 +3249,184 @@ void start_build(long w, long es, const char *cmd)
     ui::set(w, es, "buildcmd", c);
     var uri = format("exec://{}", c);
     start_capture(w, es, c.c_str(), uri.c_str());
+}
+
+// ---- the embedded TERMINAL (polish P3b-2) --------------------------------
+// The panel's Terminal tab: a program on a pseudo-terminal — a console
+// program run from the window (madcrun://<handle>?pty), the project run
+// (madcproj://<manifest>?pty), a manifest command in terminal mode or the
+// Shell (pty://<cmd>). The child's bytes fold into the [terminal] buffer
+// through ui::term_feed (the bounded screen: \r overwrite, \b, tabs,
+// CSI K / 2J; other sequences dropped); what the user types while the
+// terminal has focus (`termfocus`) travels the one input path to the core,
+// which sends the BYTES (ui::key_bytes — the inverse of the terminal's own
+// key parser) down a value channel the pump selects on (`termin`) and
+// writes to the pty. State on the bag: termlive, termfocus, termin,
+// termstop, termsrc. ^] (the @terminal scope's one binding, profile data)
+// gives the keyboard back; a press in an editor window does too.
+long term_doc_if_any(long w, long es)
+{
+    return buffer_doc_named(w, es, "[terminal]");
+}
+
+long term_doc(long w, long es)
+{
+    long existing = term_doc_if_any(w, es);
+    if ( existing != 0 )
+	return existing;
+    long nd = open_buffer_doc(w, es, "[terminal]");
+    push_buffer_row(w, es, nd, "[terminal]");
+    return nd;
+}
+
+void term_feed_text(long w, long tdoc, const char *text)
+{
+    var t = text;			// ring discipline
+    ui::term_feed(w, tdoc, t.c_str(), strlen(t.c_str()));
+    ui::set(w, tdoc, "modified", false);
+}
+
+// The pump: the MT-4b select over {stop, the pty's readable bytes, the
+// keyboard channel}. Bytes read fold into the screen; a keyboard value is
+// written to the child as-is (already bytes); the stop channel SIGTERMs
+// the child (cancel) so close() reaps promptly. EOF = the program ended;
+// its exit status ends the screen.
+void term_pump(long w, long es, long tdoc, long stopc, long inc)
+{
+    var uri;
+    ui::get(uri, w, es, "termsrc");
+    madc::channel tc(uri.c_str());
+    if ( !tc.ok() )
+    {
+	var em = format("[terminal] cannot start: {}\n", tc.last_error());
+	term_feed_text(w, tdoc, em.c_str());
+	ui::set(w, es, "termlive", 0);
+	return;
+    }
+    var cases;
+    cases[0] = stopc;
+    cases[1] = madc::chan_readable(tc);
+    cases[2] = inc;
+    var got;
+    bool stopped = false;
+    char buf[4096];
+    for ( ;; )
+    {
+	long idx = madc::chan_select(got, cases);
+	if ( idx == 0 )
+	{
+	    stopped = true;
+	    tc.cancel();
+	    break;
+	}
+	if ( idx == 2 )
+	{
+	    tc.write(got);		// the keystrokes' bytes to the child
+	    continue;
+	}
+	if ( idx != 1 )
+	    break;			// every case dead
+	long n = tc.read(buf, 4096);
+	if ( n <= 0 )
+	    break;			// EOF: the program ended
+	ui::term_feed(w, tdoc, buf, n);
+	ui::set(w, tdoc, "modified", false);
+    }
+    tc.close();
+    long xc = tc.exit_status();
+    if ( stopped )
+	term_feed_text(w, tdoc, "\n[stopped]\n");
+    else if ( xc >= 0 )
+    {
+	var xl = format("\n[exit {}]\n", xc);
+	term_feed_text(w, tdoc, xl.c_str());
+    }
+    else
+	term_feed_text(w, tdoc, "\n[done]\n");
+    ui::set(w, es, "termlive", 0);
+}
+
+// Start a program in the Terminal tab: the screen shows the title, the
+// tab shows, the keyboard is the program's until it ends or ^] hands it
+// back. One program at a time (^C it — the tty delivers SIGINT).
+void start_terminal(long w, long es, const char *title, const char *uri)
+{
+    var t = title;			// ring discipline: own the texts first
+    var u = uri;
+    if ( es_int(w, es, "termlive", 0) != 0 )
+    {
+	ui::set(w, es, "msg", "A program is already running in the Terminal (^C it first).");
+	return;
+    }
+    long tdoc = term_doc(w, es);
+    var hdr = format("=== {} ===\n", t);
+    term_feed_text(w, tdoc, hdr.c_str());
+    long stopc = madc::chan_make(1);
+    long inc = madc::chan_make(64);
+    ui::set(w, es, "termstop", stopc);
+    ui::set(w, es, "termin", inc);
+    ui::set(w, es, "termsrc", u);
+    ui::set(w, es, "termlive", 1);
+    ui::set(w, es, "termfocus", 1);
+    show_panel_tab(w, es, "terminal");
+    go term_pump(w, es, tdoc, stopc, inc);
+    ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
+}
+
+// Send bytes to the running program (the pump writes them to the pty).
+void term_send(long w, long es, var &bytes)
+{
+    long inc = es_int(w, es, "termin", 0);
+    if ( inc != 0 && es_int(w, es, "termlive", 0) != 0 )
+	madc::chan_send(inc, bytes);
+}
+
+// The keyboard while the Terminal has focus: text is its own bytes; a
+// key is the bytes a terminal would send for it (ui::key_bytes); a chord
+// the global table resolved to an action is the keys the user typed — its
+// sequence's spellings, each to bytes — except the @terminal scope's own
+// binding (^] termunfocus, profile data), which hands the keyboard back.
+// True = consumed. Pointer, choose, dialog and focus events pass through
+// (a press elsewhere is how the mouse leaves the terminal).
+bool terminal_event(long w, long es, var &ev)
+{
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
+    {
+	var t = ev["text"];
+	term_send(w, es, t);
+	return true;
+    }
+    if ( kind == ui::event_kind::key || kind == ui::event_kind::action )
+    {
+	var a;
+	if ( scoped_action(a, w, es, "terminal", ev) && a == "termunfocus" )
+	{
+	    ui::set(w, es, "termfocus", 0);
+	    ui::set(w, es, "msg", "Keyboard back to the editor.");
+	    return true;
+	}
+	var spell;
+	if ( kind == ui::event_kind::key )
+	    spell = format("{}", ev["key"]);
+	else
+	    spell = format("{}", ev["seq"]);
+	if ( strlen(spell.c_str()) == 0 )
+	    return true;
+	// A chord's spellings are space-separated: each key's bytes in turn.
+	array keys;
+	php::explode(keys, " ", spell.c_str());
+	long n = php::count(keys);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var one = php::array_get_cstr(keys, i);
+	    var bytes;
+	    if ( ui::key_bytes(bytes, one.c_str()) )
+		term_send(w, es, bytes);
+	}
+	return true;
+    }
+    return false;
 }
 
 void stop_build(long w, long es)
@@ -3485,16 +3671,26 @@ void run_buffer(long w, long es, long doc)
 	return;			// ensure_phandle already said why
     if ( es_flag(w, es, "haspanel") )
     {
-	// A window (polish P3b-1): the live parse runs in a child whose
-	// output streams into the Output tab — the running madc is still
-	// the compiler (the tree is forked, nothing execs); the terminal
-	// below keeps the inherited-stdio handoff. The Terminal tab (P3b-2)
-	// gives console programs their keyboard.
+	// A window (polish P3b): the live parse runs in a child — the
+	// running madc is still the compiler (the tree is forked, nothing
+	// execs). By the project KIND: a console program runs on a pty in
+	// the Terminal tab with its keyboard; a gui program opens its own
+	// window and its stdout/stderr stream into Output. The terminal
+	// below keeps the inherited-stdio handoff.
 	var rp;
 	ui::get(rp, w, doc, "path");
 	var title = format("Run {}", rp);
-	var uri = format("madcrun://{}", h);
-	start_capture(w, es, title.c_str(), uri.c_str());
+	var pk = proj_kind(w, es);
+	if ( pk == "gui" )
+	{
+	    var uri = format("madcrun://{}", h);
+	    start_capture(w, es, title.c_str(), uri.c_str());
+	}
+	else
+	{
+	    var uri = format("madcrun://{}?pty", h);
+	    start_terminal(w, es, title.c_str(), uri.c_str());
+	}
 	return;
     }
     var rq = { "kind": "run", "doc": doc, "pause": 1 };
@@ -3509,11 +3705,10 @@ void run_in_terminal(long w, long es, const char *cmd)
 {
     if ( es_flag(w, es, "haspanel") )
     {
-	// A window: the command's output streams into Output (its keyboard
-	// arrives with the Terminal tab, P3b-2).
+	// A window: a terminal-mode command runs on a pty in the Terminal tab.
 	var c = cmd;
-	var uri = format("exec://{}", c);
-	start_capture(w, es, c.c_str(), uri.c_str());
+	var uri = format("pty://{}", c);
+	start_terminal(w, es, c.c_str(), uri.c_str());
 	return;
     }
     var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
@@ -3687,10 +3882,20 @@ void run_project(long w, long es, long doc)
     }
     if ( es_flag(w, es, "haspanel") )
     {
-	// A window: the --project JIT lane in a child, streamed into Output.
+	// A window: the --project JIT lane in a child — the Terminal tab
+	// for a console project, Output for a gui one (the kind).
 	var title = format("Run project {}", pf);
-	var uri = format("madcproj://{}", pf);
-	start_capture(w, es, title.c_str(), uri.c_str());
+	var pk = proj_kind(w, es);
+	if ( pk == "gui" )
+	{
+	    var uri = format("madcproj://{}", pf);
+	    start_capture(w, es, title.c_str(), uri.c_str());
+	}
+	else
+	{
+	    var uri = format("madcproj://{}?pty", pf);
+	    start_terminal(w, es, title.c_str(), uri.c_str());
+	}
 	return;
     }
     var rq = { "kind": "projrun", "pause": 1 };
@@ -3914,9 +4119,11 @@ void open_shell(long w, long es)
 {
     if ( es_flag(w, es, "haspanel") )
     {
-	// A window has no terminal to hand over; the shell arrives with the
-	// Terminal tab (P3b-2). Said, not swallowed.
-	ui::set(w, es, "msg", "No terminal in this window yet — the shell needs the Terminal tab.");
+	// A window: the shell on a pty in the Terminal tab. $SHELL falls back
+	// to /bin/sh INSIDE the command (no getenv: the dlsym fallback hands
+	// the pointer back as a long); the exec factory splits on spaces,
+	// so the one word ${SHELL:-/bin/sh} is the whole -c script.
+	start_terminal(w, es, "Shell", "pty://sh -c ${SHELL:-/bin/sh}");
 	return;
     }
     var rq = { "kind": "shell", "pause": 0 };
@@ -4035,6 +4242,17 @@ void toggle_pane(long w, long es, const char *name)
 // the gesture to the caret, as its mark/bend actions refuse.
 void IdeSession::pointer_event(long doc, long nav, var &ev)
 {
+    // The Terminal tab (polish P3b-2): a press on its node — the [terminal]
+    // buffer is its subject — gives the program the keyboard; a press
+    // anywhere else takes it back. The window logic below never sees it.
+    long tsubj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
+    long tdoc = term_doc_if_any(w, es);
+    if ( tdoc != 0 && tsubj == tdoc )
+    {
+	ui::set(w, es, "termfocus", 1);
+	return;
+    }
+    ui::set(w, es, "termfocus", 0);
     long idx = -1;
     long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
     if ( tag >= 0 && tag < window_count(w, es) )
@@ -4080,6 +4298,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     bool viewing = nav != doc;
     long caret = clamped_caret(w, es, nav);
     ui::set(w, es, "msg", "");
+
+    // The embedded Terminal (polish P3b-2) owns the keyboard while it has
+    // focus and a program runs; pointer/choose/dialog events pass through.
+    if ( es_int(w, es, "termfocus", 0) != 0 && es_int(w, es, "termlive", 0) != 0 )
+    {
+	if ( terminal_event(w, es, ev) )
+	    return true;
+    }
 
     if ( prompt_active(w, es) )
 	return prompt_event(w, es, nav, caret, ev);
@@ -4362,6 +4588,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	if ( a == "output" )
 	{
 	    show_panel_tab(w, es, "output");
+	    return true;
+	}
+	if ( a == "terminal" )
+	{
+	    show_panel_tab(w, es, "terminal");
+	    if ( es_int(w, es, "termlive", 0) != 0 )
+		ui::set(w, es, "termfocus", 1);
 	    return true;
 	}
 	if ( a == "shell" )
@@ -4954,8 +5187,37 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    if ( tab == "output" )
 		t2["active"] = 1;
 	    strip.push(t2);
+	    var t3 = { "title": "Terminal", "action": "terminal" };
+	    if ( tab == "terminal" )
+		t3["active"] = 1;
+	    strip.push(t3);
 	    var pkids = {};
-	    if ( tab == "output" )
+	    if ( tab == "terminal" )
+	    {
+		// The screen: an edit node over the [terminal] buffer (the
+		// line-DOM, the caret at the end) whose subject is that
+		// buffer — a press on it is how the program gets the
+		// keyboard (pointer_event). Empty until something ran.
+		long tdoc = term_doc_if_any(w, es);
+		var tt = "";
+		long tsz = 0;
+		if ( tdoc != 0 )
+		{
+		    ui::text(tt, w, tdoc);
+		    tsz = ui::text_size(w, tdoc);
+		}
+		var term = { "role": "edit" };
+		term["content"] = tt;
+		if ( tdoc != 0 )
+		    term["subject"] = tdoc;
+		var th = { "terminal": 1 };
+		th["caret"] = tsz;
+		if ( es_int(w, es, "termfocus", 0) != 0 )
+		    th["focus"] = 1;
+		term["hints"] = th;
+		pkids.push(term);
+	    }
+	    else if ( tab == "output" )
 	    {
 		var out = { "role": "content" };
 		var bt = "";
