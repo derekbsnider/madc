@@ -12,8 +12,11 @@
 #    (tkProgram && !child_has_error_row) appears exactly once (the
 #    owner's body).
 # 3. Every fork() child in madc_program.cpp RUNS madc code (isolation
-#    eval children + parse_run; there is no fork+exec here), so every
-#    one must reset the cooperative scheduler: the fork-site count and
+#    eval children + parse_run; there is no fork+exec here), and so does
+#    every Process child_body this file hands the spawn owner (the
+#    madcrun:// / madcproj:// run factories — fork-as-isolation through
+#    the owner, polish P3b-1), so every one must reset the cooperative
+#    scheduler: the fork-site count (fork() sites + child_body sites) and
 #    the __madc_task_atfork_child() call count must match. A new fork
 #    lane without the reset can schedule parent task contexts.
 set -u
@@ -32,7 +35,10 @@ count_gate()
 
 count_forks()
 {
-	grep -c 'pid_t pid = fork();' "$1"
+	local direct bodies
+	direct=$(grep -c 'pid_t pid = fork();' "$1")
+	bodies=$(grep -c 'options.child_body = ' "$1")
+	echo $((direct + bodies))
 }
 
 count_resets()

@@ -4924,11 +4924,13 @@ run_channel_policy &run_policy()
 }
 
 #ifndef _WIN32
-// The child's first steps before the program runs: the task runtime's
-// atfork reset, CLI-parity signal dispositions, stderr onto the stream.
+// The child's first steps before the program runs (after the body's own
+// __madc_task_atfork_child() — every child that runs madc code resets the
+// cooperative scheduler at its fork site, the discipline the live-build
+// owners gate counts): CLI-parity signal dispositions, stderr onto the
+// stream.
 void run_child_prologue()
 {
-    __madc_task_atfork_child();
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
     ::dup2(STDOUT_FILENO, STDERR_FILENO);
@@ -4998,6 +5000,7 @@ public:
 	::Program *child = st->child;
 	const std::string name = st->display_name;
 	options.child_body = [child, name]() -> int {
+	    __madc_task_atfork_child();		// a fork child running madc code
 	    run_child_prologue();
 	    std::string argv0 = name;
 	    char *guest_argv[2];
@@ -5057,6 +5060,7 @@ public:
 	const std::string forest_bind_path = policy.forest_bind_path;
 	options.child_body = [engine, manifest, manifest_path, forest_bind,
 			      forest_bind_path]() -> int {
+	    __madc_task_atfork_child();		// a fork child running madc code
 	    run_child_prologue();
 	    std::string argv0 = manifest_path;
 	    char *guest_argv[2];
