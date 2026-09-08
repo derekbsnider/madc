@@ -200,12 +200,19 @@ core writes them to the child through a VALUE channel the pump selects on
 console program runs here by the project kind; a gui program keeps
 P3b-1's Output route. Windows: pipes (ConPTY is the named residue).
 
-## P4 — editor tabs over the buffer ring
+## P4 — editor tabs over the buffer ring — BUILT 2026-09-08
 
-The `tabs` hint on the editor group renders the buffer ring as a tab strip
-(`push_buffer_row` data; the active buffer marked; click selects, the
-`^K` buffer chords unchanged). A tab can be a browser view (a `web` node
-whose content is a URL — help pages, documentation).
+The buffer ring as a tab strip above the window stack, under the window's
+fact: a content node docked first into the editor region whose `tabs`
+array carries one tab per buffer (its base name, `*` while modified, the
+active buffer marked), each naming the `bufsel` command WITH its argument
+— the ring index. Commands take ARGUMENTS (the gateway shape): the action
+input carries `arg`, `ui::event` reports it, and a human client's prompt
+collects the same argument when a command arrives without one (the
+palette's Switch to Buffer…). The S5 `tabs: 1` marker and the page's
+`has-tabs` class are gone — one shape for every strip. A browser-view tab
+(a node whose content is a URL — help pages, documentation) is the named
+follow-up after the master release.
 
 Then the polished local IDE → master (the release-tier lanes: libc++,
 darwin full suite both arches, genuine Windows).

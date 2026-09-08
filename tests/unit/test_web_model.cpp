@@ -1162,3 +1162,48 @@ TEST_CASE("compose — a group's tabs array becomes the strip as data; the integ
     REQUIRE(mk);
     CHECK((*mk)["tabs"] == true);
 }
+
+TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the action input reports it as the event's text")
+{
+    // madcide polish P4: a buffer tab names `bufsel` with its ring index; the
+    // page posts {"kind":"action","action":"bufsel","arg":"1"} and the event
+    // carries the argument (ui::event's `arg`) — commands take arguments.
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    strip.content = madc::value(std::string(""));
+    std::vector<madc::value> tabs;
+    std::map<std::string, madc::value> t1;
+    t1["title"] = madc::value(std::string("main.mad"));
+    t1["action"] = madc::value(std::string("bufsel"));
+    t1["arg"] = madc::value(std::string("0"));
+    t1["active"] = madc::value((int64_t)1);
+    tabs.push_back(madc::value::make_object(t1));
+    std::map<std::string, madc::value> t2;
+    t2["title"] = madc::value(std::string("util.mad*"));
+    t2["action"] = madc::value(std::string("bufsel"));
+    t2["arg"] = madc::value(std::string("1"));
+    tabs.push_back(madc::value::make_object(t2));
+    std::map<std::string, madc::value> h;
+    h["region"] = madc::value(std::string("editor"));
+    h["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(h);
+    root.add(strip);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *n = node_by_key(ops, "0.0");
+    REQUIRE(n);
+    CHECK((*n)["tabs"] == nlohmann::json::parse(
+	"[{\"title\":\"main.mad\",\"action\":\"bufsel\",\"arg\":\"0\",\"active\":true},"
+	"{\"title\":\"util.mad*\",\"action\":\"bufsel\",\"arg\":\"1\"}]"));
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"bufsel\",\"arg\":\"1\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "bufsel");
+    CHECK(ev[0].text == "1");
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"help\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].text.empty());			// a chord-shaped command: no argument
+    CHECK(m.apply_input("{\"kind\":\"action\",\"action\":\"help\",\"arg\":7}").size() == 1u);	// a non-string arg is ignored, the action stands
+}

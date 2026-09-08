@@ -1706,6 +1706,52 @@ int main()
 	    panels = panels + 1;
     println("panel-toggle: panels={}", panels);
 
+    // -- polish P4: the editor TABS — under the window's fact the buffer
+    //    ring is a tab strip (a content node docked first into the editor
+    //    region; one tab per buffer naming `bufsel` WITH its ring index as
+    //    the argument; the active buffer marked); the command with the
+    //    argument switches the buffer, the palette's form prompts.
+    S.compose_ide_tree(tree, doc);
+    var tstrip;
+    for ( var tk : tree["children"] )
+	if ( !tk["hints"].is_null() && tk["hints"]["region"] == "editor"
+	  && !tk["hints"]["tabs"].is_null() )
+	    tstrip = tk["hints"]["tabs"];
+    long tbi = es_int(w, es, "bufidx", 0);
+    long tn = 0;
+    if ( !tstrip.is_null() )
+	tn = php::count(tstrip);
+    long tactive = -1;
+    for ( long ti = 0; ti < tn; ti = ti + 1 )
+	if ( !tstrip[ti]["active"].is_null() )
+	    tactive = ti;
+    var targ = "-";
+    var tact = "-";
+    if ( tactive >= 0 )
+    {
+	targ = format("{}", tstrip[tactive]["arg"]);
+	tact = format("{}", tstrip[tactive]["action"]);
+    }
+    println("tabs: n>=2 {} active-is-bufidx {} arg-of-active={} action={}",
+	    tn >= 2 ? 1 : 0, tactive == tbi ? 1 : 0, targ, tact);
+    var be;
+    ev_action(be, "bufsel", "");
+    be["arg"] = "0";
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    println("bufsel-arg: bufidx={}", es_int(w, es, "bufidx", 0));
+    ev_action(be, "bufsel", "");		// the palette's form: a prompt
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    S.compose_ide_tree(tree, active_doc(w, es, doc));
+    long bkids = php::count(tree["children"]);
+    println("bufsel-prompt: {}", php::trim(tree["children"][bkids - 1]["content"]));
+    ev_text(be, "madc_ide_second.mad");
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    ev_key(be, "enter");
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    var bsp;
+    ui::get(bsp, w, active_doc(w, es, doc), "path");
+    println("bufsel-name: path={}", bsp);
+
     // -- polish P3b-1: Run in a window — the live parse runs in a CHILD
     //    (madcrun://, the fork through the one spawn owner; nothing
     //    execs) whose output streams into the Output tab's [build] text,

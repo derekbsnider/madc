@@ -218,5 +218,11 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .edit.terminal { background: #0f1117; color: #d4d7e0; }
 .edit.terminal .caret { background: #9fc2ff; color: #0f1117; }
 .workbench > .slot[data-slot="panel"] .choice.list .opt:hover { background: #343b52; }
-/* The editor's tab-strip marker (the buffer-named strip is a later slice). */
-.edit.has-tabs { border-top: 2px solid #4a5a80; }
+/* The editor TABS (polish P4): the buffer ring as a strip above the window
+   stack — a content node docked first into the editor slot carrying the
+   strip; its own text is empty, so the node is the strip. */
+.workbench > .slot[data-slot="editor"] > .node.content { padding: 0; flex: 0 0 auto; }
+.workbench > .slot[data-slot="editor"] > .node.content > .tabstrip { text-transform: none;
+  letter-spacing: 0; font-size: 12px; }
+.workbench > .slot[data-slot="editor"] > .node.content > .tabstrip .tab { text-transform: none;
+  letter-spacing: 0; padding: 0 12px; border-right: 1px solid var(--sb-line, #343b52); }

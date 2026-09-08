@@ -1535,6 +1535,30 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	proj_open(w, es, doc, in.c_str());
 	return true;
     }
+    if ( mode == "bufsel" )
+    {
+	// The palette's Switch to Buffer…: the ring row whose path or base
+	// name is the answer.
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	long nb = php::count(bufs);
+	for ( long i = 0; i < nb; i = i + 1 )
+	{
+	    var bp = format("{}", bufs[i]["path"]);
+	    var bn = bp;
+	    const char *sl = strrchr(bp.c_str(), '/');
+	    if ( sl != 0 )
+		bn = sl + 1;
+	    if ( bp == in.c_str() || bn == in.c_str() )
+	    {
+		if ( i != es_int(w, es, "bufidx", 0) )
+		    switch_buffer(w, es, doc, i);
+		return true;
+	    }
+	}
+	ui::set(w, es, "msg", format("No buffer '{}'.", in));
+	return true;
+    }
     if ( mode == "projadd" )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
@@ -4597,6 +4621,24 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 		ui::set(w, es, "termfocus", 1);
 	    return true;
 	}
+	if ( a == "bufsel" )
+	{
+	    // Switch to a buffer (polish P4): by ring index when the command
+	    // carries its argument (a tab), else the prompt collects a name.
+	    var arg = ev["arg"];
+	    if ( !arg.is_null() && strlen(arg.c_str()) > 0 )
+	    {
+		var bufs;
+		ui::get(bufs, w, es, "buffers");
+		long idx = php::intval(arg);
+		if ( idx >= 0 && idx < php::count(bufs)
+		  && idx != es_int(w, es, "bufidx", 0) )
+		    switch_buffer(w, es, doc, idx);
+	    }
+	    else
+		start_prompt(w, es, "Buffer", "bufsel");
+	    return true;
+	}
 	if ( a == "shell" )
 	{
 	    open_shell(w, es);
@@ -4868,10 +4910,6 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     long wc = window_count(w, es);
     {
 	eh["region"] = "editor";
-	var bufs;
-	ui::get(bufs, w, es, "buffers");
-	if ( !bufs.is_null() && php::count(bufs) > 1 )
-	    eh["tabs"] = 1;
 	// With two-plus windows the active window carries the focus hint
 	// (the multi-window branch below composes the others); it rides
 	// the same single write-back.
@@ -4892,6 +4930,51 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 
     var r = { "role": "group" };
     var kids = {};
+    // The editor TABS (polish P4): under a window's fact, the buffer ring
+    // as a tab strip above the window stack — a content node docked FIRST
+    // into the editor region whose `tabs` hint carries the strip as data:
+    // one tab per buffer (its base name, `*` while modified), the active
+    // buffer marked, each tab naming the `bufsel` command WITH its argument
+    // (the ring index) — a command that takes an argument, the gateway
+    // shape (a human client's prompt collects the same argument). The
+    // terminal keeps ^P's buffer rows; it never composes this node.
+    if ( es_flag(w, es, "haspanel") )
+    {
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	long nb = 0;
+	if ( !bufs.is_null() )
+	    nb = php::count(bufs);
+	if ( nb > 0 )
+	{
+	    long cur = es_int(w, es, "bufidx", 0);
+	    var strip = {};
+	    for ( long i = 0; i < nb; i = i + 1 )
+	    {
+		var b = bufs[i];
+		var bp = format("{}", b["path"]);
+		var bn = bp;
+		const char *sl = strrchr(bp.c_str(), '/');
+		if ( sl != 0 )
+		    bn = sl + 1;
+		var m;
+		ui::get(m, w, b["doc"].as_integer(), "modified");
+		var title = bn;
+		if ( !m.is_null() && m.as_boolean() )
+		    title = format("{}*", bn);
+		var tb = { "title": title, "action": "bufsel" };
+		tb["arg"] = format("{}", i);
+		if ( i == cur )
+		    tb["active"] = 1;
+		strip.push(tb);
+	    }
+	    var tabsnode = { "role": "content", "content": "" };
+	    var tnh = { "region": "editor" };
+	    tnh["tabs"] = strip;
+	    tabsnode["hints"] = tnh;
+	    kids.push(tabsnode);
+	}
+    }
     // IDE-9e: with two-plus windows, each window is its own status line +
     // edit node, stacked. The ACTIVE window is the live one — the full
     // edit node composed above (views, spans, tabwidth) plus the focus

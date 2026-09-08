@@ -543,6 +543,10 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["event"] = madc::value(std::string("action"));
 	    fields["action"] = madc::value(e.action_name);
 	    fields["seq"] = madc::value(e.seq);
+	    // The command's argument a native control carried (a buffer
+	    // tab's ring index — polish P4); absent for a chord.
+	    if ( !e.text.empty() )
+		fields["arg"] = madc::value(e.text);
 	    break;
 	case madc::hub::tui_event_kind::resize:
 	    // The surface changed: refresh the stored dimensions so the

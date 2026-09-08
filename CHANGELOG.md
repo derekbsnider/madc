@@ -4,6 +4,10 @@
 
 ### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
 
+- Editor tabs: the open buffers as a tab strip above the editor (the base
+  name, `*` while modified, the active one marked); a click switches to
+  that buffer. Commands take arguments now — a tab posts `bufsel` with the
+  buffer's index, the palette's Switch to Buffer… prompts for a name.
 - The Terminal tab: a console program runs on a real pseudo-terminal
   inside the window with its keyboard — prompts flush, the line you type
   goes to it (the tty echoes it), its exit status ends the screen; `^]`

@@ -89,8 +89,7 @@
       nodes.set(op.key, el);
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.tabs === true ? ' has-tabs' : '') +
-                   (op.terminal ? ' terminal' : '');
+                   (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
     // A tab STRIP (madcide polish P3a): `tabs` as an array is the strip a
     // group carries as data — drawn as the group's first element, above the
     // children the composer docked into it; a tab click posts the tab's
@@ -154,6 +153,7 @@
     for (var i = 0; i < tabs.length; i++) {
       var t = span('tab' + (tabs[i].active ? ' active' : ''), tabs[i].title || '');
       if (tabs[i].action) t.dataset.action = tabs[i].action;
+      if (tabs[i].arg != null) t.dataset.arg = String(tabs[i].arg);
       s.appendChild(t);
     }
   }
@@ -623,11 +623,14 @@
       kb.focus();
       return;
     }
-    // A tab of a tool window: its command by name.
+    // A tab: its command by name, with the argument it carries (a buffer
+    // tab's ring index) — the page never interprets either.
     var tab = t && t.closest ? t.closest('.tabstrip .tab') : null;
     if (tab && tab.dataset.action) {
       e.preventDefault();
-      post({ kind: 'action', action: tab.dataset.action });
+      var msg = { kind: 'action', action: tab.dataset.action };
+      if (tab.dataset.arg != null) msg.arg = tab.dataset.arg;
+      post(msg);
       kb.focus();
       return;
     }

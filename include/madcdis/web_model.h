@@ -25,7 +25,8 @@
 //    "tabwidth":8,"focus":true}
 //   {"op":"node","key":"0.6","parent":"0","class":"group","region":"panel",
 //    "tabs":[{"title":"Problems","action":"problems","active":true},
-//            {"title":"Output","action":"output"}]}
+//            {"title":"Output","action":"output"},
+//            {"title":"main.mad*","action":"bufsel","arg":"0"}]}
 //                                                          a tabbed tool
 //                                                          window (polish
 //                                                          P3a): the strip as
@@ -98,11 +99,17 @@
 //                                          event asks the application to
 //                                          recompose — the next compose
 //                                          paints every edit node in full
-//   {"kind":"action","action":"pyes"}     a native control fired a command
+//   {"kind":"action","action":"pyes",
+//    "arg":"2"}                            a native control fired a command
 //                                          by id: a menu item (S2), a dialog
 //                                          button or a popup's dismissal
-//                                          (S6) — the SAME action event a
-//                                          bound chord produces
+//                                          (S6), a tab (P3a/P4) — the SAME
+//                                          action event a bound chord
+//                                          produces; `arg` (optional) is
+//                                          the command's argument the
+//                                          control carried (a buffer tab's
+//                                          ring index), reported as the
+//                                          event's text
 //   {"kind":"choose","key":"0.4","index":2} a pointing gesture PICKED an
 //                                          option of the choice node `key`
 //                                          (a click on its row; `index`
@@ -581,6 +588,12 @@ class web_model
 			nlohmann::json tb = nlohmann::json::object();
 			tb["title"] = title;
 			tb["action"] = action;
+			// The command's ARGUMENT (polish P4: a buffer tab names
+			// `bufsel` with its ring index) — posted back with the
+			// action; the gateway shape (commands take arguments).
+			const std::string arg = hint_str(rows[k], "arg");
+			if ( !arg.empty() )
+			    tb["arg"] = arg;
 			if ( hint_of(rows[k], "active", 0) != 0 )
 			    tb["active"] = true;
 			strip.push_back(tb);
@@ -1072,6 +1085,11 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::action;
 	    e.action_name = it->get<std::string>();
+	    // The command's argument (polish P4): a tab's data rides the
+	    // event's `text` — what ui::event reports as `arg`.
+	    nlohmann::json::const_iterator ai = j.find("arg");
+	    if ( ai != j.end() && ai->is_string() )
+		e.text = ai->get<std::string>();
 	    none.push_back(e);
 	    return none;
 	}

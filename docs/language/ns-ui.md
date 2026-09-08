@@ -303,6 +303,7 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"text", text}` | the run | Coalesced printable keys — ONE semantic insertion |
 | `{event:"key", key}` | `"up"`, `"enter"`, `"^s"`, ... | A non-printable key for the application |
 | `{event:"choose", option, action}` | 1-based index + action name | Enter on the selected option — the same number the line-mode menu prints |
+| `{event:"action", action, seq, arg?}` | the bound name, the chord's spelling, the argument a native control carried | a chord the bindings table resolved (`seq`), or a native control (a menu item, a dialog button, a tab) that fired the command by id — `arg` when the control carried the command's argument (a buffer tab's ring index); commands take arguments, the gateway shape |
 | `{event:"action", action, seq}` | bound name + the sequence | A bound key sequence completed (empty action = unbound miss) |
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
 | `{event:"wake"}` | — | Cooperative background tasks drained: recompose |
@@ -433,7 +434,7 @@ and the window honours:
 | `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
 | `tag` (N) | an edit node | the composer's own identity for the node, echoed as data on the pointer events it yields (madcide: every window's edit node carries its window index while split) — no renderer reads it for itself |
 | `terminal` (1) | an edit node | the embedded Terminal's screen (madcide's Terminal tab: the `[terminal]` buffer a program's pty bytes fold into through `ui::term_feed`) — the page styles it as a terminal surface; a press on it gives the running program the keyboard |
-| `tabs` (`[{title, action, active?}]`, or 1) | a group (madcide's bottom panel), the editor group | the array is a tab STRIP as data — the page draws it above the group's children and a click on a tab posts its `action` by name (madcide: Problems / Output show the panel on that tab); the integer form is the editor group's tab-strip marker (the buffer-named strip is a later slice) |
+| `tabs` (`[{title, action, arg?, active?}]`) | a group (madcide's bottom panel), a content node docked first into the editor region (madcide's buffer tabs) | a tab STRIP as data — the page draws it above the node's children and a click on a tab posts its `action` by name with its `arg` (madcide: Problems / Output / Terminal show the panel on that tab; a buffer tab posts `bufsel` with the buffer's ring index) |
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
 | `dismiss` (action id) | a popup | the action a press OUTSIDE the popup fires (a prompt's cancel), posted as `{"kind":"action"}` — data, never a key |
 | `prompt` (`{label, input}`) | the prompt row (a content node) | the core's prompt as a QUICK INPUT: the label over a field showing the input text the CORE holds, a caret after it, the keys it answers to beneath; typing still travels the one input path — the page never edits the text (Neovim's `ext_cmdline` shape) |
