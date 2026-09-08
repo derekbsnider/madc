@@ -307,7 +307,7 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
 | `{event:"wake"}` | — | Cooperative background tasks drained: recompose |
 | `{event:"snapshot", text}` | the page's rendered text | A web target's page answered `madcSnapshot()` (the test seam) |
-| `{event:"pointer", phase, offset, subject}` | `"down"` / `"drag"` / `"up"`, a BYTE offset, the entity the node projects | A pointing-device gesture on an `edit` node, resolved by the engine to the offset in that node's text (the web target's hit test today; a terminal's mouse reporting takes the same shape). `subject` is absent when the node projects nothing — set it (the edit node's `subject` = its document) so a multi-window composer knows which window was hit. The shared editor core's `edit_pointer` is the one caret model for it: a press places the caret, a drag lights the selection through the same mark (and end, under a two-point personality), a release ends the gesture |
+| `{event:"pointer", phase, offset, subject, tag}` | `"down"` / `"drag"` / `"up"`, a BYTE offset, the entity the node projects, the node's `tag` hint | A pointing-device gesture on an `edit` node, resolved by the engine to the offset in that node's text (the web target's hit test today; a terminal's mouse reporting takes the same shape). `subject` is absent when the node projects nothing — set it (the edit node's `subject` = its document) so a multi-window composer knows which document was hit; `tag` echoes the integer `tag` hint the composer stamped on the node (absent when it carried none) — the composer's OWN identity for the node, the one answer when two windows show the same document (madcide stamps the window index). `offset` is `-1` for a press on the node at no text position (a window's header): activate, place nothing. The shared editor core's `edit_pointer` is the one caret model for it: a press places the caret, a drag lights the selection through the same mark (and end, under a two-point personality), a release ends the gesture |
 
 **The vocabularies are enums.** Every event object also carries the
 enumerator values beside the names: `event_code` (`ui::event_kind`),
@@ -402,7 +402,7 @@ means anything in JavaScript.
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog — the last two optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted — `{"kind":"action","action":id}`, a native menu selection, the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog — the last two optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted; `line` and `col` both omitted = a press on the node at no position (a window's header) — `{"kind":"action","action":id}`, a native menu selection, a dialog button or a popup's dismissal — the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
 | `dialogs(t)` / `dialog(t, json)` | Native file dialogs: can the target show one (a window whose host draws chrome; the terminal cannot), and show the one the request describes — true = up, the answer arrives as an `{event:"dialog", mode, path}` event; false = not here, the application falls back to its own prompt |
 
 `madc::module_available("madcwebview")` answers whether the window can
@@ -422,10 +422,14 @@ and the window honours:
 |------|----|-----------|
 | `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar`; the nodes docked into one region STACK in the slot in tree order |
 | `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
+| `tag` (N) | an edit node | the composer's own identity for the node, echoed as data on the pointer events it yields (madcide: every window's edit node carries its window index while split) — no renderer reads it for itself |
 | `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
-| `items` (`{left:[…],right:[…]}`) | the status node | the status bar as chrome: each side a row of SEGMENTS `{seat, label, text}` — one per JOE format seat that showed text (`%n` the name, `%r`/`%c` with their `Row`/`Col` labels, `%m` the modified badge, `%k` the pending chord …), laid as discrete themeable items (`.sb-seat.sb-<letter>`); the terminal shows the same expansion as one string |
-| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope |
+| `dismiss` (action id) | a popup | the action a press OUTSIDE the popup fires (a prompt's cancel), posted as `{"kind":"action"}` — data, never a key |
+| `prompt` (`{label, input}`) | the prompt row (a content node) | the core's prompt as a QUICK INPUT: the label over a field showing the input text the CORE holds, a caret after it, the keys it answers to beneath; typing still travels the one input path — the page never edits the text (Neovim's `ext_cmdline` shape) |
+| `confirm` (`{label, choices:[{label, action}]}`) | the confirm row | a question as a DIALOG: the label and one button per answer, each posting its action by name — what its key does in the terminal |
+| `items` (`{left:[…],right:[…]}`) | the status node | the status bar as chrome: each side a row of SEGMENTS `{seat, label, text}` — one per JOE format seat that showed text (`%n` the name, `%r`/`%c` with their `Row`/`Col` labels, `%m` the modified badge, `%k` the pending chord …), laid as discrete themeable items (`.sb-seat.sb-<letter>`) in the proportional chrome font on the bar's own surface — the name leads, labels are small captions, the modified / read-only badges are accent pills, the pending chord a key cap — and while split each window's header is the same bar with the ACTIVE window's header marked; the terminal shows the same expansion as one string |
+| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope; the chrome reads `bg` `fg` `accent` `font` `chrome-font` and the status bar's `sb-bg` `sb-fg` `sb-line` `sb-label` `sb-name` `sb-active` (the seats' own: `sb-context`), the highlight classes `syn-<class>` |
 | `menu` (`{bar:[{title,items:[{id,title,enabled?}\|{sep}]}]}`) | the root | the command / menu contribution: the bar's menus in order, each item a command id + title, `enabled: 0` when its `[when]` fails now; a chrome-rendering client draws it natively, the terminal ignores it |
 
 **Menus and commands are data.** `profiles/default.menu` is the one
@@ -483,6 +487,26 @@ URI scheme / authority addressing of the two-sided file model lands with
 the remote-transport arc. `tests/testidedialog.mad` pins the verb
 headless; `testuihostfake` the seam.
 
+**The prompts as dialogs.** Every prompt the session runs on the terminal's
+bottom line — find, go to line, insert file, theme, tab width, the vi colon
+line, the project window's add — is the SAME row in the window, floated as a
+quick input; the quit question on a dirty buffer (JOE's `(y,n,^C)?`) is a
+confirm dialog. The composer stamps the data ADDITIVELY on the row
+(`compose_overlay_row`: `popup`, `prompt` / `confirm`, `dismiss`), the
+terminal keeps its one-line text, and the core keeps owning the input: a
+key reaches the prompt exactly as before, the page only draws what the core
+holds. A dialog BUTTON (and a press outside the quick input) posts an
+ACTION by name — `pyes`, `pcancel` — and the prompt arms admit it through
+`scope_action_named`: an action event is accepted when the modal scope
+(`@confirm`, `@prompt`) binds that name to some key, so a button reaches
+exactly what a key can and any other command mid-prompt stays what it was
+(inert for a prompt, a cancel for a question). The confirm's buttons are the
+scope's actions with titles (`confirm_choices`: Yes = `pyes`, No =
+`pcancel`), so a profile that respells the keys keeps the dialog honest.
+`tests/testidehints.mad` pins the hints and the action-by-name arms
+headless; `tests/gui/madcide_prompt.mad` the popup, the typing, the
+dismissal and the buttons in the real page.
+
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is
 byte-identical. The grid places SLOTS, one per region a parent's children
@@ -494,7 +518,12 @@ this: with two-plus windows the composer docks EVERY window's status line
 and edit node into `editor`, so the window stack reads as JOE's screen —
 a status line heading each window, the inactive windows at their `rows`
 height, the active one flexing and marked; the status bar slot is empty
-while split, and the single window's status returns to it. `@gui prop value` lines in `profiles/*.theme` feed the
+while split, and the single window's status returns to it. A press picks
+the window: in another window's text it activates that window (its `tag`,
+the window index, names it even when both show the same document) and
+places the caret there; on a window's header (its status line) the page
+posts the window's edit node with NO position and the session activates it,
+caret kept — `tests/gui/madcide_split.mad` drives both in the real page. `@gui prop value` lines in `profiles/*.theme` feed the
 web colours/fonts through the ONE `@scope` rule the key tables use
 (`scope_line_parts`, shared by `parse_keys` and `load_theme`); the
 unscoped JOE-vocabulary lines still feed the terminal — one file, two

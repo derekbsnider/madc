@@ -267,9 +267,11 @@ namespace ui {
     //   {event:"action", action, seq}  a bound key sequence completed
     //       (empty action = unbound miss; seq says which)
     //   {event:"focus"} {event:"resize"}  recompose and re-render
-    //   {event:"pointer", phase, offset, subject}  a pointing-device
+    //   {event:"pointer", phase, offset, subject, tag}  a pointing-device
     //       gesture on an edit node (a web target's hit test): offset is a
-    //       BYTE offset in that node's text, subject the entity it projects
+    //       BYTE offset in that node's text (-1 = a press on the node at no
+    //       text position — its header), subject the entity it projects,
+    //       tag the node's `tag` hint echoed (absent when it carried none)
     // Every object also carries the enum values: event_code
     // (ui::event_kind), key_code on a key event (ui::key), phase_code on a
     // pointer event (ui::pointer_phase) — compare against those.

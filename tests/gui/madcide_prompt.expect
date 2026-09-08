@@ -1,0 +1,9 @@
+PROMPT open
+PROMPT find-open: popups=1 qi-label=Find qi-input="" caret=1 top-third=1 centered=1 in-foot=1 foot-h=0
+PROMPT typed: popups=1 qi-label=Find qi-input="abc" caret=1 top-third=1 centered=1 in-foot=1 foot-h=0
+PROMPT action pcancel
+PROMPT dismissed: popups=0 prompt-off=1
+PROMPT confirm-open: popups=1 question="Lose changes to this file (y,n,^C)?" buttons=Yes:pyes,No:pcancel
+PROMPT action pcancel
+PROMPT answered: popups=0 prompt-off=1 modified=1
+PROMPT closed

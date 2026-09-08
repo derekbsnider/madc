@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### madcide: the status bar looks like chrome (2026-09-08)
+
+- The status bar, the window headers of a split and the message line render
+  in the proportional chrome font on their own surface: the file name leads,
+  labels are small captions, the modified / read-only badges are accent
+  pills, the pending chord a key cap, digits tabular; the ACTIVE window's
+  header carries the accent (the page marks it). Colours ride the `@gui`
+  theme (`sb-bg`, `sb-fg`, `sb-line`, `sb-label`, `sb-name`, `sb-active`,
+  `chrome-font`); the structure (S3's seats) and the terminal are unchanged.
+
+### madcide: a click picks the window (2026-09-08)
+
+- With two-plus windows, a press in another window's text activates it and
+  places the caret there, and a press on a window's header (its status
+  line) activates it with its caret kept — the owner's mouse-click switch
+  beside `^K N` / `^K P`. The ^K O split shows ONE document twice, so the
+  projected subject could not name the window; every window's edit node now
+  carries its window index as a `tag` hint, and the pointer event echoes the
+  hit node's tag as data (`tui_event::tag`, `{event:"pointer", …, tag}`).
+  A header press is a pointer with no text position (`line`/`col` omitted,
+  `offset` -1). `tests/gui/madcide_split.mad` drives both clicks in the
+  real page; `testidehints` pins the tags and the arm headless.
+
+### madcide: the prompts as dialogs in the window (S6, 2026-09-08)
+
+- Every bottom-line prompt (find, go to line, insert file, theme, tab width,
+  the colon line, the project add) floats in the window as a QUICK INPUT —
+  the label over a field showing the text the core holds, a caret, the keys
+  it answers to — and the quit question on a dirty buffer is a CONFIRM
+  dialog with Yes / No buttons. The composer stamps the data additively on
+  the same row the terminal shows (`popup`, `prompt {label, input}`,
+  `confirm {label, choices}`, `dismiss`); the terminal is unchanged. A
+  button, and a press outside the quick input, posts the scope's ACTION by
+  name (`pyes`, `pcancel`) — the menu-bar rule — and the prompt arms admit
+  an action the `@confirm` / `@prompt` scope binds (`scope_action_named`);
+  every other command mid-prompt behaves as before. `web_model` emits the
+  fields; the page renders `.quickinput` / `.confirm`. Pinned by
+  `tests/testidehints.mad`, the web_model unit battery and
+  `tests/gui/madcide_prompt.mad`.
+
 ## [v0.99.0] — 2026-09-08
 
 madcide is a desktop application: the GUI chrome milestone (S0–S5) — a

@@ -103,7 +103,7 @@ prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
-help: pane=help label=Help — pico profile rows=40
+help: pane=help label=Help — pico profile rows=41
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84

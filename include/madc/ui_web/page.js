@@ -57,13 +57,20 @@
   }
 
   // A slot holding more than one edit node is a STACK of windows: the
-  // focused one is marked and each window's header separates it.
+  // focused one is marked, each window's header separates it, and the
+  // header heading the focused window is marked ACTIVE (a header is the
+  // status line the edit node follows — the page's chrome look reads it).
   function markStacks() {
     document.querySelectorAll('.slot').forEach(function (s) {
       var n = 0;
       for (var c = s.firstElementChild; c; c = c.nextElementSibling)
         if (c.classList.contains('edit')) n++;
       s.classList.toggle('stacked', n > 1);
+      for (var h = s.firstElementChild; h; h = h.nextElementSibling) {
+        if (!h.classList.contains('status')) continue;
+        var ed = h.nextElementSibling;
+        h.classList.toggle('active', !!(ed && ed.classList.contains('edit') && ed.classList.contains('focus')));
+      }
     });
   }
 
@@ -141,6 +148,44 @@
     e.className = cls;
     e.textContent = s;
     return e;
+  }
+
+  // ---- the prompts as dialogs (S6) ---------------------------------------
+  // The core's prompt as a QUICK INPUT: the label, the input text the core
+  // holds (every key still travels the one input path — the page draws the
+  // text and a caret after it, it never edits), and the two keys every
+  // prompt answers to. The composer's `popup` hint floats the node.
+  function quickInput(el, p) {
+    el.classList.add('quickinput');
+    el.textContent = '';
+    el.appendChild(span('qi-label', p.label || ''));
+    var box = document.createElement('div');
+    box.className = 'qi-input';
+    box.appendChild(span('qi-text', p.input || ''));
+    box.appendChild(span('caret', ' '));
+    el.appendChild(box);
+    el.appendChild(span('qi-hint', 'Enter \u21B5 confirms \u00B7 Esc cancels'));
+  }
+
+  // A question as a DIALOG: the label and one button per answer; a button
+  // posts the action the composer named for it — what its key does in the
+  // terminal — through the same {kind:'action'} a menu item posts.
+  function confirmBox(el, c) {
+    el.classList.add('confirm');
+    el.textContent = '';
+    el.appendChild(span('cf-question', c.label || ''));
+    var row = document.createElement('div');
+    row.className = 'cf-buttons';
+    var choices = Array.isArray(c.choices) ? c.choices : [];
+    for (var i = 0; i < choices.length; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cf-btn';
+      b.dataset.action = choices[i].action || '';
+      b.textContent = choices[i].label || '';
+      row.appendChild(b);
+    }
+    el.appendChild(row);
   }
 
   // A BYTE column in a row's UTF-8 text -> the index into the page's
@@ -293,6 +338,7 @@
       el.appendChild(span('label', op.label || ''));
       el.appendChild(span('text', op.text || ''));
     } else if (cls === 'status' || cls === 'content' || cls === 'item') {
+      el.classList.remove('quickinput', 'confirm');
       if (cls === 'status' && op.items) {
         // The status bar as chrome (S3): each side is a row of SEGMENTS —
         // the composer's expanded format seats {seat, label, text} — laid
@@ -302,9 +348,16 @@
         el.textContent = '';
         el.appendChild(segments('sb-left', op.items.left));
         el.appendChild(segments('sb-right', op.items.right));
+      } else if (op.prompt) {
+        quickInput(el, op.prompt);
+      } else if (op.confirm) {
+        confirmBox(el, op.confirm);
       } else {
         text(el, op.text);
       }
+      // A popup a press outside dismisses: the composer's action, kept on
+      // the element for the mousedown handler (data, never a key).
+      if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {
@@ -390,7 +443,9 @@
   // The page knows geometry, the engine knows the document: a press, a
   // drag and a release on an edit node are posted as the index of the line
   // element and the UTF-16 column the browser's caret hit test resolved to
-  // (in the TUI vocabulary's spirit — a fact about where, never what to do).
+  // (in the TUI vocabulary's spirit — a fact about where, never what to do);
+  // a press on a window's header posts the window's edit node with NO
+  // position (the engine's offset -1: activate, place nothing).
   // web_model turns them into a byte offset over the rows it emitted for
   // that key and the application places its caret and selection: ONE caret
   // model for mouse and keyboard. Native selection is suppressed — the
@@ -401,6 +456,18 @@
   function editOf(target) {
     for (var el = target; el && el !== root; el = el.parentNode)
       if (el.classList && el.classList.contains('edit')) return el;
+    return null;
+  }
+
+  // A window's HEADER is the status line heading its edit node in a stack
+  // (the composer's tree order: status, then edit): the edit element it
+  // heads, or null when the press was not on a header.
+  function headerOf(target) {
+    for (var el = target; el && el !== root; el = el.parentNode) {
+      if (!el.classList || !el.classList.contains('status')) continue;
+      var next = el.nextElementSibling;
+      return next && next.classList.contains('edit') ? next : null;
+    }
     return null;
   }
 
@@ -456,8 +523,43 @@
     post({ kind: 'pointer', phase: phase, key: ed.dataset.key, line: pos.line, col: pos.col });
   }
 
+  // A dialog button: its action by name, nothing else (no key, no editor
+  // knowledge — the composer named what the answer means).
+  root.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('.cf-btn') : null;
+    if (!b || !b.dataset.action) return;
+    e.preventDefault();
+    post({ kind: 'action', action: b.dataset.action });
+    kb.focus();
+  });
+
+  // A press OUTSIDE a popup that names a dismissal fires that action (the
+  // quick input's cancel) instead of reaching what is underneath.
+  function dismissTarget(target) {
+    var pops = document.querySelectorAll('.node.popup[data-dismiss]');
+    for (var i = 0; i < pops.length; i++)
+      if (!pops[i].contains(target)) return pops[i].dataset.dismiss;
+    return null;
+  }
+
   root.addEventListener('mousedown', function (e) {
     if (e.button !== 0) return;
+    var dismiss = dismissTarget(e.target);
+    if (dismiss) {
+      e.preventDefault();
+      post({ kind: 'action', action: dismiss });
+      kb.focus();
+      return;
+    }
+    // A press on a window's header: the window, at no text position — the
+    // engine activates it and leaves its caret where it was.
+    var hd = headerOf(e.target);
+    if (hd) {
+      e.preventDefault();
+      post({ kind: 'pointer', phase: 'down', key: hd.dataset.key });
+      kb.focus();
+      return;
+    }
     var ed = editOf(e.target);
     if (!ed) return;
     var r = ed.getBoundingClientRect();

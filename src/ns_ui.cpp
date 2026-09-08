@@ -493,14 +493,18 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 //   { event:"wake" }                     background tasks drained
 //   { event:"snapshot", text:"..." }     a page reported its text (the
 //       DOM frontend's test seam)
-//   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E }
+//   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E, tag:T }
 //   Every object also carries event_code (ui::event_kind), a key event
 //   key_code (ui::key), a pointer event phase_code (ui::pointer_phase) —
 //   the enum values script code compares against (<bits/ui_enums>).
 //       a pointing-device gesture on an edit node: N is the BYTE offset
-//       in that node's text the pointer resolved to, E (absent when the
-//       node projects nothing) the entity it projects — its document —
-//       so a multi-window composer knows which window was hit
+//       in that node's text the pointer resolved to (-1 = the press named
+//       no text position: the node itself, a window's header), E (absent
+//       when the node projects nothing) the entity it projects — its
+//       document — and T (absent when the node carried none) the `tag`
+//       hint the composer stamped on it, echoed as data — its own identity
+//       for the node (madcide: the window index, the one answer when two
+//       windows show the same document)
 madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 			   ui_frontend *f)
 {
@@ -568,6 +572,8 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["offset"] = madc::value((int64_t)e.offset);
 	    if ( e.subject != 0 )
 		fields["subject"] = madc::value((int64_t)e.subject);
+	    if ( e.tag >= 0 )
+		fields["tag"] = madc::value((int64_t)e.tag);
 	    break;
 	case madc::hub::tui_event_kind::dialog:
 	    // A native file dialog answered (S4): the request's mode and the

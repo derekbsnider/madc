@@ -56,8 +56,9 @@ class IdeSession
 					// headless harness, embedders)
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
-					// arm: the hit node's subject picks
-					// the window, edit_pointer places
+					// arm: the hit node's window tag
+					// (else its subject) picks the
+					// window, edit_pointer places
 	void compose_ide_tree(var &root, long doc);
 	bool vi_event(long doc, long nav, var &ev, bool &cont);
 					// the vi modes-as-scopes arm:
@@ -239,6 +240,7 @@ const char *modal_default_keys_text()
     return "# baked modal defaults (@scope key action) — profile data\n"
 	   "@prompt enter pcommit\n"
 	   "@prompt esc pcancel\n"
+	   "@prompt ^c pcancel\n"
 	   "@prompt backspace pdelchar\n"
 	   "@confirm y pyes\n"
 	   "@confirm n pcancel\n"
@@ -256,7 +258,11 @@ const char *modal_default_keys_text()
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
-// Key events look up by key name, text events by their single character.
+// Key events look up by key name, text events by their single character,
+// ACTION events by the sequence that completed (`seq`): a chord the global
+// table binds still reaches a modal scope that binds the same spelling —
+// the modal owns its keys while it is up (JOE's ^C aborts every prompt
+// though ^C is `discard` in the JOE profile: "@prompt ^c pcancel" wins).
 // The key matches AS WRITTEN first, then by its lowercase spelling — so
 // a scope whose data is all lowercase stays case-insensitive (the JOE
 // convention, every modal scope), and one spelling both cases is
@@ -265,9 +271,12 @@ const char *modal_default_keys_text()
 // prompt's characters are its input) — the caller picks. False = the
 // scope binds nothing for this event. Sessions that never loaded a
 // profile (the headless harness) lazily seed the baked defaults.
-bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
+// The modal @scope tables — a loaded profile's, else the baked defaults
+// seeded lazily (sessions that never loaded a profile: the headless
+// harness). ONE reader for every consumer (the lookup below, the confirm
+// dialog's choices).
+void modal_keys(var &mk, long w, long es)
 {
-    var mk;
     ui::get(mk, w, es, "modekeys");
     if ( mk.is_null() )
     {
@@ -275,6 +284,12 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	parse_keys(t0, mk, modal_default_keys_text());
 	ui::set(w, es, "modekeys", mk);
     }
+}
+
+bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
+{
+    var mk;
+    modal_keys(mk, w, es);
     var sc = mk[scope];
     if ( sc.is_null() )
 	return false;
@@ -289,6 +304,14 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	    return false;
 	k = t;
     }
+    else if ( kind == ui::event_kind::action )
+    {
+	if ( ev["seq"].is_null() )
+	    return false;		// fired by name (a menu, a button): no keys
+	k = format("{}", ev["seq"]);
+	if ( strlen(k.c_str()) == 0 )
+	    return false;
+    }
     else
 	return false;
     var a = sc[k.c_str()];		// as written (the vi case alphabet)
@@ -301,6 +324,33 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	return false;
     out = a;
     return true;
+}
+
+// The ACTION twin of scoped_action: a client fired one of a scope's
+// actions by NAME — a dialog button, a popup's dismissal (the menu-bar
+// rule: native chrome posts the action id, never a key). Accepted only
+// when the scope binds that name to some key, so a button can reach
+// exactly what a key can; any other action is not the scope's. False =
+// not an action event, or not this scope's.
+bool scope_action_named(var &out, long w, long es, const char *scope,
+			var &ev)
+{
+    var kind = ev["event_code"];
+    if ( !(kind == ui::event_kind::action) )
+	return false;
+    var mk;
+    modal_keys(mk, w, es);
+    var sc = mk[scope];
+    if ( sc.is_null() )
+	return false;
+    var nm = format("{}", ev["action"]);
+    for ( var a : sc )
+	if ( strcmp(a.c_str(), nm.c_str()) == 0 )
+	{
+	    out = nm;
+	    return true;
+	}
+    return false;
 }
 
 // The vi mode setter (defined with the vi machinery below — the loaders
@@ -1115,6 +1165,52 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 // plain row. This builds CONTENT from the editor state only; WHERE the
 // row goes is the screen model's decision (compose_ide_tree appends it
 // last) — a different editor personality places the same row elsewhere.
+// The confirm question's answers as a chrome-drawing client shows them
+// (the dialog's buttons): the @confirm scope's ACTIONS — profile data
+// binds their keys; this table gives each its title and the order a
+// dialog lays them. An action the scope does not bind gets no button, so
+// a profile that respells the question's keys keeps the dialog honest.
+void confirm_choices(var &out, long w, long es)
+{
+    var mk;
+    modal_keys(mk, w, es);
+    var sc = mk["confirm"];
+    var titles = {};
+    titles[] = { "action": "pyes", "label": "Yes" };
+    titles[] = { "action": "pcancel", "label": "No" };
+    var rows = {};
+    for ( var t : titles )
+    {
+	var want = t["action"];
+	bool bound = false;
+	if ( !sc.is_null() )
+	    for ( var a : sc )
+		if ( strcmp(a.c_str(), want.c_str()) == 0 )
+		    bound = true;
+	if ( bound )
+	    rows.push(t);
+    }
+    out = rows;
+}
+
+// A prompt row's hints for a window (S6, the prompts as GUI dialogs):
+// the same row the terminal shows as its bottom line carries, ADDITIVELY,
+// the quick-input data a chrome-drawing client renders as a floating
+// popup — `popup` (the overlay), `prompt` {label, input} (the core owns
+// the input text: keys reach it exactly as in the terminal, the client
+// only draws it — Neovim's ext_cmdline shape), `dismiss` (the action a
+// click outside the popup fires: the scope's cancel). The terminal reads
+// none of it (its "unknown hints are ignored" rule).
+void prompt_hints(var &st, var &label, var &input, bool dismiss)
+{
+    var qi = { "label": label, "input": input };
+    var h = { "popup": 1 };
+    if ( dismiss )
+	h["dismiss"] = "pcancel";
+    h["prompt"] = qi;
+    st["hints"] = h;
+}
+
 bool compose_overlay_row(var &row, long w, long es)
 {
     var st = { "role": "content" };
@@ -1127,12 +1223,23 @@ bool compose_overlay_row(var &row, long w, long es)
 	if ( pm == "confirm" )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
+	    // The question as a DIALOG in a window: the label and its
+	    // answers as buttons — each fires the scope's action by name
+	    // (scope_action_named), what its key does in the terminal.
+	    var ch;
+	    confirm_choices(ch, w, es);
+	    var cf = { "label": pr };
+	    cf["choices"] = ch;
+	    var h = { "popup": 1 };
+	    h["confirm"] = cf;
+	    st["hints"] = h;
 	    row = st;
 	    return true;
 	}
 	var pi;
 	ui::get(pi, w, es, "pinput");
 	st["content"] = format("{} (^C aborts): {}", pr, pi);
+	prompt_hints(st, pr, pi, true);
 	row = st;
 	return true;
     }
@@ -1141,6 +1248,8 @@ bool compose_overlay_row(var &row, long w, long es)
 	var sch;
 	ui::get(sch, w, es, "search");
 	st["content"] = format("Find (^C aborts): {}", sch);
+	var fl = "Find";
+	prompt_hints(st, fl, sch, false);	// its cancel is the search's own
 	row = st;
 	return true;
     }
@@ -1366,7 +1475,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
 // Every event while the prompt is up. The keys are @prompt/@confirm
 // profile data (the baked defaults: enter pcommit / esc pcancel /
 // backspace pdelchar; y pyes / n pcancel / esc pcancel) — this arm
-// dispatches the looked-up NAMES, never the keys themselves.
+// dispatches the looked-up NAMES, never the keys themselves. A window's
+// dialog reaches the same names as ACTION events (a confirm button, the
+// quick input's click-outside dismissal): scope_action_named admits an
+// action the scope binds; every other action stays what it was here —
+// a confirm cancels on it, a prompt ignores it.
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
@@ -1380,7 +1493,8 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	// (discard in the JOE profile), so any action cancels too.
 	// Unbound keys leave the question standing.
 	var a;
-	if ( scoped_action(a, w, es, "confirm", ev) )
+	if ( scoped_action(a, w, es, "confirm", ev)
+	  || scope_action_named(a, w, es, "confirm", ev) )
 	{
 	    if ( a == "pyes" )
 	    {
@@ -1419,10 +1533,19 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	    return finish_prompt(w, es, doc, caret);
 	return true;
     }
-    if ( kind != ui::event_kind::key )
-	return true;
     var a;
-    if ( !scoped_action(a, w, es, "prompt", ev) )
+    if ( kind == ui::event_kind::action )
+    {
+	// By name (a dialog's button, a dismissal) or by the sequence that
+	// completed (^C, bound globally, is the prompt's cancel by data);
+	// any other command mid-prompt is inert.
+	if ( !scope_action_named(a, w, es, "prompt", ev)
+	  && !scoped_action(a, w, es, "prompt", ev) )
+	    return true;
+    }
+    else if ( kind != ui::event_kind::key )
+	return true;
+    else if ( !scoped_action(a, w, es, "prompt", ev) )
 	return true;			// unbound keys are inert
     if ( a == "pcommit" )
 	return finish_prompt(w, es, doc, caret);	// false = a :q quit
@@ -3629,27 +3752,38 @@ void toggle_pane(long w, long es, const char *name)
 	ui::set(w, es, "pane", name);
 }
 
-// The pointer arm (IDE-9e aware): the event names the document the hit
-// edit node projects (its subject). With two-plus windows a press in
-// another window activates it first — the first window showing that
-// buffer, in tree order (a split of ONE buffer shows it twice; a press
-// in its twin places the caret in the active one, same document). Then
-// the SHARED edit_pointer places the caret and, off a stored document,
-// the selection — a displayed view keeps the gesture to the caret, as
-// its mark/bend actions refuse.
+// The pointer arm (IDE-9e aware): a press picks the WINDOW first. The
+// event echoes the hit edit node's `tag` — the window index the composer
+// stamped on every window's edit node while split — the one answer when
+// two windows show the same buffer (the ^K O default duplicates the
+// active window); a client that carries no tag (a terminal's mouse
+// reporting later) is read by the projected subject: the first window
+// showing that document, in tree order. A press in another window
+// activates it (the owner's mouse-click switch); a press on a window's
+// HEADER arrives with no text position (offset -1) and activates only,
+// the window's own caret kept. Then the SHARED edit_pointer places the
+// caret and, off a stored document, the selection — a displayed view keeps
+// the gesture to the caret, as its mark/bend actions refuse.
 void IdeSession::pointer_event(long doc, long nav, var &ev)
 {
-    long subj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
-    long ad = doc;
-    if ( subj != 0 && subj != nav )
+    long idx = -1;
+    long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
+    if ( tag >= 0 && tag < window_count(w, es) )
+	idx = tag;
+    else
     {
-	long idx = window_showing(w, es, subj);
-	if ( idx >= 0 && idx != es_int(w, es, "winat", 0) )
-	{
-	    window_activate(w, es, doc, idx);
-	    ad = active_doc(w, es, doc);
-	}
+	long subj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
+	if ( subj != 0 && subj != nav )
+	    idx = window_showing(w, es, subj);
     }
+    long ad = doc;
+    if ( idx >= 0 && idx != es_int(w, es, "winat", 0) )
+    {
+	window_activate(w, es, doc, idx);
+	ad = active_doc(w, es, doc);
+    }
+    if ( ev["offset"].as_integer() < 0 )
+	return;			// the header: the window, no position
     long target = nav_doc(w, es, ad);
     edit_pointer(w, es, target, ev, target == ad);
 }
@@ -4206,8 +4340,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	long i = 0;
 	for ( var wr : ws )
 	{
+	    // Every window's edit node carries its WINDOW INDEX as the
+	    // node's `tag` — echoed on the pointer events the node yields, so
+	    // a press picks the window even when two windows show the same
+	    // document (the ^K O default), where the projected subject
+	    // cannot tell them apart.
 	    if ( i == at )
 	    {
+		var ah = ed["hints"];
+		ah["tag"] = i;
+		ed["hints"] = ah;
 		kids.push(status);
 		kids.push(ed);
 	    }
@@ -4229,7 +4371,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		ui::text(wt, w, wdoc);
 		wed["content"] = wt;
 		wed["subject"] = wdoc;
-		var wh = { "caret": wcaret, "region": "editor" };
+		var wh = { "caret": wcaret, "region": "editor", "tag": i };
 		long wrows = base + wr["grow"].as_integer();
 		if ( wrows < window_min_rows() )
 		    wrows = window_min_rows();

@@ -748,6 +748,85 @@ static uinode menu_tree(world &w, const char *file_title, bool with_menu = true)
     return root;
 }
 
+// The prompts as dialogs (S6, madcide GUI): a content row whose hints carry
+// popup + prompt {label, input} (+ dismiss) is the core's prompt as a quick
+// input; popup + confirm {label, choices:[{label, action}]} is a question
+// with its buttons. web_model emits them as additive op fields beside the
+// terminal's `text`; a row without them carries none.
+TEST_CASE("compose — a content row's prompt / confirm hints become quick-input data; dismiss rides the popup")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    uinode prow(r.content);
+    prow.content = madc::value(std::string("Find (^C aborts): ab"));	// the TUI line
+    std::map<std::string, madc::value> qi;
+    qi["label"] = madc::value(std::string("Find"));
+    qi["input"] = madc::value(std::string("ab"));
+    std::map<std::string, madc::value> ph;
+    ph["popup"] = madc::value((int64_t)1);
+    ph["dismiss"] = madc::value(std::string("pcancel"));
+    ph["prompt"] = madc::value::make_object(qi);
+    prow.hints = madc::value::make_object(ph);
+    root.add(prow);					// 0.0
+    uinode crow(r.content);
+    crow.content = madc::value(std::string("Lose changes (y,n,^C)?"));
+    std::map<std::string, madc::value> yes, no, bad;
+    yes["label"] = madc::value(std::string("Yes"));
+    yes["action"] = madc::value(std::string("pyes"));
+    no["label"] = madc::value(std::string("No"));
+    no["action"] = madc::value(std::string("pcancel"));
+    bad["label"] = madc::value(std::string("Nothing"));	// no action: skipped
+    std::vector<madc::value> choices;
+    choices.push_back(madc::value::make_object(yes));
+    choices.push_back(madc::value::make_object(no));
+    choices.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> cf;
+    cf["label"] = madc::value(std::string("Lose changes (y,n,^C)?"));
+    cf["choices"] = madc::value::make_array(choices);
+    std::map<std::string, madc::value> ch;
+    ch["popup"] = madc::value((int64_t)1);
+    ch["confirm"] = madc::value::make_object(cf);
+    crow.hints = madc::value::make_object(ch);
+    root.add(crow);					// 0.1
+    uinode plain(r.content);
+    plain.content = madc::value(std::string("2 windows."));
+    root.add(plain);					// 0.2
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+    const nlohmann::json *pr = node_by_key(ops, "0.0");
+    REQUIRE(pr);
+    CHECK((*pr)["class"] == "content");
+    CHECK((*pr)["text"] == "Find (^C aborts): ab");	// the terminal's form rides along
+    CHECK((*pr)["popup"] == true);
+    CHECK((*pr)["dismiss"] == "pcancel");
+    REQUIRE((*pr).contains("prompt"));
+    CHECK((*pr)["prompt"]["label"] == "Find");
+    CHECK((*pr)["prompt"]["input"] == "ab");
+    CHECK((*pr).find("confirm") == (*pr).end());
+    const nlohmann::json *cr = node_by_key(ops, "0.1");
+    REQUIRE(cr);
+    CHECK((*cr)["popup"] == true);
+    CHECK((*cr).find("dismiss") == (*cr).end());	// a question is not dismissed by a stray press
+    REQUIRE((*cr).contains("confirm"));
+    CHECK((*cr)["confirm"]["label"] == "Lose changes (y,n,^C)?");
+    REQUIRE((*cr)["confirm"]["choices"].size() == 2);	// the action-less row dropped
+    CHECK((*cr)["confirm"]["choices"][0]["label"] == "Yes");
+    CHECK((*cr)["confirm"]["choices"][0]["action"] == "pyes");
+    CHECK((*cr)["confirm"]["choices"][1]["action"] == "pcancel");
+    CHECK((*cr).find("prompt") == (*cr).end());
+    // A plain row (the message line) carries none of it (negative control).
+    const nlohmann::json *pl = node_by_key(ops, "0.2");
+    REQUIRE(pl);
+    CHECK((*pl)["text"] == "2 windows.");
+    CHECK((*pl).find("prompt") == (*pl).end());
+    CHECK((*pl).find("confirm") == (*pl).end());
+    CHECK((*pl).find("dismiss") == (*pl).end());
+    CHECK((*pl).find("popup") == (*pl).end());
+}
+
 TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
 {
     world w;
@@ -865,4 +944,35 @@ TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the 
     ev = m3.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":0,\"col\":0}");
     REQUIRE(ev.size() == 1u);
     CHECK(m3.focus_slot() == 0u);
+
+    // The node's `tag` hint (a composer's own identity — madcide's window
+    // index) is echoed on the event as data; a node without one echoes -1.
+    // A press with NO position (line and col both absent — a window's
+    // header) yields offset -1 and still focuses the node; one coordinate
+    // without the other is malformed.
+    CHECK(ev[0].tag == -1);
+    web_model m4;
+    uinode troot(r.group);
+    uinode tedit(r.edit);
+    tedit.content = madc::value(std::string("ab\ncd"));
+    tedit.subject = 7;
+    std::map<std::string, madc::value> th;
+    th["tag"] = madc::value((int64_t)1);
+    tedit.hints = madc::value::make_object(th);
+    troot.add(option(w, "Save", "w"));		// 0.0: a focusable-free item
+    troot.add(tedit);				// 0.1
+    m4.compose(r, troot);
+    ev = m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].tag == 1);
+    CHECK(ev[0].subject == 7u);
+    CHECK(ev[0].offset == 4);
+    ev = m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].offset == -1);
+    CHECK(ev[0].tag == 1);
+    CHECK(ev[0].subject == 7u);
+    CHECK(m4.focus_slot() == 0u);
+    CHECK(m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"col\":0}").empty());
 }

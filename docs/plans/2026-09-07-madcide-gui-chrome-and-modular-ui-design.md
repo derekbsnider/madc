@@ -15,9 +15,25 @@ dialogs (a core→client request/response verb; `GtkFileDialog`; the terminal
 keeps its prompts). Win32 / Cocoa native menu + dialogs, the DOM command
 palette, pane drag / persisted layout and the remote transport / multi-user
 arc are the follow-ups. Decision 5 (attach handshake + intersection
-capabilities) is adopted as principle; nothing built here violates it. The
-text below is the design as proposed (2026-09-07), kept for its reasoning
-and citations.
+capabilities) is adopted as principle; nothing built here violates it.
+
+**S6 — the owner's post-release round (2026-09-08,
+`feature/madcide-gui-prompts-claude`):** the prompts as dialogs (every
+bottom-line prompt floats as a QUICK INPUT whose text the core owns —
+Neovim's `ext_cmdline` shape, Decision 1's in-webview DOM; the quit
+question as a CONFIRM dialog whose buttons post the `@confirm` scope's
+actions by name, the menu-bar rule); a click picks the window (every
+window's edit node carries its window index as a `tag` the pointer event
+echoes — the one answer when the `^K O` split shows one document twice; a
+press on a window's header is a positionless pointer that activates only);
+the status bar's chrome LOOK (the proportional chrome font on its own
+surface, the name leading, caption labels, accent pills, a key cap, the
+active window's header marked); and the `(^C aborts)` fix found on the way
+(a modal scope consults an action event's sequence; `@prompt ^c pcancel` is
+baked data). The terminal is byte-identical throughout.
+
+The text below is the design as proposed (2026-09-07), kept for its
+reasoning and citations.
 
 ## The problem
 

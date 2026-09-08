@@ -25,6 +25,15 @@
 //    "tabwidth":8,"focus":true}
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
 //    "opts":["Save","Quit"],"sel":1,"list":false,"focus":true}
+//   {"op":"node","key":"0.5","parent":"0","class":"content","popup":true,
+//    "dismiss":"pcancel","prompt":{"label":"Find","input":"ab"}}
+//                                                          a quick input (S6):
+//                                                          the core's prompt
+//                                                          as a popup; or
+//    "confirm":{"label":"...?","choices":[{"label":"Yes","action":"pyes"},..]}
+//                                                          a question with its
+//                                                          buttons, each
+//                                                          posting its action
 //   {"op":"end"}                                           prune unvisited keys
 // Keys are node PATHS in the composed tree (child indices joined by '.',
 // the root is "0"), so the applier reconciles by key: an unchanged key
@@ -71,6 +80,11 @@
 //                                          event asks the application to
 //                                          recompose — the next compose
 //                                          paints every edit node in full
+//   {"kind":"action","action":"pyes"}     a native control fired a command
+//                                          by id: a menu item (S2), a dialog
+//                                          button or a popup's dismissal
+//                                          (S6) — the SAME action event a
+//                                          bound chord produces
 //   {"kind":"pointer","phase":"down"|"drag"|"up",
 //    "key":"0.3","line":12,"col":7}        a pointing-device gesture on the
 //                                          edit node `key`: the index of the
@@ -91,7 +105,14 @@
 //                                          (where the pointer is), the
 //                                          engine owns the document (what
 //                                          offset that is): no caret or
-//                                          selection logic lives in the page
+//                                          selection logic lives in the page.
+//                                          The node's `tag` hint rides the
+//                                          event as data (a composer's own
+//                                          identity for the node — madcide's
+//                                          window index); line and col may
+//                                          BOTH be omitted: a press on the
+//                                          node at no text position (its
+//                                          header) — offset -1
 // apply_input() turns each into zero or more tui_event objects; a malformed
 // or unknown object yields none and never throws.
 //
@@ -211,7 +232,9 @@ class web_model
 	std::vector<edit_row> rows;
 	size_t slot;
 	entity_id subject;
-	edit_basis() : slot(0), subject(0) {}
+	long tag;		// the node's `tag` hint (-1 = none): echoed on
+				// its pointer events as data
+	edit_basis() : slot(0), subject(0), tag(-1) {}
     };
     std::map<std::string, edit_basis> _basis;
     // The native menu the host draws (S2): the root's `menu` hint resolved
@@ -465,6 +488,12 @@ class web_model
 		op["region"] = region;
 	    if ( hint_of(n.hints, "popup", 0) )
 		op["popup"] = true;
+	    // `dismiss` (S6): the action a press OUTSIDE a popup fires —
+	    // the composer's word (a prompt's cancel); the page posts it as
+	    // the same {"kind":"action"} a menu item posts. Data, never a key.
+	    const std::string dismiss = hint_str(n.hints, "dismiss");
+	    if ( !dismiss.empty() )
+		op["dismiss"] = dismiss;
 	    if ( hint_of(n.hints, "tabs", 0) )
 		op["tabs"] = true;
 	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
@@ -499,6 +528,53 @@ class web_model
 	       || n.role == r.item )
 	{
 	    op["text"] = node_text(n);
+	    // The prompts as quick-input DATA (S6, madcide GUI): a content
+	    // row whose hints carry `prompt` {label, input} is the core's
+	    // prompt — the page draws a floating quick input showing the
+	    // label and the input text the CORE owns (keys keep reaching
+	    // it through the one input path; the page never edits it);
+	    // `confirm` {label, choices:[{label, action}]} is a question —
+	    // the page draws its buttons, each posting its action by name.
+	    // The `text` stays beside them (the terminal's one-line form).
+	    if ( n.role == r.content && n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator pi = ho.find("prompt");
+		if ( pi != ho.end() && pi->second.is_object() )
+		{
+		    nlohmann::json pr = nlohmann::json::object();
+		    pr["label"] = hint_str(pi->second, "label");
+		    pr["input"] = hint_str(pi->second, "input");
+		    op["prompt"] = pr;
+		}
+		std::map<std::string, madc::value>::const_iterator ci = ho.find("confirm");
+		if ( ci != ho.end() && ci->second.is_object() )
+		{
+		    nlohmann::json cf = nlohmann::json::object();
+		    cf["label"] = hint_str(ci->second, "label");
+		    nlohmann::json choices = nlohmann::json::array();
+		    const std::map<std::string, madc::value> &co = ci->second.as_object();
+		    std::map<std::string, madc::value>::const_iterator li = co.find("choices");
+		    if ( li != co.end() && li->second.is_array() )
+		    {
+			const std::vector<madc::value> &rows = li->second.as_array();
+			for ( size_t k = 0; k < rows.size(); ++k )
+			{
+			    if ( !rows[k].is_object() )
+				continue;
+			    const std::string action = hint_str(rows[k], "action");
+			    if ( action.empty() )
+				continue;
+			    nlohmann::json ch = nlohmann::json::object();
+			    ch["label"] = hint_str(rows[k], "label");
+			    ch["action"] = action;
+			    choices.push_back(ch);
+			}
+		    }
+		    cf["choices"] = choices;
+		    op["confirm"] = cf;
+		}
+	    }
 	    // The status bar as items (slice 3 Task 5; S3 as chrome): a status
 	    // node whose hints carry {items:{left,right}} — each side an
 	    // array of SEGMENTS {seat, label, text} (the composer's expanded
@@ -605,6 +681,7 @@ class web_model
 	    edit_basis &basis = _basis[key];
 	    basis.slot = slot;
 	    basis.subject = n.subject;
+	    basis.tag = hint_of(n.hints, "tag", -1);
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -757,19 +834,27 @@ public:
 	    pointer_phase phase;
 	    if ( pi == j.end() || !pi->is_string()
 	      || !pointer_phase_from_name(pi->get<std::string>(), phase)
-	      || ni == j.end() || !ni->is_string()
-	      || li == j.end() || !li->is_number_integer()
-	      || ci == j.end() || !ci->is_number_integer() )
+	      || ni == j.end() || !ni->is_string() )
+		return none;
+	    // The position is OPTIONAL as a pair: both present = a press at
+	    // a text position; both absent = a press on the node itself with
+	    // no position (a window's header — the application activates the
+	    // window and leaves its caret alone), reported as offset -1; one
+	    // without the other is malformed.
+	    const bool positioned = li != j.end() || ci != j.end();
+	    if ( positioned
+	      && (li == j.end() || !li->is_number_integer()
+		  || ci == j.end() || !ci->is_number_integer()) )
 		return none;
 	    std::map<std::string, edit_basis>::const_iterator bi =
 		_basis.find(ni->get<std::string>());
 	    if ( bi == _basis.end() )
 		return none;
 	    const std::vector<edit_row> &rows = bi->second.rows;
-	    long line = li->get<long>();
-	    long col = ci->get<long>();
-	    long offset = 0;
-	    if ( !rows.empty() )
+	    long line = positioned ? li->get<long>() : 0;
+	    long col = positioned ? ci->get<long>() : 0;
+	    long offset = positioned ? 0 : -1;
+	    if ( positioned && !rows.empty() )
 	    {
 		if ( line < 0 )
 		{
@@ -790,6 +875,7 @@ public:
 	    e.phase = phase;
 	    e.offset = offset;
 	    e.subject = bi->second.subject;
+	    e.tag = bi->second.tag;
 	    none.push_back(e);
 	    return none;
 	}
