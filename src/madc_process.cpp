@@ -1281,7 +1281,9 @@ public:
 		ProcessOptions options;
 		options.args.assign(words.begin() + 1, words.end());
 		options.inherit_stderr = true;
-		options.pty = pty_;
+#ifndef _WIN32
+		options.pty = pty_;	// Windows: pipes (ConPTY is the named residue)
+#endif
 		std::unique_ptr<Process> process(
 			new Process(DataSource("exec://" + words[0]), options));
 		if ( !process->start(err) )

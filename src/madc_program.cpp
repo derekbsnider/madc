@@ -4973,8 +4973,8 @@ public:
 	}
 	ProcessOptions options;
 	options.inherit_stderr = true;
-	options.pty = pty;
 #ifdef _WIN32
+	(void)pty;		// pipes: ConPTY is the named residue (the owner refuses pty here)
 	std::string snapshot_path;
 	int tfd = madc::detail::make_temp_file("madc_run", snapshot_path);
 	if ( tfd < 0 )
@@ -4997,6 +4997,7 @@ public:
 	std::unique_ptr<Process> process(
 	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
 #else
+	options.pty = pty;
 	::Program *child = st->child;
 	const std::string name = st->display_name;
 	options.child_body = [child, name]() -> int {
@@ -5048,13 +5049,14 @@ public:
 	}
 	ProcessOptions options;
 	options.inherit_stderr = true;
-	options.pty = pty;
 #ifdef _WIN32
+	(void)pty;		// pipes: ConPTY is the named residue (the owner refuses pty here)
 	options.args.push_back("--project");
 	options.args.push_back(manifest_path);
 	std::unique_ptr<Process> process(
 	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
 #else
+	options.pty = pty;
 	MadcEngine *engine = policy.engine;
 	const bool forest_bind = policy.forest_bind;
 	const std::string forest_bind_path = policy.forest_bind_path;
