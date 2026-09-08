@@ -422,6 +422,21 @@ until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
 render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
 `--gui` loop is a manual gate.
 
+**Remote X displays.** GTK4 paints the window through its GL renderer,
+which on a software GL (any X server without a GPU) presents frames over
+MIT-SHM. An X connection over TCP has no shared memory — `DISPLAY` names
+a host, as a Docker container talking to a Windows or remote X server does
+— and there the GL path paints a BLACK window, or never paints the region a
+window grow exposes (measured 2026-09-08 against `Xvfb -listen tcp`). The
+web target therefore defaults `GSK_RENDERER=cairo` (GTK's XPutImage
+renderer) when `DISPLAY` names a host and no renderer was chosen; a local
+display keeps GTK's default. Set `GSK_RENDERER` yourself to override. The
+software-GL flags (`LIBGL_ALWAYS_SOFTWARE=1`,
+`WEBKIT_DISABLE_COMPOSITING_MODE=1`) do not cure the black window on their
+own. A relative `LD_LIBRARY_PATH` (e.g. `lib`) breaks WebKit's sandboxed
+web-process launch (`bwrap: execvp … WebKitWebProcess: No such file`, exit
+133) — use an absolute path or none (the module map finds `lib/` itself).
+
 ## Thread contract
 
 Per `.claude/rules/thread-safety.md`: a session and every world

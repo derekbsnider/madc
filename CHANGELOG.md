@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Web target: a remote X display paints — GTK's cairo renderer by default there (2026-09-08)
+
+- **S0 (window resize leaves the exposed region black) reproduced and traced
+  from the container.** A screenshot harness (Xvfb + `xdotool windowsize` +
+  `xwd`, a band classifier over the root dump) showed: over the unix socket
+  the grown band paints, with and without the owner's software-GL flags; over
+  a TCP X connection (the owner's shape — Docker to a Windows X server, so no
+  MIT-SHM) the WHOLE window is black while the page reports the grown
+  geometry, with Mesa logging "Failed to attach to x11 shm"; `GSK_RENDERER=
+  cairo` (or `GDK_DEBUG=gl-disable`) paints everything, grown band included;
+  the software-GL flags and `WEBKIT_DISABLE_DMABUF_RENDERER` do not help. The
+  failing layer is GTK4's GL renderer presenting frames over SHM, not WebKit
+  or the page.
+- The web target fragment now defaults `GSK_RENDERER=cairo` before GTK
+  initializes when `DISPLAY` names a host and no renderer was chosen; local
+  displays keep GTK's default; an explicit `GSK_RENDERER` always wins.
+  Documented in the ns-ui workbench section, with the trap found on the way: a
+  RELATIVE `LD_LIBRARY_PATH=lib` breaks WebKit's sandboxed web-process launch
+  (exit 133) — absolute or none. `x11-apps` and `xdotool` join the container
+  provisioning so a probe can screenshot and resize windows headlessly.
+
 ### Web editor: the mouse places the caret and selects (2026-09-07)
 
 - **A click places the caret; a drag selects.** Until now the web editor's

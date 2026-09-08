@@ -103,7 +103,10 @@ PKGS_winlane="g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64 wine64 libz-m
 PKGS_oracle="php-cli"
 # Platform webview spike / GUI lane: GTK4 WebKit development headers and a
 # headless X server. xauth is required by xvfb-run, including minimal installs.
-PKGS_webview="libwebkitgtk-6.0-dev xvfb xauth"
+# x11-apps (xwd) and xdotool let a probe screenshot the Xvfb display and grow
+# a window from outside — the only way to SEE a WebKit paint defect (the S0
+# resize-fill investigation) without a real display.
+PKGS_webview="libwebkitgtk-6.0-dev xvfb xauth x11-apps xdotool"
 
 ALL="$PKGS_base $PKGS_llvm18 $PKGS_codec $PKGS_storage $PKGS_cross $PKGS_package $PKGS_winlane $PKGS_oracle $PKGS_webview"
 

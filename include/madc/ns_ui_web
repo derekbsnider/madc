@@ -36,6 +36,33 @@ namespace ui_web {
 	    webview_terminate(h->view);	// run() returns; the engine drains the events
     }
 
+    // GTK4 draws the window through its GL renderer, and a software GL
+    // (Mesa llvmpipe — every X server without a GPU: Xvfb, VcXsrv, a
+    // Docker-to-desktop forward) presents its frames over MIT-SHM. An X
+    // connection over TCP has no shared memory — DISPLAY names a host, as
+    // Docker → a Windows X server does — and there the GL path fails to
+    // attach its images and the window stays BLACK: entirely (measured
+    // 2026-09-08 against Xvfb -listen tcp: "MESA: error: Failed to attach
+    // to x11 shm", not one painted pixel) or from the first window grow on
+    // (the owner's VcXsrv: the exposed region never paints — S0, KG
+    // web_window_resize_fill). GTK's cairo renderer draws through plain
+    // XPutImage and is correct over any connection, so it is the DEFAULT
+    // for a remote display — chosen before GTK initializes (inside
+    // webview_create) and only when the user has not named a renderer. A
+    // local display (":0", "unix:0", Wayland) keeps GTK's own default.
+    // Runs once, on the opening thread, before any GTK thread exists.
+    void renderer_default_for_display()
+    {
+	const char *disp = getenv("DISPLAY");
+	if ( !disp || disp[0] == 0 || disp[0] == ':' )
+	    return;
+	if ( strncmp(disp, "unix:", 5) == 0 )
+	    return;
+	if ( getenv("GSK_RENDERER") )
+	    return;
+	setenv("GSK_RENDERER", "cairo", 1);
+    }
+
     void *open(const char *title, const char *page, void *ctx)
     {
 	// The module row is LAZY: this fragment compiles and runs on a system
@@ -49,6 +76,7 @@ namespace ui_web {
 	host *h = (host *)malloc(sizeof(host));
 	if ( !h )
 	    return 0;
+	renderer_default_for_display();
 	h->view = webview_create(0, 0);
 	if ( !h->view )
 	{
