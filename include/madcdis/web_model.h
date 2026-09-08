@@ -131,6 +131,7 @@
 #include "madcdis/ui_events.h"
 #include "madcdis/ui_focus.h"
 #include "madcdis/ui_input.h"
+#include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
 #include "madcdis/uinode.h"
 
 namespace madc {
@@ -206,15 +207,15 @@ class web_model
     std::string _snapshot;		// last snapshot text (test seam)
 
     // One line of an edit node's line-DOM as the model last emitted it:
-    // the text and its clipped spans [start-in-line, len, class]. The
+    // the text and its clipped spans [start-in-line, len, classes]. The
     // per-key vector of these is the diff basis (see the header).
     struct span_ref
     {
 	long a, len;
-	std::string cls;
+	std::string css;	// the span's style as the page's classes
 	bool operator==(const span_ref &o) const
 	{
-	    return a == o.a && len == o.len && cls == o.cls;
+	    return a == o.a && len == o.len && css == o.css;
 	}
     };
     struct edit_row
@@ -253,22 +254,51 @@ class web_model
     static const long default_tab_stop = 8;
 
     // One highlight-span row of an edit node's hints["spans"], validated
-    // as the grid model validates it (byte range non-empty, a class name).
-    // The web reads the SEMANTIC class `cls` (the portable fact the span
-    // carries) and renders it as the CSS class `c-<cls>` — its own styling
-    // vocabulary (page.css / the @gui theme). The sibling `c` field is the
-    // TUI's JOE style spec, which the web ignores; a row with only `c`
-    // (a TUI-only styling) carries no `cls` and is skipped here.
-    struct doc_span { long start, end; std::string cls; };
+    // exactly as the grid model validates it: a non-empty byte range and a
+    // style SPEC `c` in JOE's vocabulary (the theme's `keyword bold`,
+    // `string cyan`) that the ONE spec parser accepts — a malformed row is
+    // skipped whole, as there. The web renders the SAME style the terminal
+    // paints, as the page's classes (style_classes below); it has no
+    // vocabulary of its own, so a class the theme leaves unstyled is plain
+    // in the window as it is in the terminal (the colour-unification slice,
+    // 2026-09-08 — before it the web styled the span's semantic class from
+    // a private palette, and the GUI never showed the loaded scheme).
+    struct doc_span { long start, end; std::string css; };
     static bool span_before(const doc_span &a, const doc_span &b)
     {
 	return a.start < b.start;
     }
 
+    // The style as the page's classes — the DOM renderer's LAST step from
+    // the shared style, as style -> SGR is the VT100 target's: one class per
+    // attribute bit (`st-bold` `st-dim` `st-italic` `st-underline` `st-blink`
+    // `st-inverse`), `fg-<colour>` / `bg-<colour>` for the 8 colour names
+    // (ui_style_colour_name, the parser's own table). Bold-as-bright is the
+    // page's rule (page.css: `.st-bold.fg-cyan` reads the bright entry of
+    // the palette), as it is the terminal's. Empty for the normal style.
+    static std::string style_classes(const ui_style &st)
+    {
+	std::string css;
+	if ( st.flags & ui_style::BOLD )	css += "st-bold ";
+	if ( st.flags & ui_style::DIM )		css += "st-dim ";
+	if ( st.flags & ui_style::ITALIC )	css += "st-italic ";
+	if ( st.flags & ui_style::UNDERLINE )	css += "st-underline ";
+	if ( st.flags & ui_style::BLINK )	css += "st-blink ";
+	if ( st.flags & ui_style::INVERSE )	css += "st-inverse ";
+	if ( st.fg )
+	    css += std::string("fg-") + ui_style_colour_name(st.fg) + " ";
+	if ( st.bg )
+	    css += std::string("bg-") + ui_style_colour_name(st.bg) + " ";
+	if ( !css.empty() )
+	    css.erase(css.size() - 1);
+	return css;
+    }
+
     // Rows come out sorted by start (stable: rows with one start keep
     // their order) — the sweep in edit_lines relies on it. The composers
     // already hand them over in source order, so the sort is a contract,
-    // not a cost.
+    // not a cost. A row whose style is `normal` paints nothing and is
+    // dropped here (the grid paints a no-op; the DOM would gain a span).
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -285,19 +315,21 @@ class web_model
 	    ds.start = hint_of(row, "s", -1);
 	    ds.end = hint_of(row, "e", -1);
 	    const std::map<std::string, madc::value> &ro = row.as_object();
-	    std::map<std::string, madc::value>::const_iterator ci = ro.find("cls");
+	    std::map<std::string, madc::value>::const_iterator ci = ro.find("c");
+	    ui_style st;
 	    if ( ds.start < 0 || ds.end <= ds.start
 	      || ci == ro.end() || !ci->second.is_string()
-	      || ci->second.as_string().empty() )
+	      || !ui_style_of(ci->second.as_string(), st)
+	      || st.is_normal() )
 		continue;
-	    ds.cls = ci->second.as_string();
+	    ds.css = style_classes(st);
 	    out.push_back(ds);
 	}
 	std::stable_sort(out.begin(), out.end(), span_before);
     }
 
     // The edit node's text as the line-DOM: one row per line, each with
-    // the spans that overlap it ([start-in-line, len, class]). ONE sweep
+    // the spans that overlap it ([start-in-line, len, classes]). ONE sweep
     // over start-sorted spans: a cursor admits a span into the ACTIVE set
     // on the line that holds its start, and the set drops it after the
     // line that holds its end — O(lines + spans + spans that cross a line
@@ -335,7 +367,7 @@ class web_model
 		    span_ref sr;
 		    sr.a = (long)(a - ls);
 		    sr.len = (long)(b - a);
-		    sr.cls = sp.cls;
+		    sr.css = sp.css;
 		    row.s.push_back(sr);
 		}
 		// A span reaching past this line's newline has more to
@@ -362,7 +394,7 @@ class web_model
 	    nlohmann::json s = nlohmann::json::array();
 	    for ( size_t k = 0; k < rows[i].s.size(); ++k )
 		s.push_back(nlohmann::json::array(
-		    { rows[i].s[k].a, rows[i].s[k].len, rows[i].s[k].cls }));
+		    { rows[i].s[k].a, rows[i].s[k].len, rows[i].s[k].css }));
 	    row["s"] = s;
 	    out.push_back(row);
 	}
@@ -657,7 +689,7 @@ class web_model
 	{
 	    // The editable region: the SAME hints the grid model reads
 	    // (caret / sel_start / sel_end byte offsets, tabwidth, rows,
-	    // focus, spans rows {s, e, cls}) — rendered as the line-DOM.
+	    // focus, spans rows {s, e, c}) — rendered as the line-DOM.
 	    size_t slot = _focus.count();
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);

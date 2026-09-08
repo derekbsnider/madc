@@ -1,6 +1,5 @@
-rows before=4 after=4
-span cls=type c=bold s=4 e=8
-span cls=function c=- s=9 e=11
-span cls=keyword c=bold s=22 e=28
-all cls kept: yes
+rows before=2 after=2
+span c=bold s=4 e=8
+span c=bold s=22 e=28
+all c kept: yes
 all shifted: yes

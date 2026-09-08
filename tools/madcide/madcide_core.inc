@@ -455,7 +455,7 @@ bool bind_rescue_keys(long w, long es)
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
 // One `class SPEC` pair per line: the class is the FIRST word, the spec
 // the rest — JOE's style vocabulary (attribute words + a colour +
-// bg_colour, e.g. "keyword bold yellow"); the renderer's tui_attr_of
+// bg_colour, e.g. "keyword bold yellow"); the renderer's ui_style_of
 // parses specs at paint. Line rule (comments/blanks) = profile_line,
 // shared with the keybindings; the SPLIT differs by design — a binding
 // ENDS in one action word, a theme line ENDS in a multi-word spec.
@@ -734,15 +734,19 @@ void load_status(long w, long es, const char *name)
 
 // Highlight spans onto the bag (AST-2): the engine's classification rows
 // (source coordinates) converted to the byte-offset rows the edit node's
-// hints speak. Each row carries the SEMANTIC class `cls` (the portable
-// fact the web renders as `.c-<cls>`) and, when the THEME styles that
-// class, the TUI's JOE style spec `c` too — one converter, two
-// renderings (a class the theme omits still colours on the web; the TUI
-// skips it). ONE converter, two feeders: parse_spans (refresh_spans, the
-// full-parse state) and lex_spans (colour at load before the parse
-// lands). Like the status line, spans go stale with edits until the next
-// check/save. A plain identifier (styled by no renderer) or a stale line
-// skips.
+// hints speak: {s, e, c} — the byte range and the THEME's style spec for
+// the span's class, JOE's vocabulary (`bold`, `cyan`, `bold yellow`). The
+// spec is the ONE fact both renderers read: the grid paints it through the
+// one spec parser, the window renders the same style as classes over its
+// palette — the scheme the terminal shows is the scheme the window shows
+// (the colour-unification slice, 2026-09-08; before it the rows also
+// carried the semantic class and the web coloured THAT from a palette of
+// its own). A class the scheme does not style is plain on both, so its
+// span is not emitted. ONE converter, two feeders: parse_spans
+// (refresh_spans, the full-parse state) and lex_spans (colour at load
+// before the parse lands). Like the status line, spans go stale with
+// edits until the next check/save. A plain identifier (styled by no
+// scheme) or a stale line skips.
 void spans_to_hspans(long w, long es, long doc, var &rows)
 {
     var hs = {};
@@ -752,21 +756,17 @@ void spans_to_hspans(long w, long es, long doc, var &rows)
     {
 	var cls = r["class"];
 	if ( cls == "ident" )
-	    continue;			// a plain identifier: styled by no renderer
+	    continue;			// a plain identifier: styled by no scheme
+	var c;
+	if ( !th.is_null() )
+	    c = th[cls.c_str()];
+	if ( c.is_null() )
+	    continue;			// a class this scheme leaves plain
 	long ls = ui::text_line_start(w, doc, r["line"].as_integer());
 	if ( ls < 0 )
 	    continue;			// a stale line (edited since the parse)
 	long s = ls + r["column"].as_integer();
-	// The SEMANTIC class is the portable fact BOTH renderers read. The
-	// web styles it as `.c-<cls>` (its own CSS / @gui vocabulary), so it
-	// rides on EVERY classified span. The TUI's JOE style spec `c` is a
-	// null unless the theme styles this class (tui_model skips a row whose
-	// `c` is not a style string) — ONE converter, two renderings, neither
-	// renderer's vocabulary leaking into the other's.
-	var c;
-	if ( !th.is_null() )
-	    c = th[cls.c_str()];
-	hs[] = { "s": s, "e": s + r["length"].as_integer(), "cls": cls, "c": c };
+	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
     }
     ui::set(w, es, "hspans", hs);
 }

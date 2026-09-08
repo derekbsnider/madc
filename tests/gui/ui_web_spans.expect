@@ -1,0 +1,3 @@
+SP open
+SP st-bold fg-cyan|kw|rgb(10, 11, 12)|700|rgba(0, 0, 0, 0) ; st-underline bg-blue|str|rgb(217, 219, 228)|400|rgb(97, 175, 239)
+SP closed
