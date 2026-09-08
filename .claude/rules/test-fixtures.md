@@ -34,7 +34,11 @@
   - `tests/foo.<domain>_expect` — replaces `.expect` when `MADC_SKIP_EXT`
     includes `<domain>` (first listed domain with a fixture wins); for tests
     whose CORRECT output differs on the domain — content comes from that
-    target's oracle compiler (e.g. mingw-gcc for win64)
+    target's oracle compiler (e.g. mingw-gcc for win64). A change to a
+    LABELLED line (`label: …`) of `.expect` lands in every twin too, unless
+    the label is named in `tests/foo.<domain>_expect.domain` (the labels
+    whose answer differs on that domain); `scripts/check-expect-twins.sh`
+    (fulltest) fails the drift
   - `tests/foo.<domain>_obj_skip` — skip the `--obj` pass only, only when
     `MADC_SKIP_EXT` includes `<domain>`; for tests whose `.o` lane is
     structurally out of that domain's scope while the JIT (and other

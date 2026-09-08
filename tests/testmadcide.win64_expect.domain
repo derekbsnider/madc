@@ -1,0 +1,11 @@
+# Labels whose line legitimately DIFFERS from (or is absent in) tests/testmadcide.win64_expect
+# versus tests/testmadcide.expect — the win64 domain's own answers. Every other
+# labelled line must be identical in both (scripts/check-expect-twins.sh).
+build-out
+build-stop
+view1-node
+seam-exec-ok
+colon-exec-ok
+ptr-drag
+ptr-press
+ptr-window
