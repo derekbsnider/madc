@@ -70,7 +70,7 @@ TEST_CASE("term_screen — controls and escape sequences drop; erase-to-EOL and 
     CHECK(j.text() == "three");
     // An OSC window title: dropped up to BEL, or up to ESC \.
     term_screen o;
-    feed(o, "\x1b]0;my title\x07after");
+    feed(o, "\x1b]0;my title\x07" "after");	// (a split literal: \x07a would be one escape)
     CHECK(o.cur == "after");
     term_screen o2;
     feed(o2, "\x1b]2;t\x1b\\x");

@@ -1487,6 +1487,7 @@ void edit_file(long w, long es, long olddoc, const char *path);
 // commits membership through these.
 void proj_add(long w, long es, long doc, const char *path0);
 void proj_open(long w, long es, long doc, const char *path0);	// polish P2b: Open Project… (the prompt commits through it)
+void switch_buffer(long w, long es, long olddoc, long idx);	// polish P4: the bufsel prompt commits through it
 bool project_active(long w, long es);
 bool proj_write(long w, long es, long doc);	// polish P2c: the kind toggle persists
 void proj_show(long w, long es, long doc);	// polish P2b: Open Project… shows the window
@@ -5078,7 +5079,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		nrows = nrows + 1;
 	    }
 	    var nofilter;
-	    dialog_hints(box, w, es, "pane", 0, nofilter);	// rows do nothing on choose
+	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
 	}
 	else if ( pane == "options" )
 	{
