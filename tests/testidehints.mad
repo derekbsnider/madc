@@ -138,6 +138,24 @@ int main()
     S.apply_ide_event(doc, ea);
     println("prompt-actions: other-inert={} dismiss-ends={}", still,
 	    prompt_active(w, es) ? 0 : 1);
+    // "(^C aborts)" is true in every profile: in JOE ^C is the bound
+    // `discard`, so it arrives as an ACTION whose sequence is ^c — the
+    // baked "@prompt ^c pcancel" wins by the sequence; in a profile that
+    // leaves ^C unbound it arrives as the KEY ^c and the same line wins.
+    start_prompt(w, es, "Find", "find");
+    ea["action"] = "discard";
+    ea["seq"] = "^c";
+    S.apply_ide_event(doc, ea);
+    long ctrlc_action = prompt_active(w, es) ? 0 : 1;
+    start_prompt(w, es, "Find", "find");
+    var ek;
+    ek["event"] = "key";
+    ek["event_code"] = ui::event_kind::key;
+    ek["key"] = "^c";
+    ek["key_code"] = ui::key::ctrl;
+    S.apply_ide_event(doc, ek);
+    println("prompt-ctrl-c: as-action={} as-key={}", ctrlc_action,
+	    prompt_active(w, es) ? 0 : 1);
     start_confirm(w, es, "Lose changes to this file (y,n,^C)?", "q!");
     var t6;
     S.compose_ide_tree(t6, doc);

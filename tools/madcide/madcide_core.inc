@@ -240,6 +240,7 @@ const char *modal_default_keys_text()
     return "# baked modal defaults (@scope key action) — profile data\n"
 	   "@prompt enter pcommit\n"
 	   "@prompt esc pcancel\n"
+	   "@prompt ^c pcancel\n"
 	   "@prompt backspace pdelchar\n"
 	   "@confirm y pyes\n"
 	   "@confirm n pcancel\n"
@@ -257,7 +258,11 @@ const char *modal_default_keys_text()
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
-// Key events look up by key name, text events by their single character.
+// Key events look up by key name, text events by their single character,
+// ACTION events by the sequence that completed (`seq`): a chord the global
+// table binds still reaches a modal scope that binds the same spelling —
+// the modal owns its keys while it is up (JOE's ^C aborts every prompt
+// though ^C is `discard` in the JOE profile: "@prompt ^c pcancel" wins).
 // The key matches AS WRITTEN first, then by its lowercase spelling — so
 // a scope whose data is all lowercase stays case-insensitive (the JOE
 // convention, every modal scope), and one spelling both cases is
@@ -298,6 +303,14 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	if ( strlen(t.c_str()) != 1 )
 	    return false;
 	k = t;
+    }
+    else if ( kind == ui::event_kind::action )
+    {
+	if ( ev["seq"].is_null() )
+	    return false;		// fired by name (a menu, a button): no keys
+	k = format("{}", ev["seq"]);
+	if ( strlen(k.c_str()) == 0 )
+	    return false;
     }
     else
 	return false;
@@ -1523,8 +1536,12 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
     var a;
     if ( kind == ui::event_kind::action )
     {
-	if ( !scope_action_named(a, w, es, "prompt", ev) )
-	    return true;		// another command mid-prompt: inert
+	// By name (a dialog's button, a dismissal) or by the sequence that
+	// completed (^C, bound globally, is the prompt's cancel by data);
+	// any other command mid-prompt is inert.
+	if ( !scope_action_named(a, w, es, "prompt", ev)
+	  && !scoped_action(a, w, es, "prompt", ev) )
+	    return true;
     }
     else if ( kind != ui::event_kind::key )
 	return true;
