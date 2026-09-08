@@ -1,9 +1,23 @@
 # madcide GUI chrome & modular UI — design (recon + proposal)
 
-**Status:** DESIGN PROPOSAL (2026-09-07). Not approved, nothing built. This
-folds two 2026-industry-standard recon passes into a proposed architecture and
-a slice decomposition, for owner review. It completes the web-target arc
-(ROADMAP 7.5 / 8.6) beyond slice 3.1.
+**Status:** LANDED 2026-09-08 — S0–S5 all built on
+`feature/web-editor-incremental-claude` (owner-locked milestone: "locally-
+complete madcide" = the merge + push + release gate). S0 resize-fill (the GTK
+GL renderer over a no-SHM TCP X connection; `GSK_RENDERER=cairo` default for
+a remote display); S5 split layout (the workbench places SLOTS, one per
+region, a region's nodes stack; the ^K O split renders as JOE's window
+stack); S1 menus/commands as data (`profiles/default.menu`, the root's `menu`
+hint, the one-vocabulary registry gate); S2 the native menu bar (GTK4
+`GtkPopoverMenuBar` through madc's `madcwebview_chrome` extension of the
+webview library; a selection is the chord's own action event); S3 the status
+bar as chrome (the JOE format's seats as discrete items); S4 native file
+dialogs (a core→client request/response verb; `GtkFileDialog`; the terminal
+keeps its prompts). Win32 / Cocoa native menu + dialogs, the DOM command
+palette, pane drag / persisted layout and the remote transport / multi-user
+arc are the follow-ups. Decision 5 (attach handshake + intersection
+capabilities) is adopted as principle; nothing built here violates it. The
+text below is the design as proposed (2026-09-07), kept for its reasoning
+and citations.
 
 ## The problem
 
