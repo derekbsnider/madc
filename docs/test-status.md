@@ -1,6 +1,32 @@
 # Test Status
 
-> **Current (2026-09-08, the s168 merge wave — madcide polish P1 on
+> **Current (2026-09-08, the s168 P2–P4 merge wave — the local-IDE polish
+> for the master release on `feature/madcide-polish-panel-claude`: the list
+> overlays as dialogs, Open Project… + the project kind (the Windows
+> subsystem), the bottom panel with Problems / Output / Terminal, Run in the
+> window (Output for gui programs, a pty Terminal for console ones —
+> `madcrun://` / `madcproj://` / `pty://` through the spawn owner's
+> `child_body` / `pty`), editor tabs with commands taking arguments):** FULL
+> develop-set battery (`tmp/logs/rb-20260908-183549.log`; the final run on the
+> final commit is recorded in `docs/lane-status.tsv`): fulltest suite JIT
+> **1335 passed / 0 failed / 0 timed out / 9 skipped** (every gate green after
+> two owner gates caught copies: the pty fds' close-on-exec now through
+> `detail::set_fd_close_on_exec`, the run bodies' scheduler reset paired per
+> fork child), native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**,
+> headerless **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`,
+> +`madcide_dialog` + `madcide_panel`): **15/15 JIT, 15/15 EXE, 15/15 OBJ**.
+> Unit battery green incl. `test_process` (child_body, pty), `test_term_screen`,
+> `test_web_model` (dialog / choose / tabs / arg), `test_project_manifest`
+> (kind), `test_tui_model` (key bytes). release-win + `verify_pe_release`
+> authority 6 (subsystem console=3, `-mwindows`=2, as mingw-gcc). wine64
+> **1276/0/0TO/68skip** once the win64 twin carries the terminal / run
+> clauses' piped values (Windows runs the pty-requesting schemes on pipes;
+> ConPTY is the named residue). c-testsuite **220/220**; macOS cross release
+> both arches + webview dylibs, verify_macho OK, package-macos rc=0.
+> Release-tier lanes (libcxx, darwin-suite, genuine-win) run at the master
+> promotion.
+>
+> **Previous (2026-09-08, the s168 merge wave — madcide polish P1 on
 > `feature/madcide-polish-colours-claude`: one theme, two renderers — the
 > render style and its spec parser moved to `madcdis/ui_style.h`, the DOM
 > model renders the scheme's spec as `st-*` / `fg-*` / `bg-*` classes over
