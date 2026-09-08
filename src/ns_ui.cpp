@@ -471,6 +471,9 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 //   { event:"snapshot", text:"..." }     a page reported its text (the
 //       DOM frontend's test seam)
 //   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E }
+//   Every object also carries event_code (ui::event_kind), a key event
+//   key_code (ui::key), a pointer event phase_code (ui::pointer_phase) —
+//   the enum values script code compares against (<bits/ui_enums>).
 //       a pointing-device gesture on an edit node: N is the BYTE offset
 //       in that node's text the pointer resolved to, E (absent when the
 //       node projects nothing) the entity it projects — its document —
@@ -479,6 +482,11 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 			   ui_frontend *f)
 {
     std::map<std::string, madc::value> fields;
+    // The kind as its ENUM value beside the name: script code compares
+    // `ev["event_code"] == ui::event_kind::key` (a misspelt enumerator is a
+    // compile error; a misspelt name was a silent miss). The names stay for
+    // display, transport and the bindings tables.
+    fields["event_code"] = madc::value((int64_t)e.kind);
     switch ( e.kind )
     {
 	case madc::hub::tui_event_kind::text:
@@ -488,6 +496,7 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	case madc::hub::tui_event_kind::key:
 	    fields["event"] = madc::value(std::string("key"));
 	    fields["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    fields["key_code"] = madc::value((int64_t)e.key);	// ui::key
 	    // A focused choice's live selection rides along (1-based, the
 	    // choose contract) so the application can act on the focused
 	    // row for keys the widget does not consume (ins/del); absent
@@ -532,6 +541,7 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["event"] = madc::value(std::string("pointer"));
 	    fields["phase"] = madc::value(
 		std::string(madc::hub::pointer_phase_name(e.phase)));
+	    fields["phase_code"] = madc::value((int64_t)e.phase);	// ui::pointer_phase
 	    fields["offset"] = madc::value((int64_t)e.offset);
 	    if ( e.subject != 0 )
 		fields["subject"] = madc::value((int64_t)e.subject);
@@ -1564,6 +1574,20 @@ void pending(madc::value &out, int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
     out = madc::value(std::string(f ? f->pending_chord() : std::string()));
+}
+
+// A key SPELLING (the bindings-table / action-name vocabulary: "left",
+// "^k", "a") -> its ui::key enumerator value; ui::key::none for a spelling
+// that is not a key. The ONE spelling owner (tui_key_from_name) answers, so
+// an application that synthesizes a key event from an action name (the
+// editor's "the action name IS the key spelling" rule) carries the same
+// code the target would have.
+int64_t key_code(const char *name)
+{
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) )
+	return (int64_t)madc::hub::tui_key::none;
+    return (int64_t)k.kind;
 }
 
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------

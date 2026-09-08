@@ -14,10 +14,13 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
+// The exact value objects ui::event produces: the names AND the enum codes
+// (event_code / key_code / phase_code) the session compares against.
 void ev_text(var &e, const char *t)
 {
     var f;
     f["event"] = "text";
+    f["event_code"] = ui::event_kind::text;
     f["text"] = t;
     e = f;
 }
@@ -26,7 +29,9 @@ void ev_key(var &e, const char *k)
 {
     var f;
     f["event"] = "key";
+    f["event_code"] = ui::event_kind::key;
     f["key"] = k;
+    f["key_code"] = ui::key_code(k);
     e = f;
 }
 
@@ -36,7 +41,9 @@ void ev_key_opt(var &e, const char *k, long option)
 {
     var f;
     f["event"] = "key";
+    f["event_code"] = ui::event_kind::key;
     f["key"] = k;
+    f["key_code"] = ui::key_code(k);
     f["option"] = option;
     e = f;
 }
@@ -45,6 +52,7 @@ void ev_action(var &e, const char *a, const char *seq)
 {
     var f;
     f["event"] = "action";
+    f["event_code"] = ui::event_kind::action;
     f["action"] = a;
     f["seq"] = seq;
     e = f;
@@ -54,16 +62,18 @@ void ev_choose(var &e, long option, const char *a)
 {
     var f;
     f["event"] = "choose";
+    f["event_code"] = ui::event_kind::choose;
     f["option"] = option;
     f["action"] = a;
     e = f;
 }
 
-void ev_pointer(var &e, const char *phase, long off, long subject)
+void ev_pointer(var &e, ui::pointer_phase phase, long off, long subject)
 {
     var f;
     f["event"] = "pointer";
-    f["phase"] = phase;
+    f["event_code"] = ui::event_kind::pointer;
+    f["phase_code"] = phase;
     f["offset"] = off;
     if ( subject != 0 )
 	f["subject"] = subject;
@@ -1566,10 +1576,10 @@ int main()
     //    first, then places the caret there.
     long ptrdoc = active_doc(w, es, doc);
     var pe;
-    ev_pointer(pe, "down", 2, 0);
+    ev_pointer(pe, ui::pointer_phase::down, 2, 0);
     S.apply_ide_event(ptrdoc, pe);
     long pm0 = es_int(w, es, "mark", -1);
-    ev_pointer(pe, "drag", 6, 0);
+    ev_pointer(pe, ui::pointer_phase::drag, 6, 0);
     S.apply_ide_event(ptrdoc, pe);
     S.compose_ide_tree(tree, ptrdoc);
     var psel = tree["children"][1]["hints"];
@@ -1579,9 +1589,9 @@ int main()
 	    psel["sel_start"].is_null() ? -1 : psel["sel_start"].as_integer(),
 	    psel["sel_end"].is_null() ? -1 : psel["sel_end"].as_integer(),
 	    tree["children"][1]["subject"].as_integer() == ptrdoc ? 1 : 0);
-    ev_pointer(pe, "up", 6, 0);
+    ev_pointer(pe, ui::pointer_phase::up, 6, 0);
     S.apply_ide_event(ptrdoc, pe);
-    ev_pointer(pe, "down", 3, 0);
+    ev_pointer(pe, ui::pointer_phase::down, 3, 0);
     S.apply_ide_event(ptrdoc, pe);
     println("ptr-press: caret={} mark={} bend={}", es_int(w, es, "caret", -1),
 	    es_int(w, es, "mark", -1), es_int(w, es, "bend", -1));
@@ -1594,7 +1604,7 @@ int main()
     S.apply_ide_event(ptrdoc, e);
     edit_file(w, es, ptrdoc, "madc_ide_second.mad");
     long ptrbuf = active_doc(w, es, ptrdoc);
-    ev_pointer(pe, "down", 1, ptrdoc);
+    ev_pointer(pe, ui::pointer_phase::down, 1, ptrdoc);
     S.apply_ide_event(ptrbuf, pe);
     println("ptr-window: other-buffer={} switched-to={} active-is-first={} caret={}",
 	    ptrbuf != ptrdoc ? 1 : 0, es_int(w, es, "winat", -1),

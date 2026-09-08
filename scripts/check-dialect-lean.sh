@@ -8,6 +8,10 @@
 #
 #   1. No dialect fragment may contain a C++ system #include (any
 #      <header> without a .h suffix — <string>, <vector>, <iostream>...).
+#      A sibling dialect fragment under bits/ (<bits/ui_enums>) is NOT a
+#      system header: it is the same zero-include surface this gate scans,
+#      and one shared text (the ui enums, included by the engine and by
+#      <ns_ui>) beats two hand-kept copies.
 #   2. Every std::string mention in a fragment must sit inside the
 #      stdlib-guard conditional
 #      `#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)`
@@ -45,6 +49,7 @@ scan_fragment() {
 			if (depth > 0) depth--
 			next
 		}
+		/^[ \t]*#[ \t]*include[ \t]*<bits\/[^.>]*>/ { next }
 		/^[ \t]*#[ \t]*include[ \t]*<[^.>]*>/ {
 			print FILENAME ":" FNR ": C++ system include in a dialect fragment: " $0
 			bad = 1
@@ -68,6 +73,16 @@ printf '#include <string>\nnamespace x { std::string f(); }\n' \
 if scan_fragment "$ctrl_dir/bad_fragment" > /dev/null 2>&1; then
 	echo "check-dialect-lean: NEGATIVE CONTROL FAILED — the scanner" >&2
 	echo "accepted a fragment with a bare <string> include; the gate" >&2
+	echo "is broken." >&2
+	exit 2
+fi
+
+# --- positive control: a sibling bits/ fragment include must PASS ---
+printf '#include <bits/ui_enums>\nnamespace x { int f(); }\n' \
+	> "$ctrl_dir/good_fragment"
+if ! scan_fragment "$ctrl_dir/good_fragment" > /dev/null 2>&1; then
+	echo "check-dialect-lean: POSITIVE CONTROL FAILED — the scanner" >&2
+	echo "rejected a <bits/...> sibling-fragment include; the gate" >&2
 	echo "is broken." >&2
 	exit 2
 fi

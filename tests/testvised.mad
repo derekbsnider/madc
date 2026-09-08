@@ -13,10 +13,13 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/texteditor/vised_core.inc"
 
+// The exact value objects ui::event produces: the names AND the enum codes
+// (event_code / key_code / phase_code) the editor core compares against.
 void ev_text(var &e, const char *t)
 {
     var f;
     f["event"] = "text";
+    f["event_code"] = ui::event_kind::text;
     f["text"] = t;
     e = f;
 }
@@ -25,15 +28,18 @@ void ev_key(var &e, const char *k)
 {
     var f;
     f["event"] = "key";
+    f["event_code"] = ui::event_kind::key;
     f["key"] = k;
+    f["key_code"] = ui::key_code(k);
     e = f;
 }
 
-void ev_pointer(var &e, const char *phase, long off)
+void ev_pointer(var &e, ui::pointer_phase phase, long off)
 {
     var f;
     f["event"] = "pointer";
-    f["phase"] = phase;
+    f["event_code"] = ui::event_kind::pointer;
+    f["phase_code"] = phase;
     f["offset"] = off;
     e = f;
 }
@@ -41,7 +47,7 @@ void ev_pointer(var &e, const char *phase, long off)
 // One pointer step applied, then the caret, the mark and the selection
 // the composed edit node lights (-1 = none).
 void ptr_report(long w, long es, long doc, const char *tag,
-		const char *phase, long off)
+		ui::pointer_phase phase, long off)
 {
     var e;
     ev_pointer(e, phase, off);
@@ -129,13 +135,13 @@ int main()
     // (no selection), a drag lights [press, here] through the mark, the
     // release is the last placement; a fresh press drops the selection,
     // and a drag back over its own press point clears it again.
-    ptr_report(w, es, doc, "ptr-down", "down", 2);
-    ptr_report(w, es, doc, "ptr-drag", "drag", 6);
-    ptr_report(w, es, doc, "ptr-up", "up", 7);
-    ptr_report(w, es, doc, "ptr-down2", "down", 4);
-    ptr_report(w, es, doc, "ptr-drag2", "drag", 1);
-    ptr_report(w, es, doc, "ptr-drag3", "drag", 4);
-    ptr_report(w, es, doc, "ptr-up2", "up", 4);
+    ptr_report(w, es, doc, "ptr-down", ui::pointer_phase::down, 2);
+    ptr_report(w, es, doc, "ptr-drag", ui::pointer_phase::drag, 6);
+    ptr_report(w, es, doc, "ptr-up", ui::pointer_phase::up, 7);
+    ptr_report(w, es, doc, "ptr-down2", ui::pointer_phase::down, 4);
+    ptr_report(w, es, doc, "ptr-drag2", ui::pointer_phase::drag, 1);
+    ptr_report(w, es, doc, "ptr-drag3", ui::pointer_phase::drag, 4);
+    ptr_report(w, es, doc, "ptr-up2", ui::pointer_phase::up, 4);
 
     // ^S runs the SAME w script verb; then ^Q succeeds (criterion 3's
     // no-duplicated-mutation-logic evidence: the persistence path IS the

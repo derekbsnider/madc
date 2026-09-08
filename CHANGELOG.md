@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### The ui event vocabularies are enums the dialect compares against (2026-09-08)
+
+- Owner (2026-09-07): editor code compared key names and event kinds as
+  strings (`k == "down"`, `kind == "key"`) — a typo is a silent miss, where a
+  misspelt enumerator is a compile error. The three vocabularies — `ui::key`,
+  `ui::event_kind`, `ui::pointer_phase` — now live once, in
+  `include/madc/bits/ui_enums` (plain C++11, no includes), which the engine
+  headers include and alias (`tui_key`, `tui_event_kind`, `pointer_phase` are
+  unchanged names) and `<ns_ui>` includes for scripts. Every event object
+  carries the values beside the names (`event_code`, `key_code`,
+  `phase_code`); `ui::key_code(name)` maps a key spelling to its enumerator.
+  The editor core, vised and madcide compare kinds, named keys and phases
+  against the enums; chord spellings (`"^s"`) and action names stay strings
+  (they are bindings-table data). The dialect-lean gate gains the one include
+  a fragment may carry — a sibling `bits/` fragment — with a positive control;
+  the rule text says so.
+- `tests/testuienums.mad` pins the surface; the editor tests build their
+  events with the codes, as `ui::event` does.
+
 ### `6 == v` and `v == E::z` compare by value (2026-09-08)
 
 - Two more carrier-equality shapes answered false silently. A number on the

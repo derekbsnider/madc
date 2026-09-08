@@ -23,30 +23,19 @@ namespace hub {
 // What the application receives: SEMANTIC units, never raw terminal
 // events. The target/model pair owns which keys become navigation
 // (consumed here, re-render signalled) and which reach the application.
-enum class tui_event_kind : unsigned char
-{
-    none = 0,
-    text,	// a coalesced printable run — one semantic insertion
-    key,	// a non-printable key for the application to interpret
-    choose,	// enter on the focused choice's selected option
-    focus,	// focus or menu selection moved: recompose and repaint
-    resize,	// the surface changed size: recompose and repaint
-    action,	// a bound key sequence completed (empty name = unbound miss)
-    wake,	// cooperative background tasks drained: recompose (the
-		// application re-checks its pending state, e.g. a spawned
-		// parse's completion)
-    snapshot,	// a DOM frontend's page reported its rendered text (the
-		// test seam, madcSnapshot()): `text` carries it
-    pointer	// a pointing-device gesture on an edit node: `offset` is
-		// the BYTE offset in that node's text the pointer resolved
-		// to, `phase` the gesture step, `subject` the entity the
-		// node projects (0 = none). One shape for a window's hit
-		// test today and a terminal's mouse reporting later.
-};
+// The event and pointer-phase vocabularies are the shared enum text
+// (include/madc/bits/ui_enums, via keys.h): ui::event_kind and
+// ui::pointer_phase under the engine's names. What the application receives
+// are SEMANTIC units, never raw terminal events — the target/model pair owns
+// which keys become navigation (consumed there, re-render signalled) and
+// which reach the application; the enumerators are documented in the
+// fragment, once.
+typedef ::ui::event_kind tui_event_kind;
 
 // The steps of a pointing-device gesture (tui_event_kind::pointer): a
-// press places, a drag extends, a release ends.
-enum class pointer_phase : unsigned char { down, drag, up };
+// press places, a drag extends, a release ends — the shared text's
+// ui::pointer_phase.
+typedef ::ui::pointer_phase pointer_phase;
 
 // The phase's name at the boundary (the event object's `phase`, the
 // page's posted input) — ONE spelling owner, both directions.

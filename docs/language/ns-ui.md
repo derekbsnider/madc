@@ -309,6 +309,21 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"snapshot", text}` | the page's rendered text | A web target's page answered `madcSnapshot()` (the test seam) |
 | `{event:"pointer", phase, offset, subject}` | `"down"` / `"drag"` / `"up"`, a BYTE offset, the entity the node projects | A pointing-device gesture on an `edit` node, resolved by the engine to the offset in that node's text (the web target's hit test today; a terminal's mouse reporting takes the same shape). `subject` is absent when the node projects nothing — set it (the edit node's `subject` = its document) so a multi-window composer knows which window was hit. The shared editor core's `edit_pointer` is the one caret model for it: a press places the caret, a drag lights the selection through the same mark (and end, under a two-point personality), a release ends the gesture |
 
+**The vocabularies are enums.** Every event object also carries the
+enumerator values beside the names: `event_code` (`ui::event_kind`),
+`key_code` on a key event (`ui::key`), `phase_code` on a pointer event
+(`ui::pointer_phase`). Compare against those — `ev["key_code"] ==
+ui::key::down` is checked by the compiler, where `k == "down"` was a
+string a typo turned into a silent miss. The three enums are ONE text,
+`include/madc/bits/ui_enums`, that the engine (`tui_key`,
+`tui_event_kind`, `pointer_phase` alias it) and `<ns_ui>` both include, so
+there is no second copy to drift. Control chords (`"^s"`) and printables
+stay names: a chord is a key plus a letter, the bindings-table vocabulary.
+`ui::key_code(name)` turns a key spelling into its enumerator
+(`ui::key::none` when it is not one) for an application that synthesizes a
+key event from an action name (the editor's "the action name IS the key
+spelling" rule).
+
 **Keybindings are data.** `tui_bind_keys` installs a whole profile: a
 value object mapping key SEQUENCES to action names
 (`{"^k s": "save", ...}`) — sequences are space-separated key

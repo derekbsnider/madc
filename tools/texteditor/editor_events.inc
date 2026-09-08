@@ -411,8 +411,8 @@ void do_find(long w, long es, long doc, long caret)
 // Search-mode key handling; every key is consumed while searching.
 bool search_key(long w, long es, long doc, long caret, var &ev)
 {
-    var k = format("{}", ev["key"]);
-    if ( k == "enter" )
+    var k = ev["key_code"];		// ui::key — the enumerator, not the name
+    if ( k == ui::key::enter )
     {
 	var pat;
 	ui::get(pat, w, es, "search");
@@ -422,12 +422,12 @@ bool search_key(long w, long es, long doc, long caret, var &ev)
 	do_find(w, es, doc, caret);
 	return true;
     }
-    if ( k == "esc" )
+    if ( k == ui::key::esc )
     {
 	ui::set(w, es, "searching", false);
 	return true;
     }
-    if ( k == "backspace" )
+    if ( k == ui::key::backspace )
     {
 	var s;
 	ui::get(s, w, es, "search");
@@ -552,16 +552,16 @@ void compose_menu(var &menu)
 // the key was one of ours; false = the dispatcher's key, not handled.
 bool edit_key(long w, long es, long doc, long caret, var &ev)
 {
-    var k = format("{}", ev["key"]);
+    var k = ev["key_code"];		// ui::key — the enumerator, not the name
     bool editable = es_flag(w, es, "editable");
     long size = ui::text_size(w, doc);
-    if ( k == "left" )
+    if ( k == ui::key::left )
     {
 	if ( caret > 0 )
 	    ui::set(w, es, "caret", caret - 1);
 	return true;
     }
-    if ( k == "right" )
+    if ( k == ui::key::right )
     {
 	if ( caret < size )
 	    ui::set(w, es, "caret", caret + 1);
@@ -570,12 +570,12 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     long line = line_of(w, doc, caret);
     long start = line_start_of(w, doc, line);
     long col = caret - start;
-    if ( k == "home" )
+    if ( k == ui::key::home )
     {
 	ui::set(w, es, "caret", start);
 	return true;
     }
-    if ( k == "end" )
+    if ( k == ui::key::end )
     {
 	long len = ui::text_line_len(w, doc, line);
 	if ( len < 0 )
@@ -583,27 +583,27 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	ui::set(w, es, "caret", start + len);
 	return true;
     }
-    if ( k == "up" )
+    if ( k == ui::key::up )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line - 1, col));
 	return true;
     }
-    if ( k == "down" )
+    if ( k == ui::key::down )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line + 1, col));
 	return true;
     }
-    if ( k == "pgup" )
+    if ( k == ui::key::pgup )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line - 10, col));
 	return true;
     }
-    if ( k == "pgdn" )
+    if ( k == ui::key::pgdn )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line + 10, col));
 	return true;
     }
-    if ( k == "backspace" )
+    if ( k == ui::key::backspace )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -616,7 +616,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
-    if ( k == "del" )
+    if ( k == ui::key::del )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -628,7 +628,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
-    if ( k == "enter" )
+    if ( k == ui::key::enter )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -645,7 +645,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 }
 
 // The pointer arm — ONE caret model for mouse and keyboard. `ev` is the
-// engine's pointer event ({phase, offset}: a BYTE offset in this document
+// engine's pointer event ({phase_code, offset}: a BYTE offset in this document
 // the target's hit test resolved to). A press places the caret and drops
 // any live selection; a drag lights [press, here] through the SAME
 // selection state the block keys set — the mark, plus the end under the
@@ -656,10 +656,10 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 // that follows it; the release drops it.
 void edit_pointer(long w, long es, long doc, var &ev, bool selectable)
 {
-    var ph = format("{}", ev["phase"]);
+    var ph = ev["phase_code"];		// ui::pointer_phase
     long off = clamp_caret_to(w, doc, ev["offset"].as_integer());
     ui::set(w, es, "caret", off);
-    if ( ph == "down" )
+    if ( ph == ui::pointer_phase::down )
     {
 	ui::set(w, es, "mark", -1);
 	ui::set(w, es, "bend", -1);
@@ -680,6 +680,6 @@ void edit_pointer(long w, long es, long doc, var &ev, bool selectable)
 	ui::set(w, es, "mark", -1);
 	ui::set(w, es, "bend", -1);
     }
-    if ( ph == "up" )
+    if ( ph == ui::pointer_phase::up )
 	ui::set(w, es, "anchor", -1);
 }

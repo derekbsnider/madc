@@ -1,0 +1,39 @@
+// The ui event vocabularies as ENUMS (owner 2026-09-07: `k == "down"` is a
+// string a typo turns into a silent miss; an enumerator the compiler
+// checks). ONE text — include/madc/bits/ui_enums — serves the engine
+// (tui_key / tui_event_kind / pointer_phase alias it) and the dialect
+// (<ns_ui> includes it), so the values a script compares against are the
+// very enumerators the engine switches on. Every event object carries the
+// codes beside the names (event_code, key_code, phase_code); ui::key_code
+// turns a key SPELLING into its enumerator for an application that
+// synthesizes a key event from an action name. The var-against-enumerator
+// comparison is the carrier's integer row (tests/testvareqenum.mad).
+int main()
+{
+    // The shape ui::event delivers (a key event), built by hand.
+    var ev = { "event": "key", "event_code": 2, "key": "down", "key_code": 8 };
+    if ( ev["event_code"] == ui::event_kind::key )
+	println("kind: key");
+    if ( ev["event_code"] != ui::event_kind::text )
+	println("kind: not text");
+    if ( ev["key_code"] == ui::key::down )
+	println("key: down");
+    if ( ui::key::down != ev["key_code"] )
+	println("UNREACHED");
+    else
+	println("key: reversed compare agrees");
+    // A pointer event's phase.
+    var pe = { "event": "pointer", "event_code": 9, "phase": "drag", "phase_code": 1 };
+    if ( pe["event_code"] == ui::event_kind::pointer && pe["phase_code"] == ui::pointer_phase::drag )
+	println("pointer: drag");
+    // Spelling -> enumerator through the ONE spelling owner.
+    println("codes: left={} down={} ^k={} a={} space={} zz={} none={}",
+	    ui::key_code("left"), ui::key_code("down"), ui::key_code("^k"),
+	    ui::key_code("a"), ui::key_code("space"), ui::key_code("zz"),
+	    (long)ui::key::none);
+    // An enumerator lands in a carrier slot as its value.
+    var made = { "event_code": ui::event_kind::action };
+    made["key_code"] = ui::key::esc;
+    println("stored: {} {}", made["event_code"], made["key_code"]);
+    return 0;
+}

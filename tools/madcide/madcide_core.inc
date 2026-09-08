@@ -273,11 +273,11 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
     var sc = mk[scope];
     if ( sc.is_null() )
 	return false;
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     var k = "";
-    if ( kind == "key" )
+    if ( kind == ui::event_kind::key )
 	k = format("{}", ev["key"]);
-    else if ( kind == "text" )
+    else if ( kind == ui::event_kind::text )
     {
 	var t = format("{}", ev["text"]);
 	if ( strlen(t.c_str()) != 1 )
@@ -1147,7 +1147,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 // dispatches the looked-up NAMES, never the keys themselves.
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     var pmode;
     ui::get(pmode, w, es, "pmode");
     if ( pmode == "confirm" )
@@ -1171,11 +1171,11 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 		end_prompt(w, es);
 	    return true;
 	}
-	if ( kind == "action" )
+	if ( kind == ui::event_kind::action )
 	    end_prompt(w, es);
 	return true;
     }
-    if ( kind == "text" )
+    if ( kind == ui::event_kind::text )
     {
 	var in;
 	ui::get(in, w, es, "pinput");
@@ -1183,20 +1183,21 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	ui::set(w, es, "pinput", nx.c_str());
 	return true;
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	// A FOCUSED pane makes the engine hand enter back as a CHOOSE
 	// (its focused-choice contract). While the prompt is modal that
 	// enter belongs to the prompt — route it through the same
 	// @prompt data as the key, or a prompt opened from a focused
 	// pane row (tabwidth, theme, keymap) can never commit.
-	var ke = { "event": "key", "key": "enter" };
+	var ke = { "event": "key", "event_code": ui::event_kind::key,
+		   "key": "enter", "key_code": ui::key::enter };
 	var ca;
 	if ( scoped_action(ca, w, es, "prompt", ke) && ca == "pcommit" )
 	    return finish_prompt(w, es, doc, caret);
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind != ui::event_kind::key )
 	return true;
     var a;
     if ( !scoped_action(a, w, es, "prompt", ev) )
@@ -2207,8 +2208,8 @@ bool project_active(long w, long es)
 // ^K chords would be worse than inert keys.
 bool project_event(long w, long es, long doc, var &ev)
 {
-    var kind = format("{}", ev["event"]);
-    if ( kind == "text" )
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
     {
 	var in;
 	ui::get(in, w, es, "projfilter");
@@ -2217,10 +2218,11 @@ bool project_event(long w, long es, long doc, var &ev)
 	project_rows(w, es, doc);
 	return true;
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	var a;
-	var ke = { "event": "key", "key": "enter" };
+	var ke = { "event": "key", "event_code": ui::event_kind::key,
+		   "key": "enter", "key_code": ui::key::enter };
 	if ( !scoped_action(a, w, es, "project", ke) )
 	    return true;
 	if ( a == "projopen" )
@@ -2238,7 +2240,7 @@ bool project_event(long w, long es, long doc, var &ev)
 	}
 	return true;
     }
-    if ( kind == "action" )
+    if ( kind == ui::event_kind::action )
     {
 	var a = format("{}", ev["action"]);
 	if ( a == "project" || a == "quit" )
@@ -2250,7 +2252,7 @@ bool project_event(long w, long es, long doc, var &ev)
 	}
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind != ui::event_kind::key )
 	return true;
     var a;
     if ( !scoped_action(a, w, es, "project", ev) )
@@ -2472,18 +2474,19 @@ bool modes_dispatch(long w, long es, long doc, long caret, var &a)
 // swallowed; `modes` itself (and quit) toggles the palette shut.
 bool modes_event(long w, long es, long doc, long caret, var &ev)
 {
-    var kind = format("{}", ev["event"]);
-    if ( kind == "text" )
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
     {
 	var a;
 	if ( scoped_action(a, w, es, "modes", ev) )
 	    return modes_dispatch(w, es, doc, caret, a);
 	return true;			// other typing is inert
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	var a;
-	var ke = { "event": "key", "key": "enter" };
+	var ke = { "event": "key", "event_code": ui::event_kind::key,
+		   "key": "enter", "key_code": ui::key::enter };
 	if ( !scoped_action(a, w, es, "modes", ke) )
 	    return true;
 	if ( a == "modesopen" )
@@ -2500,14 +2503,14 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
-    if ( kind == "action" )
+    if ( kind == ui::event_kind::action )
     {
 	var a = format("{}", ev["action"]);
 	if ( a == "modes" || a == "quit" )
 	    modes_hide(w, es);
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind != ui::event_kind::key )
 	return true;
     var a;
     if ( !scoped_action(a, w, es, "modes", ev) )
@@ -3370,12 +3373,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     // The startup hint yields to the first event of any kind — the same
     // "first event returns the row" rule run_ide's loop used to apply.
     ui::set(w, es, "hint", 0);
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     // Stage-2: cooperative background tasks drained — the spawned parse
     // already parked its handle/spans on the bag; recompose only. Before
     // anything else: a wake is not a user gesture (it must not clear the
     // message seat or disturb a pending prompt).
-    if ( kind == "wake" )
+    if ( kind == ui::event_kind::wake )
 	return true;
     // Display-vs-stored routing (the view seam): navigation, find, and the
     // caret run over the NAV target — the view buffer while a view is up.
@@ -3409,13 +3412,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 
     // A pointing-device gesture (the web target's hit test; a terminal's
     // mouse reporting later): the caret model is the keyboard's.
-    if ( kind == "pointer" )
+    if ( kind == ui::event_kind::pointer )
     {
 	pointer_event(doc, nav, ev);
 	return true;
     }
 
-    if ( kind == "action" )
+    if ( kind == ui::event_kind::action )
     {
 	var a = format("{}", ev["action"]);
 	if ( strlen(a.c_str()) == 0 )
@@ -3677,18 +3680,19 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	// the dispatcher synthesizes the key event. One movement
 	// implementation. (IDE-10a reclaimed ^B/^F/^P/^N from the
 	// WordStar diamond — real arrow keys serve motion.)
-	var ke = { "event": "key", "key": a };
+	var ke = { "event": "key", "event_code": ui::event_kind::key,
+		   "key": a, "key_code": ui::key_code(a.c_str()) };
 	if ( edit_key(w, es, nav, caret, ke) )
 	    return true;
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	return true;
     }
-    if ( kind == "text" )
+    if ( kind == ui::event_kind::text )
     {
 	edit_text_run(w, es, nav, caret, ev);
 	return true;
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	var a = format("{}", ev["action"]);
 	// Build-pane rows dispatch by ROW (act + command + mode are the
@@ -3735,7 +3739,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	}
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind != ui::event_kind::key )
 	return true;	// focus / resize: the loop recomposes anyway
 
     // OWNER RULING (IDE-10c): backing out of ANY pane — help, options,
@@ -4407,7 +4411,8 @@ bool IdeSession::vi_exec(long doc, const char *a, long n)
 			// loop below makes ring-returning calls
     for ( long i = 0; i < n; i = i + 1 )
     {
-	var e = { "event": "action", "action": an };
+	var e = { "event": "action", "event_code": ui::event_kind::action,
+		  "action": an };
 	if ( !apply_ide_event(doc, e) )
 	    return false;
     }
@@ -4442,10 +4447,10 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     cont = true;
     var mode;
     ui::get(mode, w, es, "vimode");
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     if ( mode == "insert" )
     {
-	if ( kind != "key" )
+	if ( kind != ui::event_kind::key )
 	    return false;		// typing types; chords act
 	var ia;
 	if ( !scoped_action(ia, w, es, "insert", ev) )
@@ -4459,15 +4464,14 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     }
     // NORMAL mode. Keys stay on the shared implementations; esc clears
     // a pending count/operator (nothing pending: the pane's, or inert).
-    if ( kind == "key" )
+    if ( kind == ui::event_kind::key )
     {
-	var k = format("{}", ev["key"]);
-	if ( k != "esc" || !vi_pending(w, es) )
+	if ( ev["key_code"] != ui::key::esc || !vi_pending(w, es) )
 	    return false;
 	vi_pending_clear(w, es);
 	return true;
     }
-    if ( kind != "text" )
+    if ( kind != ui::event_kind::text )
 	return false;
     var t = format("{}", ev["text"]);
     if ( strlen(t.c_str()) != 1 )
