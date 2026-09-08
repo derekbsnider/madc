@@ -20956,8 +20956,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					       ? node1(N_ADDR, flat, tb) : flat;
 			// `&s.valuemember` — same decay as `&valueobj`; see the
 			// address-of-variable arm above for why N_ADDR is the wrong type.
-			if (tae->expr && is_array_object(tae->expr->datadef()))
-				return translate_expr(tae->expr);
+			// The decay is a fact about carrier STORAGE (an opaque
+			// `long long name[N]` variable or member: the translation IS
+			// the address). A carrier value LVALUE is different: a keyed
+			// or indexed subscript (`var &r = o["h"]` — the reference
+			// initializer the parser wrapped in this address-of), a
+			// reference read, translate to N_DEREF(pointer) and there is
+			// nothing to decay — the address is the pointer under the
+			// deref (&* folds), cast to void* as object_arg_addr's
+			// keyed-subscript arm does. Returning the bare translation
+			// LOADED the slot's first word and bound the reference to
+			// that integer (c2mir: "assigning integer without cast to
+			// pointer"; SIGSEGV in madarray_key_slot / madarray_assign_int
+			// — tests/testvarrefslot.mad).
+			if (tae->expr && is_array_object(tae->expr->datadef())) {
+				node_t inner = translate_expr(tae->expr);
+				cir_node *in = inner ? CIR_NODE(inner) : NULL;
+				if (in && in->base.code == N_DEREF)
+					return node2(N_CAST, void_ptr_type(),
+						     node1(N_ADDR, inner, tb), tb);
+				return inner;
+			}
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
 		}
 	}

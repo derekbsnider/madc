@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `var &r = o["h"]` binds the live slot (2026-09-08)
+
+- A local reference bound to a carrier subscript crashed on first use: the
+  CIR builder's address-of arm treated every carrier-typed operand as storage
+  that decays to its address, which is right for a carrier variable or member
+  but wrong for a subscript (a value lvalue — a dereference of the slot
+  pointer); dropping the address bound the reference to the slot's first word
+  (c2mir warned "assigning integer without cast to pointer", then SIGSEGV in
+  `madarray_key_slot`). The arm now decides by the translation's shape: a
+  dereference keeps its address (the slot pointer, as a `var &` PARAMETER
+  already bound it), storage still decays. `tests/testvarrefslot.mad` pins
+  object-slot, whole-carrier, scalar-slot, indexed-slot and parameter forms
+  against the g++/clang++ std::map analogue.
+
 ### Web target: a remote X display paints — GTK's cairo renderer by default there (2026-09-08)
 
 - **S0 (window resize leaves the exposed region black) reproduced and traced
