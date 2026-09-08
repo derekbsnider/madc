@@ -97,7 +97,8 @@ come from the scope tables (profile data), the primary button is the
 choose contract. The terminal is byte-identical (unknown hints).
 
 **P2b — File → Open Project….** `default.menu` gains `File openproject Open
-Project…` beside Open File…. The command asks the host for the native open
+Project…` in the project group (beside Project…; the File menu's first rows and
+their separator keep their places). The command asks the host for the native open
 dialog through the existing request/response verb (`dialog_request` mode
 `openproject`; the terminal and a headless session get the prompt, mode
 `openproject`), and the answer loads the manifest: `proj_startup`'s read is

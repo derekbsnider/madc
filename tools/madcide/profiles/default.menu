@@ -17,7 +17,6 @@
 # (a title for every command the bar does not carry).
 
 File editfile Open File…
-File openproject Open Project…
 File insertfile Insert File… [editable]
 File -
 File save Save [editable]
@@ -25,6 +24,7 @@ File saveas Save As… [editable]
 File savequit Save and Exit [editable]
 File -
 File project Project…
+File openproject Open Project…
 File projaddcur Add Current File to Project
 File -
 File shell Shell
