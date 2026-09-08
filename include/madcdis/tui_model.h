@@ -488,6 +488,44 @@ public:
     }
 };
 
+// The INVERSE adapter — a key back to the bytes a terminal would have sent
+// for it (madcide polish P3b-2: what the IDE writes to a program running on
+// its embedded Terminal's pty when the user types at it). ONE table with
+// tui_keyparse above: every key the parser yields round-trips through
+// these bytes (the unit battery pins it) — the xterm/VT100 spellings the
+// parser's CSI/SS3 arms read (the CSI form for the cursor keys, the tilde
+// codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
+// control chord is its control byte; a printable is itself; `none` is
+// empty.
+inline std::string tui_key_bytes(const tui_keyev &k)
+{
+    switch ( k.kind )
+    {
+	case tui_key::ch:	 return std::string(1, k.ch);
+	case tui_key::ctrl:
+	    if ( k.ch >= 'a' && k.ch <= 'z' )
+		return std::string(1, (char)(k.ch - 'a' + 1));
+	    if ( k.ch >= '\\' && k.ch <= '_' )		// ^\ ^] ^^ ^_
+		return std::string(1, (char)(k.ch - 0x40));
+	    return std::string();
+	case tui_key::enter:	 return std::string("\r");
+	case tui_key::tab:	 return std::string("\t");
+	case tui_key::backspace: return std::string("\x7f");
+	case tui_key::esc:	 return std::string("\x1b");
+	case tui_key::up:	 return std::string("\x1b[A");
+	case tui_key::down:	 return std::string("\x1b[B");
+	case tui_key::right:	 return std::string("\x1b[C");
+	case tui_key::left:	 return std::string("\x1b[D");
+	case tui_key::home:	 return std::string("\x1b[H");
+	case tui_key::end:	 return std::string("\x1b[F");
+	case tui_key::ins:	 return std::string("\x1b[2~");
+	case tui_key::del:	 return std::string("\x1b[3~");
+	case tui_key::pgup:	 return std::string("\x1b[5~");
+	case tui_key::pgdn:	 return std::string("\x1b[6~");
+	default:		 return std::string();
+    }
+}
+
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
 // (events are interpreted against the focusables the last compose

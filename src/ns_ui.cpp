@@ -1638,6 +1638,17 @@ int64_t key_code(const char *name)
     return (int64_t)k.kind;
 }
 
+bool key_bytes(madc::value &out, const char *name)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) )
+	return false;
+    std::string bytes = madc::hub::tui_key_bytes(k);
+    out = madc::value(bytes);
+    return !bytes.empty();
+}
+
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------
 // The original grid-frontend API, kept as the terminal target's names over
 // the same handles: tui_open() IS open("term").

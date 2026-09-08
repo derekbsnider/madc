@@ -845,3 +845,46 @@ TEST_CASE("chords — bindings win over navigation; a swap restores it")
     REQUIRE(ev.size() == 1u);
     CHECK(ev[0].kind == tui_event_kind::focus);
 }
+
+TEST_CASE("keybytes — the inverse of the parser: every key round-trips through its bytes")
+{
+    // madcide polish P3b-2: what the IDE writes to a program on its embedded
+    // terminal's pty for a key the user typed — ONE table with tui_keyparse:
+    // feeding a key's bytes back to the parser yields that key again.
+    using madc::hub::tui_key_bytes;
+    const tui_key named[] = {
+	tui_key::enter, tui_key::tab, tui_key::backspace, tui_key::esc,
+	tui_key::up, tui_key::down, tui_key::right, tui_key::left,
+	tui_key::home, tui_key::end, tui_key::ins, tui_key::del,
+	tui_key::pgup, tui_key::pgdn
+    };
+    for ( size_t i = 0; i < sizeof(named) / sizeof(named[0]); ++i )
+    {
+	tui_keyev k(named[i]);
+	std::string b = tui_key_bytes(k);
+	REQUIRE(!b.empty());
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	p.feed(b.data(), b.size(), out);
+	p.flush(out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == named[i]);
+    }
+    // Control chords: ^a..^z are their control bytes; ^\ ^] ^^ ^_ too.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, 'c')) == std::string("\x03"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, 'z')) == std::string("\x1a"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, ']')) == std::string("\x1d"));
+    {
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	std::string b = tui_key_bytes(tui_keyev(tui_key::ctrl, 'k'));
+	p.feed(b.data(), b.size(), out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == tui_key::ctrl);
+	CHECK(out[0].ch == 'k');
+    }
+    // A printable is itself; none is nothing.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ch, ' ')) == " ");
+    CHECK(tui_key_bytes(tui_keyev()).empty());
+}

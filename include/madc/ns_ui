@@ -343,6 +343,12 @@ namespace ui {
     // -> its ui::key value; ui::key::none when it is not a key spelling.
     // For an application that synthesizes a key event from an action name.
     int64_t key_code(const char *name);
+    // A key spelling -> the BYTES a terminal would have sent for it (the
+    // xterm/VT100 sequences the terminal target's own parser reads, so the
+    // two are one table): what an IDE writes to a program on its embedded
+    // terminal's pty when the user types at it. False (out empty) when the
+    // name is not a key spelling. A text run is its own bytes already.
+    bool    key_bytes(value &out, const char *name);
 
     // ---- script-hosted targets (the web target is one; a test fake is
     // another). A host is a table of C function pointers a madc fragment
