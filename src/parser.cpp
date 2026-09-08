@@ -40333,6 +40333,30 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    DataDef *ternary_dd = tdd;
 		    if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
 			ternary_dd = fdd;
+		    // [expr.cond]/4 with the CARRIER (`var`): one arm a value (a
+		    // variable, a keyed slot, a `value &`), the other a type the
+		    // carrier's registered operator= rows take (a char pointer, a
+		    // number, a bool — its converting surface): the conditional
+		    // is a value PRVALUE — the class arm wins the implicit
+		    // conversion; there is none the other way. The overload owner
+		    // answers "does it convert" with the same rows `v = x` binds.
+		    // Without this `c ? php::trim(p) : v` typed as char* and the
+		    // lowering's two arms could never agree.
+		    {
+			DataDefCLASS *tcls = operand_object_class(ternary->true_expr);
+			DataDefCLASS *fcls = operand_object_class(ternary->false_expr);
+			if ( (tcls == &ddARRAY) != (fcls == &ddARRAY) )
+			{
+			    DataDef *other = tcls == &ddARRAY ? fdd : tdd;
+			    if ( other && !other->unqualified()->as_class_dd() )
+			    {
+				std::vector<const DataDef *> argt;
+				argt.push_back(other);
+				if ( ddARRAY.findMethodOverload("operator=", argt, 0, NULL) )
+				    ternary_dd = &ddARRAY;
+			    }
+			}
+		    }
 
 		    // C ternary type unification for pointer-flavored
 		    // branches. Each branch has an *effective* type:

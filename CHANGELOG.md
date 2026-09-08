@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### `c ? v : php::trim(p)` is a value (2026-09-08)
+
+- A conditional mixing a `var` with a scalar or a char pointer — a
+  function's `const char*` result, a string literal, a number, an int against
+  a keyed slot (`x.is_null() ? 1 : x`) — failed the c2mir check ("lvalue
+  required as unary & operand"), and with the char pointer on the left it
+  typed as `char*`. C++ [expr.cond]/4 applies: the class arm wins the
+  implicit conversion and the conditional is a value prvalue. The parser now
+  types it as the carrier when the other arm binds one of the carrier's
+  `operator=` rows, and the lowering materializes a temporary the SELECTED
+  arm assigns through that row — the other arm is never evaluated, exactly as
+  in C++. Two `var` lvalues keep the lvalue conditional.
+  `tests/testvarternary.mad` pins every shape against a `std::string` oracle
+  (g++ and clang++ agree).
+
 ### madcide: menus and commands are data (S1, 2026-09-08)
 
 - The GUI chrome spine: `tools/madcide/profiles/default.menu` is the ONE
