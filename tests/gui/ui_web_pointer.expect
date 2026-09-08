@@ -1,0 +1,14 @@
+PTR open
+PTR 1 down 10
+PTR 1 snapshot caret=r sel=
+PTR 2 drag 15
+PTR 2 snapshot caret=o sel=reef
+PTR 3 up 15
+PTR 3 snapshot caret=o sel=reef
+PTR 4 down 3
+PTR 4 snapshot caret=  sel=
+PTR 5 down 25
+PTR 5 snapshot caret=  sel=
+PTR 6 down 22
+PTR 6 snapshot caret=l sel=
+PTR closed

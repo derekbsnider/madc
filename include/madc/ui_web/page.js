@@ -1,9 +1,10 @@
 // ui_web/page.js — the web target's ONE embedded page: the DOM applier for
 // the engine's keyed operations (web_model::compose) and the input relay
-// that posts raw key spellings and printable runs back (web_model::
-// apply_input). No key -> action logic lives here and no editor knowledge:
-// the page reconciles what the engine composed and reports what the user
-// did, in the TUI's own vocabulary (tui_key_name spellings).
+// that posts raw key spellings, printable runs and pointer positions back
+// (web_model::apply_input). No key -> action logic lives here and no
+// editor knowledge: the page reconciles what the engine composed and
+// reports what the user did — keys in the TUI's own vocabulary
+// (tui_key_name spellings), a pointer as the line and column it hit.
 (function () {
   'use strict';
   var root = document.getElementById('root');
@@ -279,6 +280,105 @@
     if (t) post({ kind: 'text', text: t });
   });
   document.addEventListener('mousedown', function () { setTimeout(function () { kb.focus(); }, 0); });
+
+  // ---- pointer: a gesture on an editor, hit-tested to (line, column) ----
+  // The page knows geometry, the engine knows the document: a press, a
+  // drag and a release on an edit node are posted as the index of the line
+  // element and the UTF-16 column the browser's caret hit test resolved to
+  // (in the TUI vocabulary's spirit — a fact about where, never what to do).
+  // web_model turns them into a byte offset over the rows it emitted for
+  // that key and the application places its caret and selection: ONE caret
+  // model for mouse and keyboard. Native selection is suppressed — the
+  // engine draws the selection it owns. A drag posts only when the
+  // position changed, so a held button costs nothing while it rests.
+  var drag = null;                  // { el, line, col } while a button is down
+
+  function editOf(target) {
+    for (var el = target; el && el !== root; el = el.parentNode)
+      if (el.classList && el.classList.contains('edit')) return el;
+    return null;
+  }
+
+  function lineHeight(ed) {
+    var f = ed.firstElementChild;
+    return (f && f.getBoundingClientRect().height) || 16;
+  }
+
+  // The (line, col) under (x, y) within `ed`: the point is clamped into
+  // the visible line area (a press past the last line lands on it, one
+  // in the padding on the nearest line), the browser's caret hit test
+  // yields a text position, the .line ancestor is the row and the text
+  // before the position its UTF-16 column. Past the text on a line the
+  // hit test itself resolves to the line's end.
+  function hitPos(ed, x, y) {
+    var first = ed.firstElementChild, last = ed.lastElementChild;
+    if (!first) return null;
+    var r = ed.getBoundingClientRect();
+    var top = Math.max(r.top, first.getBoundingClientRect().top);
+    var bottom = Math.min(r.top + ed.clientHeight, last.getBoundingClientRect().bottom) - 1;
+    y = Math.min(Math.max(y, top), bottom);
+    x = Math.min(Math.max(x, r.left), r.left + ed.clientWidth - 1);
+    var node = null, off = 0;
+    if (document.caretPositionFromPoint) {
+      var p = document.caretPositionFromPoint(x, y);
+      if (p) { node = p.offsetNode; off = p.offset; }
+    } else if (document.caretRangeFromPoint) {
+      var cr = document.caretRangeFromPoint(x, y);
+      if (cr) { node = cr.startContainer; off = cr.startOffset; }
+    }
+    var line = null;
+    for (var n = node; n && n !== ed; n = n.parentNode)
+      if (n.parentNode === ed) { line = n; break; }
+    if (!line) {
+      // The hit test answered outside the rows (the container itself, a
+      // gap): the line element under the clamped point, at its end.
+      for (var m = document.elementFromPoint(x, y); m && m !== ed; m = m.parentNode)
+        if (m.parentNode === ed) { line = m; break; }
+      if (!line) return null;
+      node = line; off = line.childNodes.length;
+    }
+    var rg = document.createRange();
+    rg.setStart(line, 0);
+    try { rg.setEnd(node, off); } catch (e) { rg.selectNodeContents(line); }
+    return { line: Array.prototype.indexOf.call(ed.children, line), col: rg.toString().length };
+  }
+
+  function postPointer(phase, ed, x, y) {
+    var pos = hitPos(ed, x, y);
+    if (!pos) return;
+    if (drag && phase === 'drag' && pos.line === drag.line && pos.col === drag.col) return;
+    if (drag) { drag.line = pos.line; drag.col = pos.col; }
+    post({ kind: 'pointer', phase: phase, key: ed.dataset.key, line: pos.line, col: pos.col });
+  }
+
+  root.addEventListener('mousedown', function (e) {
+    if (e.button !== 0) return;
+    var ed = editOf(e.target);
+    if (!ed) return;
+    var r = ed.getBoundingClientRect();
+    // The scrollbar is the browser's: a press on it scrolls, nothing more.
+    if (e.clientX - r.left >= ed.clientWidth || e.clientY - r.top >= ed.clientHeight) return;
+    e.preventDefault();               // no native selection: the engine draws its own
+    drag = { el: ed, line: -1, col: -1 };
+    postPointer('down', ed, e.clientX, e.clientY);
+    kb.focus();
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    if (!(e.buttons & 1)) { drag = null; return; }   // the release happened elsewhere
+    var ed = drag.el, r = ed.getBoundingClientRect();
+    // Past the top or bottom edge the view creeps a line per move, so a
+    // drag can select beyond the fold.
+    if (e.clientY < r.top) ed.scrollTop -= lineHeight(ed);
+    else if (e.clientY >= r.top + ed.clientHeight) ed.scrollTop += lineHeight(ed);
+    postPointer('drag', ed, e.clientX, e.clientY);
+  });
+  document.addEventListener('mouseup', function (e) {
+    if (!drag || e.button !== 0) return;
+    var ed = drag.el;
+    drag = null;
+    postPointer('up', ed, e.clientX, e.clientY);
+  });
 
   // ---- viewport facts: rows x cols in text cells -------------------------
   function reportSize() {
