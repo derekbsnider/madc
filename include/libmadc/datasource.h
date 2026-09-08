@@ -146,7 +146,9 @@ private:
 	    // P3b-1): the live parse handle / the project manifest run in a
 	    // child through the process owner — process family, like exec.
 	    { "madcrun", domain::execution, family::process, true, true },
-	    { "madcproj", domain::execution, family::process, true, true }
+	    { "madcproj", domain::execution, family::process, true, true },
+	    // a command on a pseudo-terminal (the embedded Terminal's shell)
+	    { "pty", domain::execution, family::process, true, true }
 	};
 	for ( std::size_t i = 0; i < sizeof(schemes) / sizeof(schemes[0]); ++i )
 	{

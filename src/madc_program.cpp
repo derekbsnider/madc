@@ -4943,6 +4943,22 @@ void flush_before_spawn()
     std::cerr.flush();
 }
 
+// `madcrun://<handle>?pty` / `madcproj://<manifest>?pty`: the child on a
+// pseudo-terminal (the embedded Terminal — a console program gets its
+// keyboard and a real tty); without the suffix, pipes (Output). True =
+// the suffix was present and stripped from `spec`.
+bool strip_pty_suffix(std::string &spec)
+{
+    static const char suffix[] = "?pty";
+    const size_t n = sizeof(suffix) - 1;
+    if ( spec.size() > n && spec.compare(spec.size() - n, n, suffix) == 0 )
+    {
+	spec.erase(spec.size() - n);
+	return true;
+    }
+    return false;
+}
+
 class RunChannelFactory : public DataChannelRegistry::Factory
 {
 public:
@@ -4951,17 +4967,20 @@ public:
 				      error *err = nullptr) const override
     {
 	(void)mode;
-	int64_t handle = atoll(source.path().c_str());
+	std::string spec = source.path();
+	const bool pty = strip_pty_suffix(spec);
+	int64_t handle = atoll(spec.c_str());
 	parse_tu_state *st = parse_tu_get(handle);
 	if ( !st || !st->child || !parse_tree_backend_ready(*st->child) )
 	{
 	    detail::set_channel_error(err, "madcrun: no runnable parse handle at "
-				   + source.path());
+				   + spec);
 	    return std::unique_ptr<DataChannel>();
 	}
 	flush_before_spawn();
 	ProcessOptions options;
 	options.inherit_stderr = true;
+	options.pty = pty;
 #ifdef _WIN32
 	std::string snapshot_path;
 	int tfd = madc::detail::make_temp_file("madc_run", snapshot_path);
@@ -5013,7 +5032,8 @@ public:
 				      error *err = nullptr) const override
     {
 	(void)mode;
-	const std::string manifest_path = source.path();
+	std::string manifest_path = source.path();
+	const bool pty = strip_pty_suffix(manifest_path);
 	ProjectManifest manifest;
 	std::string merr;
 	if ( !read_project_manifest(manifest_path, manifest, merr) )
@@ -5035,6 +5055,7 @@ public:
 	flush_before_spawn();
 	ProcessOptions options;
 	options.inherit_stderr = true;
+	options.pty = pty;
 #ifdef _WIN32
 	options.args.push_back("--project");
 	options.args.push_back(manifest_path);

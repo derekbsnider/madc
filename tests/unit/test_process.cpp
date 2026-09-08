@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <dirent.h>
 #include <string>
 #include <unistd.h>
@@ -350,3 +351,54 @@ TEST_CASE("Process child_body: fork-as-isolation through the owner — the body'
 	ch->close();
 	CHECK(ch->exit_status() == 3);
 }
+
+#ifndef _WIN32
+TEST_CASE("Process pty: the child runs on a pseudo-terminal — isatty holds, the master is one bidirectional endpoint")
+{
+	// madcide polish P3b-2: the embedded Terminal runs programs on a pty so
+	// prompts flush and isatty holds; the master fd is both channels.
+	madc::ProcessOptions options;
+	options.pty = true;
+	options.child_body = []() -> int {
+		const char *msg = isatty(STDOUT_FILENO) && isatty(STDIN_FILENO)
+			? "tty-yes\n" : "tty-no\n";
+		ssize_t n = ::write(STDOUT_FILENO, msg, strlen(msg));
+		(void)n;
+		// Echo one line typed at us back in upper case.
+		char buf[64];
+		ssize_t got = ::read(STDIN_FILENO, buf, sizeof(buf) - 1);
+		if ( got > 0 )
+		{
+			for ( ssize_t i = 0; i < got; ++i )
+				if ( buf[i] >= 'a' && buf[i] <= 'z' )
+					buf[i] = (char)(buf[i] - 'a' + 'A');
+			ssize_t m = ::write(STDOUT_FILENO, buf, (size_t)got);
+			(void)m;
+		}
+		return 5;
+	};
+	madc::Process process(madc::DataSource("exec://<pty-body>"), options);
+	madc::error err;
+	REQUIRE(process.start(&err));
+	CHECK(process.stdin_channel().capabilities().write);
+	CHECK(process.stdout_channel().capabilities().read);
+	CHECK_FALSE(process.stderr_channel().capabilities().read);	// the pty is the child's stderr
+	const char line[] = "abc\n";
+	REQUIRE(madc::write_all(process.stdin_channel(), line, sizeof(line) - 1, &err));
+	// Read until the child exits: the tty echoes what we wrote, then the
+	// child's answers arrive (\n comes back as \r\n through the tty).
+	std::string all;
+	unsigned char buf[256];
+	for ( ;; )
+	{
+		std::size_t n = 0;
+		if ( !process.stdout_channel().read(buf, sizeof(buf), n, &err) || n == 0 )
+			break;
+		all.append((const char *)buf, n);
+	}
+	REQUIRE(process.wait(&err));
+	CHECK(all.find("tty-yes") != std::string::npos);
+	CHECK(all.find("ABC") != std::string::npos);
+	CHECK(process.exit_status() == 5);
+}
+#endif

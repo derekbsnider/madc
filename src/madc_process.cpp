@@ -18,8 +18,14 @@
 #include <windows.h>
 #else
 #include <sys/wait.h>
+#include <sys/ioctl.h>	/* TIOCSCTTY: the pty child's controlling terminal */
 #include <time.h>	/* nanosleep: wait_or_kill's grace slices (MT-3b) */
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <util.h>	/* openpty (libSystem) */
+#else
+#include <pty.h>	/* openpty (glibc >= 2.34: libc; older: libutil) */
+#endif
 
 extern char **environ;
 #endif
@@ -522,6 +528,12 @@ bool Process::start(error *err)
 				       " platform (no fork): spawn a child of self");
 		return false;
 	}
+	if ( _->options.pty )
+	{
+		set_process_error(err, "process pty is not supported on this"
+				       " platform yet (ConPTY is the named residue)");
+		return false;
+	}
 	// One command-line string, re-split by the child's CRT under the MS
 	// quoting rules. CreateProcess owns the executable search for the
 	// first token (app dir, cwd, system dirs, PATH; .exe appended), so
@@ -663,7 +675,28 @@ bool Process::start(error *err)
 	int output_fds[2] = { -1, -1 };
 	int error_fds[2] = { -1, -1 };
 	int exec_fds[2] = { -1, -1 };
-	if ( !make_cloexec_pipe(input_fds, err)
+	int pty_master = -1, pty_slave = -1;
+	const bool pty = _->options.pty;
+	if ( pty )
+	{
+		// The pseudo-terminal replaces the three stdio pipes: the
+		// slave is the child's stdio (its controlling terminal), the
+		// master the parent's one bidirectional endpoint.
+		if ( ::openpty(&pty_master, &pty_slave, NULL, NULL, NULL) != 0 )
+		{
+			set_process_errno(err, "process openpty failed", errno);
+			return false;
+		}
+		::fcntl(pty_master, F_SETFD, FD_CLOEXEC);
+		::fcntl(pty_slave, F_SETFD, FD_CLOEXEC);
+		if ( !make_cloexec_pipe(exec_fds, err) )
+		{
+			close_fd(pty_master);
+			close_fd(pty_slave);
+			return false;
+		}
+	}
+	else if ( !make_cloexec_pipe(input_fds, err)
 	  || !make_cloexec_pipe(output_fds, err)
 	  || (!_->options.inherit_stderr && !make_cloexec_pipe(error_fds, err))
 	  || !make_cloexec_pipe(exec_fds, err) )
@@ -683,13 +716,32 @@ bool Process::start(error *err)
 		close_pipe(output_fds);
 		close_pipe(error_fds);
 		close_pipe(exec_fds);
+		close_fd(pty_master);
+		close_fd(pty_slave);
 		set_process_errno(err, "process fork failed", number);
 		return false;
 	}
 	if ( child == 0 )
 	{
 		close_fd(exec_fds[0]);
-		if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
+		if ( pty )
+		{
+			// A new session whose controlling terminal is the slave.
+			close_fd(pty_master);
+			if ( ::setsid() < 0
+			  || ::ioctl(pty_slave, TIOCSCTTY, 0) < 0
+			  || ::dup2(pty_slave, STDIN_FILENO) < 0
+			  || ::dup2(pty_slave, STDOUT_FILENO) < 0
+			  || ::dup2(pty_slave, STDERR_FILENO) < 0 )
+			{
+				int number = errno;
+				report_child_error(exec_fds[1], number);
+				::_exit(127);
+			}
+			if ( pty_slave > STDERR_FILENO )
+				close_fd(pty_slave);
+		}
+		else if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
 		  || ::dup2(output_fds[1], STDOUT_FILENO) < 0
 		  || (error_fds[1] >= 0 && ::dup2(error_fds[1], STDERR_FILENO) < 0) )
 		{
@@ -727,6 +779,7 @@ bool Process::start(error *err)
 	close_fd(output_fds[1]);
 	close_fd(error_fds[1]);
 	close_fd(exec_fds[1]);
+	close_fd(pty_slave);
 	int exec_error = 0;
 	bool exec_failed = read_exec_error(exec_fds[0], exec_error);
 	close_fd(exec_fds[0]);
@@ -735,6 +788,7 @@ bool Process::start(error *err)
 		close_fd(input_fds[1]);
 		close_fd(output_fds[0]);
 		close_fd(error_fds[0]);
+		close_fd(pty_master);
 		int status = 0;
 		while ( ::waitpid(child, &status, 0) < 0 && errno == EINTR ) {}
 		set_process_errno(err, "process exec failed for " + _->source.path(), exec_error);
@@ -742,9 +796,20 @@ bool Process::start(error *err)
 	}
 
 	_->child = child;
-	_->stdin_pipe.assign(input_fds[1]);
-	_->stdout_pipe.assign(output_fds[0]);
-	_->stderr_pipe.assign(error_fds[0]);
+	if ( pty )
+	{
+		// ONE master, two channel views: the write side is a dup so
+		// each channel owns the fd it closes; the stderr channel stays
+		// unassigned (the child's stderr is the pty).
+		_->stdin_pipe.assign(::dup(pty_master));
+		_->stdout_pipe.assign(pty_master);
+	}
+	else
+	{
+		_->stdin_pipe.assign(input_fds[1]);
+		_->stdout_pipe.assign(output_fds[0]);
+		_->stderr_pipe.assign(error_fds[0]);
+	}
 	_->has_started = true;
 	return true;
 #endif // !_WIN32
@@ -1164,6 +1229,10 @@ private:
 class ExecChannelFactory : public DataChannelRegistry::Factory
 {
 public:
+	// pty: the child on a pseudo-terminal (the pty:// scheme — madcide's
+	// embedded Terminal runs the shell and terminal-mode commands on it).
+	explicit ExecChannelFactory(bool pty = false) : pty_(pty) {}
+
 	std::unique_ptr<DataChannel> open(const DataSource &source,
 					  ChannelOpenMode mode,
 					  error *err = nullptr) const override
@@ -1194,6 +1263,7 @@ public:
 		ProcessOptions options;
 		options.args.assign(words.begin() + 1, words.end());
 		options.inherit_stderr = true;
+		options.pty = pty_;
 		std::unique_ptr<Process> process(
 			new Process(DataSource("exec://" + words[0]), options));
 		if ( !process->start(err) )
@@ -1201,6 +1271,9 @@ public:
 		return std::unique_ptr<DataChannel>(
 			new ExecDataChannel(std::move(process)));
 	}
+
+private:
+	bool pty_;
 };
 
 } // namespace
@@ -1217,6 +1290,9 @@ void register_exec_channel_factory(DataChannelRegistry &registry)
 	registry.register_factory(
 		"exec", std::unique_ptr<DataChannelRegistry::Factory>(
 				new ExecChannelFactory()));
+	registry.register_factory(
+		"pty", std::unique_ptr<DataChannelRegistry::Factory>(
+				new ExecChannelFactory(true)));
 }
 
 } // namespace detail

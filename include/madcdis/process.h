@@ -45,6 +45,14 @@ struct ProcessOptions
 	// Files the owner removes once the child is reaped (a snapshot the
 	// child ran from); removed in the destructor, after the reap.
 	std::vector<std::string> cleanup_paths;
+	// The child on a PSEUDO-TERMINAL (madcide polish P3b-2, the embedded
+	// Terminal): its stdin/stdout/stderr are the pty slave — its
+	// controlling terminal (prompts flush, isatty holds, the tty echoes
+	// what is written to it) — and the master is ONE fd that is both the
+	// stdin channel (write) and the stdout channel (read); the stderr
+	// channel is unreadable (the child's stderr is the pty). POSIX only:
+	// start() refuses it on Windows (ConPTY is the named residue).
+	bool pty = false;
 };
 
 class Process
