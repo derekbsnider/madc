@@ -833,6 +833,15 @@ bool Process::start(error *err)
 #endif // !_WIN32
 }
 
+bool Process::is_pty() const
+{
+#ifdef _WIN32
+	return false;
+#else
+	return _->has_started && _->options.pty;
+#endif
+}
+
 DataChannel &Process::stdin_channel() { return _->stdin_pipe; }
 DataChannel &Process::stdout_channel() { return _->stdout_pipe; }
 DataChannel &Process::stderr_channel() { return _->stderr_pipe; }
@@ -1236,6 +1245,11 @@ public:
 	int exit_status() const override
 	{
 		return process_ && process_->exited() ? process_->exit_status() : -1;
+	}
+
+	bool is_terminal() const override
+	{
+		return process_ && !closed_ && process_->is_pty();
 	}
 
 private:

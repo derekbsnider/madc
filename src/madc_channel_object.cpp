@@ -310,6 +310,12 @@ int64_t channel::exit_status()
 	return s->channel ? s->channel->exit_status() : s->exit_status;
 }
 
+bool channel::is_terminal()
+{
+	ChannelState *s = state(impl_);
+	return s->channel && s->channel->is_terminal();
+}
+
 // Readiness probes (MT-4b) — the select scan's three-state contract
 // (chan_poll_recv's shape): 1 = progress now, 0 = would wait, -1 = dead.
 int64_t channel::poll_state()

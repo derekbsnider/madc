@@ -413,6 +413,11 @@ namespace madc {
 	// (exec://, madcrun://, madcproj://) once close() reaped it —
 	// 128+signal for a killed child; -1 = no child / not finished.
 	int64_t exit_status();
+	// The far end is a TERMINAL (a pty:// or ?pty child on POSIX: the
+	// program sees a tty — echo, CR->LF, isatty); false on pipes (every
+	// other channel, and Windows until ConPTY) — the caller emulates
+	// the line discipline it needs.
+	bool is_terminal();
 
     private:
 	channel(const channel &);

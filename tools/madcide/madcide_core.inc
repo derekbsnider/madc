@@ -3339,6 +3339,11 @@ void term_pump(long w, long es, long tdoc, long stopc, long inc)
 	ui::set(w, es, "termlive", 0);
 	return;
     }
+    // A pty gives the program a line discipline (echo, CR->LF); on pipes
+    // (Windows until ConPTY) the pump emulates the two a console program
+    // needs: what was typed is echoed onto the screen and Enter ends the
+    // line with LF, or fgets would wait forever for a newline.
+    bool tty = tc.is_terminal();
     var cases;
     cases[0] = stopc;
     cases[1] = madc::chan_readable(tc);
@@ -3357,7 +3362,17 @@ void term_pump(long w, long es, long tdoc, long stopc, long inc)
 	}
 	if ( idx == 2 )
 	{
-	    tc.write(got);		// the keystrokes' bytes to the child
+	    if ( tty )
+		tc.write(got);		// the keystrokes' bytes to the child
+	    else
+	    {
+		var b = got;
+		if ( b == "\r" )
+		    b = "\n";
+		ui::term_feed(w, tdoc, b.c_str(), strlen(b.c_str()));
+		ui::set(w, tdoc, "modified", false);
+		tc.write(b);
+	    }
 	    continue;
 	}
 	if ( idx != 1 )

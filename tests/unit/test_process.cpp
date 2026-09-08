@@ -402,3 +402,31 @@ TEST_CASE("Process pty: the child runs on a pseudo-terminal — isatty holds, th
 	CHECK(process.exit_status() == 5);
 }
 #endif
+
+TEST_CASE("exec-style channels say whether their far end is a terminal")
+{
+	// madcide's Terminal tab emulates the line discipline itself on pipes
+	// (Windows until ConPTY): the channel tells it which it got.
+	madc::ProcessOptions pipes;
+	pipes.inherit_stderr = true;
+	pipes.child_body = []() -> int { return 0; };
+	std::unique_ptr<madc::Process> p(new madc::Process(madc::DataSource("exec://<body>"), pipes));
+	madc::error err;
+	REQUIRE(p->start(&err));
+	CHECK_FALSE(p->is_pty());
+	std::unique_ptr<madc::DataChannel> ch = madc::detail::exec_channel_over(std::move(p));
+	CHECK_FALSE(ch->is_terminal());
+	ch->close();
+#ifndef _WIN32
+	madc::ProcessOptions pty;
+	pty.pty = true;
+	pty.child_body = []() -> int { return 0; };
+	std::unique_ptr<madc::Process> q(new madc::Process(madc::DataSource("exec://<pty-body>"), pty));
+	REQUIRE(q->start(&err));
+	CHECK(q->is_pty());
+	std::unique_ptr<madc::DataChannel> tch = madc::detail::exec_channel_over(std::move(q));
+	CHECK(tch->is_terminal());
+	tch->close();
+	CHECK_FALSE(tch->is_terminal());	// closed: no far end any more
+#endif
+}

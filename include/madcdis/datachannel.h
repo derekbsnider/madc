@@ -62,6 +62,11 @@ public:
 	// reaped (an exec-style channel after close(); the process-facing
 	// shape: 128+signal for a killed child); -1 = no child, or not yet.
 	virtual int exit_status() const { return -1; }
+	// The channel's far end is a TERMINAL (a pty master: the child sees a
+	// tty with a line discipline — echo, CR->LF, isatty); false for pipes
+	// and every other channel. An owner emulating a terminal over pipes
+	// (madcide's Terminal tab on Windows until ConPTY) reads this.
+	virtual bool is_terminal() const { return false; }
 };
 
 // Optional extension for message-oriented channels. Each call transfers one

@@ -80,6 +80,9 @@ public:
 	bool started() const;
 	bool exited() const;
 	int exit_status() const;
+	// The child runs on a pseudo-terminal (the pty option honoured by
+	// start()); false on pipes — and always on Windows for now.
+	bool is_pty() const;
 	void terminate();
 
 	// Spawn `executable` with the caller's full argv (argv[0] included)

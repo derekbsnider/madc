@@ -69,6 +69,9 @@ public:
 	// for a killed child; -1 = no child / not finished. (The script
 	// fragment include/madc/ns_madc declares the same member.)
 	int64_t exit_status();
+	// The far end is a terminal (a pty:// / ?pty child on POSIX); false
+	// on pipes — the caller emulates the line discipline it needs.
+	bool is_terminal();
 
 private:
 	channel(const channel &);
