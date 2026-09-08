@@ -7,8 +7,12 @@ PTR 3 up 15
 PTR 3 snapshot caret=o sel=reef
 PTR 4 down 3
 PTR 4 snapshot caret=  sel=
-PTR 5 down 25
+PTR 5 down 24
 PTR 5 snapshot caret=  sel=
 PTR 6 down 22
-PTR 6 snapshot caret=l sel=
+PTR 6 snapshot caret=a sel=
+PTR 7 down 20
+PTR 7 snapshot caret=é sel=
+PTR 8 drag 23
+PTR 8 snapshot caret=b sel=éa
 PTR closed

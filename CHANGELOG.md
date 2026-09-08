@@ -37,6 +37,14 @@
   and `tests/gui/ui_web_pointer.mad` (real MouseEvents through the real
   handlers and hit test under Xvfb: press, drag-select, release, past a
   line's end, below the last line, after a two-byte character).
+- **Fix found on the way**: the page used the engine's BYTE columns as
+  string indices, so after a multi-byte character the caret, selection and
+  spans drew one cell late (two after an emoji) — a silent misdraw that the
+  mouse would have surfaced as "the caret lands on the wrong letter". The
+  page now converts byte columns to string indices once per rendered line
+  (`unitsOf`, the inverse of the engine's `web_byte_col`); the wire stays
+  bytes. The GUI test's last line is `héab` so the misdraw is visible
+  (caret on `a`, not `b`; a drag lights `éa`, not `éab`).
 - Not here: a click on a `choice` option (select + choose), double-click
   word selection, shift-click extension, and the TUI twin (xterm SGR mouse
   reporting through the term target) — the event shape is ready for all of

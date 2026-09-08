@@ -7,10 +7,13 @@
 // text shows the result. Steps: a press on line 2 col 2, a drag to line 3
 // col 1 (the selection lights), the release; a press past the end of a
 // line (its end); a press below the last line (its end); a press after a
-// two-byte character (the UTF-16 column becomes a byte offset). Every
+// two-byte character (the UTF-16 column becomes a byte offset, and the
+// caret the page draws back sits on the character AFTER it — the byte
+// column converted to a string index, not used as one); a drag across
+// that character (the selection covers it once, "éa", not "éab"). Every
 // gesture is a synthetic MouseEvent dispatched at coordinates the page
 // measured — the real handlers and the real hit test run.
-var doc = "one\ntwo\nthree\nfour\nhéllo";
+var doc = "one\ntwo\nthree\nfour\nhéab";
 long caret = 0;
 long mark = -1;
 long anchor = -1;
@@ -143,6 +146,16 @@ int main()
 	    {
 		stage = 6;
 		gesture(t, "mousedown", 4, 2);	// after "hé": two units, three bytes
+	    }
+	    else if ( stage == 6 )
+	    {
+		stage = 7;
+		gesture(t, "mousedown", 4, 1);	// before the é
+	    }
+	    else if ( stage == 7 )
+	    {
+		stage = 8;
+		gesture(t, "mousemove", 4, 3);	// drag over "éa"
 	    }
 	    else
 		break;

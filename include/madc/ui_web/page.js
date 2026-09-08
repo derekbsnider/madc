@@ -70,10 +70,26 @@
     return e;
   }
 
+  // A BYTE column in a row's UTF-8 text -> the index into the page's
+  // decoded (UTF-16) string: one unit per code point below U+10000, two for
+  // a four-byte sequence (a surrogate pair). The engine speaks bytes (its
+  // caret, selection and span offsets are document byte offsets), the DOM
+  // speaks units; this is the ONE conversion, the inverse of the engine's
+  // web_byte_col. A column past the text clamps to its length.
+  function unitsOf(t, bytes) {
+    var i = 0, b = 0;
+    while (i < t.length && b < bytes) {
+      var code = t.codePointAt(i);
+      b += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      i += code >= 0x10000 ? 2 : 1;
+    }
+    return i;
+  }
+
   // One edit line: per-character class sets (highlight spans, selection,
-  // caret) coalesced into runs. Columns are BYTE offsets from the engine;
-  // the page's text is the same bytes decoded, so ASCII-heavy documents
-  // line up exactly and multi-byte runs stay within their span.
+  // caret) coalesced into runs. Columns arrive as BYTE offsets from the
+  // engine and are converted to string indices per line (unitsOf), so a
+  // multi-byte character costs one cell, not two or three.
   function renderLine(row, lineNo, caret, sel) {
     var t = row.t || '';
     var n = t.length;
@@ -81,19 +97,20 @@
     for (var i = 0; i <= n; i++) classes[i] = '';
     var spans = row.s || [];
     for (var k = 0; k < spans.length; k++) {
-      var start = spans[k][0], len = spans[k][1], cls = ' c-' + spans[k][2];
-      for (var c = start; c < start + len && c < n; c++) classes[c] += cls;
+      var start = unitsOf(t, spans[k][0]), end = unitsOf(t, spans[k][0] + spans[k][1]);
+      var cls = ' c-' + spans[k][2];
+      for (var c = start; c < end && c < n; c++) classes[c] += cls;
     }
     if (sel) {
       var l0 = sel[0][0], c0 = sel[0][1], l1 = sel[1][0], c1 = sel[1][1];
       if (lineNo >= l0 && lineNo <= l1) {
-        var from = lineNo === l0 ? c0 : 0;
-        var to = lineNo === l1 ? c1 : n + 1;
+        var from = lineNo === l0 ? unitsOf(t, c0) : 0;
+        var to = lineNo === l1 ? unitsOf(t, c1) : n + 1;
         for (var s2 = from; s2 < to && s2 <= n; s2++) classes[s2] += ' sel';
       }
     }
     if (caret && caret.line === lineNo) {
-      var cc = Math.min(caret.col, n);
+      var cc = unitsOf(t, caret.col);
       classes[cc] += ' caret';
     }
     var line = document.createElement('div');
