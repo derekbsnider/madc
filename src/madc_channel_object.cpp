@@ -18,6 +18,7 @@ struct ChannelState
 	std::string pending;
 	bool eof = false;
 	bool failed = false;
+	int exit_status = -1;	// kept past close(): the reaped child's status
 };
 
 ChannelState *state(void *impl)
@@ -298,8 +299,15 @@ void channel::close()
 	if ( s->channel )
 	{
 		s->channel->close();
+		s->exit_status = s->channel->exit_status();
 		s->channel.reset();
 	}
+}
+
+int64_t channel::exit_status()
+{
+	ChannelState *s = state(impl_);
+	return s->channel ? s->channel->exit_status() : s->exit_status;
 }
 
 // Readiness probes (MT-4b) — the select scan's three-state contract

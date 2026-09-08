@@ -4,6 +4,14 @@
 
 ### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
 
+- Run works in the window: the program runs in a child (the live parse
+  forked — nothing execs) and its output streams into the Output tab,
+  ending with its exit status; the project Run and a manifest command in
+  terminal mode take the same route. Run used to be a silent no-op there;
+  a request the window cannot serve (the shell, until the Terminal tab) is
+  now said on the status line. Engine: the `madcrun://` and `madcproj://`
+  channel schemes; the process owner's `child_body` (fork through the one
+  spawn owner) and `exit_status`.
 - The window gains VS Code's bottom tool window in our palette: a panel,
   optionally visible (View → Toggle Panel), with tabs — Problems (the
   diagnostics rows; a click or Enter goes to the line) and Output (the

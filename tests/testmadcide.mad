@@ -1705,6 +1705,28 @@ int main()
 	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
 	    panels = panels + 1;
     println("panel-toggle: panels={}", panels);
+
+    // -- polish P3b-1: Run in a window — the live parse runs in a CHILD
+    //    (madcrun://, the fork through the one spawn owner; nothing
+    //    execs) whose output streams into the Output tab's [build] text,
+    //    ending with the child's exit status. The terminal keeps the
+    //    inherited-stdio handoff (the clauses above).
+    php::file_put_contents("madc_ide_run.mad",
+	"int main() { println(\"run-says-hi\"); return 3; }\n");
+    edit_file(w, es, doc, "madc_ide_run.mad");
+    long rdoc = active_doc(w, es, doc);
+    run_buffer(w, es, rdoc);
+    madc::task_drain();
+    long rbdoc = build_doc_if_any(w, es);
+    var rtxt = "";
+    if ( rbdoc != 0 )
+	ui::text(rtxt, w, rbdoc);
+    ui::get(msg, w, es, "msg");
+    println("run-window: said={} exit={} tab={} live={} msg={}",
+	    rtxt.index("run-says-hi") >= 0 ? 1 : 0,
+	    rtxt.index("[exit 3]") >= 0 ? 1 : 0,
+	    es_int(w, es, "panel", 0), es_int(w, es, "buildlive", 0), msg);
+    remove("madc_ide_run.mad");
     S.panel(false);
 
     // :q on the now-clean buffer quits — false propagates out of the

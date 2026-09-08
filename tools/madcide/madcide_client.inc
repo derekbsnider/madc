@@ -62,7 +62,10 @@ void client_service(IdeSession &S, long t)
 	return;
     }
     if ( !ui::suspend(t) )
+    {
+	S.request_refused(req);		// never a silent drop (P3b-1)
 	return;
+    }
     S.term_exec(req);
     if ( req["pause"].as_integer() != 0 )
 	terminal_return_pause();

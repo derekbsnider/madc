@@ -58,6 +58,10 @@ public:
 	// abandon.
 	virtual void cancel() {}
 	virtual void close() = 0;
+	// The exit status of the child behind this channel once it has been
+	// reaped (an exec-style channel after close(); the process-facing
+	// shape: 128+signal for a killed child); -1 = no child, or not yet.
+	virtual int exit_status() const { return -1; }
 };
 
 // Optional extension for message-oriented channels. Each call transfers one

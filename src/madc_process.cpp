@@ -470,6 +470,10 @@ Process::~Process()
 		while ( ::waitpid(_->child, &status, 0) < 0 && errno == EINTR ) {}
 	}
 #endif
+	// The files the child ran from (a run snapshot) go once it is gone —
+	// the owner's promise to the factory that spawned through it.
+	for ( std::size_t i = 0; i < _->options.cleanup_paths.size(); ++i )
+		std::remove(_->options.cleanup_paths[i].c_str());
 }
 
 bool Process::start(error *err)
@@ -511,6 +515,12 @@ bool Process::start(error *err)
 		environment[it->first] = it->second;
 
 #ifdef _WIN32
+	if ( _->options.child_body )
+	{
+		set_process_error(err, "process child_body is not supported on this"
+				       " platform (no fork): spawn a child of self");
+		return false;
+	}
 	// One command-line string, re-split by the child's CRT under the MS
 	// quoting rules. CreateProcess owns the executable search for the
 	// first token (app dir, cwd, system dirs, PATH; .exe appended), so
@@ -695,6 +705,16 @@ bool Process::start(error *err)
 			int number = errno;
 			report_child_error(exec_fds[1], number);
 			::_exit(127);
+		}
+		if ( _->options.child_body )
+		{
+			// Fork-as-isolation through the owner: no exec — the
+			// errno pipe closes EMPTY (the parent reads "no exec
+			// error" and returns), then the body runs on the
+			// dup'd stdio and its return is the exit status.
+			close_fd(exec_fds[1]);
+			int rc = _->options.child_body();
+			::_exit(rc & 0xff);
 		}
 		::execve(executable.c_str(), &argv[0], &environment_vector[0]);
 		int number = errno;
@@ -1041,7 +1061,7 @@ public:
 	ChannelCapabilities capabilities() const override
 	{
 		ChannelCapabilities capabilities;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return capabilities;
 		capabilities.read = process_->stdout_channel().capabilities().read;
 		capabilities.write = process_->stdin_channel().capabilities().write;
@@ -1053,7 +1073,7 @@ public:
 		  error *err = nullptr) override
 	{
 		bytes_read = 0;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 		{
 			set_process_error(err, "exec channel is closed");
 			return false;
@@ -1065,7 +1085,7 @@ public:
 		   error *err = nullptr) override
 	{
 		bytes_written = 0;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 		{
 			set_process_error(err, "exec channel is closed");
 			return false;
@@ -1075,19 +1095,19 @@ public:
 
 	void close_read() override
 	{
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->stdout_channel().close_read();
 	}
 
 	void close_write() override
 	{
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->close_stdin();
 	}
 
 	void close() override
 	{
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return;
 		// Stdin EOF + a closed stdout let the child run out; wait()
 		// reaps it. A CANCELLED channel escalates (MT-3b): the child
@@ -1101,13 +1121,14 @@ public:
 			process_->wait_or_kill(2000);
 		else
 			process_->wait();
-		process_.reset();
+		closed_ = true;	// the Process stays for exit_status(); its
+				// pipes are shut, its child reaped
 	}
 
 	// The waitable READ side is the child's stdout pipe.
 	intptr_t read_poll_handle() const override
 	{
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return (intptr_t)-1;
 		PollableDataChannel *pollable =
 			pollable_surface(&process_->stdout_channel());
@@ -1122,13 +1143,21 @@ public:
 	void cancel() override
 	{
 		cancelled_ = true;
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->terminate();
+	}
+
+	// The reaped child's status (close() waited it) — kept in the
+	// Process until this channel dies; -1 before the reap.
+	int exit_status() const override
+	{
+		return process_ && process_->exited() ? process_->exit_status() : -1;
 	}
 
 private:
 	std::unique_ptr<Process> process_;
 	bool cancelled_ = false;
+	bool closed_ = false;
 };
 
 class ExecChannelFactory : public DataChannelRegistry::Factory
@@ -1176,6 +1205,11 @@ public:
 } // namespace
 
 namespace detail {
+
+std::unique_ptr<DataChannel> exec_channel_over(std::unique_ptr<Process> process)
+{
+	return std::unique_ptr<DataChannel>(new ExecDataChannel(std::move(process)));
+}
 
 void register_exec_channel_factory(DataChannelRegistry &registry)
 {

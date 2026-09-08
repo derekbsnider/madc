@@ -48,7 +48,9 @@ extern thread_local bool madc_verbose;
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
-#include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper)
+#include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper);
+				// madcrun:// / madcproj://: Process child_body
+#include "madc_datachannel_internal.h"	// set_channel_error — the run channel factories
 #include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
@@ -4892,10 +4894,203 @@ static parse_tu_state *parse_tu_get(int64_t handle)
     return parse_tu_handles().get(handle);
 }
 
+// ---- the live parse / the project as a DATA SOURCE (madcide polish P3b-1)
+// madcrun://<parse handle> runs the handle's parsed tree, madcproj://
+// <manifest> the --project JIT lane, each in a CHILD whose stdout (stderr
+// folded into it — one stream, as a terminal shows) is the channel's read
+// side. Through the ONE spawn owner: a Process with a child_body — fork-
+// as-isolation with the owner's pipes, reap and cancel — so a window can
+// pump a program's output into its Output tab while the editor stays live
+// (the terminal keeps parse_run's inherited-stdio handoff; the owner
+// ruling holds: the tree is forked, nothing execs, nothing re-parses).
+// Windows: no fork — parse_run's own arm, the snapshot + --run-frozen (or
+// --project) child of self, as an ordinary exec:// spawn; the owner
+// removes the snapshot once the child is reaped (cleanup_paths). The
+// project lane needs an engine and the forest policy: the Program that
+// opened the handles registers them (the IDE's own Program).
+namespace {
+
+struct run_channel_policy
+{
+    MadcEngine *engine;
+    bool forest_bind;
+    std::string forest_bind_path;
+};
+
+run_channel_policy &run_policy()
+{
+    static run_channel_policy p = { (MadcEngine *)0, true, std::string() };
+    return p;
+}
+
+#ifndef _WIN32
+// The child's first steps before the program runs: the task runtime's
+// atfork reset, CLI-parity signal dispositions, stderr onto the stream.
+void run_child_prologue()
+{
+    __madc_task_atfork_child();
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    ::dup2(STDOUT_FILENO, STDERR_FILENO);
+}
+#endif
+
+// The stdio the parent buffered must not duplicate into the child's pipe.
+void flush_before_spawn()
+{
+    fflush(NULL);
+    std::cout.flush();
+    std::cerr.flush();
+}
+
+class RunChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+    std::unique_ptr<DataChannel> open(const DataSource &source,
+				      ChannelOpenMode mode,
+				      error *err = nullptr) const override
+    {
+	(void)mode;
+	int64_t handle = atoll(source.path().c_str());
+	parse_tu_state *st = parse_tu_get(handle);
+	if ( !st || !st->child || !parse_tree_backend_ready(*st->child) )
+	{
+	    detail::set_channel_error(err, "madcrun: no runnable parse handle at "
+				   + source.path());
+	    return std::unique_ptr<DataChannel>();
+	}
+	flush_before_spawn();
+	ProcessOptions options;
+	options.inherit_stderr = true;
+#ifdef _WIN32
+	std::string snapshot_path;
+	int tfd = madc::detail::make_temp_file("madc_run", snapshot_path);
+	if ( tfd < 0 )
+	{
+	    detail::set_channel_error(err, "madcrun: cannot create the run snapshot");
+	    return std::unique_ptr<DataChannel>();
+	}
+	close(tfd);
+	if ( madc_cir_freeze(st->child, st->display_name.c_str(),
+			     snapshot_path.c_str(), false,
+			     /*mir_cache=*/true, /*ledger=*/NULL,
+			     /*progress=*/false) != 0 )
+	{
+	    std::remove(snapshot_path.c_str());
+	    detail::set_channel_error(err, "madcrun: cannot freeze the parse for the child");
+	    return std::unique_ptr<DataChannel>();
+	}
+	options.args.push_back("--run-frozen=" + snapshot_path);
+	options.cleanup_paths.push_back(snapshot_path);
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
+#else
+	::Program *child = st->child;
+	const std::string name = st->display_name;
+	options.child_body = [child, name]() -> int {
+	    run_child_prologue();
+	    std::string argv0 = name;
+	    char *guest_argv[2];
+	    guest_argv[0] = &argv0[0];
+	    guest_argv[1] = (char *)0;
+	    int rc = madc_cir_execute(child, name.c_str(), 1, guest_argv);
+	    return rc < 0 ? 1 : (rc & 0xff);	// the CLI's own mapping
+	};
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://<madcrun>"), options));
+#endif
+	if ( !process->start(err) )
+	    return std::unique_ptr<DataChannel>();
+	return detail::exec_channel_over(std::move(process));
+    }
+};
+
+class ProjectRunChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+    std::unique_ptr<DataChannel> open(const DataSource &source,
+				      ChannelOpenMode mode,
+				      error *err = nullptr) const override
+    {
+	(void)mode;
+	const std::string manifest_path = source.path();
+	ProjectManifest manifest;
+	std::string merr;
+	if ( !read_project_manifest(manifest_path, manifest, merr) )
+	{
+	    detail::set_channel_error(err, "madcproj: " + merr);
+	    return std::unique_ptr<DataChannel>();
+	}
+	if ( manifest.tus.empty() )
+	{
+	    detail::set_channel_error(err, "madcproj: empty manifest " + manifest_path);
+	    return std::unique_ptr<DataChannel>();
+	}
+	run_channel_policy &policy = run_policy();
+	if ( !policy.engine )
+	{
+	    detail::set_channel_error(err, "madcproj: no engine registered the scheme");
+	    return std::unique_ptr<DataChannel>();
+	}
+	flush_before_spawn();
+	ProcessOptions options;
+	options.inherit_stderr = true;
+#ifdef _WIN32
+	options.args.push_back("--project");
+	options.args.push_back(manifest_path);
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
+#else
+	MadcEngine *engine = policy.engine;
+	const bool forest_bind = policy.forest_bind;
+	const std::string forest_bind_path = policy.forest_bind_path;
+	options.child_body = [engine, manifest, manifest_path, forest_bind,
+			      forest_bind_path]() -> int {
+	    run_child_prologue();
+	    std::string argv0 = manifest_path;
+	    char *guest_argv[2];
+	    guest_argv[0] = &argv0[0];
+	    guest_argv[1] = (char *)0;
+	    int rc = madc_project_execute(*engine, manifest, 1, guest_argv,
+					  forest_bind, forest_bind_path);
+	    return rc < 0 ? 1 : (rc & 0xff);
+	};
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://<madcproj>"), options));
+#endif
+	if ( !process->start(err) )
+	    return std::unique_ptr<DataChannel>();
+	return detail::exec_channel_over(std::move(process));
+    }
+};
+
+// Registered by the Program that opens parse / project handles (the IDE's
+// own runtime Program) — once; the project policy follows the latest.
+void register_run_channel_factories(::Program &self)
+{
+    run_channel_policy &policy = run_policy();
+    policy.engine = self.engine;
+    policy.forest_bind = self.registration_policy.enable_forest_bind;
+    policy.forest_bind_path = self.forest_bind_path;
+    static bool registered = false;
+    if ( registered )
+	return;
+    registered = true;
+    DataChannelRegistry::instance().register_factory(
+	"madcrun", std::unique_ptr<DataChannelRegistry::Factory>(
+			new RunChannelFactory()));
+    DataChannelRegistry::instance().register_factory(
+	"madcproj", std::unique_ptr<DataChannelRegistry::Factory>(
+			new ProjectRunChannelFactory()));
+}
+
+} // namespace
+
 int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
 				    const std::string &display_name)
 {
+    register_run_channel_factories(self);	// madcrun:// serves this handle
     self.clear_diagnostics();
     self.clear_error();
     parse_tu_state *st = new parse_tu_state();
@@ -4920,6 +5115,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     struct stat sb;
     if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
 	return 0;
+    register_run_channel_factories(self);	// madcrun:// serves this handle
     self.clear_diagnostics();
     self.clear_error();
     parse_tu_state *st = new parse_tu_state();
@@ -5449,6 +5645,7 @@ static parse_project_state *parse_project_get(int64_t handle)
 int64_t internal_program_project_open(::Program &self,
 				      const std::string &manifest_path)
 {
+    register_run_channel_factories(self);	// madcproj:// runs this project
     ProjectManifest manifest;
     std::string err;
     if ( !read_project_manifest(manifest_path, manifest, err) )

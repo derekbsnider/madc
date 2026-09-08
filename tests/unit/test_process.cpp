@@ -304,3 +304,49 @@ TEST_CASE("process exec does not inherit unrelated data channels")
 	unrelated->close();
 	std::remove(path.c_str());
 }
+
+TEST_CASE("Process child_body: fork-as-isolation through the owner — the body's output is the stdout channel, its return the exit status")
+{
+	// madcide polish P3b-1: madcrun:// / madcproj:// run the live parse in a
+	// child WITHOUT exec — through the one spawn owner, so the pipes, the
+	// reap and the cancel are its. The errno pipe closes empty (no exec
+	// error), the body runs on the dup'd stdio, its return is the status.
+	madc::ProcessOptions options;
+	options.inherit_stderr = true;
+	options.child_body = []() -> int {
+		const char msg[] = "body-says-hi\n";
+		ssize_t n = ::write(1, msg, sizeof(msg) - 1);
+		(void)n;
+		return 7;
+	};
+	madc::Process process(madc::DataSource("exec://<body>"), options);
+	madc::error err;
+	REQUIRE(process.start(&err));
+	REQUIRE(process.close_stdin(&err));
+	std::vector<unsigned char> stdout_bytes = read_channel(process.stdout_channel(), &err);
+	REQUIRE(process.wait(&err));
+	CHECK(as_string(stdout_bytes) == "body-says-hi\n");
+	CHECK(process.exited());
+	CHECK(process.exit_status() == 7);
+
+	// The exec-style channel over such a process: read = the body's
+	// output, exit_status after close (the reap) = the body's return.
+	madc::ProcessOptions o2;
+	o2.inherit_stderr = true;
+	o2.child_body = []() -> int {
+		const char msg[] = "ch\n";
+		ssize_t n = ::write(1, msg, sizeof(msg) - 1);
+		(void)n;
+		return 3;
+	};
+	std::unique_ptr<madc::Process> p2(
+		new madc::Process(madc::DataSource("exec://<body>"), o2));
+	REQUIRE(p2->start(&err));
+	std::unique_ptr<madc::DataChannel> ch = madc::detail::exec_channel_over(std::move(p2));
+	REQUIRE(ch);
+	CHECK(ch->exit_status() == -1);		// not reaped yet
+	std::vector<unsigned char> got = read_channel(*ch, &err);
+	CHECK(as_string(got) == "ch\n");
+	ch->close();
+	CHECK(ch->exit_status() == 3);
+}

@@ -409,6 +409,10 @@ namespace madc {
 	// endpoint without waiting for graceful completion — an exec://
 	// child is SIGTERMed — so a following close() returns promptly.
 	void cancel();
+	// The exit status of the child behind an exec-style channel
+	// (exec://, madcrun://, madcproj://) once close() reaped it —
+	// 128+signal for a killed child; -1 = no child / not finished.
+	int64_t exit_status();
 
     private:
 	channel(const channel &);

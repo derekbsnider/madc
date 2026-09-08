@@ -122,7 +122,7 @@ same field. Gate: `scripts/verify_pe_release.sh` gains the subsystem read
 (console for madc.exe itself), and a wine-lane reducer emits a `-mwindows`
 program and reads its header back.
 
-## P3 — the bottom pane with tabs; Run routing — P3a BUILT 2026-09-08, P3b next
+## P3 — the bottom pane with tabs; Run routing — P3a + P3b-1 BUILT 2026-09-08, P3b-2 (the Terminal tab) next
 
 **The shape.** VS Code's bottom tool window in our palette: a PANEL region
 that is optionally visible and holds TABS — **Problems** (the diagnostics
@@ -164,12 +164,41 @@ onto the one style (ui_style, the palette); other CSI sequences are
 dropped. `bld-run-cmd` (a manifest command in terminal mode) and the
 Shell request take the same route.
 
-**Slices.** P3a: the panel, the strip, Problems + Output, `show_diags`,
-the commands + menu rows, a GUI fixture (the strip renders; a tab click
-posts its command) and the byte-identity check in testmadcide. P3b: the
-pty channel + the fork-with-stdio verb, the Terminal tab, Run routing by
-kind, the Shell in the Terminal, the no-op fixed (a GUI fixture runs a
-console program and reads its output back from the tab).
+**Slices.** P3a (built): the panel, the strip, Problems + Output,
+`show_diags`, the commands + menu rows, a GUI fixture (the strip renders; a
+tab click posts its command) and the byte-identity check in testmadcide.
+
+**P3b-1 — Run in the window (Output).** The fork of the live parse becomes a
+DATA SOURCE: channel schemes `madcrun://<parse handle>` and
+`madcproj://<manifest>` (registered beside `exec://`) run the tree /
+the --project lane in a child — through the ONE spawn owner: `Process`
+gains a `child_body` option (fork-as-isolation with the owner's pipes; the
+body runs `madc_cir_execute` / `madc_project_execute` and `_exit`s;
+POSIX only — Windows keeps the snapshot + `--run-frozen` child of self as
+an ordinary `exec://` spawn), so the pipes, the reap and the cancel are
+the owner's. madcide pumps the channel like `build_pump` into the Output
+tab ([run] output → the `[build]` buffer, tagged) as a cooperative task
+(the editor stays live; Stop cancels). `run_buffer` / the project Run
+route there under `haspanel` — the silent no-op is gone; the terminal
+keeps the suspend + inherited-stdio path byte-identical. `client_service`
+reports a request the client cannot serve instead of dropping it.
+
+**P3b-2 — the Terminal tab (pty).** `Process` gains a `pty` option
+(`forkpty`; the master is ONE fd-backed channel that is both the stdin
+and the stdout channel) so `madcrun://`, `madcproj://` and `pty://cmd`
+(the Shell, manifest commands in terminal mode) run on a controlling
+terminal — prompts flush, `isatty` holds. madcide keeps a `[terminal]`
+buffer the pump fills through a bounded VT filter (`\r` `\n` `\b`, CSI /
+OSC sequences dropped; SGR colours onto the one style later); the Terminal
+tab's node is an `edit` over it (the line-DOM, caret at the end, a
+`terminal` hint); a press on it sets `termfocus`, a press in a window
+clears it; while focused, keys and text travel the one input path and the
+core writes them to the child through a VALUE channel the pump selects on
+(`termin`) — the bytes come from `tui_key_bytes`, the INVERSE of
+`tui_keyparse` beside it in the one key-bytes owner (exposed as
+`ui::key_bytes`); `@terminal esc termunfocus` is baked modal data. A
+console program runs here by the project kind; a gui program keeps
+P3b-1's Output route. Windows: pipes (ConPTY is the named residue).
 
 ## P4 — editor tabs over the buffer ring
 

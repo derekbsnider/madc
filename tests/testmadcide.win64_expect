@@ -154,4 +154,5 @@ vi-toggle: mode='' typed-x=1
 panel-problems: tabs=2 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
 panel-output: t1-active=1 child=content
 panel-toggle: panels=0
+run-window: said=1 exit=1 tab=1 live=0 msg=Run madc_ide_run.mad — Output shows it.
 colon-quit: cont=0

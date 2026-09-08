@@ -81,6 +81,8 @@ class IdeSession
 					// bottom PANEL with tabs is composed
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
+	void request_refused(var &req);	// the client cannot hand over a
+					// terminal for this request: say so
 	void pending_chord(const char *pcs);
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
@@ -3146,9 +3148,18 @@ void append_build_line(long w, long es, long bdoc, const char *text)
 // only fd activity wakes it — real build tools emit whole lines.
 void build_pump(long w, long es, long bdoc, long stopc)
 {
-    var cmd;
-    ui::get(cmd, w, es, "buildcmd");
-    var uri = format("exec://{}", cmd);
+    // The capture SOURCE (polish P3b-1): a URI the registry opens —
+    // exec://<cmd> for a build command, madcrun://<handle> for the live
+    // parse run in a child, madcproj://<manifest> for the project run —
+    // one pump for every stream the Output tab shows.
+    var uri;
+    ui::get(uri, w, es, "buildsrc");
+    if ( uri.is_null() || strlen(uri.c_str()) == 0 )
+    {
+	var cmd;
+	ui::get(cmd, w, es, "buildcmd");
+	uri = format("exec://{}", cmd);
+    }
     madc::channel bc(uri.c_str());
     if ( !bc.ok() )
     {
@@ -3180,27 +3191,53 @@ void build_pump(long w, long es, long bdoc, long stopc)
 	append_build_line(w, es, bdoc, line.c_str());
     }
     bc.close();
-    append_build_line(w, es, bdoc, stopped ? "[stopped]" : "[done]");
+    // The child's exit status (a run's verdict; a build tool's rc) rides
+    // the stream's last line — what the terminal's Run reports on its
+    // status line.
+    long xc = bc.exit_status();
+    if ( stopped )
+	append_build_line(w, es, bdoc, "[stopped]");
+    else if ( xc >= 0 )
+	append_build_line(w, es, bdoc, format("[exit {}]", xc).c_str());
+    else
+	append_build_line(w, es, bdoc, "[done]");
     ui::set(w, es, "buildlive", 0);
 }
 
-void start_build(long w, long es, const char *cmd)
+// ONE capture starter for every stream the [build] buffer / the Output
+// tab shows (polish P3b-1): a build command (exec://), a run of the live
+// parse in a child (madcrun://), the project run (madcproj://). `title`
+// heads the stream; the pump appends the child's exit status at its end.
+void start_capture(long w, long es, const char *title, const char *uri)
 {
+    var t = title;			// ring discipline: own the texts first
+    var u = uri;
     if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	ui::set(w, es, "msg", "A build is already running (Stop first).");
 	return;
     }
     long bdoc = build_doc(w, es);
-    var hdr = format("=== {} ===", cmd);
+    var hdr = format("=== {} ===", t);
     append_build_line(w, es, bdoc, hdr.c_str());
     long stopc = madc::chan_make(1);
     ui::set(w, es, "buildstop", stopc);
-    ui::set(w, es, "buildcmd", cmd);
+    ui::set(w, es, "buildsrc", u);
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
-    ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+    if ( es_flag(w, es, "haspanel") )
+	ui::set(w, es, "msg", format("{} — Output shows it.", t));
+    else
+	ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+}
+
+void start_build(long w, long es, const char *cmd)
+{
+    var c = cmd;			// ring discipline
+    ui::set(w, es, "buildcmd", c);
+    var uri = format("exec://{}", c);
+    start_capture(w, es, c.c_str(), uri.c_str());
 }
 
 void stop_build(long w, long es)
@@ -3443,6 +3480,20 @@ void run_buffer(long w, long es, long doc)
     long h = es_int(w, doc, "phandle", 0);
     if ( h == 0 )
 	return;			// ensure_phandle already said why
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window (polish P3b-1): the live parse runs in a child whose
+	// output streams into the Output tab — the running madc is still
+	// the compiler (the tree is forked, nothing execs); the terminal
+	// below keeps the inherited-stdio handoff. The Terminal tab (P3b-2)
+	// gives console programs their keyboard.
+	var rp;
+	ui::get(rp, w, doc, "path");
+	var title = format("Run {}", rp);
+	var uri = format("madcrun://{}", h);
+	start_capture(w, es, title.c_str(), uri.c_str());
+	return;
+    }
     var rq = { "kind": "run", "doc": doc, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -3453,6 +3504,15 @@ void run_buffer(long w, long es, long doc)
 // before the full-repaint resume.
 void run_in_terminal(long w, long es, const char *cmd)
 {
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window: the command's output streams into Output (its keyboard
+	// arrives with the Terminal tab, P3b-2).
+	var c = cmd;
+	var uri = format("exec://{}", c);
+	start_capture(w, es, c.c_str(), uri.c_str());
+	return;
+    }
     var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -3620,6 +3680,14 @@ void run_project(long w, long es, long doc)
 	show_diags(w, es);
 	ui::set(w, es, "msg",
 		format("Run refused: {} error(s) — fix them first.", errs));
+	return;
+    }
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window: the --project JIT lane in a child, streamed into Output.
+	var title = format("Run project {}", pf);
+	var uri = format("madcproj://{}", pf);
+	start_capture(w, es, title.c_str(), uri.c_str());
 	return;
     }
     var rq = { "kind": "projrun", "pause": 1 };
@@ -3841,6 +3909,13 @@ void cycle_view(long w, long es, long doc)
 // No return-key pause — leaving the shell IS the gesture.
 void open_shell(long w, long es)
 {
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window has no terminal to hand over; the shell arrives with the
+	// Terminal tab (P3b-2). Said, not swallowed.
+	ui::set(w, es, "msg", "No terminal in this window yet — the shell needs the Terminal tab.");
+	return;
+    }
     var rq = { "kind": "shell", "pause": 0 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -5092,6 +5167,16 @@ void IdeSession::dialog_fallback(var &req)
 	start_prompt(w, es, "Project file to open", "openproject");
     else
 	start_prompt(w, es, "Name of file to edit", "editfile");
+}
+
+// A terminal request the client cannot serve (no terminal to suspend —
+// a window, a headless session): the status line says so; the request
+// was silently dropped before polish P3b-1 (fix-what-you-find).
+void IdeSession::request_refused(var &req)
+{
+    var kind = format("{}", req["kind"]);
+    ui::set(w, es, "msg",
+	    format("This client has no terminal to hand over for '{}'.", kind));
 }
 
 void IdeSession::pending_chord(const char *pcs)
