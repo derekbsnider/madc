@@ -9,5 +9,5 @@ split: nextw-enabled=1
 no-selection: blockcopy-enabled=0
 selection: blockcopy-enabled=1 save-enabled=1
 read-only: blockcopy-enabled=0 save-enabled=0
-registry: palette=yes commands=45 duplicates=0
+registry: palette=yes commands=51 duplicates=0
 when: a=1 !b=1 a&&!b=1 a&&b=0 unknown=0 empty=1

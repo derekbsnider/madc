@@ -77,8 +77,12 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
+	void panel(bool has);		// the client renders regions (P3a): the
+					// bottom PANEL with tabs is composed
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
+	void request_refused(var &req);	// the client cannot hand over a
+					// terminal for this request: say so
 	void pending_chord(const char *pcs);
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
@@ -254,7 +258,8 @@ const char *modal_default_keys_text()
 	   "@modes v vimode\n"
 	   "@modes enter modesopen\n"
 	   "@modes esc modesclose\n"
-	   "@pane esc paneclose\n";
+	   "@pane esc paneclose\n"
+	   "@terminal ^] termunfocus\n";
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
@@ -881,11 +886,45 @@ long diag_error_count(var &diags)
     return errs;
 }
 
+// ---- the bottom PANEL (polish P3a) --------------------------------------
+// A region-rendering client (the window) pushes `haspanel`; under it the
+// composer adds a persistent, optionally visible tool window with TABS —
+// Problems (the diagnostics projection) and Output (the [build] stream):
+// VS Code's bottom pane in our palette. State on the bag: `panel`
+// (visible), `paneltab` (the active tab). The terminal never composes it
+// (byte-identical). Commands in the one vocabulary: panel (toggle),
+// problems, output (show that tab).
+void show_panel_tab(long w, long es, const char *tab)
+{
+    var t = tab;			// ring discipline: own the text first
+    ui::set(w, es, "panel", 1);
+    ui::set(w, es, "paneltab", t);
+}
+
+// ONE way to surface the diagnostics: the terminal's diags pane, or — in
+// a window — the panel's Problems tab. Six sites used to set the pane by
+// hand; a second surface is where they would have drifted.
+void show_diags(long w, long es)
+{
+    if ( es_flag(w, es, "haspanel") )
+	show_panel_tab(w, es, "problems");
+    else
+	ui::set(w, es, "pane", "diags");
+}
+
+// A build starting: a window shows its stream in the Output tab; the
+// terminal reaches [build] via ^P as before.
+void show_output(long w, long es)
+{
+    if ( es_flag(w, es, "haspanel") )
+	show_panel_tab(w, es, "output");
+}
+
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
     long n = refresh_diags(w, es, doc);
-    ui::set(w, es, "pane", "diags");
+    show_diags(w, es);
     if ( n == 0 )
 	ui::set(w, es, "msg", "Check: clean.");
     else
@@ -1193,6 +1232,64 @@ void confirm_choices(var &out, long w, long es)
     out = rows;
 }
 
+// The action a modal scope binds to one key — the scope's own data
+// (profile-loaded or the baked defaults), looked up through the ONE
+// modal reader by a synthetic key event. Null = the scope binds nothing
+// for that key. Used to name a dialog's buttons after what the keys do.
+void scope_key_action(var &out, long w, long es, const char *scope,
+		      const char *key)
+{
+    var none;
+    out = none;
+    var ke = { "event": "key", "event_code": ui::event_kind::key };
+    ke["key"] = key;
+    ke["key_code"] = ui::key_code(key);
+    var a;
+    if ( scoped_action(a, w, es, scope, ke) )
+	out = a;
+}
+
+// A list pane's hints as a DIALOG for a chrome-drawing client (polish P2,
+// the S6 treatment for the list overlays): ADDITIVELY, beside the `list`
+// and `focus` hints the grid model reads, `popup` (the overlay), `dialog`
+// {title, filter?, buttons} and `dismiss` (a press outside = the scope's
+// cancel). The buttons are DATA named after what the pane's keys do:
+// the primary picks the selected row (`choose` — the focus owner's enter
+// contract, so every pane's choose arm runs unchanged) under the label
+// the caller gives (null = no primary: a pane whose rows do nothing on
+// choose); Close posts the action the pane's @scope binds to esc — a
+// scope that binds no cancel gets no Close button (confirm_choices'
+// honesty rule). The filter is the text the core holds (null = the pane
+// does not filter). The terminal reads none of it.
+void dialog_hints(var &box, long w, long es, const char *scope,
+		  const char *primary, var &filter)
+{
+    var bh = box["hints"];
+    bh["popup"] = 1;
+    var title = box["label"];
+    var dlg = { "title": title };
+    if ( !filter.is_null() )
+	dlg["filter"] = filter;
+    var btns = {};
+    if ( primary != 0 && strlen(primary) > 0 )
+    {
+	var pb = { "label": primary, "choose": 1 };
+	btns.push(pb);
+    }
+    var cancel;
+    scope_key_action(cancel, w, es, scope, "esc");
+    if ( !cancel.is_null() )
+    {
+	var cb = { "label": "Close" };
+	cb["action"] = cancel;
+	btns.push(cb);
+	bh["dismiss"] = cancel;
+    }
+    dlg["buttons"] = btns;
+    bh["dialog"] = dlg;
+    box["hints"] = bh;
+}
+
 // A prompt row's hints for a window (S6, the prompts as GUI dialogs):
 // the same row the terminal shows as its bottom line carries, ADDITIVELY,
 // the quick-input data a chrome-drawing client renders as a floating
@@ -1389,7 +1486,11 @@ void edit_file(long w, long es, long olddoc, const char *path);
 // The ^P project window (defined after the buffer machinery): the prompt
 // commits membership through these.
 void proj_add(long w, long es, long doc, const char *path0);
+void proj_open(long w, long es, long doc, const char *path0);	// polish P2b: Open Project… (the prompt commits through it)
+void switch_buffer(long w, long es, long olddoc, long idx);	// polish P4: the bufsel prompt commits through it
 bool project_active(long w, long es);
+bool proj_write(long w, long es, long doc);	// polish P2c: the kind toggle persists
+void proj_show(long w, long es, long doc);	// polish P2b: Open Project… shows the window
 void project_rows(long w, long es, long doc);
 // The vi colon line (defined after the verbs it translates to): one ex
 // command, interpreted against the EXISTING vocabulary. False = quit.
@@ -1431,6 +1532,35 @@ bool finish_prompt(long w, long es, long doc, long caret)
     }
     if ( mode == "saveas" )
 	return save_as(w, es, doc, in.c_str());
+    if ( mode == "openproject" )
+    {
+	proj_open(w, es, doc, in.c_str());
+	return true;
+    }
+    if ( mode == "bufsel" )
+    {
+	// The palette's Switch to Buffer…: the ring row whose path or base
+	// name is the answer.
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	long nb = php::count(bufs);
+	for ( long i = 0; i < nb; i = i + 1 )
+	{
+	    var bp = format("{}", bufs[i]["path"]);
+	    var bn = bp;
+	    const char *sl = strrchr(bp.c_str(), '/');
+	    if ( sl != 0 )
+		bn = sl + 1;
+	    if ( bp == in.c_str() || bn == in.c_str() )
+	    {
+		if ( i != es_int(w, es, "bufidx", 0) )
+		    switch_buffer(w, es, doc, i);
+		return true;
+	    }
+	}
+	ui::set(w, es, "msg", format("No buffer '{}'.", in));
+	return true;
+    }
     if ( mode == "projadd" )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
@@ -2245,6 +2375,57 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     out = rows;
 }
 
+// The project's KIND (polish P2c): the manifest's "kind" — console
+// (absent) or gui. It decides the Windows executable's subsystem on a
+// project build (the engine reads the manifest itself) and where Run sends
+// the program's output. Ring-lifetime text; callers own it at once.
+const char *proj_kind(long w, long es)
+{
+    var proj;
+    ui::get(proj, w, es, "proj");
+    if ( proj.is_null() )
+	return "console";
+    var k = proj["kind"];
+    if ( k.is_null() )
+	return "console";
+    return k.c_str();
+}
+
+// A manifest is OPEN (loaded or materialized): the kind row shows, the
+// build rows go project-wide. (project_active is the WINDOW being up — a
+// different fact.)
+bool proj_has_manifest(long w, long es)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    return !pf.is_null() && strlen(pf.c_str()) > 0;
+}
+
+// Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
+// persistence rule) — the ^T Options row's action (opt-projkind). Only a
+// project with a manifest has a kind to set; the implicit project refuses
+// with the reason (its manifest materializes on the second file).
+void proj_toggle_kind(long w, long es, long doc)
+{
+    var proj;
+    ui::get(proj, w, es, "proj");
+    if ( proj.is_null() )
+    {
+	ui::set(w, es, "msg",
+		"No project manifest yet — add a second file (^K I) first.");
+	return;
+    }
+    var cur = proj_kind(w, es);		// own the ring text
+    var nk = "console";
+    if ( cur == "console" )
+	nk = "gui";
+    proj["kind"] = nk;
+    ui::set(w, es, "proj", proj);
+    proj_touch(w, es);
+    if ( proj_write(w, es, doc) )
+	ui::set(w, es, "msg", format("Project kind: {}.", nk));
+}
+
 bool proj_member(long w, long es, long doc, const char *path)
 {
     var rows;
@@ -2390,9 +2571,52 @@ void proj_del(long w, long es, long doc, long option)
     project_rows(w, es, doc);
 }
 
+// THE manifest reader (polish P2b factored it out of the startup read so
+// File -> Open Project… and run_ide's startup are ONE reader): load the
+// manifest at `pf` onto the bag ("proj" + "projfile"), bump the project
+// generation, announce. Malformed content refuses LOUD and leaves the
+// session as it was. False = not loaded (the message says why).
+bool proj_load(long w, long es, var &pf)
+{
+    var txt;
+    if ( !php::file_get_contents(txt, pf.c_str()) )
+    {
+	ui::set(w, es, "msg", format("Cannot read {}.", pf));
+	return false;
+    }
+    var proj;
+    if ( !js::parse(proj, txt) )
+    {
+	ui::set(w, es, "msg", format("{} is not valid JSON.", pf));
+	return false;
+    }
+    if ( !proj.is_object() )
+    {
+	// Valid JSON but not the native OBJECT shape (a scalar, or a
+	// compile_commands array — the read-only import is --project's
+	// lane, not the window's).
+	ui::set(w, es, "msg",
+		format("{} is not a madc project manifest.", pf));
+	return false;
+    }
+    var tus = proj["tus"];
+    if ( tus.is_null() )
+    {
+	ui::set(w, es, "msg",
+		format("{} has no \"tus\" — not a project manifest.", pf));
+	return false;
+    }
+    ui::set(w, es, "proj", proj);
+    ui::set(w, es, "projfile", pf);
+    proj_touch(w, es);
+    ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
+				 php::count(tus)));
+    return true;
+}
+
 // Startup manifest read (run_ide): a <base>.prj.json beside the launch
 // file IS the project — persistence would be pointless if nothing read
-// it back. Malformed content refuses LOUD; the session stays implicit.
+// it back. No file = the implicit single-file project.
 void proj_startup(long w, long es, long doc)
 {
     var lp;
@@ -2402,39 +2626,21 @@ void proj_startup(long w, long es, long doc)
     var pf = format("{}.prj.json", base);
     if ( !php::file_exists(pf) )
 	return;
-    var txt;
-    if ( !php::file_get_contents(txt, pf.c_str()) )
-    {
-	ui::set(w, es, "msg", format("Cannot read {}.", pf));
+    proj_load(w, es, pf);
+}
+
+// File -> Open Project… (polish P2b): the manifest the user chose (the
+// native dialog's answer, or the prompt's) becomes THE project — the same
+// reader run_ide's startup uses — and the Project window opens on it. An
+// empty path (a cancelled dialog) does nothing.
+void proj_open(long w, long es, long doc, const char *path0)
+{
+    var pf = path0;		// ring discipline: own the text first
+    if ( strlen(pf.c_str()) == 0 )
 	return;
-    }
-    var proj;
-    if ( !js::parse(proj, txt) )
-    {
-	ui::set(w, es, "msg", format("{} is not valid JSON.", pf));
+    if ( !proj_load(w, es, pf) )
 	return;
-    }
-    if ( !proj.is_object() )
-    {
-	// Valid JSON but not the native OBJECT shape (a scalar, or a
-	// compile_commands array — the read-only import is --project's
-	// lane, not the window's).
-	ui::set(w, es, "msg",
-		format("{} is not a madc project manifest.", pf));
-	return;
-    }
-    var tus = proj["tus"];
-    if ( tus.is_null() )
-    {
-	ui::set(w, es, "msg",
-		format("{} has no \"tus\" — not a project manifest.", pf));
-	return;
-    }
-    ui::set(w, es, "proj", proj);
-    ui::set(w, es, "projfile", pf);
-    proj_touch(w, es);
-    ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
-				 php::count(tus)));
+    proj_show(w, es, doc);
 }
 
 // Recompute the window's rows onto the bag ("projrows": {path, tag, ti,
@@ -2594,6 +2800,14 @@ bool project_event(long w, long es, long doc, var &ev)
 	{
 	    proj_addcur(w, es, doc);
 	    project_rows(w, es, doc);
+	}
+	else
+	{
+	    // The dialog's Close button / a press outside it (polish P2):
+	    // the @project cancel posted BY NAME.
+	    var pn;
+	    if ( scope_action_named(pn, w, es, "project", ev) && pn == "projclose" )
+		proj_hide(w, es);
 	}
 	return true;
     }
@@ -2853,6 +3067,14 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 	var a = format("{}", ev["action"]);
 	if ( a == "modes" || a == "quit" )
 	    modes_hide(w, es);
+	else
+	{
+	    // The dialog's Close button / a press outside it (polish P2):
+	    // the @modes cancel posted BY NAME.
+	    var mn;
+	    if ( scope_action_named(mn, w, es, "modes", ev) && mn == "modesclose" )
+		modes_hide(w, es);
+	}
 	return true;
     }
     if ( kind != ui::event_kind::key )
@@ -2915,7 +3137,9 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
 // The [build] buffer if it already exists, else 0 — a NON-creating lookup
 // for read-only callers (the composer's live-build panel), so composition
 // never mints a buffer as a side effect.
-long build_doc_if_any(long w, long es)
+// ONE finder for a pseudo-buffer by its bracketed name ([build],
+// [terminal]) — non-creating: composition never mints a buffer.
+long buffer_doc_named(long w, long es, const char *name)
 {
     var bufs;
     ui::get(bufs, w, es, "buffers");
@@ -2923,10 +3147,15 @@ long build_doc_if_any(long w, long es)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == "[build]" )
+	if ( r["path"] == name )
 	    return r["doc"].as_integer();
     }
     return 0;
+}
+
+long build_doc_if_any(long w, long es)
+{
+    return buffer_doc_named(w, es, "[build]");
 }
 
 // The [build] buffer: found-or-created in the buffer table WITHOUT
@@ -2963,9 +3192,18 @@ void append_build_line(long w, long es, long bdoc, const char *text)
 // only fd activity wakes it — real build tools emit whole lines.
 void build_pump(long w, long es, long bdoc, long stopc)
 {
-    var cmd;
-    ui::get(cmd, w, es, "buildcmd");
-    var uri = format("exec://{}", cmd);
+    // The capture SOURCE (polish P3b-1): a URI the registry opens —
+    // exec://<cmd> for a build command, madcrun://<handle> for the live
+    // parse run in a child, madcproj://<manifest> for the project run —
+    // one pump for every stream the Output tab shows.
+    var uri;
+    ui::get(uri, w, es, "buildsrc");
+    if ( uri.is_null() || strlen(uri.c_str()) == 0 )
+    {
+	var cmd;
+	ui::get(cmd, w, es, "buildcmd");
+	uri = format("exec://{}", cmd);
+    }
     madc::channel bc(uri.c_str());
     if ( !bc.ok() )
     {
@@ -2997,26 +3235,249 @@ void build_pump(long w, long es, long bdoc, long stopc)
 	append_build_line(w, es, bdoc, line.c_str());
     }
     bc.close();
-    append_build_line(w, es, bdoc, stopped ? "[stopped]" : "[done]");
+    // The child's exit status (a run's verdict; a build tool's rc) rides
+    // the stream's last line — what the terminal's Run reports on its
+    // status line.
+    long xc = bc.exit_status();
+    if ( stopped )
+	append_build_line(w, es, bdoc, "[stopped]");
+    else if ( xc >= 0 )
+    {
+	var xl = format("[exit {}]", xc);
+	append_build_line(w, es, bdoc, xl.c_str());
+    }
+    else
+	append_build_line(w, es, bdoc, "[done]");
     ui::set(w, es, "buildlive", 0);
 }
 
-void start_build(long w, long es, const char *cmd)
+// ONE capture starter for every stream the [build] buffer / the Output
+// tab shows (polish P3b-1): a build command (exec://), a run of the live
+// parse in a child (madcrun://), the project run (madcproj://). `title`
+// heads the stream; the pump appends the child's exit status at its end.
+void start_capture(long w, long es, const char *title, const char *uri)
 {
+    var t = title;			// ring discipline: own the texts first
+    var u = uri;
     if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	ui::set(w, es, "msg", "A build is already running (Stop first).");
 	return;
     }
     long bdoc = build_doc(w, es);
-    var hdr = format("=== {} ===", cmd);
+    var hdr = format("=== {} ===", t);
     append_build_line(w, es, bdoc, hdr.c_str());
     long stopc = madc::chan_make(1);
     ui::set(w, es, "buildstop", stopc);
-    ui::set(w, es, "buildcmd", cmd);
+    ui::set(w, es, "buildsrc", u);
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
-    ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+    if ( es_flag(w, es, "haspanel") )
+	ui::set(w, es, "msg", format("{} — Output shows it.", t));
+    else
+	ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+}
+
+void start_build(long w, long es, const char *cmd)
+{
+    var c = cmd;			// ring discipline
+    ui::set(w, es, "buildcmd", c);
+    var uri = format("exec://{}", c);
+    start_capture(w, es, c.c_str(), uri.c_str());
+}
+
+// ---- the embedded TERMINAL (polish P3b-2) --------------------------------
+// The panel's Terminal tab: a program on a pseudo-terminal — a console
+// program run from the window (madcrun://<handle>?pty), the project run
+// (madcproj://<manifest>?pty), a manifest command in terminal mode or the
+// Shell (pty://<cmd>). The child's bytes fold into the [terminal] buffer
+// through ui::term_feed (the bounded screen: \r overwrite, \b, tabs,
+// CSI K / 2J; other sequences dropped); what the user types while the
+// terminal has focus (`termfocus`) travels the one input path to the core,
+// which sends the BYTES (ui::key_bytes — the inverse of the terminal's own
+// key parser) down a value channel the pump selects on (`termin`) and
+// writes to the pty. State on the bag: termlive, termfocus, termin,
+// termstop, termsrc. ^] (the @terminal scope's one binding, profile data)
+// gives the keyboard back; a press in an editor window does too.
+long term_doc_if_any(long w, long es)
+{
+    return buffer_doc_named(w, es, "[terminal]");
+}
+
+long term_doc(long w, long es)
+{
+    long existing = term_doc_if_any(w, es);
+    if ( existing != 0 )
+	return existing;
+    long nd = open_buffer_doc(w, es, "[terminal]");
+    push_buffer_row(w, es, nd, "[terminal]");
+    return nd;
+}
+
+void term_feed_text(long w, long tdoc, const char *text)
+{
+    var t = text;			// ring discipline
+    ui::term_feed(w, tdoc, t.c_str(), strlen(t.c_str()));
+    ui::set(w, tdoc, "modified", false);
+}
+
+// The pump: the MT-4b select over {stop, the pty's readable bytes, the
+// keyboard channel}. Bytes read fold into the screen; a keyboard value is
+// written to the child as-is (already bytes); the stop channel SIGTERMs
+// the child (cancel) so close() reaps promptly. EOF = the program ended;
+// its exit status ends the screen.
+void term_pump(long w, long es, long tdoc, long stopc, long inc)
+{
+    var uri;
+    ui::get(uri, w, es, "termsrc");
+    madc::channel tc(uri.c_str());
+    if ( !tc.ok() )
+    {
+	var em = format("[terminal] cannot start: {}\n", tc.last_error());
+	term_feed_text(w, tdoc, em.c_str());
+	ui::set(w, es, "termlive", 0);
+	return;
+    }
+    // A pty gives the program a line discipline (echo, CR->LF); on pipes
+    // (Windows until ConPTY) the pump emulates the two a console program
+    // needs: what was typed is echoed onto the screen and Enter ends the
+    // line with LF, or fgets would wait forever for a newline.
+    bool tty = tc.is_terminal();
+    var cases;
+    cases[0] = stopc;
+    cases[1] = madc::chan_readable(tc);
+    cases[2] = inc;
+    var got;
+    bool stopped = false;
+    char buf[4096];
+    for ( ;; )
+    {
+	long idx = madc::chan_select(got, cases);
+	if ( idx == 0 )
+	{
+	    stopped = true;
+	    tc.cancel();
+	    break;
+	}
+	if ( idx == 2 )
+	{
+	    if ( tty )
+		tc.write(got);		// the keystrokes' bytes to the child
+	    else
+	    {
+		var b = got;
+		if ( b == "\r" )
+		    b = "\n";
+		ui::term_feed(w, tdoc, b.c_str(), strlen(b.c_str()));
+		ui::set(w, tdoc, "modified", false);
+		tc.write(b);
+	    }
+	    continue;
+	}
+	if ( idx != 1 )
+	    break;			// every case dead
+	long n = tc.read(buf, 4096);
+	if ( n <= 0 )
+	    break;			// EOF: the program ended
+	ui::term_feed(w, tdoc, buf, n);
+	ui::set(w, tdoc, "modified", false);
+    }
+    tc.close();
+    long xc = tc.exit_status();
+    if ( stopped )
+	term_feed_text(w, tdoc, "\n[stopped]\n");
+    else if ( xc >= 0 )
+    {
+	var xl = format("\n[exit {}]\n", xc);
+	term_feed_text(w, tdoc, xl.c_str());
+    }
+    else
+	term_feed_text(w, tdoc, "\n[done]\n");
+    ui::set(w, es, "termlive", 0);
+}
+
+// Start a program in the Terminal tab: the screen shows the title, the
+// tab shows, the keyboard is the program's until it ends or ^] hands it
+// back. One program at a time (^C it — the tty delivers SIGINT).
+void start_terminal(long w, long es, const char *title, const char *uri)
+{
+    var t = title;			// ring discipline: own the texts first
+    var u = uri;
+    if ( es_int(w, es, "termlive", 0) != 0 )
+    {
+	ui::set(w, es, "msg", "A program is already running in the Terminal (^C it first).");
+	return;
+    }
+    long tdoc = term_doc(w, es);
+    var hdr = format("=== {} ===\n", t);
+    term_feed_text(w, tdoc, hdr.c_str());
+    long stopc = madc::chan_make(1);
+    long inc = madc::chan_make(64);
+    ui::set(w, es, "termstop", stopc);
+    ui::set(w, es, "termin", inc);
+    ui::set(w, es, "termsrc", u);
+    ui::set(w, es, "termlive", 1);
+    ui::set(w, es, "termfocus", 1);
+    show_panel_tab(w, es, "terminal");
+    go term_pump(w, es, tdoc, stopc, inc);
+    ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
+}
+
+// Send bytes to the running program (the pump writes them to the pty).
+void term_send(long w, long es, var &bytes)
+{
+    long inc = es_int(w, es, "termin", 0);
+    if ( inc != 0 && es_int(w, es, "termlive", 0) != 0 )
+	madc::chan_send(inc, bytes);
+}
+
+// The keyboard while the Terminal has focus: text is its own bytes; a
+// key is the bytes a terminal would send for it (ui::key_bytes); a chord
+// the global table resolved to an action is the keys the user typed — its
+// sequence's spellings, each to bytes — except the @terminal scope's own
+// binding (^] termunfocus, profile data), which hands the keyboard back.
+// True = consumed. Pointer, choose, dialog and focus events pass through
+// (a press elsewhere is how the mouse leaves the terminal).
+bool terminal_event(long w, long es, var &ev)
+{
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
+    {
+	var t = ev["text"];
+	term_send(w, es, t);
+	return true;
+    }
+    if ( kind == ui::event_kind::key || kind == ui::event_kind::action )
+    {
+	var a;
+	if ( scoped_action(a, w, es, "terminal", ev) && a == "termunfocus" )
+	{
+	    ui::set(w, es, "termfocus", 0);
+	    ui::set(w, es, "msg", "Keyboard back to the editor.");
+	    return true;
+	}
+	var spell;
+	if ( kind == ui::event_kind::key )
+	    spell = format("{}", ev["key"]);
+	else
+	    spell = format("{}", ev["seq"]);
+	if ( strlen(spell.c_str()) == 0 )
+	    return true;
+	// A chord's spellings are space-separated: each key's bytes in turn.
+	array keys;
+	php::explode(keys, " ", spell.c_str());
+	long n = php::count(keys);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var one = php::array_get_cstr(keys, i);
+	    var bytes;
+	    if ( ui::key_bytes(bytes, one.c_str()) )
+		term_send(w, es, bytes);
+	}
+	return true;
+    }
+    return false;
 }
 
 void stop_build(long w, long es)
@@ -3107,7 +3568,7 @@ void native_build_task(long w, long es)
     var pane;
     ui::get(pane, w, es, "pane");
     if ( strlen(pane.c_str()) == 0 )
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Build failed: {} problem(s).", php::count(diags)));
 }
@@ -3133,6 +3594,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "buildscope", 0);	// published by the task when live
     ui::set(w, es, "buildstopreq", 0);
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go native_build_task(w, es);
     var md;
     ui::get(md, w, doc, "modified");
@@ -3225,6 +3687,11 @@ void dialog_result(long w, long es, long doc, var &ev)
 	save_as(w, es, doc, path.c_str());
 	return;
     }
+    if ( mode == "openproject" )
+    {
+	proj_open(w, es, doc, path.c_str());
+	return;
+    }
     edit_file(w, es, doc, path.c_str());
 }
 
@@ -3245,7 +3712,7 @@ void run_buffer(long w, long es, long doc)
     long errs = diag_error_count(diags);
     if ( errs > 0 )
     {
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
 	ui::set(w, es, "msg",
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
@@ -3253,6 +3720,30 @@ void run_buffer(long w, long es, long doc)
     long h = es_int(w, doc, "phandle", 0);
     if ( h == 0 )
 	return;			// ensure_phandle already said why
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window (polish P3b): the live parse runs in a child — the
+	// running madc is still the compiler (the tree is forked, nothing
+	// execs). By the project KIND: a console program runs on a pty in
+	// the Terminal tab with its keyboard; a gui program opens its own
+	// window and its stdout/stderr stream into Output. The terminal
+	// below keeps the inherited-stdio handoff.
+	var rp;
+	ui::get(rp, w, doc, "path");
+	var title = format("Run {}", rp);
+	var pk = proj_kind(w, es);
+	if ( pk == "gui" )
+	{
+	    var uri = format("madcrun://{}", h);
+	    start_capture(w, es, title.c_str(), uri.c_str());
+	}
+	else
+	{
+	    var uri = format("madcrun://{}?pty", h);
+	    start_terminal(w, es, title.c_str(), uri.c_str());
+	}
+	return;
+    }
     var rq = { "kind": "run", "doc": doc, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -3263,6 +3754,14 @@ void run_buffer(long w, long es, long doc)
 // before the full-repaint resume.
 void run_in_terminal(long w, long es, const char *cmd)
 {
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window: a terminal-mode command runs on a pty in the Terminal tab.
+	var c = cmd;
+	var uri = format("pty://{}", c);
+	start_terminal(w, es, c.c_str(), uri.c_str());
+	return;
+    }
     var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -3334,7 +3833,7 @@ void proj_run_check(long w, long es, long doc)
     if ( !proj_check_rows(rows, w, es) )
 	return;
     ui::set(w, es, "diags", rows);
-    ui::set(w, es, "pane", "diags");
+    show_diags(w, es);
     long n = php::count(rows);
     if ( n == 0 )
 	ui::set(w, es, "msg", "Project check: clean.");
@@ -3374,7 +3873,7 @@ void project_build_task(long w, long es)
     var pane;
     ui::get(pane, w, es, "pane");
     if ( strlen(pane.c_str()) == 0 )
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Project build failed: {} problem(s).", php::count(diags)));
 }
@@ -3402,6 +3901,7 @@ void start_project_build(long w, long es, long doc, var &kind, var &out)
     ui::set(w, es, "buildscope", 0);	// no cancellation chain reaches
     ui::set(w, es, "buildstopreq", 0);	// the project lane (named residue)
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go project_build_task(w, es);
     ui::set(w, es, "msg", format("Building project {} -> {}", pf, out));
 }
@@ -3426,9 +3926,27 @@ void run_project(long w, long es, long doc)
     long errs = diag_error_count(rows);
     if ( errs > 0 )
     {
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
 	ui::set(w, es, "msg",
 		format("Run refused: {} error(s) — fix them first.", errs));
+	return;
+    }
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window: the --project JIT lane in a child — the Terminal tab
+	// for a console project, Output for a gui one (the kind).
+	var title = format("Run project {}", pf);
+	var pk = proj_kind(w, es);
+	if ( pk == "gui" )
+	{
+	    var uri = format("madcproj://{}", pf);
+	    start_capture(w, es, title.c_str(), uri.c_str());
+	}
+	else
+	{
+	    var uri = format("madcproj://{}?pty", pf);
+	    start_terminal(w, es, title.c_str(), uri.c_str());
+	}
 	return;
     }
     var rq = { "kind": "projrun", "pause": 1 };
@@ -3650,6 +4168,15 @@ void cycle_view(long w, long es, long doc)
 // No return-key pause — leaving the shell IS the gesture.
 void open_shell(long w, long es)
 {
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// A window: the shell on a pty in the Terminal tab. $SHELL falls back
+	// to /bin/sh INSIDE the command (no getenv: the dlsym fallback hands
+	// the pointer back as a long); the exec factory splits on spaces,
+	// so the one word ${SHELL:-/bin/sh} is the whole -c script.
+	start_terminal(w, es, "Shell", "pty://sh -c ${SHELL:-/bin/sh}");
+	return;
+    }
     var rq = { "kind": "shell", "pause": 0 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
@@ -3766,6 +4293,17 @@ void toggle_pane(long w, long es, const char *name)
 // the gesture to the caret, as its mark/bend actions refuse.
 void IdeSession::pointer_event(long doc, long nav, var &ev)
 {
+    // The Terminal tab (polish P3b-2): a press on its node — the [terminal]
+    // buffer is its subject — gives the program the keyboard; a press
+    // anywhere else takes it back. The window logic below never sees it.
+    long tsubj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
+    long tdoc = term_doc_if_any(w, es);
+    if ( tdoc != 0 && tsubj == tdoc )
+    {
+	ui::set(w, es, "termfocus", 1);
+	return;
+    }
+    ui::set(w, es, "termfocus", 0);
     long idx = -1;
     long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
     if ( tag >= 0 && tag < window_count(w, es) )
@@ -3811,6 +4349,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     bool viewing = nav != doc;
     long caret = clamped_caret(w, es, nav);
     ui::set(w, es, "msg", "");
+
+    // The embedded Terminal (polish P3b-2) owns the keyboard while it has
+    // focus and a program runs; pointer/choose/dialog events pass through.
+    if ( es_int(w, es, "termfocus", 0) != 0 && es_int(w, es, "termlive", 0) != 0 )
+    {
+	if ( terminal_event(w, es, ev) )
+	    return true;
+    }
 
     if ( prompt_active(w, es) )
 	return prompt_event(w, es, nav, caret, ev);
@@ -4069,6 +4615,57 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 		start_prompt(w, es, "Save as", "saveas");
 	    return true;
 	}
+	if ( a == "openproject" )
+	{
+	    // File -> Open Project… (polish P2b): the native Open over the
+	    // manifests; the terminal and a headless session keep a prompt.
+	    var none = "";
+	    if ( !dialog_request(w, es, "openproject", "Open Project", none) )
+		start_prompt(w, es, "Project file to open", "openproject");
+	    return true;
+	}
+	if ( a == "panel" )
+	{
+	    // The bottom panel's visibility (polish P3a) — data a window
+	    // renders; the terminal composes no panel either way.
+	    ui::set(w, es, "panel", es_int(w, es, "panel", 0) != 0 ? 0 : 1);
+	    return true;
+	}
+	if ( a == "problems" )
+	{
+	    show_panel_tab(w, es, "problems");
+	    return true;
+	}
+	if ( a == "output" )
+	{
+	    show_panel_tab(w, es, "output");
+	    return true;
+	}
+	if ( a == "terminal" )
+	{
+	    show_panel_tab(w, es, "terminal");
+	    if ( es_int(w, es, "termlive", 0) != 0 )
+		ui::set(w, es, "termfocus", 1);
+	    return true;
+	}
+	if ( a == "bufsel" )
+	{
+	    // Switch to a buffer (polish P4): by ring index when the command
+	    // carries its argument (a tab), else the prompt collects a name.
+	    var arg = ev["arg"];
+	    if ( !arg.is_null() && strlen(arg.c_str()) > 0 )
+	    {
+		var bufs;
+		ui::get(bufs, w, es, "buffers");
+		long idx = php::intval(arg);
+		if ( idx >= 0 && idx < php::count(bufs)
+		  && idx != es_int(w, es, "bufidx", 0) )
+		    switch_buffer(w, es, doc, idx);
+	    }
+	    else
+		start_prompt(w, es, "Buffer", "bufsel");
+	    return true;
+	}
 	if ( a == "shell" )
 	{
 	    open_shell(w, es);
@@ -4178,6 +4775,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	    toggle_profile(w, es);
 	    return true;
 	}
+	if ( a == "opt-projkind" )
+	{
+	    proj_toggle_kind(w, es, doc);
+	    return true;
+	}
+	// A chrome dialog's Close button or a press outside it (polish P2):
+	// the @pane scope's cancel posted BY NAME — what esc does in the
+	// terminal (the S6 rule: buttons post the scope's actions by name).
+	var pc;
+	if ( scope_action_named(pc, w, es, "pane", ev) && pc == "paneclose" )
+	    ui::set(w, es, "pane", "");
 	return true;
     }
     if ( kind != ui::event_kind::key )
@@ -4208,6 +4816,46 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 // it projects the loaded profile's own lines. The Phase-2 gate's third
 // clause (swap leaves the tree identical) is pinned with the help pane
 // hidden.
+// The diagnostics / outline rows as navigable items carrying `goto` — ONE
+// builder for the terminal's diags/outline pane and the window's Problems
+// tab (polish P3a). A project check's rows span TUs: a row from ANOTHER
+// file leads with it (goto opens it; the row carries the file as data
+// either way); rows on the shown buffer stay unprefixed (the JOE shape).
+// Returns the row count (0 = the caller adds its empty-state line).
+long diag_items(var &items, long w, long es, long doc, bool outline_pane)
+{
+    var rows;
+    if ( outline_pane )
+	ui::get(rows, w, es, "outline");
+    else
+	ui::get(rows, w, es, "diags");
+    var dpath;
+    ui::get(dpath, w, doc, "path");
+    long nrows = 0;
+    for ( var row : rows )
+    {
+	var it = { "role": "item" };
+	if ( outline_pane )
+	    it["content"] = format("{} {} :{}", row["kind"],
+				   row["name"], row["line"]);
+	else if ( !row["file"].is_null()
+	       && !(row["file"] == dpath.c_str()) )
+	    it["content"] = format("{} {}:{} {} {}", row["file"],
+				   row["line"], row["column"],
+				   row["severity"], row["message"]);
+	else
+	    it["content"] = format("{}:{} {} {}", row["line"],
+				   row["column"], row["severity"],
+				   row["message"]);
+	var ga = {};
+	ga[] = "goto";
+	it["actions"] = ga;
+	items[] = it;
+	nrows = nrows + 1;
+    }
+    return nrows;
+}
+
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
@@ -4289,10 +4937,6 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     long wc = window_count(w, es);
     {
 	eh["region"] = "editor";
-	var bufs;
-	ui::get(bufs, w, es, "buffers");
-	if ( !bufs.is_null() && php::count(bufs) > 1 )
-	    eh["tabs"] = 1;
 	// With two-plus windows the active window carries the focus hint
 	// (the multi-window branch below composes the others); it rides
 	// the same single write-back.
@@ -4313,6 +4957,51 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 
     var r = { "role": "group" };
     var kids = {};
+    // The editor TABS (polish P4): under a window's fact, the buffer ring
+    // as a tab strip above the window stack — a content node docked FIRST
+    // into the editor region whose `tabs` hint carries the strip as data:
+    // one tab per buffer (its base name, `*` while modified), the active
+    // buffer marked, each tab naming the `bufsel` command WITH its argument
+    // (the ring index) — a command that takes an argument, the gateway
+    // shape (a human client's prompt collects the same argument). The
+    // terminal keeps ^P's buffer rows; it never composes this node.
+    if ( es_flag(w, es, "haspanel") )
+    {
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	long nb = 0;
+	if ( !bufs.is_null() )
+	    nb = php::count(bufs);
+	if ( nb > 0 )
+	{
+	    long cur = es_int(w, es, "bufidx", 0);
+	    var strip = {};
+	    for ( long i = 0; i < nb; i = i + 1 )
+	    {
+		var b = bufs[i];
+		var bp = format("{}", b["path"]);
+		var bn = bp;
+		const char *sl = strrchr(bp.c_str(), '/');
+		if ( sl != 0 )
+		    bn = sl + 1;
+		var m;
+		ui::get(m, w, b["doc"].as_integer(), "modified");
+		var title = bn;
+		if ( !m.is_null() && m.as_boolean() )
+		    title = format("{}*", bn);
+		var tb = { "title": title, "action": "bufsel" };
+		tb["arg"] = format("{}", i);
+		if ( i == cur )
+		    tb["active"] = 1;
+		strip.push(tb);
+	    }
+	    var tabsnode = { "role": "content", "content": "" };
+	    var tnh = { "region": "editor" };
+	    tnh["tabs"] = strip;
+	    tabsnode["hints"] = tnh;
+	    kids.push(tabsnode);
+	}
+    }
     // IDE-9e: with two-plus windows, each window is its own status line +
     // edit node, stacked. The ACTIVE window is the live one — the full
     // edit node composed above (views, spans, tabwidth) plus the focus
@@ -4414,6 +5103,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
 	}
 	else if ( pane == "options" )
 	{
@@ -4433,6 +5124,14 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		       "act": "opt-scheme" };
 	    rows[] = { "content": format("K Keymap      {}", prof),
 		       "act": "opt-keymap" };
+	    // The project kind (polish P2c): console | gui — shown while a
+	    // manifest is open (the implicit project has no manifest).
+	    if ( proj_has_manifest(w, es) )
+	    {
+		var pk = proj_kind(w, es);
+		rows[] = { "content": format("P Project kind {}", pk),
+			   "act": "opt-projkind" };
+	    }
 	    for ( var row : rows )
 	    {
 		var it = { "role": "item", "content": row["content"] };
@@ -4442,6 +5141,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items.push(it);
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Change", nofilter);
 	}
 	else if ( pane == "build" )
 	{
@@ -4465,6 +5166,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = it;
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Run", nofilter);
 	}
 	else if ( pane == "modes" )
 	{
@@ -4480,6 +5183,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = { "role": "item", "content": row["content"] };
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
 	else if ( pane == "project" )
 	{
@@ -4509,48 +5214,29 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    }
 	    if ( nrows == 0 )
 		items[] = { "role": "item", "content": "(no matches)" };
+	    // The dialog's title names the manifest; the label keeps the
+	    // terminal's one-line form (the filter inline). The filter text
+	    // is the core's — the field shows it, keys keep reaching it.
+	    var ftxt = "";
+	    if ( !filt.is_null() )
+		ftxt = format("{}", filt);
+	    dialog_hints(box, w, es, "project", "Open", ftxt);
+	    var dh = box["hints"];
+	    var dg = dh["dialog"];
+	    dg["title"] = format("Project — {}", pfd);
+	    dh["dialog"] = dg;
+	    box["hints"] = dh;
 	}
 	else
 	{
 	    // diagnostics / outline: projections of the STORED compiler
 	    // data — navigable rows carrying the `goto` action.
 	    bool outline_pane = pane == "outline";
-	    var rows;
-	    if ( outline_pane )
-		ui::get(rows, w, es, "outline");
-	    else
-		ui::get(rows, w, es, "diags");
 	    if ( outline_pane )
 		box["label"] = "Outline";
 	    else
 		box["label"] = "Diagnostics";
-	    var dpath;
-	    ui::get(dpath, w, doc, "path");
-	    for ( var row : rows )
-	    {
-		var it = { "role": "item" };
-		if ( outline_pane )
-		    it["content"] = format("{} {} :{}", row["kind"],
-					   row["name"], row["line"]);
-		else if ( !row["file"].is_null()
-		       && !(row["file"] == dpath.c_str()) )
-		    // A project check's rows span TUs — a row from
-		    // ANOTHER file leads with it (goto opens it; the
-		    // row carries the file as data either way). Rows on
-		    // the shown buffer stay unprefixed (the JOE shape).
-		    it["content"] = format("{} {}:{} {} {}", row["file"],
-					   row["line"], row["column"],
-					   row["severity"], row["message"]);
-		else
-		    it["content"] = format("{}:{} {} {}", row["line"],
-					   row["column"], row["severity"],
-					   row["message"]);
-		var ga = {};
-		ga[] = "goto";
-		it["actions"] = ga;
-		items[] = it;
-		nrows = nrows + 1;
-	    }
+	    nrows = diag_items(items, w, es, doc, outline_pane);
 	    if ( nrows == 0 )
 		items[] = { "role": "item",
 			    "content": outline_pane ? "(no definitions)"
@@ -4563,7 +5249,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// machinery. A `popup` hint floats the choice as an overlay; a
 	// `region` hint docks it. Both are hints the grid model ignores.
 	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
-			  "build": "panel", "project": "popup",
+			  "build": "popup", "project": "popup",
 			  "modes": "popup", "help": "popup",
 			  "options": "popup" };
 	var slot = pane_slot[pane.c_str()];
@@ -4586,7 +5272,91 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // (buildlive == 0) composes no panel, so the terminal shape and every
     // testmadcide compose-shape assertion are unchanged. Non-creating
     // lookup: composition never mints a buffer.
-    if ( es_int(w, es, "buildlive", 0) != 0 )
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// The bottom PANEL (polish P3a): a `group` docked into the panel
+	// region whose `tabs` hint carries the STRIP as data — one tab per
+	// tool, each naming the command that shows it (a click posts it by
+	// name, the S1 rule) — and whose one child is the active tab's
+	// content: Problems = the diagnostics rows (diag_items, the same
+	// builder the terminal's pane uses), Output = the [build] buffer's
+	// text (live or last; empty when nothing was built). Composed only
+	// while `panel` is up.
+	if ( es_int(w, es, "panel", 0) != 0 )
+	{
+	    var tab;
+	    ui::get(tab, w, es, "paneltab");
+	    if ( tab.is_null() || strlen(tab.c_str()) == 0 )
+		tab = "problems";
+	    var strip = {};
+	    var t1 = { "title": "Problems", "action": "problems" };
+	    if ( tab == "problems" )
+		t1["active"] = 1;
+	    strip.push(t1);
+	    var t2 = { "title": "Output", "action": "output" };
+	    if ( tab == "output" )
+		t2["active"] = 1;
+	    strip.push(t2);
+	    var t3 = { "title": "Terminal", "action": "terminal" };
+	    if ( tab == "terminal" )
+		t3["active"] = 1;
+	    strip.push(t3);
+	    var pkids = {};
+	    if ( tab == "terminal" )
+	    {
+		// The screen: an edit node over the [terminal] buffer (the
+		// line-DOM, the caret at the end) whose subject is that
+		// buffer — a press on it is how the program gets the
+		// keyboard (pointer_event). Empty until something ran.
+		long tdoc = term_doc_if_any(w, es);
+		var tt = "";
+		long tsz = 0;
+		if ( tdoc != 0 )
+		{
+		    ui::text(tt, w, tdoc);
+		    tsz = ui::text_size(w, tdoc);
+		}
+		var term = { "role": "edit" };
+		term["content"] = tt;
+		if ( tdoc != 0 )
+		    term["subject"] = tdoc;
+		var th = { "terminal": 1 };
+		th["caret"] = tsz;
+		if ( es_int(w, es, "termfocus", 0) != 0 )
+		    th["focus"] = 1;
+		term["hints"] = th;
+		pkids.push(term);
+	    }
+	    else if ( tab == "output" )
+	    {
+		var out = { "role": "content" };
+		var bt = "";
+		long bdoc = build_doc_if_any(w, es);
+		if ( bdoc != 0 )
+		    ui::text(bt, w, bdoc);
+		out["content"] = bt;
+		pkids.push(out);
+	    }
+	    else
+	    {
+		var pb = { "role": "choice", "label": "Problems" };
+		var pitems = {};
+		long pn = diag_items(pitems, w, es, doc, false);
+		if ( pn == 0 )
+		    pitems[] = { "role": "item", "content": "(clean)" };
+		pb["children"] = pitems;
+		pb["hints"] = { "list": 1 };
+		pkids.push(pb);
+	    }
+	    var panel = { "role": "group" };
+	    var ph = { "region": "panel" };
+	    ph["tabs"] = strip;
+	    panel["hints"] = ph;
+	    panel["children"] = pkids;
+	    kids.push(panel);
+	}
+    }
+    else if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	long bdoc = build_doc_if_any(w, es);
 	if ( bdoc != 0 )
@@ -4755,6 +5525,11 @@ void IdeSession::dialogs(bool has)
     ui::set(w, es, "hasdialogs", has);
 }
 
+void IdeSession::panel(bool has)
+{
+    ui::set(w, es, "haspanel", has);
+}
+
 // The client could not show the dialog it was asked for (no native dialog
 // on this platform): the request's prompt instead — the same prompts the
 // terminal uses, so the command still completes.
@@ -4763,8 +5538,20 @@ void IdeSession::dialog_fallback(var &req)
     var mode = req["mode"];
     if ( mode == "save" )
 	start_prompt(w, es, "Save as", "saveas");
+    else if ( mode == "openproject" )
+	start_prompt(w, es, "Project file to open", "openproject");
     else
 	start_prompt(w, es, "Name of file to edit", "editfile");
+}
+
+// A terminal request the client cannot serve (no terminal to suspend —
+// a window, a headless session): the status line says so; the request
+// was silently dropped before polish P3b-1 (fix-what-you-find).
+void IdeSession::request_refused(var &req)
+{
+    var kind = format("{}", req["kind"]);
+    ui::set(w, es, "msg",
+	    format("This client has no terminal to hand over for '{}'.", kind));
 }
 
 void IdeSession::pending_chord(const char *pcs)

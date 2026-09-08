@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
+
+- Editor tabs: the open buffers as a tab strip above the editor (the base
+  name, `*` while modified, the active one marked); a click switches to
+  that buffer. Commands take arguments now — a tab posts `bufsel` with the
+  buffer's index, the palette's Switch to Buffer… prompts for a name.
+- The Terminal tab: a console program runs on a real pseudo-terminal
+  inside the window with its keyboard — prompts flush, the line you type
+  goes to it (the tty echoes it), its exit status ends the screen; `^]`
+  hands the keyboard back to the editor and a click in an editor does too;
+  View → Terminal, and the Shell, open a shell on it. The project kind
+  routes Run: console → the Terminal, gui → its own window with Output.
+  Engine: the process owner's `pty` option, the `pty://` scheme, `?pty` on
+  the run schemes, `ui::term_feed` (a bounded terminal screen) and
+  `ui::key_bytes` (the inverse of the terminal's key parser).
+- Run works in the window: the program runs in a child (the live parse
+  forked — nothing execs) and its output streams into the Output tab,
+  ending with its exit status; the project Run and a manifest command in
+  terminal mode take the same route. Run used to be a silent no-op there;
+  a request the window cannot serve (the shell, until the Terminal tab) is
+  now said on the status line. Engine: the `madcrun://` and `madcproj://`
+  channel schemes; the process owner's `child_body` (fork through the one
+  spawn owner) and `exit_status`.
+- The window gains VS Code's bottom tool window in our palette: a panel,
+  optionally visible (View → Toggle Panel), with tabs — Problems (the
+  diagnostics rows; a click or Enter goes to the line) and Output (the
+  build stream, live or last). A check or a failed build surfaces Problems;
+  a build starting shows Output. The strip is data (a tab names the command
+  a click posts), so profiles may bind the same commands. The terminal is
+  unchanged. A click on any list row now picks it, as Enter does.
+
+### madcide: the list overlays as dialogs; Open Project…; the project kind (2026-09-08)
+
+- The Build, Project, Options, Modes and Help panes — bare popup lists in the
+  window until now (Build docked into the bottom panel) — are titled
+  DIALOGS in the quick-pick shape: a title bar, a filter field showing the
+  text the core holds, the rows as pick targets, and buttons named after
+  what the pane's keys do (Open / Run / Change / Select picks the selected
+  row; Close posts the pane's own cancel by name). A click on a row picks it
+  through the one focus owner — the same choose event Enter produces — so
+  every pane behaves as it does from the keyboard. The terminal is
+  unchanged.
+- File → Open Project…: the native open dialog (the prompt in a terminal)
+  loads a manifest through the one reader run_ide's startup uses and opens
+  the Project window on it.
+- The project KIND: a manifest's `"kind": "console" | "gui"` (absent =
+  console). `^T` Options gains a `Project kind` row that toggles and
+  persists it at once. A project build stamps the Windows executable's
+  subsystem from it (WINDOWS_GUI for gui — no console window at start);
+  the CLI spells the same for a single file as mingw-gcc does, `-mwindows`
+  / `-mconsole`. The PE release gate now reads the subsystem back against
+  the cross gcc's.
+
 ### madcide GUI: the window shows the terminal's colour scheme (2026-09-08)
 
 - The GUI and the TUI highlighted the same source in two different colour

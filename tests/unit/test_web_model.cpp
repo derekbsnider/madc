@@ -1019,3 +1019,191 @@ TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the 
     CHECK(m4.focus_slot() == 0u);
     CHECK(m4.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"col\":0}").empty());
 }
+
+TEST_CASE("compose — a choice's dialog hint becomes dialog data; a click or the primary button chooses through the one focus owner")
+{
+    // madcide polish P2 (the list overlays as dialogs): the `dialog` hint
+    // {title, filter?, buttons:[{label, choose:1}|{label, action}]} rides
+    // the choice op as data (a malformed button is dropped), and the page's
+    // {"kind":"choose", key, index?} input resolves in focus_state — the
+    // SAME choose event Enter produces, with the option's action.
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode head(r.heading);
+    head.label = madc::value(std::string("doc"));
+    root.add(head);
+    uinode menu(r.choice);
+    menu.label = madc::value(std::string("Project"));
+    menu.add(option(w, "main.mad", "projopen"));
+    menu.add(option(w, "util.mad", "projopen"));
+    menu.add(option(w, "notes.txt", NULL));
+    std::map<std::string, madc::value> dlg;
+    dlg["title"] = madc::value(std::string("Project — demo.prj.json"));
+    dlg["filter"] = madc::value(std::string("ma"));
+    std::vector<madc::value> buttons;
+    std::map<std::string, madc::value> b1;
+    b1["label"] = madc::value(std::string("Open"));
+    b1["choose"] = madc::value((int64_t)1);
+    buttons.push_back(madc::value::make_object(b1));
+    std::map<std::string, madc::value> b2;
+    b2["label"] = madc::value(std::string("Close"));
+    b2["action"] = madc::value(std::string("projclose"));
+    buttons.push_back(madc::value::make_object(b2));
+    std::map<std::string, madc::value> bad;		// no action, no choose: dropped
+    bad["label"] = madc::value(std::string("Nothing"));
+    buttons.push_back(madc::value::make_object(bad));
+    dlg["buttons"] = madc::value::make_array(buttons);
+    std::map<std::string, madc::value> h;
+    h["list"] = madc::value((int64_t)1);
+    h["focus"] = madc::value((int64_t)1);
+    h["popup"] = madc::value((int64_t)1);
+    h["dismiss"] = madc::value(std::string("projclose"));
+    h["dialog"] = madc::value::make_object(dlg);
+    menu.hints = madc::value::make_object(h);
+    root.add(menu);
+
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *c = node_by_key(ops, "0.1");
+    REQUIRE(c);
+    CHECK((*c)["class"] == "choice");
+    CHECK((*c)["popup"] == true);
+    CHECK((*c)["dismiss"] == "projclose");
+    CHECK((*c)["dialog"] == nlohmann::json::parse(
+	"{\"title\":\"Project — demo.prj.json\",\"filter\":\"ma\","
+	"\"buttons\":[{\"label\":\"Open\",\"choose\":true},"
+	"{\"label\":\"Close\",\"action\":\"projclose\"}]}"));
+
+    // A click on row 1: focus + selection move there, ONE choose event
+    // carrying the row's action — what Enter on that row yields.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"choose\",\"key\":\"0.1\",\"index\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].option == 1u);
+    CHECK(ev[0].action == w.intern("projopen"));
+    // The primary button (no index): the live selection — now row 1; a
+    // row without an action chooses with action 0; an index past the end
+    // clamps to the last row.
+    ev = m.apply_input("{\"kind\":\"choose\",\"key\":\"0.1\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].option == 1u);
+    ev = m.apply_input("{\"kind\":\"choose\",\"key\":\"0.1\",\"index\":9}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].option == 2u);
+    CHECK(ev[0].action == 0u);
+    // The next compose paints the moved selection.
+    ops = nlohmann::json::parse(m.compose(r, root));
+    c = node_by_key(ops, "0.1");
+    REQUIRE(c);
+    CHECK((*c)["sel"] == 2);
+    // Malformed: an unknown key, a non-choice key, a non-integer index.
+    CHECK(m.apply_input("{\"kind\":\"choose\",\"key\":\"0.9\"}").empty());
+    CHECK(m.apply_input("{\"kind\":\"choose\",\"key\":\"0.0\"}").empty());
+    CHECK(m.apply_input("{\"kind\":\"choose\",\"key\":\"0.1\",\"index\":\"x\"}").empty());
+    // A choice without the hint carries no dialog (negative control).
+    web_model m2;
+    ops = nlohmann::json::parse(m2.compose(r, editor_tree(w, 3)));
+    c = node_by_key(ops, "0.3");
+    REQUIRE(c);
+    CHECK(c->find("dialog") == c->end());
+}
+
+TEST_CASE("compose — a group's tabs array becomes the strip as data; the integer form stays the marker")
+{
+    // madcide polish P3a: the bottom panel's tab strip — {title, action,
+    // active?} rows the page draws above the group's children; a tab click
+    // posts its action by name. A malformed tab (no title / no action) is
+    // dropped; the editor group's `tabs: 1` marker still emits true.
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode panel(r.group);
+    std::vector<madc::value> tabs;
+    std::map<std::string, madc::value> t1;
+    t1["title"] = madc::value(std::string("Problems"));
+    t1["action"] = madc::value(std::string("problems"));
+    t1["active"] = madc::value((int64_t)1);
+    tabs.push_back(madc::value::make_object(t1));
+    std::map<std::string, madc::value> t2;
+    t2["title"] = madc::value(std::string("Output"));
+    t2["action"] = madc::value(std::string("output"));
+    tabs.push_back(madc::value::make_object(t2));
+    std::map<std::string, madc::value> bad;
+    bad["title"] = madc::value(std::string("Nothing"));	// no action: dropped
+    tabs.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["region"] = madc::value(std::string("panel"));
+    h["tabs"] = madc::value::make_array(tabs);
+    panel.hints = madc::value::make_object(h);
+    uinode body(r.content);
+    body.content = madc::value(std::string("(clean)"));
+    panel.add(body);
+    root.add(panel);
+    uinode marked(r.group);
+    std::map<std::string, madc::value> mh;
+    mh["tabs"] = madc::value((int64_t)1);
+    marked.hints = madc::value::make_object(mh);
+    root.add(marked);
+
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *p = node_by_key(ops, "0.0");
+    REQUIRE(p);
+    CHECK((*p)["region"] == "panel");
+    CHECK((*p)["tabs"] == nlohmann::json::parse(
+	"[{\"title\":\"Problems\",\"action\":\"problems\",\"active\":true},"
+	"{\"title\":\"Output\",\"action\":\"output\"}]"));
+    const nlohmann::json *c = node_by_key(ops, "0.0.0");
+    REQUIRE(c);
+    CHECK((*c)["class"] == "content");
+    CHECK((*c)["parent"] == "0.0");
+    const nlohmann::json *mk = node_by_key(ops, "0.1");
+    REQUIRE(mk);
+    CHECK((*mk)["tabs"] == true);
+}
+
+TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the action input reports it as the event's text")
+{
+    // madcide polish P4: a buffer tab names `bufsel` with its ring index; the
+    // page posts {"kind":"action","action":"bufsel","arg":"1"} and the event
+    // carries the argument (ui::event's `arg`) — commands take arguments.
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode strip(r.content);
+    strip.content = madc::value(std::string(""));
+    std::vector<madc::value> tabs;
+    std::map<std::string, madc::value> t1;
+    t1["title"] = madc::value(std::string("main.mad"));
+    t1["action"] = madc::value(std::string("bufsel"));
+    t1["arg"] = madc::value(std::string("0"));
+    t1["active"] = madc::value((int64_t)1);
+    tabs.push_back(madc::value::make_object(t1));
+    std::map<std::string, madc::value> t2;
+    t2["title"] = madc::value(std::string("util.mad*"));
+    t2["action"] = madc::value(std::string("bufsel"));
+    t2["arg"] = madc::value(std::string("1"));
+    tabs.push_back(madc::value::make_object(t2));
+    std::map<std::string, madc::value> h;
+    h["region"] = madc::value(std::string("editor"));
+    h["tabs"] = madc::value::make_array(tabs);
+    strip.hints = madc::value::make_object(h);
+    root.add(strip);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *n = node_by_key(ops, "0.0");
+    REQUIRE(n);
+    CHECK((*n)["tabs"] == nlohmann::json::parse(
+	"[{\"title\":\"main.mad\",\"action\":\"bufsel\",\"arg\":\"0\",\"active\":true},"
+	"{\"title\":\"util.mad*\",\"action\":\"bufsel\",\"arg\":\"1\"}]"));
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"bufsel\",\"arg\":\"1\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "bufsel");
+    CHECK(ev[0].text == "1");
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"help\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].text.empty());			// a chord-shaped command: no argument
+    CHECK(m.apply_input("{\"kind\":\"action\",\"action\":\"help\",\"arg\":7}").size() == 1u);	// a non-string arg is ignored, the action stands
+}

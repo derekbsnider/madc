@@ -152,9 +152,29 @@ bool read_native_object(const json &root, const std::string &manifest_dir,
 		out.entry = root["entry"].get<std::string>();
 	if (root.contains("output") && root["output"].is_string())
 		out.output_name = root["output"].get<std::string>();
+	// "kind": console (absent) | gui — an unknown word refuses loud
+	// rather than silently building a console program.
+	if (root.contains("kind")) {
+		if (!root["kind"].is_string()
+		    || !project_kind_from_name(root["kind"].get<std::string>(),
+					       out.kind)) {
+			err = "\"kind\" must be \"console\" or \"gui\"";
+			return false;
+		}
+	}
 	return true;
 }
 } // namespace
+
+bool project_kind_from_name(const std::string &name, ProjectKind &out) {
+	if (name == "console") { out = ProjectKind::console; return true; }
+	if (name == "gui")     { out = ProjectKind::gui;     return true; }
+	return false;
+}
+
+const char *project_kind_name(ProjectKind kind) {
+	return kind == ProjectKind::gui ? "gui" : "console";
+}
 
 bool read_project_manifest(const std::string &path,
 			   ProjectManifest &out, std::string &err) {

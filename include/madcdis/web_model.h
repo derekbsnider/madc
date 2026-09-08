@@ -23,8 +23,27 @@
 //    "lines":[{"t":"line text","s":[[start,len,"keyword"],...]}, ...],
 //    "caret":{"line":3,"col":7},"sel":[[l,c],[l,c]]|null,
 //    "tabwidth":8,"focus":true}
+//   {"op":"node","key":"0.6","parent":"0","class":"group","region":"panel",
+//    "tabs":[{"title":"Problems","action":"problems","active":true},
+//            {"title":"Output","action":"output"},
+//            {"title":"main.mad*","action":"bufsel","arg":"0"}]}
+//                                                          a tabbed tool
+//                                                          window (polish
+//                                                          P3a): the strip as
+//                                                          data, a tab click
+//                                                          posts its command
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
-//    "opts":["Save","Quit"],"sel":1,"list":false,"focus":true}
+//    "opts":["Save","Quit"],"sel":1,"list":false,"focus":true,
+//    "dialog":{"title":"Project","filter":"ab",
+//              "buttons":[{"label":"Open","choose":true},
+//                         {"label":"Close","action":"projclose"}]}}
+//                                                          a list pane as a
+//                                                          DIALOG (polish P2):
+//                                                          title, the core's
+//                                                          filter text, and
+//                                                          buttons that choose
+//                                                          the selected row or
+//                                                          post an action
 //   {"op":"node","key":"0.5","parent":"0","class":"content","popup":true,
 //    "dismiss":"pcancel","prompt":{"label":"Find","input":"ab"}}
 //                                                          a quick input (S6):
@@ -80,11 +99,25 @@
 //                                          event asks the application to
 //                                          recompose — the next compose
 //                                          paints every edit node in full
-//   {"kind":"action","action":"pyes"}     a native control fired a command
+//   {"kind":"action","action":"pyes",
+//    "arg":"2"}                            a native control fired a command
 //                                          by id: a menu item (S2), a dialog
 //                                          button or a popup's dismissal
-//                                          (S6) — the SAME action event a
-//                                          bound chord produces
+//                                          (S6), a tab (P3a/P4) — the SAME
+//                                          action event a bound chord
+//                                          produces; `arg` (optional) is
+//                                          the command's argument the
+//                                          control carried (a buffer tab's
+//                                          ring index), reported as the
+//                                          event's text
+//   {"kind":"choose","key":"0.4","index":2} a pointing gesture PICKED an
+//                                          option of the choice node `key`
+//                                          (a click on its row; `index`
+//                                          omitted or -1 = the dialog's
+//                                          primary button: the live
+//                                          selection) — resolved by the one
+//                                          focus owner into the SAME choose
+//                                          event Enter produces (polish P2)
 //   {"kind":"pointer","phase":"down"|"drag"|"up",
 //    "key":"0.3","line":12,"col":7}        a pointing-device gesture on the
 //                                          edit node `key`: the index of the
@@ -238,6 +271,9 @@ class web_model
 	edit_basis() : slot(0), subject(0), tag(-1) {}
     };
     std::map<std::string, edit_basis> _basis;
+    // The choice nodes' focus slots by key, from the last compose — what a
+    // {"kind":"choose","key":...} gesture resolves against (polish P2).
+    std::map<std::string, size_t> _choice_slot;
     // The native menu the host draws (S2): the root's `menu` hint resolved
     // against the bindings — items gain the chord bound to their command
     // id (`key`) — as one JSON text; recomposed every compose and handed
@@ -526,8 +562,48 @@ class web_model
 	    const std::string dismiss = hint_str(n.hints, "dismiss");
 	    if ( !dismiss.empty() )
 		op["dismiss"] = dismiss;
-	    if ( hint_of(n.hints, "tabs", 0) )
-		op["tabs"] = true;
+	    // The tab strip (madcide polish P3a): `tabs` as an ARRAY of
+	    // {title, action, active?} is the strip a group carries as DATA —
+	    // the page draws it above the group's children and a tab click
+	    // posts the tab's command by name (the S1 rule); a malformed tab
+	    // (no title or no action) is dropped. The integer form stays the
+	    // editor group's tab-strip MARKER (S5) until P4 hands it the
+	    // buffer strip in this array shape.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &tho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ti = tho.find("tabs");
+		if ( ti != tho.end() && ti->second.is_array() )
+		{
+		    nlohmann::json strip = nlohmann::json::array();
+		    const std::vector<madc::value> &rows = ti->second.as_array();
+		    for ( size_t k = 0; k < rows.size(); ++k )
+		    {
+			if ( !rows[k].is_object() )
+			    continue;
+			const std::string title = hint_str(rows[k], "title");
+			const std::string action = hint_str(rows[k], "action");
+			if ( title.empty() || action.empty() )
+			    continue;
+			nlohmann::json tb = nlohmann::json::object();
+			tb["title"] = title;
+			tb["action"] = action;
+			// The command's ARGUMENT (polish P4: a buffer tab names
+			// `bufsel` with its ring index) — posted back with the
+			// action; the gateway shape (commands take arguments).
+			const std::string arg = hint_str(rows[k], "arg");
+			if ( !arg.empty() )
+			    tb["arg"] = arg;
+			if ( hint_of(rows[k], "active", 0) != 0 )
+			    tb["active"] = true;
+			strip.push_back(tb);
+		    }
+		    if ( !strip.empty() )
+			op["tabs"] = strip;
+		}
+		else if ( hint_of(n.hints, "tabs", 0) )
+		    op["tabs"] = true;
+	    }
 	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
 	    // bag of CSS custom-property name -> value strings; emit them so
 	    // the page applies them as `--name` variables. String values only
@@ -679,6 +755,59 @@ class web_model
 	    op["opts"] = opts;
 	    op["sel"] = (long)_focus.selection_of(slot);
 	    op["list"] = hint_of(n.hints, "list", 0) != 0;
+	    _choice_slot[key] = slot;
+	    // A list pane as a DIALOG (madcide polish P2): the `dialog` hint
+	    // {title, filter?, buttons:[{label, choose:1}|{label, action}]}
+	    // — the page draws a titled floating dialog around the options:
+	    // the filter field shows the text the CORE holds (typing keeps
+	    // travelling the one input path), a `choose` button picks the
+	    // selected row (the focus owner's enter contract, posted as the
+	    // "choose" input), an `action` button posts its action by name
+	    // (the scope's cancel). Composer data throughout; a malformed
+	    // button is dropped, a dialog with no title and no buttons too.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &ho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator di = ho.find("dialog");
+		if ( di != ho.end() && di->second.is_object() )
+		{
+		    nlohmann::json dg = nlohmann::json::object();
+		    const std::string title = hint_str(di->second, "title");
+		    if ( !title.empty() )
+			dg["title"] = title;
+		    const std::map<std::string, madc::value> &dob = di->second.as_object();
+		    std::map<std::string, madc::value>::const_iterator fi = dob.find("filter");
+		    if ( fi != dob.end() && fi->second.is_string() )
+			dg["filter"] = fi->second.as_string();
+		    nlohmann::json buttons = nlohmann::json::array();
+		    std::map<std::string, madc::value>::const_iterator bi = dob.find("buttons");
+		    if ( bi != dob.end() && bi->second.is_array() )
+		    {
+			const std::vector<madc::value> &rows = bi->second.as_array();
+			for ( size_t k = 0; k < rows.size(); ++k )
+			{
+			    if ( !rows[k].is_object() )
+				continue;
+			    const std::string label = hint_str(rows[k], "label");
+			    const std::string action = hint_str(rows[k], "action");
+			    const bool choose = hint_of(rows[k], "choose", 0) != 0;
+			    if ( label.empty() || (action.empty() && !choose) )
+				continue;
+			    nlohmann::json b = nlohmann::json::object();
+			    b["label"] = label;
+			    if ( choose )
+				b["choose"] = true;
+			    else
+				b["action"] = action;
+			    buttons.push_back(b);
+			}
+		    }
+		    if ( !buttons.empty() )
+			dg["buttons"] = buttons;
+		    if ( !dg.empty() )
+			op["dialog"] = dg;
+		}
+	    }
 	    slot_op so;
 	    so.op = ops.size();
 	    so.slot = slot;
@@ -731,6 +860,10 @@ class web_model
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;
+	    // The embedded Terminal's screen (madcide polish P3b-2): the page
+	    // styles it as a terminal (its own surface); nothing else differs.
+	    if ( hint_of(n.hints, "terminal", 0) )
+		op["terminal"] = true;
 	    slot_op so;
 	    so.op = ops.size();
 	    so.slot = slot;
@@ -768,6 +901,7 @@ public:
 	std::vector<slot_op> slots;
 	_focus.begin_compose();
 	_seen.clear();
+	_choice_slot.clear();
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
 	// An edit key that left the tree drops its basis — the page prunes
@@ -911,6 +1045,35 @@ public:
 	    none.push_back(e);
 	    return none;
 	}
+	else if ( kind == "choose" )
+	{
+	    // Not a key: a pointing gesture PICKED an option of the choice
+	    // node `key` — a click on its row (`index`), or the dialog's
+	    // primary button on the live selection (no index / -1). The one
+	    // focus owner moves focus and selection and yields the SAME
+	    // choose event Enter produces; an unknown key or a node that is
+	    // not a choice with options yields nothing.
+	    nlohmann::json::const_iterator ni = j.find("key");
+	    nlohmann::json::const_iterator ii = j.find("index");
+	    if ( ni == j.end() || !ni->is_string() )
+		return none;
+	    long index = -1;
+	    if ( ii != j.end() )
+	    {
+		if ( !ii->is_number_integer() )
+		    return none;
+		index = ii->get<long>();
+	    }
+	    std::map<std::string, size_t>::const_iterator si =
+		_choice_slot.find(ni->get<std::string>());
+	    if ( si == _choice_slot.end() )
+		return none;
+	    tui_event e;
+	    if ( !_focus.choose(si->second, index, e) )
+		return none;
+	    none.push_back(e);
+	    return none;
+	}
 	else if ( kind == "action" )
 	{
 	    // Not a key: a command the host's native chrome fired (a menu bar
@@ -922,6 +1085,11 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::action;
 	    e.action_name = it->get<std::string>();
+	    // The command's argument (polish P4): a tab's data rides the
+	    // event's `text` — what ui::event reports as `arg`.
+	    nlohmann::json::const_iterator ai = j.find("arg");
+	    if ( ai != j.end() && ai->is_string() )
+		e.text = ai->get<std::string>();
 	    none.push_back(e);
 	    return none;
 	}

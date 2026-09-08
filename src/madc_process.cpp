@@ -4,6 +4,8 @@
 
 #include <cerrno>
 #include <csignal>
+#include <cstdio>	/* std::remove: cleanup_paths; fflush before a child_body fork */
+#include <iostream>	/* std::cout/cerr flush before a child_body fork */
 #include <cstring>
 #include <fcntl.h>
 #include <map>
@@ -17,8 +19,14 @@
 #include <windows.h>
 #else
 #include <sys/wait.h>
+#include <sys/ioctl.h>	/* TIOCSCTTY: the pty child's controlling terminal */
 #include <time.h>	/* nanosleep: wait_or_kill's grace slices (MT-3b) */
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <util.h>	/* openpty (libSystem) */
+#else
+#include <pty.h>	/* openpty (glibc >= 2.34: libc; older: libutil) */
+#endif
 
 extern char **environ;
 #endif
@@ -470,6 +478,10 @@ Process::~Process()
 		while ( ::waitpid(_->child, &status, 0) < 0 && errno == EINTR ) {}
 	}
 #endif
+	// The files the child ran from (a run snapshot) go once it is gone —
+	// the owner's promise to the factory that spawned through it.
+	for ( std::size_t i = 0; i < _->options.cleanup_paths.size(); ++i )
+		std::remove(_->options.cleanup_paths[i].c_str());
 }
 
 bool Process::start(error *err)
@@ -511,6 +523,18 @@ bool Process::start(error *err)
 		environment[it->first] = it->second;
 
 #ifdef _WIN32
+	if ( _->options.child_body )
+	{
+		set_process_error(err, "process child_body is not supported on this"
+				       " platform (no fork): spawn a child of self");
+		return false;
+	}
+	if ( _->options.pty )
+	{
+		set_process_error(err, "process pty is not supported on this"
+				       " platform yet (ConPTY is the named residue)");
+		return false;
+	}
 	// One command-line string, re-split by the child's CRT under the MS
 	// quoting rules. CreateProcess owns the executable search for the
 	// first token (app dir, cwd, system dirs, PATH; .exe appended), so
@@ -652,7 +676,30 @@ bool Process::start(error *err)
 	int output_fds[2] = { -1, -1 };
 	int error_fds[2] = { -1, -1 };
 	int exec_fds[2] = { -1, -1 };
-	if ( !make_cloexec_pipe(input_fds, err)
+	int pty_master = -1, pty_slave = -1;
+	const bool pty = _->options.pty;
+	if ( pty )
+	{
+		// The pseudo-terminal replaces the three stdio pipes: the
+		// slave is the child's stdio (its controlling terminal), the
+		// master the parent's one bidirectional endpoint.
+		if ( ::openpty(&pty_master, &pty_slave, NULL, NULL, NULL) != 0 )
+		{
+			set_process_errno(err, "process openpty failed", errno);
+			return false;
+		}
+		// openpty has no atomic O_CLOEXEC: the one post-hoc owner
+		// (madc_posix_io) marks both ends, like the pipe fallback.
+		detail::set_fd_close_on_exec(pty_master);
+		detail::set_fd_close_on_exec(pty_slave);
+		if ( !make_cloexec_pipe(exec_fds, err) )
+		{
+			close_fd(pty_master);
+			close_fd(pty_slave);
+			return false;
+		}
+	}
+	else if ( !make_cloexec_pipe(input_fds, err)
 	  || !make_cloexec_pipe(output_fds, err)
 	  || (!_->options.inherit_stderr && !make_cloexec_pipe(error_fds, err))
 	  || !make_cloexec_pipe(exec_fds, err) )
@@ -664,6 +711,16 @@ bool Process::start(error *err)
 		return false;
 	}
 
+	if ( _->options.child_body )
+	{
+		// The child will exit() through the body's stdio: whatever the
+		// PARENT has buffered on stdout/stderr would be flushed a second
+		// time, by the child, into the pipe or pty — so the parent's
+		// buffers are emptied before the fork (parse_run's own rule).
+		fflush(NULL);
+		std::cout.flush();
+		std::cerr.flush();
+	}
 	pid_t child = ::fork();
 	if ( child < 0 )
 	{
@@ -672,13 +729,32 @@ bool Process::start(error *err)
 		close_pipe(output_fds);
 		close_pipe(error_fds);
 		close_pipe(exec_fds);
+		close_fd(pty_master);
+		close_fd(pty_slave);
 		set_process_errno(err, "process fork failed", number);
 		return false;
 	}
 	if ( child == 0 )
 	{
 		close_fd(exec_fds[0]);
-		if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
+		if ( pty )
+		{
+			// A new session whose controlling terminal is the slave.
+			close_fd(pty_master);
+			if ( ::setsid() < 0
+			  || ::ioctl(pty_slave, TIOCSCTTY, 0) < 0
+			  || ::dup2(pty_slave, STDIN_FILENO) < 0
+			  || ::dup2(pty_slave, STDOUT_FILENO) < 0
+			  || ::dup2(pty_slave, STDERR_FILENO) < 0 )
+			{
+				int number = errno;
+				report_child_error(exec_fds[1], number);
+				::_exit(127);
+			}
+			if ( pty_slave > STDERR_FILENO )
+				close_fd(pty_slave);
+		}
+		else if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
 		  || ::dup2(output_fds[1], STDOUT_FILENO) < 0
 		  || (error_fds[1] >= 0 && ::dup2(error_fds[1], STDERR_FILENO) < 0) )
 		{
@@ -696,6 +772,21 @@ bool Process::start(error *err)
 			report_child_error(exec_fds[1], number);
 			::_exit(127);
 		}
+		if ( _->options.child_body )
+		{
+			// Fork-as-isolation through the owner: no exec — the
+			// errno pipe closes EMPTY (the parent reads "no exec
+			// error" and returns), then the body runs on the
+			// dup'd stdio and its return is the exit status. A
+			// normal exit(), not _exit(): the body ran program
+			// code whose stdio is buffered (a pipe is fully
+			// buffered — _exit would lose everything it printed)
+			// and whose atexit handlers the fork-run has always
+			// run (parse_run's own child calls exit).
+			close_fd(exec_fds[1]);
+			int rc = _->options.child_body();
+			::exit(rc & 0xff);
+		}
 		::execve(executable.c_str(), &argv[0], &environment_vector[0]);
 		int number = errno;
 		report_child_error(exec_fds[1], number);
@@ -706,6 +797,7 @@ bool Process::start(error *err)
 	close_fd(output_fds[1]);
 	close_fd(error_fds[1]);
 	close_fd(exec_fds[1]);
+	close_fd(pty_slave);
 	int exec_error = 0;
 	bool exec_failed = read_exec_error(exec_fds[0], exec_error);
 	close_fd(exec_fds[0]);
@@ -714,6 +806,7 @@ bool Process::start(error *err)
 		close_fd(input_fds[1]);
 		close_fd(output_fds[0]);
 		close_fd(error_fds[0]);
+		close_fd(pty_master);
 		int status = 0;
 		while ( ::waitpid(child, &status, 0) < 0 && errno == EINTR ) {}
 		set_process_errno(err, "process exec failed for " + _->source.path(), exec_error);
@@ -721,12 +814,32 @@ bool Process::start(error *err)
 	}
 
 	_->child = child;
-	_->stdin_pipe.assign(input_fds[1]);
-	_->stdout_pipe.assign(output_fds[0]);
-	_->stderr_pipe.assign(error_fds[0]);
+	if ( pty )
+	{
+		// ONE master, two channel views: the write side is a dup so
+		// each channel owns the fd it closes; the stderr channel stays
+		// unassigned (the child's stderr is the pty).
+		_->stdin_pipe.assign(::dup(pty_master));
+		_->stdout_pipe.assign(pty_master);
+	}
+	else
+	{
+		_->stdin_pipe.assign(input_fds[1]);
+		_->stdout_pipe.assign(output_fds[0]);
+		_->stderr_pipe.assign(error_fds[0]);
+	}
 	_->has_started = true;
 	return true;
 #endif // !_WIN32
+}
+
+bool Process::is_pty() const
+{
+#ifdef _WIN32
+	return false;
+#else
+	return _->has_started && _->options.pty;
+#endif
 }
 
 DataChannel &Process::stdin_channel() { return _->stdin_pipe; }
@@ -1041,7 +1154,7 @@ public:
 	ChannelCapabilities capabilities() const override
 	{
 		ChannelCapabilities capabilities;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return capabilities;
 		capabilities.read = process_->stdout_channel().capabilities().read;
 		capabilities.write = process_->stdin_channel().capabilities().write;
@@ -1053,7 +1166,7 @@ public:
 		  error *err = nullptr) override
 	{
 		bytes_read = 0;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 		{
 			set_process_error(err, "exec channel is closed");
 			return false;
@@ -1065,7 +1178,7 @@ public:
 		   error *err = nullptr) override
 	{
 		bytes_written = 0;
-		if ( !process_ )
+		if ( !process_ || closed_ )
 		{
 			set_process_error(err, "exec channel is closed");
 			return false;
@@ -1075,19 +1188,19 @@ public:
 
 	void close_read() override
 	{
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->stdout_channel().close_read();
 	}
 
 	void close_write() override
 	{
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->close_stdin();
 	}
 
 	void close() override
 	{
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return;
 		// Stdin EOF + a closed stdout let the child run out; wait()
 		// reaps it. A CANCELLED channel escalates (MT-3b): the child
@@ -1101,13 +1214,14 @@ public:
 			process_->wait_or_kill(2000);
 		else
 			process_->wait();
-		process_.reset();
+		closed_ = true;	// the Process stays for exit_status(); its
+				// pipes are shut, its child reaped
 	}
 
 	// The waitable READ side is the child's stdout pipe.
 	intptr_t read_poll_handle() const override
 	{
-		if ( !process_ )
+		if ( !process_ || closed_ )
 			return (intptr_t)-1;
 		PollableDataChannel *pollable =
 			pollable_surface(&process_->stdout_channel());
@@ -1122,18 +1236,35 @@ public:
 	void cancel() override
 	{
 		cancelled_ = true;
-		if ( process_ )
+		if ( process_ && !closed_ )
 			process_->terminate();
+	}
+
+	// The reaped child's status (close() waited it) — kept in the
+	// Process until this channel dies; -1 before the reap.
+	int exit_status() const override
+	{
+		return process_ && process_->exited() ? process_->exit_status() : -1;
+	}
+
+	bool is_terminal() const override
+	{
+		return process_ && !closed_ && process_->is_pty();
 	}
 
 private:
 	std::unique_ptr<Process> process_;
 	bool cancelled_ = false;
+	bool closed_ = false;
 };
 
 class ExecChannelFactory : public DataChannelRegistry::Factory
 {
 public:
+	// pty: the child on a pseudo-terminal (the pty:// scheme — madcide's
+	// embedded Terminal runs the shell and terminal-mode commands on it).
+	explicit ExecChannelFactory(bool pty = false) : pty_(pty) {}
+
 	std::unique_ptr<DataChannel> open(const DataSource &source,
 					  ChannelOpenMode mode,
 					  error *err = nullptr) const override
@@ -1164,6 +1295,9 @@ public:
 		ProcessOptions options;
 		options.args.assign(words.begin() + 1, words.end());
 		options.inherit_stderr = true;
+#ifndef _WIN32
+		options.pty = pty_;	// Windows: pipes (ConPTY is the named residue)
+#endif
 		std::unique_ptr<Process> process(
 			new Process(DataSource("exec://" + words[0]), options));
 		if ( !process->start(err) )
@@ -1171,17 +1305,28 @@ public:
 		return std::unique_ptr<DataChannel>(
 			new ExecDataChannel(std::move(process)));
 	}
+
+private:
+	bool pty_;
 };
 
 } // namespace
 
 namespace detail {
 
+std::unique_ptr<DataChannel> exec_channel_over(std::unique_ptr<Process> process)
+{
+	return std::unique_ptr<DataChannel>(new ExecDataChannel(std::move(process)));
+}
+
 void register_exec_channel_factory(DataChannelRegistry &registry)
 {
 	registry.register_factory(
 		"exec", std::unique_ptr<DataChannelRegistry::Factory>(
 				new ExecChannelFactory()));
+	registry.register_factory(
+		"pty", std::unique_ptr<DataChannelRegistry::Factory>(
+				new ExecChannelFactory(true)));
 }
 
 } // namespace detail

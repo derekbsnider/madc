@@ -144,6 +144,30 @@ public:
 	}
 	return false;
     }
+
+    // A pointing gesture PICKED an option (madcide polish P2, the list
+    // dialogs): a click on the row `index` of the choice at `slot`, or the
+    // dialog's primary button on the live selection (`index` < 0). Focus
+    // moves to that choice, the selection to that row, and `e` is the SAME
+    // choose event Enter produces (option + its action) — one contract for
+    // keyboard and pointer; the widget's selection never leaves this owner.
+    // False = not a choice with options (nothing chosen, `e` untouched).
+    bool choose(size_t slot, long index, tui_event &e)
+    {
+	if ( slot >= _focusables.size()
+	  || _focusables[slot].k != focusable::kind::choice
+	  || _focusables[slot].option_count == 0 )
+	    return false;
+	_focus = slot;
+	size_t n = _focusables[slot].option_count;
+	size_t sel = index < 0 ? selection_of(slot)
+			       : ((size_t)index < n ? (size_t)index : n - 1);
+	_selection[slot] = sel;
+	e.kind = tui_event_kind::choose;
+	e.option = sel;
+	e.action = _focusables[slot].option_actions[sel];
+	return true;
+    }
 };
 
 } // namespace hub

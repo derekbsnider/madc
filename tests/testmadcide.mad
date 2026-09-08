@@ -470,9 +470,11 @@ int main()
     long bdoc = build_doc(w, es);
     var btxt;
     ui::text(btxt, w, bdoc);
-    println("build-out: has-hello={} has-done={} live={}",
+    // The stream ends with the child's exit status (polish P3b-1: what a
+    // run reports on its status line rides the stream's last line).
+    println("build-out: has-hello={} has-exit0={} live={}",
 	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
-	    rust::contains(btxt.c_str(), "[done]") ? 1 : 0,
+	    rust::contains(btxt.c_str(), "[exit 0]") ? 1 : 0,
 	    es_int(w, es, "buildlive", 0));
     // Stop against a silent child: sleep 5 emits nothing — the stop send
     // fires the pump's select case 0 (buffered: the pump has not even run
@@ -796,6 +798,60 @@ int main()
     println("proj-build: artifact={} {}",
 	    php::file_exists("madc_ide_prog") ? 1 : 0, msg);
     remove("madc_ide_prog");
+
+    // -- polish P2c: the project KIND (console | gui) — a ^T Options row
+    //    while a manifest is open; its action toggles and persists the
+    //    manifest AT ONCE (the immediate-persistence rule); the engine
+    //    reads the field on a project build (the PE subsystem) and Run
+    //    routing reads it in the GUI.
+    ev_action(e, "options", "^t");
+    S.apply_ide_event(gdoc, e);
+    S.compose_ide_tree(tree, gdoc);
+    var obox = tree["children"][2];
+    var krow = "";
+    for ( var oi : obox["children"] )
+	if ( strstr(format("{}", oi["content"]), "Project kind") != 0 )
+	    krow = php::trim(oi["content"]);
+    println("proj-kind-row: {}", krow);
+    ev_choose(e, 0, "opt-projkind");	// the row's own verb (a click / enter)
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    js::parse(mparsed, mtxt);
+    println("proj-kind-toggle: {} file-kind={}", msg, mparsed["kind"]);
+    ev_choose(e, 0, "opt-projkind");	// and back
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    js::parse(mparsed, mtxt);
+    println("proj-kind-toggle2: {} file-kind={}", msg, mparsed["kind"]);
+    ev_key(e, "esc");			// @pane esc paneclose
+    S.apply_ide_event(gdoc, e);
+
+    // -- polish P2b: File -> Open Project… — the headless session gets the
+    //    prompt (no native dialog); the answer runs THE manifest reader
+    //    run_ide's startup uses and opens the Project window on it.
+    php::file_put_contents("madc_ide_open.prj.json",
+	"{\"tus\":[\"madc_ide_test.mad\"],\"kind\":\"gui\"}");
+    ev_action(e, "openproject", "");
+    S.apply_ide_event(gdoc, e);
+    S.compose_ide_tree(tree, gdoc);
+    long okids = php::count(tree["children"]);
+    println("proj-openproject-prompt: {}",
+	    php::trim(tree["children"][okids - 1]["content"]));
+    ev_text(e, "madc_ide_open.prj.json");
+    S.apply_ide_event(gdoc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    var opf;
+    ui::get(opf, w, es, "projfile");
+    println("proj-openproject: {} active={} projfile={} kind={}", msg,
+	    project_active(w, es) ? 1 : 0, opf, proj_kind(w, es));
+    ev_key(e, "esc");			// close the window
+    S.apply_ide_event(gdoc, e);
+    remove("madc_ide_open.prj.json");
+    proj_startup(w, es, doc);		// back to the test manifest
     // The implicit single-file project keeps the buffer semantics.
     long pes4 = ui::create(w, "editor-state-4");
     proj_run_check(w, pes4, doc);
@@ -1612,6 +1668,161 @@ int main()
 	    es_int(w, es, "caret", -1));
     ev_action(e, "onlywin", "^k 1");
     S.apply_ide_event(ptrdoc, e);
+
+    // -- polish P3a: the bottom PANEL — a WINDOW's fact (haspanel): the
+    //    diagnostics surface goes to the panel's Problems tab instead of
+    //    the diags pane, the tab strip is DATA (a title + the command a
+    //    click posts), Output shows the [build] text, `panel` toggles it.
+    //    The terminal composes none of it: every clause above ran with the
+    //    fact off, so the TUI shape they pin is untouched.
+    S.panel(true);
+    ev_action(e, "check", "");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    var pnode;
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    pnode = pk;
+    var ptabs = pnode["hints"]["tabs"];
+    var pnpane;
+    ui::get(pnpane, w, es, "pane");
+    println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} diags-pane={}",
+	    php::count(ptabs), ptabs[0]["title"], ptabs[0]["active"],
+	    ptabs[1]["title"], pnode["children"][0]["role"],
+	    pnode["children"][0]["label"], pnpane == "diags" ? 1 : 0);
+    ev_action(e, "output", "");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    pnode = pk;
+    ptabs = pnode["hints"]["tabs"];
+    println("panel-output: t1-active={} child={}", ptabs[1]["active"],
+	    pnode["children"][0]["role"]);
+    ev_action(e, "panel", "");		// toggles it away
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    long panels = 0;
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    panels = panels + 1;
+    println("panel-toggle: panels={}", panels);
+
+    // -- polish P4: the editor TABS — under the window's fact the buffer
+    //    ring is a tab strip (a content node docked first into the editor
+    //    region; one tab per buffer naming `bufsel` WITH its ring index as
+    //    the argument; the active buffer marked); the command with the
+    //    argument switches the buffer, the palette's form prompts.
+    S.compose_ide_tree(tree, doc);
+    var tstrip;
+    for ( var tk : tree["children"] )
+	if ( !tk["hints"].is_null() && tk["hints"]["region"] == "editor"
+	  && !tk["hints"]["tabs"].is_null() )
+	    tstrip = tk["hints"]["tabs"];
+    long tbi = es_int(w, es, "bufidx", 0);
+    long tn = 0;
+    if ( !tstrip.is_null() )
+	tn = php::count(tstrip);
+    long tactive = -1;
+    for ( long ti = 0; ti < tn; ti = ti + 1 )
+	if ( !tstrip[ti]["active"].is_null() )
+	    tactive = ti;
+    var targ = "-";
+    var tact = "-";
+    if ( tactive >= 0 )
+    {
+	targ = format("{}", tstrip[tactive]["arg"]);
+	tact = format("{}", tstrip[tactive]["action"]);
+    }
+    println("tabs: n>=2 {} active-is-bufidx {} arg-of-active={} action={}",
+	    tn >= 2 ? 1 : 0, tactive == tbi ? 1 : 0, targ, tact);
+    var be;
+    ev_action(be, "bufsel", "");
+    be["arg"] = "0";
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    println("bufsel-arg: bufidx={}", es_int(w, es, "bufidx", 0));
+    ev_action(be, "bufsel", "");		// the palette's form: a prompt
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    S.compose_ide_tree(tree, active_doc(w, es, doc));
+    long bkids = php::count(tree["children"]);
+    println("bufsel-prompt: {}", php::trim(tree["children"][bkids - 1]["content"]));
+    ev_text(be, "madc_ide_second.mad");
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    ev_key(be, "enter");
+    S.apply_ide_event(active_doc(w, es, doc), be);
+    var bsp;
+    ui::get(bsp, w, active_doc(w, es, doc), "path");
+    println("bufsel-name: path={}", bsp);
+
+    // -- polish P3b-1: Run in a window — the live parse runs in a CHILD
+    //    (madcrun://, the fork through the one spawn owner; nothing
+    //    execs) whose output streams into the Output tab's [build] text,
+    //    ending with the child's exit status. The terminal keeps the
+    //    inherited-stdio handoff (the clauses above).
+    php::file_put_contents("madc_ide_run.mad",
+	"int main() { println(\"run-says-hi\"); return 3; }\n");
+    edit_file(w, es, doc, "madc_ide_run.mad");
+    long rdoc = active_doc(w, es, doc);
+    // A gui-kind project: the program's stream goes to Output (a console
+    // one takes the Terminal — the clause after this one).
+    var pjk;
+    ui::get(pjk, w, es, "proj");
+    pjk["kind"] = "gui";
+    ui::set(w, es, "proj", pjk);
+    run_buffer(w, es, rdoc);
+    madc::task_drain();
+    long rbdoc = build_doc_if_any(w, es);
+    var rtxt = "";
+    if ( rbdoc != 0 )
+	ui::text(rtxt, w, rbdoc);
+    ui::get(msg, w, es, "msg");
+    println("run-window: said={} exit={} tab={} live={} msg={}",
+	    rtxt.index("run-says-hi") >= 0 ? 1 : 0,
+	    rtxt.index("[exit 3]") >= 0 ? 1 : 0,
+	    es_int(w, es, "panel", 0), es_int(w, es, "buildlive", 0), msg);
+    remove("madc_ide_run.mad");
+    pjk["kind"] = "console";		// back to the console kind
+    ui::set(w, es, "proj", pjk);
+
+    // -- polish P3b-2: a CONSOLE program runs on a pty in the Terminal tab
+    //    with its keyboard: the prompt it prints arrives through the
+    //    bounded screen, the line typed while the terminal has focus goes
+    //    to the child (the tty echoes it), its answer and exit status end
+    //    the screen; ^] hands the keyboard back. (No manifest: the kind is
+    //    console.)
+    php::file_put_contents("madc_ide_tty.mad",
+	"#include <stdio.h>\n"
+	"int main() { char b[64]; println(\"name?\"); "
+	"if ( fgets(b, 64, stdin) ) printf(\"hi %s\", b); return 4; }\n");
+    edit_file(w, es, doc, "madc_ide_tty.mad");
+    long ttydoc = active_doc(w, es, doc);
+    run_buffer(w, es, ttydoc);
+    var ttab;
+    ui::get(ttab, w, es, "paneltab");
+    println("tty-start: live={} focus={} tab={}", es_int(w, es, "termlive", 0),
+	    es_int(w, es, "termfocus", 0), ttab);
+    // The keyboard returns with the scope's key (^] termunfocus, baked
+    // data) and the `terminal` command gives it back to the live program.
+    ev_key(e, "^]");
+    S.apply_ide_event(ttydoc, e);
+    println("tty-unfocus: focus={}", es_int(w, es, "termfocus", 0));
+    ev_action(e, "terminal", "");
+    S.apply_ide_event(ttydoc, e);
+    println("tty-refocus: focus={}", es_int(w, es, "termfocus", 0));
+    ev_text(e, "bob");			// the keyboard goes to the child…
+    S.apply_ide_event(ttydoc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(ttydoc, e);
+    madc::task_drain();			// …the program answers and ends
+    long ttdoc = term_doc_if_any(w, es);
+    var tty = "";
+    if ( ttdoc != 0 )
+	ui::text(tty, w, ttdoc);
+    println("tty-run: prompt={} answer={} exit={} live={}",
+	    tty.index("name?") >= 0 ? 1 : 0, tty.index("hi bob") >= 0 ? 1 : 0,
+	    tty.index("[exit 4]") >= 0 ? 1 : 0, es_int(w, es, "termlive", 0));
+    remove("madc_ide_tty.mad");
+    S.panel(false);
 
     // :q on the now-clean buffer quits — false propagates out of the
     // prompt commit exactly like the quit chord.

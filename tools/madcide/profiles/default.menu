@@ -24,6 +24,7 @@ File saveas Save As… [editable]
 File savequit Save and Exit [editable]
 File -
 File project Project…
+File openproject Open Project…
 File projaddcur Add Current File to Project
 File -
 File shell Shell
@@ -52,6 +53,11 @@ View -
 View options Options…
 View modes Modes…
 View -
+View panel Toggle Panel
+View problems Problems
+View output Output
+View terminal Terminal
+View -
 View refresh Refresh Screen
 
 Window splitw Split Window
@@ -76,5 +82,6 @@ palette wordright Word Right
 palette discard Discard Changes and Exit
 palette profile Switch Keymap
 palette theme Theme…
+palette bufsel Switch to Buffer…
 palette colon Command Line…
 palette vimode Toggle vi Mode

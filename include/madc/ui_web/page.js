@@ -89,7 +89,19 @@
       nodes.set(op.key, el);
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.tabs ? ' has-tabs' : '');
+                   (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    // A tab STRIP (madcide polish P3a): `tabs` as an array is the strip a
+    // group carries as data — drawn as the group's first element, above the
+    // children the composer docked into it; a tab click posts the tab's
+    // command by name. The strip is the node's own furniture, not a keyed
+    // child, so the children's placement starts after it.
+    if (Array.isArray(op.tabs)) {
+      tabStrip(el, op.tabs);
+      placed.set(el, 1);
+    } else if (el._strip) {
+      el.removeChild(el._strip);
+      el._strip = null;
+    }
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -99,6 +111,9 @@
     // region'd children re-add it). data-region on the node itself names
     // where it asked to go.
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // A popup's dismissal (S6): the action a press OUTSIDE it fires — on any
+    // popup node (a prompt row, a list dialog), not only a content row.
+    if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
     // properties on the document root, so the workbench CSS reads them via
     // var(--name, fallback). The composer attaches it to the root group.
@@ -126,6 +141,25 @@
   }
 
   function text(el, s) { el.textContent = s == null ? '' : String(s); }
+
+  // The tab strip of a tabbed tool window (polish P3a): one tab per entry,
+  // the active one marked; each carries its command for the click handler.
+  function tabStrip(el, tabs) {
+    var s = el._strip;
+    if (!s) {
+      s = document.createElement('div');
+      s.className = 'tabstrip';
+      el._strip = s;
+    }
+    if (el.firstChild !== s) el.insertBefore(s, el.firstChild);
+    s.textContent = '';
+    for (var i = 0; i < tabs.length; i++) {
+      var t = span('tab' + (tabs[i].active ? ' active' : ''), tabs[i].title || '');
+      if (tabs[i].action) t.dataset.action = tabs[i].action;
+      if (tabs[i].arg != null) t.dataset.arg = String(tabs[i].arg);
+      s.appendChild(t);
+    }
+  }
 
   // One side of the status bar: its segments as discrete items.
   function segments(cls, segs) {
@@ -186,6 +220,51 @@
       row.appendChild(b);
     }
     el.appendChild(row);
+  }
+
+  // A list pane as a DIALOG (madcide polish P2): the title bar, the filter
+  // field showing the text the CORE holds (a caret after it — typing still
+  // travels the one input path, the page never edits), the option rows
+  // (each a pick target), and the buttons: a `choose` button picks the
+  // selected row (posted as the "choose" input the focus owner resolves), an
+  // `action` button posts its action by name (the scope's cancel), through
+  // the same click handler a confirm's buttons use.
+  function dialogBox(el, op) {
+    el.classList.add('dialog');
+    el.textContent = '';
+    var d = op.dialog || {};
+    if (d.title) el.appendChild(span('dlg-title', d.title));
+    if (typeof d.filter === 'string') {
+      var f = document.createElement('div');
+      f.className = 'qi-input dlg-filter';
+      f.appendChild(span('qi-text', d.filter));
+      f.appendChild(span('caret', ' '));
+      el.appendChild(f);
+    }
+    var list = document.createElement('div');
+    list.className = 'dlg-list';
+    var opts = op.opts || [];
+    for (var i = 0; i < opts.length; i++) {
+      var o = span('opt' + (i === op.sel ? ' sel' : ''), opts[i]);
+      o.dataset.index = String(i);
+      list.appendChild(o);
+    }
+    el.appendChild(list);
+    var buttons = Array.isArray(d.buttons) ? d.buttons : [];
+    if (buttons.length) {
+      var row = document.createElement('div');
+      row.className = 'cf-buttons dlg-buttons';
+      for (var k = 0; k < buttons.length; k++) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cf-btn';
+        if (buttons[k].choose) b.dataset.choose = el.dataset.key;
+        else b.dataset.action = buttons[k].action || '';
+        b.textContent = buttons[k].label || '';
+        row.appendChild(b);
+      }
+      el.appendChild(row);
+    }
   }
 
   // A BYTE column in a row's UTF-8 text -> the index into the page's
@@ -357,7 +436,6 @@
       }
       // A popup a press outside dismisses: the composer's action, kept on
       // the element for the mousedown handler (data, never a key).
-      if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {
@@ -366,10 +444,15 @@
     } else if (cls === 'choice') {
       el.textContent = '';
       if (op.list) el.classList.add('list');
+      if (op.dialog) { dialogBox(el, op); return false; }
+      el.classList.remove('dialog');
       if (op.label != null) el.appendChild(span('label', op.label));
       var opts = op.opts || [];
-      for (var i = 0; i < opts.length; i++)
-        el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
+      for (var i = 0; i < opts.length; i++) {
+        var oe = span('opt' + (i === op.sel ? ' sel' : ''), opts[i]);
+        oe.dataset.index = String(i);
+        el.appendChild(oe);
+      }
     } else if (cls === 'edit') {
       return applyEdit(el, op);
     }
@@ -523,14 +606,45 @@
     post({ kind: 'pointer', phase: phase, key: ed.dataset.key, line: pos.line, col: pos.col });
   }
 
-  // A dialog button: its action by name, nothing else (no key, no editor
-  // knowledge — the composer named what the answer means).
+  // A dialog button: its action by name, or a pick of the selected row
+  // (the focus owner's choose contract) — nothing else (no key, no editor
+  // knowledge — the composer named what the answer means). A click on a
+  // dialog's option row picks THAT row.
   root.addEventListener('click', function (e) {
-    var b = e.target && e.target.closest ? e.target.closest('.cf-btn') : null;
-    if (!b || !b.dataset.action) return;
-    e.preventDefault();
-    post({ kind: 'action', action: b.dataset.action });
-    kb.focus();
+    var t = e.target;
+    var b = t && t.closest ? t.closest('.cf-btn') : null;
+    if (b && b.dataset.choose) {
+      e.preventDefault();
+      post({ kind: 'choose', key: b.dataset.choose });
+      kb.focus();
+      return;
+    }
+    if (b && b.dataset.action) {
+      e.preventDefault();
+      post({ kind: 'action', action: b.dataset.action });
+      kb.focus();
+      return;
+    }
+    // A tab: its command by name, with the argument it carries (a buffer
+    // tab's ring index) — the page never interprets either.
+    var tab = t && t.closest ? t.closest('.tabstrip .tab') : null;
+    if (tab && tab.dataset.action) {
+      e.preventDefault();
+      var msg = { kind: 'action', action: tab.dataset.action };
+      if (tab.dataset.arg != null) msg.arg = tab.dataset.arg;
+      post(msg);
+      kb.focus();
+      return;
+    }
+    // A choice's option row — a dialog's, a list pane's, the menu bar's:
+    // a click PICKS that row (the focus owner's choose contract).
+    var o = t && t.closest ? t.closest('.node.choice .opt') : null;
+    if (o && o.dataset.index != null) {
+      var node = o.closest('.node.choice');
+      e.preventDefault();
+      post({ kind: 'choose', key: node.dataset.key, index: parseInt(o.dataset.index, 10) });
+      kb.focus();
+    }
   });
 
   // A press OUTSIDE a popup that names a dismissal fires that action (the

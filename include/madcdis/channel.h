@@ -64,6 +64,14 @@ public:
 	// SIGTERMed — so a following close() returns promptly. No-op on
 	// channels with nothing to abandon.
 	void cancel();
+	// The exit status of the child behind an exec-style channel (exec://,
+	// pty://, madcrun://, madcproj://) once close() reaped it — 128+signal
+	// for a killed child; -1 = no child / not finished. (The script
+	// fragment include/madc/ns_madc declares the same member.)
+	int64_t exit_status();
+	// The far end is a terminal (a pty:// / ?pty child on POSIX); false
+	// on pipes — the caller emulates the line discipline it needs.
+	bool is_terminal();
 
 private:
 	channel(const channel &);

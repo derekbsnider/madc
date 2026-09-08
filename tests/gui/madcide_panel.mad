@@ -1,0 +1,91 @@
+// madcide polish P3a: the bottom PANEL with tabs in a REAL session's window.
+// A window pushes the `haspanel` fact; a check then surfaces the diagnostics
+// in the panel's Problems tab (not the terminal's diags pane), the tab
+// strip is data (a title + the command a click posts), and a click on the
+// Output tab travels the page's real click path as the `output` action —
+// the panel shows the [build] text (empty: nothing was built). Runs under
+// Xvfb through remote_build gui.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render_and_probe(IdeSession &S, long t, long w, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, w, tree);
+    ui::eval_page(t,
+	"(function(){var sl=document.querySelector('.slot[data-slot=\"panel\"]');"
+	"if(!sl){window.madc(JSON.stringify({kind:'snapshot',text:'panel=none'}));return;}"
+	"var ts=[];sl.querySelectorAll('.tabstrip .tab').forEach(function(x){"
+	"ts.push(x.textContent+(x.classList.contains('active')?'*':''));});"
+	"var opts=sl.querySelectorAll('.choice .opt');var c=sl.querySelector('.node.content');"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'tabs='+ts.join(',')+' rows='+opts.length"
+	"+' first='+(opts.length?opts[0].textContent:'-')+' content='+(c?'yes':'no')}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_panel_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+    S.panel(true);			// what run_ide pushes for a window
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("PNL open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var ce;
+	    ce["event"] = "action";
+	    ce["event_code"] = ui::event_kind::action;
+	    ce["action"] = "check";
+	    ce["seq"] = "";
+	    S.apply_ide_event(doc, ce);	// a clean check: Problems shows (clean)
+	    render_and_probe(S, t, w, doc);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("PNL {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		stage = 2;
+		ui::eval_page(t,
+		    "document.querySelector('.tabstrip .tab[data-action=\"output\"]')"
+		    ".dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+	    }
+	    else
+		break;
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("PNL event action {}", ev["action"]);
+	    S.apply_ide_event(doc, ev);
+	    render_and_probe(S, t, w, doc);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("PNL closed");
+    return 0;
+}

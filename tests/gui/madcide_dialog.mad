@@ -1,0 +1,125 @@
+// madcide polish P2 (the list overlays as dialogs): a REAL session's
+// Project window renders in the GUI as a titled DIALOG — the title names
+// the manifest (or its absence), the filter field shows the core's text,
+// the rows are pick targets, the buttons are the pane's own actions as
+// data (Open = choose the selected row, Close = the @project cancel by
+// name). A CLICK on a row travels the page's real click path: the
+// "choose" input -> the one focus owner -> the SAME choose event Enter
+// yields -> the pane's choose arm (@project enter projopen opens the row's
+// file and hides the window). The Close button posts projclose by name.
+// Runs under Xvfb through remote_build gui.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render_and_probe(IdeSession &S, long t, long w, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, w, tree);
+    ui::eval_page(t,
+	"(function(){var d=document.querySelector('.node.dialog');"
+	"if(!d){window.madc(JSON.stringify({kind:'snapshot',text:'dialog=none popups='"
+	"+document.querySelectorAll('.node.popup').length}));return;}"
+	"var t=d.querySelector('.dlg-title');var f=d.querySelector('.dlg-filter .qi-text');"
+	"var rows=d.querySelectorAll('.dlg-list .opt').length;"
+	"var bs=[];d.querySelectorAll('.cf-btn').forEach(function(b){"
+	"bs.push(b.textContent+(b.dataset.choose?'/choose':'/'+b.dataset.action));});"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'dialog title='+(t?t.textContent:'')"
+	"+' filter='+(f?'\"'+f.textContent+'\"':'none')+' rows='+rows+' buttons='+bs.join(',')"
+	"+' dismiss='+(d.dataset.dismiss||'')}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_dialog_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    remove("madc_ide_dialog_gui.prj.json");	// no manifest: the implicit project
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("DLG open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    // ^P: the Project window, as the chord's action.
+	    var pe;
+	    pe["event"] = "action";
+	    pe["event_code"] = ui::event_kind::action;
+	    pe["action"] = "project";
+	    pe["seq"] = "^p";
+	    S.apply_ide_event(doc, pe);
+	    render_and_probe(S, t, w, doc);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("DLG {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// Click the first row (the launch file itself).
+		stage = 2;
+		ui::eval_page(t,
+		    "document.querySelector('.node.dialog .opt[data-index=\"0\"]')"
+		    ".dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+	    }
+	    else if ( stage == 3 )
+	    {
+		// Reopen, then the Close button.
+		stage = 4;
+		var pe;
+		pe["event"] = "action";
+		pe["event_code"] = ui::event_kind::action;
+		pe["action"] = "project";
+		pe["seq"] = "^p";
+		S.apply_ide_event(doc, pe);
+		render_and_probe(S, t, w, doc);
+	    }
+	    else if ( stage == 4 )
+	    {
+		stage = 5;
+		ui::eval_page(t,
+		    "document.querySelector('.node.dialog .cf-btn[data-action]')"
+		    ".dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+	    }
+	    else
+		break;
+	}
+	else if ( ev["event"] == "choose" )
+	{
+	    println("DLG event choose option={}", ev["option"]);
+	    S.apply_ide_event(doc, ev);
+	    stage = 3;
+	    render_and_probe(S, t, w, doc);
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("DLG event action {}", ev["action"]);
+	    S.apply_ide_event(doc, ev);
+	    render_and_probe(S, t, w, doc);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("DLG closed");
+    return 0;
+}

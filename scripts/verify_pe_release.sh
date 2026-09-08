@@ -125,4 +125,51 @@ if grep -aq 'opened container' "$PROFILE_LOG"; then
 fi
 rm -f "$PROFILE_LOG"
 
-echo "verify_pe_release: OK ($BIN: $UNITS units, ONE stdlib profile, ledger complete, imports clean, stripped, DLL set adjacent)"
+# 6. The SUBSYSTEM (madcide polish P2c): madc.exe itself is a console
+#    program; an executable it emits is console by default and WINDOWS_GUI
+#    under -mwindows (mingw-gcc's spelling; a project manifest's
+#    "kind": "gui" says the same for a --project build). The oracle is the
+#    cross gcc on this host: -mwindows stamps 2, the default 3 — read from
+#    the PE optional header (e_lfanew + 4 + 20 + 68, u16) the same way.
+#    Never name an output `con.exe`: CON is the console DEVICE on Windows
+#    (and under wine), so fopen(con.exe) opens the console — EBADF.
+pe_subsystem() {
+    python3 - "$1" <<'PY'
+import struct, sys
+b = open(sys.argv[1], 'rb').read()
+lfanew = struct.unpack_from('<I', b, 0x3c)[0]
+assert b[lfanew:lfanew+4] == b'PE\0\0', 'not a PE image'
+print(struct.unpack_from('<H', b, lfanew + 4 + 20 + 68)[0])
+PY
+}
+SUBSYS_DIR=tmp/verify_pe_subsystem
+rm -rf "$SUBSYS_DIR"
+mkdir -p "$SUBSYS_DIR"
+printf 'int main(void) { return 0; }\n' > "$SUBSYS_DIR/hello.c"
+self_sub=$(pe_subsystem "$BIN")
+if [ "$self_sub" != 3 ]; then
+    echo "verify_pe_release: FAILED — $BIN subsystem is $self_sub, expected 3 (console)" >&2
+    exit 1
+fi
+timeout 300 "$WINE" "$BIN" -o "$SUBSYS_DIR/default.exe" "$SUBSYS_DIR/hello.c" > "$SUBSYS_DIR/default.log" 2>&1 || {
+    echo "verify_pe_release: FAILED — the default emit of hello.c did not link (see $SUBSYS_DIR/default.log)" >&2; exit 1; }
+timeout 300 "$WINE" "$BIN" -mwindows -o "$SUBSYS_DIR/gui.exe" "$SUBSYS_DIR/hello.c" > "$SUBSYS_DIR/gui.log" 2>&1 || {
+    echo "verify_pe_release: FAILED — the -mwindows emit of hello.c did not link (see $SUBSYS_DIR/gui.log)" >&2; exit 1; }
+con_sub=$(pe_subsystem "$SUBSYS_DIR/default.exe")
+gui_sub=$(pe_subsystem "$SUBSYS_DIR/gui.exe")
+GCC_W64="${GCC_W64:-x86_64-w64-mingw32-gcc}"
+oracle_con=3
+oracle_gui=2
+if command -v "$GCC_W64" > /dev/null 2>&1; then
+    "$GCC_W64" -o "$SUBSYS_DIR/oracle-default.exe" "$SUBSYS_DIR/hello.c" > /dev/null 2>&1 \
+        && oracle_con=$(pe_subsystem "$SUBSYS_DIR/oracle-default.exe")
+    "$GCC_W64" -mwindows -o "$SUBSYS_DIR/oracle-gui.exe" "$SUBSYS_DIR/hello.c" > /dev/null 2>&1 \
+        && oracle_gui=$(pe_subsystem "$SUBSYS_DIR/oracle-gui.exe")
+fi
+if [ "$con_sub" != "$oracle_con" ] || [ "$gui_sub" != "$oracle_gui" ]; then
+    echo "verify_pe_release: FAILED — emitted subsystems console=$con_sub gui=$gui_sub; gcc oracle console=$oracle_con gui=$oracle_gui" >&2
+    exit 1
+fi
+rm -rf "$SUBSYS_DIR"
+
+echo "verify_pe_release: OK ($BIN: $UNITS units, ONE stdlib profile, ledger complete, imports clean, stripped, DLL set adjacent, subsystem console=$con_sub -mwindows=$gui_sub as gcc)"

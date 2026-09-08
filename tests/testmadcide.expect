@@ -59,7 +59,7 @@ proj-startup: Project madc_ide_test.prj.json: 2 TU(s). tus=2
 proj-bad: madc_ide_test.prj.json is not valid JSON. implicit=1
 build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
 build-start: live=1
-build-out: has-hello=1 has-done=1 live=0
+build-out: has-hello=1 has-exit0=1 live=0
 build-stop: has-stopped=1 live=0
 build-terminal-headless: No terminal to suspend.
 build-defaults: rows=6 row1=Build (in-process) run-internal=1
@@ -79,6 +79,11 @@ proj-goto: path=madc_ide_bad.mad switched=1
 proj-run-red: refused=1
 proj-run-clean: No terminal to suspend.
 proj-build: artifact=1 Built project madc_ide_test.prj.json -> madc_ide_prog
+proj-kind-row: P Project kind console
+proj-kind-toggle: Project kind: gui. file-kind=gui
+proj-kind-toggle2: Project kind: console. file-kind=console
+proj-openproject-prompt: Project file to open (^C aborts):
+proj-openproject: Project madc_ide_open.prj.json: 1 TU(s). active=1 projfile=madc_ide_open.prj.json kind=gui
 proj-implicit-check: Check: clean.
 proj-subst: echo madc_ide_test.prj.json
 win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view
@@ -103,7 +108,7 @@ prompt-bottom: top-clean=1 bottom=Go to line (^C aborts):
 gotoline: caret=43 prompt-off=1
 find: first=5 next=71
 insertfile: Inserted 8 bytes. size=92
-help: pane=help label=Help — pico profile rows=41
+help: pane=help label=Help — pico profile rows=42
 shell-headless: No terminal to suspend.
 v2-restored: size=84 modified=false
 view1: name=mc11 editable=0 caret=0 stored-size=84
@@ -151,4 +156,16 @@ vi-toggle: mode='' typed-x=1
 ptr-drag: caret=6 press-mark=-1 mark=2 bend=6 lit=2..6 subject-ok=1
 ptr-press: caret=3 mark=-1 bend=-1
 ptr-window: other-buffer=1 switched-to=1 active-is-first=1 caret=1
+panel-problems: tabs=3 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
+panel-output: t1-active=1 child=content
+panel-toggle: panels=0
+tabs: n>=2 1 active-is-bufidx 1 arg-of-active=
+bufsel-arg: bufidx=0
+bufsel-prompt: Buffer (^C aborts):
+bufsel-name: path=madc_ide_second.mad
+run-window: said=1 exit=1 tab=1 live=0 msg=Run madc_ide_run.mad — Output shows it.
+tty-start: live=1 focus=1 tab=terminal
+tty-unfocus: focus=0
+tty-refocus: focus=1
+tty-run: prompt=1 answer=1 exit=1 live=0
 colon-quit: cont=0

@@ -1,6 +1,37 @@
 # Test Status
 
-> **Current (2026-09-08, the s168 merge wave — madcide polish P1 on
+> **Current (2026-09-08, the s168 P2–P4 merge wave — the local-IDE polish
+> for the master release on `feature/madcide-polish-panel-claude`: the list
+> overlays as dialogs, Open Project… + the project kind (the Windows
+> subsystem), the bottom panel with Problems / Output / Terminal, Run in the
+> window (Output for gui programs, a pty Terminal for console ones —
+> `madcrun://` / `madcproj://` / `pty://` through the spawn owner's
+> `child_body` / `pty`; Windows runs them on pipes with the pump's line
+> discipline), editor tabs with commands taking arguments):** FULL
+> develop-set battery, recorded in `docs/lane-status.tsv` at 1beeb77e:
+> fulltest rc=0 — every gate — on 1beeb77e (`tmp/logs/rb-20260908-204941.log`)
+> with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**; the first
+> full run (`tmp/logs/rb-20260908-200316.log`, 23026bed code) stopped at the
+> C-ABI export gate: the P2c engine global `madc_gui_subsystem` was exported
+> unlisted — listed in `scripts/c-abi-internal-exports.txt` beside its
+> siblings (the one CODE_PATHS delta between the two runs; only that gate
+> reads it). Native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**,
+> headerless **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`,
+> +`madcide_dialog` + `madcide_panel`): **15/15 JIT, 15/15 EXE, 15/15 OBJ**.
+> Unit battery green incl. `test_process` (child_body, pty, is_terminal),
+> `test_term_screen`, `test_web_model` (dialog / choose / tabs / arg),
+> `test_project_manifest` (kind), `test_tui_model` (key bytes). release-win
+> + `verify_pe_release` authority 6 (subsystem console=3, `-mwindows`=2, as
+> mingw-gcc). wine64 **1276/0/0TO/68skip** first-run green — the win64
+> twin's terminal / run clauses were verified by hand first
+> (`tmp/logs/p234-wine-hand3.log`: 171/171 lines, 1.5 s under wine; the
+> pre-fix PE hung in the tty clause because Enter reached the piped child
+> as a bare `\r`). c-testsuite **220/220** (`tmp/logs/cts-s168c.log`);
+> macOS cross release both arches (836 units each) + webview dylibs,
+> verify_macho OK both, package-macos rc=0. Release-tier lanes (libcxx,
+> darwin-suite, genuine-win) run at the master promotion.
+>
+> **Previous (2026-09-08, the s168 merge wave — madcide polish P1 on
 > `feature/madcide-polish-colours-claude`: one theme, two renderers — the
 > render style and its spec parser moved to `madcdis/ui_style.h`, the DOM
 > model renders the scheme's spec as `st-*` / `fg-*` / `bg-*` classes over
