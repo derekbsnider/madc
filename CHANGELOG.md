@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### madcide: the status bar is chrome (S3, 2026-09-08)
+
+- The window's status bar was the terminal's two half-strings side by side.
+  The JOE format expansion now also yields its SEGMENTS — one `{seat, label,
+  text}` per format seat that showed text (`%n` the file, `%r`/`%c` with
+  their `Row`/`Col` labels, `%m` the modified badge, `%R` read-only, `%M` the
+  vi mode, `%k` the pending chord, `%x` the enclosing function) — on the
+  status node's `items` hint, and the page lays them as discrete items with
+  semantic classes (`.sb-seat.sb-<letter>`; the badges in the accent, the mode
+  bold, the chord as a key cap, all `@gui`-themeable). One expansion, two
+  renderings: the terminal still shows the combined string.
+- `tests/testidestatus.mad` pins the segments (the name seat, Row/Col with
+  labels, the chord and modified seats lighting); `test_web_model` pins the
+  emitted arrays.
+
 ### madcide: a native menu bar (S2, 2026-09-08)
 
 - The window draws the S1 menu data as real application chrome. The engine

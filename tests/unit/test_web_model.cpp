@@ -649,10 +649,22 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     web_model m;
     uinode root(r.group);
     uinode status(r.status);
-    status.content = madc::value(std::string("Ln 1        Row 2"));  // TUI string
+    status.content = madc::value(std::string("notes.txt        Row 2"));  // TUI string
+    // The composer's segments: {seat, label, text} per shown format seat.
+    std::map<std::string, madc::value> nseg;
+    nseg["seat"] = madc::value(std::string("n"));
+    nseg["label"] = madc::value(std::string(""));
+    nseg["text"] = madc::value(std::string("notes.txt"));
+    std::map<std::string, madc::value> rseg;
+    rseg["seat"] = madc::value(std::string("r"));
+    rseg["label"] = madc::value(std::string("Row"));
+    rseg["text"] = madc::value(std::string("2"));
+    std::vector<madc::value> left, right;
+    left.push_back(madc::value::make_object(nseg));
+    right.push_back(madc::value::make_object(rseg));
     std::map<std::string, madc::value> items;
-    items["left"] = madc::value(std::string("Ln 1"));
-    items["right"] = madc::value(std::string("Row 2"));
+    items["left"] = madc::value::make_array(left);
+    items["right"] = madc::value::make_array(right);
     std::map<std::string, madc::value> h;
     h["items"] = madc::value::make_object(items);
     status.hints = madc::value::make_object(h);
@@ -663,10 +675,15 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     const nlohmann::json *st = node_by_key(ops, "0.0");
     REQUIRE(st);
     CHECK((*st)["class"] == "status");
-    CHECK((*st)["text"] == "Ln 1        Row 2");	// the TUI combined string
+    CHECK((*st)["text"] == "notes.txt        Row 2");	// the TUI combined string
     REQUIRE((*st).contains("items"));
-    CHECK((*st)["items"]["left"] == "Ln 1");
-    CHECK((*st)["items"]["right"] == "Row 2");
+    REQUIRE((*st)["items"]["left"].size() == 1);
+    CHECK((*st)["items"]["left"][0]["seat"] == "n");
+    CHECK((*st)["items"]["left"][0]["text"] == "notes.txt");
+    REQUIRE((*st)["items"]["right"].size() == 1);
+    CHECK((*st)["items"]["right"][0]["seat"] == "r");
+    CHECK((*st)["items"]["right"][0]["label"] == "Row");
+    CHECK((*st)["items"]["right"][0]["text"] == "2");
 
     // A status without items carries none (negative control).
     web_model m2;

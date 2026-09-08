@@ -120,6 +120,22 @@
 
   function text(el, s) { el.textContent = s == null ? '' : String(s); }
 
+  // One side of the status bar: its segments as discrete items.
+  function segments(cls, segs) {
+    var side = document.createElement('span');
+    side.className = cls;
+    var list = Array.isArray(segs) ? segs : [];
+    for (var i = 0; i < list.length; i++) {
+      var sg = list[i] || {};
+      var item = document.createElement('span');
+      item.className = 'sb-seat' + (sg.seat ? ' sb-' + sg.seat : '');
+      if (sg.label) item.appendChild(span('sb-label', sg.label));
+      item.appendChild(span('sb-text', sg.text || ''));
+      side.appendChild(item);
+    }
+    return side;
+  }
+
   function span(cls, s) {
     var e = document.createElement('span');
     e.className = cls;
@@ -278,11 +294,14 @@
       el.appendChild(span('text', op.text || ''));
     } else if (cls === 'status' || cls === 'content' || cls === 'item') {
       if (cls === 'status' && op.items) {
-        // The status bar as a justified item pair (slice 3): .status is
-        // already flex space-between, so a left and a right span sit apart.
+        // The status bar as chrome (S3): each side is a row of SEGMENTS —
+        // the composer's expanded format seats {seat, label, text} — laid
+        // as discrete items (.sb-seat.sb-<letter>: a label span when the
+        // format gave one, then the text), left and right apart (.status
+        // is flex space-between).
         el.textContent = '';
-        el.appendChild(span('sb-left', op.items.left || ''));
-        el.appendChild(span('sb-right', op.items.right || ''));
+        el.appendChild(segments('sb-left', op.items.left));
+        el.appendChild(segments('sb-right', op.items.right));
       } else {
         text(el, op.text);
       }

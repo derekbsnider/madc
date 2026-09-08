@@ -956,13 +956,23 @@ bool view_name(var &out, long w, long es)
 // ring-lifetime (the pre-L3 contract) and this loop makes many
 // ring-returning calls — the format is copied into a frame-owned buffer
 // at entry, never held as a borrowed pointer.
-void status_expand(var &out, long w, long es, long doc, long caret,
+// The SAME expansion also yields the line's SEGMENTS (S3, the status bar
+// as chrome): one row per seat that expanded to text — { seat: the
+// format letter, label: the literal text before it (trimmed: "Row" for
+// `Row %4r`), text: the seat's text (trimmed) } — so a chrome renderer
+// lays discrete, themeable items where the terminal shows one string. An
+// empty seat (an unsupported escape, no chord pending) contributes no
+// segment and drops the literal before it; `%%` is literal text. One
+// walk, two renderings.
+void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 		   var &fmtv, var &fnctxv)
 {
     char fmt[240];
     strncpy(fmt, fmtv.c_str(), 239);
     fmt[239] = 0;
     var s = "";
+    var lit = "";		// literal text since the last seat
+    var rows = {};
     long line = line_of(w, doc, caret);
     long start = line_start_of(w, doc, line);
     long col = caret - start + 1;
@@ -978,7 +988,11 @@ void status_expand(var &out, long w, long es, long doc, long caret,
 	    continue;
 	}
 	if ( i > run )
-	    s = format("{}{}", s, perl::substr(fmt, run, i - run));
+	{
+	    var piece = perl::substr(fmt, run, i - run);
+	    s = format("{}{}", s, piece);
+	    lit = format("{}{}", lit, piece);
+	}
 	if ( c == '\\' )
 	{
 	    i = i + 2;				// attribute escape: consumed
@@ -1062,12 +1076,26 @@ void status_expand(var &out, long w, long es, long doc, long caret,
 	if ( pad > 0 )
 	    s = format("{}{}", s, php::str_repeat(" ", pad));
 	s = format("{}{}", s, seat);
+	if ( e == '%' )
+	    lit = format("{}%", lit);		// literal, not a seat
+	else
+	{
+	    var text = php::trim(seat);
+	    if ( strlen(text.c_str()) > 0 )
+	    {
+		var letter = perl::substr(fmt, j, 1);
+		var label = php::trim(lit);
+		rows[] = { "seat": letter, "label": label, "text": text };
+	    }
+	    lit = "";
+	}
 	i = j + 1;
 	run = i;
     }
     if ( i > run )
 	s = format("{}{}", s, perl::substr(fmt, run, i - run));
     out = s;
+    segs = rows;
 }
 
 // The JOE screen model's status line (IDE-9a/9b): ONE inverse row at the
@@ -1143,7 +1171,8 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
     var rm;
     ui::get(rm, w, es, "rmsg");
     var lout;
-    status_expand(lout, w, es, doc, caret, lm, fnctx);
+    var lsegs;
+    status_expand(lout, lsegs, w, es, doc, caret, lm, fnctx);
     var fill = " ";
     var rfmt = "";
     if ( strlen(rm.c_str()) > 0 )
@@ -1152,7 +1181,8 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	rfmt = perl::substr(rm, 1, strlen(rm.c_str()) - 1);
     }
     var rout;
-    status_expand(rout, w, es, doc, caret, rfmt, fnctx);
+    var rsegs;
+    status_expand(rout, rsegs, w, es, doc, caret, rfmt, fnctx);
     // The viewport is a CLIENT-pushed fact (headless sessions typeset
     // the joerc default width).
     long cols = es_int(w, es, "vcols", 80);
@@ -1165,12 +1195,14 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	gap = 1;
     st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),
 			   rout);
-    // The status bar as discrete items (slice 3 Task 5): the SAME expanded
-    // halves (lout left, rout right) ride the hints so the web target lays
-    // them into a justified item bar; the TUI reads the combined `content`
-    // string above (the fill between them is a terminal real-estate detail).
-    // No new seat logic — one expansion, two renderings.
-    var items = { "left": lout, "right": rout };
+    // The status bar as discrete items (slice 3 Task 5; S3 as chrome): the
+    // SAME expansion's SEGMENTS (left half, right half — each seat that
+    // showed text, with its label) ride the hints so the web target lays
+    // them as discrete, themeable items; the TUI reads the combined
+    // `content` string above (the fill between the halves is a terminal
+    // real-estate detail). No new seat logic — one expansion, two
+    // renderings.
+    var items = { "left": lsegs, "right": rsegs };
     var sh = { "items": items };
     st["hints"] = sh;
     status = st;

@@ -14,6 +14,18 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .node.group { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .heading, .status { display: flex; justify-content: space-between; padding: 1px 8px; background: #3b4a6b; color: #f2f4ff; }
 .status { background: #2d3448; }
+/* The status bar as chrome (S3): each side a row of discrete seats; a
+   label (the format's literal, "Row") in the quiet colour, the text beside
+   it; a few seats carry their own look — the modified / read-only badges in
+   the accent, the vi mode bold, the pending chord as a key cap. Theme them
+   through the @gui custom properties like everything else. */
+.sb-left, .sb-right { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
+.sb-seat { display: inline-flex; gap: 5px; white-space: nowrap; }
+.sb-label { color: var(--sb-label, #9aa0b4); }
+.sb-m .sb-text, .sb-R .sb-text { color: var(--accent, #9fc2ff); }
+.sb-M .sb-text { font-weight: bold; }
+.sb-k .sb-text { background: #3b4a6b; padding: 0 5px; border-radius: 3px; }
+.sb-x .sb-text { color: var(--sb-context, #c9cde0); font-style: italic; }
 .content { white-space: pre-wrap; padding: 0 8px; }
 .item { padding: 0 8px 0 24px; }
 .action { padding: 0 8px; color: var(--accent, #9fc2ff); }

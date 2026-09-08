@@ -25,12 +25,34 @@ int main()
     // The combined content string still names the file (the TUI's view).
     var content = st["content"];
     println("content-has-name={}", content.index("madc_ide_status.mad") >= 0 ? 1 : 0);
-    // The items ride the hints: left carries the name seat, right the Row/Col.
+    // The items ride the hints as SEGMENTS (S3: the status bar as chrome):
+    // one {seat, label, text} per format seat that showed text — the name
+    // seat (%n) on the left, Row (%4r) and Col (%3c) with their labels on
+    // the right; the empty seats (%T %W ... %S) contribute nothing.
     println("items-present={}", st["hints"]["items"].is_null() ? 0 : 1);
     var left = st["hints"]["items"]["left"];
     var right = st["hints"]["items"]["right"];
-    println("left-has-name={} right-has-row={}",
-	    left.index("madc_ide_status.mad") >= 0 ? 1 : 0,
-	    right.index("Row") >= 0 ? 1 : 0);
+    var lseats = "";
+    var name_text = "";
+    for ( var sg : left )
+    {
+	lseats = format("{}{}", lseats, sg["seat"]);
+	if ( sg["seat"] == "n" )
+	    name_text = sg["text"];
+    }
+    var rdesc = "";
+    for ( var sg : right )
+	rdesc = format("{}{}:{}={} ", rdesc, sg["seat"], sg["label"], sg["text"]);
+    println("left-seats={} name={}", lseats, name_text);
+    println("right={}", php::trim(rdesc));
+    // A pending chord lights the %k seat first; a modified buffer its badge.
+    ui::set(w, es, "pendingchord", "^K");
+    ui::set(w, doc, "modified", true);
+    S.compose_ide_tree(tree, doc);
+    left = tree["children"][0]["hints"]["items"]["left"];
+    lseats = "";
+    for ( var sg : left )
+	lseats = format("{}{}", lseats, sg["seat"]);
+    println("chord+modified-seats={}", lseats);
     return 0;
 }

@@ -499,9 +499,11 @@ class web_model
 	       || n.role == r.item )
 	{
 	    op["text"] = node_text(n);
-	    // The status bar as items (slice 3 Task 5): a status node whose
-	    // hints carry {items:{left,right}} renders a justified item bar;
-	    // the page prefers items when present, else the single `text`.
+	    // The status bar as items (slice 3 Task 5; S3 as chrome): a status
+	    // node whose hints carry {items:{left,right}} — each side an
+	    // array of SEGMENTS {seat, label, text} (the composer's expanded
+	    // format seats) — renders a justified bar of discrete items; the
+	    // page prefers items when present, else the single `text`.
 	    if ( n.role == r.status && n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -510,12 +512,26 @@ class web_model
 		{
 		    const std::map<std::string, madc::value> &iv = ii->second.as_object();
 		    nlohmann::json items = nlohmann::json::object();
-		    std::map<std::string, madc::value>::const_iterator l = iv.find("left");
-		    std::map<std::string, madc::value>::const_iterator rr = iv.find("right");
-		    if ( l != iv.end() && l->second.is_string() )
-			items["left"] = l->second.as_string();
-		    if ( rr != iv.end() && rr->second.is_string() )
-			items["right"] = rr->second.as_string();
+		    static const char *const sides[2] = { "left", "right" };
+		    for ( int si = 0; si < 2; ++si )
+		    {
+			std::map<std::string, madc::value>::const_iterator l = iv.find(sides[si]);
+			if ( l == iv.end() || !l->second.is_array() )
+			    continue;
+			nlohmann::json segs = nlohmann::json::array();
+			const std::vector<madc::value> &rows = l->second.as_array();
+			for ( size_t k = 0; k < rows.size(); ++k )
+			{
+			    if ( !rows[k].is_object() )
+				continue;
+			    nlohmann::json seg = nlohmann::json::object();
+			    seg["seat"] = hint_str(rows[k], "seat");
+			    seg["label"] = hint_str(rows[k], "label");
+			    seg["text"] = hint_str(rows[k], "text");
+			    segs.push_back(seg);
+			}
+			items[sides[si]] = segs;
+		    }
 		    op["items"] = items;
 		}
 	    }
