@@ -402,7 +402,8 @@ means anything in JavaScript.
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu — the last optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted — and `{"kind":"action","action":id}`, a native menu selection, the same action event a bound chord produces). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog — the last two optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted — `{"kind":"action","action":id}`, a native menu selection, the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `dialogs(t)` / `dialog(t, json)` | Native file dialogs: can the target show one (a window whose host draws chrome; the terminal cannot), and show the one the request describes — true = up, the answer arrives as an `{event:"dialog", mode, path}` event; false = not here, the application falls back to its own prompt |
 
 `madc::module_available("madcwebview")` answers whether the window can
 exist on this system; `tools/texteditor/vised.mad <file> --web` is the
@@ -453,7 +454,7 @@ and hands the host the whole menu whenever any title, key or enablement
 changed. The host (`<ns_ui_web>`) walks it item by item into madc's
 extension of the webview library (`madcwebview_menu_begin` / `_add` /
 `_separator` / `_end`, declared in the embedded `webview.h` beside
-upstream's API; `src/madcwebview_menu.cc` implements them in
+upstream's API; `src/madcwebview_chrome.cc` implements them in
 `libmadcwebview`): on GTK4 a `GtkPopoverMenuBar` over a `GMenu` model, the
 webview re-parented beneath it, each item an action under the `menu.`
 prefix — a single-key chord becomes the item's accelerator, a multi-key
@@ -463,6 +464,24 @@ session dispatches it exactly as it dispatches the chord. Win32 and Cocoa
 answer "unsupported" until their native menus land (the window keeps the
 page as it is). `ui_web::menu_activate(id)` fires an item by id — the test
 seam `tests/gui/madcide_menu.mad` drives.
+
+**Native file dialogs.** Open File and Save As are a request / response
+VERB between the session and its client, never a widget the session
+draws: a client that can show native dialogs pushes the fact
+(`IdeSession::dialogs`, from `ui::dialogs(t)`), and then those commands
+park a `filedialog` request — mode, title, the initial path — in the same
+slot the terminal requests ride; the client shows it (`ui::dialog`, the
+host's `dialog` op, `madcwebview_dialog_open` / `_save`: a `GtkFileDialog`
+on GTK 4.10+, asynchronous inside the platform loop) and the answer comes
+back as a `dialog` event the dispatcher applies — open edits the chosen
+file, save writes the buffer under the new path (its buffer row follows),
+`""` cancels. Without the fact (the terminal, a headless session) both
+commands keep JOE's prompts exactly as before, and a platform without a
+native dialog yet (Win32, Cocoa) falls back to the same prompts through
+`IdeSession::dialog_fallback`. Paths are the one local workspace's; the
+URI scheme / authority addressing of the two-sided file model lands with
+the remote-transport arc. `tests/testidedialog.mad` pins the verb
+headless; `testuihostfake` the seam.
 
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is

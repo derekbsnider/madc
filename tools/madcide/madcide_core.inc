@@ -73,6 +73,11 @@ class IdeSession
 					// keeps serving input)
 	void viewport(long cols, long rows);	// client-pushed facts
 	void terminal(bool has);
+	void dialogs(bool has);		// the client can show native file
+					// dialogs (S4): open / save-as park a
+					// filedialog request instead of a prompt
+	void dialog_fallback(var &req);	// the client could not show it:
+					// the request's prompt instead
 	void pending_chord(const char *pcs);
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
@@ -889,6 +894,7 @@ void toggle_profile(long w, long es)
 // or switches to that file through edit_file — THE one open-or-switch
 // owner — then the caret lands in the now-active buffer.
 void edit_file(long w, long es, long olddoc, const char *path0);
+bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option)
 {
@@ -1314,6 +1320,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	edit_file(w, es, doc, in.c_str());
 	return true;
     }
+    if ( mode == "saveas" )
+	return save_as(w, es, doc, in.c_str());
     if ( mode == "projadd" )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
@@ -3030,6 +3038,73 @@ bool term_request(long w, long es, var &req)
     return true;
 }
 
+bool save_and_check(long w, long es, long doc);	// defined with the actions below
+
+// A native file dialog request (S4): the SAME parked-request slot the
+// terminal requests ride (kinds are data; the client dispatches by kind),
+// gated on the client's own fact (hasdialogs — a window whose host draws
+// chrome pushes it; the terminal and a headless session never do, so
+// their open / save-as keep prompting exactly as before). The answer
+// returns as a dialog EVENT the dispatcher handles (dialog_result).
+bool dialog_request(long w, long es, const char *mode, const char *title,
+		    var &initial)
+{
+    if ( !es_flag(w, es, "hasdialogs") )
+	return false;
+    var rq = { "kind": "filedialog", "mode": mode, "title": title,
+	       "path": initial, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+    return true;
+}
+
+// Save the buffer under a NEW path (Save As…): the document's path moves,
+// its buffer row follows (the ring addresses buffers by path), then the
+// one write verb runs — the same `w` every save uses.
+bool save_as(long w, long es, long doc, const char *path0)
+{
+    var p = path0;			// ring discipline: own the text first
+    if ( strlen(p.c_str()) == 0 )
+	return true;
+    ui::set(w, doc, "path", p);
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( !bufs.is_null() )
+    {
+	long n = php::count(bufs);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var r = bufs[i];
+	    if ( r["doc"].as_integer() == doc )
+	    {
+		r["path"] = p;
+		bufs[i] = r;
+	    }
+	}
+	ui::set(w, es, "buffers", bufs);
+    }
+    return save_and_check(w, es, doc);
+}
+
+// A native file dialog answered (the dialog event, S4): open edits the
+// chosen file (the same path editfile's prompt takes), save writes the
+// buffer under it; an empty path is the user's cancel.
+void dialog_result(long w, long es, long doc, var &ev)
+{
+    var mode = ev["mode"];
+    var path = ev["path"];
+    if ( path.is_null() || strlen(path.c_str()) == 0 )
+    {
+	ui::set(w, es, "msg", "Cancelled.");
+	return;
+    }
+    if ( mode == "save" )
+    {
+	save_as(w, es, doc, path.c_str());
+	return;
+    }
+    edit_file(w, es, doc, path.c_str());
+}
+
 // The Run row (owner ruling 2026-08-27: the running madc IS the
 // compiler): fork-run the buffer's LIVE parse — refresh the handle from
 // the screen text, refuse a red parse LOUD (the rows land in the diags
@@ -3626,6 +3701,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 
     // A pointing-device gesture (the web target's hit test; a terminal's
     // mouse reporting later): the caret model is the keyboard's.
+    if ( kind == ui::event_kind::dialog )
+    {
+	// A native file dialog answered (S4): open or save-as by the path.
+	dialog_result(w, es, doc, ev);
+	return true;
+    }
     if ( kind == ui::event_kind::pointer )
     {
 	pointer_event(doc, nav, ev);
@@ -3839,7 +3920,19 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	}
 	if ( a == "editfile" )
 	{
-	    start_prompt(w, es, "Name of file to edit", "editfile");
+	    // A window with native dialogs shows the platform's Open; the
+	    // terminal and a headless session keep JOE's prompt.
+	    var none = "";
+	    if ( !dialog_request(w, es, "open", "Open File", none) )
+		start_prompt(w, es, "Name of file to edit", "editfile");
+	    return true;
+	}
+	if ( a == "saveas" )
+	{
+	    var cur;
+	    ui::get(cur, w, doc, "path");
+	    if ( !dialog_request(w, es, "save", "Save As", cur) )
+		start_prompt(w, es, "Save as", "saveas");
 	    return true;
 	}
 	if ( a == "shell" )
@@ -4513,6 +4606,23 @@ void IdeSession::viewport(long cols, long rows)
 void IdeSession::terminal(bool has)
 {
     ui::set(w, es, "hasterm", has);
+}
+
+void IdeSession::dialogs(bool has)
+{
+    ui::set(w, es, "hasdialogs", has);
+}
+
+// The client could not show the dialog it was asked for (no native dialog
+// on this platform): the request's prompt instead — the same prompts the
+// terminal uses, so the command still completes.
+void IdeSession::dialog_fallback(var &req)
+{
+    var mode = req["mode"];
+    if ( mode == "save" )
+	start_prompt(w, es, "Save as", "saveas");
+    else
+	start_prompt(w, es, "Name of file to edit", "editfile");
 }
 
 void IdeSession::pending_chord(const char *pcs)

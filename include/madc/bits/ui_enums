@@ -48,10 +48,13 @@ namespace ui {
 	wake,		// cooperative background tasks drained: recompose
 	snapshot,	// a DOM frontend's page reported its rendered text (the
 			// test seam, madcSnapshot()): `text` carries it
-	pointer		// a pointing-device gesture on an edit node: `offset` is
+	pointer,	// a pointing-device gesture on an edit node: `offset` is
 			// the BYTE offset in that node's text the pointer resolved
 			// to, `phase` the gesture step, `subject` the entity the
 			// node projects (0 = none)
+	dialog		// a native file dialog answered (ui::dialog): `mode` is
+			// the request's ("open" / "save"), `path` the chosen file
+			// ("" = cancelled)
     };
 
     // The steps of a pointing-device gesture (event_kind::pointer): a

@@ -1,5 +1,6 @@
-// madcwebview_menu.cc — the native menu bar over the webview window (madcide
-// GUI chrome S2; API in madcwebview_menu.h). GTK4: a GtkPopoverMenuBar fed
+// madcwebview_chrome.cc — madc's native chrome around the webview (API in
+// madcwebview_chrome.h): the menu bar over the window (madcide GUI chrome
+// S2) and the platform's file dialogs (S4). GTK4: a GtkPopoverMenuBar fed
 // by a GMenu model, its items bound to a GSimpleActionGroup inserted on the
 // window under the `menu.` prefix; the webview widget is re-parented into a
 // vertical box under the bar (upstream sets the widget as the window's child
@@ -9,7 +10,7 @@
 // every call answers "unsupported" and the page stays as it is.
 #define WEBVIEW_HEADER 1
 #include "webview/webview.h"
-#include "madcwebview_menu.h"
+#include "madcwebview_chrome.h"
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 
@@ -253,9 +254,101 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id)
 	return 0;
 }
 
-} // extern "C"
+} // extern "C" — the menu API
 
-#else /* Win32 / Cocoa: the native menu bar is not built yet */
+// ---- file dialogs (S4): GtkFileDialog (GTK 4.10+), asynchronous ----------
+// The dialog runs inside the platform loop the host is already in
+// (webview_run); its completion callback resolves the GFile to a path and
+// hands it to the caller's callback — "" when the user cancelled or the
+// platform reported an error. The context is freed after the one call.
+
+#if GTK_CHECK_VERSION(4, 10, 0)
+namespace {
+
+struct dialog_ctx {
+	madcwebview_dialog_fn cb;
+	void *arg;
+	bool save;
+};
+
+void on_dialog_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+	dialog_ctx *c = static_cast<dialog_ctx *>(data);
+	GError *err = 0;
+	GFile *f = c->save
+		? gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &err)
+		: gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &err);
+	char *path = f ? g_file_get_path(f) : 0;
+	if (c->cb)
+		c->cb(path ? path : "", c->arg);
+	if (path)
+		g_free(path);
+	if (f)
+		g_object_unref(f);
+	if (err)
+		g_error_free(err);
+	delete c;
+}
+
+int dialog_run(webview_t w, const char *title, const char *initial,
+	       madcwebview_dialog_fn cb, void *arg, bool save)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	GtkFileDialog *d = gtk_file_dialog_new();
+	if (title && *title)
+		gtk_file_dialog_set_title(d, title);
+	if (initial && *initial) {
+		GFile *g = g_file_new_for_path(initial);
+		if (g_file_query_file_type(g, G_FILE_QUERY_INFO_NONE, NULL)
+		    == G_FILE_TYPE_DIRECTORY)
+			gtk_file_dialog_set_initial_folder(d, g);
+		else
+			gtk_file_dialog_set_initial_file(d, g);
+		g_object_unref(g);
+	}
+	dialog_ctx *c = new dialog_ctx;
+	c->cb = cb;
+	c->arg = arg;
+	c->save = save;
+	if (save)
+		gtk_file_dialog_save(d, GTK_WINDOW(st->win), NULL, on_dialog_done, c);
+	else
+		gtk_file_dialog_open(d, GTK_WINDOW(st->win), NULL, on_dialog_done, c);
+	g_object_unref(d);	// the operation holds its own reference
+	return 0;
+}
+
+} // namespace
+
+extern "C" {
+
+WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg)
+{
+	return dialog_run(w, title, initial, cb, arg, false);
+}
+
+WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg)
+{
+	return dialog_run(w, title, initial, cb, arg, true);
+}
+
+} // extern "C"
+#else
+extern "C" {
+WEBVIEW_API int madcwebview_dialog_open(webview_t, const char *, const char *,
+					madcwebview_dialog_fn, void *) { return 1; }
+WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
+					madcwebview_dialog_fn, void *) { return 1; }
+}
+#endif
+
+#else /* Win32 / Cocoa: the native menu bar and dialogs are not built yet */
 
 extern "C" {
 WEBVIEW_API int madcwebview_menu_begin(webview_t) { return 1; }
@@ -266,6 +359,10 @@ WEBVIEW_API int madcwebview_menu_end(webview_t) { return 1; }
 WEBVIEW_API int madcwebview_menu_on_action(webview_t, madcwebview_menu_action_fn, void *)
 { return 1; }
 WEBVIEW_API int madcwebview_menu_activate(webview_t, const char *) { return 1; }
+WEBVIEW_API int madcwebview_dialog_open(webview_t, const char *, const char *,
+					madcwebview_dialog_fn, void *) { return 1; }
+WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
+					madcwebview_dialog_fn, void *) { return 1; }
 }
 
 #endif

@@ -101,6 +101,7 @@ namespace ui {
     typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
     typedef int64_t (*ui_host_run_fn)(void *host);
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -113,6 +114,10 @@ namespace ui {
 	ui_host_menu_fn	 menu;	// draw the native menu bar from the menu
 				// JSON (S2); 0 = ok; optional (a host with
 				// no chrome leaves it 0)
+	ui_host_dialog_fn dialog; // open the native file dialog the request
+				// JSON describes (S4); 0 = shown (the answer
+				// arrives as a posted {"kind":"dialog"} event);
+				// nonzero = unsupported here; optional
     };
 }
 
@@ -195,6 +200,11 @@ struct ui_frontend
     // Script text into a page-hosted surface (the test seam); a grid has
     // no page: false.
     virtual bool eval_page(const char *) { return false; }
+    // Native file dialogs (S4): can this surface show one, and show the
+    // one the request JSON describes (the answer arrives as an event). A
+    // grid has none: false.
+    virtual bool dialogs() const { return false; }
+    virtual bool dialog(const char *) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -369,6 +379,11 @@ struct ui_dom_frontend : ui_frontend
     bool eval_page(const char *js)
     {
 	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
+    }
+    bool dialogs() const { return host && ops->dialog; }
+    bool dialog(const char *json)
+    {
+	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
     }
 };
 
@@ -553,6 +568,13 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["offset"] = madc::value((int64_t)e.offset);
 	    if ( e.subject != 0 )
 		fields["subject"] = madc::value((int64_t)e.subject);
+	    break;
+	case madc::hub::tui_event_kind::dialog:
+	    // A native file dialog answered (S4): the request's mode and the
+	    // chosen path ("" = cancelled).
+	    fields["event"] = madc::value(std::string("dialog"));
+	    fields["mode"] = madc::value(e.action_name);
+	    fields["path"] = madc::value(e.text);
 	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:
@@ -1419,6 +1441,18 @@ bool eval_page(int64_t t, const char *js)
 {
     ui_frontend *f = ui_frontend_get(t);
     return f && f->eval_page(js);
+}
+
+bool dialogs(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialogs();
+}
+
+bool dialog(int64_t t, const char *json)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialog(json);
 }
 
 int64_t rows(int64_t t)

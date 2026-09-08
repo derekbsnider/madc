@@ -1,8 +1,9 @@
-/* madcwebview_menu.h — madc's extension of the webview C API: a NATIVE menu
- * bar over the webview window (madcide GUI chrome S2). Built into
- * libmadcwebview beside upstream's webview.cc; scripts/gen_webview_header.py
- * appends this text to the embedded include/madc/webview.h, so the ONE
- * module interface carries upstream's API and madc's — never a hand copy.
+/* madcwebview_chrome.h — madc's extension of the webview C API: the NATIVE
+ * chrome around the webview — a menu bar over the window (madcide GUI chrome
+ * S2) and the platform's file dialogs (S4). Built into libmadcwebview beside
+ * upstream's webview.cc; scripts/gen_webview_header.py appends this text to
+ * the embedded include/madc/webview.h, so the ONE module interface carries
+ * upstream's API and madc's — never a hand copy.
  *
  * JSON-free by design: the host (the <ns_ui_web> fragment) walks the engine's
  * menu description and calls begin / add / separator / end; the platform
@@ -31,6 +32,21 @@ WEBVIEW_API int madcwebview_menu_end(webview_t w);
 WEBVIEW_API int madcwebview_menu_on_action(webview_t w, madcwebview_menu_action_fn cb,
 					   void *arg);
 WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id);
+
+/* The platform's file dialogs (S4): open or save-as, over the webview's
+ * window, ASYNCHRONOUS — the call returns 0 once the dialog is up and the
+ * callback fires later, on the UI thread inside the platform's run loop,
+ * with the chosen path ("" = cancelled). `initial` names the folder or file
+ * the dialog starts at (NULL/"" = the platform's default). Nonzero = no
+ * native dialog on this platform / no window. */
+typedef void (*madcwebview_dialog_fn)(const char *path, void *arg);
+
+WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg);
+WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
+					const char *initial,
+					madcwebview_dialog_fn cb, void *arg);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,7 @@ File editfile Open File…
 File insertfile Insert File… [editable]
 File -
 File save Save [editable]
+File saveas Save As… [editable]
 File savequit Save and Exit [editable]
 File -
 File project Project…

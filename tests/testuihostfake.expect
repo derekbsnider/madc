@@ -11,6 +11,10 @@ fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"S
 menu calls after same render: 1
 fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"enabled":false,"id":"quit","title":"Quit"}],"title":"Datei"}]}
 menu calls after changed render: 2
+dialogs -> yes
+fake dialog: {"mode":"open","title":"Open File","path":""}
+dialog -> shown
+event dialog open /tmp/picked.mad
 event text hi
 event focus
 event action save ^k s

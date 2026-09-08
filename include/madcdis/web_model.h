@@ -807,6 +807,23 @@ public:
 	    none.push_back(e);
 	    return none;
 	}
+	else if ( kind == "dialog" )
+	{
+	    // Not a key: the host's native file dialog answered (ui::dialog,
+	    // S4) — the request's mode and the chosen path ("" = cancelled),
+	    // reported as ONE dialog event (mode in action_name, path in text).
+	    nlohmann::json::const_iterator mi = j.find("mode");
+	    nlohmann::json::const_iterator pi = j.find("path");
+	    if ( mi == j.end() || !mi->is_string() || mi->get<std::string>().empty() )
+		return none;
+	    tui_event e;
+	    e.kind = tui_event_kind::dialog;
+	    e.action_name = mi->get<std::string>();
+	    if ( pi != j.end() && pi->is_string() )
+		e.text = pi->get<std::string>();
+	    none.push_back(e);
+	    return none;
+	}
 	else if ( kind == "snapshot" )
 	{
 	    // Not a key: the page's rendered text (the test seam) — kept for

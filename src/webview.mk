@@ -5,8 +5,8 @@ WEBVIEW_SOURCE = $(WEBVIEW_DIR)/core/src/webview.cc
 # madc's own extension of the library (the native menu bar, S2): compiled
 # beside upstream's source into the same shared object; its header is what
 # scripts/gen_webview_header.py appends to the embedded include/madc/webview.h.
-WEBVIEW_MADC_SOURCE = madcwebview_menu.cc
-WEBVIEW_MADC_HEADER = madcwebview_menu.h
+WEBVIEW_MADC_SOURCE = madcwebview_chrome.cc
+WEBVIEW_MADC_HEADER = madcwebview_chrome.h
 WEBVIEW_HEADERS = $(wildcard $(WEBVIEW_DIR)/core/include/*.h $(WEBVIEW_DIR)/core/include/webview/*.h $(WEBVIEW_DIR)/compatibility/mingw/include/*.h)
 WEBVIEW_WEBKITGTK_API ?= 6.0
 WEBVIEW_MACOS_MINOS ?= 13.3

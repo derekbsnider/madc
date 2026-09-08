@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### madcide: native file dialogs (S4, 2026-09-08)
+
+- Open File and Save As become a request / response VERB. A client that can
+  show native dialogs pushes the fact; the session then parks a `filedialog`
+  request (mode, title, initial path) in the one request slot the client
+  services, `ui::dialog` shows it through the host's new optional `dialog`
+  op — `madcwebview_dialog_open` / `_save` in madc's chrome extension of the
+  webview library, a `GtkFileDialog` on GTK 4.10+ answering asynchronously
+  inside the platform loop — and the answer returns as a `dialog` event
+  (`ui::event_kind::dialog`: `mode`, `path`, `""` = cancelled) the dispatcher
+  applies: open edits the chosen file, save writes the buffer under the new
+  path and moves its buffer row. `saveas` joins the command registry and the
+  File menu. Without the fact (the terminal, a headless session) both keep
+  JOE's prompts unchanged; a platform without a native dialog yet (Win32,
+  Cocoa) falls back to the same prompts. The extension source is now
+  `src/madcwebview_chrome.{h,cc}` (menu bar + dialogs).
+- `tests/testidedialog.mad` pins the verb end to end headless (park, answer,
+  save-as, cancel, fallback); `testuihostfake` pins the seam (`dialogs`,
+  `dialog`, the answer event).
+
 ### madcide: the status bar is chrome (S3, 2026-09-08)
 
 - The window's status bar was the terminal's two half-strings side by side.
