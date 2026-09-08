@@ -24,7 +24,8 @@ int main()
     load_theme(w, es, "default");	// keyword/type bold, no `function` line
 
     // The full parse promotes the head name `id` to `function`; the
-    // default scheme has no function line, so that span emits no row.
+    // default scheme has no function line, so that span emits no row —
+    // three rows remain: the two `long` types and the `return` keyword.
     long h = ensure_phandle(w, es, doc);
     refresh_spans(w, es, doc, h);
     var hs;
