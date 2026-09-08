@@ -34,7 +34,7 @@ int64_t fake_eval(void *host, const char *js)
     return 0;
 }
 
-// The host's loop: each run posts ONE page event and returns; the eighth
+// The host's loop: each run posts ONE page event and returns; the ninth
 // run reports that the host ended (the window closed).
 int64_t fake_run(void *host)
 {
@@ -45,7 +45,10 @@ int64_t fake_run(void *host)
     if ( step == 4 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"right\"}"); return 0; }
     if ( step == 5 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"enter\"}"); return 0; }
     if ( step == 6 ) { ui::post_event(fake_ctx, "{\"kind\":\"resize\",\"rows\":40,\"cols\":100}"); return 0; }
-    if ( step == 7 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
+    // A pointer gesture the page hit-tested to the edit node ("0.2", the
+    // third child): line 1, column 1 -> byte offset 4 of "ab\ncd".
+    if ( step == 7 ) { ui::post_event(fake_ctx, "{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":1,\"col\":1}"); return 0; }
+    if ( step == 8 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
     return 1;
 }
 
@@ -88,11 +91,19 @@ int main()
     options.push(save);
     options.push(quit);
     menu["children"] = options;
+    // An edit node after the menu (the menu keeps the default focus, so the
+    // key steps above still drive it): the pointer step lands here, and
+    // its subject rides the event.
+    var edit;
+    edit["role"] = "edit";
+    edit["content"] = "ab\ncd";
+    edit["subject"] = 7;
     var root;
     root["role"] = "group";
     var kids = {};
     kids.push(head);
     kids.push(menu);
+    kids.push(edit);
     root["children"] = kids;
     ui::render(t, w, root);
     println("pushed heading: {}", pushed_heading ? "yes" : "no");
@@ -107,6 +118,9 @@ int main()
 	    println("event action {} {}", ev["action"], ev["seq"]);
 	else if ( ev["event"] == "choose" )
 	    println("event choose {} {}", ev["option"], ev["action"]);
+	else if ( ev["event"] == "pointer" )
+	    println("event pointer {} {} subject {}", ev["phase"], ev["offset"],
+		    ev["subject"]);
 	else
 	    println("event {}", ev["event"]);
     }

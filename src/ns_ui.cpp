@@ -470,6 +470,11 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 //   { event:"wake" }                     background tasks drained
 //   { event:"snapshot", text:"..." }     a page reported its text (the
 //       DOM frontend's test seam)
+//   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E }
+//       a pointing-device gesture on an edit node: N is the BYTE offset
+//       in that node's text the pointer resolved to, E (absent when the
+//       node projects nothing) the entity it projects — its document —
+//       so a multi-window composer knows which window was hit
 madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 			   ui_frontend *f)
 {
@@ -519,6 +524,17 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    // seam); the grid target never emits it.
 	    fields["event"] = madc::value(std::string("snapshot"));
 	    fields["text"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::pointer:
+	    // A pointing-device gesture resolved to a byte offset in an
+	    // edit node (the DOM model's hit test today; a terminal's mouse
+	    // reporting later takes the same shape).
+	    fields["event"] = madc::value(std::string("pointer"));
+	    fields["phase"] = madc::value(
+		std::string(madc::hub::pointer_phase_name(e.phase)));
+	    fields["offset"] = madc::value((int64_t)e.offset);
+	    if ( e.subject != 0 )
+		fields["subject"] = madc::value((int64_t)e.subject);
 	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:

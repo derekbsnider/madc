@@ -307,6 +307,7 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
 | `{event:"wake"}` | — | Cooperative background tasks drained: recompose |
 | `{event:"snapshot", text}` | the page's rendered text | A web target's page answered `madcSnapshot()` (the test seam) |
+| `{event:"pointer", phase, offset, subject}` | `"down"` / `"drag"` / `"up"`, a BYTE offset, the entity the node projects | A pointing-device gesture on an `edit` node, resolved by the engine to the offset in that node's text (the web target's hit test today; a terminal's mouse reporting takes the same shape). `subject` is absent when the node projects nothing — set it (the edit node's `subject` = its document) so a multi-window composer knows which window was hit. The shared editor core's `edit_pointer` is the one caret model for it: a press places the caret, a drag lights the selection through the same mark (and end, under a two-point personality), a release ends the gesture |
 
 **Keybindings are data.** `tui_bind_keys` installs a whole profile: a
 value object mapping key SEQUENCES to action names
@@ -386,7 +387,7 @@ means anything in JavaScript.
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
 
 `madc::module_available("madcwebview")` answers whether the window can
 exist on this system; `tools/texteditor/vised.mad <file> --web` is the

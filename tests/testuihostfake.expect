@@ -13,6 +13,7 @@ event action save ^k s
 event focus
 event choose 2 q
 event resize
+event pointer down 4 subject 7
 rows x cols after resize -> 40 x 100
 pending -> []
 fake close

@@ -71,6 +71,27 @@
 //                                          event asks the application to
 //                                          recompose — the next compose
 //                                          paints every edit node in full
+//   {"kind":"pointer","phase":"down"|"drag"|"up",
+//    "key":"0.3","line":12,"col":7}        a pointing-device gesture on the
+//                                          edit node `key`: the index of the
+//                                          line element and the UTF-16
+//                                          column the page's caret hit test
+//                                          resolved to. The model turns them
+//                                          into a BYTE offset over its basis
+//                                          for that key (the rows the page
+//                                          holds ARE the rows it emitted),
+//                                          focuses the node (a press is a
+//                                          focus gesture, as tab is) and
+//                                          yields ONE pointer event carrying
+//                                          the offset, the phase and the
+//                                          node's subject — the entity it
+//                                          projects — so a multi-window
+//                                          application knows which document
+//                                          was hit. The page owns geometry
+//                                          (where the pointer is), the
+//                                          engine owns the document (what
+//                                          offset that is): no caret or
+//                                          selection logic lives in the page
 // apply_input() turns each into zero or more tui_event objects; a malformed
 // or unknown object yields none and never throws.
 //
@@ -132,6 +153,30 @@ inline void web_line_col(const std::string &text, long off,
     col = (size_t)off - line_start;
 }
 
+// A UTF-16 column (what a page's hit test reports — JavaScript string
+// indices) → the byte index in the line's UTF-8 text: one unit per code
+// point below U+10000, two for a four-byte sequence (a surrogate pair); a
+// column past the end clamps to the line's length, one inside a pair snaps
+// to the pair's start. The inverse of the page decoding the row's bytes.
+inline size_t web_byte_col(const std::string &t, long col16)
+{
+    size_t i = 0;
+    long units = 0;
+    while ( i < t.size() && units < col16 )
+    {
+	const unsigned char lead = (unsigned char)t[i];
+	size_t n = lead < 0x80 ? 1 : lead < 0xC0 ? 1 : lead < 0xE0 ? 2
+		 : lead < 0xF0 ? 3 : 4;	// a stray continuation byte: one unit
+	if ( i + n > t.size() )
+	    n = t.size() - i;
+	units += n == 4 ? 2 : 1;
+	if ( units > col16 )
+	    break;
+	i += n;
+    }
+    return i;
+}
+
 class web_model
 {
     key_resolver _keys;			// the ONE chord/key owner
@@ -157,7 +202,18 @@ class web_model
 	std::vector<span_ref> s;
 	bool operator==(const edit_row &o) const { return t == o.t && s == o.s; }
     };
-    std::map<std::string, std::vector<edit_row> > _basis;	// edit key -> rows
+    // The per-key diff basis: the rows the page holds for one edit node,
+    // with the focus slot and the projected entity the node carried when
+    // they were emitted — what a pointer gesture on that node resolves
+    // against (apply_input's "pointer").
+    struct edit_basis
+    {
+	std::vector<edit_row> rows;
+	size_t slot;
+	entity_id subject;
+	edit_basis() : slot(0), subject(0) {}
+    };
+    std::map<std::string, edit_basis> _basis;	// edit key -> its basis
     std::set<std::string> _seen;		// edit keys this compose visited
 
     // A node op that carries a focus flag, patched after end_compose()
@@ -291,12 +347,12 @@ class web_model
 			 std::vector<edit_row> &rows)
     {
 	op["nlines"] = (long)rows.size();
-	std::map<std::string, std::vector<edit_row> >::iterator bi = _basis.find(key);
+	std::map<std::string, edit_basis>::iterator bi = _basis.find(key);
 	if ( bi == _basis.end() )
 	    op["lines"] = rows_json(rows, 0, rows.size());
 	else
 	{
-	    const std::vector<edit_row> &old = bi->second;
+	    const std::vector<edit_row> &old = bi->second.rows;
 	    const size_t n0 = old.size(), n1 = rows.size();
 	    size_t p = 0;
 	    while ( p < n0 && p < n1 && old[p] == rows[p] )
@@ -314,7 +370,7 @@ class web_model
 	    }
 	}
 	_seen.insert(key);
-	_basis[key].swap(rows);
+	_basis[key].rows.swap(rows);
     }
 
     void walk(const roles &r, const uinode &n, const std::string &key,
@@ -460,6 +516,9 @@ class web_model
 	    read_spans(n.hints, spans);
 	    std::vector<edit_row> doc_rows = edit_rows(text, spans);
 	    emit_edit_lines(op, key, doc_rows);
+	    edit_basis &basis = _basis[key];
+	    basis.slot = slot;
+	    basis.subject = n.subject;
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -518,7 +577,7 @@ public:
 	_focus.end_compose();
 	// An edit key that left the tree drops its basis — the page prunes
 	// the element after "end" by the same rule, so both sides forget.
-	for ( std::map<std::string, std::vector<edit_row> >::iterator bi = _basis.begin();
+	for ( std::map<std::string, edit_basis>::iterator bi = _basis.begin();
 	      bi != _basis.end(); )
 	    if ( _seen.count(bi->first) )
 		++bi;
@@ -586,6 +645,55 @@ public:
 	    reset_surface();
 	    tui_event e;
 	    e.kind = tui_event_kind::focus;
+	    none.push_back(e);
+	    return none;
+	}
+	else if ( kind == "pointer" )
+	{
+	    // Not a key: a pointing-device gesture the page hit-tested to an
+	    // edit node's line element and UTF-16 column (see the header).
+	    // Resolve it to a BYTE offset over the basis for that key, focus
+	    // the node, report ONE pointer event with the node's subject.
+	    nlohmann::json::const_iterator pi = j.find("phase");
+	    nlohmann::json::const_iterator ni = j.find("key");
+	    nlohmann::json::const_iterator li = j.find("line");
+	    nlohmann::json::const_iterator ci = j.find("col");
+	    pointer_phase phase;
+	    if ( pi == j.end() || !pi->is_string()
+	      || !pointer_phase_from_name(pi->get<std::string>(), phase)
+	      || ni == j.end() || !ni->is_string()
+	      || li == j.end() || !li->is_number_integer()
+	      || ci == j.end() || !ci->is_number_integer() )
+		return none;
+	    std::map<std::string, edit_basis>::const_iterator bi =
+		_basis.find(ni->get<std::string>());
+	    if ( bi == _basis.end() )
+		return none;
+	    const std::vector<edit_row> &rows = bi->second.rows;
+	    long line = li->get<long>();
+	    long col = ci->get<long>();
+	    long offset = 0;
+	    if ( !rows.empty() )
+	    {
+		if ( line < 0 )
+		{
+		    line = 0;
+		    col = 0;
+		}
+		bool past_end = (size_t)line >= rows.size();
+		if ( past_end )
+		    line = (long)rows.size() - 1;
+		for ( long i = 0; i < line; ++i )
+		    offset += (long)rows[i].t.size() + 1;
+		offset += (long)(past_end ? rows[line].t.size()
+					  : web_byte_col(rows[line].t, col));
+	    }
+	    _focus.set_focus(bi->second.slot);
+	    tui_event e;
+	    e.kind = tui_event_kind::pointer;
+	    e.phase = phase;
+	    e.offset = offset;
+	    e.subject = bi->second.subject;
 	    none.push_back(e);
 	    return none;
 	}

@@ -25,6 +25,8 @@ using madc::hub::tui_key;
 using madc::hub::tui_keyev;
 using madc::hub::tui_event;
 using madc::hub::tui_event_kind;
+using madc::hub::pointer_phase;
+using madc::hub::entity_id;
 using madc::hub::tui_bindings;
 using madc::hub::web_model;
 using madc::hub::web_line_col;
@@ -677,4 +679,78 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     REQUIRE(st2);
     CHECK((*st2)["text"] == "just text");
     CHECK((*st2).find("items") == (*st2).end());
+}
+
+// A bare edit node projecting `subject` — the pointer event's identity.
+static uinode pointer_tree(world &w, const char *text, entity_id subject)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    edit.subject = subject;
+    root.add(edit);
+    return root;
+}
+
+TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the node's rows; focus follows it")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, doc_tree(w, "ab\ncd", 0));		// edit key "0.1": rows ab / cd
+
+    std::vector<tui_event> ev = m.apply_input(
+	"{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].phase == pointer_phase::down);
+    CHECK(ev[0].offset == 4);			// "ab\n" + 1
+    CHECK(ev[0].subject == 0);
+    // Past the end of a line: its end. Past the last line: the text's end.
+    // Before the first line: 0. Drag and up carry their phase.
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"drag\",\"key\":\"0.1\",\"line\":0,\"col\":9}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == pointer_phase::drag);
+    CHECK(ev[0].offset == 2);
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"up\",\"key\":\"0.1\",\"line\":7,\"col\":0}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == pointer_phase::up);
+    CHECK(ev[0].offset == 5);
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":-3,\"col\":4}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 0);
+    // A key with no basis (a node that is not an edit, a pruned one), a
+    // phase outside the vocabulary, a missing field: nothing, no throw.
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":0,\"col\":0}").empty());
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"tap\",\"key\":\"0.1\",\"line\":0,\"col\":0}").empty());
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":0}").empty());
+
+    // Columns arrive as UTF-16 units (the page's string indices) and leave
+    // as bytes: a two-byte é is one unit, a four-byte emoji two (a column
+    // inside the pair snaps to its start). The node's subject rides along.
+    web_model m2;
+    m2.compose(r, pointer_tree(w, "h\xC3\xA9llo\n\xF0\x9F\x98\x80" "ab", 42));
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":0,\"col\":2}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 3);
+    CHECK(ev[0].subject == 42u);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":2}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7 + 4);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":3}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7 + 5);
+
+    // A press is a focus gesture: with the menu autofocused, a pointer on
+    // the edit moves the focus slot to it (the next keys are its).
+    web_model m3;
+    m3.compose(r, editor_tree(w, 0, -1, -1, true));	// edit = slot 0, menu = slot 1 (autofocus)
+    CHECK(m3.focus_slot() == 1u);
+    ev = m3.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":0,\"col\":0}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(m3.focus_slot() == 0u);
 }

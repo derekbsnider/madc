@@ -35,9 +35,38 @@ enum class tui_event_kind : unsigned char
     wake,	// cooperative background tasks drained: recompose (the
 		// application re-checks its pending state, e.g. a spawned
 		// parse's completion)
-    snapshot	// a DOM frontend's page reported its rendered text (the
+    snapshot,	// a DOM frontend's page reported its rendered text (the
 		// test seam, madcSnapshot()): `text` carries it
+    pointer	// a pointing-device gesture on an edit node: `offset` is
+		// the BYTE offset in that node's text the pointer resolved
+		// to, `phase` the gesture step, `subject` the entity the
+		// node projects (0 = none). One shape for a window's hit
+		// test today and a terminal's mouse reporting later.
 };
+
+// The steps of a pointing-device gesture (tui_event_kind::pointer): a
+// press places, a drag extends, a release ends.
+enum class pointer_phase : unsigned char { down, drag, up };
+
+// The phase's name at the boundary (the event object's `phase`, the
+// page's posted input) — ONE spelling owner, both directions.
+inline const char *pointer_phase_name(pointer_phase p)
+{
+    switch ( p )
+    {
+	case pointer_phase::down: return "down";
+	case pointer_phase::drag: return "drag";
+	case pointer_phase::up:   return "up";
+    }
+    return "down";
+}
+inline bool pointer_phase_from_name(const std::string &s, pointer_phase &p)
+{
+    if ( s == "down" ) { p = pointer_phase::down; return true; }
+    if ( s == "drag" ) { p = pointer_phase::drag; return true; }
+    if ( s == "up" )   { p = pointer_phase::up;   return true; }
+    return false;
+}
 
 struct tui_event
 {
@@ -56,9 +85,13 @@ struct tui_event
     name_id	   action;	// choose: the option's first action; 0 = none
     std::string	   action_name;	// action: the bound name ("" = unbound)
     std::string	   seq;		// action: the canonical sequence spelling
+    pointer_phase  phase;	// pointer: the gesture step
+    long	   offset;	// pointer: BYTE offset in the edit node's text
+    entity_id	   subject;	// pointer: the entity the node projects (0 = none)
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0) {}
+		  option(0), choice_focused(false), action(0),
+		  phase(pointer_phase::down), offset(0), subject(0) {}
 };
 
 } // namespace hub
