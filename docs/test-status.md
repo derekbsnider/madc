@@ -1,6 +1,35 @@
 # Test Status
 
-> **Current (2026-09-08, the s165 merge wave — the madcide GUI chrome
+> **Current (2026-09-08, the s166 merge wave — the madcide S6 round on
+> `feature/madcide-gui-prompts-claude`, the owner's first feedback on the
+> v0.99.0 desktop application: the prompts as dialogs (`compose_overlay_row`
+> stamps `popup` + `prompt {label, input}` + `dismiss` / `confirm {label,
+> choices}` additively; `web_model` emits them; the page's `.quickinput` /
+> `.confirm`; buttons and a click outside post the scope's ACTION by name,
+> admitted by `scope_action_named`), a click picks the window (every
+> window's edit node carries its window index as a `tag` the pointer event
+> echoes; a header press is a positionless pointer, offset -1), the status
+> bar's chrome look (`--chrome-font`, `--sb-*`, the active header marked),
+> and the `(^C aborts)` fix found on the way (a modal scope consults an
+> action event's sequence; `@prompt ^c pcancel` baked)):** FULL develop-set
+> battery on the final code (ee19f0cf; the one later CODE_PATHS delta is the
+> win64 fixture `tests/testmadcide.win64_expect`, the help-rows twin, read
+> only under that domain): fulltest rc=0 (every gate) with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**,
+> native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`, +`madcide_prompt`;
+> `madcide_split` now drives the click in the other window and the header
+> press, `madcide_render` pins the chrome font): **12/12 JIT, 12/12 EXE, 12/12 OBJ**.
+> Headless reducers extended: `testidehints` (the prompt / confirm hints,
+> action-by-name, ^C as action and as key, the window tags, the text and
+> header presses), `test_web_model` (prompt / confirm / dismiss ops, the tag
+> echo, the positionless press), `testmadcide` (help rows 41). wine64
+> **1276/0/0TO/68skip** (verify_pe_release OK, 234 units; the first run was 1275/1 on
+> the stale win64 help-rows twin, converged 0c6652c2); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK
+> both, macho_exe_dylib_gate OK, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-08, the s165 merge wave — the madcide GUI chrome
 > milestone S0–S5 on `feature/web-editor-incremental-claude`
 > ([design](plans/2026-09-07-madcide-gui-chrome-and-modular-ui-design.md),
 > 23 trailer'd code commits): S0 resize-fill over a remote X display

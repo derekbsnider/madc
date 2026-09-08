@@ -214,42 +214,40 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.99.0** — madcide is a desktop application.
-The GUI chrome milestone (S0–S5) turns the window that used to show the
-terminal's composed tree into real application chrome, through the ONE
-composer and the ONE client loop the terminal uses (the TUI is
-byte-identical): a native menu bar fed by one command/menu data file
-(`profiles/default.menu`, `[when]` clauses, a gate keeping profiles,
-dispatcher and menu on one action vocabulary); native Open / Save As
-dialogs as a core→client request/response verb (`GtkFileDialog` in the
-window, JOE's prompts everywhere else); a status bar of discrete,
-themeable items; the `^K O` split rendered as JOE's window stack in a
-slot-based workbench; a mouse that places the caret and drags a
-selection through the editor's one caret model; and a remote-display fix
-(GTK's GL renderer over a no-SHM TCP X connection paints black — the web
-target defaults to cairo). Underneath, the web editor became incremental
-(a keystroke moves work proportional to what changed; the wire dropped
-from ~296 KB to ~700 B), the ui event vocabularies became enums the
-compiler checks, and five carrier defects found on the way were fixed at
-their layer (`var &r = o["h"]`, `6 == v` / `v == E::z`, `var == enum
-class`, the mixed conditional as a value prvalue, `var &` in a `%s`
-position). `madc --capabilities=json` (reworked from PR #7, with credit
-to its author) ships too.
+The current release is **v0.99.1** — the owner's first round with the
+desktop application, answered. Every bottom-line prompt (find, go to line,
+insert file, theme, tab width, the colon line, the project add) floats in
+the window as a QUICK INPUT whose text the core owns (Neovim's `ext_cmdline`
+shape: keys reach the prompt exactly as in the terminal, the page only draws
+it), and the quit question on a dirty buffer is a CONFIRM dialog whose
+Yes / No buttons post the modal scope's actions by name — the menu-bar rule.
+A click picks the window: every window's edit node carries its window index
+as a `tag` the pointer event echoes (the one answer when the `^K O` split
+shows one document twice), a press in another window's text activates it
+and places the caret, a press on its header activates it with the caret
+kept. The status bar, the window headers and the message line render as
+chrome (the proportional chrome font on their own surface, the name leading,
+caption labels, accent pills, a key cap, the active window's header marked).
+And "(^C aborts)" is true: a modal scope consults an action's key sequence,
+`@prompt ^c pcancel` is baked data. The terminal is byte-identical
+throughout. v0.99.0 (the S0–S5 chrome milestone: native menu bar, native
+file dialogs, status items, the window stack, mouse, the incremental web
+editor, event enums, five carrier fixes) is the release beneath it.
 
-Branch state: v0.99.0 is released on `develop` (2026-09-08; master holds
+Branch state: v0.99.1 is released on `develop` (2026-09-08; master holds
 v0.98.0 until the release-tier lanes — libc++, the darwin full suite on
 both mac runner arches, genuine Windows — re-run on this content for the
 promotion). v0.98.0's public binaries (Linux deb/rpm/tarball, Windows
 x86-64, macOS Apple Silicon + Intel) remain the latest published assets.
 
-Latest validated results (the v0.99.0 merge-wave battery, content 0edc6150 /
-85073b9c):
+Latest validated results (the v0.99.1 merge-wave battery, content ee19f0cf /
+0c6652c2):
 
 - Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
   **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
   disk anywhere) **1301/0/0/43**
 - the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
-  split, menu bar): **11/11 JIT, 11/11 EXE, 11/11 OBJ**
+  split with both clicks, menu bar, the prompt dialogs): **12/12 JIT, 12/12 EXE, 12/12 OBJ**
 - Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
   (`verify_pe_release` OK, 234 units)
 - c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
@@ -265,6 +263,10 @@ Latest validated results (the v0.99.0 merge-wave battery, content 0edc6150 /
 
 ### Recent Releases
 
+- [v0.99.1](docs/release-notes/v0.99.1.md) — the owner's first round with
+  the desktop application: the prompts as dialogs (quick input / confirm
+  with buttons), a click picks the window, the status bar as chrome, and
+  "(^C aborts)" true in every profile.
 - [v0.99.0](docs/release-notes/v0.99.0.md) — madcide is a desktop
   application: the GUI chrome milestone (native menu bar from one
   command/menu data file, native file dialogs, status chrome, the JOE

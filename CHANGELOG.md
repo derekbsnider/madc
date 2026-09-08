@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [v0.99.1] — 2026-09-08
+
+The owner's first round with the v0.99.0 desktop application, answered: the
+prompts are dialogs (a quick input whose text the core owns; the quit
+question with Yes / No buttons), a click picks the window (the window-index
+tag on every window's edit node; a header press activates at no position),
+the status bar looks like chrome, and "(^C aborts)" is true. The terminal
+is byte-identical throughout.
+
+### madcide: "(^C aborts)" is true (2026-09-08)
+
+- Every text prompt promised "(^C aborts)" and ^C aborted nothing in any
+  profile: in JOE ^C is the bound `discard`, so it reached the prompt as an
+  ACTION the arm ignored; unbound, it reached it as the KEY `^c` no
+  `@prompt` line bound. A modal scope now consults an action event by the
+  sequence that completed, and the baked modal defaults carry
+  `@prompt ^c pcancel` — data, in every profile. `testidehints` pins ^C as
+  the action and as the key; `testmadcide`'s help pane counts the new line.
+
 ### madcide: the status bar looks like chrome (2026-09-08)
 
 - The status bar, the window headers of a split and the message line render
