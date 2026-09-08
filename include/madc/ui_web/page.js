@@ -188,6 +188,51 @@
     el.appendChild(row);
   }
 
+  // A list pane as a DIALOG (madcide polish P2): the title bar, the filter
+  // field showing the text the CORE holds (a caret after it — typing still
+  // travels the one input path, the page never edits), the option rows
+  // (each a pick target), and the buttons: a `choose` button picks the
+  // selected row (posted as the "choose" input the focus owner resolves), an
+  // `action` button posts its action by name (the scope's cancel), through
+  // the same click handler a confirm's buttons use.
+  function dialogBox(el, op) {
+    el.classList.add('dialog');
+    el.textContent = '';
+    var d = op.dialog || {};
+    if (d.title) el.appendChild(span('dlg-title', d.title));
+    if (typeof d.filter === 'string') {
+      var f = document.createElement('div');
+      f.className = 'qi-input dlg-filter';
+      f.appendChild(span('qi-text', d.filter));
+      f.appendChild(span('caret', ' '));
+      el.appendChild(f);
+    }
+    var list = document.createElement('div');
+    list.className = 'dlg-list';
+    var opts = op.opts || [];
+    for (var i = 0; i < opts.length; i++) {
+      var o = span('opt' + (i === op.sel ? ' sel' : ''), opts[i]);
+      o.dataset.index = String(i);
+      list.appendChild(o);
+    }
+    el.appendChild(list);
+    var buttons = Array.isArray(d.buttons) ? d.buttons : [];
+    if (buttons.length) {
+      var row = document.createElement('div');
+      row.className = 'cf-buttons dlg-buttons';
+      for (var k = 0; k < buttons.length; k++) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cf-btn';
+        if (buttons[k].choose) b.dataset.choose = el.dataset.key;
+        else b.dataset.action = buttons[k].action || '';
+        b.textContent = buttons[k].label || '';
+        row.appendChild(b);
+      }
+      el.appendChild(row);
+    }
+  }
+
   // A BYTE column in a row's UTF-8 text -> the index into the page's
   // decoded (UTF-16) string: one unit per code point below U+10000, two for
   // a four-byte sequence (a surrogate pair). The engine speaks bytes (its
@@ -366,6 +411,8 @@
     } else if (cls === 'choice') {
       el.textContent = '';
       if (op.list) el.classList.add('list');
+      if (op.dialog) { dialogBox(el, op); return false; }
+      el.classList.remove('dialog');
       if (op.label != null) el.appendChild(span('label', op.label));
       var opts = op.opts || [];
       for (var i = 0; i < opts.length; i++)
@@ -523,14 +570,32 @@
     post({ kind: 'pointer', phase: phase, key: ed.dataset.key, line: pos.line, col: pos.col });
   }
 
-  // A dialog button: its action by name, nothing else (no key, no editor
-  // knowledge — the composer named what the answer means).
+  // A dialog button: its action by name, or a pick of the selected row
+  // (the focus owner's choose contract) — nothing else (no key, no editor
+  // knowledge — the composer named what the answer means). A click on a
+  // dialog's option row picks THAT row.
   root.addEventListener('click', function (e) {
-    var b = e.target && e.target.closest ? e.target.closest('.cf-btn') : null;
-    if (!b || !b.dataset.action) return;
-    e.preventDefault();
-    post({ kind: 'action', action: b.dataset.action });
-    kb.focus();
+    var t = e.target;
+    var b = t && t.closest ? t.closest('.cf-btn') : null;
+    if (b && b.dataset.choose) {
+      e.preventDefault();
+      post({ kind: 'choose', key: b.dataset.choose });
+      kb.focus();
+      return;
+    }
+    if (b && b.dataset.action) {
+      e.preventDefault();
+      post({ kind: 'action', action: b.dataset.action });
+      kb.focus();
+      return;
+    }
+    var o = t && t.closest ? t.closest('.node.dialog .opt') : null;
+    if (o && o.dataset.index != null) {
+      var node = o.closest('.node.dialog');
+      e.preventDefault();
+      post({ kind: 'choose', key: node.dataset.key, index: parseInt(o.dataset.index, 10) });
+      kb.focus();
+    }
   });
 
   // A press OUTSIDE a popup that names a dismissal fires that action (the

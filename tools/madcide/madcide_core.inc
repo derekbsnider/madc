@@ -1193,6 +1193,64 @@ void confirm_choices(var &out, long w, long es)
     out = rows;
 }
 
+// The action a modal scope binds to one key — the scope's own data
+// (profile-loaded or the baked defaults), looked up through the ONE
+// modal reader by a synthetic key event. Null = the scope binds nothing
+// for that key. Used to name a dialog's buttons after what the keys do.
+void scope_key_action(var &out, long w, long es, const char *scope,
+		      const char *key)
+{
+    var none;
+    out = none;
+    var ke = { "event": "key", "event_code": ui::event_kind::key };
+    ke["key"] = key;
+    ke["key_code"] = ui::key_code(key);
+    var a;
+    if ( scoped_action(a, w, es, scope, ke) )
+	out = a;
+}
+
+// A list pane's hints as a DIALOG for a chrome-drawing client (polish P2,
+// the S6 treatment for the list overlays): ADDITIVELY, beside the `list`
+// and `focus` hints the grid model reads, `popup` (the overlay), `dialog`
+// {title, filter?, buttons} and `dismiss` (a press outside = the scope's
+// cancel). The buttons are DATA named after what the pane's keys do:
+// the primary picks the selected row (`choose` — the focus owner's enter
+// contract, so every pane's choose arm runs unchanged) under the label
+// the caller gives (null = no primary: a pane whose rows do nothing on
+// choose); Close posts the action the pane's @scope binds to esc — a
+// scope that binds no cancel gets no Close button (confirm_choices'
+// honesty rule). The filter is the text the core holds (null = the pane
+// does not filter). The terminal reads none of it.
+void dialog_hints(var &box, long w, long es, const char *scope,
+		  const char *primary, var &filter)
+{
+    var bh = box["hints"];
+    bh["popup"] = 1;
+    var title = box["label"];
+    var dlg = { "title": title };
+    if ( !filter.is_null() )
+	dlg["filter"] = filter;
+    var btns = {};
+    if ( primary != 0 && strlen(primary) > 0 )
+    {
+	var pb = { "label": primary, "choose": 1 };
+	btns.push(pb);
+    }
+    var cancel;
+    scope_key_action(cancel, w, es, scope, "esc");
+    if ( !cancel.is_null() )
+    {
+	var cb = { "label": "Close" };
+	cb["action"] = cancel;
+	btns.push(cb);
+	bh["dismiss"] = cancel;
+    }
+    dlg["buttons"] = btns;
+    bh["dialog"] = dlg;
+    box["hints"] = bh;
+}
+
 // A prompt row's hints for a window (S6, the prompts as GUI dialogs):
 // the same row the terminal shows as its bottom line carries, ADDITIVELY,
 // the quick-input data a chrome-drawing client renders as a floating
@@ -2595,6 +2653,14 @@ bool project_event(long w, long es, long doc, var &ev)
 	    proj_addcur(w, es, doc);
 	    project_rows(w, es, doc);
 	}
+	else
+	{
+	    // The dialog's Close button / a press outside it (polish P2):
+	    // the @project cancel posted BY NAME.
+	    var pn;
+	    if ( scope_action_named(pn, w, es, "project", ev) && pn == "projclose" )
+		proj_hide(w, es);
+	}
 	return true;
     }
     if ( kind != ui::event_kind::key )
@@ -2853,6 +2919,14 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 	var a = format("{}", ev["action"]);
 	if ( a == "modes" || a == "quit" )
 	    modes_hide(w, es);
+	else
+	{
+	    // The dialog's Close button / a press outside it (polish P2):
+	    // the @modes cancel posted BY NAME.
+	    var mn;
+	    if ( scope_action_named(mn, w, es, "modes", ev) && mn == "modesclose" )
+		modes_hide(w, es);
+	}
 	return true;
     }
     if ( kind != ui::event_kind::key )
@@ -4178,6 +4252,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	    toggle_profile(w, es);
 	    return true;
 	}
+	// A chrome dialog's Close button or a press outside it (polish P2):
+	// the @pane scope's cancel posted BY NAME — what esc does in the
+	// terminal (the S6 rule: buttons post the scope's actions by name).
+	var pc;
+	if ( scope_action_named(pc, w, es, "pane", ev) && pc == "paneclose" )
+	    ui::set(w, es, "pane", "");
 	return true;
     }
     if ( kind != ui::event_kind::key )
@@ -4414,6 +4494,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", 0, nofilter);	// rows do nothing on choose
 	}
 	else if ( pane == "options" )
 	{
@@ -4442,6 +4524,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items.push(it);
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Change", nofilter);
 	}
 	else if ( pane == "build" )
 	{
@@ -4465,6 +4549,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = it;
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Run", nofilter);
 	}
 	else if ( pane == "modes" )
 	{
@@ -4480,6 +4566,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		items[] = { "role": "item", "content": row["content"] };
 		nrows = nrows + 1;
 	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
 	else if ( pane == "project" )
 	{
@@ -4509,6 +4597,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    }
 	    if ( nrows == 0 )
 		items[] = { "role": "item", "content": "(no matches)" };
+	    // The dialog's title names the manifest; the label keeps the
+	    // terminal's one-line form (the filter inline). The filter text
+	    // is the core's — the field shows it, keys keep reaching it.
+	    var ftxt = "";
+	    if ( !filt.is_null() )
+		ftxt = format("{}", filt);
+	    dialog_hints(box, w, es, "project", "Open", ftxt);
+	    var dh = box["hints"];
+	    var dg = dh["dialog"];
+	    dg["title"] = format("Project — {}", pfd);
+	    dh["dialog"] = dg;
+	    box["hints"] = dh;
 	}
 	else
 	{
@@ -4563,7 +4663,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// machinery. A `popup` hint floats the choice as an overlay; a
 	// `region` hint docks it. Both are hints the grid model ignores.
 	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
-			  "build": "panel", "project": "popup",
+			  "build": "popup", "project": "popup",
 			  "modes": "popup", "help": "popup",
 			  "options": "popup" };
 	var slot = pane_slot[pane.c_str()];

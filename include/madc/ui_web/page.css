@@ -178,5 +178,27 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .cf-btn:hover { background: #4a5a80; }
 .cf-btn:first-child { background: var(--accent, #9fc2ff); border-color: var(--accent, #9fc2ff);
                       color: #1b1d24; }
+/* A list pane as a DIALOG (madcide polish P2): the quick-pick shape in our
+   palette — a title bar in the chrome font, the filter field (the quick
+   input's field), the option rows as pick targets with the live selection
+   marked, and the buttons at the foot (the confirm's buttons: the first is
+   the primary). */
+.node.popup.dialog {
+  display: flex; flex-direction: column; gap: 8px; padding: 0 0 10px 0;
+  min-width: 36em; max-height: 70%;
+  font: 13px/1.4 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  border-radius: 6px; overflow: hidden;
+}
+.dlg-title { display: block; padding: 7px 14px; font-weight: 600; color: #f2f4ff;
+             background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52); }
+.dlg-filter { margin: 0 14px; }
+.dlg-list { display: flex; flex-direction: column; overflow: auto; min-height: 0;
+            font: 14px/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            white-space: pre; }
+.dlg-list .opt { padding: 1px 14px; cursor: pointer; }
+.dlg-list .opt:hover { background: #343b52; }
+.dlg-list .opt.sel { background: var(--sb-active, #2f3a55); box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); color: #f2f4ff; }
+.node.popup.dialog.focus .dlg-list .opt.sel { background: #3b4a6b; }
+.dlg-buttons { padding: 0 14px; }
 /* The editor's tab-strip marker (the buffer-named strip is a later slice). */
 .edit.has-tabs { border-top: 2px solid #4a5a80; }
