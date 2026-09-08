@@ -688,8 +688,10 @@ bool Process::start(error *err)
 			set_process_errno(err, "process openpty failed", errno);
 			return false;
 		}
-		::fcntl(pty_master, F_SETFD, FD_CLOEXEC);
-		::fcntl(pty_slave, F_SETFD, FD_CLOEXEC);
+		// openpty has no atomic O_CLOEXEC: the one post-hoc owner
+		// (madc_posix_io) marks both ends, like the pipe fallback.
+		detail::set_fd_close_on_exec(pty_master);
+		detail::set_fd_close_on_exec(pty_slave);
 		if ( !make_cloexec_pipe(exec_fds, err) )
 		{
 			close_fd(pty_master);
