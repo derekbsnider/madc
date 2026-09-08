@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Web editor: the mouse places the caret and selects (2026-09-07)
+
+- **A click places the caret; a drag selects.** Until now the web editor's
+  mouse did nothing but refocus the hidden input, so after wheel-scrolling
+  there was no way to edit where you had scrolled to (owner, live check).
+  The chain, deepest layer first: `tui_event_kind::pointer` (`offset`,
+  `phase` down/drag/up, `subject`) joins the ONE semantic-event vocabulary;
+  `web_model::apply_input` accepts `{"kind":"pointer","phase","key","line",
+  "col"}` — the page's hit test as a line index and UTF-16 column — and
+  resolves it to a BYTE offset over the rows it emitted for that node (its
+  diff basis, extended to carry the node's focus slot and subject), focuses
+  the node, and yields one pointer event carrying the node's `subject`;
+  `ui::event` shapes it as `{event:"pointer", phase, offset, subject}`; the
+  page's pointer handlers (`mousedown`/`mousemove`/`mouseup` on `.edit`,
+  `caretPositionFromPoint` / `caretRangeFromPoint`, native selection
+  suppressed, drag posts only when the position changes, a drag past the
+  edge creeps the view a line) know geometry and nothing about the
+  document. The shared editor core gains `edit_pointer` — ONE caret model for
+  mouse and keyboard: a press places the caret and drops the selection, a
+  drag lights [press, here] through the SAME mark (plus the end under the
+  two-point personality, so the block ops see it), a release ends the
+  gesture; vised and madcide route the event to it. `compose_edit_node` now
+  sets the edit node's `subject` (the document — uinode's documented edit
+  contract), and madcide's arm uses it: a press in another window's edit
+  node activates that window first (`window_showing`, the active window's
+  buffer read live as the composer reads it). Views keep the gesture to the
+  caret, as their mark/bend actions refuse.
+- Tests: `test_web_model` (offset resolution incl. UTF-16 → byte columns,
+  clamping, malformed input, focus-follows-press), `testuihostfake` (a
+  pointer post through the display-free host → the shaped event with its
+  subject), `testvised` and `testmadcide` (the editor arm: press / drag /
+  release / re-press, the two-point ends, the window switch by subject),
+  and `tests/gui/ui_web_pointer.mad` (real MouseEvents through the real
+  handlers and hit test under Xvfb: press, drag-select, release, past a
+  line's end, below the last line, after a two-byte character).
+- Not here: a click on a `choice` option (select + choose), double-click
+  word selection, shift-click extension, and the TUI twin (xterm SGR mouse
+  reporting through the term target) — the event shape is ready for all of
+  them.
+
 ### Web editor: per-keystroke cost proportional to the change (2026-09-07)
 
 - **Measured first, on the real file** (madcide_core.inc, 4557 lines, 4841

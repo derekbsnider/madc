@@ -55,6 +55,9 @@ class IdeSession
 					// world + state entity (the
 					// headless harness, embedders)
 	bool apply_ide_event(long doc, var &ev);	// false = quit
+	void pointer_event(long doc, long nav, var &ev);	// the pointer
+					// arm: the hit node's subject picks
+					// the window, edit_pointer places
 	void compose_ide_tree(var &root, long doc);
 	bool vi_event(long doc, long nav, var &ev, bool &cont);
 					// the vi modes-as-scopes arm:
@@ -1598,6 +1601,32 @@ long window_count(long w, long es)
     var ws;
     ui::get(ws, w, es, "windows");
     return ws.is_null() ? 0 : php::count(ws);
+}
+
+// The FIRST window (tree order) showing document `doc`; -1 when none.
+// The active window's buffer is the LIVE es state (its row is saved
+// only on a switch — window_save_active), the others' are their rows:
+// the same active-live / inactive-row rule compose_ide_tree renders by.
+long window_showing(long w, long es, long doc)
+{
+    var ws;
+    ui::get(ws, w, es, "windows");
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( ws.is_null() || bufs.is_null() )
+	return -1;
+    long at = es_int(w, es, "winat", 0);
+    long i = 0;
+    for ( var wr : ws )
+    {
+	long bi = i == at ? es_int(w, es, "bufidx", 0)
+			  : wr["bufidx"].as_integer();
+	var brow = bufs[bi];
+	if ( brow["doc"].as_integer() == doc )
+	    return i;
+	i = i + 1;
+    }
+    return -1;
 }
 
 // Each window needs its status row + this many content rows.
@@ -3308,6 +3337,31 @@ void toggle_pane(long w, long es, const char *name)
 	ui::set(w, es, "pane", name);
 }
 
+// The pointer arm (IDE-9e aware): the event names the document the hit
+// edit node projects (its subject). With two-plus windows a press in
+// another window activates it first — the first window showing that
+// buffer, in tree order (a split of ONE buffer shows it twice; a press
+// in its twin places the caret in the active one, same document). Then
+// the SHARED edit_pointer places the caret and, off a stored document,
+// the selection — a displayed view keeps the gesture to the caret, as
+// its mark/bend actions refuse.
+void IdeSession::pointer_event(long doc, long nav, var &ev)
+{
+    long subj = ev["subject"].is_null() ? 0 : ev["subject"].as_integer();
+    long ad = doc;
+    if ( subj != 0 && subj != nav )
+    {
+	long idx = window_showing(w, es, subj);
+	if ( idx >= 0 && idx != es_int(w, es, "winat", 0) )
+	{
+	    window_activate(w, es, doc, idx);
+	    ad = active_doc(w, es, doc);
+	}
+    }
+    long target = nav_doc(w, es, ad);
+    edit_pointer(w, es, target, ev, target == ad);
+}
+
 // Apply ONE semantic event (the value shapes the engine's event query
 // produces — action events from the bindings table included) — the
 // session surface. False = quit.
@@ -3351,6 +3405,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	bool vcont = true;
 	if ( vi_event(doc, nav, ev, vcont) )
 	    return vcont;
+    }
+
+    // A pointing-device gesture (the web target's hit test; a terminal's
+    // mouse reporting later): the caret model is the keyboard's.
+    if ( kind == "pointer" )
+    {
+	pointer_event(doc, nav, ev);
+	return true;
     }
 
     if ( kind == "action" )
@@ -3845,6 +3907,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var wt;
 		ui::text(wt, w, wdoc);
 		wed["content"] = wt;
+		wed["subject"] = wdoc;
 		var wh = { "caret": wcaret };
 		long wrows = base + wr["grow"].as_integer();
 		if ( wrows < window_min_rows() )

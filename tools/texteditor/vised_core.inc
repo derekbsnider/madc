@@ -48,6 +48,11 @@ bool apply_event(long w, long es, long doc, var &ev)
 	    return do_verb(w, es, "q");
 	return true;
     }
+    if ( kind == "pointer" )
+    {
+	edit_pointer(w, es, doc, ev, true);
+	return true;
+    }
     if ( kind != "key" )
 	return true;	// focus / resize: the loop recomposes anyway
 

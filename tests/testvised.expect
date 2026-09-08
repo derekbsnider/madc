@@ -16,6 +16,13 @@ end->5
 paste-caret=9 text=[alphaHell
 quit1-cont=1 msg=[Unsaved changes — w to save, q! to discard.]
 search-caret=10
+ptr-down caret=2 mark=-1 sel=-1..-1
+ptr-drag caret=6 mark=2 sel=2..6
+ptr-up caret=7 mark=2 sel=2..7
+ptr-down2 caret=4 mark=-1 sel=-1..-1
+ptr-drag2 caret=1 mark=4 sel=1..4
+ptr-drag3 caret=4 mark=-1 sel=-1..-1
+ptr-up2 caret=4 mark=-1 sel=-1..-1
 save-msg=[Wrote 15 bytes.]
 quit2-cont=0 msg=[Bye.]
 -- read-only --

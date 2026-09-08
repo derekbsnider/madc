@@ -470,6 +470,8 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
     var t;
     ui::text(t, w, doc);
     e["content"] = t;
+    e["subject"] = doc;		// the entity the node projects (uinode's
+				// edit contract) — a pointer event names it
     var hints = { "caret": caret };
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
@@ -640,4 +642,44 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	return true;
     }
     return false;	// not an edit-core key — the dispatcher's business
+}
+
+// The pointer arm — ONE caret model for mouse and keyboard. `ev` is the
+// engine's pointer event ({phase, offset}: a BYTE offset in this document
+// the target's hit test resolved to). A press places the caret and drops
+// any live selection; a drag lights [press, here] through the SAME
+// selection state the block keys set — the mark, plus the end under the
+// two-point personality (compose_edit_node's rule reads both); a release
+// is the last placement. `selectable` false (madcide's displayed views:
+// stored-space markers are meaningless there) keeps the gesture to caret
+// placement. The press offset parks on the es as "anchor" for the drag
+// that follows it; the release drops it.
+void edit_pointer(long w, long es, long doc, var &ev, bool selectable)
+{
+    var ph = format("{}", ev["phase"]);
+    long off = clamp_caret_to(w, doc, ev["offset"].as_integer());
+    ui::set(w, es, "caret", off);
+    if ( ph == "down" )
+    {
+	ui::set(w, es, "mark", -1);
+	ui::set(w, es, "bend", -1);
+	ui::set(w, es, "anchor", off);
+	return;
+    }
+    long anchor = es_int(w, es, "anchor", -1);
+    if ( anchor < 0 )
+	return;		// a drag whose press landed elsewhere: caret only
+    if ( selectable && off != anchor )
+    {
+	ui::set(w, es, "mark", anchor);
+	if ( es_flag(w, es, "selblock") )
+	    ui::set(w, es, "bend", off);
+    }
+    else
+    {
+	ui::set(w, es, "mark", -1);
+	ui::set(w, es, "bend", -1);
+    }
+    if ( ph == "up" )
+	ui::set(w, es, "anchor", -1);
 }
