@@ -42,8 +42,10 @@ int main()
 		"document.querySelectorAll('[data-region]').forEach(function(e){"
 		"rs.push(e.dataset.region);});"
 		"var sb=document.querySelector('.status .sb-left')?'yes':'no';"
+		"var st=document.querySelector('.status'),ed=document.querySelector('.edit');"
+		"var chrome=(st&&ed&&getComputedStyle(st).fontFamily!==getComputedStyle(ed).fontFamily)?'yes':'no';"
 		"window.madc(JSON.stringify({kind:'snapshot',"
-		"text:'regions='+rs.sort().join(',')+' statusitems='+sb}));})()");
+		"text:'regions='+rs.sort().join(',')+' statusitems='+sb+' chrome-font='+chrome}));})()");
 	}
 	else if ( ev["event"] == "snapshot" )
 	{

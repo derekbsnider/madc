@@ -13,19 +13,34 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .node { flex: 0 0 auto; }
 .node.group { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .heading, .status { display: flex; justify-content: space-between; padding: 1px 8px; background: #3b4a6b; color: #f2f4ff; }
-.status { background: #2d3448; }
-/* The status bar as chrome (S3): each side a row of discrete seats; a
-   label (the format's literal, "Row") in the quiet colour, the text beside
-   it; a few seats carry their own look — the modified / read-only badges in
-   the accent, the vi mode bold, the pending chord as a key cap. Theme them
-   through the @gui custom properties like everything else. */
-.sb-left, .sb-right { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
-.sb-seat { display: inline-flex; gap: 5px; white-space: nowrap; }
-.sb-label { color: var(--sb-label, #9aa0b4); }
-.sb-m .sb-text, .sb-R .sb-text { color: var(--accent, #9fc2ff); }
-.sb-M .sb-text { font-weight: bold; }
-.sb-k .sb-text { background: #3b4a6b; padding: 0 5px; border-radius: 3px; }
+/* The status bar as CHROME (S3 gave it the structure — discrete seats —
+   this gives it the look): application chrome reads in the proportional
+   chrome font (--chrome-font), not the editor's cells; the bar is its own
+   surface (--sb-bg) with a hairline above it; the file name leads in a
+   heavier weight; a label (the format's literal, "Row") is a small quiet
+   caption; the modified / read-only badges are accent PILLS; the pending
+   chord is a key cap in the editor's font; row / column digits are tabular
+   so they do not jitter. While split, each window's header is the same bar
+   and the ACTIVE window's header carries the accent (the page marks it,
+   markStacks). Theme it through the @gui custom properties like everything
+   else. */
+.status { font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+          padding: 2px 10px; background: var(--sb-bg, #262b3a); color: var(--sb-fg, #d9dbe4);
+          border-top: 1px solid var(--sb-line, #343b52); align-items: center; }
+.sb-left, .sb-right { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.sb-seat { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.sb-label { color: var(--sb-label, #8b91a8); font-size: 10.5px; text-transform: uppercase;
+            letter-spacing: 0.05em; }
+.sb-n .sb-text { font-weight: 600; color: var(--sb-name, #f2f4ff); }
+.sb-r .sb-text, .sb-c .sb-text, .sb-o .sb-text { font-variant-numeric: tabular-nums; }
+.sb-m .sb-text, .sb-R .sb-text { background: var(--accent, #9fc2ff); color: var(--bg, #1b1d24);
+                                 padding: 0 8px; border-radius: 9px; font-size: 11px;
+                                 font-weight: 600; line-height: 1.5; }
+.sb-M .sb-text { font-weight: 700; letter-spacing: 0.04em; }
+.sb-k .sb-text { font: 12px/1.4 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+                 background: #3b4a6b; border: 1px solid #4a5a80; padding: 0 6px; border-radius: 4px; }
 .sb-x .sb-text { color: var(--sb-context, #c9cde0); font-style: italic; }
+.sb-y .sb-text { color: var(--sb-label, #8b91a8); }
 .content { white-space: pre-wrap; padding: 0 8px; }
 .item { padding: 0 8px 0 24px; }
 .action { padding: 0 8px; color: var(--accent, #9fc2ff); }
@@ -88,10 +103,19 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .workbench > .slot[data-slot="statusbar"] { grid-area: statusbar; }
 .workbench > .slot[data-slot="foot"]      { grid-area: foot; }
 /* The window stack: each window's header (its status line) separates it
-   from the one above; the focused window carries the accent at its edge. */
-.slot.stacked > .status { border-top: 1px solid #4a5a80; }
+   from the one above; the ACTIVE window's header carries the accent at its
+   edge and a lighter surface, and the focused window the same edge. */
+.slot.stacked > .status { border-top: 1px solid var(--sb-line, #343b52); }
 .slot.stacked > .status:first-child { border-top: none; }
+.slot.stacked > .status.active { background: var(--sb-active, #2f3a55);
+                                 box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
 .slot.stacked > .edit.focus { box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
+/* The message line (the foot): a message bar in the chrome font. */
+.workbench > .slot[data-slot="foot"] > .content:not(.popup) {
+  font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  padding: 2px 10px; color: var(--sb-fg, #d9dbe4); background: var(--sb-bg, #262b3a);
+  border-top: 1px solid var(--sb-line, #343b52);
+}
 /* A floating pane (palette / quick pick / prompt): out of the grid flow,
    centered near the top, above the workbench. */
 .node.popup {

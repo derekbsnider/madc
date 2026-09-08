@@ -45,8 +45,9 @@ void probe(long t)
 	"var sbar=document.querySelector('.workbench > [data-slot=\\\"statusbar\\\"]');"
 	"var sbn=sbar?sbar.children.length:0;"
 	"var st=slot.classList.contains('stacked')?1:0;"
+	"var hact=kids.filter(function(e){return e.classList.contains('status');}).map(function(e,i){return e.classList.contains('active')?'S'+i:'';}).join('');"
 	"window.madc(JSON.stringify({kind:'snapshot',text:'shape='+shape+' ordered='+ordered"
-	"+' rows-ok='+rowsok+' focus='+focus+' flex='+flex+' stacked='+st+' span-ok='+span"
+	"+' rows-ok='+rowsok+' focus='+focus+' header='+hact+' flex='+flex+' stacked='+st+' span-ok='+span"
 	"+' foot-ok='+footok+' statusbar='+sbn}));})()");
 }
 

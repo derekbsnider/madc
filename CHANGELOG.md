@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### madcide: the status bar looks like chrome (2026-09-08)
+
+- The status bar, the window headers of a split and the message line render
+  in the proportional chrome font on their own surface: the file name leads,
+  labels are small captions, the modified / read-only badges are accent
+  pills, the pending chord a key cap, digits tabular; the ACTIVE window's
+  header carries the accent (the page marks it). Colours ride the `@gui`
+  theme (`sb-bg`, `sb-fg`, `sb-line`, `sb-label`, `sb-name`, `sb-active`,
+  `chrome-font`); the structure (S3's seats) and the terminal are unchanged.
+
 ### madcide: a click picks the window (2026-09-08)
 
 - With two-plus windows, a press in another window's text activates it and

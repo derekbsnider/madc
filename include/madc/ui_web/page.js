@@ -57,13 +57,20 @@
   }
 
   // A slot holding more than one edit node is a STACK of windows: the
-  // focused one is marked and each window's header separates it.
+  // focused one is marked, each window's header separates it, and the
+  // header heading the focused window is marked ACTIVE (a header is the
+  // status line the edit node follows — the page's chrome look reads it).
   function markStacks() {
     document.querySelectorAll('.slot').forEach(function (s) {
       var n = 0;
       for (var c = s.firstElementChild; c; c = c.nextElementSibling)
         if (c.classList.contains('edit')) n++;
       s.classList.toggle('stacked', n > 1);
+      for (var h = s.firstElementChild; h; h = h.nextElementSibling) {
+        if (!h.classList.contains('status')) continue;
+        var ed = h.nextElementSibling;
+        h.classList.toggle('active', !!(ed && ed.classList.contains('edit') && ed.classList.contains('focus')));
+      }
     });
   }
 
