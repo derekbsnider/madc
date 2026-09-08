@@ -3,6 +3,7 @@ load: ok
 missing: no
 menus: 8
 bar: File Edit Search View Window Build Help
+build-menu: items=8 sep-at=1 first=build-1/Check (in-process) enabled=1 last=build-6/Stop enabled=0
 file: title=File first=editfile/Open File… sep=yes
 one-window: nextw-enabled=0 splitw-enabled=1
 split: nextw-enabled=1

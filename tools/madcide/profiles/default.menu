@@ -15,6 +15,9 @@
 # selection split buffers project building modal viewing.
 # The menu "palette" lists commands that live only in the command palette
 # (a title for every command the bar does not carry).
+# The Build menu's items after its separator are COMPOSED, not listed here:
+# the ^B palette's rows (buildcmds — the built-ins for the buffer or the
+# project, plus a manifest's own commands), one item per row, id build-<n>.
 
 File editfile Open File…
 File insertfile Insert File… [editable]
@@ -70,7 +73,6 @@ Window -
 Window killwin Close Window [split]
 Window onlywin Only Window [split]
 
-Build check Check
 Build build Build…
 
 Help help Keyboard Help
@@ -83,5 +85,6 @@ palette discard Discard Changes and Exit
 palette profile Switch Keymap
 palette theme Theme…
 palette bufsel Switch to Buffer…
+palette check Check
 palette colon Command Line…
 palette vimode Toggle vi Mode

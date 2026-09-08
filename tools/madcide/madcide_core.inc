@@ -604,6 +604,7 @@ bool load_menu(long w, long es, const char *name)
 // The window table's size (defined with the window machinery below —
 // the menu context reads it).
 long window_count(long w, long es);
+void ensure_build_cmds(long w, long es);	// the Build menu composes the ^B rows
 
 // The context a [when] clause is judged against: named FACTS of the
 // session, computed once per compose. A clause names keys from this bag
@@ -688,6 +689,35 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
 	    items.push(row);
+	}
+	// The Build menu carries the ^B palette's rows as DIRECT items
+	// (owner 2026-09-08: Build -> Run runs, no overlay): the same
+	// `buildcmds` data the palette lists — the built-ins for the
+	// buffer or the project, plus a manifest's own commands — one item
+	// per row, id `build-<n>` (its 1-based row, the palette's choose
+	// contract), after a separator. Stop is enabled only while a build
+	// runs, the rest only while none does (what the palette's rows do).
+	if ( m["title"] == "Build" )
+	{
+	    ensure_build_cmds(w, es);
+	    var brows;
+	    ui::get(brows, w, es, "buildcmds");
+	    if ( !brows.is_null() && php::count(brows) > 0 )
+	    {
+		items[] = { "sep": 1 };
+		bool live = es_int(w, es, "buildlive", 0) != 0;
+		long n = 0;
+		for ( var br : brows )
+		{
+		    n = n + 1;
+		    var brow = { "id": format("build-{}", n),
+				 "title": format("{}", br["name"]) };
+		    bool stop = br["act"] == "bld-stop";
+		    if ( stop != live )
+			brow["enabled"] = 0;
+		    items.push(brow);
+		}
+	    }
 	}
 	bar[] = { "title": m["title"], "items": items };
     }
@@ -4712,6 +4742,29 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	    grow_window(w, es, -1);
 	    return true;
 	}
+	// A Build MENU row (the ^B palette's rows as menu items): the id
+	// carries the 1-based row; build_choose owns the rest — the same
+	// row data, the same dispatcher the palette's choose reaches.
+	if ( a.index("build-") == 0 )
+	{
+	    ensure_build_cmds(w, es);
+	    build_choose(w, es, doc,
+			 php::intval(perl::substr(a, 6, strlen(a.c_str()) - 6)));
+	    return true;
+	}
+	// A chrome dialog's Close button or a press outside it (polish P2):
+	// the @pane scope's cancel posted BY NAME as an ACTION — what esc
+	// does in the terminal (the S6 rule: buttons post the scope's
+	// actions by name; the project and modes dialogs admit theirs the
+	// same way above). It must sit in THIS region: a Close is never a
+	// choose, and the motion fallback below would otherwise report it
+	// as an unknown action.
+	var pc;
+	if ( scope_action_named(pc, w, es, "pane", ev) && pc == "paneclose" )
+	{
+	    ui::set(w, es, "pane", "");
+	    return true;
+	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
 	// edit_key vocabulary: the action name IS the key spelling
 	// ("left", "pgdn", "del", ...) — a profile binds e.g. "^a home",
@@ -4780,12 +4833,6 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	    proj_toggle_kind(w, es, doc);
 	    return true;
 	}
-	// A chrome dialog's Close button or a press outside it (polish P2):
-	// the @pane scope's cancel posted BY NAME — what esc does in the
-	// terminal (the S6 rule: buttons post the scope's actions by name).
-	var pc;
-	if ( scope_action_named(pc, w, es, "pane", ev) && pc == "paneclose" )
-	    ui::set(w, es, "pane", "");
 	return true;
     }
     if ( kind != ui::event_kind::key )

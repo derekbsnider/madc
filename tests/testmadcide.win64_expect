@@ -82,6 +82,8 @@ proj-build: artifact=1 Built project madc_ide_test.prj.json -> madc_ide_prog
 proj-kind-row: P Project kind console
 proj-kind-toggle: Project kind: gui. file-kind=gui
 proj-kind-toggle2: Project kind: console. file-kind=console
+close-button: before=help after='' unknown=0
+menu-build-row: pane='diags' unknown=0 msg=Project check: clean.
 proj-openproject-prompt: Project file to open (^C aborts):
 proj-openproject: Project madc_ide_open.prj.json: 1 TU(s). active=1 projfile=madc_ide_open.prj.json kind=gui
 proj-implicit-check: Check: clean.

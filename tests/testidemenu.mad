@@ -68,6 +68,32 @@ int main()
     ui::get(def, w, es, "menudef");
     println("menus: {}", php::count(def));
 
+    // The Build menu carries the ^B palette's rows as direct items after
+    // its separator (owner 2026-09-08: Build -> Run, no overlay): without a
+    // manifest the buffer's built-ins; ids name the 1-based row; Stop is
+    // disabled while no build runs, the rest enabled.
+    var btree;
+    S.compose_ide_tree(btree, doc);
+    var bbar = btree["hints"]["menu"];
+    var bmenu;
+    for ( var bm : bbar["bar"] )
+	if ( bm["title"] == "Build" )
+	    bmenu = bm;
+    var bitems = bmenu["items"];
+    long bsep = -1;
+    long bi = 0;
+    for ( var bit : bitems )
+    {
+	if ( !bit["sep"].is_null() && bsep < 0 )
+	    bsep = bi;
+	bi = bi + 1;
+    }
+    var bfirst = bitems[bsep + 1];
+    var blast = bitems[php::count(bitems) - 1];
+    println("build-menu: items={} sep-at={} first={}/{} enabled={} last={}/{} enabled={}",
+	    php::count(bitems), bsep, bfirst["id"], bfirst["title"],
+	    enabled_of(bfirst), blast["id"], blast["title"], enabled_of(blast));
+
     var tree;
     S.compose_ide_tree(tree, doc);
     var menu = tree["hints"]["menu"];

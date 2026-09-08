@@ -828,6 +828,35 @@ int main()
     ev_key(e, "esc");			// @pane esc paneclose
     S.apply_ide_event(gdoc, e);
 
+    // -- a chrome dialog's Close BUTTON posts the @pane cancel BY NAME as
+    //    an ACTION (the S6 rule) — it must close the pane like esc, never
+    //    fall through to the unknown-action message (owner 2026-09-08: the
+    //    Build overlay's Close closed nothing).
+    ev_action(e, "help", "^k h");
+    S.apply_ide_event(gdoc, e);
+    var cpane;
+    ui::get(cpane, w, es, "pane");
+    var cpane0 = format("{}", cpane);
+    ui::set(w, es, "msg", "");
+    ev_action(e, "paneclose", "");
+    S.apply_ide_event(gdoc, e);
+    ui::get(cpane, w, es, "pane");
+    ui::get(msg, w, es, "msg");
+    println("close-button: before={} after='{}' unknown={}", cpane0, cpane,
+	    strstr(msg.c_str(), "Unknown action") != 0 ? 1 : 0);
+
+    // -- the Build MENU carries the ^B rows as direct items (owner
+    //    2026-09-08: Build -> Run, no overlay): a row's action `build-<n>`
+    //    runs the palette's row dispatcher — build-1 = Check (in-process)
+    //    refreshes the diagnostics with no pane opened.
+    ui::set(w, es, "msg", "");
+    ev_action(e, "build-1", "");
+    S.apply_ide_event(gdoc, e);
+    ui::get(cpane, w, es, "pane");
+    ui::get(msg, w, es, "msg");
+    println("menu-build-row: pane='{}' unknown={} msg={}", cpane,
+	    strstr(msg.c_str(), "Unknown action") != 0 ? 1 : 0, msg);
+
     // -- polish P2b: File -> Open Project… — the headless session gets the
     //    prompt (no native dialog); the answer runs THE manifest reader
     //    run_ide's startup uses and opens the Project window on it.
