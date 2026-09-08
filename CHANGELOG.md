@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### madcide GUI: the native menu bar and file dialogs on macOS and Windows (2026-09-08)
+
+- The chrome the GTK window has had since S2/S4 now draws natively on the
+  other two platforms, behind the SAME `madcwebview_chrome` C API inside
+  `libmadcwebview`: on macOS the application's main menu (the bar at the top
+  of the screen — its application menu carries Quit as the window's own
+  close, the close button's path) and `NSOpenPanel` / `NSSavePanel` as a
+  sheet on the window; on Windows an `HMENU` bar (the client area re-lays
+  the webview) with `WM_COMMAND` read through a comctl32 subclass of the
+  library's window procedure, and `IFileOpenDialog` / `IFileSaveDialog`.
+  Open File… / Save As… therefore stop falling back to the prompts there;
+  nothing in the engine, the host fragment or the composed tree changed.
+- One reading of the key spelling serves all three arms: a control key
+  (`^s`) becomes the item's accelerator; a chord (`^k d`) or a bare key
+  (`pgdn`, a letter) is shown beside the title and never bound — bound, a
+  bare key would fire the command on every such keystroke typed into the
+  page (GTK previously bound them; no profile binds one to a menu command).
+
+### packaging: the platform webview library ships (2026-09-08)
+
+- `release-windows` / `release-<arch>-macos` build the library beside the
+  binaries, and the packagers stage it where the module loader looks:
+  `bin\madcwebview.dll` beside `madc.exe`, `lib/libmadcwebview.dylib` next
+  to `bin/madc`, `lib/libmadcwebview.so` in the Linux tarball and the
+  deb/rpm libdir — a WEAK dependency there (`Recommends` on the WebKitGTK
+  6.0 / GTK 4 runtimes; the rpm excludes the library's own requires), since
+  madc never loads it, only a program that imports it does. The
+  webview/webview MIT notice ships beside it; the READMEs gain a GUI
+  paragraph; the mac install gate checks the dylib is in the tarball.
+
 ## [v0.99.1] — 2026-09-08
 
 The owner's first round with the v0.99.0 desktop application, answered: the
