@@ -8,12 +8,16 @@
  * JSON-free by design: the host (the <ns_ui_web> fragment) walks the engine's
  * menu description and calls begin / add / separator / end; the platform
  * layer only builds widgets. `key` is a madc key spelling ("^s", "pgdn",
- * "^k d"); a single key becomes the item's accelerator, a chord is shown in
- * the item's label. A selection calls the registered action callback with
- * the item's id (on the UI thread, inside the platform's run loop).
- * activate(id) fires that callback as if the item were chosen — the test
- * seam. Return 0 = ok; nonzero = unsupported on this platform / no window /
- * unknown id. Thread contract: the UI thread only (webview's own).
+ * "^k d"): a CONTROL key becomes the item's accelerator (GTK4 accel, Cocoa
+ * key equivalent, Win32's accelerator column); a chord or a bare key is
+ * shown beside the title and never bound — the page still delivers it to
+ * the engine, which resolves it as the terminal would. A selection calls the
+ * registered action callback with the item's id (on the UI thread, inside
+ * the platform's run loop). activate(id) fires that callback as if the item
+ * were chosen — the test seam. Return 0 = ok; nonzero = no window / unknown
+ * id / no native menu on this host. Built for GTK4 (GtkPopoverMenuBar),
+ * Cocoa (the application's main menu) and Win32 (an HMENU bar).
+ * Thread contract: the UI thread only (webview's own).
  */
 #ifndef MADCWEBVIEW_MENU_H
 #define MADCWEBVIEW_MENU_H 1
@@ -38,7 +42,9 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id);
  * callback fires later, on the UI thread inside the platform's run loop,
  * with the chosen path ("" = cancelled). `initial` names the folder or file
  * the dialog starts at (NULL/"" = the platform's default). Nonzero = no
- * native dialog on this platform / no window. */
+ * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+);
+ * Cocoa: NSOpenPanel / NSSavePanel as a sheet; Win32: IFileOpenDialog /
+ * IFileSaveDialog. */
 typedef void (*madcwebview_dialog_fn)(const char *path, void *arg);
 
 WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,

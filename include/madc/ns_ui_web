@@ -123,8 +123,9 @@ namespace ui_web {
     // The native menu bar (S2): the engine's menu JSON — {"bar":[{"title",
     // "items":[{"id","title","key"?,"enabled"}|{"sep"}]}]} — walked here and
     // handed to the platform layer item by item (madcwebview_menu_*: JSON-
-    // free by design). 0 = drawn; 1 = the platform has no native menu yet
-    // (Win32 / Cocoa) or the text is not a menu — the page stands as it is.
+    // free by design; GTK4 / Cocoa / Win32 each draw it natively). 0 = drawn;
+    // 1 = no native menu on this host or the text is not a menu — the page
+    // stands as it is.
     int64_t menu(void *hv, const char *json)
     {
 	host *h = (host *)hv;
@@ -173,8 +174,8 @@ namespace ui_web {
     // The native file dialog (S4): the engine's request — {"mode":"open"|
     // "save","title":..,"path":<initial>} — shown over the window; the
     // answer comes back through the host's one door as a dialog event.
-    // 0 = up; 1 = no native dialog on this platform (Win32 / Cocoa yet) or
-    // not a request — the caller falls back to its prompt.
+    // 0 = up; 1 = no native dialog on this host or not a request — the
+    // caller falls back to its prompt.
     int64_t dialog(void *hv, const char *json)
     {
 	host *h = (host *)hv;
