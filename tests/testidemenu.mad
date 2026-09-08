@@ -1,0 +1,158 @@
+// S1 (madcide GUI chrome): the command / menu contribution as DATA.
+// profiles/default.menu is the one description — menus in order, items
+// {id, title, [when]}, separators — loaded by load_menu into the bag and
+// composed onto the root's `menu` hint: the bar (the palette-only menu
+// stays off it), each item's id and title, and `enabled: 0` when the
+// item's [when] clause fails against the session's live context. Ids are
+// the action vocabulary the key profiles bind; no key spelling rides the
+// data (a renderer shows the LOADED profile's chord), so the composed
+// tree stays profile-independent — testmadcide's swap-identity gate
+// keeps holding. The TUI reads none of it (its shape clauses are pinned
+// elsewhere). Runs with the madcide session, no compiler.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The bar's menu titles, joined.
+void bar_titles(var &out, var &menu)
+{
+    var t = "";
+    for ( var m : menu["bar"] )
+	t = format("{}{} ", t, m["title"]);
+    out = php::trim(t);
+}
+
+// An item's enablement: 1 unless the composer said `enabled: 0`.
+long enabled_of(var &it)
+{
+    if ( it["enabled"].is_null() )
+	return 1;
+    return it["enabled"].as_integer();
+}
+
+// The item with `id` in the bar; null when absent.
+void find_item(var &out, var &menu, const char *id)
+{
+    var none;
+    out = none;
+    for ( var m : menu["bar"] )
+	for ( var it : m["items"] )
+	    if ( !it["id"].is_null() && it["id"] == id )
+		out = it;
+}
+
+int main()
+{
+    const char *path = "madc_ide_menu.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    // No menu data loaded: the root carries no menu hint (optional data).
+    var t0;
+    S.compose_ide_tree(t0, doc);
+    println("unloaded: menu={}", t0["hints"]["menu"].is_null() ? "none" : "set");
+
+    println("load: {}", load_menu(w, es, "default") ? "ok" : "FAILED");
+    println("missing: {}", load_menu(w, es, "no-such-menu") ? "loaded?" : "no");
+    var def;
+    ui::get(def, w, es, "menudef");
+    println("menus: {}", php::count(def));
+
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var menu = tree["hints"]["menu"];
+    var titles;
+    bar_titles(titles, menu);
+    println("bar: {}", titles);
+    // The File menu: items in file order, a separator as its own row.
+    var file = menu["bar"][0];
+    var f0 = file["items"][0];
+    var f2 = file["items"][2];
+    println("file: title={} first={}/{} sep={}", file["title"],
+	    f0["id"], f0["title"], f2["sep"].is_null() ? "no" : "yes");
+    // [when] against the live context: one window -> the window verbs
+    // that need a split are disabled; split -> enabled (no key at all).
+    var nw;
+    find_item(nw, menu, "nextw");
+    var sw;
+    find_item(sw, menu, "splitw");
+    println("one-window: nextw-enabled={} splitw-enabled={}",
+	    enabled_of(nw),
+	    enabled_of(sw));
+    split_window(w, es, doc);
+    S.compose_ide_tree(tree, doc);
+    menu = tree["hints"]["menu"];
+    find_item(nw, menu, "nextw");
+    println("split: nextw-enabled={}", enabled_of(nw));
+    kill_window(w, es, doc, true);
+    // A block verb needs a selection AND an editable buffer; a read-only
+    // buffer disables save as well.
+    var bc;
+    find_item(bc, menu, "blockcopy");
+    println("no-selection: blockcopy-enabled={}", enabled_of(bc));
+    ui::set(w, es, "mark", 0);
+    S.compose_ide_tree(tree, doc);
+    menu = tree["hints"]["menu"];
+    find_item(bc, menu, "blockcopy");
+    var sv;
+    find_item(sv, menu, "save");
+    println("selection: blockcopy-enabled={} save-enabled={}",
+	    enabled_of(bc),
+	    enabled_of(sv));
+    ui::set(w, es, "editable", false);
+    S.compose_ide_tree(tree, doc);
+    menu = tree["hints"]["menu"];
+    find_item(bc, menu, "blockcopy");
+    find_item(sv, menu, "save");
+    println("read-only: blockcopy-enabled={} save-enabled={}",
+	    enabled_of(bc),
+	    enabled_of(sv));
+    ui::set(w, es, "editable", true);
+    ui::set(w, es, "mark", -1);
+    // The palette-only menu is off the bar but in the definition, and
+    // every id in the data is unique (one vocabulary, one title each).
+    var seen;
+    long dups = 0;
+    long total = 0;
+    bool palette = false;
+    for ( var m : def )
+    {
+	if ( m["title"] == "palette" )
+	    palette = true;
+	for ( var it : m["items"] )
+	{
+	    if ( !it["id"].is_null() )
+	    {
+		total = total + 1;
+		if ( !seen[it["id"].c_str()].is_null() )
+		    dups = dups + 1;
+		seen[it["id"].c_str()] = 1;
+	    }
+	}
+    }
+    println("registry: palette={} commands={} duplicates={}",
+	    palette ? "yes" : "no", total, dups);
+    // The when grammar directly.
+    var ctx = { "a": true, "b": false };
+    var e1 = "a";
+    var e2 = "!b";
+    var e3 = "a && !b";
+    var e4 = "a && b";
+    var e5 = "zz";
+    var e6 = "";
+    println("when: a={} !b={} a&&!b={} a&&b={} unknown={} empty={}",
+	    when_holds(ctx, e1) ? 1 : 0, when_holds(ctx, e2) ? 1 : 0,
+	    when_holds(ctx, e3) ? 1 : 0, when_holds(ctx, e4) ? 1 : 0,
+	    when_holds(ctx, e5) ? 1 : 0, when_holds(ctx, e6) ? 1 : 0);
+    return 0;
+}

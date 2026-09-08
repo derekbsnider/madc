@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### madcide: menus and commands are data (S1, 2026-09-08)
+
+- The GUI chrome spine: `tools/madcide/profiles/default.menu` is the ONE
+  command / menu description (the VS Code contribution shape — a command
+  registry plus a menu-location map — on the one action vocabulary the key
+  profiles bind and the dispatcher understands). One line per item,
+  `MENU COMMAND TITLE… [WHEN]`; `[WHEN]` names the live context that enables
+  the item (`editable`, `dirty`, `selection`, `split`, `buffers`, `project`,
+  `building`, `modal`, `viewing`; `!` and `&&`). The session loads it beside
+  the theme and the status format, judges every item's clause at compose,
+  and carries the bar on the root's `menu` hint — ids, titles and enablement
+  only, no key spellings (a renderer shows the LOADED profile's chord), so
+  the composed tree stays profile-independent and the terminal, which reads
+  no root hints, is unchanged. The menu named `palette` titles the commands
+  the bar does not carry.
+- `scripts/check-madcide-command-registry.sh` (fulltest) keeps the profiles,
+  the dispatcher's action arm and the menu data on one vocabulary in all
+  three directions, with negative controls. `tests/testidemenu.mad` pins
+  the load, the composed bar, the `[when]` evaluation and the grammar.
+
 ### The web workbench stacks a region's nodes; the ^K O split renders as windows (2026-09-08)
 
 - Owner (2026-09-08, `madcide --gui`): the JOE split "doesn't seem to work so

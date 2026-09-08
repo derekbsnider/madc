@@ -453,6 +453,188 @@ bool load_theme(long w, long es, const char *name)
     return true;
 }
 
+// ---- menus / commands as data (S1, 2026-09-08) --------------------------
+// profiles/<name>.menu: the command / menu CONTRIBUTION (the VS Code shape:
+// a command registry + a menu-location map, one action vocabulary — the
+// ids the key profiles bind and the dispatcher understands). One line per
+// item "MENU COMMAND TITLE... [WHEN]", "MENU -" a separator, comments and
+// blanks by the profile_line rule. The bag holds `menudef`: the menus in
+// first-appearance order, each { title, items: [{ id, title, when } |
+// { sep }] }. Key spellings are NOT part of it — a renderer shows the
+// chord the LOADED profile binds to an id, so the composed tree stays
+// profile-independent (testmadcide's swap-identity gate). The TUI reads
+// none of it: JOE has no menu bar; the web target's chrome (S2) and a
+// command palette render it. Missing file = no menu (optional data, like
+// the status format), false.
+bool load_menu(long w, long es, const char *name)
+{
+    var mname = name;		// ring discipline: own the text first
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    var txt;
+    if ( !php::file_get_contents(txt, format("{}/{}.menu", dir, mname)) )
+	return false;
+    var menus = {};
+    var at;			// menu title -> index into menus
+    array lines;
+    php::explode(lines, "\n", txt.c_str());
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	const char *ls = line.c_str();
+	const char *sp = strchr(ls, ' ');
+	if ( sp == 0 )
+	    continue;
+	var menu = perl::substr(line, 0, sp - ls);
+	var rest = php::trim(sp + 1);
+	var item;
+	if ( rest == "-" )
+	    item = { "sep": 1 };
+	else
+	{
+	    const char *rs = rest.c_str();
+	    const char *sp2 = strchr(rs, ' ');
+	    var id = rest;
+	    var title = "";
+	    if ( sp2 != 0 )
+	    {
+		id = perl::substr(rest, 0, sp2 - rs);
+		title = php::trim(sp2 + 1);
+	    }
+	    var when = "";
+	    // A trailing [when] clause: the context that enables the item.
+	    const char *ts = title.c_str();
+	    long tl = strlen(ts);
+	    if ( tl > 0 && ts[tl - 1] == ']' )
+	    {
+		const char *lb = strrchr(ts, '[');
+		if ( lb != 0 )
+		{
+		    when = perl::substr(title, lb - ts + 1, tl - (lb - ts) - 2);
+		    title = php::trim(perl::substr(title, 0, lb - ts));
+		}
+	    }
+	    item = { "id": id, "title": title, "when": when };
+	}
+	var idx = at[menu.c_str()];
+	if ( idx.is_null() )
+	{
+	    var items = {};
+	    items.push(item);
+	    menus[] = { "title": menu, "items": items };
+	    at[menu.c_str()] = php::count(menus) - 1;
+	}
+	else
+	{
+	    long k = idx.as_integer();
+	    var m = menus[k];
+	    var items = m["items"];
+	    items.push(item);
+	    m["items"] = items;
+	    menus[k] = m;
+	}
+    }
+    ui::set(w, es, "menudef", menus);
+    return true;
+}
+
+// The window table's size (defined with the window machinery below —
+// the menu context reads it).
+long window_count(long w, long es);
+
+// The context a [when] clause is judged against: named FACTS of the
+// session, computed once per compose. A clause names keys from this bag
+// only; an unknown key never holds.
+void menu_context(var &ctx, long w, long es, long doc, long nav)
+{
+    var mod;
+    ui::get(mod, w, doc, "modified");
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    var vm;
+    ui::get(vm, w, es, "vimode");
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    bool editable = es_flag(w, es, "editable");
+    bool dirty = !mod.is_null() && mod.as_boolean();
+    bool selection = es_int(w, es, "mark", -1) >= 0;
+    bool split = window_count(w, es) >= 2;
+    bool buffers = !bufs.is_null() && php::count(bufs) > 1;
+    bool project = !pf.is_null() && strlen(pf.c_str()) > 0;
+    bool building = es_int(w, es, "buildlive", 0) != 0;
+    bool modal = !vm.is_null() && strlen(vm.c_str()) > 0;
+    bool viewing = nav != doc;
+    ctx = { "editable": editable, "dirty": dirty, "selection": selection,
+	    "split": split, "buffers": buffers, "project": project,
+	    "building": building, "modal": modal, "viewing": viewing };
+}
+
+// Does a [when] clause hold? `key`, `!key`, joined by `&&`; an empty
+// clause always holds; an unknown key never does.
+bool when_holds(var &ctx, var &when)
+{
+    if ( strlen(when.c_str()) == 0 )
+	return true;
+    array terms;
+    php::explode(terms, "&&", when.c_str());
+    long n = php::count(terms);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var t = php::trim(php::array_get_cstr(terms, i));
+	const char *ts = t.c_str();
+	bool neg = ts[0] == '!';
+	var key = t;
+	if ( neg )
+	    key = php::trim(ts + 1);
+	var v = ctx[key.c_str()];
+	bool holds = !v.is_null() && v.as_boolean();
+	if ( holds == neg )
+	    return false;
+    }
+    return true;
+}
+
+// The menu BAR as the composed tree carries it: the bar's menus in order
+// (the "palette" menu is palette-only and stays off the bar), each item
+// { id, title } plus `enabled: 0` when its [when] fails now. Titles and
+// ids only — profile-independent by construction. (compose_menu is the
+// shared editor helpers' vised-style menu LINE — a different node.)
+bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
+{
+    var def;
+    ui::get(def, w, es, "menudef");
+    if ( def.is_null() || php::count(def) == 0 )
+	return false;
+    var ctx;
+    menu_context(ctx, w, es, doc, nav);
+    var bar = {};
+    for ( var m : def )
+    {
+	if ( m["title"] == "palette" )
+	    continue;
+	var items = {};
+	for ( var it : m["items"] )
+	{
+	    if ( !it["sep"].is_null() )
+	    {
+		items[] = { "sep": 1 };
+		continue;
+	    }
+	    var row = { "id": it["id"], "title": it["title"] };
+	    var when = it["when"];
+	    if ( !when_holds(ctx, when) )
+		row["enabled"] = 0;
+	    items.push(row);
+	}
+	bar[] = { "title": m["title"], "items": items };
+    }
+    out = { "bar": bar };
+    return true;
+}
+
 // ---- status line as data (IDE-9a): JOE's joerc format vocabulary ------
 // profiles/<name>.status: "lmsg FMT" / "rmsg FMT" lines (the profile_line
 // comment/blank rule; the value is everything after the FIRST space,
@@ -4174,11 +4356,20 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // attached (the JOE default look).
     var gt;
     ui::get(gt, w, es, "gui_theme");
+    // The root's hints: each field conditional (a loaded scheme, loaded
+    // menu data), so the bag is built by keyed assignment (`{}` would be
+    // an empty ARRAY); nothing loaded = no hints, as before.
+    var rh;
     if ( !gt.is_null() && php::count(gt) > 0 )
-    {
-	var rh = { "theme": gt };
+	rh["theme"] = gt;
+    // The menu / command data (S1): the bar's menus with their items'
+    // ids, titles and enablement — a root hint the TUI ignores and a
+    // chrome-rendering client (S2) draws natively.
+    var menu;
+    if ( compose_menu_bar(menu, w, es, doc, nav) )
+	rh["menu"] = menu;
+    if ( !rh.is_null() )
 	r["hints"] = rh;
-    }
     root = r;
 }
 
@@ -4208,6 +4399,7 @@ long IdeSession::open(const char *path0, bool ro)
     load_status(w, es, "joe");	// the status FORMAT rides the profile
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
+    load_menu(w, es, "default");	// the menu/command data (optional, S1)
     // The profile loads LAST of the three data loads: a broken layout
     // fails the theme too, and its message must not bury the rescue
     // announcement — the status line has to SAY the fallback is active.

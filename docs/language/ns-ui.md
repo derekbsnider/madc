@@ -425,6 +425,25 @@ and the window honours:
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
 | `items` (`{left,right}`) | the status node | the status bar's justified item pair (the same JOE seats the terminal shows as one string) |
 | `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope |
+| `menu` (`{bar:[{title,items:[{id,title,enabled?}\|{sep}]}]}`) | the root | the command / menu contribution: the bar's menus in order, each item a command id + title, `enabled: 0` when its `[when]` fails now; a chrome-rendering client draws it natively, the terminal ignores it |
+
+**Menus and commands are data.** `profiles/default.menu` is the one
+description a menu bar, a command palette, or any client that renders
+commands natively reads (the VS Code contribution shape: a command registry
+plus a menu-location map, one action vocabulary): one line per item,
+`MENU COMMAND TITLE… [WHEN]`, `MENU -` a separator, comments and blanks as
+in every profile file. `COMMAND` is an action id from the vocabulary the
+key profiles bind and the dispatcher understands — never a key spelling: a
+renderer shows the chord the LOADED profile binds to the id, so the
+composed tree stays profile-independent. `[WHEN]` names the context that
+enables the item (`key`, `!key`, joined by `&&`; the keys: `editable`
+`dirty` `selection` `split` `buffers` `project` `building` `modal`
+`viewing`), judged against the session's live facts at every compose. The
+menu named `palette` lists palette-only commands (a title for every
+command the bar does not carry). `scripts/check-madcide-command-registry.sh`
+(fulltest) keeps the three in agreement: every profile action is registered
+or a key spelling, every dispatched action is registered, every registered
+command is dispatched.
 
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is
