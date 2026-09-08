@@ -470,9 +470,11 @@ int main()
     long bdoc = build_doc(w, es);
     var btxt;
     ui::text(btxt, w, bdoc);
-    println("build-out: has-hello={} has-done={} live={}",
+    // The stream ends with the child's exit status (polish P3b-1: what a
+    // run reports on its status line rides the stream's last line).
+    println("build-out: has-hello={} has-exit0={} live={}",
 	    rust::contains(btxt.c_str(), "hello-madc_ide_test") ? 1 : 0,
-	    rust::contains(btxt.c_str(), "[done]") ? 1 : 0,
+	    rust::contains(btxt.c_str(), "[exit 0]") ? 1 : 0,
 	    es_int(w, es, "buildlive", 0));
     // Stop against a silent child: sleep 5 emits nothing — the stop send
     // fires the pump's select case 0 (buffered: the pump has not even run
@@ -811,13 +813,13 @@ int main()
 	if ( strstr(format("{}", oi["content"]), "Project kind") != 0 )
 	    krow = php::trim(oi["content"]);
     println("proj-kind-row: {}", krow);
-    ev_action(e, "opt-projkind", "");
+    ev_choose(e, 0, "opt-projkind");	// the row's own verb (a click / enter)
     S.apply_ide_event(gdoc, e);
     ui::get(msg, w, es, "msg");
     php::file_get_contents(mtxt, "madc_ide_test.prj.json");
     js::parse(mparsed, mtxt);
     println("proj-kind-toggle: {} file-kind={}", msg, mparsed["kind"]);
-    ev_action(e, "opt-projkind", "");	// and back
+    ev_choose(e, 0, "opt-projkind");	// and back
     S.apply_ide_event(gdoc, e);
     ui::get(msg, w, es, "msg");
     php::file_get_contents(mtxt, "madc_ide_test.prj.json");
@@ -1761,6 +1763,12 @@ int main()
 	"int main() { println(\"run-says-hi\"); return 3; }\n");
     edit_file(w, es, doc, "madc_ide_run.mad");
     long rdoc = active_doc(w, es, doc);
+    // A gui-kind project: the program's stream goes to Output (a console
+    // one takes the Terminal — the clause after this one).
+    var pjk;
+    ui::get(pjk, w, es, "proj");
+    pjk["kind"] = "gui";
+    ui::set(w, es, "proj", pjk);
     run_buffer(w, es, rdoc);
     madc::task_drain();
     long rbdoc = build_doc_if_any(w, es);
@@ -1773,6 +1781,8 @@ int main()
 	    rtxt.index("[exit 3]") >= 0 ? 1 : 0,
 	    es_int(w, es, "panel", 0), es_int(w, es, "buildlive", 0), msg);
     remove("madc_ide_run.mad");
+    pjk["kind"] = "console";		// back to the console kind
+    ui::set(w, es, "proj", pjk);
 
     // -- polish P3b-2: a CONSOLE program runs on a pty in the Terminal tab
     //    with its keyboard: the prompt it prints arrives through the

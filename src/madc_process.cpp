@@ -764,10 +764,15 @@ bool Process::start(error *err)
 			// Fork-as-isolation through the owner: no exec — the
 			// errno pipe closes EMPTY (the parent reads "no exec
 			// error" and returns), then the body runs on the
-			// dup'd stdio and its return is the exit status.
+			// dup'd stdio and its return is the exit status. A
+			// normal exit(), not _exit(): the body ran program
+			// code whose stdio is buffered (a pipe is fully
+			// buffered — _exit would lose everything it printed)
+			// and whose atexit handlers the fork-run has always
+			// run (parse_run's own child calls exit).
 			close_fd(exec_fds[1]);
 			int rc = _->options.child_body();
-			::_exit(rc & 0xff);
+			::exit(rc & 0xff);
 		}
 		::execve(executable.c_str(), &argv[0], &environment_vector[0]);
 		int number = errno;

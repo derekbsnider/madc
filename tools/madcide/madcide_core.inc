@@ -2391,6 +2391,16 @@ const char *proj_kind(long w, long es)
     return k.c_str();
 }
 
+// A manifest is OPEN (loaded or materialized): the kind row shows, the
+// build rows go project-wide. (project_active is the WINDOW being up — a
+// different fact.)
+bool proj_has_manifest(long w, long es)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    return !pf.is_null() && strlen(pf.c_str()) > 0;
+}
+
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
 // persistence rule) — the ^T Options row's action (opt-projkind). Only a
 // project with a manifest has a kind to set; the implicit project refuses
@@ -5101,7 +5111,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		       "act": "opt-keymap" };
 	    // The project kind (polish P2c): console | gui — shown while a
 	    // manifest is open (the implicit project has no manifest).
-	    if ( project_active(w, es) )
+	    if ( proj_has_manifest(w, es) )
 	    {
 		var pk = proj_kind(w, es);
 		rows[] = { "content": format("P Project kind {}", pk),
