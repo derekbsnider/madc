@@ -460,6 +460,17 @@ WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,
 WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 					const char *initial,
 					madcwebview_dialog_fn cb, void *arg);
+/* A one-shot timer on the UI thread (the window's bounded wait, madcide
+ * polish): cb(arg) fires once, about ms milliseconds later, inside the
+ * platform's run loop — the host's `tick` op ends its loop from it so the
+ * engine can hand its cooperative tasks the CPU while the window is idle.
+ * Nonzero = no window here (GTK: a GLib timeout source; Cocoa: dispatch_after
+ * on the main queue; Win32: SetTimer on the top-level window, served by the
+ * chrome subclass's WM_TIMER). A tick armed for a loop that ended early may
+ * fire in a later one; the callback owner tolerates that. */
+typedef void (*madcwebview_tick_fn)(void *arg);
+WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
+				 void *arg);
 
 #ifdef __cplusplus
 }

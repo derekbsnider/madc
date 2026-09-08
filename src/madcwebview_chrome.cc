@@ -436,6 +436,36 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
 }
 #endif
 
+// The one-shot UI-thread timer (the window's bounded wait): a GLib timeout
+// source on the main context the webview's loop runs; fires once.
+namespace {
+struct tick_ctx {
+	madcwebview_tick_fn cb;
+	void *arg;
+};
+gboolean tick_fire(gpointer data)
+{
+	tick_ctx *c = static_cast<tick_ctx *>(data);
+	c->cb(c->arg);
+	delete c;
+	return G_SOURCE_REMOVE;
+}
+} // namespace
+
+extern "C" {
+WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
+				 void *arg)
+{
+	if (!w || !cb)
+		return 1;
+	tick_ctx *c = new tick_ctx;
+	c->cb = cb;
+	c->arg = arg;
+	g_timeout_add(ms, tick_fire, c);
+	return 0;
+}
+} // extern "C"
+
 #elif defined(__APPLE__)
 
 // ======================================================================
@@ -445,6 +475,7 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
 
 #include <objc/objc-runtime.h>
 #include <objc/NSObjCRuntime.h>
+#include <dispatch/dispatch.h>	// the tick: dispatch_after on the main queue
 
 namespace {
 
@@ -784,6 +815,21 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 
 } // extern "C"
 
+
+// The one-shot UI-thread timer (the window's bounded wait): dispatch_after on
+// the main queue, which the run loop the webview runs drains; fires once.
+extern "C" {
+WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
+				 void *arg)
+{
+	if (!w || !cb)
+		return 1;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)ms * 1000000LL),
+		       dispatch_get_main_queue(), ^{ cb(arg); });
+	return 0;
+}
+} // extern "C"
+
 #else
 
 // ======================================================================
@@ -835,7 +881,10 @@ struct menu_state {
 	bool subclassed;
 	madcwebview_menu_action_fn cb;
 	void *arg;
-	menu_state() : w(0), win(0), bar(0), root(0), subclassed(false), cb(0), arg(0) {}
+	madcwebview_tick_fn tick_cb;	// the armed one-shot tick (WM_TIMER)
+	void *tick_arg;
+	menu_state() : w(0), win(0), bar(0), root(0), subclassed(false), cb(0), arg(0),
+		       tick_cb(0), tick_arg(0) {}
 };
 
 std::map<webview_t, menu_state> &states()
@@ -846,6 +895,7 @@ std::map<webview_t, menu_state> &states()
 
 const UINT_PTR subclass_id = 0x6d616463;	// 'madc'
 const UINT WM_MADC_DIALOG = WM_APP + 0x11;	// lp = a dialog_ctx to run
+const UINT_PTR tick_timer_id = 0x7469636b;	// 'tick' — the one-shot tick's SetTimer id
 
 struct dialog_ctx {
 	HWND win;
@@ -877,6 +927,18 @@ LRESULT CALLBACK chrome_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR
 	case WM_MADC_DIALOG:
 		run_dialog(reinterpret_cast<dialog_ctx *>(lp));
 		return 0;
+	case WM_TIMER:
+		if (wp == tick_timer_id) {	// the one-shot tick: fire once
+			KillTimer(hwnd, tick_timer_id);
+			madcwebview_tick_fn cb = st->tick_cb;
+			void *arg = st->tick_arg;
+			st->tick_cb = 0;
+			st->tick_arg = 0;
+			if (cb)
+				cb(arg);
+			return 0;
+		}
+		break;
 	case WM_NCDESTROY: {
 		LRESULT r = DefSubclassProc(hwnd, msg, wp, lp);
 		RemoveWindowSubclass(hwnd, chrome_proc, subclass_id);
@@ -1161,6 +1223,25 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 					madcwebview_dialog_fn cb, void *arg)
 {
 	return dialog_run(w, title, initial, cb, arg, true);
+}
+
+
+// The one-shot UI-thread timer (the window's bounded wait): SetTimer on the
+// top-level window; the chrome subclass serves WM_TIMER and fires once.
+WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
+				 void *arg)
+{
+	menu_state *st = state_of(w);
+	if (!st || !cb)
+		return 1;
+	st->tick_cb = cb;
+	st->tick_arg = arg;
+	if (!SetTimer(st->win, tick_timer_id, ms ? ms : 1, NULL)) {
+		st->tick_cb = 0;
+		st->tick_arg = 0;
+		return 1;
+	}
+	return 0;
 }
 
 } // extern "C"

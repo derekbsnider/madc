@@ -60,6 +60,13 @@
 #include "madcdis/tui_provider.h"
 #include "madcdis/web_model.h"
 #include "madcdis/world_text.h"
+#include "rt/rt_task.h"	// the window's wait = the cooperative scheduler's (fire_due / runnable / yield / live)
+
+// How long a window with LIVE cooperative tasks may park in its platform
+// loop before the engine probes the scheduler again (ui_web_session::
+// read_events): the Terminal/Output pumps' worst-case latency, and the
+// only cost of an idle-but-live window.
+static const int64_t WEB_TASK_TICK_MS = 25;
 
 using madc::hub::world;
 using madc::hub::world_doc;
@@ -103,6 +110,7 @@ namespace ui {
     typedef int64_t (*ui_host_run_fn)(void *host);
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -119,6 +127,11 @@ namespace ui {
 				// JSON describes (S4); 0 = shown (the answer
 				// arrives as a posted {"kind":"dialog"} event);
 				// nonzero = unsupported here; optional
+	ui_host_tick_fn	 tick;	// end the running/next loop after ms when no
+				// event did (run() returns 0, nothing posted)
+				// — the cooperative scheduler's bounded wait
+				// while tasks are live; nonzero = no timer
+				// here; optional
     };
 }
 
@@ -356,11 +369,43 @@ struct ui_dom_frontend : ui_frontend
 	if ( ops->menu && model.menu_changed() )
 	    ops->menu(host, model.menu_json().c_str());
     }
+    // The window's wait is the cooperative scheduler's ONE blocking
+    // decision, as the terminal's is (src/ui_term.cpp): fire what is due
+    // and hand runnable tasks the CPU BEFORE parking in the platform loop,
+    // and when tasks ran, synthesize a `wake` — the application recomposes,
+    // so a program's output streams into the Terminal tab and a build into
+    // Output without a keystroke. While tasks are LIVE but parked (an fd
+    // wait, a sleep) the platform wait is BOUNDED by the host's tick, so
+    // the probe runs again shortly; with no live task the loop blocks as
+    // before (zero cost). A host without a tick cannot bound the wait: the
+    // pumps then progress only on input (the pre-tick shape).
     bool read_events()
     {
 	while ( inbound.empty() )
+	{
+	    bool ran = false;
+	    __madc_task_fire_due();
+	    while ( inbound.empty() && __madc_task_runnable() > 0 )
+	    {
+		__madc_yield();
+		ran = true;
+	    }
+	    if ( !inbound.empty() )
+		break;
+	    if ( ran )
+	    {
+		queue.clear();
+		madc::hub::tui_event e;
+		e.kind = madc::hub::tui_event_kind::wake;
+		queue.push_back(e);
+		next_event = 0;
+		return true;
+	    }
+	    if ( ops->tick && __madc_task_live() > 0 )
+		ops->tick(host, WEB_TASK_TICK_MS);
 	    if ( ops->run(host) != 0 )
 		return false;		// the host ended: input is over
+	}
 	std::string json = inbound.front();
 	inbound.pop_front();
 	queue = model.apply_input(json);

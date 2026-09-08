@@ -20,6 +20,7 @@ namespace ui_web {
 	void *ctx;		// the engine session — ui::post_event's key
 	int posted;		// events posted during the current run()
 	int running;		// inside webview_run (terminate is meaningful)
+	int ticked;		// the tick ended the current run() (nothing posted)
     };
 
     // The most recently opened host — the test seam's target
@@ -35,8 +36,25 @@ namespace ui_web {
     // or the same stale idle would end the next run empty.
     void posted_event(host *h)
     {
-	if ( h->posted++ == 0 && h->running )
+	if ( h->posted++ == 0 && h->running && !h->ticked )
 	    webview_terminate(h->view);	// run() returns; the engine drains the events
+    }
+
+    // The tick (the engine's `tick` op, madcwebview_tick): ends the running
+    // loop ONCE when no event ended it first — the same one-terminate-per-
+    // run rule as posted_event (an event landing after the tick in the same
+    // run rides the tick's terminate; the engine reads it next). A tick
+    // armed for a run that ended early fires outside any run, or inside a
+    // later one: outside it is a no-op; inside, it merely ends that run
+    // early (the engine probes its tasks and runs again).
+    void on_tick(void *arg)
+    {
+	host *h = (host *)arg;
+	if ( h->running && !h->posted && !h->ticked )
+	{
+	    h->ticked = 1;
+	    webview_terminate(h->view);
+	}
     }
 
     // The ONE bound callback: the page calls window.madc(json) -> here. The
@@ -111,6 +129,7 @@ namespace ui_web {
 	h->ctx = ctx;
 	h->posted = 0;
 	h->running = 0;
+	h->ticked = 0;
 	webview_set_title(h->view, title);
 	webview_set_size(h->view, 960, 640, WEBVIEW_HINT_NONE);
 	webview_bind(h->view, "madc", on_event, h);
@@ -238,23 +257,34 @@ namespace ui_web {
     }
 
     // Run the platform loop until the page posts ONE event (on_event
-    // terminates the loop), then return 0; the loop ending with nothing
-    // posted means the window closed: 1.
+    // terminates the loop) or the armed tick ends it, then return 0; the
+    // loop ending with nothing posted and no tick means the window closed: 1.
     int64_t run(void *hv)
     {
 	host *h = (host *)hv;
 	h->posted = 0;
+	h->ticked = 0;
 	h->running = 1;
 	webview_error_t rc = webview_run(h->view);
 	h->running = 0;
 	if ( rc != WEBVIEW_ERROR_OK )
 	    return 1;
-	return h->posted ? 0 : 1;
+	return (h->posted || h->ticked) ? 0 : 1;
+    }
+
+    // The bounded wait (the engine's `tick` op): arm a one-shot UI-thread
+    // timer that ends the next run() after ms when no event did — the
+    // engine's cooperative tasks (a program in the Terminal tab, a build
+    // streaming into Output) get the CPU between loops. 0 = armed.
+    int64_t tick(void *hv, int64_t ms)
+    {
+	host *h = (host *)hv;
+	return madcwebview_tick(h->view, (unsigned)ms, on_tick, h) == 0 ? 0 : 1;
     }
 
     // The name a program hands ui::open.
     const char *target() { return "web"; }
 }
 
-static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog };
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick };
 static bool __ui_web_registered = ui::register_host("web", &__ui_web_ops);

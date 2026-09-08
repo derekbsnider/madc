@@ -1,0 +1,147 @@
+// madcide polish (owner hands-on 2026-09-08): a program RUN from the window
+// shows its output in the Terminal tab WITHOUT a keystroke — the window's
+// wait is the cooperative scheduler's bounded wait (the engine drains the
+// pumps between platform loops and wakes the application), where before the
+// pumps only progressed on input. Also pins two chrome facts the hands-on
+// found wrong: the ^B Build overlay floats as a fixed-position dialog (not
+// docked into the bottom panel) and its Close button closes it (the @pane
+// cancel by name as an action). Runs under Xvfb through remote_build gui.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render(IdeSession &S, long t, long w, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, w, tree);
+}
+
+// The dialog's placement: which grid slot holds it, its CSS position, and
+// whether it sits inside the panel slot.
+void probe_dialog(long t)
+{
+    ui::eval_page(t,
+	"(function(){var d=document.querySelector('.node.dialog');"
+	"if(!d){window.madc(JSON.stringify({kind:'snapshot',text:'dialog=none'}));return;}"
+	"var s=d.closest('.slot');var p=d.closest('.slot[data-slot=\"panel\"]');"
+	"var cs=getComputedStyle(d);var r=d.getBoundingClientRect();"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'dialog slot='+(s?s.dataset.slot:'none')"
+	"+' in-panel='+(p?1:0)+' position='+cs.position+' top-pct='+Math.round(100*r.top/window.innerHeight)"
+	"+' title='+(d.querySelector('.dlg-title')||{}).textContent}));})()");
+}
+
+// The Terminal tab's text as the page shows it.
+void probe_terminal(long t)
+{
+    ui::eval_page(t,
+	"(function(){var e=document.querySelector('.edit.terminal');"
+	"var tx=e?e.textContent:'';"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'terminal present='+(e?1:0)"
+	"+' has-output='+(tx.indexOf('run-output-42')>=0?1:0)+' has-exit='+(tx.indexOf('[exit 7]')>=0?1:0)"
+	"+' dialog='+(document.querySelector('.node.dialog')?1:0)}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_run_gui.mad";
+    php::file_put_contents(path,
+	"#include <stdio.h>\nint main() { printf(\"run-output-42\\n\"); return 7; }\n");
+    remove("madc_ide_run_gui.prj.json");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    S.panel(true);			// the window renders regions (the client's fact)
+    println("RUN open");
+    var ev;
+    int stage = 0;
+    long wakes = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    // ^B: the Build overlay, as the chord's action; then its placement.
+	    var pe;
+	    pe["event"] = "action";
+	    pe["event_code"] = ui::event_kind::action;
+	    pe["action"] = "build";
+	    pe["seq"] = "^b";
+	    S.apply_ide_event(doc, pe);
+	    render(S, t, w, doc);
+	    probe_dialog(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("RUN {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// The Close button: the page's real click path (an action by name).
+		stage = 2;
+		ui::eval_page(t,
+		    "document.querySelector('.node.dialog .cf-btn[data-action]')"
+		    ".dispatchEvent(new MouseEvent('click',{bubbles:true}))");
+	    }
+	    else if ( stage == 3 )
+		break;
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("RUN event action {}", ev["action"]);
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, w, doc);
+	    if ( stage == 2 && ev["action"] == "paneclose" )
+	    {
+		// The dialog is closed; now RUN the buffer through the window's
+		// own route (a console program -> the Terminal tab) and wait for
+		// the engine's wakes — no input is sent from here on.
+		var pane;
+		ui::get(pane, w, es, "pane");
+		println("RUN closed pane='{}'", pane);
+		stage = 3;
+		run_buffer(w, es, doc);
+		var ptab;
+		ui::get(ptab, w, es, "paneltab");
+		println("RUN started live={} tab={}", es_int(w, es, "termlive", 0), ptab);
+		render(S, t, w, doc);
+	    }
+	}
+	else if ( ev["event"] == "wake" )
+	{
+	    wakes = wakes + 1;
+	    render(S, t, w, doc);
+	    if ( stage == 3 && es_int(w, es, "termlive", 0) == 0 )
+	    {
+		// The program ended (the pump saw its exit): the page shows it.
+		println("RUN ended wakes>=1={}", wakes >= 1 ? 1 : 0);
+		probe_terminal(t);
+	    }
+	}
+	else if ( ev["event"] == "choose" )
+	{
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, w, doc);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    remove(path);
+    println("RUN closed");
+    return 0;
+}

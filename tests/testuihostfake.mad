@@ -81,7 +81,17 @@ int64_t fake_run(void *host)
     return 1;
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog };
+// The bounded wait (madcide polish): this fake has no platform loop to end,
+// so it reports "no timer here" — the engine then blocks in run() as before
+// (no live cooperative task in this harness asks for a tick anyway).
+int64_t fake_tick(void *h, int64_t ms)
+{
+    (void)h;
+    (void)ms;
+    return 1;
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick };
 static bool fake_registered = ui::register_host("fake", &fake_ops);
 
 int main()

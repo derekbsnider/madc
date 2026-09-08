@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### madcide GUI: the first hands-on round on the polished window (2026-09-08)
+
+- A program run from the window streams into the Terminal tab (and a build
+  into Output) WITHOUT a keystroke: the window's wait is now the cooperative
+  scheduler's bounded wait, as the terminal's always was — the engine fires
+  what is due, hands runnable tasks the CPU and wakes the application
+  between platform loops, and while tasks are parked it asks the host to end
+  its loop after a few milliseconds (`tick`, a one-shot UI-thread timer on
+  GTK, Cocoa and Win32). An idle window with no live task still blocks for
+  free. Before, the pumps only progressed when input arrived.
+- The Build menu carries every `^B` row as a direct item (Check, Build,
+  Run, Run native, Stop — the project's rows and a manifest's own commands
+  when one is open), so Build → Run runs with no overlay; `Build…` keeps the
+  palette for the keyboard, and Check lives in the command palette.
+- A chrome dialog's Close button closes it: the `@pane` cancel posted by
+  name reached the wrong dispatcher region and came back as an unknown
+  action.
+
 ### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
 
 - Editor tabs: the open buffers as a tab strip above the editor (the base

@@ -1,0 +1,8 @@
+RUN open
+RUN dialog slot=foot in-panel=0 position=fixed top-pct=15 title=Build
+RUN event action paneclose
+RUN closed pane=''
+RUN started live=1 tab=terminal
+RUN ended wakes>=1=1
+RUN terminal present=1 has-output=1 has-exit=1 dialog=0
+RUN closed

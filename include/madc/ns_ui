@@ -379,7 +379,14 @@ namespace ui {
     // returns 0 — the answer arrives later as a posted {"kind":"dialog",
     // "mode","path"} event ("" = cancelled); nonzero = no native dialog on
     // this platform (the caller falls back to its prompt); optional.
-    // LAYOUT CONTRACT with src/ns_ui.cpp — the same six pointers in the
+    // tick(host, ms): end the host's NEXT (or running) loop after ms
+    // milliseconds when no event ended it first — run() then returns 0 with
+    // nothing posted, and the engine hands the cooperative tasks the CPU
+    // (a program running in the window's Terminal, a build streaming into
+    // Output) before running the loop again. Asked only while tasks are
+    // live, so an idle window still blocks for free. 0 = armed; nonzero =
+    // no timer on this host (the engine cannot bound the wait); optional.
+    // LAYOUT CONTRACT with src/ns_ui.cpp — the same seven pointers in the
     // same order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
@@ -387,6 +394,7 @@ namespace ui {
     typedef int64_t (*ui_host_run_fn)(void *host);
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
     struct ui_host_ops {
 	ui_host_open_fn  open;
 	ui_host_close_fn close;
@@ -394,6 +402,7 @@ namespace ui {
 	ui_host_run_fn   run;
 	ui_host_menu_fn  menu;
 	ui_host_dialog_fn dialog;
+	ui_host_tick_fn  tick;
     };
     bool register_host(const char *target, const ui_host_ops *ops);
     // The host's ONE inbound door: the page's event object (JSON text —
