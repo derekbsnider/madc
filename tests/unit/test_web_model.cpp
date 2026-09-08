@@ -693,6 +693,101 @@ static uinode pointer_tree(world &w, const char *text, entity_id subject)
     return root;
 }
 
+// The native menu (S2): the root's `menu` hint, resolved against the bindings
+// (each command's shortest bound chord), as the JSON the host draws — sent
+// only when it changed; a host selection arrives as {"kind":"action"}.
+static uinode menu_tree(world &w, const char *file_title, bool with_menu = true)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("ab"));
+    root.add(edit);
+    if ( !with_menu )
+	return root;
+    std::map<std::string, madc::value> save;
+    save["id"] = madc::value(std::string("save"));
+    save["title"] = madc::value(std::string("Save"));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    std::map<std::string, madc::value> quit;
+    quit["id"] = madc::value(std::string("quit"));
+    quit["title"] = madc::value(std::string("Quit"));
+    quit["enabled"] = madc::value((int64_t)0);
+    std::vector<madc::value> items;
+    items.push_back(madc::value::make_object(save));
+    items.push_back(madc::value::make_object(sep));
+    items.push_back(madc::value::make_object(quit));
+    std::map<std::string, madc::value> file;
+    file["title"] = madc::value(std::string(file_title));
+    file["items"] = madc::value::make_array(items);
+    std::vector<madc::value> bar;
+    bar.push_back(madc::value::make_object(file));
+    std::map<std::string, madc::value> menu;
+    menu["bar"] = madc::value::make_array(bar);
+    std::map<std::string, madc::value> h;
+    h["menu"] = madc::value::make_object(menu);
+    root.hints = madc::value::make_object(h);
+    return root;
+}
+
+TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    tui_bindings b;
+    b.bind("^k d", "save");
+    b.bind("^s", "save");		// the single key wins over the chord
+    b.bind("^k s", "save");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+
+    m.compose(r, menu_tree(w, "File"));
+    CHECK(m.menu_changed());
+    nlohmann::json mj = nlohmann::json::parse(m.menu_json(), nullptr, false);
+    REQUIRE(!mj.is_discarded());
+    REQUIRE(mj["bar"].size() == 1);
+    CHECK(mj["bar"][0]["title"] == "File");
+    const nlohmann::json &items = mj["bar"][0]["items"];
+    REQUIRE(items.size() == 3);
+    CHECK(items[0]["id"] == "save");
+    CHECK(items[0]["title"] == "Save");
+    CHECK(items[0]["key"] == "^s");
+    CHECK(items[0]["enabled"] == true);
+    CHECK(items[1]["sep"] == true);
+    CHECK(items[2]["id"] == "quit");
+    CHECK(items[2]["enabled"] == false);
+    CHECK(items[2].find("key") == items[2].end());	// unbound: no chord
+
+    m.compose(r, menu_tree(w, "File"));		// the same menu: unchanged
+    CHECK(!m.menu_changed());
+    m.compose(r, menu_tree(w, "Datei"));		// a title changed
+    CHECK(m.menu_changed());
+    tui_bindings b2;
+    b2.bind("^q", "save");
+    REQUIRE(b2.finalize(err));
+    m.set_bindings(b2);
+    m.compose(r, menu_tree(w, "Datei"));		// the bindings changed: re-sent
+    CHECK(m.menu_changed());
+    CHECK(nlohmann::json::parse(m.menu_json())["bar"][0]["items"][0]["key"] == "^q");
+    m.compose(r, menu_tree(w, "Datei", false));	// the menu left the tree
+    CHECK(m.menu_changed());
+    CHECK(m.menu_json().empty());
+    m.compose(r, menu_tree(w, "Datei", false));
+    CHECK(!m.menu_changed());
+
+    // A native selection: the same action event a chord produces, no seq.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"save\"}");
+    REQUIRE(ev.size() == 1);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "save");
+    CHECK(ev[0].seq.empty());
+    CHECK(m.apply_input("{\"kind\":\"action\"}").empty());
+    CHECK(m.apply_input("{\"kind\":\"action\",\"action\":\"\"}").empty());
+}
+
 TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the node's rows; focus follows it")
 {
     world w;

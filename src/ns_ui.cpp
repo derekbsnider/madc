@@ -100,6 +100,7 @@ namespace ui {
     typedef void  (*ui_host_close_fn)(void *host);
     typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
     typedef int64_t (*ui_host_run_fn)(void *host);
+    typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -109,6 +110,9 @@ namespace ui {
 	ui_host_run_fn	 run;	// run the host's loop until ONE event was
 				// posted, then return 0; nonzero = the host
 				// ended (the window closed)
+	ui_host_menu_fn	 menu;	// draw the native menu bar from the menu
+				// JSON (S2); 0 = ok; optional (a host with
+				// no chrome leaves it 0)
     };
 }
 
@@ -336,6 +340,10 @@ struct ui_dom_frontend : ui_frontend
 	    model.compose(s->r, madc::hub::value_to_uinode(s->w, tree));
 	if ( ops->eval )
 	    ops->eval(host, ("madcApply(" + ops_json + ")").c_str());
+	// The native menu bar (S2): the composed root's `menu` hint, resolved
+	// against the bindings, reaches the host only when it changed.
+	if ( ops->menu && model.menu_changed() )
+	    ops->menu(host, model.menu_json().c_str());
     }
     bool read_events()
     {

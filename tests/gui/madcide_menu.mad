@@ -1,0 +1,76 @@
+// S2 (madcide GUI chrome): the native menu bar. A REAL session's composed
+// root carries the menu data (profiles/default.menu, S1); the engine resolves
+// the bound chords and hands the host its menu JSON; the host (<ns_ui_web>)
+// builds the platform menu bar (GTK4: GtkPopoverMenuBar over a GMenu, the
+// items bound to actions). Choosing an item fires the command as the SAME
+// action event a chord produces — here through the seam that activates the
+// platform action by id (ui_web::menu_activate), so the whole chain runs:
+// GTK action -> the host's callback -> ui::post_event -> the engine -> the
+// session's dispatcher (help toggles the help pane, a popup in the window).
+// Runs under Xvfb through remote_build gui.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_menu_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("MENU open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);		// the first render sends the menu
+	    // Choose "Keyboard Help" from the Help menu as the user would;
+	    // an unknown id is refused by the platform layer.
+	    println("MENU activate unknown={} help={}",
+		    ui_web::menu_activate("no-such-command"),
+		    ui_web::menu_activate("help"));
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("MENU event action {}", ev["action"]);
+	    S.apply_ide_event(doc, ev);
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    ui::eval_page(t,
+		"(function(){var p=document.querySelectorAll('.node.popup').length;"
+		"window.madc(JSON.stringify({kind:'snapshot',text:'popups='+p}));})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("MENU {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("MENU closed");
+    return 0;
+}

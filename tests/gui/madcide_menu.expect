@@ -1,0 +1,5 @@
+MENU open
+MENU activate unknown=1 help=0
+MENU event action help
+MENU popups=1
+MENU closed

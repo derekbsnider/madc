@@ -351,22 +351,30 @@ namespace ui {
     // display); close(host); eval(host, js) runs script text in the page
     // (0 = ok); run(host) runs the host's loop until ONE event was posted
     // through post_event, then returns 0 — nonzero = the host ended (the
-    // window closed). LAYOUT CONTRACT with src/ns_ui.cpp — the same four
-    // pointers in the same order, append-only, keep both in sync.
+    // window closed); menu(host, json) draws the native menu bar from the
+    // engine's menu JSON ({"bar":[{"title","items":[{"id","title","key"?,
+    // "enabled"}|{"sep"}]}]}, the composed root's `menu` hint with each
+    // command's bound chord) — optional: a host with no chrome leaves it
+    // 0; a selection posts {"kind":"action","action":id} back. LAYOUT
+    // CONTRACT with src/ns_ui.cpp — the same five pointers in the same
+    // order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
     typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
     typedef int64_t (*ui_host_run_fn)(void *host);
+    typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     struct ui_host_ops {
 	ui_host_open_fn  open;
 	ui_host_close_fn close;
 	ui_host_eval_fn  eval;
 	ui_host_run_fn   run;
+	ui_host_menu_fn  menu;
     };
     bool register_host(const char *target, const ui_host_ops *ops);
     // The host's ONE inbound door: the page's event object (JSON text —
     // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
-    // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..})
+    // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..} /
+    // {"kind":"action","action":id} — a native menu selection)
     // for the session `ctx` that open() received. Callable from inside
     // run(); the engine queues it and run() returns.
     void post_event(void *ctx, const char *json);

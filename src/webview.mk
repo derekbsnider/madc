@@ -2,6 +2,11 @@
 # targets below). It is not linked into libmadc or loaded by non-GUI programs.
 WEBVIEW_DIR = ../third_party/webview
 WEBVIEW_SOURCE = $(WEBVIEW_DIR)/core/src/webview.cc
+# madc's own extension of the library (the native menu bar, S2): compiled
+# beside upstream's source into the same shared object; its header is what
+# scripts/gen_webview_header.py appends to the embedded include/madc/webview.h.
+WEBVIEW_MADC_SOURCE = madcwebview_menu.cc
+WEBVIEW_MADC_HEADER = madcwebview_menu.h
 WEBVIEW_HEADERS = $(wildcard $(WEBVIEW_DIR)/core/include/*.h $(WEBVIEW_DIR)/core/include/webview/*.h $(WEBVIEW_DIR)/compatibility/mingw/include/*.h)
 WEBVIEW_WEBKITGTK_API ?= 6.0
 WEBVIEW_MACOS_MINOS ?= 13.3
@@ -57,9 +62,9 @@ $(WEBVIEW_BUILD_DIR)/command: FORCE
 	@printf '%s\n' '$(WEBVIEW_CXX) $(WEBVIEW_CXXFLAGS) $(WEBVIEW_LDFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
-$(WEBVIEW_LIBRARY): $(WEBVIEW_SOURCE) $(WEBVIEW_HEADERS) $(WEBVIEW_EXTRA) $(WEBVIEW_BUILD_DIR)/command | webview-deps
+$(WEBVIEW_LIBRARY): $(WEBVIEW_SOURCE) $(WEBVIEW_MADC_SOURCE) $(WEBVIEW_MADC_HEADER) $(WEBVIEW_HEADERS) $(WEBVIEW_EXTRA) $(WEBVIEW_BUILD_DIR)/command | webview-deps
 	mkdir -p $(dir $@)
-	$(WEBVIEW_CXX) $(WEBVIEW_CXXFLAGS) $(WEBVIEW_SOURCE) $(filter %.o,$(WEBVIEW_EXTRA)) -o $@ $(WEBVIEW_LDFLAGS)
+	$(WEBVIEW_CXX) $(WEBVIEW_CXXFLAGS) -I. $(WEBVIEW_SOURCE) $(WEBVIEW_MADC_SOURCE) $(filter %.o,$(WEBVIEW_EXTRA)) -o $@ $(WEBVIEW_LDFLAGS)
 
 webview-header-check:
 	python3 ../scripts/gen_webview_header.py --check

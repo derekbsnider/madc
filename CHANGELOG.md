@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### madcide: a native menu bar (S2, 2026-09-08)
+
+- The window draws the S1 menu data as real application chrome. The engine
+  resolves each command's bound chord from the installed key profile and
+  hands the host the menu as JSON only when a title, key or enablement
+  changed; a new optional host op `menu(host, json)` receives it (append-only
+  table, the fake host proves the seam). The host walks the menu into madc's
+  extension of the webview library — `madcwebview_menu_begin/add/separator/
+  end`, JSON-free, declared in the embedded `webview.h` beside upstream's API
+  (the header generator appends `src/madcwebview_menu.h`) and implemented in
+  `libmadcwebview` — which on GTK4 builds a `GtkPopoverMenuBar` over a
+  `GMenu`, re-parents the webview beneath it, and binds each item to an action
+  (a single-key chord is the accelerator, a multi-key chord shows in the
+  label). A selection posts `{"kind":"action","action":id}` through the
+  host's one door, the same action event a chord produces, so the session
+  dispatches it unchanged. Win32 / Cocoa answer "unsupported" for now.
+- `tests/gui/madcide_menu.mad` fires an item through the platform action
+  (`ui_web::menu_activate`) and sees the help pane open; `test_web_model` pins
+  the menu JSON, chord resolution, the change dedupe and the action input;
+  `testuihostfake` pins the host op and the dedupe display-free.
+
 ### `c ? v : php::trim(p)` is a value (2026-09-08)
 
 - A conditional mixing a `var` with a scalar or a char pointer — a

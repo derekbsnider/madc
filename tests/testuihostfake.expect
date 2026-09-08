@@ -7,6 +7,10 @@ rows x cols -> 24 x 80
 bind -> yes
 pushed heading: yes
 pushed choice: yes
+fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"enabled":false,"id":"quit","title":"Quit"}],"title":"File"}]}
+menu calls after same render: 1
+fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"enabled":false,"id":"quit","title":"Quit"}],"title":"Datei"}]}
+menu calls after changed render: 2
 event text hi
 event focus
 event action save ^k s
@@ -14,7 +18,8 @@ event focus
 event choose 2 q
 event resize
 event pointer down 4 subject 7
+event action quit
 rows x cols after resize -> 40 x 100
 pending -> []
 fake close
-pushed 1 times
+pushed 3 times

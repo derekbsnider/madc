@@ -213,7 +213,14 @@ class web_model
 	entity_id subject;
 	edit_basis() : slot(0), subject(0) {}
     };
-    std::map<std::string, edit_basis> _basis;	// edit key -> its basis
+    std::map<std::string, edit_basis> _basis;
+    // The native menu the host draws (S2): the root's `menu` hint resolved
+    // against the bindings — items gain the chord bound to their command
+    // id (`key`) — as one JSON text; recomposed every compose and handed
+    // to the host only when it differs from the last (a keystroke that
+    // changes no title, key or enablement costs nothing on the wire).
+    std::string _menu_json;
+    bool _menu_dirty;	// edit key -> its basis
     std::set<std::string> _seen;		// edit keys this compose visited
 
     // A node op that carries a focus flag, patched after end_compose()
@@ -371,6 +378,69 @@ class web_model
 	}
 	_seen.insert(key);
 	_basis[key].rows.swap(rows);
+    }
+
+    // The menu the host draws, from the root's `menu` hint ({bar:[{title,
+    // items:[{id,title,enabled?}|{sep}]}]}, madcide's default.menu shape):
+    // the same menus and items with each command's chord from the installed
+    // bindings (`key`, omitted when unbound) and `enabled` made explicit.
+    // Empty when the root carries no menu. Ids, titles and keys only — the
+    // host renders; nothing here knows what a command does.
+    std::string menu_json_of(const uinode &root) const
+    {
+	if ( !root.hints.is_object() )
+	    return std::string();
+	const std::map<std::string, madc::value> &ho = root.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator mi = ho.find("menu");
+	if ( mi == ho.end() || !mi->second.is_object() )
+	    return std::string();
+	const std::map<std::string, madc::value> &mo = mi->second.as_object();
+	std::map<std::string, madc::value>::const_iterator bi = mo.find("bar");
+	if ( bi == mo.end() || !bi->second.is_array() )
+	    return std::string();
+	nlohmann::json bar = nlohmann::json::array();
+	const std::vector<madc::value> &menus = bi->second.as_array();
+	for ( size_t m = 0; m < menus.size(); ++m )
+	{
+	    if ( !menus[m].is_object() )
+		continue;
+	    nlohmann::json menu = nlohmann::json::object();
+	    menu["title"] = hint_str(menus[m], "title");
+	    nlohmann::json items = nlohmann::json::array();
+	    const std::map<std::string, madc::value> &mm = menus[m].as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = mm.find("items");
+	    if ( ii != mm.end() && ii->second.is_array() )
+	    {
+		const std::vector<madc::value> &rows = ii->second.as_array();
+		for ( size_t i = 0; i < rows.size(); ++i )
+		{
+		    if ( !rows[i].is_object() )
+			continue;
+		    nlohmann::json item = nlohmann::json::object();
+		    if ( hint_of(rows[i], "sep", 0) )
+		    {
+			item["sep"] = true;
+			items.push_back(item);
+			continue;
+		    }
+		    const std::string id = hint_str(rows[i], "id");
+		    if ( id.empty() )
+			continue;
+		    item["id"] = id;
+		    item["title"] = hint_str(rows[i], "title");
+		    item["enabled"] = hint_of(rows[i], "enabled", 1) != 0;
+		    const std::string key = _keys.bindings().seq_for_action(id);
+		    if ( !key.empty() )
+			item["key"] = key;
+		    items.push_back(item);
+		}
+	    }
+	    menu["items"] = items;
+	    bar.push_back(menu);
+	}
+	nlohmann::json out = nlohmann::json::object();
+	out["bar"] = bar;
+	return out.dump();
     }
 
     void walk(const roles &r, const uinode &n, const std::string &key,
@@ -551,7 +621,7 @@ class web_model
     }
 
 public:
-    web_model() : _rows(24), _cols(80) {}
+    web_model() : _rows(24), _cols(80), _menu_dirty(false) {}
 
     void set_bindings(const tui_bindings &b) { _keys.set_bindings(b); }
     const std::string &pending_chord() const { return _keys.pending(); }
@@ -586,8 +656,18 @@ public:
 	for ( size_t i = 0; i < slots.size(); ++i )
 	    ops[slots[i].op]["focus"] = slots[i].slot == _focus.focus();
 	ops.push_back(nlohmann::json{ {"op", "end"} });
+	// The native menu (S2): resolved against the CURRENT bindings, so a
+	// profile swap re-sends it with the new chords; unchanged = not sent.
+	const std::string mj = menu_json_of(tree);
+	_menu_dirty = mj != _menu_json;
+	_menu_json = mj;
 	return ops.dump();
     }
+
+    // Did the last compose change the menu the host draws? (The first
+    // compose with a menu: yes; a compose that dropped it: yes, to "".)
+    bool menu_changed() const { return _menu_dirty; }
+    const std::string &menu_json() const { return _menu_json; }
 
     // Forget what the page holds: the NEXT compose paints every edit node
     // in full (ui::refresh — the grid model's painted-grid reset).
@@ -694,6 +774,20 @@ public:
 	    e.phase = phase;
 	    e.offset = offset;
 	    e.subject = bi->second.subject;
+	    none.push_back(e);
+	    return none;
+	}
+	else if ( kind == "action" )
+	{
+	    // Not a key: a command the host's native chrome fired (a menu bar
+	    // item — S2) — the SAME action event a bound chord produces, with
+	    // no sequence (nothing was typed).
+	    nlohmann::json::const_iterator it = j.find("action");
+	    if ( it == j.end() || !it->is_string() || it->get<std::string>().empty() )
+		return none;
+	    tui_event e;
+	    e.kind = tui_event_kind::action;
+	    e.action_name = it->get<std::string>();
 	    none.push_back(e);
 	    return none;
 	}

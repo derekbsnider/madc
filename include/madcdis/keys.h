@@ -225,6 +225,34 @@ public:
 	return true;
     }
 
+    // The INVERSE: the sequence a client shows beside a command (a menu
+    // item's accelerator). An action may be bound to several sequences;
+    // the one shown is the fewest-keys, then shortest, then first in
+    // spelling order — deterministic, and a single key beats a chord.
+    // Empty when the action is unbound.
+    std::string seq_for_action(const std::string &action) const
+    {
+	std::string best;
+	size_t best_keys = 0;
+	for ( std::map<std::string, std::string>::const_iterator it
+		= _actions.begin(); it != _actions.end(); ++it )
+	{
+	    if ( it->second != action )
+		continue;
+	    size_t keys = 1;
+	    for ( size_t i = 0; i < it->first.size(); ++i )
+		if ( it->first[i] == ' ' )
+		    ++keys;
+	    if ( best.empty() || keys < best_keys
+	      || (keys == best_keys && it->first.size() < best.size()) )
+	    {
+		best = it->first;
+		best_keys = keys;
+	    }
+	}
+	return best;
+    }
+
     bool bound(const std::string &canon_seq) const
 	{ return _actions.count(canon_seq) != 0; }
     bool prefix(const std::string &canon_seq) const

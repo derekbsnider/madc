@@ -402,7 +402,7 @@ means anything in JavaScript.
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu — the last optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted — and `{"kind":"action","action":id}`, a native menu selection, the same action event a bound chord produces). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
 
 `madc::module_available("madcwebview")` answers whether the window can
 exist on this system; `tools/texteditor/vised.mad <file> --web` is the
@@ -444,6 +444,25 @@ command the bar does not carry). `scripts/check-madcide-command-registry.sh`
 (fulltest) keeps the three in agreement: every profile action is registered
 or a key spelling, every dispatched action is registered, every registered
 command is dispatched.
+
+**The native menu bar.** The window draws that description as real
+application chrome: the engine resolves each command's bound chord from the
+installed key profile (`key`, the shortest sequence bound to the id — the
+composed tree stays profile-independent, the host's view carries the keys)
+and hands the host the whole menu whenever any title, key or enablement
+changed. The host (`<ns_ui_web>`) walks it item by item into madc's
+extension of the webview library (`madcwebview_menu_begin` / `_add` /
+`_separator` / `_end`, declared in the embedded `webview.h` beside
+upstream's API; `src/madcwebview_menu.cc` implements them in
+`libmadcwebview`): on GTK4 a `GtkPopoverMenuBar` over a `GMenu` model, the
+webview re-parented beneath it, each item an action under the `menu.`
+prefix — a single-key chord becomes the item's accelerator, a multi-key
+chord is shown in its label. Choosing an item posts
+`{"kind":"action","action":id}` back through the host's one door, so the
+session dispatches it exactly as it dispatches the chord. Win32 and Cocoa
+answer "unsupported" until their native menus land (the window keeps the
+page as it is). `ui_web::menu_activate(id)` fires an item by id — the test
+seam `tests/gui/madcide_menu.mad` drives.
 
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is
