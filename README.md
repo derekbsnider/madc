@@ -9,7 +9,7 @@ same source.
 A basic madc program needs no project scaffolding, no separate compiler
 invocation, and—under the default madc dialect—no explicit `main()`.
 
-[Usage](docs/usage.md) · [Build](docs/build.md) ·
+[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](docs/madcide.md) ·
 [Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
 [Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
@@ -323,6 +323,7 @@ features, installation paths, and release packaging.
 ## Documentation
 
 - [Usage and CLI](docs/usage.md)
+- [madcide — the IDE](docs/madcide.md) (terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
 - [Build and installation](docs/build.md)
 - [Compiler architecture](docs/architecture.md)
 - [Testing guide](docs/testing.md)
