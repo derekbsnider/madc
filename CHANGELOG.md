@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `6 == v` and `v == E::z` compare by value (2026-09-08)
+
+- Two more carrier-equality shapes answered false silently. A number on the
+  LEFT (`6 == v`) never reached the carrier's member rows; the CIR builder now
+  applies C++20's rewritten reversed candidate for `==` and `!=`. A SCOPED
+  enumerator on the right tied between the `const char*` row and the integer
+  row because pointer types count as numeric in the ranker, and the
+  first-registered pointer row won (the enumerator went in as a pointer); the
+  ranker no longer lets an enumerator bind a pointer parameter (C++ has no such
+  conversion). The dialect thus compares a `var` against any enumerator by its
+  value — the surface the ui event enums need — a documented divergence from
+  C++'s scoped-enum rules, like the strict-kind number rule.
+  `tests/testvareqenum.mad` pins both shapes plus strict kind.
+
 ### `var &r = o["h"]` binds the live slot (2026-09-08)
 
 - A local reference bound to a carrier subscript crashed on first use: the

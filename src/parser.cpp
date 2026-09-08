@@ -19158,10 +19158,25 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	    rt = free_binary_operator_return_class(lc, opname, to->right);
     }
     else
+    {
+	// The REVERSED equality candidate (C++20 [over.match.oper]/3.4): a
+	// scalar lhs with the CARRIER on the right — `6 == v`, `E::z != v` —
+	// binds the carrier's member row with the operands swapped
+	// (CirBuilder::class_operator_call), so it types as that row's
+	// result (bool), not the operator token's default int: `println("{}",
+	// 6 == v)` printed 1 while `v == 6` printed true. Carrier-only, as
+	// the lowering is; a user class's reversed candidate is a C++20
+	// conformance item for the --std= gate, not this rule.
+	DataDefCLASS *rc = operand_object_class(to->right);
+	if ( rc == &ddARRAY
+	  && (to->id() == TokenID::tkEquals || to->id() == TokenID::tkNotEq) )
+	    rt = rc->binary_operator_return_type(opname);
 	// Non-class lhs with a class rhs: let retained free-operator templates
 	// decide whether a mixed operand shape applies.
-	rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
-							    to->right);
+	if ( !rt )
+	    rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
+								to->right);
+    }
     if ( rt ) to->set_resolved_type(rt);
 }
 

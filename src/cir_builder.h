@@ -1886,6 +1886,7 @@ public:
 	// opsym_override substitutes the operator spelling looked up from
 	// top->id() (e.g. strict equality dispatching through "=="); NULL =
 	// derive from binop_overload_symbol(top->id()).
+	bool carrier_operand_lvalue(TokenBase *t);	// the carrier receiver rule
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
 				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp

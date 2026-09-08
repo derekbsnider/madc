@@ -14098,8 +14098,17 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return -1;
 		// Existing enum-to-integer ranking stays a standard conversion;
 		// unscoped-enum uses rely on this, and scoped enums still prefer
-		// their exact enum overload when one exists.
-		return pdc->is_numeric() ? 4 : -1;
+		// their exact enum overload when one exists. A POINTER parameter
+		// is not that conversion: C++ has no enum -> pointer conversion
+		// (an enumerator is not a null pointer constant, [conv.ptr]).
+		// DataDefPTR::is_numeric() is true, so without this exclusion a
+		// scoped enumerator scored 4 against BOTH the carrier's
+		// operator==(const char*) row and its operator==(long long) row,
+		// tied, and the first-registered cstr row won: the enumerator
+		// was passed as a pointer (c2mir: "using integer without cast
+		// for pointer type parameter") and `v == E::z` answered false
+		// (tests/testvareqenum.mad).
+		return pdc->is_numeric() && !pdc->is_pointer() ? 4 : -1;
 	}
 	// A function-pointer PARAMETER. Function-to-pointer decay: a bare function
 	// argument binds it (`__stoa(&std::strtol, ...)`), discriminated by
@@ -18199,6 +18208,27 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	return inst;
 }
 
+// A carrier (`array`/`value`/`var` — ddARRAY) LVALUE an operator can take as
+// its receiver: a variable or member of the carrier type; a `value &` variable
+// (`void f(value &v) { v = 5; }` — the reference denotes the carrier, its
+// address is the stored pointer, object_arg_addr's reference arm); a keyed or
+// indexed carrier subscript (`bag["k"] = x` — the slot is a value lvalue, its
+// address the slot call, object_arg_addr's keyed arm). ONE rule for the left
+// operand's admission and for the reversed equality candidate's right one.
+bool CirBuilder::carrier_operand_lvalue(TokenBase *t)
+{
+	if (!t)
+		return false;
+	if ((t->type() == TokenType::ttVariable || t->type() == TokenType::ttMember)
+	    && unqualified_type(t->datadef()) == &ddARRAY)
+		return true;
+	if (t->type() == TokenType::ttVariable && t->datadef()
+	    && t->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(t->datadef())) == &ddARRAY)
+		return true;
+	return is_carrier_keyed_subscript(t);
+}
+
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				       const char *opsym_override)
 {
@@ -18231,30 +18261,16 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// without unwrapping plain pointers (only the reference representation).
 	DataDefCLASS *lcls = operand_object_class(top->left);
 	// The intrinsic value carrier (`array`/`value`/`var` — ddARRAY) is a
-	// compiler-known class with NATIVE operator= methods (add_array_methods)
+	// compiler-known class with NATIVE operator methods (add_array_methods)
 	// but lives outside the user-class universe (as_user_class requires
 	// dtRESERVED; array objects lower to aligned long[] buffers). Admit an
-	// lvalue of it here so scalar (re)assignment resolves through the same
-	// operator machinery; operators it lacks decline in
-	// select_operator_overload and fall through unchanged.
-	if (!lcls && top->left
-	    && (top->left->type() == TokenType::ttVariable
-		|| top->left->type() == TokenType::ttMember)
-	    && unqualified_type(top->left->datadef()) == &ddARRAY)
-		lcls = &ddARRAY;
-	// A `value &` variable lvalue (`void f(value &v) { v = 5; }`): the
-	// reference denotes a carrier lvalue — same admission; the receiver
-	// address is the stored pointer (object_arg_addr's reference arm).
-	if (!lcls && top->left
-	    && top->left->type() == TokenType::ttVariable
-	    && top->left->datadef() && top->left->datadef()->is_reference()
-	    && unqualified_type(ref_param_referent(top->left->datadef())) == &ddARRAY)
-		lcls = &ddARRAY;
-	// A KEYED carrier subscript lvalue (`bag["k"] = x`, `bag.k = x`): the
-	// map slot is a value lvalue — admit ddARRAY so the registered
-	// operator= family (madarray_assign_*) resolves; the receiver address
-	// is the slot call itself (object_arg_addr's keyed arm).
-	if (!lcls && is_carrier_keyed_subscript(top->left))
+	// lvalue of it here so scalar (re)assignment and the equality rows
+	// resolve through the same operator machinery; operators it lacks
+	// decline in select_operator_overload and fall through unchanged.
+	// carrier_operand_lvalue is the ONE admission rule (a variable or
+	// member, a `value &` variable, a keyed subscript) — the reversed
+	// candidate below reads it for the RIGHT operand too.
+	if (!lcls && carrier_operand_lvalue(top->left))
 		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
@@ -18265,6 +18281,23 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		if (ofd) lcls = class_behind(&ofd->return_value_type());
 	}
 	if (!lcls) {
+		// `6 == v` / `E::z != v`: a scalar lhs with the CARRIER on the
+		// right. The carrier's equality rows are member rows (receiver
+		// on the left), so nothing bound and the expression fell to
+		// c2mir's pointer-vs-integer compare — false, silently.
+		// C++20 [over.match.oper]/3.4 adds the REWRITTEN reversed
+		// candidate `v == 6` for == and != (both symmetric); do the
+		// same: swap the operands for the lookup, restore them after.
+		// Only the two symmetric operators — an ordering operator would
+		// need its mirror (`<` -> `>`), which is the <=> lane's job.
+		if ((top->id() == TokenID::tkEquals || top->id() == TokenID::tkNotEq)
+		    && !opsym_override && carrier_operand_lvalue(top->right)
+		    && !operand_object_class(top->left)) {
+			std::swap(top->left, top->right);
+			node_t rev = class_operator_call(top, origin, NULL);
+			std::swap(top->left, top->right);
+			if (rev) return rev;
+		}
 		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
 		// operator set's mixed shape can bind (no member candidate).
 		if (!operand_object_class(top->right)) return NULL;
