@@ -131,6 +131,8 @@ rm -f "$PROFILE_LOG"
 #    "kind": "gui" says the same for a --project build). The oracle is the
 #    cross gcc on this host: -mwindows stamps 2, the default 3 — read from
 #    the PE optional header (e_lfanew + 4 + 20 + 68, u16) the same way.
+#    Never name an output `con.exe`: CON is the console DEVICE on Windows
+#    (and under wine), so fopen(con.exe) opens the console — EBADF.
 pe_subsystem() {
     python3 - "$1" <<'PY'
 import struct, sys
@@ -149,18 +151,18 @@ if [ "$self_sub" != 3 ]; then
     echo "verify_pe_release: FAILED — $BIN subsystem is $self_sub, expected 3 (console)" >&2
     exit 1
 fi
-timeout 300 "$WINE" "$BIN" -o "$SUBSYS_DIR/con.exe" "$SUBSYS_DIR/hello.c" > "$SUBSYS_DIR/con.log" 2>&1 || {
-    echo "verify_pe_release: FAILED — the default emit of hello.c did not link (see $SUBSYS_DIR/con.log)" >&2; exit 1; }
+timeout 300 "$WINE" "$BIN" -o "$SUBSYS_DIR/default.exe" "$SUBSYS_DIR/hello.c" > "$SUBSYS_DIR/default.log" 2>&1 || {
+    echo "verify_pe_release: FAILED — the default emit of hello.c did not link (see $SUBSYS_DIR/default.log)" >&2; exit 1; }
 timeout 300 "$WINE" "$BIN" -mwindows -o "$SUBSYS_DIR/gui.exe" "$SUBSYS_DIR/hello.c" > "$SUBSYS_DIR/gui.log" 2>&1 || {
     echo "verify_pe_release: FAILED — the -mwindows emit of hello.c did not link (see $SUBSYS_DIR/gui.log)" >&2; exit 1; }
-con_sub=$(pe_subsystem "$SUBSYS_DIR/con.exe")
+con_sub=$(pe_subsystem "$SUBSYS_DIR/default.exe")
 gui_sub=$(pe_subsystem "$SUBSYS_DIR/gui.exe")
 GCC_W64="${GCC_W64:-x86_64-w64-mingw32-gcc}"
 oracle_con=3
 oracle_gui=2
 if command -v "$GCC_W64" > /dev/null 2>&1; then
-    "$GCC_W64" -o "$SUBSYS_DIR/oracle-con.exe" "$SUBSYS_DIR/hello.c" > /dev/null 2>&1 \
-        && oracle_con=$(pe_subsystem "$SUBSYS_DIR/oracle-con.exe")
+    "$GCC_W64" -o "$SUBSYS_DIR/oracle-default.exe" "$SUBSYS_DIR/hello.c" > /dev/null 2>&1 \
+        && oracle_con=$(pe_subsystem "$SUBSYS_DIR/oracle-default.exe")
     "$GCC_W64" -mwindows -o "$SUBSYS_DIR/oracle-gui.exe" "$SUBSYS_DIR/hello.c" > /dev/null 2>&1 \
         && oracle_gui=$(pe_subsystem "$SUBSYS_DIR/oracle-gui.exe")
 fi

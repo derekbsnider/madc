@@ -1682,12 +1682,12 @@ int main()
 	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
 	    pnode = pk;
     var ptabs = pnode["hints"]["tabs"];
-    var ppane;
-    ui::get(ppane, w, es, "pane");
+    var pnpane;
+    ui::get(pnpane, w, es, "pane");
     println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} diags-pane={}",
 	    php::count(ptabs), ptabs[0]["title"], ptabs[0]["active"],
 	    ptabs[1]["title"], pnode["children"][0]["role"],
-	    pnode["children"][0]["label"], ppane == "diags" ? 1 : 0);
+	    pnode["children"][0]["label"], pnpane == "diags" ? 1 : 0);
     ev_action(e, "output", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(tree, doc);

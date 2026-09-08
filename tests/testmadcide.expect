@@ -156,7 +156,7 @@ vi-toggle: mode='' typed-x=1
 ptr-drag: caret=6 press-mark=-1 mark=2 bend=6 lit=2..6 subject-ok=1
 ptr-press: caret=3 mark=-1 bend=-1
 ptr-window: other-buffer=1 switched-to=1 active-is-first=1 caret=1
-panel-problems: tabs=2 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
+panel-problems: tabs=3 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
 panel-output: t1-active=1 child=content
 panel-toggle: panels=0
 tabs: n>=2 1 active-is-bufidx 1 arg-of-active=

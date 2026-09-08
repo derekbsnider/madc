@@ -111,6 +111,9 @@
     // region'd children re-add it). data-region on the node itself names
     // where it asked to go.
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // A popup's dismissal (S6): the action a press OUTSIDE it fires — on any
+    // popup node (a prompt row, a list dialog), not only a content row.
+    if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
     // properties on the document root, so the workbench CSS reads them via
     // var(--name, fallback). The composer attaches it to the root group.
@@ -433,7 +436,6 @@
       }
       // A popup a press outside dismisses: the composer's action, kept on
       // the element for the mousedown handler (data, never a key).
-      if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
     } else if (cls === 'action') {
       text(el, '[' + (op.label || '') + ']');
     } else if (cls === 'list') {

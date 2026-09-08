@@ -1,5 +1,5 @@
 PNL open
-PNL tabs=Problems*,Output rows=1 first=(clean) content=no
+PNL tabs=Problems*,Output,Terminal rows=1 first=(clean) content=no
 PNL event action output
-PNL tabs=Problems,Output* rows=0 first=- content=yes
+PNL tabs=Problems,Output*,Terminal rows=0 first=- content=yes
 PNL closed
