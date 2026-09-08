@@ -4935,14 +4935,6 @@ void run_child_prologue()
 }
 #endif
 
-// The stdio the parent buffered must not duplicate into the child's pipe.
-void flush_before_spawn()
-{
-    fflush(NULL);
-    std::cout.flush();
-    std::cerr.flush();
-}
-
 // `madcrun://<handle>?pty` / `madcproj://<manifest>?pty`: the child on a
 // pseudo-terminal (the embedded Terminal — a console program gets its
 // keyboard and a real tty); without the suffix, pipes (Output). True =
@@ -4977,7 +4969,6 @@ public:
 				   + spec);
 	    return std::unique_ptr<DataChannel>();
 	}
-	flush_before_spawn();
 	ProcessOptions options;
 	options.inherit_stderr = true;
 	options.pty = pty;
@@ -5052,7 +5043,6 @@ public:
 	    detail::set_channel_error(err, "madcproj: no engine registered the scheme");
 	    return std::unique_ptr<DataChannel>();
 	}
-	flush_before_spawn();
 	ProcessOptions options;
 	options.inherit_stderr = true;
 	options.pty = pty;

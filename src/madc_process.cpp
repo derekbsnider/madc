@@ -4,7 +4,8 @@
 
 #include <cerrno>
 #include <csignal>
-#include <cstdio>	/* std::remove: cleanup_paths */
+#include <cstdio>	/* std::remove: cleanup_paths; fflush before a child_body fork */
+#include <iostream>	/* std::cout/cerr flush before a child_body fork */
 #include <cstring>
 #include <fcntl.h>
 #include <map>
@@ -708,6 +709,16 @@ bool Process::start(error *err)
 		return false;
 	}
 
+	if ( _->options.child_body )
+	{
+		// The child will exit() through the body's stdio: whatever the
+		// PARENT has buffered on stdout/stderr would be flushed a second
+		// time, by the child, into the pipe or pty — so the parent's
+		// buffers are emptied before the fork (parse_run's own rule).
+		fflush(NULL);
+		std::cout.flush();
+		std::cerr.flush();
+	}
 	pid_t child = ::fork();
 	if ( child < 0 )
 	{
