@@ -11,6 +11,7 @@
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine (win twin of libmadc.so.0; AOT output + madcide bind it)
+#   madc-<ver>-windows-x86_64/bin/madcwebview.dll     the platform webview library (WebView2 + native chrome; GUI programs: import madcwebview)
 #   madc-<ver>-windows-x86_64/lib/libmadc.dll.a       import lib for it (link .o output)
 #   madc-<ver>-windows-x86_64/lib/libmadc_rt.a        emitted-C runtime (try/catch + VLA)
 #   madc-<ver>-windows-x86_64/madc.ini.example        documented example config (non-live name)
@@ -51,7 +52,7 @@ GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 mkdir -p dist
 
 for f in "$BIN" bin/libstdc++-6.dll bin/libwinpthread-1.dll bin/libmadc-0.dll \
-         lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+         bin/madcwebview.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -88,6 +89,10 @@ install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"
 install -m 755 bin/libstdc++-6.dll "$STAGE/$ROOT/bin/libstdc++-6.dll"
 install -m 755 bin/libwinpthread-1.dll "$STAGE/$ROOT/bin/libwinpthread-1.dll"
 install -m 755 bin/libmadc-0.dll "$STAGE/$ROOT/bin/libmadc-0.dll"
+# The platform webview library (GUI programs: import madcwebview): the
+# loader searches the exe's directory on Windows — beside madc.exe, like
+# the runtime DLLs. It needs the Evergreen WebView2 runtime on the machine.
+install -m 755 bin/madcwebview.dll "$STAGE/$ROOT/bin/madcwebview.dll"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
@@ -110,6 +115,8 @@ if [ ! -f /workspace/zstd/LICENSE ]; then
     exit 1
 fi
 install -m 644 /workspace/zstd/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
+# The webview library binds webview/webview (MIT): its notice ships with it.
+install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
 
 cat > "$STAGE/$ROOT/README-windows.txt" <<EOF
 madc ${VER} for Windows (x86_64)
@@ -153,6 +160,17 @@ projections of real parse data). Run it in a real console window:
 Keybinding profiles and colour schemes live in bin\\profiles (JOE-style
 chords by default; emacs, pico, and vi-modal neovim personalities
 included — all plain text, copy and edit them to make your own).
+
+GUI: bin\\madcwebview.dll is madc's binding of the platform webview
+(WebView2) with the native menu bar and file dialogs. A program that
+says \`import madcwebview;\` (madc's ui "web" target) loads it from the
+directory madc.exe runs from — keep it beside the exe like the runtime
+DLLs. madcide's window mode is one:
+
+    bin\\madcide.exe file.c --gui
+
+It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
+machine with Microsoft Edge) already has.
 
 madc.ini.example (this folder) is a documented example configuration
 file; to use one, copy it to madc.ini next to where you run madc, or

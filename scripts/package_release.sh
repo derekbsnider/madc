@@ -21,9 +21,13 @@
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
+#   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
+#                                               native chrome; GUI programs: import madcwebview) —
+#                                               a WEAK dependency (Recommends): madc never loads it itself
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
+#   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
@@ -92,6 +96,11 @@ trap restore_tree EXIT
 make -C src clean > /dev/null
 make -C src -j"$(nproc)" > /dev/null
 make -C src -j"$(nproc)" release > /dev/null
+# The platform webview library (GUI programs: import madcwebview) — built
+# against the build host's WebKitGTK 6.0 / GTK4 (scripts/provision_container.sh;
+# libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
+# madc itself never loads it, only a program that imports it does.
+make -C src -j"$(nproc)" libmadcwebview > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -145,12 +154,17 @@ stage() {
     # try/catch context stack + VLA scope-exit helpers, nothing else.
     # Platform parity: the mac and win archives already ship it.
     install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
+    # The platform webview library: the loader tries <exedir>/../lib first
+    # (the tarball's lib/), then the system search (the deb/rpm libdir,
+    # registered by the ldconfig trigger).
+    install -m 755 lib/libmadcwebview.so "$root/$libdir/libmadcwebview.so"
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
     gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
     gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
     install -m 644 LICENSE "$p/share/doc/madc/copyright"
+    install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
     gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
     # The example config keeps its real name: share/doc is not on
     # madc.ini's search path, so it can never shadow a user's config.
@@ -175,6 +189,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: ${MAINT}
 Depends: libc6 (>= 2.38), libstdc++6, libgcc-s1, zlib1g, libzstd1
+Recommends: libwebkitgtk-6.0-4, libgtk-4-1
 Homepage: ${HOMEPAGE}
 Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
@@ -196,7 +211,13 @@ Summary: ${SUMMARY}
 License: MPL-2.0
 URL: ${HOMEPAGE}
 AutoReqProv: yes
+Recommends: webkitgtk6.0
+Recommends: gtk4
 %define debug_package %{nil}
+# The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
+# not become hard Requires of the whole package: the GUI is optional, the
+# weak dependencies above name it.
+%global __requires_exclude_from ^/usr/lib64/libmadcwebview\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -212,8 +233,10 @@ ${DESC_BODY}
 /usr/lib64/libmadc.so.0
 /usr/lib64/libmadc.so
 /usr/lib64/libmadc_rt.a
+/usr/lib64/libmadcwebview.so
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
+%doc /usr/share/doc/madc/webview-copyright
 %doc /usr/share/doc/madc/changelog.gz
 %doc /usr/share/doc/madc/examples/madc.ini
 /usr/share/man/man1/madc.1.gz
@@ -253,6 +276,17 @@ madcide: keybinding profiles and colour schemes load from
 share/madcide/profiles next to this README. See share/man/man1 for the
 manual pages, and share/doc/madc/examples/madc.ini for a documented
 example configuration file.
+
+GUI: lib/libmadcwebview.so is madc's binding of the platform webview
+(WebKitGTK 6.0 / GTK4) with the native menu bar and file dialogs. A
+program that says \`import madcwebview;\` (madc's ui "web" target) loads
+it from this lib/; madcide's window mode is one:
+
+    bin/madcide file.c --gui
+
+It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed
+(Debian/Ubuntu: libwebkitgtk-6.0-4 libgtk-4-1; Fedora: webkitgtk6.0
+gtk4). Nothing else in this folder does.
 EOF
 # The $ORIGIN proof: the staged binaries must bind the STAGED library
 # (relocatable runpath), not the build tree's. ldd resolves runpaths
