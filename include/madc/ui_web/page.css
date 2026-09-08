@@ -200,5 +200,19 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .dlg-list .opt.sel { background: var(--sb-active, #2f3a55); box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); color: #f2f4ff; }
 .node.popup.dialog.focus .dlg-list .opt.sel { background: #3b4a6b; }
 .dlg-buttons { padding: 0 14px; }
+/* A tabbed tool window's strip (madcide polish P3a — the bottom panel's
+   Problems / Output): chrome-font tabs on the bar surface, the active one
+   underlined in the accent; the panel's group fills its slot so an empty
+   Output still reads as a pane. */
+.tabstrip { display: flex; gap: 2px; padding: 0 8px; flex: 0 0 auto;
+            background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52);
+            font: 11px/2.2 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif); }
+.tabstrip .tab { padding: 0 10px; color: var(--sb-label, #8b91a8); cursor: pointer;
+                 text-transform: uppercase; letter-spacing: 0.05em; }
+.tabstrip .tab:hover { color: #f2f4ff; }
+.tabstrip .tab.active { color: #f2f4ff; box-shadow: inset 0 -2px 0 var(--accent, #9fc2ff); }
+.workbench > .slot[data-slot="panel"] > .node.group { flex: 1 1 auto; min-height: 9em; overflow: auto; }
+.workbench > .slot[data-slot="panel"] .choice.list .opt { cursor: pointer; }
+.workbench > .slot[data-slot="panel"] .choice.list .opt:hover { background: #343b52; }
 /* The editor's tab-strip marker (the buffer-named strip is a later slice). */
 .edit.has-tabs { border-top: 2px solid #4a5a80; }

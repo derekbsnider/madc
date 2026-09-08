@@ -122,17 +122,54 @@ same field. Gate: `scripts/verify_pe_release.sh` gains the subsystem read
 (console for madc.exe itself), and a wine-lane reducer emits a `-mwindows`
 program and reads its header back.
 
-## P3 — the bottom pane with tabs; Run routing
+## P3 — the bottom pane with tabs; Run routing — P3a BUILT 2026-09-08, P3b next
 
-The `panel` slot becomes a tabbed tool window (VS Code's shape, our
-palette): **Problems** (the diagnostics projection), **Output** (the build
-stream that already docks as `region: panel`), **Terminal** (an embedded
-shell: a pty behind a `term` node the grid renderer paints). Run today is a
-SILENT NO-OP in the GUI — `client_service`: `if ( !ui::suspend(t) )
-return;` — the web target refuses suspend and the request is dropped
-(fix-what-you-find). Routing by the project kind: a console program runs in
-the Terminal tab (pty → the grid renderer in a DOM node); a gui program gets
-its own OS window with stdout/stderr captured into Output.
+**The shape.** VS Code's bottom tool window in our palette: a PANEL region
+that is optionally visible and holds TABS — **Problems** (the diagnostics
+projection: the rows the `diags` pane shows, `goto` on a row), **Output**
+(the build stream: the `[build]` buffer the capture pump fills, live or
+last), **Terminal** (an embedded console: P3b). GUI only — the terminal
+keeps its panes byte-identical (the client pushes a `haspanel` fact for a
+region-rendering target, as it pushes `hasterm` / `hasdialogs`; the
+composer composes the panel only under it).
+
+**Data, not names.** Panel state on the bag: `panel` (visible), `paneltab`
+(the active tab). Commands in the one vocabulary (default.menu, View):
+`panel` toggles visibility, `problems` / `output` / `terminal` show the
+panel on that tab — key profiles may bind them (data). The panel node is a
+`group` docked `region: panel` whose `tabs` hint carries the STRIP as data
+— `[{title, action, active?}]` — so a tab click posts the tab's command by
+name (the S1 rule), and whose one child is the active tab's content. Every
+site that opened the diagnostics pane (`pane = "diags"`, six of them) goes
+through ONE `show_diags` that, under `haspanel`, also shows the panel on
+Problems — the terminal's behaviour unchanged.
+
+**Run routing (P3b).** Run is a SILENT NO-OP in the GUI today
+(`client_service`: `if ( !ui::suspend(t) ) return;` — the web target
+refuses suspend, the request is dropped). The fix routes by the project
+kind: a **console** program runs in the Terminal tab; a **gui** program
+gets its own OS window and its stdout/stderr go to Output. Both keep the
+owner ruling (the running madc IS the compiler): the live parse is still
+FORKED (`parse_run` / `project_run`), only its stdio is wired — a new
+engine verb runs the fork with its stdio on a channel: a PTY for the
+Terminal tab (POSIX `forkpty`; the child gets a controlling terminal, so
+prompts flush and `isatty` holds — the pty master is one more DataChannel
+the `chan_select` pump reads, the `pty://` sibling of `exec://`), pipes for
+Output. Windows: pipes first (ConPTY is the named residue). The Terminal
+tab's node carries the pty's scrollback as lines plus a cursor line; while
+the tab has focus, keys and text travel the one input path to the core,
+which writes them to the pty (a small TUI-key → bytes table; `^c` is
+0x03). Output parsing is a bounded terminal: `\r` `\n` `\b`, SGR colours
+onto the one style (ui_style, the palette); other CSI sequences are
+dropped. `bld-run-cmd` (a manifest command in terminal mode) and the
+Shell request take the same route.
+
+**Slices.** P3a: the panel, the strip, Problems + Output, `show_diags`,
+the commands + menu rows, a GUI fixture (the strip renders; a tab click
+posts its command) and the byte-identity check in testmadcide. P3b: the
+pty channel + the fork-with-stdio verb, the Terminal tab, Run routing by
+kind, the Shell in the Terminal, the no-op fixed (a GUI fixture runs a
+console program and reads its output back from the tab).
 
 ## P4 — editor tabs over the buffer ring
 

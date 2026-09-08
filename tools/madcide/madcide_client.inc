@@ -93,6 +93,7 @@ void run_ide(const char *path, bool ro, const char *target)
     bool has_term = strcmp(target, "term") == 0;
     S.terminal(has_term);
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
+    S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
     long keysgen = -1;
     client_bind_keys(S, t, keysgen);
     bool run = true;

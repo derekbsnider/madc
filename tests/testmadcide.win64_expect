@@ -151,4 +151,7 @@ vi-open: text=1
 vi-A-colon: eol-append=1 pmode=colon closed=1
 vi-unbound: msg=1 count-cleared=1
 vi-toggle: mode='' typed-x=1
+panel-problems: tabs=2 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
+panel-output: t1-active=1 child=content
+panel-toggle: panels=0
 colon-quit: cont=0

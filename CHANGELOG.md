@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
+
+- The window gains VS Code's bottom tool window in our palette: a panel,
+  optionally visible (View → Toggle Panel), with tabs — Problems (the
+  diagnostics rows; a click or Enter goes to the line) and Output (the
+  build stream, live or last). A check or a failed build surfaces Problems;
+  a build starting shows Output. The strip is data (a tab names the command
+  a click posts), so profiles may bind the same commands. The terminal is
+  unchanged. A click on any list row now picks it, as Enter does.
+
 ### madcide: the list overlays as dialogs; Open Project…; the project kind (2026-09-08)
 
 - The Build, Project, Options, Modes and Help panes — bare popup lists in the

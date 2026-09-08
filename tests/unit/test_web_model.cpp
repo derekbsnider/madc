@@ -1108,3 +1108,57 @@ TEST_CASE("compose — a choice's dialog hint becomes dialog data; a click or th
     REQUIRE(c);
     CHECK(c->find("dialog") == c->end());
 }
+
+TEST_CASE("compose — a group's tabs array becomes the strip as data; the integer form stays the marker")
+{
+    // madcide polish P3a: the bottom panel's tab strip — {title, action,
+    // active?} rows the page draws above the group's children; a tab click
+    // posts its action by name. A malformed tab (no title / no action) is
+    // dropped; the editor group's `tabs: 1` marker still emits true.
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode panel(r.group);
+    std::vector<madc::value> tabs;
+    std::map<std::string, madc::value> t1;
+    t1["title"] = madc::value(std::string("Problems"));
+    t1["action"] = madc::value(std::string("problems"));
+    t1["active"] = madc::value((int64_t)1);
+    tabs.push_back(madc::value::make_object(t1));
+    std::map<std::string, madc::value> t2;
+    t2["title"] = madc::value(std::string("Output"));
+    t2["action"] = madc::value(std::string("output"));
+    tabs.push_back(madc::value::make_object(t2));
+    std::map<std::string, madc::value> bad;
+    bad["title"] = madc::value(std::string("Nothing"));	// no action: dropped
+    tabs.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["region"] = madc::value(std::string("panel"));
+    h["tabs"] = madc::value::make_array(tabs);
+    panel.hints = madc::value::make_object(h);
+    uinode body(r.content);
+    body.content = madc::value(std::string("(clean)"));
+    panel.add(body);
+    root.add(panel);
+    uinode marked(r.group);
+    std::map<std::string, madc::value> mh;
+    mh["tabs"] = madc::value((int64_t)1);
+    marked.hints = madc::value::make_object(mh);
+    root.add(marked);
+
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *p = node_by_key(ops, "0.0");
+    REQUIRE(p);
+    CHECK((*p)["region"] == "panel");
+    CHECK((*p)["tabs"] == nlohmann::json::parse(
+	"[{\"title\":\"Problems\",\"action\":\"problems\",\"active\":true},"
+	"{\"title\":\"Output\",\"action\":\"output\"}]"));
+    const nlohmann::json *c = node_by_key(ops, "0.0.0");
+    REQUIRE(c);
+    CHECK((*c)["class"] == "content");
+    CHECK((*c)["parent"] == "0.0");
+    const nlohmann::json *mk = node_by_key(ops, "0.1");
+    REQUIRE(mk);
+    CHECK((*mk)["tabs"] == true);
+}

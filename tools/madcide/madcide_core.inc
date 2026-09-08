@@ -77,6 +77,8 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
+	void panel(bool has);		// the client renders regions (P3a): the
+					// bottom PANEL with tabs is composed
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
 	void pending_chord(const char *pcs);
@@ -881,11 +883,45 @@ long diag_error_count(var &diags)
     return errs;
 }
 
+// ---- the bottom PANEL (polish P3a) --------------------------------------
+// A region-rendering client (the window) pushes `haspanel`; under it the
+// composer adds a persistent, optionally visible tool window with TABS —
+// Problems (the diagnostics projection) and Output (the [build] stream):
+// VS Code's bottom pane in our palette. State on the bag: `panel`
+// (visible), `paneltab` (the active tab). The terminal never composes it
+// (byte-identical). Commands in the one vocabulary: panel (toggle),
+// problems, output (show that tab).
+void show_panel_tab(long w, long es, const char *tab)
+{
+    var t = tab;			// ring discipline: own the text first
+    ui::set(w, es, "panel", 1);
+    ui::set(w, es, "paneltab", t);
+}
+
+// ONE way to surface the diagnostics: the terminal's diags pane, or — in
+// a window — the panel's Problems tab. Six sites used to set the pane by
+// hand; a second surface is where they would have drifted.
+void show_diags(long w, long es)
+{
+    if ( es_flag(w, es, "haspanel") )
+	show_panel_tab(w, es, "problems");
+    else
+	ui::set(w, es, "pane", "diags");
+}
+
+// A build starting: a window shows its stream in the Output tab; the
+// terminal reaches [build] via ^P as before.
+void show_output(long w, long es)
+{
+    if ( es_flag(w, es, "haspanel") )
+	show_panel_tab(w, es, "output");
+}
+
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
     long n = refresh_diags(w, es, doc);
-    ui::set(w, es, "pane", "diags");
+    show_diags(w, es);
     if ( n == 0 )
 	ui::set(w, es, "msg", "Check: clean.");
     else
@@ -3162,6 +3198,7 @@ void start_build(long w, long es, const char *cmd)
     ui::set(w, es, "buildstop", stopc);
     ui::set(w, es, "buildcmd", cmd);
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
     ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
 }
@@ -3254,7 +3291,7 @@ void native_build_task(long w, long es)
     var pane;
     ui::get(pane, w, es, "pane");
     if ( strlen(pane.c_str()) == 0 )
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Build failed: {} problem(s).", php::count(diags)));
 }
@@ -3280,6 +3317,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "buildscope", 0);	// published by the task when live
     ui::set(w, es, "buildstopreq", 0);
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go native_build_task(w, es);
     var md;
     ui::get(md, w, doc, "modified");
@@ -3397,7 +3435,7 @@ void run_buffer(long w, long es, long doc)
     long errs = diag_error_count(diags);
     if ( errs > 0 )
     {
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
 	ui::set(w, es, "msg",
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
@@ -3486,7 +3524,7 @@ void proj_run_check(long w, long es, long doc)
     if ( !proj_check_rows(rows, w, es) )
 	return;
     ui::set(w, es, "diags", rows);
-    ui::set(w, es, "pane", "diags");
+    show_diags(w, es);
     long n = php::count(rows);
     if ( n == 0 )
 	ui::set(w, es, "msg", "Project check: clean.");
@@ -3526,7 +3564,7 @@ void project_build_task(long w, long es)
     var pane;
     ui::get(pane, w, es, "pane");
     if ( strlen(pane.c_str()) == 0 )
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Project build failed: {} problem(s).", php::count(diags)));
 }
@@ -3554,6 +3592,7 @@ void start_project_build(long w, long es, long doc, var &kind, var &out)
     ui::set(w, es, "buildscope", 0);	// no cancellation chain reaches
     ui::set(w, es, "buildstopreq", 0);	// the project lane (named residue)
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     go project_build_task(w, es);
     ui::set(w, es, "msg", format("Building project {} -> {}", pf, out));
 }
@@ -3578,7 +3617,7 @@ void run_project(long w, long es, long doc)
     long errs = diag_error_count(rows);
     if ( errs > 0 )
     {
-	ui::set(w, es, "pane", "diags");
+	show_diags(w, es);
 	ui::set(w, es, "msg",
 		format("Run refused: {} error(s) — fix them first.", errs));
 	return;
@@ -4230,6 +4269,23 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 		start_prompt(w, es, "Project file to open", "openproject");
 	    return true;
 	}
+	if ( a == "panel" )
+	{
+	    // The bottom panel's visibility (polish P3a) — data a window
+	    // renders; the terminal composes no panel either way.
+	    ui::set(w, es, "panel", es_int(w, es, "panel", 0) != 0 ? 0 : 1);
+	    return true;
+	}
+	if ( a == "problems" )
+	{
+	    show_panel_tab(w, es, "problems");
+	    return true;
+	}
+	if ( a == "output" )
+	{
+	    show_panel_tab(w, es, "output");
+	    return true;
+	}
 	if ( a == "shell" )
 	{
 	    open_shell(w, es);
@@ -4380,6 +4436,46 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 // it projects the loaded profile's own lines. The Phase-2 gate's third
 // clause (swap leaves the tree identical) is pinned with the help pane
 // hidden.
+// The diagnostics / outline rows as navigable items carrying `goto` — ONE
+// builder for the terminal's diags/outline pane and the window's Problems
+// tab (polish P3a). A project check's rows span TUs: a row from ANOTHER
+// file leads with it (goto opens it; the row carries the file as data
+// either way); rows on the shown buffer stay unprefixed (the JOE shape).
+// Returns the row count (0 = the caller adds its empty-state line).
+long diag_items(var &items, long w, long es, long doc, bool outline_pane)
+{
+    var rows;
+    if ( outline_pane )
+	ui::get(rows, w, es, "outline");
+    else
+	ui::get(rows, w, es, "diags");
+    var dpath;
+    ui::get(dpath, w, doc, "path");
+    long nrows = 0;
+    for ( var row : rows )
+    {
+	var it = { "role": "item" };
+	if ( outline_pane )
+	    it["content"] = format("{} {} :{}", row["kind"],
+				   row["name"], row["line"]);
+	else if ( !row["file"].is_null()
+	       && !(row["file"] == dpath.c_str()) )
+	    it["content"] = format("{} {}:{} {} {}", row["file"],
+				   row["line"], row["column"],
+				   row["severity"], row["message"]);
+	else
+	    it["content"] = format("{}:{} {} {}", row["line"],
+				   row["column"], row["severity"],
+				   row["message"]);
+	var ga = {};
+	ga[] = "goto";
+	it["actions"] = ga;
+	items[] = it;
+	nrows = nrows + 1;
+    }
+    return nrows;
+}
+
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
@@ -4715,42 +4811,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    // diagnostics / outline: projections of the STORED compiler
 	    // data — navigable rows carrying the `goto` action.
 	    bool outline_pane = pane == "outline";
-	    var rows;
-	    if ( outline_pane )
-		ui::get(rows, w, es, "outline");
-	    else
-		ui::get(rows, w, es, "diags");
 	    if ( outline_pane )
 		box["label"] = "Outline";
 	    else
 		box["label"] = "Diagnostics";
-	    var dpath;
-	    ui::get(dpath, w, doc, "path");
-	    for ( var row : rows )
-	    {
-		var it = { "role": "item" };
-		if ( outline_pane )
-		    it["content"] = format("{} {} :{}", row["kind"],
-					   row["name"], row["line"]);
-		else if ( !row["file"].is_null()
-		       && !(row["file"] == dpath.c_str()) )
-		    // A project check's rows span TUs — a row from
-		    // ANOTHER file leads with it (goto opens it; the
-		    // row carries the file as data either way). Rows on
-		    // the shown buffer stay unprefixed (the JOE shape).
-		    it["content"] = format("{} {}:{} {} {}", row["file"],
-					   row["line"], row["column"],
-					   row["severity"], row["message"]);
-		else
-		    it["content"] = format("{}:{} {} {}", row["line"],
-					   row["column"], row["severity"],
-					   row["message"]);
-		var ga = {};
-		ga[] = "goto";
-		it["actions"] = ga;
-		items[] = it;
-		nrows = nrows + 1;
-	    }
+	    nrows = diag_items(items, w, es, doc, outline_pane);
 	    if ( nrows == 0 )
 		items[] = { "role": "item",
 			    "content": outline_pane ? "(no definitions)"
@@ -4786,7 +4851,62 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // (buildlive == 0) composes no panel, so the terminal shape and every
     // testmadcide compose-shape assertion are unchanged. Non-creating
     // lookup: composition never mints a buffer.
-    if ( es_int(w, es, "buildlive", 0) != 0 )
+    if ( es_flag(w, es, "haspanel") )
+    {
+	// The bottom PANEL (polish P3a): a `group` docked into the panel
+	// region whose `tabs` hint carries the STRIP as data — one tab per
+	// tool, each naming the command that shows it (a click posts it by
+	// name, the S1 rule) — and whose one child is the active tab's
+	// content: Problems = the diagnostics rows (diag_items, the same
+	// builder the terminal's pane uses), Output = the [build] buffer's
+	// text (live or last; empty when nothing was built). Composed only
+	// while `panel` is up.
+	if ( es_int(w, es, "panel", 0) != 0 )
+	{
+	    var tab;
+	    ui::get(tab, w, es, "paneltab");
+	    if ( tab.is_null() || strlen(tab.c_str()) == 0 )
+		tab = "problems";
+	    var strip = {};
+	    var t1 = { "title": "Problems", "action": "problems" };
+	    if ( tab == "problems" )
+		t1["active"] = 1;
+	    strip.push(t1);
+	    var t2 = { "title": "Output", "action": "output" };
+	    if ( tab == "output" )
+		t2["active"] = 1;
+	    strip.push(t2);
+	    var pkids = {};
+	    if ( tab == "output" )
+	    {
+		var out = { "role": "content" };
+		var bt = "";
+		long bdoc = build_doc_if_any(w, es);
+		if ( bdoc != 0 )
+		    ui::text(bt, w, bdoc);
+		out["content"] = bt;
+		pkids.push(out);
+	    }
+	    else
+	    {
+		var pb = { "role": "choice", "label": "Problems" };
+		var pitems = {};
+		long pn = diag_items(pitems, w, es, doc, false);
+		if ( pn == 0 )
+		    pitems[] = { "role": "item", "content": "(clean)" };
+		pb["children"] = pitems;
+		pb["hints"] = { "list": 1 };
+		pkids.push(pb);
+	    }
+	    var panel = { "role": "group" };
+	    var ph = { "region": "panel" };
+	    ph["tabs"] = strip;
+	    panel["hints"] = ph;
+	    panel["children"] = pkids;
+	    kids.push(panel);
+	}
+    }
+    else if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	long bdoc = build_doc_if_any(w, es);
 	if ( bdoc != 0 )
@@ -4953,6 +5073,11 @@ void IdeSession::terminal(bool has)
 void IdeSession::dialogs(bool has)
 {
     ui::set(w, es, "hasdialogs", has);
+}
+
+void IdeSession::panel(bool has)
+{
+    ui::set(w, es, "haspanel", has);
 }
 
 // The client could not show the dialog it was asked for (no native dialog

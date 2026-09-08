@@ -23,6 +23,14 @@
 //    "lines":[{"t":"line text","s":[[start,len,"keyword"],...]}, ...],
 //    "caret":{"line":3,"col":7},"sel":[[l,c],[l,c]]|null,
 //    "tabwidth":8,"focus":true}
+//   {"op":"node","key":"0.6","parent":"0","class":"group","region":"panel",
+//    "tabs":[{"title":"Problems","action":"problems","active":true},
+//            {"title":"Output","action":"output"}]}
+//                                                          a tabbed tool
+//                                                          window (polish
+//                                                          P3a): the strip as
+//                                                          data, a tab click
+//                                                          posts its command
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
 //    "opts":["Save","Quit"],"sel":1,"list":false,"focus":true,
 //    "dialog":{"title":"Project","filter":"ab",
@@ -547,8 +555,42 @@ class web_model
 	    const std::string dismiss = hint_str(n.hints, "dismiss");
 	    if ( !dismiss.empty() )
 		op["dismiss"] = dismiss;
-	    if ( hint_of(n.hints, "tabs", 0) )
-		op["tabs"] = true;
+	    // The tab strip (madcide polish P3a): `tabs` as an ARRAY of
+	    // {title, action, active?} is the strip a group carries as DATA —
+	    // the page draws it above the group's children and a tab click
+	    // posts the tab's command by name (the S1 rule); a malformed tab
+	    // (no title or no action) is dropped. The integer form stays the
+	    // editor group's tab-strip MARKER (S5) until P4 hands it the
+	    // buffer strip in this array shape.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &tho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator ti = tho.find("tabs");
+		if ( ti != tho.end() && ti->second.is_array() )
+		{
+		    nlohmann::json strip = nlohmann::json::array();
+		    const std::vector<madc::value> &rows = ti->second.as_array();
+		    for ( size_t k = 0; k < rows.size(); ++k )
+		    {
+			if ( !rows[k].is_object() )
+			    continue;
+			const std::string title = hint_str(rows[k], "title");
+			const std::string action = hint_str(rows[k], "action");
+			if ( title.empty() || action.empty() )
+			    continue;
+			nlohmann::json tb = nlohmann::json::object();
+			tb["title"] = title;
+			tb["action"] = action;
+			if ( hint_of(rows[k], "active", 0) != 0 )
+			    tb["active"] = true;
+			strip.push_back(tb);
+		    }
+		    if ( !strip.empty() )
+			op["tabs"] = strip;
+		}
+		else if ( hint_of(n.hints, "tabs", 0) )
+		    op["tabs"] = true;
+	    }
 	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
 	    // bag of CSS custom-property name -> value strings; emit them so
 	    // the page applies them as `--name` variables. String values only

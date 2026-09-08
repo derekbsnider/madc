@@ -432,7 +432,7 @@ and the window honours:
 | `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar`; the nodes docked into one region STACK in the slot in tree order |
 | `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
 | `tag` (N) | an edit node | the composer's own identity for the node, echoed as data on the pointer events it yields (madcide: every window's edit node carries its window index while split) — no renderer reads it for itself |
-| `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
+| `tabs` (`[{title, action, active?}]`, or 1) | a group (madcide's bottom panel), the editor group | the array is a tab STRIP as data — the page draws it above the group's children and a click on a tab posts its `action` by name (madcide: Problems / Output show the panel on that tab); the integer form is the editor group's tab-strip marker (the buffer-named strip is a later slice) |
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
 | `dismiss` (action id) | a popup | the action a press OUTSIDE the popup fires (a prompt's cancel), posted as `{"kind":"action"}` — data, never a key |
 | `prompt` (`{label, input}`) | the prompt row (a content node) | the core's prompt as a QUICK INPUT: the label over a field showing the input text the CORE holds, a caret after it, the keys it answers to beneath; typing still travels the one input path — the page never edits the text (Neovim's `ext_cmdline` shape) |

@@ -1667,6 +1667,46 @@ int main()
     ev_action(e, "onlywin", "^k 1");
     S.apply_ide_event(ptrdoc, e);
 
+    // -- polish P3a: the bottom PANEL — a WINDOW's fact (haspanel): the
+    //    diagnostics surface goes to the panel's Problems tab instead of
+    //    the diags pane, the tab strip is DATA (a title + the command a
+    //    click posts), Output shows the [build] text, `panel` toggles it.
+    //    The terminal composes none of it: every clause above ran with the
+    //    fact off, so the TUI shape they pin is untouched.
+    S.panel(true);
+    ev_action(e, "check", "");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    var pnode;
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    pnode = pk;
+    var ptabs = pnode["hints"]["tabs"];
+    var ppane;
+    ui::get(ppane, w, es, "pane");
+    println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} diags-pane={}",
+	    php::count(ptabs), ptabs[0]["title"], ptabs[0]["active"],
+	    ptabs[1]["title"], pnode["children"][0]["role"],
+	    pnode["children"][0]["label"], ppane == "diags" ? 1 : 0);
+    ev_action(e, "output", "");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    pnode = pk;
+    ptabs = pnode["hints"]["tabs"];
+    println("panel-output: t1-active={} child={}", ptabs[1]["active"],
+	    pnode["children"][0]["role"]);
+    ev_action(e, "panel", "");		// toggles it away
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    long panels = 0;
+    for ( var pk : tree["children"] )
+	if ( !pk["hints"].is_null() && pk["hints"]["region"] == "panel" )
+	    panels = panels + 1;
+    println("panel-toggle: panels={}", panels);
+    S.panel(false);
+
     // :q on the now-clean buffer quits — false propagates out of the
     // prompt commit exactly like the quit chord.
     ev_action(e, "colon", "");

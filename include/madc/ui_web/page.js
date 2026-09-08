@@ -89,7 +89,19 @@
       nodes.set(op.key, el);
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
-                   (op.popup ? ' popup' : '') + (op.tabs ? ' has-tabs' : '');
+                   (op.popup ? ' popup' : '') + (op.tabs === true ? ' has-tabs' : '');
+    // A tab STRIP (madcide polish P3a): `tabs` as an array is the strip a
+    // group carries as data — drawn as the group's first element, above the
+    // children the composer docked into it; a tab click posts the tab's
+    // command by name. The strip is the node's own furniture, not a keyed
+    // child, so the children's placement starts after it.
+    if (Array.isArray(op.tabs)) {
+      tabStrip(el, op.tabs);
+      placed.set(el, 1);
+    } else if (el._strip) {
+      el.removeChild(el._strip);
+      el._strip = null;
+    }
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -126,6 +138,24 @@
   }
 
   function text(el, s) { el.textContent = s == null ? '' : String(s); }
+
+  // The tab strip of a tabbed tool window (polish P3a): one tab per entry,
+  // the active one marked; each carries its command for the click handler.
+  function tabStrip(el, tabs) {
+    var s = el._strip;
+    if (!s) {
+      s = document.createElement('div');
+      s.className = 'tabstrip';
+      el._strip = s;
+    }
+    if (el.firstChild !== s) el.insertBefore(s, el.firstChild);
+    s.textContent = '';
+    for (var i = 0; i < tabs.length; i++) {
+      var t = span('tab' + (tabs[i].active ? ' active' : ''), tabs[i].title || '');
+      if (tabs[i].action) t.dataset.action = tabs[i].action;
+      s.appendChild(t);
+    }
+  }
 
   // One side of the status bar: its segments as discrete items.
   function segments(cls, segs) {
@@ -415,8 +445,11 @@
       el.classList.remove('dialog');
       if (op.label != null) el.appendChild(span('label', op.label));
       var opts = op.opts || [];
-      for (var i = 0; i < opts.length; i++)
-        el.appendChild(span('opt' + (i === op.sel ? ' sel' : ''), opts[i]));
+      for (var i = 0; i < opts.length; i++) {
+        var oe = span('opt' + (i === op.sel ? ' sel' : ''), opts[i]);
+        oe.dataset.index = String(i);
+        el.appendChild(oe);
+      }
     } else if (cls === 'edit') {
       return applyEdit(el, op);
     }
@@ -589,9 +622,19 @@
       kb.focus();
       return;
     }
-    var o = t && t.closest ? t.closest('.node.dialog .opt') : null;
+    // A tab of a tool window: its command by name.
+    var tab = t && t.closest ? t.closest('.tabstrip .tab') : null;
+    if (tab && tab.dataset.action) {
+      e.preventDefault();
+      post({ kind: 'action', action: tab.dataset.action });
+      kb.focus();
+      return;
+    }
+    // A choice's option row — a dialog's, a list pane's, the menu bar's:
+    // a click PICKS that row (the focus owner's choose contract).
+    var o = t && t.closest ? t.closest('.node.choice .opt') : null;
     if (o && o.dataset.index != null) {
-      var node = o.closest('.node.dialog');
+      var node = o.closest('.node.choice');
       e.preventDefault();
       post({ kind: 'choose', key: node.dataset.key, index: parseInt(o.dataset.index, 10) });
       kb.focus();
