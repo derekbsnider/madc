@@ -1486,6 +1486,7 @@ void edit_file(long w, long es, long olddoc, const char *path);
 // The ^P project window (defined after the buffer machinery): the prompt
 // commits membership through these.
 void proj_add(long w, long es, long doc, const char *path0);
+void proj_open(long w, long es, long doc, const char *path0);	// polish P2b: Open Project… (the prompt commits through it)
 bool project_active(long w, long es);
 bool proj_write(long w, long es, long doc);	// polish P2c: the kind toggle persists
 void proj_show(long w, long es, long doc);	// polish P2b: Open Project… shows the window
