@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### A `var &` in a `%s` position coerces like a `var` (2026-09-08)
+
+- `void f(var &v) { printf("%s\n", v); }` crashed MIR ("wrong type memory")
+  where the same call with `var v` printed the text, and a local `var &r`
+  failed the same way: two of the CIR builder's carrier-lvalue admissions
+  knew the carrier but not a reference to it (the class-object gate admitted
+  only user-class referents; the c_str coercion admitted only the bare
+  carrier type). Both now read the reference-aware carrier reader. Found by
+  the pre-merge duplication audit of that admission family (five sites
+  answering one question — recorded in the knowledge graph for
+  consolidation with a gate). `tests/testvarrefcoerce.mad` pins a reference
+  parameter, a local reference and a reference to a keyed slot in `%s`
+  positions.
+
 ### madcide: native file dialogs (S4, 2026-09-08)
 
 - Open File and Save As become a request / response VERB. A client that can

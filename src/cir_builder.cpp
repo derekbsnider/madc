@@ -4699,7 +4699,15 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			if (tv->var.name.compare(0, 11, "__literal__") == 0)
 				return false;
-			if ((tv->var.is_reference()) && class_behind(tv->var.type))
+			// A reference variable denotes its referent: a user
+			// class OR the carrier (`value &v` — carrier_behind; the
+			// same admission carrier_operand_lvalue makes). Without
+			// the carrier here a `value &` parameter in a char*/
+			// varargs position skipped object_cstr_arg and passed
+			// its raw pointer words ("MIR fatal error: wrong type
+			// memory" in printf).
+			if ((tv->var.is_reference())
+			    && (class_behind(tv->var.type) || carrier_behind(tv->var.type)))
 				return true;
 			return as_class_instance(tv->var.type) != NULL
 			    || is_array_object(tv->var.type);
@@ -6154,8 +6162,12 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		cdd = class_behind(arg ? arg->datadef() : NULL);
-	if (!cdd && is_array_object(arg ? arg->datadef() : NULL))
-		cdd = &ddARRAY;	// the value carrier's c_str is madarray_cstr
+	// The value carrier's c_str is madarray_cstr — the carrier itself OR a
+	// reference to it (`value &v`: carrier_behind unwraps the reference;
+	// the bare is_array_object test refused it and printf received the
+	// reference's raw words).
+	if (!cdd)
+		cdd = carrier_behind(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		return translate_expr(arg);
 	std::string sym = class_method_symbol(cdd, "c_str");
