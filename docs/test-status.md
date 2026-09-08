@@ -28,8 +28,18 @@
 > pre-fix PE hung in the tty clause because Enter reached the piped child
 > as a bare `\r`). c-testsuite **220/220** (`tmp/logs/cts-s168c.log`);
 > macOS cross release both arches (836 units each) + webview dylibs,
-> verify_macho OK both, package-macos rc=0. Release-tier lanes (libcxx,
-> darwin-suite, genuine-win) run at the master promotion.
+> verify_macho OK both, package-macos rc=0. Release tier on the merged
+> develop content (all recorded; `lane_ledger.sh check --release` rc=0):
+> darwin-suite (gh run 34282289812) arm64 **1319/0/0TO/25skip**, Intel
+> **1320/0/0TO/24skip** — its first run failed exactly one test on both
+> arches, `testimportiface_neg` (the M_PI negative import control): the
+> darwin hosted build serves every standard C include from the one
+> flattened umbrella prelude, so `<stdio.h>` alone declares `M_PI` where
+> Apple clang rejects it — formally skipped on darwin with the stated
+> reason (KG Gap `darwin_umbrella_prelude_whole_set_visibility`); libcxx
+> **1330/0/0TO/14skip**, EXE/OBJ **1271/0**; genuine Windows 11
+> **1278/0/0TO/66skip** (run #1's single timeout on `testcompoundnarrow`
+> was a channel transient, green on the re-run).
 >
 > **Previous (2026-09-08, the s168 merge wave — madcide polish P1 on
 > `feature/madcide-polish-colours-claude`: one theme, two renderers — the
