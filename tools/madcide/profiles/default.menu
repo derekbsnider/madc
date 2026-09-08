@@ -1,0 +1,80 @@
+# madcide menu data (S1, 2026-09-08): the command / menu contribution —
+# what a menu bar, a command palette, or any client that renders commands
+# natively shows. The TUI reads none of it (JOE has no menu bar); the
+# composed tree carries it as the root's `menu` hint.
+#
+# One line per item:    MENU  COMMAND  TITLE...  [WHEN]
+# A separator:          MENU  -
+# MENU is the top-level menu the item belongs to (first appearance orders
+# the bar). COMMAND is an action id from the ONE vocabulary the key
+# profiles bind (profiles/*.keys) and the dispatcher understands — never a
+# key spelling: a renderer shows the chord the LOADED profile binds to it.
+# TITLE is everything after the command. An optional trailing [WHEN] names
+# the context that must hold for the item to be enabled: a context key,
+# `!key` to negate, `a && b` to join. Context keys: editable dirty
+# selection split buffers project building modal viewing.
+# The menu "palette" lists commands that live only in the command palette
+# (a title for every command the bar does not carry).
+
+File editfile Open File…
+File insertfile Insert File… [editable]
+File -
+File save Save [editable]
+File saveas Save As… [editable]
+File savequit Save and Exit [editable]
+File -
+File project Project…
+File projaddcur Add Current File to Project
+File -
+File shell Shell
+File -
+File quit Quit
+
+Edit undo Undo [editable && !viewing]
+Edit redo Redo [editable && !viewing]
+Edit -
+Edit mark Mark Block Start [!viewing]
+Edit bend Mark Block End [!viewing]
+Edit blockcopy Copy Block [selection && editable]
+Edit blockmove Move Block [selection && editable]
+Edit blockdel Delete Block [selection && editable]
+Edit -
+Edit delline Delete Line [editable]
+Edit delword Delete Word [editable]
+
+Search find Find…
+Search findnext Find Next
+Search gotoline Go to Line…
+
+View outline Outline
+View view AST Views
+View -
+View options Options…
+View modes Modes…
+View -
+View refresh Refresh Screen
+
+Window splitw Split Window
+Window nextw Next Window [split]
+Window prevw Previous Window [split]
+Window -
+Window groww Grow Window [split]
+Window shrinkw Shrink Window [split]
+Window -
+Window killwin Close Window [split]
+Window onlywin Only Window [split]
+
+Build check Check
+Build build Build…
+
+Help help Keyboard Help
+
+palette top Go to Top
+palette bottom Go to Bottom
+palette wordleft Word Left
+palette wordright Word Right
+palette discard Discard Changes and Exit
+palette profile Switch Keymap
+palette theme Theme…
+palette colon Command Line…
+palette vimode Toggle vi Mode

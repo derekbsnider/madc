@@ -4675,6 +4675,12 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 	// payload words (SIGSEGV in _IO_printf).
 	if (is_carrier_keyed_subscript(arg))
 		return true;
+	// A carrier-typed CONDITIONAL is a value too (an lvalue conditional of
+	// two values, or a materialized prvalue — object_arg_addr's ternary
+	// arm binds either); unadmitted it fell to the raw reference pass,
+	// `&(c ? *slot : a)`, whose distributed arms have unlike address types.
+	if (arg && arg->as_terq_tok() && unqualified_type(arg->datadef()) == &ddARRAY)
+		return true;
 	// type() discriminators gate the downcasts: TokenCallMethod derives
 	// from TokenMember which derives from TokenCallFunc which derives from
 	// TokenVar — an ungated downcast would classify a method CALL (an
@@ -4693,7 +4699,15 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
 			if (tv->var.name.compare(0, 11, "__literal__") == 0)
 				return false;
-			if ((tv->var.is_reference()) && class_behind(tv->var.type))
+			// A reference variable denotes its referent: a user
+			// class OR the carrier (`value &v` — carrier_behind; the
+			// same admission carrier_operand_lvalue makes). Without
+			// the carrier here a `value &` parameter in a char*/
+			// varargs position skipped object_cstr_arg and passed
+			// its raw pointer words ("MIR fatal error: wrong type
+			// memory" in printf).
+			if ((tv->var.is_reference())
+			    && (class_behind(tv->var.type) || carrier_behind(tv->var.type)))
 				return true;
 			return as_class_instance(tv->var.type) != NULL
 			    || is_array_object(tv->var.type);
@@ -5904,58 +5918,102 @@ node_t CirBuilder::carrier_list_elements(const std::function<node_t()> &recv,
 		if (!fd || fd->emit_symbol.empty())
 			return error_node("cannot initialize a value list "
 					  "element of this type", elem);
-		DataDef *pt = fd->parameters[1];
-		bool refp = fd->is_ref_param(1);
-		node_t args = list();
 		// KEYED element: the receiver is the key's vivified SLOT
 		// (carrier_slot_call — the value-lvalue lane, key vs index
 		// decided there), assigned through the operator= row.
 		// Positional: the carrier itself, through the push row.
-		if (key)
-			append(args, node2(N_CAST, void_ptr_type(),
-					   carrier_slot_call(recv(), key,
-							     origin),
-					   origin));
-		else
-			append(args, recv());
-		std::vector<ExternParam> eparams;
-		eparams.push_back({ {N_VOID}, true });   // receiver (void*)
-		// The same argument branch order the ctor/method call paths
-		// keep: an object behind the parameter (the value row's
-		// carrier&) passes by object address; a scalar reference by
-		// referent address; a plain scalar/pointer by value.
-		if (DataDefCLASS *pc = param_object_class(pt, refp)) {
-			append(args, object_arg_addr(elem, pc,
-				fd->is_nonconst_lref_param(1)));
-			eparams.push_back({ {N_VOID}, true });
-		} else if (refp) {
-			append(args, ref_param_arg_addr(elem,
-				ref_param_referent(pt),
-				const_ref_param(fd, 1)));
-			eparams.push_back(native_param_shape(pt, refp));
-		} else {
-			append(args, translate_expr(elem));
-			eparams.push_back(native_param_shape(pt, refp));
-		}
-		// The extern's return shape comes from the ONE owner the
-		// method-call path reads (emit_symbol_ret_specs): the script
-		// surface declares these rows `long long *` (the reference-
-		// return convention), and need_output_extern keeps only the
-		// FIRST shape per symbol — a `void *` here made a later
-		// script `v.push(x).push(y)` deref an untyped pointer ("mov:
-		// wrong type memory").
-		bool push_ret_ptr = false;
-		std::vector<c2mir_node_code_t> push_ret_specs =
-			emit_symbol_ret_specs(fd, push_ret_ptr);
-		need_output_extern(fd->emit_symbol.c_str(), push_ret_ptr,
-				   eparams, push_ret_specs);
-		referenced_funcs.insert(fd->emit_symbol);
-		node_t call = node2(N_CALL, id(fd->emit_symbol.c_str(), elem),
-				    args, elem);
-		CIR_NODE(call)->synth_from_origin = true;
-		stmts.push_back(node2(N_EXPR, list(), call, elem));
+		node_t r = key
+			? node2(N_CAST, void_ptr_type(),
+				carrier_slot_call(recv(), key, origin), origin)
+			: recv();
+		stmts.push_back(node2(N_EXPR, list(),
+				      carrier_row_call(fd, r, elem, elem), elem));
 	}
 	return NULL;
+}
+
+node_t CirBuilder::carrier_row_call(FuncDef *fd, node_t recv, TokenBase *elem,
+				    TokenBase *origin)
+{
+	DataDef *pt = fd->parameters[1];
+	bool refp = fd->is_ref_param(1);
+	node_t args = list();
+	append(args, recv);
+	std::vector<ExternParam> eparams;
+	eparams.push_back({ {N_VOID}, true });   // receiver (void*)
+	// The same argument branch order the ctor/method call paths keep: an
+	// object behind the parameter (the value row's carrier&) passes by
+	// object address; a scalar reference by referent address; a plain
+	// scalar/pointer by value.
+	if (DataDefCLASS *pc = param_object_class(pt, refp)) {
+		append(args, object_arg_addr(elem, pc,
+			fd->is_nonconst_lref_param(1)));
+		eparams.push_back({ {N_VOID}, true });
+	} else if (refp) {
+		append(args, ref_param_arg_addr(elem, ref_param_referent(pt),
+						const_ref_param(fd, 1)));
+		eparams.push_back(native_param_shape(pt, refp));
+	} else {
+		append(args, translate_expr(elem));
+		eparams.push_back(native_param_shape(pt, refp));
+	}
+	// The extern's return shape comes from the ONE owner the method-call
+	// path reads (emit_symbol_ret_specs): the script surface declares
+	// these rows `long long *` (the reference-return convention), and
+	// need_output_extern keeps only the FIRST shape per symbol — a
+	// `void *` here made a later script `v.push(x).push(y)` deref an
+	// untyped pointer ("mov: wrong type memory").
+	bool ret_ptr = false;
+	std::vector<c2mir_node_code_t> ret_specs = emit_symbol_ret_specs(fd, ret_ptr);
+	need_output_extern(fd->emit_symbol.c_str(), ret_ptr, eparams, ret_specs);
+	referenced_funcs.insert(fd->emit_symbol);
+	node_t call = node2(N_CALL, id(fd->emit_symbol.c_str(), origin), args,
+			    origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
+// A carrier-typed conditional whose arms are not both value lvalues — `c ?
+// v : php::trim(p)`, `x.is_null() ? 1 : x`, `c ? "lit" : v` — is a value
+// PRVALUE ([expr.cond]/4: the class arm wins the implicit conversion, the
+// parser typed it so). C has no class prvalue and no lvalue conditional
+// (C11 6.5.15), so the value is MATERIALIZED the way g++'s gimplifier does
+// it: a cleanup-tagged temp of the carrier, default-constructed ahead of
+// the statement, and the conditional itself ASSIGNS the selected arm into
+// it through the registered operator= row that arm's type binds — the same
+// rows `v = x` and a keyed literal element bind — so only the selected arm
+// is evaluated, as in C++. The expression is `(c ? assign(tmp, A) :
+// assign(tmp, B), tmp)`: a comma whose value is the temp's lvalue, and
+// `&(...)` distributes to `(..., &tmp)` (node1's N_ADDR rewrite) for every
+// by-reference consumer. Two value LVALUES keep the plain conditional:
+// `&(c ? a : b)` -> `c ? &a : &b` is the lvalue conditional C++ has.
+bool CirBuilder::carrier_ternary_needs_temp(TokenTerQ *tq)
+{
+	if (!tq || unqualified_type(tq->datadef()) != &ddARRAY)
+		return false;
+	return !(carrier_operand_lvalue(tq->true_expr)
+		 && carrier_operand_lvalue(tq->false_expr));
+}
+
+node_t CirBuilder::carrier_ternary_value(TokenTerQ *tq, TokenBase *origin)
+{
+	char name[40];
+	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+	m_pending_stmts.push_back(array_storage_decl(name, origin));
+	m_pending_stmts.push_back(array_ctor_call(name, origin));
+	TokenBase *arm_tok[2] = { tq->true_expr, tq->false_expr };
+	node_t arm[2];
+	for (int i = 0; i < 2; i++) {
+		FuncDef *fd = carrier_assign_def_for(ctor_arg_datadef(arm_tok[i]));
+		if (!fd || fd->emit_symbol.empty())
+			return error_node("cannot convert this conditional arm "
+					  "to a value", arm_tok[i]);
+		arm[i] = carrier_row_call(fd, object_addr(name, origin),
+					  arm_tok[i], arm_tok[i]);
+	}
+	node_t cond = translate_cond(tq->condition);
+	return node2(N_COMMA, node3(N_COND, cond, arm[0], arm[1], origin),
+		     id(name, origin), origin);
 }
 
 static FuncDef *class_method_def(DataDefCLASS *cdd, const char *name)
@@ -6104,8 +6162,12 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		cdd = class_behind(arg ? arg->datadef() : NULL);
-	if (!cdd && is_array_object(arg ? arg->datadef() : NULL))
-		cdd = &ddARRAY;	// the value carrier's c_str is madarray_cstr
+	// The value carrier's c_str is madarray_cstr — the carrier itself OR a
+	// reference to it (`value &v`: carrier_behind unwraps the reference;
+	// the bare is_array_object test refused it and printf received the
+	// reference's raw words).
+	if (!cdd)
+		cdd = carrier_behind(arg ? arg->datadef() : NULL);
 	if (!cdd)
 		return translate_expr(arg);
 	std::string sym = class_method_symbol(cdd, "c_str");
@@ -6184,6 +6246,29 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 	if (target == &ddARRAY && is_carrier_keyed_subscript(arg))
 		return node2(N_CAST, void_ptr_type(),
 			     node1(N_ADDR, translate_expr(arg), arg), arg);
+
+	// A carrier-typed CONDITIONAL. Two value LVALUES (`c ? a : b`,
+	// `c ? o["k"] : a`) bind as the conditional of their two object
+	// addresses — each arm through this very rule, so a storage buffer
+	// and a keyed slot both arrive as the carrier's `void *` argument
+	// convention (their raw address types differ; c2mir rejects the
+	// mixed conditional). A materialized prvalue (`c ? v : php::trim(p)`)
+	// translates to a comma yielding the temp's lvalue
+	// (carrier_ternary_value), and `&(...)` distributes into the value
+	// position (node1's N_ADDR rewrite). Either way bind the address —
+	// the materializing tail below would copy the value a second time.
+	if (target == &ddARRAY && arg && arg->as_terq_tok()
+	    && unqualified_type(arg->datadef()) == &ddARRAY) {
+		TokenTerQ *tq = arg->as_terq_tok();
+		if (!carrier_ternary_needs_temp(tq))
+			return node3(N_COND, translate_cond(tq->condition),
+				     object_arg_addr(tq->true_expr, target,
+						     nonconst_lref),
+				     object_arg_addr(tq->false_expr, target,
+						     nonconst_lref), arg);
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
+	}
 
 	// A REFERENCE-to-carrier variable (`value &v` parameter: `v = 5`, or
 	// v passed on as a value argument): the reference is pointer-stored —
@@ -6815,6 +6900,29 @@ node_t CirBuilder::ref_param_arg_addr_from_value(
 node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent,
 				      bool allow_converted_temp)
 {
+	// A carrier-typed CONDITIONAL bound to a `value &` parameter (`take(c ?
+	// o["k"] : a)`, the carrier's own operator= row): C++ binds the
+	// reference to the SELECTED arm's object, so pass the conditional of
+	// the two arm ADDRESSES — each through this rule and cast to the
+	// carrier's `void *` convention, because a storage buffer and a keyed
+	// slot have unlike raw address types and c2mir rejects the mixed
+	// conditional `&(c ? *slot : a)` distributes into. A materialized
+	// prvalue (carrier_ternary_value) yields its temp's lvalue: its
+	// address, through node1's N_ADDR-over-comma rewrite.
+	if (TokenTerQ *tq = arg ? arg->as_terq_tok() : NULL)
+		if (unqualified_type(arg->datadef()) == &ddARRAY) {
+			if (carrier_ternary_needs_temp(tq))
+				return node2(N_CAST, void_ptr_type(),
+					     node1(N_ADDR, translate_expr(arg), arg), arg);
+			return node3(N_COND, translate_cond(tq->condition),
+				     node2(N_CAST, void_ptr_type(),
+					   ref_param_arg_addr(tq->true_expr, expected_referent,
+							      allow_converted_temp), arg),
+				     node2(N_CAST, void_ptr_type(),
+					   ref_param_arg_addr(tq->false_expr, expected_referent,
+							      allow_converted_temp), arg),
+				     arg);
+		}
 	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
 	// object's address ([expr.ref]) — the reference parameter binds to the
 	// same object, so pass the pointer through. `&translate_expr` below
@@ -14098,8 +14206,17 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return -1;
 		// Existing enum-to-integer ranking stays a standard conversion;
 		// unscoped-enum uses rely on this, and scoped enums still prefer
-		// their exact enum overload when one exists.
-		return pdc->is_numeric() ? 4 : -1;
+		// their exact enum overload when one exists. A POINTER parameter
+		// is not that conversion: C++ has no enum -> pointer conversion
+		// (an enumerator is not a null pointer constant, [conv.ptr]).
+		// DataDefPTR::is_numeric() is true, so without this exclusion a
+		// scoped enumerator scored 4 against BOTH the carrier's
+		// operator==(const char*) row and its operator==(long long) row,
+		// tied, and the first-registered cstr row won: the enumerator
+		// was passed as a pointer (c2mir: "using integer without cast
+		// for pointer type parameter") and `v == E::z` answered false
+		// (tests/testvareqenum.mad).
+		return pdc->is_numeric() && !pdc->is_pointer() ? 4 : -1;
 	}
 	// A function-pointer PARAMETER. Function-to-pointer decay: a bare function
 	// argument binds it (`__stoa(&std::strtol, ...)`), discriminated by
@@ -18199,6 +18316,32 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	return inst;
 }
 
+// A carrier (`array`/`value`/`var` — ddARRAY) LVALUE an operator can take as
+// its receiver: a variable or member of the carrier type; a `value &` variable
+// (`void f(value &v) { v = 5; }` — the reference denotes the carrier, its
+// address is the stored pointer, object_arg_addr's reference arm); a keyed or
+// indexed carrier subscript (`bag["k"] = x` — the slot is a value lvalue, its
+// address the slot call, object_arg_addr's keyed arm). ONE rule for the left
+// operand's admission and for the reversed equality candidate's right one.
+bool CirBuilder::carrier_operand_lvalue(TokenBase *t)
+{
+	if (!t)
+		return false;
+	if ((t->type() == TokenType::ttVariable || t->type() == TokenType::ttMember)
+	    && unqualified_type(t->datadef()) == &ddARRAY)
+		return true;
+	if (t->type() == TokenType::ttVariable && t->datadef()
+	    && t->datadef()->is_reference()
+	    && unqualified_type(ref_param_referent(t->datadef())) == &ddARRAY)
+		return true;
+	// A carrier-typed conditional yields a value lvalue either way: the
+	// lvalue conditional of two value lvalues, or the materialized
+	// prvalue's temp (carrier_ternary_value) — object_arg_addr binds it.
+	if (t->as_terq_tok() && unqualified_type(t->datadef()) == &ddARRAY)
+		return true;
+	return is_carrier_keyed_subscript(t);
+}
+
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				       const char *opsym_override)
 {
@@ -18231,30 +18374,16 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// without unwrapping plain pointers (only the reference representation).
 	DataDefCLASS *lcls = operand_object_class(top->left);
 	// The intrinsic value carrier (`array`/`value`/`var` — ddARRAY) is a
-	// compiler-known class with NATIVE operator= methods (add_array_methods)
+	// compiler-known class with NATIVE operator methods (add_array_methods)
 	// but lives outside the user-class universe (as_user_class requires
 	// dtRESERVED; array objects lower to aligned long[] buffers). Admit an
-	// lvalue of it here so scalar (re)assignment resolves through the same
-	// operator machinery; operators it lacks decline in
-	// select_operator_overload and fall through unchanged.
-	if (!lcls && top->left
-	    && (top->left->type() == TokenType::ttVariable
-		|| top->left->type() == TokenType::ttMember)
-	    && unqualified_type(top->left->datadef()) == &ddARRAY)
-		lcls = &ddARRAY;
-	// A `value &` variable lvalue (`void f(value &v) { v = 5; }`): the
-	// reference denotes a carrier lvalue — same admission; the receiver
-	// address is the stored pointer (object_arg_addr's reference arm).
-	if (!lcls && top->left
-	    && top->left->type() == TokenType::ttVariable
-	    && top->left->datadef() && top->left->datadef()->is_reference()
-	    && unqualified_type(ref_param_referent(top->left->datadef())) == &ddARRAY)
-		lcls = &ddARRAY;
-	// A KEYED carrier subscript lvalue (`bag["k"] = x`, `bag.k = x`): the
-	// map slot is a value lvalue — admit ddARRAY so the registered
-	// operator= family (madarray_assign_*) resolves; the receiver address
-	// is the slot call itself (object_arg_addr's keyed arm).
-	if (!lcls && is_carrier_keyed_subscript(top->left))
+	// lvalue of it here so scalar (re)assignment and the equality rows
+	// resolve through the same operator machinery; operators it lacks
+	// decline in select_operator_overload and fall through unchanged.
+	// carrier_operand_lvalue is the ONE admission rule (a variable or
+	// member, a `value &` variable, a keyed subscript) — the reversed
+	// candidate below reads it for the RIGHT operand too.
+	if (!lcls && carrier_operand_lvalue(top->left))
 		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
@@ -18265,6 +18394,23 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		if (ofd) lcls = class_behind(&ofd->return_value_type());
 	}
 	if (!lcls) {
+		// `6 == v` / `E::z != v`: a scalar lhs with the CARRIER on the
+		// right. The carrier's equality rows are member rows (receiver
+		// on the left), so nothing bound and the expression fell to
+		// c2mir's pointer-vs-integer compare — false, silently.
+		// C++20 [over.match.oper]/3.4 adds the REWRITTEN reversed
+		// candidate `v == 6` for == and != (both symmetric); do the
+		// same: swap the operands for the lookup, restore them after.
+		// Only the two symmetric operators — an ordering operator would
+		// need its mirror (`<` -> `>`), which is the <=> lane's job.
+		if ((top->id() == TokenID::tkEquals || top->id() == TokenID::tkNotEq)
+		    && !opsym_override && carrier_operand_lvalue(top->right)
+		    && !operand_object_class(top->left)) {
+			std::swap(top->left, top->right);
+			node_t rev = class_operator_call(top, origin, NULL);
+			std::swap(top->left, top->right);
+			if (rev) return rev;
+		}
 		// `"pre" + s`: a non-class lhs with a CLASS rhs — only the free
 		// operator set's mixed shape can bind (no member candidate).
 		if (!operand_object_class(top->right)) return NULL;
@@ -20873,6 +21019,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (live)
 					return translate_expr(live);
 			}
+			// A carrier prvalue ([expr.cond]/4) materializes into a temp
+			// the selected arm assigns (carrier_ternary_value).
+			if (carrier_ternary_needs_temp(tq))
+				return carrier_ternary_value(tq, tb);
 			node_t cond = translate_cond(tq->condition);
 			// A throw-expression branch ([expr.cond]/2): the conditional's
 			// type is the OTHER (non-throw) branch's; the throw branch is a
@@ -20956,8 +21106,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					       ? node1(N_ADDR, flat, tb) : flat;
 			// `&s.valuemember` — same decay as `&valueobj`; see the
 			// address-of-variable arm above for why N_ADDR is the wrong type.
-			if (tae->expr && is_array_object(tae->expr->datadef()))
-				return translate_expr(tae->expr);
+			// The decay is a fact about carrier STORAGE (an opaque
+			// `long long name[N]` variable or member: the translation IS
+			// the address). A carrier value LVALUE is different: a keyed
+			// or indexed subscript (`var &r = o["h"]` — the reference
+			// initializer the parser wrapped in this address-of), a
+			// reference read, translate to N_DEREF(pointer) and there is
+			// nothing to decay — the address is the pointer under the
+			// deref (&* folds), cast to void* as object_arg_addr's
+			// keyed-subscript arm does. Returning the bare translation
+			// LOADED the slot's first word and bound the reference to
+			// that integer (c2mir: "assigning integer without cast to
+			// pointer"; SIGSEGV in madarray_key_slot / madarray_assign_int
+			// — tests/testvarrefslot.mad).
+			if (tae->expr && is_array_object(tae->expr->datadef())) {
+				node_t inner = translate_expr(tae->expr);
+				cir_node *in = inner ? CIR_NODE(inner) : NULL;
+				if (in && in->base.code == N_DEREF)
+					return node2(N_CAST, void_ptr_type(),
+						     node1(N_ADDR, inner, tb), tb);
+				return inner;
+			}
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
 		}
 	}

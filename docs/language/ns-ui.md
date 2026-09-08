@@ -113,6 +113,7 @@ properties (`path`, `modified`, `read_only`) are application bag keys.
 | `text_line(out, w, e, n)` | Line `n`'s text (empty when absent) |
 | `text_line_start(w, e, n)` | Line `n`'s byte offset (−1 when absent) |
 | `text_line_len(w, e, n)` | Line `n`'s length sans `'\n'` (−1 when absent) |
+| `text_line_of(w, e, off)` | The 1-based line containing byte `off` (indexed; `off == size` after a terminated last line answers `line_count + 1`, the phantom line; −1 = no component) |
 | `text_find(w, e, from, needle)` | First occurrence at/after `from` (−1 = none) |
 | `text_word_left(w, e, from)` / `text_word_right(w, e, from)` | Word motion (JOE `^Z`/`^X` duals over `[A-Za-z0-9_]`): the previous word's first byte / just past the next word's end (−1 = no component) |
 | `text_checkpoint(w, e, meta)` | Snapshot the buffer BEFORE a mutation, with an opaque payload |
@@ -306,6 +307,22 @@ offsets). Events arrive as value objects, names at the boundary:
 | `{event:"focus"}` / `{event:"resize"}` | — | Recompose and re-render |
 | `{event:"wake"}` | — | Cooperative background tasks drained: recompose |
 | `{event:"snapshot", text}` | the page's rendered text | A web target's page answered `madcSnapshot()` (the test seam) |
+| `{event:"pointer", phase, offset, subject}` | `"down"` / `"drag"` / `"up"`, a BYTE offset, the entity the node projects | A pointing-device gesture on an `edit` node, resolved by the engine to the offset in that node's text (the web target's hit test today; a terminal's mouse reporting takes the same shape). `subject` is absent when the node projects nothing — set it (the edit node's `subject` = its document) so a multi-window composer knows which window was hit. The shared editor core's `edit_pointer` is the one caret model for it: a press places the caret, a drag lights the selection through the same mark (and end, under a two-point personality), a release ends the gesture |
+
+**The vocabularies are enums.** Every event object also carries the
+enumerator values beside the names: `event_code` (`ui::event_kind`),
+`key_code` on a key event (`ui::key`), `phase_code` on a pointer event
+(`ui::pointer_phase`). Compare against those — `ev["key_code"] ==
+ui::key::down` is checked by the compiler, where `k == "down"` was a
+string a typo turned into a silent miss. The three enums are ONE text,
+`include/madc/bits/ui_enums`, that the engine (`tui_key`,
+`tui_event_kind`, `pointer_phase` alias it) and `<ns_ui>` both include, so
+there is no second copy to drift. Control chords (`"^s"`) and printables
+stay names: a chord is a key plus a letter, the bindings-table vocabulary.
+`ui::key_code(name)` turns a key spelling into its enumerator
+(`ui::key::none` when it is not one) for an application that synthesizes a
+key event from an action name (the editor's "the action name IS the key
+spelling" rule).
 
 **Keybindings are data.** `tui_bind_keys` installs a whole profile: a
 value object mapping key SEQUENCES to action names
@@ -385,7 +402,8 @@ means anything in JavaScript.
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog — the last two optional: `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted — `{"kind":"action","action":id}`, a native menu selection, the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `dialogs(t)` / `dialog(t, json)` | Native file dialogs: can the target show one (a window whose host draws chrome; the terminal cannot), and show the one the request describes — true = up, the answer arrives as an `{event:"dialog", mode, path}` event; false = not here, the application falls back to its own prompt |
 
 `madc::module_available("madcwebview")` answers whether the window can
 exist on this system; `tools/texteditor/vised.mad <file> --web` is the
@@ -402,15 +420,81 @@ and the window honours:
 
 | Hint | On | The window |
 |------|----|-----------|
-| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar` |
+| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar`; the nodes docked into one region STACK in the slot in tree order |
+| `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
 | `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
-| `items` (`{left,right}`) | the status node | the status bar's justified item pair (the same JOE seats the terminal shows as one string) |
+| `items` (`{left:[…],right:[…]}`) | the status node | the status bar as chrome: each side a row of SEGMENTS `{seat, label, text}` — one per JOE format seat that showed text (`%n` the name, `%r`/`%c` with their `Row`/`Col` labels, `%m` the modified badge, `%k` the pending chord …), laid as discrete themeable items (`.sb-seat.sb-<letter>`); the terminal shows the same expansion as one string |
 | `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope |
+| `menu` (`{bar:[{title,items:[{id,title,enabled?}\|{sep}]}]}`) | the root | the command / menu contribution: the bar's menus in order, each item a command id + title, `enabled: 0` when its `[when]` fails now; a chrome-rendering client draws it natively, the terminal ignores it |
+
+**Menus and commands are data.** `profiles/default.menu` is the one
+description a menu bar, a command palette, or any client that renders
+commands natively reads (the VS Code contribution shape: a command registry
+plus a menu-location map, one action vocabulary): one line per item,
+`MENU COMMAND TITLE… [WHEN]`, `MENU -` a separator, comments and blanks as
+in every profile file. `COMMAND` is an action id from the vocabulary the
+key profiles bind and the dispatcher understands — never a key spelling: a
+renderer shows the chord the LOADED profile binds to the id, so the
+composed tree stays profile-independent. `[WHEN]` names the context that
+enables the item (`key`, `!key`, joined by `&&`; the keys: `editable`
+`dirty` `selection` `split` `buffers` `project` `building` `modal`
+`viewing`), judged against the session's live facts at every compose. The
+menu named `palette` lists palette-only commands (a title for every
+command the bar does not carry). `scripts/check-madcide-command-registry.sh`
+(fulltest) keeps the three in agreement: every profile action is registered
+or a key spelling, every dispatched action is registered, every registered
+command is dispatched.
+
+**The native menu bar.** The window draws that description as real
+application chrome: the engine resolves each command's bound chord from the
+installed key profile (`key`, the shortest sequence bound to the id — the
+composed tree stays profile-independent, the host's view carries the keys)
+and hands the host the whole menu whenever any title, key or enablement
+changed. The host (`<ns_ui_web>`) walks it item by item into madc's
+extension of the webview library (`madcwebview_menu_begin` / `_add` /
+`_separator` / `_end`, declared in the embedded `webview.h` beside
+upstream's API; `src/madcwebview_chrome.cc` implements them in
+`libmadcwebview`): on GTK4 a `GtkPopoverMenuBar` over a `GMenu` model, the
+webview re-parented beneath it, each item an action under the `menu.`
+prefix — a single-key chord becomes the item's accelerator, a multi-key
+chord is shown in its label. Choosing an item posts
+`{"kind":"action","action":id}` back through the host's one door, so the
+session dispatches it exactly as it dispatches the chord. Win32 and Cocoa
+answer "unsupported" until their native menus land (the window keeps the
+page as it is). `ui_web::menu_activate(id)` fires an item by id — the test
+seam `tests/gui/madcide_menu.mad` drives.
+
+**Native file dialogs.** Open File and Save As are a request / response
+VERB between the session and its client, never a widget the session
+draws: a client that can show native dialogs pushes the fact
+(`IdeSession::dialogs`, from `ui::dialogs(t)`), and then those commands
+park a `filedialog` request — mode, title, the initial path — in the same
+slot the terminal requests ride; the client shows it (`ui::dialog`, the
+host's `dialog` op, `madcwebview_dialog_open` / `_save`: a `GtkFileDialog`
+on GTK 4.10+, asynchronous inside the platform loop) and the answer comes
+back as a `dialog` event the dispatcher applies — open edits the chosen
+file, save writes the buffer under the new path (its buffer row follows),
+`""` cancels. Without the fact (the terminal, a headless session) both
+commands keep JOE's prompts exactly as before, and a platform without a
+native dialog yet (Win32, Cocoa) falls back to the same prompts through
+`IdeSession::dialog_fallback`. Paths are the one local workspace's; the
+URI scheme / authority addressing of the two-sided file model lands with
+the remote-transport arc. `tests/testidedialog.mad` pins the verb
+headless; `testuihostfake` the seam.
 
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is
-byte-identical. `@gui prop value` lines in `profiles/*.theme` feed the
+byte-identical. The grid places SLOTS, one per region a parent's children
+name, never a node: two nodes docked into one region stack inside its slot
+(a grid area given two direct children would overlap them), and a child
+that names no region flows to the `foot` slot under the status bar (the
+message line) instead of the first empty grid cell. The ^K O split rides
+this: with two-plus windows the composer docks EVERY window's status line
+and edit node into `editor`, so the window stack reads as JOE's screen —
+a status line heading each window, the inactive windows at their `rows`
+height, the active one flexing and marked; the status bar slot is empty
+while split, and the single window's status returns to it. `@gui prop value` lines in `profiles/*.theme` feed the
 web colours/fonts through the ONE `@scope` rule the key tables use
 (`scope_line_parts`, shared by `parse_keys` and `load_theme`); the
 unscoped JOE-vocabulary lines still feed the terminal — one file, two
@@ -419,6 +503,21 @@ renderings. While a build streams, its output docks as the `panel` region
 until the embedded terminal lands. `tests/gui/madcide_{workbench,theme,
 render}.mad` are the suite's fixtures (Xvfb, JIT / exe / `.o`); the full
 `--gui` loop is a manual gate.
+
+**Remote X displays.** GTK4 paints the window through its GL renderer,
+which on a software GL (any X server without a GPU) presents frames over
+MIT-SHM. An X connection over TCP has no shared memory — `DISPLAY` names
+a host, as a Docker container talking to a Windows or remote X server does
+— and there the GL path paints a BLACK window, or never paints the region a
+window grow exposes (measured 2026-09-08 against `Xvfb -listen tcp`). The
+web target therefore defaults `GSK_RENDERER=cairo` (GTK's XPutImage
+renderer) when `DISPLAY` names a host and no renderer was chosen; a local
+display keeps GTK's default. Set `GSK_RENDERER` yourself to override. The
+software-GL flags (`LIBGL_ALWAYS_SOFTWARE=1`,
+`WEBKIT_DISABLE_COMPOSITING_MODE=1`) do not cure the black window on their
+own. A relative `LD_LIBRARY_PATH` (e.g. `lib`) breaks WebKit's sandboxed
+web-process launch (`bwrap: execvp … WebKitWebProcess: No such file`, exit
+133) — use an absolute path or none (the module map finds `lib/` itself).
 
 ## Thread contract
 

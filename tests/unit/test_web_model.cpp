@@ -25,6 +25,8 @@ using madc::hub::tui_key;
 using madc::hub::tui_keyev;
 using madc::hub::tui_event;
 using madc::hub::tui_event_kind;
+using madc::hub::pointer_phase;
+using madc::hub::entity_id;
 using madc::hub::tui_bindings;
 using madc::hub::web_model;
 using madc::hub::web_line_col;
@@ -198,6 +200,250 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     web_line_col("", 3, line, col);
     CHECK(line == 0u);
     CHECK(col == 0u);
+}
+
+// An edit node over `text` with the given {s, e, cls} rows, in that order.
+static uinode spanned_edit(const roles &r, const char *text,
+			   const std::vector<std::vector<long> > &rows,
+			   const std::vector<const char *> &classes)
+{
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    std::vector<madc::value> spans;
+    for ( size_t i = 0; i < rows.size(); ++i )
+    {
+	std::map<std::string, madc::value> row;
+	row["s"] = madc::value((int64_t)rows[i][0]);
+	row["e"] = madc::value((int64_t)rows[i][1]);
+	row["cls"] = madc::value(std::string(classes[i]));
+	spans.push_back(madc::value::make_object(row));
+    }
+    std::map<std::string, madc::value> h;
+    h["spans"] = madc::value::make_array(spans);
+    edit.hints = madc::value::make_object(h);
+    return edit;
+}
+
+TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans clip per line")
+{
+    world w;
+    roles r = roles::standard(w);
+    // Lines [0,8) [9,17) [18,26) and the empty line after the trailing
+    // newline. `a` spans three lines, `b` nests inside line 1, `c` starts
+    // on line 1 and reaches past the end of the text.
+    const char *text = "abcdefgh\nijklmnop\nqrstuvwx\n";
+    std::vector<std::vector<long> > rows;
+    rows.push_back(std::vector<long>{ 0, 20 });
+    rows.push_back(std::vector<long>{ 2, 5 });
+    rows.push_back(std::vector<long>{ 7, 30 });
+    std::vector<const char *> classes;
+    classes.push_back("a");
+    classes.push_back("b");
+    classes.push_back("c");
+    nlohmann::json want = nlohmann::json::parse(
+	"[{\"t\":\"abcdefgh\",\"s\":[[0,8,\"a\"],[2,3,\"b\"],[7,1,\"c\"]]},"
+	"{\"t\":\"ijklmnop\",\"s\":[[0,8,\"a\"],[0,8,\"c\"]]},"
+	"{\"t\":\"qrstuvwx\",\"s\":[[0,2,\"a\"],[0,8,\"c\"]]},"
+	"{\"t\":\"\",\"s\":[]}]");
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(
+	m.compose(r, spanned_edit(r, text, rows, classes)));
+    const nlohmann::json *e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"] == want);
+
+    // Rows arriving out of start order emit the same line-DOM: the model
+    // orders by start (stably), a contract of the sweep.
+    std::vector<std::vector<long> > shuffled;
+    shuffled.push_back(rows[2]);
+    shuffled.push_back(rows[0]);
+    shuffled.push_back(rows[1]);
+    std::vector<const char *> shuffled_cls;
+    shuffled_cls.push_back("c");
+    shuffled_cls.push_back("a");
+    shuffled_cls.push_back("b");
+    web_model m2;
+    ops = nlohmann::json::parse(
+	m2.compose(r, spanned_edit(r, text, shuffled, shuffled_cls)));
+    e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"] == want);
+
+    // A span ending exactly after a newline gives the next line nothing.
+    std::vector<std::vector<long> > tail;
+    tail.push_back(std::vector<long>{ 5, 9 });
+    std::vector<const char *> tail_cls;
+    tail_cls.push_back("d");
+    web_model m3;
+    ops = nlohmann::json::parse(
+	m3.compose(r, spanned_edit(r, text, tail, tail_cls)));
+    e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"][0]["s"] == nlohmann::json::parse("[[5,3,\"d\"]]"));
+    CHECK((*e)["lines"][1]["s"] == nlohmann::json::parse("[]"));
+}
+
+// group -> [heading, edit(text, caret, one keyword span [0,2))]; `extra`
+// prepends a content node so the edit's key path shifts from 0.1 to 0.2.
+static uinode doc_tree(world &w, const char *text, long caret,
+		       bool extra = false, long span_end = 2)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    if ( extra )
+    {
+	uinode para(r.content);
+	para.content = madc::value(std::string("banner"));
+	root.add(para);
+    }
+    uinode head(r.heading);
+    head.label = madc::value(std::string("doc"));
+    root.add(head);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)caret);
+    std::map<std::string, madc::value> row;
+    row["s"] = madc::value((int64_t)0);
+    row["e"] = madc::value((int64_t)span_end);
+    row["cls"] = madc::value(std::string("keyword"));
+    std::vector<madc::value> spans;
+    spans.push_back(madc::value::make_object(row));
+    h["spans"] = madc::value::make_array(spans);
+    edit.hints = madc::value::make_object(h);
+    root.add(edit);
+    return root;
+}
+
+static const nlohmann::json *edit_op(const nlohmann::json &ops, const char *key = "0.1")
+{
+    const nlohmann::json *e = node_by_key(ops, key);
+    REQUIRE(e);
+    REQUIRE((*e)["class"] == "edit");
+    return e;
+}
+
+// The patch an edit op carries — asserted present first (a const lookup of
+// an absent key is a json assertion, not a test failure).
+static nlohmann::json patch_of(const nlohmann::json *e)
+{
+    REQUIRE(e->find("patch") != e->end());
+    return (*e)["patch"];
+}
+
+TEST_CASE("compose — the edit node is incremental: full first, then one splice, nothing for a caret move")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    // First paint: the full line-DOM and its count.
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    const nlohmann::json *e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK((*e)["lines"] == nlohmann::json::parse(
+	"[{\"t\":\"ab\",\"s\":[[0,2,\"keyword\"]]},{\"t\":\"cd\",\"s\":[]}]"));
+    CHECK(e->find("patch") == e->end());
+
+    // The same document again: neither lines nor a patch (a resize, a wake).
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK(e->find("lines") == e->end());
+    CHECK(e->find("patch") == e->end());
+
+    // A caret move: no line work; the caret field carries it.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 4)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK(e->find("patch") == e->end());
+    CHECK((*e)["caret"] == nlohmann::json{ {"line", 1}, {"col", 1} });
+
+    // A span change with the text unchanged is a line change too.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 4, false, 1)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":0,\"del\":1,\"ins\":[{\"t\":\"ab\",\"s\":[[0,1,\"keyword\"]]}]}"));
+
+    // One character typed into line 2: replace that one row.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncXd", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());
+    CHECK((*e)["nlines"] == 2);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":1,\"del\":1,\"ins\":[{\"t\":\"cXd\",\"s\":[]}]}"));
+
+    // Enter inside line 2: one row becomes two.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\nc\nXd", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 3);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":1,\"del\":1,\"ins\":[{\"t\":\"c\",\"s\":[]},{\"t\":\"Xd\",\"s\":[]}]}"));
+
+    // A line appended at the end: an insertion with nothing deleted.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\nc\nXd\nef", 5, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 4);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":3,\"del\":0,\"ins\":[{\"t\":\"ef\",\"s\":[]}]}"));
+
+    // The first line deleted. The keyword span rides the document's first
+    // byte, so the NEW first line "c" carries it while the old second line
+    // "c" did not: the common suffix is Xd/ef, and the splice replaces two
+    // old rows with the one re-spanned row.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "c\nXd\nef", 0, false, 1)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 3);
+    CHECK(patch_of(e) == nlohmann::json::parse(
+	"{\"at\":0,\"del\":2,\"ins\":[{\"t\":\"c\",\"s\":[[0,1,\"keyword\"]]}]}"));
+
+    // And a plain first-line deletion with no span in play: pure removal.
+    web_model m2;
+    ops = nlohmann::json::parse(m2.compose(r, doc_tree(w, "ab\ncd\nef", 0, false, 0)));
+    ops = nlohmann::json::parse(m2.compose(r, doc_tree(w, "cd\nef", 0, false, 0)));
+    e = edit_op(ops);
+    CHECK((*e)["nlines"] == 2);
+    CHECK(patch_of(e) == nlohmann::json::parse("{\"at\":0,\"del\":1,\"ins\":[]}"));
+}
+
+TEST_CASE("compose — an edit key that moves, a resync, and reset_surface paint in full again")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    const nlohmann::json *e = edit_op(ops);
+    REQUIRE(e->find("lines") != e->end());
+
+    // A node inserted before the editor moves its key (0.1 -> 0.2): a new
+    // key paints in full, and the old key's basis is dropped with it.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0, true)));
+    e = edit_op(ops, "0.2");
+    CHECK(e->find("lines") != e->end());
+    CHECK(node_by_key(ops, "0.1")->at("class") == "heading");
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") != e->end());		// 0.1 forgot — full again
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") == e->end());		// and steady once more
+
+    // The page's resync: one focus event (the application recomposes), and
+    // the next compose paints every edit node in full.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"resync\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    e = edit_op(ops);
+    CHECK(e->find("lines") != e->end());
+    CHECK((*e)["nlines"] == 2);
+
+    // ui::refresh's reset does the same.
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    CHECK(edit_op(ops)->find("lines") == edit_op(ops)->end());
+    m.reset_surface();
+    ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncd", 0)));
+    CHECK(edit_op(ops)->find("lines") != edit_op(ops)->end());
 }
 
 TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's input")
@@ -403,10 +649,22 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     web_model m;
     uinode root(r.group);
     uinode status(r.status);
-    status.content = madc::value(std::string("Ln 1        Row 2"));  // TUI string
+    status.content = madc::value(std::string("notes.txt        Row 2"));  // TUI string
+    // The composer's segments: {seat, label, text} per shown format seat.
+    std::map<std::string, madc::value> nseg;
+    nseg["seat"] = madc::value(std::string("n"));
+    nseg["label"] = madc::value(std::string(""));
+    nseg["text"] = madc::value(std::string("notes.txt"));
+    std::map<std::string, madc::value> rseg;
+    rseg["seat"] = madc::value(std::string("r"));
+    rseg["label"] = madc::value(std::string("Row"));
+    rseg["text"] = madc::value(std::string("2"));
+    std::vector<madc::value> left, right;
+    left.push_back(madc::value::make_object(nseg));
+    right.push_back(madc::value::make_object(rseg));
     std::map<std::string, madc::value> items;
-    items["left"] = madc::value(std::string("Ln 1"));
-    items["right"] = madc::value(std::string("Row 2"));
+    items["left"] = madc::value::make_array(left);
+    items["right"] = madc::value::make_array(right);
     std::map<std::string, madc::value> h;
     h["items"] = madc::value::make_object(items);
     status.hints = madc::value::make_object(h);
@@ -417,10 +675,15 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     const nlohmann::json *st = node_by_key(ops, "0.0");
     REQUIRE(st);
     CHECK((*st)["class"] == "status");
-    CHECK((*st)["text"] == "Ln 1        Row 2");	// the TUI combined string
+    CHECK((*st)["text"] == "notes.txt        Row 2");	// the TUI combined string
     REQUIRE((*st).contains("items"));
-    CHECK((*st)["items"]["left"] == "Ln 1");
-    CHECK((*st)["items"]["right"] == "Row 2");
+    REQUIRE((*st)["items"]["left"].size() == 1);
+    CHECK((*st)["items"]["left"][0]["seat"] == "n");
+    CHECK((*st)["items"]["left"][0]["text"] == "notes.txt");
+    REQUIRE((*st)["items"]["right"].size() == 1);
+    CHECK((*st)["items"]["right"][0]["seat"] == "r");
+    CHECK((*st)["items"]["right"][0]["label"] == "Row");
+    CHECK((*st)["items"]["right"][0]["text"] == "2");
 
     // A status without items carries none (negative control).
     web_model m2;
@@ -433,4 +696,173 @@ TEST_CASE("compose — a status node with items renders a left/right item bar")
     REQUIRE(st2);
     CHECK((*st2)["text"] == "just text");
     CHECK((*st2).find("items") == (*st2).end());
+}
+
+// A bare edit node projecting `subject` — the pointer event's identity.
+static uinode pointer_tree(world &w, const char *text, entity_id subject)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string(text));
+    edit.subject = subject;
+    root.add(edit);
+    return root;
+}
+
+// The native menu (S2): the root's `menu` hint, resolved against the bindings
+// (each command's shortest bound chord), as the JSON the host draws — sent
+// only when it changed; a host selection arrives as {"kind":"action"}.
+static uinode menu_tree(world &w, const char *file_title, bool with_menu = true)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("ab"));
+    root.add(edit);
+    if ( !with_menu )
+	return root;
+    std::map<std::string, madc::value> save;
+    save["id"] = madc::value(std::string("save"));
+    save["title"] = madc::value(std::string("Save"));
+    std::map<std::string, madc::value> sep;
+    sep["sep"] = madc::value((int64_t)1);
+    std::map<std::string, madc::value> quit;
+    quit["id"] = madc::value(std::string("quit"));
+    quit["title"] = madc::value(std::string("Quit"));
+    quit["enabled"] = madc::value((int64_t)0);
+    std::vector<madc::value> items;
+    items.push_back(madc::value::make_object(save));
+    items.push_back(madc::value::make_object(sep));
+    items.push_back(madc::value::make_object(quit));
+    std::map<std::string, madc::value> file;
+    file["title"] = madc::value(std::string(file_title));
+    file["items"] = madc::value::make_array(items);
+    std::vector<madc::value> bar;
+    bar.push_back(madc::value::make_object(file));
+    std::map<std::string, madc::value> menu;
+    menu["bar"] = madc::value::make_array(bar);
+    std::map<std::string, madc::value> h;
+    h["menu"] = madc::value::make_object(menu);
+    root.hints = madc::value::make_object(h);
+    return root;
+}
+
+TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    tui_bindings b;
+    b.bind("^k d", "save");
+    b.bind("^s", "save");		// the single key wins over the chord
+    b.bind("^k s", "save");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+
+    m.compose(r, menu_tree(w, "File"));
+    CHECK(m.menu_changed());
+    nlohmann::json mj = nlohmann::json::parse(m.menu_json(), nullptr, false);
+    REQUIRE(!mj.is_discarded());
+    REQUIRE(mj["bar"].size() == 1);
+    CHECK(mj["bar"][0]["title"] == "File");
+    const nlohmann::json &items = mj["bar"][0]["items"];
+    REQUIRE(items.size() == 3);
+    CHECK(items[0]["id"] == "save");
+    CHECK(items[0]["title"] == "Save");
+    CHECK(items[0]["key"] == "^s");
+    CHECK(items[0]["enabled"] == true);
+    CHECK(items[1]["sep"] == true);
+    CHECK(items[2]["id"] == "quit");
+    CHECK(items[2]["enabled"] == false);
+    CHECK(items[2].find("key") == items[2].end());	// unbound: no chord
+
+    m.compose(r, menu_tree(w, "File"));		// the same menu: unchanged
+    CHECK(!m.menu_changed());
+    m.compose(r, menu_tree(w, "Datei"));		// a title changed
+    CHECK(m.menu_changed());
+    tui_bindings b2;
+    b2.bind("^q", "save");
+    REQUIRE(b2.finalize(err));
+    m.set_bindings(b2);
+    m.compose(r, menu_tree(w, "Datei"));		// the bindings changed: re-sent
+    CHECK(m.menu_changed());
+    CHECK(nlohmann::json::parse(m.menu_json())["bar"][0]["items"][0]["key"] == "^q");
+    m.compose(r, menu_tree(w, "Datei", false));	// the menu left the tree
+    CHECK(m.menu_changed());
+    CHECK(m.menu_json().empty());
+    m.compose(r, menu_tree(w, "Datei", false));
+    CHECK(!m.menu_changed());
+
+    // A native selection: the same action event a chord produces, no seq.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"save\"}");
+    REQUIRE(ev.size() == 1);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "save");
+    CHECK(ev[0].seq.empty());
+    CHECK(m.apply_input("{\"kind\":\"action\"}").empty());
+    CHECK(m.apply_input("{\"kind\":\"action\",\"action\":\"\"}").empty());
+}
+
+TEST_CASE("apply_input — a pointer gesture resolves to a byte offset over the node's rows; focus follows it")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, doc_tree(w, "ab\ncd", 0));		// edit key "0.1": rows ab / cd
+
+    std::vector<tui_event> ev = m.apply_input(
+	"{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::pointer);
+    CHECK(ev[0].phase == pointer_phase::down);
+    CHECK(ev[0].offset == 4);			// "ab\n" + 1
+    CHECK(ev[0].subject == 0);
+    // Past the end of a line: its end. Past the last line: the text's end.
+    // Before the first line: 0. Drag and up carry their phase.
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"drag\",\"key\":\"0.1\",\"line\":0,\"col\":9}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == pointer_phase::drag);
+    CHECK(ev[0].offset == 2);
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"up\",\"key\":\"0.1\",\"line\":7,\"col\":0}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].phase == pointer_phase::up);
+    CHECK(ev[0].offset == 5);
+    ev = m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":-3,\"col\":4}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 0);
+    // A key with no basis (a node that is not an edit, a pruned one), a
+    // phase outside the vocabulary, a missing field: nothing, no throw.
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":0,\"col\":0}").empty());
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"tap\",\"key\":\"0.1\",\"line\":0,\"col\":0}").empty());
+    CHECK(m.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.1\",\"line\":0}").empty());
+
+    // Columns arrive as UTF-16 units (the page's string indices) and leave
+    // as bytes: a two-byte é is one unit, a four-byte emoji two (a column
+    // inside the pair snaps to its start). The node's subject rides along.
+    web_model m2;
+    m2.compose(r, pointer_tree(w, "h\xC3\xA9llo\n\xF0\x9F\x98\x80" "ab", 42));
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":0,\"col\":2}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 3);
+    CHECK(ev[0].subject == 42u);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":2}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7 + 4);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":1}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7);
+    ev = m2.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.0\",\"line\":1,\"col\":3}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].offset == 7 + 5);
+
+    // A press is a focus gesture: with the menu autofocused, a pointer on
+    // the edit moves the focus slot to it (the next keys are its).
+    web_model m3;
+    m3.compose(r, editor_tree(w, 0, -1, -1, true));	// edit = slot 0, menu = slot 1 (autofocus)
+    CHECK(m3.focus_slot() == 1u);
+    ev = m3.apply_input("{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":0,\"col\":0}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(m3.focus_slot() == 0u);
 }

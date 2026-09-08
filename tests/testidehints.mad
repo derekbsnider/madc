@@ -23,6 +23,10 @@ int main()
     load_status(w, es, "joe");
     IdeSession S;
     S.attach(w, es);
+    // The buffer table row 0 (what IdeSession::open seeds): the split
+    // composes inactive windows from their buffer rows.
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
 
     // Base tree: status at children[0], the edit node at children[1] (the
     // order testmadcide pins). The regions place them in the workbench.
@@ -48,5 +52,34 @@ int main()
     // Additive-only: the grid model still reads the edit node's own hints
     // (caret) unchanged beside the new region key.
     println("caret-hint: {}", ed["hints"]["caret"]);
+
+    // IDE-9e windows in the workbench (S5): with two-plus windows EVERY
+    // window's status line and edit node docks into the editor slot — a
+    // window's status line is its header there, stacked in tree order (the
+    // JOE shape; the terminal reads none of it, testmadcide pins its
+    // shape). No node is left without a slot: an unplaced node would fall
+    // into the grid's empty rail cell. Back to one window the status
+    // returns to the status bar.
+    ui::set(w, es, "pane", "");
+    split_window(w, es, doc);
+    var t3;
+    S.compose_ide_tree(t3, doc);
+    var k3 = t3["children"];
+    println("split: kids={} regions={}/{}/{}/{} rows-hint={}",
+	    php::count(k3),
+	    k3[0]["hints"]["region"], k3[1]["hints"]["region"],
+	    k3[2]["hints"]["region"], k3[3]["hints"]["region"],
+	    k3[3]["hints"]["rows"].is_null() ? "none" : "yes");
+    // The message row (the split's "2 windows.") is the LAST child and is
+    // unplaced: the page flows it to the foot — its region stays absent.
+    var last3 = k3[php::count(k3) - 1];
+    println("split-msg: role={} region={}", last3["role"],
+	    last3["hints"]["region"].is_null() ? "none" : "set");
+    kill_window(w, es, doc, true);
+    var t4;
+    S.compose_ide_tree(t4, doc);
+    println("one-window: status={} editor={}",
+	    t4["children"][0]["hints"]["region"],
+	    t4["children"][1]["hints"]["region"]);
     return 0;
 }

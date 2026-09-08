@@ -1,0 +1,56 @@
+// fix-what-you-find (2026-09-07, found measuring the web editor): the ONE
+// text-mutation owner's span shifter (shift_hspans, editor_events.inc)
+// rebuilt every row as { s, e, c } — a second copy of the row shape — and
+// so DROPPED the semantic `cls` slice 3.1 added to the converter's rows
+// (spans_to_hspans). The web renderer reads `cls`, so every keystroke
+// killed its syntax colour until the next reparse; the TUI reads `c` and
+// never saw it. The contract pinned here: an edit moves a row's GEOMETRY
+// (s/e) and leaves every other field the converter stamped intact.
+// Oracle: the converter's row shape (tests/testidespans.mad) — a shifted
+// row equals the unshifted row with s/e moved by the inserted length.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_spanshift.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_theme(w, es, "default");
+    long h = ensure_phandle(w, es, doc);
+    refresh_spans(w, es, doc, h);
+    var before;
+    ui::get(before, w, es, "hspans");
+
+    // An insert at the top of the document shifts every span by its
+    // length; nothing else about a row may change.
+    ed_text_insert(w, es, doc, 0, "//x\n");
+    var after;
+    ui::get(after, w, es, "hspans");
+    println("rows before={} after={}", php::count(before), php::count(after));
+    long kept = 0;
+    long shifted = 0;
+    long i = 0;
+    for ( var r : after )
+    {
+	var b = before[i];
+	var rc = r["cls"];
+	var bc = b["cls"];
+	if ( !rc.is_null() && !bc.is_null() && strcmp(rc.c_str(), bc.c_str()) == 0 )
+	    kept++;
+	if ( r["s"].as_integer() == b["s"].as_integer() + 4
+	  && r["e"].as_integer() == b["e"].as_integer() + 4 )
+	    shifted++;
+	var c = r["c"];
+	println("span cls={} c={} s={} e={}", r["cls"],
+		c.is_null() ? "-" : c.c_str(), r["s"], r["e"]);
+	i++;
+    }
+    println("all cls kept: {}", kept == php::count(after) ? "yes" : "no");
+    println("all shifted: {}", shifted == php::count(after) ? "yes" : "no");
+    return 0;
+}

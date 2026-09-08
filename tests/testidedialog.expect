@@ -1,0 +1,7 @@
+no-dialogs: prompt=Name of file to edit parked=no
+open: parked=yes kind=filedialog mode=open title=Open File prompt-empty=1
+opened: buffers=2 active-path=madc_ide_dialog_other.mad
+saveas: parked=yes mode=save initial=madc_ide_dialog_other.mad
+saved-as: path=madc_ide_dialog_copy.mad row-path=madc_ide_dialog_copy.mad exists=1 text-ok=1 msg=Wrote 7 bytes.
+cancel: msg=Cancelled. buffers=2
+fallback: prompt=Save as mode=saveas

@@ -1,0 +1,5 @@
+val: alpha
+ref: alpha
+local-ref: alpha
+ref-len: 5 alpha
+slot-ref: keyed

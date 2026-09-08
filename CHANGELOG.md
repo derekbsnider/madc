@@ -2,6 +2,303 @@
 
 ## [Unreleased]
 
+### A `var &` in a `%s` position coerces like a `var` (2026-09-08)
+
+- `void f(var &v) { printf("%s\n", v); }` crashed MIR ("wrong type memory")
+  where the same call with `var v` printed the text, and a local `var &r`
+  failed the same way: two of the CIR builder's carrier-lvalue admissions
+  knew the carrier but not a reference to it (the class-object gate admitted
+  only user-class referents; the c_str coercion admitted only the bare
+  carrier type). Both now read the reference-aware carrier reader. Found by
+  the pre-merge duplication audit of that admission family (five sites
+  answering one question — recorded in the knowledge graph for
+  consolidation with a gate). `tests/testvarrefcoerce.mad` pins a reference
+  parameter, a local reference and a reference to a keyed slot in `%s`
+  positions.
+
+### madcide: native file dialogs (S4, 2026-09-08)
+
+- Open File and Save As become a request / response VERB. A client that can
+  show native dialogs pushes the fact; the session then parks a `filedialog`
+  request (mode, title, initial path) in the one request slot the client
+  services, `ui::dialog` shows it through the host's new optional `dialog`
+  op — `madcwebview_dialog_open` / `_save` in madc's chrome extension of the
+  webview library, a `GtkFileDialog` on GTK 4.10+ answering asynchronously
+  inside the platform loop — and the answer returns as a `dialog` event
+  (`ui::event_kind::dialog`: `mode`, `path`, `""` = cancelled) the dispatcher
+  applies: open edits the chosen file, save writes the buffer under the new
+  path and moves its buffer row. `saveas` joins the command registry and the
+  File menu. Without the fact (the terminal, a headless session) both keep
+  JOE's prompts unchanged; a platform without a native dialog yet (Win32,
+  Cocoa) falls back to the same prompts. The extension source is now
+  `src/madcwebview_chrome.{h,cc}` (menu bar + dialogs).
+- `tests/testidedialog.mad` pins the verb end to end headless (park, answer,
+  save-as, cancel, fallback); `testuihostfake` pins the seam (`dialogs`,
+  `dialog`, the answer event).
+
+### madcide: the status bar is chrome (S3, 2026-09-08)
+
+- The window's status bar was the terminal's two half-strings side by side.
+  The JOE format expansion now also yields its SEGMENTS — one `{seat, label,
+  text}` per format seat that showed text (`%n` the file, `%r`/`%c` with
+  their `Row`/`Col` labels, `%m` the modified badge, `%R` read-only, `%M` the
+  vi mode, `%k` the pending chord, `%x` the enclosing function) — on the
+  status node's `items` hint, and the page lays them as discrete items with
+  semantic classes (`.sb-seat.sb-<letter>`; the badges in the accent, the mode
+  bold, the chord as a key cap, all `@gui`-themeable). One expansion, two
+  renderings: the terminal still shows the combined string.
+- `tests/testidestatus.mad` pins the segments (the name seat, Row/Col with
+  labels, the chord and modified seats lighting); `test_web_model` pins the
+  emitted arrays.
+
+### madcide: a native menu bar (S2, 2026-09-08)
+
+- The window draws the S1 menu data as real application chrome. The engine
+  resolves each command's bound chord from the installed key profile and
+  hands the host the menu as JSON only when a title, key or enablement
+  changed; a new optional host op `menu(host, json)` receives it (append-only
+  table, the fake host proves the seam). The host walks the menu into madc's
+  extension of the webview library — `madcwebview_menu_begin/add/separator/
+  end`, JSON-free, declared in the embedded `webview.h` beside upstream's API
+  (the header generator appends `src/madcwebview_menu.h`) and implemented in
+  `libmadcwebview` — which on GTK4 builds a `GtkPopoverMenuBar` over a
+  `GMenu`, re-parents the webview beneath it, and binds each item to an action
+  (a single-key chord is the accelerator, a multi-key chord shows in the
+  label). A selection posts `{"kind":"action","action":id}` through the
+  host's one door, the same action event a chord produces, so the session
+  dispatches it unchanged. Win32 / Cocoa answer "unsupported" for now.
+- `tests/gui/madcide_menu.mad` fires an item through the platform action
+  (`ui_web::menu_activate`) and sees the help pane open; `test_web_model` pins
+  the menu JSON, chord resolution, the change dedupe and the action input;
+  `testuihostfake` pins the host op and the dedupe display-free.
+
+### `c ? v : php::trim(p)` is a value (2026-09-08)
+
+- A conditional mixing a `var` with a scalar or a char pointer — a
+  function's `const char*` result, a string literal, a number, an int against
+  a keyed slot (`x.is_null() ? 1 : x`) — failed the c2mir check ("lvalue
+  required as unary & operand"), and with the char pointer on the left it
+  typed as `char*`. C++ [expr.cond]/4 applies: the class arm wins the
+  implicit conversion and the conditional is a value prvalue. The parser now
+  types it as the carrier when the other arm binds one of the carrier's
+  `operator=` rows, and the lowering materializes a temporary the SELECTED
+  arm assigns through that row — the other arm is never evaluated, exactly as
+  in C++. Two `var` lvalues keep the lvalue conditional.
+  `tests/testvarternary.mad` pins every shape against a `std::string` oracle
+  (g++ and clang++ agree).
+
+### madcide: menus and commands are data (S1, 2026-09-08)
+
+- The GUI chrome spine: `tools/madcide/profiles/default.menu` is the ONE
+  command / menu description (the VS Code contribution shape — a command
+  registry plus a menu-location map — on the one action vocabulary the key
+  profiles bind and the dispatcher understands). One line per item,
+  `MENU COMMAND TITLE… [WHEN]`; `[WHEN]` names the live context that enables
+  the item (`editable`, `dirty`, `selection`, `split`, `buffers`, `project`,
+  `building`, `modal`, `viewing`; `!` and `&&`). The session loads it beside
+  the theme and the status format, judges every item's clause at compose,
+  and carries the bar on the root's `menu` hint — ids, titles and enablement
+  only, no key spellings (a renderer shows the LOADED profile's chord), so
+  the composed tree stays profile-independent and the terminal, which reads
+  no root hints, is unchanged. The menu named `palette` titles the commands
+  the bar does not carry.
+- `scripts/check-madcide-command-registry.sh` (fulltest) keeps the profiles,
+  the dispatcher's action arm and the menu data on one vocabulary in all
+  three directions, with negative controls. `tests/testidemenu.mad` pins
+  the load, the composed bar, the `[when]` evaluation and the grammar.
+
+### The web workbench stacks a region's nodes; the ^K O split renders as windows (2026-09-08)
+
+- Owner (2026-09-08, `madcide --gui`): the JOE split "doesn't seem to work so
+  well" — the inactive window's status line and text landed beside the editor
+  in a narrow column. Two causes, one layer each. The composer stamped no
+  workbench placement on the inactive windows (or on the split's message
+  line), so CSS grid auto-placement dropped them into the empty rail cell;
+  and the page docked region'd nodes as direct grid children, so two nodes in
+  one region overlapped (a latent panel defect). Now the composer docks every
+  window's status line and edit node into the editor region while split (the
+  JOE shape: one status line heading each window; the single window's status
+  keeps the status bar), and the page places SLOTS — one per region, created
+  on demand — stacking a region's nodes in tree order; a child with no region
+  flows to a `foot` slot under the status bar. An inactive window's `rows`
+  hint (the terminal's own budget) becomes its fixed height; the active
+  window flexes and carries the accent; the terminal composition is
+  unchanged (testmadcide's shape clauses pin it).
+- `tests/testidehints.mad` pins the split's hints; `tests/gui/madcide_split.mad`
+  measures the live layout under Xvfb (stack order, fixed heights, the
+  foot, the empty status bar, and the return to one window).
+
+### The ui event vocabularies are enums the dialect compares against (2026-09-08)
+
+- Owner (2026-09-07): editor code compared key names and event kinds as
+  strings (`k == "down"`, `kind == "key"`) — a typo is a silent miss, where a
+  misspelt enumerator is a compile error. The three vocabularies — `ui::key`,
+  `ui::event_kind`, `ui::pointer_phase` — now live once, in
+  `include/madc/bits/ui_enums` (plain C++11, no includes), which the engine
+  headers include and alias (`tui_key`, `tui_event_kind`, `pointer_phase` are
+  unchanged names) and `<ns_ui>` includes for scripts. Every event object
+  carries the values beside the names (`event_code`, `key_code`,
+  `phase_code`); `ui::key_code(name)` maps a key spelling to its enumerator.
+  The editor core, vised and madcide compare kinds, named keys and phases
+  against the enums; chord spellings (`"^s"`) and action names stay strings
+  (they are bindings-table data). The dialect-lean gate gains the one include
+  a fragment may carry — a sibling `bits/` fragment — with a positive control;
+  the rule text says so.
+- `tests/testuienums.mad` pins the surface; the editor tests build their
+  events with the codes, as `ui::event` does.
+
+### `6 == v` and `v == E::z` compare by value (2026-09-08)
+
+- Two more carrier-equality shapes answered false silently. A number on the
+  LEFT (`6 == v`) never reached the carrier's member rows; the CIR builder now
+  applies C++20's rewritten reversed candidate for `==` and `!=`. A SCOPED
+  enumerator on the right tied between the `const char*` row and the integer
+  row because pointer types count as numeric in the ranker, and the
+  first-registered pointer row won (the enumerator went in as a pointer); the
+  ranker no longer lets an enumerator bind a pointer parameter (C++ has no such
+  conversion). The dialect thus compares a `var` against any enumerator by its
+  value — the surface the ui event enums need — a documented divergence from
+  C++'s scoped-enum rules, like the strict-kind number rule.
+  `tests/testvareqenum.mad` pins both shapes plus strict kind.
+
+### `var &r = o["h"]` binds the live slot (2026-09-08)
+
+- A local reference bound to a carrier subscript crashed on first use: the
+  CIR builder's address-of arm treated every carrier-typed operand as storage
+  that decays to its address, which is right for a carrier variable or member
+  but wrong for a subscript (a value lvalue — a dereference of the slot
+  pointer); dropping the address bound the reference to the slot's first word
+  (c2mir warned "assigning integer without cast to pointer", then SIGSEGV in
+  `madarray_key_slot`). The arm now decides by the translation's shape: a
+  dereference keeps its address (the slot pointer, as a `var &` PARAMETER
+  already bound it), storage still decays. `tests/testvarrefslot.mad` pins
+  object-slot, whole-carrier, scalar-slot, indexed-slot and parameter forms
+  against the g++/clang++ std::map analogue.
+
+### Web target: a remote X display paints — GTK's cairo renderer by default there (2026-09-08)
+
+- **S0 (window resize leaves the exposed region black) reproduced and traced
+  from the container.** A screenshot harness (Xvfb + `xdotool windowsize` +
+  `xwd`, a band classifier over the root dump) showed: over the unix socket
+  the grown band paints, with and without the owner's software-GL flags; over
+  a TCP X connection (the owner's shape — Docker to a Windows X server, so no
+  MIT-SHM) the WHOLE window is black while the page reports the grown
+  geometry, with Mesa logging "Failed to attach to x11 shm"; `GSK_RENDERER=
+  cairo` (or `GDK_DEBUG=gl-disable`) paints everything, grown band included;
+  the software-GL flags and `WEBKIT_DISABLE_DMABUF_RENDERER` do not help. The
+  failing layer is GTK4's GL renderer presenting frames over SHM, not WebKit
+  or the page.
+- The web target fragment now defaults `GSK_RENDERER=cairo` before GTK
+  initializes when `DISPLAY` names a host and no renderer was chosen; local
+  displays keep GTK's default; an explicit `GSK_RENDERER` always wins.
+  Documented in the ns-ui workbench section, with the trap found on the way: a
+  RELATIVE `LD_LIBRARY_PATH=lib` breaks WebKit's sandboxed web-process launch
+  (exit 133) — absolute or none. `x11-apps` and `xdotool` join the container
+  provisioning so a probe can screenshot and resize windows headlessly.
+
+### Web editor: the mouse places the caret and selects (2026-09-07)
+
+- **A click places the caret; a drag selects.** Until now the web editor's
+  mouse did nothing but refocus the hidden input, so after wheel-scrolling
+  there was no way to edit where you had scrolled to (owner, live check).
+  The chain, deepest layer first: `tui_event_kind::pointer` (`offset`,
+  `phase` down/drag/up, `subject`) joins the ONE semantic-event vocabulary;
+  `web_model::apply_input` accepts `{"kind":"pointer","phase","key","line",
+  "col"}` — the page's hit test as a line index and UTF-16 column — and
+  resolves it to a BYTE offset over the rows it emitted for that node (its
+  diff basis, extended to carry the node's focus slot and subject), focuses
+  the node, and yields one pointer event carrying the node's `subject`;
+  `ui::event` shapes it as `{event:"pointer", phase, offset, subject}`; the
+  page's pointer handlers (`mousedown`/`mousemove`/`mouseup` on `.edit`,
+  `caretPositionFromPoint` / `caretRangeFromPoint`, native selection
+  suppressed, drag posts only when the position changes, a drag past the
+  edge creeps the view a line) know geometry and nothing about the
+  document. The shared editor core gains `edit_pointer` — ONE caret model for
+  mouse and keyboard: a press places the caret and drops the selection, a
+  drag lights [press, here] through the SAME mark (plus the end under the
+  two-point personality, so the block ops see it), a release ends the
+  gesture; vised and madcide route the event to it. `compose_edit_node` now
+  sets the edit node's `subject` (the document — uinode's documented edit
+  contract), and madcide's arm uses it: a press in another window's edit
+  node activates that window first (`window_showing`, the active window's
+  buffer read live as the composer reads it). Views keep the gesture to the
+  caret, as their mark/bend actions refuse.
+- Tests: `test_web_model` (offset resolution incl. UTF-16 → byte columns,
+  clamping, malformed input, focus-follows-press), `testuihostfake` (a
+  pointer post through the display-free host → the shaped event with its
+  subject), `testvised` and `testmadcide` (the editor arm: press / drag /
+  release / re-press, the two-point ends, the window switch by subject),
+  and `tests/gui/ui_web_pointer.mad` (real MouseEvents through the real
+  handlers and hit test under Xvfb: press, drag-select, release, past a
+  line's end, below the last line, after a two-byte character).
+- **Fix found on the way**: the page used the engine's BYTE columns as
+  string indices, so after a multi-byte character the caret, selection and
+  spans drew one cell late (two after an emoji) — a silent misdraw that the
+  mouse would have surfaced as "the caret lands on the wrong letter". The
+  page now converts byte columns to string indices once per rendered line
+  (`unitsOf`, the inverse of the engine's `web_byte_col`); the wire stays
+  bytes. The GUI test's last line is `héab` so the misdraw is visible
+  (caret on `a`, not `b`; a drag lights `éa`, not `éab`).
+- Not here: a click on a `choice` option (select + choose), double-click
+  word selection, shift-click extension, and the TUI twin (xterm SGR mouse
+  reporting through the term target) — the event shape is ready for all of
+  them.
+
+### Web editor: per-keystroke cost proportional to the change (2026-09-07)
+
+- **Measured first, on the real file** (madcide_core.inc, 4557 lines, 4841
+  spans, dev build): a keystroke at mid-document cost ~840 ms — and the
+  handoff's diagnosis (the web renderer) was not the largest term.
+  `text_buffer::line_span` rescanned the piece table per call and the editor's
+  `line_of` walked it once per line, three times per composed keystroke and
+  once per caret motion: compose 433 ms + motion 135 ms, on BOTH targets.
+  text_buffer now keeps a lazily rebuilt newline index (`line_count` /
+  `line_span` O(1), new `line_of` O(log n)); `ui::text_line_of` is the
+  caret-line lookup as one engine call, and the editor's `line_of` is that
+  call. Compose 433 → 35 ms, motion 135 → 0.05 ms, the parse's span
+  conversion 1576 → 413 ms.
+- `web_model::edit_lines` clipped every span against every line (22M
+  comparisons, 140 ms): rows are start-sorted once and swept with an active
+  set. Render 165 → 55 ms, identical line-DOM.
+- **Bug**: `shift_hspans` rebuilt every span row as `{s, e, c}` on each edit,
+  dropping the semantic `cls` slice 3.1 added — the web lost all syntax
+  colour on the first keystroke until the next reparse. It now copies the row
+  and moves only its geometry (reducer `tests/testidespanshift.mad`).
+- **The editor line-DOM is incremental.** web_model keeps the rows it last
+  emitted per edit key (its diff basis, as tui_model keeps the painted grid)
+  and each compose sends ONE splice `{at, del, ins}` — nothing for a caret
+  move; full `lines` only on a key's first paint, after `ui::refresh` (now
+  honoured by the DOM frontend) or after the page's `resync`. `nlines` rides
+  every edit op; the page holds its rows and the caret/selection it drew,
+  splices in place, re-renders only lines whose caret/selection state
+  changed, and posts `{"kind":"resync"}` when its count disagrees (heals the
+  platform dropping the first render before the page loaded). The caret is
+  scrolled into view only when it moved. Native scrolling untouched; the
+  whole document stays in the DOM. Nav render 55 → 10 ms, wire 296 KB →
+  ~700 B. Shape from CodeMirror 6 / Monaco / Ace (in-process) and Neovim's
+  `grid_line` / xi-editor's line cache (thin client) — madc is the latter.
+- The page placed every existing node with `appendChild` each cycle; on the
+  attached editor that is a 100 ms subtree rebuild in WebKit. A node is now
+  placed only when it is not already in its slot. Page apply + layout per
+  keystroke 105 → 4 ms (full paint 125 ms once). `content-visibility: auto`
+  per line was tried and made it five times slower on WebKitGTK 2.52 —
+  reverted, noted.
+- `compose_ide_tree` wrote the edit node's hints through three
+  read-modify-write passes (six deep copies of the span rows); now one read
+  and one write-back. Compose 33 → 23 ms, tree byte-identical.
+- New tests: `test_text_buffer` (line index lockstep vs a string oracle,
+  `line_of` incl. the phantom line), `test_web_model` (the span sweep; the
+  incremental protocol: full/unchanged/caret/edit/Enter/append/delete/moved
+  key/resync/reset), `testuitext` (`text_line_of`), `testidespanshift`, and
+  `tests/gui/ui_web_patch.mad` (the real page under Xvfb through navigation,
+  typing, Enter, Backspace and a forced desync).
+- Recorded, not fixed here (KG Gaps): a local `var &r = o["h"]` reference to
+  a carrier slot lowers its initializer as an integer and crashes (by-ref
+  PARAMETERS work); dialect code compares key names / event kinds as strings
+  because `ui::event` converts the engine's enums to names at the boundary;
+  the carrier's deep-copy cost (~23 ms of compose) is a copy-on-write
+  decision for the owner.
+
 ### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
 
 - A source-free `madc --capabilities=json` prints a versioned JSON manifest of

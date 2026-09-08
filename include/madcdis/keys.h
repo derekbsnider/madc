@@ -25,25 +25,18 @@
 #include <string>
 #include <vector>
 
+#include "madc/bits/ui_enums"	// ui::key — the shared enum text
+
 namespace madc {
 namespace hub {
 
 // ------------------------------------------------------------------- the keys
-enum class tui_key : unsigned char
-{
-    none = 0,
-    ch,		// printable byte in `ch`
-    ctrl,	// control chord; `ch` = the lowercase letter (^S -> 's')
-		// or one of the four punctuation controls 0x1c..0x1f
-		// ('\\' ']' '^' '_' — JOE's ^_ undo / ^^ redo live here)
-    enter, tab, backspace, esc,
-    up, down, left, right,
-    home, end, pgup, pgdn, del, ins,
-    resize,	// synthesized by the target on a size change
-    wake	// synthesized by the target when cooperative background
-		// tasks drained (stage-2: a spawned parse finished while
-		// the loop was waiting for input — recompose)
-};
+// The key vocabulary is ONE text shared with the dialect: include/madc/bits/
+// ui_enums defines `ui::key` (plain C++11, no includes) for the engine AND
+// for <ns_ui>, so script code compares `ev["key_code"] == ui::key::down`
+// against the very enumerators this header switches on — no second copy to
+// drift. tui_key is that enum under the engine's name.
+typedef ::ui::key tui_key;
 
 struct tui_keyev
 {
@@ -230,6 +223,34 @@ public:
 	    }
 	}
 	return true;
+    }
+
+    // The INVERSE: the sequence a client shows beside a command (a menu
+    // item's accelerator). An action may be bound to several sequences;
+    // the one shown is the fewest-keys, then shortest, then first in
+    // spelling order — deterministic, and a single key beats a chord.
+    // Empty when the action is unbound.
+    std::string seq_for_action(const std::string &action) const
+    {
+	std::string best;
+	size_t best_keys = 0;
+	for ( std::map<std::string, std::string>::const_iterator it
+		= _actions.begin(); it != _actions.end(); ++it )
+	{
+	    if ( it->second != action )
+		continue;
+	    size_t keys = 1;
+	    for ( size_t i = 0; i < it->first.size(); ++i )
+		if ( it->first[i] == ' ' )
+		    ++keys;
+	    if ( best.empty() || keys < best_keys
+	      || (keys == best_keys && it->first.size() < best.size()) )
+	    {
+		best = it->first;
+		best_keys = keys;
+	    }
+	}
+	return best;
     }
 
     bool bound(const std::string &canon_seq) const

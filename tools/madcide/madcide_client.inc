@@ -51,6 +51,16 @@ void client_service(IdeSession &S, long t)
 	ui::refresh(t);
 	return;
     }
+    if ( kind == "filedialog" )
+    {
+	// The native file dialog (S4): the target shows it and the answer
+	// arrives as a dialog event; a target that cannot (the platform has
+	// no native dialog yet) gets the request's prompt instead.
+	var js = js::stringify(req);
+	if ( !ui::dialog(t, js.c_str()) )
+	    S.dialog_fallback(req);
+	return;
+    }
     if ( !ui::suspend(t) )
 	return;
     S.term_exec(req);
@@ -82,6 +92,7 @@ void run_ide(const char *path, bool ro, const char *target)
 	return;			// open refused (e.g. no webview) with a reason
     bool has_term = strcmp(target, "term") == 0;
     S.terminal(has_term);
+    S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
     long keysgen = -1;
     client_bind_keys(S, t, keysgen);
     bool run = true;

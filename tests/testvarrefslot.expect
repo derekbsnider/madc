@@ -1,0 +1,5 @@
+3 4
+whole-ref 9
+scalar-slot-ref 7
+index-slot-ref 25
+slot-as-ref-arg 4

@@ -14,14 +14,22 @@
 // bytes, and (later, madcide) undo is a pieces-vector snapshot.
 //
 // Scale contract (hub.h's words): scans are linear and that is the
-// CONTRACT — line/find queries walk the pieces in one pass; indexing is a
-// later, measured change. Offsets are BYTE offsets; a line is the span
-// between newlines, its length EXCLUDING the '\n' (a trailing unterminated
-// span is a line; an empty buffer has zero lines — the ed model).
+// CONTRACT for find/word queries — they walk the pieces in one pass. LINE
+// queries read a NEWLINE INDEX (the offsets of every '\n', in document
+// order) that is rebuilt lazily, in one pass, on the first line query after
+// a mutation: line_count / line_span are O(1) and line_of is O(log lines)
+// between edits, so an editor's per-keystroke line arithmetic never
+// rescans the document (the measured change the earlier "later, measured"
+// note deferred: a 4557-line buffer paid ~60 µs per line query, and a
+// caret-line lookup walked one query per line — quadratic — 2026-09-07).
+// Offsets are BYTE offsets; a line is the span between newlines, its
+// length EXCLUDING the '\n' (a trailing unterminated span is a line; an
+// empty buffer has zero lines — the ed model).
 //
 // THREAD-SAFETY CONTRACT (.claude/rules/thread-safety.md): a plain value
 // object, confined to the thread that owns it (the hub world's contract).
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -39,7 +47,7 @@ public:
     // definition (C++11 has no inline variables).
     enum : size_t { npos = (size_t)-1 };
 
-    text_buffer() : _size(0) {}
+    text_buffer() : _size(0), _nl_dirty(true) {}
 
     // Reset to a single piece over a fresh immutable snapshot. History
     // dies with the old snapshot — its entries reference the replaced
@@ -60,6 +68,7 @@ public:
 	    _pieces.push_back(p);
 	}
 	_size = _original.size();
+	_nl_dirty = true;
     }
 
     size_t size() const { return _size; }
@@ -110,6 +119,7 @@ public:
 	    return;
 	if ( off > _size )
 	    off = _size;
+	_nl_dirty = true;
 	piece np;
 	np.add = true;
 	np.off = _add.size();
@@ -151,6 +161,7 @@ public:
 	    return;
 	if ( len > _size - off )
 	    len = _size - off;
+	_nl_dirty = true;
 	_size -= len;
 	size_t pos = 0;
 	for ( size_t i = 0; i < _pieces.size() && len > 0; )
@@ -212,62 +223,38 @@ public:
     }
 
     // Lines: newline-delimited spans; a trailing unterminated span counts;
-    // an empty buffer has zero lines.
+    // an empty buffer has zero lines. All three read the newline index.
     size_t line_count() const
     {
-	size_t lines = 0;
-	bool open = false;
-	for ( size_t i = 0; i < _pieces.size(); ++i )
-	{
-	    const piece &p = _pieces[i];
-	    const std::string &src = source(p);
-	    for ( size_t k = 0; k < p.len; ++k )
-	    {
-		open = true;
-		if ( src[p.off + k] == '\n' )
-		{
-		    ++lines;
-		    open = false;
-		}
-	    }
-	}
-	return lines + (open ? 1 : 0);
+	const std::vector<size_t> &nl = index();
+	return nl.size() + (trailing_span(nl) ? 1 : 0);
     }
 
     // The span of 1-based line `n`: byte offset and length EXCLUDING the
     // terminating '\n'. False when the buffer has no such line.
     bool line_span(size_t n, size_t &off, size_t &len) const
     {
-	if ( n == 0 )
+	const std::vector<size_t> &nl = index();
+	if ( n == 0 || n > nl.size() + (trailing_span(nl) ? 1 : 0) )
 	    return false;
-	size_t line = 1;
-	size_t start = 0;
-	size_t pos = 0;
-	for ( size_t i = 0; i < _pieces.size(); ++i )
-	{
-	    const piece &p = _pieces[i];
-	    const std::string &src = source(p);
-	    for ( size_t k = 0; k < p.len; ++k, ++pos )
-	    {
-		if ( src[p.off + k] != '\n' )
-		    continue;
-		if ( line == n )
-		{
-		    off = start;
-		    len = pos - start;
-		    return true;
-		}
-		++line;
-		start = pos + 1;
-	    }
-	}
-	if ( line == n && start < _size )
-	{
-	    off = start;
-	    len = _size - start;
-	    return true;
-	}
-	return false;
+	off = n == 1 ? 0 : nl[n - 2] + 1;
+	len = (n - 1 < nl.size() ? nl[n - 1] : _size) - off;
+	return true;
+    }
+
+    // The 1-based line the byte at `off` belongs to: one more than the
+    // newlines before it (a '\n' belongs to the line it ends). `off` is
+    // clamped to the size, so off == size names the position PAST the
+    // last byte — after a terminated last line that is line_count() + 1,
+    // the empty line past the content (the editor model's phantom line);
+    // an empty buffer answers 1.
+    size_t line_of(size_t off) const
+    {
+	const std::vector<size_t> &nl = index();
+	if ( off > _size )
+	    off = _size;
+	return 1 + (size_t)(std::lower_bound(nl.begin(), nl.end(), off)
+			    - nl.begin());
     }
 
     // First occurrence of `needle` at or after `from`; npos when absent.
@@ -389,6 +376,7 @@ private:
 	    return false;
 	_pieces = st.back().pieces;
 	_size = st.back().size;
+	_nl_dirty = true;
 	meta_out = st.back().meta;
 	st.pop_back();
 	return true;
@@ -400,10 +388,41 @@ private:
 	    || (c >= '0' && c <= '9') || c == '_';
     }
 
+    // The newline index: offsets of every '\n' in document order, rebuilt
+    // in one pass over the pieces on the first line query after a
+    // mutation (every mutating path sets _nl_dirty). A cache over the
+    // pieces, so it is mutable behind the const query surface.
+    const std::vector<size_t> &index() const
+    {
+	if ( _nl_dirty )
+	{
+	    _nl.clear();
+	    size_t pos = 0;
+	    for ( size_t i = 0; i < _pieces.size(); ++i )
+	    {
+		const piece &p = _pieces[i];
+		const std::string &src = source(p);
+		for ( size_t k = 0; k < p.len; ++k, ++pos )
+		    if ( src[p.off + k] == '\n' )
+			_nl.push_back(pos);
+	    }
+	    _nl_dirty = false;
+	}
+	return _nl;
+    }
+    // True when bytes follow the last '\n' (or there is none and the
+    // buffer is non-empty): that unterminated span is a line too.
+    bool trailing_span(const std::vector<size_t> &nl) const
+    {
+	return _size > 0 && (nl.empty() || nl.back() != _size - 1);
+    }
+
     std::string _original;	// the loaded snapshot — never mutated
     std::string _add;		// append-only insert storage
     std::vector<piece> _pieces;
     size_t _size;
+    mutable std::vector<size_t> _nl;
+    mutable bool _nl_dirty;
     std::vector<history_entry> _history;
     std::vector<history_entry> _redo;
 };

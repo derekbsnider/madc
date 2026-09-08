@@ -23,21 +23,39 @@ namespace hub {
 // What the application receives: SEMANTIC units, never raw terminal
 // events. The target/model pair owns which keys become navigation
 // (consumed here, re-render signalled) and which reach the application.
-enum class tui_event_kind : unsigned char
+// The event and pointer-phase vocabularies are the shared enum text
+// (include/madc/bits/ui_enums, via keys.h): ui::event_kind and
+// ui::pointer_phase under the engine's names. What the application receives
+// are SEMANTIC units, never raw terminal events — the target/model pair owns
+// which keys become navigation (consumed there, re-render signalled) and
+// which reach the application; the enumerators are documented in the
+// fragment, once.
+typedef ::ui::event_kind tui_event_kind;
+
+// The steps of a pointing-device gesture (tui_event_kind::pointer): a
+// press places, a drag extends, a release ends — the shared text's
+// ui::pointer_phase.
+typedef ::ui::pointer_phase pointer_phase;
+
+// The phase's name at the boundary (the event object's `phase`, the
+// page's posted input) — ONE spelling owner, both directions.
+inline const char *pointer_phase_name(pointer_phase p)
 {
-    none = 0,
-    text,	// a coalesced printable run — one semantic insertion
-    key,	// a non-printable key for the application to interpret
-    choose,	// enter on the focused choice's selected option
-    focus,	// focus or menu selection moved: recompose and repaint
-    resize,	// the surface changed size: recompose and repaint
-    action,	// a bound key sequence completed (empty name = unbound miss)
-    wake,	// cooperative background tasks drained: recompose (the
-		// application re-checks its pending state, e.g. a spawned
-		// parse's completion)
-    snapshot	// a DOM frontend's page reported its rendered text (the
-		// test seam, madcSnapshot()): `text` carries it
-};
+    switch ( p )
+    {
+	case pointer_phase::down: return "down";
+	case pointer_phase::drag: return "drag";
+	case pointer_phase::up:   return "up";
+    }
+    return "down";
+}
+inline bool pointer_phase_from_name(const std::string &s, pointer_phase &p)
+{
+    if ( s == "down" ) { p = pointer_phase::down; return true; }
+    if ( s == "drag" ) { p = pointer_phase::drag; return true; }
+    if ( s == "up" )   { p = pointer_phase::up;   return true; }
+    return false;
+}
 
 struct tui_event
 {
@@ -56,9 +74,13 @@ struct tui_event
     name_id	   action;	// choose: the option's first action; 0 = none
     std::string	   action_name;	// action: the bound name ("" = unbound)
     std::string	   seq;		// action: the canonical sequence spelling
+    pointer_phase  phase;	// pointer: the gesture step
+    long	   offset;	// pointer: BYTE offset in the edit node's text
+    entity_id	   subject;	// pointer: the entity the node projects (0 = none)
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0) {}
+		  option(0), choice_focused(false), action(0),
+		  phase(pointer_phase::down), offset(0), subject(0) {}
 };
 
 } // namespace hub

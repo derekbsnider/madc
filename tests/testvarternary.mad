@@ -1,0 +1,49 @@
+// A conditional expression whose arms mix the carrier (`var`) with a
+// non-carrier value — a const char* function result, a string literal, a
+// number, a keyed slot against an int — is a value PRVALUE ([expr.cond]/4:
+// the class arm wins the implicit conversion, as `c ? s : trim(p)` does
+// for std::string in g++/clang++). It used to fail the c2mir check
+// ("lvalue required as unary & operand / incompatible types in true and
+// false parts") because the lowering handed the consumer `&(c ? a : f())`.
+// The lowering now materializes a temp the SELECTED arm assigns — the
+// other arm is never evaluated (side() runs once). Two value lvalues keep
+// the lvalue conditional. Oracle: tmp/ternary_oracle.cpp (std::string).
+long calls = 0;
+const char *side(const char *s)
+{
+    calls = calls + 1;
+    return s;
+}
+
+int main()
+{
+    var a = "alpha";
+    const char *p = "  beta ";
+    bool c = true;
+    var r1 = c ? a : php::trim(p);		// value lvalue vs const char* result
+    var r2 = !c ? a : php::trim(p);
+    var r3 = c ? php::trim(p) : a;		// the class arm on the RIGHT
+    var o = { "k": 7 };
+    var r4 = o["k"].is_null() ? 1 : o["k"];	// int vs a keyed slot
+    var r5 = o["zz"].is_null() ? 1 : o["zz"];
+    var r6 = c ? a : "lit";			// value vs string literal
+    var r7 = !c ? a : "lit";
+    var r8 = c ? 25 : a;			// number vs value
+    println("{} {} {} {} {} {} {} {}", r1, r2, r3, r4, r5, r6, r7, r8);
+    // Only the selected arm is evaluated ([expr.cond]).
+    var r9 = c ? a : side("x");
+    var r10 = !c ? a : side("y");
+    println("{} {} calls={}", r9, r10, calls);
+    // As an argument, in a compare, and two value lvalues (var + slot).
+    var b = "bravo";
+    println("{}", c ? a : b);
+    println("{}", (!c ? a : b) == "bravo");
+    var r11 = c ? o["k"] : a;
+    var r12 = !c ? o["k"] : a;
+    println("{} {}", r11, r12);
+    // Reassignment (not initialization) through the same conditional.
+    var r13 = "old";
+    r13 = c ? php::trim(p) : a;
+    println("{}", r13);
+    return 0;
+}

@@ -19,21 +19,72 @@ namespace ui_web {
 	webview_t view;
 	void *ctx;		// the engine session — ui::post_event's key
 	int posted;		// events posted during the current run()
+	int running;		// inside webview_run (terminate is meaningful)
     };
+
+    // The most recently opened host — the test seam's target
+    // (menu_activate); a GUI test opens one window.
+    host *__last_host = 0;
+
+    // An event posted from inside the platform loop stops it ONCE per run:
+    // the platform delivers terminate through its own idle queue, so a
+    // second terminate for a second event in the same run would fire in a
+    // LATER run and end it with nothing posted — read as the window
+    // closing. Posted OUTSIDE run (the test seam's activate), the event is
+    // queued and the engine reads it before running again: no terminate,
+    // or the same stale idle would end the next run empty.
+    void posted_event(host *h)
+    {
+	if ( h->posted++ == 0 && h->running )
+	    webview_terminate(h->view);	// run() returns; the engine drains the events
+    }
 
     // The ONE bound callback: the page calls window.madc(json) -> here. The
     // request is the call's argument array (["{...}"]); the engine's door
-    // unwraps the one string argument. The loop stops ONCE per run: the
-    // platform delivers terminate through its own idle queue, so a second
-    // terminate for a second event in the same run would fire in a LATER
-    // run and end it with nothing posted — read as the window closing.
+    // unwraps the one string argument.
     void on_event(const char *id, const char *req, void *arg)
     {
 	host *h = (host *)arg;
 	ui::post_event(h->ctx, req);
 	webview_return(h->view, id, 0, "null");
-	if ( h->posted++ == 0 )
-	    webview_terminate(h->view);	// run() returns; the engine drains the events
+	posted_event(h);
+    }
+
+    // A native menu selection (madcwebview_menu_on_action): the SAME door
+    // the page uses, as the action event a bound chord would produce.
+    void on_menu_action(const char *id, void *arg)
+    {
+	host *h = (host *)arg;
+	var ev = { "kind": "action", "action": id };
+	ui::post_event(h->ctx, js::stringify(ev));
+	posted_event(h);
+    }
+
+    // GTK4 draws the window through its GL renderer, and a software GL
+    // (Mesa llvmpipe — every X server without a GPU: Xvfb, VcXsrv, a
+    // Docker-to-desktop forward) presents its frames over MIT-SHM. An X
+    // connection over TCP has no shared memory — DISPLAY names a host, as
+    // Docker → a Windows X server does — and there the GL path fails to
+    // attach its images and the window stays BLACK: entirely (measured
+    // 2026-09-08 against Xvfb -listen tcp: "MESA: error: Failed to attach
+    // to x11 shm", not one painted pixel) or from the first window grow on
+    // (the owner's VcXsrv: the exposed region never paints — S0, KG
+    // web_window_resize_fill). GTK's cairo renderer draws through plain
+    // XPutImage and is correct over any connection, so it is the DEFAULT
+    // for a remote display — chosen before GTK initializes (inside
+    // webview_create) and only when the user has not named a renderer. A
+    // local display (":0", "unix:0", Wayland) keeps GTK's own default.
+    // Runs once, on the opening thread, before any GTK thread exists.
+    void renderer_default_for_display()
+    {
+	const char *disp = getenv("DISPLAY");
+	if ( !disp || disp[0] == 0 || disp[0] == ':' )
+	    return;
+	if ( strncmp(disp, "unix:", 5) == 0 )
+	    return;
+	if ( getenv("GSK_RENDERER") )
+	    return;
+	setenv("GSK_RENDERER", "cairo", 1);
     }
 
     void *open(const char *title, const char *page, void *ctx)
@@ -49,6 +100,7 @@ namespace ui_web {
 	host *h = (host *)malloc(sizeof(host));
 	if ( !h )
 	    return 0;
+	renderer_default_for_display();
 	h->view = webview_create(0, 0);
 	if ( !h->view )
 	{
@@ -58,16 +110,118 @@ namespace ui_web {
 	}
 	h->ctx = ctx;
 	h->posted = 0;
+	h->running = 0;
 	webview_set_title(h->view, title);
 	webview_set_size(h->view, 960, 640, WEBVIEW_HINT_NONE);
 	webview_bind(h->view, "madc", on_event, h);
+	madcwebview_menu_on_action(h->view, on_menu_action, h);
 	webview_set_html(h->view, page);
+	__last_host = h;
 	return h;
+    }
+
+    // The native menu bar (S2): the engine's menu JSON — {"bar":[{"title",
+    // "items":[{"id","title","key"?,"enabled"}|{"sep"}]}]} — walked here and
+    // handed to the platform layer item by item (madcwebview_menu_*: JSON-
+    // free by design). 0 = drawn; 1 = the platform has no native menu yet
+    // (Win32 / Cocoa) or the text is not a menu — the page stands as it is.
+    int64_t menu(void *hv, const char *json)
+    {
+	host *h = (host *)hv;
+	var m;
+	if ( !js::parse(m, json) || m["bar"].is_null() )
+	    return 1;
+	if ( madcwebview_menu_begin(h->view) != 0 )
+	    return 1;
+	for ( var mn : m["bar"] )
+	{
+	    var title = mn["title"];
+	    for ( var it : mn["items"] )
+	    {
+		if ( !it["sep"].is_null() )
+		{
+		    madcwebview_menu_separator(h->view, title.c_str());
+		    continue;
+		}
+		var id = it["id"];
+		var itl = it["title"];
+		var key = it["key"];
+		bool en = it["enabled"].is_null() || it["enabled"].as_boolean();
+		madcwebview_menu_add(h->view, title.c_str(), id.c_str(), itl.c_str(),
+				     key.is_null() ? "" : key.c_str(), en ? 1 : 0);
+	    }
+	}
+	return madcwebview_menu_end(h->view) == 0 ? 0 : 1;
+    }
+
+    // A native file dialog's answer (madcwebview_dialog_*): the request's
+    // mode rides the context so the event names it; "" = cancelled.
+    struct dialog_wait {
+	host *h;
+	char mode[16];
+    };
+
+    void on_dialog_done(const char *path, void *arg)
+    {
+	dialog_wait *dw = (dialog_wait *)arg;
+	var ev = { "kind": "dialog", "mode": dw->mode, "path": path };
+	ui::post_event(dw->h->ctx, js::stringify(ev));
+	posted_event(dw->h);
+	free(dw);
+    }
+
+    // The native file dialog (S4): the engine's request — {"mode":"open"|
+    // "save","title":..,"path":<initial>} — shown over the window; the
+    // answer comes back through the host's one door as a dialog event.
+    // 0 = up; 1 = no native dialog on this platform (Win32 / Cocoa yet) or
+    // not a request — the caller falls back to its prompt.
+    int64_t dialog(void *hv, const char *json)
+    {
+	host *h = (host *)hv;
+	var rq;
+	if ( !js::parse(rq, json) || rq["mode"].is_null() )
+	    return 1;
+	var mode = rq["mode"];
+	var title = rq["title"];
+	var initial = rq["path"];
+	dialog_wait *dw = (dialog_wait *)malloc(sizeof(dialog_wait));
+	if ( !dw )
+	    return 1;
+	dw->h = h;
+	strncpy(dw->mode, mode.c_str(), 15);
+	dw->mode[15] = 0;
+	int rc;
+	if ( mode == "save" )
+	    rc = madcwebview_dialog_save(h->view, title.is_null() ? "" : title.c_str(),
+					 initial.is_null() ? "" : initial.c_str(),
+					 on_dialog_done, dw);
+	else
+	    rc = madcwebview_dialog_open(h->view, title.is_null() ? "" : title.c_str(),
+					 initial.is_null() ? "" : initial.c_str(),
+					 on_dialog_done, dw);
+	if ( rc != 0 )
+	{
+	    free(dw);
+	    return 1;
+	}
+	return 0;
+    }
+
+    // The test seam: choose a menu item by its command id as the user would
+    // (the platform fires the action; the event reaches the engine).
+    // 0 = fired; 1 = no window, no menu, or no such item.
+    int64_t menu_activate(const char *id)
+    {
+	if ( !__last_host )
+	    return 1;
+	return madcwebview_menu_activate(__last_host->view, id) == 0 ? 0 : 1;
     }
 
     void close(void *hv)
     {
 	host *h = (host *)hv;
+	if ( __last_host == h )
+	    __last_host = 0;
 	webview_unbind(h->view, "madc");
 	webview_destroy(h->view);
 	free(h);
@@ -89,7 +243,10 @@ namespace ui_web {
     {
 	host *h = (host *)hv;
 	h->posted = 0;
-	if ( webview_run(h->view) != WEBVIEW_ERROR_OK )
+	h->running = 1;
+	webview_error_t rc = webview_run(h->view);
+	h->running = 0;
+	if ( rc != WEBVIEW_ERROR_OK )
 	    return 1;
 	return h->posted ? 0 : 1;
     }
@@ -98,5 +255,5 @@ namespace ui_web {
     const char *target() { return "web"; }
 }
 
-static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run };
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog };
 static bool __ui_web_registered = ui::register_host("web", &__ui_web_ops);

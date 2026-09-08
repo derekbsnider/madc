@@ -23,18 +23,18 @@
 // False = the session should end.
 bool apply_event(long w, long es, long doc, var &ev)
 {
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     long caret = clamped_caret(w, es, doc);
     ui::set(w, es, "msg", "");
     bool editable = es_flag(w, es, "editable");
     bool searching = es_flag(w, es, "searching");
 
-    if ( kind == "text" )
+    if ( kind == ui::event_kind::text )
     {
 	edit_text_run(w, es, doc, caret, ev);
 	return true;
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	var a = format("{}", ev["action"]);
 	if ( a == "w" )
@@ -48,7 +48,12 @@ bool apply_event(long w, long es, long doc, var &ev)
 	    return do_verb(w, es, "q");
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind == ui::event_kind::pointer )
+    {
+	edit_pointer(w, es, doc, ev, true);
+	return true;
+    }
+    if ( kind != ui::event_kind::key )
 	return true;	// focus / resize: the loop recomposes anyway
 
     if ( searching )

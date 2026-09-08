@@ -148,4 +148,7 @@ vi-open: text=1
 vi-A-colon: eol-append=1 pmode=colon closed=1
 vi-unbound: msg=1 count-cleared=1
 vi-toggle: mode='' typed-x=1
+ptr-drag: caret=6 press-mark=-1 mark=2 bend=6 lit=2..6 subject-ok=1
+ptr-press: caret=3 mark=-1 bend=-1
+ptr-window: other-buffer=1 switched-to=1 active-is-first=1 caret=1
 colon-quit: cont=0

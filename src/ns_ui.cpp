@@ -100,6 +100,8 @@ namespace ui {
     typedef void  (*ui_host_close_fn)(void *host);
     typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
     typedef int64_t (*ui_host_run_fn)(void *host);
+    typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -109,6 +111,13 @@ namespace ui {
 	ui_host_run_fn	 run;	// run the host's loop until ONE event was
 				// posted, then return 0; nonzero = the host
 				// ended (the window closed)
+	ui_host_menu_fn	 menu;	// draw the native menu bar from the menu
+				// JSON (S2); 0 = ok; optional (a host with
+				// no chrome leaves it 0)
+	ui_host_dialog_fn dialog; // open the native file dialog the request
+				// JSON describes (S4); 0 = shown (the answer
+				// arrives as a posted {"kind":"dialog"} event);
+				// nonzero = unsupported here; optional
     };
 }
 
@@ -191,6 +200,11 @@ struct ui_frontend
     // Script text into a page-hosted surface (the test seam); a grid has
     // no page: false.
     virtual bool eval_page(const char *) { return false; }
+    // Native file dialogs (S4): can this surface show one, and show the
+    // one the request JSON describes (the answer arrives as an event). A
+    // grid has none: false.
+    virtual bool dialogs() const { return false; }
+    virtual bool dialog(const char *) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -336,6 +350,10 @@ struct ui_dom_frontend : ui_frontend
 	    model.compose(s->r, madc::hub::value_to_uinode(s->w, tree));
 	if ( ops->eval )
 	    ops->eval(host, ("madcApply(" + ops_json + ")").c_str());
+	// The native menu bar (S2): the composed root's `menu` hint, resolved
+	// against the bindings, reaches the host only when it changed.
+	if ( ops->menu && model.menu_changed() )
+	    ops->menu(host, model.menu_json().c_str());
     }
     bool read_events()
     {
@@ -355,9 +373,17 @@ struct ui_dom_frontend : ui_frontend
     }
     void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
     const std::string &pending_chord() const { return model.pending_chord(); }
+    // Forget what the page holds so the next render paints every edit
+    // node in full — the grid frontend's painted-grid reset.
+    void refresh() { model.reset_surface(); }
     bool eval_page(const char *js)
     {
 	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
+    }
+    bool dialogs() const { return host && ops->dialog; }
+    bool dialog(const char *json)
+    {
+	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
     }
 };
 
@@ -467,10 +493,23 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 //   { event:"wake" }                     background tasks drained
 //   { event:"snapshot", text:"..." }     a page reported its text (the
 //       DOM frontend's test seam)
+//   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E }
+//   Every object also carries event_code (ui::event_kind), a key event
+//   key_code (ui::key), a pointer event phase_code (ui::pointer_phase) —
+//   the enum values script code compares against (<bits/ui_enums>).
+//       a pointing-device gesture on an edit node: N is the BYTE offset
+//       in that node's text the pointer resolved to, E (absent when the
+//       node projects nothing) the entity it projects — its document —
+//       so a multi-window composer knows which window was hit
 madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 			   ui_frontend *f)
 {
     std::map<std::string, madc::value> fields;
+    // The kind as its ENUM value beside the name: script code compares
+    // `ev["event_code"] == ui::event_kind::key` (a misspelt enumerator is a
+    // compile error; a misspelt name was a silent miss). The names stay for
+    // display, transport and the bindings tables.
+    fields["event_code"] = madc::value((int64_t)e.kind);
     switch ( e.kind )
     {
 	case madc::hub::tui_event_kind::text:
@@ -480,6 +519,7 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	case madc::hub::tui_event_kind::key:
 	    fields["event"] = madc::value(std::string("key"));
 	    fields["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    fields["key_code"] = madc::value((int64_t)e.key);	// ui::key
 	    // A focused choice's live selection rides along (1-based, the
 	    // choose contract) so the application can act on the focused
 	    // row for keys the widget does not consume (ins/del); absent
@@ -516,6 +556,25 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    // seam); the grid target never emits it.
 	    fields["event"] = madc::value(std::string("snapshot"));
 	    fields["text"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::pointer:
+	    // A pointing-device gesture resolved to a byte offset in an
+	    // edit node (the DOM model's hit test today; a terminal's mouse
+	    // reporting later takes the same shape).
+	    fields["event"] = madc::value(std::string("pointer"));
+	    fields["phase"] = madc::value(
+		std::string(madc::hub::pointer_phase_name(e.phase)));
+	    fields["phase_code"] = madc::value((int64_t)e.phase);	// ui::pointer_phase
+	    fields["offset"] = madc::value((int64_t)e.offset);
+	    if ( e.subject != 0 )
+		fields["subject"] = madc::value((int64_t)e.subject);
+	    break;
+	case madc::hub::tui_event_kind::dialog:
+	    // A native file dialog answered (S4): the request's mode and the
+	    // chosen path ("" = cancelled).
+	    fields["event"] = madc::value(std::string("dialog"));
+	    fields["mode"] = madc::value(e.action_name);
+	    fields["path"] = madc::value(e.text);
 	    break;
 	case madc::hub::tui_event_kind::focus:
 	default:
@@ -1203,6 +1262,19 @@ int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
     return -1;
 }
 
+// The 1-based line containing byte `off` (clamped into the document; a
+// negative offset reads as 0). off == size after a terminated last line
+// is line_count + 1 — the empty line past the content the editor calls
+// the phantom line. One indexed lookup, so a caret's line is O(log lines)
+// — never a walk over text_line_start.
+int64_t text_line_of(int64_t w, int64_t entity, int64_t off)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b )
+	return -1;
+    return (int64_t)b->line_of(off < 0 ? 0 : (size_t)off);
+}
+
 int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);
@@ -1371,6 +1443,18 @@ bool eval_page(int64_t t, const char *js)
     return f && f->eval_page(js);
 }
 
+bool dialogs(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialogs();
+}
+
+bool dialog(int64_t t, const char *json)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialog(json);
+}
+
 int64_t rows(int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
@@ -1532,6 +1616,20 @@ void pending(madc::value &out, int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
     out = madc::value(std::string(f ? f->pending_chord() : std::string()));
+}
+
+// A key SPELLING (the bindings-table / action-name vocabulary: "left",
+// "^k", "a") -> its ui::key enumerator value; ui::key::none for a spelling
+// that is not a key. The ONE spelling owner (tui_key_from_name) answers, so
+// an application that synthesizes a key event from an action name (the
+// editor's "the action name IS the key spelling" rule) carries the same
+// code the target would have.
+int64_t key_code(const char *name)
+{
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) )
+	return (int64_t)madc::hub::tui_key::none;
+    return (int64_t)k.kind;
 }
 
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------

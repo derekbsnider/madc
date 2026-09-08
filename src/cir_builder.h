@@ -792,6 +792,19 @@ class CirBuilder {
 	FuncDef *carrier_row_def_for(const char *opname, DataDef *ad);
 	FuncDef *carrier_push_def_for(DataDef *ad);
 	FuncDef *carrier_assign_def_for(DataDef *ad);
+	// ONE registered carrier row applied to a receiver: the call node
+	// `sym(recv, <elem by the row's parameter shape>)` with the extern
+	// declared from the row's own shapes — the emitter behind every list
+	// element (carrier_list_elements) and the conditional's arms
+	// (carrier_ternary_value). `recv` is the receiver address node.
+	node_t carrier_row_call(FuncDef *fd, node_t recv, TokenBase *elem,
+				TokenBase *origin);
+	// A carrier-typed conditional whose arms are not both value lvalues is
+	// a value PRVALUE ([expr.cond]/4): materialized into a cleanup-tagged
+	// carrier temp the conditional assigns through the selected arm's
+	// registered operator= row; yields `(c ? assign : assign, tmp)`.
+	bool carrier_ternary_needs_temp(class TokenTerQ *tq);
+	node_t carrier_ternary_value(class TokenTerQ *tq, TokenBase *origin);
 
 	// ---- STL container (vector/map/set) object lowering ----
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
@@ -1886,6 +1899,7 @@ public:
 	// opsym_override substitutes the operator spelling looked up from
 	// top->id() (e.g. strict equality dispatching through "=="); NULL =
 	// derive from binop_overload_symbol(top->id()).
+	bool carrier_operand_lvalue(TokenBase *t);	// the carrier receiver rule
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
 				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp

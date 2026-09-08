@@ -52,16 +52,14 @@ bool has_phantom_line(long w, long doc)
 }
 
 // The 1-based line containing byte offset `off` (1 on an empty document;
-// total+1 on the phantom line).
+// total+1 on the phantom line). ONE indexed engine lookup — the same
+// answer the newline count gives: the phantom position (offset == size
+// after a terminated last line) is one past the last content line. This
+// used to walk text_line_start once per line, and each of those rescanned
+// the document: quadratic per call, three calls per composed keystroke.
 long line_of(long w, long doc, long off)
 {
-    long total = ui::text_line_count(w, doc);
-    long line = 1;
-    while ( line < total && ui::text_line_start(w, doc, line + 1) <= off )
-	line = line + 1;
-    if ( off >= ui::text_size(w, doc) && has_phantom_line(w, doc) )
-	line = total + 1;
-    return line;
+    return ui::text_line_of(w, doc, off);
 }
 
 // Line start for column math: the phantom line starts at the document's
@@ -113,7 +111,14 @@ void shift_hspans(long w, long es, long off, long delta)
 	}
 	if ( e > s )
 	{
-	    var nr = { "s": s, "e": e, "c": r["c"] };
+	    // The row is the converter's (spans_to_hspans): carry it WHOLE
+	    // and move only its geometry. A field list here is a second copy
+	    // of the row shape — it silently dropped the semantic `cls` the
+	    // web renderer reads when slice 3.1 added it, killing the web's
+	    // colour on the first keystroke (tests/testidespanshift.mad).
+	    var nr = r;
+	    nr["s"] = s;
+	    nr["e"] = e;
 	    out.push(nr);
 	}
     }
@@ -406,8 +411,8 @@ void do_find(long w, long es, long doc, long caret)
 // Search-mode key handling; every key is consumed while searching.
 bool search_key(long w, long es, long doc, long caret, var &ev)
 {
-    var k = format("{}", ev["key"]);
-    if ( k == "enter" )
+    var k = ev["key_code"];		// ui::key — the enumerator, not the name
+    if ( k == ui::key::enter )
     {
 	var pat;
 	ui::get(pat, w, es, "search");
@@ -417,12 +422,12 @@ bool search_key(long w, long es, long doc, long caret, var &ev)
 	do_find(w, es, doc, caret);
 	return true;
     }
-    if ( k == "esc" )
+    if ( k == ui::key::esc )
     {
 	ui::set(w, es, "searching", false);
 	return true;
     }
-    if ( k == "backspace" )
+    if ( k == ui::key::backspace )
     {
 	var s;
 	ui::get(s, w, es, "search");
@@ -465,6 +470,8 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
     var t;
     ui::text(t, w, doc);
     e["content"] = t;
+    e["subject"] = doc;		// the entity the node projects (uinode's
+				// edit contract) — a pointer event names it
     var hints = { "caret": caret };
     long mark = es_int(w, es, "mark", -1);
     long bend = es_int(w, es, "bend", -1);
@@ -545,16 +552,16 @@ void compose_menu(var &menu)
 // the key was one of ours; false = the dispatcher's key, not handled.
 bool edit_key(long w, long es, long doc, long caret, var &ev)
 {
-    var k = format("{}", ev["key"]);
+    var k = ev["key_code"];		// ui::key — the enumerator, not the name
     bool editable = es_flag(w, es, "editable");
     long size = ui::text_size(w, doc);
-    if ( k == "left" )
+    if ( k == ui::key::left )
     {
 	if ( caret > 0 )
 	    ui::set(w, es, "caret", caret - 1);
 	return true;
     }
-    if ( k == "right" )
+    if ( k == ui::key::right )
     {
 	if ( caret < size )
 	    ui::set(w, es, "caret", caret + 1);
@@ -563,12 +570,12 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     long line = line_of(w, doc, caret);
     long start = line_start_of(w, doc, line);
     long col = caret - start;
-    if ( k == "home" )
+    if ( k == ui::key::home )
     {
 	ui::set(w, es, "caret", start);
 	return true;
     }
-    if ( k == "end" )
+    if ( k == ui::key::end )
     {
 	long len = ui::text_line_len(w, doc, line);
 	if ( len < 0 )
@@ -576,27 +583,27 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	ui::set(w, es, "caret", start + len);
 	return true;
     }
-    if ( k == "up" )
+    if ( k == ui::key::up )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line - 1, col));
 	return true;
     }
-    if ( k == "down" )
+    if ( k == ui::key::down )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line + 1, col));
 	return true;
     }
-    if ( k == "pgup" )
+    if ( k == ui::key::pgup )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line - 10, col));
 	return true;
     }
-    if ( k == "pgdn" )
+    if ( k == ui::key::pgdn )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, line + 10, col));
 	return true;
     }
-    if ( k == "backspace" )
+    if ( k == ui::key::backspace )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -609,7 +616,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
-    if ( k == "del" )
+    if ( k == ui::key::del )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -621,7 +628,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
-    if ( k == "enter" )
+    if ( k == ui::key::enter )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
@@ -635,4 +642,44 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	return true;
     }
     return false;	// not an edit-core key — the dispatcher's business
+}
+
+// The pointer arm — ONE caret model for mouse and keyboard. `ev` is the
+// engine's pointer event ({phase_code, offset}: a BYTE offset in this document
+// the target's hit test resolved to). A press places the caret and drops
+// any live selection; a drag lights [press, here] through the SAME
+// selection state the block keys set — the mark, plus the end under the
+// two-point personality (compose_edit_node's rule reads both); a release
+// is the last placement. `selectable` false (madcide's displayed views:
+// stored-space markers are meaningless there) keeps the gesture to caret
+// placement. The press offset parks on the es as "anchor" for the drag
+// that follows it; the release drops it.
+void edit_pointer(long w, long es, long doc, var &ev, bool selectable)
+{
+    var ph = ev["phase_code"];		// ui::pointer_phase
+    long off = clamp_caret_to(w, doc, ev["offset"].as_integer());
+    ui::set(w, es, "caret", off);
+    if ( ph == ui::pointer_phase::down )
+    {
+	ui::set(w, es, "mark", -1);
+	ui::set(w, es, "bend", -1);
+	ui::set(w, es, "anchor", off);
+	return;
+    }
+    long anchor = es_int(w, es, "anchor", -1);
+    if ( anchor < 0 )
+	return;		// a drag whose press landed elsewhere: caret only
+    if ( selectable && off != anchor )
+    {
+	ui::set(w, es, "mark", anchor);
+	if ( es_flag(w, es, "selblock") )
+	    ui::set(w, es, "bend", off);
+    }
+    else
+    {
+	ui::set(w, es, "mark", -1);
+	ui::set(w, es, "bend", -1);
+    }
+    if ( ph == ui::pointer_phase::up )
+	ui::set(w, es, "anchor", -1);
 }

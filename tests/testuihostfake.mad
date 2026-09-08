@@ -34,10 +34,37 @@ int64_t fake_eval(void *host, const char *js)
     return 0;
 }
 
-// The host's loop: each run posts ONE page event and returns; the eighth
+// The native menu (S2): the engine hands the host its menu JSON — the root's
+// menu hint with each command's bound chord — only when it changed.
+int menu_calls = 0;
+int64_t fake_menu(void *host, const char *json)
+{
+    menu_calls++;
+    println("fake menu: {}", json);
+    return 0;
+}
+
+// A native file dialog (S4): the host shows it and answers LATER through
+// the same door — here the request is echoed and the answer posted by the
+// next run step, as a real platform's completion callback would.
+int dialog_pending = 0;
+int64_t fake_dialog(void *host, const char *json)
+{
+    println("fake dialog: {}", json);
+    dialog_pending = 1;
+    return 0;
+}
+
+// The host's loop: each run posts ONE page event and returns; the last
 // run reports that the host ended (the window closed).
 int64_t fake_run(void *host)
 {
+    if ( dialog_pending )
+    {
+	dialog_pending = 0;
+	ui::post_event(fake_ctx, "{\"kind\":\"dialog\",\"mode\":\"open\",\"path\":\"/tmp/picked.mad\"}");
+	return 0;
+    }
     step++;
     if ( step == 1 ) { ui::post_event(fake_ctx, "{\"kind\":\"text\",\"text\":\"hi\"}"); return 0; }
     if ( step == 2 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"^k\"}"); return 0; }
@@ -45,11 +72,16 @@ int64_t fake_run(void *host)
     if ( step == 4 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"right\"}"); return 0; }
     if ( step == 5 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"enter\"}"); return 0; }
     if ( step == 6 ) { ui::post_event(fake_ctx, "{\"kind\":\"resize\",\"rows\":40,\"cols\":100}"); return 0; }
-    if ( step == 7 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
+    // A pointer gesture the page hit-tested to the edit node ("0.2", the
+    // third child): line 1, column 1 -> byte offset 4 of "ab\ncd".
+    if ( step == 7 ) { ui::post_event(fake_ctx, "{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":1,\"col\":1}"); return 0; }
+    // A native menu selection: the host's chrome fired the command "quit".
+    if ( step == 8 ) { ui::post_event(fake_ctx, "{\"kind\":\"action\",\"action\":\"quit\"}"); return 0; }
+    if ( step == 9 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
     return 1;
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run };
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog };
 static bool fake_registered = ui::register_host("fake", &fake_ops);
 
 int main()
@@ -88,25 +120,67 @@ int main()
     options.push(save);
     options.push(quit);
     menu["children"] = options;
+    // An edit node after the menu (the menu keeps the default focus, so the
+    // key steps above still drive it): the pointer step lands here, and
+    // its subject rides the event.
+    var edit;
+    edit["role"] = "edit";
+    edit["content"] = "ab\ncd";
+    edit["subject"] = 7;
     var root;
     root["role"] = "group";
     var kids = {};
     kids.push(head);
     kids.push(menu);
+    kids.push(edit);
     root["children"] = kids;
+    // The root's menu hint (madcide's default.menu shape): the engine
+    // resolves each command's chord from the bound table (save -> ^k s;
+    // quit unbound) and hands the host the whole menu ONCE per change.
+    var msave = { "id": "save", "title": "Save" };
+    var msep = { "sep": 1 };
+    var mquit = { "id": "quit", "title": "Quit", "enabled": 0 };
+    var mitems = {};
+    mitems.push(msave);
+    mitems.push(msep);
+    mitems.push(mquit);
+    var mfile = { "title": "File", "items": mitems };
+    var mbar = {};
+    mbar.push(mfile);
+    var mmenu = { "bar": mbar };
+    root["hints"] = { "menu": mmenu };
     ui::render(t, w, root);
     println("pushed heading: {}", pushed_heading ? "yes" : "no");
     println("pushed choice: {}", pushed_choice ? "yes" : "no");
+    ui::render(t, w, root);		// unchanged menu: not sent again
+    println("menu calls after same render: {}", menu_calls);
+    mfile["title"] = "Datei";
+    var mbar2 = {};
+    mbar2.push(mfile);
+    var mmenu2 = { "bar": mbar2 };
+    root["hints"] = { "menu": mmenu2 };
+    ui::render(t, w, root);		// a changed title: sent
+    println("menu calls after changed render: {}", menu_calls);
 
+    // Native dialogs: the fake host has the op, so the target says yes; the
+    // request goes out as JSON and the answer comes back as a dialog event.
+    println("dialogs -> {}", ui::dialogs(t) ? "yes" : "no");
+    bool shown = ui::dialog(t, "{\"mode\":\"open\",\"title\":\"Open File\",\"path\":\"\"}");
+    println("dialog -> {}", shown ? "shown" : "refused");
     var ev;
     while ( ui::event(ev, t, w) )
     {
-	if ( ev["event"] == "text" )
+	if ( ev["event"] == "dialog" )
+	    println("event dialog {} {}", ev["mode"], ev["path"]);
+	else if ( ev["event"] == "text" )
 	    println("event text {}", ev["text"]);
 	else if ( ev["event"] == "action" )
 	    println("event action {} {}", ev["action"], ev["seq"]);
 	else if ( ev["event"] == "choose" )
 	    println("event choose {} {}", ev["option"], ev["action"]);
+	else if ( ev["event"] == "pointer" )
+	    println("event pointer {} {} subject {}", ev["phase"], ev["offset"],
+		    ev["subject"]);
 	else
 	    println("event {}", ev["event"]);
     }

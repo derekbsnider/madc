@@ -1,0 +1,4 @@
+SPLIT open
+SPLIT two windows: shape=SESE ordered=1 rows-ok=1 focus=E0 flex=1 stacked=1 span-ok=1 foot-ok=1 statusbar=0
+SPLIT one window: shape=E ordered=1 rows-ok=0 focus=E0 flex=1 stacked=0 span-ok=1 foot-ok=1 statusbar=1
+SPLIT closed

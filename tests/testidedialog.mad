@@ -1,0 +1,110 @@
+// S4 (madcide GUI chrome): native file dialogs as a request / response
+// VERB. A client that can show them pushes the fact (dialogs(true)); then
+// Open File (editfile) and Save As (saveas) PARK a filedialog request —
+// mode, title, the initial path — in the one request slot the client
+// services (the terminal requests' slot; kinds are data), and the answer
+// returns as a dialog EVENT the dispatcher applies: open edits the chosen
+// file, save writes the buffer under the new path (its buffer row
+// follows), an empty path cancels. Without the fact — the terminal, a
+// headless session — both keep their prompts exactly as before; the
+// client's fallback (dialog_fallback) starts the same prompts when the
+// platform refuses. Headless, no compiler.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void ev_action(var &e, const char *a)
+{
+    e = { "event": "action", "event_code": ui::event_kind::action,
+	  "action": a, "seq": "" };
+}
+
+void ev_dialog(var &e, const char *mode, const char *path)
+{
+    e = { "event": "dialog", "event_code": ui::event_kind::dialog,
+	  "mode": mode, "path": path };
+}
+
+int main()
+{
+    const char *path = "madc_ide_dialog.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    php::file_put_contents("madc_ide_dialog_other.mad", "int y;\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+    var e;
+    var req;
+
+    // No dialogs (the terminal / headless shape): editfile prompts, nothing parks.
+    ev_action(e, "editfile");
+    S.apply_ide_event(doc, e);
+    var pr;
+    ui::get(pr, w, es, "prompt");
+    println("no-dialogs: prompt={} parked={}", pr, S.take_request(req) ? "yes" : "no");
+    ui::set(w, es, "prompt", "");
+    ui::set(w, es, "pmode", "");
+
+    // With dialogs: editfile parks an open request; nothing prompts.
+    S.dialogs(true);
+    ev_action(e, "editfile");
+    S.apply_ide_event(doc, e);
+    ui::get(pr, w, es, "prompt");
+    bool parked = S.take_request(req);
+    println("open: parked={} kind={} mode={} title={} prompt-empty={}",
+	    parked ? "yes" : "no", req["kind"], req["mode"], req["title"],
+	    pr.is_null() || strlen(pr.c_str()) == 0 ? 1 : 0);
+    // The answer: the other file opens as a second buffer, active.
+    ev_dialog(e, "open", "madc_ide_dialog_other.mad");
+    S.apply_ide_event(doc, e);
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long adoc = S.active(doc);
+    var ap;
+    ui::get(ap, w, adoc, "path");
+    println("opened: buffers={} active-path={}", php::count(bufs), ap);
+
+    // Save As parks a save request carrying the current path as the start.
+    ev_action(e, "saveas");
+    S.apply_ide_event(adoc, e);
+    parked = S.take_request(req);
+    println("saveas: parked={} mode={} initial={}", parked ? "yes" : "no",
+	    req["mode"], req["path"]);
+    // The answer: the buffer is written under the new name, its path and
+    // row follow, and the file exists with the buffer's text.
+    ev_dialog(e, "save", "madc_ide_dialog_copy.mad");
+    S.apply_ide_event(adoc, e);
+    ui::get(ap, w, adoc, "path");
+    ui::get(bufs, w, es, "buffers");
+    var row = bufs[es_int(w, es, "bufidx", 0)];
+    var copy;
+    php::file_get_contents(copy, "madc_ide_dialog_copy.mad");
+    var msg;
+    ui::get(msg, w, es, "msg");
+    println("saved-as: path={} row-path={} exists={} text-ok={} msg={}",
+	    ap, row["path"], php::file_exists("madc_ide_dialog_copy.mad") ? 1 : 0,
+	    copy == "int y;\n" ? 1 : 0, msg);
+
+    // A cancelled dialog changes nothing.
+    ev_dialog(e, "open", "");
+    S.apply_ide_event(adoc, e);
+    ui::get(msg, w, es, "msg");
+    ui::get(bufs, w, es, "buffers");
+    println("cancel: msg={} buffers={}", msg, php::count(bufs));
+
+    // The client's fallback when the platform cannot show the dialog.
+    var frq = { "kind": "filedialog", "mode": "save", "title": "Save As", "path": "" };
+    S.dialog_fallback(frq);
+    ui::get(pr, w, es, "prompt");
+    var pm;
+    ui::get(pm, w, es, "pmode");
+    println("fallback: prompt={} mode={}", pr, pm);
+    return 0;
+}

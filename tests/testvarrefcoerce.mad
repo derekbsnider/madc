@@ -1,0 +1,26 @@
+// A `value &` VARIABLE denotes its referent everywhere a plain value does
+// (C++: a reference is the object). In a char* / varargs position the
+// carrier coerces through c_str() — for a plain `var` it always did; for a
+// `var &` parameter or a local reference the argument classifier admitted
+// only user-class referents, so printf received the reference's raw words
+// ("MIR fatal error: func show_ref: in instruction 'call': wrong type
+// memory"). Found by the pre-merge dupaudit of the carrier-lvalue
+// admission family (KG DupFamily carrier_lvalue_admission). Oracle: the
+// plain-value lines; g++/clang++ print the same for std::string& via
+// c_str().
+void show_ref(var &v) { printf("ref: %s\n", v); }
+void show_val(var v) { printf("val: %s\n", v); }
+void show_ref_len(var &v) { printf("ref-len: %d %s\n", (int)strlen(v), v); }
+int main()
+{
+    var s = "alpha";
+    show_val(s);
+    show_ref(s);
+    var &r = s;
+    printf("local-ref: %s\n", r);
+    show_ref_len(r);
+    var o = { "k": "keyed" };
+    var &slot = o["k"];
+    printf("slot-ref: %s\n", slot);
+    return 0;
+}

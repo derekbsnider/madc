@@ -1,0 +1,65 @@
+// madc embedded <bits/ui_enums> — the ui event vocabularies as ENUMS, the
+// ONE text for two readers: the engine (include/madcdis/keys.h and
+// ui_events.h include this file and alias tui_key / tui_event_kind /
+// pointer_phase to it) and the dialect (<ns_ui> includes it, so script
+// code compares `ev["key_code"] == ui::key::down` — an enumerator the
+// compiler checks — instead of `k == "down"`, a string a typo turns into a
+// silent miss). Plain C++11 enums, nothing else: no includes, no
+// std::string (dialect-lean), no functions. The names at the boundary
+// (tui_key_name, pointer_phase_name, ui_event_value's "event" field) are
+// derived from these values by the engine, never re-typed here.
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_UI_ENUMS
+#define __MADC_BITS_UI_ENUMS 1
+
+namespace ui {
+    // A key as the ONE input vocabulary spells it (tui_keyev.kind): the
+    // printable byte (`ch`), a control chord (`ctrl`, the letter in `ch`),
+    // the named non-printables, and the two the target synthesizes.
+    enum class key : unsigned char
+    {
+	none = 0,
+	ch,		// printable byte in `ch`
+	ctrl,		// control chord; `ch` = the lowercase letter (^S -> 's')
+			// or one of the four punctuation controls 0x1c..0x1f
+			// ('\\' ']' '^' '_' — JOE's ^_ undo / ^^ redo live here)
+	enter, tab, backspace, esc,
+	up, down, left, right,
+	home, end, pgup, pgdn, del, ins,
+	resize,		// synthesized by the target on a size change
+	wake		// synthesized by the target when cooperative background
+			// tasks drained (stage-2: a spawned parse finished while
+			// the loop was waiting for input — recompose)
+    };
+
+    // What the application receives from ui::event: SEMANTIC units, never
+    // raw terminal events (the event object's "event" name is this value's
+    // spelling; "event_code" carries the value).
+    enum class event_kind : unsigned char
+    {
+	none = 0,
+	text,		// a coalesced printable run — one semantic insertion
+	key,		// a non-printable key for the application to interpret
+	choose,		// enter on the focused choice's selected option
+	focus,		// focus or menu selection moved: recompose and repaint
+	resize,		// the surface changed size: recompose and repaint
+	action,		// a bound key sequence completed (empty name = unbound miss)
+	wake,		// cooperative background tasks drained: recompose
+	snapshot,	// a DOM frontend's page reported its rendered text (the
+			// test seam, madcSnapshot()): `text` carries it
+	pointer,	// a pointing-device gesture on an edit node: `offset` is
+			// the BYTE offset in that node's text the pointer resolved
+			// to, `phase` the gesture step, `subject` the entity the
+			// node projects (0 = none)
+	dialog		// a native file dialog answered (ui::dialog): `mode` is
+			// the request's ("open" / "save"), `path` the chosen file
+			// ("" = cancelled)
+    };
+
+    // The steps of a pointing-device gesture (event_kind::pointer): a
+    // press places, a drag extends, a release ends.
+    enum class pointer_phase : unsigned char { down, drag, up };
+}
+
+#endif // __MADC_BITS_UI_ENUMS

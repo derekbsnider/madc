@@ -1,0 +1,112 @@
+// S5 (madcide GUI): the ^K O split in the window. A REAL session splits
+// its window; the composer stamps every window's status line and edit
+// node into the editor slot, and the page STACKS a slot's nodes in tree
+// order — a window's status line is its header, an inactive window's
+// `rows` hint is its fixed height, the active window flexes, the focused
+// window is marked. The message row (no region) flows to the foot,
+// spanning the workbench; the status bar slot is empty while split. Back
+// to one window the status returns to the status bar and the editor
+// flexes again. The probe reads geometry back from the live layout —
+// before this slice the unplaced nodes fell into the grid's empty rail
+// cell (auto-placement) beside the editor.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+// The layout facts, as one snapshot line.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var root=document.getElementById('root');"
+	"var rb=root.getBoundingClientRect();"
+	"var slot=document.querySelector('.workbench > [data-slot=\\\"editor\\\"]');"
+	"if(!slot){window.madc(JSON.stringify({kind:'snapshot',text:'no editor slot'}));return;}"
+	"var kids=Array.prototype.slice.call(slot.children);"
+	"var shape=kids.map(function(e){return e.classList.contains('status')?'S':e.classList.contains('edit')?'E':'?';}).join('');"
+	"var ys=kids.map(function(e){return e.getBoundingClientRect().top;});"
+	"var ordered=1;for(var i=1;i<ys.length;i++)if(!(ys[i]>ys[i-1]))ordered=0;"
+	"var cell=document.getElementById('measure').getBoundingClientRect().height;"
+	"var fixed=kids.filter(function(e){return e.classList.contains('edit')&&e.dataset.rows;});"
+	"var rowsok=fixed.length?1:0;fixed.forEach(function(e){var h=e.getBoundingClientRect().height;"
+	"if(Math.abs(h-Number(e.dataset.rows)*cell)>=cell)rowsok=0;});"
+	"var eds=kids.filter(function(e){return e.classList.contains('edit');});"
+	"var focus=eds.map(function(e,i){return e.classList.contains('focus')?'E'+i:'';}).join('');"
+	"var flex=eds.filter(function(e){return !e.dataset.rows;}).map(function(e){return e.style.flexBasis===''?1:0;}).join('');"
+	"var sb=slot.getBoundingClientRect();"
+	"var span=(Math.abs(sb.left-rb.left)<1&&Math.abs(sb.width-rb.width)<1)?1:0;"
+	"var foot=document.querySelector('.workbench > [data-slot=\\\"foot\\\"]');"
+	"var fb=foot?foot.getBoundingClientRect():null;"
+	"var footok=fb&&fb.top>=sb.bottom-1&&Math.abs(fb.left-rb.left)<1&&Math.abs(fb.width-rb.width)<1&&foot.children.length===1?1:0;"
+	"var sbar=document.querySelector('.workbench > [data-slot=\\\"statusbar\\\"]');"
+	"var sbn=sbar?sbar.children.length:0;"
+	"var st=slot.classList.contains('stacked')?1:0;"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'shape='+shape+' ordered='+ordered"
+	"+' rows-ok='+rowsok+' focus='+focus+' flex='+flex+' stacked='+st+' span-ok='+span"
+	"+' foot-ok='+footok+' statusbar='+sbn}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_split.mad";
+    php::file_put_contents(path,
+	"int a() { return 1; }\nint b() { return 2; }\nint c() { return 3; }\n"
+	"int d() { return 4; }\nint e() { return 5; }\nint f() { return 6; }\n"
+	"int g() { return 7; }\nint h() { return 8; }\nint main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    // The buffer table row 0 (what IdeSession::open seeds): the split
+    // composes inactive windows from their buffer rows.
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("SPLIT open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    split_window(w, es, doc);	// leaves "2 windows." on the message line
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    if ( stage == 1 )
+	    {
+		println("SPLIT two windows: {}", ev["text"]);
+		stage = 2;
+		kill_window(w, es, doc, true);	// "One window."
+		var tree;
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		probe(t);
+	    }
+	    else
+	    {
+		println("SPLIT one window: {}", ev["text"]);
+		break;
+	    }
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("SPLIT closed");
+    return 0;
+}

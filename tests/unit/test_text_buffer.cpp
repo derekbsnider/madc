@@ -143,6 +143,114 @@ TEST_CASE("piece table — line model: terminated, trailing, empty")
     CHECK(b.slice(off, len) == "BXB");
 }
 
+// The slow oracle for the newline index: line_of by counting, line spans
+// by splitting the mirror string.
+static size_t slow_line_of(const std::string &s, size_t off)
+{
+    if ( off > s.size() )
+	off = s.size();
+    size_t line = 1;
+    for ( size_t i = 0; i < off; ++i )
+	if ( s[i] == '\n' )
+	    ++line;
+    return line;
+}
+
+static void check_lines_match(const mirrored &m)
+{
+    // line_count against a split of the mirror
+    size_t want_lines = 0;
+    size_t start = 0;
+    std::vector<std::pair<size_t, size_t> > spans;
+    for ( size_t i = 0; i <= m.s.size(); ++i )
+    {
+	if ( i == m.s.size() )
+	{
+	    if ( start < m.s.size() )
+		spans.push_back(std::make_pair(start, m.s.size() - start));
+	    break;
+	}
+	if ( m.s[i] == '\n' )
+	{
+	    spans.push_back(std::make_pair(start, i - start));
+	    start = i + 1;
+	}
+    }
+    want_lines = spans.size();
+    CHECK(m.b.line_count() == want_lines);
+    size_t off = 0, len = 0;
+    for ( size_t n = 1; n <= want_lines; ++n )
+    {
+	REQUIRE(m.b.line_span(n, off, len));
+	CHECK(off == spans[n - 1].first);
+	CHECK(len == spans[n - 1].second);
+    }
+    CHECK_FALSE(m.b.line_span(want_lines + 1, off, len));
+    for ( size_t o = 0; o <= m.s.size() + 1; ++o )
+	CHECK(m.b.line_of(o) == slow_line_of(m.s, o));
+}
+
+TEST_CASE("piece table — line_of: the line a byte belongs to, the phantom line")
+{
+    text_buffer b;
+    b.load("");
+    CHECK(b.line_of(0) == 1u);		// an empty buffer is line 1
+    CHECK(b.line_of(9) == 1u);		// clamped
+
+    b.load("one\ntwo\nthree\n");	// terminated: 3 content lines
+    CHECK(b.line_of(0) == 1u);
+    CHECK(b.line_of(3) == 1u);		// the '\n' ends line 1
+    CHECK(b.line_of(4) == 2u);
+    CHECK(b.line_of(13) == 3u);
+    CHECK(b.line_of(14) == 4u);		// past the end: the phantom line
+    CHECK(b.line_of(99) == 4u);
+    CHECK(b.line_count() == 3u);
+
+    b.load("one\ntwo");			// unterminated: no phantom line
+    CHECK(b.line_of(4) == 2u);
+    CHECK(b.line_of(7) == 2u);		// the end is still line 2
+}
+
+TEST_CASE("piece table — the newline index stays in lockstep across edits, undo and redo")
+{
+    mirrored m;
+    m.load("aa\nbb\ncc\n");
+    check_lines_match(m);
+    // The index is a cache: a query between edits must see every edit.
+    m.insert(3, "X\nY");		// a newline lands inside a line
+    check_lines_match(m);
+    m.erase(2, 1);			// the first '\n' goes: lines merge
+    check_lines_match(m);
+    m.replace(0, m.s.size(), "no newline at all");
+    check_lines_match(m);
+    m.insert(m.s.size(), "\n");		// terminate: the phantom line appears
+    check_lines_match(m);
+    for ( int i = 0; i < 60; ++i )
+    {
+	m.insert((size_t)(i * 7) % (m.b.size() + 1), i % 3 ? "ab" : "\n");
+	check_lines_match(m);
+	m.erase((size_t)(i * 5) % (m.b.size() + 1), (size_t)i % 4);
+	check_lines_match(m);
+    }
+    // History restores a pieces vector behind the index's back — the
+    // index must follow it.
+    text_buffer b;
+    b.load("p\nq\nr");
+    madc::value meta((int64_t)1);
+    madc::value out;
+    CHECK(b.line_count() == 3u);
+    b.checkpoint(meta);
+    b.insert(1, "\n\n");
+    CHECK(b.line_count() == 5u);
+    REQUIRE(b.undo(out, meta));
+    CHECK(b.line_count() == 3u);
+    CHECK(b.line_of(2) == 2u);
+    REQUIRE(b.redo(out, meta));			// "p\n\n\nq\nr"
+    CHECK(b.line_count() == 5u);
+    CHECK(b.line_of(2) == 2u);			// the second '\n' ends line 2
+    CHECK(b.line_of(4) == 4u);			// 'q'
+}
+
 TEST_CASE("piece table — find at and after an offset")
 {
     text_buffer b;

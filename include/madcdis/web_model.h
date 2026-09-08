@@ -19,8 +19,8 @@
 //   {"op":"root"}                                          reset marker
 //   {"op":"node","key":"0.2","parent":"0","class":"heading",
 //    "label":"...","text":"..."}                           create-or-update
-//   {"op":"node","key":"0.3","parent":"0","class":"edit","lines":[
-//      {"t":"line text","s":[[start,len,"keyword"],...]}, ...],
+//   {"op":"node","key":"0.3","parent":"0","class":"edit","nlines":2,
+//    "lines":[{"t":"line text","s":[[start,len,"keyword"],...]}, ...],
 //    "caret":{"line":3,"col":7},"sel":[[l,c],[l,c]]|null,
 //    "tabwidth":8,"focus":true}
 //   {"op":"node","key":"0.4","parent":"0","class":"choice",
@@ -33,6 +33,27 @@
 // application's compose, as on the TUI); offsets in the edit node are BYTE
 // offsets turned into line/col, as the grid model reads them.
 //
+// THE EDIT NODE IS INCREMENTAL (the thin-client shape — Neovim's grid_line
+// redraws "a continuous part of a row" and the rest "should remain
+// unchanged"; xi-editor rewrites the frontend's line cache with copy/ins
+// runs): the model keeps the rows it last emitted per edit key — its diff
+// BASIS, as tui_model keeps the painted grid — and each compose sends
+// work proportional to what changed, never the document:
+//   "lines":[rows]   the full line-DOM: this key's FIRST paint, or the
+//                    first after reset_surface() (ui::refresh) / a resync
+//   "patch":{"at":i,"del":d,"ins":[rows]}
+//                    rows [i, i+d) of what the page holds are replaced by
+//                    `ins` — ONE splice from the common prefix to the
+//                    common suffix (one edited line = at:i del:1 ins:1)
+//   neither          no line changed (a caret move, a resize, a wake)
+//   "nlines":N       ALWAYS: the row count the page must hold after this
+//                    op — the page checks its own count against it and
+//                    posts {"kind":"resync"} on disagreement
+// The caret / sel / focus fields ride every edit op; the page re-renders
+// only the lines whose caret or selection state changed. A key that
+// leaves the tree drops its basis (the page prunes the element the same
+// way), so the two sides forget together.
+//
 // INPUT. The page posts ONE JSON object per event through the target's
 // bound callback:
 //   {"kind":"key","key":"^k"}              a key in tui_key_name spelling
@@ -42,13 +63,44 @@
 //   {"kind":"snapshot","text":"..."}       the test seam's DOM text: kept
 //                                          for last_snapshot(), reported
 //                                          as ONE snapshot event (text)
+//   {"kind":"resync"}                      the page's line-DOM disagrees
+//                                          with the model's basis (a render
+//                                          the platform dropped before the
+//                                          page loaded, a lost eval): every
+//                                          basis is forgotten and ONE focus
+//                                          event asks the application to
+//                                          recompose — the next compose
+//                                          paints every edit node in full
+//   {"kind":"pointer","phase":"down"|"drag"|"up",
+//    "key":"0.3","line":12,"col":7}        a pointing-device gesture on the
+//                                          edit node `key`: the index of the
+//                                          line element and the UTF-16
+//                                          column the page's caret hit test
+//                                          resolved to. The model turns them
+//                                          into a BYTE offset over its basis
+//                                          for that key (the rows the page
+//                                          holds ARE the rows it emitted),
+//                                          focuses the node (a press is a
+//                                          focus gesture, as tab is) and
+//                                          yields ONE pointer event carrying
+//                                          the offset, the phase and the
+//                                          node's subject — the entity it
+//                                          projects — so a multi-window
+//                                          application knows which document
+//                                          was hit. The page owns geometry
+//                                          (where the pointer is), the
+//                                          engine owns the document (what
+//                                          offset that is): no caret or
+//                                          selection logic lives in the page
 // apply_input() turns each into zero or more tui_event objects; a malformed
 // or unknown object yields none and never throws.
 //
 // Thread contract: a plain value object; confined with the frontend that
 // owns it (the C++ standard-library convention).
 
+#include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -101,12 +153,75 @@ inline void web_line_col(const std::string &text, long off,
     col = (size_t)off - line_start;
 }
 
+// A UTF-16 column (what a page's hit test reports — JavaScript string
+// indices) → the byte index in the line's UTF-8 text: one unit per code
+// point below U+10000, two for a four-byte sequence (a surrogate pair); a
+// column past the end clamps to the line's length, one inside a pair snaps
+// to the pair's start. The inverse of the page decoding the row's bytes.
+inline size_t web_byte_col(const std::string &t, long col16)
+{
+    size_t i = 0;
+    long units = 0;
+    while ( i < t.size() && units < col16 )
+    {
+	const unsigned char lead = (unsigned char)t[i];
+	size_t n = lead < 0x80 ? 1 : lead < 0xC0 ? 1 : lead < 0xE0 ? 2
+		 : lead < 0xF0 ? 3 : 4;	// a stray continuation byte: one unit
+	if ( i + n > t.size() )
+	    n = t.size() - i;
+	units += n == 4 ? 2 : 1;
+	if ( units > col16 )
+	    break;
+	i += n;
+    }
+    return i;
+}
+
 class web_model
 {
     key_resolver _keys;			// the ONE chord/key owner
     focus_state _focus;			// the ONE focus/navigation owner
     size_t _rows, _cols;		// last reported viewport facts
     std::string _snapshot;		// last snapshot text (test seam)
+
+    // One line of an edit node's line-DOM as the model last emitted it:
+    // the text and its clipped spans [start-in-line, len, class]. The
+    // per-key vector of these is the diff basis (see the header).
+    struct span_ref
+    {
+	long a, len;
+	std::string cls;
+	bool operator==(const span_ref &o) const
+	{
+	    return a == o.a && len == o.len && cls == o.cls;
+	}
+    };
+    struct edit_row
+    {
+	std::string t;
+	std::vector<span_ref> s;
+	bool operator==(const edit_row &o) const { return t == o.t && s == o.s; }
+    };
+    // The per-key diff basis: the rows the page holds for one edit node,
+    // with the focus slot and the projected entity the node carried when
+    // they were emitted — what a pointer gesture on that node resolves
+    // against (apply_input's "pointer").
+    struct edit_basis
+    {
+	std::vector<edit_row> rows;
+	size_t slot;
+	entity_id subject;
+	edit_basis() : slot(0), subject(0) {}
+    };
+    std::map<std::string, edit_basis> _basis;
+    // The native menu the host draws (S2): the root's `menu` hint resolved
+    // against the bindings — items gain the chord bound to their command
+    // id (`key`) — as one JSON text; recomposed every compose and handed
+    // to the host only when it differs from the last (a keystroke that
+    // changes no title, key or enablement costs nothing on the wire).
+    std::string _menu_json;
+    bool _menu_dirty;	// edit key -> its basis
+    std::set<std::string> _seen;		// edit keys this compose visited
 
     // A node op that carries a focus flag, patched after end_compose()
     // (the flag reads the CLAMPED focus, as the grid paints the caret).
@@ -122,7 +237,15 @@ class web_model
     // TUI's JOE style spec, which the web ignores; a row with only `c`
     // (a TUI-only styling) carries no `cls` and is skipped here.
     struct doc_span { long start, end; std::string cls; };
+    static bool span_before(const doc_span &a, const doc_span &b)
+    {
+	return a.start < b.start;
+    }
 
+    // Rows come out sorted by start (stable: rows with one start keep
+    // their order) — the sweep in edit_lines relies on it. The composers
+    // already hand them over in source order, so the sort is a contract,
+    // not a cost.
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -147,41 +270,177 @@ class web_model
 	    ds.cls = ci->second.as_string();
 	    out.push_back(ds);
 	}
+	std::stable_sort(out.begin(), out.end(), span_before);
     }
 
     // The edit node's text as the line-DOM: one row per line, each with
-    // the spans that overlap it ([start-in-line, len, class]).
-    static nlohmann::json edit_lines(const std::string &text,
-				     const std::vector<doc_span> &spans)
+    // the spans that overlap it ([start-in-line, len, class]). ONE sweep
+    // over start-sorted spans: a cursor admits a span into the ACTIVE set
+    // on the line that holds its start, and the set drops it after the
+    // line that holds its end — O(lines + spans + spans that cross a line
+    // boundary). The earlier form tested every span against every line;
+    // on a 4557-line, 4841-span document that was 22M comparisons — 140 ms
+    // of a 165 ms render — per keystroke (measured 2026-09-07).
+    static std::vector<edit_row> edit_rows(const std::string &text,
+					   const std::vector<doc_span> &spans)
     {
-	nlohmann::json lines = nlohmann::json::array();
+	std::vector<edit_row> rows;
 	size_t ls = 0;
+	size_t next = 0;		// the first span not yet admitted
+	std::vector<size_t> active;	// admitted spans still reaching ahead
 	for ( size_t i = 0; i <= text.size(); ++i )
 	{
 	    if ( i < text.size() && text[i] != '\n' )
 		continue;
 	    const size_t le = i;		// [ls, le) is one line
-	    nlohmann::json row = nlohmann::json::object();
-	    row["t"] = text.substr(ls, le - ls);
-	    nlohmann::json s = nlohmann::json::array();
-	    for ( size_t k = 0; k < spans.size(); ++k )
+	    edit_row row;
+	    row.t = text.substr(ls, le - ls);
+	    while ( next < spans.size() && (size_t)spans[next].start < le )
+		active.push_back(next++);
+	    size_t keep = 0;
+	    for ( size_t k = 0; k < active.size(); ++k )
 	    {
-		size_t a = spans[k].start < 0 ? 0 : (size_t)spans[k].start;
-		size_t b = (size_t)spans[k].end;
+		const doc_span &sp = spans[active[k]];
+		size_t a = (size_t)sp.start;
+		size_t b = (size_t)sp.end;
 		if ( a < ls )
 		    a = ls;
 		if ( b > le )
 		    b = le;
-		if ( a >= b )
-		    continue;
-		s.push_back(nlohmann::json::array(
-		    { (long)(a - ls), (long)(b - a), spans[k].cls }));
+		if ( a < b )
+		{
+		    span_ref sr;
+		    sr.a = (long)(a - ls);
+		    sr.len = (long)(b - a);
+		    sr.cls = sp.cls;
+		    row.s.push_back(sr);
+		}
+		// A span reaching past this line's newline has more to
+		// give on the next line; one ending at or before it is done.
+		if ( (size_t)sp.end > le + 1 )
+		    active[keep++] = active[k];
 	    }
-	    row["s"] = s;
-	    lines.push_back(row);
+	    active.resize(keep);
+	    rows.push_back(row);
 	    ls = i + 1;
 	}
-	return lines;
+	return rows;
+    }
+
+    // Rows [from, to) as the page's row objects {"t": text, "s": [...]}.
+    static nlohmann::json rows_json(const std::vector<edit_row> &rows,
+				    size_t from, size_t to)
+    {
+	nlohmann::json out = nlohmann::json::array();
+	for ( size_t i = from; i < to && i < rows.size(); ++i )
+	{
+	    nlohmann::json row = nlohmann::json::object();
+	    row["t"] = rows[i].t;
+	    nlohmann::json s = nlohmann::json::array();
+	    for ( size_t k = 0; k < rows[i].s.size(); ++k )
+		s.push_back(nlohmann::json::array(
+		    { rows[i].s[k].a, rows[i].s[k].len, rows[i].s[k].cls }));
+	    row["s"] = s;
+	    out.push_back(row);
+	}
+	return out;
+    }
+
+    // The edit node's line-DOM against this key's basis: the full rows
+    // when there is none, else ONE splice from the common prefix to the
+    // common suffix — absent when nothing changed. The rows become the
+    // new basis either way.
+    void emit_edit_lines(nlohmann::json &op, const std::string &key,
+			 std::vector<edit_row> &rows)
+    {
+	op["nlines"] = (long)rows.size();
+	std::map<std::string, edit_basis>::iterator bi = _basis.find(key);
+	if ( bi == _basis.end() )
+	    op["lines"] = rows_json(rows, 0, rows.size());
+	else
+	{
+	    const std::vector<edit_row> &old = bi->second.rows;
+	    const size_t n0 = old.size(), n1 = rows.size();
+	    size_t p = 0;
+	    while ( p < n0 && p < n1 && old[p] == rows[p] )
+		++p;
+	    size_t q = 0;
+	    while ( q < n0 - p && q < n1 - p && old[n0 - 1 - q] == rows[n1 - 1 - q] )
+		++q;
+	    if ( p < n0 || p < n1 )
+	    {
+		nlohmann::json patch = nlohmann::json::object();
+		patch["at"] = (long)p;
+		patch["del"] = (long)(n0 - p - q);
+		patch["ins"] = rows_json(rows, p, n1 - q);
+		op["patch"] = patch;
+	    }
+	}
+	_seen.insert(key);
+	_basis[key].rows.swap(rows);
+    }
+
+    // The menu the host draws, from the root's `menu` hint ({bar:[{title,
+    // items:[{id,title,enabled?}|{sep}]}]}, madcide's default.menu shape):
+    // the same menus and items with each command's chord from the installed
+    // bindings (`key`, omitted when unbound) and `enabled` made explicit.
+    // Empty when the root carries no menu. Ids, titles and keys only — the
+    // host renders; nothing here knows what a command does.
+    std::string menu_json_of(const uinode &root) const
+    {
+	if ( !root.hints.is_object() )
+	    return std::string();
+	const std::map<std::string, madc::value> &ho = root.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator mi = ho.find("menu");
+	if ( mi == ho.end() || !mi->second.is_object() )
+	    return std::string();
+	const std::map<std::string, madc::value> &mo = mi->second.as_object();
+	std::map<std::string, madc::value>::const_iterator bi = mo.find("bar");
+	if ( bi == mo.end() || !bi->second.is_array() )
+	    return std::string();
+	nlohmann::json bar = nlohmann::json::array();
+	const std::vector<madc::value> &menus = bi->second.as_array();
+	for ( size_t m = 0; m < menus.size(); ++m )
+	{
+	    if ( !menus[m].is_object() )
+		continue;
+	    nlohmann::json menu = nlohmann::json::object();
+	    menu["title"] = hint_str(menus[m], "title");
+	    nlohmann::json items = nlohmann::json::array();
+	    const std::map<std::string, madc::value> &mm = menus[m].as_object();
+	    std::map<std::string, madc::value>::const_iterator ii = mm.find("items");
+	    if ( ii != mm.end() && ii->second.is_array() )
+	    {
+		const std::vector<madc::value> &rows = ii->second.as_array();
+		for ( size_t i = 0; i < rows.size(); ++i )
+		{
+		    if ( !rows[i].is_object() )
+			continue;
+		    nlohmann::json item = nlohmann::json::object();
+		    if ( hint_of(rows[i], "sep", 0) )
+		    {
+			item["sep"] = true;
+			items.push_back(item);
+			continue;
+		    }
+		    const std::string id = hint_str(rows[i], "id");
+		    if ( id.empty() )
+			continue;
+		    item["id"] = id;
+		    item["title"] = hint_str(rows[i], "title");
+		    item["enabled"] = hint_of(rows[i], "enabled", 1) != 0;
+		    const std::string key = _keys.bindings().seq_for_action(id);
+		    if ( !key.empty() )
+			item["key"] = key;
+		    items.push_back(item);
+		}
+	    }
+	    menu["items"] = items;
+	    bar.push_back(menu);
+	}
+	nlohmann::json out = nlohmann::json::object();
+	out["bar"] = bar;
+	return out.dump();
     }
 
     void walk(const roles &r, const uinode &n, const std::string &key,
@@ -240,9 +499,11 @@ class web_model
 	       || n.role == r.item )
 	{
 	    op["text"] = node_text(n);
-	    // The status bar as items (slice 3 Task 5): a status node whose
-	    // hints carry {items:{left,right}} renders a justified item bar;
-	    // the page prefers items when present, else the single `text`.
+	    // The status bar as items (slice 3 Task 5; S3 as chrome): a status
+	    // node whose hints carry {items:{left,right}} — each side an
+	    // array of SEGMENTS {seat, label, text} (the composer's expanded
+	    // format seats) — renders a justified bar of discrete items; the
+	    // page prefers items when present, else the single `text`.
 	    if ( n.role == r.status && n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -251,12 +512,26 @@ class web_model
 		{
 		    const std::map<std::string, madc::value> &iv = ii->second.as_object();
 		    nlohmann::json items = nlohmann::json::object();
-		    std::map<std::string, madc::value>::const_iterator l = iv.find("left");
-		    std::map<std::string, madc::value>::const_iterator rr = iv.find("right");
-		    if ( l != iv.end() && l->second.is_string() )
-			items["left"] = l->second.as_string();
-		    if ( rr != iv.end() && rr->second.is_string() )
-			items["right"] = rr->second.as_string();
+		    static const char *const sides[2] = { "left", "right" };
+		    for ( int si = 0; si < 2; ++si )
+		    {
+			std::map<std::string, madc::value>::const_iterator l = iv.find(sides[si]);
+			if ( l == iv.end() || !l->second.is_array() )
+			    continue;
+			nlohmann::json segs = nlohmann::json::array();
+			const std::vector<madc::value> &rows = l->second.as_array();
+			for ( size_t k = 0; k < rows.size(); ++k )
+			{
+			    if ( !rows[k].is_object() )
+				continue;
+			    nlohmann::json seg = nlohmann::json::object();
+			    seg["seat"] = hint_str(rows[k], "seat");
+			    seg["label"] = hint_str(rows[k], "label");
+			    seg["text"] = hint_str(rows[k], "text");
+			    segs.push_back(seg);
+			}
+			items[sides[si]] = segs;
+		    }
 		    op["items"] = items;
 		}
 	    }
@@ -325,7 +600,11 @@ class web_model
 	    long rows = hint_of(n.hints, "rows", 0);
 	    std::vector<doc_span> spans;
 	    read_spans(n.hints, spans);
-	    op["lines"] = edit_lines(text, spans);
+	    std::vector<edit_row> doc_rows = edit_rows(text, spans);
+	    emit_edit_lines(op, key, doc_rows);
+	    edit_basis &basis = _basis[key];
+	    basis.slot = slot;
+	    basis.subject = n.subject;
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
@@ -358,7 +637,7 @@ class web_model
     }
 
 public:
-    web_model() : _rows(24), _cols(80) {}
+    web_model() : _rows(24), _cols(80), _menu_dirty(false) {}
 
     void set_bindings(const tui_bindings &b) { _keys.set_bindings(b); }
     const std::string &pending_chord() const { return _keys.pending(); }
@@ -379,13 +658,36 @@ public:
 	ops.push_back(nlohmann::json{ {"op", "root"} });
 	std::vector<slot_op> slots;
 	_focus.begin_compose();
+	_seen.clear();
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
+	// An edit key that left the tree drops its basis — the page prunes
+	// the element after "end" by the same rule, so both sides forget.
+	for ( std::map<std::string, edit_basis>::iterator bi = _basis.begin();
+	      bi != _basis.end(); )
+	    if ( _seen.count(bi->first) )
+		++bi;
+	    else
+		_basis.erase(bi++);
 	for ( size_t i = 0; i < slots.size(); ++i )
 	    ops[slots[i].op]["focus"] = slots[i].slot == _focus.focus();
 	ops.push_back(nlohmann::json{ {"op", "end"} });
+	// The native menu (S2): resolved against the CURRENT bindings, so a
+	// profile swap re-sends it with the new chords; unchanged = not sent.
+	const std::string mj = menu_json_of(tree);
+	_menu_dirty = mj != _menu_json;
+	_menu_json = mj;
 	return ops.dump();
     }
+
+    // Did the last compose change the menu the host draws? (The first
+    // compose with a menu: yes; a compose that dropped it: yes, to "".)
+    bool menu_changed() const { return _menu_dirty; }
+    const std::string &menu_json() const { return _menu_json; }
+
+    // Forget what the page holds: the NEXT compose paints every edit node
+    // in full (ui::refresh — the grid model's painted-grid reset).
+    void reset_surface() { _basis.clear(); }
 
     // One posted input object → zero or more semantic events, through the
     // shared adapter — the page's keys become the grid's events.
@@ -429,6 +731,98 @@ public:
 	    _rows = (size_t)ri->get<long>();
 	    _cols = (size_t)ci->get<long>();
 	    keys.push_back(tui_keyev(tui_key::resize));
+	}
+	else if ( kind == "resync" )
+	{
+	    // The page found its line-DOM out of step with the basis (a
+	    // render the platform dropped before the page loaded, a lost
+	    // eval): forget the bases and ask for a recompose — a focus
+	    // event, the application's "repaint" signal on every target.
+	    reset_surface();
+	    tui_event e;
+	    e.kind = tui_event_kind::focus;
+	    none.push_back(e);
+	    return none;
+	}
+	else if ( kind == "pointer" )
+	{
+	    // Not a key: a pointing-device gesture the page hit-tested to an
+	    // edit node's line element and UTF-16 column (see the header).
+	    // Resolve it to a BYTE offset over the basis for that key, focus
+	    // the node, report ONE pointer event with the node's subject.
+	    nlohmann::json::const_iterator pi = j.find("phase");
+	    nlohmann::json::const_iterator ni = j.find("key");
+	    nlohmann::json::const_iterator li = j.find("line");
+	    nlohmann::json::const_iterator ci = j.find("col");
+	    pointer_phase phase;
+	    if ( pi == j.end() || !pi->is_string()
+	      || !pointer_phase_from_name(pi->get<std::string>(), phase)
+	      || ni == j.end() || !ni->is_string()
+	      || li == j.end() || !li->is_number_integer()
+	      || ci == j.end() || !ci->is_number_integer() )
+		return none;
+	    std::map<std::string, edit_basis>::const_iterator bi =
+		_basis.find(ni->get<std::string>());
+	    if ( bi == _basis.end() )
+		return none;
+	    const std::vector<edit_row> &rows = bi->second.rows;
+	    long line = li->get<long>();
+	    long col = ci->get<long>();
+	    long offset = 0;
+	    if ( !rows.empty() )
+	    {
+		if ( line < 0 )
+		{
+		    line = 0;
+		    col = 0;
+		}
+		bool past_end = (size_t)line >= rows.size();
+		if ( past_end )
+		    line = (long)rows.size() - 1;
+		for ( long i = 0; i < line; ++i )
+		    offset += (long)rows[i].t.size() + 1;
+		offset += (long)(past_end ? rows[line].t.size()
+					  : web_byte_col(rows[line].t, col));
+	    }
+	    _focus.set_focus(bi->second.slot);
+	    tui_event e;
+	    e.kind = tui_event_kind::pointer;
+	    e.phase = phase;
+	    e.offset = offset;
+	    e.subject = bi->second.subject;
+	    none.push_back(e);
+	    return none;
+	}
+	else if ( kind == "action" )
+	{
+	    // Not a key: a command the host's native chrome fired (a menu bar
+	    // item — S2) — the SAME action event a bound chord produces, with
+	    // no sequence (nothing was typed).
+	    nlohmann::json::const_iterator it = j.find("action");
+	    if ( it == j.end() || !it->is_string() || it->get<std::string>().empty() )
+		return none;
+	    tui_event e;
+	    e.kind = tui_event_kind::action;
+	    e.action_name = it->get<std::string>();
+	    none.push_back(e);
+	    return none;
+	}
+	else if ( kind == "dialog" )
+	{
+	    // Not a key: the host's native file dialog answered (ui::dialog,
+	    // S4) — the request's mode and the chosen path ("" = cancelled),
+	    // reported as ONE dialog event (mode in action_name, path in text).
+	    nlohmann::json::const_iterator mi = j.find("mode");
+	    nlohmann::json::const_iterator pi = j.find("path");
+	    if ( mi == j.end() || !mi->is_string() || mi->get<std::string>().empty() )
+		return none;
+	    tui_event e;
+	    e.kind = tui_event_kind::dialog;
+	    e.action_name = mi->get<std::string>();
+	    if ( pi != j.end() && pi->is_string() )
+		e.text = pi->get<std::string>();
+	    none.push_back(e);
+	    return none;
 	}
 	else if ( kind == "snapshot" )
 	{
