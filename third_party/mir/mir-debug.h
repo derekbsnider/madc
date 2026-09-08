@@ -348,6 +348,11 @@ typedef struct MIR_object_exec_params {
   const char *extra_sectname; /* e.g. "__forest" */
   const void *extra_data;
   size_t extra_size;
+  /* PE targets: nonzero = IMAGE_SUBSYSTEM_WINDOWS_GUI (a windowed program:
+     no console is allocated at start -- gcc's -mwindows), zero = the
+     console subsystem (-mconsole, the default).  ELF and Mach-O targets
+     ignore it: a GUI program is an ordinary program there. */
+  int gui_subsystem_p;
 } MIR_object_exec_params;
 
 /* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable

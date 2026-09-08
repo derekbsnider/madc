@@ -1448,6 +1448,8 @@ void edit_file(long w, long es, long olddoc, const char *path);
 // commits membership through these.
 void proj_add(long w, long es, long doc, const char *path0);
 bool project_active(long w, long es);
+bool proj_write(long w, long es, long doc);	// polish P2c: the kind toggle persists
+void proj_show(long w, long es, long doc);	// polish P2b: Open Project… shows the window
 void project_rows(long w, long es, long doc);
 // The vi colon line (defined after the verbs it translates to): one ex
 // command, interpreted against the EXISTING vocabulary. False = quit.
@@ -1489,6 +1491,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
     }
     if ( mode == "saveas" )
 	return save_as(w, es, doc, in.c_str());
+    if ( mode == "openproject" )
+    {
+	proj_open(w, es, doc, in.c_str());
+	return true;
+    }
     if ( mode == "projadd" )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
@@ -2303,6 +2310,47 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     out = rows;
 }
 
+// The project's KIND (polish P2c): the manifest's "kind" — console
+// (absent) or gui. It decides the Windows executable's subsystem on a
+// project build (the engine reads the manifest itself) and where Run sends
+// the program's output. Ring-lifetime text; callers own it at once.
+const char *proj_kind(long w, long es)
+{
+    var proj;
+    ui::get(proj, w, es, "proj");
+    if ( proj.is_null() )
+	return "console";
+    var k = proj["kind"];
+    if ( k.is_null() )
+	return "console";
+    return k.c_str();
+}
+
+// Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
+// persistence rule) — the ^T Options row's action (opt-projkind). Only a
+// project with a manifest has a kind to set; the implicit project refuses
+// with the reason (its manifest materializes on the second file).
+void proj_toggle_kind(long w, long es, long doc)
+{
+    var proj;
+    ui::get(proj, w, es, "proj");
+    if ( proj.is_null() )
+    {
+	ui::set(w, es, "msg",
+		"No project manifest yet — add a second file (^K I) first.");
+	return;
+    }
+    var cur = proj_kind(w, es);		// own the ring text
+    var nk = "console";
+    if ( cur == "console" )
+	nk = "gui";
+    proj["kind"] = nk;
+    ui::set(w, es, "proj", proj);
+    proj_touch(w, es);
+    if ( proj_write(w, es, doc) )
+	ui::set(w, es, "msg", format("Project kind: {}.", nk));
+}
+
 bool proj_member(long w, long es, long doc, const char *path)
 {
     var rows;
@@ -2448,9 +2496,52 @@ void proj_del(long w, long es, long doc, long option)
     project_rows(w, es, doc);
 }
 
+// THE manifest reader (polish P2b factored it out of the startup read so
+// File -> Open Project… and run_ide's startup are ONE reader): load the
+// manifest at `pf` onto the bag ("proj" + "projfile"), bump the project
+// generation, announce. Malformed content refuses LOUD and leaves the
+// session as it was. False = not loaded (the message says why).
+bool proj_load(long w, long es, var &pf)
+{
+    var txt;
+    if ( !php::file_get_contents(txt, pf.c_str()) )
+    {
+	ui::set(w, es, "msg", format("Cannot read {}.", pf));
+	return false;
+    }
+    var proj;
+    if ( !js::parse(proj, txt) )
+    {
+	ui::set(w, es, "msg", format("{} is not valid JSON.", pf));
+	return false;
+    }
+    if ( !proj.is_object() )
+    {
+	// Valid JSON but not the native OBJECT shape (a scalar, or a
+	// compile_commands array — the read-only import is --project's
+	// lane, not the window's).
+	ui::set(w, es, "msg",
+		format("{} is not a madc project manifest.", pf));
+	return false;
+    }
+    var tus = proj["tus"];
+    if ( tus.is_null() )
+    {
+	ui::set(w, es, "msg",
+		format("{} has no \"tus\" — not a project manifest.", pf));
+	return false;
+    }
+    ui::set(w, es, "proj", proj);
+    ui::set(w, es, "projfile", pf);
+    proj_touch(w, es);
+    ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
+				 php::count(tus)));
+    return true;
+}
+
 // Startup manifest read (run_ide): a <base>.prj.json beside the launch
 // file IS the project — persistence would be pointless if nothing read
-// it back. Malformed content refuses LOUD; the session stays implicit.
+// it back. No file = the implicit single-file project.
 void proj_startup(long w, long es, long doc)
 {
     var lp;
@@ -2460,39 +2551,21 @@ void proj_startup(long w, long es, long doc)
     var pf = format("{}.prj.json", base);
     if ( !php::file_exists(pf) )
 	return;
-    var txt;
-    if ( !php::file_get_contents(txt, pf.c_str()) )
-    {
-	ui::set(w, es, "msg", format("Cannot read {}.", pf));
+    proj_load(w, es, pf);
+}
+
+// File -> Open Project… (polish P2b): the manifest the user chose (the
+// native dialog's answer, or the prompt's) becomes THE project — the same
+// reader run_ide's startup uses — and the Project window opens on it. An
+// empty path (a cancelled dialog) does nothing.
+void proj_open(long w, long es, long doc, const char *path0)
+{
+    var pf = path0;		// ring discipline: own the text first
+    if ( strlen(pf.c_str()) == 0 )
 	return;
-    }
-    var proj;
-    if ( !js::parse(proj, txt) )
-    {
-	ui::set(w, es, "msg", format("{} is not valid JSON.", pf));
+    if ( !proj_load(w, es, pf) )
 	return;
-    }
-    if ( !proj.is_object() )
-    {
-	// Valid JSON but not the native OBJECT shape (a scalar, or a
-	// compile_commands array — the read-only import is --project's
-	// lane, not the window's).
-	ui::set(w, es, "msg",
-		format("{} is not a madc project manifest.", pf));
-	return;
-    }
-    var tus = proj["tus"];
-    if ( tus.is_null() )
-    {
-	ui::set(w, es, "msg",
-		format("{} has no \"tus\" — not a project manifest.", pf));
-	return;
-    }
-    ui::set(w, es, "proj", proj);
-    ui::set(w, es, "projfile", pf);
-    proj_touch(w, es);
-    ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
-				 php::count(tus)));
+    proj_show(w, es, doc);
 }
 
 // Recompute the window's rows onto the bag ("projrows": {path, tag, ti,
@@ -3297,6 +3370,11 @@ void dialog_result(long w, long es, long doc, var &ev)
     if ( mode == "save" )
     {
 	save_as(w, es, doc, path.c_str());
+	return;
+    }
+    if ( mode == "openproject" )
+    {
+	proj_open(w, es, doc, path.c_str());
 	return;
     }
     edit_file(w, es, doc, path.c_str());
@@ -4143,6 +4221,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 		start_prompt(w, es, "Save as", "saveas");
 	    return true;
 	}
+	if ( a == "openproject" )
+	{
+	    // File -> Open Project… (polish P2b): the native Open over the
+	    // manifests; the terminal and a headless session keep a prompt.
+	    var none = "";
+	    if ( !dialog_request(w, es, "openproject", "Open Project", none) )
+		start_prompt(w, es, "Project file to open", "openproject");
+	    return true;
+	}
 	if ( a == "shell" )
 	{
 	    open_shell(w, es);
@@ -4250,6 +4337,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	if ( a == "opt-keymap" )
 	{
 	    toggle_profile(w, es);
+	    return true;
+	}
+	if ( a == "opt-projkind" )
+	{
+	    proj_toggle_kind(w, es, doc);
 	    return true;
 	}
 	// A chrome dialog's Close button or a press outside it (polish P2):
@@ -4515,6 +4607,14 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		       "act": "opt-scheme" };
 	    rows[] = { "content": format("K Keymap      {}", prof),
 		       "act": "opt-keymap" };
+	    // The project kind (polish P2c): console | gui — shown while a
+	    // manifest is open (the implicit project has no manifest).
+	    if ( project_active(w, es) )
+	    {
+		var pk = proj_kind(w, es);
+		rows[] = { "content": format("P Project kind {}", pk),
+			   "act": "opt-projkind" };
+	    }
 	    for ( var row : rows )
 	    {
 		var it = { "role": "item", "content": row["content"] };
@@ -4863,6 +4963,8 @@ void IdeSession::dialog_fallback(var &req)
     var mode = req["mode"];
     if ( mode == "save" )
 	start_prompt(w, es, "Save as", "saveas");
+    else if ( mode == "openproject" )
+	start_prompt(w, es, "Project file to open", "openproject");
     else
 	start_prompt(w, es, "Name of file to edit", "editfile");
 }

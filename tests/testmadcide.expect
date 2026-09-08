@@ -79,6 +79,11 @@ proj-goto: path=madc_ide_bad.mad switched=1
 proj-run-red: refused=1
 proj-run-clean: No terminal to suspend.
 proj-build: artifact=1 Built project madc_ide_test.prj.json -> madc_ide_prog
+proj-kind-row: P Project kind console
+proj-kind-toggle: Project kind: gui. file-kind=gui
+proj-kind-toggle2: Project kind: console. file-kind=console
+proj-openproject-prompt: Project file to open (^C aborts):
+proj-openproject: Project madc_ide_open.prj.json: 1 TU(s). active=1 projfile=madc_ide_open.prj.json kind=gui
 proj-implicit-check: Check: clean.
 proj-subst: echo madc_ide_test.prj.json
 win-keys: o=splitw n=nextw p=prevw g=groww t=shrinkw k0=killwin k1=onlywin i=outline a=view

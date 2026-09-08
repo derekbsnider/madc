@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### madcide: the list overlays as dialogs; Open Project…; the project kind (2026-09-08)
+
+- The Build, Project, Options, Modes and Help panes — bare popup lists in the
+  window until now (Build docked into the bottom panel) — are titled
+  DIALOGS in the quick-pick shape: a title bar, a filter field showing the
+  text the core holds, the rows as pick targets, and buttons named after
+  what the pane's keys do (Open / Run / Change / Select picks the selected
+  row; Close posts the pane's own cancel by name). A click on a row picks it
+  through the one focus owner — the same choose event Enter produces — so
+  every pane behaves as it does from the keyboard. The terminal is
+  unchanged.
+- File → Open Project…: the native open dialog (the prompt in a terminal)
+  loads a manifest through the one reader run_ide's startup uses and opens
+  the Project window on it.
+- The project KIND: a manifest's `"kind": "console" | "gui"` (absent =
+  console). `^T` Options gains a `Project kind` row that toggles and
+  persists it at once. A project build stamps the Windows executable's
+  subsystem from it (WINDOWS_GUI for gui — no console window at start);
+  the CLI spells the same for a single file as mingw-gcc does, `-mwindows`
+  / `-mconsole`. The PE release gate now reads the subsystem back against
+  the cross gcc's.
+
 ### madcide GUI: the window shows the terminal's colour scheme (2026-09-08)
 
 - The GUI and the TUI highlighted the same source in two different colour

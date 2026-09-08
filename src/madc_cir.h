@@ -66,6 +66,10 @@ extern const char *madc_pack_forest_path;
 // the flag spelling scopes exactly what it promises. Emit-lane state, like
 // madc_pack_forest_path: read at both native-emit sites.
 extern bool madc_static_libmadc;
+// -mwindows / -mconsole (the CLI's emit-lane state, like -static-libmadc):
+// the executable's PE subsystem — true = WINDOWS_GUI. The --project lane
+// reads the manifest's kind instead (madc_project_emit_native).
+extern bool madc_gui_subsystem;
 
 // -fno-eval-shims: omit the __madc_shim_<sym> host-call adapters from this
 // artifact. They are the value-ABI surface a libmadc host calls a compiled

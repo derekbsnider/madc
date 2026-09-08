@@ -83,6 +83,25 @@ madc never writes cache files beside your project. To skip recompiling on
 later runs, produce a real artifact explicitly: `-c` per-TU objects (madc
 runs `.o` files directly as a precompiled cache) or `-o` an AOT executable.
 
+madc's own manifest is a JSON object (the shape madcide reads and writes as
+`<base>.prj.json` beside the launch file; `--project` takes it
+interchangeably with a `compile_commands.json` array):
+
+```json
+{ "tus": ["main.mad", {"file": "util.c", "std": "c89", "defines": ["NDEBUG"]}],
+  "entry": "main",
+  "output": "app",
+  "kind": "console",
+  "commands": [{"name": "Docs", "cmd": "make -C {project} docs"}] }
+```
+
+`tus` is required (a bare string is the file; an object carries `file`,
+`directory`, `defines`, `include_dirs`, `std`, `stdlib`); `kind` is
+`console` (the default) or `gui` — a gui program gets the Windows GUI
+subsystem when built (no console window at start) and, in madcide, runs in
+its own window; `commands` are the IDE's extra Build rows. Unknown keys
+pass through untouched.
+
 ## Native output (AOT)
 
 madc emits native artifacts itself — MIR assembles the ELF/Mach-O image
@@ -100,6 +119,9 @@ madc prog.o                       # execute .o files as a precompiled cache
   emitted image, so it runs with no madc library installed (libc/libstdc++
   stay dynamic).
 - `-pie` / `-no-pie` select the image layout, gcc-style.
+- `-mwindows` / `-mconsole` (Windows) select the executable's subsystem,
+  mingw-gcc-style: a windowed program allocates no console at start; a
+  `--project` build takes the manifest's `kind` instead.
 - Emitted executables otherwise locate `libmadc.so` via their `DT_RUNPATH`.
 
 ## Rendering and introspection

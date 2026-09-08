@@ -796,6 +796,60 @@ int main()
     println("proj-build: artifact={} {}",
 	    php::file_exists("madc_ide_prog") ? 1 : 0, msg);
     remove("madc_ide_prog");
+
+    // -- polish P2c: the project KIND (console | gui) — a ^T Options row
+    //    while a manifest is open; its action toggles and persists the
+    //    manifest AT ONCE (the immediate-persistence rule); the engine
+    //    reads the field on a project build (the PE subsystem) and Run
+    //    routing reads it in the GUI.
+    ev_action(e, "options", "^t");
+    S.apply_ide_event(gdoc, e);
+    S.compose_ide_tree(tree, gdoc);
+    var obox = tree["children"][2];
+    var krow = "";
+    for ( var oi : obox["children"] )
+	if ( strstr(format("{}", oi["content"]), "Project kind") != 0 )
+	    krow = php::trim(oi["content"]);
+    println("proj-kind-row: {}", krow);
+    ev_action(e, "opt-projkind", "");
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    js::parse(mparsed, mtxt);
+    println("proj-kind-toggle: {} file-kind={}", msg, mparsed["kind"]);
+    ev_action(e, "opt-projkind", "");	// and back
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    php::file_get_contents(mtxt, "madc_ide_test.prj.json");
+    js::parse(mparsed, mtxt);
+    println("proj-kind-toggle2: {} file-kind={}", msg, mparsed["kind"]);
+    ev_key(e, "esc");			// @pane esc paneclose
+    S.apply_ide_event(gdoc, e);
+
+    // -- polish P2b: File -> Open Project… — the headless session gets the
+    //    prompt (no native dialog); the answer runs THE manifest reader
+    //    run_ide's startup uses and opens the Project window on it.
+    php::file_put_contents("madc_ide_open.prj.json",
+	"{\"tus\":[\"madc_ide_test.mad\"],\"kind\":\"gui\"}");
+    ev_action(e, "openproject", "");
+    S.apply_ide_event(gdoc, e);
+    S.compose_ide_tree(tree, gdoc);
+    long okids = php::count(tree["children"]);
+    println("proj-openproject-prompt: {}",
+	    php::trim(tree["children"][okids - 1]["content"]));
+    ev_text(e, "madc_ide_open.prj.json");
+    S.apply_ide_event(gdoc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(gdoc, e);
+    ui::get(msg, w, es, "msg");
+    var opf;
+    ui::get(opf, w, es, "projfile");
+    println("proj-openproject: {} active={} projfile={} kind={}", msg,
+	    project_active(w, es) ? 1 : 0, opf, proj_kind(w, es));
+    ev_key(e, "esc");			// close the window
+    S.apply_ide_event(gdoc, e);
+    remove("madc_ide_open.prj.json");
+    proj_startup(w, es, doc);		// back to the test manifest
     // The implicit single-file project keeps the buffer semantics.
     long pes4 = ui::create(w, "editor-state-4");
     proj_run_check(w, pes4, doc);

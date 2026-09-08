@@ -60,7 +60,7 @@ madcide_theme.mad` (a palette entry travels as a custom property),
 `tests/testidespans.mad` + `testidespanshift.mad` (the one row shape). The
 terminal is byte-identical (`testmadcide`, the tui_model unit battery).
 
-## P2 — the list overlays as dialogs; Open Project…; the project kind
+## P2 — the list overlays as dialogs; Open Project…; the project kind — BUILT 2026-09-08
 
 **P2a — the list panes as dialogs (additive, the S6 treatment).** Today the
 TUI's list overlays — Build `^B`, Project `^P`, Options `^T`, Modes, Help —

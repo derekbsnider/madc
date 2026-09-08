@@ -1546,6 +1546,7 @@ const char *madc_pack_forest_path = NULL;
 // -static-libmadc (S5): merge the AOT-ledger runtime into the emitted image
 // instead of depending on libmadc at run time. See madc_cir.h.
 bool madc_static_libmadc = false;
+bool madc_gui_subsystem = false;
 
 // -fno-eval-shims: this artifact will never be host-called through the value
 // ABI, so the __madc_shim_* adapters (and their Tier-B madc_value_* imports)
@@ -1841,10 +1842,14 @@ static bool cir_split_needed(const std::vector<std::string> &needed,
 // glibc >= 2.34 runs an executable's own array from __libc_start_main.
 // Executables get entry=main and, per gcc parity, the PIE layout unless
 // -no-pie chose fixed-base ET_EXEC.
+// gui_subsystem: the executable's PE subsystem (WINDOWS_GUI = a windowed
+// program, no console at start — gcc's -mwindows); ELF and Mach-O writers
+// ignore it. The CLI's -mwindows or a project manifest's "kind": "gui".
 static void cir_fill_exec_params(MIR_object_exec_params &xp,
 				 MadcNativeKind kind,
 				 const std::vector<const char *> &libs,
-				 const std::string &runpath)
+				 const std::string &runpath,
+				 bool gui_subsystem)
 {
     memset(&xp, 0, sizeof xp);
     xp.needed = libs.data();
@@ -1854,6 +1859,7 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     } else {
 	xp.entry = "main";
 	xp.pie_p = kind == mnkPieExecutable;
+	xp.gui_subsystem_p = gui_subsystem;
     }
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
 }
@@ -1948,7 +1954,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath,
-				   MadcNativeKind kind)
+				   MadcNativeKind kind, bool gui_subsystem)
 {
     bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every dynamic import
@@ -1990,7 +1996,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	libs.push_back(l.c_str());
 #endif
     MIR_object_exec_params xp;
-    cir_fill_exec_params(xp, kind, libs, runpath);
+    cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
     // Apple targets: the ad-hoc code-signature identifier is conventionally
     // the output basename (ignored by the ELF writer).
     const char *out_base = strrchr(out_path, '/');
@@ -2018,7 +2024,8 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
-    return cir_write_native_image(ctx, out_path, needed, runpath, kind);
+    return cir_write_native_image(ctx, out_path, needed, runpath, kind,
+				  madc_gui_subsystem);
 }
 
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
@@ -2457,7 +2464,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	    libs.push_back(l.c_str());
 #endif
 	MIR_object_exec_params xp;
-	cir_fill_exec_params(xp, kind, libs, runpath);
+	cir_fill_exec_params(xp, kind, libs, runpath, madc_gui_subsystem);
 	const char *out_base = strrchr(out_path, '/');
 	xp.identifier = out_base ? out_base + 1 : out_path;
 	std::vector<uint8_t> pack_blob;
@@ -6489,8 +6496,11 @@ int madc_project_emit_native(MadcEngine &engine,
 				    == all_libs.end())
 					all_libs.push_back(l);
 		cir_native_link_env(flavor, all_libs, needed, runpath);
+		// The manifest's kind decides the subsystem for a project
+		// build (the CLI's -mwindows is the single-TU lane's spelling).
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					    kind);
+					    kind,
+					    manifest.kind == ProjectKind::gui);
 	}
 	teardown();
 	return ok ? 0 : -1;

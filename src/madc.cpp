@@ -429,6 +429,10 @@ static void print_usage(const char *prog)
 "                          value-ABI accessors, which are not on the ledger)\n"
 "  -pie / -no-pie          keep / drop the PIE layout: -no-pie emits a\n"
 "                          fixed-base ET_EXEC instead of the ET_DYN PIE\n"
+"  -mwindows / -mconsole   Windows: the executable's subsystem — a windowed\n"
+"                          program (no console at start) / the default\n"
+"                          console; a --project build reads the manifest's\n"
+"                          \"kind\" (console | gui) instead\n"
 "  -shared [-o file.so]    compile to a shared object (ET_DYN, MIR-assembled;\n"
 "                          dlopen/import-consumable; PIC, no TEXTREL)\n"
 "  --emit-object/--emit-executable <path> are aliases of -c -o / -o.\n"
@@ -553,6 +557,17 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-pie") == 0) {
             // gcc vocabulary: explicitly request the (default) PIE layout.
             no_pie = false;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-mwindows") == 0) {
+            // mingw-gcc vocabulary: a windowed program — the PE gets the
+            // WINDOWS_GUI subsystem (no console at start). Emit-lane state
+            // like -static-libmadc; ELF / Mach-O emits ignore it. The
+            // --project lane takes the manifest's "kind" instead.
+            madc_gui_subsystem = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-mconsole") == 0) {
+            // mingw-gcc vocabulary: the (default) console subsystem.
+            madc_gui_subsystem = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
             // alias for -c -o <path>
