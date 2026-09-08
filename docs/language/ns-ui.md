@@ -419,7 +419,8 @@ and the window honours:
 
 | Hint | On | The window |
 |------|----|-----------|
-| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar` |
+| `region` (string) | any container / status / editor node | a workbench grid slot: `rail` · `sidebar` · `editor` · `panel` · `statusbar`; the nodes docked into one region STACK in the slot in tree order |
+| `rows` (N) | an edit node | a fixed height of N text cells — the same hint the terminal reads (an inactive window of a ^K O split); without it the editor flexes |
 | `tabs` (1) | the editor group | an editor-group tab-strip marker (the buffer-named strip is a later slice) |
 | `popup` (1) | a palette / quick-pick / prompt | a centered floating overlay |
 | `items` (`{left,right}`) | the status node | the status bar's justified item pair (the same JOE seats the terminal shows as one string) |
@@ -427,7 +428,16 @@ and the window honours:
 
 The renderers read `region` through `hint_str` (the string twin of
 `hint_of`), so a node without a hint carries none — the terminal tree is
-byte-identical. `@gui prop value` lines in `profiles/*.theme` feed the
+byte-identical. The grid places SLOTS, one per region a parent's children
+name, never a node: two nodes docked into one region stack inside its slot
+(a grid area given two direct children would overlap them), and a child
+that names no region flows to the `foot` slot under the status bar (the
+message line) instead of the first empty grid cell. The ^K O split rides
+this: with two-plus windows the composer docks EVERY window's status line
+and edit node into `editor`, so the window stack reads as JOE's screen —
+a status line heading each window, the inactive windows at their `rows`
+height, the active one flexing and marked; the status bar slot is empty
+while split, and the single window's status returns to it. `@gui prop value` lines in `profiles/*.theme` feed the
 web colours/fonts through the ONE `@scope` rule the key tables use
 (`scope_line_parts`, shared by `parse_keys` and `load_theme`); the
 unscoped JOE-vocabulary lines still feed the terminal — one file, two

@@ -3845,6 +3845,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // region'd node into the workbench grid. The active window's ed and
     // status are stamped here, before the multi-window branch's own
     // read-modify-write of ed["hints"] preserves the region.
+    long wc = window_count(w, es);
     {
 	eh["region"] = "editor";
 	var bufs;
@@ -3854,13 +3855,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// With two-plus windows the active window carries the focus hint
 	// (the multi-window branch below composes the others); it rides
 	// the same single write-back.
-	if ( window_count(w, es) >= 2 )
+	if ( wc >= 2 )
 	    eh["focus"] = 1;
 	ed["hints"] = eh;
     }
     {
+	// While split (S5), the active window's status line is its HEADER
+	// in the editor slot like every other window's — the JOE shape, one
+	// status line per window, stacked in tree order; the status BAR is
+	// the single window's presentation. The window (the page) stacks a
+	// slot's nodes in order, so no window's node is left unplaced.
 	var sh = status["hints"];
-	sh["region"] = "statusbar";
+	sh["region"] = wc >= 2 ? "editor" : "statusbar";
 	status["hints"] = sh;
     }
 
@@ -3876,8 +3882,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // snapshots: their buffer's plain text, their own caret (clamped —
     // edits in the active window may have shortened the doc), a fixed
     // rows hint from the even split ± grow. No selection, no spans, no
-    // views on inactive windows (named residues).
-    long wc = window_count(w, es);
+    // views on inactive windows (named residues). Every window's status
+    // line and edit node docks into the editor slot (S5): the window
+    // stacks them in tree order, a status line heading its window.
     if ( wc >= 2 )
     {
 	long trows = es_int(w, es, "vrows", 24);	// client viewport
@@ -3906,13 +3913,16 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var wfn = "";
 		var wst;
 		compose_joe_statusline(wst, w, es, wdoc, wcaret, wfn);
+		var wsh = wst["hints"];
+		wsh["region"] = "editor";
+		wst["hints"] = wsh;
 		kids.push(wst);
 		var wed = { "role": "edit" };
 		var wt;
 		ui::text(wt, w, wdoc);
 		wed["content"] = wt;
 		wed["subject"] = wdoc;
-		var wh = { "caret": wcaret };
+		var wh = { "caret": wcaret, "region": "editor" };
 		long wrows = base + wr["grow"].as_integer();
 		if ( wrows < window_min_rows() )
 		    wrows = window_min_rows();

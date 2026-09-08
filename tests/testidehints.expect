@@ -3,3 +3,6 @@ region: status=statusbar editor=editor
 tabs: none
 pane: role=choice popup=yes
 caret-hint: 0
+split: kids=5 regions=editor/editor/editor/editor rows-hint=yes
+split-msg: role=content region=none
+one-window: status=statusbar editor=editor

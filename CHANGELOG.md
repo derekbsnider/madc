@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### The web workbench stacks a region's nodes; the ^K O split renders as windows (2026-09-08)
+
+- Owner (2026-09-08, `madcide --gui`): the JOE split "doesn't seem to work so
+  well" — the inactive window's status line and text landed beside the editor
+  in a narrow column. Two causes, one layer each. The composer stamped no
+  workbench placement on the inactive windows (or on the split's message
+  line), so CSS grid auto-placement dropped them into the empty rail cell;
+  and the page docked region'd nodes as direct grid children, so two nodes in
+  one region overlapped (a latent panel defect). Now the composer docks every
+  window's status line and edit node into the editor region while split (the
+  JOE shape: one status line heading each window; the single window's status
+  keeps the status bar), and the page places SLOTS — one per region, created
+  on demand — stacking a region's nodes in tree order; a child with no region
+  flows to a `foot` slot under the status bar. An inactive window's `rows`
+  hint (the terminal's own budget) becomes its fixed height; the active
+  window flexes and carries the accent; the terminal composition is
+  unchanged (testmadcide's shape clauses pin it).
+- `tests/testidehints.mad` pins the split's hints; `tests/gui/madcide_split.mad`
+  measures the live layout under Xvfb (stack order, fixed heights, the
+  foot, the empty status bar, and the return to one window).
+
 ### The ui event vocabularies are enums the dialect compares against (2026-09-08)
 
 - Owner (2026-09-07): editor code compared key names and event kinds as

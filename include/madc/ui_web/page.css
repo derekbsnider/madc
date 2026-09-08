@@ -43,29 +43,43 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .choice.list .opt { padding-left: 24px; }
 
 /* Slice 3 — the madcide workbench. A group holding region'd children lays
-   them into a grid: an optional left rail, a docked sidebar spanning the
-   two upper rows, the editor filling, a bottom panel, and the status bar
-   across the foot. Empty columns (no rail node) collapse to zero width. */
+   its SLOTS into a grid: an optional left rail, a docked sidebar spanning
+   the two upper rows, the editor filling, a bottom panel, the status bar
+   across the foot, and the foot itself (the message line — every child
+   that named no region). Empty columns (no rail slot) collapse to zero
+   width; an empty slot takes no space at all. A slot STACKS the nodes
+   docked into its region in tree order (S5): the editor slot is the
+   window stack — a status line heads its window, an inactive window keeps
+   the fixed height its `rows` hint asked for (the page sets it), the
+   active window flexes. */
 .node.group.workbench {
   display: grid;
   grid-template-columns: auto auto 1fr;
-  grid-template-rows: 1fr auto auto;
+  grid-template-rows: 1fr auto auto auto;
   grid-template-areas:
     "rail sidebar editor"
     "rail sidebar panel"
-    "statusbar statusbar statusbar";
+    "statusbar statusbar statusbar"
+    "foot foot foot";
   flex: 1 1 auto; min-height: 0;
 }
-.workbench > [data-region="rail"]      { grid-area: rail; background: #22252f; }
-.workbench > [data-region="sidebar"]   { grid-area: sidebar; min-width: 12em;
-                                         border-right: 1px solid #2d3448;
-                                         overflow: auto; }
-.workbench > [data-region="editor"]    { grid-area: editor; min-height: 0;
-                                         overflow: auto; }
-.workbench > [data-region="panel"]     { grid-area: panel; max-height: 40vh;
-                                         border-top: 1px solid #2d3448;
-                                         overflow: auto; }
-.workbench > [data-region="statusbar"] { grid-area: statusbar; }
+.slot { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.slot:empty { display: none; }
+.workbench > .slot[data-slot="rail"]      { grid-area: rail; background: #22252f; }
+.workbench > .slot[data-slot="sidebar"]   { grid-area: sidebar; min-width: 12em;
+                                            border-right: 1px solid #2d3448;
+                                            overflow: auto; }
+.workbench > .slot[data-slot="editor"]    { grid-area: editor; overflow: hidden; }
+.workbench > .slot[data-slot="panel"]     { grid-area: panel; max-height: 40vh;
+                                            border-top: 1px solid #2d3448;
+                                            overflow: auto; }
+.workbench > .slot[data-slot="statusbar"] { grid-area: statusbar; }
+.workbench > .slot[data-slot="foot"]      { grid-area: foot; }
+/* The window stack: each window's header (its status line) separates it
+   from the one above; the focused window carries the accent at its edge. */
+.slot.stacked > .status { border-top: 1px solid #4a5a80; }
+.slot.stacked > .status:first-child { border-top: none; }
+.slot.stacked > .edit.focus { box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
 /* A floating pane (palette / quick pick / prompt): out of the grid flow,
    centered near the top, above the workbench. */
 .node.popup {

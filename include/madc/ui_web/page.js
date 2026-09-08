@@ -21,6 +21,58 @@
     }
   }
 
+  // ---- workbench slots ---------------------------------------------------
+  // A container holding region'd children is the workbench grid. Each
+  // REGION is a slot element of it (created on demand, one per region);
+  // the grid places the SLOT, and the nodes docked into that region STACK
+  // inside it in tree order — the editor slot holds every window's status
+  // line and edit node (S5: the ^K O split), the panel every docked panel —
+  // so two nodes in one region never overlap, which is what a grid area
+  // would do with two direct children. A child with no region flows to
+  // the `foot` slot (the message line) instead of falling into whichever
+  // grid cell auto-placement finds empty (the rail).
+  function slotOf(container, region) {
+    var s = container._slots && container._slots.get(region);
+    if (!s) {
+      s = document.createElement('div');
+      s.className = 'slot';
+      s.dataset.slot = region;
+      container.appendChild(s);
+      if (!container._slots) container._slots = new Map();
+      container._slots.set(region, s);
+    }
+    return s;
+  }
+
+  function makeWorkbench(container) {
+    if (container.classList.contains('workbench')) return;
+    container.classList.add('workbench');
+    // Siblings placed before the first region'd child arrived this cycle
+    // were laid directly; they belong to the foot, ahead of what follows.
+    var foot = slotOf(container, 'foot');
+    var direct = Array.prototype.filter.call(container.children,
+      function (c) { return c.classList.contains('node'); });
+    for (var i = 0; i < direct.length; i++) foot.appendChild(direct[i]);
+    if (direct.length) placed.set(foot, (placed.get(foot) || 0) + direct.length);
+  }
+
+  // A slot holding more than one edit node is a STACK of windows: the
+  // focused one is marked and each window's header separates it.
+  function markStacks() {
+    document.querySelectorAll('.slot').forEach(function (s) {
+      var n = 0;
+      for (var c = s.firstElementChild; c; c = c.nextElementSibling)
+        if (c.classList.contains('edit')) n++;
+      s.classList.toggle('stacked', n > 1);
+    });
+  }
+
+  // The text cell's height — the same cell the viewport report measures —
+  // for a fixed-height window (the composer's `rows` hint).
+  function cellHeight() {
+    return measure.getBoundingClientRect().height;
+  }
+
   // ---- the applier -------------------------------------------------------
   function elementFor(op) {
     var el = nodes.get(op.key);
@@ -31,12 +83,14 @@
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
                    (op.popup ? ' popup' : '') + (op.tabs ? ' has-tabs' : '');
-    // Slice 3 workbench: a `region` node docks into a grid slot (the
-    // page's own CSS placement, keyed by data-region), and a parent that
-    // holds region'd children becomes the workbench grid. Pre-order means
-    // the parent element already exists when a region'd child arrives, so
-    // the class is set deterministically each compose cycle (the parent's
-    // own op reset its className first, region'd children re-add it).
+    // Slice 3 workbench: a `region` node docks into that region's slot of
+    // its parent's grid (the page's own CSS placement, keyed by data-slot),
+    // and a parent that holds region'd children becomes the workbench
+    // grid. Pre-order means the parent element already exists when a
+    // region'd child arrives, so the class is set deterministically each
+    // compose cycle (the parent's own op reset its className first,
+    // region'd children re-add it). data-region on the node itself names
+    // where it asked to go.
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
     // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
     // properties on the document root, so the workbench CSS reads them via
@@ -53,11 +107,14 @@
     // elements) that was a 100 ms renderer rebuild on every keystroke
     // (measured 2026-09-07: re-append 100 ms; a two-line patch 4 ms).
     var container = (op.parent ? nodes.get(op.parent) : null) || root;
+    if (container !== root && (op.region || container.classList.contains('workbench'))) {
+      makeWorkbench(container);
+      container = slotOf(container, op.region || 'foot');
+    }
     var slot = placed.get(container) || 0;
     if (container.children[slot] !== el)
       container.insertBefore(el, container.children[slot] || null);
     placed.set(container, slot + 1);
-    if (op.region && container !== root) container.classList.add('workbench');
     return el;
   }
 
@@ -154,6 +211,18 @@
   // was painted in full), the one case the caret is scrolled into view.
   function applyEdit(el, op) {
     if (op.tabwidth) el.style.tabSize = String(op.tabwidth);
+    // A fixed height in text cells (the composer's `rows` hint — an
+    // inactive window of a split, the terminal's own row budget); without
+    // it the node flexes, and the active window takes what the fixed ones
+    // leave. Measured before layout the cell is 0 — then the line height.
+    if (op.rows) {
+      var h = cellHeight();
+      el.dataset.rows = op.rows;
+      el.style.flex = '0 0 ' + (h ? (op.rows * h) + 'px' : (op.rows * 1.35) + 'em');
+    } else {
+      delete el.dataset.rows;
+      el.style.flex = '';
+    }
     var caret = op.focus ? op.caret : null;
     var sel = op.sel || null;
     if (op.lines) {
@@ -251,7 +320,7 @@
       var op = ops[i];
       if (op.op === 'root') { visited = new Set(); placed = new Map(); }
       else if (op.op === 'node') { moved = applyNode(op) || moved; visited.add(op.key); }
-      else if (op.op === 'end') prune();
+      else if (op.op === 'end') { prune(); markStacks(); }
     }
     kb.focus();
     // Keyboard navigation must move the viewport, not just the caret: the
