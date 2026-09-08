@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### madcide GUI: the window shows the terminal's colour scheme (2026-09-08)
+
+- The GUI and the TUI highlighted the same source in two different colour
+  schemes: the terminal painted each span's JOE style spec from the loaded
+  `.theme` (`keyword bold`, `string cyan`) while the window styled the
+  span's semantic class from a private palette in `page.css`, so `^K T`
+  swapped the terminal's scheme and not the window's, and the `function`
+  class the default scheme leaves plain on purpose coloured in the window
+  only. One style now: the render style and its spec parser live in
+  `madcdis/ui_style.h` (out of `tui_model.h`), the DOM model renders the
+  SAME spec as classes (`st-bold`, `fg-cyan`, `bg-blue`) and the page keeps
+  only a sixteen-colour palette — bold-as-bright, as a terminal shows
+  `bold cyan` — each entry an `@gui` custom property (`pal-cyan`,
+  `pal-cyan-bright`). A class the scheme leaves unstyled is plain in both.
+  Gate: `scripts/check-one-style-vocabulary.sh` (the page carries no syntax
+  vocabulary of its own; one spec parser). Plan:
+  `docs/plans/2026-09-08-madcide-local-polish-for-master.md`.
+
 ### madcide GUI: the native menu bar and file dialogs on macOS and Windows (2026-09-08)
 
 - The chrome the GTK window has had since S2/S4 now draws natively on the

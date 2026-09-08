@@ -353,6 +353,15 @@ paints them through the same range-overlap rule as the selection, and
 the selection paints LAST (it wins where they overlap). The VT100
 target emits reset-then-SGR per style change; a grid with only
 normal/reverse produces the byte-identical stream it always did. The
+web target reads the SAME rows through the same spec parser
+(`madcdis/ui_style.h`, the one owner) and renders the style as the
+page's classes — `st-<attribute>`, `fg-<colour>`, `bg-<colour>` — over
+one palette of sixteen CSS custom properties (`pal-<colour>` and
+`pal-<colour>-bright`; `bold cyan` reads the bright entry, as a
+terminal shows it), so the window shows the scheme the terminal shows
+and a class the scheme leaves unstyled is plain in both (the gate
+`scripts/check-one-style-vocabulary.sh` keeps the page free of a
+syntax vocabulary of its own). The
 renderer never classifies: `madc::parse_spans` (see `eval.md`) provides
 classification rows from a parse handle's retained state, and a colour
 SCHEME — app data, `profiles/*.theme`, one `class SPEC` pair per line
@@ -429,7 +438,7 @@ and the window honours:
 | `prompt` (`{label, input}`) | the prompt row (a content node) | the core's prompt as a QUICK INPUT: the label over a field showing the input text the CORE holds, a caret after it, the keys it answers to beneath; typing still travels the one input path — the page never edits the text (Neovim's `ext_cmdline` shape) |
 | `confirm` (`{label, choices:[{label, action}]}`) | the confirm row | a question as a DIALOG: the label and one button per answer, each posting its action by name — what its key does in the terminal |
 | `items` (`{left:[…],right:[…]}`) | the status node | the status bar as chrome: each side a row of SEGMENTS `{seat, label, text}` — one per JOE format seat that showed text (`%n` the name, `%r`/`%c` with their `Row`/`Col` labels, `%m` the modified badge, `%k` the pending chord …), laid as discrete themeable items (`.sb-seat.sb-<letter>`) in the proportional chrome font on the bar's own surface — the name leads, labels are small captions, the modified / read-only badges are accent pills, the pending chord a key cap — and while split each window's header is the same bar with the ACTIVE window's header marked; the terminal shows the same expansion as one string |
-| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope; the chrome reads `bg` `fg` `accent` `font` `chrome-font` and the status bar's `sb-bg` `sb-fg` `sb-line` `sb-label` `sb-name` `sb-active` (the seats' own: `sb-context`), the highlight classes `syn-<class>` |
+| `theme` (`{name:value}`) | the root | CSS custom properties (`--name`) — the `@gui` theme scope; the chrome reads `bg` `fg` `accent` `font` `chrome-font` and the status bar's `sb-bg` `sb-fg` `sb-line` `sb-label` `sb-name` `sb-active` (the seats' own: `sb-context`), and the sixteen-colour palette the highlight styles read: `pal-<colour>` / `pal-<colour>-bright` for `black red green yellow blue magenta cyan white` |
 | `menu` (`{bar:[{title,items:[{id,title,enabled?}\|{sep}]}]}`) | the root | the command / menu contribution: the bar's menus in order, each item a command id + title, `enabled: 0` when its `[when]` fails now; a chrome-rendering client draws it natively, the terminal ignores it |
 
 **Menus and commands are data.** `profiles/default.menu` is the one

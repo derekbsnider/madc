@@ -43,7 +43,7 @@
 namespace {
 
 using madc::hub::tui_grid;
-using madc::hub::tui_attr;
+using madc::hub::ui_style;
 using madc::hub::tui_keyev;
 using madc::hub::tui_key;
 using madc::hub::tui_keyparse;
@@ -71,7 +71,7 @@ void cup(std::string &out, size_t row, size_t col)
 // entered from normal emits \x1b[7m and any->normal emits \x1b[0m,
 // so a grid using only normal/reverse produces the byte stream it
 // always did.
-void emit_sgr(std::string &out, tui_attr from, tui_attr to)
+void emit_sgr(std::string &out, ui_style from, ui_style to)
 {
 	if ( to.is_normal() )
 	{
@@ -87,12 +87,12 @@ void emit_sgr(std::string &out, tui_attr from, tui_attr to)
 	}
 	std::string params;
 	char buf[8];
-	if ( to.flags & tui_attr::BOLD )	params += "1;";
-	if ( to.flags & tui_attr::DIM )		params += "2;";
-	if ( to.flags & tui_attr::ITALIC )	params += "3;";
-	if ( to.flags & tui_attr::UNDERLINE )	params += "4;";
-	if ( to.flags & tui_attr::BLINK )	params += "5;";
-	if ( to.flags & tui_attr::INVERSE )	params += "7;";
+	if ( to.flags & ui_style::BOLD )	params += "1;";
+	if ( to.flags & ui_style::DIM )		params += "2;";
+	if ( to.flags & ui_style::ITALIC )	params += "3;";
+	if ( to.flags & ui_style::UNDERLINE )	params += "4;";
+	if ( to.flags & ui_style::BLINK )	params += "5;";
+	if ( to.flags & ui_style::INVERSE )	params += "7;";
 	if ( to.fg )
 	{
 	    snprintf(buf, sizeof(buf), "%d;", 29 + (int)to.fg);
@@ -143,7 +143,7 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next)
 	    size_t pe = next.row_paint_end(s.row);
 	    bool   el = pe <= s.c1;
 	    size_t end = el ? (pe > s.c0 ? pe : s.c0) : s.c1 + 1;
-	    tui_attr cur = tui_attr::normal();
+	    ui_style cur = ui_style::normal();
 	    for ( size_t c = s.c0; c < end; ++c )
 	    {
 		const madc::hub::tui_cell &cell = next.at(s.row, c);
@@ -154,7 +154,7 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next)
 		}
 		out += cell.ch;
 	    }
-	    if ( cur != tui_attr::normal() )
+	    if ( cur != ui_style::normal() )
 		out += "\x1b[0m";
 	    if ( el )
 		out += "\x1b[K";	// the normal-space tail, one erase

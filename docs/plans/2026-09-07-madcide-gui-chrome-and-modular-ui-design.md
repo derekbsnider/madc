@@ -56,6 +56,12 @@ stage under Xvfb (GTK), and `tests/gui/madcide_menu.mad` run natively on
 the owner's Windows 11 box (WebView2) and Intel Mac (WKWebView) against
 the staged sets.
 
+**After S7 — the local-IDE polish for the master release** is planned and
+tracked in `2026-09-08-madcide-local-polish-for-master.md` (P1 colours: one
+theme, two renderers — built 2026-09-08; P2 list dialogs + Open Project… +
+the project kind; P3 the bottom pane with tabs + Run routing; P4 editor
+tabs).
+
 The text below is the design as proposed (2026-09-07), kept for its
 reasoning and citations.
 

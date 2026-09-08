@@ -66,13 +66,13 @@ static uinode editor_tree(world &w, long caret, long sel_start = -1,
     std::map<std::string, madc::value> row;
     row["s"] = madc::value((int64_t)0);
     row["e"] = madc::value((int64_t)2);
-    row["cls"] = madc::value(std::string("keyword"));
+    row["c"] = madc::value(std::string("bold"));	// the scheme's spec (keyword bold)
     std::vector<madc::value> spans;
     spans.push_back(madc::value::make_object(row));
-    std::map<std::string, madc::value> bad;		// TUI-only (c, no cls): the web skips it
+    std::map<std::string, madc::value> bad;		// no style spec: skipped (a class name is not a style)
     bad["s"] = madc::value((int64_t)3);
     bad["e"] = madc::value((int64_t)5);
-    bad["c"] = madc::value(std::string("bold"));
+    bad["cls"] = madc::value(std::string("keyword"));
     spans.push_back(madc::value::make_object(bad));
     h["spans"] = madc::value::make_array(spans);
     edit.hints = madc::value::make_object(h);
@@ -134,7 +134,7 @@ TEST_CASE("compose — keyed DOM ops: root, one node per tree node, end")
     REQUIRE(edit);
     CHECK((*edit)["class"] == "edit");
     nlohmann::json want_lines = nlohmann::json::parse(
-	"[{\"t\":\"ab\",\"s\":[[0,2,\"keyword\"]]},{\"t\":\"cd\",\"s\":[]}]");
+	"[{\"t\":\"ab\",\"s\":[[0,2,\"st-bold\"]]},{\"t\":\"cd\",\"s\":[]}]");
     CHECK((*edit)["lines"] == want_lines);
     CHECK((*edit)["caret"] == nlohmann::json{ {"line", 1}, {"col", 0} });
     CHECK((*edit)["sel"].is_null());
@@ -178,7 +178,7 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     std::map<std::string, madc::value> row;
     row["s"] = madc::value((int64_t)2);
     row["e"] = madc::value((int64_t)6);
-    row["cls"] = madc::value(std::string("string"));
+    row["c"] = madc::value(std::string("cyan"));	// string cyan
     std::vector<madc::value> spans;
     spans.push_back(madc::value::make_object(row));
     std::map<std::string, madc::value> h;
@@ -190,7 +190,7 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     const nlohmann::json *e2 = node_by_key(ops, "0");
     REQUIRE(e2);
     CHECK((*e2)["lines"] == nlohmann::json::parse(
-	"[{\"t\":\"abc\",\"s\":[[2,1,\"string\"]]},{\"t\":\"def\",\"s\":[[0,2,\"string\"]]}]"));
+	"[{\"t\":\"abc\",\"s\":[[2,1,\"fg-cyan\"]]},{\"t\":\"def\",\"s\":[[0,2,\"fg-cyan\"]]}]"));
     CHECK((*e2)["caret"] == nlohmann::json{ {"line", 1}, {"col", 3} });
 
     size_t line, col;
@@ -202,10 +202,11 @@ TEST_CASE("compose — selection spans lines; a span across lines splits; autofo
     CHECK(col == 0u);
 }
 
-// An edit node over `text` with the given {s, e, cls} rows, in that order.
+// An edit node over `text` with the given {s, e, c} rows, in that order
+// (`specs` = the style spec of each row).
 static uinode spanned_edit(const roles &r, const char *text,
 			   const std::vector<std::vector<long> > &rows,
-			   const std::vector<const char *> &classes)
+			   const std::vector<const char *> &specs)
 {
     uinode edit(r.edit);
     edit.content = madc::value(std::string(text));
@@ -215,7 +216,7 @@ static uinode spanned_edit(const roles &r, const char *text,
 	std::map<std::string, madc::value> row;
 	row["s"] = madc::value((int64_t)rows[i][0]);
 	row["e"] = madc::value((int64_t)rows[i][1]);
-	row["cls"] = madc::value(std::string(classes[i]));
+	row["c"] = madc::value(std::string(specs[i]));
 	spans.push_back(madc::value::make_object(row));
     }
     std::map<std::string, madc::value> h;
@@ -229,25 +230,26 @@ TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans cl
     world w;
     roles r = roles::standard(w);
     // Lines [0,8) [9,17) [18,26) and the empty line after the trailing
-    // newline. `a` spans three lines, `b` nests inside line 1, `c` starts
-    // on line 1 and reaches past the end of the text.
+    // newline. The red span covers three lines, the green one nests inside
+    // line 1, the blue one starts on line 1 and reaches past the end of
+    // the text.
     const char *text = "abcdefgh\nijklmnop\nqrstuvwx\n";
     std::vector<std::vector<long> > rows;
     rows.push_back(std::vector<long>{ 0, 20 });
     rows.push_back(std::vector<long>{ 2, 5 });
     rows.push_back(std::vector<long>{ 7, 30 });
-    std::vector<const char *> classes;
-    classes.push_back("a");
-    classes.push_back("b");
-    classes.push_back("c");
+    std::vector<const char *> specs;
+    specs.push_back("red");
+    specs.push_back("green");
+    specs.push_back("blue");
     nlohmann::json want = nlohmann::json::parse(
-	"[{\"t\":\"abcdefgh\",\"s\":[[0,8,\"a\"],[2,3,\"b\"],[7,1,\"c\"]]},"
-	"{\"t\":\"ijklmnop\",\"s\":[[0,8,\"a\"],[0,8,\"c\"]]},"
-	"{\"t\":\"qrstuvwx\",\"s\":[[0,2,\"a\"],[0,8,\"c\"]]},"
+	"[{\"t\":\"abcdefgh\",\"s\":[[0,8,\"fg-red\"],[2,3,\"fg-green\"],[7,1,\"fg-blue\"]]},"
+	"{\"t\":\"ijklmnop\",\"s\":[[0,8,\"fg-red\"],[0,8,\"fg-blue\"]]},"
+	"{\"t\":\"qrstuvwx\",\"s\":[[0,2,\"fg-red\"],[0,8,\"fg-blue\"]]},"
 	"{\"t\":\"\",\"s\":[]}]");
     web_model m;
     nlohmann::json ops = nlohmann::json::parse(
-	m.compose(r, spanned_edit(r, text, rows, classes)));
+	m.compose(r, spanned_edit(r, text, rows, specs)));
     const nlohmann::json *e = node_by_key(ops, "0");
     REQUIRE(e);
     CHECK((*e)["lines"] == want);
@@ -258,13 +260,13 @@ TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans cl
     shuffled.push_back(rows[2]);
     shuffled.push_back(rows[0]);
     shuffled.push_back(rows[1]);
-    std::vector<const char *> shuffled_cls;
-    shuffled_cls.push_back("c");
-    shuffled_cls.push_back("a");
-    shuffled_cls.push_back("b");
+    std::vector<const char *> shuffled_specs;
+    shuffled_specs.push_back("blue");
+    shuffled_specs.push_back("red");
+    shuffled_specs.push_back("green");
     web_model m2;
     ops = nlohmann::json::parse(
-	m2.compose(r, spanned_edit(r, text, shuffled, shuffled_cls)));
+	m2.compose(r, spanned_edit(r, text, shuffled, shuffled_specs)));
     e = node_by_key(ops, "0");
     REQUIRE(e);
     CHECK((*e)["lines"] == want);
@@ -272,15 +274,56 @@ TEST_CASE("compose — the span sweep: overlapping, nested and crossing spans cl
     // A span ending exactly after a newline gives the next line nothing.
     std::vector<std::vector<long> > tail;
     tail.push_back(std::vector<long>{ 5, 9 });
-    std::vector<const char *> tail_cls;
-    tail_cls.push_back("d");
+    std::vector<const char *> tail_specs;
+    tail_specs.push_back("yellow");
     web_model m3;
     ops = nlohmann::json::parse(
-	m3.compose(r, spanned_edit(r, text, tail, tail_cls)));
+	m3.compose(r, spanned_edit(r, text, tail, tail_specs)));
     e = node_by_key(ops, "0");
     REQUIRE(e);
-    CHECK((*e)["lines"][0]["s"] == nlohmann::json::parse("[[5,3,\"d\"]]"));
+    CHECK((*e)["lines"][0]["s"] == nlohmann::json::parse("[[5,3,\"fg-yellow\"]]"));
     CHECK((*e)["lines"][1]["s"] == nlohmann::json::parse("[]"));
+}
+
+TEST_CASE("styles — a span's spec renders as the terminal paints it: st-/fg-/bg- classes; bad rows skip")
+{
+    // The colour-unification slice (2026-09-08): the DOM model reads the
+    // SAME row the grid model reads — {s, e, c} with `c` the scheme's JOE
+    // spec — through the one spec parser (madcdis/ui_style.h), and renders
+    // the style as the page's classes. No vocabulary of its own: a row with
+    // a class name and no spec, a malformed spec, or the normal style paints
+    // nothing, exactly as in the terminal.
+    world w;
+    roles r = roles::standard(w);
+    const char *text = "abcdefg";
+    std::vector<std::vector<long> > rows;
+    std::vector<const char *> specs;
+    rows.push_back(std::vector<long>{ 0, 1 }); specs.push_back("underline bg_blue cyan");
+    rows.push_back(std::vector<long>{ 1, 2 }); specs.push_back("bold yellow");
+    rows.push_back(std::vector<long>{ 2, 3 }); specs.push_back("normal");	// paints nothing
+    rows.push_back(std::vector<long>{ 3, 4 }); specs.push_back("mauve");	// refused whole
+    rows.push_back(std::vector<long>{ 4, 5 }); specs.push_back("reverse");	// JOE's synonym
+    rows.push_back(std::vector<long>{ 5, 6 }); specs.push_back("dim italic blink bg_red");
+    uinode edit = spanned_edit(r, text, rows, specs);
+    // A row carrying only a class name (the pre-slice web-only shape).
+    std::map<std::string, madc::value> h = edit.hints.as_object();
+    std::vector<madc::value> spans = h["spans"].as_array();
+    std::map<std::string, madc::value> named;
+    named["s"] = madc::value((int64_t)6);
+    named["e"] = madc::value((int64_t)7);
+    named["cls"] = madc::value(std::string("keyword"));
+    spans.push_back(madc::value::make_object(named));
+    h["spans"] = madc::value::make_array(spans);
+    edit.hints = madc::value::make_object(h);
+    web_model m;
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, edit));
+    const nlohmann::json *e = node_by_key(ops, "0");
+    REQUIRE(e);
+    CHECK((*e)["lines"][0]["s"] == nlohmann::json::parse(
+	"[[0,1,\"st-underline fg-cyan bg-blue\"],"
+	"[1,1,\"st-bold fg-yellow\"],"
+	"[4,1,\"st-inverse\"],"
+	"[5,1,\"st-dim st-italic st-blink bg-red\"]]"));
 }
 
 // group -> [heading, edit(text, caret, one keyword span [0,2))]; `extra`
@@ -306,7 +349,7 @@ static uinode doc_tree(world &w, const char *text, long caret,
     std::map<std::string, madc::value> row;
     row["s"] = madc::value((int64_t)0);
     row["e"] = madc::value((int64_t)span_end);
-    row["cls"] = madc::value(std::string("keyword"));
+    row["c"] = madc::value(std::string("bold"));	// keyword bold
     std::vector<madc::value> spans;
     spans.push_back(madc::value::make_object(row));
     h["spans"] = madc::value::make_array(spans);
@@ -341,7 +384,7 @@ TEST_CASE("compose — the edit node is incremental: full first, then one splice
     const nlohmann::json *e = edit_op(ops);
     CHECK((*e)["nlines"] == 2);
     CHECK((*e)["lines"] == nlohmann::json::parse(
-	"[{\"t\":\"ab\",\"s\":[[0,2,\"keyword\"]]},{\"t\":\"cd\",\"s\":[]}]"));
+	"[{\"t\":\"ab\",\"s\":[[0,2,\"st-bold\"]]},{\"t\":\"cd\",\"s\":[]}]"));
     CHECK(e->find("patch") == e->end());
 
     // The same document again: neither lines nor a patch (a resize, a wake).
@@ -363,7 +406,7 @@ TEST_CASE("compose — the edit node is incremental: full first, then one splice
     e = edit_op(ops);
     CHECK(e->find("lines") == e->end());
     CHECK(patch_of(e) == nlohmann::json::parse(
-	"{\"at\":0,\"del\":1,\"ins\":[{\"t\":\"ab\",\"s\":[[0,1,\"keyword\"]]}]}"));
+	"{\"at\":0,\"del\":1,\"ins\":[{\"t\":\"ab\",\"s\":[[0,1,\"st-bold\"]]}]}"));
 
     // One character typed into line 2: replace that one row.
     ops = nlohmann::json::parse(m.compose(r, doc_tree(w, "ab\ncXd", 5, false, 1)));
@@ -395,7 +438,7 @@ TEST_CASE("compose — the edit node is incremental: full first, then one splice
     e = edit_op(ops);
     CHECK((*e)["nlines"] == 3);
     CHECK(patch_of(e) == nlohmann::json::parse(
-	"{\"at\":0,\"del\":2,\"ins\":[{\"t\":\"c\",\"s\":[[0,1,\"keyword\"]]}]}"));
+	"{\"at\":0,\"del\":2,\"ins\":[{\"t\":\"c\",\"s\":[[0,1,\"st-bold\"]]}]}"));
 
     // And a plain first-line deletion with no span in play: pure removal.
     web_model m2;

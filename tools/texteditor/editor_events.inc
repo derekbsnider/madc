@@ -113,9 +113,10 @@ void shift_hspans(long w, long es, long off, long delta)
 	{
 	    // The row is the converter's (spans_to_hspans): carry it WHOLE
 	    // and move only its geometry. A field list here is a second copy
-	    // of the row shape — it silently dropped the semantic `cls` the
-	    // web renderer reads when slice 3.1 added it, killing the web's
-	    // colour on the first keystroke (tests/testidespanshift.mad).
+	    // of the row shape — when slice 3.1 added a field the web read,
+	    // such a list silently dropped it and killed the web's colour on
+	    // the first keystroke (tests/testidespanshift.mad). Today the row
+	    // is {s, e, c}; this code does not know that, by design.
 	    var nr = r;
 	    nr["s"] = s;
 	    nr["e"] = e;

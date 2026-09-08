@@ -1,4 +1,4 @@
-span cls=type c=bold
-span cls=function c=-
-span cls=keyword c=bold
-idents=0
+span s=0 e=4 c=bold
+span s=8 e=12 c=bold
+span s=18 e=24 c=bold
+spans=3

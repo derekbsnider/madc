@@ -1,0 +1,73 @@
+// The colour-unification slice (2026-09-08): the window paints a highlight
+// span exactly as the terminal does. An edit node's spans rows {s, e, c}
+// carry the scheme's JOE spec; the DOM model parses each through the one
+// spec parser (madcdis/ui_style.h) and renders the style as the page's
+// classes (st-<attr>, fg-<colour>, bg-<colour>); page.css maps them onto
+// the 16-colour palette — bold-as-bright, as a terminal shows `bold cyan`
+// — and an @gui theme overrides a palette entry (pal-cyan-bright here). A
+// malformed spec paints nothing (the row is refused whole, as in the grid).
+// The probe reads each painted span's classes, text and COMPUTED colours
+// back through the snapshot channel. Runs under Xvfb via remote_build gui.
+void compose(var &tree)
+{
+    var edit;
+    edit["role"] = "edit";
+    edit["content"] = "kw str\n";
+    var spans = {};
+    var kw = { "s": 0, "e": 2, "c": "bold cyan" };
+    var str = { "s": 3, "e": 6, "c": "underline bg_blue" };
+    var bad = { "s": 0, "e": 1, "c": "mauve" };	// refused whole
+    spans.push(kw);
+    spans.push(str);
+    spans.push(bad);
+    var hints;
+    hints["caret"] = 7;			// the empty last line: no caret span on line 0
+    hints["spans"] = spans;
+    edit["hints"] = hints;
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(edit);
+    root["children"] = kids;
+    var th;
+    th["pal-cyan-bright"] = "#0a0b0c";
+    var rh;
+    rh["theme"] = th;
+    root["hints"] = rh;
+    tree = root;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("SP open");
+    var tree;
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    ui::eval_page(t,
+		"(function(){var r=[];"
+		"var sp=document.querySelectorAll('.edit .line span:not(.caret)');"
+		"for(var i=0;i<sp.length;i++){var cs=getComputedStyle(sp[i]);"
+		"r.push(sp[i].className+'|'+sp[i].textContent+'|'+cs.color+'|'"
+		"+cs.fontWeight+'|'+cs.backgroundColor);}"
+		"window.madc(JSON.stringify({kind:'snapshot',text:r.join(' ; ')}));})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("SP {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("SP closed");
+    return 0;
+}

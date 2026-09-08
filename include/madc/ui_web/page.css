@@ -50,17 +50,45 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .edit .line { white-space: pre; min-height: 1.35em; }
 .caret { background: #d9dbe4; color: #1b1d24; }
 .sel { background: #4a5a80; }
-/* Syntax highlight: the web's OWN styling vocabulary, keyed by the span's
-   SEMANTIC class (`.c-<class>`, the highlight_class_name names). Each colour
-   reads an @gui custom property so a theme overrides it (@gui syn-keyword
-   #...); omit it and this default holds. A plain identifier carries no class
-   and stays unstyled. */
-.c-keyword  { color: var(--syn-keyword,  #8fb4ff); }
-.c-string   { color: var(--syn-string,   #a8d08d); }
-.c-comment  { color: var(--syn-comment,  #8a8f9f); font-style: italic; }
-.c-number   { color: var(--syn-number,   #f0c674); }
-.c-type     { color: var(--syn-type,     #7ed3d3); }
-.c-function { color: var(--syn-function, #e0b070); }
+/* Syntax highlight: the SAME style the terminal paints. A span arrives as
+   the theme's JOE spec (`keyword bold`, `string cyan`) parsed once by the
+   one spec parser (madcdis/ui_style.h) and rendered as classes — st-<attr>,
+   fg-<colour>, bg-<colour> — so the window shows the loaded scheme (^K T
+   swaps it here too) and a class the scheme leaves unstyled is plain, as in
+   the terminal. The page has no syntax vocabulary of its own: only the
+   PALETTE below — the 8 ANSI colours, 16 with bold-as-bright (the VT-102
+   model a terminal shows for `bold cyan`), each an @gui custom property
+   (`@gui pal-cyan #56b6c2`, `@gui pal-cyan-bright #6fd2de`); omit one and
+   this default holds. Blink is not rendered. */
+.st-bold      { font-weight: 700; }
+.st-dim       { opacity: 0.7; }
+.st-italic    { font-style: italic; }
+.st-underline { text-decoration: underline; }
+.st-inverse   { background: var(--fg, #d9dbe4); color: var(--bg, #1b1d24); }
+.fg-black   { color: var(--pal-black,   #3b4048); }
+.fg-red     { color: var(--pal-red,     #e06c75); }
+.fg-green   { color: var(--pal-green,   #98c379); }
+.fg-yellow  { color: var(--pal-yellow,  #e5c07b); }
+.fg-blue    { color: var(--pal-blue,    #61afef); }
+.fg-magenta { color: var(--pal-magenta, #c678dd); }
+.fg-cyan    { color: var(--pal-cyan,    #56b6c2); }
+.fg-white   { color: var(--pal-white,   #d9dbe4); }
+.st-bold.fg-black   { color: var(--pal-black-bright,   #5c6370); }
+.st-bold.fg-red     { color: var(--pal-red-bright,     #ff7b86); }
+.st-bold.fg-green   { color: var(--pal-green-bright,   #b5e890); }
+.st-bold.fg-yellow  { color: var(--pal-yellow-bright,  #ffd78a); }
+.st-bold.fg-blue    { color: var(--pal-blue-bright,    #7cc0ff); }
+.st-bold.fg-magenta { color: var(--pal-magenta-bright, #d896f0); }
+.st-bold.fg-cyan    { color: var(--pal-cyan-bright,    #6fd2de); }
+.st-bold.fg-white   { color: var(--pal-white-bright,   #ffffff); }
+.bg-black   { background: var(--pal-black,   #3b4048); }
+.bg-red     { background: var(--pal-red,     #e06c75); }
+.bg-green   { background: var(--pal-green,   #98c379); }
+.bg-yellow  { background: var(--pal-yellow,  #e5c07b); }
+.bg-blue    { background: var(--pal-blue,    #61afef); }
+.bg-magenta { background: var(--pal-magenta, #c678dd); }
+.bg-cyan    { background: var(--pal-cyan,    #56b6c2); }
+.bg-white   { background: var(--pal-white,   #d9dbe4); }
 .choice { display: flex; flex-wrap: wrap; padding: 1px 8px; gap: 0 4px; }
 .choice .label { color: #9aa0b4; margin-right: 8px; }
 .choice .opt { padding: 0 6px; }

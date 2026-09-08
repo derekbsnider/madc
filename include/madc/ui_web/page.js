@@ -216,7 +216,7 @@
     var spans = row.s || [];
     for (var k = 0; k < spans.length; k++) {
       var start = unitsOf(t, spans[k][0]), end = unitsOf(t, spans[k][0] + spans[k][1]);
-      var cls = ' c-' + spans[k][2];
+      var cls = ' ' + spans[k][2];	// the span's style as classes (st-*, fg-*, bg-*)
       for (var c = start; c < end && c < n; c++) classes[c] += cls;
     }
     if (sel) {
