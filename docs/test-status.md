@@ -1,6 +1,29 @@
 # Test Status
 
-> **Current (2026-09-08, the s166 merge wave — the madcide S6 round on
+> **Current (2026-09-08, the s168 merge wave — madcide polish P1 on
+> `feature/madcide-polish-colours-claude`: one theme, two renderers — the
+> render style and its spec parser moved to `madcdis/ui_style.h`, the DOM
+> model renders the scheme's spec as `st-*` / `fg-*` / `bg-*` classes over
+> a sixteen-colour `pal-*` palette (bold-as-bright), `page.css` lost its
+> private syntax palette, `spans_to_hspans` rows are `{s, e, c}`; gate
+> `check-one-style-vocabulary.sh`):** FULL develop-set battery on d843823f
+> code (`tmp/logs/rb-20260908-164609.log`): fulltest rc=0 (every gate) with
+> JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`, +`ui_web_spans`: the
+> window's COMPUTED colours — `bold cyan` paints the `@gui`-set bright
+> palette entry): **13/13 JIT, 13/13 EXE, 13/13 OBJ**. Headless reducers:
+> `testidespans` / `testidespanshift` (the one row shape), `testmadcide`
+> (spans n=7), `test_web_model` (the class rendering), `test_tui_model`
+> (the rename). wine64 **1276/0/0TO/68skip** on fb1b3dc6 (the first run was
+> 1275/1: `tests/testmadcide.win64_expect` kept the pre-P1 spans line —
+> twin drift, now gated by `scripts/check-expect-twins.sh` with `.domain`
+> sidecars naming each twin's legitimate differences; converged a24e90ff);
+> c-testsuite **220/220**; macOS cross release both arches + the webview
+> dylib, verify_macho OK both, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-08, the s166 merge wave — the madcide S6 round on
 > `feature/madcide-gui-prompts-claude`, the owner's first feedback on the
 > v0.99.0 desktop application: the prompts as dialogs (`compose_overlay_row`
 > stamps `popup` + `prompt {label, input}` + `dismiss` / `confirm {label,
