@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Views — the lens is a View row; the ONE file-kind vocabulary (2026-09-09)
+
+- madcide's code lens (`^K A`) is a **View** (client-server design §2.1,
+  slice V1): `es.views` rows `{id, subject, kind, lang, revision, generator,
+  vbuf, rbuf, map}`; every editor tab carries its View, `es.fview` names the
+  focused container's; the cycle REPLACES the focused View's representation
+  in place (source → mc11 → c11 [→ c++] → source) and switches on the
+  language CODE; the composer composes the View by id. Navigation (caret /
+  mark / bend, the parked stored-space caret) is the CONTAINER's, never the
+  View's (owner ruling, §6 Q1). The `vdoc` / `view` / `vmap` bag strings are
+  gone. The identity lens composes byte-identically (`testmadcide`, the GUI
+  DOM snapshots); new `view-row` / `view-row-lens` / `view-kinds` pins hold
+  the row through the cycle and the misspelling refusals.
+- **`<bits/file_kinds>`** — the ONE file-kind vocabulary the IDE and the
+  compiler share (`madc::fk*`): text formats, the C standards, the C++
+  standards, madc's own (`madc`, `mc11`), other languages, binary formats,
+  GROUPED IN RANGES with a family head (`fkC`, `fkCPP`) and a `_LAST` marker
+  so membership is a range test. `Program::LanguageStd`'s enumerators ARE the
+  C / C++ / madc ranges (every `--std=` row keeps its enumerator; forest
+  format **v47**: the producer-config word's `language_std` bits carry the new
+  values, so a v46 pack refuses until `release` rebuilds it). The boundary
+  converters `madc::file_kind_name` / `file_kind_of` / `file_kind_of_path`
+  (src/file_kinds.cpp; dialect-visible through `<ns_madc>`) draw a standard's
+  spelling from the one `--std=` table ("c" and "c++" are the FAMILIES there,
+  not `--std=`'s aliases); a misspelling converts to `madc::fkUNKNOWN`. A
+  document's kind is stamped once at open / new-file / save-as
+  (`doc_set_path`); the c++ lens applies by a range test on it, no extension
+  ladder.
+- The emitter's depth-of-support table `cir_emit_lang_of_kind` (src/
+  cir_emit_c.h) is the ONE kind → `CirEmitLang` conversion; `--emit=`'s name
+  form converts through the vocabulary and rides it, so no render target is
+  spelled in the emitter; `madc::emit(out, src, file, int64_t kind)` renders
+  by kind. `test_cir`: LanguageStd = the ranges; every canonical `--std=`
+  name round-trips; `CIR_EMIT_TARGETS` names exactly the kinds the table
+  renders.
+- `ide_view` (`viewSOURCE | viewCODE | viewPROBLEMS | viewOUTPUT |
+  viewTERMINAL | viewPROJECT | viewOUTLINE | viewHELP`) and `ide_gen`
+  (`genMADC | genGCC | genCLANG`) join madcide's enums with `view_name` /
+  `view_of` / `gen_name`; `view_of` of a misspelling is `viewNONE`.
+
 ### UI levels — a program opens the rendering model it wants (2026-09-09)
 
 - `ui::level` (`<bits/ui_enums>`): the ordered enum `ui::NONE < ui::LINE < ui::TUI

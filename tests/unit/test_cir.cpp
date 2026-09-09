@@ -26,6 +26,8 @@ thread_local bool madc_verbose = false;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_file_kinds.h"	// the file-kind vocabulary's converters
+#include "../../src/cir_emit_c.h"	// cir_emit_lang_of / CIR_EMIT_TARGETS (a src/ header: relative, the unit flags carry only -I../include)
 
 extern "C" {
 #include "mir.h"
@@ -2628,4 +2630,101 @@ TEST_CASE("B1: datadef_id round-trips primitives and project types exactly") {
     CHECK(n->datadef_id == T.type_id);             // memo stamped on the DataDef
     n->set_datadef(NULL);                          // reset
     CHECK(n->datadef_id == (uint32_t)MADC_TYPEID_INVALID);
+}
+
+// ---- the file-kind vocabulary (<bits/file_kinds>; client-server design §2.1) ----
+// LanguageStd's enumerators ARE the vocabulary's C / C++ / madc ranges; a
+// standard's spelling comes from the one --std= table and round-trips; the
+// families and the IR have their own names; a misspelling refuses; the
+// emitter's depth table renders exactly the CIR_EMIT_TARGETS members.
+TEST_CASE("file kinds: LanguageStd = the vocabulary's ranges; one name table; the emitter's depth table") {
+    CHECK((int)Program::STD_MADC == (int)madc::fkMADC);
+    CHECK((int)Program::STD_C89 == (int)madc::fkC89);
+    CHECK((int)Program::STD_C11 == (int)madc::fkC11);
+    CHECK((int)Program::STD_C23 == (int)madc::fkC23);
+    CHECK((int)Program::STD_CPP98 == (int)madc::fkCPP98);
+    CHECK((int)Program::STD_CPP26 == (int)madc::fkCPP26);
+    // every canonical --std= spelling names a kind inside its family's range
+    // and spells back identically through the vocabulary's converters
+    std::vector<std::string> cs = Program::supported_c_standard_names();
+    CHECK(cs.size() >= 8);
+    for (size_t i = 0; i < cs.size(); ++i) {
+	int64_t k = madc::file_kind_of(cs[i].c_str());
+	CHECK(k > (int64_t)madc::fkC);
+	CHECK(k <= (int64_t)madc::fkC_LAST);
+	CHECK(std::string(madc::file_kind_name(k)) == cs[i]);
+    }
+    std::vector<std::string> ps = Program::supported_cpp_standard_names();
+    CHECK(ps.size() >= 8);
+    for (size_t i = 0; i < ps.size(); ++i) {
+	int64_t k = madc::file_kind_of(ps[i].c_str());
+	CHECK(k > (int64_t)madc::fkCPP);
+	CHECK(k <= (int64_t)madc::fkCPP_LAST);
+	CHECK(std::string(madc::file_kind_name(k)) == ps[i]);
+    }
+    CHECK(madc::file_kind_of("madc") == (int64_t)madc::fkMADC);
+    CHECK(madc::file_kind_of("mc11") == (int64_t)madc::fkMC11);
+    CHECK(madc::file_kind_of("c") == (int64_t)madc::fkC);	// the FAMILY, not --std='s c11 alias
+    CHECK(madc::file_kind_of("c++") == (int64_t)madc::fkCPP);
+    CHECK(madc::file_kind_of("cpp11") == (int64_t)madc::fkUNKNOWN);	// a --std= alias is not a kind name
+    CHECK(madc::file_kind_of("mc1l") == (int64_t)madc::fkUNKNOWN);	// a misspelling refuses
+    CHECK(madc::file_kind_of("") == (int64_t)madc::fkUNKNOWN);
+    CHECK(madc::file_kind_of(NULL) == (int64_t)madc::fkUNKNOWN);
+    CHECK(std::string(madc::file_kind_name(madc::fkUNKNOWN)) == "");
+    CHECK(std::string(madc::file_kind_name(madc::fkMC11)) == "mc11");
+    CHECK(std::string(madc::file_kind_name(madc::fkCPP)) == "c++");
+    CHECK(std::string(madc::file_kind_name(madc::fkOBJECT)) == "object");
+    CHECK(std::string(madc::file_kind_name(70000)) == "");
+    // every named non-standard kind spells back (the two converters agree)
+    for (int k = 1; k <= (int)madc::fkBINARY_LAST; ++k) {
+	const char *n = madc::file_kind_name(k);
+	if (*n)
+	    CHECK(madc::file_kind_of(n) == k);
+    }
+    // extensions answer the FAMILY; case-insensitive; a leading dot is no extension
+    CHECK(madc::file_kind_of_path("dir/x.cpp") == (int64_t)madc::fkCPP);
+    CHECK(madc::file_kind_of_path("C:\\src\\x.HPP") == (int64_t)madc::fkCPP);
+    CHECK(madc::file_kind_of_path("x.c") == (int64_t)madc::fkC);
+    CHECK(madc::file_kind_of_path("x.h") == (int64_t)madc::fkC);
+    CHECK(madc::file_kind_of_path("/a/b/test.mad") == (int64_t)madc::fkMADC);
+    CHECK(madc::file_kind_of_path("madcide_core.inc") == (int64_t)madc::fkMADC);
+    CHECK(madc::file_kind_of_path("Makefile") == (int64_t)madc::fkMAKEFILE);
+    CHECK(madc::file_kind_of_path("notes.TXT") == (int64_t)madc::fkTEXT);
+    CHECK(madc::file_kind_of_path("a.out.o") == (int64_t)madc::fkOBJECT);
+    CHECK(madc::file_kind_of_path(".hidden") == (int64_t)madc::fkUNKNOWN);
+    CHECK(madc::file_kind_of_path("noext") == (int64_t)madc::fkUNKNOWN);
+    CHECK(madc::file_kind_of_path("[build]") == (int64_t)madc::fkUNKNOWN);
+    CHECK(madc::file_kind_of_path("") == (int64_t)madc::fkUNKNOWN);
+    // the emitter's depth table: every CIR_EMIT_TARGETS member renders, a
+    // standard it has no rendering for refuses, and the message list names
+    // exactly the kinds the table maps (the two cannot drift)
+    CirEmitLang l;
+    CHECK(cir_emit_lang_of("c11", l));
+    CHECK(l == celC11);
+    CHECK(cir_emit_lang_of("mc11", l));
+    CHECK(l == celMC11);
+    CHECK(cir_emit_lang_of("c++", l));
+    CHECK(l == celCxx);
+    CHECK_FALSE(cir_emit_lang_of("c17", l));
+    CHECK_FALSE(cir_emit_lang_of("madc", l));
+    CHECK_FALSE(cir_emit_lang_of("", l));
+    CHECK_FALSE(cir_emit_lang_of_kind(madc::fkCPP11, l));
+    CHECK_FALSE(cir_emit_lang_of_kind(madc::fkUNKNOWN, l));
+    std::string targets = CIR_EMIT_TARGETS;
+    int members = 0;
+    size_t at = 0;
+    while (at <= targets.size()) {
+	size_t bar = targets.find('|', at);
+	std::string one = targets.substr(at, bar == std::string::npos ? std::string::npos : bar - at);
+	CHECK(cir_emit_lang_of(one.c_str(), l));
+	++members;
+	if (bar == std::string::npos)
+	    break;
+	at = bar + 1;
+    }
+    int rendered = 0;
+    for (int k = 1; k <= (int)madc::fkBINARY_LAST; ++k)
+	if (cir_emit_lang_of_kind(k, l))
+	    ++rendered;
+    CHECK(members == rendered);
 }

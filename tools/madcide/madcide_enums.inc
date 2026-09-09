@@ -404,3 +404,56 @@ long pane_slot_of(long p)
     }
     return slotNONE;
 }
+
+// ---- Views (client-server arc V1; design doc §2.1) -------------------------
+// A View's projection KIND — what a View shows. A code View's LANGUAGE is the
+// engine's file-kind vocabulary (<bits/file_kinds>, madc::fk*; its names are
+// the engine's, madc::file_kind_name / file_kind_of); the two fields are the
+// representation. These names are OUTPUT (a probe's print, a hint a client
+// shows) and, from V2, the layout profile's INPUT words (`views source
+// problems`) — view_of converts once at load; a misspelling is viewNONE, the
+// caller's refusal, never a dead View.
+enum ide_view : unsigned char
+{
+    viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
+    viewPROJECT, viewOUTLINE, viewHELP
+};
+const char *view_name(long k)
+{
+    switch ( k )
+    {
+	case viewSOURCE: return "source";
+	case viewCODE: return "code";
+	case viewPROBLEMS: return "problems";
+	case viewOUTPUT: return "output";
+	case viewTERMINAL: return "terminal";
+	case viewPROJECT: return "project";
+	case viewOUTLINE: return "outline";
+	case viewHELP: return "help";
+    }
+    return "";
+}
+long view_of(var &name)
+{
+    if ( name.is_null() )
+	return viewNONE;
+    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
+	if ( name == view_name(k) )
+	    return k;
+    return viewNONE;
+}
+
+// A rendered View's GENERATOR — the compiler that produced its text: genNONE
+// for stored text, genMADC for every render this compiler makes, gcc / clang
+// for the external-assembly Views (V7).
+enum ide_gen : unsigned char { genNONE = 0, genMADC, genGCC, genCLANG };
+const char *gen_name(long g)
+{
+    switch ( g )
+    {
+	case genMADC: return "madc";
+	case genGCC: return "gcc";
+	case genCLANG: return "clang";
+    }
+    return "";
+}

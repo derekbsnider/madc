@@ -1311,7 +1311,7 @@ int main()
     ev_action(e, "view", "^k n");	// original -> mc11
     S.apply_ide_event(doc, e);
     var vname;
-    ui::get(vname, w, es, "view");
+    lens_name(vname, w, es);		// the focused View's render language
     println("view1: name={} editable={} caret={} stored-size={}",
 	    vname, es_flag(w, es, "editable") ? 1 : 0,
 	    es_int(w, es, "caret", -1), ui::text_size(w, doc));
@@ -1356,11 +1356,11 @@ int main()
     println("view-find: hit={}", es_int(w, es, "caret", -1) > 0 ? 1 : 0);
     ev_action(e, "view", "^k n");	// mc11 -> c11
     S.apply_ide_event(doc, e);
-    ui::get(vname, w, es, "view");
+    lens_name(vname, w, es);
     println("view2: name={}", vname);
     ev_action(e, "view", "^k n");	// c11 -> original
     S.apply_ide_event(doc, e);
-    ui::get(vname, w, es, "view");
+    lens_name(vname, w, es);
     ui::get(m, w, doc, "modified");
     S.compose_ide_tree(tree, doc);
     var bed;
@@ -1371,6 +1371,43 @@ int main()
     println("view-exit: name='{}' caret={} identical={} modified={}",
 	    vname, es_int(w, es, "caret", -1),
 	    btext == dtext ? 1 : 0, m.as_boolean());
+    // -- V1 Views (client-server arc, design §2.1): the lens IS a View row —
+    //    the focused container's View, its representation replaced in
+    //    place (one row, one id, through the whole cycle); its text entity
+    //    is the subject for stored text and its own render buffer for a
+    //    code View; navigation is the CONTAINER's, never the row's; a
+    //    misspelled kind or language converts to the refusal value. --
+    var vrow;
+    long vid = focused_view(w, es);
+    view_row(vrow, w, es, vid);
+    println("view-row: id={} subject-is-doc={} kind={} lang={} gen={} text-is-doc={} nav-on-row={}",
+	    vid, vrow["subject"].as_integer() == doc ? 1 : 0,
+	    view_name(vrow["kind"].as_integer()),
+	    madc::file_kind_name(vrow["lang"].as_integer()),
+	    gen_name(vrow["generator"].as_integer()),
+	    vrow["vbuf"].as_integer() == doc ? 1 : 0,
+	    vrow["caret"].is_null() && vrow["ocaret"].is_null() ? 0 : 1);
+    ev_action(e, "view", "^k n");	// original -> mc11: the SAME row
+    S.apply_ide_event(doc, e);
+    view_row(vrow, w, es, focused_view(w, es));
+    println("view-row-lens: same-id={} kind={} lang={} gen={} text-own={} nav-target-is-text={}",
+	    focused_view(w, es) == vid ? 1 : 0,
+	    view_name(vrow["kind"].as_integer()),
+	    madc::file_kind_name(vrow["lang"].as_integer()),
+	    gen_name(vrow["generator"].as_integer()),
+	    vrow["vbuf"].as_integer() != doc && vrow["vbuf"].as_integer() != 0 ? 1 : 0,
+	    nav_doc(w, es, doc) == vrow["vbuf"].as_integer() ? 1 : 0);
+    ev_action(e, "view", "^k n");	// mc11 -> c11
+    S.apply_ide_event(doc, e);
+    ev_action(e, "view", "^k n");	// c11 -> original (a .mad buffer: no c++)
+    S.apply_ide_event(doc, e);
+    var kname = "source";
+    var kbad = "sourse";
+    println("view-kinds: doc-kind={} source={} misspelt-kind={} misspelt-lang={} ext-cpp={} ext-none={} caret={}",
+	    madc::file_kind_name(doc_kind(w, doc)), view_of(kname), view_of(kbad),
+	    madc::file_kind_of("mc1l"),
+	    madc::file_kind_of_path("x/y.cpp") == madc::fkCPP ? 1 : 0,
+	    madc::file_kind_of_path("noext"), es_int(w, es, "caret", -1));
     // The coordinate map's dialect face (the markdown-conceal shape):
     // 1:1 in copies, forward collapse inside gaps, boundary-earlier on
     // the inverse, 0 for the empty (wholly rendered) map.
@@ -1411,7 +1448,7 @@ int main()
     ev_action(e, "view", "^k n");	// -> c++ (a C/C++ buffer)
     S2.apply_ide_event(doc2, e);
     var vn2;
-    ui::get(vn2, w2, es2, "view");
+    lens_name(vn2, w2, es2);
     S2.compose_ide_tree(tree, doc2);
     var ced;
     ced = tree["children"][1];
@@ -1433,7 +1470,7 @@ int main()
 	    strstr(hl.c_str(), "(Read only)") != 0 ? 1 : 0);
     ev_action(e, "view", "^k n");	// c++ -> original
     S2.apply_ide_event(doc2, e);
-    ui::get(vn2, w2, es2, "view");
+    lens_name(vn2, w2, es2);
     println("cxxview-exit: name='{}' caret={}", vn2, es_int(w2, es2, "caret", -1));
     ui::world_close(w2);
 

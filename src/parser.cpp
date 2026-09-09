@@ -314,6 +314,11 @@ bool internal_program_source_emit(::Program &self,
 				  const std::string &target,
 				  value &out,
 				  const std::string &display_name);
+bool internal_program_source_emit_kind(::Program &self,
+				       const std::string &source_text,
+				       int64_t target_kind,
+				       value &out,
+				       const std::string &display_name);
 // The build surface (madcide IDE-10c; madc_program.cpp beside the child
 // pipeline): the CLI's AOT lane in-process — parse a FILE in a child,
 // emit a native artifact ("exe" | "obj"); diagnostics rows either way.
@@ -958,6 +963,28 @@ bool madc_source_emit(void *result, void *source, void *filename,
     return madc::internal_program_source_emit(*active, src, tgt, out,
 					      disp.empty() ? "<source>"
 							   : disp);
+}
+
+// The same render by the target's KIND (madc::file_kind, <bits/file_kinds>)
+// — the dialect's enum-typed madc::emit overload lands here; the name form
+// above converts once and joins it.
+bool madc_source_emit_kind(void *result, void *source, void *filename,
+			   int64_t target_kind)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_source_emit_kind(*active, src, target_kind,
+						   out,
+						   disp.empty() ? "<source>"
+								: disp);
 }
 
 // The build bridge (madcide IDE-10c): path/kind/outpath = std::string*,
@@ -21656,6 +21683,32 @@ std::vector<std::string> Program::supported_c_standard_names()
 std::vector<std::string> Program::supported_cpp_standard_names()
 {
 	return collect_std_names('p');
+}
+
+// One row at a time, for the file-kind vocabulary's converters
+// (src/file_kinds.cpp): the CANONICAL spelling of a standard's value, and
+// the value a canonical spelling names. Aliases are `--std=`'s conveniences
+// (set_language_standard accepts them); a file-kind name is the canonical
+// row only, so "c" stays the C FAMILY in that vocabulary.
+const char *Program::standard_canonical_name(LanguageStd std)
+{
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && row.std == std )
+			return row.name;
+	return "";
+}
+
+bool Program::standard_of_canonical_name(const char *name, LanguageStd &out)
+{
+	if ( !name || !*name )
+		return false;
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && strcmp(row.name, name) == 0 )
+		{
+			out = row.std;
+			return true;
+		}
+	return false;
 }
 
 bool Program::set_language_standard(const std::string &standard)

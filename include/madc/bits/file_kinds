@@ -1,0 +1,78 @@
+// madc embedded <bits/file_kinds> — the ONE file-kind vocabulary: everything
+// the IDE may open and everything the compiler may read or emit, text or
+// binary, as one enum shared by two readers (the ui_enums precedent): the
+// engine (madc.h — Program::LanguageStd's enumerators ARE the C / C++ / madc
+// ranges below, so every `--std=` row keeps its value) and the dialect
+// (<ns_madc> includes it, so a View's `lang` is `madc::fkMC11`, an enumerator
+// the compiler checks, never the string "mc11" a typo turns into a silent
+// miss). Design: docs/plans/2026-09-09-nexus-client-server-design.md §2.1.
+//
+// GROUPED IN RANGES so membership is a range test (`k >= madc::fkC && k <=
+// madc::fkC_LAST`): the ranges group files by WHAT THEY ARE, never by today's
+// support. DEPTH OF SUPPORT is a table per layer owned by that layer, not a
+// flag here: the editor edits every text kind; the highlighter has lexers for
+// some; the parser accepts the standards its registry rows declare; the
+// emitter renders what cir_emit_lang_of_kind maps (src/cir_emit_c.h). A kind
+// moves from "text with a lexer" to "parsed and lowered" by gaining registry
+// rows, never by moving its enumerator. Each range head (fkTEXT, fkC, fkCPP,
+// fkMADC, fkOTHER, fkBINARY) is a member: `fkC` is "the C family, standard
+// unspecified" — what a file extension answers; the standard within a family
+// comes from the manifest or --std=, never from the extension. The GNU
+// dialects are the engine's `gnu_dialect` modifier beside the standard, not
+// members here (`--std=gnu11` = fkC11 + gnu).
+//
+// Prefixed unscoped enumerators with a fixed base (the owner's spelling:
+// `switch (k) { case madc::fkMC11: }` on a `long` read from a bag). Plain
+// C++11 enums, nothing else: no includes, no std::string (dialect-lean), no
+// functions. The names at the boundary (madc::file_kind_name / file_kind_of /
+// file_kind_of_path, src/file_kinds.cpp) are derived by the engine from the
+// `--std=` table and one extension table, never re-typed here.
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_FILE_KINDS
+#define __MADC_BITS_FILE_KINDS 1
+
+namespace madc {
+    enum file_kind : unsigned short
+    {
+	fkUNKNOWN = 0,		// no kind (an extension no table names)
+
+	// ---- text the compiler never touches: edited everywhere, coloured
+	//      where a lexer exists (json has a small one; plain text none) ----
+	fkTEXT = 16,		// the range head: plain text
+	fkMARKDOWN, fkJSON, fkHTML, fkCSS, fkJS, fkYAML, fkTOML, fkXML,
+	fkSHELL, fkMAKEFILE, fkINI, fkCSV,
+	fkTEXT_LAST = fkCSV,
+
+	// ---- the C standards (Program::LanguageStd's C range) ----
+	fkC = 32,		// the family, standard unspecified
+	fkC78, fkC86, fkC88, fkC89, fkC90, fkC94, fkC95, fkC99, fkC11, fkC17,
+	fkC23,
+	fkC_LAST = fkC23,
+
+	// ---- the C++ standards (Program::LanguageStd's C++ range) ----
+	fkCPP = 64,		// the family, standard unspecified
+	fkCPP98, fkCPP03, fkCPP11, fkCPP14, fkCPP17, fkCPP20, fkCPP23, fkCPP26,
+	fkCPP_LAST = fkCPP26,
+
+	// ---- madc's own ----
+	fkMADC = 96,		// the dialect (Program::STD_MADC)
+	fkMC11,			// the Mad-enhanced-C11 IR rendered as text
+	fkMADC_LAST = fkMC11,
+
+	// ---- languages the IDE knows that the compiler does not yet read:
+	//      text with a lexer until their registry rows land ----
+	fkOTHER = 128,		// the range head: an unlisted language
+	fkTYPESCRIPT, fkPYTHON, fkRUST, fkGO, fkJAVA, fkPHP, fkPERL, fkRUBY,
+	fkLUA, fkSWIFT, fkKOTLIN, fkCSHARP, fkASM,
+	fkOTHER_LAST = fkASM,
+
+	// ---- binary formats: opened by name, never edited as text ----
+	fkBINARY = 192,		// the range head: an unlisted binary
+	fkOBJECT, fkEXECUTABLE, fkARCHIVE, fkSHAREDLIB, fkIMAGE, fkPDF,
+	fkAUDIO, fkVIDEO, fkFONT, fkZIP,
+	fkBINARY_LAST = fkZIP
+    };
+}
+
+#endif // __MADC_BITS_FILE_KINDS

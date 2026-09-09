@@ -18,6 +18,7 @@
 // scope-access variants are gated by the parser's scope-access hooks.
 
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
+#include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -97,6 +98,26 @@ namespace madc {
     // child program — the runtime-eval machinery's confinement.
     bool emit(value &out, const char *source, const char *filename,
 	      const char *target);
+    // The same render by the target's KIND (<bits/file_kinds>): madc::fkC11 |
+    // madc::fkMC11 | madc::fkCPP (the family — the retained-source echo) —
+    // an enumerator the compiler checks. A kind the emitter has no rendering
+    // for is false, like an unknown name. An IDE carries the code; the name
+    // form is for text that just arrived (a command line).
+    bool emit(value &out, const char *source, const char *filename,
+	      int64_t target_kind);
+
+    // The file-kind vocabulary's boundary converters (<bits/file_kinds>; the
+    // engine owns the tables, src/file_kinds.cpp — a standard's spelling is
+    // the --std= table's row): a kind's canonical spelling ("" for none);
+    // the kind a spelling names (madc::fkUNKNOWN = a misspelling, the
+    // caller's refusal); the kind a file NAME's extension answers — the
+    // FAMILY for C/C++ (madc::fkC / madc::fkCPP; the standard within a family
+    // comes from the manifest or --std=), madc::fkUNKNOWN for an extension
+    // no table names. Convert ONCE where text enters (a file open, a profile
+    // line, a command line); carry the code after; a switch dispatches it.
+    const char *file_kind_name(int64_t kind);
+    int64_t file_kind_of(const char *name);
+    int64_t file_kind_of_path(const char *path);
 
     // Persistent parse handles: the compiler-data surfaces above given a
     // LIFETIME. parse_open compiles (NEVER executes) `source` in a child

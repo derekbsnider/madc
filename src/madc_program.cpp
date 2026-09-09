@@ -4719,21 +4719,23 @@ bool internal_program_source_outline(::Program &self,
 }
 
 // The render query (madcide AST-3 code views): parse the buffer in a
-// child and render its cir_node tree as `target` — the cir_emit_lang_of
-// vocabulary, the SAME one --emit= speaks — into a string value. False =
-// unknown target, or a buffer that does not parse/translate; diagnostics
-// stay captured under the mute, never printed. Nothing runs.
-bool internal_program_source_emit(::Program &self,
-				  const std::string &source_text,
-				  const std::string &target,
-				  madc::value &out,
-				  const std::string &display_name)
+// child and render its cir_node tree as the target KIND (madc::file_kind —
+// the emitter's depth table cir_emit_lang_of_kind says which kinds render;
+// the SAME vocabulary --emit= speaks by name) into a string value. False =
+// a kind the emitter does not render, or a buffer that does not
+// parse/translate; diagnostics stay captured under the mute, never
+// printed. Nothing runs.
+bool internal_program_source_emit_kind(::Program &self,
+				       const std::string &source_text,
+				       int64_t target_kind,
+				       madc::value &out,
+				       const std::string &display_name)
 {
     self.clear_diagnostics();
     self.clear_error();
     out = value();
     CirEmitLang lang;
-    if ( !cir_emit_lang_of(target.c_str(), lang) )
+    if ( !cir_emit_lang_of_kind(target_kind, lang) )
 	return false;
     ::Program child(self.engine);
     // The C++ reverse-render echoes the retained tokens: full-fidelity
@@ -4752,6 +4754,19 @@ bool internal_program_source_emit(::Program &self,
 	return false;
     out = value(text);
     return true;
+}
+
+// The name form: the target's spelling converts ONCE (the file-kind
+// vocabulary's input converter) and joins the kind form above.
+bool internal_program_source_emit(::Program &self,
+				  const std::string &source_text,
+				  const std::string &target,
+				  madc::value &out,
+				  const std::string &display_name)
+{
+    return internal_program_source_emit_kind(self, source_text,
+					     madc::file_kind_of(target.c_str()),
+					     out, display_name);
 }
 
 // Does the child carry at least one ERROR-severity diagnostic? The

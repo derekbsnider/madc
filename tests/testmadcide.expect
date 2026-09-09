@@ -121,6 +121,9 @@ view-undo: Read-only view (^K A returns).
 view-find: hit=1
 view2: name=c11
 view-exit: name='' caret=84 identical=1 modified=false
+view-row: id=1 subject-is-doc=1 kind=source lang=madc gen= text-is-doc=1 nav-on-row=0
+view-row-lens: same-id=1 kind=code lang=mc11 gen=madc text-own=1 nav-target-is-text=1
+view-kinds: doc-kind=madc source=1 misspelt-kind=0 misspelt-lang=0 ext-cpp=1 ext-none=0 caret=84
 lens: d3=2 d5=3 s3=5 s2=2 empty-d=0
 cxxview: name=c++ include=1 echo=1 stored-size=109
 cxxview-head: tagged=1 ro=1

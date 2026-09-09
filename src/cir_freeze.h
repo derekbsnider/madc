@@ -562,7 +562,7 @@ bool cir_freeze_read(const madc::dis::snapshot_reader &r, uint32_t seg_id_base,
 // packaged target can instead tokenize the producer's exact header bytes
 // under another --std=/-D/POSIX config. This is source fallback, never a
 // relaxation of LOADED == parsed.
-enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 46 };	// v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
+enum : uint32_t { CIR_FOREST_FORMAT_VERSION = 47 };	// v47: the producer-config word's language_std bits carry the file-kind vocabulary's values (Program::LanguageStd = madc::fk* ranges, <bits/file_kinds>) — a v46 pack's word would compare against different numbers; v46: defrec ovl_spelling_id / ovl_targ run — a DK_FUNC's overload-set declaration identity (FuncDef::overload_spelling + overload_template_args); v45: DF_FUNC_C_LINKAGE (a namespace fn's extern "C" linkage — restore re-derives the C alias); v44: DK_NSALIAS namespace-alias records; v42: defrec vslot/vmeth runs (flat vtable_slots + virtual_methods)
 	// v43: defrec friendfn/friendcls runs — the friendship grants
 	// (friend_function_names / friend_class_names), parse-time access
 	// state a restored class never carried (hoisted hidden-friend bodies

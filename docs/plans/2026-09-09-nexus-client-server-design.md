@@ -64,11 +64,32 @@ federation between Nexus nodes (Nexus §17–§24), the debugger/profiler tier
   table generation) and per-document bags (`path`, `modified`, `phandle`).
   Client-pushed FACTS (viewport, terminal presence, dialogs, panel) arrive
   through methods; keys stay client-side.
-- **The lens is session-level.** `enter_view` renders `madc::emit` over the
-  live buffer into ONE view-buffer entity `es.vdoc` with `es.view`,
-  `es.vmap` (EMPTY for a rendered view), `es.ocaret`; `nav_doc` routes
-  navigation to it. One active lens per session, not per window — the gap
-  that blocks "source beside its MC11".
+- **The lens is a View (V1, landed 2026-09-09).** `es.views` holds the View
+  rows (§2.1: `{id, subject, kind, lang, revision, generator, vbuf, rbuf,
+  map}`); every editor tab (buffer row) carries its View as `view`, and
+  `es.fview` is the focused container's. `enter_lens` re-represents the
+  focused View as a code View (`kind = viewCODE`, `lang = madc::fkMC11 /
+  fkC11 / fkCPP`, `generator = genMADC`, its text the View's own render
+  buffer); `exit_lens` returns it to the source View; `nav_doc` and the
+  composer read the View's text entity (`view_text_entity`, one routing
+  rule); `cycle_view` switches on the language CODE. Navigation (caret /
+  mark / bend, the parked `ocaret`) stays the CONTAINER's (§6 Q1). The
+  former `es.vdoc / view / vmap` bag strings are gone. Still one lens at a
+  time: a tab switch exits it — "source beside its MC11" needs V2's
+  containers (a second leaf pane holding a second View over the same
+  subject).
+- **The file-kind vocabulary exists (V1).** `<bits/file_kinds>` is the ONE
+  enum (`madc::fk*`, ranges: text / C / C++ / madc / other / binary, each
+  with a family head and a `_LAST` marker); `Program::LanguageStd`'s
+  enumerators are its C / C++ / madc values (forest format v47: the
+  producer-config word's `language_std` bits moved); the boundary
+  converters `madc::file_kind_name / file_kind_of / file_kind_of_path`
+  (src/file_kinds.cpp) draw a standard's spelling from the one `--std=`
+  table; the emitter's depth table `cir_emit_lang_of_kind` says which kinds
+  it renders and `--emit=`'s name form rides it; `madc::emit` takes the
+  kind. A document's kind is stamped ONCE at open / new-file / save-as
+  (`doc_set_path`, lined_core.inc) — `cxx_view_applies` is a range test on
+  it, no extension ladder.
 - **Views already exist in all but name:** the edit node (a document's
   text), a lens (its render), Problems (`diag_items`), Output (the `[build]`
   buffer), the Terminal (`term_feed` into the `[terminal]` buffer through
@@ -496,7 +517,7 @@ git adapter (the nexus axes slice).
 |---|---|---|
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
-| **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
+| **V1 Views** ✅ 2026-09-09 (arc branch) | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_view_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View; the file-kind vocabulary `<bits/file_kinds>` (+ `ide_view` / `ide_gen` enums) | `testmadcide` byte-identical composition for the identity lens (+ `view-row` / `view-row-lens` / `view-kinds` pins: one row through the cycle, the refusals); GUI DOM snapshots unchanged; `test_cir` file-kind unit test (LanguageStd = the ranges, name round-trips, the emitter's depth table == `CIR_EMIT_TARGETS`) |
 | **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
 | **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
 | **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
@@ -521,8 +542,9 @@ the file-kind vocabulary, §2.2 layout flexibility + nesting, §6 the first
 three questions, and this boundary are ruled; §6's fourth (entity
 identity across history) stays the named hard problem. V0.5 landed
 2026-09-09 (its battery ran in error — the seam is V5, per the owner; a
-slice never gets the battery, `testing-fulltest.md`); V1 begins on the arc's
-feature branch, and the next battery is the V5 seam.
+slice never gets the battery, `testing-fulltest.md`); V1 landed 2026-09-09
+on the arc's feature branch (`feature/client-server-views-claude`, targeted
+gates only); V1.5 is next, and the next battery is the V5 seam.
 
 ## 5. Standing defaults (owner veto welcome)
 

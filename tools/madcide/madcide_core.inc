@@ -1109,18 +1109,127 @@ void goto_pane_row(long w, long es, long doc, long option)
     }
 }
 
-// THE view-active rule, one seat (dupaudit family view_active_predicate):
-// a view is active iff the editor-state bag carries a non-empty "view"
-// name. Out = the name; false = the original (identity lens). Defined
-// here, ahead of the prompt machinery (the theme completion consults it)
-// and of the view seam below.
-bool view_name(var &out, long w, long es)
+// ---- Views (client-server arc V1; design doc §2.1) ------------------------
+// A View is DATA on the session — es "views", rows
+//   { id, subject, kind, lang, revision, generator, vbuf, rbuf, map }
+// id: 1-based, never reused in a session (the row's index + 1); subject:
+// the document entity the View projects (an entity handle, never a byte
+// offset); kind: ide_view; lang: the representation's language (madc::fk*,
+// <bits/file_kinds>) — the subject's own kind for a source View, the render
+// target for a code View; revision: 0 = current (an event sequence number
+// from V4); generator: ide_gen (genMADC for a render, genNONE for stored
+// text); vbuf: the entity holding the View's TEXT — the subject for stored
+// text, the View's own render buffer for a code View (rbuf: that buffer,
+// allocated once per View and kept between renders); map: the coordinate
+// map to the subject's stored space (EMPTY for a wholly rendered view,
+// ui::lens_to_display; V5 fills it). A View's highlight SPANS live on its
+// text entity — the render buffer's "hspans" for a code View, the state
+// bag's stored-space "hspans" (edit-shifted by ed_text_insert / erase) for
+// stored text; view_spans is the one reader.
+// NAVIGATION (caret / mark / bend, the parked stored-space caret "ocaret")
+// is NOT View state (OWNER 2026-09-09, design §6 Q1): it belongs to the
+// CONTAINER that shows the View — the state bag for the focused editor tab
+// (the shared editor machinery's live cursor), the buffer row for the other
+// tabs, the window row for the S5 stack — so every client sits at its own
+// place in one shared text.
+// The FOCUSED View is es "fview": the View the focused container (the
+// active editor tab) shows; every buffer row carries its View as "view". A
+// session without the buffer table (the headless harness) gets its focused
+// View created on first need, over the document it drives. Defined here,
+// ahead of the prompt machinery (the theme completion consults the lens
+// predicate) and of the lens seam below.
+
+bool view_row(var &out, long w, long es, long id)
 {
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+    if ( id <= 0 )
 	return false;
-    out = vw;
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() || php::count(vs) < id )
+	return false;
+    out = vs[id - 1];
+    return true;
+}
+
+void view_store(long w, long es, var &v)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    vs[v["id"].as_integer() - 1] = v;
+    ui::set(w, es, "views", vs);
+}
+
+// A new View over `subject`, its text the subject's own buffer; the id.
+long view_new(long w, long es, long subject, long kind, long lang)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() )
+    {
+	var fresh = {};
+	vs = fresh;
+    }
+    long id = php::count(vs) + 1;
+    var nomap = {};
+    vs[] = { "id": id, "subject": subject, "kind": kind, "lang": lang,
+	     "revision": 0, "generator": genNONE, "vbuf": subject,
+	     "rbuf": 0, "map": nomap };
+    ui::set(w, es, "views", vs);
+    return id;
+}
+
+long focused_view(long w, long es)
+{
+    return es_int(w, es, "fview", 0);
+}
+
+// The focused View, created over `doc` (a source View) when the session
+// has none yet.
+long ensure_focused_view(long w, long es, long doc)
+{
+    long id = focused_view(w, es);
+    var v;
+    if ( view_row(v, w, es, id) )
+	return id;
+    id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    ui::set(w, es, "fview", id);
+    return id;
+}
+
+// The entity a View's text is read from: its render buffer while it is a
+// code View, else the document — the ONE place display-vs-stored routing
+// happens (nav_doc and the composer both read it). A null row (a session
+// with no View yet) is the document.
+long view_text_entity(var &v, long doc)
+{
+    if ( v.is_null() || v["kind"].as_integer() != viewCODE )
+	return doc;
+    long vb = v["vbuf"].as_integer();
+    return vb != 0 ? vb : doc;
+}
+
+// The one reader of a View's highlight rows (see the table comment).
+void view_spans(var &out, long w, long es, var &v)
+{
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	ui::get(out, w, v["vbuf"].as_integer(), "hspans");
+    else
+	ui::get(out, w, es, "hspans");
+}
+
+// THE lens-up rule, one seat (dupaudit family view_active_predicate): a
+// lens is up iff the focused View is a code render (viewCODE). Out = the
+// render language's name (madc::file_kind_name: "mc11" / "c11" / "c++"),
+// "" otherwise; false = the identity lens (a source View, or no View yet).
+bool lens_name(var &out, long w, long es)
+{
+    out = "";
+    var v;
+    if ( !view_row(v, w, es, focused_view(w, es)) )
+	return false;
+    if ( v["kind"].as_integer() != viewCODE )
+	return false;
+    out = madc::file_kind_name(v["lang"].as_integer());
     return true;
 }
 
@@ -1252,7 +1361,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'y' )
 	{
 	    var vw;
-	    if ( view_name(vw, w, es) )
+	    if ( lens_name(vw, w, es) )
 		seat = format("({}) ", vw);
 	}
 	long pad = width - strlen(seat.c_str());
@@ -1696,7 +1805,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	    return true;
 	}
 	var vw;
-	if ( !view_name(vw, w, es) )
+	if ( !lens_name(vw, w, es) )
 	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
 	ui::set(w, es, "msg", format("Theme: {}.", in));
     }
@@ -1952,81 +2061,106 @@ void delete_word(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
-// ---- the view seam (AST-3): read-only code views -----------------------
-// A VIEW is a document lens applied at composition: the stored text stays
-// the document truth; what is DISPLAYED is the lens's rendered text
-// (madc::emit over the live buffer), held in a view-buffer entity so the
-// ONE shared navigation implementation (edit_key, find, goto-line) works
-// over the display space unchanged. The lens's coordinate map rides as
-// data on the bag ("vmap" — EMPTY for a wholly rendered view: nothing
-// corresponds; see ui::lens_to_display) and onto the edit node's hints;
-// the stored caret parks on "ocaret" and returns on exit; mutations and
-// stored-space history are refused through the one editable gate. The
-// identity lens (no view) adds NOTHING — the composed tree stays
-// byte-identical to today's.
+// ---- the lens seam (AST-3, re-expressed on Views in V1): read-only code
+//      views ---------------------------------------------------------------
+// A LENS is the focused View re-represented as a code View: the stored text
+// stays the document truth; what is DISPLAYED is the render (madc::emit
+// over the live buffer, by the target's KIND), held in the View's own
+// render buffer so the ONE shared navigation implementation (edit_key,
+// find, goto-line) works over the display space unchanged. The View's
+// coordinate map (EMPTY for a wholly rendered view: nothing corresponds;
+// see ui::lens_to_display) rides onto the edit node's hints; the
+// container's stored-space caret parks on "ocaret" and returns on exit;
+// mutations and stored-space history are refused through the one editable
+// gate. The identity lens (a source View) adds NOTHING — the composed tree
+// stays byte-identical.
 
-// The navigation target: the view buffer while a view is up, else the
-// document — the ONE place display-vs-stored routing happens.
+// The navigation target: the View's text entity — the render buffer while
+// a lens is up, else the document (view_text_entity, the one routing rule).
 long nav_doc(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
-	return doc;
-    long vd = es_int(w, es, "vdoc", 0);
-    return vd != 0 ? vd : doc;
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    return view_text_entity(v, doc);
 }
 
-bool enter_view(long w, long es, long doc, const char *name)
+// Re-represent the focused View as a code View in `lang` (madc::fkMC11 /
+// fkC11 / fkCPP — the kinds the emitter renders). False = the buffer does
+// not translate (the compiler's own rows surface; the View is unchanged).
+bool enter_lens(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
     var p;
     ui::get(p, w, doc, "path");
     var emitted;
-    if ( !madc::emit(emitted, t.c_str(), p.c_str(), name) )
+    if ( !madc::emit(emitted, t.c_str(), p.c_str(), lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
 	run_check(w, es, doc);
 	return false;
     }
-    long vd = es_int(w, es, "vdoc", 0);
+    long id = ensure_focused_view(w, es, doc);
+    var v;
+    view_row(v, w, es, id);
+    long vd = v["rbuf"].as_integer();
     if ( vd == 0 )
     {
 	vd = ui::create(w, "view-buffer");
-	ui::set(w, es, "vdoc", vd);
+	v["rbuf"] = vd;
     }
     ui::text_load(w, vd, emitted.c_str());
-    ui::set(w, vd, "path", p);	// the status %n seat: a view is a lens
-				// over the file — its name IS the file's
+    ui::set(w, vd, "path", p);	// the status %n seat: a lens is over the
+				// file — its name IS the file's (a display
+				// path only: the render buffer is no
+				// document and carries no kind)
     // Colour on the lens (owner 2026-09-09: every emitted code view is
-    // syntax-coloured): the view buffer carries its OWN highlight spans —
+    // syntax-coloured): the render buffer carries its OWN highlight spans —
     // the lexer-alone classification (the colour-at-load path) over the
-    // EMITTED text, through the one converter, landing on the view
+    // EMITTED text, through the one converter, landing on the render
     // buffer; the composer attaches the spans of whichever buffer it
-    // shows. The emitted text is already indented — the emitter's own
-    // layout (src/cir_emit_c.cpp), one owner for --emit and every lens.
+    // shows (view_spans). The emitted text is already indented — the
+    // emitter's own layout (src/cir_emit_c.cpp), one owner for --emit and
+    // every lens.
     var vrows;
     madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
-    var cur;
-    if ( !view_name(cur, w, es) )
-	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
-    ui::set(w, es, "view", name);
-    var vm = {};
-    ui::set(w, es, "vmap", vm);
+    if ( v["kind"].as_integer() != viewCODE )
+	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));	// the CONTAINER
+				// parks its stored-space caret (never the row)
+    v["kind"] = viewCODE;
+    v["lang"] = lang;
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    var nomap = {};
+    v["map"] = nomap;
+    view_store(w, es, v);
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     ui::set(w, es, "editable", false);
     ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
-    ui::set(w, es, "msg", format("View: {}", name));
+    ui::set(w, es, "msg", format("View: {}", madc::file_kind_name(lang)));
     return true;
 }
 
-void exit_view(long w, long es, long doc)
+// Back to the source View: the row's representation returns to the
+// subject's own text and kind; the container's parked caret returns.
+void exit_lens(long w, long es, long doc)
 {
-    ui::set(w, es, "view", "");
+    var v;
+    if ( view_row(v, w, es, focused_view(w, es)) )
+    {
+	long subject = v["subject"].as_integer();
+	v["kind"] = viewSOURCE;
+	v["lang"] = doc_kind(w, subject);
+	v["generator"] = genNONE;
+	v["vbuf"] = subject;
+	var nomap = {};
+	v["map"] = nomap;
+	view_store(w, es, v);
+    }
     ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
@@ -2060,9 +2194,29 @@ long open_buffer_doc(long w, long es, const char *path)
 	return nd;
     nd = ui::create(w, "document");
     ui::text_load(w, nd, "");
-    ui::set(w, nd, "path", path);
+    doc_set_path(w, nd, path);
     ui::set(w, nd, "modified", false);
     return nd;
+}
+
+// The View a buffer row (an editor tab) shows; a row from before the table
+// carried Views gets its source View here.
+long buffer_view(long w, long es, long idx)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) <= idx )
+	return 0;
+    var r = bufs[idx];
+    var v = r["view"];
+    if ( !v.is_null() && v.as_integer() != 0 )
+	return v.as_integer();
+    long vid = view_new(w, es, r["doc"].as_integer(), viewSOURCE,
+			doc_kind(w, r["doc"].as_integer()));
+    r["view"] = vid;
+    bufs[idx] = r;
+    ui::set(w, es, "buffers", bufs);
+    return vid;
 }
 
 // Switch the active buffer: leave any view (it lenses the OLD buffer),
@@ -2073,8 +2227,8 @@ long open_buffer_doc(long w, long es, const char *path)
 void switch_buffer(long w, long es, long olddoc, long idx)
 {
     var vw;
-    if ( view_name(vw, w, es) )
-	exit_view(w, es, olddoc);
+    if ( lens_name(vw, w, es) )
+	exit_lens(w, es, olddoc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
     long cur = es_int(w, es, "bufidx", 0);
@@ -2088,6 +2242,8 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     long nd = t["doc"].as_integer();
     ui::set(w, es, "bufidx", idx);
     ui::set(w, es, "adoc", nd);
+    ui::set(w, es, "fview", buffer_view(w, es, idx));	// the focused
+				// container's View is the tab's
     ui::set(w, es, "caret", t["caret"].as_integer());
     ui::set(w, es, "mark", t["mark"].as_integer());
     ui::set(w, es, "bend", t["bend"].as_integer());
@@ -2110,8 +2266,10 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	var fresh = {};
 	bufs = fresh;
     }
+    long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
+				// View: the source View over its document
     bufs[] = { "doc": nd, "path": path, "caret": 0,
-	       "mark": -1, "bend": -1 };
+	       "mark": -1, "bend": -1, "view": vid };
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -2133,9 +2291,10 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	var seed = {};
 	var op;
 	ui::get(op, w, olddoc, "path");
+	long lv = ensure_focused_view(w, es, olddoc);	// the live View too
 	seed[] = { "doc": olddoc, "path": op,
 		   "caret": es_int(w, es, "caret", 0),
-		   "mark": -1, "bend": -1 };
+		   "mark": -1, "bend": -1, "view": lv };
 	ui::set(w, es, "buffers", seed);
 	ui::set(w, es, "bufidx", 0);
 	ui::set(w, es, "adoc", olddoc);
@@ -3752,7 +3911,7 @@ bool save_as(long w, long es, long doc, const char *path0)
     var p = path0;			// ring discipline: own the text first
     if ( strlen(p.c_str()) == 0 )
 	return true;
-    ui::set(w, doc, "path", p);
+    doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     var bufs;
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
@@ -4211,48 +4370,52 @@ void build_choose(long w, long es, long doc, long option)
 	start_build(w, es, cmd.c_str());
 }
 
-// The c++ view applies when the BUFFER'S OWN language is C/C++ (by
-// extension — the app's document-kind rule): its render is source-shaped
-// (madc::emit "c++" echoes the retained source), and a madc-dialect
-// buffer has no C++ respelling yet (the named seat, design doc §3.2).
+// The c++ view applies when the BUFFER'S OWN kind is in the C or C++
+// family (doc_kind — stamped once at open from the file name, never
+// re-derived here): its render is source-shaped (madc::emit for madc::fkCPP
+// echoes the retained source), and a madc-dialect buffer has no C++
+// respelling yet (the named seat, design doc §3.2). A range test on the
+// one file-kind vocabulary, never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    var p;
-    ui::get(p, w, doc, "path");
-    const char *pc = p.c_str();
-    const char *dot = strrchr(pc, '.');
-    if ( dot == 0 )
-	return false;
-    var ext = format("{}", dot);
-    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx"
-	|| ext == ".h" || ext == ".hpp";
+    long k = doc_kind(w, doc);
+    return (k >= madc::fkC && k <= madc::fkC_LAST)
+	|| (k >= madc::fkCPP && k <= madc::fkCPP_LAST);
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
 // [-> c++ on a C/C++ buffer] -> original.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
+// The cycle REPLACES the focused View's representation in place (one View
+// per tab; its navigation stays the container's). A switch on the render
+// language's code, never its spelling.
 void cycle_view(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
+    var v;
+    bool up = view_row(v, w, es, focused_view(w, es))
+	   && v["kind"].as_integer() == viewCODE;
+    if ( !up )
     {
-	enter_view(w, es, doc, "mc11");
+	enter_lens(w, es, doc, madc::fkMC11);
 	return;
     }
-    if ( vw == "mc11" )
+    switch ( v["lang"].as_integer() )
     {
-	if ( !enter_view(w, es, doc, "c11") )
-	    exit_view(w, es, doc);
-	return;
+	case madc::fkMC11:
+	    if ( !enter_lens(w, es, doc, madc::fkC11) )
+		exit_lens(w, es, doc);
+	    return;
+	case madc::fkC11:
+	    if ( cxx_view_applies(w, es, doc) )
+	    {
+		if ( !enter_lens(w, es, doc, madc::fkCPP) )
+		    exit_lens(w, es, doc);
+		return;
+	    }
+	    break;
     }
-    if ( vw == "c11" && cxx_view_applies(w, es, doc) )
-    {
-	if ( !enter_view(w, es, doc, "c++") )
-	    exit_view(w, es, doc);
-	return;
-    }
-    exit_view(w, es, doc);
+    exit_lens(w, es, doc);
 }
 
 // ---- ^K Z: hand the terminal to a shell -------------------------------
@@ -4995,21 +5158,55 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
     return nrows;
 }
 
+// Compose the edit node of a View, by id: the node presents the View's TEXT
+// entity (its render buffer, or the subject's own buffer for stored text)
+// through the ONE shared edit-node composer; the caller's single hints RMW
+// attaches the lens data — never a second read-modify-write of the hints
+// (the measured 3 ms copies, 2026-09-07). A session with no View yet
+// composes the document itself: byte-identical.
+void compose_view_node(var &ed, long w, long es, long id, long doc,
+		       long caret)
+{
+    var v;
+    view_row(v, w, es, id);
+    compose_edit_node(ed, w, es, view_text_entity(v, doc), caret);
+}
+
+// The lens data a code View's edit node carries as hints: the render
+// language — its enumerator ("lang_code", what a client switches on) and
+// its name ("view", what a client shows) — the coordinate map, and the
+// View's own highlight spans. A source View adds nothing.
+void view_lens_hints(var &eh, long w, long es, var &v)
+{
+    long lang = v["lang"].as_integer();
+    eh["view"] = madc::file_kind_name(lang);
+    eh["lang_code"] = lang;
+    eh["map"] = v["map"];
+    var vhs;
+    view_spans(vhs, w, es, v);
+    if ( !vhs.is_null() && php::count(vhs) > 0 )
+	eh["spans"] = vhs;
+}
+
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
-    // The view seam at composition: the edit node presents the NAV
-    // target's text (the lens's get) and, while a view is up, carries the
-    // lens data — the view name and its coordinate map — as hints. The
-    // identity lens (no view) takes neither branch: byte-identical.
-    long nav = nav_doc(w, es, doc);
+    // The View seam at composition: the edit node presents the focused
+    // View's text (its render buffer while a lens is up) and, for a code
+    // View, carries the lens data — the render language and its
+    // coordinate map — as hints. The identity lens (a source View, or no
+    // View yet) takes neither branch: byte-identical.
+    long fv = focused_view(w, es);
+    var fvrow;
+    view_row(fvrow, w, es, fv);
+    long nav = view_text_entity(fvrow, doc);
     bool viewing = nav != doc;
 
     // The JOE screen model (IDE-9b): no heading banner — the path, the
     // modified/read-only badges, and the view name all render in the
     // status line's %n / %m / %R / %y seats.
     var ed;
-    compose_edit_node(ed, w, es, nav, caret);
+    compose_view_node(ed, w, es, fv, doc, caret);
     // ONE read-modify-write of the edit node's hints: every hint below
     // lands on this local and it is written back ONCE, after the region
     // block. A var assignment is a deep copy, and with the highlight
@@ -5018,27 +5215,15 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // (measured 2026-09-07).
     var eh = ed["hints"];
     if ( viewing )
-    {
-	var vw;
-	view_name(vw, w, es);
-	eh["view"] = vw;
-	var vm;
-	ui::get(vm, w, es, "vmap");
-	eh["map"] = vm;
-	// The lens's own highlight spans (enter_view lexed the emitted
-	// text onto the view buffer): the view renders in colour too.
-	var vhs;
-	ui::get(vhs, w, nav, "hspans");
-	if ( !vhs.is_null() && php::count(vhs) > 0 )
-	    eh["spans"] = vhs;
-    }
+	view_lens_hints(eh, w, es, fvrow);
     else
     {
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
 	// the hints — the document's stored-space rows, computed at
-	// (re)parse, just attached here (a view's rows live on its buffer).
+	// (re)parse, just attached here (a code View's rows live on its
+	// render buffer — view_spans is the one reader).
 	var hs;
-	ui::get(hs, w, es, "hspans");
+	view_spans(hs, w, es, fvrow);
 	if ( !hs.is_null() && php::count(hs) > 0 )
 	    eh["spans"] = hs;
     }
@@ -5055,7 +5240,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // handle; composition never runs the compiler.
     var fnctx = "";
     var vw_st;
-    if ( !view_name(vw_st, w, es) )
+    if ( !lens_name(vw_st, w, es) )
     {
 	long ph = es_int(w, doc, "phandle", 0);
 	if ( ph != 0 )
@@ -5594,6 +5779,8 @@ long IdeSession::open(const char *path0, bool ro)
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
     push_buffer_row(w, es, doc, p.c_str());
     ui::set(w, es, "bufidx", 0);
+    ui::set(w, es, "fview", buffer_view(w, es, 0));	// the focused
+				// container's View: the launch tab's
     // The project (owner rulings 2026-08-31): the launch file anchors the
     // implicit single-file project; a <base>.prj.json beside it IS the
     // project and loads back (announced on the status line).
