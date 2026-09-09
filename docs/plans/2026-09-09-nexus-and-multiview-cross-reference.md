@@ -1,6 +1,6 @@
 # The Nexus and Multi-View documents, cross-referenced with the settled design
 
-**Date:** 2026-09-09 · **Status:** REVIEW — read before the client-server step
+**Date:** 2026-09-09 · **Status:** REVIEWED + RULED (owner 2026-09-09: "yes, sounds good to me" — the six rulings in §5 stand as recommended; §5b adds a seventh requirement stated the same day)
 (owner request, 2026-09-09: "before we embark onto the client-server step,
 please read and cross reference with the two new markdown documents").
 
@@ -134,7 +134,7 @@ generalization plus the change-event stream, not a terminal-window feature.
 - **Federation, semantic pub/sub, cross-project dependency graphs** (Nexus
   §18–§24): the far end of the arc.
 
-## 5. Rulings this asks for (owner)
+## 5. Rulings (owner, 2026-09-09: all six accepted as recommended — KG Decisions `nexus_event_log_from_slice_one`, `nexus_native_records_when_no_external_owner`, `tui_panes_and_tabs_user_opened`, `vocabulary_nexus_session_client`, `debugger_profiler_track_after_nexus_axes`, `view_pairs_order`)
 
 1. **Event log from slice one?** Persist the session's verb + splice log,
    actor-stamped with a causal parent, as THE record that edit history, the
@@ -161,6 +161,31 @@ generalization plus the change-event stream, not a terminal-window feature.
    comparison (MAD C GEN-ASM beside gcc and clang: our own parity method as
    a feature, useful to us daily), then git-revision Views (the first madcdat
    adapter).
+
+## 5b. Emitted code views are indented and coloured (owner requirement, 2026-09-09)
+
+"All emitted code views should be subject to auto-indenting and colour syntax
+highlighting" — every emitted View: today's `^K A` lenses (MC11, C11, C++)
+and every future one (MIR, GEN-ASM, external assembly). Findings at the time
+of the ruling, so the slice starts from facts:
+
+- **Indentation.** `madc --emit=c11` and `--emit=mc11` emit FLUSH-LEFT text —
+  zero indentation and redundant parentheses (`if ((a > b)) {`,
+  `return (a - b);`, `(a += i);` from a five-line reducer). The lenses show
+  the emitted text as-is. The deepest layer is the EMITTER (`cir_emit_c` /
+  the MC11 renderer): indent by block depth and render operators
+  precedence-aware (gcc's own spelling) — ONE owner serving `--emit` on the
+  CLI and every lens; never a re-indenting shim in the IDE.
+- **Colour.** The composer attaches the session's highlight spans
+  "stored-space only (a view shows a render)": a lens buffer carries NO
+  spans, so the MC11 / C11 / C++ views render uncoloured in both faces. The
+  fix is the existing lexer-alone colour path (`lex_spans`, "colour at
+  load") run over the EMITTED text into the view buffer's own span rows; a
+  MIR or assembly View brings its own classifier as part of its provider.
+- **Priority.** Its own slice, EARLY — it is visible in the shipped v0.99.2
+  lenses — and independent of the View/container generalization (the
+  generalization inherits it: a View's provider yields text + spans).
+  KG Decision `emitted_views_indent_and_colour`.
 
 ## 6. What this changes about the client-server step
 
