@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v0.99.2] — 2026-09-09
+
+The owner's hands-on round on the polished local IDE — the last polish before
+the master GUI release: output streams into the Terminal with no keystroke,
+Build → Run with no overlay, dialogs close cleanly, resizable panel and sidebar.
+
 ### madcide GUI: the first hands-on round on the polished window (2026-09-08)
 
 - A program run from the window streams into the Terminal tab (and a build

@@ -1,6 +1,35 @@
 # Test Status
 
-> **Current (2026-09-08, the s168 P2–P4 merge wave — the local-IDE polish
+> **Current (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
+> five findings on the staged Windows / Mac sets, all fixed on `develop`:
+> a dialog's Close button closes it (the `@pane` cancel-by-name admitted in
+> the dispatcher's ACTION region), the Build menu carries every `^B` row as
+> a direct item (Build → Run with no overlay), the window's wait is the
+> cooperative scheduler's bounded wait (the `tick` host op +
+> `madcwebview_tick` on GTK / Cocoa / Win32 — a program's output streams
+> into the Terminal tab with no keystroke), a closed dialog leaves no
+> furniture in the panel (a re-used keyed element wipes its old kind), and
+> the panel / sidebar are resizable (splitters; double-click maximizes;
+> sizes remembered)):** FULL develop-set battery on 38a71163
+> (`tmp/logs/rb-20260909-003024.log`): fulltest rc=0 — every gate and the
+> warning ratchet — with JIT **1335 passed / 0 failed / 0 timed out / 9
+> skipped**, native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**,
+> headerless **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`,
+> +`madcide_run`: the Build dialog floats (`position: fixed`, not in the
+> panel), Close by click, Run → wait for the engine's `wake` events with NO
+> input → the Terminal holds the program's output and `[exit 7]`, the panel
+> holds no dialog remains; +`madcide_resize`: a 120 px splitter drag grows
+> the panel by ~120, a double-click maximizes it): **17/17 JIT, 17/17 EXE,
+> 17/17 OBJ**. release-win + `verify_pe_release` OK (234 units, subsystem
+> console=3 / `-mwindows`=2 as gcc; the Win32 tick arm compiled); wine64
+> **1276/0/0TO/68skip**; c-testsuite **220/220** (`tmp/logs/cts-s169.log`);
+> macOS cross release both arches (836 units each; the Cocoa tick arm
+> compiled), verify_macho OK both, package-macos rc=0. Release tier on the
+> pushed develop content (`lane_ledger.sh check --release` rc=0): libcxx
+> **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**; darwin-suite (gh run 34299462528) **arm64 1319/0/0TO/25skip, Intel 1320/0/0TO/24skip**;
+> genuine Windows 11 **1278/0/0TO/66skip**.
+>
+> **Previous (2026-09-08, the s168 P2–P4 merge wave — the local-IDE polish
 > for the master release on `feature/madcide-polish-panel-claude`: the list
 > overlays as dialogs, Open Project… + the project kind (the Windows
 > subsystem), the bottom panel with Problems / Output / Terminal, Run in the

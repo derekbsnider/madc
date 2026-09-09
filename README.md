@@ -214,55 +214,58 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.99.1** — the owner's first round with the
-desktop application, answered. Every bottom-line prompt (find, go to line,
-insert file, theme, tab width, the colon line, the project add) floats in
-the window as a QUICK INPUT whose text the core owns (Neovim's `ext_cmdline`
-shape: keys reach the prompt exactly as in the terminal, the page only draws
-it), and the quit question on a dirty buffer is a CONFIRM dialog whose
-Yes / No buttons post the modal scope's actions by name — the menu-bar rule.
-A click picks the window: every window's edit node carries its window index
-as a `tag` the pointer event echoes (the one answer when the `^K O` split
-shows one document twice), a press in another window's text activates it
-and places the caret, a press on its header activates it with the caret
-kept. The status bar, the window headers and the message line render as
-chrome (the proportional chrome font on their own surface, the name leading,
-caption labels, accent pills, a key cap, the active window's header marked).
-And "(^C aborts)" is true: a modal scope consults an action's key sequence,
-`@prompt ^c pcancel` is baked data. The terminal is byte-identical
-throughout. v0.99.0 (the S0–S5 chrome milestone: native menu bar, native
-file dialogs, status items, the window stack, mouse, the incremental web
-editor, event enums, five carrier fixes) is the release beneath it.
+The current release is **v0.99.2** — madcide is a desktop application on
+Linux, Windows and macOS. The IDE that IS the running compiler opens in a
+native window (`madcide file.mad --gui`) with the platform's own menu bar
+and file dialogs, editor tabs, a Problems / Output / Terminal panel,
+dialogs, a status bar as chrome, the JOE split as a window stack, the mouse,
+and the terminal's colour scheme; Build → Run runs the live parse forked
+with a console program on a real pseudo-terminal in the Terminal tab and a
+gui program in its own window, its output streaming as it happens; the
+panel and sidebar resize. ONE composer and ONE client loop serve both faces
+— the terminal is byte-identical. Underneath: `import name [as ns];` (C++20's
+`import` made whole — interface AND library, no platform spelling, JIT and
+native), `madc --capabilities=json`, the `ui::` web target the window is
+built on, and resource guards that default off. v0.99.2 itself is the
+owner's hands-on round on the polished window: output with no keystroke
+(the window's wait is the cooperative scheduler's wait), the Build menu's
+`^B` rows, a dialog's Close that closes and leaves nothing behind, and the
+resizable panes.
 
-Branch state: v0.99.1 is released on `develop` (2026-09-08; master holds
-v0.98.0 until the release-tier lanes — libc++, the darwin full suite on
-both mac runner arches, genuine Windows — re-run on this content for the
-promotion). v0.98.0's public binaries (Linux deb/rpm/tarball, Windows
-x86-64, macOS Apple Silicon + Intel) remain the latest published assets.
+Branch state: v0.99.2 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger the same day (every platform lane's
+FULL suite green on this content), with public binaries built by CI for
+Linux (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel),
+each shipping the platform webview library beside the binaries.
 
-Latest validated results (the v0.99.1 merge-wave battery, content ee19f0cf /
-0c6652c2):
+Latest validated results (the v0.99.2 battery, content 38a71163, and the
+release tier on the same content):
 
 - Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
   **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
   disk anywhere) **1301/0/0/43**
 - the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
-  split with both clicks, menu bar, the prompt dialogs): **12/12 JIT, 12/12 EXE, 12/12 OBJ**
+  split with both clicks, menu bar, the dialogs, the panel, Run into the
+  Terminal with no input, the resizable panel): **17/17 JIT, 17/17 EXE, 17/17 OBJ**
 - Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
-  (`verify_pe_release` OK, 234 units)
+  (`verify_pe_release` OK, 234 units); the FULL suite on genuine Windows 11
+  **1278/0/0TO/66skip**
 - c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
 - macOS cross release on both architectures: 836 units, Mach-O release
-  verifier and the exe/dylib gate green
-- release-tier lanes at v0.98.0 (re-run at the master promotion): libc++
-  flavor **1303/0/0TO/14skip**, the FULL suite on GitHub's mac runners
-  arm64 **1293/0/0TO/24skip** / Intel **1294/0/0TO/23skip**, genuine
-  Windows 11 **1253/0/0TO/64skip**
+  verifier and the exe/dylib gate green; the FULL suite on GitHub's mac
+  runners: arm64 **1319/0/0TO/25skip**, Intel **1320/0/0TO/24skip**
+- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.99.2](docs/release-notes/v0.99.2.md) — the owner's hands-on round
+  on the polished local IDE, the last polish before the master GUI release:
+  output streams into the Terminal with no keystroke (the window's wait is
+  the scheduler's wait), the Build menu's `^B` rows, a dialog's Close that
+  closes and leaves nothing behind, resizable panel and sidebar.
 - [v0.99.1](docs/release-notes/v0.99.1.md) — the owner's first round with
   the desktop application: the prompts as dialogs (quick input / confirm
   with buttons), a click picks the window, the status bar as chrome, and
@@ -284,12 +287,6 @@ Latest validated results (the v0.99.1 merge-wave battery, content ee19f0cf /
   profile data) + the carrier elegance arc (keyed literals, `rows[] =`
   append, literal expressions, live-kind subscripts); c-testsuite
   220/220 COMPLETE.
-- [v0.96.0](docs/release-notes/v0.96.0.md) — the variadic-class arc:
-  `bin/madc examples/embed_hello.cpp` compiles and RUNS; libmadc
-  embedding fixes; two forest-artifact fixes (ranked-ctor symbol
-  stamp, husk canonical-path re-include).
-- [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
-  darwin clang-lane conformance (override sweep) + the six assets.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 
