@@ -1891,6 +1891,11 @@ public:
     // madc's historical int layout (gcc without -fshort-enums: unfixed
     // enums are int-sized).
     DataDef *underlying = NULL;
+    // Was the base DECLARED (`enum E : short`)? [conv.prom]/4 promotes a
+    // fixed enum to its underlying type; an unfixed one promotes by its
+    // VALUE range ([conv.prom]/3), not by the computed base — the two
+    // readers (overload ranking) need to tell them apart.
+    bool fixed_base = false;
 
     // The tag's OWN enumerators, in DECLARATION order — the one live owner of
     // "which enumerators belong to this enum, and what are their values".
@@ -1920,6 +1925,7 @@ public:
     void set_underlying(DataDef *u)
     {
 	underlying = u;
+	fixed_base = (u != NULL);
 	if ( u && u->size )
 	{
 	    size = u->size;

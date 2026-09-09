@@ -4360,6 +4360,42 @@ static const DataDefENUM *as_enum_type(const DataDef *dd)
 	return (dd ? dd->as_enum_dd() : NULL);
 }
 
+// [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? A
+// fixed enum promotes to its underlying type and, when that type itself
+// promotes (narrower than int), to int as well — both are promotions. An
+// unfixed enum promotes to the first of int / unsigned int / long / unsigned
+// long that holds every enumerator — by its VALUE range, not by the computed
+// underlying type (the canon rule makes that unsigned for a non-negative
+// range, yet `enum { a, b }` promotes to int: g++ and clang++ pick f(int)
+// over f(long) for `f(a)`, tests/testenumnsoverload.mad). Every other
+// arithmetic parameter is a conversion; a pointer or function pointer is not
+// viable at all.
+static bool enum_promotes_to(const DataDefENUM *e, const DataDef *target)
+{
+	if (!e || !target || !target->is_numeric() || target->is_real()
+	    || target->is_pointer() || target->as_fptr_dd()
+	    || target->rawtype() == DataType::dtBOOL)
+		return false;
+	if (e->fixed_base && e->underlying) {
+		if (e->underlying->rawtype() == target->rawtype())
+			return true;
+		return e->underlying->size < ddINT.size
+		    && target->rawtype() == ddINT.rawtype();
+	}
+	int64_t lo = 0, hi = 0;
+	for (size_t i = 0; i < e->enumerators.size(); ++i) {
+		if (e->enumerators[i].second < lo) lo = e->enumerators[i].second;
+		if (e->enumerators[i].second > hi) hi = e->enumerators[i].second;
+	}
+	if (lo >= INT32_MIN && hi <= INT32_MAX)
+		return target->rawtype() == ddINT.rawtype();
+	if (lo >= 0 && hi <= (int64_t)UINT32_MAX)
+		return target->rawtype() == ddUINT32.rawtype();
+	if (lo >= 0)
+		return target->rawtype() == ddUINT64.rawtype();
+	return target->rawtype() == ddINT64.rawtype();
+}
+
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
 {
 	if (!a || !b) return false;
@@ -14204,19 +14240,27 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			return same_enum_type(a_enum, p_enum) ? 5 : -1;
 		if (p_enum)
 			return -1;
-		// Existing enum-to-integer ranking stays a standard conversion;
-		// unscoped-enum uses rely on this, and scoped enums still prefer
-		// their exact enum overload when one exists. A POINTER parameter
-		// is not that conversion: C++ has no enum -> pointer conversion
-		// (an enumerator is not a null pointer constant, [conv.ptr]).
-		// DataDefPTR::is_numeric() is true, so without this exclusion a
-		// scoped enumerator scored 4 against BOTH the carrier's
-		// operator==(const char*) row and its operator==(long long) row,
-		// tied, and the first-registered cstr row won: the enumerator
-		// was passed as a pointer (c2mir: "using integer without cast
-		// for pointer type parameter") and `v == E::z` answered false
-		// (tests/testvareqenum.mad).
-		return pdc->is_numeric() && !pdc->is_pointer() ? 4 : -1;
+		// An enum ARGUMENT against a non-enum parameter. A pointer or a
+		// FUNCTION-pointer parameter is not viable: C++ has no enum ->
+		// pointer conversion (an enumerator is not a null pointer
+		// constant, [conv.ptr]). DataDefPTR::is_numeric() and
+		// DataDefFPTR::is_numeric() are both true, so without this
+		// exclusion a scoped enumerator scored 4 against BOTH the
+		// carrier's operator==(const char*) row and its operator==(long
+		// long) row, tied, and the first-registered cstr row won
+		// (tests/testvareqenum.mad); and once a global enumerator
+		// carried its enum type (2026-09-09) `cout << name` tied the
+		// manipulator `operator<<(ostream& (*)(ostream&))` with
+		// operator<<(int) and, registered first, dereferenced the value
+		// as a function pointer (SIGSEGV, tests/testenumclass.mad).
+		if (!pdc->is_numeric() || pdc->is_pointer() || pdc->as_fptr_dd())
+			return -1;
+		// [conv.prom]: the enum's PROMOTED type ranks above every other
+		// arithmetic parameter, which is a conversion ([conv.integral],
+		// [conv.fpint], [conv.bool]) — g++/clang++ pick f(int) for an
+		// unfixed enum and f(unsigned char) / f(int) for a `: unsigned
+		// char` one over f(long) (tests/testenumnsoverload.mad).
+		return enum_promotes_to(a_enum, pdc) ? 4 : 3;
 	}
 	// A function-pointer PARAMETER. Function-to-pointer decay: a bare function
 	// argument binds it (`__stoa(&std::strtol, ...)`), discriminated by

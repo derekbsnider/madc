@@ -1,0 +1,13 @@
+open(level) -> 3
+open(name) -> 100
+var -> 2
+arith -> 4
+promote -> 20
+switch -> blue
+compare -> 1
+sizeof -> 1
+grade(red) -> 1
+g2(uiWEB) -> 1
+g3(uiWEB) -> 1
+g4(red) -> 2
+g5(red) -> 2

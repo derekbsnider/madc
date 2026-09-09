@@ -51255,8 +51255,16 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	}
 	else
 	{
-	    // register as a global constant variable (plain C enum)
-	    Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
+	    // register as a global constant variable. C: a plain int
+	    // constant (C11 6.7.2.2p3). C++: a TAGGED enum's enumerator has
+	    // its enumeration type once the closing brace is seen
+	    // ([dcl.enum]/5) — it binds an enum-typed parameter and picks the
+	    // enum overload (`ui::open(ui::WEB)` against {open(const char*),
+	    // open(level)}); an anonymous enum's enumerator stays int, as in
+	    // the class-scope branch above. Integral promotion still carries
+	    // it into arithmetic and int parameters.
+	    DataDef &enumerator_type = (enum_dd && !pgm.is_c_mode()) ? *enum_dd : ddINT;
+	    Variable *evar = pgm.addVariable(NULL, enumerator_type, name, 1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
 	    // v26 forest SAVE state: the constant has no TopDecl and no link
