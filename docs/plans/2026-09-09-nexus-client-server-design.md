@@ -186,10 +186,25 @@ pane panel bottom 25%  tabs   views problems output terminal   hidden
 A **client record** lives on the session:
 
 ```
-Client { id, kind (term|web|ws|mcp|api), name, colour, tier, layout,
-         focus (view id), viewport {rows, cols}, keys_generation,
-         pending_chord, facts {terminal, dialogs, panel}, last_seq }
+Client { id, level (uiLevel), transport (local|ws|api), name, colour, tier,
+         layout, focus (view id), viewport {rows, cols}, keys_generation,
+         pending_chord, flags {terminal, dialogs, panel, …}, last_seq }
 ```
+
+`level` is the ordered UI-level enum (RULED 2026-09-09, KG Decision
+`ui_level_enum_ordered_by_requirement`): `uiNONE < uiLINE < uiTUI < uiWEB <
+uiGUI < uiGFX2D < uiGFX3D` in `include/madc/bits/ui_enums`, escalating in
+requirement and platform specificity. `uiNONE` is a client with no
+rendered surface that still posts commands (an `api` / MCP seat, the
+headless gates); `uiLINE` the ex/edlin line mode; `uiTUI` the grid; `uiWEB`
+the webview page (local or over `ws`). The level is the rendering model; the
+devices and chrome a target offers (keyboard, pointer, touch, menu bar,
+dialogs, sixel) are feature FLAGS beside it. A target declares the level it
+serves — `ui::open(uiWEB)` replaces `ui::open("web")` — and the order has a
+meaning: the session composes for the highest level a client wants, every
+lower level ignores the hints it cannot show, and a target below the
+requested level refuses with the reason or serves the lower rendering by the
+program's choice, never silently.
 
 The loop becomes: for every client whose input or view changed since its
 last compose, `compose(client)` (that client's layout, that client's focus,
@@ -357,6 +372,7 @@ git adapter (the nexus axes slice).
 | Slice | Content | Gate |
 |---|---|---|
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
+| **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
 | **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; per-View caret/mark/scroll | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
 | **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
 | **V3 Clients + windows** | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` | `tests/gui/madcide_window2` (two windows, one edit seen in both); `check-one-anchor-owner.sh` |
@@ -373,6 +389,10 @@ window is a client") and gets ONE merge-wave battery when complete
 
 - Vocabulary in code and docs: `Nexus`, `Session`, `Client`, `View`,
   `Pane`, `Tab`, `Window`, `Layout`, `Provider`, `ChangeEvent`.
+- Every discriminator in this arc is an enum in `bits/ui_enums` (UI level,
+  transport, View representation, container kind, region, tab, tier); text
+  spellings exist only in the profile files and the wire JSON and convert at
+  load (`.claude/rules/enum-over-strings.md`, sharpened 2026-09-09).
 - Layout files: `profiles/*.layout`, the baked default an inline profile;
   the client's live layout persists per project beside the manifest as
   `<base>.prj.layout` (the window remembers its sizes today in

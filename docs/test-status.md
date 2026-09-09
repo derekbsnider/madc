@@ -1,6 +1,33 @@
 # Test Status
 
-> **Current (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
+> **Current (2026-09-09, s170 — slice V0 of the client-server arc: every
+> emitted code view is INDENTED and COLOURED. The emitter
+> (`src/cir_emit_c.cpp`) owns the layout — block-depth tabs, case labels
+> one level out, a control head's single-statement body on its own line,
+> the builder's `<labels>: 0;` carrier rendered as its labels — and renders
+> precedence-aware parentheses (C11 6.5 plus gcc's / clang's
+> `-Wparentheses` set and the `-(-x)` guard); the `^K A` lenses carry their
+> own highlight spans (the lexer over the emitted text). New reducer
+> `tests/testemitindent` (`--emit=c11`, 36 tab-literal expectation lines),
+> `testmadcide` pins `spans=1 indented=1` on the MC11 lens, new fulltest
+> gate `scripts/emit_layout_gate.sh` (gcc + clang `-Werror=parentheses`,
+> indentation shape, negative control)):** FULL develop-set battery on
+> 4d2687c4 (`tmp/logs/rb-20260909-042300.log`): fulltest rc=0 — every gate
+> and the warning ratchet — with JIT **1336 passed / 0 failed / 0 timed out
+> / 9 skipped**, native EXE **1276/0**, OBJ **1276/0** (the new reducer is
+> `exe_skip`: a render test), packed **1336/0/0/9**, headerless
+> **1302/0/0/43**. GUI stage under Xvfb: **17/17 JIT, 17/17 EXE, 17/17
+> OBJ**. release-win + `verify_pe_release` OK (234 units); wine64
+> **1277/0/0TO/68skip**; c-testsuite **220/220 gnu11** (`tmp/logs/cts-s170.log`); macOS cross
+> release both arches, verify_macho OK both, package-macos rc=0. Oracle for
+> the render change: `scripts/cir_fidelity.sh --all` (gcc asm of the
+> original vs the emitted C) — 1357 of 1358 verdicts identical to the
+> pre-change release binary; the one delta is the dev/release
+> implicit-prototype flavour (KG Gap
+> `implicit_libc_prototype_dev_vs_release_shape`), not the render. Release
+> tier unchanged since v0.99.2.
+>
+> **Previous (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
 > five findings on the staged Windows / Mac sets, all fixed on `develop`:
 > a dialog's Close button closes it (the `@pane` cancel-by-name admitted in
 > the dispatcher's ACTION region), the Build menu carries every `^B` row as
