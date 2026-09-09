@@ -19688,27 +19688,89 @@ std::string Program::peek_param_list_spelling()
 // Variable, or NULL when no candidate is viable. `zero_args` (optional,
 // index-aligned with argtypes) marks arguments that are integer literals of
 // value zero — C++ null-pointer constants ([conv.ptr]).
-// A plain concrete overload: no template machinery, no varargs — the
-// candidates whose tie the ranker may call AMBIGUOUS (a template set has its
-// own partial-ordering and instantiate-on-miss lanes).
+// A plain concrete overload — the candidates whose tie the ranker may call
+// AMBIGUOUS (a template set has its own partial-ordering and
+// instantiate-on-miss lanes) — is PROVEN by its entry's provenance: a LIVE
+// concrete declaration records its parameter spelling (parseFunction's
+// ns_overload_spelling); the placeholder and pre-existing-source seeds start
+// with '\x01'; a template-instantiation product carries the "\x01@<identity>"
+// suffix and its template_arg_names. A forest-RESTORED or a using-IMPORTED
+// member arrives with NO spelling (its provenance is not restored — KG Gap
+// forest_overload_entry_provenance_not_restored), so its tie is never called
+// ambiguous: two restored twins of ONE specialization (std::min over
+// size_type and over uint64_t, one C type) tied exactly and were refused
+// (forest_crosstu_gate [vector], stl_vector.h _S_max_size).
 static bool plain_concrete_overload(const Program::NamespaceFnOverload &e,
 				    FuncDef *fd)
 {
-    return e.param_spelling != "\x01fn-template-placeholder"
+    return !e.param_spelling.empty() && e.param_spelling[0] != '\x01'
+	&& e.param_spelling.find("\x01@") == std::string::npos
 	&& e.template_arg_names.empty() && fd && !fd->is_varargs
 	&& !fd->is_member_template && !fd->dependent_pattern
 	&& !fd->tsubst_source;
 }
 
+// PROOF that two parameter types are distinct — the ambiguity verdict may
+// fire only for a tie the scorer's ranks cannot break in C++'s favour, so a
+// type pair counts as distinct only when proven so by the scorer's own
+// identity rules: two scalars with different Program::proven_scalar_identity
+// (the rule that graded both EXACT — typedef-transparent, so `size_t` and
+// `unsigned long` are ONE type), two pointers over proven-distinct pointees,
+// two aggregates that fail denotes_same_type (the restore/live twin rule),
+// or two proven kinds that differ (a scalar against an aggregate or a
+// pointer). cv-qualification is stripped first: the scorer carries no cv
+// rank, and [over.ics.rank]/3 would break that tie, so `f(long&)` against
+// `f(const long&)` is never called ambiguous. Anything unproven — an enum,
+// a function pointer, an unresolvable spelling — is NOT distinct: the ranker
+// keeps its first-declared winner and refuses no valid call.
+static bool proven_distinct_types(const DataDef *a, const DataDef *b,
+				  int depth)
+{
+    if ( !a || !b || a == b || depth > 8 )
+	return false;
+    a = a->unqualified();
+    b = b->unqualified();
+    if ( !a || !b || a == b )
+	return false;
+    const DataDefPTR *pa = dynamic_cast<const DataDefPTR *>(a);
+    const DataDefPTR *pb = dynamic_cast<const DataDefPTR *>(b);
+    if ( pa && pb )
+	return proven_distinct_types(pa->base_type, pb->base_type, depth + 1);
+    if ( a->is_struct() && b->is_struct() )
+	return !const_cast<DataDef *>(a)->denotes_same_type(
+		    *const_cast<DataDef *>(b));
+    DataDef *sa = Program::proven_scalar_identity(a);
+    DataDef *sb = Program::proven_scalar_identity(b);
+    if ( sa && sb )
+	return sa != sb;
+    bool ka = sa || a->is_struct() || pa;
+    bool kb = sb || b->is_struct() || pb;
+    return ka && kb;
+}
+
 // The same function declared twice (a declaration and its definition, a
-// respelled typedef): identical parameter identities over the ranked arity.
-static bool same_parameter_identities(FuncDef *a, FuncDef *b, size_t n)
+// respelled typedef — `f(size_t)` / `f(unsigned long)` — a restored twin):
+// no parameter over the ranked arity is PROVEN distinct. A reference
+// parameter compares its referenced type, as the scorer strips it.
+static bool same_parameter_types(FuncDef *a, FuncDef *b, size_t n)
 {
     if ( !a || !b || a->parameters.size() != b->parameters.size() )
 	return false;
     for ( size_t i = 0; i < n && i < a->parameters.size(); i++ )
-	if ( a->parameters[i] != b->parameters[i] )
+    {
+	const DataDef *pa = a->parameters[i];
+	const DataDef *pb = b->parameters[i];
+	if ( a->is_ref_param(i) )
+	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pa) )
+		if ( r->base_type )
+		    pa = r->base_type;
+	if ( b->is_ref_param(i) )
+	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pb) )
+		if ( r->base_type )
+		    pb = r->base_type;
+	if ( proven_distinct_types(pa, pb, 0) )
 	    return false;
+    }
     return true;
 }
 
@@ -19821,7 +19883,9 @@ static Variable *rank_fn_overload_candidates(
 	    // ("call of overloaded ... is ambiguous"). Picking the
 	    // first-declared silently is how `take(enum)` against
 	    // {take(long), take(bool)} compiled here (tests/testoverloadambig).
-	    // A redeclaration (identical parameter identities) is ONE function.
+	    // A redeclaration or a twin (no parameter proven distinct) is ONE
+	    // function; the verdict needs BOTH entries' provenance (a
+	    // restored member has none — plain_concrete_overload).
 	    FuncDef *bfd = best_e && best_e->var
 			   ? dynamic_cast<FuncDef *>(best_e->var->type) : NULL;
 	    bool cand_plain = plain_concrete_overload(e, fd);
@@ -19833,7 +19897,7 @@ static Variable *rank_fn_overload_candidates(
 		tied = NULL;
 	    }
 	    else if ( cand_plain && best_plain
-		   && !same_parameter_identities(fd, bfd, argtypes.size()) )
+		   && !same_parameter_types(fd, bfd, argtypes.size()) )
 		tied = &e;
 	}
     }

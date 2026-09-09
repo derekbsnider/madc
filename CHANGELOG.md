@@ -107,8 +107,14 @@
   clang++ do. Before, the first-declared candidate compiled silently
   (`pr::take("k", cmdSAVE)` against `take(const char *, long)` /
   `take(const char *, bool)` picked the `long` overload). A non-template
-  still beats a template specialization on an equal total. Reducer:
-  `tests/testoverloadambig.mad` (`.expect_err`).
+  still beats a template specialization on an equal total. The verdict
+  rests on PROVEN facts only: both candidates live-declared concrete
+  overloads (a forest-restored or using-imported member carries no
+  provenance and never ties ambiguously) and their parameter types
+  proven distinct by the scorer's own identity (typedef-transparent,
+  cv stripped) — two restored twins of one `std::min` specialization
+  are one function. Reducer: `tests/testoverloadambig.mad`
+  (`.expect_err`); `forest_crosstu_gate` pins the twin case.
 - An anonymous function-pointer parameter in a function DEFINITION
   (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
   other unnamed parameter shape already was; c2mir refused the abstract

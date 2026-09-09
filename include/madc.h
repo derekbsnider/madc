@@ -3554,7 +3554,11 @@ public:
     // PLAIN concrete candidates tie for the best conversion total with
     // distinct parameter types — the call is ambiguous ([over.match.best];
     // g++ and clang++ reject it); the returned winner is then only the
-    // first-declared, and the caller that reports must not compile it.
+    // first-declared, and the caller that reports must not compile it. Only
+    // a LIVE-declared member carries the provenance the verdict needs — a
+    // forest-restored or using-imported member (no spelling) never ties
+    // ambiguously — and "distinct" is the scorer's own type identity
+    // (typedef-transparent, cv stripped), never object identity.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
