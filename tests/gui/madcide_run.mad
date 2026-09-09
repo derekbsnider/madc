@@ -39,7 +39,8 @@ void probe_terminal(long t)
 	"var tx=e?e.textContent:'';"
 	"window.madc(JSON.stringify({kind:'snapshot',text:'terminal present='+(e?1:0)"
 	"+' has-output='+(tx.indexOf('run-output-42')>=0?1:0)+' has-exit='+(tx.indexOf('[exit 7]')>=0?1:0)"
-	"+' dialog='+(document.querySelector('.node.dialog')?1:0)}));})()");
+	"+' dialog='+(document.querySelector('.node.dialog')?1:0)"
+	"+' panel-dlg-remains='+(document.querySelector('.slot[data-slot=\"panel\"] .dlg-title,.slot[data-slot=\"panel\"] .dlg-list,.slot[data-slot=\"panel\"] .dlg-buttons')?1:0)}));})()");
 }
 
 int main()

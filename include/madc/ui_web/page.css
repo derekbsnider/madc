@@ -122,12 +122,27 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .slot:empty { display: none; }
 .workbench > .slot[data-slot="rail"]      { grid-area: rail; background: #22252f; }
 .workbench > .slot[data-slot="sidebar"]   { grid-area: sidebar; min-width: 12em;
+                                            width: var(--sidebar-w, auto);
                                             border-right: 1px solid #2d3448;
                                             overflow: auto; }
 .workbench > .slot[data-slot="editor"]    { grid-area: editor; overflow: hidden; }
-.workbench > .slot[data-slot="panel"]     { grid-area: panel; max-height: 40vh;
+.workbench > .slot[data-slot="panel"]     { grid-area: panel;
+                                            height: var(--panel-h, auto);
+                                            max-height: var(--panel-h, 40vh);
                                             border-top: 1px solid #2d3448;
                                             overflow: auto; }
+/* Resizable panes (madcide polish): a splitter is a grid sibling laid over
+   its slot's edge — the panel's top edge, the sidebar's right edge — shown
+   only while the slot holds something; dragging sets --panel-h /
+   --sidebar-w on the workbench, a double-click on the panel's maximizes. */
+.workbench > .splitter { display: none; z-index: 5; background: transparent; }
+.workbench > .splitter:hover, .workbench.resizing > .splitter { background: var(--accent, #9fc2ff); opacity: 0.5; }
+.workbench:has(> .slot[data-slot="panel"]:not(:empty)) > .splitter[data-for="panel"] {
+  display: block; grid-area: panel; align-self: start; height: 5px; margin-top: -2px; cursor: row-resize; }
+.workbench:has(> .slot[data-slot="sidebar"]:not(:empty)) > .splitter[data-for="sidebar"] {
+  display: block; grid-area: sidebar; justify-self: end; width: 5px; margin-right: -2px; cursor: col-resize; }
+.workbench.resizing { user-select: none; }
+.workbench.resizing, .workbench.resizing * { cursor: inherit; }
 .workbench > .slot[data-slot="statusbar"] { grid-area: statusbar; }
 .workbench > .slot[data-slot="foot"]      { grid-area: foot; }
 /* The window stack: each window's header (its status line) separates it

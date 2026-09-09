@@ -19,6 +19,12 @@
 - A chrome dialog's Close button closes it: the `@pane` cancel posted by
   name reached the wrong dispatcher region and came back as an unknown
   action.
+- Closing a dialog no longer leaves its title, rows and buttons inside the
+  bottom panel: the page re-uses a node's element when the tree shifts into
+  its position, and a kind change now clears the old kind's furniture first.
+- The bottom panel and the sidebar are resizable: drag the splitter over the
+  panel's top edge (or the sidebar's right edge); a double-click on the
+  panel's splitter maximizes it and back; sizes are remembered per window.
 
 ### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
 

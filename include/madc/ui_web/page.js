@@ -54,6 +54,76 @@
       function (c) { return c.classList.contains('node'); });
     for (var i = 0; i < direct.length; i++) foot.appendChild(direct[i]);
     if (direct.length) placed.set(foot, (placed.get(foot) || 0) + direct.length);
+    splitter(container, 'panel', 'panel-h', true);
+    splitter(container, 'sidebar', 'sidebar-w', false);
+  }
+
+  // ---- resizable panes (madcide polish, owner 2026-09-08) -----------------
+  // A SPLITTER per resizable slot: a grid sibling laid over the slot's edge
+  // (the panel's top, the sidebar's right) — not a child of the slot, so
+  // node placement by index and the empty-slot rule are untouched; CSS
+  // shows it only while its slot holds something. Dragging sets the
+  // workbench's --panel-h / --sidebar-w (the slot reads them), clamped to
+  // the workbench; a double-click on the panel's splitter toggles the
+  // maximized panel (most of the height) and back. Sizes are remembered
+  // per window in localStorage (a per-viewer convenience: absent or
+  // blocked storage leaves the defaults). The press never reaches the
+  // page's pointer path (a splitter is chrome, not a node).
+  function stored(key) {
+    try { return window.localStorage.getItem('madc.' + key); } catch (e) { return null; }
+  }
+  function store(key, value) {
+    try { window.localStorage.setItem('madc.' + key, value); } catch (e) { /* no storage here */ }
+  }
+  function splitter(wb, slotName, varName, horizontal) {
+    var sp = document.createElement('div');
+    sp.className = 'splitter';
+    sp.dataset['for'] = slotName;
+    wb.appendChild(sp);
+    var saved = stored(varName);
+    if (saved) wb.style.setProperty('--' + varName, saved);
+    var dragging = null;
+    function size(e) {
+      var r = wb.getBoundingClientRect();
+      var v = horizontal ? (r.bottom - e.clientY - dragging.foot) : (e.clientX - r.left - dragging.rail);
+      var lim = horizontal ? r.height : r.width;
+      v = Math.max(48, Math.min(lim * 0.9, v));
+      wb.style.setProperty('--' + varName, Math.round(v) + 'px');
+    }
+    sp.addEventListener('mousedown', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var slot = slotOf(wb, slotName).getBoundingClientRect();
+      var r = wb.getBoundingClientRect();
+      // What sits below the panel (status bar, foot) / left of the sidebar (the rail).
+      dragging = { foot: r.bottom - slot.bottom, rail: slot.left - r.left };
+      wb.classList.add('resizing');
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      size(e);
+    });
+    document.addEventListener('mouseup', function (e) {
+      if (!dragging) return;
+      size(e);
+      dragging = null;
+      wb.classList.remove('resizing');
+      store(varName, wb.style.getPropertyValue('--' + varName));
+    });
+    if (horizontal) {
+      sp.addEventListener('dblclick', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var cur = wb.style.getPropertyValue('--' + varName);
+        if (wb.classList.contains('panel-max')) {
+          wb.classList.remove('panel-max');
+          wb.style.setProperty('--' + varName, wb._panelBefore || '');
+        } else {
+          wb._panelBefore = cur;
+          wb.classList.add('panel-max');
+          wb.style.setProperty('--' + varName, Math.round(wb.getBoundingClientRect().height * 0.85) + 'px');
+        }
+        store(varName, wb.style.getPropertyValue('--' + varName));
+      });
+    }
   }
 
   // A slot holding more than one edit node is a STACK of windows: the
@@ -90,6 +160,23 @@
     }
     el.className = 'node ' + op['class'] + (op.focus ? ' focus' : '') +
                    (op.popup ? ' popup' : '') + (op.terminal ? ' terminal' : '');
+    // A key re-used for a different KIND of node — keys are tree paths, so
+    // when a dialog closes the panel group shifts into its key and inherits
+    // its element. The old kind's furniture (a dialog's title bar, option
+    // rows and buttons; a strip; a content node's text) is not a keyed
+    // child prune() would remove, and a structural kind (group) draws
+    // nothing of its own, so the Build dialog's remains sat inside the
+    // panel (owner hands-on 2026-09-08). Drop every non-node child before
+    // this kind draws; keyed children are re-placed by their own ops.
+    if (el._cls !== undefined && el._cls !== op['class']) {
+      for (var cn = el.lastChild; cn; ) {
+        var prev = cn.previousSibling;
+        if (!(cn.nodeType === 1 && cn.dataset && cn.dataset.key !== undefined)) el.removeChild(cn);
+        cn = prev;
+      }
+      el._strip = null;
+    }
+    el._cls = op['class'];
     // A tab STRIP (madcide polish P3a): `tabs` as an array is the strip a
     // group carries as data — drawn as the group's first element, above the
     // children the composer docked into it; a tab click posts the tab's

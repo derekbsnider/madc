@@ -106,7 +106,13 @@ The window arranges the editor with the pieces an IDE user expects:
   Switch to Buffer… does the same by name).
 - **The bottom panel** (View → Toggle Panel) with **Problems**, **Output**
   and **Terminal** tabs; View → Problems / Output / Terminal show it on
-  that tab.
+  that tab. Drag the splitter over its top edge to resize it (the sidebar's
+  right edge likewise); a double-click on the panel's splitter maximizes it
+  and back; the window remembers the sizes.
+- **The Build menu** lists every `^B` row directly (Check, Build, Run, Run
+  native, Stop — the project's rows and a manifest's own commands when one
+  is open); Build → Run runs with no overlay. `Build…` keeps the palette
+  for the keyboard.
 - **Dialogs** — Build, Project, Options, Modes and Help are titled dialogs
   with the rows as pick targets and buttons named after what the pane's
   keys do (Open / Run / Change / Select, Close); a click outside closes

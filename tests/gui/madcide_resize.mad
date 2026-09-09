@@ -1,0 +1,137 @@
+// madcide polish (owner hands-on 2026-09-08): the bottom panel and the
+// sidebar are RESIZABLE in the window — a splitter over the panel's top edge
+// (a grid sibling, shown only while the panel holds something) drags the
+// height (the workbench's --panel-h, remembered per window), a double-click
+// maximizes it and back. The TUI is untouched (grid geometry is the page's).
+// Runs under Xvfb through remote_build gui.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render(IdeSession &S, long t, long w, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, w, tree);
+}
+
+// The splitter's presence and state, then the panel slot's height and the
+// workbench's height LAST (the caller prints the head and reads the numbers).
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var wb=document.querySelector('.node.group.workbench');"
+	"var p=wb?wb.querySelector('.slot[data-slot=\"panel\"]'):null;"
+	"var sp=wb?wb.querySelector('.splitter[data-for=\"panel\"]'):null;"
+	"var shown=sp?getComputedStyle(sp).display!=='none':false;"
+	"var h=p?Math.round(p.getBoundingClientRect().height):-1;"
+	"var wh=wb?Math.round(wb.getBoundingClientRect().height):-1;"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'splitter='+(sp?1:0)+' shown='+(shown?1:0)"
+	"+' max='+(wb&&wb.classList.contains('panel-max')?1:0)"
+	"+' var-set='+(wb&&wb.style.getPropertyValue('--panel-h')?1:0)"
+	"+' panel-h='+h+' wb-h='+wh}));})()");
+}
+
+// Drag the panel splitter UP by dy pixels (a taller panel): the page's real
+// mouse path — mousedown on the splitter, mousemove, mouseup on the document.
+void drag(long t, long dy)
+{
+    var js = format(
+	"(function(){{var sp=document.querySelector('.splitter[data-for=\"panel\"]');"
+	"var r=sp.getBoundingClientRect();var x=r.left+20,y=r.top+2;"
+	"sp.dispatchEvent(new MouseEvent('mousedown',{{bubbles:true,clientX:x,clientY:y}}));"
+	"document.dispatchEvent(new MouseEvent('mousemove',{{bubbles:true,clientX:x,clientY:y-{}}}));"
+	"document.dispatchEvent(new MouseEvent('mouseup',{{bubbles:true,clientX:x,clientY:y-{}}}));}})()",
+	dy, dy);
+    ui::eval_page(t, js.c_str());
+}
+
+int main()
+{
+    const char *path = "madc_ide_resize_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    S.panel(true);
+    println("RSZ open");
+    var ev;
+    int stage = 0;
+    long h0 = -1;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    // View -> Toggle Panel (the command by name), then the shape.
+	    var pe;
+	    pe["event"] = "action";
+	    pe["event_code"] = ui::event_kind::action;
+	    pe["action"] = "panel";
+	    pe["seq"] = "";
+	    S.apply_ide_event(doc, pe);
+	    render(S, t, w, doc);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    var txt = format("{}", ev["text"]);
+	    long at = txt.index(" panel-h=");
+	    var head = perl::substr(txt, 0, at);
+	    long h = php::intval(perl::substr(txt, at + 9, 6));
+	    long wat = txt.index(" wb-h=");
+	    long wh = php::intval(perl::substr(txt, wat + 6, 6));
+	    if ( stage == 1 )
+	    {
+		// Remember the height, then drag the splitter up 120 px.
+		h0 = h;
+		println("RSZ shown {}", head);
+		stage = 2;
+		drag(t, 120);
+		probe(t);
+	    }
+	    else if ( stage == 2 )
+	    {
+		println("RSZ dragged grew={} by~120={} {}", h > h0 ? 1 : 0,
+			(h - h0) >= 100 && (h - h0) <= 140 ? 1 : 0, head);
+		stage = 3;
+		// Double-click the splitter: the panel maximizes.
+		ui::eval_page(t,
+		    "document.querySelector('.splitter[data-for=\"panel\"]')"
+		    ".dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))");
+		probe(t);
+	    }
+	    else if ( stage == 3 )
+	    {
+		println("RSZ maximized most-of-height={} {}", h * 10 >= wh * 7 ? 1 : 0, head);
+		break;
+	    }
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, w, doc);
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    remove(path);
+    println("RSZ closed");
+    return 0;
+}

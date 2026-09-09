@@ -4,5 +4,5 @@ RUN event action paneclose
 RUN closed pane=''
 RUN started live=1 tab=terminal
 RUN ended wakes>=1=1
-RUN terminal present=1 has-output=1 has-exit=1 dialog=0
+RUN terminal present=1 has-output=1 has-exit=1 dialog=0 panel-dlg-remains=0
 RUN closed
