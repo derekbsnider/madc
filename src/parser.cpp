@@ -65129,8 +65129,14 @@ grabnt:
 		    pid = contextual_identifier_name(nt);
 		    nt = nextToken();
 		}
-		// else: anonymous function-pointer parameter `type (*)(params)`
-		// — prototypes don't bind names; nt should already hold ')'.
+		else
+		    // Anonymous function-pointer parameter `type (*)(params)`:
+		    // legal in a C++ DEFINITION as well as a prototype
+		    // ([dcl.fct]/11), and c2mir needs every parameter of a
+		    // definition NAMED ("parameter type without a name in
+		    // function definition") — the same synthesized name every
+		    // other abstract parameter shape takes. nt holds ')'.
+		    pid = "__anon_param_" + std::to_string(anon_param_index++);
 		// Array-of-fn-ptrs parameter: `int (*[4])(int)` (00209's f4)
 		// / `int (*name[4])(int)` — dims before the ')'. The param
 		// keeps the CArray-of-fnptr shape (the SAME DataDef a
