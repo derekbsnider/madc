@@ -133,10 +133,16 @@ scope, [dcl.enum]/5; the ranker grades an enum argument by [conv.prom]) and
 2b737b62 (the level API) — the two compiler defects the slice uncovered each
 in its own commit with a g++/clang++-oracled reducer; validated by the full
 JIT suite (1338/0/9 skipped), `fulltest` rc=0 and GUI 17/17 on every lane.
-b follows (this table's row as shipped). Found for c: `madcide_core.inc`
-still compares `r["severity"] == "error"` and synthesizes a row with a
-string severity — both convert to `severity_code` against
-`madc::diag_severity::error` with the command enum.
+b LANDED c0dac18c (this table's row as shipped). c as shipped:
+`madcide_enums.inc` carries `enum ide_cmd` (51 registry + 11 motion + 14
+modal + 9 vi + 16 row verbs + `cmdBUILDROW`) and the one table; `parse_keys`
+/ `load_menu` resolve and REFUSE at load; the session converts a name-only
+arrival once at `apply_ide_event`'s entry (the headless harness and a
+future API client speak names); `build-<n>` stays a name-carried argument
+under `cmdBUILDROW`. Deferred to d: `madcide_core.inc` still compares
+`r["severity"] == "error"` and synthesizes a row with a string severity —
+both convert to `severity_code` against `madc::diag_severity::error` with
+the discriminator enums.
 
 ## 4. Out of scope (named, not forgotten)
 

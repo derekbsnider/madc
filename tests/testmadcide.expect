@@ -2,7 +2,8 @@ joe: [^k s]=save [^k x]=savequit [^c]=discard
 pico: [^s]=save [^k]=blockdel
 joe-ide: [^p]=project [^f]=find [^n]=modes [^b]=build [^r]=refresh [^k u]=top [^_]=undo
 joe-project: ins=projadd del=projdel enter=projopen pico-ins=projadd
-scoped: y-override=pquit Y-cased=sh ins-as-written=act2 main-x=save prompt-enter=pcommit
+scoped: y-override=pcancel Y-cased=pyes ins-as-written=projadd main-x=save prompt-enter=pcommit
+refused: ok=0 err=line 2: unknown action 'svae'
 rescue: n=5 [^s]=save [^q]=quit [^x]=discard [^g]=help [^p]=profile
 validate: joe=1 printable-head=0
 check1: Check: clean.

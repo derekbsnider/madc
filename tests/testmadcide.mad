@@ -14,6 +14,26 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
+// The parsed key tables hold command CODES (V0.5c: enums, not strings); the
+// probes below print their NAMES through the one output converter.
+void nm(var &out, var &t, const char *seq)
+{
+    var c = t[seq];
+    if ( c.is_null() )
+	out = "";
+    else
+	cmd_name(out, c.as_integer());
+}
+void nm2(var &out, var &sc, const char *scope, const char *key)
+{
+    var s = sc[scope];
+    var c = s[key];
+    if ( c.is_null() )
+	out = "";
+    else
+	cmd_name(out, c.as_integer());
+}
+
 // The exact value objects ui::event produces: the names AND the enum codes
 // (event_code / key_code / phase_code) the session compares against.
 void ev_text(var &e, const char *t)
@@ -105,24 +125,57 @@ int main()
     php::file_get_contents(txt, "tools/madcide/profiles/joe.keys");
     var joe;
     var joesc;
-    parse_keys(joe, joesc, txt.c_str());
+    var perr;
+    parse_keys(joe, joesc, txt.c_str(), perr);
+    var p1;
+    nm(p1, joe, "^k s");
+    var p2;
+    nm(p2, joe, "^k x");
+    var p3;
+    nm(p3, joe, "^c");
     println("joe: [^k s]={} [^k x]={} [^c]={}",
-	    joe["^k s"], joe["^k x"], joe["^c"]);
+	    p1, p2, p3);
     php::file_get_contents(txt, "tools/madcide/profiles/pico.keys");
     var pico;
     var picosc;
-    parse_keys(pico, picosc, txt.c_str());
-    println("pico: [^s]={} [^k]={}", pico["^s"], pico["^k"]);
+    parse_keys(pico, picosc, txt.c_str(), perr);
+    var p4;
+    nm(p4, pico, "^s");
+    var p5;
+    nm(p5, pico, "^k");
+    println("pico: [^s]={} [^k]={}", p4, p5);
     // IDE-10a (owner ruling): the WordStar diamond's control spellings are
     // reclaimed for IDE verbs; ^K U / ^_ pin that chords + edits survived.
+    var p6;
+    nm(p6, joe, "^p");
+    var p7;
+    nm(p7, joe, "^f");
+    var p8;
+    nm(p8, joe, "^n");
+    var p9;
+    nm(p9, joe, "^b");
+    var p10;
+    nm(p10, joe, "^r");
+    var p11;
+    nm(p11, joe, "^k u");
+    var p12;
+    nm(p12, joe, "^_");
     println("joe-ide: [^p]={} [^f]={} [^n]={} [^b]={} [^r]={} [^k u]={} [^_]={}",
-	    joe["^p"], joe["^f"], joe["^n"], joe["^b"], joe["^r"],
-	    joe["^k u"], joe["^_"]);
+	    p6, p7, p8, p9, p10,
+	    p11, p12);
     // The @project window keys ship in BOTH profiles as DATA (owner law:
     // pane/modal keys are never hardwired), through the ONE parse_keys.
+    var p13;
+    nm2(p13, joesc, "project", "ins");
+    var p14;
+    nm2(p14, joesc, "project", "del");
+    var p15;
+    nm2(p15, joesc, "project", "enter");
+    var p16;
+    nm2(p16, picosc, "project", "ins");
     println("joe-project: ins={} del={} enter={} pico-ins={}",
-	    joesc["project"]["ins"], joesc["project"]["del"],
-	    joesc["project"]["enter"], picosc["project"]["ins"]);
+	    p13, p14,
+	    p15, p16);
     // The scoped parser's rules: a profile's @scope line OVERRIDES the
     // baked default per (scope, key) — later lines win; scoped keys are
     // stored AS WRITTEN (a lowercase spelling matches either case at
@@ -133,21 +186,42 @@ int main()
     var st;
     var ssc;
     parse_keys(st, ssc,
-	       format("{}\n@confirm y pquit\n@confirm Y sh\n@myscope INS act2\nx save\n",
-		      modal_default_keys_text()));
+	       format("{}\n@confirm y pcancel\n@confirm Y pyes\n@myscope INS projadd\nx save\n",
+		      modal_default_keys_text()), perr);
+    var sy, sY, sins, sx, spe;
+    nm2(sy, ssc, "confirm", "y");
+    nm2(sY, ssc, "confirm", "Y");
+    nm2(sins, ssc, "myscope", "INS");
+    nm(sx, st, "x");
+    nm2(spe, ssc, "prompt", "enter");
     println("scoped: y-override={} Y-cased={} ins-as-written={} main-x={} prompt-enter={}",
-	    ssc["confirm"]["y"], ssc["confirm"]["Y"], ssc["myscope"]["INS"],
-	    st["x"], ssc["prompt"]["enter"]);
+	    sy, sY, sins, sx, spe);
+    // A misspelt action REFUSES the whole text at load, naming its line
+    // (V0.5c, enums not strings): nothing binds, the previous tables stand.
+    var bad;
+    var badsc;
+    long okbad = parse_keys(bad, badsc, "^k s save\n^k q svae\n", perr) ? 1 : 0;
+    println("refused: ok={} err={}", okbad, perr);
     // The baked-in RESCUE set (no profile file loads) is the same data
     // shape: an inline profile string through parse_keys. Binding needs a
     // TUI; headless pins the table content and the tiny exit/save/help
     // vocabulary (owner directive 2026-08-29).
     var rescue;
     var rescuesc;
-    parse_keys(rescue, rescuesc, rescue_keys_text());
+    parse_keys(rescue, rescuesc, rescue_keys_text(), perr);
+    var p17;
+    nm(p17, rescue, "^s");
+    var p18;
+    nm(p18, rescue, "^q");
+    var p19;
+    nm(p19, rescue, "^x");
+    var p20;
+    nm(p20, rescue, "^g");
+    var p21;
+    nm(p21, rescue, "^p");
     println("rescue: n={} [^s]={} [^q]={} [^x]={} [^g]={} [^p]={}",
-	    php::count(rescue), rescue["^s"], rescue["^q"], rescue["^x"],
-	    rescue["^g"], rescue["^p"]);
+	    php::count(rescue), p17, p18, p19,
+	    p20, p21);
     // Handle-free table validation (the gateway seam): the session layer
     // validates a profile WITHOUT a tui — same rules as binding (a
     // printable-headed sequence would swallow typing), SILENT verdict
@@ -436,23 +510,23 @@ int main()
 	c1["name"] = "Echo";
 	c1["cmd"] = "echo hello-{base}";
 	c1["mode"] = "capture";
-	c1["act"] = "bld-run-cmd";
+	c1["act"] = cmdBLD_RUN_CMD;	// the row verb is a CODE (V0.5c)
 	brws.push(c1);
 	var c2;
 	c2["name"] = "Sleepy";
 	c2["cmd"] = "sleep 5";
 	c2["mode"] = "capture";
-	c2["act"] = "bld-run-cmd";
+	c2["act"] = cmdBLD_RUN_CMD;
 	brws.push(c2);
 	var c3;
 	c3["name"] = "Run";
 	c3["cmd"] = "echo never";
 	c3["mode"] = "terminal";
-	c3["act"] = "bld-run-cmd";
+	c3["act"] = cmdBLD_RUN_CMD;
 	brws.push(c3);
 	var c4;
 	c4["name"] = "Stop";
-	c4["act"] = "bld-stop";
+	c4["act"] = cmdBLD_STOP;
 	brws.push(c4);
 	ui::set(w, es, "buildcmds", brws);
     }
@@ -909,10 +983,28 @@ int main()
     // O/N/P/G/T + ^K 0/^K 1 for tw0/tw1); outline moved to ^K I, the
     // AST views to ^K A; ^K P no longer spells profile (it and theme
     // live on the ^T Options rows).
+    var p22;
+    nm(p22, joe, "^k o");
+    var p23;
+    nm(p23, joe, "^k n");
+    var p24;
+    nm(p24, joe, "^k p");
+    var p25;
+    nm(p25, joe, "^k g");
+    var p26;
+    nm(p26, joe, "^k t");
+    var p27;
+    nm(p27, joe, "^k 0");
+    var p28;
+    nm(p28, joe, "^k 1");
+    var p29;
+    nm(p29, joe, "^k i");
+    var p30;
+    nm(p30, joe, "^k a");
     println("win-keys: o={} n={} p={} g={} t={} k0={} k1={} i={} a={}",
-	    joe["^k o"], joe["^k n"], joe["^k p"], joe["^k g"],
-	    joe["^k t"], joe["^k 0"], joe["^k 1"], joe["^k i"],
-	    joe["^k a"]);
+	    p22, p23, p24, p25,
+	    p26, p27, p28, p29,
+	    p30);
     long wdoc = active_doc(w, es, doc);
     long wsz = ui::text_size(w, wdoc);
     ui::set(w, es, "caret", 3);
@@ -1411,8 +1503,10 @@ int main()
     long kgen2 = S.keys_generation();
     var kt;
     S.key_table(kt);
+    var ktsave;
+    nm(ktsave, kt, "^k s");		// the table holds the CODE; print its name
     println("seam-keys: moved={} joe-save={}", kgen2 > kgen1 ? 1 : 0,
-	    kt["^k s"]);
+	    ktsave);
     // The viewport is a client-pushed fact: 7 rows leave no room for a
     // second window (window_min_rows + status each).
     S.viewport(80, 7);

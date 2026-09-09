@@ -37,6 +37,26 @@
   against the enumerator, never the text.
 - Sub-slice b of the conversion (`docs/plans/2026-09-09-v05-enums-not-strings.md`).
 
+### madcide: the command vocabulary is an enum (2026-09-09)
+
+- `tools/madcide/madcide_enums.inc`: `enum ide_cmd` — every verb the IDE
+  dispatches (the registry commands, the key-named motions, the modal-scope
+  actions, the vi grammar, the pane-row verbs) — with the ONE name ↔ code
+  table beside it. A `.keys` profile's action names and a `.menu` file's
+  command ids resolve to codes when the file LOADS; an unknown word refuses
+  the file naming its line (`Profile 'x' line 12: unknown action 'svae'`) —
+  a misspelt binding is a load-time error, never a dead key. The dispatcher
+  is a `switch` on the code; the modal handlers, the vi grammar and the build
+  palette compare codes. Controls a window posts by name (menu items, tabs,
+  buttons, dialog dismissals, pane rows) carry their code, and a command
+  that still arrives by name converts once at the session's entry.
+- `scripts/check-madcide-command-registry.sh` re-anchored on the enum:
+  profiles ⊆ table, registry ⊆ table, table ≡ enum, every enumerator
+  dispatched, every spelled `cmd…` an enumerator; four negative controls.
+- Sub-slice c of the conversion; the composed trees and every `.expect` are
+  byte-identical (testmadcide's parser probes print through the name
+  converter and gain the refusal probe).
+
 ### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
 
 - In C++ mode an enumerator of a TAGGED enum at namespace or global scope
