@@ -462,7 +462,9 @@ git adapter (the nexus axes slice).
   bind (the registry), the same events the log records, plus queries (the
   composed tree of a client, or raw projections a client declares it
   consumes — LSP's capability negotiation borrowed, as the gateway design
-  says). The MCP seat is an adapter over `api`; the LSP endpoint is a
+  says). RULED (owner 2026-09-09): the API is RICH by design — the composed
+  tree AND the raw projections are both offered, and the client chooses what
+  suits its needs, wants and capabilities (§6). The MCP seat is an adapter over `api`; the LSP endpoint is a
   second adapter (semanticTokens ← spans, publishDiagnostics ← diags rows,
   documentSymbol ← outline, hover ← `parse_enclosing`).
 - **Headless** = a session with zero windows and one or more `api` / `ws`
@@ -544,9 +546,14 @@ window is a client") and gets ONE merge-wave battery when complete
   persists exactly when the manifest does (the user or an admin creates the
   project; the log follows it); a crash loses a manifest-less remote
   session's record and the buffer's own file remains the truth.
-- Whether the `api` transport speaks the composed tree (trivial thin
-  clients) or raw projections only (gateway open question): recommendation
-  both, declared per client at connect.
+- RULED (owner 2026-09-09): the `api` transport offers BOTH — the composed
+  tree a window paints (a trivial thin client, a remote TUI) AND the raw
+  projections a tool consumes (text, spans, diagnostics rows, outline: the
+  MCP seat, the LSP adapter) — a RICH API the client chooses from to suit its
+  needs, wants and capabilities; a client declares at connect what it
+  consumes (LSP's capability negotiation) and nothing is composed for a
+  client that did not ask. Both are products of the same Views on one
+  session.
 - Entity identity across history (rename/move survival) — named hard
   problem, unchanged.
 
