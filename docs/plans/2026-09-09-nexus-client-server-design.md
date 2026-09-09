@@ -519,8 +519,10 @@ anything to serve); V7 (external providers) ships later on its own.
 Review of this document complete (owner, 2026-09-09): §0 vocabulary, §2.1
 the file-kind vocabulary, §2.2 layout flexibility + nesting, §6 the first
 three questions, and this boundary are ruled; §6's fourth (entity
-identity across history) stays the named hard problem. V1 may begin once
-the V0.5 merge wave is pushed.
+identity across history) stays the named hard problem. V0.5 landed
+2026-09-09 (its battery ran in error — the seam is V5, per the owner; a
+slice never gets the battery, `testing-fulltest.md`); V1 begins on the arc's
+feature branch, and the next battery is the V5 seam.
 
 ## 5. Standing defaults (owner veto welcome)
 
