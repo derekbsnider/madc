@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### madcide: the `ui::NONE` client — `madcide <file> -c "<command> [arg]"` (2026-09-09)
+
+- **One command, the projection, a verdict** (client-server design §2.3b,
+  slice V1.5): `madcide <file> -c "<command> [arg]"` opens the session with no
+  surface at all, posts ONE registry command (the name converts once at the
+  command-line boundary through the registry's table; an unknown name
+  refuses with exit 2 before a session opens), typesets the composed tree
+  through the level-0 renderer onto stdout — the headless harness's shape —
+  and exits with the verdict: 0 clean; 1 the file unreadable or ERROR rows
+  in the problems projection (`-c check` on a broken file); 2 the line
+  refused. The argument is what the prompt the command opens would have been
+  typed (`gotoline 3`, `find add`, `colon w`), committed by code.
+- `IdeSession::post(doc, code)` — one command by code through the one
+  dispatcher (the vi grammar's `vi_exec` rides it); `IdeSession::command(doc,
+  code, arg, cont)` — a command with its argument, the primitive the `-c`
+  line, the `:` line (V2.5) and the api seat (V6) share;
+  `IdeSession::error_count()` — the verdict query. New client file
+  `tools/madcide/madcide_once.inc`; `check-madcide-enums.sh` and
+  `check-madcide-seam.sh` scan it. `ui::open(ui::NONE)` keeps refusing: the
+  level has no frontend by design (a client there drives the session).
+- Gate: `tests/testmadcide_cli` (the `-c` output pinned against the session
+  driven directly for the same command, the verdicts, the argument feed);
+  `testmadcide` byte-identical.
+
 ### Views — the lens is a View row; the ONE file-kind vocabulary (2026-09-09)
 
 - madcide's code lens (`^K A`) is a **View** (client-server design §2.1,

@@ -1,0 +1,79 @@
+// The ui::NONE client gate (client-server design 2026-09-09 §2.3b, slice
+// V1.5): `madcide <file> -c "<command> [arg]"` — one registry command
+// against the session, the projection to stdout, the verdict as the exit
+// status. The application under test is THE tool (tools/madcide, one
+// copy): run_once is the function main hands the -c line to. Pins:
+//   1. the -c output IS the headless harness's projection for the same
+//      command (IdeSession driven directly, typeset by ui::render_tree);
+//   2. the verdict: 0 clean, 1 when the problems projection carries an
+//      error after the command (the check's verdict), 2 for a line the
+//      client refuses — an unknown command (before a session opens; stderr
+//      says why) or an argument for a command that opened no prompt;
+//   3. the argument feeds the prompt the command opens (gotoline, find)
+//      and commits it by CODE — the same commit a key reaches.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_once.inc"
+
+int main()
+{
+    const char *path = "madc_ide_cli.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b) { return a + b; }\nlong twice(long x) { return add(x, x); }\nlong bad() { return nosuch; }\n");
+
+    // 1 + 2. -c check on a file with one error: the diagnostics projection,
+    //        verdict 1.
+    var out;
+    long rc = run_once(out, path, false, "check");
+    print("--- -c check ---\n{}--- end rc={} ---\n", out, rc);
+
+    // The same command through the session directly — the headless
+    // harness's shape — typesets the SAME text.
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+    bool cont = true;
+    bool ran = S.command(S.active(doc), cmdCHECK, "", cont);
+    var tree;
+    S.compose_ide_tree(tree, S.active(doc));
+    var ref;
+    ui::render_tree(ref, S.world(), tree);
+    long errs = S.error_count();
+    S.close();
+    println("cli-pin: identical={} ran={} cont={} errors={}",
+	    out == ref ? 1 : 0, ran ? 1 : 0, cont ? 1 : 0, errs);
+
+    // The outline: a projection that runs no check — verdict 0 on the same
+    // file (the verdict is the command's, not the file's).
+    rc = run_once(out, path, false, "outline");
+    print("--- -c outline ---\n{}--- end rc={} ---\n", out, rc);
+
+    // 3. An argument is what the prompt would have been typed: gotoline 3
+    //    lands the caret on line 3 (the status line's Row seat); find add
+    //    lands on the first "add" (line 1, column 6).
+    rc = run_once(out, path, false, "gotoline 3");
+    print("--- -c gotoline 3 ---\n{}--- end rc={} ---\n", out, rc);
+    rc = run_once(out, path, false, "find add");
+    print("--- -c find add ---\n{}--- end rc={} ---\n", out, rc);
+
+    // 2. The refusals: an unknown command (2, nothing on stdout, no session);
+    //    an argument for a command that opened no prompt (2, the status
+    //    line says so); a command that needs a terminal this client has not
+    //    (the session's own refusal on the status line; the verdict stays
+    //    the projection's).
+    rc = run_once(out, path, false, "chekc");
+    println("cli-unknown: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    rc = run_once(out, path, false, "outline now");
+    println("cli-noarg: rc={} said={}", rc, out.index("'outline' takes no argument.") >= 0 ? 1 : 0);
+    rc = run_once(out, path, false, "shell");
+    println("cli-noterm: rc={} said={}", rc, out.index("No terminal to suspend.") >= 0 ? 1 : 0);
+    // A quit is a command too: the session ends, the verdict is 0.
+    rc = run_once(out, path, false, "quit");
+    println("cli-quit: rc={}", rc);
+    // A one-shot on a path nobody can read: 1, the reason on stderr.
+    rc = run_once(out, "no/such/dir/madc_ide_cli_none.mad", false, "check");
+    println("cli-noread: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    remove(path);
+    return 0;
+}

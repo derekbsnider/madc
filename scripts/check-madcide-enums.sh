@@ -4,7 +4,8 @@
 # paneltab, pmode, vimode) and the kinds that ride a request are integers
 # from tools/madcide/madcide_enums.inc; a NAME appears only where text
 # leaves the program, through that file's *_name() converters. Three
-# rules over tools/madcide/madcide_core.inc + madcide_client.inc:
+# rules over tools/madcide/madcide_core.inc + madcide_client.inc +
+# madcide_once.inc (the ui::NONE client):
 #   1. no string literal is written to a discriminator slot
 #      (`"pane", "x"` / `"paneltab", "x"` / `"pmode", "x"` / `"vimode", "x"`
 #      / `"dlgkind", "x"`);
@@ -24,6 +25,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="$ROOT/tools/madcide/madcide_core.inc"
 CLIENT="$ROOT/tools/madcide/madcide_client.inc"
+ONCE="$ROOT/tools/madcide/madcide_once.inc"
 ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
 
 # The name words: every `return "word";` inside the five name converters.
@@ -37,7 +39,7 @@ name_words()
 
 check()
 {
-	local core="$1" client="$2" enums="$3" label="$4"
+	local core="$1" client="$2" enums="$3" label="$4" once="$5"
 	local words alt bad rc=0
 	words=$(name_words "$enums")
 	if [ -z "$words" ]; then
@@ -46,28 +48,28 @@ check()
 		return 1
 	fi
 	alt=$(echo "$words" | paste -sd'|' -)
-	bad=$(grep -n -E 'ui::set\([a-z0-9]+, [a-z0-9]+, "(pane|paneltab|pmode|vimode|dlgkind|fview)", "' "$core" "$client")
+	bad=$(grep -n -E 'ui::set\([a-z0-9]+, [a-z0-9]+, "(pane|paneltab|pmode|vimode|dlgkind|fview)", "' "$core" "$client" "$once")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a string literal is written" \
 		     "to a discriminator slot:" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E "[!=]= \"($alt)\"" "$core" "$client")
+	bad=$(grep -n -E "[!=]= \"($alt)\"" "$core" "$client" "$once")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a compare against a" \
 		     "discriminator's name word (an enumerator belongs there):" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E 'rq = \{ "kind": "' "$core" "$client")
+	bad=$(grep -n -E 'rq = \{ "kind": "' "$core" "$client" "$once")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a request literal names its" \
 		     "kind as text:" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E '"(lang|generator)": "' "$core" "$client")
+	bad=$(grep -n -E '"(lang|generator)": "' "$core" "$client" "$once")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a View row carries its" \
 		     "representation as text (madc::fk* / ide_gen belong there):" >&2
@@ -77,35 +79,35 @@ check()
 	return $rc
 }
 
-if ! check "$CORE" "$CLIENT" "$ENUMS" "live"; then
+if ! check "$CORE" "$CLIENT" "$ENUMS" "live" "$ONCE"; then
 	exit 1
 fi
 
 # Negative controls: each rule must catch a synthetic drift.
 tmpcore=$(mktemp)
 awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tui::set(w, es, \"pane\", \"zz\");" }' "$CORE" > "$tmpcore"
-if check "$tmpcore" "$CLIENT" "$ENUMS" "control" 2>/dev/null; then
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a string written to a" \
 	     "slot went undetected (rule 1 went blind)." >&2
 	exit 1
 fi
 awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tif ( pane == \"outline\" ) return true;" }' "$CORE" > "$tmpcore"
-if check "$tmpcore" "$CLIENT" "$ENUMS" "control" 2>/dev/null; then
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a name-word compare" \
 	     "went undetected (rule 2 went blind)." >&2
 	exit 1
 fi
 awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tvar rq = { \"kind\": \"shell\", \"pause\": 0 };" }' "$CORE" > "$tmpcore"
-if check "$tmpcore" "$CLIENT" "$ENUMS" "control" 2>/dev/null; then
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a text request kind" \
 	     "went undetected (rule 3 went blind)." >&2
 	exit 1
 fi
 awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tvs[] = { \"id\": 1, \"lang\": \"mc11\", \"generator\": \"madc\" };" }' "$CORE" > "$tmpcore"
-if check "$tmpcore" "$CLIENT" "$ENUMS" "control" 2>/dev/null; then
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a View row's text" \
 	     "representation went undetected (rule 4 went blind)." >&2

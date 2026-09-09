@@ -79,6 +79,20 @@ class IdeSession
 	bool vi_exec(long doc, long code, long n);	// one command (its
 					// code), n times, through
 					// apply_ide_event
+	bool post(long doc, long code);	// ONE command by CODE through the
+					// one dispatcher (a client that
+					// speaks codes); false = quit
+	bool command(long doc, long code, const char *arg, bool &cont);
+					// a command WITH ITS ARGUMENT
+					// (the -c line, the api seat, a
+					// `:` verb): the argument is what
+					// the prompt the command opens
+					// would have been typed; false =
+					// refused (an argument the command
+					// does not take); cont = the
+					// continue / quit verdict
+	long error_count();		// ERROR rows in the problems
+					// projection (a one-shot's verdict)
 	void vi_open_line(long doc, bool above);	// o / O / cc's line
 	long world();
 	long active(long fallback);	// the active buffer's document
@@ -6008,20 +6022,70 @@ void IdeSession::close()
 
 // ---- the vi arm (modes-as-scopes — the session owns mode routing) -------
 
-// Run a named action n times through the ONE dispatcher (apply_ide_event
-// recursion — kind "action" never re-enters the vi arm, so motions, the
-// edit keys, and the IDE verbs all serve the grammar without a second
-// dispatch). False = the session ended (a quit propagates).
+// ONE command by CODE through the ONE dispatcher: the action event a
+// code-bound chord produces, without the chord (kind "action" never
+// re-enters the vi arm, so motions, the edit keys, and the IDE verbs all
+// serve a code-speaking client without a second dispatch). The vi grammar
+// (vi_exec), the `-c` one-shot and the api seat post through here. False =
+// the session ended (a quit propagates).
+bool IdeSession::post(long doc, long code)
+{
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "", "action_code": code };
+    return apply_ide_event(doc, e);
+}
+
+// Run a named action n times through the ONE dispatcher.
 bool IdeSession::vi_exec(long doc, long code, long n)
 {
     for ( long i = 0; i < n; i = i + 1 )
-    {
-	var e = { "event": "action", "event_code": ui::event_kind::action,
-		  "action": "", "action_code": code };
-	if ( !apply_ide_event(doc, e) )
+	if ( !post(doc, code) )
 	    return false;
-    }
     return true;
+}
+
+// A command WITH ITS ARGUMENT — the shape every non-interactive input
+// boundary posts (client-server design §2.3b: the `-c` command line now;
+// the `:` line's `:find x` and the api seat's {"cmd", "args"} later). The
+// argument is what the PROMPT the command opens would have been typed:
+// `find add` = the find prompt, "add", commit; `gotoline 7`; `colon w`; a
+// confirm reads it as its answer (`quit y`). The commit posts the @prompt
+// scope's pcommit by CODE (scope_action_named: a code reaches exactly what
+// a key can), so a profile's spelling of the commit key is not this
+// method's concern. False = refused: an argument for a command that opened
+// no prompt (the message says so — the caller's exit status 2). `cont` is
+// the continue / quit verdict the dispatcher returned.
+bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
+{
+    var a = arg;			// ring discipline: own the text first
+    cont = post(doc, code);
+    if ( !cont || strlen(a.c_str()) == 0 )
+	return true;
+    if ( !prompt_active(w, es) )
+    {
+	var nm;
+	cmd_name(nm, code);
+	ui::set(w, es, "msg", format("'{}' takes no argument.", nm));
+	return false;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": a };
+    cont = apply_ide_event(doc, t);
+    if ( !cont || !prompt_active(w, es) )
+	return true;			// a confirm answered (y / n)
+    cont = post(doc, cmdPCOMMIT);
+    return true;
+}
+
+// ERROR rows in the problems projection after the last command — the
+// one-shot's verdict (`madcide f -c check` exits 1 on a broken file);
+// warnings never count, exactly as they never bar a build.
+long IdeSession::error_count()
+{
+    var diags;
+    ui::get(diags, w, es, "diags");
+    if ( diags.is_null() )
+	return 0;
+    return diag_error_count(diags);
 }
 
 // o / O (and cc's emptied line): break the line at the caret, land on

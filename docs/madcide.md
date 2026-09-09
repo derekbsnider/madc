@@ -12,8 +12,19 @@ the same commands; the window adds a workbench around the editor.
 ```sh
 madcide file.mad            # in the terminal
 madcide file.mad --gui      # in a window
+madcide file.mad -c check   # no surface: one command, the projection, a verdict
 madc tools/madcide/madcide.mad file.mad   # from a source checkout
 ```
+
+`-c "<command> [arg]"` runs ONE command of the registry (the names are the
+`.menu` / `.keys` files' — `check`, `outline`, `gotoline 3`, `find add`,
+`colon w`) against the opened file with no terminal or window at all,
+prints what the IDE would have shown — the status line, the text, the
+problems rows or the outline — and exits with the verdict: `0` clean, `1`
+the file could not be read or the problems projection carries errors
+(`-c check` on a broken file), `2` an unknown command or an argument the
+command does not take. The argument is what you would have typed at the
+prompt the command opens.
 
 The packaged `madcide` binary ships with the Linux, Windows and macOS
 releases (`bin/madcide`, `bin\madcide.exe`); the window needs the platform

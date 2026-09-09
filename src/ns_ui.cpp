@@ -1494,8 +1494,12 @@ int64_t open(const char *target)
 // the RENDERING MODEL it wants — ui::level, ordered by requirement — never a
 // target's spelling): ui::TUI is the grid frontend; any other level is the
 // first registered host declaring it. 0 + stderr when no target serves the
-// level here (ui::NONE and ui::LINE have no frontend yet — slices V1.5 / V2.5 of
-// the client-server design), or when that target cannot serve (as open(name)).
+// level here, or when that target cannot serve (as open(name)). ui::NONE has
+// no frontend BY DESIGN: a client at that level has no surface and drives
+// the session directly — the headless harness, `madcide -c` (the one-shot,
+// client-server design §2.3b, V1.5), the api seat (V6) — so there is nothing
+// to open. ui::LINE's frontend (stdin lines in, the level-0 typesetter out)
+// is slice V2.5.
 int64_t open(ui::level lvl)
 {
     if ( lvl == ui::TUI )

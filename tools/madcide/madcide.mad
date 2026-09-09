@@ -1,5 +1,5 @@
 // madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
-// Usage: madc tools/madcide/madcide.mad <file> [ro]
+// Usage: madc tools/madcide/madcide.mad <file> [ro] [--gui] [-c "<command> [arg]"]
 // Run it from the repository root (verb bodies and keybinding profiles
 // load by relative path). The buffer is the texteditor machinery; the
 // diagnostics pane and outline are projections of live compiler data;
@@ -34,35 +34,58 @@
 // The gateway seam (design doc 2026-08-31): madcide_core.inc is the
 // SESSION layer (class IdeSession — state + semantics, terminal-free);
 // madcide_client.inc is the TUI CLIENT (the only tui-handle holder:
-// render/input/refresh/suspend + the run_ide loop).
+// render/input/refresh/suspend + the run_ide loop); madcide_once.inc is
+// the ui::NONE client (the `-c` one-shot: one command, the projection to
+// stdout, the verdict as the exit status — client-server design §2.3b).
 #include "../texteditor/lined_core.inc"
 #include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
 #include "madcide_client.inc"
+#include "madcide_once.inc"
 
 int main(int argc, char **argv)
 {
     if ( argc < 2 )
     {
-	printf("usage: madcide <file> [ro] [--gui]\n");
-	return 1;
+	printf("usage: madcide <file> [ro] [--gui] [-c \"<command> [arg]\"]\n");
+	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
     // names the rendering model it wants, never a target's spelling): --gui
     // shows the same composed tree in a window through the web level
     // (<ns_ui_web>, a lazy module row — a machine without the library
-    // refuses at open with the reason); the grid (ui::TUI) is the default.
-    // `ro` opens the file read-only. The client loop and the composer are
-    // identical for both levels (the workbench layout rides layout hints
-    // the terminal ignores).
+    // refuses at open with the reason); the grid (ui::TUI) is the default;
+    // -c "<command> [arg]" is the ui::NONE level — no surface, one command,
+    // the projection printed, the exit status the verdict (run_once). `ro`
+    // opens the file read-only. The client loop and the composer are
+    // identical for every level (the workbench layout rides layout hints
+    // the terminal ignores; the one-shot typesets the same tree).
     bool ro = false;
     ui::level lvl = ui::TUI;
+    const char *once = NULL;
     for ( int i = 2; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "--gui") == 0 )
 	    lvl = ui::WEB;
 	else if ( strcmp(argv[i], "ro") == 0 )
 	    ro = true;
+	else if ( strcmp(argv[i], "-c") == 0 )
+	{
+	    if ( i + 1 >= argc )
+	    {
+		println(stderr, "madcide: -c needs \"<command> [arg]\"");
+		return 2;
+	    }
+	    i++;
+	    once = argv[i];
+	}
+    }
+    if ( once != NULL )
+    {
+	var out;
+	long rc = run_once(out, argv[1], ro, once);
+	print("{}", out);
+	return rc;
     }
     run_ide(argv[1], ro, lvl);
     return 0;

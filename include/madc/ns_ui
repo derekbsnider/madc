@@ -349,8 +349,9 @@ namespace ui {
     // ui::GUI < ui::GFX2D < ui::GFX3D, ordered by requirement) and the target that
     // declares that level serves it: ui::TUI is the grid frontend; a
     // script-hosted target registers with its level (ui::WEB — <ns_ui_web>).
-    // 0 + stderr reason when no target serves the level here (ui::NONE and
-    // ui::LINE have no frontend yet). level_of(t) reports the opened target's
+    // 0 + stderr reason when no target serves the level here (ui::NONE has
+    // none by design — a one-shot or an api seat drives the session with no
+    // surface; ui::LINE's arrives with slice V2.5). level_of(t) reports the opened target's
     // level (-1 for a bad handle) — "a real terminal exists" is
     // level_of(t) <= ui::TUI, the ONE per-target fact a client loop needs.
     // open(name) stays for name-addressed opening (a test's fake host).

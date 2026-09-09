@@ -90,6 +90,22 @@ federation between Nexus nodes (Nexus §17–§24), the debugger/profiler tier
   kind. A document's kind is stamped ONCE at open / new-file / save-as
   (`doc_set_path`, lined_core.inc) — `cxx_view_applies` is a range test on
   it, no extension ladder.
+- **The `ui::NONE` client exists (V1.5, landed 2026-09-09).** `madcide
+  <file> -c "<command> [arg]"` (tools/madcide/madcide_once.inc, `run_once`):
+  the command NAME converts once at the command-line boundary through the
+  registry's table (`cmd_of`; an unknown name refuses with exit 2 before a
+  session opens), the session opens exactly as the TUI client's does,
+  `IdeSession::command(doc, code, arg, cont)` posts the code through the one
+  dispatcher and feeds the argument to the prompt the command opened
+  (committed by CODE — `cmdPCOMMIT` through `scope_action_named`), the
+  composed tree is typeset by `ui::render_tree` (the headless harness's
+  shape) onto stdout, and the exit status is the verdict (0 clean; 1 the
+  file unreadable or ERROR rows in the problems projection; 2 the line
+  refused). No target is opened: `ui::NONE` has no frontend by design — a
+  client at that level drives the session directly. `IdeSession::post(doc,
+  code)` is the code-speaking primitive the vi grammar (`vi_exec`), the
+  one-shot and the api seat share; `IdeSession::error_count()` the verdict
+  query. Gate: `tests/testmadcide_cli`.
 - **Views already exist in all but name:** the edit node (a document's
   text), a lens (its render), Problems (`diag_items`), Output (the `[build]`
   buffer), the Terminal (`term_feed` into the `[terminal]` buffer through
@@ -359,7 +375,7 @@ the IDE already has, without the TUI part (owner) — no new command language.
 
 | Level | The IDE client | Today | Slice |
 |---|---|---|---|
-| `ui::NONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | the headless harness (`testmadcide` drives the session with no frontend at all) IS (a) without a command line | V1.5 (a); V6 (b) |
+| `ui::NONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | (a) LANDED 2026-09-09 (`madcide_once.inc`, `run_once`; `IdeSession::post` / `command` / `error_count`; gate `testmadcide_cli`): the headless harness with a command line, no frontend opened; the argument is what the command's prompt would have been typed, committed by code. Verdict: 0 clean, 1 unreadable file or error rows, 2 the line refused (unknown name; an argument the command does not take). A command's OWN refusal speaks on the status line and reads as 0 until (b)'s per-reply verdicts. | V1.5 (a) ✅; V6 (b) |
 | `ui::LINE` | the **ex / edlin client**: a line frontend over the colon interpreter — `:` verbs (`w q e r`, `goto`, `find`, and every registry command by name) read from stdin, the level-0 sequential renderer prints the projection to stdout (numbered choices; the edit node's lines by range, the way `ex` prints). No cursor addressing: it works over a pipe, in a dumb terminal, and as an MCP seat's transcript. | the colon line (`do_verb`) and `render_tree`'s level-0 print exist; no line frontend | V2.5 |
 | `ui::TUI` | the grid client (the JOE personality and the other profiles) | landed | — |
 | `ui::WEB` | the webview window | landed | — |
@@ -376,8 +392,14 @@ Consequences for the design:
 - A `ui::NONE` client gets PROJECTIONS, never a layout: the client record's
   `level` gates what the session composes for it.
 - The registry-command name → code table (slice V0.5) is the one converter
-  every input boundary uses: profiles, menus, the `-c` command line and the
-  `:` line.
+  every input boundary uses: profiles, menus, the `-c` command line (V1.5:
+  `run_once` converts once, refuses with exit 2) and the `:` line.
+- A command WITH AN ARGUMENT is one session primitive
+  (`IdeSession::command(doc, code, arg, cont)`, V1.5): post the code, then
+  the argument is what the prompt the command opened would have been typed,
+  committed by CODE. The `-c` line posts through it now; the `:` line's
+  `:find x` (V2.5) and the api seat's `{"cmd", "args"}` (V6) post through
+  the same method.
 - Thread contract: unchanged — every frontend runs on the UI thread; the
   line frontend's stdin read is the blocking decision, exactly the grid's
   `read_keys`.
@@ -518,7 +540,7 @@ git adapter (the nexus axes slice).
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
 | **V1 Views** ✅ 2026-09-09 (arc branch) | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_view_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View; the file-kind vocabulary `<bits/file_kinds>` (+ `ide_view` / `ide_gen` enums) | `testmadcide` byte-identical composition for the identity lens (+ `view-row` / `view-row-lens` / `view-kinds` pins: one row through the cycle, the refusals); GUI DOM snapshots unchanged; `test_cir` file-kind unit test (LanguageStd = the ranges, name round-trips, the emitter's depth table == `CIR_EMIT_TARGETS`) |
-| **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
+| **V1.5 The `ui::NONE` client** ✅ 2026-09-09 (arc branch; OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line (`madcide_once.inc`; `IdeSession::post` / `command` / `error_count`) | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command (`cli-pin: identical=1`); a misspelled command refuses with exit 2; the argument feeds the prompt (`gotoline 3`, `find add`); `testmadcide` byte-identical |
 | **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
 | **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
 | **V3 Clients + windows** | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` | `tests/gui/madcide_window2` (two windows, one edit seen in both); `check-one-anchor-owner.sh` |
@@ -544,7 +566,8 @@ identity across history) stays the named hard problem. V0.5 landed
 2026-09-09 (its battery ran in error — the seam is V5, per the owner; a
 slice never gets the battery, `testing-fulltest.md`); V1 landed 2026-09-09
 on the arc's feature branch (`feature/client-server-views-claude`, targeted
-gates only); V1.5 is next, and the next battery is the V5 seam.
+gates only); V1.5 landed 2026-09-09 on the same branch (targeted gates
+only); V2 is next, and the next battery is the V5 seam.
 
 ## 5. Standing defaults (owner veto welcome)
 
