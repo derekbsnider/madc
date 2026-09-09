@@ -1808,6 +1808,38 @@ bool key_bytes(madc::value &out, const char *name)
     return !bytes.empty();
 }
 
+// The layout vocabulary at its boundaries (V2): the spellings are
+// madcdis/ui_events.h's; unknown = none / "".
+int64_t split_code(const char *name)
+{
+    madc::hub::ui_split d;
+    if ( !name || !madc::hub::ui_split_from_name(name, d) )
+	return (int64_t)ui::split::none;
+    return (int64_t)d;
+}
+
+int64_t side_code(const char *name)
+{
+    madc::hub::ui_side sd;
+    if ( !name || !madc::hub::ui_side_from_name(name, sd) )
+	return (int64_t)ui::side::none;
+    return (int64_t)sd;
+}
+
+const char *split_name(int64_t code)
+{
+    if ( code < (int64_t)ui::split::none || code > (int64_t)ui::split::horizontal )
+	return "";
+    return madc::hub::ui_split_name((ui::split)code);
+}
+
+const char *side_name(int64_t code)
+{
+    if ( code < (int64_t)ui::side::none || code > (int64_t)ui::side::bottom )
+	return "";
+    return madc::hub::ui_side_name((ui::side)code);
+}
+
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------
 // The original grid-frontend API, kept as the terminal target's names over
 // the same handles: tui_open() IS open("term").

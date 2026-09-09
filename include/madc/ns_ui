@@ -378,6 +378,15 @@ namespace ui {
     // terminal's pty when the user types at it. False (out empty) when the
     // name is not a key spelling. A text run is its own bytes already.
     bool    key_bytes(value &out, const char *name);
+    // The LAYOUT vocabulary's boundary converters (client-server arc V2,
+    // <bits/ui_enums> ui::split / ui::side): a `.layout` profile's word ->
+    // its code (none for a word that is not one — the loader's refusal),
+    // and a code -> its spelling (a probe, a message). The engine owns the
+    // spellings (madcdis/ui_events.h), so a word is typed in ONE place.
+    int64_t split_code(const char *name);
+    int64_t side_code(const char *name);
+    const char *split_name(int64_t code);
+    const char *side_name(int64_t code);
 
     // ---- script-hosted targets (the web target is one; a test fake is
     // another). A host is a table of C function pointers a madc fragment

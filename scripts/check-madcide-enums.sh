@@ -18,7 +18,10 @@
 #   4. (V1 Views) no View row carries its representation as text — a
 #      `"lang": "…"` or `"generator": "…"` literal field (the lang is a
 #      madc::fk* enumerator from <bits/file_kinds>, the generator an
-#      ide_gen); the focused-View slot `fview` takes no string either.
+#      ide_gen); the focused-View slot `fview` takes no string either;
+#   5. (V2 layouts) no layout node carries its discriminator as text — a
+#      `"slot": "…"`, `"side": "…"`, `"mode": "…"` or `"dir": "…"` literal
+#      field (ide_slot / ui::side / ide_pmode / ui::split belong there).
 # Each rule carries a negative control.
 set -u
 
@@ -31,7 +34,7 @@ ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
 # The name words: every `return "word";` inside the five name converters.
 name_words()
 {
-	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen)_name\(long/ { on = 1 }
+	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode)_name\(long/ { on = 1 }
 	     on { print }
 	     on && /^}/ { on = 0 }' "$1" |
 	grep -o 'return "[a-z]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u
@@ -76,6 +79,13 @@ check()
 		echo "$bad" >&2
 		rc=1
 	fi
+	bad=$(grep -n -E '"(slot|side|mode|dir)": "' "$core" "$client" "$once")
+	if [ -n "$bad" ]; then
+		echo "check-madcide-enums: FAIL ($label) — a layout node carries a" \
+		     "discriminator as text (ide_slot / ui::side / ide_pmode / ui::split belong there):" >&2
+		echo "$bad" >&2
+		rc=1
+	fi
 	return $rc
 }
 
@@ -111,6 +121,13 @@ if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a View row's text" \
 	     "representation went undetected (rule 4 went blind)." >&2
+	exit 1
+fi
+awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tvar ln = { \"kind\": ctPANE, \"slot\": \"sidebar\", \"side\": \"left\" };" }' "$CORE" > "$tmpcore"
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
+	rm -f "$tmpcore"
+	echo "check-madcide-enums: FAIL — negative control: a layout node's text" \
+	     "discriminator went undetected (rule 5 went blind)." >&2
 	exit 1
 fi
 rm -f "$tmpcore"

@@ -520,6 +520,467 @@ bool bind_rescue_keys(long w, long es)
     return true;
 }
 
+// ---- layouts as data (client-server arc V2; design doc §2.2; plan
+//      2026-09-09-v2-containers-layouts-plan.md) ----------------------------
+// A LAYOUT is a tree of containers holding Views, owned by the client and
+// stored on the bag as "layout":
+//   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ { "kind": ide_view, "view": 0, "caret": 0, "mark": -1, "bend": -1, "grow": 0 }... ], "active": 0, "focus", "hidden" }
+//   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
+// The `.layout` text is the input boundary (profiles/default.layout, the
+// grammar in its header): every word converts ONCE here — slot_of, pmode_of,
+// view_of, ui::side_code, ui::split_code — and an unknown word REFUSES the
+// text with its line; a ragged indentation, a chrome pane inside a split, a
+// pane with children, a split with fewer than two children, two editor
+// regions or two windows refuse the same way (parse_keys' shape). The baked
+// default rides the same parser (the rescue-keys pattern).
+
+// Split a trimmed line into its whitespace-separated words.
+void layout_words(var &out, var &line)
+{
+    var words = {};
+    const char *ls = line.c_str();
+    long n = strlen(ls);
+    long start = -1;
+    for ( long i = 0; i <= n; i = i + 1 )
+    {
+	bool sep = i == n || ls[i] == ' ' || ls[i] == '\t';
+	if ( !sep && start < 0 )
+	    start = i;
+	else if ( sep && start >= 0 )
+	{
+	    var wd = perl::substr(line, start, i - start);
+	    words.push(wd);
+	    start = -1;
+	}
+    }
+    out = words;
+}
+
+// A size word "NN%" -> NN (1..90); -1 when the word is not a size.
+long layout_size_of(var &word)
+{
+    const char *ws = word.c_str();
+    long n = strlen(ws);
+    if ( n < 2 || ws[n - 1] != '%' )
+	return -1;
+    for ( long i = 0; i < n - 1; i = i + 1 )
+	if ( ws[i] < '0' || ws[i] > '9' )
+	    return -1;
+    long v = php::intval(perl::substr(word, 0, n - 1));
+    if ( v < 1 || v > 90 )
+	return -1;
+    return v;
+}
+
+// The leading whitespace of a raw line (its nesting depth).
+long layout_depth_of(var &raw)
+{
+    const char *rs = raw.c_str();
+    long d = 0;
+    while ( rs[d] == ' ' || rs[d] == '\t' )
+	d = d + 1;
+    return d;
+}
+
+// One `pane` line's words (after the keyword) into a flat row. False + err.
+bool layout_pane_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: pane without a slot", lineno);
+	return false;
+    }
+    var sw = words[1];
+    long slot = slot_of(sw);
+    if ( slot == slotNONE || slot == slotPOPUP )
+    {
+	err = format("line {}: unknown slot '{}'", lineno, sw);
+	return false;
+    }
+    long side = ui::side_code("");
+    long size = 0;
+    long mode = lmNONE;
+    bool collecting = false;
+    bool focus = false;
+    bool hidden = false;
+    var tabs = {};
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	if ( wd == "views" )
+	{
+	    collecting = true;
+	    continue;
+	}
+	if ( wd == "focus" )
+	{
+	    focus = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( wd == "hidden" )
+	{
+	    hidden = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( collecting )
+	{
+	    long k = view_of(wd);
+	    if ( k == viewNONE )
+	    {
+		err = format("line {}: unknown view '{}'", lineno, wd);
+		return false;
+	    }
+	    var tb = { "kind": k, "view": 0, "caret": 0, "mark": -1,
+		       "bend": -1, "grow": 0 };
+	    tabs.push(tb);
+	    continue;
+	}
+	long sz = layout_size_of(wd);
+	if ( sz > 0 )
+	{
+	    size = sz;
+	    continue;
+	}
+	const char *wds = wd.c_str();
+	if ( strlen(wds) > 1 && wds[strlen(wds) - 1] == '%' )
+	{
+	    err = format("line {}: bad size '{}' (1%..90%)", lineno, wd);
+	    return false;
+	}
+	long sd = ui::side_code(wd.c_str());
+	if ( sd != ui::side_code("") )
+	{
+	    side = sd;
+	    continue;
+	}
+	long pm = pmode_of(wd);
+	if ( pm != lmNONE )
+	{
+	    mode = pm;
+	    continue;
+	}
+	err = format("line {}: unknown word '{}'", lineno, wd);
+	return false;
+    }
+    if ( php::count(tabs) == 0 )
+    {
+	err = format("line {}: pane without views", lineno);
+	return false;
+    }
+    // The slot's side rule: a sidebar docks left or right, a panel bottom or
+    // top, the editor region has no side.
+    var sidev = side;
+    bool sideok = true;
+    if ( slot == slotSIDEBAR )
+	sideok = sidev == ui::side::left || sidev == ui::side::right;
+    else if ( slot == slotPANEL )
+	sideok = sidev == ui::side::bottom || sidev == ui::side::top;
+    else
+	sideok = sidev == ui::side::none;
+    if ( !sideok )
+    {
+	err = format("line {}: a {} pane cannot dock '{}'", lineno,
+		     slot_name(slot), ui::side_name(side));
+	return false;
+    }
+    if ( size == 0 && slot == slotSIDEBAR )
+	size = 20;
+    if ( size == 0 && slot == slotPANEL )
+	size = 25;
+    if ( mode == lmNONE )
+	mode = lmTABS;
+    long f = focus ? 1 : 0;
+    long h = hidden ? 1 : 0;
+    row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
+	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h };
+    return true;
+}
+
+// One `split` line's words into a flat row. False + err.
+bool layout_split_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: split without a direction", lineno);
+	return false;
+    }
+    var dw = words[1];
+    long dir = ui::split_code(dw.c_str());
+    if ( dir == ui::split_code("") )
+    {
+	err = format("line {}: unknown split direction '{}'", lineno, dw);
+	return false;
+    }
+    long size = 0;
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	long sz = layout_size_of(wd);
+	if ( sz <= 0 )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, wd);
+	    return false;
+	}
+	size = sz;
+    }
+    row = { "kind": ctSPLIT, "dir": dir, "size": size };
+    return true;
+}
+
+// Build the tree node for flat row `idx`: a pane as is; a split with its
+// children (the rows whose parent is idx, in order) built recursively.
+void layout_build(var &node, var &rows, long idx)
+{
+    var r = rows[idx];
+    if ( r["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	long n = php::count(rows);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var c = rows[i];
+	    if ( c["parent"] == idx )
+	    {
+		var child;
+		layout_build(child, rows, i);
+		kids.push(child);
+	    }
+	}
+	node = { "kind": ctSPLIT, "dir": r["dir"], "size": r["size"],
+		 "children": kids };
+	return;
+    }
+    node = { "kind": ctPANE, "slot": r["slot"], "side": r["side"],
+	     "size": r["size"], "mode": r["mode"], "tabs": r["tabs"],
+	     "active": r["active"], "focus": r["focus"],
+	     "hidden": r["hidden"] };
+}
+
+// The parser: text -> the layout tree. False + err (the line and the word).
+bool parse_layout(var &layout, const char *text, var &err)
+{
+    var window = "";
+    var rows = {};		// flat: every pane / split with depth + parent
+    var open = {};		// indices of the split rows still open
+    array lines;
+    php::explode(lines, "\n", text);
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var raw = php::array_get_cstr(lines, i);
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	long lineno = i + 1;
+	var words;
+	layout_words(words, line);
+	var kw = words[0];
+	if ( kw == "@window" )
+	{
+	    if ( strlen(window.c_str()) > 0 )
+	    {
+		err = format("line {}: a second window (one window; V3 adds windows)", lineno);
+		return false;
+	    }
+	    if ( php::count(words) < 2 )
+	    {
+		err = format("line {}: window without a name", lineno);
+		return false;
+	    }
+	    window = words[1];
+	    continue;
+	}
+	long ct = container_of(kw);
+	if ( ct == ctNONE )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, kw);
+	    return false;
+	}
+	long depth = layout_depth_of(raw);
+	// The open splits: a line at or above an open split's depth closes it.
+	while ( php::count(open) > 0 )
+	{
+	    var top = rows[open[php::count(open) - 1].as_integer()];
+	    if ( top["depth"].as_integer() < depth )
+		break;
+	    var shorter = {};
+	    long no = php::count(open) - 1;
+	    for ( long k = 0; k < no; k = k + 1 )
+		shorter.push(open[k]);
+	    open = shorter;
+	}
+	long parent = -1;
+	if ( php::count(open) > 0 )
+	{
+	    parent = open[php::count(open) - 1].as_integer();
+	    var pr = rows[parent];
+	    long cd = pr["childdepth"].as_integer();
+	    if ( cd == 0 )
+	    {
+		pr["childdepth"] = depth;
+		rows[parent] = pr;
+	    }
+	    else if ( cd != depth )
+	    {
+		err = format("line {}: ragged layout", lineno);
+		return false;
+	    }
+	}
+	else if ( depth > 0 )
+	{
+	    err = format("line {}: ragged layout", lineno);
+	    return false;
+	}
+	var row;
+	if ( ct == ctPANE )
+	{
+	    if ( !layout_pane_row(row, words, lineno, err) )
+		return false;
+	    if ( parent >= 0 && row["slot"] != slotEDITOR )
+	    {
+		err = format("line {}: a {} pane never splits", lineno,
+			     slot_name(row["slot"].as_integer()));
+		return false;
+	    }
+	}
+	else
+	{
+	    if ( !layout_split_row(row, words, lineno, err) )
+		return false;
+	}
+	row["depth"] = depth;
+	row["parent"] = parent;
+	row["childdepth"] = 0;
+	row["line"] = lineno;
+	rows.push(row);
+	if ( ct == ctSPLIT )
+	    open.push(php::count(rows) - 1);
+    }
+    // Every split holds two or more children; exactly one editor region;
+    // the chrome panes are top-level; one focus (the first editor pane when
+    // none is named).
+    long nr = php::count(rows);
+    long editor = -1;
+    long focused = 0;
+    var chrome = {};
+    for ( long i = 0; i < nr; i = i + 1 )
+    {
+	var r = rows[i];
+	if ( r["kind"] == ctSPLIT )
+	{
+	    long kids = 0;
+	    for ( long j = 0; j < nr; j = j + 1 )
+	    {
+		var c = rows[j];
+		if ( c["parent"] == i )
+		    kids = kids + 1;
+	    }
+	    if ( kids < 2 )
+	    {
+		err = format("line {}: a split needs two or more children", r["line"]);
+		return false;
+	    }
+	}
+	else if ( r["focus"].as_integer() != 0 )
+	    focused = focused + 1;
+	if ( r["parent"].as_integer() != -1 )
+	    continue;
+	if ( r["kind"] == ctSPLIT || r["slot"] == slotEDITOR )
+	{
+	    if ( editor >= 0 )
+	    {
+		err = format("line {}: a second editor region", r["line"]);
+		return false;
+	    }
+	    editor = i;
+	}
+	else
+	    chrome.push(i);
+    }
+    if ( editor < 0 )
+    {
+	err = "no editor region (a `pane editor` or a `split`)";
+	return false;
+    }
+    if ( focused > 1 )
+    {
+	err = "more than one pane carries focus";
+	return false;
+    }
+    if ( focused == 0 )
+    {
+	for ( long i = 0; i < nr; i = i + 1 )
+	{
+	    var r = rows[i];
+	    if ( r["kind"] == ctPANE && r["slot"] == slotEDITOR )
+	    {
+		r["focus"] = 1;
+		rows[i] = r;
+		break;
+	    }
+	}
+    }
+    var ed;
+    layout_build(ed, rows, editor);
+    var ch = {};
+    for ( var ci : chrome )
+    {
+	var cnode;
+	layout_build(cnode, rows, ci.as_integer());
+	ch.push(cnode);
+    }
+    if ( strlen(window.c_str()) == 0 )
+	window = "main";
+    layout = { "window": window, "editor": ed, "chrome": ch };
+    return true;
+}
+
+// The baked default: the shipped profiles/default.layout as inline data
+// through the SAME parser — what a missing or broken file falls back to.
+const char *default_layout_text()
+{
+    return "# baked default layout — profile data\n"
+	   "@window main\n"
+	   "pane editor tabs views source focus\n"
+	   "pane sidebar left 20% tabs views outline hidden\n"
+	   "pane panel bottom 25% tabs views problems output terminal hidden\n";
+}
+
+// Load a named layout from the profile directory onto the bag ("layout");
+// a missing or refused file falls back to the baked default and SAYS so on
+// the status line (a layout must exist: the composer places by it). False =
+// the fallback was taken.
+bool load_layout(long w, long es, const char *name)
+{
+    var lname = name;		// ring discipline: own the text first
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    var txt;
+    var layout;
+    var err;
+    bool ok = php::file_get_contents(txt, format("{}/{}.layout", dir, lname));
+    if ( ok )
+	ok = parse_layout(layout, txt.c_str(), err);
+    else
+	err = "no such file";
+    if ( !ok )
+    {
+	var fallback;
+	var ferr;
+	parse_layout(fallback, default_layout_text(), ferr);
+	ui::set(w, es, "layout", fallback);
+	ui::set(w, es, "msg", format("Layout '{}' {} — the default layout is in use.", lname, err));
+	return false;
+    }
+    ui::set(w, es, "layout", layout);
+    return true;
+}
+
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
 // One `class SPEC` pair per line: the class is the FIRST word, the spec
 // the rest — JOE's style vocabulary (attribute words + a colour +
@@ -5771,6 +6232,9 @@ long IdeSession::open(const char *path0, bool ro)
     if ( !load_theme(w, es, "default") )
 	ui::set(w, es, "msg", "No theme 'default' — colours off.");
     load_menu(w, es, "default");	// the menu/command data (optional, S1)
+    load_layout(w, es, "default");	// WHERE Views live (V2): the client's
+					// layout; the baked default when the
+					// file is missing or refused
     // The profile loads LAST of the three data loads: a broken layout
     // fails the theme too, and its message must not bury the rescue
     // announcement — the status line has to SAY the fallback is active.

@@ -106,6 +106,49 @@ inline bool ui_level_from_name(const std::string &s, ui_level &l)
     return false;
 }
 
+// A layout split's DIRECTION (ui::split) and a chrome pane's SIDE (ui::side)
+// — the client-server arc's container vocabulary (V2) — and their names at
+// the boundaries (a `.layout` profile's words, the page's op fields) — ONE
+// spelling owner each, both directions.
+typedef ::ui::split ui_split;
+inline const char *ui_split_name(ui_split d)
+{
+    switch ( d )
+    {
+	case ui_split::vertical:   return "vertical";
+	case ui_split::horizontal: return "horizontal";
+	case ui_split::none: break;
+    }
+    return "";
+}
+inline bool ui_split_from_name(const std::string &s, ui_split &d)
+{
+    if ( s == "vertical" )   { d = ui_split::vertical;   return true; }
+    if ( s == "horizontal" ) { d = ui_split::horizontal; return true; }
+    return false;
+}
+typedef ::ui::side ui_side;
+inline const char *ui_side_name(ui_side sd)
+{
+    switch ( sd )
+    {
+	case ui_side::left:   return "left";
+	case ui_side::right:  return "right";
+	case ui_side::top:    return "top";
+	case ui_side::bottom: return "bottom";
+	case ui_side::none: break;
+    }
+    return "";
+}
+inline bool ui_side_from_name(const std::string &s, ui_side &sd)
+{
+    if ( s == "left" )   { sd = ui_side::left;   return true; }
+    if ( s == "right" )  { sd = ui_side::right;  return true; }
+    if ( s == "top" )    { sd = ui_side::top;    return true; }
+    if ( s == "bottom" ) { sd = ui_side::bottom; return true; }
+    return false;
+}
+
 struct tui_event
 {
     tui_event_kind kind;

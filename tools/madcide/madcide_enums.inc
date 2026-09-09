@@ -379,7 +379,7 @@ long bmode_of(var &m)
 // diagnostics pane docks in the bottom PANEL (owner: its original home is
 // the panel's Problems tab); a former name table keyed it "diagnostics"
 // while the pane spells "diags", so it never docked at all — fixed here.
-enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL };
+enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
 const char *slot_name(long s)
 {
     switch ( s )
@@ -387,8 +387,69 @@ const char *slot_name(long s)
 	case slotPOPUP: return "popup";
 	case slotSIDEBAR: return "sidebar";
 	case slotPANEL: return "panel";
+	case slotEDITOR: return "editor";
     }
     return "";
+}
+// The INPUT converter for a `.layout` line's slot word (V2): the chrome
+// slots and the editor region; slotNONE = not a slot word (the refusal).
+long slot_of(var &name)
+{
+    if ( name.is_null() )
+	return slotNONE;
+    for ( long k = slotPOPUP; k <= slotEDITOR; k = k + 1 )
+	if ( name == slot_name(k) )
+	    return k;
+    return slotNONE;
+}
+
+// ---- containers (client-server arc V2; design doc §2.2) -------------------
+// A layout node's KIND: a pane (a region holding Views, in `tabs` or `stack`
+// mode) or a split (children side by side or one above the other — the
+// direction is the engine's ui::split, <bits/ui_enums>, a chrome pane's side
+// its ui::side). The layout file's words convert once at load (parse_layout,
+// madcide_core.inc); a misspelling refuses the profile with its line.
+enum ide_container : unsigned char { ctNONE = 0, ctPANE, ctSPLIT };
+const char *container_name(long c)
+{
+    switch ( c )
+    {
+	case ctPANE: return "pane";
+	case ctSPLIT: return "split";
+    }
+    return "";
+}
+long container_of(var &name)
+{
+    if ( name.is_null() )
+	return ctNONE;
+    for ( long k = ctPANE; k <= ctSPLIT; k = k + 1 )
+	if ( name == container_name(k) )
+	    return k;
+    return ctNONE;
+}
+
+// A pane's stacking MODE: `tabs` shows one View at a time behind a strip;
+// `stack` shows every View one above the other, each with its header (the
+// S5 window stack's shape).
+enum ide_pmode : unsigned char { lmNONE = 0, lmTABS, lmSTACK };
+const char *pmode_name(long m)
+{
+    switch ( m )
+    {
+	case lmTABS: return "tabs";
+	case lmSTACK: return "stack";
+    }
+    return "";
+}
+long pmode_of(var &name)
+{
+    if ( name.is_null() )
+	return lmNONE;
+    for ( long k = lmTABS; k <= lmSTACK; k = k + 1 )
+	if ( name == pmode_name(k) )
+	    return k;
+    return lmNONE;
 }
 long pane_slot_of(long p)
 {
