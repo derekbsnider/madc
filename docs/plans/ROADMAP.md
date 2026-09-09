@@ -554,6 +554,7 @@ SMAUG target terminal, web, and GUI from the same game code.
 | MAD C IDE Multi-View Architecture — every representation a View, correlated (owner vision, 2026-09-08) | [2026-09-08-madc-ide-multi-view-architecture.md](2026-09-08-madc-ide-multi-view-architecture.md) |
 | Nexus + Multi-View cross-referenced with the settled design; what it changes about the client-server step (2026-09-09) | [2026-09-09-nexus-and-multiview-cross-reference.md](2026-09-09-nexus-and-multiview-cross-reference.md) |
 | Nexus, sessions and clients — the client-server design: Views, containers/layouts, a window is a client, the change event log, correlation maps, tiers, transports + headless, thread contracts, slices V0–V7 (2026-09-09) | [2026-09-09-nexus-client-server-design.md](2026-09-09-nexus-client-server-design.md) |
+| Slice V0.5 — enums, not strings: the measured inventory, the decided enum shape (UI level, action codes end to end, discriminator enums, one name→code converter at every input boundary), sub-slices a–e with gates (2026-09-09) | [2026-09-09-v05-enums-not-strings.md](2026-09-09-v05-enums-not-strings.md) |
 | madcdis Memory Research | [madcdis-memory-research.md](madcdis-memory-research.md) |
 | madcdat External Drivers | [madcdat-plan.md](madcdat-plan.md) |
 | Language Interfaces | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
