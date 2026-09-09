@@ -72,10 +72,13 @@
 - `scripts/check-madcide-enums.sh` (fulltest): no string written to a slot,
   no compare against a discriminator's name word, no request kind as text;
   three negative controls.
-- Sub-slice d of the conversion; every `.expect` byte-identical. Found and
-  left for the owner: the former slot table keyed the Problems pane
-  "diagnostics" while the pane spells "diags", so that pane never docked —
-  preserved as is (a layout decision), see the plan.
+- Sub-slice d of the conversion; every `.expect` byte-identical.
+- Fixed (owner ruling 2026-09-09): the diagnostics pane docks in a window's
+  bottom PANEL region — its original home is the panel's Problems tab. The
+  former layout table keyed it "diagnostics" while the pane spells "diags",
+  so it never received a region hint and floated wherever the page put an
+  unslotted node. The slot policy (`pane_slot_of`) is the interim default
+  until V2's `.layout` profiles make placement the user's.
 - Sub-slice e: the IDE's error count compares a diagnostics row's
   `severity_code` against `madc::diag_severity::error` (the synthesized
   "cannot open this TU" row carries its code beside the display word), and

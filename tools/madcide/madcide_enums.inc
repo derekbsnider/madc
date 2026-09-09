@@ -372,20 +372,30 @@ long bmode_of(var &m)
 }
 
 // Where a window lays a pane: a floating popup or a docked region (the
-// page's region hook spells the name). Layout policy for the IDE's OWN
-// panes, as data. paneDIAGS keeps no slot: the former name table keyed it
-// "diagnostics" while the pane spells "diags", so the Problems pane never
-// docked — preserved here byte-for-byte (a layout decision for the owner,
-// plan §4).
-enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR };
+// page's region hook spells the name — the workbench grid's sidebar and
+// bottom panel). The IDE's default layout policy for its OWN panes, as
+// data — the interim default until V2's .layout profiles make placement
+// the user's (owner 2026-09-09: layout flexibility within the UI). The
+// diagnostics pane docks in the bottom PANEL (owner: its original home is
+// the panel's Problems tab); a former name table keyed it "diagnostics"
+// while the pane spells "diags", so it never docked at all — fixed here.
+enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL };
 const char *slot_name(long s)
 {
-    return s == slotSIDEBAR ? "sidebar" : (s == slotPOPUP ? "popup" : "");
+    switch ( s )
+    {
+	case slotPOPUP: return "popup";
+	case slotSIDEBAR: return "sidebar";
+	case slotPANEL: return "panel";
+    }
+    return "";
 }
 long pane_slot_of(long p)
 {
     switch ( p )
     {
+	case paneDIAGS:
+	    return slotPANEL;
 	case paneOUTLINE:
 	    return slotSIDEBAR;
 	case paneBUILD: case panePROJECT: case paneMODES: case paneHELP:

@@ -48,6 +48,19 @@ int main()
     var box = kids[php::count(kids) - 1];
     println("pane: role={} popup={}", box["role"],
 	    box["hints"]["popup"].is_null() ? "none" : "yes");
+    // The diagnostics pane DOCKS in the bottom panel region (owner ruling
+    // 2026-09-09: its home is the panel's Problems tab). A former layout
+    // table keyed it "diagnostics" while the pane spells "diags", so it
+    // carried no slot at all; the slot policy is an enum switch now.
+    set_pane(w, es, paneDIAGS);
+    var tdiag;
+    S.compose_ide_tree(tdiag, doc);
+    var dkids = tdiag["children"];
+    var dbox = dkids[php::count(dkids) - 1];
+    println("pane-diags: role={} region={} popup={}", dbox["role"],
+	    dbox["hints"]["region"],
+	    dbox["hints"]["popup"].is_null() ? "none" : "yes");
+    set_pane(w, es, paneHELP);
 
     // Additive-only: the grid model still reads the edit node's own hints
     // (caret) unchanged beside the new region key.

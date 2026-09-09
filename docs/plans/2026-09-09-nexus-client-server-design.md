@@ -191,6 +191,18 @@ pane panel bottom 25%  tabs   views problems output terminal   hidden
 - Saved layouts are workspaces (Multi-View §27): `compiler-dev.layout`,
   `codegen-compare.layout` ship as examples once the Views they name exist.
 
+**Layout flexibility (OWNER 2026-09-09).** Placement is the user's: the
+IDE's own panes carry a DEFAULT slot (`pane_slot_of` in
+`madcide_enums.inc` — the diagnostics pane's home is the bottom panel, the
+outline docks in the sidebar, the palettes float), and V2's `.layout`
+profiles make that default data the user overrides, per pane, per client.
+The lineage is the TUI IDEs — Turbo Pascal, RHIDE, Fresh, Helix, Neovim —
+which all lay panes, panels and views INSIDE one terminal; only a GUI could
+afford separate windows. The client-server model changes that limit: a
+second TUI client in another terminal session is a client of the same
+session (§2.3, V3 / V6 — the remote window over `listen://` is not only a
+web page), so "separate windows" become separately connected terminals.
+
 ### 2.3 A window is a client — the multi-client loop
 
 A **client record** lives on the session:

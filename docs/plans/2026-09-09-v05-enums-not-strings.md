@@ -148,10 +148,13 @@ word; gate `check-madcide-enums.sh`. Left with reasons: the view names
 (`mc11` / `c11` / `c++` — V1's emit-target enum), the page's `region` hook
 words and the theme file's class words (output / input file vocabularies at
 their boundaries), the ex verbs (`w q e r x wq`, lined's colon vocabulary —
-V2.5 owns that line). FOUND (owner decision): the former layout table keyed
-the Problems pane `"diagnostics"` while the pane spells `diags`, so it never
-received `region: sidebar`; `pane_slot_of(paneDIAGS)` preserves that
-(byte-identical GUI) — docking it is one enumerator away. d LANDED aca802a7. e as shipped: `diag_error_count` compares
+V2.5 owns that line). FOUND and FIXED (owner ruling 2026-09-09, a
+bug): the former layout table keyed the Problems pane `"diagnostics"` while
+the pane spells `diags`, so it never received a region hint;
+`pane_slot_of(paneDIAGS)` now docks it in the bottom PANEL region (its
+original home, the panel's Problems tab). The slot policy is the interim
+default; V2's `.layout` profiles make placement the user's (owner: layout
+flexibility within the UI, the TUI-IDE lineage of panes / panels / views). d LANDED aca802a7. e as shipped: `diag_error_count` compares
 `r["severity_code"] == madc::diag_severity::error`; the synthesized
 "cannot open this TU" row carries `severity_code`; `docs/madcide.md` states
 the load-time resolution and refusal rule for profiles and menus; the
