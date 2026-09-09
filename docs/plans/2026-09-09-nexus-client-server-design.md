@@ -510,6 +510,18 @@ The local half (V1–V5) is one feature ("any View in any container; a
 window is a client") and gets ONE merge-wave battery when complete
 (`testing-fulltest.md`). V6–V7 are the remote half, banked separately.
 
+**Order and release boundary (RULED, owner 2026-09-09).** The slices run
+in the order above — V1, V1.5, V2, V2.5, V3, V4, V5, then V6, then V7.
+V1–V5 is the FIRST release of the arc (one complete feature, one battery);
+V6 — transports, headless, tiers born low, the MCP seat — is the release
+AFTER it (a remote client needs the local half stable before there is
+anything to serve); V7 (external providers) ships later on its own.
+Review of this document complete (owner, 2026-09-09): §0 vocabulary, §2.1
+the file-kind vocabulary, §2.2 layout flexibility + nesting, §6 the first
+three questions, and this boundary are ruled; §6's fourth (entity
+identity across history) stays the named hard problem. V1 may begin once
+the V0.5 merge wave is pushed.
+
 ## 5. Standing defaults (owner veto welcome)
 
 - Vocabulary in code and docs: `Nexus`, `Session`, `Client`, `View`,
