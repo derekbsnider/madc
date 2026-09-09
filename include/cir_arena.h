@@ -134,6 +134,13 @@ enum DefFlags : uint32_t {
 	DF_HAS_USER_CTOR     = 1u << 8,
 	DF_HAS_USER_DTOR     = 1u << 9,
 	// func:
+	DF_FUNC_C_LINKAGE    = 1u << 9,		// v45: FuncDef::c_linkage — extern "C" declared
+						// INSIDE a namespace ([dcl.link]/6): the restore
+						// binds the unqualified C name, never the Itanium
+						// one. DK_FUNC-scoped; shares the bit with the
+						// class-only DF_HAS_USER_DTOR (the DF_PURE_VIRTUAL /
+						// DF_TYPEDEF_TAG_ALIAS kind-scoping precedent — all
+						// 32 bits are taken)
 	DF_IS_VARARGS        = 1u << 10,
 	DF_IS_VOID_PARAMS    = 1u << 11,
 	DF_DECLARATION_ONLY  = 1u << 12,

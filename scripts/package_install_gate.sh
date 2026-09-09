@@ -270,6 +270,7 @@ gate_mactar() {
     esac
     [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
     [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
+    [ -f "$root/lib/libmadcwebview.dylib" ] || fail mactar "no lib/libmadcwebview.dylib in the artifact"
 
     # 1. the shipped madc runs a program
     out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )

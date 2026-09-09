@@ -1,0 +1,18 @@
+// The object carries its module list (KG Gap obj_lane_module_dependency,
+// decided 2026-09-07): `import m;` binds libm at parse, and the .o this
+// unit compiles to records libm's TARGET spelling in __madc_module_deps, so
+// the single-object lane opens it before load — no -l on the command line.
+// libm's symbols happen to be reachable in madc's own process, so the JIT
+// and exe lanes never needed the table; the gate script asserts the table
+// itself in the emitted C11 (scripts/check-object-module-deps.sh), and the
+// GUI stage's .o lane (import madcwebview — a library madc does NOT link)
+// is where the mechanism carries real weight. (madc dialect: `import` is
+// a directive there as in C++20, and the intrinsics need no include.)
+import m;
+
+int main()
+{
+    println("sqrt {}", (int)sqrt(16.0));
+    println("cbrt {}", (int)cbrt(27.0));
+    return 0;
+}

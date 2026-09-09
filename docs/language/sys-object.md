@@ -32,7 +32,7 @@ int main(int argc, char **argv)
 | Member | Type | Mutability | Semantics (Python analog) |
 |---|---|---|---|
 | `sys.argv` | `array` | mutable | `argv[0]` = script path, then arguments (`sys.argv`) |
-| `sys.path` | `array` | mutable | search dirs for future `#load`/eval; seeded `[script-dir, "."]` (`sys.path`) |
+| `sys.path` | `array` | mutable | search dirs for future `import`/eval; seeded `[script-dir, "."]` (`sys.path`) |
 | `sys.platform` | `const char *` | fact | `"linux"`, `"darwin"`, `"win32"` (`sys.platform`) |
 | `sys.version` | `const char *` | fact | the madc version string (`sys.version`) |
 | `sys.hostname` | `const char *` | fact | the host's name — madc extension (Python: `socket.gethostname()`) |
@@ -42,7 +42,7 @@ int main(int argc, char **argv)
   `argv` is mutated. Bare `argc`/`argv` main parameters remain the raw
   C door (see [argc-argv.md](argc-argv.md)).
 - `sys.path` has Python's one-way semantics: mutations affect future
-  `#load`/eval resolution only — already-processed `#include`s are not
+  `import`/eval resolution only — already-processed `#include`s are not
   re-resolved.
 - Facts follow Python-level semantics: the values they point at are
   immutable; the members are rebindable pointers (Python allows

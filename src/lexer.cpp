@@ -29,6 +29,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// import: the module map + the one library-spelling owner
 #include "madc_posix_io.h"	// resolve_real_path (canonical_path_for_compare's primitive)
 #include "madc_pch.h"
 #include "madc_sys_includes.h"	// generated per-stdlib-flavor include search tables
@@ -1283,6 +1284,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"rust", "ns_rust"},
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
+	{"ui_web", "ns_ui_web"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1352,6 +1354,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
 {
     static const char *preferred_order[] = {
+	"bits/std_format",	// the dialect intrinsics precede everything they serve
 	"stddef.h",
 	"stdint.h",
 	"float.h",
@@ -1373,6 +1376,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_rust",
 	"ns_madc",
 	"ns_ui",
+	"ns_ui_web",
 	NULL
     };
 
@@ -1443,8 +1447,53 @@ static bool is_trivia_token(const TokenBase *t)
 	|| tt == TokenType::ttEOL || tt == TokenType::ttComment;
 }
 
+// A dialect FRAGMENT: an extensionless file under include/madc/ (ns_*,
+// bits/*) — madc code, the same set scripts/check-dialect-lean.sh holds to
+// zero includes. Every other embedded file (a .h stub, a page asset) is a
+// declaration or data surface.
+static bool embedded_dialect_fragment_p(const std::string &name)
+{
+    // The repo's layout IS the rule: `ns_*` at the top of include/madc/ and
+    // the files under bits/. "Extensionless" alone is not it — a cross
+    // prelude dir embeds libc++'s own headers (`string`, `__atomic/...`),
+    // which are C++ declaration surfaces, never dialect fragments (the
+    // darwin pack build tripped its check gate when they were scanned).
+    size_t slash = name.rfind('/');
+    std::string dir = slash == std::string::npos ? std::string() : name.substr(0, slash);
+    std::string base = slash == std::string::npos ? name : name.substr(slash + 1);
+    if ( base.empty() || base.find('.') != std::string::npos )
+	return false;
+    if ( dir.empty() )
+	return base.compare(0, 3, "ns_") == 0;
+    return dir == "bits";
+}
+
+// What a fragment's own mention may pull in: the dialect's intrinsic
+// providers (bits/*: zero-include fragments) and the C headers (.h). A C++
+// system header (<string>, <iostream>, ...) is never pulled by a fragment —
+// that is the dialect-lean line a fragment must not cross.
+static bool fragment_may_pull_header(const char *header, bool qualified_use)
+{
+    if ( !header )
+	return false;
+    std::string h(header);
+    // A sibling dialect fragment (ns_madc from <ns_ui_web>'s
+    // madc::module_available) is a zero-include surface too — an EMBEDDED
+    // extensionless file — but only a QUALIFIED use (`madc::x`) names it:
+    // bits/value_stream DEFINES `namespace madc {`, and reading that as a
+    // pull gave every iostream program the sys object (and the darwin
+    // -static-libmadc gate a madarray_destruct the ledger never carried).
+    // The C++ system headers are extensionless as well (<string>, <vector>)
+    // and are never embedded: a fragment's `getline` must not pull <string>
+    // (madcide paid the whole libstdc++ parse for it).
+    if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
+	return qualified_use;
+    return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
+}
+
 bool Program::auto_include_standard_identifier(const std::string &word,
-					       bool positional)
+					       bool positional,
+					       bool qualified_use)
 {
     if ( skip_includes )
 	return false;
@@ -1453,10 +1502,20 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     if ( suppress_auto_include_scan )
 	return false;
 
+    // A word this TU DECLARES never auto-includes — not at the declaration
+    // and not at any later mention: the TU provides the name itself
+    // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
+    // strlen(...)`; pulling <stddef.h> in as well would redeclare it).
+    if ( auto_include_declared_words.count(word) )
+	return false;
     // `typedef unsigned long size_t;` and similar declaration heads are
-    // defining the identifier, not using the standard header surface.
-    // Auto-including here injects the embedded header in the middle of
-    // the declarator and leaves a duplicate alias token behind.
+    // defining the identifier, not using the standard header surface: a
+    // word that follows a TYPE (or a struct/class/enum tag keyword) is the
+    // declarator. A decl-specifier that PRECEDES the type — const, static,
+    // extern, register, typedef, restrict — says nothing about the word
+    // after it, which is the type itself or a qualifier of it (`const
+    // string s`, `static ui::ui_host_ops ops`): that word is a USE and
+    // must scan, or the header it names never arrives.
     for ( auto it = tokens.rbegin(); positional && it != tokens.rend(); ++it )
     {
 	TokenBase *t = *it;
@@ -1467,14 +1526,29 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 	if ( tt == TokenType::ttDataType
 	  || tid == TokenID::tkSTRUCT
 	  || tid == TokenID::tkCLASS
-	  || tid == TokenID::tkENUM
-	  || tid == TokenID::tkCONST
-	  || tid == TokenID::tkEXTERN
-	  || tid == TokenID::tkSTATIC
-	  || tid == TokenID::tkREGISTER
-	  || tid == TokenID::tkTYPEDEF
-	  || tid == TokenID::tkRESTRICT )
+	  || tid == TokenID::tkENUM )
+	{
+	    // A fragment's declarators are the fragment's, not the TU's.
+	    if ( !auto_include_fragment_scan )
+		auto_include_declared_words.insert(word);
 	    return false;
+	}
+	// `namespace X {` DEFINES X — never a use of the ns_X surface; `using
+	// namespace X;` is a use (the token before `namespace` says which).
+	if ( tid == TokenID::tkNAMESPACE )
+	{
+	    bool using_directive = false;
+	    for ( ++it; it != tokens.rend(); ++it )
+	    {
+		if ( is_trivia_token(*it) )
+		    continue;
+		using_directive = (*it)->id() == TokenID::tkUSING;
+		break;
+	    }
+	    if ( !using_directive )
+		return false;
+	    break;	// `using namespace X;` — a use; fall through to the lookup
+	}
 	// An identifier in member-access position (`G.player.set`, `p->set`)
 	// or qualified by anything other than `std` (`ui::set`,
 	// `madc::getline`) cannot denote the std-header surface — matching
@@ -1501,6 +1575,12 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
+	return false;
+    // Inside a dialect fragment only the intrinsic and C-header providers
+    // answer (fragment_may_pull_header) — a fragment's `println(stderr,
+    // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
+    // <string>.
+    if ( auto_include_fragment_scan && !fragment_may_pull_header(header, qualified_use) )
 	return false;
 
     // Host policy must not be bypassed by the auto-include convenience: the
@@ -1586,6 +1666,169 @@ void Program::tokenize_synthetic_system_include(const std::string &header,
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
 }
 
+// import — C++20 [cpp.pre] made whole (docs/language/import.md; design:
+// docs/plans/2026-09-06-ui-web-target-and-madcide-gui.md §3.1). `import` is
+// an identifier with special meaning in DIRECTIVE POSITION only: the first
+// token of a logical line, followed by a module name, '<' or '"'. Never a
+// reserved word (`int import = 3;` compiles); never active in C or before
+// C++20 (the madc dialect reserves the full C++ keyword set, so it is on
+// there).
+//
+// The position test. The gates come first so a non-directive `import` costs
+// nothing; horizontal whitespace after the word is consumed only to look at
+// the next char and is given back (one normalized space — the compound
+// type-specifier scan's convention) when this is NOT a directive.
+bool Program::import_directive_position()
+{
+    if ( !cpp_keyword_active(STD_CPP20) )
+	return false;
+    if ( source.line() == source.last_token_line() )
+	return false;
+    int ws = 0;
+    while ( source.peek() == ' ' || source.peek() == '\t' )
+    {
+	source.get();
+	++ws;
+    }
+    int c = source.peek();
+    bool directive = c == '<' || c == '"' || isalpha(c) || c == '_';
+    if ( !directive && ws > 0 )
+	source.pushback_reread(" ");
+    return directive;
+}
+
+// import <header>;  import "header";  import module [as alias];
+// Header-unit spellings are served as the include (a header unit's
+// declarations plus, as the documented approximation, its macros): the
+// directive text is pushed back for the ONE #include reader — synthesized
+// text with a newline, so pushback_reread's frozen-cursor drain leaves the
+// includer's line and column counters untouched. The module form binds the
+// library FIRST, then serves the interface (the registry row's embedded
+// header) the same way; the alias form binds the library only.
+TokenBase *Program::tokenize_import_directive()
+{
+    auto skip_ws = [this]() {
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+    };
+    auto finish_semicolon = [this, &skip_ws]() {
+	skip_ws();
+	if ( source.peek() != ';' )
+	    Throw << "import: expected ';'" << flush;
+	source.get();
+    };
+    skip_ws();
+    int c = source.peek();
+    if ( c == '<' || c == '"' )
+    {
+	char close = c == '<' ? '>' : '"';
+	source.get();
+	std::string header;
+	while ( source.good() && !source.eof() && source.peek() != close
+	     && source.peek() != '\n' && source.peek() != '\r' )
+	    header += source.get();
+	if ( source.peek() != close )
+	    Throw << "import: unterminated header name" << flush;
+	source.get();
+	finish_semicolon();
+	source.pushback_reread(std::string("#include ") + (close == '>' ? "<" : "\"")
+			       + header + (close == '>' ? ">" : "\"") + "\n");
+	return getToken();
+    }
+    std::string name;
+    while ( source.good() && !source.eof()
+	 && (isalnum(source.peek()) || source.peek() == '_' || source.peek() == '.') )
+	name += source.get();
+    if ( name.empty() )
+	Throw << "import: expected a module name, '<' or '\"'" << flush;
+    skip_ws();
+    std::string alias;
+    if ( isalpha(source.peek()) )
+    {
+	std::string kw;
+	while ( source.good() && !source.eof() && isalpha(source.peek()) )
+	    kw += source.get();
+	if ( kw != "as" )
+	    Throw << "import: expected 'as' or ';' after module name '" << name << "'" << flush;
+	skip_ws();
+	while ( source.good() && !source.eof()
+	     && (isalnum(source.peek()) || source.peek() == '_') )
+	    alias += source.get();
+	if ( alias.empty() )
+	    Throw << "import: expected an alias after 'as'" << flush;
+    }
+    finish_semicolon();
+    if ( !is_dynamic_library_loading_enabled() )
+	Throw << "import: library binding is disabled by registration policy" << flush;
+    const MadcModuleSpec *row = madc_module_find(name);
+    std::string spelling = madc_module_library_spelling(name);
+    // The row's flags are module-map DATA (Rule 7): a GUI module lifts the
+    // memory guard at run start — recorded here, acted on by the driver.
+    if ( row && (row->flags & MADC_MODULE_GUI) )
+	bound_gui_module = true;
+    if ( alias.empty() && !(row && row->interface) )
+	Throw << "import: module '" << name << "' has no interface; bind it with"
+	      << " `import " << name << " as <alias>;`" << flush;
+    // A LAZY row's interface form binds nothing at parse and joins no link
+    // closure: its interface is served between the synthetic module markers,
+    // so every prototype in it becomes a typed first-call slot against the
+    // row's spelling (parseFunction + CirBuilder::dyn_module_callee). The
+    // program compiles and runs without the library and asks
+    // madc::module_available before using it. The alias form keeps the
+    // eager binding (a namespace needs the exports to answer member lookups).
+    if ( alias.empty() && row && (row->flags & MADC_MODULE_LAZY) )
+    {
+	module_optional_libs.push_back(spelling);	// the object's manifest: optional
+	DBG(std::cout << "import " << name << " -> " << spelling << " (lazy)" << std::endl);
+	source.pushback_reread(std::string("#pragma madc module_begin(\"") + spelling
+			       + "\")\n#include <" + row->interface + ">\n"
+			       + "#pragma madc module_end\n");
+	return getToken();
+    }
+    bind_module_namespace(alias, spelling, /*link_form=*/alias.empty());
+    DBG(std::cout << "import " << name << (alias.empty() ? std::string() : " as " + alias)
+		  << " -> " << spelling << std::endl);
+    if ( alias.empty() )
+	source.pushback_reread(std::string("#include <") + row->interface + ">\n");
+    return getToken();
+}
+
+// The binder shared by `import` and the low-level `#load`. JIT: open the
+// spelled library into the default symbol scope (madc_module_open: beside the
+// running binary's ../lib first, then the loader's own search) — or, under
+// --no-auto-load or in an emit-only cross madc, bind to the program's own
+// scope: the library is linked, not loaded. A namespace (alias form) records
+// the spelling the member lowering passes to __madc_dl_member; the link form
+// records it for the native link closure (module_link_libs).
+void Program::bind_module_namespace(const std::string &ns, const std::string &spelling,
+				    bool link_form)
+{
+    void *handle = NULL;
+#ifndef MADC_CROSS_TARGET
+    if ( is_auto_library_loading_enabled() )
+    {
+	std::string err;
+	handle = madc_module_open(spelling, err);
+	if ( !handle )
+	    Throw << "import: cannot load '" << spelling << "': " << err << flush;
+	loaded_lib_paths.push_back(spelling);	// the frozen-forest link closure
+    }
+#endif
+    if ( !handle )
+	handle = madcdl_open_self();
+    DBG(std::cout << "bind module " << spelling
+		  << (ns.empty() ? std::string() : " as " + ns)
+		  << (link_form ? " (link form)" : "") << std::endl);
+    if ( link_form )
+	module_link_libs.push_back(spelling);
+    if ( !ns.empty() )
+    {
+	dlopen_map[ns] = handle;
+	dl_library_spelling[ns] = spelling;
+	namespace_variables_for_write(ns);	// create the (empty) namespace
+    }
+}
+
 void Program::tokenize_embedded_header_text(const std::string &name,
 					    const std::string &text,
 					    bool protocol_visit)
@@ -1600,7 +1843,14 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_record_edge(name);
 	Source saved = std::move(source);
 	bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
-	suppress_auto_include_scan = true;
+	bool saved_fragment_scan = auto_include_fragment_scan;
+	// A dialect FRAGMENT is madc code and may lean on the dialect's
+	// intrinsics (print / println / format) and the C headers: its mentions
+	// keep scanning, restricted to those providers
+	// (auto_include_standard_identifier). Every other embedded header is a
+	// declaration surface — no scan, as before.
+	auto_include_fragment_scan = embedded_dialect_fragment_p(name);
+	suppress_auto_include_scan = !auto_include_fragment_scan;
 	source = Source();
 	source.fname(name.c_str());
 	{ ReadTimer _rt(_read_seconds); source.str(text); }
@@ -1630,6 +1880,7 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_unit_stack.pop_back();
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	auto_include_fragment_scan = saved_fragment_scan;
 	if ( protocol_visit )
 		pack_protocol_serving_end(protocol_saved);
 	mark_embedded_include_flag(name);
@@ -1715,6 +1966,101 @@ void Program::expand_pending_auto_include_macros(size_t original_start)
     pending_auto_include_identifiers.clear();
 }
 
+// The identifiers a dialect fragment's TEXT mentions (code only — `//` and
+// `/* */` comments and string literals skipped), fed through the ordinary
+// auto-include scan in FRAGMENT mode so the provider gate applies (the
+// intrinsics' bits/* fragments, sibling ns_* fragments, the C headers —
+// never a C++ system header). Whatever it queues joins `batch` and is
+// itself scanned, to closure. Positional=false: a fragment's own
+// declarators never suppress (they are recorded for nothing here either).
+void Program::queue_fragment_prerequisites(std::set<std::string> &batch)
+{
+    std::set<std::string> scanned;
+    bool saved_fragment_scan = auto_include_fragment_scan;
+    bool saved_suppress = suppress_auto_include_scan;
+    auto_include_fragment_scan = true;
+    suppress_auto_include_scan = false;
+    for ( bool grew = true; grew; )
+    {
+	grew = false;
+	std::vector<std::string> todo;
+	for ( std::set<std::string>::const_iterator it = batch.begin();
+	      it != batch.end(); ++it )
+	    if ( !scanned.count(*it) && embedded_dialect_fragment_p(*it) )
+		todo.push_back(*it);
+	for ( size_t ti = 0; ti < todo.size(); ++ti )
+	{
+	    scanned.insert(todo[ti]);
+	    const std::string *text = find_embedded_header(todo[ti]);
+	    if ( !text )
+		continue;
+	    const std::string &t = *text;
+	    std::string prev_word, prev_prev_word;
+	    for ( size_t i = 0; i < t.size(); )
+	    {
+		char c = t[i];
+		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '/' )
+		{
+		    while ( i < t.size() && t[i] != '\n' )
+			++i;
+		    continue;
+		}
+		if ( c == '/' && i + 1 < t.size() && t[i + 1] == '*' )
+		{
+		    size_t e = t.find("*/", i + 2);
+		    i = e == std::string::npos ? t.size() : e + 2;
+		    continue;
+		}
+		if ( c == '"' || c == '\'' )
+		{
+		    char q = c;
+		    ++i;
+		    while ( i < t.size() && t[i] != q )
+			i += (t[i] == '\\' && i + 1 < t.size()) ? 2 : 1;
+		    ++i;
+		    continue;
+		}
+		if ( isalpha((unsigned char)c) || c == '_' )
+		{
+		    size_t b = i;
+		    while ( i < t.size() && (isalnum((unsigned char)t[i]) || t[i] == '_') )
+			++i;
+		    std::string word = t.substr(b, i - b);
+		    // A word right after `namespace` is a definition (`namespace
+		    // madc {`), unless `using namespace`; a namespace surface is
+		    // pulled only by a QUALIFIED use — `word ::`.
+		    size_t k = i;
+		    while ( k < t.size() && (t[k] == ' ' || t[k] == '\t') )
+			++k;
+		    bool qualified = k + 1 < t.size() && t[k] == ':' && t[k + 1] == ':';
+		    if ( prev_word == "namespace" && prev_prev_word != "using" )
+		    {
+			prev_prev_word = prev_word;
+			prev_word = word;
+			continue;
+		    }
+		    prev_prev_word = prev_word;
+		    prev_word = word;
+		    auto_include_standard_identifier(word, false, qualified);
+		    continue;
+		}
+		++i;
+	    }
+	}
+	if ( !pending_auto_include_headers.empty() )
+	{
+	    for ( std::set<std::string>::const_iterator pi
+		    = pending_auto_include_headers.begin();
+		  pi != pending_auto_include_headers.end(); ++pi )
+		if ( batch.insert(*pi).second )
+		    grew = true;
+	    pending_auto_include_headers.clear();
+	}
+    }
+    auto_include_fragment_scan = saved_fragment_scan;
+    suppress_auto_include_scan = saved_suppress;
+}
+
 void Program::inject_pending_auto_includes()
 {
     static const bool prelude_probe = getenv("MADC_PRELUDE_CACHE_PROBE") != NULL;
@@ -1738,6 +2084,14 @@ void Program::inject_pending_auto_includes()
     {
 	std::set<std::string> batch;
 	batch.swap(pending_auto_include_headers);
+	// A dialect fragment's PREREQUISITES join the batch BEFORE anything is
+	// tokenized (queue_fragment_prerequisites), so the order table places
+	// them ahead of the fragment and lex order stays parse order — the
+	// preprocessor state a fragment's guards read (`_GLIBCXX_STRING` after
+	// <string>) is decided at lex time, so tokens must never be reordered
+	// afterwards (moving a later batch to the head broke exactly that:
+	// ns_madc's std::string conveniences parsed before <string>).
+	queue_fragment_prerequisites(batch);
 	std::vector<std::string> ordered = ordered_auto_include_headers(batch);
 	for ( std::vector<std::string>::const_iterator hi = ordered.begin();
 	      hi != ordered.end(); ++hi )
@@ -2505,6 +2859,8 @@ void Program::push_token_with_literal_concat(TokenBase *tb)
     if ( pack_protocol_unit )	// __need serving: the includer owns this token
 	pack_protocol_token_owner[tb] = pack_protocol_unit;	// (identity-keyed)
     pin_pending_pack_ops(tb);
+    if ( !lazy_module_spelling.empty() )	// inside a LAZY row's interface
+	_lazy_module_tokens[tb] = lazy_module_spelling;
 }
 
 // Pin queued #pragma pack ops to the first real token emitted after the
@@ -2616,7 +2972,13 @@ void Program::_tokenizer_init()
     include_guard_by_file.clear();
     pending_auto_include_headers.clear();
     pending_auto_include_identifiers.clear();
+    auto_include_declared_words.clear();
     suppress_auto_include_scan = false;
+    auto_include_fragment_scan = false;
+    bound_gui_module = false;
+    module_optional_libs.clear();
+    lazy_module_spelling.clear();
+    _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
@@ -6453,30 +6815,10 @@ TokenBase *Program::_getToken()
 			source.get();
 		    if ( source.peek() == ';' )
 			source.get();
-		    // dlopen the library — unless auto-library-loading is off, in
-		    // which case the named library is NOT loaded; the namespace is
-		    // bound to the global symbol scope (dlopen(NULL)) so its symbols
-		    // come from explicit linking (`madc -l<lib>` / the host) instead.
-		    void *handle;
-		    if ( is_auto_library_loading_enabled() )
-		    {
-			handle = madcdl_open_global(libname.c_str());
-			if ( !handle )
-			{
-			    std::string err = "Failed to load library: " + libname + ": " + madcdl_error();
-			    Throw << err.c_str() << flush;
-			}
-			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
-			loaded_lib_paths.push_back(libname);
-		    }
-		    else
-		    {
-			handle = madcdl_open_self();
-			DBG(std::cout << "#load \"" << libname << "\" as " << ns_name
-				      << " — auto-load off, bound to global scope" << std::endl);
-		    }
-		    dlopen_map[ns_name] = handle;
-		    namespace_variables_for_write(ns_name); // create empty namespace
+		    // #load "spelling" as ns; — the low-level directive (tooling /
+		    // fixtures, like #pragma): the import binder with the file spelled
+		    // VERBATIM — you name the file, you own the platform. testdlopen.
+		    bind_module_namespace(ns_name, libname, /*link_form=*/false);
 		    return getToken();
 		}
 		if ( directive == "define" )
@@ -8069,6 +8411,12 @@ TokenBase *Program::_getToken()
 			    break;
 		    }
 		}
+		// C++20 [cpp.pre]: `import` is a DIRECTIVE when it heads a logical
+		// line and a module name, '<' or '"' follows; an identifier
+		// otherwise (`int import = 3;` compiles). Gated: the madc dialect
+		// and C++20+ only; never in C or earlier C++.
+		if ( word == "import" && import_directive_position() )
+		    return tokenize_import_directive();
 		if ( (kmi=keyword_map.find(sid)) != keyword_map.end() )
 		    return (*kmi)->clone();
 		// C++ alternative-token operators (and/or/not/...): empty in C
@@ -9234,6 +9582,55 @@ void Program::handle_pragma_body()
 	// multi-line /* */ comment on this line)
 	consume_directive_line_tail();
     }
+    else if ( pragma == "madc" )
+    {
+	// `#pragma madc module_begin("<spelling>")` / `module_end` — the import
+	// directive's synthetic wrap of a LAZY module row's interface (never
+	// written by hand): the prototypes between them bind at first call.
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	std::string what;
+	while ( source.good() && !source.eof()
+	     && (isalnum(source.peek()) || source.peek() == '_') )
+	    what += source.get();
+	if ( what == "module_begin" )
+	{
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    std::string spelling;
+	    if ( source.peek() == '(' )
+	    {
+		source.get();
+		if ( source.peek() == '"' )
+		{
+		    source.get();
+		    while ( source.good() && !source.eof() && source.peek() != '"' )
+			spelling += source.get();
+		    if ( source.peek() == '"' )
+			source.get();
+		}
+		if ( source.peek() == ')' )
+		    source.get();
+	    }
+	    if ( spelling.empty() )
+		Throw << "#pragma madc module_begin: expected (\"<library spelling>\")" << flush;
+	    // Lexing runs ahead of parsing (the whole TU lexes first, then the
+	    // auto-include injector reorders the stream), so the range is a
+	    // TOKEN-IDENTITY fact: every token emitted from here to module_end
+	    // carries the spelling (_lazy_module_tokens) and parseFunction reads
+	    // it off the prototype's own token.
+	    lazy_module_spelling = spelling;
+	    DBG(std::cout << "#pragma madc module_begin(" << spelling << ")" << std::endl);
+	}
+	else if ( what == "module_end" )
+	{
+	    lazy_module_spelling.clear();
+	    DBG(std::cout << "#pragma madc module_end" << std::endl);
+	}
+	else
+	    Throw << "#pragma madc: unknown directive '" << what << "'" << flush;
+	consume_directive_line_tail();
+    }
     else if ( pragma == "prefer" )
     {
 	std::vector<std::string> order;
@@ -9386,6 +9783,7 @@ TokenBase *Program::getRealToken()
 	    default:
 		if ( keep_trivia && !pending_trivia.empty() )
 		    tb->leading_trivia = std::move(pending_trivia);
+		source.note_token_line(tb->line);	// import's directive-position test
 		return tb;
 	}
     }

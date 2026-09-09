@@ -1,0 +1,1 @@
+the gcc-torture shape typedefs size_t as unsigned long (LP64); LLP64 size_t is unsigned long long and the win64 pack already declares it — "repeated declaration size_t"

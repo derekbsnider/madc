@@ -102,7 +102,20 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    leaves no trace when skipped, which is why it fails silently.
    Standing instances: balanced-delimiter scanning is `DelimDepth`
    (`delimiter-tracking.md`); path canonicalization for comparison is
-   `canonical_path_for_compare()`.
+   `canonical_path_for_compare()`; a library's platform spelling (the `lib`
+   prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
+   `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
+   `check-one-library-spelling.sh`); a module-bound namespace's members
+   materialize in `Program::resolve_module_member()` — reached only
+   through `find_namespace_member()`'s miss path (gated by
+   `check-one-module-member-owner.sh`); the ui INPUT owners are
+   `key_resolver` (`include/madcdis/keys.h` — chords, key spelling),
+   `focus_state` (`include/madcdis/ui_focus.h` — focus slot, choice
+   selection, tab/arrow/enter) and the keys → events loop `ui_apply_keys`
+   (`include/madcdis/ui_input.h`), consumed by BOTH `tui_model` and
+   `web_model` (gated by `check-one-key-owner.sh`); a module row's
+   flags (`MADC_MODULE_GUI`, `MADC_MODULE_LAZY`) are module-map DATA in
+   `src/madc_modules.cpp`, never a name test.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -323,7 +336,8 @@ no matter how small.
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
 | [value-first.md](.claude/rules/value-first.md)   |    30 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
-| [dialect-lean.md](.claude/rules/dialect-lean.md) |    35 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
+| [dialect-lean.md](.claude/rules/dialect-lean.md) |    38 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
+| [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 
@@ -335,7 +349,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 11 | Targeted tests per change; `make -C src fulltest` once per merge wave |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 18 | Targeted tests per change; `make -C src fulltest` once per merge wave — and the merge wave is a COMPLETE feature: bank every slice + known-open fix before the multi-hour push-gate lanes |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -360,10 +374,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **34 rules, 993 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **35 rules, 1035 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~414 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1415 lines.**
+- **Grand total loaded by Claude Code per turn: ~1471 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

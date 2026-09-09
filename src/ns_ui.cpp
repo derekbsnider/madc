@@ -38,8 +38,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -53,9 +55,18 @@
 #include "madcdis/verbs.h"
 #include "madcdis/projection.h"
 #include "madcdis/render_text.h"
+#include "madcdis/term_screen.h"	// term_feed: the embedded Terminal's screen
 #include "madcdis/tui_model.h"
 #include "madcdis/tui_provider.h"
+#include "madcdis/web_model.h"
 #include "madcdis/world_text.h"
+#include "rt/rt_task.h"	// the window's wait = the cooperative scheduler's (fire_due / runnable / yield / live)
+
+// How long a window with LIVE cooperative tasks may park in its platform
+// loop before the engine probes the scheduler again (ui_web_session::
+// read_events): the Terminal/Output pumps' worst-case latency, and the
+// only cost of an idle-but-live window.
+static const int64_t WEB_TASK_TICK_MS = 25;
 
 using madc::hub::world;
 using madc::hub::world_doc;
@@ -79,6 +90,49 @@ using madc::hub::affordance_gatherer;
 namespace madc {
     bool getline(value &out);
     value &eval_string_ctx(value &out, const char *source, value &ctx);
+}
+// The embedded include/madc/** files (scripts/gen_embedded_headers.sh):
+// the DOM frontend reads its page from them (include/madc.h declares this
+// for the lexer; ns_ui.cpp does not include the compiler's header).
+const std::string *find_embedded_header(const std::string &name);
+
+// A script-hosted ui TARGET (the web target is one, a test fake is
+// another): a table of C function pointers a madc fragment fills and
+// registers ONCE under a target name. LAYOUT CONTRACT with the script-side
+// declaration in include/madc/ns_ui (namespace ui) — the same four
+// pointers in the same order, append-only, keep both in sync. The engine
+// calls them on the opening thread only (design §3.7).
+namespace ui {
+    typedef void *(*ui_host_open_fn)(const char *title, const char *page,
+				     void *ctx);
+    typedef void  (*ui_host_close_fn)(void *host);
+    typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
+    typedef int64_t (*ui_host_run_fn)(void *host);
+    typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
+    struct ui_host_ops
+    {
+	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
+				// post_event's key; 0 = cannot serve here
+	ui_host_close_fn close;
+	ui_host_eval_fn	 eval;	// run script text in the page; 0 = ok
+	ui_host_run_fn	 run;	// run the host's loop until ONE event was
+				// posted, then return 0; nonzero = the host
+				// ended (the window closed)
+	ui_host_menu_fn	 menu;	// draw the native menu bar from the menu
+				// JSON (S2); 0 = ok; optional (a host with
+				// no chrome leaves it 0)
+	ui_host_dialog_fn dialog; // open the native file dialog the request
+				// JSON describes (S4); 0 = shown (the answer
+				// arrives as a posted {"kind":"dialog"} event);
+				// nonzero = unsupported here; optional
+	ui_host_tick_fn	 tick;	// end the running/next loop after ms when no
+				// event did (run() returns 0, nothing posted)
+				// — the cooperative scheduler's bounded wait
+				// while tasks are live; nonzero = no timer
+				// here; optional
+    };
 }
 
 namespace {
@@ -121,31 +175,281 @@ handle_table<ui_session> &ui_sessions()
     return sessions;
 }
 
-// A TUI session (R5): the model (layout/focus/key semantics) plus the
-// registered byte-moving target, and the event queue one read batch
-// fills. Independent of world sessions — an application holds both
-// handles. Same handle discipline as ui_sessions (handle_table).
-struct ui_tui
+// The target-generic ui session (slice 2 of the web-target arc): one
+// FRONTEND per ui::open handle. A frontend pairs a model with the thing
+// that shows it and owns the event queue one read batch fills:
+//   - the GRID frontend (level 1, R5): tui_model (layout / focus / key
+//     semantics / diffing) over a registered byte-moving tui_target (the
+//     built-in one is the hand-rolled VT100/xterm target, src/ui_term.cpp);
+//   - the DOM frontend (level 3): web_model over a script-hosted target
+//     (the web target, <ns_ui_web>) — the next step of this slice.
+// Independent of world sessions — an application holds both handles. Same
+// handle discipline as ui_sessions (handle_table). The publics speak to
+// this interface only; the tui_* names are the "term" target's spellings
+// over the same handles.
+struct ui_frontend
+{
+    std::vector<madc::hub::tui_event> queue;	// one read batch's events
+    size_t next_event;
+    size_t rows, cols;				// the surface, in text cells
+    ui_frontend() : next_event(0), rows(0), cols(0) {}
+    virtual ~ui_frontend() {}
+    // Enter the target (grid mode; a window); report the surface size.
+    // False = this target cannot serve here (reason on stderr).
+    virtual bool open(size_t &rows, size_t &cols) = 0;
+    virtual void close() = 0;
+    // Compose the value-shaped projection tree and present it.
+    virtual void render(ui_session *s, madc::value &tree) = 0;
+    // Refill `queue` with the next batch of semantic events (blocks);
+    // false = the input source ended.
+    virtual bool read_events() = 0;
+    virtual void size(size_t &rows, size_t &cols) = 0;
+    virtual void set_bindings(const madc::hub::tui_bindings &b) = 0;
+    virtual const std::string &pending_chord() const = 0;
+    // Terminal-only capabilities: refused by default (false).
+    virtual bool suspend() { return false; }
+    virtual bool resume() { return false; }
+    // Forget what is on the surface so the NEXT render repaints all.
+    virtual void refresh() {}
+    // Script text into a page-hosted surface (the test seam); a grid has
+    // no page: false.
+    virtual bool eval_page(const char *) { return false; }
+    // Native file dialogs (S4): can this surface show one, and show the
+    // one the request JSON describes (the answer arrives as an event). A
+    // grid has none: false.
+    virtual bool dialogs() const { return false; }
+    virtual bool dialog(const char *) { return false; }
+};
+
+struct ui_grid_frontend : ui_frontend
 {
     madc::hub::tui_target *target;
     madc::hub::tui_model   model;
     madc::hub::tui_grid	   painted;	// the diff basis
-    std::vector<madc::hub::tui_event> queue;
-    size_t next_event;
-    size_t rows, cols;
-    ui_tui() : target((madc::hub::tui_target *)0), next_event(0),
-	       rows(0), cols(0) {}
+    ui_grid_frontend() : target((madc::hub::tui_target *)0) {}
+
+    bool open(size_t &r, size_t &c)
+    {
+	madc::hub::register_builtin_tui_targets();
+	target = madc::hub::create_tui_target("term");
+	if ( !target )
+	{
+	    fprintf(stderr, "ui::open: no TUI target available\n");
+	    return false;
+	}
+	if ( !target->open(r, c) )
+	{
+	    delete target;
+	    target = (madc::hub::tui_target *)0;
+	    return false;
+	}
+	return true;
+    }
+    void close()
+    {
+	// Target teardown is this consumer's own step (see handle_table.h);
+	// the slot rule (delete + null, no reuse) is the table's.
+	if ( !target )
+	    return;
+	target->close();
+	delete target;
+	target = (madc::hub::tui_target *)0;
+    }
+    // Only rows that changed since the last render repaint. The tree
+    // arrives already access-filtered (typesetting only, the render_tree
+    // contract).
+    void render(ui_session *s, madc::value &tree)
+    {
+	const madc::hub::tui_grid &g =
+	    model.compose(s->r, madc::hub::value_to_uinode(s->w, tree),
+			  rows, cols);
+	target->paint(painted, g);
+	painted = g;
+    }
+    bool read_events()
+    {
+	std::vector<madc::hub::tui_keyev> keys;
+	if ( !target->read_keys(keys) )
+	    return false;
+	queue = model.apply_keys(keys);
+	next_event = 0;
+	return true;
+    }
+    void size(size_t &r, size_t &c) { target->size(r, c); }
+    void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
+    const std::string &pending_chord() const { return model.pending_chord(); }
+    bool suspend() { return target->suspend(); }
+    bool resume()
+    {
+	if ( !target->resume() )
+	    return false;
+	target->size(rows, cols);
+	painted = madc::hub::tui_grid();
+	return true;
+    }
+    void refresh() { painted = madc::hub::tui_grid(); }
 };
 
-handle_table<ui_tui> &ui_tuis()
+// The script-hosted target registry: name -> the host's ops table (the
+// fragment's static lives for the program; the engine never copies it).
+// Populated by dynamic initialization before main, read by ui::open.
+std::map<std::string, const ui::ui_host_ops *> &ui_hosts()
 {
-    static handle_table<ui_tui> tuis;
-    return tuis;
+    static std::map<std::string, const ui::ui_host_ops *> hosts;
+    return hosts;
 }
 
-ui_tui *ui_tui_get(int64_t handle)
+// The DOM frontend (level 3): web_model over a script-hosted target. The
+// host runs the platform loop; the page posts one JSON object per event
+// through the host's bound callback -> ui::post_event(ctx, json), which
+// lands in `inbound`; read_events drains one object through the model
+// into the SAME semantic events the grid emits. The page text is the
+// engine's (Task 6 embeds it); the host only shows it.
+struct ui_dom_frontend : ui_frontend
 {
-    return ui_tuis().get(handle);
+    madc::hub::web_model	 model;
+    const ui::ui_host_ops	*ops;
+    void			*host;		// the host's own handle
+    std::deque<std::string>	 inbound;	// posted, not yet applied
+    std::string			 name;		// the target name (title)
+    ui_dom_frontend(const std::string &target, const ui::ui_host_ops *o)
+	: ops(o), host((void *)0), name(target) {}
+
+    // The ONE embedded page: the applier + input relay (ui_web/page.js) and
+    // the default look (ui_web/page.css), baked in with the headers
+    // (scripts/gen_embedded_headers.sh). The page knows the DOM ops and the
+    // key spellings — never an editor or an action.
+    static std::string page_html()
+    {
+	const std::string *js = find_embedded_header("ui_web/page.js");
+	const std::string *css = find_embedded_header("ui_web/page.css");
+	std::string html = "<!doctype html><html><head><meta charset=\"utf-8\">"
+			   "<style>";
+	if ( css )
+	    html += *css;
+	html += "</style></head><body><div id=\"root\"></div>"
+		"<span id=\"measure\">M</span>"
+		"<input id=\"kb\" autofocus autocomplete=\"off\" spellcheck=\"false\">"
+		"<script>";
+	if ( js )
+	    html += *js;
+	html += "</script></body></html>";
+	return html;
+    }
+    bool open(size_t &r, size_t &c)
+    {
+	const std::string page = page_html();
+	host = ops->open("madc", page.c_str(), (void *)this);
+	if ( !host )
+	{
+	    fprintf(stderr, "ui::open: target '%s' cannot serve here\n",
+		    name.c_str());
+	    return false;
+	}
+	r = model.rows();
+	c = model.cols();
+	return true;
+    }
+    void close()
+    {
+	if ( !host )
+	    return;
+	if ( ops->close )
+	    ops->close(host);
+	host = (void *)0;
+    }
+    void render(ui_session *s, madc::value &tree)
+    {
+	std::string ops_json =
+	    model.compose(s->r, madc::hub::value_to_uinode(s->w, tree));
+	if ( ops->eval )
+	    ops->eval(host, ("madcApply(" + ops_json + ")").c_str());
+	// The native menu bar (S2): the composed root's `menu` hint, resolved
+	// against the bindings, reaches the host only when it changed.
+	if ( ops->menu && model.menu_changed() )
+	    ops->menu(host, model.menu_json().c_str());
+    }
+    // The window's wait is the cooperative scheduler's ONE blocking
+    // decision, as the terminal's is (src/ui_term.cpp): fire what is due
+    // and hand runnable tasks the CPU BEFORE parking in the platform loop,
+    // and when tasks ran, synthesize a `wake` — the application recomposes,
+    // so a program's output streams into the Terminal tab and a build into
+    // Output without a keystroke. While tasks are LIVE but parked (an fd
+    // wait, a sleep) the platform wait is BOUNDED by the host's tick, so
+    // the probe runs again shortly; with no live task the loop blocks as
+    // before (zero cost). A host without a tick cannot bound the wait: the
+    // pumps then progress only on input (the pre-tick shape).
+    bool read_events()
+    {
+	while ( inbound.empty() )
+	{
+	    bool ran = false;
+	    __madc_task_fire_due();
+	    while ( inbound.empty() && __madc_task_runnable() > 0 )
+	    {
+		__madc_yield();
+		ran = true;
+	    }
+	    if ( !inbound.empty() )
+		break;
+	    if ( ran )
+	    {
+		queue.clear();
+		madc::hub::tui_event e;
+		e.kind = madc::hub::tui_event_kind::wake;
+		queue.push_back(e);
+		next_event = 0;
+		return true;
+	    }
+	    if ( ops->tick && __madc_task_live() > 0 )
+		ops->tick(host, WEB_TASK_TICK_MS);
+	    if ( ops->run(host) != 0 )
+		return false;		// the host ended: input is over
+	}
+	std::string json = inbound.front();
+	inbound.pop_front();
+	queue = model.apply_input(json);
+	next_event = 0;
+	return true;
+    }
+    void size(size_t &r, size_t &c)
+    {
+	r = model.rows();
+	c = model.cols();
+    }
+    void set_bindings(const madc::hub::tui_bindings &b) { model.set_bindings(b); }
+    const std::string &pending_chord() const { return model.pending_chord(); }
+    // Forget what the page holds so the next render paints every edit
+    // node in full — the grid frontend's painted-grid reset.
+    void refresh() { model.reset_surface(); }
+    bool eval_page(const char *js)
+    {
+	return host && ops->eval && ops->eval(host, js ? js : "") == 0;
+    }
+    bool dialogs() const { return host && ops->dialog; }
+    bool dialog(const char *json)
+    {
+	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
+    }
+};
+
+// The live DOM frontends — post_event's key is a `ctx` a host hands back,
+// and a host is script code: an unknown key is refused, never followed.
+std::set<ui_dom_frontend *> &ui_dom_live()
+{
+    static std::set<ui_dom_frontend *> live;
+    return live;
+}
+
+handle_table<ui_frontend> &ui_frontends()
+{
+    static handle_table<ui_frontend> frontends;
+    return frontends;
+}
+
+ui_frontend *ui_frontend_get(int64_t handle)
+{
+    return ui_frontends().get(handle);
 }
 
 // Key spelling at the value boundary: the model's tui_key_name is the one
@@ -218,6 +522,122 @@ bool ui_script_executor(action_env &env, const invocation &inv,
     madc::value ctx = madc::value::make_object(c);
     madc::eval_string_ctx(out, source.c_str(), ctx);
     return out.is_string() && !out.as_string().empty();
+}
+
+
+// The ONE event -> value-object shaping (names at the boundary), shared by
+// every target — a key on the terminal and the same key in a window arrive
+// at the application as the same object:
+//   { event:"text",   text:"..." }       a coalesced printable run
+//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
+//       option:N (1-based, the choose contract) when a focused choice
+//       existed — the focused row for keys the widget does not consume
+//   { event:"action", action:"name", seq:"^k s" }  a bound sequence
+//   { event:"choose", option:N, action:"name" }  N is 1-based — the
+//       same number the level-0 menu prints for that option
+//   { event:"focus" } / { event:"resize" }  recompose and re-render
+//   { event:"wake" }                     background tasks drained
+//   { event:"snapshot", text:"..." }     a page reported its text (the
+//       DOM frontend's test seam)
+//   { event:"pointer", phase:"down"|"drag"|"up", offset:N, subject:E, tag:T }
+//   Every object also carries event_code (ui::event_kind), a key event
+//   key_code (ui::key), a pointer event phase_code (ui::pointer_phase) —
+//   the enum values script code compares against (<bits/ui_enums>).
+//       a pointing-device gesture on an edit node: N is the BYTE offset
+//       in that node's text the pointer resolved to (-1 = the press named
+//       no text position: the node itself, a window's header), E (absent
+//       when the node projects nothing) the entity it projects — its
+//       document — and T (absent when the node carried none) the `tag`
+//       hint the composer stamped on it, echoed as data — its own identity
+//       for the node (madcide: the window index, the one answer when two
+//       windows show the same document)
+madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
+			   ui_frontend *f)
+{
+    std::map<std::string, madc::value> fields;
+    // The kind as its ENUM value beside the name: script code compares
+    // `ev["event_code"] == ui::event_kind::key` (a misspelt enumerator is a
+    // compile error; a misspelt name was a silent miss). The names stay for
+    // display, transport and the bindings tables.
+    fields["event_code"] = madc::value((int64_t)e.kind);
+    switch ( e.kind )
+    {
+	case madc::hub::tui_event_kind::text:
+	    fields["event"] = madc::value(std::string("text"));
+	    fields["text"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::key:
+	    fields["event"] = madc::value(std::string("key"));
+	    fields["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    fields["key_code"] = madc::value((int64_t)e.key);	// ui::key
+	    // A focused choice's live selection rides along (1-based, the
+	    // choose contract) so the application can act on the focused
+	    // row for keys the widget does not consume (ins/del); absent
+	    // when nothing choice-shaped had focus.
+	    if ( e.choice_focused )
+		fields["option"] = madc::value((int64_t)(e.option + 1));
+	    break;
+	case madc::hub::tui_event_kind::choose:
+	    fields["event"] = madc::value(std::string("choose"));
+	    fields["option"] = madc::value((int64_t)(e.option + 1));
+	    fields["action"] = madc::value(e.action
+					   ? std::string(s->w.spelling(e.action))
+					   : std::string());
+	    break;
+	case madc::hub::tui_event_kind::action:
+	    fields["event"] = madc::value(std::string("action"));
+	    fields["action"] = madc::value(e.action_name);
+	    fields["seq"] = madc::value(e.seq);
+	    // The command's argument a native control carried (a buffer
+	    // tab's ring index — polish P4); absent for a chord.
+	    if ( !e.text.empty() )
+		fields["arg"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::resize:
+	    // The surface changed: refresh the stored dimensions so the
+	    // next render composes to the new size.
+	    f->size(f->rows, f->cols);
+	    fields["event"] = madc::value(std::string("resize"));
+	    break;
+	case madc::hub::tui_event_kind::wake:
+	    // Cooperative background tasks drained while the loop waited
+	    // for input (stage-2): the application re-checks its pending
+	    // state (a spawned parse's completion) and recomposes.
+	    fields["event"] = madc::value(std::string("wake"));
+	    break;
+	case madc::hub::tui_event_kind::snapshot:
+	    // A DOM frontend's page reported its rendered text (the test
+	    // seam); the grid target never emits it.
+	    fields["event"] = madc::value(std::string("snapshot"));
+	    fields["text"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::pointer:
+	    // A pointing-device gesture resolved to a byte offset in an
+	    // edit node (the DOM model's hit test today; a terminal's mouse
+	    // reporting later takes the same shape).
+	    fields["event"] = madc::value(std::string("pointer"));
+	    fields["phase"] = madc::value(
+		std::string(madc::hub::pointer_phase_name(e.phase)));
+	    fields["phase_code"] = madc::value((int64_t)e.phase);	// ui::pointer_phase
+	    fields["offset"] = madc::value((int64_t)e.offset);
+	    if ( e.subject != 0 )
+		fields["subject"] = madc::value((int64_t)e.subject);
+	    if ( e.tag >= 0 )
+		fields["tag"] = madc::value((int64_t)e.tag);
+	    break;
+	case madc::hub::tui_event_kind::dialog:
+	    // A native file dialog answered (S4): the request's mode and the
+	    // chosen path ("" = cancelled).
+	    fields["event"] = madc::value(std::string("dialog"));
+	    fields["mode"] = madc::value(e.action_name);
+	    fields["path"] = madc::value(e.text);
+	    break;
+	case madc::hub::tui_event_kind::focus:
+	default:
+	    fields["event"] = madc::value(std::string("focus"));
+	    break;
+    }
+    return madc::value::make_object(fields);
 }
 
 } // namespace
@@ -869,6 +1289,33 @@ int64_t text_line_count(int64_t w, int64_t entity)
     return b ? (int64_t)b->line_count() : -1;
 }
 
+int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || !bytes || n < 0 )
+	return -1;
+    const std::string old_text = b->text();
+    madc::hub::term_screen scr;
+    madc::value col, esc, params;
+    get(col, w, entity, "termcol");
+    get(esc, w, entity, "termesc");
+    get(params, w, entity, "termparams");
+    // The first feed: the cursor sits at the end of whatever the text held.
+    scr.load(old_text, col.is_integer() ? (size_t)col.as_integer()
+					: old_text.size());
+    if ( esc.is_integer() )
+	scr.st = (madc::hub::term_screen::esc_state)(unsigned char)esc.as_integer();
+    if ( params.is_string() )
+	scr.params = params.as_string();
+    scr.feed(bytes, (size_t)n);
+    const std::string new_text = scr.text();
+    text_replace(w, entity, 0, (int64_t)old_text.size(), new_text.c_str());
+    set(w, entity, "termcol", (int64_t)scr.col);
+    set(w, entity, "termesc", (int64_t)(unsigned char)scr.st);
+    set(w, entity, "termparams", scr.params.c_str());
+    return (int64_t)new_text.size();
+}
+
 madc::value &text_line(madc::value &out, int64_t w, int64_t entity, int64_t n)
 {
     const madc::hub::text_buffer *b = ui_text_component(w, entity);
@@ -896,6 +1343,19 @@ int64_t text_line_len(int64_t w, int64_t entity, int64_t n)
     if ( b && n > 0 && b->line_span((size_t)n, off, len) )
 	return (int64_t)len;
     return -1;
+}
+
+// The 1-based line containing byte `off` (clamped into the document; a
+// negative offset reads as 0). off == size after a terminated last line
+// is line_count + 1 — the empty line past the content the editor calls
+// the phantom line. One indexed lookup, so a caret's line is O(log lines)
+// — never a walk over text_line_start.
+int64_t text_line_of(int64_t w, int64_t entity, int64_t off)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b )
+	return -1;
+    return (int64_t)b->line_of(off < 0 ? 0 : (size_t)off);
 }
 
 int64_t text_find(int64_t w, int64_t entity, int64_t from, const char *needle)
@@ -949,132 +1409,212 @@ int64_t lens_to_stored(madc::value &map, int64_t display)
     return (int64_t)m.to_stored((size_t)display);
 }
 
-// ---- level-1 TUI (R5): the grid frontend behind the provider seam.
-// The MODEL (madcdis/tui_model.h) owns layout, focus, key semantics, and
-// diffing; the registered TARGET moves the bytes (the built-in one is the
-// hand-rolled VT100/xterm target — src/ui_term.cpp). The application
-// loop is compose-as-data -> tui_render -> tui_event -> apply: the same
-// value-shaped projection tree render_tree typesets sequentially is
-// presented on an addressable grid, choice menus becoming NAVIGABLE.
+// ---- the target-generic session surface (slice 2): open(target) ------
+// The MODEL owns layout, focus, key semantics and diffing; a FRONTEND
+// pairs it with the thing that shows it — the grid frontend behind the
+// provider seam (level 1, R5: the registered TARGET moves the bytes; the
+// built-in one is the hand-rolled VT100/xterm target, src/ui_term.cpp),
+// the DOM frontend behind a script-hosted target (level 3, the web
+// target). The application loop is compose-as-data -> render -> event ->
+// apply on EVERY target: the same value-shaped projection tree render_tree
+// typesets sequentially is presented on an addressable grid or in a page,
+// choice menus becoming NAVIGABLE. The tui_* names are the "term" target's
+// spellings over the same handles (the level-1 API, unchanged).
 
-// Open the grid frontend. Returns a TUI handle (> 0), or 0 with the
-// reason on stderr (no target registered, no tty, one already open).
-int64_t tui_open()
+// Open a target by name: "term" (the grid frontend), or a registered
+// script-hosted target. Returns a ui handle (> 0), or 0 with the reason on
+// stderr (unknown target; the target cannot serve here — no tty, no
+// display; one already open). An empty name is the terminal.
+int64_t open(const char *target)
 {
-    madc::hub::register_builtin_tui_targets();
-    madc::hub::tui_target *t = madc::hub::create_tui_target((const char *)0);
-    if ( !t )
+    std::string name = target ? target : "";
+    if ( name.empty() )
+	name = "term";
+    ui_frontend *f = (ui_frontend *)0;
+    ui_dom_frontend *dom = (ui_dom_frontend *)0;
+    if ( name == "term" )
+	f = new ui_grid_frontend();
+    else
     {
-	fprintf(stderr, "ui::tui_open: no TUI target available\n");
+	std::map<std::string, const ui_host_ops *>::const_iterator it =
+	    ui_hosts().find(name);
+	if ( it == ui_hosts().end() )
+	{
+	    fprintf(stderr, "ui::open: unknown target '%s'\n", name.c_str());
+	    return 0;
+	}
+	dom = new ui_dom_frontend(name, it->second);
+	f = dom;
+    }
+    if ( dom )
+	ui_dom_live().insert(dom);
+    if ( !f->open(f->rows, f->cols) )
+    {
+	if ( dom )
+	    ui_dom_live().erase(dom);
+	delete f;
 	return 0;
     }
-    ui_tui *u = new ui_tui();
-    u->target = t;
-    if ( !t->open(u->rows, u->cols) )
-    {
-	delete t;
-	delete u;
-	return 0;
-    }
-    return ui_tuis().open(u);
+    return ui_frontends().open(f);
 }
 
-void tui_close(int64_t t)
+void close(int64_t t)
 {
-    // Target teardown is this consumer's own step (see handle_table.h);
-    // the slot rule (delete + null, no reuse) is the table's.
-    ui_tui *u = ui_tuis().get(t);
-    if ( !u )
+    ui_frontend *f = ui_frontend_get(t);
+    if ( !f )
 	return;
-    u->target->close();
-    delete u->target;
-    ui_tuis().close(t);
+    f->close();
+    ui_dom_live().erase(dynamic_cast<ui_dom_frontend *>(f));
+    ui_frontends().close(t);
 }
 
-int64_t tui_rows(int64_t t)
+// ---- script-hosted targets ---------------------------------------------
+// Register a host under a target name (a fragment's dynamic initializer
+// does this once, before main). False + stderr on a missing table, a
+// table without open/run, or a name already taken — the first
+// registration wins, so a program cannot swap the web target's host from
+// under the engine.
+bool register_host(const char *target, const ui_host_ops *ops)
 {
-    ui_tui *u = ui_tui_get(t);
-    return u ? (int64_t)u->rows : -1;
+    std::string name = target ? target : "";
+    if ( name.empty() || !ops || !ops->open || !ops->run )
+    {
+	fprintf(stderr, "ui::register_host: '%s' needs a name and a table with open and run\n",
+		name.c_str());
+	return false;
+    }
+    if ( name == "term" || ui_hosts().count(name) )
+    {
+	fprintf(stderr, "ui::register_host: target '%s' is already registered\n",
+		name.c_str());
+	return false;
+    }
+    ui_hosts()[name] = ops;
+    return true;
 }
 
-int64_t tui_cols(int64_t t)
+// The host's ONE inbound door: the page's event object (JSON text) for
+// the session `ctx` its open() received. Callable from inside run(); the
+// engine queues it and run() returns to let read_events drain it. An
+// unknown `ctx` (a closed session, a stray pointer) is refused loudly.
+void post_event(void *ctx, const char *json)
 {
-    ui_tui *u = ui_tui_get(t);
-    return u ? (int64_t)u->cols : -1;
+    ui_dom_frontend *f = (ui_dom_frontend *)ctx;
+    if ( !f || !ui_dom_live().count(f) )
+    {
+	fprintf(stderr, "ui::post_event: not an open script-hosted ui session\n");
+	return;
+    }
+    std::string text = json ? json : "";
+    // A host may hand the page call's ARGUMENT ARRAY verbatim (the webview
+    // bind convention — `["{...}"]`): the event object is its one string.
+    if ( !text.empty() && text[0] == '[' )
+    {
+	nlohmann::json args = nlohmann::json::parse(text, nullptr, false);
+	if ( args.is_array() && !args.empty() && args[0].is_string() )
+	    text = args[0].get<std::string>();
+    }
+    f->inbound.push_back(text);
 }
 
-// Compose a value-shaped projection tree (the render_tree schema) onto
-// the grid and present it — only rows that changed since the last render
-// repaint. The tree arrives already access-filtered (typesetting only,
-// the render_tree contract).
-void tui_render(int64_t t, int64_t w, madc::value &tree)
+// Script text into a page-hosted target — the test seam (`madcSnapshot()`
+// posts the rendered text back as a snapshot event). False on the grid
+// frontend, a bad handle, or a host that refused the text.
+bool eval_page(int64_t t, const char *js)
 {
-    ui_tui *u = ui_tui_get(t);
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->eval_page(js);
+}
+
+bool dialogs(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialogs();
+}
+
+bool dialog(int64_t t, const char *json)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->dialog(json);
+}
+
+int64_t rows(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f ? (int64_t)f->rows : -1;
+}
+
+int64_t cols(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f ? (int64_t)f->cols : -1;
+}
+
+// Compose a value-shaped projection tree (the render_tree schema) and
+// present it on the target. The tree arrives already access-filtered
+// (typesetting only, the render_tree contract).
+void render(int64_t t, int64_t w, madc::value &tree)
+{
+    ui_frontend *f = ui_frontend_get(t);
     ui_session *s = ui_get(w);
-    if ( !u || !s )
+    if ( !f || !s )
 	return;
-    const madc::hub::tui_grid &g =
-	u->model.compose(s->r, madc::hub::value_to_uinode(s->w, tree),
-			 u->rows, u->cols);
-    u->target->paint(u->painted, g);
-    u->painted = g;
+    f->render(s, tree);
 }
 
 // Hand the terminal back to run a child process (madcide v2, JOE ^K Z):
-// tui_suspend leaves grid mode restoring the screen and modes as found;
-// tui_resume re-enters and forces the NEXT render to repaint every row
-// (the previous contents are gone — the diff basis resets). The size is
+// suspend leaves grid mode restoring the screen and modes as found;
+// resume re-enters and forces the NEXT render to repaint every row (the
+// previous contents are gone — the diff basis resets). The size is
 // re-read on resume (it may have changed while away); the application
 // re-composes and renders as it would after a resize. False + stderr on
-// a bad handle, a target that cannot suspend, or mismatched pairing.
-bool tui_suspend(int64_t t)
+// a bad handle, a target that cannot suspend (a window answers false),
+// or mismatched pairing.
+bool suspend(int64_t t)
 {
-    ui_tui *u = ui_tui_get(t);
-    if ( !u )
+    ui_frontend *f = ui_frontend_get(t);
+    if ( !f )
 	return false;
-    if ( !u->target->suspend() )
+    if ( !f->suspend() )
     {
-	fprintf(stderr, "ui::tui_suspend: the target cannot suspend here\n");
+	fprintf(stderr, "ui::suspend: the target cannot suspend here\n");
 	return false;
     }
     return true;
 }
 
-bool tui_resume(int64_t t)
+bool resume(int64_t t)
 {
-    ui_tui *u = ui_tui_get(t);
-    if ( !u )
+    ui_frontend *f = ui_frontend_get(t);
+    if ( !f )
 	return false;
-    if ( !u->target->resume() )
+    if ( !f->resume() )
     {
-	fprintf(stderr, "ui::tui_resume: not suspended (or cannot re-enter)\n");
+	fprintf(stderr, "ui::resume: not suspended (or cannot re-enter)\n");
 	return false;
     }
-    u->target->size(u->rows, u->cols);
-    u->painted = madc::hub::tui_grid();
     return true;
 }
 
-// JOE's ^R retype (IDE-10a): the terminal's contents can no longer be
+// JOE's ^R retype (IDE-10a): the surface's contents can no longer be
 // trusted (external writes on the tty, transmission junk) — a delta paint
 // against the model's idea of the screen repairs nothing, because that
 // idea IS what's wrong. Reset the diff basis so the NEXT render repaints
 // every row from scratch (full-row spans + EL tails rewrite the whole
-// viewport — the same guarantee tui_resume relies on).
-void tui_refresh(int64_t t)
+// viewport — the same guarantee resume relies on).
+void refresh(int64_t t)
 {
-    ui_tui *u = ui_tui_get(t);
-    if ( !u )
-	return;
-    u->painted = madc::hub::tui_grid();
+    ui_frontend *f = ui_frontend_get(t);
+    if ( f )
+	f->refresh();
 }
 
-// The ONE table -> tui_bindings converter (tui_bind_keys installs the
-// result, tui_validate_keys only verifies — valid here IS bindable
-// there): a value object mapping key sequences to action names becomes
-// a finalized bindings table. False = invalid table (unknown spelling,
-// printable-headed sequence, a sequence shadowing a shorter binding);
-// `err` names the offense for the installing caller's stderr.
+// The ONE table -> tui_bindings converter (bind_keys installs the result,
+// validate_keys only verifies — valid here IS bindable there): a value
+// object mapping key sequences to action names becomes a finalized
+// bindings table. False = invalid table (unknown spelling, printable-
+// headed sequence, a sequence shadowing a shorter binding); `err` names
+// the offense for the installing caller's stderr.
 static bool table_to_bindings(madc::value &table, madc::hub::tui_bindings &b,
 			      std::string &err)
 {
@@ -1104,111 +1644,50 @@ static bool table_to_bindings(madc::value &table, madc::hub::tui_bindings &b,
 // the app may report it). The whole table replaces the previous one — a
 // profile swap is one call; an empty object clears. False + stderr on an
 // invalid table, leaving the installed table unchanged.
-bool tui_bind_keys(int64_t t, madc::value &table)
+bool bind_keys(int64_t t, madc::value &table)
 {
-    ui_tui *u = ui_tui_get(t);
-    if ( !u )
+    ui_frontend *f = ui_frontend_get(t);
+    if ( !f )
 	return false;
     madc::hub::tui_bindings b;
     std::string err;
     if ( !table_to_bindings(table, b, err) )
     {
-	fprintf(stderr, "ui::tui_bind_keys: %s\n", err.c_str());
+	fprintf(stderr, "ui::bind_keys: %s\n", err.c_str());
 	return false;
     }
-    u->model.set_bindings(b);
+    f->set_bindings(b);
     return true;
 }
 
 // Handle-free whole-table validation (the gateway seam): the SESSION
 // layer validates keybinding-profile data — refusal before any state
-// commits — while only the TUI CLIENT holds a tui handle to bind into.
-// The same converter as tui_bind_keys, so a table this accepts binds.
-// The verdict is SILENT by contract: the session composes its own
-// refusal message, and a live tui's stderr is invisible under the alt
-// screen anyway.
-bool tui_validate_keys(madc::value &table)
+// commits — while only the ui CLIENT holds a handle to bind into. The
+// same converter as bind_keys, so a table this accepts binds. The verdict
+// is SILENT by contract: the session composes its own refusal message,
+// and a live tui's stderr is invisible under the alt screen anyway.
+bool validate_keys(madc::value &table)
 {
     madc::hub::tui_bindings b;
     std::string err;
     return table_to_bindings(table, b, err);
 }
 
-// The next SEMANTIC event as a value object (names at the boundary):
-//   { event:"text",   text:"..." }       a coalesced printable run
-//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
-//       option:N (1-based, the choose contract) when a focused choice
-//       existed — the focused row for keys the widget does not consume
-//   { event:"action", action:"name", seq:"^k s" }  a bound sequence
-//   { event:"choose", option:N, action:"name" }  N is 1-based — the
-//       same number the level-0 menu prints for that option
-//   { event:"focus" } / { event:"resize" }  recompose and re-render
-// Blocks until input arrives; false = the input source ended (out is a
-// null value). Events are interpreted against the LAST tui_render's
+// The next SEMANTIC event as a value object (the shapes ui_event_value
+// documents). Blocks until input arrives; false = the input source ended
+// (out is a null value). Events are interpreted against the LAST render's
 // tree (the model's focusables), so render before the first event.
-bool tui_event(madc::value &out, int64_t t, int64_t w)
+bool event(madc::value &out, int64_t t, int64_t w)
 {
     out = madc::value();
-    ui_tui *u = ui_tui_get(t);
+    ui_frontend *f = ui_frontend_get(t);
     ui_session *s = ui_get(w);
-    if ( !u || !s )
+    if ( !f || !s )
 	return false;
-    while ( u->next_event >= u->queue.size() )
-    {
-	std::vector<madc::hub::tui_keyev> keys;
-	if ( !u->target->read_keys(keys) )
+    while ( f->next_event >= f->queue.size() )
+	if ( !f->read_events() )
 	    return false;
-	u->queue = u->model.apply_keys(keys);
-	u->next_event = 0;
-    }
-    const madc::hub::tui_event &e = u->queue[u->next_event++];
-    std::map<std::string, madc::value> f;
-    switch ( e.kind )
-    {
-	case madc::hub::tui_event_kind::text:
-	    f["event"] = madc::value(std::string("text"));
-	    f["text"] = madc::value(e.text);
-	    break;
-	case madc::hub::tui_event_kind::key:
-	    f["event"] = madc::value(std::string("key"));
-	    f["key"] = madc::value(ui_key_name(e.key, e.ch));
-	    // A focused choice's live selection rides along (1-based, the
-	    // choose contract) so the application can act on the focused
-	    // row for keys the widget does not consume (ins/del); absent
-	    // when nothing choice-shaped had focus.
-	    if ( e.choice_focused )
-		f["option"] = madc::value((int64_t)(e.option + 1));
-	    break;
-	case madc::hub::tui_event_kind::choose:
-	    f["event"] = madc::value(std::string("choose"));
-	    f["option"] = madc::value((int64_t)(e.option + 1));
-	    f["action"] = madc::value(e.action
-				      ? std::string(s->w.spelling(e.action))
-				      : std::string());
-	    break;
-	case madc::hub::tui_event_kind::action:
-	    f["event"] = madc::value(std::string("action"));
-	    f["action"] = madc::value(e.action_name);
-	    f["seq"] = madc::value(e.seq);
-	    break;
-	case madc::hub::tui_event_kind::resize:
-	    // The surface changed: refresh the stored dimensions so the
-	    // next render composes to the new size.
-	    u->target->size(u->rows, u->cols);
-	    f["event"] = madc::value(std::string("resize"));
-	    break;
-	case madc::hub::tui_event_kind::wake:
-	    // Cooperative background tasks drained while the loop waited
-	    // for input (stage-2): the application re-checks its pending
-	    // state (a spawned parse's completion) and recomposes.
-	    f["event"] = madc::value(std::string("wake"));
-	    break;
-	case madc::hub::tui_event_kind::focus:
-	default:
-	    f["event"] = madc::value(std::string("focus"));
-	    break;
-    }
-    out = madc::value::make_object(f);
+    out = ui_event_value(f->queue[f->next_event++], s, f);
     return true;
 }
 
@@ -1216,11 +1695,56 @@ bool tui_event(madc::value &out, int64_t t, int64_t w)
 // no chord is pending or the handle is bad. A status line's chord-echo
 // seat (JOE's %k) reads it at compose time; presentation state stays in
 // the model, this is a read-only view of it.
-void tui_pending(madc::value &out, int64_t t)
+void pending(madc::value &out, int64_t t)
 {
-    ui_tui *u = ui_tui_get(t);
-    out = madc::value(std::string(u ? u->model.pending_chord()
-				    : std::string()));
+    ui_frontend *f = ui_frontend_get(t);
+    out = madc::value(std::string(f ? f->pending_chord() : std::string()));
 }
+
+// A key SPELLING (the bindings-table / action-name vocabulary: "left",
+// "^k", "a") -> its ui::key enumerator value; ui::key::none for a spelling
+// that is not a key. The ONE spelling owner (tui_key_from_name) answers, so
+// an application that synthesizes a key event from an action name (the
+// editor's "the action name IS the key spelling" rule) carries the same
+// code the target would have.
+int64_t key_code(const char *name)
+{
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) )
+	return (int64_t)madc::hub::tui_key::none;
+    return (int64_t)k.kind;
+}
+
+bool key_bytes(madc::value &out, const char *name)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) )
+	return false;
+    std::string bytes = madc::hub::tui_key_bytes(k);
+    out = madc::value(bytes);
+    return !bytes.empty();
+}
+
+// ---- level-1 TUI (R5): the "term" target's spellings ------------------
+// The original grid-frontend API, kept as the terminal target's names over
+// the same handles: tui_open() IS open("term").
+int64_t tui_open()			{ return ui::open("term"); }
+void	tui_close(int64_t t)		{ ui::close(t); }
+int64_t tui_rows(int64_t t)		{ return ui::rows(t); }
+int64_t tui_cols(int64_t t)		{ return ui::cols(t); }
+void	tui_render(int64_t t, int64_t w, madc::value &tree)
+					{ ui::render(t, w, tree); }
+bool	tui_suspend(int64_t t)		{ return ui::suspend(t); }
+bool	tui_resume(int64_t t)		{ return ui::resume(t); }
+void	tui_refresh(int64_t t)		{ ui::refresh(t); }
+bool	tui_bind_keys(int64_t t, madc::value &table)
+					{ return ui::bind_keys(t, table); }
+bool	tui_validate_keys(madc::value &table)
+					{ return ui::validate_keys(table); }
+bool	tui_event(madc::value &out, int64_t t, int64_t w)
+					{ return ui::event(out, t, w); }
+void	tui_pending(madc::value &out, int64_t t)
+					{ ui::pending(out, t); }
 
 } // namespace ui

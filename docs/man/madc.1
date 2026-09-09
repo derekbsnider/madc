@@ -86,13 +86,15 @@ Define a preprocessor macro.
 Add an include search directory.
 .TP
 .BI \-l name
-dlopen
-.IB lib name .so
-(RTLD_GLOBAL) so its symbols resolve at link time (e.g. \fB\-lcrypt\fR).
-In AOT mode this becomes a DT_NEEDED entry instead.
+Bind a library so its symbols resolve at link time (e.g. \fB\-lcrypt\fR).
+The name is a module or bare library name spelled for the target by the
+module map (\fB\-lm\fR names libm.so.6 / libSystem.B.dylib / ucrtbase.dll;
+a bare name follows lib<name>.so / lib<name>.dylib / <name>.dll; a path is
+verbatim). JIT: opened RTLD_GLOBAL. AOT: a DT_NEEDED entry / load command /
+PE import. The build-line spelling of the source's \fBimport\fR directive.
 .TP
 .B \-\-no\-auto\-load
-Do not act on #load directives; link explicitly via \fB\-l\fR.
+Do not act on \fBimport\fR / \fB#load\fR library bindings; link explicitly via \fB\-l\fR.
 .TP
 .B \-\-no\-includes
 Do not process #include directives.
@@ -127,7 +129,7 @@ only when it uses the madc runtime; a plain C program's executable is
 runtime-free.
 .TP
 .BR \-shared " [" \-o " \fIfile.so\fR]"
-Compile to a shared object (ET_DYN; dlopen/#load-consumable; PIC).
+Compile to a shared object (ET_DYN; dlopen/import-consumable; PIC).
 .TP
 .BR \-static\-libmadc ", " \-static
 Carry the madc runtime pieces the program needs INSIDE the emitted

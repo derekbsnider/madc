@@ -1,0 +1,24 @@
+// `static` followed by a namespace-QUALIFIED type: the storage-class
+// parser asks the one declared-type resolver what the identifier denotes
+// (a typedef name, `ns::Type`, a template-id), exactly as `const` and a
+// plain declaration head do. g++/clang++ accept every line below; madc
+// answered "Expecting type after 'static'" for the qualified ones. The
+// C89 implicit-int head (`static f(...)`) keeps its fallback. (The
+// elaborated `static struct ns::S x` is TokenSTRUCT's own qualified-tag
+// gap — KG Gap elaborated_qualified_struct_statement_head — not this one.)
+namespace ns {
+    struct S { int a; };
+    typedef int T;
+}
+static ns::S file_s = { 2 };
+static ns::T file_t = 3;
+static implicit() { return 7; }
+
+int main()
+{
+    static ns::S block_s = { 4 };
+    static ns::T block_t = 6;
+    println("{} {} {} {}", file_s.a, file_t, block_s.a, block_t);
+    println("{}", implicit());
+    return 0;
+}

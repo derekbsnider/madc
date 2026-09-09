@@ -32,6 +32,15 @@ void *madcdl_sym(void *handle, const char *name);
 // probe.
 void *madcdl_sym_default(const char *name);
 
+// Win32 only (PE has no default symbol scope): the process's runtime DLLs
+// the default-scope walk spans after the self-exe and the recorded modules,
+// in resolution order, NULL-terminated — libstdc++-6, libwinpthread-1,
+// ucrtbase, kernel32, ws2_32. ONE list: the JIT's symbol walk, the native
+// runtime-need cover set and the PE writer's import-attribution order all
+// read it (a second copy in the writer had drifted). Undefined on POSIX
+// builds — nothing there names it.
+const char *const *madcdl_default_scope_modules(void);
+
 void madcdl_close(void *handle);
 
 // Human-readable description of the last open/sym failure (POSIX dlerror():

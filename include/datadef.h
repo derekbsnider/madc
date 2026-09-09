@@ -67,8 +67,12 @@ inline bool target_microsoft_bitfields()
 // one" question, and never re-test _WIN32 at a consumer. This is what decides
 // whether the POSIX compatibility layer (docs/plans/2026-08-13-posix-target-
 // surface.md) is even eligible, so it must follow the target and not the host.
-// Defined beside the data-model owner.
-enum class TargetOS { Posix, Windows };
+// Posix = ELF hosts (Linux, the BSDs); Darwin = Mach-O (macOS/iOS) — POSIX
+// for the compat question (target_windows() stays the one non-POSIX test),
+// distinct for LIBRARY SPELLING, which src/madc_modules.cpp decides from this
+// enum (the one owner) and never from a host #ifdef at a call site; Windows
+// = PE. Defined beside the data-model owner.
+enum class TargetOS { Posix, Darwin, Windows };
 extern TargetOS madc_target_os;
 inline bool target_windows()
 { return madc_target_os == TargetOS::Windows; }
@@ -148,6 +152,13 @@ class FuncDef;
 // _NSGetExecutablePath on macOS.
 std::string madc_self_exe_path();
 
+// The relocatable install's library directory beside the running executable:
+// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with
+// /usr/local/lib). Empty when the executable is unresolvable. The one owner
+// of that shape — the native lanes' runpath and the module opener both read
+// it.
+std::string madc_self_lib_dir();
+
 // Resolved absolute path of the IMAGE that contains libmadc's own code: the
 // shared library when the CLI/host links libmadc dynamically, the executable
 // itself in the monolithic shape (static libmadc). dladdr on a libmadc-resident
@@ -155,14 +166,6 @@ std::string madc_self_exe_path();
 // forest discovery chain's library-image arm compares it against
 // madc_self_exe_path() to know whether a distinct library carrier exists.
 std::string madc_self_lib_path();
-
-// Host shared-library suffix for dlopen soname synthesis (-l<name>) and
-// native shared-artifact naming.
-#ifdef __APPLE__
-#define MADC_DSO_SUFFIX ".dylib"
-#else
-#define MADC_DSO_SUFFIX ".so"
-#endif
 
 // The native-emit TARGET is an Apple/Mach-O platform: either an emit-only
 // cross madc configured for one (MADC_CROSS_APPLE) or a madc hosted on one

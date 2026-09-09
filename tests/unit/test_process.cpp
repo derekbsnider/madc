@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <dirent.h>
 #include <string>
 #include <unistd.h>
@@ -303,4 +304,129 @@ TEST_CASE("process exec does not inherit unrelated data channels")
 
 	unrelated->close();
 	std::remove(path.c_str());
+}
+
+TEST_CASE("Process child_body: fork-as-isolation through the owner — the body's output is the stdout channel, its return the exit status")
+{
+	// madcide polish P3b-1: madcrun:// / madcproj:// run the live parse in a
+	// child WITHOUT exec — through the one spawn owner, so the pipes, the
+	// reap and the cancel are its. The errno pipe closes empty (no exec
+	// error), the body runs on the dup'd stdio, its return is the status.
+	madc::ProcessOptions options;
+	options.inherit_stderr = true;
+	options.child_body = []() -> int {
+		const char msg[] = "body-says-hi\n";
+		ssize_t n = ::write(1, msg, sizeof(msg) - 1);
+		(void)n;
+		return 7;
+	};
+	madc::Process process(madc::DataSource("exec://<body>"), options);
+	madc::error err;
+	REQUIRE(process.start(&err));
+	REQUIRE(process.close_stdin(&err));
+	std::vector<unsigned char> stdout_bytes = read_channel(process.stdout_channel(), &err);
+	REQUIRE(process.wait(&err));
+	CHECK(as_string(stdout_bytes) == "body-says-hi\n");
+	CHECK(process.exited());
+	CHECK(process.exit_status() == 7);
+
+	// The exec-style channel over such a process: read = the body's
+	// output, exit_status after close (the reap) = the body's return.
+	madc::ProcessOptions o2;
+	o2.inherit_stderr = true;
+	o2.child_body = []() -> int {
+		const char msg[] = "ch\n";
+		ssize_t n = ::write(1, msg, sizeof(msg) - 1);
+		(void)n;
+		return 3;
+	};
+	std::unique_ptr<madc::Process> p2(
+		new madc::Process(madc::DataSource("exec://<body>"), o2));
+	REQUIRE(p2->start(&err));
+	std::unique_ptr<madc::DataChannel> ch = madc::detail::exec_channel_over(std::move(p2));
+	REQUIRE(ch);
+	CHECK(ch->exit_status() == -1);		// not reaped yet
+	std::vector<unsigned char> got = read_channel(*ch, &err);
+	CHECK(as_string(got) == "ch\n");
+	ch->close();
+	CHECK(ch->exit_status() == 3);
+}
+
+#ifndef _WIN32
+TEST_CASE("Process pty: the child runs on a pseudo-terminal — isatty holds, the master is one bidirectional endpoint")
+{
+	// madcide polish P3b-2: the embedded Terminal runs programs on a pty so
+	// prompts flush and isatty holds; the master fd is both channels.
+	madc::ProcessOptions options;
+	options.pty = true;
+	options.child_body = []() -> int {
+		const char *msg = isatty(STDOUT_FILENO) && isatty(STDIN_FILENO)
+			? "tty-yes\n" : "tty-no\n";
+		ssize_t n = ::write(STDOUT_FILENO, msg, strlen(msg));
+		(void)n;
+		// Echo one line typed at us back in upper case.
+		char buf[64];
+		ssize_t got = ::read(STDIN_FILENO, buf, sizeof(buf) - 1);
+		if ( got > 0 )
+		{
+			for ( ssize_t i = 0; i < got; ++i )
+				if ( buf[i] >= 'a' && buf[i] <= 'z' )
+					buf[i] = (char)(buf[i] - 'a' + 'A');
+			ssize_t m = ::write(STDOUT_FILENO, buf, (size_t)got);
+			(void)m;
+		}
+		return 5;
+	};
+	madc::Process process(madc::DataSource("exec://<pty-body>"), options);
+	madc::error err;
+	REQUIRE(process.start(&err));
+	CHECK(process.stdin_channel().capabilities().write);
+	CHECK(process.stdout_channel().capabilities().read);
+	CHECK_FALSE(process.stderr_channel().capabilities().read);	// the pty is the child's stderr
+	const char line[] = "abc\n";
+	REQUIRE(madc::write_all(process.stdin_channel(), line, sizeof(line) - 1, &err));
+	// Read until the child exits: the tty echoes what we wrote, then the
+	// child's answers arrive (\n comes back as \r\n through the tty).
+	std::string all;
+	unsigned char buf[256];
+	for ( ;; )
+	{
+		std::size_t n = 0;
+		if ( !process.stdout_channel().read(buf, sizeof(buf), n, &err) || n == 0 )
+			break;
+		all.append((const char *)buf, n);
+	}
+	REQUIRE(process.wait(&err));
+	CHECK(all.find("tty-yes") != std::string::npos);
+	CHECK(all.find("ABC") != std::string::npos);
+	CHECK(process.exit_status() == 5);
+}
+#endif
+
+TEST_CASE("exec-style channels say whether their far end is a terminal")
+{
+	// madcide's Terminal tab emulates the line discipline itself on pipes
+	// (Windows until ConPTY): the channel tells it which it got.
+	madc::ProcessOptions pipes;
+	pipes.inherit_stderr = true;
+	pipes.child_body = []() -> int { return 0; };
+	std::unique_ptr<madc::Process> p(new madc::Process(madc::DataSource("exec://<body>"), pipes));
+	madc::error err;
+	REQUIRE(p->start(&err));
+	CHECK_FALSE(p->is_pty());
+	std::unique_ptr<madc::DataChannel> ch = madc::detail::exec_channel_over(std::move(p));
+	CHECK_FALSE(ch->is_terminal());
+	ch->close();
+#ifndef _WIN32
+	madc::ProcessOptions pty;
+	pty.pty = true;
+	pty.child_body = []() -> int { return 0; };
+	std::unique_ptr<madc::Process> q(new madc::Process(madc::DataSource("exec://<pty-body>"), pty));
+	REQUIRE(q->start(&err));
+	CHECK(q->is_pty());
+	std::unique_ptr<madc::DataChannel> tch = madc::detail::exec_channel_over(std::move(q));
+	CHECK(tch->is_terminal());
+	tch->close();
+	CHECK_FALSE(tch->is_terminal());	// closed: no far end any more
+#endif
 }

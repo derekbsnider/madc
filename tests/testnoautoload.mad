@@ -1,9 +1,9 @@
-// --no-auto-load: the embedded <math.h> contains `#load "libm.so.6" as libm;`.
-// With --no-auto-load (see testnoautoload.flags), madc must NOT dlopen libm and
-// must bind the namespace to the global symbol scope. sqrt still resolves
-// because madc is itself linked against libm (RTLD_DEFAULT), so explicit/host
-// linking provides the symbol — proving the skip path doesn't break resolution.
-#include <math.h>
+// --no-auto-load: `import m;` must NOT open libm (the flag says the library
+// is linked, not loaded — the JIT spelling of the native "link" policy) and
+// must bind to the program's own symbol scope; sqrt still resolves because
+// madc is itself linked against libm, proving the skip path keeps
+// resolution intact. Fixture: tests/testnoautoload.flags.
+import m;
 #include <stdio.h>
 
 int main()

@@ -1,0 +1,15 @@
+roles: status=status edit=edit
+region: status=statusbar editor=editor
+tabs: none
+pane: role=choice popup=yes
+caret-hint: 0
+split: kids=5 regions=editor/editor/editor/editor rows-hint=yes
+split-msg: role=content region=none
+split-tags: active=0 other=1
+split-press: text-window=1 text-caret=12 header-window=0 header-caret=5
+one-window: status=statusbar editor=editor tag=none
+prompt: content=Find (^C aborts): ab popup=1 label=Find input=ab dismiss=pcancel
+prompt-actions: other-inert=1 dismiss-ends=1
+prompt-ctrl-c: as-action=1 as-key=1
+confirm: content=Lose changes to this file (y,n,^C)? popup=1 label-same=1 choices=Yes=pyes No=pcancel dismiss=none
+confirm-button: prompt-off=1

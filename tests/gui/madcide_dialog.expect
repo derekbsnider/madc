@@ -1,0 +1,8 @@
+DLG open
+DLG dialog title=Project — (no project file) filter="" rows=1 buttons=Open/choose,Close/projclose dismiss=projclose
+DLG event choose option=1
+DLG dialog=none popups=0
+DLG dialog title=Project — (no project file) filter="" rows=1 buttons=Open/choose,Close/projclose dismiss=projclose
+DLG event action projclose
+DLG dialog=none popups=0
+DLG closed

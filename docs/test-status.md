@@ -1,6 +1,254 @@
 # Test Status
 
-> **Current (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
+> **Current (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
+> five findings on the staged Windows / Mac sets, all fixed on `develop`:
+> a dialog's Close button closes it (the `@pane` cancel-by-name admitted in
+> the dispatcher's ACTION region), the Build menu carries every `^B` row as
+> a direct item (Build → Run with no overlay), the window's wait is the
+> cooperative scheduler's bounded wait (the `tick` host op +
+> `madcwebview_tick` on GTK / Cocoa / Win32 — a program's output streams
+> into the Terminal tab with no keystroke), a closed dialog leaves no
+> furniture in the panel (a re-used keyed element wipes its old kind), and
+> the panel / sidebar are resizable (splitters; double-click maximizes;
+> sizes remembered)):** FULL develop-set battery on 38a71163
+> (`tmp/logs/rb-20260909-003024.log`): fulltest rc=0 — every gate and the
+> warning ratchet — with JIT **1335 passed / 0 failed / 0 timed out / 9
+> skipped**, native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**,
+> headerless **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`,
+> +`madcide_run`: the Build dialog floats (`position: fixed`, not in the
+> panel), Close by click, Run → wait for the engine's `wake` events with NO
+> input → the Terminal holds the program's output and `[exit 7]`, the panel
+> holds no dialog remains; +`madcide_resize`: a 120 px splitter drag grows
+> the panel by ~120, a double-click maximizes it): **17/17 JIT, 17/17 EXE,
+> 17/17 OBJ**. release-win + `verify_pe_release` OK (234 units, subsystem
+> console=3 / `-mwindows`=2 as gcc; the Win32 tick arm compiled); wine64
+> **1276/0/0TO/68skip**; c-testsuite **220/220** (`tmp/logs/cts-s169.log`);
+> macOS cross release both arches (836 units each; the Cocoa tick arm
+> compiled), verify_macho OK both, package-macos rc=0. Release tier on the
+> pushed develop content (`lane_ledger.sh check --release` rc=0): libcxx
+> **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**; darwin-suite (gh run 34299462528) **arm64 1319/0/0TO/25skip, Intel 1320/0/0TO/24skip**;
+> genuine Windows 11 **1278/0/0TO/66skip**.
+>
+> **Previous (2026-09-08, the s168 P2–P4 merge wave — the local-IDE polish
+> for the master release on `feature/madcide-polish-panel-claude`: the list
+> overlays as dialogs, Open Project… + the project kind (the Windows
+> subsystem), the bottom panel with Problems / Output / Terminal, Run in the
+> window (Output for gui programs, a pty Terminal for console ones —
+> `madcrun://` / `madcproj://` / `pty://` through the spawn owner's
+> `child_body` / `pty`; Windows runs them on pipes with the pump's line
+> discipline), editor tabs with commands taking arguments):** FULL
+> develop-set battery, recorded in `docs/lane-status.tsv` at 1beeb77e:
+> fulltest rc=0 — every gate — on 1beeb77e (`tmp/logs/rb-20260908-204941.log`)
+> with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**; the first
+> full run (`tmp/logs/rb-20260908-200316.log`, 23026bed code) stopped at the
+> C-ABI export gate: the P2c engine global `madc_gui_subsystem` was exported
+> unlisted — listed in `scripts/c-abi-internal-exports.txt` beside its
+> siblings (the one CODE_PATHS delta between the two runs; only that gate
+> reads it). Native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**,
+> headerless **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`,
+> +`madcide_dialog` + `madcide_panel`): **15/15 JIT, 15/15 EXE, 15/15 OBJ**.
+> Unit battery green incl. `test_process` (child_body, pty, is_terminal),
+> `test_term_screen`, `test_web_model` (dialog / choose / tabs / arg),
+> `test_project_manifest` (kind), `test_tui_model` (key bytes). release-win
+> + `verify_pe_release` authority 6 (subsystem console=3, `-mwindows`=2, as
+> mingw-gcc). wine64 **1276/0/0TO/68skip** first-run green — the win64
+> twin's terminal / run clauses were verified by hand first
+> (`tmp/logs/p234-wine-hand3.log`: 171/171 lines, 1.5 s under wine; the
+> pre-fix PE hung in the tty clause because Enter reached the piped child
+> as a bare `\r`). c-testsuite **220/220** (`tmp/logs/cts-s168c.log`);
+> macOS cross release both arches (836 units each) + webview dylibs,
+> verify_macho OK both, package-macos rc=0. Release tier on the merged
+> develop content (all recorded; `lane_ledger.sh check --release` rc=0):
+> darwin-suite (gh run 34282289812) arm64 **1319/0/0TO/25skip**, Intel
+> **1320/0/0TO/24skip** — its first run failed exactly one test on both
+> arches, `testimportiface_neg` (the M_PI negative import control): the
+> darwin hosted build serves every standard C include from the one
+> flattened umbrella prelude, so `<stdio.h>` alone declares `M_PI` where
+> Apple clang rejects it — formally skipped on darwin with the stated
+> reason (KG Gap `darwin_umbrella_prelude_whole_set_visibility`); libcxx
+> **1330/0/0TO/14skip**, EXE/OBJ **1271/0**; genuine Windows 11
+> **1278/0/0TO/66skip** (run #1's single timeout on `testcompoundnarrow`
+> was a channel transient, green on the re-run).
+>
+> **Previous (2026-09-08, the s168 merge wave — madcide polish P1 on
+> `feature/madcide-polish-colours-claude`: one theme, two renderers — the
+> render style and its spec parser moved to `madcdis/ui_style.h`, the DOM
+> model renders the scheme's spec as `st-*` / `fg-*` / `bg-*` classes over
+> a sixteen-colour `pal-*` palette (bold-as-bright), `page.css` lost its
+> private syntax palette, `spans_to_hspans` rows are `{s, e, c}`; gate
+> `check-one-style-vocabulary.sh`):** FULL develop-set battery on d843823f
+> code (`tmp/logs/rb-20260908-164609.log`): fulltest rc=0 (every gate) with
+> JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`, +`ui_web_spans`: the
+> window's COMPUTED colours — `bold cyan` paints the `@gui`-set bright
+> palette entry): **13/13 JIT, 13/13 EXE, 13/13 OBJ**. Headless reducers:
+> `testidespans` / `testidespanshift` (the one row shape), `testmadcide`
+> (spans n=7), `test_web_model` (the class rendering), `test_tui_model`
+> (the rename). wine64 **1276/0/0TO/68skip** on fb1b3dc6 (the first run was
+> 1275/1: `tests/testmadcide.win64_expect` kept the pre-P1 spans line —
+> twin drift, now gated by `scripts/check-expect-twins.sh` with `.domain`
+> sidecars naming each twin's legitimate differences; converged a24e90ff);
+> c-testsuite **220/220**; macOS cross release both arches + the webview
+> dylib, verify_macho OK both, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-08, the s166 merge wave — the madcide S6 round on
+> `feature/madcide-gui-prompts-claude`, the owner's first feedback on the
+> v0.99.0 desktop application: the prompts as dialogs (`compose_overlay_row`
+> stamps `popup` + `prompt {label, input}` + `dismiss` / `confirm {label,
+> choices}` additively; `web_model` emits them; the page's `.quickinput` /
+> `.confirm`; buttons and a click outside post the scope's ACTION by name,
+> admitted by `scope_action_named`), a click picks the window (every
+> window's edit node carries its window index as a `tag` the pointer event
+> echoes; a header press is a positionless pointer, offset -1), the status
+> bar's chrome look (`--chrome-font`, `--sb-*`, the active header marked),
+> and the `(^C aborts)` fix found on the way (a modal scope consults an
+> action event's sequence; `@prompt ^c pcancel` baked)):** FULL develop-set
+> battery on the final code (ee19f0cf; the one later CODE_PATHS delta is the
+> win64 fixture `tests/testmadcide.win64_expect`, the help-rows twin, read
+> only under that domain): fulltest rc=0 (every gate) with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**,
+> native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`, +`madcide_prompt`;
+> `madcide_split` now drives the click in the other window and the header
+> press, `madcide_render` pins the chrome font): **12/12 JIT, 12/12 EXE, 12/12 OBJ**.
+> Headless reducers extended: `testidehints` (the prompt / confirm hints,
+> action-by-name, ^C as action and as key, the window tags, the text and
+> header presses), `test_web_model` (prompt / confirm / dismiss ops, the tag
+> echo, the positionless press), `testmadcide` (help rows 41). wine64
+> **1276/0/0TO/68skip** (verify_pe_release OK, 234 units; the first run was 1275/1 on
+> the stale win64 help-rows twin, converged 0c6652c2); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK
+> both, macho_exe_dylib_gate OK, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-08, the s165 merge wave — the madcide GUI chrome
+> milestone S0–S5 on `feature/web-editor-incremental-claude`
+> ([design](plans/2026-09-07-madcide-gui-chrome-and-modular-ui-design.md),
+> 23 trailer'd code commits): S0 resize-fill over a remote X display
+> (`GSK_RENDERER=cairo` default), the incremental web editor (a newline index
+> in `text_buffer`, one span sweep, ONE splice per keystroke), mouse caret /
+> drag-select through one caret model, the ui event vocabularies as enums
+> (`bits/ui_enums`), S5 the workbench's slots (a region's nodes stack; the
+> `^K O` split as JOE's window stack), S1 menus/commands as data
+> (`profiles/default.menu`, the `check-madcide-command-registry` gate), S2
+> the GTK4 native menu bar (`madcwebview_chrome` in libmadcwebview), S3 the
+> status bar as chrome (format seats as segments), S4 native file dialogs (a
+> request/response verb, `GtkFileDialog`, Save As), and five carrier fixes
+> found on the way (`var &r = o["h"]`, `6 == v` / `v == E::z`, `var ==
+> enum class`, the mixed conditional as a value prvalue, `var &` in a `%s`
+> position). Pre-merge `/dupaudit`: one live divergence fixed, three
+> `DupFamily` nodes recorded):** FULL develop-set battery on the final code
+> (0edc6150; the one later CODE_PATHS delta is the win64 fixture
+> `tests/testmadcide.win64_expect`, read only under that domain): fulltest
+> rc=0 (every gate incl. `check-madcide-command-registry`,
+> `check-madcide-seam`, `check-one-key-owner`, `check-dialect-lean` with
+> the `<bits/…>` positive control) with JIT **1335 passed / 0 failed / 0 timed out / 9 skipped**,
+> native EXE **1276/0**, OBJ **1276/0**, packed **1335/0/0/9**, headerless
+> **1301/0/0/43**. GUI stage under Xvfb (`tests/gui/`: webview{,_size},
+> ui_web_{hello,edit,patch,pointer}, madcide_{workbench,theme,render,split,menu}):
+> **11/11 JIT, 11/11 EXE, 11/11 OBJ**. New headless reducers: `testidemenu`, `testidedialog`,
+> `testuienums`, `testvarrefslot`, `testvareqenum`, `testvarternary`,
+> `testvarrefcoerce`, `testidespanshift`; `testidehints` / `testidestatus` /
+> `testuihostfake` / `testmadcide` / `testvised` extended (+9 → 1335 JIT-run
+> tests). wine64 **1276/0/0TO/68skip** (verify_pe_release OK, 234 units; the
+> stale spans line of the win64 fixture converged — 85073b9c); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK
+> both, macho_exe_dylib_gate OK, package-macos rc=0. Release-tier lanes
+> (libcxx, darwin-suite, genuine-win) re-run at the next master promotion.
+>
+> **Previous (2026-09-07, the s161 merge wave — slice 3, madcide GUI mode
+> on `feature/madcide-gui-claude`
+> ([plan](plans/2026-09-07-madcide-gui-plan.md), 9 tasks, one trailer'd
+> commit each): the web target's first customer — the `--gui` flag over ONE
+> target-generic client loop (`run_ide` speaks `ui::open/render/event/…`,
+> not `tui_*`) and ONE composer (`compose_ide_tree` stamps additive
+> `region`/`tabs`/`popup` layout hints the terminal ignores and `web_model`
+> renders as a workbench grid, with popups floated); `@gui` theme sections
+> as CSS custom properties through the shared `@scope` rule
+> (`scope_line_parts`, one owner for `parse_keys` and `load_theme`); the
+> status bar as left/right items; the live-build output panel
+> (`region:panel`); `hint_str` beside `hint_of`. Two recorded carrier gaps
+> were fixed en route (fix-what-you-find): a qualified struct tag at the
+> statement head (`struct ns::S x`) and `var == number` equality (a silent
+> wrong answer)):** FULL develop-set battery on the final content
+> (fab56d7c): fulltest rc=0 (every gate incl. `check-madcide-seam`,
+> `check-one-key-owner`, `check-object-module-deps`, `forest_config_gate`)
+> with JIT **1326 passed / 0 failed / 0 timed out / 9 skipped**, native EXE **1267/0**, OBJ **1267/0**,
+> packed **1326/0/0/9**, headerless **1292/0/0/43**. The GUI stage —
+> `tests/gui/webview{,_size}`, `ui_web_{hello,edit}`, and the slice-3
+> `madcide_{workbench,theme,render}` — runs under Xvfb in JIT, exe and obj:
+> **7/7 JIT, 7/7 EXE, 7/7 OBJ**. New headless reducers: `testidehints`, `testidetheme`,
+> `testidestatus`, `testidepanel`, `teststructqualtag`, `testvareqnum`
+> (+6 → 1326 JIT-run tests). wine64 **1267/0/0TO/68skip** (verify_pe_release OK, 234 units);
+> c-testsuite **220/220**; macOS cross release both arches 836 units, verify_macho OK both, macho_exe_dylib_gate OK, package-macos rc=0.
+> Release-tier lanes (libcxx, darwin-suite, genuine-win) re-run at the next
+> master promotion.
+>
+> **Previous (2026-09-07, the s160 merge wave — slice 2's ENGINE half of the
+> web-target arc on `feature/web-provider-engine-claude`
+> ([plan](plans/2026-09-07-web-provider-engine-plan.md), 12 tasks, one
+> trailer'd commit each): the shared ui input owners out of `tui_model`
+> (`keys.h` key_resolver, `ui_focus.h` focus_state, `ui_input.h`
+> ui_apply_keys, `ui_events.h`), `web_model`, `ui::open(target)` with the
+> grid and DOM frontends and one event-value owner, the script-hosted target
+> seam (`register_host` / `post_event`), `<ns_ui_web>` + one embedded page,
+> `ui::eval_page`, `vised --web`; guards default off (`src/madc_guards.cpp`,
+> the runner's `auto`, the `.env` fixture, the GUI row lift); objects carry
+> `__madc_module_deps` (`MIR_object_section_bytes`); lazy module rows; and
+> four compiler fixes the work exposed (the auto-include declaration-head
+> guard, `static ns::T`, `(ns::S *)` casts, fragment intrinsics)):**
+> FULL develop-set battery on the final content: fulltest rc=0 with JIT
+> **1320 passed / 0 failed / 0 timed out / 9 skipped**, native EXE **1261/0**, OBJ **1261/0**, packed
+> **1320/0/0/9**, headerless **1286/0/0/43**; new gates
+> `check-one-key-owner.sh` (three rules) and `check-object-module-deps.sh`
+> green; `forest_config_gate` green after 2ecc0e53 (the guard keys are
+> validated on BOTH config readers — the first wave's only red was
+> `mem-limit = 8G` accepted through `config_load`); wine64 **1261/0/0TO/68skip** (verify_pe_release OK, 234 units; +2 `win64_skip`: `testautoincludedeclhead` — the LP64 size_t typedef shape, `testguardsoff` — POSIX `RLIMIT_AS`); c-testsuite
+> **220/220**; macOS cross release both arches 836 units, verify_macho OK, macho_exe_dylib_gate OK, package-macos rc=0. New reducers (+8 →
+> 1320 JIT-run tests): `testuiopenterm`, `testuihostfake`,
+> `testguardsoff` (+`.env`), `testimportobjdeps`, `testimportlazy`,
+> `testautoincludedeclhead`, `teststaticqualtype`, `testcastqualtype`; unit
+> binaries `test_keys` (6), `test_web_model` (5), `test_guards` (2). The
+> **GUI inventory** — `tests/gui/webview.mad`, `webview_size.mad`,
+> `ui_web_hello.mad` (the first window: open, the page's first resize,
+> render, `madcSnapshot()`), `ui_web_edit.mad` (a chord, a typed run, tab /
+> right / enter through the page's real key path, the line-DOM snapshot) —
+> run by `remote_build.sh gui` under Xvfb in **JIT, EXE and OBJ** (the `.o`
+> lane opens the object's module list): **4/4 JIT, 4/4 EXE, 4/4 OBJ** (tmp/logs/gui-s160.log).
+> Release-tier lanes (libcxx, darwin-suite, genuine-win) re-run at the next
+> master promotion.
+>
+>
+> **Previous (2026-09-07, the s159 merge wave — slice 2's BUILD half of the
+> web-target arc (Astra: webview/webview 0.12.0 subtree, the typed
+> `madcwebview` interface generated from upstream's C API, per-platform
+> `libmadcwebview` recipes, the `gui` stage) + the two `import` binding gaps
+> the spike found (cc848ea8 `extern "C"` inside a namespace keeps the C name;
+> 6cb90e4d one module-member lookup owner):** FULL develop-set battery on
+> `integrate/webview-build-wave` (content 7a06703f; ledger rows at 9ecd4e18,
+> docs-only on top): fulltest rc=0 (every gate, incl. the new
+> `check-one-module-member-owner.sh` and `gen_webview_header.py --check`) with
+> JIT **1312 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1253/0**, OBJ **1253/0**, packed **1312/0/0/9**, headerless **1278/0/0/43**
+> (pack drops 1335 = the s158 census); wine64 **1255/0/0TO/66skip** on the
+> rebuilt PE (verify_pe_release OK, 234 units); c-testsuite **220/220**
+> (`--std=gnu11`); macOS cross release both arches 836 units, verify_macho
+> OK, macho_exe_dylib_gate OK, package-macos rc=0. New reducers:
+> `testnsexternc` (+1 → 1312 JIT-run tests); `testimport` gains the
+> statement-position, cast-operand and `::libc::abs` member calls. The
+> **separate GUI inventory** — `tests/gui/webview.mad` (typed C API, handles,
+> version, DOM/layout, init, JS promise acknowledgement, destruction) and
+> `tests/gui/webview_size.mad` (all four size hints), run by `remote_build.sh
+> gui` through the same fixture runner with `MADC_TEST_DIR=tests/gui` under
+> Xvfb (`MADC_MEM_LIMIT=0` for that stage only) — **2/2 JIT, 2/2 EXE**
+> (tmp/logs/gui-s159.log). GUI tests live outside `tests/*.mad` and are not in
+> the default counts; recipes and contract:
+> [building-webview.md](building-webview.md). Release-tier lanes (libcxx,
+> darwin-suite, genuine-win) are unchanged from v0.98.0 and re-run at the
+> next master promotion.
+>
+> **Previous (2026-09-06, v0.98.0 — the macOS full-suite release: the darwin
 > D4 burndown waves 1–7c + the MIR aarch64 floor wave 8 + the SIMD arc
 > S1–S5 + the vector calling convention + Apple stack-argument packing
 > + wave 12, the libc++ `<list>` completion site):** FULL merge-wave

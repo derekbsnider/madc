@@ -39,6 +39,11 @@ cout << c << endl;         // 42
 - C++ lvalue conditionals: when both arms are lvalues of one type, the
   result is an lvalue (`(flag ? a : b) = v;` assigns through), matching
   g++/clang++
+- The value carrier (`var`) against a scalar or a char pointer:
+  `c ? v : php::trim(p)`, `c ? "lit" : v`, `x.is_null() ? 1 : x` — the
+  conditional is a value ([expr.cond]/4: the class arm wins the implicit
+  conversion, as `c ? s : trim(p)` is a `std::string` in C++). Only the
+  selected arm is evaluated. Two `var` lvalues stay an lvalue conditional.
 
 ## Precedence
 
@@ -51,7 +56,10 @@ parentheses.
 The ternary lowers to a C11 conditional expression in the `cir_node`
 tree; c2mir/MIR own the branch and merge codegen. The C++
 lvalue-conditional case distributes the address-of into the arms during
-lowering.
+lowering. A value prvalue (one carrier arm, one converting arm) is
+materialized as a scope-local carrier temporary the conditional itself
+assigns — `(c ? assign(tmp, A) : assign(tmp, B), tmp)` through the
+carrier's registered `operator=` rows — so the unselected arm never runs.
 
 ## Files
 

@@ -27,6 +27,14 @@ int main()
     ui::text(t, w, d);
     printf("edited=[%s]", t);
 
+    // The caret-line lookup: indexed, one call. The document is
+    // "zero\nalpha\ngamma\n" here: byte 4 (the '\n') is still line 1,
+    // byte 5 opens line 2, and offset == size after the terminated last
+    // line is the phantom line 4.
+    printf("line_of: %ld %ld %ld %ld nocomp=%ld\n",
+	   ui::text_line_of(w, d, 0), ui::text_line_of(w, d, 4),
+	   ui::text_line_of(w, d, 5), ui::text_line_of(w, d, ui::text_size(w, d)),
+	   ui::text_line_of(w, ui::create(w, "bare2"), 0));
     printf("find=%ld notfound=%ld nocomp=%ld\n",
 	   ui::text_find(w, d, 0, "gamma"),
 	   ui::text_find(w, d, 0, "delta"),

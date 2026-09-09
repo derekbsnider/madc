@@ -793,8 +793,9 @@ fail:
      shared_p:            refused loudly -- no DLL emission by design (the
                           Mach-O writer's posture).
 
-   No code signature, no checksum (unsigned console images verify
-   neither), no .pdata/.xdata (the W3.1 posture note), subsystem CONSOLE.
+   No code signature, no checksum (unsigned images verify neither), no
+   .pdata/.xdata (the W3.1 posture note); subsystem CONSOLE, or WINDOWS_GUI
+   when params->gui_subsystem_p (gcc's -mwindows).
    Section order: .text / .rdata (import metadata) / .mir.addrpool (+ the
    stub's six slots) / .mir.init / .data (+ .bss as the virtual tail) /
    .reloc. */
@@ -810,6 +811,7 @@ fail:
 #define PEX_DLLCHARS \
   (0x0020u /* HIGH_ENTROPY_VA */ | 0x0040u /* DYNAMIC_BASE */ | 0x0100u /* NX_COMPAT */ \
    | 0x8000u /* TERMINAL_SERVER_AWARE */)
+#define PEX_SUBSYSTEM_WINDOWS_GUI 2u
 #define PEX_SUBSYSTEM_CONSOLE 3u
 #define PEX_DIR_IMPORT 1
 #define PEX_DIR_BASERELOC 5
@@ -1318,8 +1320,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u32 (&h, 0);                       /* Win32VersionValue */
     buf_u32 (&h, (uint32_t) image_end);    /* SizeOfImage */
     buf_u32 (&h, (uint32_t) hdr_size);     /* SizeOfHeaders */
-    buf_u32 (&h, 0);                       /* CheckSum: unsigned console image */
-    buf_u16 (&h, PEX_SUBSYSTEM_CONSOLE);
+    buf_u32 (&h, 0);                       /* CheckSum: unsigned image */
+    buf_u16 (&h, params->gui_subsystem_p ? PEX_SUBSYSTEM_WINDOWS_GUI : PEX_SUBSYSTEM_CONSOLE);
     buf_u16 (&h, PEX_DLLCHARS);
     buf_u64 (&h, 0x200000);                /* stack reserve (mingw default) */
     buf_u64 (&h, 0x1000);                  /* stack commit */

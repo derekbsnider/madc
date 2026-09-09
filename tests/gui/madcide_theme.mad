@@ -1,0 +1,60 @@
+// Slice 3 Task 4: an @gui theme reaches the window as CSS custom
+// properties. Render a root whose hints carry a theme bag; the page sets
+// --accent etc. on the document root — a palette entry (the 16-colour
+// palette the syntax styles read, colour-unification slice 2026-09-08)
+// travels the same way. The probe reads the applied values back through
+// the snapshot channel. Runs under Xvfb via remote_build gui.
+void compose(var &tree)
+{
+    var body;
+    body["role"] = "content";
+    body["content"] = "themed";
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(body);
+    root["children"] = kids;
+    var th;
+    th["accent"] = "#f0a35e";
+    th["bg"] = "#201a24";
+    th["pal-cyan-bright"] = "#0a0b0c";
+    var h;
+    h["theme"] = th;
+    root["hints"] = h;
+    tree = root;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("TH open");
+    var tree;
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    ui::eval_page(t,
+		"(function(){var s=getComputedStyle(document.documentElement);"
+		"var a=s.getPropertyValue('--accent').trim();"
+		"var b=s.getPropertyValue('--bg').trim();"
+		"var p=s.getPropertyValue('--pal-cyan-bright').trim();"
+		"window.madc(JSON.stringify({kind:'snapshot',"
+		"text:'accent='+a+' bg='+b+' pal-cyan-bright='+p}));})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("TH {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("TH closed");
+    return 0;
+}

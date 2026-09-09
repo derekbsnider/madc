@@ -1,0 +1,25 @@
+// The auto-include scan and declaration heads. A word that FOLLOWS a type
+// (or a struct/class/enum tag keyword) is the declarator — the TU declares
+// it, so the standard header it happens to name never arrives, at that
+// mention or any later one (gcc torture 20010409-1.c: a TU that typedefs
+// size_t itself and then writes `extern size_t strlen(...)`). A word that
+// follows a decl-specifier which PRECEDES the type — const, static,
+// extern — is the type itself or a qualifier of it, a USE: `const string`
+// must still pull <string>, `static ui::ui_host_ops` must still pull the
+// ui fragment, with no other mention of either anywhere in the file.
+typedef unsigned long size_t;
+extern size_t strlen(const char *s);
+
+const string greeting = "hello";
+static string farewell = "bye";
+static ui::ui_host_ops ops = { 0, 0, 0, 0 };
+const madc::SysInfo *info = 0;
+
+int main()
+{
+    println("len {}", strlen("four"));
+    println("{} / {}", greeting, farewell);
+    println("ops run is null: {}", ops.run == 0 ? "yes" : "no");
+    println("info is null: {}", info == 0 ? "yes" : "no");
+    return 0;
+}

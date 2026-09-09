@@ -5,6 +5,7 @@
 #include "madcdis/datachannel.h"
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -33,6 +34,25 @@ struct ProcessOptions
 	// When set, stderr_channel() reports itself unreadable and
 	// pump_process skips its stderr leg.
 	bool inherit_stderr = false;
+	// Fork-as-isolation THROUGH the one spawn owner (madcide polish P3b):
+	// when set, the forked child runs this body instead of exec'ing the
+	// source — the pipes, the reap and the cancel are the owner's — and
+	// _exit()s with its return (the low byte). The body runs in the child
+	// after the stdio dup: it owns the task runtime's atfork reset and its
+	// signal dispositions. POSIX only: start() refuses it on Windows (no
+	// fork — a caller spawns a child of self there).
+	std::function<int()> child_body;
+	// Files the owner removes once the child is reaped (a snapshot the
+	// child ran from); removed in the destructor, after the reap.
+	std::vector<std::string> cleanup_paths;
+	// The child on a PSEUDO-TERMINAL (madcide polish P3b-2, the embedded
+	// Terminal): its stdin/stdout/stderr are the pty slave — its
+	// controlling terminal (prompts flush, isatty holds, the tty echoes
+	// what is written to it) — and the master is ONE fd that is both the
+	// stdin channel (write) and the stdout channel (read); the stderr
+	// channel is unreadable (the child's stderr is the pty). POSIX only:
+	// start() refuses it on Windows (ConPTY is the named residue).
+	bool pty = false;
 };
 
 class Process
@@ -60,6 +80,9 @@ public:
 	bool started() const;
 	bool exited() const;
 	int exit_status() const;
+	// The child runs on a pseudo-terminal (the pty option honoured by
+	// start()); false on pipes — and always on Windows for now.
+	bool is_pty() const;
 	void terminate();
 
 	// Spawn `executable` with the caller's full argv (argv[0] included)
@@ -80,6 +103,14 @@ private:
 	struct impl;
 	std::unique_ptr<impl> _;
 };
+
+namespace detail {
+// The exec-style channel over a started Process: read = the child's stdout,
+// write = its stdin, cancel = SIGTERM, close = reap (madc_process.cpp's
+// ExecDataChannel) — for factories that spawn through the owner and hand the
+// result to the registry (the madcrun:// / madcproj:// schemes).
+std::unique_ptr<DataChannel> exec_channel_over(std::unique_ptr<Process> process);
+}
 
 struct ProcessPumpResult
 {

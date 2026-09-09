@@ -74,7 +74,7 @@ never auto-served.
 
 Functions need no explicit registration: an unresolved call tries
 `dlsym(RTLD_DEFAULT, name)`, so anything in the process's loaded
-libraries (libc always; anything brought in by `-l` or `#load`) is
+libraries (libc always; anything brought in by `-l` or `import`) is
 callable. The call's convention is built from the actual argument
 types; string arguments auto-coerce to `const char*`. Embedded headers
 declare real return types where it matters (`strcmp` returns `int`,
@@ -84,7 +84,15 @@ and the lazy-registration procedure.
 
 ## Build System
 
-Embedded headers live in `include/madc/`; at build time
-`scripts/gen_embedded_headers.sh` converts them into
-`src/embedded_headers.cpp`. The Makefile regenerates it automatically
-when any file in `include/madc/` changes.
+Embedded headers live in `include/madc/`; at Makefile parse time
+`scripts/gen_embedded_headers.sh` bakes them into a generated
+`embedded_headers.cpp` — written **into the per-mode object tree**
+(`obj/<mode>/embedded_headers.cpp`), which the build compiles. Every mode
+(host and cross) regenerates it automatically when any file in
+`include/madc/` changes.
+
+The tracked `src/embedded_headers.cpp` is a committed **`#error` stub**, not
+the generated table: generated content is never edited or committed there
+(`scripts/check-embedded-headers-stub.sh`, in fulltest, enforces it). If a
+build ever compiles the stub, generation was bypassed and the build stops
+loudly instead of baking an empty header set.

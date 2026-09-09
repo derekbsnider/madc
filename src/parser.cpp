@@ -17885,10 +17885,15 @@ TargetBitFieldABI madc_target_bitfield_abi =
 #endif
 
 // Same host-derived default, same reassignment story as its two siblings: this
-// is the ONE place _WIN32 decides the target's OS personality.
+// is the ONE place the build's target predicates (datadef.h: an emit-only
+// cross madc configured for the OS, or a madc hosted on it) decide the
+// target's OS personality — so the Linux-hosted darwin cross madc is Darwin
+// here too, and its library spellings are Mach-O's.
 TargetOS madc_target_os =
-#ifdef _WIN32
+#if MADC_TARGET_WINDOWS_P
 	TargetOS::Windows;
+#elif MADC_TARGET_APPLE_P
+	TargetOS::Darwin;
 #else
 	TargetOS::Posix;
 #endif
@@ -19153,10 +19158,25 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	    rt = free_binary_operator_return_class(lc, opname, to->right);
     }
     else
+    {
+	// The REVERSED equality candidate (C++20 [over.match.oper]/3.4): a
+	// scalar lhs with the CARRIER on the right — `6 == v`, `E::z != v` —
+	// binds the carrier's member row with the operands swapped
+	// (CirBuilder::class_operator_call), so it types as that row's
+	// result (bool), not the operator token's default int: `println("{}",
+	// 6 == v)` printed 1 while `v == 6` printed true. Carrier-only, as
+	// the lowering is; a user class's reversed candidate is a C++20
+	// conformance item for the --std= gate, not this rule.
+	DataDefCLASS *rc = operand_object_class(to->right);
+	if ( rc == &ddARRAY
+	  && (to->id() == TokenID::tkEquals || to->id() == TokenID::tkNotEq) )
+	    rt = rc->binary_operator_return_type(opname);
 	// Non-class lhs with a class rhs: let retained free-operator templates
 	// decide whether a mixed operand shape applies.
-	rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
-							    to->right);
+	if ( !rt )
+	    rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
+								to->right);
+    }
     if ( rt ) to->set_resolved_type(rt);
 }
 
@@ -21425,6 +21445,76 @@ Program::Program(MadcEngine *eng, MadcCompileGroup *group)
     attach_engine(eng);
 }
 
+// The single owner of the `--std=` spelling → LanguageStd mapping. The
+// recognizer below iterates it; the source-free accessors
+// (supported_c_standard_names / supported_cpp_standard_names, read by the
+// capability manifest) collect the `canonical` rows. Adding a standard is one
+// row here — the recognizer accepts it AND the manifest lists it, with no
+// second copy to drift. `canonical` marks the spelling the manifest advertises;
+// non-canonical rows are accepted aliases (`c90`→c89, `c`→c11, `c++`/`cpp`→c++11,
+// `cppNN`) that the manifest omits. `family`: 'c' = C, 'p' = C++, 'm' = the madc
+// dialect (STD_MADC — a dialect, not a standard, so it is in neither list).
+namespace {
+struct LanguageStdRow {
+	const char *name;
+	Program::LanguageStd std;
+	bool canonical;
+	char family;
+};
+const LanguageStdRow kLanguageStdTable[] = {
+	{ "madc",  Program::STD_MADC,  true,  'm' },
+	{ "c78",   Program::STD_C78,   true,  'c' },
+	{ "c86",   Program::STD_C86,   true,  'c' },
+	{ "c88",   Program::STD_C88,   true,  'c' },
+	{ "c89",   Program::STD_C89,   true,  'c' },
+	{ "c90",   Program::STD_C89,   false, 'c' },	// alias of c89
+	{ "c94",   Program::STD_C94,   true,  'c' },
+	{ "c95",   Program::STD_C95,   true,  'c' },
+	{ "c99",   Program::STD_C99,   true,  'c' },
+	{ "c11",   Program::STD_C11,   true,  'c' },
+	{ "c",     Program::STD_C11,   false, 'c' },	// alias of c11
+	{ "c17",   Program::STD_C17,   true,  'c' },
+	{ "c23",   Program::STD_C23,   true,  'c' },
+	{ "c++98", Program::STD_CPP98, true,  'p' },
+	{ "cpp98", Program::STD_CPP98, false, 'p' },
+	{ "c++03", Program::STD_CPP03, true,  'p' },
+	{ "cpp03", Program::STD_CPP03, false, 'p' },
+	{ "c++11", Program::STD_CPP11, true,  'p' },
+	{ "cpp11", Program::STD_CPP11, false, 'p' },
+	{ "c++",   Program::STD_CPP11, false, 'p' },	// alias of c++11
+	{ "cpp",   Program::STD_CPP11, false, 'p' },
+	{ "c++14", Program::STD_CPP14, true,  'p' },
+	{ "cpp14", Program::STD_CPP14, false, 'p' },
+	{ "c++17", Program::STD_CPP17, true,  'p' },
+	{ "cpp17", Program::STD_CPP17, false, 'p' },
+	{ "c++20", Program::STD_CPP20, true,  'p' },
+	{ "cpp20", Program::STD_CPP20, false, 'p' },
+	{ "c++23", Program::STD_CPP23, true,  'p' },
+	{ "cpp23", Program::STD_CPP23, false, 'p' },
+	{ "c++26", Program::STD_CPP26, true,  'p' },
+	{ "cpp26", Program::STD_CPP26, false, 'p' },
+};
+
+std::vector<std::string> collect_std_names(char family)
+{
+	std::vector<std::string> names;
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && row.family == family )
+			names.push_back(row.name);
+	return names;
+}
+}	// namespace
+
+std::vector<std::string> Program::supported_c_standard_names()
+{
+	return collect_std_names('c');
+}
+
+std::vector<std::string> Program::supported_cpp_standard_names()
+{
+	return collect_std_names('p');
+}
+
 bool Program::set_language_standard(const std::string &standard)
 {
     // GNU dialects map onto their base standard with the gnu_dialect
@@ -21445,49 +21535,13 @@ bool Program::set_language_standard(const std::string &standard)
 	return true;
     }
     gnu_dialect = false;
-    if ( standard == "madc" )
-	language_std = STD_MADC;
-    else if ( standard == "c78" )
-	language_std = STD_C78;
-    else if ( standard == "c86" )
-	language_std = STD_C86;
-    else if ( standard == "c88" )
-	language_std = STD_C88;
-    else if ( standard == "c89" || standard == "c90" )
-	language_std = STD_C89;
-    else if ( standard == "c94" )
-	language_std = STD_C94;
-    else if ( standard == "c95" )
-	language_std = STD_C95;
-    else if ( standard == "c99" )
-	language_std = STD_C99;
-    else if ( standard == "c" || standard == "c11" )
-	language_std = STD_C11;
-    else if ( standard == "c17" )
-	language_std = STD_C17;
-    else if ( standard == "c23" )
-	language_std = STD_C23;
-    else if ( standard == "c++98" || standard == "cpp98" )
-	language_std = STD_CPP98;
-    else if ( standard == "c++03" || standard == "cpp03" )
-	language_std = STD_CPP03;
-    else if ( standard == "c++" || standard == "cpp"
-	   || standard == "c++11" || standard == "cpp11" )
-	language_std = STD_CPP11;
-    else if ( standard == "c++14" || standard == "cpp14" )
-	language_std = STD_CPP14;
-    else if ( standard == "c++17" || standard == "cpp17" )
-	language_std = STD_CPP17;
-    else if ( standard == "c++20" || standard == "cpp20" )
-	language_std = STD_CPP20;
-    else if ( standard == "c++23" || standard == "cpp23" )
-	language_std = STD_CPP23;
-    else if ( standard == "c++26" || standard == "cpp26" )
-	language_std = STD_CPP26;
-    else
-	return false;
-
-    return true;
+    for ( const LanguageStdRow &row : kLanguageStdTable )
+	if ( standard == row.name )
+	{
+	    language_std = row.std;
+	    return true;
+	}
+    return false;
 }
 
 bool Program::set_language_standard_option(const std::string &arg)
@@ -24490,11 +24544,16 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 		&& fn_template_map.find(ovkey) != fn_template_map.end();	/* identity-read: existence */
 	    // A CONCRETE declaration-only C++ namespace function binds its
 	    // external Itanium symbol through storage_alias_name. A template
-	    // placeholder never gets an alias on the live path.
+	    // placeholder never gets an alias on the live path. C language
+	    // linkage ([dcl.link]/6, FuncDef::c_linkage from the frozen
+	    // DF_FUNC_C_LINKAGE) binds the UNQUALIFIED name — the live
+	    // registration's rule (parseFunction), reproduced here.
 	    if ( !tmpl_placeholder && pf.fd->declaration_only
 	      && !pf.fd->namespace_name.empty() )
-		fv->storage_alias_name = namespace_cpp_function_symbol(
-		    pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
+		fv->storage_alias_name = pf.fd->c_linkage
+		    ? pf.fd->function_display_name
+		    : namespace_cpp_function_symbol(
+			pf.fd->namespace_name, pf.fd->function_display_name, pf.fd);
 	    std::vector<NamespaceFnOverload> &ovset =
 		namespace_fn_overload_sets[ovkey];
 	    bool known = false;
@@ -25704,6 +25763,25 @@ void Program::add_array_methods()
 	  "madarray_ne_cstr", true },
 	{ "operator!=", DataType::dtBOOL,     typespec_t(array_ref),
 	  "madarray_ne_value", true },
+	// The number kinds: `v == 5`, `v != 2.5`, `v == true`. Without these
+	// rows the comparison fell to c2mir's pointer-vs-integer compare and
+	// answered FALSE for an integer-kind 5 (a silent wrong answer, plus
+	// a warning nobody reads). The entries build a value of the operand
+	// and ask madc::value::operator== — one equality contract (strict
+	// kind: an integer-kind 5 is not the real 5.0, boolean is its own
+	// kind), never a second comparison rule.
+	{ "operator==", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_eq_int", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_eq_real", true },
+	{ "operator==", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_eq_bool", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtINT64,
+	  "madarray_ne_int", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtDOUBLE,
+	  "madarray_ne_real", true },
+	{ "operator!=", DataType::dtBOOL,     DataType::dtBOOL,
+	  "madarray_ne_bool", true },
 	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
 	  "madarray_append_cstr", false },
 	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
@@ -26524,7 +26602,8 @@ std::vector<std::string> Program::inline_namespace_descendants(
     return pending;
 }
 
-Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
+Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name,
+					 TokenBase *diag)
 {
     activate_forest_function_family(ns_name, member_name);
     // [namespace.qual]: the members of N include the members of N's inline
@@ -26554,7 +26633,77 @@ Variable *Program::find_namespace_member(const std::string &ns_name, const std::
 		return vmi->second;
 	}
     }
-    return NULL;
+    // A namespace bound to a dynamic module: its members are the library's
+    // exports, materialized here on first lookup — the ONE owner below.
+    return resolve_module_member(ns_name, member_name, diag);
+}
+
+// import (alias form) / #load: the members of a namespace bound to a dynamic
+// module ARE the library's exports. This is the ONE owner that materializes a
+// member — find_namespace_member's miss path — so every route into the
+// namespace sees the same registration: the qualified `ns::m` expression, the
+// statement-head `ns::m(...)` override (QualifiedCalleeScope), a postfix/cast
+// head, `::ns::m`, a using-directive walk. The member registers as the
+// `__dl_<ns>_<m>` Variable with the int64 K&R signature (the call lowers to
+// the slot-resolved indirect call, CirBuilder::dyn_module_callee), stamped
+// with its module identity (stamp_dynamic_module_member) and cached in the
+// namespace map. Before this owner two qualified sites carried the fallback
+// and the statement head drifted to the UNQUALIFIED dlsym fallback, which
+// registered a BARE symbol the JIT resolved by accident (RTLD_GLOBAL) and no
+// native artifact could link — `seam::spike_mark();` as a whole statement
+// (KG Gap dynamic_module_member_lookup_paths_diverge). `diag` non-NULL: a
+// registration-policy denial or an unexported member is reported at that
+// token; NULL (a lookup walk) misses silently — the caller reports its own
+// "not a member". Gate: scripts/check-one-module-member-owner.sh.
+Variable *Program::resolve_module_member(const std::string &ns_name,
+					 const std::string &member_name,
+					 TokenBase *diag)
+{
+    std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
+    if ( dli == dlopen_map.end() )
+	return NULL;
+    if ( !is_dynamic_symbol_fallback_enabled() )
+    {
+	if ( diag )
+	    Throw(diag) << "dynamic symbol fallback is disabled by registration policy" << flush;
+	return NULL;
+    }
+    if ( !is_dynamic_symbol_allowed(member_name) )
+    {
+	if ( diag )
+	    Throw(diag) << "dynamic symbol '" << member_name
+			<< "' is not allowed by registration policy" << flush;
+	return NULL;
+    }
+    void *sym = madcdl_sym(dli->second, member_name.c_str());
+    if ( !sym )
+    {
+	if ( diag )
+	{
+	    std::map<std::string, std::string>::const_iterator li =
+		dl_library_spelling.find(ns_name);
+	    Throw(diag) << "'" << member_name << "' is not a member of namespace '"
+			<< ns_name << "': "
+			<< (li != dl_library_spelling.end() ? li->second : ns_name)
+			<< " exports no such symbol (" << madcdl_error() << ")" << flush;
+	}
+	return NULL;
+    }
+    std::string func_id = "__dl_" + ns_name + "_" + member_name;
+    Variable *var = addFunction(func_id, datatype_vec_t{DataType::dtINT64},
+				(fVOIDFUNC)sym);
+    if ( !var )
+    {
+	if ( diag )
+	    Throw(diag) << "Failed to register dynamic module member '"
+			<< ns_name << "::" << member_name << "'" << flush;
+	return NULL;
+    }
+    stamp_dynamic_module_member(var, ns_name, member_name);
+    namespace_variables_for_write(ns_name)[member_name] = var;
+    DBG(cout << "resolve_module_member() " << ns_name << "::" << member_name
+	     << " at " << (uint64_t)sym << endl);
+    return var;
 }
 
 std::string Program::canonical_nested_namespace(const std::string &parent,
@@ -27418,6 +27567,44 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 }
 
 // add a function definition
+// import (alias form): mark a freshly registered namespace member as a
+// dynamic-module member so the CIR builder lowers its calls to the
+// runtime-resolved shape ((long (*)())(slot ?: __madc_dl_member(LIB, MEMBER)))
+// in every lane. The library spelling is the one the binder recorded for the
+// namespace (dl_library_spelling); the parse-time dlsym above stays the early
+// diagnostic ("is this member exported at all"), never the bound address.
+// A prototype declared while a LAZY module row's interface is being served
+// (`#pragma madc module_begin(...)` .. `module_end`, the import directive's
+// wrap): the function has no symbol of its own in this program — every call
+// lowers to the first-call slot (CirBuilder::dyn_module_callee) against the
+// row's spelling, through a pointer of the DECLARED type (dyn_module_typed).
+// Free functions only: a class member is never a module export.
+void Program::stamp_lazy_module_prototype(FuncDef *fd, const std::string &name,
+					  DataDefCLASS *owner_class,
+					  const TokenBase *proto_end)
+{
+    if ( !fd || owner_class || !proto_end || _lazy_module_tokens.empty() )
+	return;
+    std::unordered_map<const TokenBase *, std::string>::const_iterator it =
+	_lazy_module_tokens.find(proto_end);
+    if ( it == _lazy_module_tokens.end() )
+	return;
+    fd->dyn_module_library = it->second;
+    fd->dyn_module_member = name;
+    fd->dyn_module_typed = true;
+}
+
+void Program::stamp_dynamic_module_member(Variable *var, const std::string &ns,
+					  const std::string &member)
+{
+    FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( !fd )
+	return;
+    std::map<std::string, std::string>::const_iterator it = dl_library_spelling.find(ns);
+    fd->dyn_module_library = it != dl_library_spelling.end() ? it->second : ns;
+    fd->dyn_module_member = member;
+}
+
 Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod, bool builtin_registration, const std::string &emit_symbol)
 {
     variable_map_iter vmi;
@@ -28704,7 +28891,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 			return parsePostfixChainFrom(sval,
 						     postfix_expr_variable(sval));
 	    }
-	    Variable *nsv = find_namespace_member(ns_name, member);
+	    Variable *nsv = find_namespace_member(ns_name, member, member_tb);
 	    if ( !nsv )
 		Throw(member_tb) << "'" << member << "' is not a member of '" << ns_name << "'" << flush;
 	    TokenBase *r = new TokenVar(*nsv);
@@ -29786,28 +29973,10 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	}
 	else
 	{
-	    ns_var = find_namespace_member(aname, member_name);
-	    if ( !ns_var )
-	    {
-		std::map<std::string, void *>::iterator dli = dlopen_map.find(aname);
-		if ( dli != dlopen_map.end() )
-		{
-		    if ( !is_dynamic_symbol_fallback_enabled() )
-			Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-		    if ( !is_dynamic_symbol_allowed(member_name) )
-			Throw(member_tb) << "dynamic symbol '" << member_name
-					 << "' is not allowed by registration policy" << flush;
-		    void *sym = madcdl_sym(dli->second, member_name.c_str());
-		    if ( sym )
-		    {
-			std::string func_id = "__dl_" + aname + "_" + member_name;
-			ns_var = addFunction(func_id,
-			    datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
-			dl_symbol_map[func_id] = sym;
-			namespace_variables_for_write(aname)[member_name] = ns_var;
-		    }
-		}
-	    }
+	    // A module-bound namespace's member materializes inside the
+	    // lookup (resolve_module_member, find_namespace_member's miss
+	    // path); member_tb makes a policy denial / unexported member loud.
+	    ns_var = find_namespace_member(aname, member_name, member_tb);
 	    if ( !ns_var )
 		Throw(member_tb) << "'" << member_name
 				 << "' is not a member of namespace '"
@@ -37680,37 +37849,16 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    }
 			}
 		    }
+		    // A module-bound namespace's member materializes inside
+		    // the lookup (resolve_module_member, find_namespace_member's
+		    // miss path); member_tb makes a policy denial / unexported
+		    // member loud at the member token.
 		    Variable *ns_member = find_namespace_member(ns_name,
-								 member_name);
+								 member_name,
+								 member_tb);
 		    if ( !ns_member )
-		    {
-			// try dlsym fallback if this namespace was loaded via #load
-			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
-			if ( dli == dlopen_map.end() )
-			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-			if ( !is_dynamic_symbol_fallback_enabled() )
-			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
-			if ( !is_dynamic_symbol_allowed(member_name) )
-			    Throw(member_tb) << "dynamic symbol '" << member_name
-					     << "' is not allowed by registration policy" << flush;
-			void *sym = madcdl_sym(dli->second, member_name.c_str());
-			if ( !sym )
-			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << madcdl_error() << flush;
-			// create function with int64 return, no declared params (variadic-like)
-			// actual args are passed through at compile time
-			std::string func_id = "__dl_" + ns_name + "_" + member_name;
-			var = addFunction(func_id,
-			    datatype_vec_t{DataType::dtINT64},
-			    (fVOIDFUNC)sym);
-			if ( !var )
-			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
-			dl_symbol_map[func_id] = sym;
-			// Cache the resolved symbol for the next qualified call.
-			namespace_variables_for_write(ns_name)[member_name] = var;
-			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
-		    }
-		    else
-			var = ns_member;
+			Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+		    var = ns_member;
 		// Cross-namespace seed clash: namespace_map[ns][name] can hold a
 		// placeholder seed from a DIFFERENT namespace (observed: qualified
 		// std::get resolving to the std::ranges::get niebloid seed). When the
@@ -39038,17 +39186,27 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    bool shape_ok = j > 0;
 			    if ( shape_ok && !typename_head )
 			    {
-				// Bare spelling: only a registered template's
-				// id + a member chain — plain names stay with
-				// the sibling arms (and a non-template `<` is
-				// less-than, never scanned as a list).
+				// Bare spelling: a registered template's id + a
+				// member chain, or a NAMESPACE head + a member
+				// chain (`(ns::S *)v`, `(ui::ui_host_ops *)p` —
+				// before this the qualified type fell to the
+				// expression parser, which reported it "not a
+				// member of namespace"). Plain unqualified names
+				// stay with the sibling arms (and a non-template
+				// `<` is less-than, never scanned as a list). The
+				// range resolver below answers both shapes through
+				// the one declared-type resolver, non-consumingly;
+				// its completeness rule keeps a qualified VALUE
+				// (`(ns::value)`) an expression.
 				std::string tid_name =
 				    peek1->type() == TokenType::ttDataType
 					? ((TokenDataType *)peek1)->spelling()
 					: ((TokenIdent *)peek1)->spelling();
-				shape_ok = saw_tid && chain > 0
-				    && (find_template(tid_name)
-				     || find_template_alias(tid_name));
+				shape_ok = chain > 0
+				    && ((saw_tid && (find_template(tid_name)
+						  || find_template_alias(tid_name)))
+				     || (!saw_tid && peek1->type() == TokenType::ttIdentifier
+					 && !resolve_namespace_name_in_scope(tid_name).empty()));
 			    }
 			    if ( shape_ok )
 				shape_ok = tokens.size() > j && tokens[j]
@@ -40175,6 +40333,30 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    DataDef *ternary_dd = tdd;
 		    if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
 			ternary_dd = fdd;
+		    // [expr.cond]/4 with the CARRIER (`var`): one arm a value (a
+		    // variable, a keyed slot, a `value &`), the other a type the
+		    // carrier's registered operator= rows take (a char pointer, a
+		    // number, a bool — its converting surface): the conditional
+		    // is a value PRVALUE — the class arm wins the implicit
+		    // conversion; there is none the other way. The overload owner
+		    // answers "does it convert" with the same rows `v = x` binds.
+		    // Without this `c ? php::trim(p) : v` typed as char* and the
+		    // lowering's two arms could never agree.
+		    {
+			DataDefCLASS *tcls = operand_object_class(ternary->true_expr);
+			DataDefCLASS *fcls = operand_object_class(ternary->false_expr);
+			if ( (tcls == &ddARRAY) != (fcls == &ddARRAY) )
+			{
+			    DataDef *other = tcls == &ddARRAY ? fdd : tdd;
+			    if ( other && !other->unqualified()->as_class_dd() )
+			    {
+				std::vector<const DataDef *> argt;
+				argt.push_back(other);
+				if ( ddARRAY.findMethodOverload("operator=", argt, 0, NULL) )
+				    ternary_dd = &ddARRAY;
+			    }
+			}
+		    }
 
 		    // C ternary type unification for pointer-flavored
 		    // branches. Each branch has an *effective* type:
@@ -40949,7 +41131,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(member_tb ? member_tb : name_tb)
 				<< "Expecting identifier after namespace '::'" << flush;
 			std::string member_name = contextual_identifier_name(member_tb);
-			var = find_namespace_member(gname, member_name);
+			var = find_namespace_member(gname, member_name, member_tb);
 			if ( !var )
 			    Throw(member_tb) << "'" << member_name
 					     << "' is not a member of namespace '"
@@ -42962,10 +43144,31 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
-	dmi = find_visible_struct_tag(tag->spelling());
+	// The tag's aggregate, however the tag is spelled. A QUALIFIED tag —
+	// `struct ns::S x;` / `struct A::B local = { 6 };` at statement
+	// position ([dcl.type.elab]: an elaborated-type-specifier with a
+	// nested-name-specifier) — read `ns` as the qualifier's HEAD, not as
+	// a tag of this scope: never mint it. The shared elaborated-
+	// specifier resolver (resolve_declared_type_token, the arm TYPE
+	// positions already take for `struct A::B`) consumes the `::` chain
+	// and answers the aggregate; the declaration then continues exactly
+	// like the unqualified `struct tag variable;` arm below.
+	DataDef *tag_dd = NULL;
+	if ( tn->id() == TokenID::tkNS )
+	{
+	    TokenDataType *qtdt = pgm.resolve_declared_type_token(tag, true, true);
+	    if ( !qtdt )
+		pgm.Throw(tag) << "Unknown qualified " << aggregate_kw << " tag "
+			       << tag->spelling() << flush;
+	    if ( !do_typedef )
+		return pgm.parseDeclaration(qtdt);
+	    tag_dd = &qtdt->definition;
+	}
+	else
+	    dmi = find_visible_struct_tag(tag->spelling());
 
 	// plain forward declaration: struct tag;
-	if ( tn->id() == TokenID::tkSemi )
+	if ( !tag_dd && tn->id() == TokenID::tkSemi )
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
@@ -42990,13 +43193,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 
 	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
-	if ( dmi == pgm.struct_map.end() )
+	if ( !tag_dd && dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
+	if ( !tag_dd )
+	    tag_dd = dmi->second;
 	// typedef struct tag alias — a C declarator LIST like every other
 	// typedef arm (`typedef struct _X X, *PX;` — winnt.h's dominant
 	// shape for previously-defined tags). Each declarator restarts from
@@ -43009,7 +43214,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    TokenBase *node = NULL;
 	    while ( true )
 	    {
-		DataDef *alias_dd = dmi->second;
+		DataDef *alias_dd = tag_dd;
 		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 		{
 		    pgm.nextToken();
@@ -43094,7 +43299,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !alias_dd->is_pointer() && !alias_dd->as_fptr_dd() )
 		    {
 			pgm.pack_tap_struct(alias_name);	// B4a tap
-			pgm.struct_map.set(alias_name, dmi->second);
+			pgm.struct_map.set(alias_name, tag_dd);
 		    }
 		    record_typedef(alias_name, alias_dd, tdt, tn);
 		    if ( node && !pgm.compounds.empty() )
@@ -43114,7 +43319,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	string tname(aggregate_kw);
 	tname.append(" ");
 	tname.append(tag->spelling());
-	tdt = new TokenDataType(tname.c_str(), *dmi->second);
+	tdt = new TokenDataType(tname.c_str(), *tag_dd);
 	return pgm.parseDeclaration(tdt);
     }
 
@@ -51186,14 +51391,19 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 	    flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	    if ( tdmi != pgm.datatype_map.end() )
-	    {
-		TokenBase *type_tb = pgm.nextToken();
-		TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    // The declared-type resolver is the ONE owner of what an identifier
+	    // denotes in a type position — a typedef name, a namespace-qualified
+	    // type (`static ui::ui_host_ops ops`), a template-id, a class-member
+	    // type chain — exactly as `const` and a plain declaration head ask
+	    // it. The flat-map probe only decides the fallback default below.
+	    TokenStream::Pos type_saved = pgm.tokens.savepos();
+	    TokenBase *type_tb = pgm.nextToken();
+	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
+	    if ( dt || tdmi != pgm.datatype_map.end() )
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
-	    }
 	    else
 	    {
+		pgm.tokens = type_saved;
 		// C89 implicit int: `static funcname(...)` — treat as int
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
@@ -65579,6 +65789,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
 	if ( nt->id() == TokenID::tkComma )
 	{
@@ -65649,6 +65860,7 @@ paramdecl:
 	    method->owner_class = owner_class;
 	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
+	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
 	return;
     }
@@ -69112,6 +69324,28 @@ fnptr_decl_arm_head:
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
+	    // [dcl.link]/6: C language linkage ignores the namespace — the
+	    // external symbol is the UNQUALIFIED name, for a declaration and a
+	    // definition alike (g++/clang++: `namespace seam { extern "C" int
+	    // f(); }` + `seam::f()` emit `call f`; a body defines `f`). The
+	    // registration keeps its namespace-scoped key (`__ns_seam_f`, the
+	    // lookup identity); the emitted symbol rides storage_alias_name,
+	    // the same contract an asm label uses — and an explicit asm label
+	    // still wins. Without this the builder imported the internal key
+	    // itself (MIR: "import of undefined item __ns_seam_spike_answer").
+	    // The source identity is stamped too so the pack's restore
+	    // (register_forest_func) rebinds the member under its namespace
+	    // with the C alias: std::__once_proxy, __gnu_cxx::wcstold and the
+	    // __cxxabiv1 entries are exactly this shape in the system headers.
+	    else if ( namespace_function && fd && !is_c_mode()
+		   && current_linkage == LinkageSpec::C )
+	    {
+		fd->c_linkage = true;
+		fd->function_display_name = source_id;
+		fd->namespace_name = current_namespace();
+		if ( ns_var->storage_alias_name.empty() )
+		    ns_var->storage_alias_name = source_id;
+	    }
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking

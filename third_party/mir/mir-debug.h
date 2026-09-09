@@ -238,6 +238,13 @@ extern void MIR_object_add_reloc (MIR_object_t obj, int sec, uint64_t offset, in
    DEFINED symbol with that name exists (value is its section offset). */
 extern int MIR_object_find_symbol (MIR_object_t obj, const char *name, int *sec, uint64_t *value,
                                    uint64_t *size);
+/* The current bytes of a section body (TEXT, DATA or ADDRPOOL -- .bss has
+   none).  Returns nonzero and fills bytes/len; the pointer borrows the
+   builder's buffer and is valid until the next append.  With
+   MIR_object_find_symbol this reads a defined data symbol's contents out of
+   a read-in object before it is loaded or merged (madc reads its
+   __madc_module_deps table this way). */
+extern int MIR_object_section_bytes (MIR_object_t obj, int sec, const void **bytes, size_t *len);
 
 /* Register a defined text function as a module initializer: appends one
    8-byte slot to .init_array, covered by an ABS64 relocation against the
@@ -341,6 +348,11 @@ typedef struct MIR_object_exec_params {
   const char *extra_sectname; /* e.g. "__forest" */
   const void *extra_data;
   size_t extra_size;
+  /* PE targets: nonzero = IMAGE_SUBSYSTEM_WINDOWS_GUI (a windowed program:
+     no console is allocated at start -- gcc's -mwindows), zero = the
+     console subsystem (-mconsole, the default).  ELF and Mach-O targets
+     ignore it: a GUI program is an ordinary program there. */
+  int gui_subsystem_p;
 } MIR_object_exec_params;
 
 /* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable

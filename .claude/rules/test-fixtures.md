@@ -24,13 +24,21 @@
     domain, e.g. a multi-TU `--project` program; the `--exe` pass still
     covers it)
   - `tests/foo.timeout` — per-test wall-clock cap in seconds (default 5); raise it for a legitimately slow test (e.g. a real-libstdc++-header compile, no PCH yet)
+  - `tests/foo.env` — whitespace-split `NAME=value` pairs handed to `env(1)`
+    ahead of every invocation of the test (JIT, exe, obj); the runner exports
+    `MADC_MEM_LIMIT=auto`, so a test that must run unguarded says
+    `MADC_MEM_LIMIT=off` here
   - `tests/foo.<domain>_skip` — skip when `MADC_SKIP_EXT` (a whitespace-split
     domain list, e.g. `"win64 wine64"`) includes `<domain>`; content = one
     line saying why the test is structurally out of that domain
   - `tests/foo.<domain>_expect` — replaces `.expect` when `MADC_SKIP_EXT`
     includes `<domain>` (first listed domain with a fixture wins); for tests
     whose CORRECT output differs on the domain — content comes from that
-    target's oracle compiler (e.g. mingw-gcc for win64)
+    target's oracle compiler (e.g. mingw-gcc for win64). A change to a
+    LABELLED line (`label: …`) of `.expect` lands in every twin too, unless
+    the label is named in `tests/foo.<domain>_expect.domain` (the labels
+    whose answer differs on that domain); `scripts/check-expect-twins.sh`
+    (fulltest) fails the drift
   - `tests/foo.<domain>_obj_skip` — skip the `--obj` pass only, only when
     `MADC_SKIP_EXT` includes `<domain>`; for tests whose `.o` lane is
     structurally out of that domain's scope while the JIT (and other

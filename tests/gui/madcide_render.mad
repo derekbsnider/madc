@@ -1,0 +1,60 @@
+// Slice 3 Task 7: a REAL madcide session composed and rendered in the
+// window. This proves the one composer (compose_ide_tree) renders as a
+// workbench through the web target — the editor and status regions, the
+// status items — end to end under Xvfb. The full `madcide --gui` loop
+// (run_ide over ui::open(target)) is the manual owner gate; this drives a
+// session's compose+render+snapshot without the blocking loop.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("IDE open");
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    // Probe: the workbench regions the real composer stamped, and
+	    // whether the status bar rendered its left/right items.
+	    ui::eval_page(t,
+		"(function(){var rs=[];"
+		"document.querySelectorAll('[data-region]').forEach(function(e){"
+		"rs.push(e.dataset.region);});"
+		"var sb=document.querySelector('.status .sb-left')?'yes':'no';"
+		"var st=document.querySelector('.status'),ed=document.querySelector('.edit');"
+		"var chrome=(st&&ed&&getComputedStyle(st).fontFamily!==getComputedStyle(ed).fontFamily)?'yes':'no';"
+		"window.madc(JSON.stringify({kind:'snapshot',"
+		"text:'regions='+rs.sort().join(',')+' statusitems='+sb+' chrome-font='+chrome}));})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("IDE {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("IDE closed");
+    return 0;
+}

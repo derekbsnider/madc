@@ -132,12 +132,13 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o cir_freeze.o cir_emit_c.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o cir_freeze.o cir_emit_c.o madc_capabilities.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
-# MODE blocks — hosted-darwin modes embed a generated SDK prelude alongside
-# include/madc/ and write a per-mode file instead of src/embedded_headers.cpp.
+# MODE blocks — EVERY mode (host and cross) writes a per-mode file into the
+# obj tree ($(OBJDIR)/embedded_headers.cpp); src/embedded_headers.cpp is a
+# committed #error STUB, never the real table (check-embedded-headers-stub.sh).
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 MADDATHDRS = $(wildcard ../include/madcdat/*.h)
 # madc::dis substrate headers: tokens.h/madc.h include these, so they MUST be in
@@ -540,7 +541,13 @@ WIN_EMBED_FALLBACK_DIR = $(OBJDIR)/win_header_fallbacks
 EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
 EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_win_header_fallbacks.sh $(WIN_MINGW_HEADERS) $(WIN_EMBED_FALLBACK_DIR) >/dev/null && ../scripts/gen_embedded_headers.sh $(WIN_EMBED_FALLBACK_DIR) $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 else
-EMBED_GEN := $(shell ../scripts/gen_embedded_headers.sh >/dev/null 2>&1; echo done)
+# Host (no foreign header world): the include/madc/-only table, generated
+# into the obj tree like every other mode — never src/embedded_headers.cpp,
+# which is now a committed #error STUB (check-embedded-headers-stub.sh). A
+# failed gen REMOVES the .cpp so the build stops loudly rather than baking a
+# stale/empty table (the G2 silent-header-degradation class).
+EMBEDDED_HEADERS_CPP = $(OBJDIR)/embedded_headers.cpp
+EMBED_GEN := $(shell mkdir -p $(OBJDIR) && ../scripts/gen_embedded_headers.sh "" $(EMBEDDED_HEADERS_CPP) >/dev/null || rm -f $(EMBEDDED_HEADERS_CPP); echo done)
 endif
 # Forest carrier shape (--with-forest= configure axis; forest-carriers S3).
 # Applies to the PRODUCT modes (release + hosted darwin): what the build
@@ -759,6 +766,8 @@ print-%:
 all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
+include webview.mk
+
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
 
@@ -898,8 +907,11 @@ else
 MACHO_READER = bin/madc
 RELEASE_MACOS_ARCHES = arm64 x86-64
 endif
+# The platform webview library (webview.mk) rides the release of each arch:
+# package_release_macos.sh ships it as lib/libmadcwebview.dylib.
 release-%-macos:
 	$(MAKE) hosted-$*-macos
+	$(MAKE) webview-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
 	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
 
@@ -952,8 +964,11 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # pack script's verify legs (--dump-forest, --run-frozen, bind-cache
 # equivalence) run the EXACT shipped bytes under wine. The suite-facing
 # hosted exe stays live-parse; this is the packed product twin.
+# The platform webview library (webview.mk) rides the release too:
+# package_release_windows.sh ships bin/madcwebview.dll beside madc.exe.
 release-windows:
 	$(MAKE) hosted-x86-64-windows
+	$(MAKE) webview-windows
 	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
 	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
@@ -1060,6 +1075,7 @@ test: $(TESTBINS)
 
 fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/run_tests.sh
+	@python3 ../scripts/gen_webview_header.py --check
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
@@ -1077,6 +1093,14 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
 	@cd .. && bash scripts/check-dialect-lean.sh
+	@cd .. && bash scripts/check-dialect-literals.sh
+	@cd .. && bash scripts/check-embedded-headers-stub.sh
+	@cd .. && bash scripts/check-one-library-spelling.sh
+	@cd .. && bash scripts/check-one-module-member-owner.sh
+	@cd .. && bash scripts/check-one-key-owner.sh
+	@cd .. && bash scripts/check-one-style-vocabulary.sh
+	@cd .. && bash scripts/check-expect-twins.sh
+	@cd .. && bash scripts/check-object-module-deps.sh
 	@cd .. && bash scripts/check-autoinclude-position.sh
 	@cd .. && bash scripts/check-cross-mode-compiles.sh
 	@cd .. && bash scripts/check-i64-spec-spelling.sh
@@ -1090,6 +1114,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-select-fire-owner.sh
 	@cd .. && bash scripts/check-madcide-single-owners.sh
 	@cd .. && bash scripts/check-madcide-seam.sh
+	@cd .. && bash scripts/check-madcide-command-registry.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh
@@ -1110,6 +1135,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/tsubst_flagon_gate.sh --check
 	@cd .. && bash scripts/class_pattern_equivalence.sh
 	@cd .. && bash scripts/version_flag_gate.sh
+	@cd .. && bash scripts/capabilities_json_gate.sh
 	@cd .. && bash scripts/ufcs_gate.sh
 	@cd .. && bash scripts/adventure_roundtrip_gate.sh
 	@cd .. && bash scripts/adventure_parity.sh
@@ -1319,14 +1345,18 @@ $(OBJDIR)/%.o: rt/%.c $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX_BASE) -c -o $@ $(RT_CFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
-# Target modes with an extra header root compile the PER-MODE
-# embedded_headers.cpp (generated at parse time into the obj tree, EMBED_GEN
-# above) — never src/embedded_headers.cpp, which stays the committed
-# include/madc/-only table for host builds.
+# EVERY mode now compiles the generated PER-MODE embedded_headers.cpp from
+# the obj tree (EMBED_GEN above sets EMBEDDED_HEADERS_CPP for host and cross
+# alike) — never src/embedded_headers.cpp, which is a committed #error stub.
 ifdef EMBEDDED_HEADERS_CPP
 $(OBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+# The PIC twin (libmadc.so) must ALSO read the generated obj-tree table, not
+# the src/ #error stub the generic $(PICOBJDIR)/%.o:%.cpp rule would pick.
+$(PICOBJDIR)/embedded_headers.o: $(EMBEDDED_HEADERS_CPP) $(DEPENDS)
+	@mkdir -p $(PICOBJDIR)
+	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 endif
 
 # Per-mode include-table source (see SYS_INCLUDES_CPP above): same shape as

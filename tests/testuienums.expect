@@ -1,0 +1,7 @@
+kind: key
+kind: not text
+key: down
+key: reversed compare agrees
+pointer: drag
+codes: left=9 down=8 ^k=2 a=1 space=1 zz=0 none=0
+stored: 6 6

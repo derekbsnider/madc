@@ -1,0 +1,168 @@
+// The pointer chain in the REAL page (WebKitGTK under Xvfb): a press on an
+// edit line is hit-tested by the browser (caretRangeFromPoint), posted by
+// the page as the line element's index and UTF-16 column, resolved by
+// web_model over the rows it emitted for that node to a BYTE offset, and
+// reaches the application as {event:"pointer", phase, offset} — the
+// application places its caret and selection, renders, and the page's own
+// text shows the result. Steps: a press on line 2 col 2, a drag to line 3
+// col 1 (the selection lights), the release; a press past the end of a
+// line (its end); a press below the last line (its end); a press after a
+// two-byte character (the UTF-16 column becomes a byte offset, and the
+// caret the page draws back sits on the character AFTER it — the byte
+// column converted to a string index, not used as one); a drag across
+// that character (the selection covers it once, "éa", not "éab"). Every
+// gesture is a synthetic MouseEvent dispatched at coordinates the page
+// measured — the real handlers and the real hit test run.
+var doc = "one\ntwo\nthree\nfour\nhéab";
+long caret = 0;
+long mark = -1;
+long anchor = -1;
+
+void compose(var &tree)
+{
+    var head = { "role": "heading", "label": "pointer", "content": "demo" };
+    var hints = { "caret": caret };
+    if ( mark >= 0 && mark != caret )
+    {
+	hints["sel_start"] = mark < caret ? mark : caret;
+	hints["sel_end"] = mark < caret ? caret : mark;
+    }
+    var edit = { "role": "edit", "content": doc, "hints": hints };
+    var kids = {};
+    kids.push(head);
+    kids.push(edit);
+    var root = { "role": "group", "children": kids };
+    tree = root;
+}
+
+// The page's caret character and the selected text, as one snapshot.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var ed=document.querySelector('.edit');var s=[];"
+	"ed.querySelectorAll('.sel').forEach(function(e){s.push(e.textContent);});"
+	"var c=ed.querySelector('.caret');"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:'caret='+(c?c.textContent:'-')+' sel='+s.join('')}));})()");
+}
+
+// The page-side measuring helpers, installed once the page is ready:
+// __at(line, col) = a point on the left half of that character (or the
+// line's right edge past its text); __mouse dispatches a real MouseEvent
+// at a point on whatever element is there; __below = a point under the
+// last line inside the editor.
+void install(long t)
+{
+    ui::eval_page(t,
+	"window.__at=function(li,col){var ed=document.querySelector('.edit');"
+	"var ln=ed.children[li];var w=document.createTreeWalker(ln,NodeFilter.SHOW_TEXT);"
+	"var n,rem=col,r=document.createRange(),hit=false;"
+	"while((n=w.nextNode())){if(rem<n.length){r.setStart(n,rem);r.setEnd(n,rem+1);hit=true;break;}rem-=n.length;}"
+	"var lb=ln.getBoundingClientRect();"
+	"if(!hit)return{x:lb.right-2,y:lb.top+lb.height/2};"
+	"var b=r.getBoundingClientRect();return{x:b.left+1,y:lb.top+lb.height/2};};"
+	"window.__mouse=function(type,x,y){var el=document.elementFromPoint(x,y)||document.body;"
+	"el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y,"
+	"button:0,buttons:(type==='mouseup'?0:1)}));};"
+	"window.__click=function(type,li,col){var p=window.__at(li,col);window.__mouse(type,p.x,p.y);};"
+	"window.__below=function(type){var ed=document.querySelector('.edit');"
+	"var lb=ed.lastElementChild.getBoundingClientRect();var r=ed.getBoundingClientRect();"
+	"window.__mouse(type,r.left+40,Math.min(lb.bottom+30,r.top+ed.clientHeight-2));};");
+}
+
+// One gesture at (line, col) through the page's real handlers (the JS is
+// assembled from brace-free parts so the intrinsic format sees only
+// placeholders).
+void gesture(long t, const char *type, long line, long col)
+{
+    var js = format("window.__click('{}',{},{})", type, line, col);
+    ui::eval_page(t, js.c_str());
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("PTR open");
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);		// the first paint: full
+	    if ( stage == 0 )
+	    {
+		stage = 1;
+		install(t);
+		gesture(t, "mousedown", 2, 2);	// "three", before the r
+	    }
+	}
+	else if ( ev["event"] == "pointer" )
+	{
+	    long off = ev["offset"].as_integer();
+	    println("PTR {} {} {}", stage, ev["phase"], off);
+	    var ph = format("{}", ev["phase"]);
+	    caret = off;
+	    if ( ph == "down" )
+	    {
+		mark = -1;
+		anchor = off;
+	    }
+	    else
+		mark = off != anchor ? anchor : -1;
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("PTR {} snapshot {}", stage, ev["text"]);
+	    if ( stage == 1 )
+	    {
+		stage = 2;
+		gesture(t, "mousemove", 3, 1);	// drag: "four", after the f
+	    }
+	    else if ( stage == 2 )
+	    {
+		stage = 3;
+		gesture(t, "mouseup", 3, 1);
+	    }
+	    else if ( stage == 3 )
+	    {
+		stage = 4;
+		gesture(t, "mousedown", 0, 9);	// past the end of "one"
+	    }
+	    else if ( stage == 4 )
+	    {
+		stage = 5;
+		ui::eval_page(t, "window.__below('mousedown')");
+	    }
+	    else if ( stage == 5 )
+	    {
+		stage = 6;
+		gesture(t, "mousedown", 4, 2);	// after "hé": two units, three bytes
+	    }
+	    else if ( stage == 6 )
+	    {
+		stage = 7;
+		gesture(t, "mousedown", 4, 1);	// before the é
+	    }
+	    else if ( stage == 7 )
+	    {
+		stage = 8;
+		gesture(t, "mousemove", 4, 3);	// drag over "éa"
+	    }
+	    else
+		break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("PTR closed");
+    return 0;
+}

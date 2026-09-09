@@ -9,14 +9,19 @@
 //   - layout: the same semantic tree the level-0 renderer linearizes,
 //     composed onto a rows×cols grid (heading/status bars, wrapped
 //     content, a flexible `edit` window, a `choice` menu bar);
-//   - focus and selection: choice options are NAVIGABLE here (the same
-//     tree line mode numbers — design success criterion 4); focus cycles
-//     across choice/edit nodes;
+//   - focus and selection: choice options are NAVIGABLE (the same tree
+//     line mode numbers — design success criterion 4); focus cycles across
+//     choice/edit nodes — compose DISCOVERS the focusables here, the focus
+//     slot, the per-choice selection and the tab/arrow/enter rules are the
+//     shared owner's (madcdis/ui_focus.h focus_state), consumed by this
+//     model and the DOM model alike;
 //   - the input adapter: raw terminal bytes → keys (tui_keyparse: CSI/SS3
 //     escape parsing with an explicit flush for the bare-ESC pause) and
 //     keys → SEMANTIC events, coalescing printable runs into one text
 //     event (design §7.5 — five key events never become five domain
-//     transactions);
+//     transactions); the key VOCABULARY, its spelling, the bindings
+//     table and the chord resolver are the shared key owner in
+//     madcdis/keys.h — this model consumes it (key_resolver::step);
 //   - differential support: dirty-row comparison between two grids.
 //
 // The TARGET (a provider behind the ui:: session surface — the hand-
@@ -45,108 +50,25 @@
 
 #include "madcdis/uinode.h"
 #include "madcdis/render_text.h"	// wrap_text — the one wrap owner
+#include "madcdis/keys.h"		// tui_key, spelling, tui_bindings, key_resolver
+#include "madcdis/ui_events.h"	// tui_event_kind, tui_event
+#include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
+#include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
+#include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
 
 namespace madc {
 namespace hub {
 
 // ------------------------------------------------------------------ the grid
-// The render STYLE (AST-2; owner: VT-102's ANSI colours, JOE parity).
-// What JOE's syntax vocabulary can say: the classic attributes plus an
-// 8-colour foreground/background — 16 effective foreground colours via
-// bold-as-bright, the VT-102/16-colour model (no aixterm 90–97).
-// A THEME (app data) maps classification names to style SPECS;
-// tui_attr_of below is the one spec parser at the value boundary; the
-// VT100 target owns style->SGR. 256/true-colour is a named later seat.
-struct tui_attr
-{
-    enum : unsigned char
-    {
-	BOLD	  = 1,
-	DIM	  = 2,
-	ITALIC	  = 4,
-	UNDERLINE = 8,
-	BLINK	  = 16,
-	INVERSE	  = 32
-    };
-    unsigned char fg;		// 0 = default, 1..8 = black..white (ANSI+1)
-    unsigned char bg;		// same domain
-    unsigned char flags;	// the attribute bits above
-    tui_attr() : fg(0), bg(0), flags(0) {}
-    bool operator==(const tui_attr &o) const
-	{ return fg == o.fg && bg == o.bg && flags == o.flags; }
-    bool operator!=(const tui_attr &o) const { return !(*this == o); }
-    bool is_normal() const { return fg == 0 && bg == 0 && flags == 0; }
-    // Pure inverse — the pre-colour renderer's one non-normal style; the
-    // VT100 target keeps its historical \x1b[7m spelling for it.
-    bool is_reverse() const { return fg == 0 && bg == 0 && flags == INVERSE; }
-    static tui_attr normal() { return tui_attr(); }
-    static tui_attr reverse()
-	{ tui_attr a; a.flags = INVERSE; return a; }
-};
-
-// THE style-spec parser (JOE's vocabulary, one table): space-separated
-// words — attributes `bold dim italic underline blink inverse` (JOE's
-// `reverse` accepted as a synonym), a foreground colour word
-// `black red green yellow blue magenta cyan white`, a background
-// `bg_<colour>`, and `normal` (alone) for the default style. False =
-// any unknown word (the WHOLE spec is refused — themes fail loud).
-inline bool tui_attr_of(const std::string &spec, tui_attr &out)
-{
-    static const char *const colours[8] = {
-	"black", "red", "green", "yellow",
-	"blue", "magenta", "cyan", "white"
-    };
-    tui_attr a;
-    bool any = false;
-    size_t i = 0;
-    while ( i < spec.size() )
-    {
-	while ( i < spec.size() && (spec[i] == ' ' || spec[i] == '\t') )
-	    ++i;
-	size_t start = i;
-	while ( i < spec.size() && spec[i] != ' ' && spec[i] != '\t' )
-	    ++i;
-	if ( i == start )
-	    break;
-	std::string w = spec.substr(start, i - start);
-	if ( w == "normal" )	    { any = true; continue; }
-	if ( w == "bold" )	    { a.flags |= tui_attr::BOLD; any = true; continue; }
-	if ( w == "dim" )	    { a.flags |= tui_attr::DIM; any = true; continue; }
-	if ( w == "italic" )	    { a.flags |= tui_attr::ITALIC; any = true; continue; }
-	if ( w == "underline" )	    { a.flags |= tui_attr::UNDERLINE; any = true; continue; }
-	if ( w == "blink" )	    { a.flags |= tui_attr::BLINK; any = true; continue; }
-	if ( w == "inverse" || w == "reverse" )
-				    { a.flags |= tui_attr::INVERSE; any = true; continue; }
-	bool matched = false;
-	for ( int c = 0; c < 8 && !matched; ++c )
-	{
-	    if ( w == colours[c] )
-	    {
-		a.fg = (unsigned char)(c + 1);
-		matched = true;
-	    }
-	    else if ( w.compare(0, 3, "bg_") == 0
-		   && w.compare(3, std::string::npos, colours[c]) == 0 )
-	    {
-		a.bg = (unsigned char)(c + 1);
-		matched = true;
-	    }
-	}
-	if ( !matched )
-	    return false;
-	any = true;
-    }
-    if ( !any )
-	return false;
-    out = a;
-    return true;
-}
+// The render STYLE (ui_style) and its spec parser (ui_style_of) live in
+// madcdis/ui_style.h — the one vocabulary the DOM model renders too; this
+// model paints it into cells, the VT100 target spells it as SGR.
 
 struct tui_cell
 {
     char     ch;
-    tui_attr attr;
-    tui_cell() : ch(' '), attr(tui_attr::normal()) {}
+    ui_style attr;
+    tui_cell() : ch(' '), attr(ui_style::normal()) {}
     bool operator==(const tui_cell &o) const
 	{ return ch == o.ch && attr == o.attr; }
     bool operator!=(const tui_cell &o) const { return !(*this == o); }
@@ -183,7 +105,7 @@ struct tui_grid
     // through (UTF-8 renders byte-per-cell today; the multi-column glyph
     // model is the doc-lens display-map seat).
     void put(size_t r, size_t c, const std::string &text,
-	     tui_attr attr = tui_attr::normal())
+	     ui_style attr = ui_style::normal())
     {
 	if ( r >= rows )
 	    return;
@@ -195,7 +117,7 @@ struct tui_grid
 	    cell.attr = attr;
 	}
     }
-    void fill_attr(size_t r, size_t c, size_t len, tui_attr attr)
+    void fill_attr(size_t r, size_t c, size_t len, ui_style attr)
     {
 	if ( r >= rows )
 	    return;
@@ -433,223 +355,6 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
     return plan;
 }
 
-// ------------------------------------------------------------------- the keys
-enum class tui_key : unsigned char
-{
-    none = 0,
-    ch,		// printable byte in `ch`
-    ctrl,	// control chord; `ch` = the lowercase letter (^S -> 's')
-		// or one of the four punctuation controls 0x1c..0x1f
-		// ('\\' ']' '^' '_' — JOE's ^_ undo / ^^ redo live here)
-    enter, tab, backspace, esc,
-    up, down, left, right,
-    home, end, pgup, pgdn, del, ins,
-    resize,	// synthesized by the target on a size change
-    wake	// synthesized by the target when cooperative background
-		// tasks drained (stage-2: a spawned parse finished while
-		// the loop was waiting for input — recompose)
-};
-
-struct tui_keyev
-{
-    tui_key kind;
-    char    ch;
-    tui_keyev() : kind(tui_key::none), ch(0) {}
-    explicit tui_keyev(tui_key k, char c = 0) : kind(k), ch(c) {}
-};
-
-// The ONE key-spelling owner, both directions (ids/enums inside, names at
-// the value boundary): what a tui_event's `key` field carries to the
-// script, and what a bindings table's sequences are written in. Control
-// chords spell "^"+letter; a printable spells as itself ("space" for the
-// blank, which cannot stand alone in a space-separated sequence).
-inline std::string tui_key_name(const tui_keyev &k)
-{
-    switch ( k.kind )
-    {
-	case tui_key::ch:
-	    return k.ch == ' ' ? std::string("space") : std::string(1, k.ch);
-	case tui_key::ctrl:	 return std::string("^") + k.ch;
-	case tui_key::enter:	 return "enter";
-	case tui_key::tab:	 return "tab";
-	case tui_key::backspace: return "backspace";
-	case tui_key::esc:	 return "esc";
-	case tui_key::up:	 return "up";
-	case tui_key::down:	 return "down";
-	case tui_key::left:	 return "left";
-	case tui_key::right:	 return "right";
-	case tui_key::home:	 return "home";
-	case tui_key::end:	 return "end";
-	case tui_key::pgup:	 return "pgup";
-	case tui_key::pgdn:	 return "pgdn";
-	case tui_key::del:	 return "del";
-	case tui_key::ins:	 return "ins";
-	default:		 return "";
-    }
-}
-
-// Spelling -> key. Generous on input (an upper-case letter after "^"
-// lowers), canonical on output via tui_key_name. False = not a spelling.
-inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
-{
-    if ( name.empty() )
-	return false;
-    if ( name.size() == 2 && name[0] == '^' )
-    {
-	char c = name[1];
-	if ( c >= 'A' && c <= 'Z' )
-	    c = (char)(c - 'A' + 'a');
-	if ( (c < 'a' || c > 'z') && c != '\\' && c != ']' && c != '^'
-		&& c != '_' )
-	    return false;
-	out = tui_keyev(tui_key::ctrl, c);
-	return true;
-    }
-    if ( name.size() == 1 && name[0] >= 0x20 && name[0] <= 0x7e )
-    {
-	out = tui_keyev(tui_key::ch, name[0]);
-	return true;
-    }
-    static const struct { const char *n; tui_key k; } named[] = {
-	{ "space", tui_key::ch }, { "enter", tui_key::enter },
-	{ "tab", tui_key::tab }, { "backspace", tui_key::backspace },
-	{ "esc", tui_key::esc }, { "up", tui_key::up },
-	{ "down", tui_key::down }, { "left", tui_key::left },
-	{ "right", tui_key::right }, { "home", tui_key::home },
-	{ "end", tui_key::end }, { "pgup", tui_key::pgup },
-	{ "pgdn", tui_key::pgdn }, { "del", tui_key::del },
-	{ "ins", tui_key::ins },
-    };
-    for ( size_t i = 0; i < sizeof(named) / sizeof(named[0]); ++i )
-	if ( name == named[i].n )
-	{
-	    out = tui_keyev(named[i].k, named[i].k == tui_key::ch ? ' ' : 0);
-	    return true;
-	}
-    return false;
-}
-
-// ------------------------------------------------------------- the bindings
-// Key sequences -> action names: DATA, installed per profile (owner
-// 2026-08-25 — the JOE/WordStar ^K-chord ruling; a profile swap is a new
-// table, never a second hardcoded map). A sequence is space-separated key
-// spellings ("^k s"), any length. Validation is loud and whole-table at
-// finalize(): a sequence must START with a non-printable key (a printable
-// head would swallow typing), and no bound sequence may be a proper
-// prefix of another (deterministic resolution — JOE's ^K is only ever a
-// prefix). Canonical spellings are the map keys, so lookups and the seq
-// reported on events agree byte-for-byte.
-class tui_bindings
-{
-    std::map<std::string, std::string> _actions;
-    std::set<std::string> _prefixes;
-
-public:
-    // SEQUENCE spelling: tui_key_name with printable LETTERS lowered —
-    // chords are letter-case-insensitive (JOE's ^K S == ^K s convention;
-    // the shift state of a chord continuation never distinguishes
-    // bindings). Key EVENTS keep tui_key_name's exact spelling.
-    static std::string seq_spelling(const tui_keyev &k)
-    {
-	if ( k.kind == tui_key::ch && k.ch >= 'A' && k.ch <= 'Z' )
-	    return std::string(1, (char)(k.ch - 'A' + 'a'));
-	return tui_key_name(k);
-    }
-
-    // CONTINUATION spelling (every key after the head): JOE's other
-    // chord convention — the ctrl state of a continuation never
-    // distinguishes bindings either (^K ^Z == ^K Z; users keep ctrl
-    // held), so a ctrl+letter continuation spells as the bare letter.
-    // Ctrl+punctuation (^_ ^^ ^] ^\) has no letter form and stays
-    // itself. bind() canonicalization and the model's pending-chord
-    // extension both ride this — one owner, both directions.
-    static std::string cont_spelling(const tui_keyev &k)
-    {
-	if ( k.kind == tui_key::ctrl && k.ch >= 'a' && k.ch <= 'z' )
-	    return std::string(1, k.ch);
-	return seq_spelling(k);
-    }
-
-    bool empty() const { return _actions.empty(); }
-    void clear() { _actions.clear(); _prefixes.clear(); }
-
-    // Parse + canonicalize one sequence; false (table untouched) on a
-    // spelling that is not a key.
-    bool bind(const std::string &seq, const std::string &action)
-    {
-	std::string canon;
-	size_t i = 0;
-	while ( i < seq.size() )
-	{
-	    while ( i < seq.size() && seq[i] == ' ' )
-		++i;
-	    size_t j = i;
-	    while ( j < seq.size() && seq[j] != ' ' )
-		++j;
-	    if ( j == i )
-		break;
-	    tui_keyev k;
-	    if ( !tui_key_from_name(seq.substr(i, j - i), k) )
-		return false;
-	    if ( canon.empty() )
-		canon += seq_spelling(k);
-	    else
-	    {
-		canon += ' ';
-		canon += cont_spelling(k);
-	    }
-	    i = j;
-	}
-	if ( canon.empty() )
-	    return false;
-	_actions[canon] = action;
-	return true;
-    }
-
-    // Whole-table validation + the prefix set. False leaves the table
-    // unusable by contract; `err` names the offending sequence.
-    bool finalize(std::string &err)
-    {
-	_prefixes.clear();
-	for ( std::map<std::string, std::string>::const_iterator it
-		= _actions.begin(); it != _actions.end(); ++it )
-	{
-	    const std::string &seq = it->first;
-	    tui_keyev head;
-	    tui_key_from_name(seq.substr(0, seq.find(' ')), head);
-	    if ( head.kind == tui_key::ch )
-	    {
-		err = "printable-headed sequence: " + seq;
-		return false;
-	    }
-	    for ( size_t sp = seq.find(' '); sp != std::string::npos;
-		  sp = seq.find(' ', sp + 1) )
-	    {
-		std::string prefix = seq.substr(0, sp);
-		if ( _actions.count(prefix) )
-		{
-		    err = "sequence shadows a shorter binding: " + seq;
-		    return false;
-		}
-		_prefixes.insert(prefix);
-	    }
-	}
-	return true;
-    }
-
-    bool bound(const std::string &canon_seq) const
-	{ return _actions.count(canon_seq) != 0; }
-    bool prefix(const std::string &canon_seq) const
-	{ return _prefixes.count(canon_seq) != 0; }
-    const std::string &action_of(const std::string &canon_seq) const
-    {
-	static const std::string none;
-	std::map<std::string, std::string>::const_iterator it
-	    = _actions.find(canon_seq);
-	return it == _actions.end() ? none : it->second;
-    }
-};
-
 // Raw terminal bytes -> keys: the escape-sequence state machine (CSI and
 // SS3 forms of the VT100/xterm family; the shapes every terminal library
 // parses — cross-checked against termbox2's and ncurses's tables). A bare
@@ -783,45 +488,43 @@ public:
     }
 };
 
-// ----------------------------------------------------------------- the events
-// What the application receives: SEMANTIC units, never raw terminal
-// events. The target/model pair owns which keys become navigation
-// (consumed here, re-render signalled) and which reach the application.
-enum class tui_event_kind : unsigned char
+// The INVERSE adapter — a key back to the bytes a terminal would have sent
+// for it (madcide polish P3b-2: what the IDE writes to a program running on
+// its embedded Terminal's pty when the user types at it). ONE table with
+// tui_keyparse above: every key the parser yields round-trips through
+// these bytes (the unit battery pins it) — the xterm/VT100 spellings the
+// parser's CSI/SS3 arms read (the CSI form for the cursor keys, the tilde
+// codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
+// control chord is its control byte; a printable is itself; `none` is
+// empty.
+inline std::string tui_key_bytes(const tui_keyev &k)
 {
-    none = 0,
-    text,	// a coalesced printable run — one semantic insertion
-    key,	// a non-printable key for the application to interpret
-    choose,	// enter on the focused choice's selected option
-    focus,	// focus or menu selection moved: recompose and repaint
-    resize,	// the surface changed size: recompose and repaint
-    action,	// a bound key sequence completed (empty name = unbound miss)
-    wake	// cooperative background tasks drained: recompose (the
-		// application re-checks its pending state, e.g. a spawned
-		// parse's completion)
-};
-
-struct tui_event
-{
-    tui_event_kind kind;
-    std::string	   text;	// text: the run
-    tui_key	   key;		// key: which one (ctrl -> `ch`)
-    char	   ch;
-    size_t	   option;	// choose: 0-based option index;
-				// key: the focused choice's 0-based selection
-				// (valid only when choice_focused)
-    bool	   choice_focused; // key: a focused choice existed — `option`
-				// carries its selection (read-only presentation
-				// state, the tui_pending precedent), so the
-				// application can act on the focused row for
-				// keys the widget does not consume (ins/del)
-    name_id	   action;	// choose: the option's first action; 0 = none
-    std::string	   action_name;	// action: the bound name ("" = unbound)
-    std::string	   seq;		// action: the canonical sequence spelling
-
-    tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0) {}
-};
+    switch ( k.kind )
+    {
+	case tui_key::ch:	 return std::string(1, k.ch);
+	case tui_key::ctrl:
+	    if ( k.ch >= 'a' && k.ch <= 'z' )
+		return std::string(1, (char)(k.ch - 'a' + 1));
+	    if ( k.ch >= '\\' && k.ch <= '_' )		// ^\ ^] ^^ ^_
+		return std::string(1, (char)(k.ch - 0x40));
+	    return std::string();
+	case tui_key::enter:	 return std::string("\r");
+	case tui_key::tab:	 return std::string("\t");
+	case tui_key::backspace: return std::string("\x7f");
+	case tui_key::esc:	 return std::string("\x1b");
+	case tui_key::up:	 return std::string("\x1b[A");
+	case tui_key::down:	 return std::string("\x1b[B");
+	case tui_key::right:	 return std::string("\x1b[C");
+	case tui_key::left:	 return std::string("\x1b[D");
+	case tui_key::home:	 return std::string("\x1b[H");
+	case tui_key::end:	 return std::string("\x1b[F");
+	case tui_key::ins:	 return std::string("\x1b[2~");
+	case tui_key::del:	 return std::string("\x1b[3~");
+	case tui_key::pgup:	 return std::string("\x1b[5~");
+	case tui_key::pgdn:	 return std::string("\x1b[6~");
+	default:		 return std::string();
+    }
+}
 
 // ------------------------------------------------------------------ the model
 // One instance per TUI session. Contract: compose() before apply_keys()
@@ -832,27 +535,19 @@ struct tui_event
 class tui_model
 {
 public:
-    struct focusable
-    {
-	enum class kind : unsigned char { choice, edit };
-	kind k;
-	size_t option_count;			// choice: how many options
-	std::vector<name_id> option_actions;	// choice: first action each
-	focusable() : k(kind::choice), option_count(0) {}
-    };
+    // The focusable vocabulary is the shared focus owner's (madcdis/
+    // ui_focus.h); the model's spelling stays for its consumers.
+    typedef madc::hub::focusable focusable;
 
 private:
     tui_grid _grid;
-    std::vector<focusable> _focusables;
-    size_t _focus;
-    std::map<size_t, size_t> _selection;	// per choice slot
+    focus_state _focus_st;			// focus slot + per-choice selection + navigation
     std::map<size_t, size_t> _scroll;		// per edit slot: top line
     std::map<size_t, size_t> _hshift;		// per edit slot: left shift
-    tui_bindings _bindings;			// the installed profile
-    std::string _pending;			// chord so far (canonical)
+    key_resolver _keys;			// the ONE chord/key owner (madcdis/keys.h)
 
     // One composed output line: text plus attribute spans.
-    struct span { size_t col, len; tui_attr attr; };
+    struct span { size_t col, len; ui_style attr; };
     struct line_out
     {
 	std::string text;
@@ -863,13 +558,13 @@ private:
     // A flexible edit region parked between fixed lines.
     // A document byte-range with a render style (AST-2 highlight spans):
     // parsed from the edit node's hints["spans"] rows { s, e, c } —
-    // byte offsets + a colour NAME (tui_attr_of converts at the
+    // byte offsets + a colour NAME (ui_style_of converts at the
     // boundary; a malformed row is skipped — spans are presentation).
     struct doc_span
     {
 	long start, end;
-	tui_attr attr;
-	doc_span() : start(0), end(0), attr(tui_attr::normal()) {}
+	ui_style attr;
+	doc_span() : start(0), end(0), attr(ui_style::normal()) {}
     };
     struct edit_slot
     {
@@ -891,17 +586,6 @@ private:
 		      rows(0) {}
     };
 
-    static long hint_of(const madc::value &hints, const char *key, long dflt)
-    {
-	if ( !hints.is_object() )
-	    return dflt;
-	const std::map<std::string, madc::value> &o = hints.as_object();
-	std::map<std::string, madc::value>::const_iterator it = o.find(key);
-	if ( it == o.end() || !it->second.is_integer() )
-	    return dflt;
-	return (long)it->second.as_integer();
-    }
-
     void walk(const roles &r, const uinode &n, size_t cols,
 	      std::vector<line_out> &lines, std::vector<edit_slot> &edits)
     {
@@ -914,14 +598,14 @@ private:
 	    if ( !right.empty() && left.size() + right.size() + 2 <= cols )
 		l.text += std::string(cols - left.size() - right.size() - 1,
 				      ' ') + right;
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
+	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
 	else if ( n.role == r.status )
 	{
 	    line_out l(" " + node_text(n));
-	    span s; s.col = 0; s.len = cols; s.attr = tui_attr::reverse();
+	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
 	    lines.push_back(l);
 	}
@@ -964,7 +648,7 @@ private:
 	    //   focus:1 — autofocus: arrows/enter land on this choice
 	    //             without a tab cycle (a palette is modal while
 	    //             up; when its node vanishes, focus resets).
-	    size_t slot = _focusables.size();
+	    size_t slot = _focus_st.count();
 	    focusable f;
 	    f.k = focusable::kind::choice;
 	    f.option_count = n.children.size();
@@ -972,9 +656,9 @@ private:
 		f.option_actions.push_back(n.children[i].actions.empty()
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
-	    _focusables.push_back(f);
+	    _focus_st.add(f);
 	    if ( hint_of(n.hints, "focus", 0) )
-		_focus = slot;
+		_focus_st.set_focus(slot);
 	    size_t sel = selection_of(slot);
 	    if ( hint_of(n.hints, "list", 0) )
 	    {
@@ -989,7 +673,7 @@ private:
 			span s;
 			s.col = 0;
 			s.len = l.text.size();
-			s.attr = tui_attr::reverse();
+			s.attr = ui_style::reverse();
 			l.spans.push_back(s);
 		    }
 		    lines.push_back(l);
@@ -1007,7 +691,7 @@ private:
 		    span s;
 		    s.col = l.text.size();
 		    s.len = opt.size();
-		    s.attr = tui_attr::reverse();
+		    s.attr = ui_style::reverse();
 		    l.spans.push_back(s);
 		}
 		l.text += opt;
@@ -1021,7 +705,7 @@ private:
 	{
 	    edit_slot e;
 	    e.line_index = lines.size();
-	    e.slot = _focusables.size();
+	    e.slot = _focus_st.count();
 	    e.text = prose::text_of(n.content);
 	    e.caret = hint_of(n.hints, "caret", 0);
 	    e.sel_start = hint_of(n.hints, "sel_start", -1);
@@ -1037,7 +721,7 @@ private:
 	    // The same autofocus hint the choice arm honors (IDE-9e: the
 	    // active window's edit node carries it).
 	    if ( hint_of(n.hints, "focus", 0) )
-		_focus = e.slot;
+		_focus_st.set_focus(e.slot);
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &ho = n.hints.as_object();
@@ -1057,7 +741,7 @@ private:
 			    ro.find("c");
 			if ( ds.start < 0 || ds.end <= ds.start
 			  || ci == ro.end() || !ci->second.is_string()
-			  || !tui_attr_of(ci->second.as_string(), ds.attr) )
+			  || !ui_style_of(ci->second.as_string(), ds.attr) )
 			    continue;
 			e.spans.push_back(ds);
 		    }
@@ -1065,7 +749,7 @@ private:
 	    edits.push_back(e);
 	    focusable f;
 	    f.k = focusable::kind::edit;
-	    _focusables.push_back(f);
+	    _focus_st.add(f);
 	}
 	else if ( n.role == r.list && !n.label.is_null() )
 	{
@@ -1125,7 +809,7 @@ private:
     void fill_range_overlap(size_t row, size_t begin, size_t end,
 			    const std::vector<size_t> &dcol,
 			    size_t shift, size_t cols,
-			    long s0, long e0, tui_attr attr)
+			    long s0, long e0, ui_style attr)
     {
 	if ( s0 < 0 || e0 <= s0 )
 	    return;
@@ -1206,8 +890,8 @@ private:
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
 		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
 				   e.sel_start, e.sel_end,
-				   tui_attr::reverse());
-	    if ( li == caret_line && e.slot == _focus )
+				   ui_style::reverse());
+	    if ( li == caret_line && e.slot == _focus_st.focus() )
 	    {
 		_grid.cursor_row = top_row + k;
 		_grid.cursor_col = caret_col - shift;
@@ -1217,22 +901,14 @@ private:
     }
 
 public:
-    tui_model() : _focus(0) {}
+    tui_model() {}
 
     const tui_grid &grid() const { return _grid; }
-    const std::vector<focusable> &focusables() const { return _focusables; }
-    size_t focus_slot() const { return _focus; }
-    size_t selection_of(size_t slot) const
-    {
-	std::map<size_t, size_t>::const_iterator it = _selection.find(slot);
-	size_t sel = it == _selection.end() ? 0 : it->second;
-	if ( slot < _focusables.size()
-	  && _focusables[slot].k == focusable::kind::choice
-	  && _focusables[slot].option_count > 0
-	  && sel >= _focusables[slot].option_count )
-	    sel = _focusables[slot].option_count - 1;
-	return sel;
-    }
+    // Focus and selection are the shared owner's (madcdis/ui_focus.h);
+    // the model's spellings forward.
+    const std::vector<focusable> &focusables() const { return _focus_st.focusables(); }
+    size_t focus_slot() const { return _focus_st.focus(); }
+    size_t selection_of(size_t slot) const { return _focus_st.selection_of(slot); }
 
     // Compose the tree onto a rows×cols grid. Edit heights are DATA
     // (IDE-9e): a node hinted rows:N is FIXED at N; among the unhinted,
@@ -1245,12 +921,11 @@ public:
 			    size_t rows, size_t cols)
     {
 	_grid.resize(rows, cols);
-	_focusables.clear();
+	_focus_st.begin_compose();
 	std::vector<line_out> lines;
 	std::vector<edit_slot> edits;
 	walk(r, tree, cols, lines, edits);
-	if ( _focus >= _focusables.size() )
-	    _focus = 0;
+	_focus_st.end_compose();
 
 	size_t fixed = lines.size();
 	size_t hinted_sum = 0, unhinted = 0;
@@ -1302,13 +977,10 @@ public:
     }
 
     // Install a finalized bindings table (a profile swap is a new table);
-    // any chord in flight is abandoned with its profile.
-    void set_bindings(const tui_bindings &b)
-    {
-	_bindings = b;
-	_pending.clear();
-    }
-    const std::string &pending_chord() const { return _pending; }
+    // any chord in flight is abandoned with its profile. The table and the
+    // chord in flight live in the key owner (madcdis/keys.h).
+    void set_bindings(const tui_bindings &b) { _keys.set_bindings(b); }
+    const std::string &pending_chord() const { return _keys.pending(); }
 
     // Keys -> semantic events against the last compose's focusables:
     // bound sequences resolve FIRST (a pending chord consumes every key
@@ -1318,171 +990,12 @@ public:
     // presentation state — a focus event says "repaint"); enter on a
     // focused choice chooses; everything else reaches the application as
     // a key event. With no table installed, behavior is byte-identical
-    // to the pre-bindings adapter.
+    // to the pre-bindings adapter. The loop itself is the shared adapter
+    // ui_apply_keys (madcdis/ui_input.h) — the DOM model runs the same one.
     std::vector<tui_event> apply_keys(const std::vector<tui_keyev> &keys)
     {
-	std::vector<tui_event> out;
-	std::string run;
-	for ( size_t i = 0; i < keys.size(); ++i )
-	{
-	    const tui_keyev &k = keys[i];
-	    if ( !_pending.empty() )
-	    {
-		if ( k.kind == tui_key::resize )
-		{
-		    tui_event e;
-		    e.kind = tui_event_kind::resize;
-		    out.push_back(e);
-		    continue;
-		}
-		// A wake mid-chord passes through without disturbing the
-		// pending prefix (same transparency as resize).
-		if ( k.kind == tui_key::wake )
-		{
-		    tui_event e;
-		    e.kind = tui_event_kind::wake;
-		    out.push_back(e);
-		    continue;
-		}
-		if ( k.kind == tui_key::esc )
-		{
-		    // Cancelling a chord is a visible state change — a status
-		    // line echoing the prefix (%k) must repaint.
-		    _pending.clear();
-		    tui_event ec;
-		    ec.kind = tui_event_kind::focus;
-		    out.push_back(ec);
-		    continue;
-		}
-		std::string candidate = _pending + " "
-				      + tui_bindings::cont_spelling(k);
-		if ( _bindings.prefix(candidate) )
-		{
-		    _pending = candidate;
-		    tui_event ep;
-		    ep.kind = tui_event_kind::focus;
-		    out.push_back(ep);
-		    continue;
-		}
-		tui_event e;
-		e.kind = tui_event_kind::action;
-		e.action_name = _bindings.action_of(candidate);
-		e.seq = candidate;
-		out.push_back(e);
-		_pending.clear();
-		continue;
-	    }
-	    if ( k.kind == tui_key::ch )
-	    {
-		run += k.ch;
-		continue;
-	    }
-	    if ( !run.empty() )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::text;
-		e.text = run;
-		out.push_back(e);
-		run.clear();
-	    }
-	    if ( !_bindings.empty() && k.kind != tui_key::resize
-		 && k.kind != tui_key::wake )
-	    {
-		std::string head = tui_bindings::seq_spelling(k);
-		if ( _bindings.bound(head) )
-		{
-		    tui_event e;
-		    e.kind = tui_event_kind::action;
-		    e.action_name = _bindings.action_of(head);
-		    e.seq = head;
-		    out.push_back(e);
-		    continue;
-		}
-		if ( _bindings.prefix(head) )
-		{
-		    // A chord STARTED (and below, extended or cancelled): the
-		    // pending prefix is visible state — a status line echoing
-		    // it (JOE's %k) needs a repaint event to show it live.
-		    _pending = head;
-		    tui_event eh;
-		    eh.kind = tui_event_kind::focus;
-		    out.push_back(eh);
-		    continue;
-		}
-	    }
-	    const bool on_choice = _focus < _focusables.size()
-		&& _focusables[_focus].k == focusable::kind::choice
-		&& _focusables[_focus].option_count > 0;
-	    if ( k.kind == tui_key::resize )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::resize;
-		out.push_back(e);
-	    }
-	    else if ( k.kind == tui_key::wake )
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::wake;
-		out.push_back(e);
-	    }
-	    else if ( k.kind == tui_key::tab && _focusables.size() > 1 )
-	    {
-		_focus = (_focus + 1) % _focusables.size();
-		tui_event e;
-		e.kind = tui_event_kind::focus;
-		out.push_back(e);
-	    }
-	    else if ( on_choice && (k.kind == tui_key::left
-				 || k.kind == tui_key::up
-				 || k.kind == tui_key::right
-				 || k.kind == tui_key::down) )
-	    {
-		size_t n = _focusables[_focus].option_count;
-		size_t sel = selection_of(_focus);
-		if ( k.kind == tui_key::left || k.kind == tui_key::up )
-		    sel = (sel + n - 1) % n;
-		else
-		    sel = (sel + 1) % n;
-		_selection[_focus] = sel;
-		tui_event e;
-		e.kind = tui_event_kind::focus;
-		out.push_back(e);
-	    }
-	    else if ( on_choice && k.kind == tui_key::enter )
-	    {
-		size_t sel = selection_of(_focus);
-		tui_event e;
-		e.kind = tui_event_kind::choose;
-		e.option = sel;
-		e.action = _focusables[_focus].option_actions[sel];
-		out.push_back(e);
-	    }
-	    else
-	    {
-		tui_event e;
-		e.kind = tui_event_kind::key;
-		e.key = k.kind;
-		e.ch = k.ch;
-		if ( on_choice )
-		{
-		    // The key rides through with the focused choice's live
-		    // selection: keys the widget does not consume (ins/del)
-		    // can act on the focused row without the selection ever
-		    // leaving the model (presentation state stays here).
-		    e.choice_focused = true;
-		    e.option = selection_of(_focus);
-		}
-		out.push_back(e);
-	    }
-	}
-	if ( !run.empty() )
-	{
-	    tui_event e;
-	    e.kind = tui_event_kind::text;
-	    e.text = run;
-	    out.push_back(e);
-	}
-	return out;
+	// The one adapter (madcdis/ui_input.h) over this model's two owners.
+	return ui_apply_keys(_keys, _focus_st, keys);
     }
 };
 

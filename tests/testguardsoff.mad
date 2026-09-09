@@ -1,0 +1,25 @@
+// The resource guards default OFF (owner ruling 2026-09-07): a program may
+// reserve far more address space than the old 4096 MB RLIMIT_AS default —
+// six gigabytes here, one byte touched per gigabyte so nothing is really
+// committed. Under the runner's MADC_MEM_LIMIT=auto this allocation is
+// refused (the guard doing its job); this test's .env fixture says
+// MADC_MEM_LIMIT=off, the program default — so the only way it prints
+// "guard off: ok" is if the default really arms nothing.
+int main()
+{
+    unsigned long gb = 1024UL * 1024UL * 1024UL;
+    char *p = (char *)malloc(6UL * gb);
+    if ( !p )
+    {
+	println("guard off: allocation refused");
+	return 1;
+    }
+    for ( unsigned long i = 0; i < 6; i++ )
+	p[i * gb] = (char)(i + 1);
+    long sum = 0;
+    for ( unsigned long i = 0; i < 6; i++ )
+	sum += p[i * gb];
+    free(p);
+    println("guard off: ok {}", sum);
+    return 0;
+}

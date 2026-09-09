@@ -1,0 +1,123 @@
+// Keys and editing in the window (the web-provider engine plan, Task 7):
+// a compact editor loop over a tree with an edit node and a choice menu,
+// driven through the page's REAL key path with synthetic KeyboardEvent /
+// InputEvent dispatches (ui::eval_page). Key spelling stays the page's job
+// and interpretation the engine's: a ^K S chord fires the bound action, a
+// printable run arrives as text, tab / right / enter navigate the menu and
+// choose, and the snapshot shows the line-DOM carrying the inserted text
+// and the menu's selected option.
+var doc = "alpha\nbeta";
+long caret = 2;
+long selected_from_choose = 0;
+
+void compose(var &tree)
+{
+    var head;
+    head["role"] = "heading";
+    head["label"] = "edit";
+    head["content"] = "demo";
+    var edit;
+    edit["role"] = "edit";
+    edit["content"] = doc;
+    var hints;
+    hints["caret"] = caret;
+    edit["hints"] = hints;
+    var save;
+    save["role"] = "item";
+    save["content"] = "Save";
+    var save_actions = {};
+    save_actions.push("w");
+    save["actions"] = save_actions;
+    var quit;
+    quit["role"] = "item";
+    quit["content"] = "Quit";
+    var quit_actions = {};
+    quit_actions.push("q");
+    quit["actions"] = quit_actions;
+    var menu;
+    menu["role"] = "choice";
+    var options = {};
+    options.push(save);
+    options.push(quit);
+    menu["children"] = options;
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(head);
+    kids.push(edit);
+    kids.push(menu);
+    root["children"] = kids;
+    tree = root;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("EDIT open");
+    var table;
+    table["^k s"] = "save";
+    ui::bind_keys(t, table);
+    var tree;
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    if ( stage == 0 )
+	    {
+		stage = 1;
+		// The chord through the page's keydown path, then a typed
+		// run through its input path, then the menu.
+		ui::eval_page(t, "(function(){var kb=document.getElementById('kb');"
+			 "kb.dispatchEvent(new KeyboardEvent('keydown',{key:'k',ctrlKey:true}));"
+			 "kb.value='s';kb.dispatchEvent(new InputEvent('input',{data:'s'}));"
+			 "kb.value='hi';kb.dispatchEvent(new InputEvent('input',{data:'hi'}));"
+			 "kb.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab'}));"
+			 "kb.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight'}));"
+			 "kb.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter'}));})()");
+	    }
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    println("EDIT action {} {}", ev["action"], ev["seq"]);
+	}
+	else if ( ev["event"] == "text" )
+	{
+	    println("EDIT text {}", ev["text"]);
+	    // The transcript types "hi" at the caret (byte 2 of "alpha"); the
+	    // intrinsic format joins the pieces (var + var concatenation is
+	    // KG Gap var_string_concatenation_operator_plus).
+	    doc = format("al{}pha\nbeta", ev["text"]);
+	    caret = 4;
+	    compose(tree);
+	    ui::render(t, w, tree);
+	}
+	else if ( ev["event"] == "focus" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);
+	}
+	else if ( ev["event"] == "choose" )
+	{
+	    println("EDIT choose {} {}", ev["option"], ev["action"]);
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    ui::eval_page(t, "madcSnapshot()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("EDIT snapshot {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("EDIT closed");
+    return 0;
+}

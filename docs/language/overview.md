@@ -56,6 +56,7 @@ and the streams are the real library objects.
 | Lambdas — `[](args) { ... }`, typed return in brackets | [modern/lambdas.md](modern/lambdas.md) |
 | Range-based `for` over arrays and containers | [modern/range-for.md](modern/range-for.md) |
 | Function pointers via `auto` | [modern/function-pointers.md](modern/function-pointers.md) |
+| `import name [as ns];` — module binding: interface + library, platform-agnostic, JIT and native | [import.md](import.md) |
 | Built-in regex via `madc::` | [regex.md](regex.md) |
 | `sys` object — argv, environment, process info | [sys-object.md](sys-object.md) |
 | `madc::channel` — URI byte channels (`exec://`, `tcp://`, `file://`) | [channel.md](channel.md) |

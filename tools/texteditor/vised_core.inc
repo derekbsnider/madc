@@ -23,18 +23,18 @@
 // False = the session should end.
 bool apply_event(long w, long es, long doc, var &ev)
 {
-    var kind = format("{}", ev["event"]);
+    var kind = ev["event_code"];
     long caret = clamped_caret(w, es, doc);
     ui::set(w, es, "msg", "");
     bool editable = es_flag(w, es, "editable");
     bool searching = es_flag(w, es, "searching");
 
-    if ( kind == "text" )
+    if ( kind == ui::event_kind::text )
     {
 	edit_text_run(w, es, doc, caret, ev);
 	return true;
     }
-    if ( kind == "choose" )
+    if ( kind == ui::event_kind::choose )
     {
 	var a = format("{}", ev["action"]);
 	if ( a == "w" )
@@ -48,7 +48,12 @@ bool apply_event(long w, long es, long doc, var &ev)
 	    return do_verb(w, es, "q");
 	return true;
     }
-    if ( kind != "key" )
+    if ( kind == ui::event_kind::pointer )
+    {
+	edit_pointer(w, es, doc, ev, true);
+	return true;
+    }
+    if ( kind != ui::event_kind::key )
 	return true;	// focus / resize: the loop recomposes anyway
 
     if ( searching )
@@ -109,8 +114,7 @@ void compose_tree(var &root, long w, long es, long doc)
     var menu;
     compose_menu(menu);
 
-    var r;
-    r["role"] = "group";
+    var r = { "role": "group" };
     var kids = {};
     kids.push(head);
     kids.push(ed);
@@ -122,7 +126,7 @@ void compose_tree(var &root, long w, long es, long doc)
 
 // The TUI loop: compose as data -> render -> one semantic event ->
 // apply, until a quit verb says stop.
-void run_visual(const char *path, bool ro)
+void run_visual(const char *path, bool ro, const char *target)
 {
     long w = ui::world_new();
     long doc = setup_editor(w, path, ro);
@@ -132,7 +136,10 @@ void run_visual(const char *path, bool ro)
 	return;
     }
     long es = ui::entity_by_name(w, "editor-state");
-    long t = ui::tui_open();
+    // The target-generic loop (compose-as-data -> render -> event -> apply):
+    // "term" is the grid frontend the tui_* names spell; the web target
+    // shows the same tree in a window.
+    long t = ui::open(target);
     if ( t == 0 )
 	return;
     bool run = true;
@@ -140,12 +147,12 @@ void run_visual(const char *path, bool ro)
     {
 	var tree;
 	compose_tree(tree, w, es, doc);
-	ui::tui_render(t, w, tree);
+	ui::render(t, w, tree);
 	var ev;
-	if ( !ui::tui_event(ev, t, w) )
+	if ( !ui::event(ev, t, w) )
 	    break;
 	run = apply_event(w, es, doc, ev);
     }
-    ui::tui_close(t);
+    ui::close(t);
     ui::world_close(w);
 }

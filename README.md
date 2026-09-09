@@ -9,7 +9,7 @@ same source.
 A basic madc program needs no project scaffolding, no separate compiler
 invocation, and—under the default madc dialect—no explicit `main()`.
 
-[Usage](docs/usage.md) · [Build](docs/build.md) ·
+[Usage](docs/usage.md) · [Build](docs/build.md) · [madcide](docs/madcide.md) ·
 [Architecture](docs/architecture.md) · [Test status](docs/test-status.md) ·
 [Changelog](CHANGELOG.md) · [Contributing](AGENTS.md)
 
@@ -91,12 +91,15 @@ of the emitted program. The source can include the library's normal header and
 call its API directly.
 
 For cases that genuinely require runtime loading or an isolated namespace,
-madc also provides `#load`, `dlopen`, `dlsym`, and `dlcall`:
+madc also provides `import name as ns;` (the C++20 `import` made whole —
+interface and library, spelled for the target by the module map, so no
+`.so` / `.dylib` / `.dll` appears in the source), `dlopen`, `dlsym`, and
+`dlcall`:
 
 ```c
-#load "libfoo.so" as foo;
+import c as libc;
 
-foo::some_function();
+libc::abs(-42);
 ```
 
 This makes madc useful for native API exploration, systems utilities,
@@ -211,58 +214,67 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.98.0** — the macOS full-suite release. The
-entire integration suite now runs natively on both of GitHub's mac
-runner architectures and is green (arm64 **1293/0/0TO/24skip**, Intel
-**1294/0/0TO/23skip**), the end of a seven-wave burndown that only running
-the real suite on the platform could drive: by-value class parameters
-are the callee's own object (the Itanium invisible-reference and
-`__retbuf` rules, so copy/move constructors and destructors run exactly
-as g++ and clang run them), `wchar_t`/`char16_t`/`char32_t` are
-distinct types, `long double` and `va_list` take their shape from the
-target, nested-class and namespace-alias forms parse, and template
-argument deduction and `<` reading follow the standard's name-lookup
-rules. libc++'s `std::list` works (a template-id named as a template
-argument now instantiates after the class body that names it), and
-`cout << value` and `println` of a `std::string` cross the stdlib
-flavor boundary. The MIR floor gained 128-bit SIMD (`MIR_T_V128`) on
-x86-64 and aarch64 with NEON code generation, and the vector calling
-convention, Apple's stack-argument packing and aarch64-linux's unsigned
-`char` are gated against the platform compiler by compiling one half of
-a probe pair natively. `-w` silences compile warnings, gcc-style.
-Process: every platform lane's FULL suite now gates a master release
-(`scripts/lane_ledger.sh check --release`: the libc++ flavor lane, the
-darwin suite on both arches, genuine Windows), all driven and recorded
-from the build container.
+The current release is **v0.99.2** — madcide is a desktop application on
+Linux, Windows and macOS. The IDE that IS the running compiler opens in a
+native window (`madcide file.mad --gui`) with the platform's own menu bar
+and file dialogs, editor tabs, a Problems / Output / Terminal panel,
+dialogs, a status bar as chrome, the JOE split as a window stack, the mouse,
+and the terminal's colour scheme; Build → Run runs the live parse forked
+with a console program on a real pseudo-terminal in the Terminal tab and a
+gui program in its own window, its output streaming as it happens; the
+panel and sidebar resize. ONE composer and ONE client loop serve both faces
+— the terminal is byte-identical. Underneath: `import name [as ns];` (C++20's
+`import` made whole — interface AND library, no platform spelling, JIT and
+native), `madc --capabilities=json`, the `ui::` web target the window is
+built on, and resource guards that default off. v0.99.2 itself is the
+owner's hands-on round on the polished window: output with no keystroke
+(the window's wait is the cooperative scheduler's wait), the Build menu's
+`^B` rows, a dialog's Close that closes and leaves nothing behind, and the
+resizable panes.
 
-Branch state: v0.98.0 is released on `develop`; the `master` promotion
-follows the release-tier lane ledger the same day, with public binaries
-built by CI for Linux (deb/rpm/tarball), Windows x86-64, and macOS
-(Apple Silicon + Intel).
+Branch state: v0.99.2 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger the same day (every platform lane's
+FULL suite green on this content), with public binaries built by CI for
+Linux (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel),
+each shipping the platform webview library beside the binaries.
 
-Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
+Latest validated results (the v0.99.2 battery, content 38a71163, and the
+release tier on the same content):
 
-- Linux JIT: **1308 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1249/0**, OBJ lane
-  **1249/0**; packed suite **1308/0/0/9**; headerless (no headers on
-  disk anywhere) **1274/0/0/43**
-- libc++ flavor lane (`-stdlib=libc++` on linux — macOS's library): JIT
-  **1303/0/0TO/14skip**, EXE **1244/0**, OBJ **1244/0**
-- macOS, the FULL suite on GitHub's native mac runners: arm64
-  **1293/0/0TO/24skip**, Intel **1294/0/0TO/23skip**; the owner's arm64 Mac
-  **1293/0/0TO/24skip**; both arches packed at 835 units with the Mach-O release
-  verifier green
-- Windows: packed Win64 under persistent Wine **1251/0/0TO/66skip**; the same PE on
-  genuine Windows 11 **1253/0/0TO/64skip**
+- Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
+  **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
+  disk anywhere) **1301/0/0/43**
+- the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
+  split with both clicks, menu bar, the dialogs, the panel, Run into the
+  Terminal with no input, the resizable panel): **17/17 JIT, 17/17 EXE, 17/17 OBJ**
+- Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
+  (`verify_pe_release` OK, 234 units); the FULL suite on genuine Windows 11
+  **1278/0/0TO/66skip**
 - c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
+- macOS cross release on both architectures: 836 units, Mach-O release
+  verifier and the exe/dylib gate green; the FULL suite on GitHub's mac
+  runners: arm64 **1319/0/0TO/25skip**, Intel **1320/0/0TO/24skip**
+- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
-- the vector ABI gate: 28 lines identical to the host compiler on c2m
-  generated code, the interpreter, and madc (x86-64 in fulltest; aarch64
-  under qemu and on the Mac in the arc's own stages)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.99.2](docs/release-notes/v0.99.2.md) — the owner's hands-on round
+  on the polished local IDE, the last polish before the master GUI release:
+  output streams into the Terminal with no keystroke (the window's wait is
+  the scheduler's wait), the Build menu's `^B` rows, a dialog's Close that
+  closes and leaves nothing behind, resizable panel and sidebar.
+- [v0.99.1](docs/release-notes/v0.99.1.md) — the owner's first round with
+  the desktop application: the prompts as dialogs (quick input / confirm
+  with buttons), a click picks the window, the status bar as chrome, and
+  "(^C aborts)" true in every profile.
+- [v0.99.0](docs/release-notes/v0.99.0.md) — madcide is a desktop
+  application: the GUI chrome milestone (native menu bar from one
+  command/menu data file, native file dialogs, status chrome, the JOE
+  split as a window stack, mouse caret/selection, the incremental web
+  editor, event enums) + five carrier fixes.
 - [v0.98.0](docs/release-notes/v0.98.0.md) — the macOS full-suite
   release: the whole suite green on both mac runner arches after the
   darwin burndown (by-value class ABI, distinct wide char types,
@@ -275,14 +287,6 @@ Latest validated results (the v0.98.0 merge-wave battery, content e7b628e1):
   profile data) + the carrier elegance arc (keyed literals, `rows[] =`
   append, literal expressions, live-kind subscripts); c-testsuite
   220/220 COMPLETE.
-- [v0.96.0](docs/release-notes/v0.96.0.md) — the variadic-class arc:
-  `bin/madc examples/embed_hello.cpp` compiles and RUNS; libmadc
-  embedding fixes; two forest-artifact fixes (ranked-ctor symbol
-  stamp, husk canonical-path re-include).
-- [v0.95.2](docs/release-notes/v0.95.2.md) — the v0.95 download tag:
-  darwin clang-lane conformance (override sweep) + the six assets.
-- [v0.95.1](docs/release-notes/v0.95.1.md) — win64 `--project`
-  first-call crash fixed (lazy-gen gated to eager on win64).
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 
@@ -316,6 +320,7 @@ features, installation paths, and release packaging.
 ## Documentation
 
 - [Usage and CLI](docs/usage.md)
+- [madcide — the IDE](docs/madcide.md) (terminal and window; profiles, projects, Build/Run, the panel and the Terminal)
 - [Build and installation](docs/build.md)
 - [Compiler architecture](docs/architecture.md)
 - [Testing guide](docs/testing.md)

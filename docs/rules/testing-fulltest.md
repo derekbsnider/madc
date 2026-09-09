@@ -17,6 +17,27 @@ runs once, where it counts. The blast-radius exception exists because some
 layers (lexer include machinery, shared codegen) genuinely touch every
 test — there a targeted run cannot bound the risk.
 
+## Why the merge wave is drawn at feature completion (owner, 2026-09-07)
+
+"Battery once per merge wave" only saves time if the merge wave is a COMPLETE
+feature. The push-gate battery is hours of cross-platform suites (fulltest +
+exe + obj + packed + headerless, then c-testsuite, wine, and the macOS cross
+build). Launch it on a feature that still has a known-open fix and the moment
+that fix lands the lane ledger marks every lane stale ("code content changed")
+and the whole battery runs AGAIN — the same hours twice.
+
+The owner drew this line after a battery was kicked off with one of a feature's
+three live-window bugs (the web-window resize-fill) still unbanked: "I prefer to
+try to get a feature completed before running hours and hours of test suites,"
+and "we established to try to bank a bunch of fixes before running the 2-hour+
+long full test suites." So bank the whole feature — every slice, every
+known-open fix — THEN run the long suites once.
+
+This is a judgment rule, not a mechanical gate: nothing can detect "feature
+complete" for you. The lane ledger's freshness check is the cost signal it
+minimizes — every content change after a green lane re-stales it, so the
+cheapest path is to make the content whole before the first expensive run.
+
 ## Why `make -C src fulltest` stays the merge-wave gate
 
 That target is still the single command that exercises the normal unit

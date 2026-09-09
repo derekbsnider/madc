@@ -1,0 +1,179 @@
+// Slice 3 (madcide GUI): the composer stamps ADDITIVE layout hints —
+// `region` on the editor and status nodes, `popup` on a floating pane —
+// that the TUI ignores (tui_model reads only caret/sel/focus/list/
+// tabwidth/spans) and web_model lays into the workbench. The gate is that
+// the ROLES and text are unchanged (testmadcide pins the terminal
+// composition byte-identical); this reducer pins the new hints. Oracle:
+// the design's role->region table (docs/plans/2026-09-06-ui-web-target-
+// and-madcide-gui.md §3.4). Runs with the madcide session, no compiler.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_hints.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    IdeSession S;
+    S.attach(w, es);
+    // The buffer table row 0 (what IdeSession::open seeds): the split
+    // composes inactive windows from their buffer rows.
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    // Base tree: status at children[0], the edit node at children[1] (the
+    // order testmadcide pins). The regions place them in the workbench.
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var st = tree["children"][0];
+    var ed = tree["children"][1];
+    println("roles: status={} edit={}", st["role"], ed["role"]);
+    println("region: status={} editor={}",
+	    st["hints"]["region"], ed["hints"]["region"]);
+    // One buffer open -> no tab strip yet.
+    println("tabs: {}", ed["hints"]["tabs"].is_null() ? "none" : "yes");
+
+    // A floating pane (help needs no compiler data): the box carries popup.
+    ui::set(w, es, "pane", "help");
+    var t2;
+    S.compose_ide_tree(t2, doc);
+    var kids = t2["children"];
+    var box = kids[php::count(kids) - 1];
+    println("pane: role={} popup={}", box["role"],
+	    box["hints"]["popup"].is_null() ? "none" : "yes");
+
+    // Additive-only: the grid model still reads the edit node's own hints
+    // (caret) unchanged beside the new region key.
+    println("caret-hint: {}", ed["hints"]["caret"]);
+
+    // IDE-9e windows in the workbench (S5): with two-plus windows EVERY
+    // window's status line and edit node docks into the editor slot — a
+    // window's status line is its header there, stacked in tree order (the
+    // JOE shape; the terminal reads none of it, testmadcide pins its
+    // shape). No node is left without a slot: an unplaced node would fall
+    // into the grid's empty rail cell. Back to one window the status
+    // returns to the status bar.
+    ui::set(w, es, "pane", "");
+    split_window(w, es, doc);
+    var t3;
+    S.compose_ide_tree(t3, doc);
+    var k3 = t3["children"];
+    println("split: kids={} regions={}/{}/{}/{} rows-hint={}",
+	    php::count(k3),
+	    k3[0]["hints"]["region"], k3[1]["hints"]["region"],
+	    k3[2]["hints"]["region"], k3[3]["hints"]["region"],
+	    k3[3]["hints"]["rows"].is_null() ? "none" : "yes");
+    // The message row (the split's "2 windows.") is the LAST child and is
+    // unplaced: the page flows it to the foot — its region stays absent.
+    var last3 = k3[php::count(k3) - 1];
+    println("split-msg: role={} region={}", last3["role"],
+	    last3["hints"]["region"].is_null() ? "none" : "set");
+    // Every window's edit node carries its window index as `tag` — the
+    // identity a pointer event echoes, so a press picks the window even
+    // when both show the same document (this split does).
+    println("split-tags: active={} other={}", k3[1]["hints"]["tag"],
+	    k3[3]["hints"]["tag"]);
+    // A press in the other window's text (its tag, the same document as
+    // the subject) activates it; a press on a window's header — no text
+    // position, offset -1 — activates it and moves no caret.
+    ui::set(w, es, "caret", 5);
+    var pe;
+    pe["event"] = "pointer";
+    pe["event_code"] = ui::event_kind::pointer;
+    pe["phase"] = "down";
+    pe["phase_code"] = ui::pointer_phase::down;
+    pe["offset"] = 12;
+    pe["subject"] = doc;
+    pe["tag"] = 1;
+    S.apply_ide_event(doc, pe);
+    long win_after_text = es_int(w, es, "winat", -1);
+    long caret_after_text = es_int(w, es, "caret", -1);
+    pe["offset"] = -1;
+    pe["tag"] = 0;
+    S.apply_ide_event(doc, pe);
+    println("split-press: text-window={} text-caret={} header-window={} header-caret={}",
+	    win_after_text, caret_after_text, es_int(w, es, "winat", -1),
+	    es_int(w, es, "caret", -1));
+    kill_window(w, es, doc, true);
+    var t4;
+    S.compose_ide_tree(t4, doc);
+    println("one-window: status={} editor={} tag={}",
+	    t4["children"][0]["hints"]["region"],
+	    t4["children"][1]["hints"]["region"],
+	    t4["children"][1]["hints"]["tag"].is_null() ? "none" : "set");
+
+    // The prompts as GUI dialogs (S6): the bottom-line prompt row keeps its
+    // terminal content string and ADDITIVELY carries popup + prompt {label,
+    // input} + dismiss (the action a press outside the popup fires); the
+    // confirm question carries popup + confirm {label, choices} — its
+    // answers are the @confirm scope's actions with titles, in dialog
+    // order — and no dismiss (a question is not answered by a stray press).
+    start_prompt(w, es, "Find", "find");
+    ui::set(w, es, "pinput", "ab");
+    var t5;
+    S.compose_ide_tree(t5, doc);
+    var k5 = t5["children"];
+    var prow = k5[php::count(k5) - 1];
+    var ph = prow["hints"];
+    println("prompt: content={} popup={} label={} input={} dismiss={}",
+	    prow["content"], ph["popup"], ph["prompt"]["label"],
+	    ph["prompt"]["input"], ph["dismiss"]);
+    // A window's dialog reaches the prompt by ACTION NAME: another command
+    // mid-prompt stays inert (as ever), the scope's cancel ends it.
+    var ea;
+    ea["event"] = "action";
+    ea["event_code"] = ui::event_kind::action;
+    ea["action"] = "save";
+    ea["seq"] = "";
+    S.apply_ide_event(doc, ea);
+    long still = prompt_active(w, es) ? 1 : 0;
+    ea["action"] = "pcancel";
+    S.apply_ide_event(doc, ea);
+    println("prompt-actions: other-inert={} dismiss-ends={}", still,
+	    prompt_active(w, es) ? 0 : 1);
+    // "(^C aborts)" is true in every profile: in JOE ^C is the bound
+    // `discard`, so it arrives as an ACTION whose sequence is ^c — the
+    // baked "@prompt ^c pcancel" wins by the sequence; in a profile that
+    // leaves ^C unbound it arrives as the KEY ^c and the same line wins.
+    start_prompt(w, es, "Find", "find");
+    ea["action"] = "discard";
+    ea["seq"] = "^c";
+    S.apply_ide_event(doc, ea);
+    long ctrlc_action = prompt_active(w, es) ? 0 : 1;
+    start_prompt(w, es, "Find", "find");
+    var ek;
+    ek["event"] = "key";
+    ek["event_code"] = ui::event_kind::key;
+    ek["key"] = "^c";
+    ek["key_code"] = ui::key::ctrl;
+    S.apply_ide_event(doc, ek);
+    println("prompt-ctrl-c: as-action={} as-key={}", ctrlc_action,
+	    prompt_active(w, es) ? 0 : 1);
+    start_confirm(w, es, "Lose changes to this file (y,n,^C)?", "q!");
+    var t6;
+    S.compose_ide_tree(t6, doc);
+    var k6 = t6["children"];
+    var crow = k6[php::count(k6) - 1];
+    var chs = crow["hints"]["confirm"]["choices"];
+    var cs = "";
+    for ( var c : chs )
+	cs = format("{}{}={} ", cs, c["label"], c["action"]);
+    println("confirm: content={} popup={} label-same={} choices={} dismiss={}",
+	    crow["content"], crow["hints"]["popup"],
+	    crow["hints"]["confirm"]["label"] == crow["content"] ? 1 : 0,
+	    php::trim(cs),
+	    crow["hints"]["dismiss"].is_null() ? "none" : "set");
+    // The dialog's No button: the scope's pcancel by name ends the question
+    // and keeps the buffer (the same as the n key).
+    ea["action"] = "pcancel";
+    S.apply_ide_event(doc, ea);
+    println("confirm-button: prompt-off={}", prompt_active(w, es) ? 0 : 1);
+    return 0;
+}

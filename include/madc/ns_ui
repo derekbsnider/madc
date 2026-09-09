@@ -21,6 +21,14 @@
 // containment is the `in` relation; a carried entity confers a key via
 // its `grants` bag property.
 
+// The event vocabularies as ENUMS — ui::key, ui::event_kind,
+// ui::pointer_phase — ONE text shared with the engine (madcdis/keys.h and
+// ui_events.h alias it): `ev["key_code"] == ui::key::down` is checked by
+// the compiler where `k == "down"` was a string a typo turns into a silent
+// miss. A sibling bits/ fragment is the one include a fragment may carry
+// (dialect-lean).
+#include <bits/ui_enums>
+
 namespace ui {
     // ---- interaction (the prompt handler) ------------------------------
     // Write `text`, FLUSH, read a line, return it. Scripted stdin (a
@@ -190,9 +198,23 @@ namespace ui {
     value  &text(value &out, int64_t w, int64_t entity);
     int64_t text_size(int64_t w, int64_t entity);
     int64_t text_line_count(int64_t w, int64_t entity);
+    // The embedded Terminal's screen (madcide polish P3b-2): fold `n`
+    // bytes a program wrote to its pty into the document's text through
+    // the bounded terminal screen (madcdis/term_screen.h — printables at
+    // the cursor, \r overwrite, \b, tabs, CSI K / 2J, every other escape
+    // sequence dropped). The document's text IS the screen (the completed
+    // lines + the cursor line); the cursor column and the escape parser's
+    // state ride the document's attributes (termcol, termesc, termparams)
+    // between feeds, so any pump can feed it chunk by chunk. Returns the
+    // new text size; -1 = no such document.
+    int64_t term_feed(int64_t w, int64_t entity, const char *bytes, int64_t n);
     value  &text_line(value &out, int64_t w, int64_t entity, int64_t n);
     int64_t text_line_start(int64_t w, int64_t entity, int64_t n);
     int64_t text_line_len(int64_t w, int64_t entity, int64_t n);
+    // The 1-based line containing byte `off` (off == size after a
+    // terminated last line = line_count + 1, the phantom line); -1 = no
+    // component. Indexed — the caret-line lookup, never a per-line walk.
+    int64_t text_line_of(int64_t w, int64_t entity, int64_t off);
     int64_t text_find(int64_t w, int64_t entity, int64_t from,
 		      const char *needle);
     // Word motion (JOE ^Z/^X): a word byte is [A-Za-z0-9_].
@@ -255,6 +277,14 @@ namespace ui {
     //   {event:"action", action, seq}  a bound key sequence completed
     //       (empty action = unbound miss; seq says which)
     //   {event:"focus"} {event:"resize"}  recompose and re-render
+    //   {event:"pointer", phase, offset, subject, tag}  a pointing-device
+    //       gesture on an edit node (a web target's hit test): offset is a
+    //       BYTE offset in that node's text (-1 = a press on the node at no
+    //       text position — its header), subject the entity it projects,
+    //       tag the node's `tag` hint echoed (absent when it carried none)
+    // Every object also carries the enum values: event_code
+    // (ui::event_kind), key_code on a key event (ui::key), phase_code on a
+    // pointer event (ui::pointer_phase) — compare against those.
     // and returns false at end of input. Render before the first event;
     // tab cycles focus between the tree's choice/edit nodes.
     //
@@ -296,4 +326,105 @@ namespace ui {
     // none is pending. A status line's chord-echo seat (JOE's %k) reads
     // it at compose time.
     void    tui_pending(value &out, int64_t t);
+
+    // ---- the target-generic surface (Level 3 arrives beside Level 1) ----
+    // open(target) names WHERE the tree is shown: "term" (the grid
+    // frontend — the tui_* names above are open("term")'s spellings over
+    // the same handles) or a registered script-hosted target (the web
+    // target, "web" — <ns_ui_web>). 0 + stderr reason when the target is
+    // unknown, cannot serve here (no tty, no display), or is already
+    // open. An empty name is the terminal. The loop is the same on every
+    // target: render(t, w, tree) -> event(ev, t, w) -> apply; the event
+    // objects are the ONE vocabulary tui_event documents. suspend /
+    // resume are terminal capabilities — a window answers false.
+    int64_t open(const char *target);
+    void    close(int64_t t);
+    int64_t rows(int64_t t);
+    int64_t cols(int64_t t);
+    void    render(int64_t t, int64_t w, value &tree);
+    bool    bind_keys(int64_t t, value &table);
+    bool    validate_keys(value &table);
+    bool    event(value &out, int64_t t, int64_t w);
+    bool    suspend(int64_t t);
+    bool    resume(int64_t t);
+    void    refresh(int64_t t);
+    void    pending(value &out, int64_t t);
+    // A key spelling ("left", "^k", "a" — the bindings-table vocabulary)
+    // -> its ui::key value; ui::key::none when it is not a key spelling.
+    // For an application that synthesizes a key event from an action name.
+    int64_t key_code(const char *name);
+    // A key spelling -> the BYTES a terminal would have sent for it (the
+    // xterm/VT100 sequences the terminal target's own parser reads, so the
+    // two are one table): what an IDE writes to a program on its embedded
+    // terminal's pty when the user types at it. False (out empty) when the
+    // name is not a key spelling. A text run is its own bytes already.
+    bool    key_bytes(value &out, const char *name);
+
+    // ---- script-hosted targets (the web target is one; a test fake is
+    // another). A host is a table of C function pointers a madc fragment
+    // fills and registers ONCE under a target name (dynamic init of a
+    // file-scope static is the idiom). The engine calls them on the
+    // opening thread only: open(title, page, ctx) builds the surface
+    // and returns the host's own handle (0 = cannot serve here — no
+    // display); close(host); eval(host, js) runs script text in the page
+    // (0 = ok); run(host) runs the host's loop until ONE event was posted
+    // through post_event, then returns 0 — nonzero = the host ended (the
+    // window closed); menu(host, json) draws the native menu bar from the
+    // engine's menu JSON ({"bar":[{"title","items":[{"id","title","key"?,
+    // "enabled"}|{"sep"}]}]}, the composed root's `menu` hint with each
+    // command's bound chord) — optional: a host with no chrome leaves it
+    // 0; a selection posts {"kind":"action","action":id} back;
+    // dialog(host, json) shows the native file dialog the request
+    // describes ({"mode":"open"|"save","title":..,"path":<initial>}) and
+    // returns 0 — the answer arrives later as a posted {"kind":"dialog",
+    // "mode","path"} event ("" = cancelled); nonzero = no native dialog on
+    // this platform (the caller falls back to its prompt); optional.
+    // tick(host, ms): end the host's NEXT (or running) loop after ms
+    // milliseconds when no event ended it first — run() then returns 0 with
+    // nothing posted, and the engine hands the cooperative tasks the CPU
+    // (a program running in the window's Terminal, a build streaming into
+    // Output) before running the loop again. Asked only while tasks are
+    // live, so an idle window still blocks for free. 0 = armed; nonzero =
+    // no timer on this host (the engine cannot bound the wait); optional.
+    // LAYOUT CONTRACT with src/ns_ui.cpp — the same seven pointers in the
+    // same order, append-only, keep both in sync.
+    typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
+    typedef void  (*ui_host_close_fn)(void *host);
+    typedef int64_t (*ui_host_eval_fn)(void *host, const char *js);
+    typedef int64_t (*ui_host_run_fn)(void *host);
+    typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
+    typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
+    struct ui_host_ops {
+	ui_host_open_fn  open;
+	ui_host_close_fn close;
+	ui_host_eval_fn  eval;
+	ui_host_run_fn   run;
+	ui_host_menu_fn  menu;
+	ui_host_dialog_fn dialog;
+	ui_host_tick_fn  tick;
+    };
+    bool register_host(const char *target, const ui_host_ops *ops);
+    // The host's ONE inbound door: the page's event object (JSON text —
+    // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
+    // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..} /
+    // {"kind":"action","action":id} — a native menu selection /
+    // {"kind":"dialog","mode","path"} — a native file dialog's answer)
+    // for the session `ctx` that open() received. Callable from inside
+    // run(); the engine queues it and run() returns.
+    void post_event(void *ctx, const char *json);
+    // Script text into a page-hosted target: the test seam — the page's
+    // madcSnapshot() posts its rendered text back as {event:"snapshot",
+    // text}. False on the grid frontend or a bad handle. Evals before the
+    // page has loaded are dropped by the platform view: the first resize
+    // event is the page's ready signal.
+    bool    eval_page(int64_t t, const char *js);
+    // Native file dialogs (S4): dialogs(t) — can this target show one (a
+    // window whose host draws chrome; the terminal cannot); dialog(t, json)
+    // — show the one the request describes ({"mode":"open"|"save",
+    // "title":..,"path":<initial>}); true = shown, and the answer arrives
+    // as an {event:"dialog", mode, path} event ("" = cancelled); false =
+    // not available here — the application falls back to its own prompt.
+    bool    dialogs(int64_t t);
+    bool    dialog(int64_t t, const char *json);
 }

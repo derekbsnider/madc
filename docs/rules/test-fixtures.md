@@ -122,6 +122,25 @@ properties of individual tests, not of the runner:
 The first listed domain with a fixture wins, so layered runs (wine over
 win64) resolve deterministically.
 
+### Twins drift — the `.domain` sidecar and `check-expect-twins.sh` (2026-09-08)
+
+A twin REPLACES the base, so every line of the base that is not a domain
+difference is a COPY in the twin — and a copy drifts. It happened on the
+colour-unification slice: the fix to `testmadcide.expect`'s `spans:` line
+never reached `testmadcide.win64_expect`; the win64 twin kept the old
+answer and the wine lane went red two hours later, at the end of the
+merge-wave battery, on content every other lane had passed. The gate
+`scripts/check-expect-twins.sh` (fulltest) closes it for LABELLED lines
+(`label: rest`, the clause labels a headless IDE test prints): a base
+label must appear in the twin with the identical line, unless the twin's
+`.domain` sidecar names it — the labels whose answer differs on that
+domain (`build-out` under wine, `platform` on darwin/win64), or which the
+domain does not print (the pointer clauses on win64). Naming the
+differences makes them reviewable; the silent kind was the bug. Unlabelled
+twins (a C program's plain output) are not gated — their whole point is a
+different answer — and the domain-oracle rule above still governs what a
+twin may say.
+
 ## The `.helper` marker — why it exists
 
 `tests/<name>.helper` marks a `.mad` file that is a compilation unit of
@@ -135,3 +154,16 @@ forbids, and every new helper file would have needed a seventh, eighth,
 … edit. The marker moves the fact onto the test it describes (one
 fixture file, co-located, contents name the owner) and every enumerator
 consults it the same way it consults the other fixtures.
+
+## The `.env` fixture (2026-09-07)
+
+madc arms no resource guard by default (owner ruling 2026-09-07); the suites'
+caps are the RUNNER's to ask for, so `scripts/run_tests.sh` exports
+`MADC_MEM_LIMIT=auto` once and every test process inherits it. A test whose
+point is the unguarded behaviour (`tests/testguardsoff.mad` allocates and
+touches 6 GB of address space) needs the opposite for itself only — a
+per-test environment. `tests/<base>.env` holds whitespace-split `NAME=value`
+pairs that the runner hands to `env(1)` in front of every invocation of that
+test (JIT, exe and obj alike), exactly as `.argv` and `.input` shape the
+other two ends of the process. No `MADC_TEST_ENV_<name>` switch, no per-test
+branch: the fixture file is the convention.

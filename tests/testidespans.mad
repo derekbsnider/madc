@@ -1,0 +1,37 @@
+// The colour-unification slice (2026-09-08): spans_to_hspans is the ONE
+// converter feeding both renderers, and a row carries ONE fact beside its
+// byte range — the loaded scheme's style spec `c` for the span's class
+// (JOE's vocabulary). The grid paints it through the one spec parser; the
+// window renders the same style as classes over its palette — so the
+// scheme the terminal shows is the scheme the window shows. A class the
+// scheme leaves unstyled emits NO row (the default scheme's JOE parity has
+// no `function` line: `id` is plain in both); a plain identifier is
+// dropped. Oracle: the terminal's own rendering — the window paints what
+// the grid paints, nothing more (madcdis/ui_style.h; docs/language/ns-ui.md,
+// the highlight spans §).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_spans.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_theme(w, es, "default");	// keyword/type bold, no `function` line
+
+    // The full parse promotes the head name `id` to `function`; the
+    // default scheme has no function line, so that span emits no row —
+    // three rows remain: the two `long` types and the `return` keyword.
+    long h = ensure_phandle(w, es, doc);
+    refresh_spans(w, es, doc, h);
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    for ( var sp : hs )
+	println("span s={} e={} c={}", sp["s"], sp["e"], sp["c"]);
+    println("spans={}", php::count(hs));
+    return 0;
+}

@@ -25,16 +25,19 @@
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include "madc_guards.h"	// the GUI memory-guard lift after the project parse
 #include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "datadef.h"
+#include "madc_modules.h"	// madc_module_open — the object's module list opens through the one seam
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_dl.h"
+#include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
@@ -122,11 +125,6 @@ static void cir_register_source_debug(MIR_context_t ctx)
 // MIR_link by the session/one-shot build paths (same single-threaded session
 // discipline as the fatal-containment state below).
 static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
-// #load'd namespace functions (task #67): the Program's __dl_<ns>_<member>
-// import-name -> dlsym'd-address table, set around MIR_link exactly like the
-// host-callback registrations above — dlsym(RTLD_DEFAULT) can never find
-// these madc-synthesized names.
-static thread_local const std::map<std::string, void *> *cir_active_dl_syms = NULL;
 
 // The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
 //
@@ -199,12 +197,6 @@ static void *cir_import_resolver(const char *name)
 	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
-    if (cir_active_dl_syms) {
-	std::map<std::string, void *>::const_iterator it =
-	    cir_active_dl_syms->find(name);
-	if (it != cir_active_dl_syms->end())
-	    return it->second;
-    }
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -1081,7 +1073,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
-	cir_active_dl_syms = NULL;
 	teardown();
 	return false;
     }
@@ -1117,7 +1108,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	cir_ledger_pull(ctx, prog);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
-    cir_active_dl_syms = prog ? &prog->dl_symbol_map : NULL;
     // Object mode never reads import addresses (cir_object_import_resolver),
     // so it needs no runtime loaded — its DT_NEEDED comes from
     // cir_native_link_env. prog == NULL is the frozen lane, which recreates
@@ -1141,7 +1131,6 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 		 madc_object_mode ? cir_object_import_resolver
 				  : cir_import_resolver);
     cir_active_host_regs = NULL;
-    cir_active_dl_syms = NULL;
     mc_lap("MIR_link");
     if (madc_debug_info) {
 	// -g: JIT lane registers the GDB-JIT object; object mode attaches
@@ -1557,6 +1546,7 @@ const char *madc_pack_forest_path = NULL;
 // -static-libmadc (S5): merge the AOT-ledger runtime into the emitted image
 // instead of depending on libmadc at run time. See madc_cir.h.
 bool madc_static_libmadc = false;
+bool madc_gui_subsystem = false;
 
 // -fno-eval-shims: this artifact will never be host-called through the value
 // ABI, so the __madc_shim_* adapters (and their Tier-B madc_value_* imports)
@@ -1710,9 +1700,7 @@ static bool cir_import_covered(const char *name,
     // outright). RTLD_NOLOAD: these libraries are already mapped — we are
     // interrogating them, never loading anything new.
     for (const std::string &c : covers) {
-	if (c.find(".so") == std::string::npos
-	    && c.find(".dylib") == std::string::npos
-	    && c.find(".dll") == std::string::npos)
+	if (!madc_spelled_library_p(c))
 	    continue;	// a bare stem (darwin's libsystem_/libc++) is a
 			// prefix cover, handled by the dladdr pass below
 	void *h = madcdl_probe_loaded(c.c_str());
@@ -1854,10 +1842,14 @@ static bool cir_split_needed(const std::vector<std::string> &needed,
 // glibc >= 2.34 runs an executable's own array from __libc_start_main.
 // Executables get entry=main and, per gcc parity, the PIE layout unless
 // -no-pie chose fixed-base ET_EXEC.
+// gui_subsystem: the executable's PE subsystem (WINDOWS_GUI = a windowed
+// program, no console at start — gcc's -mwindows); ELF and Mach-O writers
+// ignore it. The CLI's -mwindows or a project manifest's "kind": "gui".
 static void cir_fill_exec_params(MIR_object_exec_params &xp,
 				 MadcNativeKind kind,
 				 const std::vector<const char *> &libs,
-				 const std::string &runpath)
+				 const std::string &runpath,
+				 bool gui_subsystem)
 {
     memset(&xp, 0, sizeof xp);
     xp.needed = libs.data();
@@ -1867,6 +1859,7 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
     } else {
 	xp.entry = "main";
 	xp.pie_p = kind == mnkPieExecutable;
+	xp.gui_subsystem_p = gui_subsystem;
     }
     xp.runpath = runpath.empty() ? NULL : runpath.c_str();
 }
@@ -1919,14 +1912,40 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // name the worlds. Itanium-mangled imports are the C++ world, whose
 // darwin install name is libc++ — a target-platform constant with the
 // same standing as the writer's own libSystem spelling.
+//
+// A USER library (-l / import, arriving in `other` as its TARGET spelling —
+// a .dylib name) is a real load command too. Everything else in `other` is
+// cover-analysis input, never a load command: a hosted-darwin madc's stems
+// (libc++, libsystem_, libSystem), a Linux-hosted cross madc's HOST ELF
+// images (libstdc++.so.6, libm.so.6, libc.so.6 — the process the analysis
+// runs in), and libSystem.B.dylib (the `c` / `m` module rows), which is
+// dyld's implicit world. So the test is "spelled for Darwin", asked of the
+// owner per target — an any-target test let the cross madc's ELF cover set
+// leak into a pure-C image as three load commands (macho_exe_dylib_gate
+// [A] caught it). One owner for both Mach-O writers (image + object link).
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
+				   const std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
 	if (s.compare(0, 2, "_Z") == 0) {
 	    libs.push_back("/usr/lib/libc++.1.dylib");
-	    return;
+	    break;
 	}
+    for (const std::string &l : other) {
+	if (!madc_spelled_library_p(l, TargetOS::Darwin))
+	    continue;
+	// The WORLD's libraries share this list with the user's: libSystem is
+	// dyld's implicit load, and the C++ runtime is the import-class rule's
+	// above — the active flavor's link set spells it by full install path
+	// (/usr/lib/libc++.1.dylib), so the family test is on the BASENAME (a
+	// whole-string prefix test let it through: a pure-C image grew a libc++
+	// load command and a C++ image carried two).
+	std::string base = madc::detail::host_path_basename(l);
+	if (base.compare(0, 9, "libSystem") == 0 || base.compare(0, 6, "libc++") == 0)
+	    continue;
+	libs.push_back(l.c_str());
+    }
 }
 #endif
 
@@ -1935,7 +1954,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath,
-				   MadcNativeKind kind)
+				   MadcNativeKind kind, bool gui_subsystem)
 {
     bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every dynamic import
@@ -1967,7 +1986,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     // import flat across the load list (mir-debug.h).
     if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
 	return false;
-    cir_apple_extra_dylibs(imports, libs);
+    cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
     // PE: runtime-needing programs import from libmadc-0.dll; the list
     // flows to the writer as its import-attribution DLL order.
@@ -1977,7 +1996,7 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	libs.push_back(l.c_str());
 #endif
     MIR_object_exec_params xp;
-    cir_fill_exec_params(xp, kind, libs, runpath);
+    cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
     // Apple targets: the ad-hoc code-signature identifier is conventionally
     // the output basename (ignored by the ELF writer).
     const char *out_base = strrchr(out_path, '/');
@@ -2005,19 +2024,8 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
-    return cir_write_native_image(ctx, out_path, needed, runpath, kind);
-}
-
-// bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
-// installed madc pairs with /usr/local/lib — both go on the produced
-// binary's library search path so it works from either layout.
-static std::string cir_selfexe_libdir(void)
-{
-    std::string d = madc_self_exe_path();
-    size_t slash = d.rfind('/');
-    if (slash == std::string::npos)
-	return std::string();
-    return d.substr(0, slash) + "/../lib";
+    return cir_write_native_image(ctx, out_path, needed, runpath, kind,
+				  madc_gui_subsystem);
 }
 
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
@@ -2051,17 +2059,16 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libsystem_");
     needed.push_back("libSystem");
 #elif defined(_WIN32)
-    // Hosted win64: the process's own runtime DLLs, in the madcdl walk's
-    // order (specific before general — first provider wins). This list is
-    // BOTH the cover set for the runtime-need analysis AND the PE writer's
-    // import-attribution list (PE binds two-level: every import names its
-    // DLL; the writer probes these in order).
+    // Hosted win64: the process's own runtime DLLs, in the madcdl
+    // default-scope walk's order (specific before general — first provider
+    // wins). ONE list, owned by the dl seam (madcdl_default_scope_modules):
+    // it is the JIT's symbol walk, the cover set for the runtime-need
+    // analysis AND the PE writer's import-attribution list (PE binds
+    // two-level: every import names its DLL; the writer probes these in
+    // order). A second copy here had already drifted (ws2_32.dll).
     (void)flavor;
-    needed.push_back("libstdc++-6.dll");
-    needed.push_back("libwinpthread-1.dll");
-    needed.push_back("ucrtbase.dll");
-    needed.push_back("kernel32.dll");
-    needed.push_back("ws2_32.dll");
+    for (const char *const *m = madcdl_default_scope_modules(); *m; m++)
+	needed.push_back(*m);
 #else
     if (!flavor)
 	flavor = &madc_stdlib_flavors[0];
@@ -2075,11 +2082,17 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
+    // User libraries arrive as TARGET spellings (the CLI resolves -l<name>
+    // through madc_modules before it gets here); a raw -l<name> word from a
+    // caller that still forwards one resolves through the same owner. Once
+    // each: `-lm` / `import m;` names libm.so.6, which the base set above
+    // already carries on ELF — a repeated DT_NEEDED is noise the linker
+    // would never emit.
     for (const std::string &l : user_libs) {
-	if (l.compare(0, 2, "-l") == 0)
-	    needed.push_back("lib" + l.substr(2) + MADC_DSO_SUFFIX);
-	else
-	    needed.push_back(l);
+	std::string spelling = l.compare(0, 2, "-l") == 0
+			       ? madc_module_library_spelling(l.substr(2)) : l;
+	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
+	    needed.push_back(spelling);
     }
     // Relocatable arm first: a produced binary placed in a relocatable
     // install (tarball <root>/bin beside <root>/lib — madcide in the
@@ -2095,7 +2108,10 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
 #else
     runpath = "$ORIGIN/../lib:";
 #endif
-    runpath += cir_selfexe_libdir();
+    // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
+    // installed madc pairs with /usr/local/lib — both go on the produced
+    // binary's library search path so it works from either layout.
+    runpath += madc_self_lib_dir();
     if (runpath.empty() || runpath[runpath.size() - 1] == ':')
 	runpath += "/usr/local/lib";
     else
@@ -2226,10 +2242,70 @@ static int cir_enter_loaded_main(MIR_object_loaded_t lo, const char *display,
     return rc;
 }
 
+// An object's module list (__madc_module_deps: the TARGET spellings its
+// `import`s chose, NUL-separated, double-NUL-terminated — emitted by the
+// CIR builder's extern flush) is opened into the default symbol scope
+// BEFORE the object loads, since the loader resolves imports at load. One
+// MIR_object_read per object, read through the builder API (find the
+// symbol, take its section bytes); a merged image carries every input's
+// table, unused at run time. Explicit -l spellings (the runner's run_flags)
+// opened earlier and stay an override. False + stderr on the first spelling
+// that will not open (the object and the spelling named); an object with no
+// table (no import, or one built before the table existed) passes.
+static bool cir_open_object_module_deps(const unsigned char *bytes, size_t size,
+					const char *display)
+{
+    MIR_object_t obj = MIR_object_create();
+    if (!obj)
+	return true;	// no builder on this host: nothing to read, load decides
+    char err[256];
+    if (MIR_object_read(obj, bytes, size, err, sizeof err) != 0) {
+	MIR_object_destroy(obj);
+	return true;	// the loader reports the real read error itself
+    }
+    int sec = 0;
+    uint64_t value = 0, dsize = 0;
+    bool ok = true;
+    if (MIR_object_find_symbol(obj, "__madc_module_deps", &sec, &value, &dsize)) {
+	const void *sb = NULL;
+	size_t slen = 0;
+	if (MIR_object_section_bytes(obj, sec, &sb, &slen) && sb
+	    && value < slen && value + dsize <= slen) {
+	    const char *p = (const char *)sb + value;
+	    const char *end = p + dsize;
+	    while (p < end && *p) {
+		std::string entry(p, strnlen(p, (size_t)(end - p)));
+		p += entry.size() + 1;
+		// '?' marks an OPTIONAL entry (a lazy module row): it may be absent.
+		bool optional = !entry.empty() && entry[0] == '?';
+		std::string spelling = optional ? entry.substr(1) : entry;
+		// The object lane has no parse to record a GUI module on: the
+		// row behind the spelling says it, and the armed memory guard
+		// lifts here exactly as the drivers lift it after a parse — BEFORE
+		// the library opens (its own load reserves address space).
+		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+		if (row && (row->flags & MADC_MODULE_GUI))
+		    madc_lift_memory_guard("a GUI module row in the object's module list");
+		std::string derr;
+		if (!madc_module_open(spelling, derr) && !optional) {
+		    fprintf(stderr, "madc: %s: import: cannot load '%s': %s\n",
+			    display, spelling.c_str(), derr.c_str());
+		    ok = false;
+		    break;
+		}
+	    }
+	}
+    }
+    MIR_object_destroy(obj);
+    return ok;
+}
+
 int madc_cir_run_object(const char *path, int argc, char **argv)
 {
     std::vector<unsigned char> bytes;
     if (!cir_read_file(path, bytes))
+	return 1;
+    if (!cir_open_object_module_deps(bytes.data(), bytes.size(), path))
 	return 1;
 
     char err[256];
@@ -2257,6 +2333,12 @@ static MIR_object_t cir_read_objects(const std::vector<std::string> &paths)
     for (const std::string &p : paths) {
 	std::vector<unsigned char> bytes;
 	if (!cir_read_file(p.c_str(), bytes)) {
+	    MIR_object_destroy(obj);
+	    return NULL;
+	}
+	// Each input's module list opens before the merge (a run needs the
+	// libraries; a link records nothing from them and loses nothing by it).
+	if (!cir_open_object_module_deps(bytes.data(), bytes.size(), p.c_str())) {
 	    MIR_object_destroy(obj);
 	    return NULL;
 	}
@@ -2371,7 +2453,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	    MIR_object_destroy(obj);
 	    return -1;
 	}
-	cir_apple_extra_dylibs(imports, libs);
+	cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
 	// Same PE rule as cir_write_native_image: libmadc-0.dll first
 	// when the runtime is needed, then the base DLL order (the one
@@ -2382,7 +2464,7 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 	    libs.push_back(l.c_str());
 #endif
 	MIR_object_exec_params xp;
-	cir_fill_exec_params(xp, kind, libs, runpath);
+	cir_fill_exec_params(xp, kind, libs, runpath, madc_gui_subsystem);
 	const char *out_base = strrchr(out_path, '/');
 	xp.identifier = out_base ? out_base + 1 : out_path;
 	std::vector<uint8_t> pack_blob;
@@ -3197,6 +3279,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->is_varargs)       r.flags |= madc::dis::DF_IS_VARARGS;
 	if (fd->is_void_params)   r.flags |= madc::dis::DF_IS_VOID_PARAMS;
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
+	if (fd->c_linkage)        r.flags |= madc::dis::DF_FUNC_C_LINKAGE;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->noexcept_spec == FuncDef::NxTrue)
@@ -6034,6 +6117,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
 		return -1;	// no MIR/c2m created yet — nothing to tear down
+	// A GUI module row bound by any TU lifts an armed memory guard before
+	// the program runs (the single-TU driver does the same after its parse).
+	for (const CirParsedTU &pt : parsed)
+		if (pt.prog && pt.prog->bound_gui_module) {
+			madc_lift_memory_guard("a GUI module row was imported");
+			break;
+		}
 
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
@@ -6397,9 +6487,20 @@ int madc_project_emit_native(MadcEngine &engine,
 						tu.stdlib_option);
 				break;
 			}
-		cir_native_link_env(flavor, user_libs, needed, runpath);
+		// import (module form): every TU's bound modules join the
+		// closure beside the -l spellings, once each.
+		std::vector<std::string> all_libs(user_libs);
+		for (CirParsedTU &pt : parsed)
+			for (const std::string &l : pt.prog->module_link_libs)
+				if (std::find(all_libs.begin(), all_libs.end(), l)
+				    == all_libs.end())
+					all_libs.push_back(l);
+		cir_native_link_env(flavor, all_libs, needed, runpath);
+		// The manifest's kind decides the subsystem for a project
+		// build (the CLI's -mwindows is the single-TU lane's spelling).
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					    kind);
+					    kind,
+					    manifest.kind == ProjectKind::gui);
 	}
 	teardown();
 	return ok ? 0 : -1;

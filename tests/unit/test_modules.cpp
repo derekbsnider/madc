@@ -1,0 +1,140 @@
+// Unit tests for madc_modules — the module map and the ONE platform
+// library-spelling owner (design: docs/plans/2026-09-06-ui-web-target-and-
+// madcide-gui.md §3.1). `import name;`, `-l<name>` and the native lanes'
+// link closure all spell a library through madc_module_library_spelling;
+// these rows pin the rule per target OS so no call site ever needs a host
+// #ifdef to know what image a name means.
+
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+thread_local bool madc_verbose = false;	// the prologue every tests/unit file uses
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include <string>
+#include "datadef.h"
+#include "madc_modules.h"
+
+TEST_CASE("module spelling: the platform rule for a bare library name")
+{
+	CHECK(madc_module_library_spelling("foo", TargetOS::Posix)   == "libfoo.so");
+	CHECK(madc_module_library_spelling("foo", TargetOS::Darwin)  == "libfoo.dylib");
+	CHECK(madc_module_library_spelling("foo", TargetOS::Windows) == "foo.dll");
+}
+
+TEST_CASE("module spelling: a registry row names the real runtime image per OS")
+{
+	CHECK(madc_module_library_spelling("m", TargetOS::Posix)   == "libm.so.6");
+	CHECK(madc_module_library_spelling("m", TargetOS::Darwin)  == "libSystem.B.dylib");
+	CHECK(madc_module_library_spelling("m", TargetOS::Windows) == "ucrtbase.dll");
+	CHECK(madc_module_library_spelling("c", TargetOS::Posix)   == "libc.so.6");
+	CHECK(madc_module_library_spelling("c", TargetOS::Darwin)  == "libSystem.B.dylib");
+	CHECK(madc_module_library_spelling("c", TargetOS::Windows) == "ucrtbase.dll");
+}
+
+TEST_CASE("module spelling: a path or an already-spelled name passes verbatim (the -l contract)")
+{
+	CHECK(madc_module_library_spelling("/opt/x/libfoo.so", TargetOS::Posix) == "/opt/x/libfoo.so");
+	CHECK(madc_module_library_spelling("libfoo.so", TargetOS::Posix)        == "libfoo.so");
+	CHECK(madc_module_library_spelling("bar.dll", TargetOS::Windows)        == "bar.dll");
+	CHECK(madc_module_library_spelling("libz.dylib", TargetOS::Darwin)      == "libz.dylib");
+	// A path is a path on every target: either separator marks one.
+	CHECK(madc_module_library_spelling("C:\\x\\foo", TargetOS::Windows)     == "C:\\x\\foo");
+	CHECK(madc_module_library_spelling("./foo", TargetOS::Posix)            == "./foo");
+	// A versioned soname is already spelled (libfoo.so.2 carries the suffix
+	// inside the name); the rule must not wrap it as liblibfoo.so.2.so.
+	CHECK(madc_module_library_spelling("libfoo.so.2", TargetOS::Posix)      == "libfoo.so.2");
+}
+
+TEST_CASE("module spelling: the target-default form follows madc_target_os")
+{
+	CHECK(madc_module_library_spelling("foo") == madc_module_library_spelling("foo", madc_target_os));
+	CHECK(madc_module_library_spelling("m")   == madc_module_library_spelling("m", madc_target_os));
+}
+
+TEST_CASE("module rows: interface presence")
+{
+	const MadcModuleSpec *m = madc_module_find("m");
+	REQUIRE(m != nullptr);
+	CHECK(std::string(m->interface) == "math.h");
+	const MadcModuleSpec *webview = madc_module_find("madcwebview");
+	REQUIRE(webview != nullptr);
+	CHECK(std::string(webview->interface) == "webview.h");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Posix) == "libmadcwebview.so");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Darwin) == "libmadcwebview.dylib");
+	CHECK(madc_module_library_spelling("madcwebview", TargetOS::Windows) == "madcwebview.dll");
+	const MadcModuleSpec *c = madc_module_find("c");
+	REQUIRE(c != nullptr);
+	CHECK(c->interface == nullptr);
+	const MadcModuleSpec *none = madc_module_find("no-such-module");
+	CHECK(none == nullptr);
+	const MadcModuleSpec *empty = madc_module_find("");
+	CHECK(empty == nullptr);
+}
+
+TEST_CASE("spelled library: any target's suffix marks an already-spelled name")
+{
+	CHECK(madc_spelled_library_p("libc.so.6"));
+	CHECK(madc_spelled_library_p("libfoo.so"));
+	CHECK(madc_spelled_library_p("libSystem.B.dylib"));
+	CHECK(madc_spelled_library_p("ucrtbase.dll"));
+	CHECK(!madc_spelled_library_p("libc++"));	// a darwin cover stem
+	CHECK(!madc_spelled_library_p("libsystem_"));
+	CHECK(!madc_spelled_library_p("m"));
+	// Per target: a Mach-O writer asking "the target's user libraries" must
+	// not see the Linux-hosted cross madc's own ELF cover set as Darwin's.
+	CHECK(madc_spelled_library_p("libfoo.dylib", TargetOS::Darwin));
+	CHECK(!madc_spelled_library_p("libm.so.6", TargetOS::Darwin));
+	CHECK(!madc_spelled_library_p("libstdc++.so.6", TargetOS::Darwin));
+	CHECK(madc_spelled_library_p("libm.so.6", TargetOS::Posix));
+	CHECK(!madc_spelled_library_p("ucrtbase.dll", TargetOS::Posix));
+	CHECK(madc_spelled_library_p("ucrtbase.dll", TargetOS::Windows));
+}
+
+TEST_CASE("dso suffix per OS")
+{
+	CHECK(std::string(madc_target_dso_suffix(TargetOS::Posix))   == ".so");
+	CHECK(std::string(madc_target_dso_suffix(TargetOS::Darwin))  == ".dylib");
+	CHECK(std::string(madc_target_dso_suffix(TargetOS::Windows)) == ".dll");
+}
+
+TEST_CASE("module open: an unopenable spelling reports an error and NULL")
+{
+	std::string err;
+	void *h = madc_module_open("libmadc-no-such-module-xyz.so", err);
+	CHECK(h == nullptr);
+	CHECK(!err.empty());
+}
+
+// The row flags are module-map DATA the drivers act on: a GUI library lifts
+// an armed memory guard at run start (owner ruling 2026-09-07); the C runtime
+// rows carry no flag.
+TEST_CASE("module rows: the GUI flag")
+{
+	const MadcModuleSpec *web = madc_module_find("madcwebview");
+	REQUIRE(web);
+	CHECK((web->flags & MADC_MODULE_GUI) != 0);
+	CHECK((web->flags & MADC_MODULE_LAZY) != 0);	// optional: binds at first call
+	const MadcModuleSpec *c = madc_module_find("c");
+	REQUIRE(c);
+	CHECK((c->flags & MADC_MODULE_GUI) == 0);
+	const MadcModuleSpec *m = madc_module_find("m");
+	REQUIRE(m);
+	CHECK(m->flags == 0);
+}
+
+// The object loader reads SPELLINGS out of __madc_module_deps and asks which
+// carry row flags: the lookup by the target's spelling is the inverse of
+// madc_module_library_spelling for the rows, NULL for a bare library.
+TEST_CASE("module rows: lookup by the target spelling")
+{
+	const MadcModuleSpec *web = madc_module_find_spelled(
+		madc_module_library_spelling("madcwebview"));
+	REQUIRE(web);
+	CHECK(std::string(web->name) == "madcwebview");
+	const MadcModuleSpec *m = madc_module_find_spelled(madc_module_library_spelling("m"));
+	REQUIRE(m);
+	CHECK(std::string(m->name) == "m");
+	CHECK(!madc_module_find_spelled("libnosuchthing.so"));
+	CHECK(!madc_module_find_spelled(""));
+}

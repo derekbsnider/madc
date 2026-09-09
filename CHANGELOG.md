@@ -2,6 +2,726 @@
 
 ## [Unreleased]
 
+## [v0.99.2] — 2026-09-09
+
+The owner's hands-on round on the polished local IDE — the last polish before
+the master GUI release: output streams into the Terminal with no keystroke,
+Build → Run with no overlay, dialogs close cleanly, resizable panel and sidebar.
+
+### madcide GUI: the first hands-on round on the polished window (2026-09-08)
+
+- A program run from the window streams into the Terminal tab (and a build
+  into Output) WITHOUT a keystroke: the window's wait is now the cooperative
+  scheduler's bounded wait, as the terminal's always was — the engine fires
+  what is due, hands runnable tasks the CPU and wakes the application
+  between platform loops, and while tasks are parked it asks the host to end
+  its loop after a few milliseconds (`tick`, a one-shot UI-thread timer on
+  GTK, Cocoa and Win32). An idle window with no live task still blocks for
+  free. Before, the pumps only progressed when input arrived.
+- The Build menu carries every `^B` row as a direct item (Check, Build,
+  Run, Run native, Stop — the project's rows and a manifest's own commands
+  when one is open), so Build → Run runs with no overlay; `Build…` keeps the
+  palette for the keyboard, and Check lives in the command palette.
+- A chrome dialog's Close button closes it: the `@pane` cancel posted by
+  name reached the wrong dispatcher region and came back as an unknown
+  action.
+- Closing a dialog no longer leaves its title, rows and buttons inside the
+  bottom panel: the page re-uses a node's element when the tree shifts into
+  its position, and a kind change now clears the old kind's furniture first.
+- The bottom panel and the sidebar are resizable: drag the splitter over the
+  panel's top edge (or the sidebar's right edge); a double-click on the
+  panel's splitter maximizes it and back; sizes are remembered per window.
+
+### madcide GUI: the bottom panel with Problems and Output tabs (2026-09-08)
+
+- Editor tabs: the open buffers as a tab strip above the editor (the base
+  name, `*` while modified, the active one marked); a click switches to
+  that buffer. Commands take arguments now — a tab posts `bufsel` with the
+  buffer's index, the palette's Switch to Buffer… prompts for a name.
+- The Terminal tab: a console program runs on a real pseudo-terminal
+  inside the window with its keyboard — prompts flush, the line you type
+  goes to it (the tty echoes it), its exit status ends the screen; `^]`
+  hands the keyboard back to the editor and a click in an editor does too;
+  View → Terminal, and the Shell, open a shell on it. The project kind
+  routes Run: console → the Terminal, gui → its own window with Output.
+  Engine: the process owner's `pty` option, the `pty://` scheme, `?pty` on
+  the run schemes, `ui::term_feed` (a bounded terminal screen) and
+  `ui::key_bytes` (the inverse of the terminal's key parser).
+- Run works in the window: the program runs in a child (the live parse
+  forked — nothing execs) and its output streams into the Output tab,
+  ending with its exit status; the project Run and a manifest command in
+  terminal mode take the same route. Run used to be a silent no-op there;
+  a request the window cannot serve (the shell, until the Terminal tab) is
+  now said on the status line. Engine: the `madcrun://` and `madcproj://`
+  channel schemes; the process owner's `child_body` (fork through the one
+  spawn owner) and `exit_status`.
+- The window gains VS Code's bottom tool window in our palette: a panel,
+  optionally visible (View → Toggle Panel), with tabs — Problems (the
+  diagnostics rows; a click or Enter goes to the line) and Output (the
+  build stream, live or last). A check or a failed build surfaces Problems;
+  a build starting shows Output. The strip is data (a tab names the command
+  a click posts), so profiles may bind the same commands. The terminal is
+  unchanged. A click on any list row now picks it, as Enter does.
+
+### madcide: the list overlays as dialogs; Open Project…; the project kind (2026-09-08)
+
+- The Build, Project, Options, Modes and Help panes — bare popup lists in the
+  window until now (Build docked into the bottom panel) — are titled
+  DIALOGS in the quick-pick shape: a title bar, a filter field showing the
+  text the core holds, the rows as pick targets, and buttons named after
+  what the pane's keys do (Open / Run / Change / Select picks the selected
+  row; Close posts the pane's own cancel by name). A click on a row picks it
+  through the one focus owner — the same choose event Enter produces — so
+  every pane behaves as it does from the keyboard. The terminal is
+  unchanged.
+- File → Open Project…: the native open dialog (the prompt in a terminal)
+  loads a manifest through the one reader run_ide's startup uses and opens
+  the Project window on it.
+- The project KIND: a manifest's `"kind": "console" | "gui"` (absent =
+  console). `^T` Options gains a `Project kind` row that toggles and
+  persists it at once. A project build stamps the Windows executable's
+  subsystem from it (WINDOWS_GUI for gui — no console window at start);
+  the CLI spells the same for a single file as mingw-gcc does, `-mwindows`
+  / `-mconsole`. The PE release gate now reads the subsystem back against
+  the cross gcc's.
+
+### madcide GUI: the window shows the terminal's colour scheme (2026-09-08)
+
+- The GUI and the TUI highlighted the same source in two different colour
+  schemes: the terminal painted each span's JOE style spec from the loaded
+  `.theme` (`keyword bold`, `string cyan`) while the window styled the
+  span's semantic class from a private palette in `page.css`, so `^K T`
+  swapped the terminal's scheme and not the window's, and the `function`
+  class the default scheme leaves plain on purpose coloured in the window
+  only. One style now: the render style and its spec parser live in
+  `madcdis/ui_style.h` (out of `tui_model.h`), the DOM model renders the
+  SAME spec as classes (`st-bold`, `fg-cyan`, `bg-blue`) and the page keeps
+  only a sixteen-colour palette — bold-as-bright, as a terminal shows
+  `bold cyan` — each entry an `@gui` custom property (`pal-cyan`,
+  `pal-cyan-bright`). A class the scheme leaves unstyled is plain in both.
+  Gate: `scripts/check-one-style-vocabulary.sh` (the page carries no syntax
+  vocabulary of its own; one spec parser). Plan:
+  `docs/plans/2026-09-08-madcide-local-polish-for-master.md`.
+
+### madcide GUI: the native menu bar and file dialogs on macOS and Windows (2026-09-08)
+
+- The chrome the GTK window has had since S2/S4 now draws natively on the
+  other two platforms, behind the SAME `madcwebview_chrome` C API inside
+  `libmadcwebview`: on macOS the application's main menu (the bar at the top
+  of the screen — its application menu carries Quit as the window's own
+  close, the close button's path) and `NSOpenPanel` / `NSSavePanel` as a
+  sheet on the window; on Windows an `HMENU` bar (the client area re-lays
+  the webview) with `WM_COMMAND` read through a comctl32 subclass of the
+  library's window procedure, and `IFileOpenDialog` / `IFileSaveDialog`.
+  Open File… / Save As… therefore stop falling back to the prompts there;
+  nothing in the engine, the host fragment or the composed tree changed.
+- One reading of the key spelling serves all three arms: a control key
+  (`^s`) becomes the item's accelerator; a chord (`^k d`) or a bare key
+  (`pgdn`, a letter) is shown beside the title and never bound — bound, a
+  bare key would fire the command on every such keystroke typed into the
+  page (GTK previously bound them; no profile binds one to a menu command).
+
+### packaging: the platform webview library ships (2026-09-08)
+
+- `release-windows` / `release-<arch>-macos` build the library beside the
+  binaries, and the packagers stage it where the module loader looks:
+  `bin\madcwebview.dll` beside `madc.exe`, `lib/libmadcwebview.dylib` next
+  to `bin/madc`, `lib/libmadcwebview.so` in the Linux tarball and the
+  deb/rpm libdir — a WEAK dependency there (`Recommends` on the WebKitGTK
+  6.0 / GTK 4 runtimes; the rpm excludes the library's own requires), since
+  madc never loads it, only a program that imports it does. The
+  webview/webview MIT notice ships beside it; the READMEs gain a GUI
+  paragraph; the mac install gate checks the dylib is in the tarball.
+
+## [v0.99.1] — 2026-09-08
+
+The owner's first round with the v0.99.0 desktop application, answered: the
+prompts are dialogs (a quick input whose text the core owns; the quit
+question with Yes / No buttons), a click picks the window (the window-index
+tag on every window's edit node; a header press activates at no position),
+the status bar looks like chrome, and "(^C aborts)" is true. The terminal
+is byte-identical throughout.
+
+### madcide: "(^C aborts)" is true (2026-09-08)
+
+- Every text prompt promised "(^C aborts)" and ^C aborted nothing in any
+  profile: in JOE ^C is the bound `discard`, so it reached the prompt as an
+  ACTION the arm ignored; unbound, it reached it as the KEY `^c` no
+  `@prompt` line bound. A modal scope now consults an action event by the
+  sequence that completed, and the baked modal defaults carry
+  `@prompt ^c pcancel` — data, in every profile. `testidehints` pins ^C as
+  the action and as the key; `testmadcide`'s help pane counts the new line.
+
+### madcide: the status bar looks like chrome (2026-09-08)
+
+- The status bar, the window headers of a split and the message line render
+  in the proportional chrome font on their own surface: the file name leads,
+  labels are small captions, the modified / read-only badges are accent
+  pills, the pending chord a key cap, digits tabular; the ACTIVE window's
+  header carries the accent (the page marks it). Colours ride the `@gui`
+  theme (`sb-bg`, `sb-fg`, `sb-line`, `sb-label`, `sb-name`, `sb-active`,
+  `chrome-font`); the structure (S3's seats) and the terminal are unchanged.
+
+### madcide: a click picks the window (2026-09-08)
+
+- With two-plus windows, a press in another window's text activates it and
+  places the caret there, and a press on a window's header (its status
+  line) activates it with its caret kept — the owner's mouse-click switch
+  beside `^K N` / `^K P`. The ^K O split shows ONE document twice, so the
+  projected subject could not name the window; every window's edit node now
+  carries its window index as a `tag` hint, and the pointer event echoes the
+  hit node's tag as data (`tui_event::tag`, `{event:"pointer", …, tag}`).
+  A header press is a pointer with no text position (`line`/`col` omitted,
+  `offset` -1). `tests/gui/madcide_split.mad` drives both clicks in the
+  real page; `testidehints` pins the tags and the arm headless.
+
+### madcide: the prompts as dialogs in the window (S6, 2026-09-08)
+
+- Every bottom-line prompt (find, go to line, insert file, theme, tab width,
+  the colon line, the project add) floats in the window as a QUICK INPUT —
+  the label over a field showing the text the core holds, a caret, the keys
+  it answers to — and the quit question on a dirty buffer is a CONFIRM
+  dialog with Yes / No buttons. The composer stamps the data additively on
+  the same row the terminal shows (`popup`, `prompt {label, input}`,
+  `confirm {label, choices}`, `dismiss`); the terminal is unchanged. A
+  button, and a press outside the quick input, posts the scope's ACTION by
+  name (`pyes`, `pcancel`) — the menu-bar rule — and the prompt arms admit
+  an action the `@confirm` / `@prompt` scope binds (`scope_action_named`);
+  every other command mid-prompt behaves as before. `web_model` emits the
+  fields; the page renders `.quickinput` / `.confirm`. Pinned by
+  `tests/testidehints.mad`, the web_model unit battery and
+  `tests/gui/madcide_prompt.mad`.
+
+## [v0.99.0] — 2026-09-08
+
+madcide is a desktop application: the GUI chrome milestone (S0–S5) — a
+native menu bar from one command/menu data file, native file dialogs, a
+status bar of discrete items, the JOE split as a window stack, mouse caret
+and selection, the incremental web editor, event enums — plus five carrier
+fixes found on the way.
+
+### A `var &` in a `%s` position coerces like a `var` (2026-09-08)
+
+- `void f(var &v) { printf("%s\n", v); }` crashed MIR ("wrong type memory")
+  where the same call with `var v` printed the text, and a local `var &r`
+  failed the same way: two of the CIR builder's carrier-lvalue admissions
+  knew the carrier but not a reference to it (the class-object gate admitted
+  only user-class referents; the c_str coercion admitted only the bare
+  carrier type). Both now read the reference-aware carrier reader. Found by
+  the pre-merge duplication audit of that admission family (five sites
+  answering one question — recorded in the knowledge graph for
+  consolidation with a gate). `tests/testvarrefcoerce.mad` pins a reference
+  parameter, a local reference and a reference to a keyed slot in `%s`
+  positions.
+
+### madcide: native file dialogs (S4, 2026-09-08)
+
+- Open File and Save As become a request / response VERB. A client that can
+  show native dialogs pushes the fact; the session then parks a `filedialog`
+  request (mode, title, initial path) in the one request slot the client
+  services, `ui::dialog` shows it through the host's new optional `dialog`
+  op — `madcwebview_dialog_open` / `_save` in madc's chrome extension of the
+  webview library, a `GtkFileDialog` on GTK 4.10+ answering asynchronously
+  inside the platform loop — and the answer returns as a `dialog` event
+  (`ui::event_kind::dialog`: `mode`, `path`, `""` = cancelled) the dispatcher
+  applies: open edits the chosen file, save writes the buffer under the new
+  path and moves its buffer row. `saveas` joins the command registry and the
+  File menu. Without the fact (the terminal, a headless session) both keep
+  JOE's prompts unchanged; a platform without a native dialog yet (Win32,
+  Cocoa) falls back to the same prompts. The extension source is now
+  `src/madcwebview_chrome.{h,cc}` (menu bar + dialogs).
+- `tests/testidedialog.mad` pins the verb end to end headless (park, answer,
+  save-as, cancel, fallback); `testuihostfake` pins the seam (`dialogs`,
+  `dialog`, the answer event).
+
+### madcide: the status bar is chrome (S3, 2026-09-08)
+
+- The window's status bar was the terminal's two half-strings side by side.
+  The JOE format expansion now also yields its SEGMENTS — one `{seat, label,
+  text}` per format seat that showed text (`%n` the file, `%r`/`%c` with
+  their `Row`/`Col` labels, `%m` the modified badge, `%R` read-only, `%M` the
+  vi mode, `%k` the pending chord, `%x` the enclosing function) — on the
+  status node's `items` hint, and the page lays them as discrete items with
+  semantic classes (`.sb-seat.sb-<letter>`; the badges in the accent, the mode
+  bold, the chord as a key cap, all `@gui`-themeable). One expansion, two
+  renderings: the terminal still shows the combined string.
+- `tests/testidestatus.mad` pins the segments (the name seat, Row/Col with
+  labels, the chord and modified seats lighting); `test_web_model` pins the
+  emitted arrays.
+
+### madcide: a native menu bar (S2, 2026-09-08)
+
+- The window draws the S1 menu data as real application chrome. The engine
+  resolves each command's bound chord from the installed key profile and
+  hands the host the menu as JSON only when a title, key or enablement
+  changed; a new optional host op `menu(host, json)` receives it (append-only
+  table, the fake host proves the seam). The host walks the menu into madc's
+  extension of the webview library — `madcwebview_menu_begin/add/separator/
+  end`, JSON-free, declared in the embedded `webview.h` beside upstream's API
+  (the header generator appends `src/madcwebview_menu.h`) and implemented in
+  `libmadcwebview` — which on GTK4 builds a `GtkPopoverMenuBar` over a
+  `GMenu`, re-parents the webview beneath it, and binds each item to an action
+  (a single-key chord is the accelerator, a multi-key chord shows in the
+  label). A selection posts `{"kind":"action","action":id}` through the
+  host's one door, the same action event a chord produces, so the session
+  dispatches it unchanged. Win32 / Cocoa answer "unsupported" for now.
+- `tests/gui/madcide_menu.mad` fires an item through the platform action
+  (`ui_web::menu_activate`) and sees the help pane open; `test_web_model` pins
+  the menu JSON, chord resolution, the change dedupe and the action input;
+  `testuihostfake` pins the host op and the dedupe display-free.
+
+### `c ? v : php::trim(p)` is a value (2026-09-08)
+
+- A conditional mixing a `var` with a scalar or a char pointer — a
+  function's `const char*` result, a string literal, a number, an int against
+  a keyed slot (`x.is_null() ? 1 : x`) — failed the c2mir check ("lvalue
+  required as unary & operand"), and with the char pointer on the left it
+  typed as `char*`. C++ [expr.cond]/4 applies: the class arm wins the
+  implicit conversion and the conditional is a value prvalue. The parser now
+  types it as the carrier when the other arm binds one of the carrier's
+  `operator=` rows, and the lowering materializes a temporary the SELECTED
+  arm assigns through that row — the other arm is never evaluated, exactly as
+  in C++. Two `var` lvalues keep the lvalue conditional.
+  `tests/testvarternary.mad` pins every shape against a `std::string` oracle
+  (g++ and clang++ agree).
+
+### madcide: menus and commands are data (S1, 2026-09-08)
+
+- The GUI chrome spine: `tools/madcide/profiles/default.menu` is the ONE
+  command / menu description (the VS Code contribution shape — a command
+  registry plus a menu-location map — on the one action vocabulary the key
+  profiles bind and the dispatcher understands). One line per item,
+  `MENU COMMAND TITLE… [WHEN]`; `[WHEN]` names the live context that enables
+  the item (`editable`, `dirty`, `selection`, `split`, `buffers`, `project`,
+  `building`, `modal`, `viewing`; `!` and `&&`). The session loads it beside
+  the theme and the status format, judges every item's clause at compose,
+  and carries the bar on the root's `menu` hint — ids, titles and enablement
+  only, no key spellings (a renderer shows the LOADED profile's chord), so
+  the composed tree stays profile-independent and the terminal, which reads
+  no root hints, is unchanged. The menu named `palette` titles the commands
+  the bar does not carry.
+- `scripts/check-madcide-command-registry.sh` (fulltest) keeps the profiles,
+  the dispatcher's action arm and the menu data on one vocabulary in all
+  three directions, with negative controls. `tests/testidemenu.mad` pins
+  the load, the composed bar, the `[when]` evaluation and the grammar.
+
+### The web workbench stacks a region's nodes; the ^K O split renders as windows (2026-09-08)
+
+- Owner (2026-09-08, `madcide --gui`): the JOE split "doesn't seem to work so
+  well" — the inactive window's status line and text landed beside the editor
+  in a narrow column. Two causes, one layer each. The composer stamped no
+  workbench placement on the inactive windows (or on the split's message
+  line), so CSS grid auto-placement dropped them into the empty rail cell;
+  and the page docked region'd nodes as direct grid children, so two nodes in
+  one region overlapped (a latent panel defect). Now the composer docks every
+  window's status line and edit node into the editor region while split (the
+  JOE shape: one status line heading each window; the single window's status
+  keeps the status bar), and the page places SLOTS — one per region, created
+  on demand — stacking a region's nodes in tree order; a child with no region
+  flows to a `foot` slot under the status bar. An inactive window's `rows`
+  hint (the terminal's own budget) becomes its fixed height; the active
+  window flexes and carries the accent; the terminal composition is
+  unchanged (testmadcide's shape clauses pin it).
+- `tests/testidehints.mad` pins the split's hints; `tests/gui/madcide_split.mad`
+  measures the live layout under Xvfb (stack order, fixed heights, the
+  foot, the empty status bar, and the return to one window).
+
+### The ui event vocabularies are enums the dialect compares against (2026-09-08)
+
+- Owner (2026-09-07): editor code compared key names and event kinds as
+  strings (`k == "down"`, `kind == "key"`) — a typo is a silent miss, where a
+  misspelt enumerator is a compile error. The three vocabularies — `ui::key`,
+  `ui::event_kind`, `ui::pointer_phase` — now live once, in
+  `include/madc/bits/ui_enums` (plain C++11, no includes), which the engine
+  headers include and alias (`tui_key`, `tui_event_kind`, `pointer_phase` are
+  unchanged names) and `<ns_ui>` includes for scripts. Every event object
+  carries the values beside the names (`event_code`, `key_code`,
+  `phase_code`); `ui::key_code(name)` maps a key spelling to its enumerator.
+  The editor core, vised and madcide compare kinds, named keys and phases
+  against the enums; chord spellings (`"^s"`) and action names stay strings
+  (they are bindings-table data). The dialect-lean gate gains the one include
+  a fragment may carry — a sibling `bits/` fragment — with a positive control;
+  the rule text says so.
+- `tests/testuienums.mad` pins the surface; the editor tests build their
+  events with the codes, as `ui::event` does.
+
+### `6 == v` and `v == E::z` compare by value (2026-09-08)
+
+- Two more carrier-equality shapes answered false silently. A number on the
+  LEFT (`6 == v`) never reached the carrier's member rows; the CIR builder now
+  applies C++20's rewritten reversed candidate for `==` and `!=`. A SCOPED
+  enumerator on the right tied between the `const char*` row and the integer
+  row because pointer types count as numeric in the ranker, and the
+  first-registered pointer row won (the enumerator went in as a pointer); the
+  ranker no longer lets an enumerator bind a pointer parameter (C++ has no such
+  conversion). The dialect thus compares a `var` against any enumerator by its
+  value — the surface the ui event enums need — a documented divergence from
+  C++'s scoped-enum rules, like the strict-kind number rule.
+  `tests/testvareqenum.mad` pins both shapes plus strict kind.
+
+### `var &r = o["h"]` binds the live slot (2026-09-08)
+
+- A local reference bound to a carrier subscript crashed on first use: the
+  CIR builder's address-of arm treated every carrier-typed operand as storage
+  that decays to its address, which is right for a carrier variable or member
+  but wrong for a subscript (a value lvalue — a dereference of the slot
+  pointer); dropping the address bound the reference to the slot's first word
+  (c2mir warned "assigning integer without cast to pointer", then SIGSEGV in
+  `madarray_key_slot`). The arm now decides by the translation's shape: a
+  dereference keeps its address (the slot pointer, as a `var &` PARAMETER
+  already bound it), storage still decays. `tests/testvarrefslot.mad` pins
+  object-slot, whole-carrier, scalar-slot, indexed-slot and parameter forms
+  against the g++/clang++ std::map analogue.
+
+### Web target: a remote X display paints — GTK's cairo renderer by default there (2026-09-08)
+
+- **S0 (window resize leaves the exposed region black) reproduced and traced
+  from the container.** A screenshot harness (Xvfb + `xdotool windowsize` +
+  `xwd`, a band classifier over the root dump) showed: over the unix socket
+  the grown band paints, with and without the owner's software-GL flags; over
+  a TCP X connection (the owner's shape — Docker to a Windows X server, so no
+  MIT-SHM) the WHOLE window is black while the page reports the grown
+  geometry, with Mesa logging "Failed to attach to x11 shm"; `GSK_RENDERER=
+  cairo` (or `GDK_DEBUG=gl-disable`) paints everything, grown band included;
+  the software-GL flags and `WEBKIT_DISABLE_DMABUF_RENDERER` do not help. The
+  failing layer is GTK4's GL renderer presenting frames over SHM, not WebKit
+  or the page.
+- The web target fragment now defaults `GSK_RENDERER=cairo` before GTK
+  initializes when `DISPLAY` names a host and no renderer was chosen; local
+  displays keep GTK's default; an explicit `GSK_RENDERER` always wins.
+  Documented in the ns-ui workbench section, with the trap found on the way: a
+  RELATIVE `LD_LIBRARY_PATH=lib` breaks WebKit's sandboxed web-process launch
+  (exit 133) — absolute or none. `x11-apps` and `xdotool` join the container
+  provisioning so a probe can screenshot and resize windows headlessly.
+
+### Web editor: the mouse places the caret and selects (2026-09-07)
+
+- **A click places the caret; a drag selects.** Until now the web editor's
+  mouse did nothing but refocus the hidden input, so after wheel-scrolling
+  there was no way to edit where you had scrolled to (owner, live check).
+  The chain, deepest layer first: `tui_event_kind::pointer` (`offset`,
+  `phase` down/drag/up, `subject`) joins the ONE semantic-event vocabulary;
+  `web_model::apply_input` accepts `{"kind":"pointer","phase","key","line",
+  "col"}` — the page's hit test as a line index and UTF-16 column — and
+  resolves it to a BYTE offset over the rows it emitted for that node (its
+  diff basis, extended to carry the node's focus slot and subject), focuses
+  the node, and yields one pointer event carrying the node's `subject`;
+  `ui::event` shapes it as `{event:"pointer", phase, offset, subject}`; the
+  page's pointer handlers (`mousedown`/`mousemove`/`mouseup` on `.edit`,
+  `caretPositionFromPoint` / `caretRangeFromPoint`, native selection
+  suppressed, drag posts only when the position changes, a drag past the
+  edge creeps the view a line) know geometry and nothing about the
+  document. The shared editor core gains `edit_pointer` — ONE caret model for
+  mouse and keyboard: a press places the caret and drops the selection, a
+  drag lights [press, here] through the SAME mark (plus the end under the
+  two-point personality, so the block ops see it), a release ends the
+  gesture; vised and madcide route the event to it. `compose_edit_node` now
+  sets the edit node's `subject` (the document — uinode's documented edit
+  contract), and madcide's arm uses it: a press in another window's edit
+  node activates that window first (`window_showing`, the active window's
+  buffer read live as the composer reads it). Views keep the gesture to the
+  caret, as their mark/bend actions refuse.
+- Tests: `test_web_model` (offset resolution incl. UTF-16 → byte columns,
+  clamping, malformed input, focus-follows-press), `testuihostfake` (a
+  pointer post through the display-free host → the shaped event with its
+  subject), `testvised` and `testmadcide` (the editor arm: press / drag /
+  release / re-press, the two-point ends, the window switch by subject),
+  and `tests/gui/ui_web_pointer.mad` (real MouseEvents through the real
+  handlers and hit test under Xvfb: press, drag-select, release, past a
+  line's end, below the last line, after a two-byte character).
+- **Fix found on the way**: the page used the engine's BYTE columns as
+  string indices, so after a multi-byte character the caret, selection and
+  spans drew one cell late (two after an emoji) — a silent misdraw that the
+  mouse would have surfaced as "the caret lands on the wrong letter". The
+  page now converts byte columns to string indices once per rendered line
+  (`unitsOf`, the inverse of the engine's `web_byte_col`); the wire stays
+  bytes. The GUI test's last line is `héab` so the misdraw is visible
+  (caret on `a`, not `b`; a drag lights `éa`, not `éab`).
+- Not here: a click on a `choice` option (select + choose), double-click
+  word selection, shift-click extension, and the TUI twin (xterm SGR mouse
+  reporting through the term target) — the event shape is ready for all of
+  them.
+
+### Web editor: per-keystroke cost proportional to the change (2026-09-07)
+
+- **Measured first, on the real file** (madcide_core.inc, 4557 lines, 4841
+  spans, dev build): a keystroke at mid-document cost ~840 ms — and the
+  handoff's diagnosis (the web renderer) was not the largest term.
+  `text_buffer::line_span` rescanned the piece table per call and the editor's
+  `line_of` walked it once per line, three times per composed keystroke and
+  once per caret motion: compose 433 ms + motion 135 ms, on BOTH targets.
+  text_buffer now keeps a lazily rebuilt newline index (`line_count` /
+  `line_span` O(1), new `line_of` O(log n)); `ui::text_line_of` is the
+  caret-line lookup as one engine call, and the editor's `line_of` is that
+  call. Compose 433 → 35 ms, motion 135 → 0.05 ms, the parse's span
+  conversion 1576 → 413 ms.
+- `web_model::edit_lines` clipped every span against every line (22M
+  comparisons, 140 ms): rows are start-sorted once and swept with an active
+  set. Render 165 → 55 ms, identical line-DOM.
+- **Bug**: `shift_hspans` rebuilt every span row as `{s, e, c}` on each edit,
+  dropping the semantic `cls` slice 3.1 added — the web lost all syntax
+  colour on the first keystroke until the next reparse. It now copies the row
+  and moves only its geometry (reducer `tests/testidespanshift.mad`).
+- **The editor line-DOM is incremental.** web_model keeps the rows it last
+  emitted per edit key (its diff basis, as tui_model keeps the painted grid)
+  and each compose sends ONE splice `{at, del, ins}` — nothing for a caret
+  move; full `lines` only on a key's first paint, after `ui::refresh` (now
+  honoured by the DOM frontend) or after the page's `resync`. `nlines` rides
+  every edit op; the page holds its rows and the caret/selection it drew,
+  splices in place, re-renders only lines whose caret/selection state
+  changed, and posts `{"kind":"resync"}` when its count disagrees (heals the
+  platform dropping the first render before the page loaded). The caret is
+  scrolled into view only when it moved. Native scrolling untouched; the
+  whole document stays in the DOM. Nav render 55 → 10 ms, wire 296 KB →
+  ~700 B. Shape from CodeMirror 6 / Monaco / Ace (in-process) and Neovim's
+  `grid_line` / xi-editor's line cache (thin client) — madc is the latter.
+- The page placed every existing node with `appendChild` each cycle; on the
+  attached editor that is a 100 ms subtree rebuild in WebKit. A node is now
+  placed only when it is not already in its slot. Page apply + layout per
+  keystroke 105 → 4 ms (full paint 125 ms once). `content-visibility: auto`
+  per line was tried and made it five times slower on WebKitGTK 2.52 —
+  reverted, noted.
+- `compose_ide_tree` wrote the edit node's hints through three
+  read-modify-write passes (six deep copies of the span rows); now one read
+  and one write-back. Compose 33 → 23 ms, tree byte-identical.
+- New tests: `test_text_buffer` (line index lockstep vs a string oracle,
+  `line_of` incl. the phantom line), `test_web_model` (the span sweep; the
+  incremental protocol: full/unchanged/caret/edit/Enter/append/delete/moved
+  key/resync/reset), `testuitext` (`text_line_of`), `testidespanshift`, and
+  `tests/gui/ui_web_patch.mad` (the real page under Xvfb through navigation,
+  typing, Enter, Backspace and a forced desync).
+- Recorded, not fixed here (KG Gaps): a local `var &r = o["h"]` reference to
+  a carrier slot lowers its initializer as an integer and crashes (by-ref
+  PARAMETERS work); dialect code compares key names / event kinds as strings
+  because `ui::event` converts the engine's enums to names at the boundary;
+  the carrier's deep-copy cost (~23 ms of compose) is a copy-on-write
+  decision for the owner.
+
+### `madc --capabilities=json` — machine-readable capability manifest (2026-09-07)
+
+- A source-free `madc --capabilities=json` prints a versioned JSON manifest of
+  what the build accepts and produces: compiler version/target, the accepted
+  `--std=` C and C++ standards, project-mode support, execution and
+  native-output modes, CIR emit targets, introspection surfaces, and the
+  `libmadc` / C API boundary. It runs before any `madc.ini` lookup, like
+  `--version`, so tooling can query the compiler with nothing but the binary; a
+  cross artifact reports `emit-only` and `jit: false`. Shape from contributor
+  uhhidk's PR #7, reworked to the repo's rules.
+- Built with the in-tree `nlohmann::json` (`.dump(2)`), not hand-rolled
+  escaping (rule #4). The standards and emit-target lists are DERIVED, not
+  re-typed (rule #7): the `--std=` recognizer was refactored onto ONE canonical
+  table with source-free accessors (`Program::supported_c_standard_names()` /
+  `supported_cpp_standard_names()`), and emit targets split from
+  `CIR_EMIT_TARGETS` — so the manifest can never advertise a standard the
+  compiler rejects. It regains `c95`, which the original hand-kept list dropped.
+- Gate `capabilities_json_gate.sh` (fulltest) asserts schema 1, that every
+  advertised standard is accepted by `--std=` (and every alias/dialect the
+  manifest omits is still accepted, never leaked), that `emit_targets` equals
+  the `CIR_EMIT_TARGETS` macro, and that an unknown format is rejected — with a
+  built-in negative control (a bogus `--std=` must be refused).
+
+### `src/embedded_headers.cpp` generates into `obj/` for every mode (2026-09-07)
+
+- The tracked generated table had repeatedly drifted. Every build mode (host,
+  darwin, win) now generates the real table into
+  `obj/<mode>/embedded_headers.cpp` at Makefile parse time; the committed
+  `src/embedded_headers.cpp` is a `#error` stub, kept a stub by
+  `check-embedded-headers-stub.sh` (fulltest, two-way negative control). The
+  migration exposed the host+PIC (`libmadc.so`) path as the laggard — the
+  `#error` stub caught it loudly. Drift is now structurally impossible: the real
+  artifact lives only in gitignored `obj/`.
+
+### madcide slice 3.1 — live-window fixes + dialect-literals rule (2026-09-07)
+
+- Two web-target (`--gui`) live-window fixes the owner found: syntax colour now
+  flows to the window (`spans_to_hspans` stamps the semantic class on every
+  classified span; each renderer maps it in its own vocabulary, themeable via
+  `@gui`; functions colour on the web where they were bare), and the caret
+  scrolls into view on keyboard navigation past the fold.
+- New dialect-literals rule + `check-dialect-literals.sh` gate: dialect
+  production code (`tools/`) builds objects with literals (`var x = { "k": v }`)
+  rather than a bare `var x;` filled field-by-field; imperative key-assign stays
+  for mutation, computed keys, and integer indices. 30 `tools/` sites converted.
+
+### madcide GUI mode — the web target's first customer (slice 3, 2026-09-07)
+
+- `madc tools/madcide/madcide.mad <file> --gui` opens madcide in a window
+  through the Level-3 web target. ONE client loop and ONE composer serve
+  both the terminal and the window; the target is a flag (`--gui`, else the
+  terminal). A machine without the webview library refuses at open with the
+  reason (the lazy module row).
+- The composer stamps additive LAYOUT HINTS the terminal ignores and the
+  window honours: `region` (rail / sidebar / editor / panel / statusbar),
+  `tabs` (the editor tab-strip marker), `popup` (floating palettes and
+  dialogs). `web_model` emits them as DOM-op fields and the page lays a
+  workbench grid; a popup floats as an overlay. The terminal composition is
+  byte-identical (the hints are keys `tui_model` never reads).
+- The status bar renders as discrete left/right items in the window (the
+  same expanded JOE seats the terminal shows as one string). `@gui` theme
+  sections in `profiles/*.theme` become CSS custom properties (bg / fg /
+  accent / font) through the ONE `@scope` rule the key tables use
+  (`scope_line_parts`, shared by `parse_keys` and `load_theme`). While a
+  build streams, its output docks as a panel region (the VS Code Output
+  shape); interactive Run and the shell still use the terminal until the
+  embedded terminal lands.
+- Gates: the headless `testmadcide` composition clauses pass unchanged (one
+  composer), `check-madcide-seam.sh` holds (the session touches no handle),
+  and the GUI stage runs `tests/gui/madcide_{workbench,theme,render}.mad`
+  under Xvfb in JIT, exe and obj. New reducers: `testidehints`,
+  `testidetheme`, `testidestatus`, `testidepanel`; a `hint_str` string-hint
+  reader beside `hint_of`.
+
+### Web target — the engine half (slice 2, 2026-09-07)
+
+- **`ui::open(target)`** — the target-generic session surface: `"term"` is
+  the grid frontend (the `tui_*` names are its spellings over the same
+  handles) and `ui_web::target()` the WEB target: the same value tree in a
+  window through the platform webview, the same semantic events back. The
+  loop, the event objects and keybinding profiles are one vocabulary on
+  every target (`docs/language/ns-ui.md`).
+- **One input owner set, shared by both models**: the chord/key owner
+  `key_resolver` (`madcdis/keys.h`), the focus/navigation owner `focus_state`
+  (`madcdis/ui_focus.h`), the keys → events loop `ui_apply_keys`
+  (`madcdis/ui_input.h`) and the event vocabulary (`madcdis/ui_events.h`)
+  leave `tui_model`; `web_model` (`madcdis/web_model.h`) composes keyed DOM
+  operations through the repo's one JSON owner and turns page input into
+  the TUI's events through the same owners. Gate `check-one-key-owner.sh`.
+- **Script-hosted targets**: `ui::register_host` / `ui::post_event` — a
+  fragment registers a typed table of C callbacks (open / close / eval /
+  run); `<ns_ui_web>` is the web host over the typed `madcwebview`
+  interface with ONE embedded page (`ui_web/page.js` applier + input relay,
+  `page.css`); `ui::eval_page` is the test seam (`snapshot` events).
+  `tests/testuihostfake.mad` proves the seam without a display in every
+  lane; `tests/gui/ui_web_hello.mad` and `ui_web_edit.mad` drive a real
+  window under Xvfb (JIT, exe, `.o`). `vised.mad <file> --web` edits in a
+  window.
+- **Compiler fixes found on the way**: the auto-include scan's
+  declaration-head guard no longer treats `const` / `static` / `extern` as
+  declaring the next word (`const string s`, `static ui::ui_host_ops o`
+  pull their header; a word the TU declares stays excluded); `static
+  ns::T x` resolves through the declared-type resolver; a namespace-
+  qualified type is a C-style cast target (`(ns::S *)v`); a dialect
+  fragment's own `println` / `stderr` mentions pull the intrinsic and C-
+  header providers — resolved to closure BEFORE tokenizing and placed by
+  the one order table (lex order stays parse order; `namespace X {` is a
+  definition, never a pull; a sibling namespace fragment is pulled only by
+  a qualified `X::` use). Reducers `testautoincludedeclhead`,
+  `teststaticqualtype`, `testcastqualtype`; `testautoincludens` and
+  `testnsmadcorder` pin the order rule.
+
+### Resource guards default off (owner ruling 2026-09-07)
+
+- madc arms NO guard by default. `MADC_MEM_LIMIT` / `MADC_CPU_LIMIT` and
+  the `madc.ini` keys `mem-limit` / `cpu-limit` read `off` | `auto` | `<N>`
+  through one knob parser (`src/madc_guards.cpp`); `auto` = 4096 MB + 128
+  MB per `--project` TU for memory and off for CPU; the test runner exports
+  `auto` for every test process (a new generic `tests/<base>.env` fixture
+  lets one test say otherwise). An armed memory guard is a SOFT limit that
+  a program importing a GUI module row (`madcwebview`, flag
+  `MADC_MODULE_GUI`) lifts at run start — in the JIT, `--project` and `.o`
+  lanes alike; the GUI stage needs no memory override.
+- The `madc.ini` guard keys are validated on BOTH config readers: the
+  CLI's lookup (`config_load`) shares `check_guard_keys` with the
+  explicit-file reader, so `mem-limit = 8G` refuses with its reason
+  everywhere (`forest_config_gate` [bad-int] caught the one-reader gap).
+
+### Objects carry their module list; lazy module rows
+
+- A relocatable `.o` from a TU with module-form `import`s records the
+  target spellings in `__madc_module_deps`; `madc file.o` opens them before
+  load (`MIR_object_section_bytes` joins the in-tree MIR object API). Gate
+  `check-object-module-deps.sh`; the GUI stage runs its `.o` lane.
+- Lazy rows (`MADC_MODULE_LAZY` on `madcwebview`): the interface form binds
+  nothing at parse and links nothing; functions are typed first-call slots;
+  `madc::module_available(name)` answers whether the library exists, and the
+  web target refuses at `open` with the reason instead of failing at parse.
+
+### Platform webview library (slice 2 build half, 2026-09-07)
+
+- Optional `madcwebview` platform library: webview/webview 0.12.0 as a MIT
+  subtree, generated typed C interface through `import madcwebview`, and Make
+  targets for WebKitGTK 6.0, Windows/UCRT WebView2, and both Darwin arches
+  (library deployment target 13.3). The bounded `remote_build.sh gui` stage
+  checks DOM callbacks and shutdown in JIT/native execution under Xvfb.
+- Remote build stages follow their invoking worktree, preserve remote host
+  configuration, and support explicit local/remote checkout roots.
+- Fixed upstream webview GTK window sizing reporting an invalid-argument
+  error after a successful resize; all four size hints have GUI coverage.
+
+### Development dependencies
+
+- Provision WebKitGTK 6.0 development files, Xvfb and xauth for platform-webview
+  probes; `provision_container.sh --check` verifies the binaries and pkg-config
+  metadata. No web provider or vendored library is added in this slice.
+
+### `import` — the module binding (slice 0 of the web-target arc, 2026-09-06)
+
+- **`import name [as ns];` binds a module — its interface AND its library —
+  with no platform spelling in the source, on the JIT and in native
+  artifacts** (`docs/language/import.md`). C++20's `import` made whole: the
+  standard leaves *which library* to the build system; madc's module map
+  answers it. `import m;` tokenizes `<math.h>` then binds libm; `import c as
+  libc;` binds the C runtime under a namespace whose members resolve by name
+  at first call; `import <stdio.h>;` / `import "h";` are the header-unit
+  spellings (served as the include). Available in the madc dialect and
+  `--std=c++20` and later; recognized ONLY in directive position (the first
+  token of a logical line followed by a module name, `<` or `"`), so `int
+  import = 3;` keeps compiling everywhere.
+- **One platform-spelling owner** (`src/madc_modules.cpp`): a module row
+  names the real runtime image per target OS (`c` / `m` → `libc.so.6` /
+  `libm.so.6`, `libSystem.B.dylib`, `ucrtbase.dll`); a bare name follows the
+  linker's rule (`lib<name>.so` / `.dylib` / `<name>.dll`); paths and
+  already-spelled names pass verbatim. `-l<name>` resolves through it too —
+  which fixes `-l` spelling `lib<name>.so` on the win64 target (the host
+  macro `MADC_DSO_SUFFIX` had no `.dll` arm). `TargetOS` gains `Darwin`.
+- **Alias-form members lower to a runtime-resolved indirect call in EVERY
+  lane** — `((long (*)())(slot ? slot : (slot = __madc_dl_member(LIB,
+  MEMBER))))(args)`, the dlcall shape — replacing the JIT-only
+  `__dl_<ns>_<member>` import thunks: `tests/testdlopen` passes natively for
+  the first time (its `exe_skip` is gone). Module-form libraries join the
+  native link closure once each (DT_NEEDED / Mach-O load command / PE
+  import), in the single-TU and `--project` lanes.
+- `#load "<file>" as ns;` stays as the low-level directive underneath the
+  alias form (owner ruling: like `#pragma`, for tooling and fixtures — you
+  spell the file, you own the platform); it is sugar over the same binder.
+- **Every route to an alias-form member goes through ONE lookup owner**
+  (2026-09-07, found by the webview spike): a module-bound namespace's
+  members are the library's exports, materialized on first lookup inside
+  `find_namespace_member` (`Program::resolve_module_member`). A
+  STATEMENT-position call (`libc::puts("x");`) used to slip past the two
+  qualified sites that carried the fallback, register a bare `puts` through
+  the unqualified dlsym fallback, run on the JIT by accident (`RTLD_GLOBAL`)
+  and fail to link natively; a cast operand (`(long long)libc::abs(-7)`)
+  reported "not a member". Both, and `::libc::abs`, now lower like every
+  other member call. Gate: `scripts/check-one-module-member-owner.sh`.
+
+### Language linkage
+
+- **`extern "C"` inside a namespace keeps the C name** ([dcl.link]/6,
+  2026-09-07): `namespace sys { extern "C" int puts(const char *); }` +
+  `sys::puts(...)` binds libc's `puts`, and a body declared that way is
+  defined under its unqualified name — the namespace-scoped registration
+  key (`__ns_sys_puts`) no longer leaks into the emitted symbol (MIR: "import
+  of undefined item"). The fact is frozen into the header pack
+  (`DF_FUNC_C_LINKAGE`, forest format v45), where `std::__once_proxy`,
+  `__gnu_cxx::wcstold` and the `__cxxabiv1` block have this shape.
+  Reducer `tests/testnsexternc`.
+  `--no-auto-load` applies to both.
+- The merge-wave `/dupaudit` folded the family's two remaining sites into
+  the owner: the host macro `MADC_DSO_SUFFIX` is deleted (a Windows-hosted or
+  cross madc named a `-shared` output `.so`; the artifact now takes the
+  TARGET's suffix), and the native cover analysis / Mach-O load list read
+  `madc_spelled_library_p`. The Windows default-scope DLL walk (the JIT's
+  symbol walk, the native cover set and the PE import order) is ONE list in
+  the dl seam — the two copies had drifted on `ws2_32.dll`, so Winsock names
+  the PE writer attributed were unresolvable under the JIT. Gate:
+  `scripts/check-one-library-spelling.sh` (fulltest, negative controls).
+- Reducers: `tests/testimport.mad` (alias form, value-first, all lanes),
+  `tests/testimportiface.mad` (`--std=c++20`, interface form: `M_PI` proves
+  the interface arrived, `sqrt` the library), `tests/testimportiface_neg.mad`
+  (negative control), `tests/testnoautoload.mad` migrated to `import m;`;
+  `tests/unit/test_modules.cpp` pins the spelling rule per OS.
+
 ## [v0.98.0] — 2026-09-06
 
 madc on macOS end to end — native builds, the full suite running on both Mac architectures (202 arm64 failures → the last root closed), and the C++ front-end wave the mac runners drove (templates, classes, namespaces, the Itanium class-call ABI) — plus the MIR aarch64 backend at x86-64 parity (128-bit SIMD, the AAPCS64/Apple ABI, a vector calling convention gated against the platform compilers), the libc++ `<list>` completion fix and the stdlib-flavor boundary, and the packaged install shape (thin CLI + shared libmadc, six CI-built release assets).

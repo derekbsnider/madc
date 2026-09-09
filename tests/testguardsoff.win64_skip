@@ -1,0 +1,1 @@
+RLIMIT_AS is a POSIX guard (madc arms none on Windows anyway); a 6 GB reservation touched per GB faults under wine64

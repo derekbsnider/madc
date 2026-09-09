@@ -1,0 +1,10 @@
+// Negative control for testimportiface: without `import m;` (and no
+// #include <math.h>) M_PI is an undeclared identifier under --std=c++20.
+// Pins that the interface-form import is what supplies the declarations.
+import <stdio.h>;
+
+int main()
+{
+    printf("pi=%.5f\n", M_PI);
+    return 0;
+}

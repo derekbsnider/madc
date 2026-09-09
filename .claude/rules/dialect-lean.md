@@ -13,7 +13,9 @@
   madc builtins and the polyglot namespaces — never on std:: machinery
   in the always-served prelude.
 - Embedded dialect fragments (`include/madc/ns_*` extensionless,
-  `include/madc/bits/*`) carry ZERO includes. std::string-typed interop
+  `include/madc/bits/*`) carry ZERO system includes; the one include a
+  fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`:
+  one enum text for the engine and the dialect). std::string-typed interop
   conveniences are declared only inside
   `#if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)`
   (the stdlib's own guards — the `<ns_madc>` convention).
@@ -29,6 +31,7 @@
   subscript SLOT model is the precedent).
 - Gate: `scripts/check-dialect-lean.sh` (in fulltest) fails the build on
   a C++ system include or an unguarded std::string in any dialect
-  fragment; it carries its own negative control.
+  fragment; it carries its own negative control and a positive control
+  for the `<bits/...>` sibling include.
 
 See `docs/rules/dialect-lean.md` for the reasoning.

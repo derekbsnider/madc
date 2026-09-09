@@ -1,0 +1,89 @@
+// Slice 3 (madcide GUI) Task 3: the workbench layout in the window. A
+// hand-made IDE-shaped tree carries the region hints Task 1 stamps and
+// Task 2 emits — a status bar, an editor, a docked sidebar, and a floating
+// popup. The page docks each region into its grid slot and floats the
+// popup; the probe reads the DOM back to confirm the workbench class and
+// each node's data-region landed. Runs under Xvfb through remote_build gui.
+void region_node(var &n, const char *role, const char *content,
+		 const char *region, long popup)
+{
+    var g;
+    g["role"] = role;
+    if ( strlen(content) > 0 )
+	g["content"] = content;
+    var h;
+    if ( strlen(region) > 0 )
+	h["region"] = region;
+    if ( popup != 0 )
+	h["popup"] = 1;
+    g["hints"] = h;
+    n = g;
+}
+
+void compose(var &tree)
+{
+    var status;
+    region_node(status, "status", "Ln 1, Col 1", "statusbar", 0);
+    var edit;
+    edit["role"] = "edit";
+    edit["content"] = "int main() {}";
+    var eh;
+    eh["caret"] = 0;
+    eh["region"] = "editor";
+    edit["hints"] = eh;
+    var side;
+    side["role"] = "content";
+    side["content"] = "Diagnostics";
+    var sh;
+    sh["region"] = "sidebar";
+    side["hints"] = sh;
+    var pop;
+    region_node(pop, "content", "Command Palette", "", 1);
+    var root;
+    root["role"] = "group";
+    var kids = {};
+    kids.push(status);
+    kids.push(edit);
+    kids.push(side);
+    kids.push(pop);
+    root["children"] = kids;
+    tree = root;
+}
+
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui_web::target());
+    if ( !t )
+	return 1;
+    println("WB open");
+    var tree;
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    compose(tree);
+	    ui::render(t, w, tree);
+	    // Probe the DOM: the workbench class on the region parent, each
+	    // node's data-region in tree order, and the popup count — posted
+	    // back through the snapshot channel (window.madc is the global).
+	    ui::eval_page(t,
+		"(function(){var g=document.querySelector('.workbench');"
+		"var rs=[];document.querySelectorAll('[data-region]')"
+		".forEach(function(e){rs.push(e.dataset.region);});"
+		"var p=document.querySelectorAll('.node.popup').length;"
+		"window.madc(JSON.stringify({kind:'snapshot',"
+		"text:'wb='+(g?'yes':'no')+' regions='+rs.join(',')+' popups='+p}));})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("WB {}", ev["text"]);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("WB closed");
+    return 0;
+}

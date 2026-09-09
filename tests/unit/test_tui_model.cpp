@@ -21,7 +21,7 @@ using madc::hub::world;
 using madc::hub::roles;
 using madc::hub::uinode;
 using madc::hub::name_id;
-using madc::hub::tui_attr;
+using madc::hub::ui_style;
 using madc::hub::tui_grid;
 using madc::hub::tui_key;
 using madc::hub::tui_keyev;
@@ -33,8 +33,6 @@ using madc::hub::tui_dirty_rows;
 using madc::hub::tui_paint_plan;
 using madc::hub::tui_diff_plan;
 using madc::hub::tui_bindings;
-using madc::hub::tui_key_name;
-using madc::hub::tui_key_from_name;
 
 static std::vector<tui_keyev> parse(const char *bytes, bool flush = true)
 {
@@ -190,8 +188,8 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     // Row 0: the heading bar, reverse, content right-aligned (one blank
     // column of right margin).
     CHECK(g.row_text(0) == " notes.txt" + std::string(26, ' ') + "[+]");
-    CHECK(g.at(0, 0).attr == tui_attr::reverse());
-    CHECK(g.at(0, 39).attr == tui_attr::reverse());
+    CHECK(g.at(0, 0).attr == ui_style::reverse());
+    CHECK(g.at(0, 39).attr == ui_style::reverse());
     // Rows 1..5: the flexible edit window (8 - 3 fixed rows = 5).
     CHECK(g.row_text(1) == "one");
     CHECK(g.row_text(2) == "two");
@@ -199,7 +197,7 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     CHECK(g.row_text(4) == "");
     // Row 6: the status bar; row 7: the menu with Save selected.
     CHECK(g.row_text(6) == " Ln 1");
-    CHECK(g.at(6, 0).attr == tui_attr::reverse());
+    CHECK(g.at(6, 0).attr == ui_style::reverse());
     CHECK(g.row_text(7) == " Save   Find   Quit");
     // Caret at byte 4 = line 2 col 0; the edit region starts at row 1.
     CHECK(g.cursor_visible);
@@ -208,8 +206,8 @@ TEST_CASE("compose — bars, flexible edit window, menu bar, cursor")
     // Focus starts on the first focusable (the edit region), so the menu
     // selection is not highlighted as the cursor's home — but the
     // selected option still renders reverse.
-    CHECK(g.at(7, 1).attr == tui_attr::reverse());	// " Save "
-    CHECK(g.at(7, 9).attr == tui_attr::normal());		// " Find "
+    CHECK(g.at(7, 1).attr == ui_style::reverse());	// " Save "
+    CHECK(g.at(7, 9).attr == ui_style::normal());		// " Find "
     REQUIRE(m.focusables().size() == 2u);
     CHECK(m.focusables()[0].k == tui_model::focusable::kind::edit);
     CHECK(m.focusables()[1].k == tui_model::focusable::kind::choice);
@@ -249,10 +247,10 @@ TEST_CASE("compose — long line shifts horizontally; selection highlights")
     tui_model m2;
     const tui_grid &s = m2.compose(r, editor_tree(w, "one two three", 4,
 						  4, 9), 6, 20);
-    CHECK(s.at(1, 3).attr == tui_attr::normal());
-    CHECK(s.at(1, 4).attr == tui_attr::reverse());
-    CHECK(s.at(1, 8).attr == tui_attr::reverse());
-    CHECK(s.at(1, 9).attr == tui_attr::normal());
+    CHECK(s.at(1, 3).attr == ui_style::normal());
+    CHECK(s.at(1, 4).attr == ui_style::reverse());
+    CHECK(s.at(1, 8).attr == ui_style::reverse());
+    CHECK(s.at(1, 9).attr == ui_style::normal());
 }
 
 TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
@@ -281,10 +279,10 @@ TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
     tui_model m2;
     const tui_grid &s = m2.compose(r, editor_tree(w, "\tabc", 0, 0, 2),
 				   6, 40);
-    CHECK(s.at(1, 0).attr == tui_attr::reverse());
-    CHECK(s.at(1, 7).attr == tui_attr::reverse());
-    CHECK(s.at(1, 8).attr == tui_attr::reverse());
-    CHECK(s.at(1, 9).attr == tui_attr::normal());
+    CHECK(s.at(1, 0).attr == ui_style::reverse());
+    CHECK(s.at(1, 7).attr == ui_style::reverse());
+    CHECK(s.at(1, 8).attr == ui_style::reverse());
+    CHECK(s.at(1, 9).attr == ui_style::normal());
 
     // The horizontal shift is display-column based: a caret at byte 21 of
     // a tab-headed 20-x line sits at display column 28 — on a 20-col grid
@@ -424,34 +422,34 @@ static madc::value span_row(long s, long e, const char *colour)
 
 TEST_CASE("styles — the JOE-vocabulary spec parser (one table)")
 {
-    tui_attr a;
-    REQUIRE(tui_attr_of("yellow", a));
+    ui_style a;
+    REQUIRE(ui_style_of("yellow", a));
     CHECK(a.fg == 4);				// black..white = 1..8
     CHECK(a.bg == 0);
     CHECK(a.flags == 0);
-    REQUIRE(tui_attr_of("bold yellow", a));	// bold-as-bright: the 16
+    REQUIRE(ui_style_of("bold yellow", a));	// bold-as-bright: the 16
     CHECK(a.fg == 4);
-    CHECK((a.flags & tui_attr::BOLD) != 0);
-    REQUIRE(tui_attr_of("underline bg_blue cyan", a));
+    CHECK((a.flags & ui_style::BOLD) != 0);
+    REQUIRE(ui_style_of("underline bg_blue cyan", a));
     CHECK(a.fg == 7);
     CHECK(a.bg == 5);
-    CHECK((a.flags & tui_attr::UNDERLINE) != 0);
-    REQUIRE(tui_attr_of("inverse", a));
+    CHECK((a.flags & ui_style::UNDERLINE) != 0);
+    REQUIRE(ui_style_of("inverse", a));
     CHECK(a.is_reverse());
-    REQUIRE(tui_attr_of("reverse", a));		// JOE synonym
+    REQUIRE(ui_style_of("reverse", a));		// JOE synonym
     CHECK(a.is_reverse());
-    REQUIRE(tui_attr_of("normal", a));
+    REQUIRE(ui_style_of("normal", a));
     CHECK(a.is_normal());
-    CHECK(!tui_attr_of("mauve", a));		// unknown word refuses
-    CHECK(!tui_attr_of("bold mauve", a));	// ... the WHOLE spec
-    CHECK(!tui_attr_of("", a));			// empty refuses
+    CHECK(!ui_style_of("mauve", a));		// unknown word refuses
+    CHECK(!ui_style_of("bold mauve", a));	// ... the WHOLE spec
+    CHECK(!ui_style_of("", a));			// empty refuses
 }
 
 TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip")
 {
-    tui_attr yellow, cyan;
-    REQUIRE(tui_attr_of("yellow", yellow));
-    REQUIRE(tui_attr_of("bold cyan", cyan));
+    ui_style yellow, cyan;
+    REQUIRE(ui_style_of("yellow", yellow));
+    REQUIRE(ui_style_of("bold cyan", cyan));
 
     world w;
     roles r = roles::standard(w);
@@ -476,10 +474,10 @@ TEST_CASE("compose — highlight spans paint; the selection wins; bad rows skip"
     CHECK(g.row_text(0) == "int n = 42; // c");
     CHECK(g.at(0, 0).attr == yellow);
     CHECK(g.at(0, 2).attr == yellow);
-    CHECK(g.at(0, 3).attr == tui_attr::normal());	// the space after "int"
-    CHECK(g.at(0, 4).attr == tui_attr::normal());	// both bad rows skipped
-    CHECK(g.at(0, 8).attr == tui_attr::reverse());	// selection WINS over green
-    CHECK(g.at(0, 9).attr == tui_attr::reverse());
+    CHECK(g.at(0, 3).attr == ui_style::normal());	// the space after "int"
+    CHECK(g.at(0, 4).attr == ui_style::normal());	// both bad rows skipped
+    CHECK(g.at(0, 8).attr == ui_style::reverse());	// selection WINS over green
+    CHECK(g.at(0, 9).attr == ui_style::reverse());
     CHECK(g.at(0, 12).attr == cyan);
     CHECK(g.at(0, 15).attr == cyan);
 }
@@ -551,8 +549,8 @@ TEST_CASE("events — coalescing, focus cycle, choice navigation, choose")
 
     // The selected option's highlight follows on the next compose.
     const tui_grid &g = m.compose(r, editor_tree(w, "abc", 0), 8, 40);
-    CHECK(g.at(7, 1).attr == tui_attr::normal());		// " Save "
-    CHECK(g.at(7, 15).attr == tui_attr::reverse());	// " Quit "
+    CHECK(g.at(7, 1).attr == ui_style::normal());		// " Save "
+    CHECK(g.at(7, 15).attr == ui_style::reverse());	// " Quit "
     // The menu holds focus, so no edit caret cursor shows.
     CHECK(!g.cursor_visible);
 
@@ -606,9 +604,9 @@ TEST_CASE("compose — list choice: label row, one option per row, autofocus")
     CHECK(g.row_text(7) == "    c.h");
     // The selected row (0) renders reverse across its text; the others
     // stay normal.
-    CHECK(g.at(5, 0).attr == tui_attr::reverse());
-    CHECK(g.at(5, 8).attr == tui_attr::reverse());
-    CHECK(g.at(6, 0).attr == tui_attr::normal());
+    CHECK(g.at(5, 0).attr == ui_style::reverse());
+    CHECK(g.at(5, 8).attr == ui_style::reverse());
+    CHECK(g.at(6, 0).attr == ui_style::normal());
     // Autofocus: the choice slot holds focus straight from compose.
     REQUIRE(m.focusables().size() == 2u);
     CHECK(m.focus_slot() == 1u);
@@ -690,8 +688,8 @@ TEST_CASE("diff plan — a one-line scroll shifts; chrome + entering rows repain
     b.push_back("line 10 entering");
     tui_grid prev = plan_grid(a, 40), next = plan_grid(b, 40);
     // the status row is INVERSE-filled chrome — outside any shift band
-    prev.fill_attr(0, 0, 40, tui_attr::reverse());
-    next.fill_attr(0, 0, 40, tui_attr::reverse());
+    prev.fill_attr(0, 0, 40, ui_style::reverse());
+    next.fill_attr(0, 0, 40, ui_style::reverse());
 
     tui_paint_plan p = tui_diff_plan(prev, next);
     REQUIRE(p.shifted);
@@ -804,7 +802,7 @@ TEST_CASE("row_paint_end — the EL boundary: normal-space tails only")
     CHECK(g.row_paint_end(0) == 3u);
     CHECK(g.row_paint_end(1) == 0u);	// blank row: EL does it all
     g.put(2, 0, "st");			// an inverse status fill is NOT
-    g.fill_attr(2, 0, 20, tui_attr::reverse());	// erasable by EL
+    g.fill_attr(2, 0, 20, ui_style::reverse());	// erasable by EL
     CHECK(g.row_paint_end(2) == 20u);
     g.put(1, 19, "x");			// content in the last column
     CHECK(g.row_paint_end(1) == 20u);
@@ -814,251 +812,6 @@ TEST_CASE("row_paint_end — the EL boundary: normal-space tails only")
 // ---- the bindings-as-data chord adapter (madcide IDE-1; owner-directed
 // JOE/WordStar ^K chords, configurable — a table of key sequences to
 // action names, never a second hardcoded map).
-
-TEST_CASE("key spelling — one owner, both directions")
-{
-    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, 'k')) == "^k");
-    CHECK(tui_key_name(tui_keyev(tui_key::ch, 's')) == "s");
-    CHECK(tui_key_name(tui_keyev(tui_key::ch, ' ')) == "space");
-    CHECK(tui_key_name(tui_keyev(tui_key::pgup)) == "pgup");
-
-    tui_keyev k;
-    REQUIRE(tui_key_from_name("^s", k));
-    CHECK(k.kind == tui_key::ctrl);
-    CHECK(k.ch == 's');
-    REQUIRE(tui_key_from_name("^S", k));	// generous in, canonical out
-    CHECK(k.ch == 's');
-    REQUIRE(tui_key_from_name("q", k));
-    CHECK(k.kind == tui_key::ch);
-    CHECK(k.ch == 'q');
-    REQUIRE(tui_key_from_name("space", k));
-    CHECK(k.kind == tui_key::ch);
-    CHECK(k.ch == ' ');
-    REQUIRE(tui_key_from_name("home", k));
-    CHECK(k.kind == tui_key::home);
-    CHECK(!tui_key_from_name("", k));
-    CHECK(!tui_key_from_name("^!", k));
-    CHECK(!tui_key_from_name("nosuch", k));
-
-    // Punctuation controls round-trip like letters do.
-    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '_')) == "^_");
-    CHECK(tui_key_name(tui_keyev(tui_key::ctrl, '^')) == "^^");
-    REQUIRE(tui_key_from_name("^_", k));
-    CHECK(k.kind == tui_key::ctrl);
-    CHECK(k.ch == '_');
-    REQUIRE(tui_key_from_name("^^", k));
-    CHECK(k.ch == '^');
-    REQUIRE(tui_key_from_name("^\\", k));
-    CHECK(k.ch == '\\');
-    REQUIRE(tui_key_from_name("^]", k));
-    CHECK(k.ch == ']');
-}
-
-TEST_CASE("bindings — build validation is loud and whole-table")
-{
-    tui_bindings b;
-    CHECK(!b.bind("^k nosuchkey", "x"));	// unknown spelling
-    CHECK(!b.bind("", "x"));
-    CHECK(b.bind("^K S", "save"));		// normalizes to "^k s"
-    CHECK(b.bind("^k q", "quit"));
-    std::string err;
-    CHECK(b.finalize(err));
-    CHECK(b.bound("^k s"));
-    CHECK(b.action_of("^k s") == "save");
-    CHECK(b.prefix("^k"));
-    CHECK(!b.bound("^k"));
-
-    tui_bindings head;				// printable-headed: refused
-    CHECK(head.bind("g g", "goto"));
-    CHECK(!head.finalize(err));
-    CHECK(err.find("printable-headed") != std::string::npos);
-
-    tui_bindings shadow;			// prefix conflict: refused
-    CHECK(shadow.bind("^k", "block"));
-    CHECK(shadow.bind("^k s", "save"));
-    CHECK(!shadow.finalize(err));
-    CHECK(err.find("shadows") != std::string::npos);
-
-    // JOE's OTHER chord convention: a ctrl+letter CONTINUATION is the
-    // letter (^K ^Z == ^K Z — users keep ctrl held). Both spellings
-    // canonicalize to one slot; ctrl+punctuation continuations keep
-    // their ctrl form (^K ^_ is not ^K _).
-    tui_bindings ctrlcont;
-    CHECK(ctrlcont.bind("^k ^z", "shell"));
-    CHECK(ctrlcont.bind("^k ^_", "special"));
-    CHECK(ctrlcont.finalize(err));
-    CHECK(ctrlcont.bound("^k z"));
-    CHECK(ctrlcont.action_of("^k z") == "shell");
-    CHECK(ctrlcont.bound("^k ^_"));
-    CHECK(!ctrlcont.bound("^k _"));
-    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ctrl, 'z')) == "z");
-    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ctrl, '_')) == "^_");
-    CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ch, 'Z')) == "z");
-}
-
-TEST_CASE("chords — a ctrl-held continuation completes the chord (JOE)")
-{
-    tui_bindings b;
-    b.bind("^k z", "shell");
-    std::string err;
-    REQUIRE(b.finalize(err));
-    tui_model m;
-    m.set_bindings(b);
-    std::vector<tui_keyev> keys;
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::ctrl, 'z'));	// ctrl still held
-    std::vector<tui_event> ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 2u);
-    CHECK(ev[0].kind == tui_event_kind::focus);	// chord opened: repaint (%k)
-    CHECK(ev[1].kind == tui_event_kind::action);
-    CHECK(ev[1].action_name == "shell");
-    CHECK(ev[1].seq == "^k z");
-
-    // A three-key chord repaints on the open AND on each extension —
-    // the %k echo grows live ("^k", then "^k e") before the action.
-    tui_bindings b3;
-    b3.bind("^k e c", "deep");
-    REQUIRE(b3.finalize(err));
-    tui_model m3;
-    m3.set_bindings(b3);
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::ch, 'e'));
-    keys.push_back(tui_keyev(tui_key::ch, 'c'));
-    ev = m3.apply_keys(keys);
-    REQUIRE(ev.size() == 3u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::focus);
-    CHECK(ev[2].kind == tui_event_kind::action);
-    CHECK(ev[2].action_name == "deep");
-    CHECK(ev[2].seq == "^k e c");
-}
-
-static tui_bindings joe_table()
-{
-    tui_bindings b;
-    b.bind("^k s", "save");
-    b.bind("^k q", "quit");
-    b.bind("^s", "search");	// a single-key binding rides the same table
-    std::string err;
-    REQUIRE(b.finalize(err));
-    return b;
-}
-
-TEST_CASE("chords — resolve, coalesce around, miss, cancel, persist")
-{
-    tui_model m;
-    m.set_bindings(joe_table());
-
-    // A printable run flushes BEFORE the chord fires; the chord OPENING
-    // emits a focus (repaint) event — the pending prefix is visible
-    // state (JOE's %k echo); the chord's own printable continuation
-    // never joins a text run.
-    std::vector<tui_keyev> keys;
-    keys.push_back(tui_keyev(tui_key::ch, 'a'));
-    keys.push_back(tui_keyev(tui_key::ch, 'b'));
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::ch, 's'));
-    keys.push_back(tui_keyev(tui_key::ch, 'c'));
-    std::vector<tui_event> ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 4u);
-    CHECK(ev[0].kind == tui_event_kind::text);
-    CHECK(ev[0].text == "ab");
-    CHECK(ev[1].kind == tui_event_kind::focus);
-    CHECK(ev[2].kind == tui_event_kind::action);
-    CHECK(ev[2].action_name == "save");
-    CHECK(ev[2].seq == "^k s");
-    CHECK(ev[3].kind == tui_event_kind::text);
-    CHECK(ev[3].text == "c");
-
-    // Chord continuations are letter-case-insensitive (JOE's ^K S == ^K s):
-    // a shifted continuation matches the same binding.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::ch, 'S'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 2u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::action);
-    CHECK(ev[1].action_name == "save");
-    CHECK(ev[1].seq == "^k s");
-
-    // Single-key binding fires directly.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 's'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "search");
-    CHECK(ev[0].seq == "^s");
-
-    // An unbound completion reports the miss: empty action, the seq.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::ch, 'z'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 2u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::action);
-    CHECK(ev[1].action_name == "");
-    CHECK(ev[1].seq == "^k z");
-
-    // esc cancels a pending chord — the cancel repaints too (the %k
-    // echo must clear); the next key is ordinary.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::esc));
-    keys.push_back(tui_keyev(tui_key::ch, 'x'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 3u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::focus);
-    CHECK(m.pending_chord() == "");
-    CHECK(ev[2].kind == tui_event_kind::text);
-    CHECK(ev[2].text == "x");
-
-    // A resize passes through mid-chord and the chord still completes —
-    // across apply_keys BATCHES (pending is adapter state, and the
-    // start-focus event leaves it readable for the %k seat).
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::resize));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 2u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::resize);
-    CHECK(m.pending_chord() == "^k");
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ch, 'q'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "quit");
-
-    // A wake (stage-2: cooperative tasks drained) has resize's exact
-    // transparency: it passes through mid-chord without disturbing the
-    // pending prefix, and the chord still completes.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ctrl, 'k'));
-    keys.push_back(tui_keyev(tui_key::wake));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 2u);
-    CHECK(ev[0].kind == tui_event_kind::focus);
-    CHECK(ev[1].kind == tui_event_kind::wake);
-    CHECK(m.pending_chord() == "^k");
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::ch, 'q'));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::action);
-    CHECK(ev[0].action_name == "quit");
-    // Outside a chord: one wake in, one wake event out.
-    keys.clear();
-    keys.push_back(tui_keyev(tui_key::wake));
-    ev = m.apply_keys(keys);
-    REQUIRE(ev.size() == 1u);
-    CHECK(ev[0].kind == tui_event_kind::wake);
-}
 
 TEST_CASE("chords — bindings win over navigation; a swap restores it")
 {
@@ -1091,4 +844,47 @@ TEST_CASE("chords — bindings win over navigation; a swap restores it")
     ev = m.apply_keys(keys);
     REQUIRE(ev.size() == 1u);
     CHECK(ev[0].kind == tui_event_kind::focus);
+}
+
+TEST_CASE("keybytes — the inverse of the parser: every key round-trips through its bytes")
+{
+    // madcide polish P3b-2: what the IDE writes to a program on its embedded
+    // terminal's pty for a key the user typed — ONE table with tui_keyparse:
+    // feeding a key's bytes back to the parser yields that key again.
+    using madc::hub::tui_key_bytes;
+    const tui_key named[] = {
+	tui_key::enter, tui_key::tab, tui_key::backspace, tui_key::esc,
+	tui_key::up, tui_key::down, tui_key::right, tui_key::left,
+	tui_key::home, tui_key::end, tui_key::ins, tui_key::del,
+	tui_key::pgup, tui_key::pgdn
+    };
+    for ( size_t i = 0; i < sizeof(named) / sizeof(named[0]); ++i )
+    {
+	tui_keyev k(named[i]);
+	std::string b = tui_key_bytes(k);
+	REQUIRE(!b.empty());
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	p.feed(b.data(), b.size(), out);
+	p.flush(out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == named[i]);
+    }
+    // Control chords: ^a..^z are their control bytes; ^\ ^] ^^ ^_ too.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, 'c')) == std::string("\x03"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, 'z')) == std::string("\x1a"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ctrl, ']')) == std::string("\x1d"));
+    {
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	std::string b = tui_key_bytes(tui_keyev(tui_key::ctrl, 'k'));
+	p.feed(b.data(), b.size(), out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == tui_key::ctrl);
+	CHECK(out[0].ch == 'k');
+    }
+    // A printable is itself; none is nothing.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");
+    CHECK(tui_key_bytes(tui_keyev(tui_key::ch, ' ')) == " ");
+    CHECK(tui_key_bytes(tui_keyev()).empty());
 }

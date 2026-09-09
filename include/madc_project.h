@@ -14,12 +14,24 @@ struct ProjectTU {
 	std::string stdlib_option;		// e.g. "libc++"; empty = the build's default flavor
 };
 
+// What kind of program the project builds (the manifest's "kind"; absent =
+// console). It decides the executable's SUBSYSTEM on Windows (a gui program
+// gets no console at start — gcc's -mwindows) and where an IDE sends the
+// program's output when it runs it; ELF and Mach-O links ignore it.
+enum class ProjectKind { console, gui };
+
 // A whole project: the TU list + how to link/run it.
 struct ProjectManifest {
 	std::vector<ProjectTU> tus;
 	std::string entry = "main";	// entry symbol
 	std::string output_name;	// informational in v1 (no object output)
+	ProjectKind kind = ProjectKind::console;
 };
+
+// The manifest spelling of a kind and back (the one table): "console" /
+// "gui". False = not a known kind.
+bool project_kind_from_name(const std::string &name, ProjectKind &out);
+const char *project_kind_name(ProjectKind kind);
 
 // Reader: parse a project manifest at `path` into `out`. Two shapes route
 // by the top-level JSON kind (owner ruling 2026-08-31): an OBJECT is the

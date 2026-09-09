@@ -12,6 +12,24 @@ page covers the command line; the language itself is documented under
 
 Run `madc --help` for the complete, always-current option list.
 
+## Machine-readable capabilities
+
+Tooling can query the compiler without supplying a source file:
+
+```bash
+madc --capabilities=json
+```
+
+The response is a versioned JSON manifest describing the compiler version and
+target, the accepted `--std=` C/C++ standards, project-mode support, the
+execution and native-output modes, the CIR emission targets, the introspection
+surfaces, and the public `libmadc` / C API boundary. The advertised standards
+and emit targets are derived from the same sources the compiler enforces, so
+the manifest can never advertise a `--std=` the compiler rejects. A cross-built
+artifact reports `emit-only` and `jit: false` — the manifest describes that
+artifact, not the host that queried it. Unknown formats are rejected so a
+consumer never silently parses a schema it did not ask for.
+
 ## Running programs
 
 ```bash
@@ -47,9 +65,9 @@ cout << "hypot(3,4) = " << hypot(3.0, 4.0) << endl;
 | `-stdlib=libstdc++`\|`libc++` | C++ standard-library flavor (clang's spelling). Replaces the C++ include search list, as clang does. |
 | `-D<name>[=value]` | define a macro |
 | `-I<dir>` | add an include search directory |
-| `-l<name>` | JIT: `dlopen` `lib<name>.so` globally so its symbols resolve. AOT: becomes a `DT_NEEDED` dependency. |
+| `-l<name>` | bind a library (spelled for the target by the module map: `-lm` → `libm.so.6` / `libSystem.B.dylib` / `ucrtbase.dll`; bare names follow `lib<name>.so` / `.dylib` / `<name>.dll`). JIT: opened globally so its symbols resolve. AOT: a `DT_NEEDED` / load command / PE import. See [language/import.md](language/import.md). |
 | `--no-embedded-headers` | disable the baked-in headers; use real system headers only |
-| `--no-auto-load` | ignore `#load` directives; link explicitly via `-l` |
+| `--no-auto-load` | do not act on `import` / `#load` library bindings; link explicitly via `-l` |
 
 ## Multi-file projects
 
@@ -64,6 +82,25 @@ madc file.json                                # .json input implies --project
 madc never writes cache files beside your project. To skip recompiling on
 later runs, produce a real artifact explicitly: `-c` per-TU objects (madc
 runs `.o` files directly as a precompiled cache) or `-o` an AOT executable.
+
+madc's own manifest is a JSON object (the shape madcide reads and writes as
+`<base>.prj.json` beside the launch file; `--project` takes it
+interchangeably with a `compile_commands.json` array):
+
+```json
+{ "tus": ["main.mad", {"file": "util.c", "std": "c89", "defines": ["NDEBUG"]}],
+  "entry": "main",
+  "output": "app",
+  "kind": "console",
+  "commands": [{"name": "Docs", "cmd": "make -C {project} docs"}] }
+```
+
+`tus` is required (a bare string is the file; an object carries `file`,
+`directory`, `defines`, `include_dirs`, `std`, `stdlib`); `kind` is
+`console` (the default) or `gui` — a gui program gets the Windows GUI
+subsystem when built (no console window at start) and, in madcide, runs in
+its own window; `commands` are the IDE's extra Build rows. Unknown keys
+pass through untouched.
 
 ## Native output (AOT)
 
@@ -82,6 +119,9 @@ madc prog.o                       # execute .o files as a precompiled cache
   emitted image, so it runs with no madc library installed (libc/libstdc++
   stay dynamic).
 - `-pie` / `-no-pie` select the image layout, gcc-style.
+- `-mwindows` / `-mconsole` (Windows) select the executable's subsystem,
+  mingw-gcc-style: a windowed program allocates no console at start; a
+  `--project` build takes the manifest's `kind` instead.
 - Emitted executables otherwise locate `libmadc.so` via their `DT_RUNPATH`.
 
 ## Rendering and introspection
@@ -134,8 +174,8 @@ unknown key is an error.
 
 | Variable | Effect |
 |----------|--------|
-| `MADC_CPU_LIMIT=<secs>` | arm an `RLIMIT_CPU` guard (default off — madc runs the program, so no finite default is safe) |
-| `MADC_MEM_LIMIT=<MB>` | address-space guard; default 4096 MB + 128 MB per `--project` TU; `0` disables |
+| `MADC_CPU_LIMIT=off\|auto\|<secs>` | `RLIMIT_CPU` guard; default off, and `auto` is off too (madc runs the program, so no finite default is safe) |
+| `MADC_MEM_LIMIT=off\|auto\|<MB>` | address-space guard (`RLIMIT_AS`, a soft limit); default **off**; `auto` = 4096 MB + 128 MB per `--project` TU (the test runner asks for `auto`); a program that imports a GUI module (`madcwebview`) lifts it at run start; `0` = `off`. The same spellings work for the `madc.ini` keys `mem-limit` / `cpu-limit`. |
 | `MADC_FOREST=<file>` | frozen forest container for the discovery chain |
 
 ## See also

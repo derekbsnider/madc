@@ -1,0 +1,27 @@
+// import (alias form): `import c as libc;` binds the C runtime under a
+// namespace with NO platform spelling in the source — the module map picks
+// libc.so.6 / libSystem.B.dylib / ucrtbase.dll per target. Members resolve
+// by name at first call through __madc_dl_member (the same lowering in JIT,
+// exe and obj — this test has NO exe_skip). `import` is contextual: the
+// identifier `import` stays an identifier off the directive position.
+// Every route to a member goes through the ONE lookup owner: an expression
+// operand, a STATEMENT head (`libc::puts(...);` — this used to register a
+// bare `puts` through the unqualified dlsym fallback, which the JIT resolved
+// by accident and no native artifact could link), a cast operand, and the
+// global-qualified `::libc::abs` spelling.
+import c as libc;
+
+int main()
+{
+    int import = 3;
+    println("abs(-42): {}", libc::abs(-42));
+    println("abs(100): {}", libc::abs(100));
+    var num = "999";
+    println("atoi: {}", libc::atoi(num));
+    libc::puts("statement-position member call");
+    long long cast_abs = (long long)libc::abs(-7);
+    println("cast abs(-7): {}", cast_abs);
+    println("global-qualified abs(-9): {}", ::libc::abs(-9));
+    println("import={}", import);
+    return 0;
+}

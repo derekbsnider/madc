@@ -1,0 +1,42 @@
+// A LOCAL reference bound to a carrier slot aliases the LIVE slot: writes
+// through it land in the container (g++/clang++ oracle: a `V &r = o["h"]`
+// over a std::map — tmp/varref/oracle.cpp — prints the same lines). The
+// reference initializer is the slot's ADDRESS (the parser's
+// reference_bind_address_expr wraps it in an address-of); the CIR builder
+// used to drop that address for any carrier-typed operand — right for a
+// carrier VARIABLE or MEMBER (opaque array storage decays), wrong for a
+// SUBSCRIPT (a value lvalue: a dereference of the slot pointer) — and bound
+// the reference to the slot's first word: c2mir warned "assigning integer
+// without cast to pointer" and the first use crashed in madarray_key_slot.
+// The by-reference PARAMETER form (object_arg_addr's keyed arm) always
+// worked and is pinned beside it.
+void fill(var &out) { out["z"] = 4; }
+
+int main()
+{
+    var h = { "k": 2 };
+    var o = { "a": 1, "h": h };
+    // A reference to an OBJECT slot: keyed writes through it.
+    var &r = o["h"];
+    r["k"] = 3;
+    r["z"] = 4;
+    println("{} {}", o["h"]["k"], o["h"]["z"]);
+    // A reference to the WHOLE carrier (storage decays — the case that
+    // already worked; pinned so the fix cannot regress it).
+    var &w = o;
+    w["a"] = 9;
+    println("whole-ref {}", o["a"]);
+    // A reference to a SCALAR slot: a plain assignment through it.
+    var &s = o["a"];
+    s = 7;
+    println("scalar-slot-ref {}", o["a"]);
+    // An INDEXED slot (the same value-lvalue lane, an integer index).
+    var arr = { 10, 20, 30 };
+    var &e = arr[1];
+    e = 25;
+    println("index-slot-ref {}", arr[1]);
+    // The parameter form: the slot bound to a `var &` parameter.
+    fill(o["h"]);
+    println("slot-as-ref-arg {}", o["h"]["z"]);
+    return 0;
+}

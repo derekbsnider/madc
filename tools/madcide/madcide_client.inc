@@ -33,7 +33,7 @@ void client_bind_keys(IdeSession &S, long t, long &gen)
     var table;
     S.key_table(table);
     if ( !table.is_null() )
-	ui::tui_bind_keys(t, table);
+	ui::bind_keys(t, table);
 }
 
 // Drain the one terminal request the last event may have parked. A
@@ -48,20 +48,41 @@ void client_service(IdeSession &S, long t)
     var kind = format("{}", req["kind"]);
     if ( kind == "refresh" )
     {
-	ui::tui_refresh(t);
+	ui::refresh(t);
 	return;
     }
-    if ( !ui::tui_suspend(t) )
+    if ( kind == "filedialog" )
+    {
+	// The native file dialog (S4): the target shows it and the answer
+	// arrives as a dialog event; a target that cannot (the platform has
+	// no native dialog yet) gets the request's prompt instead.
+	var js = js::stringify(req);
+	if ( !ui::dialog(t, js.c_str()) )
+	    S.dialog_fallback(req);
 	return;
+    }
+    if ( !ui::suspend(t) )
+    {
+	S.request_refused(req);		// never a silent drop (P3b-1)
+	return;
+    }
     S.term_exec(req);
     if ( req["pause"].as_integer() != 0 )
 	terminal_return_pause();
-    ui::tui_resume(t);
+    ui::resume(t);
 }
 
 // The IDE loop: the same compose-as-data -> render -> event -> apply
-// cycle as vised, speaking to the session object only.
-void run_ide(const char *path, bool ro)
+// cycle as vised, speaking to the session object only. The TARGET is one
+// argument ("term" = the grid frontend the tui_* names spell; the web
+// target shows the same composed tree in a window through <ns_ui_web>).
+// One loop, one composer: the workbench layout rides layout hints the
+// terminal ignores, so the ONLY per-target fact is whether a real
+// terminal exists — S.terminal(has_term) gates the terminal-request
+// path (a window captures build output into the panel region instead of
+// suspending; interactive Run and the shell refuse until the embedded
+// terminal lands).
+void run_ide(const char *path, bool ro, const char *target)
 {
     IdeSession S;
     long doc = S.open(path, ro);
@@ -69,35 +90,38 @@ void run_ide(const char *path, bool ro)
 	printf("cannot read %s\n", path);
     if ( doc <= 0 )
 	return;			// -1 already reported on stderr
-    long t = ui::tui_open();
+    long t = ui::open(target);
     if ( t == 0 )
-	return;
-    S.terminal(true);
+	return;			// open refused (e.g. no webview) with a reason
+    bool has_term = strcmp(target, "term") == 0;
+    S.terminal(has_term);
+    S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
+    S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
     long keysgen = -1;
     client_bind_keys(S, t, keysgen);
     bool run = true;
     while ( run )
     {
-	// What the terminal knows arrives as facts, pushed before every
+	// What the target knows arrives as facts, pushed before every
 	// compose: the viewport (resizes land between events) and the
 	// pending chord (the status line's %k echo).
-	S.viewport(ui::tui_cols(t), ui::tui_rows(t));
+	S.viewport(ui::cols(t), ui::rows(t));
 	var pc;
-	ui::tui_pending(pc, t);
+	ui::pending(pc, t);
 	S.pending_chord(pc.is_null() ? "" : pc.c_str());
 	long adoc = S.active(doc);
 	var tree;
 	S.compose_ide_tree(tree, adoc);
-	ui::tui_render(t, S.world(), tree);
+	ui::render(t, S.world(), tree);
 	if ( S.parse_pending(adoc) )
 	    continue;		// keep serving keystrokes while it runs
 	var ev;
-	if ( !ui::tui_event(ev, t, S.world()) )
+	if ( !ui::event(ev, t, S.world()) )
 	    break;
 	run = S.apply_ide_event(adoc, ev);
 	client_bind_keys(S, t, keysgen);
 	client_service(S, t);
     }
     S.close();
-    ui::tui_close(t);
+    ui::close(t);
 }

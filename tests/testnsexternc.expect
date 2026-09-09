@@ -1,0 +1,4 @@
+extern C in namespace
+abs 5
+c_named 42
+global c_named 8

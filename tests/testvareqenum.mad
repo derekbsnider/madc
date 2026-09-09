@@ -1,0 +1,36 @@
+// `number == var` and `var == enum` — two more shapes of the carrier's
+// equality that answered FALSE silently (found 2026-09-08 probing the ui
+// event-enum surface). (1) A number on the LEFT: the carrier's operator==
+// rows are member rows (receiver on the left), so `6 == v` found no member
+// and fell to the raw pointer-vs-integer compare — C++20 [over.match.oper]
+// rewrites `a == b` to the reversed candidate `b == a` for == and !=, and
+// the dialect does the same. (2) An enum operand: an unscoped enumerator
+// promotes to an integer and already hit the integer row; a SCOPED
+// enumerator has no implicit conversion in C++ and fell to the raw compare
+// (a warning nobody reads, then the wrong boolean) — the dialect compares
+// a var against ANY enumerator by its value (the surface the ui event enums
+// need: `ev["key_code"] == ui::key::down`), a documented divergence from
+// C++ like the strict-kind number rule. Strict kind still holds.
+enum class scoped : unsigned char { x, y, z };
+namespace uix {
+    enum key { none = 0, ch, ctrl, enter, tab, up, down };
+    namespace k2 { enum key_t { a, b, c }; }
+}
+
+int main()
+{
+    var ev = { "n": 6, "s": 2, "k": 6, "k2": 2 };
+    // a number on the LEFT (the reversed candidate), == and !=
+    println("{} {} {} {}", 6 == ev["n"], 7 == ev["n"], 7 != ev["n"], 6 != ev["n"]);
+    // an unscoped enumerator, both orders
+    println("{} {} {}", ev["k"] == uix::down, uix::down == ev["k"], ev["k"] != uix::up);
+    // a nested-namespace enumerator
+    println("{} {}", ev["k2"] == uix::k2::c, ev["k2"] != uix::k2::c);
+    // a scoped enumerator: by value, both orders, == and !=
+    println("{} {} {} {}", ev["s"] == scoped::z, ev["s"] != scoped::z,
+	    ev["s"] == scoped::y, scoped::z == ev["s"]);
+    // strict kind: a real-kind 6.0 is not the integer 6, in either order
+    var r = 6.0;
+    println("{} {}", 6 == r, r == 6);
+    return 0;
+}

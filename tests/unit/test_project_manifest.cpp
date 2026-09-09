@@ -140,3 +140,43 @@ TEST_CASE("read_project_manifest: native object — empty tus is a valid "
 	CHECK_FALSE(read_project_manifest(nofile, m2, err));
 	CHECK_FALSE(err.empty());
 }
+
+TEST_CASE("read_project_manifest: native object — the project kind: absent = "
+	  "console, \"gui\" reads, an unknown word refuses loud") {
+	// madcide polish P2c: the kind decides the Windows executable's
+	// SUBSYSTEM (gui = no console at start, gcc's -mwindows) and where an
+	// IDE sends the program's output when it runs it.
+	ProjectManifest m; std::string err;
+	std::string plain = write_tmp("native_kind_none.prj.json", "{\"tus\":[]}");
+	REQUIRE(read_project_manifest(plain, m, err));
+	CHECK(m.kind == ProjectKind::console);
+
+	ProjectManifest g;
+	std::string gui = write_tmp("native_kind_gui.prj.json",
+				    "{\"tus\":[\"a.mad\"],\"kind\":\"gui\"}");
+	REQUIRE(read_project_manifest(gui, g, err));
+	CHECK(g.kind == ProjectKind::gui);
+	CHECK(std::string(project_kind_name(g.kind)) == "gui");
+
+	ProjectManifest c;
+	std::string con = write_tmp("native_kind_console.prj.json",
+				    "{\"tus\":[],\"kind\":\"console\"}");
+	REQUIRE(read_project_manifest(con, c, err));
+	CHECK(c.kind == ProjectKind::console);
+	CHECK(std::string(project_kind_name(c.kind)) == "console");
+
+	ProjectManifest bad;
+	std::string unk = write_tmp("native_kind_bad.prj.json",
+				    "{\"tus\":[],\"kind\":\"service\"}");
+	CHECK_FALSE(read_project_manifest(unk, bad, err));
+	CHECK(err.find("kind") != std::string::npos);
+	ProjectManifest notstr;
+	std::string num = write_tmp("native_kind_num.prj.json",
+				    "{\"tus\":[],\"kind\":2}");
+	CHECK_FALSE(read_project_manifest(num, notstr, err));
+
+	ProjectKind k;
+	CHECK(project_kind_from_name("gui", k));
+	CHECK(k == ProjectKind::gui);
+	CHECK_FALSE(project_kind_from_name("GUI", k));	// the spelling is the table's
+}

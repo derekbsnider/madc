@@ -12,12 +12,16 @@
 # each containing
 #   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
 #   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
+#   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
+#                                             (WKWebView + native chrome; GUI programs:
+#                                             import madcwebview) — macOS 13.3+
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
 #   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/APSL-2.0.txt
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/webview-LICENSE.txt  (webview/webview, MIT)
 #   madc-<ver>-macos-<arch>/README-macos.txt  ad-hoc signing / quarantine notes
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
@@ -106,6 +110,14 @@ package_arch() {
         echo "package_release_macos: $rtlib missing — run 'make -C src release-macos' first" >&2
         exit 1
     fi
+    # The platform webview library (GUI programs: import madcwebview) —
+    # release-<arch>-macos builds it beside the binary (webview-<arch>-macos);
+    # the loader finds it as lib/ next to bin/ (madc_self_lib_dir).
+    local webview="lib/webview/${bin_arch}-macos/libmadcwebview.dylib"
+    if [ ! -f "$webview" ]; then
+        echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
+        exit 1
+    fi
 
     rm -rf "$stage"
     mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
@@ -116,6 +128,7 @@ package_arch() {
     # try/catch + VLA runtime when those features are used; on a Mac with no
     # madc library installed this archive is what `cc emitted.c` links.
     install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
+    install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
@@ -136,6 +149,9 @@ package_arch() {
         "$stage/$root/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt"
     install -m 644 docs/licenses/APSL-2.0.txt \
         "$stage/$root/THIRD_PARTY_NOTICES/APSL-2.0.txt"
+    # The webview library binds webview/webview (MIT): its notice ships with it.
+    install -m 644 third_party/webview/LICENSE \
+        "$stage/$root/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
     cat > "$stage/$root/README-macos.txt" <<EOF
 madc ${VER} for macOS (${pkg_arch})
 ====================================
@@ -167,6 +183,12 @@ the full madc runtime, which this tarball does not ship: madc -o refuses
 such programs on macOS with a clear error. (This is also why madcide,
 the IDE the Linux and Windows packages ship as a binary, is not in this
 tarball yet — it arrives with the macOS madc runtime library.)
+
+GUI programs: lib/libmadcwebview.dylib is madc's binding of the platform
+webview (WKWebView) with the native menu bar and file dialogs. A program
+that says \`import madcwebview;\` (madc's ui "web" target — madcide's
+--gui mode, once madcide ships here) loads it from this lib/ next to
+bin/madc. It requires macOS 13.3 or later.
 
 share/doc/madc/examples/madc.ini is a documented example configuration
 file; to use one, copy it to ~/.config/madc/madc.ini.

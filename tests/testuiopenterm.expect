@@ -1,0 +1,15 @@
+unknown target -> 0
+term without a tty -> 0
+tui_open without a tty -> 0
+empty name is the terminal -> 0
+validate -> ok
+tui_validate -> ok
+validate printable head -> bad
+rows of a bad handle -> -1
+cols of a bad handle -> -1
+event of a bad handle -> no
+event out is null -> yes
+pending of a bad handle -> []
+bind_keys on a bad handle -> no
+suspend on a bad handle -> no
+done

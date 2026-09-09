@@ -65,7 +65,20 @@ fragments, intrinsic declarations, carrier semantics.
 fragment for (a) any C++ system `#include` (a header without `.h`), and
 (b) any `std::string` mention outside the stdlib-guard conditional. It
 runs in fulltest and self-tests with a negative control (a synthetic bad
-fragment must FAIL) so the gate itself cannot silently rot. The dynamic
+fragment must FAIL) so the gate itself cannot silently rot.
+
+One include IS allowed: a sibling `bits/` fragment. The ui event
+vocabularies (`ui::key`, `ui::event_kind`, `ui::pointer_phase`) are
+enums the ENGINE owns (`tui_key`, `tui_event_kind`, `pointer_phase` in
+`madcdis/keys.h` / `ui_events.h`) and the DIALECT compares against
+(`ev["key_code"] == ui::key::down`). Two hand-kept copies of one
+enumeration drift — the exact divergence the duplication rule exists
+for — so the enum text lives once, in `include/madc/bits/ui_enums`
+(plain C++11, no includes, no std::string), which the engine headers
+include textually and alias, and `<ns_ui>` includes for scripts. A
+`bits/` fragment is the same zero-include surface the gate scans, so
+including one crosses no line the rule draws; the gate's positive control
+pins that the exemption is exactly `<bits/...>` and nothing wider. The dynamic
 half of the contract is pinned by tests: `testformatring` (dialect
 format with zero includes), `testarrayslot` (carrier element slots), and
 the packed-binary bind counts recorded in the JIT plan.

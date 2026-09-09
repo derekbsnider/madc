@@ -1,0 +1,4 @@
+GUI_VERSION 0.12.0
+GUI_DOM ["hello from madc","complete",true,"native-init"]
+GUI_ACK ["ack"]
+GUI_DESTROYED

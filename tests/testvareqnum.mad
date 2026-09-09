@@ -1,0 +1,28 @@
+// `var == number` / `var != number` — the carrier's equality rows for the
+// number kinds (integer, real, boolean). Before these rows `v == 5` on an
+// integer-kind 5 fell to c2mir's pointer-vs-integer compare and answered
+// FALSE (a silent wrong answer under a warning). Every row asks
+// madc::value::operator== — ONE contract, strict kind: an integer-kind 5
+// is not the real 5.0 and a boolean is its own kind. The reference is
+// madc::value::operator== itself (the carrier's C++ equality): native
+// g++/clang++ int==double would PROMOTE and say true, which is exactly
+// why the carrier is strict-kind by design (a documented divergence).
+int main()
+{
+    var n = 5;
+    var r = 2.5;
+    var b = true;
+    var s = "5";
+    var z;
+    println("{} {} {} {}", n == 5, n != 5, n == 6, n != 6);
+    println("{} {} {}", r == 2.5, r != 2.5, r == 3.0);
+    println("{} {} {}", b == true, b != true, b == false);
+    // strict kind: the integer 5 is neither the real 5.0 nor the text "5"
+    println("{} {} {}", n == 5.0, n == true, s == 5);
+    // null is no number
+    println("{} {}", z == 0, z != 0);
+    // the value/value and text rows still answer (unchanged)
+    var m = 5;
+    println("{} {} {}", n == m, s == "5", n == s);
+    return 0;
+}

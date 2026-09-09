@@ -1,0 +1,243 @@
+/* ui_web/page.css — the web target's default look: a monospace grid of
+   bars, wrapped content, an editor line-DOM and a choice bar, dark by
+   default with madc's own accent (not a clone of any editor). Theme
+   sections (@gui) set the custom properties below via var(--name, default),
+   so a scheme that omits one keeps the default look. */
+html, body { margin: 0; padding: 0; height: 100%;
+             background: var(--bg, #1b1d24); color: var(--fg, #d9dbe4); }
+body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+       overflow: hidden; }
+#root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#kb { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
+#measure { position: absolute; visibility: hidden; white-space: pre; }
+.node { flex: 0 0 auto; }
+.node.group { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.heading, .status { display: flex; justify-content: space-between; padding: 1px 8px; background: #3b4a6b; color: #f2f4ff; }
+/* The status bar as CHROME (S3 gave it the structure — discrete seats —
+   this gives it the look): application chrome reads in the proportional
+   chrome font (--chrome-font), not the editor's cells; the bar is its own
+   surface (--sb-bg) with a hairline above it; the file name leads in a
+   heavier weight; a label (the format's literal, "Row") is a small quiet
+   caption; the modified / read-only badges are accent PILLS; the pending
+   chord is a key cap in the editor's font; row / column digits are tabular
+   so they do not jitter. While split, each window's header is the same bar
+   and the ACTIVE window's header carries the accent (the page marks it,
+   markStacks). Theme it through the @gui custom properties like everything
+   else. */
+.status { font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+          padding: 2px 10px; background: var(--sb-bg, #262b3a); color: var(--sb-fg, #d9dbe4);
+          border-top: 1px solid var(--sb-line, #343b52); align-items: center; }
+.sb-left, .sb-right { display: flex; gap: 14px; align-items: center; min-width: 0; }
+.sb-seat { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.sb-label { color: var(--sb-label, #8b91a8); font-size: 10.5px; text-transform: uppercase;
+            letter-spacing: 0.05em; }
+.sb-n .sb-text { font-weight: 600; color: var(--sb-name, #f2f4ff); }
+.sb-r .sb-text, .sb-c .sb-text, .sb-o .sb-text { font-variant-numeric: tabular-nums; }
+.sb-m .sb-text, .sb-R .sb-text { background: var(--accent, #9fc2ff); color: var(--bg, #1b1d24);
+                                 padding: 0 8px; border-radius: 9px; font-size: 11px;
+                                 font-weight: 600; line-height: 1.5; }
+.sb-M .sb-text { font-weight: 700; letter-spacing: 0.04em; }
+.sb-k .sb-text { font: 12px/1.4 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+                 background: #3b4a6b; border: 1px solid #4a5a80; padding: 0 6px; border-radius: 4px; }
+.sb-x .sb-text { color: var(--sb-context, #c9cde0); font-style: italic; }
+.sb-y .sb-text { color: var(--sb-label, #8b91a8); }
+.content { white-space: pre-wrap; padding: 0 8px; }
+.item { padding: 0 8px 0 24px; }
+.action { padding: 0 8px; color: var(--accent, #9fc2ff); }
+.list .label { padding: 0 8px; color: #9aa0b4; }
+.separator { height: 1.35em; }
+.edit { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; tab-size: 8; }
+.edit .line { white-space: pre; min-height: 1.35em; }
+.caret { background: #d9dbe4; color: #1b1d24; }
+.sel { background: #4a5a80; }
+/* Syntax highlight: the SAME style the terminal paints. A span arrives as
+   the theme's JOE spec (`keyword bold`, `string cyan`) parsed once by the
+   one spec parser (madcdis/ui_style.h) and rendered as classes — st-<attr>,
+   fg-<colour>, bg-<colour> — so the window shows the loaded scheme (^K T
+   swaps it here too) and a class the scheme leaves unstyled is plain, as in
+   the terminal. The page has no syntax vocabulary of its own: only the
+   PALETTE below — the 8 ANSI colours, 16 with bold-as-bright (the VT-102
+   model a terminal shows for `bold cyan`), each an @gui custom property
+   (`@gui pal-cyan #56b6c2`, `@gui pal-cyan-bright #6fd2de`); omit one and
+   this default holds. Blink is not rendered. */
+.st-bold      { font-weight: 700; }
+.st-dim       { opacity: 0.7; }
+.st-italic    { font-style: italic; }
+.st-underline { text-decoration: underline; }
+.st-inverse   { background: var(--fg, #d9dbe4); color: var(--bg, #1b1d24); }
+.fg-black   { color: var(--pal-black,   #3b4048); }
+.fg-red     { color: var(--pal-red,     #e06c75); }
+.fg-green   { color: var(--pal-green,   #98c379); }
+.fg-yellow  { color: var(--pal-yellow,  #e5c07b); }
+.fg-blue    { color: var(--pal-blue,    #61afef); }
+.fg-magenta { color: var(--pal-magenta, #c678dd); }
+.fg-cyan    { color: var(--pal-cyan,    #56b6c2); }
+.fg-white   { color: var(--pal-white,   #d9dbe4); }
+.st-bold.fg-black   { color: var(--pal-black-bright,   #5c6370); }
+.st-bold.fg-red     { color: var(--pal-red-bright,     #ff7b86); }
+.st-bold.fg-green   { color: var(--pal-green-bright,   #b5e890); }
+.st-bold.fg-yellow  { color: var(--pal-yellow-bright,  #ffd78a); }
+.st-bold.fg-blue    { color: var(--pal-blue-bright,    #7cc0ff); }
+.st-bold.fg-magenta { color: var(--pal-magenta-bright, #d896f0); }
+.st-bold.fg-cyan    { color: var(--pal-cyan-bright,    #6fd2de); }
+.st-bold.fg-white   { color: var(--pal-white-bright,   #ffffff); }
+.bg-black   { background: var(--pal-black,   #3b4048); }
+.bg-red     { background: var(--pal-red,     #e06c75); }
+.bg-green   { background: var(--pal-green,   #98c379); }
+.bg-yellow  { background: var(--pal-yellow,  #e5c07b); }
+.bg-blue    { background: var(--pal-blue,    #61afef); }
+.bg-magenta { background: var(--pal-magenta, #c678dd); }
+.bg-cyan    { background: var(--pal-cyan,    #56b6c2); }
+.bg-white   { background: var(--pal-white,   #d9dbe4); }
+.choice { display: flex; flex-wrap: wrap; padding: 1px 8px; gap: 0 4px; }
+.choice .label { color: #9aa0b4; margin-right: 8px; }
+.choice .opt { padding: 0 6px; }
+.choice .opt.sel { background: #d9dbe4; color: #1b1d24; }
+.choice.focus .opt.sel { background: #ffd479; }
+.choice.list { flex-direction: column; gap: 0; }
+.choice.list .opt { padding-left: 24px; }
+
+/* Slice 3 — the madcide workbench. A group holding region'd children lays
+   its SLOTS into a grid: an optional left rail, a docked sidebar spanning
+   the two upper rows, the editor filling, a bottom panel, the status bar
+   across the foot, and the foot itself (the message line — every child
+   that named no region). Empty columns (no rail slot) collapse to zero
+   width; an empty slot takes no space at all. A slot STACKS the nodes
+   docked into its region in tree order (S5): the editor slot is the
+   window stack — a status line heads its window, an inactive window keeps
+   the fixed height its `rows` hint asked for (the page sets it), the
+   active window flexes. */
+.node.group.workbench {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  grid-template-rows: 1fr auto auto auto;
+  grid-template-areas:
+    "rail sidebar editor"
+    "rail sidebar panel"
+    "statusbar statusbar statusbar"
+    "foot foot foot";
+  flex: 1 1 auto; min-height: 0;
+}
+.slot { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.slot:empty { display: none; }
+.workbench > .slot[data-slot="rail"]      { grid-area: rail; background: #22252f; }
+.workbench > .slot[data-slot="sidebar"]   { grid-area: sidebar; min-width: 12em;
+                                            width: var(--sidebar-w, auto);
+                                            border-right: 1px solid #2d3448;
+                                            overflow: auto; }
+.workbench > .slot[data-slot="editor"]    { grid-area: editor; overflow: hidden; }
+.workbench > .slot[data-slot="panel"]     { grid-area: panel;
+                                            height: var(--panel-h, auto);
+                                            max-height: var(--panel-h, 40vh);
+                                            border-top: 1px solid #2d3448;
+                                            overflow: auto; }
+/* Resizable panes (madcide polish): a splitter is a grid sibling laid over
+   its slot's edge — the panel's top edge, the sidebar's right edge — shown
+   only while the slot holds something; dragging sets --panel-h /
+   --sidebar-w on the workbench, a double-click on the panel's maximizes. */
+.workbench > .splitter { display: none; z-index: 5; background: transparent; }
+.workbench > .splitter:hover, .workbench.resizing > .splitter { background: var(--accent, #9fc2ff); opacity: 0.5; }
+.workbench:has(> .slot[data-slot="panel"]:not(:empty)) > .splitter[data-for="panel"] {
+  display: block; grid-area: panel; align-self: start; height: 5px; margin-top: -2px; cursor: row-resize; }
+.workbench:has(> .slot[data-slot="sidebar"]:not(:empty)) > .splitter[data-for="sidebar"] {
+  display: block; grid-area: sidebar; justify-self: end; width: 5px; margin-right: -2px; cursor: col-resize; }
+.workbench.resizing { user-select: none; }
+.workbench.resizing, .workbench.resizing * { cursor: inherit; }
+.workbench > .slot[data-slot="statusbar"] { grid-area: statusbar; }
+.workbench > .slot[data-slot="foot"]      { grid-area: foot; }
+/* The window stack: each window's header (its status line) separates it
+   from the one above; the ACTIVE window's header carries the accent at its
+   edge and a lighter surface, and the focused window the same edge. */
+.slot.stacked > .status { border-top: 1px solid var(--sb-line, #343b52); }
+.slot.stacked > .status:first-child { border-top: none; }
+.slot.stacked > .status.active { background: var(--sb-active, #2f3a55);
+                                 box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
+.slot.stacked > .edit.focus { box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
+/* The message line (the foot): a message bar in the chrome font. */
+.workbench > .slot[data-slot="foot"] > .content:not(.popup) {
+  font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  padding: 2px 10px; color: var(--sb-fg, #d9dbe4); background: var(--sb-bg, #262b3a);
+  border-top: 1px solid var(--sb-line, #343b52);
+}
+/* A floating pane (palette / quick pick / prompt): out of the grid flow,
+   centered near the top, above the workbench. */
+.node.popup {
+  position: fixed; top: 15%; left: 50%; transform: translateX(-50%);
+  min-width: 24em; max-width: 80%; max-height: 60%; overflow: auto;
+  z-index: 10; background: #2a2f3e; border: 1px solid #4a5a80;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+/* The prompts as dialogs (S6). A quick input: the label above a field that
+   shows the text the core holds with a caret after it, and the two keys it
+   answers to beneath; a confirm: the question and its buttons, the first
+   answer the primary. Chrome text is proportional (--chrome-font); the
+   field itself keeps the editor's monospace so what is typed reads as it
+   will land. */
+.node.popup.quickinput, .node.popup.confirm {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  font: 13px/1.4 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  border-radius: 6px; overflow: visible;
+}
+.node.popup.quickinput { min-width: 34em; }
+.qi-label { color: #c9cde0; }
+.qi-input { display: flex; align-items: center; padding: 5px 9px; min-height: 1.35em;
+            background: var(--bg, #1b1d24); border: 1px solid var(--accent, #9fc2ff);
+            border-radius: 4px; font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            white-space: pre; }
+.qi-hint { color: #7d829a; font-size: 11px; }
+.node.popup.confirm { min-width: 28em; gap: 14px; }
+.cf-question { color: #f2f4ff; font-size: 14px; }
+.cf-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+.cf-btn { font: inherit; padding: 4px 16px; border-radius: 4px; cursor: pointer;
+          border: 1px solid #4a5a80; background: #3b4a6b; color: #f2f4ff; }
+.cf-btn:hover { background: #4a5a80; }
+.cf-btn:first-child { background: var(--accent, #9fc2ff); border-color: var(--accent, #9fc2ff);
+                      color: #1b1d24; }
+/* A list pane as a DIALOG (madcide polish P2): the quick-pick shape in our
+   palette — a title bar in the chrome font, the filter field (the quick
+   input's field), the option rows as pick targets with the live selection
+   marked, and the buttons at the foot (the confirm's buttons: the first is
+   the primary). */
+.node.popup.dialog {
+  display: flex; flex-direction: column; gap: 8px; padding: 0 0 10px 0;
+  min-width: 36em; max-height: 70%;
+  font: 13px/1.4 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
+  border-radius: 6px; overflow: hidden;
+}
+.dlg-title { display: block; padding: 7px 14px; font-weight: 600; color: #f2f4ff;
+             background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52); }
+.dlg-filter { margin: 0 14px; }
+.dlg-list { display: flex; flex-direction: column; overflow: auto; min-height: 0;
+            font: 14px/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            white-space: pre; }
+.dlg-list .opt { padding: 1px 14px; cursor: pointer; }
+.dlg-list .opt:hover { background: #343b52; }
+.dlg-list .opt.sel { background: var(--sb-active, #2f3a55); box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); color: #f2f4ff; }
+.node.popup.dialog.focus .dlg-list .opt.sel { background: #3b4a6b; }
+.dlg-buttons { padding: 0 14px; }
+/* A tabbed tool window's strip (madcide polish P3a — the bottom panel's
+   Problems / Output): chrome-font tabs on the bar surface, the active one
+   underlined in the accent; the panel's group fills its slot so an empty
+   Output still reads as a pane. */
+.tabstrip { display: flex; gap: 2px; padding: 0 8px; flex: 0 0 auto;
+            background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52);
+            font: 11px/2.2 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif); }
+.tabstrip .tab { padding: 0 10px; color: var(--sb-label, #8b91a8); cursor: pointer;
+                 text-transform: uppercase; letter-spacing: 0.05em; }
+.tabstrip .tab:hover { color: #f2f4ff; }
+.tabstrip .tab.active { color: #f2f4ff; box-shadow: inset 0 -2px 0 var(--accent, #9fc2ff); }
+.workbench > .slot[data-slot="panel"] > .node.group { flex: 1 1 auto; min-height: 9em; overflow: auto; }
+.workbench > .slot[data-slot="panel"] .choice.list .opt { cursor: pointer; }
+/* The embedded Terminal's screen (polish P3b-2): the edit node over the
+   [terminal] buffer on a darker surface, its caret the program's cursor. */
+.edit.terminal { background: #0f1117; color: #d4d7e0; }
+.edit.terminal .caret { background: #9fc2ff; color: #0f1117; }
+.workbench > .slot[data-slot="panel"] .choice.list .opt:hover { background: #343b52; }
+/* The editor TABS (polish P4): the buffer ring as a strip above the window
+   stack — a content node docked first into the editor slot carrying the
+   strip; its own text is empty, so the node is the strip. */
+.workbench > .slot[data-slot="editor"] > .node.content { padding: 0; flex: 0 0 auto; }
+.workbench > .slot[data-slot="editor"] > .node.content > .tabstrip { text-transform: none;
+  letter-spacing: 0; font-size: 12px; }
+.workbench > .slot[data-slot="editor"] > .node.content > .tabstrip .tab { text-transform: none;
+  letter-spacing: 0; padding: 0 12px; border-right: 1px solid var(--sb-line, #343b52); }

@@ -202,17 +202,26 @@ void *madcdl_sym_default(const char *name)
 	// gives script-side pthread_* the same way (the exe only IMPORTS
 	// those names, and GetProcAddress on self cannot see imports). No
 	// name overlaps with ucrtbase — the order is Linux load-order parity,
-	// not a tie-break.
-	static const char *const crt_mods[] = { "libstdc++-6.dll",
-						"libwinpthread-1.dll",
-						"ucrtbase.dll", "kernel32.dll",
-						NULL };
-	for (int i = 0; crt_mods[i]; i++) {
-		HMODULE h = GetModuleHandleA(crt_mods[i]);
+	// not a tie-break. ws2_32 (Winsock, imported by the socket channel)
+	// closes the walk so script-side socket names resolve the way libc's
+	// do under RTLD_DEFAULT. A module not loaded is skipped.
+	for (const char *const *m = madcdl_default_scope_modules(); *m; m++) {
+		HMODULE h = GetModuleHandleA(*m);
 		if (h && (p = GetProcAddress(h, name)) != NULL)
 			return (void *)p;
 	}
 	return NULL;
+}
+
+// The ONE default-scope module list (contract in madc_dl.h): the symbol
+// walk above, the native cover set and the PE import-attribution order.
+const char *const *madcdl_default_scope_modules(void)
+{
+	static const char *const mods[] = { "libstdc++-6.dll",
+					    "libwinpthread-1.dll",
+					    "ucrtbase.dll", "kernel32.dll",
+					    "ws2_32.dll", NULL };
+	return mods;
 }
 
 void madcdl_close(void *handle)

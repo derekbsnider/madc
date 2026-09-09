@@ -141,7 +141,14 @@ private:
 	    { "pipe", domain::ipc, family::pipe, true, true },
 	    { "shm", domain::ipc, family::shared_memory, true, true },
 	    { "ipc", domain::ipc, family::generic_ipc, false, false },
-	    { "exec", domain::execution, family::process, true, true }
+	    { "exec", domain::execution, family::process, true, true },
+	    // madc's own program-as-a-data-source schemes (madcide polish
+	    // P3b-1): the live parse handle / the project manifest run in a
+	    // child through the process owner — process family, like exec.
+	    { "madcrun", domain::execution, family::process, true, true },
+	    { "madcproj", domain::execution, family::process, true, true },
+	    // a command on a pseudo-terminal (the embedded Terminal's shell)
+	    { "pty", domain::execution, family::process, true, true }
 	};
 	for ( std::size_t i = 0; i < sizeof(schemes) / sizeof(schemes[0]); ++i )
 	{
