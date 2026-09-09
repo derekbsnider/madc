@@ -100,6 +100,24 @@ void ev_pointer(var &e, ui::pointer_phase phase, long off, long subject)
     e = f;
 }
 
+// The first problems row's content, wherever the panel chrome docked it
+// (the group -> its choice -> the rows). "" when none.
+void problems_row0(var &out, var &tree)
+{
+    out = "";
+    for ( var pk : tree["children"] )
+    {
+	if ( pk["hints"].is_null() || !(pk["hints"]["region"] == "panel") )
+	    continue;
+	for ( var ch : pk["children"] )
+	    if ( ch["role"] == "choice" && php::count(ch["children"]) > 0 )
+	    {
+		out = ch["children"][0]["content"];
+		return;
+	    }
+    }
+}
+
 int main()
 {
     const char *path = "madc_ide_test.mad";
@@ -285,7 +303,7 @@ int main()
     S.compose_ide_tree(tree, doc);
     ui::render_tree(rendered, w, tree);
     print("--- outline view ---\n{}--- end ---\n", rendered);
-    ev_choose(e, 2, "goto");
+    ev_choose(e, 2, "gotodef");		// a definition row's verb (V2)
     S.apply_ide_event(doc, e);
     println("goto-outline: caret={}", es_int(w, es, "caret", -1));
 
@@ -663,9 +681,8 @@ int main()
     S.apply_ide_event(bldoc, e);
     madc::task_drain();
     ui::get(bdg, w, es, "diags");
-    ui::get(pn, w, es, "pane");
-    println("native-build-fail: rows-pos={} pane={}",
-	    php::count(bdg) > 0 ? 1 : 0, pane_name(cur_pane(w, es)));
+    println("native-build-fail: rows-pos={} problems-shown={}",
+	    php::count(bdg) > 0 ? 1 : 0, view_shown(w, es, viewPROBLEMS) ? 1 : 0);
     // Run on the red buffer: refused LOUD before any suspend/fork.
     ev_key(e, "esc");			// close the diags pane first
     S.apply_ide_event(bldoc, e);
@@ -674,9 +691,8 @@ int main()
     ev_choose(e, 4, "bld-run");
     S.apply_ide_event(bldoc, e);
     ui::get(msg, w, es, "msg");
-    ui::get(pn, w, es, "pane");
-    println("run-refused-red: refused-msg={} pane={}",
-	    msg.index("Run refused") >= 0 ? 1 : 0, pane_name(cur_pane(w, es)));
+    println("run-refused-red: refused-msg={} problems-shown={}",
+	    msg.index("Run refused") >= 0 ? 1 : 0, view_shown(w, es, viewPROBLEMS) ? 1 : 0);
     // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
     // window is DETERMINISTIC (spawn never switches): the task sees the
     // pre-start flag and reports stopped without building anything.
@@ -841,12 +857,12 @@ int main()
     for ( var dr : pdiags )
 	if ( dr["file"] == "madc_ide_bad.mad" )
 	    badrows = badrows + 1;
-    var ppane;
-    ui::get(ppane, w, es, "pane");
-    println("proj-check: pane={} bad-rows>0 {} msg={}", pane_name(cur_pane(w, es)),
-	    badrows > 0 ? 1 : 0, msg);
+    println("proj-check: problems-shown={} bad-rows>0 {} msg={}",
+	    view_shown(w, es, viewPROBLEMS) ? 1 : 0, badrows > 0 ? 1 : 0, msg);
     S.compose_ide_tree(tree, doc);
-    var prow0 = format("{}", tree["children"][2]["children"][0]["content"]);
+    var prow0r;
+    problems_row0(prow0r, tree);
+    var prow0 = format("{}", prow0r);
     println("proj-check-row: file-led={}",
 	    prow0.index("madc_ide_") == 0 ? 1 : 0);
     ev_choose(e, 1, "goto");		// a FILE row's goto OPENS the file
@@ -926,9 +942,8 @@ int main()
     ui::set(w, es, "msg", "");
     ev_action(e, "build-1", "");
     S.apply_ide_event(gdoc, e);
-    ui::get(cpane, w, es, "pane");
     ui::get(msg, w, es, "msg");
-    println("menu-build-row: pane='{}' unknown={} msg={}", pane_name(cur_pane(w, es)),
+    println("menu-build-row: shown={} unknown={} msg={}", view_name(slot_shown(w, es, slotPANEL)),
 	    strstr(msg.c_str(), "Unknown action") != 0 ? 1 : 0, msg);
 
     // -- polish P2b: File -> Open Project… — the headless session gets the
@@ -1851,10 +1866,10 @@ int main()
     var ptabs = pnode["hints"]["tabs"];
     var pnpane;
     ui::get(pnpane, w, es, "pane");
-    println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} diags-pane={}",
+    println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} problems-shown={}",
 	    php::count(ptabs), ptabs[0]["title"], ptabs[0]["active"],
 	    ptabs[1]["title"], pnode["children"][0]["role"],
-	    pnode["children"][0]["label"], cur_pane(w, es) == paneDIAGS ? 1 : 0);
+	    pnode["children"][0]["label"], view_shown(w, es, viewPROBLEMS) ? 1 : 0);
     ev_action(e, "output", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(tree, doc);
@@ -1944,7 +1959,7 @@ int main()
     println("run-window: said={} exit={} tab={} live={} msg={}",
 	    rtxt.index("run-says-hi") >= 0 ? 1 : 0,
 	    rtxt.index("[exit 3]") >= 0 ? 1 : 0,
-	    es_int(w, es, "panel", 0), es_int(w, es, "buildlive", 0), msg);
+	    slot_shown(w, es, slotPANEL) != viewNONE ? 1 : 0, es_int(w, es, "buildlive", 0), msg);
     remove("madc_ide_run.mad");
     pjk["kind"] = "console";		// back to the console kind
     ui::set(w, es, "proj", pjk);
@@ -1962,10 +1977,8 @@ int main()
     edit_file(w, es, doc, "madc_ide_tty.mad");
     long ttydoc = active_doc(w, es, doc);
     run_buffer(w, es, ttydoc);
-    var ttab;
-    ui::get(ttab, w, es, "paneltab");
     println("tty-start: live={} focus={} tab={}", es_int(w, es, "termlive", 0),
-	    es_int(w, es, "termfocus", 0), tab_name(es_int(w, es, "paneltab", tabPROBLEMS)));
+	    es_int(w, es, "termfocus", 0), view_name(slot_shown(w, es, slotPANEL)));
     // The keyboard returns with the scope's key (^] termunfocus, baked
     // data) and the `terminal` command gives it back to the live program.
     ev_key(e, "^]");

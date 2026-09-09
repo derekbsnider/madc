@@ -21,11 +21,11 @@ count_rows()
 }
 
 n=$(count_rows "$FILE")
-if [ "$n" -ne 2 ]; then
-	echo "check-madcide-single-owners: FAIL — $n buffer-row shape sites" \
-	     "in tools/madcide/madcide_core.inc (expected 2: push_buffer_row" \
-	     "+ edit_file's live-state seed). Route new rows through" \
-	     "push_buffer_row." >&2
+if [ "$n" -ne 3 ]; then
+	echo "check-madcide-single-owners: FAIL — $n container-navigation row" \
+	     "shape sites in tools/madcide/madcide_core.inc (expected 3:" \
+	     "push_buffer_row + edit_file's live-state seed + layout_tab, the" \
+	     "layout tab's owner (V2)). Route new rows through those owners." >&2
 	exit 1
 fi
 
@@ -33,7 +33,7 @@ fi
 tmp=$(mktemp)
 cat "$FILE" > "$tmp"
 echo '    b["bend"] = -1;	// synthetic' >> "$tmp"
-if [ "$(count_rows "$tmp")" -ne 3 ]; then
+if [ "$(count_rows "$tmp")" -ne 4 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic row site (the marker went blind)." >&2

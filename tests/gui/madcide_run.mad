@@ -116,7 +116,7 @@ int main()
 		stage = 3;
 		run_buffer(w, es, doc);
 		println("RUN started live={} tab={}", es_int(w, es, "termlive", 0),
-			tab_name(es_int(w, es, "paneltab", tabPROBLEMS)));
+			view_name(slot_shown(w, es, slotPANEL)));
 		render(S, t, w, doc);
 	    }
 	}

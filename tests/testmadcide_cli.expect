@@ -4,7 +4,7 @@ long add(long a, long b) { return a + b; }
 long twice(long x) { return add(x, x); }
 long bad() { return nosuch; }
 
-Diagnostics
+Problems
   1. 3:26 error use of undeclared identifier 'nosuch'
 Check: 1 problem(s).
 --- end rc=1 ---

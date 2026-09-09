@@ -16,7 +16,7 @@ Check: 2 problem(s).
 junk long add(long a, long b) { return a + b; }
 long twice(long x) { return add(x, x); }
 
-Diagnostics
+Problems
   1. 1:4 error use of undeclared identifier 'junk'
   2. 2:31 error use of undeclared identifier 'add'
 --- end ---
@@ -70,11 +70,11 @@ native-build-start: live=1
 native-build-done: live=0 ndiags=0 built-msg=1
 run-headless: no-tui-msg=1
 live-buffer-build: ndiags=0 built-msg=1
-native-build-fail: rows-pos=1 pane=diags
-run-refused-red: refused-msg=1 pane=diags
+native-build-fail: rows-pos=1 problems-shown=1
+run-refused-red: refused-msg=1 problems-shown=1
 native-build-stop: live=0 stopped-msg=1
 proj-bld-rows: n=6 r0=Check project (in-process) r1=Build project (in-process) r2=Run project r5=Docs  [echo docs-{project}]
-proj-check: pane=diags bad-rows>0 1 msg=Project check:
+proj-check: problems-shown=1 bad-rows>0 1 msg=Project check:
 proj-check-row: file-led=1
 proj-goto: path=madc_ide_bad.mad switched=1
 proj-run-red: refused=1
@@ -84,7 +84,7 @@ proj-kind-row: P Project kind console
 proj-kind-toggle: Project kind: gui. file-kind=gui
 proj-kind-toggle2: Project kind: console. file-kind=console
 close-button: before=help after='' unknown=0
-menu-build-row: pane='diags' unknown=0 msg=Project check: clean.
+menu-build-row: shown=problems unknown=0 msg=Project check: clean.
 proj-openproject-prompt: Project file to open (^C aborts):
 proj-openproject: Project madc_ide_open.prj.json: 1 TU(s). active=1 projfile=madc_ide_open.prj.json kind=gui
 proj-implicit-check: Check: clean.
@@ -94,7 +94,7 @@ split: wins=2 shape=status/edit/status/edit focus=1 rows=11
 win-carets: w2=3 w1=9
 win-clamp: snapshot-ok=1 live-ok=1
 win-grow: neighbor-rows=10
-win-only: wins=0 kids=2 caret-kept=1
+win-only: wins=0 kids=3 caret-kept=1
 swap-modal: profile=neovim mode=normal
 swap: profile=pico tree=identical
 motion: caret=42
@@ -162,14 +162,14 @@ vi-toggle: mode='' typed-x=1
 ptr-drag: caret=6 press-mark=-1 mark=2 bend=6 lit=2..6 subject-ok=1
 ptr-press: caret=3 mark=-1 bend=-1
 ptr-window: other-buffer=1 switched-to=1 active-is-first=1 caret=1
-panel-problems: tabs=3 t0=Problems t0-active=1 t1=Output child=choice label=Problems diags-pane=0
+panel-problems: tabs=3 t0=Problems t0-active=1 t1=Output child=choice label=Problems problems-shown=1
 panel-output: t1-active=1 child=content
 panel-toggle: panels=0
 tabs: n>=2 1 active-is-bufidx 1 arg-of-active=
 bufsel-arg: bufidx=0
 bufsel-prompt: Buffer (^C aborts):
 bufsel-name: path=madc_ide_second.mad
-run-window: said=1 exit=1 tab=1 live=0 msg=Run madc_ide_run.mad — Output shows it.
+run-window: said=1 exit=1 tab=1 live=0 msg=Run madc_ide_run.mad — the Output tab shows it.
 tty-start: live=1 focus=1 tab=terminal
 tty-unfocus: focus=0
 tty-refocus: focus=1

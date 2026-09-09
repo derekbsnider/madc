@@ -104,8 +104,10 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
-	void panel(bool has);		// the client renders regions (P3a): the
-					// bottom PANEL with tabs is composed
+	void panel(bool has);		// the client renders REGIONS (a
+					// window): runs and the shell go to a
+					// pty in the Terminal tab; the panel
+					// itself is the layout's (V2)
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
 	void request_refused(var &req);	// the client cannot hand over a
@@ -525,7 +527,8 @@ bool bind_rescue_keys(long w, long es)
 // A LAYOUT is a tree of containers holding Views, owned by the client and
 // stored on the bag as "layout":
 //   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
-//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ { "kind": ide_view, "view": 0, "caret": 0, "mark": -1, "bend": -1, "grow": 0 }... ], "active": 0, "focus", "hidden" }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden" }
+//   tab   = layout_tab(kind, view): the CONTAINER — its View and its own navigation (caret, mark, bend, grow)
 //   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
 // The `.layout` text is the input boundary (profiles/default.layout, the
 // grammar in its header): every word converts ONCE here — slot_of, pmode_of,
@@ -534,6 +537,16 @@ bool bind_rescue_keys(long w, long es)
 // pane with children, a split with fewer than two children, two editor
 // regions or two windows refuse the same way (parse_keys' shape). The baked
 // default rides the same parser (the rescue-keys pattern).
+
+// THE layout-tab row shape, one owner (the single-owners gate counts the
+// container-navigation shape: this, push_buffer_row and edit_file's seed): a
+// fresh CONTAINER over a View of `kind` — its navigation starts at the top
+// with no block (design §6 Q1: caret / mark / bend live on the container).
+void layout_tab(var &out, long kind, long view)
+{
+    out = { "kind": kind, "view": view, "caret": 0, "mark": -1, "bend": -1,
+	    "grow": 0 };
+}
 
 // Split a trimmed line into its whitespace-separated words.
 void layout_words(var &out, var &line)
@@ -634,8 +647,8 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
 		err = format("line {}: unknown view '{}'", lineno, wd);
 		return false;
 	    }
-	    var tb = { "kind": k, "view": 0, "caret": 0, "mark": -1,
-		       "bend": -1, "grow": 0 };
+	    var tb;
+	    layout_tab(tb, k, 0);
 	    tabs.push(tb);
 	    continue;
 	}
@@ -979,6 +992,169 @@ bool load_layout(long w, long es, const char *name)
     }
     ui::set(w, es, "layout", layout);
     return true;
+}
+
+// The client's layout tree; a session that never ran open (the headless
+// harness attaches over its own world) gets the baked default on first use.
+void layout_get(var &lo, long w, long es)
+{
+    ui::get(lo, w, es, "layout");
+    if ( lo.is_null() )
+    {
+	var err;
+	parse_layout(lo, default_layout_text(), err);
+	ui::set(w, es, "layout", lo);
+    }
+}
+
+// The chrome pane hosting a View KIND: its index in the layout's chrome and
+// the tab's index within it; -1 when no pane hosts the kind.
+long chrome_hosting(var &lo, long kind, long &tab)
+{
+    long ci = 0;
+    for ( var c : lo["chrome"] )
+    {
+	long ti = 0;
+	for ( var t : c["tabs"] )
+	{
+	    if ( t["kind"] == kind )
+	    {
+		tab = ti;
+		return ci;
+	    }
+	    ti = ti + 1;
+	}
+	ci = ci + 1;
+    }
+    tab = -1;
+    return -1;
+}
+
+// The kind a chrome pane SHOWS: its active tab's, viewNONE while hidden.
+long chrome_shown(var &c)
+{
+    if ( c["hidden"].as_integer() != 0 )
+	return viewNONE;
+    var tabs = c["tabs"];
+    long a = c["active"].as_integer();
+    if ( a < 0 || a >= php::count(tabs) )
+	return viewNONE;
+    var t = tabs[a];
+    return t["kind"].as_integer();
+}
+
+// The kind shown in the chrome pane of a SLOT (viewNONE: hidden or no such
+// pane) — a probe's read.
+long slot_shown(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
+	if ( c["slot"] == slot )
+	    return chrome_shown(c);
+    return viewNONE;
+}
+
+// Is a tool View SHOWN (its pane visible with it the active tab)?
+bool view_shown(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var c = lo["chrome"][ci];
+    return c["hidden"].as_integer() == 0 && c["active"].as_integer() == tab;
+}
+
+// SHOW a tool View: the chrome pane hosting it comes up with that tab active
+// — the ONE surface (the terminal's diags pane and the window's panel used
+// to be two). Focus stays where it is (Tab reaches the rows, as ever; V2b's
+// viewfocus moves it). Remembers the kind as the one the @pane esc hides.
+// False + a status message for a kind no pane of this layout hosts.
+bool show_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg", format("No pane of the layout hosts the {} view.",
+				     view_name(kind)));
+	return false;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["hidden"] = 0;
+    c["active"] = tab;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "chromelast", kind);
+    return true;
+}
+
+// HIDE the chrome pane hosting a kind; true when it was visible.
+bool hide_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    bool was = c["hidden"].as_integer() == 0;
+    c["hidden"] = 1;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    if ( es_int(w, es, "chromelast", viewNONE) == kind )
+    {
+	long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    }
+    return was;
+}
+
+// The @pane esc on the chrome: hide the pane that showed the LAST kind; false
+// when nothing is up to hide (the key falls through).
+bool hide_last_view(long w, long es)
+{
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+	return false;
+    long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    return hide_view(w, es, k);
+}
+
+// TOGGLE a slot's chrome pane (the `panel` command): hidden <-> shown with
+// its active tab; a layout without that slot says so.
+void toggle_slot(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	bool hide = c["hidden"].as_integer() == 0;
+	c["hidden"] = hide ? 1 : 0;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	long last = hide ? viewNONE : chrome_shown(c);
+	ui::set(w, es, "chromelast", last);
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
 }
 
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
@@ -1453,37 +1629,19 @@ long diag_error_count(var &diags)
     return errs;
 }
 
-// ---- the bottom PANEL (polish P3a) --------------------------------------
-// A region-rendering client (the window) pushes `haspanel`; under it the
-// composer adds a persistent, optionally visible tool window with TABS —
-// Problems (the diagnostics projection) and Output (the [build] stream):
-// VS Code's bottom pane in our palette. State on the bag: `panel`
-// (visible), `paneltab` (the active tab). The terminal never composes it
-// (byte-identical). Commands in the one vocabulary: panel (toggle),
-// problems, output (show that tab).
-void show_panel_tab(long w, long es, long tab)
-{
-    ui::set(w, es, "panel", 1);
-    ui::set(w, es, "paneltab", tab);
-}
-
-// ONE way to surface the diagnostics: the terminal's diags pane, or — in
-// a window — the panel's Problems tab. Six sites used to set the pane by
-// hand; a second surface is where they would have drifted.
+// ---- the tool Views' ONE surface (V2: the layout's chrome panes) ----------
+// The diagnostics show where the layout puts the problems View (the panel's
+// Problems tab by default — in the terminal too, the ruled relaxation); a
+// build's stream where it puts the output View. Six sites used to set the
+// pane by hand; a second surface is where they would have drifted.
 void show_diags(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, tabPROBLEMS);
-    else
-	set_pane(w, es, paneDIAGS);
+    show_view(w, es, viewPROBLEMS);
 }
 
-// A build starting: a window shows its stream in the Output tab; the
-// terminal reaches [build] via ^P as before.
 void show_output(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, tabOUTPUT);
+    show_view(w, es, viewOUTPUT);
 }
 
 // The check ACTION: refresh + report + show the pane.
@@ -1551,10 +1709,10 @@ void toggle_profile(long w, long es)
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 long active_doc(long w, long es, long fallback);
-void goto_pane_row(long w, long es, long doc, long option)
+void goto_pane_row(long w, long es, long doc, long option, bool outline)
 {
     var rows;
-    if ( cur_pane(w, es) == paneOUTLINE )
+    if ( outline )
 	ui::get(rows, w, es, "outline");
     else
 	ui::get(rows, w, es, "diags");
@@ -4006,10 +4164,7 @@ void start_capture(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
-    if ( es_flag(w, es, "haspanel") )
-	ui::set(w, es, "msg", format("{} — Output shows it.", t));
-    else
-	ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+    ui::set(w, es, "msg", format("{} — the Output tab shows it.", t));
 }
 
 void start_build(long w, long es, const char *cmd)
@@ -4152,7 +4307,7 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "termsrc", u);
     ui::set(w, es, "termlive", 1);
     ui::set(w, es, "termfocus", 1);
-    show_panel_tab(w, es, tabTERMINAL);
+    show_view(w, es, viewTERMINAL);
     go term_pump(w, es, tdoc, stopc, inc);
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
@@ -5288,12 +5443,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdOUTLINE:
 	    {
-		if ( cur_pane(w, es) == paneOUTLINE )
-		    set_pane(w, es, paneNONE);
+		// The outline View toggles where the layout hosts it (the
+		// sidebar by default): shown -> hidden; else refresh + show.
+		if ( view_shown(w, es, viewOUTLINE) )
+		    hide_view(w, es, viewOUTLINE);
 		else
 		{
 		    refresh_outline(w, es, doc);
-		    set_pane(w, es, paneOUTLINE);
+		    show_view(w, es, viewOUTLINE);
 		}
 		return true;
 	    }
@@ -5378,24 +5535,24 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdPANEL:
 	    {
-		// The bottom panel's visibility (polish P3a) — data a window
-		// renders; the terminal composes no panel either way.
-		ui::set(w, es, "panel", es_int(w, es, "panel", 0) != 0 ? 0 : 1);
+		// The panel pane's visibility (V2: the layout's chrome; every
+		// client renders it — the terminal as a band).
+		toggle_slot(w, es, slotPANEL);
 		return true;
 	    }
 	    case cmdPROBLEMS:
 	    {
-		show_panel_tab(w, es, tabPROBLEMS);
+		show_view(w, es, viewPROBLEMS);
 		return true;
 	    }
 	    case cmdOUTPUT:
 	    {
-		show_panel_tab(w, es, tabOUTPUT);
+		show_view(w, es, viewOUTPUT);
 		return true;
 	    }
 	    case cmdTERMINAL:
 	    {
-		show_panel_tab(w, es, tabTERMINAL);
+		show_view(w, es, viewTERMINAL);
 		if ( es_int(w, es, "termlive", 0) != 0 )
 		    ui::set(w, es, "termfocus", 1);
 		return true;
@@ -5486,7 +5643,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	var pc;
 	if ( scope_action_named(pc, w, es, "pane", ev) && pc == cmdPANECLOSE )
 	{
-	    set_pane(w, es, paneNONE);
+	    // A popup closes first; with none up, the chrome pane shown last
+	    // hides (V2) — the pick list's Close and the panel's esc share the
+	    // one @pane action.
+	    if ( cur_pane(w, es) != paneNONE )
+		set_pane(w, es, paneNONE);
+	    else
+		hide_last_view(w, es);
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -5535,12 +5698,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		build_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdGOTO:
+	    case cmdGOTODEF:
 		// Pane rows carry STORED line numbers — meaningless against a
-		// displayed view.
+		// displayed view. Two verbs, one handler: a problems row's
+		// goto and a definition's gotodef never make a choose guess
+		// which list it came from (both lists can be up at once).
 		if ( viewing )
 		    refuse_edit(w, es);
 		else
-		    goto_pane_row(w, es, doc, ev["option"].as_integer());
+		    goto_pane_row(w, es, doc, ev["option"].as_integer(),
+				  ev_code(ev) == cmdGOTODEF);
 		return true;
 	    // The shared editor menu's rows (compose_menu: Save / Find / Quit).
 	    case cmdW:
@@ -5584,6 +5751,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    return true;
 	}
     }
+    else if ( es_int(w, es, "chromelast", viewNONE) != viewNONE )
+    {
+	// The chrome pane shown last hides on the @pane esc (V2).
+	var pa;
+	if ( scoped_action(pa, w, es, "pane", ev) && pa == cmdPANECLOSE
+	  && hide_last_view(w, es) )
+	    return true;
+    }
     edit_key(w, es, nav, caret, ev);
     return true;	// unbound keys are inert (chords arrive as actions)
 }
@@ -5625,7 +5800,8 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{}:{} {} {}", row["line"],
 				   row["column"], row["severity"],
 				   row["message"]);
-	var gh = { "code": cmdGOTO };	// a navigable row: its verb as a code
+	long verb = outline_pane ? cmdGOTODEF : cmdGOTO;
+	var gh = { "code": verb };	// a navigable row: its verb as a code
 	it["hints"] = gh;
 	items[] = it;
 	nrows = nrows + 1;
@@ -5661,6 +5837,118 @@ void view_lens_hints(var &eh, long w, long es, var &v)
     view_spans(vhs, w, es, v);
     if ( !vhs.is_null() && php::count(vhs) > 0 )
 	eh["spans"] = vhs;
+}
+
+// ---- the chrome panes (V2): composed FROM the layout ----------------------
+// A visible chrome pane is a group docked by its slot (`region`, the wire
+// word), placed by its `side` and `size` (the grid carves a band; the page
+// sets the slot's track), heading its tabs as a strip when it holds more
+// than one (each tab posts the command that shows its View — the S1 rule),
+// and holding the active tab's projection: Problems = the diagnostics rows,
+// Outline = the definitions (both through diag_items, the one builder),
+// Output = the [build] text (its tail), Terminal = the [terminal] screen. A
+// kind with no builder yet names itself. The pane's `focus` autofocuses its
+// list; Tab reaches it as ever.
+void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
+{
+    var strip = {};
+    long active = c["active"].as_integer();
+    long ntabs = php::count(c["tabs"]);
+    long shown = viewNONE;
+    long ti = 0;
+    for ( var t : c["tabs"] )
+    {
+	long k = t["kind"].as_integer();
+	if ( ti == active )
+	    shown = k;
+	var nm = view_name(k);
+	var title = php::ucfirst(nm);
+	long sc = view_show_cmd(k);
+	var an;
+	cmd_name(an, sc);
+	var tb = { "title": title, "action": an, "code": sc };
+	if ( ti == active )
+	    tb["active"] = 1;
+	strip.push(tb);
+	ti = ti + 1;
+    }
+    bool focus = c["focus"].as_integer() != 0;
+    var pkids = {};
+    switch ( shown )
+    {
+	case viewTERMINAL:
+	{
+	    // The screen: an edit node over the [terminal] buffer (the
+	    // line-DOM, the caret at the end) whose subject is that buffer —
+	    // a press on it is how the program gets the keyboard
+	    // (pointer_event). Empty until something ran.
+	    long tdoc = term_doc_if_any(w, es);
+	    var tt = "";
+	    long tsz = 0;
+	    if ( tdoc != 0 )
+	    {
+		ui::text(tt, w, tdoc);
+		tsz = ui::text_size(w, tdoc);
+	    }
+	    var term = { "role": "edit" };
+	    term["content"] = tt;
+	    if ( tdoc != 0 )
+		term["subject"] = tdoc;
+	    var th = { "terminal": 1 };
+	    th["caret"] = tsz;
+	    if ( es_int(w, es, "termfocus", 0) != 0 )
+		th["focus"] = 1;
+	    term["hints"] = th;
+	    pkids.push(term);
+	    break;
+	}
+	case viewOUTPUT:
+	{
+	    var outn = { "role": "content" };
+	    var bt = "";
+	    long bdoc = build_doc_if_any(w, es);
+	    if ( bdoc != 0 )
+		ui::text(bt, w, bdoc);
+	    outn["content"] = bt;
+	    outn["hints"] = { "tail": 1 };	// a band shows the stream's END
+	    pkids.push(outn);
+	    break;
+	}
+	case viewOUTLINE:
+	case viewPROBLEMS:
+	{
+	    bool outline = shown == viewOUTLINE;
+	    var pb = { "role": "choice" };
+	    pb["label"] = outline ? "Outline" : "Problems";
+	    var pitems = {};
+	    long pn = diag_items(pitems, w, es, doc, outline);
+	    if ( pn == 0 )
+		pitems[] = { "role": "item",
+			     "content": outline ? "(no definitions)" : "(clean)" };
+	    pb["children"] = pitems;
+	    var ph = { "list": 1 };
+	    if ( focus )
+		ph["focus"] = 1;
+	    pb["hints"] = ph;
+	    pkids.push(pb);
+	    break;
+	}
+	default:
+	{
+	    var nn = { "role": "content" };
+	    nn["content"] = format("({} view)", view_name(shown));
+	    pkids.push(nn);
+	    break;
+	}
+    }
+    var g = { "role": "group" };
+    long slot = c["slot"].as_integer();
+    var gh = { "region": slot_name(slot), "side": c["side"], "size": c["size"] };
+    if ( ntabs > 1 )
+	gh["tabs"] = strip;
+    g["hints"] = gh;
+    g["children"] = pkids;
+    out = g;
 }
 
 void IdeSession::compose_ide_tree(var &root, long doc)
@@ -6029,141 +6317,25 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    dh["dialog"] = dg;
 	    box["hints"] = dh;
 	}
-	else
-	{
-	    // diagnostics / outline: projections of the STORED compiler
-	    // data — navigable rows carrying the `goto` action.
-	    bool outline_pane = pane == paneOUTLINE;
-	    if ( outline_pane )
-		box["label"] = "Outline";
-	    else
-		box["label"] = "Diagnostics";
-	    nrows = diag_items(items, w, es, doc, outline_pane);
-	    if ( nrows == 0 )
-		items[] = { "role": "item",
-			    "content": outline_pane ? "(no definitions)"
-						    : "(clean)" };
-	}
 	box["children"] = items;
-	// The pane's workbench slot (slice 3) is madcide's OWN presentation
-	// policy for its OWN panes, expressed as DATA — a docked side view, a
-	// bottom panel, or a floating popup — never a name test in general
-	// machinery. A `popup` hint floats the choice as an overlay; a
-	// `region` hint docks it. Both are hints the grid model ignores.
-	long slot = pane_slot_of(pane);
-	if ( slot != slotNONE )
-	{
-	    var bh = box["hints"];
-	    if ( slot == slotPOPUP )
-		bh["popup"] = 1;
-	    else
-		bh["region"] = slot_name(slot);
-	    box["hints"] = bh;
-	}
+	// Every pane here is a PICK LIST (V2: the tool Views live in the
+	// layout's chrome panes below); dialog_hints floated it as a popup.
 	kids.push(box);
     }
 
-    // The live-build output panel (slice 3 Task 6): while a build streams,
-    // dock the [build] buffer's output as a panel region in the workbench
-    // (VS Code's Output shape). ADDITIVE and gated on buildlive — the TUI
-    // ignores region:panel and reaches [build] via ^P, and a drained build
-    // (buildlive == 0) composes no panel, so the terminal shape and every
-    // testmadcide compose-shape assertion are unchanged. Non-creating
-    // lookup: composition never mints a buffer.
-    if ( es_flag(w, es, "haspanel") )
+    // The CHROME panes (V2, design §2.2): every visible fixed-slot pane of
+    // the client's layout — after the popup, so a pick list keeps its place
+    // in the tree. The grid carves their bands by `side` / `size`; the page
+    // docks them by `region`.
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
     {
-	// The bottom PANEL (polish P3a): a `group` docked into the panel
-	// region whose `tabs` hint carries the STRIP as data — one tab per
-	// tool, each naming the command that shows it (a click posts it by
-	// name, the S1 rule) — and whose one child is the active tab's
-	// content: Problems = the diagnostics rows (diag_items, the same
-	// builder the terminal's pane uses), Output = the [build] buffer's
-	// text (live or last; empty when nothing was built). Composed only
-	// while `panel` is up.
-	if ( es_int(w, es, "panel", 0) != 0 )
-	{
-	    long tab = es_int(w, es, "paneltab", tabPROBLEMS);
-	    var strip = {};
-	    var t1 = { "title": "Problems", "action": "problems", "code": cmdPROBLEMS };
-	    if ( tab == tabPROBLEMS )
-		t1["active"] = 1;
-	    strip.push(t1);
-	    var t2 = { "title": "Output", "action": "output", "code": cmdOUTPUT };
-	    if ( tab == tabOUTPUT )
-		t2["active"] = 1;
-	    strip.push(t2);
-	    var t3 = { "title": "Terminal", "action": "terminal", "code": cmdTERMINAL };
-	    if ( tab == tabTERMINAL )
-		t3["active"] = 1;
-	    strip.push(t3);
-	    var pkids = {};
-	    if ( tab == tabTERMINAL )
-	    {
-		// The screen: an edit node over the [terminal] buffer (the
-		// line-DOM, the caret at the end) whose subject is that
-		// buffer — a press on it is how the program gets the
-		// keyboard (pointer_event). Empty until something ran.
-		long tdoc = term_doc_if_any(w, es);
-		var tt = "";
-		long tsz = 0;
-		if ( tdoc != 0 )
-		{
-		    ui::text(tt, w, tdoc);
-		    tsz = ui::text_size(w, tdoc);
-		}
-		var term = { "role": "edit" };
-		term["content"] = tt;
-		if ( tdoc != 0 )
-		    term["subject"] = tdoc;
-		var th = { "terminal": 1 };
-		th["caret"] = tsz;
-		if ( es_int(w, es, "termfocus", 0) != 0 )
-		    th["focus"] = 1;
-		term["hints"] = th;
-		pkids.push(term);
-	    }
-	    else if ( tab == tabOUTPUT )
-	    {
-		var out = { "role": "content" };
-		var bt = "";
-		long bdoc = build_doc_if_any(w, es);
-		if ( bdoc != 0 )
-		    ui::text(bt, w, bdoc);
-		out["content"] = bt;
-		pkids.push(out);
-	    }
-	    else
-	    {
-		var pb = { "role": "choice", "label": "Problems" };
-		var pitems = {};
-		long pn = diag_items(pitems, w, es, doc, false);
-		if ( pn == 0 )
-		    pitems[] = { "role": "item", "content": "(clean)" };
-		pb["children"] = pitems;
-		pb["hints"] = { "list": 1 };
-		pkids.push(pb);
-	    }
-	    var panel = { "role": "group" };
-	    var ph = { "region": "panel" };
-	    ph["tabs"] = strip;
-	    panel["hints"] = ph;
-	    panel["children"] = pkids;
-	    kids.push(panel);
-	}
-    }
-    else if ( es_int(w, es, "buildlive", 0) != 0 )
-    {
-	long bdoc = build_doc_if_any(w, es);
-	if ( bdoc != 0 )
-	{
-	    var bt;
-	    ui::text(bt, w, bdoc);
-	    var panel = { "role": "content" };
-	    panel["content"] = bt;
-	    var ph = { "region": "panel" };
-	    panel["hints"] = ph;
-	    kids.push(panel);
-	}
+	if ( c["hidden"].as_integer() != 0 )
+	    continue;
+	var cp;
+	compose_chrome_pane(cp, w, es, doc, c);
+	kids.push(cp);
     }
 
     // The bottom message line (JOE's msgbuf): prompts, the search

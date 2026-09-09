@@ -48,11 +48,11 @@ int main()
     var box = kids[php::count(kids) - 1];
     println("pane: role={} popup={}", box["role"],
 	    box["hints"]["popup"].is_null() ? "none" : "yes");
-    // The diagnostics pane DOCKS in the bottom panel region (owner ruling
-    // 2026-09-09: its home is the panel's Problems tab). A former layout
-    // table keyed it "diagnostics" while the pane spells "diags", so it
-    // carried no slot at all; the slot policy is an enum switch now.
-    set_pane(w, es, paneDIAGS);
+    // The problems View shows in the chrome pane the LAYOUT hosts it in
+    // (V2: the panel, bottom, by default): a group docked by region, never
+    // a popup. (A former layout table keyed the pane "diagnostics" while it
+    // spelled "diags", so it carried no slot at all; placement is data now.)
+    show_view(w, es, viewPROBLEMS);
     var tdiag;
     S.compose_ide_tree(tdiag, doc);
     var dkids = tdiag["children"];

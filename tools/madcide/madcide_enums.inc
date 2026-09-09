@@ -47,7 +47,7 @@ enum ide_cmd : unsigned short
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
     // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
     //      the ^T Options rows, the ^B palette's rows ----
-    cmdGOTO, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
+    cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
     cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
     cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
     cmdBUILDROW				// a Build MENU row "build-<n>": the
@@ -147,6 +147,7 @@ void cmd_table(var &t)
     rows[] = { "name": "viopenbelow", "code": cmdVIOPENBELOW };
     rows[] = { "name": "viopenabove", "code": cmdVIOPENABOVE };
     rows[] = { "name": "goto", "code": cmdGOTO };
+    rows[] = { "name": "gotodef", "code": cmdGOTODEF };
     rows[] = { "name": "w", "code": cmdW };
     rows[] = { "name": "f", "code": cmdF };
     rows[] = { "name": "q", "code": cmdQ };
@@ -240,25 +241,26 @@ ui::key motion_key_of(long code)
 }
 
 // ---- the IDE's STATE discriminators (V0.5d) -------------------------------
-// The bag's slots — pane, paneltab, pmode, vimode — and the kinds that ride
+// The bag's slots — pane, pmode, vimode — and the kinds that ride
 // a request, a row or the manifest are INTEGERS (es_int reads them, a switch
 // dispatches them); a NAME appears only where text leaves the program: a
 // probe's print, a message, the page's region hook, the host's dialog mode,
 // the manifest file — through the converters here, never a literal at the
 // site. Prefixed unscoped enums with a fixed base (the owner's spelling).
 
-// The side pane a terminal shows (paneNONE = none up).
+// The POPUP pane a client shows (paneNONE = none up): the pick lists — help,
+// options, the build palette, the modes palette, the project window. The
+// tool Views (problems, outline, output, terminal) are not panes here: they
+// live in the layout's chrome panes (V2, design §2.2) and show through
+// show_view.
 enum ide_pane : unsigned char
 {
-    paneNONE = 0, paneDIAGS, paneOUTLINE, paneHELP, paneOPTIONS, paneBUILD,
-    paneMODES, panePROJECT
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT
 };
 const char *pane_name(long p)
 {
     switch ( p )
     {
-	case paneDIAGS: return "diags";
-	case paneOUTLINE: return "outline";
 	case paneHELP: return "help";
 	case paneOPTIONS: return "options";
 	case paneBUILD: return "build";
@@ -266,18 +268,6 @@ const char *pane_name(long p)
 	case panePROJECT: return "project";
     }
     return "";
-}
-
-// The window's bottom-panel tab (tabPROBLEMS = the default when unset).
-enum ide_tab : unsigned char { tabPROBLEMS = 0, tabOUTPUT, tabTERMINAL };
-const char *tab_name(long t)
-{
-    switch ( t )
-    {
-	case tabOUTPUT: return "output";
-	case tabTERMINAL: return "terminal";
-    }
-    return "problems";
 }
 
 // The prompt that is up (pmNONE = none): what enter's answer means.
@@ -371,14 +361,11 @@ long bmode_of(var &m)
     return m == "terminal" ? bmTERMINAL : bmCAPTURE;
 }
 
-// Where a window lays a pane: a floating popup or a docked region (the
-// page's region hook spells the name — the workbench grid's sidebar and
-// bottom panel). The IDE's default layout policy for its OWN panes, as
-// data — the interim default until V2's .layout profiles make placement
-// the user's (owner 2026-09-09: layout flexibility within the UI). The
-// diagnostics pane docks in the bottom PANEL (owner: its original home is
-// the panel's Problems tab); a former name table keyed it "diagnostics"
-// while the pane spells "diags", so it never docked at all — fixed here.
+// A layout SLOT (V2, design §2.2): where a pane sits — a popup (a pick list
+// floating over the workbench), the sidebar or the panel (the fixed-slot
+// chrome, docked by the client's layout), or the editor region. Placement is
+// the layout's data (profiles/default.layout); slot_name is its wire word
+// (the page docks by `region`).
 enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
 const char *slot_name(long s)
 {
@@ -451,20 +438,6 @@ long pmode_of(var &name)
 	    return k;
     return lmNONE;
 }
-long pane_slot_of(long p)
-{
-    switch ( p )
-    {
-	case paneDIAGS:
-	    return slotPANEL;
-	case paneOUTLINE:
-	    return slotSIDEBAR;
-	case paneBUILD: case panePROJECT: case paneMODES: case paneHELP:
-	case paneOPTIONS:
-	    return slotPOPUP;
-    }
-    return slotNONE;
-}
 
 // ---- Views (client-server arc V1; design doc §2.1) -------------------------
 // A View's projection KIND — what a View shows. A code View's LANGUAGE is the
@@ -502,6 +475,23 @@ long view_of(var &name)
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
+}
+
+// The registry command that SHOWS a tool View (V2): what a chrome pane's tab
+// posts when clicked — the same command the profiles bind. cmdNONE = a kind
+// no command shows (a source View: the buffer ring's own commands).
+long view_show_cmd(long kind)
+{
+    switch ( kind )
+    {
+	case viewPROBLEMS: return cmdPROBLEMS;
+	case viewOUTPUT: return cmdOUTPUT;
+	case viewTERMINAL: return cmdTERMINAL;
+	case viewOUTLINE: return cmdOUTLINE;
+	case viewPROJECT: return cmdPROJECT;
+	case viewHELP: return cmdHELP;
+    }
+    return cmdNONE;
 }
 
 // A rendered View's GENERATOR — the compiler that produced its text: genNONE
