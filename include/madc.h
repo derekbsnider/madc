@@ -303,6 +303,22 @@ public:
     std::string function_display_name;
     std::string namespace_name;
     std::string inline_builtin_kind;
+    // Overload-set DECLARATION IDENTITY — the ranker's inputs, owned by the
+    // declaration (g++: the FUNCTION_DECL carries its parameter-type-list and
+    // DECL_TEMPLATE_INFO; the overload set is a list of decls) and frozen on
+    // the DK_FUNC record with it (LOADED == parsed). overload_spelling is the
+    // normalized source spelling of the parameter list (parseFunction's
+    // peek), with the "\x01@<identity>" suffix on a template-instantiation
+    // product; a seed's spelling starts with '\x01' (the fn-template
+    // placeholder, the pre-existing source-named first). It tells a
+    // re-declaration of the SAME overload (reuse its Variable) from a NEW one
+    // (mint a fresh symbol), and marks a PLAIN concrete member for the
+    // ambiguity verdict. overload_template_args are the identity spellings
+    // (template_binding_identity_spelling) of an instantiation product's bound
+    // template arguments, pack elements flattened positionally — the
+    // explicit-template-argument prefix match binds a call to the instance.
+    std::string overload_spelling;
+    std::vector<std::string> overload_template_args;
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call
@@ -3530,13 +3546,19 @@ public:
     // internal symbol (unique_overload_symbol); this registry — keyed
     // "ns::name" — lets the call site enumerate and rank them by arg types
     // (the same generic score_arg_to_param ranking methods use).
-    // param_spelling is the normalized source spelling of the parameter list,
-    // used to tell a re-declaration of the SAME overload (reuse its Variable)
-    // from a NEW overload (mint a fresh symbol).
+    // A set member is its Variable; the declaration identity the ranker reads
+    // (the parameter spelling, an instantiation product's template-argument
+    // spellings) lives on the member's FuncDef (FuncDef::overload_spelling /
+    // overload_template_args) — ONE owner, frozen with the DK_FUNC record, so
+    // a forest-restored or using-imported member ranks exactly as the live
+    // declaration did. The accessors read through; a member with no FuncDef
+    // answers empty.
     struct NamespaceFnOverload {
-	std::string param_spelling;
-	std::vector<std::string> template_arg_names;
 	Variable *var;
+	NamespaceFnOverload() : var(NULL) {}
+	FuncDef *funcdef() const;
+	const std::string &spelling() const;
+	const std::vector<std::string> &template_args() const;
     };
     registration_map<std::string, std::vector<NamespaceFnOverload> >
 	namespace_fn_overload_sets;
@@ -3554,10 +3576,10 @@ public:
     // PLAIN concrete candidates tie for the best conversion total with
     // distinct parameter types — the call is ambiguous ([over.match.best];
     // g++ and clang++ reject it); the returned winner is then only the
-    // first-declared, and the caller that reports must not compile it. Only
-    // a LIVE-declared member carries the provenance the verdict needs — a
-    // forest-restored or using-imported member (no spelling) never ties
-    // ambiguously — and "distinct" is the scorer's own type identity
+    // first-declared, and the caller that reports must not compile it. The
+    // verdict reads each member's declaration identity from its FuncDef
+    // (overload_spelling — frozen with the declaration, so a restored member
+    // carries it too), and "distinct" is the scorer's own type identity
     // (typedef-transparent, cv stripped), never object identity.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,

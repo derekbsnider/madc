@@ -4674,8 +4674,9 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
 }
 
 // The IDENTITY SPELLING of a bound template argument — the string every
-// identity former compares: the instantiation memo (inst_key), the overload
-// set's template_arg_names, and the ranker's explicit-argument match. The
+// identity former compares: the instantiation memo (inst_key), a set
+// member's FuncDef::overload_template_args, and the ranker's explicit-argument
+// match. The
 // convention is the canonical binding dd's NAME (canonical_template_binding_dd
 // above), with the ONE exception the name cannot carry: madc lowers
 // references to pointers (DataDefREF IS-A DataDefPTR), so a reference dd's
@@ -19688,24 +19689,43 @@ std::string Program::peek_param_list_spelling()
 // Variable, or NULL when no candidate is viable. `zero_args` (optional,
 // index-aligned with argtypes) marks arguments that are integer literals of
 // value zero — C++ null-pointer constants ([conv.ptr]).
+// The set member's accessors read the declaration identity THROUGH its
+// FuncDef — one owner (FuncDef::overload_spelling / overload_template_args),
+// frozen on the DK_FUNC record and restored with it, so a forest-restored or
+// using-imported member answers exactly what the live declaration recorded.
+FuncDef *Program::NamespaceFnOverload::funcdef() const
+{
+    return var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+}
+const std::string &Program::NamespaceFnOverload::spelling() const
+{
+    static const std::string none;
+    FuncDef *fd = funcdef();
+    return fd ? fd->overload_spelling : none;
+}
+const std::vector<std::string> &Program::NamespaceFnOverload::template_args() const
+{
+    static const std::vector<std::string> none;
+    FuncDef *fd = funcdef();
+    return fd ? fd->overload_template_args : none;
+}
+
 // A plain concrete overload — the candidates whose tie the ranker may call
 // AMBIGUOUS (a template set has its own partial-ordering and
-// instantiate-on-miss lanes) — is PROVEN by its entry's provenance: a LIVE
+// instantiate-on-miss lanes) — is PROVEN by its declaration identity: a
 // concrete declaration records its parameter spelling (parseFunction's
 // ns_overload_spelling); the placeholder and pre-existing-source seeds start
 // with '\x01'; a template-instantiation product carries the "\x01@<identity>"
-// suffix and its template_arg_names. A forest-RESTORED or a using-IMPORTED
-// member arrives with NO spelling (its provenance is not restored — KG Gap
-// forest_overload_entry_provenance_not_restored), so its tie is never called
-// ambiguous: two restored twins of ONE specialization (std::min over
-// size_type and over uint64_t, one C type) tied exactly and were refused
-// (forest_crosstu_gate [vector], stl_vector.h _S_max_size).
-static bool plain_concrete_overload(const Program::NamespaceFnOverload &e,
-				    FuncDef *fd)
+// suffix and its template-argument spellings. The identity is the FuncDef's
+// (frozen with it), so a restored twin of ONE specialization (std::min over
+// size_type and over uint64_t, one C type) is plain like the live one — and
+// same_parameter_types keeps such a twin from being called ambiguous.
+static bool plain_concrete_overload(FuncDef *fd)
 {
-    return !e.param_spelling.empty() && e.param_spelling[0] != '\x01'
-	&& e.param_spelling.find("\x01@") == std::string::npos
-	&& e.template_arg_names.empty() && fd && !fd->is_varargs
+    return fd && !fd->overload_spelling.empty()
+	&& fd->overload_spelling[0] != '\x01'
+	&& fd->overload_spelling.find("\x01@") == std::string::npos
+	&& fd->overload_template_args.empty() && !fd->is_varargs
 	&& !fd->is_member_template && !fd->dependent_pattern
 	&& !fd->tsubst_source;
 }
@@ -19794,7 +19814,7 @@ static Variable *rank_fn_overload_candidates(
 	// call (`__check_constructible<V,T>()`, explicit template args only) ties
 	// its score and — registered first — would win over the real
 	// instantiation, emitting an undefined `__ns_<fn>` import. Skip it.
-	if ( e.param_spelling == "\x01fn-template-placeholder" )
+	if ( e.spelling() == "\x01fn-template-placeholder" )
 	    continue;
 	if ( explicit_template_args && !explicit_template_args->empty() )
 	{
@@ -19806,8 +19826,8 @@ static Variable *rank_fn_overload_candidates(
 	      && e.var->name.find(ovp2) != std::string::npos )
 	    {
 		fprintf(stderr, "[ovl2] cand=%s targs=", e.var->name.c_str());
-		for ( size_t ti = 0; ti < e.template_arg_names.size(); ++ti )
-		    fprintf(stderr, "'%s',", e.template_arg_names[ti].c_str());
+		for ( size_t ti = 0; ti < e.template_args().size(); ++ti )
+		    fprintf(stderr, "'%s',", e.template_args()[ti].c_str());
 		fprintf(stderr, " expl=");
 		for ( size_t ti = 0; ti < explicit_template_args->size(); ++ti )
 		    fprintf(stderr, "'%s',",
@@ -19816,7 +19836,7 @@ static Variable *rank_fn_overload_candidates(
 			    : "(null)");
 		fprintf(stderr, "\n");
 	    }
-	    if ( e.template_arg_names.size() < explicit_template_args->size() )
+	    if ( e.template_args().size() < explicit_template_args->size() )
 		continue;
 	    bool explicit_match = true;
 	    for ( size_t ti = 0; ti < explicit_template_args->size(); ++ti )
@@ -19825,7 +19845,7 @@ static Variable *rank_fn_overload_candidates(
 		// The same identity spelling the instance recorded (a
 		// reference argument is NOT its pointer twin).
 		std::string tn = template_binding_identity_spelling(td);
-		if ( e.template_arg_names[ti] != tn )
+		if ( e.template_args()[ti] != tn )
 		{ explicit_match = false; break; }
 	    }
 	    if ( !explicit_match )
@@ -19884,12 +19904,12 @@ static Variable *rank_fn_overload_candidates(
 	    // first-declared silently is how `take(enum)` against
 	    // {take(long), take(bool)} compiled here (tests/testoverloadambig).
 	    // A redeclaration or a twin (no parameter proven distinct) is ONE
-	    // function; the verdict needs BOTH entries' provenance (a
-	    // restored member has none — plain_concrete_overload).
+	    // function; the verdict needs BOTH members' declaration identity
+	    // (their FuncDefs carry it — plain_concrete_overload).
 	    FuncDef *bfd = best_e && best_e->var
 			   ? dynamic_cast<FuncDef *>(best_e->var->type) : NULL;
-	    bool cand_plain = plain_concrete_overload(e, fd);
-	    bool best_plain = best_e && plain_concrete_overload(*best_e, bfd);
+	    bool cand_plain = plain_concrete_overload(fd);
+	    bool best_plain = best_e && plain_concrete_overload(bfd);
 	    if ( cand_plain && !best_plain )
 	    {
 		best = e.var;
@@ -19902,7 +19922,7 @@ static Variable *rank_fn_overload_candidates(
 	}
     }
     if ( best && best_e && tied && ambiguity )
-	*ambiguity = best_e->param_spelling + " and " + tied->param_spelling;
+	*ambiguity = best_e->spelling() + " and " + tied->spelling();
     return best;
 }
 
@@ -19957,15 +19977,15 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		fprintf(stderr,
 			"[ovl]   cand %s spell=%s targs=%zu va=%d mt=%d dep=%d ts=%d\n",
 			e.var ? e.var->name.c_str() : "(null)",
-			e.param_spelling == "\x01fn-template-placeholder"
-			    ? "PLACEHOLDER" : e.param_spelling.c_str(),
-			e.template_arg_names.size(),
+			e.spelling() == "\x01fn-template-placeholder"
+			    ? "PLACEHOLDER" : e.spelling().c_str(),
+			e.template_args().size(),
 			cfd ? (int)cfd->is_varargs : -1,
 			cfd ? (int)cfd->is_member_template : -1,
 			cfd ? (cfd->dependent_pattern != NULL) : -1,
 			cfd ? (cfd->tsubst_source != NULL) : -1);
-	    if ( e.param_spelling == "\x01fn-template-placeholder"
-	      || !e.template_arg_names.empty() )
+	    if ( e.spelling() == "\x01fn-template-placeholder"
+	      || !e.template_args().empty() )
 	    { strict = false; if ( !ovl_probe ) break; continue; }
 	    if ( !cfd || cfd->is_varargs || cfd->is_member_template
 	      || cfd->dependent_pattern || cfd->tsubst_source )
@@ -24685,11 +24705,35 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 		    known = true;
 	    if ( !known )
 	    {
+		// The placeholder seed's identity, when the frozen declaration
+		// did not carry it (the live seed stamps its FuncDef).
+		if ( tmpl_placeholder && pf.fd->overload_spelling.empty() )
+		    pf.fd->overload_spelling = "\x01fn-template-placeholder";
 		NamespaceFnOverload e;
-		if ( tmpl_placeholder )
-		    e.param_spelling = "\x01fn-template-placeholder";
 		e.var = fv;
 		ovset.push_back(e);
+	    }
+	}
+    }
+    // LOADED == parsed on the INSTANTIATION MEMO: a restored template-
+    // instantiation product carries its inst_key in its overload spelling
+    // ("\x01@<inst_key>", parseFunction's fold). Re-enter it in
+    // fn_template_instantiated / fn_template_instantiated_vars — the memo
+    // the template lane consults BEFORE instantiating — so a bound
+    // consumer's use of a specialization the forest already holds HITS
+    // (live: the TU's own earlier instantiation) instead of parsing a
+    // second body under the restored symbol (the same-spelling reuse hands
+    // it the restored Variable; MIR: "Repeated item declaration"). First-
+    // wins, like the live insert. A method's spelling is empty: no-op.
+    {
+	size_t at = pf.fd->overload_spelling.find("\x01@");
+	if ( at != std::string::npos && !pf.fd->declaration_only )
+	{
+	    std::string inst_key = pf.fd->overload_spelling.substr(at + 2);
+	    if ( !inst_key.empty() && !fn_template_instantiated.count(inst_key) )
+	    {
+		fn_template_instantiated.insert(inst_key);
+		fn_template_instantiated_vars[inst_key] = fv;
 	    }
 	}
     }
@@ -55545,8 +55589,10 @@ static void register_skipped_namespace_template_function(
 		seeded = true;
 	if ( !seeded )
 	{
+	    if ( FuncDef *pfd = dynamic_cast<FuncDef *>(var->type) )
+		if ( pfd->overload_spelling.empty() )
+		    pfd->overload_spelling = "\x01fn-template-placeholder";
 	    Program::NamespaceFnOverload e;
-	    e.param_spelling = "\x01fn-template-placeholder";
 	    e.var = var;
 	    ovset.push_back(e);
 	}
@@ -57319,6 +57365,15 @@ static bool instantiated_template_var_has_pending_body(Program &pgm,
 	return false;
     if ( !fd->emit_symbol.empty() )
 	return true;
+    // A forest-RESTORED instance's body is pending too: it arrives through
+    // the materialize-and-lower fixpoint (has_forest_body) or the planted
+    // deferred body (deferred_lazy_bodies, keyed by the symbol) — never
+    // through pending_funcs. Without this the restored memo entry read as
+    // stale and the specialization was instantiated a second time.
+    if ( fd->has_forest_body )
+	return true;
+    if ( pgm.deferred_lazy_bodies.find(v->name) != pgm.deferred_lazy_bodies.end() )
+	return true;
     for ( TokenBase *pb : pgm.pending_funcs )
     {
 	TokenFunc *tf = dynamic_cast<TokenFunc *>(pb);
@@ -58913,30 +58968,32 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	  && oi->second.size() > pre_ovset && oi->second.back().var )
 	{
 	    Program::NamespaceFnOverload &ne = oi->second.back();
-	    if ( !ft.inline_builtin_kind.empty() )
-		if ( FuncDef *nfd = dynamic_cast<FuncDef *>(ne.var->type) )
-		    nfd->inline_builtin_kind = ft.inline_builtin_kind;
+	    FuncDef *nfd = ne.funcdef();
+	    if ( nfd && !ft.inline_builtin_kind.empty() )
+		nfd->inline_builtin_kind = ft.inline_builtin_kind;
 	    instantiated_var = ne.var;
-	    ne.template_arg_names.clear();
+	    // The product's bound template arguments as identity spellings —
+	    // on its FuncDef (the declaration owns them; frozen with it).
+	    std::vector<std::string> targs;
 	    for ( size_t ti = 0; ti < ft.typeparams.size(); ++ti )
 	    {
 		std::map<std::string, DataDef *>::const_iterator bi =
 		    binding.find(ft.typeparams[ti]);
 		if ( bi != binding.end() && bi->second )
-		    ne.template_arg_names.push_back(
+		    targs.push_back(
 			template_binding_identity_spelling(bi->second));
 		else if ( tidpack_one.count(ft.typeparams[ti])
 		       && tidpack_one[ft.typeparams[ti]] )
-		    ne.template_arg_names.push_back(
+		    targs.push_back(
 			template_binding_identity_spelling(
 			    tidpack_one[ft.typeparams[ti]]));
 		else if ( tidpack_empty_names.count(ft.typeparams[ti]) )
-		    ne.template_arg_names.push_back("{}");
+		    targs.push_back("{}");
 		else if ( nontype_tidpack_one.count(ft.typeparams[ti]) )
-		    ne.template_arg_names.push_back(
+		    targs.push_back(
 			std::to_string(nontype_tidpack_one[ft.typeparams[ti]]));
 		else if ( nontype_tidpack_empty.count(ft.typeparams[ti]) )
-		    ne.template_arg_names.push_back("{}");
+		    targs.push_back("{}");
 		else if ( ft.typeparams[ti] == pack_param )
 		    // The pack (direct, or a multi-element tid pack aliased into
 		    // pack_param/pack_elems at entry) records its elements
@@ -58946,11 +59003,13 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    // can bind the call to this instance. An empty pack
 		    // contributes no entries.
 		    for ( size_t pe = 0; pe < pack_elems.size(); ++pe )
-			ne.template_arg_names.push_back(
+			targs.push_back(
 			    template_binding_identity_spelling(pack_elems[pe]));
 		else
-		    ne.template_arg_names.push_back(std::string());
+		    targs.push_back(std::string());
 	    }
+	    if ( nfd )
+		nfd->overload_template_args.swap(targs);
 	}
 	if ( !instantiated_var && var_out )
 	{
@@ -69293,7 +69352,7 @@ fnptr_decl_arm_head:
 		namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 	    Variable *same = NULL;
 	    for ( size_t i = 0; i < ovset.size(); ++i )
-		if ( ovset[i].param_spelling == ns_overload_spelling )
+		if ( ovset[i].spelling() == ns_overload_spelling )
 		    same = ovset[i].var;
 	    if ( same )
 		parse_id = same->name;
@@ -69387,8 +69446,9 @@ fnptr_decl_arm_head:
 			ffd->function_display_name = source_id;
 			ffd->namespace_name.clear();
 		    }
+		    if ( ffd->overload_spelling.empty() )
+			ffd->overload_spelling = "\x01preexisting-source-named";
 		    NamespaceFnOverload e;
-		    e.param_spelling = "\x01preexisting-source-named";
 		    e.var = first_named;
 		    ovset.push_back(e);
 		    if ( ::getenv("MADC_OVL_PROBE") )
@@ -69399,7 +69459,7 @@ fnptr_decl_arm_head:
 	}
 	Variable *same = NULL;
 	for ( size_t i = 0; i < ovset.size(); ++i )
-	    if ( ovset[i].param_spelling == ns_overload_spelling )
+	    if ( ovset[i].spelling() == ns_overload_spelling )
 		same = ovset[i].var;
 	if ( same )
 	    parse_id = same->name;
@@ -69486,9 +69546,11 @@ fnptr_decl_arm_head:
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking
-		// (cir_builder's call_target_funcdef enumerates the set).
+		// (cir_builder's call_target_funcdef enumerates the set); the
+		// declaration owns its overload identity (frozen with it).
 		fd->function_display_name = source_id;
 		fd->namespace_name = current_namespace();
+		fd->overload_spelling = ns_overload_spelling;
 		std::vector<NamespaceFnOverload> &ovset =
 		    namespace_fn_overload_sets[current_namespace() + "::" + source_id];
 		bool known = false;
@@ -69498,7 +69560,6 @@ fnptr_decl_arm_head:
 		if ( !known )
 		{
 		    NamespaceFnOverload e;
-		    e.param_spelling = ns_overload_spelling;
 		    e.var = ns_var;
 		    ovset.push_back(e);
 		}

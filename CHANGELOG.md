@@ -113,13 +113,35 @@
   (`pr::take("k", cmdSAVE)` against `take(const char *, long)` /
   `take(const char *, bool)` picked the `long` overload). A non-template
   still beats a template specialization on an equal total. The verdict
-  rests on PROVEN facts only: both candidates live-declared concrete
-  overloads (a forest-restored or using-imported member carries no
-  provenance and never ties ambiguously) and their parameter types
-  proven distinct by the scorer's own identity (typedef-transparent,
-  cv stripped) — two restored twins of one `std::min` specialization
-  are one function. Reducer: `tests/testoverloadambig.mad`
-  (`.expect_err`); `forest_crosstu_gate` pins the twin case.
+  rests on PROVEN facts only: both candidates concrete overloads whose
+  declaration identity is known, and their parameter types proven
+  distinct by the scorer's own identity (typedef-transparent, cv
+  stripped) — two restored twins of one `std::min` specialization are
+  one function. Reducer: `tests/testoverloadambig.mad` (`.expect_err`);
+  `forest_crosstu_gate` pins the twin case.
+- The forest restores an overload-set member WITH its declaration
+  identity. A namespace function's parameter spelling (with a template
+  instantiation's identity suffix) and an instantiation product's
+  template-argument spellings — the overload ranker's inputs — now live
+  on the `FuncDef` (`overload_spelling`, `overload_template_args`), ride
+  the frozen DK_FUNC record (format v46; the pack rebuilds) and come back
+  with the free-function restore; the set entry is just the Variable and
+  reads through, so no restore or using-import site can mint a blank one.
+  Before, a bound consumer's explicit-template-argument call
+  (`std::min<unsigned long>(a, b)` against a restored `<vector>`) found
+  no candidate with recorded template arguments, instantiated a THIRD
+  `std::min<uint64_t>` (`…__o2`) beside the two it restored, and the
+  ambiguity verdict could not see a restored member at all. The
+  instantiation MEMO comes back with it: a restored instantiation product
+  re-enters `fn_template_instantiated` under the `inst_key` its spelling
+  carries, so a bound consumer's use of a specialization the forest holds
+  hits the memo (as the TU's own earlier instantiation would live) instead
+  of instantiating it again — with the restored spelling matching, that
+  second body had landed under the RESTORED symbol (MIR "Repeated item
+  declaration"; `forest_bind_gate [statmem]` printed nothing). Gate:
+  `forest_crosstu_gate` leg D — per candidate both runs know, the live
+  and bound ranker inputs are identical and the bound run re-mints
+  nothing (LOADED == parsed on the overload set and the memo).
 - An anonymous function-pointer parameter in a function DEFINITION
   (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
   other unnamed parameter shape already was; c2mir refused the abstract
