@@ -115,7 +115,7 @@ A **View** is data on the session:
 
 ```
 View { id, subject, representation, revision, generator, runtime_context,
-       vbuf, map, spans, caret, mark, scroll }
+       vbuf, map, spans }          # navigation lives on the CONTAINER (RULED)
 ```
 
 - `subject` — an ENTITY HANDLE (the gateway's day-one rule: never a byte
@@ -162,8 +162,12 @@ View { id, subject, representation, revision, generator, runtime_context,
   subject's own buffer when it is stored text.
 - `map` — the coordinate map to the subject's stored space (today's
   `vmap`; §2.6 fills it); `spans` — the View's highlight rows (landed for
-  lenses); `caret / mark / scroll` — the View's navigation state (today
-  on `es`, per View from V1).
+  lenses). `caret / mark / scroll` are NOT View fields (OWNER 2026-09-09,
+  §6 first question): they live on the client's CONTAINER — the tab (V2:
+  the leaf pane's tab) that shows the View — so each client sits at its own
+  place in one shared text, and presence (§2.3) publishes that place for the
+  others to draw. Today they sit on `es`; from V1 they sit on the editor tab
+  row that holds the View.
 
 A **provider** produces a View's text + spans + map for a (subject,
 representation, revision, generator): the document provider (stored text +
@@ -366,6 +370,8 @@ ChangeEvent { seq, session, actor (client id), ts, verb, object (entity
               handle), payload, causal_parent }
 ```
 
+- `verb` is the verb's registry CODE (the enum law, §5); the persisted line
+  spells its name, converted once at load like every wire word.
 - `payload` for text is the splice `{at, del, ins}` — written by the ONE
   text-mutation owner (`ed_text_insert` / `ed_text_erase`), which is
   exactly where the anchor registry shifts (§2.3): one pass, one record.
@@ -487,7 +493,7 @@ git adapter (the nexus axes slice).
 |---|---|---|
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
-| **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; per-View caret/mark/scroll | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
+| **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
 | **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
 | **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
 | **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
@@ -527,11 +533,9 @@ window is a client") and gets ONE merge-wave battery when complete
 
 ## 6. Open questions
 
-- Should a View's `caret/mark/scroll` live on the View (shared by every
-  client showing it) or on the client's container (each client its own
-  place in the same View)? Recommendation: on the CONTAINER (client-private
-  navigation, the state tiers) with presence publishing it — a shared View
-  is one text seen from many places.
+- RULED (owner 2026-09-09): a View's `caret/mark/scroll` live on the
+  client's CONTAINER (the tab showing the View), never on the View — each
+  client its own place in one shared text, presence publishing it (§2.1).
 - The event log for a NON-project session that is edited by a remote
   client: memory-only means the record dies with the process. Acceptable
   for slice one? (The manifest rule says yes; the owner may want the log to
