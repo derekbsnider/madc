@@ -972,7 +972,7 @@ long diag_error_count(var &diags)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = diags[i];
-	if ( r["severity"] == "error" )
+	if ( r["severity_code"] == madc::diag_severity::error )	// the row's enumerator (V0.5b), never its display word
 	    errs = errs + 1;
     }
     return errs;
@@ -3904,6 +3904,7 @@ bool proj_check_rows(var &merged, long w, long es)
 	    // visible as a row, never silent.
 	    rows[] = { "file": t["file"], "line": 1, "column": 0,
 		       "severity": "error",
+		       "severity_code": madc::diag_severity::error,
 		       "message": "cannot open this TU (file or manifest options)" };
 	    continue;
 	}

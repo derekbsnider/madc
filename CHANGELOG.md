@@ -76,6 +76,11 @@
   left for the owner: the former slot table keyed the Problems pane
   "diagnostics" while the pane spells "diags", so that pane never docked —
   preserved as is (a layout decision), see the plan.
+- Sub-slice e: the IDE's error count compares a diagnostics row's
+  `severity_code` against `madc::diag_severity::error` (the synthesized
+  "cannot open this TU" row carries its code beside the display word), and
+  `docs/madcide.md` documents that a profile's or menu's command words
+  resolve when the file loads and a misspelling refuses it naming the line.
 
 ### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
 

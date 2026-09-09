@@ -40,8 +40,18 @@ The JOE defaults most worth knowing:
 | `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
 
+A binding's last word is a command name from the IDE's one vocabulary
+(`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
+The profile resolves every word to its code when it LOADS — a misspelt word
+refuses the whole profile on the status line, naming its line (`Profile 'x'
+line 12: unknown action 'svae'.`), so a typo is a load-time error, never a
+dead key. The same rule covers the `@scope` lines (a prompt's, the project
+window's, the vi `@normal` alphabet's actions).
+
 Menus are data too (`profiles/default.menu`): the window's menu bar, and
-any command palette, read the same command registry the profiles bind.
+any command palette, read the same command registry the profiles bind; a
+menu row's command id resolves the same way and an unknown id refuses the
+menu naming its line.
 
 ## Colour schemes
 

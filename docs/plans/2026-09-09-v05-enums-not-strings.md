@@ -151,10 +151,12 @@ their boundaries), the ex verbs (`w q e r x wq`, lined's colon vocabulary —
 V2.5 owns that line). FOUND (owner decision): the former layout table keyed
 the Problems pane `"diagnostics"` while the pane spells `diags`, so it never
 received `region: sidebar`; `pane_slot_of(paneDIAGS)` preserves that
-(byte-identical GUI) — docking it is one enumerator away. Still open from c:
-`madcide_core.inc` compares `r["severity"] == "error"` and synthesizes a row
-with a string severity — `severity_code` against `madc::diag_severity::error`
-(e, with the docs).
+(byte-identical GUI) — docking it is one enumerator away. d LANDED aca802a7. e as shipped: `diag_error_count` compares
+`r["severity_code"] == madc::diag_severity::error`; the synthesized
+"cannot open this TU" row carries `severity_code`; `docs/madcide.md` states
+the load-time resolution and refusal rule for profiles and menus; the
+mirrors (`CHANGELOG`, `claude_status.json`, KG) record a–e. The slice's ONE
+merge-wave battery (the develop push gate) runs on the e commit.
 
 ## 4. Out of scope (named, not forgotten)
 
