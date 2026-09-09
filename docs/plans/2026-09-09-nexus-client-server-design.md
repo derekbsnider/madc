@@ -393,8 +393,9 @@ ChangeEvent { seq, session, actor (client id), ts, verb, object (entity
   provenance (Nexus §10): who did what, when, based on what. Undo stays
   the piece table (unchanged, per client's own history); the log is the
   RECORD, not the undo mechanism.
-- **Persistence (standing default, mirrors the manifest rule):** the log
-  lives in memory for the implicit single-file project and persists as
+- **Persistence (RULED 2026-09-09, mirrors the manifest rule):** the log
+  lives in memory for the implicit single-file project — a remote client's
+  edits included; the log never forces a manifest (§6) — and persists as
   `<base>.prj.events` beside `<base>.prj.json` once a manifest exists —
   JSON lines, appended per event, no fsync (a crash loses the tail; the
   buffer's truth is its own file). A native nexus record (RULED: native
@@ -536,10 +537,13 @@ window is a client") and gets ONE merge-wave battery when complete
 - RULED (owner 2026-09-09): a View's `caret/mark/scroll` live on the
   client's CONTAINER (the tab showing the View), never on the View — each
   client its own place in one shared text, presence publishing it (§2.1).
-- The event log for a NON-project session that is edited by a remote
-  client: memory-only means the record dies with the process. Acceptable
-  for slice one? (The manifest rule says yes; the owner may want the log to
-  force materialization.)
+- RULED (owner 2026-09-09): the event log of a NON-project session stays
+  memory-only even when a remote client edits it; the log NEVER forces a
+  file into existence — a `.prj.events` beside an unasked-for single file
+  is the surprise-artifact class the no-program-cache law bans. The record
+  persists exactly when the manifest does (the user or an admin creates the
+  project; the log follows it); a crash loses a manifest-less remote
+  session's record and the buffer's own file remains the truth.
 - Whether the `api` transport speaks the composed tree (trivial thin
   clients) or raw projections only (gateway open question): recommendation
   both, declared per client at connect.
