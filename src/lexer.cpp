@@ -1285,6 +1285,15 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
 	{"ui_web", "ns_ui_web"},
+	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
+	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
+	// wants the target that serves it — <ns_ui_web>, whose initializer
+	// registers the host. The same row `ui_web` served while programs
+	// spelled the target's NAME; the enumerator is the program's
+	// declaration of need (enums, not strings — owner law 2026-09-09). A
+	// MEMBER row (the word is not the fragment's own head) fires only
+	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
+	{"WEB", "ns_ui_web"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1505,9 +1514,14 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // A word this TU DECLARES never auto-includes — not at the declaration
     // and not at any later mention: the TU provides the name itself
     // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
-    // strlen(...)`; pulling <stddef.h> in as well would redeclare it).
-    if ( auto_include_declared_words.count(word) )
+    // strlen(...)`; pulling <stddef.h> in as well would redeclare it). The
+    // TU's words, for the TU's mentions: a dialect FRAGMENT's mentions are
+    // the fragment's own — <ns_ui_web>'s `js::stringify` means the js
+    // surface even when the TU named a parameter `js` (testuihostfake) —
+    // so the TU's declared words never shadow a fragment scan.
+    if ( !auto_include_fragment_scan && auto_include_declared_words.count(word) )
 	return false;
+    std::string dialect_qualifier;	// `X::word` with X != std — set below
     // `typedef unsigned long size_t;` and similar declaration heads are
     // defining the identifier, not using the standard header surface: a
     // word that follows a TYPE (or a struct/class/enum tag keyword) is the
@@ -1564,9 +1578,10 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 		TokenBase *q = *it;
 		if ( is_trivia_token(q) )
 		    continue;
-		if ( q->type() != TokenType::ttIdentifier
-		  || !((TokenIdent *)q)->spelling_is("std") )
+		if ( q->type() != TokenType::ttIdentifier )
 		    return false;
+		if ( !((TokenIdent *)q)->spelling_is("std") )
+		    dialect_qualifier = ((TokenIdent *)q)->spelling();
 		break;
 	    }
 	}
@@ -1576,6 +1591,27 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
 	return false;
+    // A fragment never pulls ITSELF: <ns_ui_web>'s own `ui::WEB` (its
+    // register_host line) names the fragment being tokenized.
+    if ( auto_include_fragment_scan && auto_include_fragment_name == header )
+	return false;
+    // A MEMBER row of a dialect fragment (the word is not the fragment's own
+    // head: `WEB` for ns_ui_web) fires only when QUALIFIED by a dialect
+    // namespace head (`ui::WEB`) — a bare `WEB` is the user's word. And a
+    // name qualified by a dialect head may pull only a dialect FRAGMENT its
+    // own row names — never a std header: `ui::set` stays the ui surface's
+    // own, `madc::getline` never pulls <string>, a user qualifier
+    // (`Counter::set`) pulls nothing, as before.
+    const bool fragment_row = strncmp(header, "ns_", 3) == 0;
+    const bool member_row = fragment_row && word != header + 3;
+    if ( member_row && dialect_qualifier.empty() )
+	return false;
+    if ( !dialect_qualifier.empty() )
+    {
+	const char *qh = auto_include_header_for_identifier(dialect_qualifier);
+	if ( !qh || strncmp(qh, "ns_", 3) != 0 || !fragment_row )
+	    return false;
+    }
     // Inside a dialect fragment only the intrinsic and C-header providers
     // answer (fragment_may_pull_header) — a fragment's `println(stderr,
     // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
@@ -1850,6 +1886,8 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	// (auto_include_standard_identifier). Every other embedded header is a
 	// declaration surface — no scan, as before.
 	auto_include_fragment_scan = embedded_dialect_fragment_p(name);
+	std::string saved_fragment_name = auto_include_fragment_name;
+	auto_include_fragment_name = auto_include_fragment_scan ? name : std::string();
 	suppress_auto_include_scan = !auto_include_fragment_scan;
 	source = Source();
 	source.fname(name.c_str());
@@ -1881,6 +1919,7 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
 	auto_include_fragment_scan = saved_fragment_scan;
+	auto_include_fragment_name = saved_fragment_name;
 	if ( protocol_visit )
 		pack_protocol_serving_end(protocol_saved);
 	mark_embedded_include_flag(name);

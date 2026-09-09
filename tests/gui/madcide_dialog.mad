@@ -48,7 +48,7 @@ int main()
     push_buffer_row(w, es, doc, path);
     ui::set(w, es, "bufidx", 0);
 
-    long t = ui::open(ui_web::target());
+    long t = ui::open(ui::WEB);
     if ( !t )
 	return 1;
     println("DLG open");

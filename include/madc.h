@@ -5081,6 +5081,9 @@ public:
     // the scan stays on, restricted to the intrinsic (bits/*) and C-header
     // providers — never a C++ system header (the dialect-lean line).
     bool auto_include_fragment_scan;
+    std::string auto_include_fragment_name;	// the dialect fragment being
+						// tokenized ("" outside one):
+						// a fragment never pulls ITSELF
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;

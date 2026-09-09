@@ -34,7 +34,7 @@ reads only the codes.
 ## 2. Decided shape (standing defaults; owner veto welcome)
 
 **Enum style.** Prefixed UNSCOPED enums with a fixed underlying type — the
-owner's own spelling (`enum : uint8_t { uiNONE, uiLINE, … }`): `switch` on a
+owner's own spelling (`enum : uint8_t { ui::NONE, ui::LINE, … }`): `switch` on a
 `long` read from a bag takes `case cmdSAVE:` by integral promotion, `var ==
 paneOUTLINE` compares as an integer, and a misspelt enumerator is a compile
 error. The engine's existing `enum class key / event_kind / pointer_phase`
@@ -80,18 +80,18 @@ menu with the offending line (`Profile 'x' line 12: unknown action 'svae'`).
 
 **Targets declare a level; programs open a level.**
 - `include/madc/bits/ui_enums`: `namespace ui { enum level : unsigned char {
-  uiNONE = 0, uiLINE, uiTUI, uiWEB, uiGUI, uiGFX2D, uiGFX3D }; }`; the names
+  ui::NONE = 0, ui::LINE, ui::TUI, ui::WEB, ui::GUI, ui::GFX2D, ui::GFX3D }; }`; the names
   (`ui_level_name` / `ui_level_from_name`) live beside `pointer_phase_name` in
   `madcdis/ui_events.h` — the engine derives them, never re-typed.
 - `ui::register_host(name, level, ops)`: a host declares the level it serves
-  (`<ns_ui_web>`: `uiWEB`; the fake test host: `uiWEB`). The grid frontend is
-  `uiTUI` intrinsically.
+  (`<ns_ui_web>`: `ui::WEB`; the fake test host: `ui::WEB`). The grid frontend is
+  `ui::TUI` intrinsically.
 - `ui::open(ui::level)` — the target that serves that level (the grid for
-  `uiTUI`; the first registered host of the level; `0` + stderr "no target
-  serves the <name> level" otherwise — `uiLINE` refuses until V2.5).
+  `ui::TUI`; the first registered host of the level; `0` + stderr "no target
+  serves the <name> level" otherwise — `ui::LINE` refuses until V2.5).
   `ui::open(const char *name)` stays for name-addressed opening (tests).
   `ui::level_of(t)` reports the opened frontend's level; madcide's one
-  per-target fact becomes `ui::level_of(t) <= ui::uiTUI` ("a real terminal").
+  per-target fact becomes `ui::level_of(t) <= ui::TUI` ("a real terminal").
 - `madc --capabilities=json` gains `ui.levels`: the levels this build has a
   target for — `tui` (built in) plus `web` when the module map carries a
   `MADC_MODULE_GUI` row (data, never a name test). The gate reads the enum
@@ -117,7 +117,7 @@ in a dialect compare.
 
 | # | Content | Tests / gate |
 |---|---|---|
-| **a. Levels** | `ui::level` + names; `register_host(name, level, ops)`; `open(level)`, `level_of`; capabilities `ui.levels`; madcide opens by level (`--gui` → `uiWEB`), `has_term` from `level_of` | `testuihostfake` (registers with a level; opens by level; a level nobody serves refuses); `capabilities_json_gate.sh` (`ui.levels` ⊆ enum names, `tui` present); `testmadcide` + GUI 17 byte-identical |
+| **a. Levels** | `ui::level` + names; `register_host(name, level, ops)`; `open(level)`, `level_of`; capabilities `ui.levels`; madcide opens by level (`--gui` → `ui::WEB`), `has_term` from `level_of` | `testuihostfake` (registers with a level; opens by level; a level nobody serves refuses); `capabilities_json_gate.sh` (`ui.levels` ⊆ enum names, `tui` present); `testmadcide` + GUI 17 byte-identical |
 | **b. Codes in the engine** | `tui_bindings::binding {name, code}`; `action_code` on `key_step` / `tui_event` / the event object; `code` hints → `option_codes` → `choose.action_code`; the DOM model's `id → code` table + boundary conversion; `seq_for_code`; `severity_code`; `dialog_mode` + `mode_code` | `test_tui_model` (bind an integer value; choose returns the code); a `testuihostfake` posted action resolves to its code; `testmadcide` unchanged (names still flow) |
 | **c. The command enum** | `madcide_enums.inc` (`ide_cmd`, table, `cmd_of` / `cmd_name`); load-time resolution + refusal in `load_profile` / `bind_rescue_keys` / `modal_keys` / `load_menu`; the composer stamps `code` on items / tabs / buttons / rows; the dispatcher switches; the test seam's `ev_action` resolves through `cmd_of` | `testmadcide` + `testidemenu` + `testidedialog` + `testidehints` + GUI byte-identical; a new `testmadcide` clause: a profile with a misspelt action refuses naming its line; `check-madcide-command-registry.sh` re-anchored (registry ⊆ table ⊆ enum, every enumerator has a `case`) |
 | **d. Discriminator enums + the gate** | `ide_pane`, `ide_tab`, `ide_prompt`, `ide_vimode`, `ide_reqkind`, `ide_tag` on the bag; `*_name()` at the output boundaries; vised's key ladder → `key_code` switch | `scripts/check-madcide-enums.sh` (fulltest): no `ev["action"]` / `ev["key"]` / `ev["event"]` read in `tools/`; no string literal written to or compared against a discriminator slot (`pane paneltab view pmode vimode kind tag slot`); every `case cmd…:` / `case pane…:` label names an enumerator that exists; negative controls for each rule |

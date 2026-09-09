@@ -73,16 +73,16 @@ void client_service(IdeSession &S, long t)
 }
 
 // The IDE loop: the same compose-as-data -> render -> event -> apply
-// cycle as vised, speaking to the session object only. The TARGET is one
-// argument ("term" = the grid frontend the tui_* names spell; the web
-// target shows the same composed tree in a window through <ns_ui_web>).
+// cycle as vised, speaking to the session object only. The UI LEVEL is one
+// argument (ui::level: ui::TUI = the grid frontend the tui_* names spell;
+// ui::WEB shows the same composed tree in a window through <ns_ui_web>).
 // One loop, one composer: the workbench layout rides layout hints the
-// terminal ignores, so the ONLY per-target fact is whether a real
-// terminal exists — S.terminal(has_term) gates the terminal-request
-// path (a window captures build output into the panel region instead of
-// suspending; interactive Run and the shell refuse until the embedded
-// terminal lands).
-void run_ide(const char *path, bool ro, const char *target)
+// terminal ignores, so the ONLY per-level fact is whether a real terminal
+// exists (level_of(t) <= ui::TUI) — S.terminal(has_term) gates the
+// terminal-request path (a window captures build output into the panel
+// region instead of suspending; interactive Run and the shell refuse
+// until the embedded terminal lands).
+void run_ide(const char *path, bool ro, ui::level lvl)
 {
     IdeSession S;
     long doc = S.open(path, ro);
@@ -90,10 +90,10 @@ void run_ide(const char *path, bool ro, const char *target)
 	printf("cannot read %s\n", path);
     if ( doc <= 0 )
 	return;			// -1 already reported on stderr
-    long t = ui::open(target);
+    long t = ui::open(lvl);
     if ( t == 0 )
 	return;			// open refused (e.g. no webview) with a reason
-    bool has_term = strcmp(target, "term") == 0;
+    bool has_term = ui::level_of(t) <= ui::TUI;
     S.terminal(has_term);
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)

@@ -17,19 +17,19 @@ int main(int argc, char **argv)
 	printf("usage: vised <file> [ro] [--web]\n");
 	return 1;
     }
-    // The target is ONE flag: --web shows the same tree in a window through
-    // the web target (<ns_ui_web>, a lazy module row — a machine without
-    // the library refuses at open with the reason); the terminal is the
-    // default. `ro` opens the file read-only.
+    // The UI level is ONE flag (ui::level): --web shows the same tree in a
+    // window through the web level (<ns_ui_web>, a lazy module row — a
+    // machine without the library refuses at open with the reason); the
+    // grid (ui::TUI) is the default. `ro` opens the file read-only.
     bool ro = false;
-    const char *target = "term";
+    ui::level lvl = ui::TUI;
     for ( int i = 2; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "--web") == 0 )
-	    target = ui_web::target();
+	    lvl = ui::WEB;
 	else if ( strcmp(argv[i], "ro") == 0 )
 	    ro = true;
     }
-    run_visual(argv[1], ro, target);
+    run_visual(argv[1], ro, lvl);
     return 0;
 }

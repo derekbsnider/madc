@@ -1,8 +1,11 @@
 registered -> yes
 duplicate -> no
 term taken -> no
+no-level host -> no
 fake open: madc
 open -> yes
+level -> web
+unserved level -> 0
 rows x cols -> 24 x 80
 bind -> yes
 pushed heading: yes

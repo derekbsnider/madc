@@ -60,6 +60,30 @@ namespace ui {
     // The steps of a pointing-device gesture (event_kind::pointer): a
     // press places, a drag extends, a release ends.
     enum class pointer_phase : unsigned char { down, drag, up };
+
+    // The UI LEVEL (OWNER 2026-09-09): the rendering model a target serves
+    // and a program wants, ORDERED by requirement and platform specificity.
+    // The order has a meaning — a program composes for the highest level it
+    // wants; a lower level ignores the hints it cannot show; a target below
+    // the requested level refuses with the reason (or the program chooses
+    // to degrade), never silently. Devices and chrome (keyboard, pointer,
+    // touch, menu bar, dialogs) are feature FLAGS beside the level, not
+    // levels. Unscoped by design: the order IS the point (`level_of(t) <=
+    // ui::TUI` reads "a real terminal exists"), and `case ui::WEB:` switches
+    // on a plain integer; the namespace is the prefix (ui::WEB, never a
+    // repeated `ui` inside the name). Contiguous from NONE to GFX3D (the
+    // name owner in madcdis/ui_events.h walks the range).
+    enum level : unsigned char
+    {
+	NONE = 0,	// non-interactive: may print, expects no input (a
+			// one-shot command, an api seat, the headless gates)
+	LINE,		// dumb-terminal line mode (ex / edlin): lines in, text out
+	TUI,		// the addressable grid (curses-style)
+	WEB,		// a page in the platform webview
+	GUI,		// native widget chrome
+	GFX2D,		// full-screen 2D graphics
+	GFX3D		// 3D
+    };
 }
 
 #endif // __MADC_BITS_UI_ENUMS

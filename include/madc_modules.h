@@ -45,6 +45,10 @@ const MadcModuleSpec *madc_module_find(const std::string &name);
 // for a bare library that has no row — the object loader reads spellings
 // out of __madc_module_deps and asks which of them carry row flags.
 const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling);
+// Does ANY row carry one of `flags`? — a build-level fact read from the map
+// (the capabilities manifest asks "is there a GUI library in this build" to
+// list the web UI level), never a name test.
+bool madc_module_any_flagged(unsigned flags);
 const char *madc_target_dso_suffix(TargetOS os);
 // True when `name` already carries SOME target's library suffix (libc.so.6,
 // libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem

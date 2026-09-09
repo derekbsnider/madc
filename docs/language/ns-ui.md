@@ -388,15 +388,23 @@ like the bindings).
 
 ## Level-3 web target (the same tree in a window)
 
-`ui::open(target)` names WHERE a tree is shown; the loop is the same on
-every target — compose-as-data → `ui::render` → `ui::event` → apply — and
-the event objects are the ONE vocabulary tabled above. `"term"` is the grid
-frontend: the `tui_*` functions are `open("term")`'s spellings over the
-same handles (`tui_open()` IS `open("term")`), kept as the level-1 API.
-`ui_web::target()` (`"web"`) is the web target: the value tree rendered
-as a DOM through the platform's own webview (WebKitGTK / WKWebView /
-WebView2) by `<ns_ui_web>`, a madc fragment that does `import
-madcwebview;` — the engine never names a platform library. The window is
+`ui::open(level)` names the RENDERING MODEL a program wants — `ui::level`
+from `<bits/ui_enums>`, the ordered enum `ui::NONE < ui::LINE < ui::TUI < ui::WEB <
+ui::GUI < ui::GFX2D < ui::GFX3D` (owner 2026-09-09: escalating requirement and
+platform specificity; a program composes for the highest level it wants, a
+lower level ignores the hints it cannot show, a target below the requested
+level refuses with the reason). The loop is the same on every level —
+compose-as-data → `ui::render` → `ui::event` → apply — and the event
+objects are the ONE vocabulary tabled above. `ui::TUI` is the grid frontend:
+the `tui_*` functions are its spellings over the same handles (`tui_open()`
+IS `open(ui::TUI)`), kept as the level-1 API. `ui::WEB` is the web target: the
+value tree rendered as a DOM through the platform's own webview (WebKitGTK /
+WKWebView / WebView2) by `<ns_ui_web>`, a madc fragment that does `import
+madcwebview;` and registers itself as the host serving `ui::WEB` — the engine
+never names a platform library. `ui::level_of(t)` reports the opened
+target's level; "a real terminal exists" is `level_of(t) <= ui::TUI`.
+`open(name)` (`"term"`, a registered host's name) remains for name-addressed
+opening — a test's fake host — never a program's spelling of what it wants. The window is
 a second frontend over the same models: `web_model` composes keyed DOM
 operations the embedded page applies, and turns the page's raw key
 spellings and printable runs back into the same semantic events the
@@ -406,13 +414,13 @@ means anything in JavaScript.
 
 | Function | Description |
 |----------|-------------|
-| `open(target)` | Handle (>0), or 0 with the reason on stderr: unknown target, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiled), already open |
+| `open(level)` / `open(name)` / `level_of(t)` | Handle (>0), or 0 with the reason on stderr: no target serves the level here (`ui::NONE` / `ui::LINE` have no frontend yet), unknown name, cannot serve here (no tty; no display; the `madcwebview` library absent — its row is LAZY, so the program still compiles and runs without it); one already open. `level_of` = the opened target's `ui::level`, -1 for a bad handle |
 | `close(t)` / `rows(t)` / `cols(t)` | As the `tui_*` twins; a web target's rows/cols are the viewport in text cells, reported by the page |
 | `render(t, w, tree)` / `event(out, t, w)` | The one loop; `event` blocks until the page posts one event |
 | `bind_keys(t, table)` / `validate_keys(table)` / `pending(out, t)` | Profiles are data on every target |
 | `suspend(t)` / `resume(t)` / `refresh(t)` | Terminal capabilities — a window answers `false` / no-op |
 | `eval_page(t, js)` | Script text into a page-hosted target (the test seam: `madcSnapshot()` posts the rendered text back as a `snapshot` event); `false` on the grid. Evals before the page has loaded are dropped by the platform view — the first `resize` event is the page's ready signal |
-| `register_host(name, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog / tick — the last three optional: `tick(host, ms)` arms a one-shot UI-thread timer that ends the host's next loop after `ms` when no event did, so the engine can hand its cooperative tasks the CPU while the window idles — asked only while tasks are live, so an idle window still blocks for free; `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted; `line` and `col` both omitted = a press on the node at no position (a window's header) — `{"kind":"action","action":id}`, a native menu selection, a dialog button or a popup's dismissal — the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane |
+| `register_host(name, level, ops)` / `post_event(ctx, json)` | The script-hosted target seam `<ns_ui_web>` rides: a table of C function pointers (open / close / eval / run / menu / dialog / tick — the last three optional: `tick(host, ms)` arms a one-shot UI-thread timer that ends the host's next loop after `ms` when no event did, so the engine can hand its cooperative tasks the CPU while the window idles — asked only while tasks are live, so an idle window still blocks for free; `menu(host, json)` draws the native menu bar from the engine's menu JSON, `{"bar":[{"title","items":[{"id","title","key"?,"enabled"}\|{"sep"}]}]}`, sent only when it changed; `dialog(host, json)` shows the native file dialog a request describes, `{"mode":"open"\|"save","title","path"}`, answering later through the door) registered once from a fragment's static initializer, and the host's one inbound door for the page's event objects (`{"kind":"key","key":"^k"}`, `{"kind":"text","text":"abc"}`, `{"kind":"resize","rows","cols"}`, `{"kind":"snapshot","text"}`, `{"kind":"pointer","phase","key","line","col"}` — a gesture hit-tested by the page to an edit node's line index and UTF-16 column, which the engine resolves to a byte offset over the rows it emitted; `line` and `col` both omitted = a press on the node at no position (a window's header) — `{"kind":"action","action":id}`, a native menu selection, a dialog button or a popup's dismissal — the same action event a bound chord produces, and `{"kind":"dialog","mode","path"}`, a file dialog's answer, `""` = cancelled). `tests/testuihostfake.mad` is a display-free host that proves the seam in every lane; the host DECLARES the `ui::level` it serves (`ui::WEB` for a page) and `open(level)` picks the first registered host of that level |
 | `dialogs(t)` / `dialog(t, json)` | Native file dialogs: can the target show one (a window whose host draws chrome; the terminal cannot), and show the one the request describes — true = up, the answer arrives as an `{event:"dialog", mode, path}` event; false = not here, the application falls back to its own prompt |
 
 `madc::module_available("madcwebview")` answers whether the window can

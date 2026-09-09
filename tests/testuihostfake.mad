@@ -92,17 +92,25 @@ int64_t fake_tick(void *h, int64_t ms)
 }
 
 static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick };
-static bool fake_registered = ui::register_host("fake", &fake_ops);
+static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
 
 int main()
 {
     println("registered -> {}", fake_registered ? "yes" : "no");
-    println("duplicate -> {}", ui::register_host("fake", &fake_ops) ? "yes" : "no");
-    println("term taken -> {}", ui::register_host("term", &fake_ops) ? "yes" : "no");
+    println("duplicate -> {}", ui::register_host("fake", ui::WEB, &fake_ops) ? "yes" : "no");
+    println("term taken -> {}", ui::register_host("term", ui::WEB, &fake_ops) ? "yes" : "no");
+    println("no-level host -> {}", ui::register_host("nolevel", ui::NONE, &fake_ops) ? "yes" : "no");
 
     long w = ui::world_new();
+    // A test's fake host is NAME-addressed: naming the web LEVEL (ui::WEB
+    // above) pulled <ns_ui_web>, whose initializer registered the real web
+    // host FIRST, so open(ui::WEB) would pick that one (the GUI lane covers
+    // open-by-level; this lane has no display). level_of answers the level
+    // the fake declared.
     long t = ui::open("fake");
     println("open -> {}", t > 0 ? "yes" : "no");
+    println("level -> {}", ui::level_of(t) == ui::WEB ? "web" : "other");
+    println("unserved level -> {}", ui::open(ui::GUI));
     println("rows x cols -> {} x {}", ui::rows(t), ui::cols(t));
     var table;
     table["^k s"] = "save";

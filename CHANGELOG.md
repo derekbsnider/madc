@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+### UI levels — a program opens the rendering model it wants (2026-09-09)
+
+- `ui::level` (`<bits/ui_enums>`): the ordered enum `ui::NONE < ui::LINE < ui::TUI
+  < ui::WEB < ui::GUI < ui::GFX2D < ui::GFX3D`, escalating in requirement and
+  platform specificity (owner ruling 2026-09-09). `ui::open(level)` opens the
+  target that DECLARES that level (the grid frontend for `ui::TUI`; a
+  script-hosted target registers with its level — `register_host(name,
+  level, ops)`, `<ns_ui_web>` serves `ui::WEB`); `ui::level_of(t)` reports it, so
+  "a real terminal exists" is `level_of(t) <= ui::TUI`. `open(name)` stays for
+  name-addressed opening (a test's fake host). madcide (`--gui`) and vised
+  (`--web`) pass a level; `ui_web::target()` is gone.
+- `madc --capabilities=json` gains `ui.levels`: the levels this build has a
+  target for (`tui`; `web` when the module map carries a GUI library row).
+  `capabilities_json_gate.sh` asserts the list against the enum's names.
+- This is sub-slice a of the "enums, not strings" conversion
+  (`docs/plans/2026-09-09-v05-enums-not-strings.md`; owner law 2026-09-09).
+
+### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
+
+- In C++ mode an enumerator of a TAGGED enum at namespace or global scope
+  now has its enumeration type ([dcl.enum]/5) — `f(level)` binds
+  `f(ui::WEB)`, where before the constant was a plain `int` and the overload
+  set had no viable candidate. C keeps the C rule (an enumerator is an
+  `int`, C11 6.7.2.2p3).
+- The overload ranker grades an enum argument by [conv.prom]: its promoted
+  type (the fixed underlying type, and `int` when that promotes; for an
+  unfixed enum the first of `int` / `unsigned` / `long` / `unsigned long`
+  holding every enumerator) ranks above every other arithmetic conversion,
+  and a pointer or function-pointer parameter is never viable. Before, an
+  enum-typed operand of `cout <<` could tie the manipulator overload
+  `operator<<(ostream& (*)(ostream&))` and crash. Reducer:
+  `tests/testenumnsoverload.mad` (g++ / clang++ oracle).
+- An anonymous function-pointer parameter in a function DEFINITION
+  (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
+  other unnamed parameter shape already was; c2mir refused the abstract
+  declarator ("parameter type without a name in function definition").
+  Reducer: `tests/testfnptrparamanon.mad`.
+- Naming the web UI level (`ui::WEB`) auto-includes the web target's
+  fragment (`<ns_ui_web>`, whose initializer registers the host), the way
+  spelling `ui_web::` did; a name qualified by a dialect namespace head may
+  pull a dialect fragment its own row names, never a std header; a fragment
+  never pulls itself; and a name the program declares (a parameter called
+  `js`) no longer suppresses a pulled fragment's own qualified mentions.
+
 ### Emitted code views: indented and coloured (2026-09-09)
 
 - `--emit=c11` / `--emit=mc11` and the IDE's `^K A` lenses (MC11, C11) now

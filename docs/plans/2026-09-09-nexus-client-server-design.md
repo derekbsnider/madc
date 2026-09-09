@@ -192,15 +192,15 @@ Client { id, level (uiLevel), transport (local|ws|api), name, colour, tier,
 ```
 
 `level` is the ordered UI-level enum (RULED 2026-09-09, KG Decision
-`ui_level_enum_ordered_by_requirement`): `uiNONE < uiLINE < uiTUI < uiWEB <
-uiGUI < uiGFX2D < uiGFX3D` in `include/madc/bits/ui_enums`, escalating in
-requirement and platform specificity. `uiNONE` is a client with no
+`ui_level_enum_ordered_by_requirement`): `ui::NONE < ui::LINE < ui::TUI < ui::WEB <
+ui::GUI < ui::GFX2D < ui::GFX3D` in `include/madc/bits/ui_enums`, escalating in
+requirement and platform specificity. `ui::NONE` is a client with no
 rendered surface that still posts commands (an `api` / MCP seat, the
-headless gates); `uiLINE` the ex/edlin line mode; `uiTUI` the grid; `uiWEB`
+headless gates); `ui::LINE` the ex/edlin line mode; `ui::TUI` the grid; `ui::WEB`
 the webview page (local or over `ws`). The level is the rendering model; the
 devices and chrome a target offers (keyboard, pointer, touch, menu bar,
 dialogs, sixel) are feature FLAGS beside it. A target declares the level it
-serves — `ui::open(uiWEB)` replaces `ui::open("web")` — and the order has a
+serves — `ui::open(ui::WEB)` replaces `ui::open("web")` — and the order has a
 meaning: the session composes for the highest level a client wants, every
 lower level ignores the hints it cannot show, and a target below the
 requested level refuses with the reason or serves the lower rendering by the
@@ -243,31 +243,31 @@ with its client; repeat. Concretely:
   offsets on the document and the mutation owner shifts them all in one
   pass. A highlight is a pointing gesture (RULED).
 
-### 2.3b The IDE serves every level up to `uiWEB` (OWNER 2026-09-09)
+### 2.3b The IDE serves every level up to `ui::WEB` (OWNER 2026-09-09)
 
 Owner requirement (2026-09-09, during the review of this document): "the IDE
 should be able to work in all of those UI modes". The IDE is ONE session
-behind clients of every level the enum names below `uiGUI`; `uiGUI` and above
-are out of scope for this arc. The `uiLINE` mode is the vi `:` command mode
+behind clients of every level the enum names below `ui::GUI`; `ui::GUI` and above
+are out of scope for this arc. The `ui::LINE` mode is the vi `:` command mode
 the IDE already has, without the TUI part (owner) — no new command language.
 
 | Level | The IDE client | Today | Slice |
 |---|---|---|---|
-| `uiNONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | the headless harness (`testmadcide` drives the session with no frontend at all) IS (a) without a command line | V1.5 (a); V6 (b) |
-| `uiLINE` | the **ex / edlin client**: a line frontend over the colon interpreter — `:` verbs (`w q e r`, `goto`, `find`, and every registry command by name) read from stdin, the level-0 sequential renderer prints the projection to stdout (numbered choices; the edit node's lines by range, the way `ex` prints). No cursor addressing: it works over a pipe, in a dumb terminal, and as an MCP seat's transcript. | the colon line (`do_verb`) and `render_tree`'s level-0 print exist; no line frontend | V2.5 |
-| `uiTUI` | the grid client (the JOE personality and the other profiles) | landed | — |
-| `uiWEB` | the webview window | landed | — |
-| `uiGUI` and above | native chrome, 2D, 3D | out of scope | — |
+| `ui::NONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | the headless harness (`testmadcide` drives the session with no frontend at all) IS (a) without a command line | V1.5 (a); V6 (b) |
+| `ui::LINE` | the **ex / edlin client**: a line frontend over the colon interpreter — `:` verbs (`w q e r`, `goto`, `find`, and every registry command by name) read from stdin, the level-0 sequential renderer prints the projection to stdout (numbered choices; the edit node's lines by range, the way `ex` prints). No cursor addressing: it works over a pipe, in a dumb terminal, and as an MCP seat's transcript. | the colon line (`do_verb`) and `render_tree`'s level-0 print exist; no line frontend | V2.5 |
+| `ui::TUI` | the grid client (the JOE personality and the other profiles) | landed | — |
+| `ui::WEB` | the webview window | landed | — |
+| `ui::GUI` and above | native chrome, 2D, 3D | out of scope | — |
 
 Consequences for the design:
 
-- `ui::open(uiLINE)` needs a real frontend — `ui_line_frontend`: `render` = the
+- `ui::open(ui::LINE)` needs a real frontend — `ui_line_frontend`: `render` = the
   sequential typesetter over the composed tree, `read_events` = one stdin line
   → the same semantic events (a `:` line is a colon command; a bare line is
   text; the key vocabulary's spellings name keys). Same session, same
   composer: a lower level ignores the hints it cannot show (the order's
   meaning, §2.3), so the composer changes for none of this.
-- A `uiNONE` client gets PROJECTIONS, never a layout: the client record's
+- A `ui::NONE` client gets PROJECTIONS, never a layout: the client record's
   `level` gates what the session composes for it.
 - The registry-command name → code table (slice V0.5) is the one converter
   every input boundary uses: profiles, menus, the `-c` command line and the
@@ -407,9 +407,9 @@ git adapter (the nexus axes slice).
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
 | **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; per-View caret/mark/scroll | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
-| **V1.5 The `uiNONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
+| **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
 | **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
-| **V2.5 The `uiLINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(uiLINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
+| **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
 | **V3 Clients + windows** | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` | `tests/gui/madcide_window2` (two windows, one edit seen in both); `check-one-anchor-owner.sh` |
 | **V4 Event log** | ChangeEvent written by the mutation owner + verb seam; per-change propagation; `<base>.prj.events`; the edit-history View (`revision: event:N`) | headless replay test (log → text equality); size-rewrite test |
 | **V5 Correlation** | the emitter's coordinate map → View `map`; `viewsync` source ↔ MC11 | `testmadcide` map rows > 0 for the MC11 lens; a sync round-trip pin |

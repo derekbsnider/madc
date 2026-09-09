@@ -24,8 +24,8 @@
 - A dialect event carries the engine's enum code for its key / kind /
   action; a handler switches on the code. Profile action NAMES resolve
   against the command registry when the profile loads.
-- The UI level is the ordered enum `uiNONE < uiLINE < uiTUI < uiWEB <
-  uiGUI < uiGFX2D < uiGFX3D` in `include/madc/bits/ui_enums` (the one
+- The UI level is the ordered enum `ui::NONE < ui::LINE < ui::TUI < ui::WEB <
+  ui::GUI < ui::GFX2D < ui::GFX3D` in `include/madc/bits/ui_enums` (the one
   enum text for engine + dialect); a target declares the level it
   serves; devices and chrome are feature flags beside it.
 

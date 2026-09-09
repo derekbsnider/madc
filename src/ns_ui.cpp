@@ -192,7 +192,10 @@ struct ui_frontend
     std::vector<madc::hub::tui_event> queue;	// one read batch's events
     size_t next_event;
     size_t rows, cols;				// the surface, in text cells
-    ui_frontend() : next_event(0), rows(0), cols(0) {}
+    ui::level level;				// the UI level this frontend serves
+						// (ui::level_of; the grid is ui::TUI,
+						// a host declares its own)
+    ui_frontend() : next_event(0), rows(0), cols(0), level(ui::NONE) {}
     virtual ~ui_frontend() {}
     // Enter the target (grid mode; a window); report the surface size.
     // False = this target cannot serve here (reason on stderr).
@@ -226,7 +229,7 @@ struct ui_grid_frontend : ui_frontend
     madc::hub::tui_target *target;
     madc::hub::tui_model   model;
     madc::hub::tui_grid	   painted;	// the diff basis
-    ui_grid_frontend() : target((madc::hub::tui_target *)0) {}
+    ui_grid_frontend() : target((madc::hub::tui_target *)0) { level = ui::TUI; }
 
     bool open(size_t &r, size_t &c)
     {
@@ -293,10 +296,31 @@ struct ui_grid_frontend : ui_frontend
 // The script-hosted target registry: name -> the host's ops table (the
 // fragment's static lives for the program; the engine never copies it).
 // Populated by dynamic initialization before main, read by ui::open.
-std::map<std::string, const ui::ui_host_ops *> &ui_hosts()
+struct ui_host_reg
 {
-    static std::map<std::string, const ui::ui_host_ops *> hosts;
+    std::string			 name;	// the target name (open(name); the window title)
+    ui::level			 level;	// the UI level the host declares it serves
+    const ui::ui_host_ops	*ops;
+};
+std::vector<ui_host_reg> &ui_hosts()
+{
+    static std::vector<ui_host_reg> hosts;
     return hosts;
+}
+const ui_host_reg *ui_host_named(const std::string &name)
+{
+    for ( size_t i = 0; i < ui_hosts().size(); ++i )
+	if ( ui_hosts()[i].name == name )
+	    return &ui_hosts()[i];
+    return (const ui_host_reg *)0;
+}
+// The FIRST registered host declaring the level (registration order).
+const ui_host_reg *ui_host_serving(ui::level lvl)
+{
+    for ( size_t i = 0; i < ui_hosts().size(); ++i )
+	if ( ui_hosts()[i].level == lvl )
+	    return &ui_hosts()[i];
+    return (const ui_host_reg *)0;
 }
 
 // The DOM frontend (level 3): web_model over a script-hosted target. The
@@ -312,8 +336,8 @@ struct ui_dom_frontend : ui_frontend
     void			*host;		// the host's own handle
     std::deque<std::string>	 inbound;	// posted, not yet applied
     std::string			 name;		// the target name (title)
-    ui_dom_frontend(const std::string &target, const ui::ui_host_ops *o)
-	: ops(o), host((void *)0), name(target) {}
+    ui_dom_frontend(const ui_host_reg &r)
+	: ops(r.ops), host((void *)0), name(r.name) { level = r.level; }
 
     // The ONE embedded page: the applier + input relay (ui_web/page.js) and
     // the default look (ui_web/page.css), baked in with the headers
@@ -1421,31 +1445,10 @@ int64_t lens_to_stored(madc::value &map, int64_t display)
 // choice menus becoming NAVIGABLE. The tui_* names are the "term" target's
 // spellings over the same handles (the level-1 API, unchanged).
 
-// Open a target by name: "term" (the grid frontend), or a registered
-// script-hosted target. Returns a ui handle (> 0), or 0 with the reason on
-// stderr (unknown target; the target cannot serve here — no tty, no
-// display; one already open). An empty name is the terminal.
-int64_t open(const char *target)
+// Enter a frontend: register a DOM frontend as live, open the target (0 +
+// the target's stderr reason when it cannot serve here), hand out the handle.
+static int64_t open_frontend(ui_frontend *f, ui_dom_frontend *dom)
 {
-    std::string name = target ? target : "";
-    if ( name.empty() )
-	name = "term";
-    ui_frontend *f = (ui_frontend *)0;
-    ui_dom_frontend *dom = (ui_dom_frontend *)0;
-    if ( name == "term" )
-	f = new ui_grid_frontend();
-    else
-    {
-	std::map<std::string, const ui_host_ops *>::const_iterator it =
-	    ui_hosts().find(name);
-	if ( it == ui_hosts().end() )
-	{
-	    fprintf(stderr, "ui::open: unknown target '%s'\n", name.c_str());
-	    return 0;
-	}
-	dom = new ui_dom_frontend(name, it->second);
-	f = dom;
-    }
     if ( dom )
 	ui_dom_live().insert(dom);
     if ( !f->open(f->rows, f->cols) )
@@ -1456,6 +1459,59 @@ int64_t open(const char *target)
 	return 0;
     }
     return ui_frontends().open(f);
+}
+
+// Open a target by NAME: "term" (the grid frontend), or a registered
+// script-hosted target. Returns a ui handle (> 0), or 0 with the reason on
+// stderr (unknown target; the target cannot serve here — no tty, no
+// display; one already open). An empty name is the terminal. The name is a
+// target's registry key (the fake host of the tests, a second host of one
+// level); a PROGRAM names the level it wants — open(level) below.
+int64_t open(const char *target)
+{
+    std::string name = target ? target : "";
+    if ( name.empty() )
+	name = "term";
+    if ( name == "term" )
+	return open_frontend(new ui_grid_frontend(), (ui_dom_frontend *)0);
+    const ui_host_reg *r = ui_host_named(name);
+    if ( !r )
+    {
+	fprintf(stderr, "ui::open: unknown target '%s'\n", name.c_str());
+	return 0;
+    }
+    ui_dom_frontend *dom = new ui_dom_frontend(*r);
+    return open_frontend(dom, dom);
+}
+
+// Open the target that serves a UI LEVEL (OWNER 2026-09-09: a program names
+// the RENDERING MODEL it wants — ui::level, ordered by requirement — never a
+// target's spelling): ui::TUI is the grid frontend; any other level is the
+// first registered host declaring it. 0 + stderr when no target serves the
+// level here (ui::NONE and ui::LINE have no frontend yet — slices V1.5 / V2.5 of
+// the client-server design), or when that target cannot serve (as open(name)).
+int64_t open(ui::level lvl)
+{
+    if ( lvl == ui::TUI )
+	return open_frontend(new ui_grid_frontend(), (ui_dom_frontend *)0);
+    const ui_host_reg *r = ui_host_serving(lvl);
+    if ( !r )
+    {
+	fprintf(stderr, "ui::open: no target serves the %s level\n",
+		madc::hub::ui_level_name(lvl));
+	return 0;
+    }
+    ui_dom_frontend *dom = new ui_dom_frontend(*r);
+    return open_frontend(dom, dom);
+}
+
+// The level the opened target serves (ui::level); -1 for a bad handle. "A
+// real terminal exists" is level_of(t) <= ui::TUI — the ONE per-target fact a
+// client loop needs.
+int64_t level_of(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f ? (int64_t)f->level : (int64_t)-1;
 }
 
 void close(int64_t t)
@@ -1474,7 +1530,7 @@ void close(int64_t t)
 // table without open/run, or a name already taken — the first
 // registration wins, so a program cannot swap the web target's host from
 // under the engine.
-bool register_host(const char *target, const ui_host_ops *ops)
+bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 {
     std::string name = target ? target : "";
     if ( name.empty() || !ops || !ops->open || !ops->run )
@@ -1483,13 +1539,23 @@ bool register_host(const char *target, const ui_host_ops *ops)
 		name.c_str());
 	return false;
     }
-    if ( name == "term" || ui_hosts().count(name) )
+    if ( lvl == ui::NONE )
+    {
+	fprintf(stderr, "ui::register_host: target '%s' must declare the UI level it serves\n",
+		name.c_str());
+	return false;
+    }
+    if ( name == "term" || ui_host_named(name) )
     {
 	fprintf(stderr, "ui::register_host: target '%s' is already registered\n",
 		name.c_str());
 	return false;
     }
-    ui_hosts()[name] = ops;
+    ui_host_reg r;
+    r.name = name;
+    r.level = lvl;
+    r.ops = ops;
+    ui_hosts().push_back(r);
     return true;
 }
 

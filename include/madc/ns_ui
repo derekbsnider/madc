@@ -338,6 +338,18 @@ namespace ui {
     // objects are the ONE vocabulary tui_event documents. suspend /
     // resume are terminal capabilities — a window answers false.
     int64_t open(const char *target);
+    // open(level) — OWNER 2026-09-09: a program names the RENDERING MODEL it
+    // wants (ui::level, <bits/ui_enums>: ui::NONE < ui::LINE < ui::TUI < ui::WEB <
+    // ui::GUI < ui::GFX2D < ui::GFX3D, ordered by requirement) and the target that
+    // declares that level serves it: ui::TUI is the grid frontend; a
+    // script-hosted target registers with its level (ui::WEB — <ns_ui_web>).
+    // 0 + stderr reason when no target serves the level here (ui::NONE and
+    // ui::LINE have no frontend yet). level_of(t) reports the opened target's
+    // level (-1 for a bad handle) — "a real terminal exists" is
+    // level_of(t) <= ui::TUI, the ONE per-target fact a client loop needs.
+    // open(name) stays for name-addressed opening (a test's fake host).
+    int64_t open(level lvl);
+    int64_t level_of(int64_t t);
     void    close(int64_t t);
     int64_t rows(int64_t t);
     int64_t cols(int64_t t);
@@ -404,7 +416,11 @@ namespace ui {
 	ui_host_dialog_fn dialog;
 	ui_host_tick_fn  tick;
     };
-    bool register_host(const char *target, const ui_host_ops *ops);
+    // A host registers under a target name AND declares the UI level it
+    // serves (ui::WEB for a page in a webview); open(level) picks the first
+    // registered host of that level. False + stderr: no name, no table,
+    // no level (ui::NONE), or a name already taken.
+    bool register_host(const char *target, level lvl, const ui_host_ops *ops);
     // The host's ONE inbound door: the page's event object (JSON text —
     // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
     // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..} /

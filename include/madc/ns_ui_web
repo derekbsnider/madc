@@ -282,9 +282,7 @@ namespace ui_web {
 	return madcwebview_tick(h->view, (unsigned)ms, on_tick, h) == 0 ? 0 : 1;
     }
 
-    // The name a program hands ui::open.
-    const char *target() { return "web"; }
 }
 
 static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick };
-static bool __ui_web_registered = ui::register_host("web", &__ui_web_ops);
+static bool __ui_web_registered = ui::register_host("web", ui::WEB, &__ui_web_ops);
