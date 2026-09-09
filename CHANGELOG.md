@@ -100,6 +100,15 @@
   enum-typed operand of `cout <<` could tie the manipulator overload
   `operator<<(ostream& (*)(ostream&))` and crash. Reducer:
   `tests/testenumnsoverload.mad` (g++ / clang++ oracle).
+- An ambiguous overload call is REFUSED: two plain (non-template,
+  non-variadic) overloads tied for the best conversion total are an
+  ambiguity ([over.match.best]), reported as `call of overloaded 'ns::f'
+  with argument types (...) is ambiguous: candidates A and B` — as g++ and
+  clang++ do. Before, the first-declared candidate compiled silently
+  (`pr::take("k", cmdSAVE)` against `take(const char *, long)` /
+  `take(const char *, bool)` picked the `long` overload). A non-template
+  still beats a template specialization on an equal total. Reducer:
+  `tests/testoverloadambig.mad` (`.expect_err`).
 - An anonymous function-pointer parameter in a function DEFINITION
   (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
   other unnamed parameter shape already was; c2mir refused the abstract
