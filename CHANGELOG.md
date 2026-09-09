@@ -57,6 +57,26 @@
   byte-identical (testmadcide's parser probes print through the name
   converter and gain the refusal probe).
 
+### madcide: the state discriminators are enums (2026-09-09)
+
+- The bag's slots — the side pane, the panel tab, the prompt mode, the vi
+  mode — and the kinds that ride a terminal request, a build row, a file
+  dialog and the project manifest are prefixed enums in
+  `tools/madcide/madcide_enums.inc` (`paneOUTLINE`, `tabTERMINAL`, `pmFIND`,
+  `viNORMAL`, `rqRUN`, `dlgSAVE`, `pkGUI`, `bmTERMINAL`, `slotPOPUP`), read
+  and written through one owner per slot; a name appears only where text
+  leaves the program (a probe, a message, the page's region hook, the host's
+  dialog mode, the manifest file) through the `*_name()` converters.
+- A native file dialog's IDE kind (open / save / open-project) waits on the
+  bag for the answer; the host still receives only the dialog mode it speaks.
+- `scripts/check-madcide-enums.sh` (fulltest): no string written to a slot,
+  no compare against a discriminator's name word, no request kind as text;
+  three negative controls.
+- Sub-slice d of the conversion; every `.expect` byte-identical. Found and
+  left for the owner: the former slot table keyed the Problems pane
+  "diagnostics" while the pane spells "diags", so that pane never docked —
+  preserved as is (a layout decision), see the plan.
+
 ### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
 
 - In C++ mode an enumerator of a TAGGED enum at namespace or global scope

@@ -45,13 +45,13 @@ void client_service(IdeSession &S, long t)
     var req;
     if ( !S.take_request(req) )
 	return;
-    var kind = format("{}", req["kind"]);
-    if ( kind == "refresh" )
+    long kind = req["kind"].as_integer();
+    if ( kind == rqREFRESH )
     {
 	ui::refresh(t);
 	return;
     }
-    if ( kind == "filedialog" )
+    if ( kind == rqFILEDIALOG )
     {
 	// The native file dialog (S4): the target shows it and the answer
 	// arrives as a dialog event; a target that cannot (the platform has

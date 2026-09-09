@@ -41,7 +41,7 @@ int main()
     println("tabs: {}", ed["hints"]["tabs"].is_null() ? "none" : "yes");
 
     // A floating pane (help needs no compiler data): the box carries popup.
-    ui::set(w, es, "pane", "help");
+    set_pane(w, es, paneHELP);
     var t2;
     S.compose_ide_tree(t2, doc);
     var kids = t2["children"];
@@ -60,7 +60,7 @@ int main()
     // shape). No node is left without a slot: an unplaced node would fall
     // into the grid's empty rail cell. Back to one window the status
     // returns to the status bar.
-    ui::set(w, es, "pane", "");
+    set_pane(w, es, paneNONE);
     split_window(w, es, doc);
     var t3;
     S.compose_ide_tree(t3, doc);
@@ -115,7 +115,7 @@ int main()
     // confirm question carries popup + confirm {label, choices} — its
     // answers are the @confirm scope's actions with titles, in dialog
     // order — and no dismiss (a question is not answered by a stray press).
-    start_prompt(w, es, "Find", "find");
+    start_prompt(w, es, "Find", pmFIND);
     ui::set(w, es, "pinput", "ab");
     var t5;
     S.compose_ide_tree(t5, doc);
@@ -142,12 +142,12 @@ int main()
     // `discard`, so it arrives as an ACTION whose sequence is ^c — the
     // baked "@prompt ^c pcancel" wins by the sequence; in a profile that
     // leaves ^C unbound it arrives as the KEY ^c and the same line wins.
-    start_prompt(w, es, "Find", "find");
+    start_prompt(w, es, "Find", pmFIND);
     ea["action"] = "discard";
     ea["seq"] = "^c";
     S.apply_ide_event(doc, ea);
     long ctrlc_action = prompt_active(w, es) ? 0 : 1;
-    start_prompt(w, es, "Find", "find");
+    start_prompt(w, es, "Find", pmFIND);
     var ek;
     ek["event"] = "key";
     ek["event_code"] = ui::event_kind::key;

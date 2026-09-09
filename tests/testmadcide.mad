@@ -509,19 +509,19 @@ int main()
 	var c1;
 	c1["name"] = "Echo";
 	c1["cmd"] = "echo hello-{base}";
-	c1["mode"] = "capture";
+	c1["mode"] = bmCAPTURE;		// the row's mode is a CODE (V0.5d)
 	c1["act"] = cmdBLD_RUN_CMD;	// the row verb is a CODE (V0.5c)
 	brws.push(c1);
 	var c2;
 	c2["name"] = "Sleepy";
 	c2["cmd"] = "sleep 5";
-	c2["mode"] = "capture";
+	c2["mode"] = bmCAPTURE;
 	c2["act"] = cmdBLD_RUN_CMD;
 	brws.push(c2);
 	var c3;
 	c3["name"] = "Run";
 	c3["cmd"] = "echo never";
-	c3["mode"] = "terminal";
+	c3["mode"] = bmTERMINAL;
 	c3["act"] = cmdBLD_RUN_CMD;
 	brws.push(c3);
 	var c4;
@@ -600,7 +600,7 @@ int main()
     S.apply_ide_event(doc, e);
     var pn;
     ui::get(pn, w, es, "pane");
-    println("esc-pane: closed={}", strlen(pn.c_str()) == 0 ? 1 : 0);
+    println("esc-pane: closed={}", cur_pane(w, es) == paneNONE ? 1 : 0);
     var sub;
     build_subst(sub, "{madc} {path}", w, es, doc);
     println("build-subst: madc-resolved={} has-path={}",
@@ -665,7 +665,7 @@ int main()
     ui::get(bdg, w, es, "diags");
     ui::get(pn, w, es, "pane");
     println("native-build-fail: rows-pos={} pane={}",
-	    php::count(bdg) > 0 ? 1 : 0, pn);
+	    php::count(bdg) > 0 ? 1 : 0, pane_name(cur_pane(w, es)));
     // Run on the red buffer: refused LOUD before any suspend/fork.
     ev_key(e, "esc");			// close the diags pane first
     S.apply_ide_event(bldoc, e);
@@ -676,7 +676,7 @@ int main()
     ui::get(msg, w, es, "msg");
     ui::get(pn, w, es, "pane");
     println("run-refused-red: refused-msg={} pane={}",
-	    msg.index("Run refused") >= 0 ? 1 : 0, pn);
+	    msg.index("Run refused") >= 0 ? 1 : 0, pane_name(cur_pane(w, es)));
     // MT-3b: Stop an in-process build. Landing in the spawn-to-first-run
     // window is DETERMINISTIC (spawn never switches): the task sees the
     // pre-start flag and reports stopped without building anything.
@@ -843,7 +843,7 @@ int main()
 	    badrows = badrows + 1;
     var ppane;
     ui::get(ppane, w, es, "pane");
-    println("proj-check: pane={} bad-rows>0 {} msg={}", ppane,
+    println("proj-check: pane={} bad-rows>0 {} msg={}", pane_name(cur_pane(w, es)),
 	    badrows > 0 ? 1 : 0, msg);
     S.compose_ide_tree(tree, doc);
     var prow0 = format("{}", tree["children"][2]["children"][0]["content"]);
@@ -910,13 +910,13 @@ int main()
     S.apply_ide_event(gdoc, e);
     var cpane;
     ui::get(cpane, w, es, "pane");
-    var cpane0 = format("{}", cpane);
+    var cpane0 = pane_name(cur_pane(w, es));
     ui::set(w, es, "msg", "");
     ev_action(e, "paneclose", "");
     S.apply_ide_event(gdoc, e);
     ui::get(cpane, w, es, "pane");
     ui::get(msg, w, es, "msg");
-    println("close-button: before={} after='{}' unknown={}", cpane0, cpane,
+    println("close-button: before={} after='{}' unknown={}", cpane0, pane_name(cur_pane(w, es)),
 	    strstr(msg.c_str(), "Unknown action") != 0 ? 1 : 0);
 
     // -- the Build MENU carries the ^B rows as direct items (owner
@@ -928,7 +928,7 @@ int main()
     S.apply_ide_event(gdoc, e);
     ui::get(cpane, w, es, "pane");
     ui::get(msg, w, es, "msg");
-    println("menu-build-row: pane='{}' unknown={} msg={}", cpane,
+    println("menu-build-row: pane='{}' unknown={} msg={}", pane_name(cur_pane(w, es)),
 	    strstr(msg.c_str(), "Unknown action") != 0 ? 1 : 0, msg);
 
     // -- polish P2b: File -> Open Project… — the headless session gets the
@@ -950,7 +950,7 @@ int main()
     var opf;
     ui::get(opf, w, es, "projfile");
     println("proj-openproject: {} active={} projfile={} kind={}", msg,
-	    project_active(w, es) ? 1 : 0, opf, proj_kind(w, es));
+	    project_active(w, es) ? 1 : 0, opf, projkind_name(proj_kind(w, es)));
     ev_key(e, "esc");			// close the window
     S.apply_ide_event(gdoc, e);
     remove("madc_ide_open.prj.json");
@@ -1081,7 +1081,7 @@ int main()
     ui::get(prof, w, es, "profile");
     var vmswap;
     ui::get(vmswap, w, es, "vimode");
-    println("swap-modal: profile={} mode={}", prof, vmswap);
+    println("swap-modal: profile={} mode={}", prof, vimode_name(cur_vimode(w, es)));
     ev_action(e, "profile", "opt-keymap");
     S.apply_ide_event(doc, e);
     ui::get(prof, w, es, "profile");
@@ -1286,7 +1286,7 @@ int main()
     paneb = tree["children"][2];
     var hrows;
     hrows = paneb["children"];
-    println("help: pane={} label={} rows={}", pane2, paneb["label"],
+    println("help: pane={} label={} rows={}", pane_name(cur_pane(w, es)), paneb["label"],
 	    php::count(hrows));
     ev_action(e, "help", "^k h");
     S.apply_ide_event(doc, e);
@@ -1482,12 +1482,12 @@ int main()
     var rq;
     long took = S.take_request(rq) ? 1 : 0;
     long again = S.take_request(rq) ? 1 : 0;	// the slot drained
-    println("seam-refresh: took={} kind={} drained={}", took, rq["kind"],
+    println("seam-refresh: took={} kind={} drained={}", took, req_name(rq["kind"].as_integer()),
 	    again);
     run_in_terminal(w, es, "echo seam-exec-ok");
     var rq2;
     long took2 = S.take_request(rq2) ? 1 : 0;
-    println("seam-cmd: took={} kind={} pause={}", took2, rq2["kind"],
+    println("seam-cmd: took={} kind={} pause={}", took2, req_name(rq2["kind"].as_integer()),
 	    rq2["pause"]);
     S.term_exec(rq2);		// the guest's own output: seam-exec-ok
     // The %k chord echo rides the client-pushed pending-chord fact.
@@ -1532,7 +1532,7 @@ int main()
     S.apply_ide_event(doc, e);
     var pmd;
     ui::get(pmd, w, es, "pmode");
-    println("modes-colon: pmode={} palette-closed={}", pmd,
+    println("modes-colon: pmode={} palette-closed={}", prompt_name(cur_pmode(w, es)),
 	    project_active(w, es) || modes_active(w, es) ? 0 : 1);
     ev_text(e, "zz");
     S.apply_ide_event(doc, e);
@@ -1579,7 +1579,7 @@ int main()
     S.apply_ide_event(doc, e);
     var crq;
     long ctook = S.take_request(crq) ? 1 : 0;
-    println("colon-exec: took={} kind={}", ctook, crq["kind"]);
+    println("colon-exec: took={} kind={}", ctook, req_name(crq["kind"].as_integer()));
     S.term_exec(crq);			// the guest prints colon-exec-ok
 
     // -- vi MODES-AS-SCOPES (owner 2026-08-31): the neovim profile is
@@ -1597,24 +1597,22 @@ int main()
     S3.attach(w3, es3);
     ui::set(w3, es3, "profile_dir", "tools/madcide/profiles");
     long vok = load_profile(w3, es3, "neovim") ? 1 : 0;
-    var vm;
-    ui::get(vm, w3, es3, "vimode");
-    println("vi-load: ok={} mode={}", vok, vm);
+    long vm = cur_vimode(w3, es3);
+    println("vi-load: ok={} mode={}", vok, vimode_name(vm));
     // i enters INSERT (typing types again), esc — @insert scope DATA —
     // returns to NORMAL.
     ev_text(e, "i");
     S3.apply_ide_event(doc3, e);
-    var vmi;
-    ui::get(vmi, w3, es3, "vimode");
+    long vmi = cur_vimode(w3, es3);
     ev_text(e, "Q");
     S3.apply_ide_event(doc3, e);
     ev_key(e, "esc");
     S3.apply_ide_event(doc3, e);
-    ui::get(vm, w3, es3, "vimode");
+    vm = cur_vimode(w3, es3);
     var vtx;
     ui::text(vtx, w3, doc3);
-    println("vi-insert: in={} typed={} out={}", vmi,
-	    vtx.index("Qalpha") == 0 ? 1 : 0, vm);
+    println("vi-insert: in={} typed={} out={}", vimode_name(vmi),
+	    vtx.index("Qalpha") == 0 ? 1 : 0, vimode_name(vm));
     // Normal mode: the %M status seat shows the mode; motions are
     // @normal data over the shared movement (0 home, $ end, j down).
     S3.compose_ide_tree(tree, doc3);
@@ -1686,14 +1684,13 @@ int main()
     S3.apply_ide_event(doc3, e);
     ev_text(e, "c");
     S3.apply_ide_event(doc3, e);
-    var vmcc;
-    ui::get(vmcc, w3, es3, "vimode");
+    long vmcc = cur_vimode(w3, es3);
     ev_text(e, "fresh");
     S3.apply_ide_event(doc3, e);
     ev_key(e, "esc");
     S3.apply_ide_event(doc3, e);
     ui::text(vtx, w3, doc3);
-    println("vi-cc: mode={} text={}", vmcc, vtx == "fresh\n" ? 1 : 0);
+    println("vi-cc: mode={} text={}", vimode_name(vmcc), vtx == "fresh\n" ? 1 : 0);
     // o opens below, O above — the case alphabet again.
     ev_text(e, "o");
     S3.apply_ide_event(doc3, e);
@@ -1725,11 +1722,10 @@ int main()
     long vA = vtx.index("fresh!") == 0 ? 1 : 0;
     ev_text(e, ":");
     S3.apply_ide_event(doc3, e);
-    var vpm;
-    ui::get(vpm, w3, es3, "pmode");
+    long vpm = cur_pmode(w3, es3);
     ev_key(e, "esc");
     S3.apply_ide_event(doc3, e);
-    println("vi-A-colon: eol-append={} pmode={} closed={}", vA, vpm,
+    println("vi-A-colon: eol-append={} pmode={} closed={}", vA, prompt_name(vpm),
 	    prompt_active(w3, es3) ? 0 : 1);
     // An unbound normal-mode character says so and swallows itself; esc
     // clears a pending count.
@@ -1748,11 +1744,11 @@ int main()
     // The palette's v row toggles modal editing off: typing types again.
     ev_action(e, "vimode", "^n v");
     S3.apply_ide_event(doc3, e);
-    ui::get(vm, w3, es3, "vimode");
+    vm = cur_vimode(w3, es3);
     ev_text(e, "x");
     S3.apply_ide_event(doc3, e);
     ui::text(vtx, w3, doc3);
-    println("vi-toggle: mode='{}' typed-x={}", vm,
+    println("vi-toggle: mode='{}' typed-x={}", vimode_name(vm),
 	    vtx.index("x") >= 0 ? 1 : 0);
     ui::world_close(w3);
 
@@ -1821,7 +1817,7 @@ int main()
     println("panel-problems: tabs={} t0={} t0-active={} t1={} child={} label={} diags-pane={}",
 	    php::count(ptabs), ptabs[0]["title"], ptabs[0]["active"],
 	    ptabs[1]["title"], pnode["children"][0]["role"],
-	    pnode["children"][0]["label"], pnpane == "diags" ? 1 : 0);
+	    pnode["children"][0]["label"], cur_pane(w, es) == paneDIAGS ? 1 : 0);
     ev_action(e, "output", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(tree, doc);
@@ -1932,7 +1928,7 @@ int main()
     var ttab;
     ui::get(ttab, w, es, "paneltab");
     println("tty-start: live={} focus={} tab={}", es_int(w, es, "termlive", 0),
-	    es_int(w, es, "termfocus", 0), ttab);
+	    es_int(w, es, "termfocus", 0), tab_name(es_int(w, es, "paneltab", tabPROBLEMS)));
     // The keyboard returns with the scope's key (^] termunfocus, baked
     // data) and the `terminal` command gives it back to the live program.
     ev_key(e, "^]");

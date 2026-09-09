@@ -17,7 +17,17 @@
 // (tests/testmadcide.mad drives it headlessly with the exact event value
 // shapes).
 
-#include "madcide_enums.inc"	// ide_cmd: the command vocabulary as codes
+#include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+
+// The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):
+// integers on the bag, an enumerator at every site, a name only where text
+// leaves the program (pane_name & co. in madcide_enums.inc).
+long cur_pane(long w, long es)		{ return es_int(w, es, "pane", paneNONE); }
+void set_pane(long w, long es, long p)	{ ui::set(w, es, "pane", p); }
+long cur_pmode(long w, long es)		{ return es_int(w, es, "pmode", pmNONE); }
+void set_pmode(long w, long es, long m)	{ ui::set(w, es, "pmode", m); }
+long cur_vimode(long w, long es)	{ return es_int(w, es, "vimode", viOFF); }
+void set_vimode(long w, long es, long m) { ui::set(w, es, "vimode", m); }
 
 // ---- the IDE session (the gateway seam, design doc 2026-08-31) ---------
 // THIS FILE IS THE SESSION LAYER. IdeSession owns the IDE's state and
@@ -388,7 +398,7 @@ bool scope_action_named(var &out, long w, long es, const char *scope,
 
 // The vi mode setter (defined with the vi machinery below — the loaders
 // need it: a modal personality starts in normal mode).
-void vi_enter(long w, long es, const char *mode);
+void vi_enter(long w, long es, long mode);
 
 // Load a named profile from the session's profile directory: parse it,
 // VALIDATE it handle-free (ui::tui_validate_keys — same rules the
@@ -448,7 +458,7 @@ bool load_profile(long w, long es, const char *name)
     // other profile clears vi mode — the tables its arm routes through
     // are gone. Data decides, never the profile's name.
     var vt = scopes["normal"];
-    vi_enter(w, es, vt.is_null() ? "" : "normal");
+    vi_enter(w, es, vt.is_null() ? viOFF : viNORMAL);
     ui::set(w, es, "profile", pname);
     ui::set(w, es, "bindtext", full);	// help documents the modal
 					// defaults along with the profile
@@ -488,7 +498,7 @@ bool bind_rescue_keys(long w, long es)
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
-    vi_enter(w, es, "");		// no @normal data in the rescue set
+    vi_enter(w, es, viOFF);		// no @normal data in the rescue set
     ui::set(w, es, "profile", "rescue");
     ui::set(w, es, "bindtext", full);
     ui::set(w, es, "msg",
@@ -665,8 +675,6 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     ui::get(mod, w, doc, "modified");
     var pf;
     ui::get(pf, w, es, "projfile");
-    var vm;
-    ui::get(vm, w, es, "vimode");
     var bufs;
     ui::get(bufs, w, es, "buffers");
     bool editable = es_flag(w, es, "editable");
@@ -676,7 +684,7 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     bool buffers = !bufs.is_null() && php::count(bufs) > 1;
     bool project = !pf.is_null() && strlen(pf.c_str()) > 0;
     bool building = es_int(w, es, "buildlive", 0) != 0;
-    bool modal = !vm.is_null() && strlen(vm.c_str()) > 0;
+    bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
     ctx = { "editable": editable, "dirty": dirty, "selection": selection,
 	    "split": split, "buffers": buffers, "project": project,
@@ -978,11 +986,10 @@ long diag_error_count(var &diags)
 // (visible), `paneltab` (the active tab). The terminal never composes it
 // (byte-identical). Commands in the one vocabulary: panel (toggle),
 // problems, output (show that tab).
-void show_panel_tab(long w, long es, const char *tab)
+void show_panel_tab(long w, long es, long tab)
 {
-    var t = tab;			// ring discipline: own the text first
     ui::set(w, es, "panel", 1);
-    ui::set(w, es, "paneltab", t);
+    ui::set(w, es, "paneltab", tab);
 }
 
 // ONE way to surface the diagnostics: the terminal's diags pane, or — in
@@ -991,9 +998,9 @@ void show_panel_tab(long w, long es, const char *tab)
 void show_diags(long w, long es)
 {
     if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, "problems");
+	show_panel_tab(w, es, tabPROBLEMS);
     else
-	ui::set(w, es, "pane", "diags");
+	set_pane(w, es, paneDIAGS);
 }
 
 // A build starting: a window shows its stream in the Output tab; the
@@ -1001,7 +1008,7 @@ void show_diags(long w, long es)
 void show_output(long w, long es)
 {
     if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, "output");
+	show_panel_tab(w, es, tabOUTPUT);
 }
 
 // The check ACTION: refresh + report + show the pane.
@@ -1071,10 +1078,8 @@ bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
     var rows;
-    if ( pane == "outline" )
+    if ( cur_pane(w, es) == paneOUTLINE )
 	ui::get(rows, w, es, "outline");
     else
 	ui::get(rows, w, es, "diags");
@@ -1236,11 +1241,10 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'M' )
 	{
 	    // The vi mode seat (vim's showmode; empty outside vi mode).
-	    var vm;
-	    ui::get(vm, w, es, "vimode");
-	    if ( vm == "insert" )
+	    long vm = cur_vimode(w, es);
+	    if ( vm == viINSERT )
 		seat = "-- INSERT -- ";
-	    else if ( vm == "normal" )
+	    else if ( vm == viNORMAL )
 		seat = "-- NORMAL -- ";
 	}
 	if ( e == 'x' )
@@ -1415,9 +1419,7 @@ bool compose_overlay_row(var &row, long w, long es)
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
-	var pm;
-	ui::get(pm, w, es, "pmode");
-	if ( pm == "confirm" )
+	if ( cur_pmode(w, es) == pmCONFIRM )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
 	    // The question as a DIALOG in a window: the label and its
@@ -1524,17 +1526,17 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 // Label + input + completion mode on the bag; the shared status line
 // projects "label: input". While a prompt is up it consumes every event:
 // text appends, backspace trims, enter completes, esc cancels.
-void start_prompt(long w, long es, const char *label, const char *mode)
+void start_prompt(long w, long es, const char *label, long mode)
 {
     ui::set(w, es, "prompt", label);
-    ui::set(w, es, "pmode", mode);
+    set_pmode(w, es, mode);
     ui::set(w, es, "pinput", "");
 }
 
 void end_prompt(long w, long es)
 {
     ui::set(w, es, "prompt", "");
-    ui::set(w, es, "pmode", "");
+    set_pmode(w, es, pmNONE);
     ui::set(w, es, "pinput", "");
     ui::set(w, es, "pverb", "");
 }
@@ -1545,7 +1547,7 @@ void end_prompt(long w, long es)
 // or any bound action (^C included) cancels.
 void start_confirm(long w, long es, const char *label, const char *verb)
 {
-    start_prompt(w, es, label, "confirm");
+    start_prompt(w, es, label, pmCONFIRM);
     ui::set(w, es, "pverb", verb);
 }
 
@@ -1600,44 +1602,43 @@ bool colon_command(long w, long es, long doc, long caret, var &in);
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
 {
-    var mode;
-    ui::get(mode, w, es, "pmode");
+    long mode = cur_pmode(w, es);
     var in;
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
     if ( strlen(in.c_str()) == 0 )
 	return true;
-    if ( mode == "colon" )
+    if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
-    if ( mode == "find" )
+    if ( mode == pmFIND )
     {
 	ui::set(w, es, "search", in.c_str());
 	do_find(w, es, doc, caret);
 	return true;
     }
-    if ( mode == "gotoline" )
+    if ( mode == pmGOTOLINE )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, php::intval(in), 0));
 	return true;
     }
-    if ( mode == "insertfile" )
+    if ( mode == pmINSERTFILE )
     {
 	insert_file(w, es, doc, caret, in.c_str());
 	return true;
     }
-    if ( mode == "editfile" )
+    if ( mode == pmEDITFILE )
     {
 	edit_file(w, es, doc, in.c_str());
 	return true;
     }
-    if ( mode == "saveas" )
+    if ( mode == pmSAVEAS )
 	return save_as(w, es, doc, in.c_str());
-    if ( mode == "openproject" )
+    if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
 	return true;
     }
-    if ( mode == "bufsel" )
+    if ( mode == pmBUFSEL )
     {
 	// The palette's Switch to Buffer…: the ring row whose path or base
 	// name is the answer.
@@ -1661,7 +1662,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	ui::set(w, es, "msg", format("No buffer '{}'.", in));
 	return true;
     }
-    if ( mode == "projadd" )
+    if ( mode == pmPROJADD )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
 	// ruling): the command is projadd(path).
@@ -1670,7 +1671,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	    project_rows(w, es, doc);
 	return true;
     }
-    if ( mode == "tabwidth" )
+    if ( mode == pmTABWIDTH )
     {
 	long tw = php::intval(in);
 	if ( tw < 1 || tw > 16 )
@@ -1682,7 +1683,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	ui::set(w, es, "msg", format("Tab width {}.", tw));
 	return true;
     }
-    if ( mode == "theme" )
+    if ( mode == pmTHEME )
     {
 	// A colour SCHEME swap (owner: like the keybinding profiles):
 	// load the named theme and recolour from the handle's retained
@@ -1713,9 +1714,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
-    var pmode;
-    ui::get(pmode, w, es, "pmode");
-    if ( pmode == "confirm" )
+    if ( cur_pmode(w, es) == pmCONFIRM )
     {
 	// Single-key question: characters AND keys consult @confirm
 	// (a confirm reads its answer characters — unlike a prompt,
@@ -2488,17 +2487,15 @@ void proj_tu_rows(var &out, long w, long es, long doc)
 // The project's KIND (polish P2c): the manifest's "kind" — console
 // (absent) or gui. It decides the Windows executable's subsystem on a
 // project build (the engine reads the manifest itself) and where Run sends
-// the program's output. Ring-lifetime text; callers own it at once.
-const char *proj_kind(long w, long es)
+// the program's output. The manifest's word converts HERE (ide_projkind).
+long proj_kind(long w, long es)
 {
     var proj;
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
-	return "console";
+	return pkCONSOLE;
     var k = proj["kind"];
-    if ( k.is_null() )
-	return "console";
-    return k.c_str();
+    return projkind_of(k);
 }
 
 // A manifest is OPEN (loaded or materialized): the kind row shows, the
@@ -2525,15 +2522,12 @@ void proj_toggle_kind(long w, long es, long doc)
 		"No project manifest yet — add a second file (^K I) first.");
 	return;
     }
-    var cur = proj_kind(w, es);		// own the ring text
-    var nk = "console";
-    if ( cur == "console" )
-	nk = "gui";
-    proj["kind"] = nk;
+    long nk = proj_kind(w, es) == pkCONSOLE ? pkGUI : pkCONSOLE;
+    proj["kind"] = projkind_name(nk);	// the manifest file's word
     ui::set(w, es, "proj", proj);
     proj_touch(w, es);
     if ( proj_write(w, es, doc) )
-	ui::set(w, es, "msg", format("Project kind: {}.", nk));
+	ui::set(w, es, "msg", format("Project kind: {}.", projkind_name(nk)));
 }
 
 bool proj_member(long w, long es, long doc, const char *path)
@@ -2840,24 +2834,20 @@ void project_rows(long w, long es, long doc)
 
 void proj_show(long w, long es, long doc)
 {
-    ui::set(w, es, "pane", "project");
+    set_pane(w, es, panePROJECT);
     ui::set(w, es, "projfilter", "");
     project_rows(w, es, doc);
 }
 
 void proj_hide(long w, long es)
 {
-    ui::set(w, es, "pane", "");
+    set_pane(w, es, paneNONE);
     ui::set(w, es, "projfilter", "");
 }
 
 bool project_active(long w, long es)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane.is_null() )
-	return false;
-    return pane == "project";
+    return cur_pane(w, es) == panePROJECT;
 }
 
 // Every event while the project window is up (modal, like the prompt):
@@ -2940,7 +2930,7 @@ bool project_event(long w, long es, long doc, var &ev)
 	}
     }
     else if ( a == cmdPROJADD )
-	start_prompt(w, es, "File to add to project", "projadd");
+	start_prompt(w, es, "File to add to project", pmPROJADD);
     else if ( a == cmdPROJDEL )
     {
 	var opt = ev["option"];
@@ -2971,18 +2961,14 @@ bool project_event(long w, long es, long doc, var &ev)
 // objects (iw), no repeat (.), and the caret is the shared byte caret
 // (it may sit one past a line's last character where vim's would not).
 //
-// State bags: "vimode" (""/"normal"/"insert"), "vicount" (the digits so
+// State bags: "vimode" (ide_vimode: viOFF / viNORMAL / viINSERT), "vicount" (the digits so
 // far), "viop"+"viopn" (the pending operator and its stashed count —
 // 2d3w multiplies to 6), "vipend" (the literal echo, vim's showcmd —
 // the %k seat renders it when no engine chord is in flight).
 
 bool vi_active(long w, long es)
 {
-    var m;
-    ui::get(m, w, es, "vimode");
-    if ( m.is_null() )
-	return false;
-    return strlen(m.c_str()) > 0;
+    return cur_vimode(w, es) != viOFF;
 }
 
 void vi_pending_clear(long w, long es)
@@ -2993,9 +2979,9 @@ void vi_pending_clear(long w, long es)
     ui::set(w, es, "vipend", "");
 }
 
-void vi_enter(long w, long es, const char *mode)
+void vi_enter(long w, long es, long mode)
 {
-    ui::set(w, es, "vimode", mode);
+    set_vimode(w, es, mode);
     vi_pending_clear(w, es);
 }
 
@@ -3061,7 +3047,7 @@ void vi_toggle(long w, long es)
 {
     if ( vi_active(w, es) )
     {
-	vi_enter(w, es, "");
+	vi_enter(w, es, viOFF);
 	ui::set(w, es, "msg", "vi mode off.");
 	return;
     }
@@ -3076,7 +3062,7 @@ void vi_toggle(long w, long es)
 		"No @normal keys in this profile (^T Keymap row: neovim).");
 	return;
     }
-    vi_enter(w, es, "normal");
+    vi_enter(w, es, viNORMAL);
     ui::set(w, es, "msg", "vi NORMAL mode (i inserts, ^N v leaves).");
 }
 
@@ -3102,21 +3088,17 @@ void modes_show(long w, long es)
     rows[] = { "act": cmdVIMODE,
 	       "content": " v  vi normal/insert editing — toggle modal mode" };
     ui::set(w, es, "modesrows", rows);
-    ui::set(w, es, "pane", "modes");
+    set_pane(w, es, paneMODES);
 }
 
 void modes_hide(long w, long es)
 {
-    ui::set(w, es, "pane", "");
+    set_pane(w, es, paneNONE);
 }
 
 bool modes_active(long w, long es)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane.is_null() )
-	return false;
-    return pane == "modes";
+    return cur_pane(w, es) == paneMODES;
 }
 
 // Enter the mode a palette row (or a @modes key) names. The palette
@@ -3127,7 +3109,7 @@ bool modes_dispatch(long w, long es, long doc, long caret, long a)
     if ( a == cmdCOLON )
     {
 	modes_hide(w, es);
-	start_prompt(w, es, "Command", "colon");
+	start_prompt(w, es, "Command", pmCOLON);
 	return true;
     }
     if ( a == cmdVIMODE )
@@ -3536,7 +3518,7 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "termsrc", u);
     ui::set(w, es, "termlive", 1);
     ui::set(w, es, "termfocus", 1);
-    show_panel_tab(w, es, "terminal");
+    show_panel_tab(w, es, tabTERMINAL);
     go term_pump(w, es, tdoc, stopc, inc);
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
@@ -3682,9 +3664,7 @@ void native_build_task(long w, long es)
     }
     // Failure: surface the rows. Take the lower pane only when the user
     // has nothing else up (never stomp an open palette/help/options).
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) == 0 )
+    if ( cur_pane(w, es) == paneNONE )
 	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Build failed: {} problem(s).", php::count(diags)));
@@ -3748,13 +3728,18 @@ bool save_and_check(long w, long es, long doc);	// defined with the actions belo
 // chrome pushes it; the terminal and a headless session never do, so
 // their open / save-as keep prompting exactly as before). The answer
 // returns as a dialog EVENT the dispatcher handles (dialog_result).
-bool dialog_request(long w, long es, const char *mode, const char *title,
+bool dialog_request(long w, long es, long dlg, const char *title,
 		    var &initial)
 {
     if ( !es_flag(w, es, "hasdialogs") )
 	return false;
-    var rq = { "kind": "filedialog", "mode": mode, "title": title,
-	       "path": initial, "pause": 0 };
+    // The host speaks the dialog MODE (open | save — ui::dialog_mode's
+    // names, the wire word); the IDE's own KIND — what the answer means —
+    // rides the request for the fallback prompt and waits on the bag for
+    // the answer (dialog_result).
+    var rq = { "kind": rqFILEDIALOG, "dlg": dlg, "mode": dlg_host_mode(dlg),
+	       "title": title, "path": initial, "pause": 0 };
+    ui::set(w, es, "dlgkind", dlg);
     ui::set(w, es, "termreq", rq);
     return true;
 }
@@ -3792,22 +3777,23 @@ bool save_as(long w, long es, long doc, const char *path0)
 // buffer under it; an empty path is the user's cancel.
 void dialog_result(long w, long es, long doc, var &ev)
 {
-    var mode = ev["mode"];
+    long dlg = es_int(w, es, "dlgkind", dlgOPEN);	// the request this answers
     var path = ev["path"];
     if ( path.is_null() || strlen(path.c_str()) == 0 )
     {
 	ui::set(w, es, "msg", "Cancelled.");
 	return;
     }
-    if ( mode == "save" )
+    switch ( dlg )
     {
-	save_as(w, es, doc, path.c_str());
-	return;
-    }
-    if ( mode == "openproject" )
-    {
-	proj_open(w, es, doc, path.c_str());
-	return;
+	case dlgSAVE:
+	    save_as(w, es, doc, path.c_str());
+	    return;
+	case dlgOPENPROJECT:
+	    proj_open(w, es, doc, path.c_str());
+	    return;
+	default:
+	    break;
     }
     edit_file(w, es, doc, path.c_str());
 }
@@ -3848,8 +3834,7 @@ void run_buffer(long w, long es, long doc)
 	var rp;
 	ui::get(rp, w, doc, "path");
 	var title = format("Run {}", rp);
-	var pk = proj_kind(w, es);
-	if ( pk == "gui" )
+	if ( proj_kind(w, es) == pkGUI )
 	{
 	    var uri = format("madcrun://{}", h);
 	    start_capture(w, es, title.c_str(), uri.c_str());
@@ -3861,7 +3846,7 @@ void run_buffer(long w, long es, long doc)
 	}
 	return;
     }
-    var rq = { "kind": "run", "doc": doc, "pause": 1 };
+    var rq = { "kind": rqRUN, "doc": doc, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3879,7 +3864,7 @@ void run_in_terminal(long w, long es, const char *cmd)
 	start_terminal(w, es, c.c_str(), uri.c_str());
 	return;
     }
-    var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
+    var rq = { "kind": rqCMD, "cmd": cmd, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3987,9 +3972,7 @@ void project_build_task(long w, long es)
 	ui::set(w, es, "msg", format("Built project {} -> {}", pf, o));
 	return;
     }
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) == 0 )
+    if ( cur_pane(w, es) == paneNONE )
 	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Project build failed: {} problem(s).", php::count(diags)));
@@ -4053,8 +4036,7 @@ void run_project(long w, long es, long doc)
 	// A window: the --project JIT lane in a child — the Terminal tab
 	// for a console project, Output for a gui one (the kind).
 	var title = format("Run project {}", pf);
-	var pk = proj_kind(w, es);
-	if ( pk == "gui" )
+	if ( proj_kind(w, es) == pkGUI )
 	{
 	    var uri = format("madcproj://{}", pf);
 	    start_capture(w, es, title.c_str(), uri.c_str());
@@ -4066,7 +4048,7 @@ void run_project(long w, long es, long doc)
 	}
 	return;
     }
-    var rq = { "kind": "projrun", "pause": 1 };
+    var rq = { "kind": rqPROJRUN, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -4130,7 +4112,7 @@ void ensure_build_cmds(long w, long es)
 	// bld-proj-run = the --project JIT lane, forked
 	rows[] = { "name": "Run project", "act": cmdBLD_PROJ_RUN };
 	rows[] = { "name": "Run native", "cmd": format("./{}", pout),
-		   "mode": "terminal", "act": cmdBLD_RUN_CMD };
+		   "mode": bmTERMINAL, "act": cmdBLD_RUN_CMD };
 	rows[] = { "name": "Stop", "act": cmdBLD_STOP };
 	// The manifest's commands section: {name, cmd, mode?} rows AS
 	// DATA, appended after the built-ins ({path}/{base}/{project}/
@@ -4149,9 +4131,8 @@ void ensure_build_cmds(long w, long es)
 		    continue;
 		// (An if/else default, not a ternary: mixed scalar/carrier
 		// ternary arms are a banked lowering gap.)
-		var cm = c["mode"];
-		if ( cm.is_null() )
-		    cm = "capture";
+		var cmw = c["mode"];		// the manifest's word
+		long cm = bmode_of(cmw);	// converted where the row is built
 		rows[] = { "name": cn, "cmd": cc, "mode": cm,
 			   "act": cmdBLD_RUN_CMD };
 	    }
@@ -4167,7 +4148,7 @@ void ensure_build_cmds(long w, long es)
     // bld-run = fork the LIVE parse (madc::parse_run)
     rows[] = { "name": "Run", "act": cmdBLD_RUN };
     rows[] = { "name": "Run native", "cmd": "./{base}",
-	       "mode": "terminal", "act": cmdBLD_RUN_CMD };
+	       "mode": bmTERMINAL, "act": cmdBLD_RUN_CMD };
     rows[] = { "name": "Stop", "act": cmdBLD_STOP };
     ui::set(w, es, "buildcmds", rows);
 }
@@ -4183,7 +4164,7 @@ void build_choose(long w, long es, long doc, long option)
 	return;
     var r = rows[idx];
     long a = r["act"].as_integer();
-    ui::set(w, es, "pane", "");		// the palette closes on choose
+    set_pane(w, es, paneNONE);		// the palette closes on choose
     switch ( a )
     {
 	case cmdBLD_CHECK:
@@ -4223,8 +4204,7 @@ void build_choose(long w, long es, long doc, long option)
     var cmd0 = format("{}", r["cmd"]);
     var cmd;
     build_subst(cmd, cmd0.c_str(), w, es, doc);
-    var mode = format("{}", r["mode"]);
-    if ( mode == "terminal" )
+    if ( r["mode"].as_integer() == bmTERMINAL )
 	run_in_terminal(w, es, cmd.c_str());
     else
 	start_build(w, es, cmd.c_str());
@@ -4289,7 +4269,7 @@ void open_shell(long w, long es)
 	start_terminal(w, es, "Shell", "pty://sh -c ${SHELL:-/bin/sh}");
 	return;
     }
-    var rq = { "kind": "shell", "pause": 0 };
+    var rq = { "kind": rqSHELL, "pause": 0 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -4381,14 +4361,9 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 }
 
 // Toggle the lower pane between `name` and hidden.
-void toggle_pane(long w, long es, const char *name)
+void toggle_pane(long w, long es, long p)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane == name )
-	ui::set(w, es, "pane", "");
-    else
-	ui::set(w, es, "pane", name);
+    set_pane(w, es, cur_pane(w, es) == p ? paneNONE : p);
 }
 
 // The pointer arm (IDE-9e aware): a press picks the WINDOW first. The
@@ -4579,7 +4554,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return do_verb(w, es, "q!");
 	    case cmdFIND:
 	    {
-		start_prompt(w, es, "Find", "find");
+		start_prompt(w, es, "Find", pmFIND);
 		return true;
 	    }
 	    case cmdFINDNEXT:
@@ -4589,17 +4564,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdGOTOLINE:
 	    {
-		start_prompt(w, es, "Go to line", "gotoline");
+		start_prompt(w, es, "Go to line", pmGOTOLINE);
 		return true;
 	    }
 	    case cmdINSERTFILE:
 	    {
-		start_prompt(w, es, "Insert file", "insertfile");
+		start_prompt(w, es, "Insert file", pmINSERTFILE);
 		return true;
 	    }
 	    case cmdTHEME:
 	    {
-		start_prompt(w, es, "Theme", "theme");
+		start_prompt(w, es, "Theme", pmTHEME);
 		return true;
 	    }
 	    case cmdMARK:
@@ -4674,25 +4649,23 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdOUTLINE:
 	    {
-		var pane;
-		ui::get(pane, w, es, "pane");
-		if ( pane == "outline" )
-		    ui::set(w, es, "pane", "");
+		if ( cur_pane(w, es) == paneOUTLINE )
+		    set_pane(w, es, paneNONE);
 		else
 		{
 		    refresh_outline(w, es, doc);
-		    ui::set(w, es, "pane", "outline");
+		    set_pane(w, es, paneOUTLINE);
 		}
 		return true;
 	    }
 	    case cmdHELP:
 	    {
-		toggle_pane(w, es, "help");
+		toggle_pane(w, es, paneHELP);
 		return true;
 	    }
 	    case cmdOPTIONS:
 	    {
-		toggle_pane(w, es, "options");
+		toggle_pane(w, es, paneOPTIONS);
 		return true;
 	    }
 	    case cmdPROJECT:
@@ -4719,7 +4692,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    {
 		// The colon line directly (a profile may seat it on its own
 		// chord; the palette's ":" row is the discoverable door).
-		start_prompt(w, es, "Command", "colon");
+		start_prompt(w, es, "Command", pmCOLON);
 		return true;
 	    }
 	    case cmdREFRESH:
@@ -4728,14 +4701,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		// the CLIENT's to perform (it owns refresh); the session only
 		// parks the request. Headless sessions have no terminal
 		// pushed; the action is safely inert there, as it always was.
-		var rq = { "kind": "refresh", "pause": 0 };
+		var rq = { "kind": rqREFRESH, "pause": 0 };
 		term_request(w, es, rq);
 		return true;
 	    }
 	    case cmdBUILD:
 	    {
 		ensure_build_cmds(w, es);
-		toggle_pane(w, es, "build");
+		toggle_pane(w, es, paneBUILD);
 		return true;
 	    }
 	    case cmdEDITFILE:
@@ -4743,16 +4716,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		// A window with native dialogs shows the platform's Open; the
 		// terminal and a headless session keep JOE's prompt.
 		var none = "";
-		if ( !dialog_request(w, es, "open", "Open File", none) )
-		    start_prompt(w, es, "Name of file to edit", "editfile");
+		if ( !dialog_request(w, es, dlgOPEN, "Open File", none) )
+		    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
 		return true;
 	    }
 	    case cmdSAVEAS:
 	    {
 		var cur;
 		ui::get(cur, w, doc, "path");
-		if ( !dialog_request(w, es, "save", "Save As", cur) )
-		    start_prompt(w, es, "Save as", "saveas");
+		if ( !dialog_request(w, es, dlgSAVE, "Save As", cur) )
+		    start_prompt(w, es, "Save as", pmSAVEAS);
 		return true;
 	    }
 	    case cmdOPENPROJECT:
@@ -4760,8 +4733,8 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		// File -> Open Project… (polish P2b): the native Open over the
 		// manifests; the terminal and a headless session keep a prompt.
 		var none = "";
-		if ( !dialog_request(w, es, "openproject", "Open Project", none) )
-		    start_prompt(w, es, "Project file to open", "openproject");
+		if ( !dialog_request(w, es, dlgOPENPROJECT, "Open Project", none) )
+		    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
 		return true;
 	    }
 	    case cmdPANEL:
@@ -4773,17 +4746,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdPROBLEMS:
 	    {
-		show_panel_tab(w, es, "problems");
+		show_panel_tab(w, es, tabPROBLEMS);
 		return true;
 	    }
 	    case cmdOUTPUT:
 	    {
-		show_panel_tab(w, es, "output");
+		show_panel_tab(w, es, tabOUTPUT);
 		return true;
 	    }
 	    case cmdTERMINAL:
 	    {
-		show_panel_tab(w, es, "terminal");
+		show_panel_tab(w, es, tabTERMINAL);
 		if ( es_int(w, es, "termlive", 0) != 0 )
 		    ui::set(w, es, "termfocus", 1);
 		return true;
@@ -4803,7 +4776,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 			switch_buffer(w, es, doc, idx);
 		}
 		else
-		    start_prompt(w, es, "Buffer", "bufsel");
+		    start_prompt(w, es, "Buffer", pmBUFSEL);
 		return true;
 	    }
 	    case cmdSHELL:
@@ -4874,7 +4847,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	var pc;
 	if ( scope_action_named(pc, w, es, "pane", ev) && pc == cmdPANECLOSE )
 	{
-	    ui::set(w, es, "pane", "");
+	    set_pane(w, es, paneNONE);
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -4934,16 +4907,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdW:
 		return save_and_check(w, es, doc);
 	    case cmdF:
-		start_prompt(w, es, "Find", "find");
+		start_prompt(w, es, "Find", pmFIND);
 		return true;
 	    case cmdQ:
 		return do_verb(w, es, "q");
 	    // The ^T Options rows.
 	    case cmdOPT_TABWIDTH:
-		start_prompt(w, es, "Tab width (1-16)", "tabwidth");
+		start_prompt(w, es, "Tab width (1-16)", pmTABWIDTH);
 		return true;
 	    case cmdOPT_SCHEME:
-		start_prompt(w, es, "Theme", "theme");
+		start_prompt(w, es, "Theme", pmTHEME);
 		return true;
 	    case cmdOPT_KEYMAP:
 		toggle_profile(w, es);
@@ -4963,14 +4936,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     // outline, diags, build alike — is @pane profile data (the baked
     // default: esc paneclose). The project window and prompts cancel in
     // their own scoped arms above (they route before this one).
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) > 0 )
+    if ( cur_pane(w, es) != paneNONE )
     {
 	var pa;
 	if ( scoped_action(pa, w, es, "pane", ev) && pa == cmdPANECLOSE )
 	{
-	    ui::set(w, es, "pane", "");
+	    set_pane(w, es, paneNONE);
 	    return true;
 	}
     }
@@ -5250,14 +5221,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(ed);
     }
 
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( !pane.is_null() && strlen(pane.c_str()) > 0 )
+    long pane = cur_pane(w, es);
+    if ( pane != paneNONE )
     {
 	var box = { "role": "choice" };
 	var items = {};
 	long nrows = 0;
-	if ( pane == "help" )
+	if ( pane == paneHELP )
 	{
 	    // help = a projection of the loaded profile's own data
 	    var prof;
@@ -5279,7 +5249,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
 	}
-	else if ( pane == "options" )
+	else if ( pane == paneOPTIONS )
 	{
 	    // ^T options (IDE-9d): letter row = live value + the action
 	    // its ENTER fires — the theme prompt and profile toggle are
@@ -5301,8 +5271,8 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    // manifest is open (the implicit project has no manifest).
 	    if ( proj_has_manifest(w, es) )
 	    {
-		var pk = proj_kind(w, es);
-		rows[] = { "content": format("P Project kind {}", pk),
+		rows[] = { "content": format("P Project kind {}",
+					     projkind_name(proj_kind(w, es))),
 			   "act": cmdOPT_PROJKIND };
 	    }
 	    for ( var row : rows )
@@ -5316,7 +5286,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "Change", nofilter);
 	}
-	else if ( pane == "build" )
+	else if ( pane == paneBUILD )
 	{
 	    // IDE-10b ^B: the same popup-list widget with the command
 	    // rows as data; a running build shows in the label.
@@ -5340,7 +5310,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "Run", nofilter);
 	}
-	else if ( pane == "modes" )
+	else if ( pane == paneMODES )
 	{
 	    // The MODES palette: the same focused-list widget; rows come
 	    // precomposed from modes_show. Rows carry NO actions — what a
@@ -5357,7 +5327,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
-	else if ( pane == "project" )
+	else if ( pane == panePROJECT )
 	{
 	    // IDE-10a ^P — the PROJECT window (owner rulings 2026-08-31):
 	    // the LIST-presentation choice — model hints list (one row
@@ -5402,7 +5372,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	{
 	    // diagnostics / outline: projections of the STORED compiler
 	    // data — navigable rows carrying the `goto` action.
-	    bool outline_pane = pane == "outline";
+	    bool outline_pane = pane == paneOUTLINE;
 	    if ( outline_pane )
 		box["label"] = "Outline";
 	    else
@@ -5419,18 +5389,14 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// bottom panel, or a floating popup — never a name test in general
 	// machinery. A `popup` hint floats the choice as an overlay; a
 	// `region` hint docks it. Both are hints the grid model ignores.
-	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
-			  "build": "popup", "project": "popup",
-			  "modes": "popup", "help": "popup",
-			  "options": "popup" };
-	var slot = pane_slot[pane.c_str()];
-	if ( !slot.is_null() )
+	long slot = pane_slot_of(pane);
+	if ( slot != slotNONE )
 	{
 	    var bh = box["hints"];
-	    if ( slot == "popup" )
+	    if ( slot == slotPOPUP )
 		bh["popup"] = 1;
 	    else
-		bh["region"] = slot;
+		bh["region"] = slot_name(slot);
 	    box["hints"] = bh;
 	}
 	kids.push(box);
@@ -5455,25 +5421,22 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	// while `panel` is up.
 	if ( es_int(w, es, "panel", 0) != 0 )
 	{
-	    var tab;
-	    ui::get(tab, w, es, "paneltab");
-	    if ( tab.is_null() || strlen(tab.c_str()) == 0 )
-		tab = "problems";
+	    long tab = es_int(w, es, "paneltab", tabPROBLEMS);
 	    var strip = {};
 	    var t1 = { "title": "Problems", "action": "problems", "code": cmdPROBLEMS };
-	    if ( tab == "problems" )
+	    if ( tab == tabPROBLEMS )
 		t1["active"] = 1;
 	    strip.push(t1);
 	    var t2 = { "title": "Output", "action": "output", "code": cmdOUTPUT };
-	    if ( tab == "output" )
+	    if ( tab == tabOUTPUT )
 		t2["active"] = 1;
 	    strip.push(t2);
 	    var t3 = { "title": "Terminal", "action": "terminal", "code": cmdTERMINAL };
-	    if ( tab == "terminal" )
+	    if ( tab == tabTERMINAL )
 		t3["active"] = 1;
 	    strip.push(t3);
 	    var pkids = {};
-	    if ( tab == "terminal" )
+	    if ( tab == tabTERMINAL )
 	    {
 		// The screen: an edit node over the [terminal] buffer (the
 		// line-DOM, the caret at the end) whose subject is that
@@ -5498,7 +5461,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		term["hints"] = th;
 		pkids.push(term);
 	    }
-	    else if ( tab == "output" )
+	    else if ( tab == tabOUTPUT )
 	    {
 		var out = { "role": "content" };
 		var bt = "";
@@ -5706,13 +5669,22 @@ void IdeSession::panel(bool has)
 // terminal uses, so the command still completes.
 void IdeSession::dialog_fallback(var &req)
 {
-    var mode = req["mode"];
-    if ( mode == "save" )
-	start_prompt(w, es, "Save as", "saveas");
-    else if ( mode == "openproject" )
-	start_prompt(w, es, "Project file to open", "openproject");
-    else
-	start_prompt(w, es, "Name of file to edit", "editfile");
+    var dk = req["dlg"];
+    long dlg = dlgOPEN;
+    if ( !dk.is_null() )
+	dlg = dk.as_integer();
+    switch ( dlg )
+    {
+	case dlgSAVE:
+	    start_prompt(w, es, "Save as", pmSAVEAS);
+	    return;
+	case dlgOPENPROJECT:
+	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
+	    return;
+	default:
+	    break;
+    }
+    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
 }
 
 // A terminal request the client cannot serve (no terminal to suspend —
@@ -5720,9 +5692,9 @@ void IdeSession::dialog_fallback(var &req)
 // was silently dropped before polish P3b-1 (fix-what-you-find).
 void IdeSession::request_refused(var &req)
 {
-    var kind = format("{}", req["kind"]);
     ui::set(w, es, "msg",
-	    format("This client has no terminal to hand over for '{}'.", kind));
+	    format("This client has no terminal to hand over for '{}'.",
+		   req_name(req["kind"].as_integer())));
 }
 
 void IdeSession::pending_chord(const char *pcs)
@@ -5769,8 +5741,9 @@ void IdeSession::term_exec(var &req)
     // stdout first, or a block-buffered run (piped/headless) splices the
     // guest's output into the middle of a host line.
     fflush(stdout);
-    var kind = format("{}", req["kind"]);
-    if ( kind == "run" )
+    switch ( req["kind"].as_integer() )
+    {
+	case rqRUN:
     {
 	// Fork the buffer's LIVE parse (owner ruling 2026-08-27: the
 	// running madc IS the compiler) — the child inherits the tree.
@@ -5785,7 +5758,7 @@ void IdeSession::term_exec(var &req)
 	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 	return;
     }
-    if ( kind == "projrun" )
+	case rqPROJRUN:
     {
 	// The --project JIT lane in a fork child (win: a child of self).
 	var pf;
@@ -5797,18 +5770,20 @@ void IdeSession::term_exec(var &req)
 	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 	return;
     }
-    if ( kind == "cmd" )
+	case rqCMD:
     {
 	var c = format("{}", req["cmd"]);
 	system(c.c_str());
 	return;
     }
-    if ( kind == "shell" )
-    {
-	// $SHELL falls back to /bin/sh INSIDE the command — libc system()
-	// inherits the terminal, and no getenv is needed (the dlsym
-	// fallback would hand the pointer back as a long).
-	system("exec \"${SHELL:-/bin/sh}\"");
+	case rqSHELL:
+	    // $SHELL falls back to /bin/sh INSIDE the command — libc system()
+	    // inherits the terminal, and no getenv is needed (the dlsym
+	    // fallback would hand the pointer back as a long).
+	    system("exec \"${SHELL:-/bin/sh}\"");
+	    return;
+	default:
+	    break;
     }
 }
 
@@ -5870,7 +5845,7 @@ void IdeSession::vi_open_line(long doc, bool above)
     vi_exec(doc, cmdENTER, 1);
     if ( above )
 	vi_exec(doc, cmdLEFT, 1);
-    vi_enter(w, es, "insert");
+    vi_enter(w, es, viINSERT);
 }
 
 // The vi arm: routes the main key stream while a vi mode is active.
@@ -5887,10 +5862,9 @@ void IdeSession::vi_open_line(long doc, bool above)
 bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 {
     cont = true;
-    var mode;
-    ui::get(mode, w, es, "vimode");
+    long mode = cur_vimode(w, es);
     var kind = ev["event_code"];
-    if ( mode == "insert" )
+    if ( mode == viINSERT )
     {
 	if ( kind != ui::event_kind::key )
 	    return false;		// typing types; chords act
@@ -5899,7 +5873,7 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 	    return false;
 	if ( ia == cmdVINORMAL )
 	{
-	    vi_enter(w, es, "normal");
+	    vi_enter(w, es, viNORMAL);
 	    return true;
 	}
 	return false;
@@ -6016,26 +5990,26 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 	vi_pending_clear(w, es);
 	vi_span_del(w, es, doc, c0 < c1 ? c0 : c1, c0 < c1 ? c1 : c0);
 	if ( ops == cmdVICHANGE )
-	    vi_enter(w, es, "insert");
+	    vi_enter(w, es, viINSERT);
 	return true;
     }
     // Insert-mode entries (a pending operator aborts — no text objects).
     vi_pending_clear(w, es);
     if ( a == cmdVIINSERT )
     {
-	vi_enter(w, es, "insert");
+	vi_enter(w, es, viINSERT);
 	return true;
     }
     if ( a == cmdVIAPPEND )
     {
 	cont = vi_exec(doc, cmdRIGHT, 1);
-	vi_enter(w, es, "insert");
+	vi_enter(w, es, viINSERT);
 	return true;
     }
     if ( a == cmdVIAPPENDEOL || a == cmdVIINSERTBOL )
     {
 	cont = vi_exec(doc, a == cmdVIAPPENDEOL ? cmdEND : cmdHOME, 1);
-	vi_enter(w, es, "insert");
+	vi_enter(w, es, viINSERT);
 	return true;
     }
     if ( a == cmdVIOPENBELOW || a == cmdVIOPENABOVE )

@@ -238,3 +238,159 @@ ui::key motion_key_of(long code)
     }
     return ui::key::none;
 }
+
+// ---- the IDE's STATE discriminators (V0.5d) -------------------------------
+// The bag's slots — pane, paneltab, pmode, vimode — and the kinds that ride
+// a request, a row or the manifest are INTEGERS (es_int reads them, a switch
+// dispatches them); a NAME appears only where text leaves the program: a
+// probe's print, a message, the page's region hook, the host's dialog mode,
+// the manifest file — through the converters here, never a literal at the
+// site. Prefixed unscoped enums with a fixed base (the owner's spelling).
+
+// The side pane a terminal shows (paneNONE = none up).
+enum ide_pane : unsigned char
+{
+    paneNONE = 0, paneDIAGS, paneOUTLINE, paneHELP, paneOPTIONS, paneBUILD,
+    paneMODES, panePROJECT
+};
+const char *pane_name(long p)
+{
+    switch ( p )
+    {
+	case paneDIAGS: return "diags";
+	case paneOUTLINE: return "outline";
+	case paneHELP: return "help";
+	case paneOPTIONS: return "options";
+	case paneBUILD: return "build";
+	case paneMODES: return "modes";
+	case panePROJECT: return "project";
+    }
+    return "";
+}
+
+// The window's bottom-panel tab (tabPROBLEMS = the default when unset).
+enum ide_tab : unsigned char { tabPROBLEMS = 0, tabOUTPUT, tabTERMINAL };
+const char *tab_name(long t)
+{
+    switch ( t )
+    {
+	case tabOUTPUT: return "output";
+	case tabTERMINAL: return "terminal";
+    }
+    return "problems";
+}
+
+// The prompt that is up (pmNONE = none): what enter's answer means.
+enum ide_prompt : unsigned char
+{
+    pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
+    pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON
+};
+const char *prompt_name(long m)
+{
+    switch ( m )
+    {
+	case pmCONFIRM: return "confirm";
+	case pmFIND: return "find";
+	case pmGOTOLINE: return "gotoline";
+	case pmINSERTFILE: return "insertfile";
+	case pmEDITFILE: return "editfile";
+	case pmSAVEAS: return "saveas";
+	case pmOPENPROJECT: return "openproject";
+	case pmBUFSEL: return "bufsel";
+	case pmPROJADD: return "projadd";
+	case pmTABWIDTH: return "tabwidth";
+	case pmTHEME: return "theme";
+	case pmCOLON: return "colon";
+    }
+    return "";
+}
+
+// The vi mode (viOFF = not modal).
+enum ide_vimode : unsigned char { viOFF = 0, viNORMAL, viINSERT };
+const char *vimode_name(long m)
+{
+    switch ( m )
+    {
+	case viNORMAL: return "normal";
+	case viINSERT: return "insert";
+    }
+    return "";
+}
+
+// A parked terminal request's kind (the session says WHAT it needs; the
+// client executes it).
+enum ide_req : unsigned char
+{
+    rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL
+};
+const char *req_name(long k)
+{
+    switch ( k )
+    {
+	case rqREFRESH: return "refresh";
+	case rqFILEDIALOG: return "filedialog";
+	case rqRUN: return "run";
+	case rqPROJRUN: return "projrun";
+	case rqCMD: return "cmd";
+	case rqSHELL: return "shell";
+    }
+    return "";
+}
+
+// The IDE's own dialog kind: what a native file dialog's answer MEANS. The
+// host speaks only the dialog MODE (ui::dialog_mode's names, open | save) —
+// dlg_host_mode is that wire word; the kind waits on the bag for the answer.
+enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT };
+const char *dlg_host_mode(long d)
+{
+    return d == dlgSAVE ? "save" : "open";
+}
+
+// The project's kind — the manifest's `kind` word (console | gui) converted
+// where the manifest is READ; written back as the file's word.
+enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };
+const char *projkind_name(long k)
+{
+    return k == pkGUI ? "gui" : "console";
+}
+long projkind_of(var &k)
+{
+    if ( k.is_null() )
+	return pkCONSOLE;
+    return k == "gui" ? pkGUI : pkCONSOLE;
+}
+
+// A build row's run mode — the manifest command's `mode` word (capture |
+// terminal) converted where the rows are built.
+enum ide_bmode : unsigned char { bmCAPTURE = 0, bmTERMINAL };
+long bmode_of(var &m)
+{
+    if ( m.is_null() )
+	return bmCAPTURE;
+    return m == "terminal" ? bmTERMINAL : bmCAPTURE;
+}
+
+// Where a window lays a pane: a floating popup or a docked region (the
+// page's region hook spells the name). Layout policy for the IDE's OWN
+// panes, as data. paneDIAGS keeps no slot: the former name table keyed it
+// "diagnostics" while the pane spells "diags", so the Problems pane never
+// docked — preserved here byte-for-byte (a layout decision for the owner,
+// plan §4).
+enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR };
+const char *slot_name(long s)
+{
+    return s == slotSIDEBAR ? "sidebar" : (s == slotPOPUP ? "popup" : "");
+}
+long pane_slot_of(long p)
+{
+    switch ( p )
+    {
+	case paneOUTLINE:
+	    return slotSIDEBAR;
+	case paneBUILD: case panePROJECT: case paneMODES: case paneHELP:
+	case paneOPTIONS:
+	    return slotPOPUP;
+    }
+    return slotNONE;
+}

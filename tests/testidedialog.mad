@@ -50,7 +50,7 @@ int main()
     ui::get(pr, w, es, "prompt");
     println("no-dialogs: prompt={} parked={}", pr, S.take_request(req) ? "yes" : "no");
     ui::set(w, es, "prompt", "");
-    ui::set(w, es, "pmode", "");
+    set_pmode(w, es, pmNONE);
 
     // With dialogs: editfile parks an open request; nothing prompts.
     S.dialogs(true);
@@ -59,7 +59,7 @@ int main()
     ui::get(pr, w, es, "prompt");
     bool parked = S.take_request(req);
     println("open: parked={} kind={} mode={} title={} prompt-empty={}",
-	    parked ? "yes" : "no", req["kind"], req["mode"], req["title"],
+	    parked ? "yes" : "no", req_name(req["kind"].as_integer()), req["mode"], req["title"],
 	    pr.is_null() || strlen(pr.c_str()) == 0 ? 1 : 0);
     // The answer: the other file opens as a second buffer, active.
     ev_dialog(e, "open", "madc_ide_dialog_other.mad");
@@ -100,11 +100,10 @@ int main()
     println("cancel: msg={} buffers={}", msg, php::count(bufs));
 
     // The client's fallback when the platform cannot show the dialog.
-    var frq = { "kind": "filedialog", "mode": "save", "title": "Save As", "path": "" };
+    var frq = { "kind": rqFILEDIALOG, "dlg": dlgSAVE, "mode": "save",
+		"title": "Save As", "path": "" };
     S.dialog_fallback(frq);
     ui::get(pr, w, es, "prompt");
-    var pm;
-    ui::get(pm, w, es, "pmode");
-    println("fallback: prompt={} mode={}", pr, pm);
+    println("fallback: prompt={} mode={}", pr, prompt_name(cur_pmode(w, es)));
     return 0;
 }

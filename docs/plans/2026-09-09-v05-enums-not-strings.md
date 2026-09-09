@@ -139,10 +139,22 @@ modal + 9 vi + 16 row verbs + `cmdBUILDROW`) and the one table; `parse_keys`
 / `load_menu` resolve and REFUSE at load; the session converts a name-only
 arrival once at `apply_ide_event`'s entry (the headless harness and a
 future API client speak names); `build-<n>` stays a name-carried argument
-under `cmdBUILDROW`. Deferred to d: `madcide_core.inc` still compares
-`r["severity"] == "error"` and synthesizes a row with a string severity —
-both convert to `severity_code` against `madc::diag_severity::error` with
-the discriminator enums.
+under `cmdBUILDROW`. c LANDED b211d302. d as shipped: `ide_pane` / `ide_tab` / `ide_prompt` /
+`ide_vimode` / `ide_req` / `ide_dlg` / `ide_projkind` / `ide_bmode` /
+`ide_slot` in `madcide_enums.inc` with their `*_name()` converters; one
+reader + one writer per bag slot (`cur_pane` / `set_pane`, …); the dialog
+kind waits on the bag (`dlgkind`) while the host receives only its mode
+word; gate `check-madcide-enums.sh`. Left with reasons: the view names
+(`mc11` / `c11` / `c++` — V1's emit-target enum), the page's `region` hook
+words and the theme file's class words (output / input file vocabularies at
+their boundaries), the ex verbs (`w q e r x wq`, lined's colon vocabulary —
+V2.5 owns that line). FOUND (owner decision): the former layout table keyed
+the Problems pane `"diagnostics"` while the pane spells `diags`, so it never
+received `region: sidebar`; `pane_slot_of(paneDIAGS)` preserves that
+(byte-identical GUI) — docking it is one enumerator away. Still open from c:
+`madcide_core.inc` compares `r["severity"] == "error"` and synthesizes a row
+with a string severity — `severity_code` against `madc::diag_severity::error`
+(e, with the docs).
 
 ## 4. Out of scope (named, not forgotten)
 
