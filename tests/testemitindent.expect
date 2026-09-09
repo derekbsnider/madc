@@ -1,0 +1,36 @@
+int pick(int a, int b, int *v) {
+	int s = 0;
+	if (a > b) {
+		s = a - b;
+	} else if (a == b)
+		s = 1;
+	else
+		s = -(-b);
+	for (int i = 0; i < 3; i++)
+		s += i;
+	while (s > 100)
+		s -= (a + b) * 2;
+	switch (a & 3) {
+	case 0:
+		s = (a | b) << 1;
+		break;
+	case 1:
+	case 2:
+		s = a + b * 2;
+	default:
+		s = (a > b) == (b > a);
+	if ((s = a % 7))
+		s = s || (a && b);
+	s = a & (b == 1);
+	s = (a + b) / (a - b + 7);
+	s = s > w ? s : (int)w;
+	s = -v[0] + *v;
+	do
+		s++;
+	while (s < 0);
+	return s - b;
+struct pt {
+	int x;
+};
+	struct pt q = { 5, 2 };
+	printf("%d\n", pick(q.x, q.y, v));

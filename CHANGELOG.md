@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Emitted code views: indented and coloured (2026-09-09)
+
+- `--emit=c11` / `--emit=mc11` and the IDE's `^K A` lenses (MC11, C11) now
+  render INDENTED C — the emitter itself indents by block depth (tabs; case
+  labels one level out; a control statement's single-statement body on its
+  own line) — and carry only the parentheses C precedence and gcc's / clang's
+  `-Wparentheses` call for: `if (a > b)`, `return a - b;`, `a += i;` where
+  before every operator was wrapped (`if ((a > b))`, `return (a - b);`,
+  `(a += i);`). The parentheses that must stay do: `-(-b)`, `(a + b) * 2`,
+  a comparison inside `&`, `&&` within `||`, an assignment used as a
+  condition. One owner (`src/cir_emit_c.cpp`) serves the CLI and every lens.
+  Gate: `scripts/emit_layout_gate.sh` (fulltest) — the render compiles under
+  `-Werror=parentheses` on both canons, its bodies are tab-indented, and a
+  negative control with the old shapes fails.
+- The lenses render in COLOUR in both faces: the view buffer carries its own
+  highlight spans (the lexer-alone classification over the emitted text,
+  through the one span converter), where before a view showed plain text.
+  Owner requirement 2026-09-09 (KG Decision `emitted_views_indent_and_colour`).
+
 ## [v0.99.2] — 2026-09-09
 
 The owner's hands-on round on the polished local IDE — the last polish before

@@ -37,7 +37,7 @@ The JOE defaults most worth knowing:
 | `^_` · `^^` · `^Y` · `^W` | undo · redo · delete line · delete word |
 | `^K ;` · `^B` · `^K I` · `^P` | check · Build… · outline · the Project window |
 | `^K O` `^K N` `^K P` · `^K 0` `^K 1` | split / next / previous window · close / only window |
-| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses) |
+| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
 
 Menus are data too (`profiles/default.menu`): the window's menu bar, and

@@ -1233,9 +1233,18 @@ int main()
     var vmap;
     vmap = vh["map"];
     var vtext = format("{}", ved["content"]);
-    println("view1-node: view={} maprows={} shows-lowering={}",
+    // The lens is coloured and indented (owner 2026-09-09): the view
+    // buffer's own spans ride the hints, and the emitted text carries the
+    // emitter's block-depth indentation (a tab after a newline).
+    var vsp = vh["spans"];
+    long nvsp = 0;
+    if ( !vsp.is_null() )
+	nvsp = php::count(vsp);
+    println("view1-node: view={} maprows={} shows-lowering={} spans={} indented={}",
 	    vh["view"], php::count(vmap),
-	    strstr(vtext.c_str(), "long long add") != 0 ? 1 : 0);
+	    strstr(vtext.c_str(), "long long add") != 0 ? 1 : 0,
+	    nvsp > 0 ? 1 : 0,
+	    strstr(vtext.c_str(), "\n\t") != 0 ? 1 : 0);
     // Typing and stored-space history refuse with the view's own reason.
     ev_text(e, "junk");
     S.apply_ide_event(doc, e);

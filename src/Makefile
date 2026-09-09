@@ -1158,6 +1158,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/vector_abi_gate.sh
 	@cd .. && bash scripts/emitc_sret_gate.sh
 	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh
+	@cd .. && bash scripts/emit_layout_gate.sh
 	@cd .. && bash scripts/libcxx_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh

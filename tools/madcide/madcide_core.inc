@@ -777,12 +777,16 @@ void load_status(long w, long es, const char *name)
 // (the colour-unification slice, 2026-09-08; before it the rows also
 // carried the semantic class and the web coloured THAT from a palette of
 // its own). A class the scheme does not style is plain on both, so its
-// span is not emitted. ONE converter, two feeders: parse_spans
-// (refresh_spans, the full-parse state) and lex_spans (colour at load
-// before the parse lands). Like the status line, spans go stale with
-// edits until the next check/save. A plain identifier (styled by no
-// scheme) or a stale line skips.
-void spans_to_hspans(long w, long es, long doc, var &rows)
+// span is not emitted. ONE converter, three feeders: parse_spans
+// (refresh_spans, the full-parse state), lex_spans (colour at load
+// before the parse lands) and the view lens (enter_view: the lexer's
+// classes over the EMITTED text). `doc` is the buffer whose lines the
+// rows address; `dest` is the entity the rows land on — the state bag
+// for the document's own spans, the view buffer for a lens's (owner
+// 2026-09-09: every emitted code view is coloured). Like the status
+// line, spans go stale with edits until the next check/save. A plain
+// identifier (styled by no scheme) or a stale line skips.
+void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 {
     var hs = {};
     var th;
@@ -803,14 +807,14 @@ void spans_to_hspans(long w, long es, long doc, var &rows)
 	long s = ls + r["column"].as_integer();
 	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
     }
-    ui::set(w, es, "hspans", hs);
+    ui::set(w, dest, "hspans", hs);
 }
 
 void refresh_spans(long w, long es, long doc, long h)
 {
     var rows;
     madc::parse_spans(rows, h);
-    spans_to_hspans(w, es, doc, rows);
+    spans_to_hspans(w, es, doc, rows, es);
 }
 
 // Lexical colour at load (staged parsing stage 1): keyword / number /
@@ -825,7 +829,7 @@ void lex_first_spans(long w, long es, long doc)
     ui::get(p, w, doc, "path");
     var rows;
     madc::lex_spans(rows, t.c_str(), p.c_str());
-    spans_to_hspans(w, es, doc, rows);
+    spans_to_hspans(w, es, doc, rows, es);
 }
 
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
@@ -1930,6 +1934,16 @@ bool enter_view(long w, long es, long doc, const char *name)
     ui::text_load(w, vd, emitted.c_str());
     ui::set(w, vd, "path", p);	// the status %n seat: a view is a lens
 				// over the file — its name IS the file's
+    // Colour on the lens (owner 2026-09-09: every emitted code view is
+    // syntax-coloured): the view buffer carries its OWN highlight spans —
+    // the lexer-alone classification (the colour-at-load path) over the
+    // EMITTED text, through the one converter, landing on the view
+    // buffer; the composer attaches the spans of whichever buffer it
+    // shows. The emitted text is already indented — the emitter's own
+    // layout (src/cir_emit_c.cpp), one owner for --emit and every lens.
+    var vrows;
+    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
+    spans_to_hspans(w, es, vd, vrows, vd);
     var cur;
     if ( !view_name(cur, w, es) )
 	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
@@ -4933,12 +4947,18 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	var vm;
 	ui::get(vm, w, es, "vmap");
 	eh["map"] = vm;
+	// The lens's own highlight spans (enter_view lexed the emitted
+	// text onto the view buffer): the view renders in colour too.
+	var vhs;
+	ui::get(vhs, w, nav, "hspans");
+	if ( !vhs.is_null() && php::count(vhs) > 0 )
+	    eh["spans"] = vhs;
     }
     else
     {
 	// Highlight spans (AST-2): the bag's themed byte-range rows ride
-	// the hints — stored-space only (a view shows a render), computed
-	// at (re)parse, just attached here.
+	// the hints — the document's stored-space rows, computed at
+	// (re)parse, just attached here (a view's rows live on its buffer).
 	var hs;
 	ui::get(hs, w, es, "hspans");
 	if ( !hs.is_null() && php::count(hs) > 0 )
