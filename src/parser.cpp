@@ -19688,13 +19688,40 @@ std::string Program::peek_param_list_spelling()
 // Variable, or NULL when no candidate is viable. `zero_args` (optional,
 // index-aligned with argtypes) marks arguments that are integer literals of
 // value zero — C++ null-pointer constants ([conv.ptr]).
+// A plain concrete overload: no template machinery, no varargs — the
+// candidates whose tie the ranker may call AMBIGUOUS (a template set has its
+// own partial-ordering and instantiate-on-miss lanes).
+static bool plain_concrete_overload(const Program::NamespaceFnOverload &e,
+				    FuncDef *fd)
+{
+    return e.param_spelling != "\x01fn-template-placeholder"
+	&& e.template_arg_names.empty() && fd && !fd->is_varargs
+	&& !fd->is_member_template && !fd->dependent_pattern
+	&& !fd->tsubst_source;
+}
+
+// The same function declared twice (a declaration and its definition, a
+// respelled typedef): identical parameter identities over the ranked arity.
+static bool same_parameter_identities(FuncDef *a, FuncDef *b, size_t n)
+{
+    if ( !a || !b || a->parameters.size() != b->parameters.size() )
+	return false;
+    for ( size_t i = 0; i < n && i < a->parameters.size(); i++ )
+	if ( a->parameters[i] != b->parameters[i] )
+	    return false;
+    return true;
+}
+
 static Variable *rank_fn_overload_candidates(
 	const std::vector<Program::NamespaceFnOverload> &cands,
 	const std::vector<const DataDef *> &argtypes,
 	const std::vector<bool> *zero_args = NULL,
-	const std::vector<DataDef *> *explicit_template_args = NULL)
+	const std::vector<DataDef *> *explicit_template_args = NULL,
+	std::string *ambiguity = NULL)
 {
     Variable *best = NULL;
+    const Program::NamespaceFnOverload *best_e = NULL;
+    const Program::NamespaceFnOverload *tied = NULL;
     int best_score = -1;
     for ( const Program::NamespaceFnOverload &e : cands )
     {
@@ -19781,8 +19808,37 @@ static Variable *rank_fn_overload_candidates(
 	{
 	    best_score = total;
 	    best = e.var;
+	    best_e = &e;
+	    tied = NULL;
+	}
+	else if ( ok && total == best_score && best && e.var != best )
+	{
+	    // Equal conversion totals. A non-template function beats a
+	    // template specialization ([over.match.best.general]); two PLAIN
+	    // functions with distinct parameter types are AMBIGUOUS — every
+	    // per-argument score is the shared C++ rank, so an equal total is
+	    // never a dominance winner, and g++/clang++ reject the call
+	    // ("call of overloaded ... is ambiguous"). Picking the
+	    // first-declared silently is how `take(enum)` against
+	    // {take(long), take(bool)} compiled here (tests/testoverloadambig).
+	    // A redeclaration (identical parameter identities) is ONE function.
+	    FuncDef *bfd = best_e && best_e->var
+			   ? dynamic_cast<FuncDef *>(best_e->var->type) : NULL;
+	    bool cand_plain = plain_concrete_overload(e, fd);
+	    bool best_plain = best_e && plain_concrete_overload(*best_e, bfd);
+	    if ( cand_plain && !best_plain )
+	    {
+		best = e.var;
+		best_e = &e;
+		tied = NULL;
+	    }
+	    else if ( cand_plain && best_plain
+		   && !same_parameter_identities(fd, bfd, argtypes.size()) )
+		tied = &e;
 	}
     }
+    if ( best && best_e && tied && ambiguity )
+	*ambiguity = best_e->param_spelling + " and " + tied->param_spelling;
     return best;
 }
 
@@ -19791,11 +19847,13 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args,
 		const std::vector<DataDef *> *explicit_template_args,
-		bool *strict_no_viable)
+		bool *strict_no_viable, std::string *ambiguity)
 {
     activate_forest_function_family(ns, name);
     if ( strict_no_viable )
 	*strict_no_viable = false;
+    if ( ambiguity )
+	ambiguity->clear();
     std::map<std::string, std::vector<NamespaceFnOverload>>::iterator oi =
 	namespace_fn_overload_sets.find(ns + "::" + name);
     if ( oi == namespace_fn_overload_sets.end() || oi->second.size() < 2 )
@@ -19810,7 +19868,8 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     }
     Variable *best = rank_fn_overload_candidates(oi->second, argtypes,
 						 zero_args,
-						 explicit_template_args);
+						 explicit_template_args,
+						 ambiguity);
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
 	      << (best ? best->name : "(none)") << std::endl;

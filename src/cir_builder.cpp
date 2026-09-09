@@ -4903,16 +4903,36 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 						tcf->parameters[i]));
 			}
 			bool strict_no_viable = false;
+			std::string ambiguity;
 			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
 					at, &zeros, &tcf->explicit_template_args,
-					&strict_no_viable);
+					&strict_no_viable, &ambiguity);
 			if (::getenv("MADC_OVL_PROBE"))
 				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
 					fd->namespace_name.c_str(),
 					fd->function_display_name.c_str(), at.size(),
 					at.empty() || !at[0] ? "?" : at[0]->name.c_str(),
 					w ? w->name.c_str() : "(none)");
+			// Two plain overloads tied for the best conversion:
+			// the call is AMBIGUOUS ([over.match.best]) — g++ and
+			// clang++ reject it; compiling the first-declared one
+			// silently is accepts-invalid (an enum argument
+			// against {f(long), f(bool)}, tests/testoverloadambig).
+			if (!ambiguity.empty()) {
+				std::string ats;
+				for (size_t i = 0; i < at.size(); ++i) {
+					if (i)
+						ats += ", ";
+					ats += describe_datadef(at[i]);
+				}
+				m_prog->Throw(tcf) << "call of overloaded '"
+					<< fd->namespace_name << "::"
+					<< fd->function_display_name
+					<< "' with argument types (" << ats
+					<< ") is ambiguous: candidates "
+					<< ambiguity << std::flush;
+			}
 			if (w)
 				if (FuncDef *wfd = dynamic_cast<FuncDef *>(w->type)) {
 					if (fd_out)

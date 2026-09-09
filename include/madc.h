@@ -3550,12 +3550,18 @@ public:
     // concrete function (no varargs, no template machinery) — the caller
     // must NOT fall back to the parse-bound by-name member (a silent
     // wrong-ABI bind); it reports a loud no-matching-overload error.
+    // `ambiguity` (optional): set to "<spelling> and <spelling>" when two
+    // PLAIN concrete candidates tie for the best conversion total with
+    // distinct parameter types — the call is ambiguous ([over.match.best];
+    // g++ and clang++ reject it); the returned winner is then only the
+    // first-declared, and the caller that reports must not compile it.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
 					       const std::vector<bool> *zero_args = NULL,
 					       const std::vector<DataDef *> *explicit_template_args = NULL,
-					       bool *strict_no_viable = NULL);
+					       bool *strict_no_viable = NULL,
+					       std::string *ambiguity = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`

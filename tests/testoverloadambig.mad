@@ -1,0 +1,22 @@
+// An enum argument against {take(const char *, long), take(const char *, bool)}:
+// enum -> long is an integral conversion and enum -> bool a boolean
+// conversion — both Conversion rank ([over.ics.rank]/3), and the one
+// tie-breaker of that rank (a pointer converting to bool loses) does not
+// apply — so the call is AMBIGUOUS. g++ and clang++ reject it ("call of
+// overloaded 'take(const char [2], ide_cmd)' is ambiguous"); madc used to
+// compile the first-declared overload silently (found by the V0.5c probe,
+// KG Gap enum_arg_overload_tie_not_diagnosed). The .expect_err pins the
+// refusal; tests/testenumnsoverload pins the shapes that DO resolve (an
+// int-typed promotion beats every conversion).
+enum ide_cmd : unsigned short { cmdNONE = 0, cmdSAVE, cmdQUIT };
+
+namespace pr {
+    long take(const char *k, long v) { return v; }
+    long take(const char *k, bool v) { return v ? 1 : 0; }
+}
+
+int main()
+{
+    println("{}", pr::take("k", cmdSAVE));
+    return 0;
+}
