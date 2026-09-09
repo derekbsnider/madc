@@ -98,8 +98,13 @@
   holding every enumerator) ranks above every other arithmetic conversion,
   and a pointer or function-pointer parameter is never viable. Before, an
   enum-typed operand of `cout <<` could tie the manipulator overload
-  `operator<<(ostream& (*)(ostream&))` and crash. Reducer:
-  `tests/testenumnsoverload.mad` (g++ / clang++ oracle).
+  `operator<<(ostream& (*)(ostream&))` and crash. "Is this parameter the
+  promoted type" is TYPE identity, never storage width: on the LLP64
+  Windows target `long` shares int's 32 bits but is a distinct type, so
+  `f(long)` is a conversion there too (mingw-g++ agrees) — the wine lane
+  had compiled the ambiguity reducer and refused `g3(int)`/`g3(long)`.
+  Reducer: `tests/testenumnsoverload.mad` (g++ / clang++ / mingw-g++
+  oracle).
 - An ambiguous overload call is REFUSED: two plain (non-template,
   non-variadic) overloads tied for the best conversion total are an
   ambiguity ([over.match.best]), reported as `call of overloaded 'ns::f'

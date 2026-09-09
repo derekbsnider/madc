@@ -4360,27 +4360,54 @@ static const DataDefENUM *as_enum_type(const DataDef *dd)
 	return (dd ? dd->as_enum_dd() : NULL);
 }
 
+// Type IDENTITY of two scalars — the scorer's own rule (Program::
+// proven_scalar_identity, the one its EXACT rank already applies): `long` on
+// the LLP64 target shares int's 32-bit storage yet is a distinct type
+// ([basic.fundamental]), so a STORAGE test (rawtype) took f(long) for the
+// enum's promoted type on win64 — the ambiguity reducer compiled where
+// mingw-g++ refuses, and g3(int)/g3(long) tied where it picks g3(int)
+// (tests/testoverloadambig, tests/testenumnsoverload on the wine lane). An
+// unproven identity (a spelling the builtin table does not know) falls back
+// to storage.
+static bool same_scalar_type(const DataDef *a, const DataDef *b)
+{
+	if (!a || !b)
+		return false;
+	if (a == b)
+		return true;
+	DataDef *ia = Program::proven_scalar_identity(a);
+	DataDef *ib = Program::proven_scalar_identity(b);
+	if (ia && ib)
+		return ia == ib;
+	return a->rawtype() == b->rawtype();
+}
+
 // [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? A
 // fixed enum promotes to its underlying type and, when that type itself
 // promotes (narrower than int), to int as well — both are promotions. An
 // unfixed enum promotes to the first of int / unsigned int / long / unsigned
-// long that holds every enumerator — by its VALUE range, not by the computed
-// underlying type (the canon rule makes that unsigned for a non-negative
-// range, yet `enum { a, b }` promotes to int: g++ and clang++ pick f(int)
-// over f(long) for `f(a)`, tests/testenumnsoverload.mad). Every other
-// arithmetic parameter is a conversion; a pointer or function pointer is not
-// viable at all.
+// long / long long / unsigned long long that holds every enumerator — by its
+// VALUE range (bmin..bmax, [dcl.enum]/8), not by the computed underlying type
+// (the canon rule makes that unsigned for a non-negative range, yet `enum {
+// a, b }` promotes to int: g++ and clang++ pick f(int) over f(long) for
+// `f(a)`, tests/testenumnsoverload.mad); a range past 32 bits promotes to
+// the first 64-bit SIGNED type of the list — `long` on LP64, `long long` on
+// LLP64 (where `long` is 32-bit) — never to the unsigned one, since every
+// enumerator value fits int64. "Is `target` that type" is type identity
+// (same_scalar_type), never storage width. Every other arithmetic parameter
+// is a conversion; a pointer or function pointer is not viable at all.
 static bool enum_promotes_to(const DataDefENUM *e, const DataDef *target)
 {
 	if (!e || !target || !target->is_numeric() || target->is_real()
 	    || target->is_pointer() || target->as_fptr_dd()
 	    || target->rawtype() == DataType::dtBOOL)
 		return false;
+	const DataDef *t_int = Program::resolve_builtin_type_spelling("int");
 	if (e->fixed_base && e->underlying) {
-		if (e->underlying->rawtype() == target->rawtype())
+		if (same_scalar_type(e->underlying, target))
 			return true;
 		return e->underlying->size < ddINT.size
-		    && target->rawtype() == ddINT.rawtype();
+		    && same_scalar_type(target, t_int);
 	}
 	int64_t lo = 0, hi = 0;
 	for (size_t i = 0; i < e->enumerators.size(); ++i) {
@@ -4388,12 +4415,13 @@ static bool enum_promotes_to(const DataDefENUM *e, const DataDef *target)
 		if (e->enumerators[i].second > hi) hi = e->enumerators[i].second;
 	}
 	if (lo >= INT32_MIN && hi <= INT32_MAX)
-		return target->rawtype() == ddINT.rawtype();
+		return same_scalar_type(target, t_int);
 	if (lo >= 0 && hi <= (int64_t)UINT32_MAX)
-		return target->rawtype() == ddUINT32.rawtype();
-	if (lo >= 0)
-		return target->rawtype() == ddUINT64.rawtype();
-	return target->rawtype() == ddINT64.rawtype();
+		return same_scalar_type(target,
+			Program::resolve_builtin_type_spelling("unsigned int"));
+	return same_scalar_type(target,
+		Program::resolve_builtin_type_spelling(
+			target_llp64() ? "long long" : "long"));
 }
 
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
