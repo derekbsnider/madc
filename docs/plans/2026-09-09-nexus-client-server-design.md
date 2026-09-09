@@ -19,10 +19,20 @@ target's thread contract ([Level 3](2026-09-06-ui-web-target-and-madcide-gui.md)
 
 ## 0. Vocabulary (RULED) and scope
 
-- **Nexus** — the project-state server. Today it is the running madcide
-  process itself (the running madc IS the compiler; the session lives in
-  it); the headless server is the same object without a window.
-- **Session** — one live editing context on the Nexus: documents, the
+- **madc** and **the IDE** are not the same thing (owner, 2026-09-09): madc
+  is the language, its compiler and its JIT — the engine. madcide is an
+  APPLICATION that includes madc and extends it into an IDE (the running
+  madc IS its compiler; the session lives in the same process). Everything
+  below is the IDE's design over the engine's substrate.
+- **Hub** — the running process as the madcdis substrate where clients,
+  Views, tools and data meet (owner vocabulary 2026-09-09: the larger
+  container). Today it is the madcide process itself; the headless server is
+  the same object without a window.
+- **Nexus** — the temporal meeting point the hub serves: the project's past
+  (git, the change-event log), its present (the live AST, the session) and
+  its future (plans, proposals). Every View is a projection of the nexus at
+  one point in that time; "Nexus §N" below cites the owner's vision doc.
+- **Session** — one live editing context on the hub: documents, the
   project, diagnostics, builds, the Views over them, the change-event log.
 - **Client** — a window, a TUI, an MCP seat, a remote page: something that
   shows a layout of the session's Views and posts commands. **A window is a
