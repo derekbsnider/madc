@@ -121,9 +121,36 @@ View { id, subject, representation, revision, generator, runtime_context,
 - `subject` — an ENTITY HANDLE (the gateway's day-one rule: never a byte
   offset): a document entity, the diagnostics set, a process stream entity,
   the project, a symbol (later).
-- `representation` — `source | mc11 | c11 | c++ | problems | output |
-  terminal | project | outline | help | …` (an enum in the engine, spelled
-  as data at the surface; `enum-over-strings.md`).
+- `representation` — TWO fields (OWNER 2026-09-09, the §2.1 review): a
+  `kind` — the IDE's own projection kind (`source | code | problems | output
+  | terminal | project | outline | help | …`, an `ide_view` enum beside the
+  other discriminators in `madcide_enums.inc`) — and, for `kind = code`, a
+  `lang` from the engine's ONE **file-kind vocabulary**. That vocabulary is
+  one enum, engine-owned and shared with the dialect as a `bits/` fragment
+  (the `ui_enums` precedent), naming everything the IDE may open and
+  everything the compiler may read or emit, text or binary, GROUPED IN
+  RANGES so membership is a range test: unknown; text formats the compiler
+  never touches (plain text, markdown, json, html, css, js, ts, …); the C
+  standards (c89 … c23, gnu); the C++ standards (c++98 … c++23, gnu);
+  madc's own (madc, mc11); other languages the IDE knows but the compiler
+  does not yet (TypeScript, python, rust, …); binary formats (object,
+  executable, archive, image, …). `LanguageStd` becomes those C / C++ /
+  madc ranges, so every `--std=` row keeps its value. DEPTH OF SUPPORT is a
+  table per layer owned by that layer, never a flag on the enumerator: the
+  editor edits every text kind; the highlighter has lexers for some (the
+  compiler's for the C family and madc, a small one for json, none for
+  plain text); the parser accepts the standards its registry rows declare;
+  the emitter renders `CIR_EMIT_TARGETS` — exactly what `--capabilities=json`
+  already reports (`standards`, `emit_targets` derived from their owners).
+  VSCode's shape: open anything, colour what has a lexer, compile what has
+  a parser. The ranges group files by WHAT THEY ARE, not by today's
+  support — TypeScript moves from "text with a lexer" to "parsed and
+  lowered into a `cir_node` tree" (the polyglot north star) by gaining
+  registry rows, never by moving its enumerator. File extension → kind is
+  an input-boundary table converted once when a file opens; the standard
+  within a family (c11 vs c17 for a `.c`) comes from the manifest or
+  `--std=`, not the extension. A code View of a kind without a parser is
+  still a View: text, coloured where a lexer exists, never parsed.
 - `revision` — `current` (the only value in the first slices); later an
   event sequence number (`event:1234`, the edit-history View) or a git
   revision (`git:a81f42`, the madcdat adapter).
