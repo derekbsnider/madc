@@ -224,11 +224,43 @@ IDE's own panes carry a DEFAULT slot (`pane_slot_of` in
 outline docks in the sidebar, the palettes float), and V2's `.layout`
 profiles make that default data the user overrides, per pane, per client.
 The lineage is the TUI IDEs — Turbo Pascal, RHIDE, Fresh, Helix, Neovim —
-which all lay panes, panels and views INSIDE one terminal; only a GUI could
-afford separate windows. The client-server model changes that limit: a
+which all lay panes, panels and views INSIDE one terminal; only a GUI (VS
+Code, CLion) could afford separate windows. The client-server model changes that limit: a
 second TUI client in another terminal session is a client of the same
 session (§2.3, V3 / V6 — the remote window over `listen://` is not only a
 web page), so "separate windows" become separately connected terminals.
+
+**Nesting (OWNER 2026-09-09, on recommendation).** The EDITOR region is a
+real split tree: a `split` node is `vertical` (children side by side) or
+`horizontal` (children one above the other), any depth, and every leaf is a
+pane in `tabs` or `stack` mode — the Helix / Neovim / tmux shape; today's S5
+window stack is the degenerate case, one leaf in `stack` mode. The CHROME
+regions — `sidebar left|right`, `panel bottom|top` — are fixed-SLOT panes
+(`ide_slot`): each holds tabbed Views, hides, and moves between slots
+(`viewdock left|right|bottom|top`, a registry command like every other), but
+never splits — the VS Code shape, and CLion's: a JetBrains tool window IS a
+chrome pane; its dock / float / windowed modes are a slot, a popup, and a
+second client window (§2.3); its "split a side" (two tool windows on one
+edge) is a slot holding two panes stacked. The window's one SLOTLESS child
+is the editor region — a `pane` or a `split`. The layout text nests by
+INDENTATION under a `split` line (depth = indent; a ragged tree refuses);
+every word converts ONCE at load — `ide_slot`, a split-direction enum, the
+pane-mode enum, `ide_view` — and a misspelling refuses the profile with its
+line (the `parse_keys` pattern). A remote TUI client (§2.3) receives its own
+tree and renders it in its own terminal — the tree is per client, like the
+rest of the layout.
+
+```
+# a saved workspace: source left, its MIR above its C11 on the right
+@window main
+pane sidebar left 20%  tabs   views project outline
+split vertical
+	pane tabs  views source   focus
+	split horizontal
+		pane tabs  views mir
+		pane tabs  views c11
+pane panel bottom 25%  tabs   views problems output terminal   hidden
+```
 
 ### 2.3 A window is a client — the multi-client loop
 
@@ -457,7 +489,7 @@ git adapter (the nexus axes slice).
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
 | **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; per-View caret/mark/scroll | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
 | **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
-| **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
+| **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
 | **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
 | **V3 Clients + windows** | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` | `tests/gui/madcide_window2` (two windows, one edit seen in both); `check-one-anchor-owner.sh` |
 | **V4 Event log** | ChangeEvent written by the mutation owner + verb seam; per-change propagation; `<base>.prj.events`; the edit-history View (`revision: event:N`) | headless replay test (log → text equality); size-rewrite test |
