@@ -186,6 +186,19 @@ of the ruling, so the slice starts from facts:
   lenses — and independent of the View/container generalization (the
   generalization inherits it: a View's provider yields text + spans).
   KG Decision `emitted_views_indent_and_colour`.
+- **LANDED 2026-09-09** (slice V0 of [the client-server design](2026-09-09-nexus-client-server-design.md)):
+  the emitter (`src/cir_emit_c.cpp`) owns the layout — an indentation-aware
+  writer (block depth in tabs, case labels one level out, a control head's
+  single-statement body on its own line, the builder's `<labels>: 0;`
+  carrier rendered as its labels) and precedence-aware parentheses (C11
+  6.5 plus gcc's/clang's `-Wparentheses` set, plus the `-(-x)` re-lex
+  guard); `enter_view` lexes the emitted text onto the view buffer's own
+  span rows and the composer attaches them. Gate
+  `scripts/emit_layout_gate.sh` (fulltest): tab-indented bodies, minimal
+  parentheses, `-Werror=parentheses` clean under gcc and clang, a negative
+  control with the old shapes fails. Oracle: `cir_fidelity.sh --all`
+  (gcc asm of the emitted C vs the original) unchanged against the
+  pre-change binary.
 
 ## 6. What this changes about the client-server step
 
