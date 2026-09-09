@@ -17,6 +17,8 @@
 // Security: the runtime honours the engine's madc_runtime_eval_policy;
 // scope-access variants are gated by the parser's scope-access hooks.
 
+#include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
+
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
     // `__madc_eval()`. The value-destination forms carry the rendered
@@ -69,8 +71,11 @@ namespace madc {
     // same front end bin/madc runs, in a policy-clamped child, and return
     // the compiler's own structured data as a value array. `filename` is
     // the display name diagnostics carry (default "<source>").
-    //   diagnostics rows: { severity, phase, message, file, line, column }
-    //       (severity "error"/"warning"; empty array = a clean buffer)
+    //   diagnostics rows: { severity, severity_code, phase, phase_code,
+    //       message, file, line, column } (severity "error"/"warning" with
+    //       its madc::diag_severity enumerator in severity_code — compare
+    //       against THAT, <bits/diag_enums>; phase likewise; empty array =
+    //       a clean buffer)
     //   outline rows:     { kind, name, line, column, end_line } for the
     //       buffer's OWN definitions, source order (kind: "function"
     //       today; classes/globals are a named extension seat; end_line

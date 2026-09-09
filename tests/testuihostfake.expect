@@ -10,22 +10,23 @@ rows x cols -> 24 x 80
 bind -> yes
 pushed heading: yes
 pushed choice: yes
-fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"enabled":false,"id":"quit","title":"Quit"}],"title":"File"}]}
+fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"code":42,"enabled":false,"id":"quit","title":"Quit"}],"title":"File"}]}
 menu calls after same render: 1
-fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"enabled":false,"id":"quit","title":"Quit"}],"title":"Datei"}]}
+fake menu: {"bar":[{"items":[{"enabled":true,"id":"save","key":"^k s","title":"Save"},{"sep":true},{"code":42,"enabled":false,"id":"quit","title":"Quit"}],"title":"Datei"}]}
 menu calls after changed render: 2
 dialogs -> yes
 fake dialog: {"mode":"open","title":"Open File","path":""}
 dialog -> shown
-event dialog open /tmp/picked.mad
+event dialog open /tmp/picked.mad code 0
 event text hi
 event focus
-event action save ^k s
+event action save ^k s code 0
 event focus
-event choose 2 q
+event choose 2 q code 42
 event resize
 event pointer down 4 subject 7
-event action quit
+event action quit  code 42
+event action  ^k c code 7
 rows x cols after resize -> 40 x 100
 pending -> []
 fake close

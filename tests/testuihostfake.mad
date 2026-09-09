@@ -77,7 +77,11 @@ int64_t fake_run(void *host)
     if ( step == 7 ) { ui::post_event(fake_ctx, "{\"kind\":\"pointer\",\"phase\":\"down\",\"key\":\"0.2\",\"line\":1,\"col\":1}"); return 0; }
     // A native menu selection: the host's chrome fired the command "quit".
     if ( step == 8 ) { ui::post_event(fake_ctx, "{\"kind\":\"action\",\"action\":\"quit\"}"); return 0; }
-    if ( step == 9 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
+    // A CODE-bound chord (^k c -> 7): the action event carries the code and
+    // no name (enums, not strings — madcide binds its command enum).
+    if ( step == 9 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"^k\"}"); return 0; }
+    if ( step == 10 ) { ui::post_event(fake_ctx, "{\"kind\":\"key\",\"key\":\"c\"}"); return 0; }
+    if ( step == 11 ) { ui::post_event(fake_ctx, "not json"); return 0; }	// yields no event: run again
     return 1;
 }
 
@@ -114,6 +118,7 @@ int main()
     println("rows x cols -> {} x {}", ui::rows(t), ui::cols(t));
     var table;
     table["^k s"] = "save";
+    table["^k c"] = 7;			// a CODE binding beside the named one
     println("bind -> {}", ui::bind_keys(t, table) ? "yes" : "no");
 
     var head;
@@ -132,6 +137,8 @@ int main()
     var quit_actions = {};
     quit_actions.push("q");
     quit["actions"] = quit_actions;
+    var quit_hints = { "code": 42 };	// the option's code rides the choose event
+    quit["hints"] = quit_hints;
     var menu;
     menu["role"] = "choice";
     var options = {};
@@ -157,7 +164,7 @@ int main()
     // quit unbound) and hands the host the whole menu ONCE per change.
     var msave = { "id": "save", "title": "Save" };
     var msep = { "sep": 1 };
-    var mquit = { "id": "quit", "title": "Quit", "enabled": 0 };
+    var mquit = { "id": "quit", "title": "Quit", "enabled": 0, "code": 42 };
     var mitems = {};
     mitems.push(msave);
     mitems.push(msep);
@@ -188,15 +195,17 @@ int main()
     var ev;
     while ( ui::event(ev, t, w) )
     {
-	if ( ev["event"] == "dialog" )
-	    println("event dialog {} {}", ev["mode"], ev["path"]);
-	else if ( ev["event"] == "text" )
+	// The kind by its enumerator (enums, not strings); the names print.
+	var kind = ev["event_code"];
+	if ( kind == ui::event_kind::dialog )
+	    println("event dialog {} {} code {}", ev["mode"], ev["path"], ev["mode_code"]);
+	else if ( kind == ui::event_kind::text )
 	    println("event text {}", ev["text"]);
-	else if ( ev["event"] == "action" )
-	    println("event action {} {}", ev["action"], ev["seq"]);
-	else if ( ev["event"] == "choose" )
-	    println("event choose {} {}", ev["option"], ev["action"]);
-	else if ( ev["event"] == "pointer" )
+	else if ( kind == ui::event_kind::action )
+	    println("event action {} {} code {}", ev["action"], ev["seq"], ev["action_code"]);
+	else if ( kind == ui::event_kind::choose )
+	    println("event choose {} {} code {}", ev["option"], ev["action"], ev["action_code"]);
+	else if ( kind == ui::event_kind::pointer )
 	    println("event pointer {} {} subject {}", ev["phase"], ev["offset"],
 		    ev["subject"]);
 	else

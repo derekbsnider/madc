@@ -272,10 +272,14 @@ namespace ui {
     // the next semantic event object:
     //   {event:"text", text}          a coalesced printable run
     //   {event:"key", key}            "up","enter","^s",... for the app
-    //   {event:"choose", option, action}  option is 1-based — the same
-    //       number the level-0 menu prints
-    //   {event:"action", action, seq}  a bound key sequence completed
-    //       (empty action = unbound miss; seq says which)
+    //   {event:"choose", option, action, action_code}  option is 1-based —
+    //       the same number the level-0 menu prints; action_code = the
+    //       option's `code` hint (0 = none)
+    //   {event:"action", action, action_code, seq}  a bound key sequence
+    //       completed (empty action + code 0 = unbound miss; seq says
+    //       which), or a control that posted the command by name —
+    //       action_code = the integer the table bound, or the `code` hint
+    //       the control carried
     //   {event:"focus"} {event:"resize"}  recompose and re-render
     //   {event:"pointer", phase, offset, subject, tag}  a pointing-device
     //       gesture on an edit node (a web target's hit test): offset is a
@@ -284,7 +288,9 @@ namespace ui {
     //       tag the node's `tag` hint echoed (absent when it carried none)
     // Every object also carries the enum values: event_code
     // (ui::event_kind), key_code on a key event (ui::key), phase_code on a
-    // pointer event (ui::pointer_phase) — compare against those.
+    // pointer event (ui::pointer_phase), mode_code on a dialog event
+    // (ui::dialog_mode), action_code on action / choose events (the
+    // application's own enum) — compare against those, never the names.
     // and returns false at end of input. Render before the first event;
     // tab cycles focus between the tree's choice/edit nodes.
     //

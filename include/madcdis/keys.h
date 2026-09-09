@@ -20,6 +20,7 @@
 // them (the C++ standard-library convention — concurrent reads safe,
 // distinct objects safe, shared mutation needs synchronization).
 
+#include <cstdint>		// int64_t — a binding's action CODE
 #include <map>
 #include <set>
 #include <string>
@@ -127,9 +128,20 @@ inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
 // prefix of another (deterministic resolution — JOE's ^K is only ever a
 // prefix). Canonical spellings are the map keys, so lookups and the seq
 // reported on events agree byte-for-byte.
+// What a sequence is bound TO: the action's NAME (a string the tools
+// dispatch by — the historical shape) and/or its CODE (an integer the
+// application's own enum spells — madcide binds codes; 0 = none). The
+// resolver echoes both on the action event; the engine interprets neither.
+struct tui_binding
+{
+    std::string name;
+    int64_t	code;
+    tui_binding() : code(0) {}
+};
+
 class tui_bindings
 {
-    std::map<std::string, std::string> _actions;
+    std::map<std::string, tui_binding> _actions;
     std::set<std::string> _prefixes;
 
 public:
@@ -164,6 +176,8 @@ public:
     // Parse + canonicalize one sequence; false (table untouched) on a
     // spelling that is not a key.
     bool bind(const std::string &seq, const std::string &action)
+	{ return bind(seq, action, 0); }
+    bool bind(const std::string &seq, const std::string &action, int64_t code)
     {
 	std::string canon;
 	size_t i = 0;
@@ -190,7 +204,8 @@ public:
 	}
 	if ( canon.empty() )
 	    return false;
-	_actions[canon] = action;
+	_actions[canon].name = action;
+	_actions[canon].code = code;
 	return true;
     }
 
@@ -199,7 +214,7 @@ public:
     bool finalize(std::string &err)
     {
 	_prefixes.clear();
-	for ( std::map<std::string, std::string>::const_iterator it
+	for ( std::map<std::string, tui_binding>::const_iterator it
 		= _actions.begin(); it != _actions.end(); ++it )
 	{
 	    const std::string &seq = it->first;
@@ -234,10 +249,37 @@ public:
     {
 	std::string best;
 	size_t best_keys = 0;
-	for ( std::map<std::string, std::string>::const_iterator it
+	for ( std::map<std::string, tui_binding>::const_iterator it
 		= _actions.begin(); it != _actions.end(); ++it )
 	{
-	    if ( it->second != action )
+	    if ( it->second.name != action )
+		continue;
+	    size_t keys = 1;
+	    for ( size_t i = 0; i < it->first.size(); ++i )
+		if ( it->first[i] == ' ' )
+		    ++keys;
+	    if ( best.empty() || keys < best_keys
+	      || (keys == best_keys && it->first.size() < best.size()) )
+	    {
+		best = it->first;
+		best_keys = keys;
+	    }
+	}
+	return best;
+    }
+
+    // The shortest sequence bound to an action CODE ("" = none / code 0):
+    // the menu bar's accelerator lookup when the item carries a code.
+    std::string seq_for_code(int64_t code) const
+    {
+	std::string best;
+	size_t best_keys = 0;
+	if ( code == 0 )
+	    return best;
+	for ( std::map<std::string, tui_binding>::const_iterator it
+		= _actions.begin(); it != _actions.end(); ++it )
+	{
+	    if ( it->second.code != code )
 		continue;
 	    size_t keys = 1;
 	    for ( size_t i = 0; i < it->first.size(); ++i )
@@ -257,10 +299,10 @@ public:
 	{ return _actions.count(canon_seq) != 0; }
     bool prefix(const std::string &canon_seq) const
 	{ return _prefixes.count(canon_seq) != 0; }
-    const std::string &action_of(const std::string &canon_seq) const
+    const tui_binding &action_of(const std::string &canon_seq) const
     {
-	static const std::string none;
-	std::map<std::string, std::string>::const_iterator it
+	static const tui_binding none;
+	std::map<std::string, tui_binding>::const_iterator it
 	    = _actions.find(canon_seq);
 	return it == _actions.end() ? none : it->second;
     }
@@ -288,7 +330,8 @@ struct key_step
     };
     kind k;
     std::string action_name, seq;
-    key_step() : k(kind::passthrough) {}
+    int64_t action_code;	// the bound code (0 = none), beside the name
+    key_step() : k(kind::passthrough), action_code(0) {}
 };
 
 class key_resolver
@@ -332,7 +375,8 @@ public:
 		return s;
 	    }
 	    s.k = key_step::kind::action;
-	    s.action_name = _bindings.action_of(candidate);
+	    s.action_name = _bindings.action_of(candidate).name;
+	    s.action_code = _bindings.action_of(candidate).code;
 	    s.seq = candidate;
 	    _pending.clear();
 	    return s;
@@ -346,7 +390,8 @@ public:
 	    if ( _bindings.bound(head) )
 	    {
 		s.k = key_step::kind::action;
-		s.action_name = _bindings.action_of(head);
+		s.action_name = _bindings.action_of(head).name;
+		s.action_code = _bindings.action_of(head).code;
 		s.seq = head;
 		return s;
 	    }

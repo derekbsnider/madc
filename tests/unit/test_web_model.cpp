@@ -552,6 +552,60 @@ TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's
     CHECK(m.pending_chord().empty());
 }
 
+TEST_CASE("codes — an option's code hint rides the choose event; a posted action name converts to its code at the boundary")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode menu(r.choice);
+    uinode o1 = option(w, "Save", "w");
+    std::map<std::string, madc::value> h1;
+    h1["code"] = madc::value((int64_t)7);
+    o1.hints = madc::value::make_object(h1);
+    menu.add(o1);
+    menu.add(option(w, "Quit", "q"));
+    root.add(menu);
+    // A group carrying a tab strip whose tab names its command AND its code.
+    std::map<std::string, madc::value> tab;
+    tab["title"] = madc::value(std::string("Problems"));
+    tab["action"] = madc::value(std::string("problems"));
+    tab["code"] = madc::value((int64_t)31);
+    madc::value tabs = madc::value::make_array();
+    tabs.array().push_back(madc::value::make_object(tab));
+    std::map<std::string, madc::value> gh;
+    gh["tabs"] = tabs;
+    uinode panel(r.group);
+    panel.hints = madc::value::make_object(gh);
+    root.add(panel);
+
+    web_model m;
+    std::string ops = m.compose(r, root);
+    CHECK(ops.find("\"code\":31") != std::string::npos);
+    // Enter on the focused choice (option 0): the choose event carries the
+    // option's code beside its action.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"enter\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].action == w.intern("w"));
+    CHECK(ev[0].action_code == 7);
+    // The page posts the tab's NAME; the model converts it at the boundary.
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"problems\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "problems");
+    CHECK(ev[0].action_code == 31);
+    // A name no control carried a code for: code 0, the name still flows.
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"nosuch\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "nosuch");
+    CHECK(ev[0].action_code == 0);
+    // A dialog answer carries its mode's enumerator.
+    ev = m.apply_input("{\"kind\":\"dialog\",\"mode\":\"save\",\"path\":\"/tmp/x\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::dialog);
+    CHECK(ev[0].action_code == (int64_t)madc::hub::dialog_mode::save);
+}
+
 TEST_CASE("apply_input — navigation through the focus owner; viewport facts; snapshot")
 {
     world w;

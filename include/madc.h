@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
 #include "madcdis/intern_table.h"
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
 #include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
@@ -2529,20 +2530,11 @@ public:
 	int column = 0;
     };
 
-    enum class DiagnosticSeverity
-    {
-	warning,
-	error
-    };
-
-    enum class DiagnosticPhase
-    {
-	unknown,
-	lexer,
-	parser,
-	compiler,
-	runtime
-    };
+    // The shared enum text (include/madc/bits/diag_enums): the dialect reads
+    // the same enumerators through <ns_madc> (`severity_code` / `phase_code`
+    // on a diagnostics row).
+    typedef ::madc::diag_severity DiagnosticSeverity;
+    typedef ::madc::diag_phase DiagnosticPhase;
 
     struct Diagnostic
     {

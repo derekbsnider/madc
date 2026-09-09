@@ -653,9 +653,12 @@ private:
 	    f.k = focusable::kind::choice;
 	    f.option_count = n.children.size();
 	    for ( size_t i = 0; i < n.children.size(); ++i )
+	    {
 		f.option_actions.push_back(n.children[i].actions.empty()
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
+		f.option_codes.push_back(hint_of(n.children[i].hints, "code", 0));
+	    }
 	    _focus_st.add(f);
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus_st.set_focus(slot);

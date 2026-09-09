@@ -38,6 +38,9 @@ struct focusable
     kind k;
     size_t option_count;			// choice: how many options
     std::vector<name_id> option_actions;	// choice: first action each
+    std::vector<int64_t> option_codes;		// choice: the `code` hint each
+						// (0 = none) — the application's
+						// own enum for the option
     focusable() : k(kind::choice), option_count(0) {}
 };
 
@@ -132,6 +135,8 @@ public:
 	    e.kind = tui_event_kind::choose;
 	    e.option = sel;
 	    e.action = _focusables[_focus].option_actions[sel];
+	    e.action_code = sel < _focusables[_focus].option_codes.size()
+			    ? _focusables[_focus].option_codes[sel] : 0;
 	    return true;
 	}
 	e.kind = tui_event_kind::key;
@@ -166,6 +171,8 @@ public:
 	e.kind = tui_event_kind::choose;
 	e.option = sel;
 	e.action = _focusables[slot].option_actions[sel];
+	e.action_code = sel < _focusables[slot].option_codes.size()
+			? _focusables[slot].option_codes[sel] : 0;
 	return true;
     }
 };

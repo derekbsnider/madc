@@ -4647,7 +4647,9 @@ static void diagnostic_rows_from_child(::Program &child, madc::value &out)
 	const ::Program::Diagnostic &d = child.diagnostics[i];
 	std::map<std::string, madc::value> f;
 	f["severity"] = value(std::string(child.diagnostic_severity_name(d.severity)));
+	f["severity_code"] = value((int64_t)d.severity);	// madc::diag_severity
 	f["phase"] = value(std::string(child.diagnostic_phase_name(d.phase)));
+	f["phase_code"] = value((int64_t)d.phase);		// madc::diag_phase
 	f["message"] = value(d.message);
 	f["file"] = value(d.file);
 	f["line"] = value((int64_t)d.line);

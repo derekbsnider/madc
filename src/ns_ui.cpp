@@ -607,10 +607,15 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    fields["action"] = madc::value(e.action
 					   ? std::string(s->w.spelling(e.action))
 					   : std::string());
+	    fields["action_code"] = madc::value(e.action_code);	// the option's
+						// `code` hint (0 = none)
 	    break;
 	case madc::hub::tui_event_kind::action:
 	    fields["event"] = madc::value(std::string("action"));
 	    fields["action"] = madc::value(e.action_name);
+	    fields["action_code"] = madc::value(e.action_code);	// the bound
+						// code, or the code the control
+						// posting this name carried
 	    fields["seq"] = madc::value(e.seq);
 	    // The command's argument a native control carried (a buffer
 	    // tab's ring index — polish P4); absent for a chord.
@@ -654,6 +659,7 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    // chosen path ("" = cancelled).
 	    fields["event"] = madc::value(std::string("dialog"));
 	    fields["mode"] = madc::value(e.action_name);
+	    fields["mode_code"] = madc::value(e.action_code);	// ui::dialog_mode
 	    fields["path"] = madc::value(e.text);
 	    break;
 	case madc::hub::tui_event_kind::focus:
@@ -1690,9 +1696,15 @@ static bool table_to_bindings(madc::value &table, madc::hub::tui_bindings &b,
 	for ( std::map<std::string, madc::value>::const_iterator it
 		= o.begin(); it != o.end(); ++it )
 	{
-	    std::string action = it->second.is_null()
-		? std::string() : it->second.as_string();
-	    if ( !b.bind(it->first, action) )
+	    // The bound value: a string NAME (the tools' shape), an integer
+	    // CODE (an application's own enum — madcide binds codes), or null.
+	    std::string action;
+	    int64_t code = 0;
+	    if ( it->second.is_integer() )
+		code = it->second.as_integer();
+	    else if ( !it->second.is_null() )
+		action = it->second.as_string();
+	    if ( !b.bind(it->first, action, code) )
 	    {
 		err = "bad key sequence `" + it->first + "`";
 		return false;

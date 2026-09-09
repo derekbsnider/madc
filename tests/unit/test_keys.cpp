@@ -84,7 +84,8 @@ TEST_CASE("bindings — build validation is loud and whole-table")
     std::string err;
     CHECK(b.finalize(err));
     CHECK(b.bound("^k s"));
-    CHECK(b.action_of("^k s") == "save");
+    CHECK(b.action_of("^k s").name == "save");
+    CHECK(b.action_of("^k s").code == 0);
     CHECK(b.prefix("^k"));
     CHECK(!b.bound("^k"));
 
@@ -108,7 +109,21 @@ TEST_CASE("bindings — build validation is loud and whole-table")
     CHECK(ctrlcont.bind("^k ^_", "special"));
     CHECK(ctrlcont.finalize(err));
     CHECK(ctrlcont.bound("^k z"));
-    CHECK(ctrlcont.action_of("^k z") == "shell");
+    CHECK(ctrlcont.action_of("^k z").name == "shell");
+
+    // A CODE binding (madcide binds its command enum, enums-not-strings):
+    // the code rides beside the name, and the accelerator lookup answers
+    // by code; a name-bound sequence carries code 0.
+    tui_bindings coded;
+    CHECK(coded.bind("^k s", "", 7));
+    CHECK(coded.bind("^q", "quit"));
+    CHECK(coded.finalize(err));
+    CHECK(coded.action_of("^k s").code == 7);
+    CHECK(coded.action_of("^k s").name.empty());
+    CHECK(coded.action_of("^q").code == 0);
+    CHECK(coded.seq_for_code(7) == "^k s");
+    CHECK(coded.seq_for_code(0).empty());
+    CHECK(coded.seq_for_action("quit") == "^q");
     CHECK(ctrlcont.bound("^k ^_"));
     CHECK(!ctrlcont.bound("^k _"));
     CHECK(tui_bindings::cont_spelling(tui_keyev(tui_key::ctrl, 'z')) == "z");

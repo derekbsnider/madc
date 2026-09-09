@@ -118,13 +118,25 @@ in a dialect compare.
 | # | Content | Tests / gate |
 |---|---|---|
 | **a. Levels** | `ui::level` + names; `register_host(name, level, ops)`; `open(level)`, `level_of`; capabilities `ui.levels`; madcide opens by level (`--gui` → `ui::WEB`), `has_term` from `level_of` | `testuihostfake` (registers with a level; opens by level; a level nobody serves refuses); `capabilities_json_gate.sh` (`ui.levels` ⊆ enum names, `tui` present); `testmadcide` + GUI 17 byte-identical |
-| **b. Codes in the engine** | `tui_bindings::binding {name, code}`; `action_code` on `key_step` / `tui_event` / the event object; `code` hints → `option_codes` → `choose.action_code`; the DOM model's `id → code` table + boundary conversion; `seq_for_code`; `severity_code`; `dialog_mode` + `mode_code` | `test_tui_model` (bind an integer value; choose returns the code); a `testuihostfake` posted action resolves to its code; `testmadcide` unchanged (names still flow) |
+| **b. Codes in the engine** | `tui_binding {name, code}` (`bind(seq, action, code)`; an integer table value binds a code); `action_code` on `key_step` / `tui_event` / the event object; `code` hints → `focusable::option_codes` → `choose.action_code`; the DOM model's action name → code table (`_action_codes`, per compose) converting ONCE where the page / native menu posts a name; `seq_for_code` (an item's accelerator by code); `<bits/diag_enums>` (`madc::diag_severity` / `diag_phase`, the engine's `Program::Diagnostic*` typedef'd to it) → `severity_code` / `phase_code` on diagnostics rows; `ui::dialog_mode` + `mode_code` | `test_keys` (code bindings, `seq_for_code`); `test_web_model` (an option's code on choose; a posted name converts; an unknown name = code 0; a dialog answer's mode enumerator); `testuihostfake` (a code binding, an option and a menu item carrying a code, the loop switching on `event_code`); `testmadcide` unchanged (names still flow) |
 | **c. The command enum** | `madcide_enums.inc` (`ide_cmd`, table, `cmd_of` / `cmd_name`); load-time resolution + refusal in `load_profile` / `bind_rescue_keys` / `modal_keys` / `load_menu`; the composer stamps `code` on items / tabs / buttons / rows; the dispatcher switches; the test seam's `ev_action` resolves through `cmd_of` | `testmadcide` + `testidemenu` + `testidedialog` + `testidehints` + GUI byte-identical; a new `testmadcide` clause: a profile with a misspelt action refuses naming its line; `check-madcide-command-registry.sh` re-anchored (registry ⊆ table ⊆ enum, every enumerator has a `case`) |
 | **d. Discriminator enums + the gate** | `ide_pane`, `ide_tab`, `ide_prompt`, `ide_vimode`, `ide_reqkind`, `ide_tag` on the bag; `*_name()` at the output boundaries; vised's key ladder → `key_code` switch | `scripts/check-madcide-enums.sh` (fulltest): no `ev["action"]` / `ev["key"]` / `ev["event"]` read in `tools/`; no string literal written to or compared against a discriminator slot (`pane paneltab view pmode vimode kind tag slot`); every `case cmd…:` / `case pane…:` label names an enumerator that exists; negative controls for each rule |
 | **e. Docs + mirrors** | `docs/madcide.md`, `docs/ui-*.md` (the `open(level)` API), `CHANGELOG`, `claude_status.json`, KG | — |
 
 The full develop-set battery runs ONCE at the end of the slice (the merge
 wave); a–d run their targeted tests.
+
+**Status (2026-09-09).** a LANDED on develop as three commits — f39436d1
+(an anonymous fn-ptr parameter in a definition takes a synthesized name),
+4acf8e7f (a tagged enum's enumerator has its enumeration type at namespace
+scope, [dcl.enum]/5; the ranker grades an enum argument by [conv.prom]) and
+2b737b62 (the level API) — the two compiler defects the slice uncovered each
+in its own commit with a g++/clang++-oracled reducer; validated by the full
+JIT suite (1338/0/9 skipped), `fulltest` rc=0 and GUI 17/17 on every lane.
+b follows (this table's row as shipped). Found for c: `madcide_core.inc`
+still compares `r["severity"] == "error"` and synthesizes a row with a
+string severity — both convert to `severity_code` against
+`madc::diag_severity::error` with the command enum.
 
 ## 4. Out of scope (named, not forgotten)
 

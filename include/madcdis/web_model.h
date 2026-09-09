@@ -274,6 +274,12 @@ class web_model
     // The choice nodes' focus slots by key, from the last compose — what a
     // {"kind":"choose","key":...} gesture resolves against (polish P2).
     std::map<std::string, size_t> _choice_slot;
+    // The last compose's action NAME -> CODE vocabulary (every tab, choice,
+    // button and menu item that carried a `code` hint beside its `action` /
+    // `id`): the page and the native menu post NAMES, and this converts
+    // them ONCE at that input boundary (enums, not strings — owner law
+    // 2026-09-09). Mutable: the menu bar's JSON is built by a const reader.
+    mutable std::map<std::string, int64_t> _action_codes;
     // The native menu the host draws (S2): the root's `menu` hint resolved
     // against the bindings — items gain the chord bound to their command
     // id (`key`) — as one JSON text; recomposed every compose and handed
@@ -520,7 +526,18 @@ class web_model
 		    item["id"] = id;
 		    item["title"] = hint_str(rows[i], "title");
 		    item["enabled"] = hint_of(rows[i], "enabled", 1) != 0;
-		    const std::string key = _keys.bindings().seq_for_action(id);
+		    const long mcode = hint_of(rows[i], "code", 0);
+		    if ( mcode )
+		    {
+			item["code"] = mcode;
+			_action_codes[id] = mcode;
+		    }
+		    // The accelerator: the chord the LOADED profile binds to
+		    // the item's code, else to its name (the tools' shape).
+		    std::string key = mcode ? _keys.bindings().seq_for_code(mcode)
+					    : std::string();
+		    if ( key.empty() )
+			key = _keys.bindings().seq_for_action(id);
 		    if ( !key.empty() )
 			item["key"] = key;
 		    items.push_back(item);
@@ -561,7 +578,11 @@ class web_model
 	    // the same {"kind":"action"} a menu item posts. Data, never a key.
 	    const std::string dismiss = hint_str(n.hints, "dismiss");
 	    if ( !dismiss.empty() )
+	    {
 		op["dismiss"] = dismiss;
+		if ( long dcode = hint_of(n.hints, "dismiss_code", 0) )
+		    _action_codes[dismiss] = dcode;
+	    }
 	    // The tab strip (madcide polish P3a): `tabs` as an ARRAY of
 	    // {title, action, active?} is the strip a group carries as DATA —
 	    // the page draws it above the group's children and a tab click
@@ -588,6 +609,11 @@ class web_model
 			nlohmann::json tb = nlohmann::json::object();
 			tb["title"] = title;
 			tb["action"] = action;
+			if ( long tcode = hint_of(rows[k], "code", 0) )
+			{
+			    tb["code"] = tcode;
+			    _action_codes[action] = tcode;
+			}
 			// The command's ARGUMENT (polish P4: a buffer tab names
 			// `bufsel` with its ring index) — posted back with the
 			// action; the gateway shape (commands take arguments).
@@ -676,6 +702,11 @@ class web_model
 			    nlohmann::json ch = nlohmann::json::object();
 			    ch["label"] = hint_str(rows[k], "label");
 			    ch["action"] = action;
+			    if ( long ccode = hint_of(rows[k], "code", 0) )
+			    {
+				ch["code"] = ccode;
+				_action_codes[action] = ccode;
+			    }
 			    choices.push_back(ch);
 			}
 		    }
@@ -741,9 +772,12 @@ class web_model
 	    f.k = focusable::kind::choice;
 	    f.option_count = n.children.size();
 	    for ( size_t i = 0; i < n.children.size(); ++i )
+	    {
 		f.option_actions.push_back(n.children[i].actions.empty()
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
+		f.option_codes.push_back(hint_of(n.children[i].hints, "code", 0));
+	    }
 	    _focus.add(f);
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);
@@ -798,7 +832,14 @@ class web_model
 			    if ( choose )
 				b["choose"] = true;
 			    else
+			    {
 				b["action"] = action;
+				if ( long bcode = hint_of(rows[k], "code", 0) )
+				{
+				    b["code"] = bcode;
+				    _action_codes[action] = bcode;
+				}
+			    }
 			    buttons.push_back(b);
 			}
 		    }
@@ -902,6 +943,7 @@ public:
 	_focus.begin_compose();
 	_seen.clear();
 	_choice_slot.clear();
+	_action_codes.clear();
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
 	// An edit key that left the tree drops its basis — the page prunes
@@ -1085,6 +1127,12 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::action;
 	    e.action_name = it->get<std::string>();
+	    // The name -> code conversion at this input boundary: the code
+	    // the last compose stamped on the control that posts this name.
+	    std::map<std::string, int64_t>::const_iterator ci =
+		_action_codes.find(e.action_name);
+	    if ( ci != _action_codes.end() )
+		e.action_code = ci->second;
 	    // The command's argument (polish P4): a tab's data rides the
 	    // event's `text` — what ui::event reports as `arg`.
 	    nlohmann::json::const_iterator ai = j.find("arg");
@@ -1105,6 +1153,9 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::dialog;
 	    e.action_name = mi->get<std::string>();
+	    dialog_mode dm;
+	    if ( dialog_mode_from_name(e.action_name, dm) )
+		e.action_code = (int64_t)dm;	// ui::dialog_mode, `mode_code`
 	    if ( pi != j.end() && pi->is_string() )
 		e.text = pi->get<std::string>();
 	    none.push_back(e);

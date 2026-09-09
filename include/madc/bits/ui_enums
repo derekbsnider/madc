@@ -61,6 +61,10 @@ namespace ui {
     // press places, a drag extends, a release ends.
     enum class pointer_phase : unsigned char { down, drag, up };
 
+    // A native file dialog's MODE (ui::dialog's request, the dialog event's
+    // `mode_code`): what the request asked for.
+    enum class dialog_mode : unsigned char { open, save };
+
     // The UI LEVEL (OWNER 2026-09-09): the rendering model a target serves
     // and a program wants, ORDERED by requirement and platform specificity.
     // The order has a meaning — a program composes for the highest level it

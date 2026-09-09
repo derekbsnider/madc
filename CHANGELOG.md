@@ -19,6 +19,24 @@
 - This is sub-slice a of the "enums, not strings" conversion
   (`docs/plans/2026-09-09-v05-enums-not-strings.md`; owner law 2026-09-09).
 
+### Action codes on every UI event; diagnostics enumerators (2026-09-09)
+
+- A key binding is `{name, code}`: `ui::bind_keys` accepts an INTEGER as the
+  bound value (an application's own enum) beside a name, and the `action`
+  event carries `action_code` (0 = none) beside `action` and `seq`. The
+  `choose` event carries the chosen option's `code` hint as `action_code`;
+  the `dialog` event carries `mode_code` (`ui::dialog_mode`, `<bits/ui_enums>`).
+- A web target converts a posted action NAME to its code once, at the input
+  boundary: every tab, choice, button, menu item or dismiss that carries a
+  `code` hint stamps the name → code table of that compose, and a menu
+  item's accelerator resolves by its code first.
+- `<bits/diag_enums>`: `madc::diag_severity` / `madc::diag_phase`, the one
+  enum text for the engine (`Program::DiagnosticSeverity` / `DiagnosticPhase`
+  are typedefs of it) and the dialect (`<ns_madc>` includes it) — a
+  `madc::diagnostics` row carries `severity_code` / `phase_code` to compare
+  against the enumerator, never the text.
+- Sub-slice b of the conversion (`docs/plans/2026-09-09-v05-enums-not-strings.md`).
+
 ### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
 
 - In C++ mode an enumerator of a TAGGED enum at namespace or global scope

@@ -57,6 +57,25 @@ inline bool pointer_phase_from_name(const std::string &s, pointer_phase &p)
     return false;
 }
 
+// The dialog MODE (ui::dialog_mode) and its name at the JSON boundary (the
+// request the host receives, the answer it posts) — ONE spelling owner.
+typedef ::ui::dialog_mode dialog_mode;
+inline const char *dialog_mode_name(dialog_mode m)
+{
+    switch ( m )
+    {
+	case dialog_mode::open: return "open";
+	case dialog_mode::save: return "save";
+    }
+    return "open";
+}
+inline bool dialog_mode_from_name(const std::string &s, dialog_mode &m)
+{
+    if ( s == "open" ) { m = dialog_mode::open; return true; }
+    if ( s == "save" ) { m = dialog_mode::save; return true; }
+    return false;
+}
+
 // The UI LEVEL (the shared text's ui::level — ordered by requirement, OWNER
 // 2026-09-09) and its name at the boundaries (the capabilities manifest's
 // `ui.levels`, ui::open's refusal, a command line's spelling) — ONE spelling
@@ -103,6 +122,12 @@ struct tui_event
 				// keys the widget does not consume (ins/del)
     name_id	   action;	// choose: the option's first action; 0 = none
     std::string	   action_name;	// action: the bound name ("" = unbound)
+    int64_t	   action_code;	// action: the bound CODE (0 = none — the
+				// application's own enum, bound as an integer
+				// or recorded from a `code` hint the control
+				// carried); choose: the option's `code` hint;
+				// dialog: the mode (ui::dialog_mode) — enums,
+				// not strings (owner law 2026-09-09)
     std::string	   seq;		// action: the canonical sequence spelling
     pointer_phase  phase;	// pointer: the gesture step
     long	   offset;	// pointer: BYTE offset in the edit node's text;
@@ -115,7 +140,7 @@ struct tui_event
 				// (madcide: the window index); -1 = none
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0),
+		  option(0), choice_focused(false), action(0), action_code(0),
 		  phase(pointer_phase::down), offset(0), subject(0), tag(-1) {}
 };
 
