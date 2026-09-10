@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### madcide: the ex / edlin line mode — the `ui::LINE` client (V2.5) (2026-09-10)
+
+- The client-server arc V2.5: `madcide <file> --line` drives the same
+  live-parse session over **stdin/stdout with no cursor addressing** — the vi
+  `:` command mode without the TUI. It works over a pipe, in a dumb terminal,
+  and as an MCP seat's transcript. `ui::open(ui::LINE)` gains a real frontend
+  (`ui_line_frontend`): each cycle typesets the projection (the status line,
+  the document, any message) through the level-0 sequential renderer to stdout
+  and reads one line of stdin. A `:` line is a colon command (`w q wq x e r`,
+  `:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+  shell); any other line is text inserted at the caret.
+- The engine frontend stays **dumb** — a line becomes a `text` event; the
+  tool's line grammar lives in the session (`IdeSession::line_input`), next to
+  the registry and the colon interpreter, and posts `:` lines through the one
+  argument primitive (`command(cmdCOLON, …)`, the same path the `-c` one-shot
+  and the TUI `:` prompt take). No new command language. `run_line` is the loop
+  for `--line`, parallel to the `-c` one-shot's `run_once`.
+- Follow-up (deferred): the colon line reaching the FULL registry by name
+  (`:check`, `:find x`) — a colon-interpreter enhancement that improves the TUI
+  colon line equally.
+
 ### madcide: layouts persist and the splitter feeds the session (V2c) (2026-09-10)
 
 - The client-server arc V2c (part 2): the page's splitter drag now makes the

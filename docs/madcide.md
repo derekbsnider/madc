@@ -12,9 +12,20 @@ the same commands; the window adds a workbench around the editor.
 ```sh
 madcide file.mad            # in the terminal
 madcide file.mad --gui      # in a window
+madcide file.mad --line     # the ex / edlin line mode: stdin lines, text out
 madcide file.mad -c check   # no surface: one command, the projection, a verdict
 madc tools/madcide/madcide.mad file.mad   # from a source checkout
 ```
+
+`--line` is the **ex / edlin client**: the same live-parse session driven
+over stdin/stdout with no cursor addressing — it works over a pipe, in a
+dumb terminal, and as an MCP seat's transcript. Each cycle typesets the
+projection (the status line, the document, any message) to stdout and reads
+one line: a `:` line is a colon command (the vi `:` mode — `w q wq x e r`,
+`:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+shell), and any other line is text inserted at the caret. It is the same
+composer and the same commands as the terminal and the window; only the
+rendering model (level `line`) is lower.
 
 `-c "<command> [arg]"` runs ONE command of the registry (the names are the
 `.menu` / `.keys` files' — `check`, `outline`, `gotoline 3`, `find add`,

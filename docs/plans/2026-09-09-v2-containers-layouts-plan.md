@@ -308,10 +308,18 @@ written (`tmp/logs/`); no battery until the V5 seam.
   view* verbs (viewsplit/focus/close/open/dock/size); `viewtab` (a second tab
   on one leaf) + the pane tab strip. The key seats are ONE owner decision,
   batched.
-- **NEXT = V2.5** (the `ui::LINE` client): `ui_line_frontend`,
-  `ui::open(ui::LINE)`, the colon interpreter as the command language. Then
-  V3 (clients + windows), V4 (event log), V5 (correlation / `viewsync`) → the
-  V1–V5 SEAM (the ONE battery, lane records, develop merge).
+- **V2.5 the `ui::LINE` client — LANDED 2026-09-10** (1d165538, arc branch,
+  targeted gates): `ui_line_frontend` (the level-0 typesetter to stdout, one
+  stdin line per event) + `ui::open(ui::LINE)`; the frontend stays dumb, the
+  line grammar is `IdeSession::line_input` (`:` = a colon command through
+  `command(cmdCOLON, …)`, else text), run by `run_line` (`--line`, parallel
+  to `run_once`). Gate `tests/testmadcide_line` (scripted stdin transcript +
+  a byte-identical direct-`line_input` twin) green jit/exe/obj. Follow-up:
+  the colon line reaching the full registry by name (a colon-interpreter
+  enhancement, both faces).
+- **NEXT = V3** (clients + windows: viewwindow, `ui::event_any`, presence,
+  the anchor registry). Then V4 (event log), V5 (correlation / `viewsync`) →
+  the V1–V5 SEAM (the ONE battery, lane records, develop merge).
 
 ## 4. What does not change
 
