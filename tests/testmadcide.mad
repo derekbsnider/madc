@@ -1157,6 +1157,47 @@ int main()
     println("view-collapse: leaves={} caret={} c0={} c1={}",
 	    editor_leaf_count(lo4["editor"]), es_int(w, es, "caret", -1),
 	    tree["children"][0]["role"], tree["children"][1]["role"]);
+
+    // -- V2b part 2: a CODE-View split (source left, MC11 right) --
+    // viewsplit right mc11: the right leaf is a code View of the buffer's
+    // MC11 render over the SAME subject — its edit projects the render
+    // buffer (a different entity) and carries the lens name; focus stays left.
+    ev_action_arg(e, "viewsplit", "right mc11", ":viewsplit right mc11");
+    S.apply_ide_event(doc, e);
+    var lo5;
+    layout_get(lo5, w, es);
+    S.compose_ide_tree(tree, doc);
+    var sg5 = tree["children"][0];
+    var rled = sg5["children"][1]["children"][1];	// right leaf's edit node
+    println("view-mc11: leaves={} right-view={} right-subj-differs={} left-focus={}",
+	    editor_leaf_count(lo5["editor"]), rled["hints"]["view"],
+	    rled["subject"].as_integer() != doc ? 1 : 0,
+	    sg5["children"][0]["children"][1]["hints"]["focus"]);
+    // viewfocus next: the MC11 pane is focused — a code View, so it projects
+    // the render buffer live and a keystroke is REFUSED (read-only).
+    ev_action_arg(e, "viewfocus", "next", ":viewfocus next");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    var rfoc = tree["children"][0]["children"][1]["children"][1];
+    ev_text(e, "X");
+    S.apply_ide_event(doc, e);
+    var vmsg;
+    ui::get(vmsg, w, es, "msg");
+    println("view-mc11-ro: focused-view={} msg={}", rfoc["hints"]["view"], vmsg);
+    // viewclose the MC11 pane -> sole source leaf again; viewopen mc11
+    // re-represents the primary IN PLACE (the lens the `view` cycle owns).
+    ev_action(e, "viewclose", ":viewclose");
+    S.apply_ide_event(doc, e);
+    ev_action_arg(e, "viewopen", "mc11", ":viewopen mc11");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    println("view-open: ed-view={}", tree["children"][1]["hints"]["view"]);
+    // viewopen source: back to the identity lens (no view hint).
+    ev_action_arg(e, "viewopen", "source", ":viewopen source");
+    S.apply_ide_event(doc, e);
+    S.compose_ide_tree(tree, doc);
+    println("view-open-src: ed-view-null={}",
+	    tree["children"][1]["hints"]["view"].is_null() ? 1 : 0);
     ui::set(w, es, "msg", "");		// clear the viewclose message so the
 					// next gate's compose has no overlay
 

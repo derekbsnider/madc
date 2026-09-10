@@ -2342,11 +2342,14 @@ bool colon_command(long w, long es, long doc, long caret, var &in);
 
 // The view* verbs (V2b) — defined with the dispatcher, reached from the
 // colon line too (forward-declared for that earlier caller).
-void view_split(long w, long es, long doc, long dir);
+void view_split(long w, long es, long doc, long dir, long lang);
 void view_focus(long w, long es, long doc, long dir);
 void view_close(long w, long es, long doc);
+void view_open(long w, long es, long doc, long lang);
 long viewsplit_dir_of(var &arg);
 long viewfocus_dir_of(var &arg);
+long viewrepr_lang_of(var &word);
+void viewsplit_args(var &arg, long &dir, long &lang);
 
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
@@ -2806,6 +2809,36 @@ void exit_lens(long w, long es, long doc)
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
+}
+
+// A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
+// fkCPP): a NEW View with its own render buffer, coloured like the lens, the
+// subject untouched — for a `viewsplit right mc11` second pane (source left,
+// MC11 right) that does NOT re-represent the focused View. 0 = the subject
+// does not translate. The focused re-representation stays enter_lens; this is
+// its sibling for a fresh View (the emit / colour body is the same shape).
+long make_code_view(long w, long es, long subject, long lang)
+{
+    var t;
+    ui::text(t, w, subject);
+    var p;
+    ui::get(p, w, subject, "path");
+    var emitted;
+    if ( !madc::emit(emitted, t.c_str(), p.c_str(), lang) )
+	return 0;
+    long id = view_new(w, es, subject, viewCODE, lang);
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, emitted.c_str());
+    ui::set(w, vd, "path", p);		// the status %n seat: a display path
+    var vrows;
+    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
+    spans_to_hspans(w, es, vd, vrows, vd);
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    view_store(w, es, v);
+    return id;
 }
 
 // ---- AST-5: buffers (IDE-8) ------------------------------------------
@@ -5158,11 +5191,15 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	insert_file(w, es, doc, caret, arg.c_str());
 	return true;
     }
-    // The view* verbs (V2b) reach the colon line too — `:viewsplit right`,
-    // `:viewfocus next`, `:viewclose`; the same owners the dispatcher calls.
+    // The view* verbs (V2b) reach the colon line too — `:viewsplit right
+    // mc11`, `:viewfocus next`, `:viewclose`, `:viewopen mc11`; the same
+    // owners the dispatcher calls.
     if ( verb == "viewsplit" )
     {
-	view_split(w, es, doc, viewsplit_dir_of(arg));
+	long vdir;
+	long vlang;
+	viewsplit_args(arg, vdir, vlang);
+	view_split(w, es, doc, vdir, vlang);
 	return true;
     }
     if ( verb == "viewfocus" )
@@ -5173,6 +5210,11 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
     if ( verb == "viewclose" )
     {
 	view_close(w, es, doc);
+	return true;
+    }
+    if ( verb == "viewopen" )
+    {
+	view_open(w, es, doc, viewrepr_lang_of(arg));
 	return true;
     }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
@@ -5458,11 +5500,64 @@ long viewfocus_dir_of(var &arg)
     return 1;
 }
 
-// viewsplit: the focused leaf becomes a split of itself and a new leaf — a
-// second window on the current subject (the SAME View), starting at the
-// current caret. Focus stays on the original leaf. Refused while the S5
-// window stack is up (one axis at a time in V2b; the stack is JOE's).
-void view_split(long w, long es, long doc, long dir)
+// A viewsplit / viewtab / viewopen REPR word -> its render language
+// (madc::fkMC11 / fkC11 / fkCPP); 0 = a source pane (no code render).
+long viewrepr_lang_of(var &word)
+{
+    if ( word.is_null() )
+	return 0;
+    var a = format("{}", word);
+    if ( a == "mc11" )
+	return madc::fkMC11;
+    if ( a == "c11" )
+	return madc::fkC11;
+    if ( a == "cpp" || a == "c++" || a == "cxx" )
+	return madc::fkCPP;
+    return 0;			// source / src / unknown = a source pane
+}
+
+// `viewsplit right mc11` -> dir + render language: the FIRST word the
+// direction, the SECOND the representation (both optional).
+void viewsplit_args(var &arg, long &dir, long &lang)
+{
+    dir = ui::split::vertical;
+    lang = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+    {
+	var w0 = words[0];
+	dir = viewsplit_dir_of(w0);
+    }
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	lang = viewrepr_lang_of(w1);
+    }
+}
+
+// The View a leaf's active container shows: the primary leaf (tree order's
+// first, the ring host) shows the ring's current View; a secondary leaf its
+// active tab's. One reader for the composer's snapshot and the focus handoff.
+long leaf_view_of(long w, long es, var &leaf, bool primary)
+{
+    if ( primary )
+	return buffer_view(w, es, es_int(w, es, "bufidx", 0));
+    var tabs = leaf["tabs"];
+    var tab = tabs[leaf["active"].as_integer()];
+    return tab["view"].as_integer();
+}
+
+// viewsplit: the focused leaf becomes a split of itself and a NEW leaf. With
+// no repr the new leaf is a second window on the current subject (the SAME
+// View, JOE's ^K O feel); with a repr (`mc11` / `c11` / `cpp`) it is a code
+// View of that representation over the subject (source left, MC11 right — the
+// owner's side-by-side). Focus stays on the original leaf. Refused while the
+// S5 window stack is up (one axis at a time in V2b; the stack is JOE's).
+void view_split(long w, long es, long doc, long dir, long lang)
 {
     if ( window_count(w, es) >= 2 )
     {
@@ -5470,16 +5565,38 @@ void view_split(long w, long es, long doc, long dir)
 		"Close the extra windows (^K 1) before splitting the view.");
 	return;
     }
+    long subject = active_doc(w, es, doc);
+    long ca = es_int(w, es, "caret", 0);
+    long nv;
+    long pcar;
+    long tkind;
+    if ( lang != 0 )
+    {
+	nv = make_code_view(w, es, subject, lang);
+	if ( nv == 0 )
+	{
+	    ui::set(w, es, "msg",
+		    format("Cannot render {} — the buffer does not translate.",
+			   madc::file_kind_name(lang)));
+	    return;
+	}
+	pcar = 0;			// a fresh code render starts at the top
+	tkind = viewCODE;
+    }
+    else
+    {
+	nv = focused_view(w, es);	// the same View — a second window
+	pcar = ca;
+	tkind = viewSOURCE;
+    }
     var lo;
     layout_get(lo, w, es);
     var etree = lo["editor"];
     long fi = editor_focused_index(etree);
     if ( fi < 0 )
 	fi = 0;
-    long ca = es_int(w, es, "caret", 0);
-    long fv = focused_view(w, es);
     var tab;
-    layout_tab(tab, viewSOURCE, fv);	// the same View — a second window
+    layout_tab(tab, tkind, nv);
     var tabs = {};
     tabs.push(tab);
     long snone = ui::side_code("");
@@ -5487,7 +5604,7 @@ void view_split(long w, long es, long doc, long dir)
     long mtabs = lmTABS;
     var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
 		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
-		    "hidden": 0, "pcaret": ca, "pmark": -1, "pbend": -1 };
+		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
     var focleaf;
     editor_read_leaf(focleaf, etree, fi);
     var kids = {};
@@ -5501,9 +5618,36 @@ void view_split(long w, long es, long doc, long dir)
     ui::set(w, es, "msg", format("{} views.", editor_leaf_count(newtree)));
 }
 
+// Make the leaf `arriving` (tree order) the live one: its parked caret goes
+// live, and its container's View becomes es "fview" — so the focused edit is
+// that leaf's (a code View routes display-vs-stored through nav_doc, and its
+// read-only verdict returns). The primary leaf's View is the ring's current;
+// a secondary's is its tab's.
+void editor_enter_leaf(long w, long es, var &tree, long arriving)
+{
+    var tleaf;
+    editor_read_leaf(tleaf, tree, arriving);
+    bool primary = arriving == 0;
+    long vid = leaf_view_of(w, es, tleaf, primary);
+    ui::set(w, es, "fview", vid);
+    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
+    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
+    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    var v;
+    view_row(v, w, es, vid);
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+    {
+	// A code View is read-only — the lens contract (enter_lens's rule).
+	ui::set(w, es, "editable", false);
+	ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
+    }
+    else
+	derive_access(w, es);		// the file's own verdict
+}
+
 // viewfocus: move the focus between leaves. The live caret parks on the
-// leaving leaf; the arriving leaf's parked caret becomes live. Same subject
-// (V2b part 1), so only the caret changes hands.
+// leaving leaf's node; the arriving leaf becomes live (its View, its caret) —
+// the full handoff, so a code-View pane edits (refuses) as itself.
 void view_focus(long w, long es, long doc, long dir)
 {
     var lo;
@@ -5524,13 +5668,9 @@ void view_focus(long w, long es, long doc, long dir)
 		   es_int(w, es, "mark", -1), es_int(w, es, "bend", -1));
     var focused;
     editor_do_focus(focused, parked, nx);
-    var tleaf;
-    editor_read_leaf(tleaf, focused, nx);
     lo["editor"] = focused;
     ui::set(w, es, "layout", lo);
-    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
-    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
-    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    editor_enter_leaf(w, es, focused, nx);
     ui::set(w, es, "msg", format("View {} of {}.", nx + 1, n));
 }
 
@@ -5559,15 +5699,27 @@ void view_close(long w, long es, long doc)
     long nf = fi - 1;
     var focused;
     editor_do_focus(focused, removed, nf);
-    var tleaf;
-    editor_read_leaf(tleaf, focused, nf);
     lo["editor"] = focused;
     ui::set(w, es, "layout", lo);
-    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
-    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
-    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    editor_enter_leaf(w, es, focused, nf);	// the survivor becomes live
     ui::set(w, es, "msg", format("View closed — {} left.",
 				 editor_leaf_count(focused)));
+}
+
+// viewopen: re-represent the FOCUSED leaf's View as `lang` (a code render) or
+// back to source (lang 0). es "fview" IS the focused leaf's View, so this is
+// the lens re-representation the `view` cycle already owns — one owner for
+// the focused View whichever leaf holds it.
+void view_open(long w, long es, long doc, long lang)
+{
+    if ( lang == 0 )
+    {
+	exit_lens(w, es, doc);
+	ui::set(w, es, "msg", "View: source");
+	return;
+    }
+    if ( !enter_lens(w, es, doc, lang) )
+	exit_lens(w, es, doc);
 }
 
 // Apply ONE semantic event (the value shapes the engine's event query
@@ -5690,12 +5842,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    }
 	    // The view* verbs (V2b): the editor region a real split tree.
-	    // `viewsplit right|bottom`, `viewfocus next|prev`, `viewclose` —
-	    // the direction rides the event's `arg` (the colon line's word,
-	    // a menu row's argument), read once into the split / focus enum.
+	    // `viewsplit right|bottom [repr]`, `viewfocus next|prev`,
+	    // `viewclose`, `viewopen [repr]` — the words ride the event's
+	    // `arg` (the colon line, a menu row's argument), read once into
+	    // the split / focus enum and the render language.
 	    case cmdVIEWSPLIT:
 	    {
-		view_split(w, es, doc, viewsplit_dir_of(ev["arg"]));
+		long vdir;
+		long vlang;
+		viewsplit_args(ev["arg"], vdir, vlang);
+		view_split(w, es, doc, vdir, vlang);
 		return true;
 	    }
 	    case cmdVIEWFOCUS:
@@ -5706,6 +5862,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdVIEWCLOSE:
 	    {
 		view_close(w, es, doc);
+		return true;
+	    }
+	    case cmdVIEWOPEN:
+	    {
+		view_open(w, es, doc, viewrepr_lang_of(ev["arg"]));
 		return true;
 	    }
 	    case cmdSAVE:
@@ -6480,7 +6641,8 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 // snapshots its active tree container. No spans / selection on a snapshot
 // (the S5 inactive-window rule).
 void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
-			 bool focused, long myleaf, var &ed, var &status)
+			 bool primary, bool focused, long myleaf, var &ed,
+			 var &status)
 {
     if ( focused )
     {
@@ -6498,11 +6660,17 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
 	lk.push(e);
 	return;
     }
-    // An unfocused leaf snapshots its subject at its PARKED caret (the node's
-    // `pcaret`, set when focus left it or at the split). V2b part 1 splits are
-    // a second window on the SAME subject, so the subject is the composed
-    // document; part 2's code-View leaves read the container's own subject.
-    long sdoc = doc;
+    // An unfocused leaf is a SNAPSHOT of its container's View at its parked
+    // caret (`pcaret`): the primary leaf shows the ring's current View, a
+    // secondary its active tab's. A code View snapshots its RENDER buffer and
+    // carries the lens hints (its name, coordinate map, colours); a source
+    // View its subject text and the doc's spans — the composer's single
+    // display-vs-stored routing (view_text_entity), the S5 inactive rule (no
+    // selection).
+    long vid = leaf_view_of(w, es, node, primary);
+    var v;
+    view_row(v, w, es, vid);
+    long sdoc = view_text_entity(v, v["subject"].as_integer());
     long sc = clamp_caret_to(w, sdoc, node["pcaret"].as_integer());
     var wfn = "";
     var wst;
@@ -6517,6 +6685,15 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     wed["content"] = wt;
     wed["subject"] = sdoc;
     var wh = { "caret": sc, "region": "editor", "tag": myleaf };
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
+    else
+    {
+	var hs;
+	view_spans(hs, w, es, v);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    wh["spans"] = hs;
+    }
     wed["hints"] = wh;
     lk.push(wed);
 }
@@ -6548,10 +6725,12 @@ void compose_editor_node(var &out, long w, long es, long doc, var &node,
 	return;
     }
     long myleaf = leafno;
+    bool primary = leafno == 0;
     leafno = leafno + 1;
     bool focused = node["focus"].as_integer() != 0;
     var lk = {};
-    compose_editor_leaf(lk, w, es, doc, node, focused, myleaf, ed, status);
+    compose_editor_leaf(lk, w, es, doc, node, primary, focused, myleaf, ed,
+			status);
     var g = { "role": "group", "children": lk };
     long sz = node["size"].as_integer();
     if ( sz > 0 )

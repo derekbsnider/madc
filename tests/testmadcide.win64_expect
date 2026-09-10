@@ -100,6 +100,10 @@ view-split: leaves=2 role=group split=vertical kids=2 left-role=status/edit left
 view-close-primary: leaves=2
 view-focus: caret=3 left-snap-caret=9 right-focus=1
 view-collapse: leaves=1 caret=9 c0=status c1=edit
+view-mc11: leaves=2 right-view=mc11 right-subj-differs=1 left-focus=1
+view-mc11-ro: focused-view=mc11 msg=Read-only view (^K A returns).
+view-open: ed-view=mc11
+view-open-src: ed-view-null=1
 swap-modal: profile=neovim mode=normal
 swap: profile=pico tree=identical
 motion: caret=42
