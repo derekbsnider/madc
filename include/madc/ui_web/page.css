@@ -153,6 +153,19 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .slot.stacked > .status.active { background: var(--sb-active, #2f3a55);
                                  box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
 .slot.stacked > .edit.focus { box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
+/* A split group (client-server arc V2): the editor region as a flex tree —
+   a vertical split rows its panes side by side, a horizontal one columns
+   them. A pane divides by its `size` percent (page.js sets the child flex);
+   each leaf is itself a column (its status heads its edit) filling its share.
+   A divider line sits between adjacent panes (the TUI's blank column). V2b
+   emits the split; this renders it. */
+.node[data-split] { display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.node[data-split="vertical"] { flex-direction: row; }
+.node[data-split="horizontal"] { flex-direction: column; }
+.node[data-split] > .node { display: flex; flex-direction: column;
+                            min-height: 0; min-width: 0; overflow: hidden; }
+.node[data-split="vertical"] > .node + .node { border-left: 1px solid var(--sb-line, #343b52); }
+.node[data-split="horizontal"] > .node + .node { border-top: 1px solid var(--sb-line, #343b52); }
 /* The message line (the foot): a message bar in the chrome font. */
 .workbench > .slot[data-slot="foot"] > .content:not(.popup) {
   font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);

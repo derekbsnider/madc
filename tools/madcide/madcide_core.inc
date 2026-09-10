@@ -5943,7 +5943,12 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
     }
     var g = { "role": "group" };
     long slot = c["slot"].as_integer();
-    var gh = { "region": slot_name(slot), "side": c["side"], "size": c["size"] };
+    // The wire carries the WORDS for the layout discriminators (the `region`
+    // precedent): slot -> region, the side enum -> its name; the renderers
+    // convert once back to the enum. `size` is the percent int.
+    var gh = { "region": slot_name(slot),
+	       "side": ui::side_name(c["side"].as_integer()),
+	       "size": c["size"] };
     if ( ntabs > 1 )
 	gh["tabs"] = strip;
     g["hints"] = gh;

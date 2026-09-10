@@ -571,6 +571,20 @@ class web_model
 	    std::string region = hint_str(n.hints, "region");
 	    if ( !region.empty() )
 		op["region"] = region;
+	    // The layout DISCRIMINATORS (client-server arc V2): a `split`
+	    // group's direction, a chrome pane's `side` and a `size` percent
+	    // -- the words the composer put on the wire (ui_split_name /
+	    // ui_side_name) and the page divides by. Additive: no hint, no
+	    // field (the test_web_model negative control).
+	    std::string split = hint_str(n.hints, "split");
+	    if ( !split.empty() )
+		op["split"] = split;
+	    std::string side = hint_str(n.hints, "side");
+	    if ( !side.empty() )
+		op["side"] = side;
+	    long lsize = hint_of(n.hints, "size", 0);
+	    if ( lsize > 0 )
+		op["size"] = lsize;
 	    if ( hint_of(n.hints, "popup", 0) )
 		op["popup"] = true;
 	    // `dismiss` (S6): the action a press OUTSIDE a popup fires —

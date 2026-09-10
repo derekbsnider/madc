@@ -198,6 +198,12 @@
     // region'd children re-add it). data-region on the node itself names
     // where it asked to go.
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // A SPLIT group (client-server arc V2): a flex container dividing its
+    // rect — a vertical split rows its panes side by side, a horizontal one
+    // columns them; the direction is the wire WORD (ui_split_name). Its
+    // direct children flex by their `size` percent (applied at placement
+    // below). Additive: no split hint, no flex box (the negative control).
+    if (op.split) el.dataset.split = op.split; else delete el.dataset.split;
     // A popup's dismissal (S6): the action a press OUTSIDE it fires — on any
     // popup node (a prompt row, a list dialog), not only a content row.
     if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
@@ -220,6 +226,11 @@
       makeWorkbench(container);
       container = slotOf(container, op.region || 'foot');
     }
+    // A split's direct child flexes along the split's axis: a `size` percent
+    // is a fixed basis, an unsized child grows to share the rest (V2b emits
+    // the split; the leaf's own status+edit column is the CSS below).
+    if (container !== root && container.dataset && container.dataset.split)
+      el.style.flex = op.size ? ('0 0 ' + op.size + '%') : '1 1 0';
     var slot = placed.get(container) || 0;
     if (container.children[slot] !== el)
       container.insertBefore(el, container.children[slot] || null);

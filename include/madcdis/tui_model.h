@@ -586,9 +586,146 @@ private:
 		      rows(0) {}
     };
 
-    void walk(const roles &r, const uinode &n, size_t cols,
-	      std::vector<line_out> &lines, std::vector<edit_slot> &edits)
+    // ---------------------------------------------------------- the layout tree
+    // Rectangular compose (client-server arc V2): the root's children split
+    // into CHROME (a node hinted region:sidebar|panel, carved as a band by its
+    // side/size) and the centre FLOW (everything else, tree order -- JOE's
+    // shape). A group hinted `split` inside the flow divides its rect; a leaf
+    // pane's `tabs` render as its header line. No chrome shown and no split =
+    // the linear stream, BYTE-IDENTICAL (the negative control). Collection
+    // walks the tree ONCE in tree order (the focusable slot identity) wrapping
+    // content to each region's final WIDTH; painting decides the rows.
+    struct flow_item
     {
+	enum class kind : unsigned char { line, edit, sub } k;
+	size_t idx;
+    };
+    // A collected renderable region: a LEAF (a vertical flow of lines and edit
+    // windows, optionally headed by a tab strip) or a SPLIT (children divided
+    // along one axis). `c0`/`width` are the column geometry decided at
+    // collection; the rows are the paint half's.
+    struct region
+    {
+	bool is_split;
+	ui_split dir;
+	long size;
+	size_t c0, width;
+	std::vector<std::string> header;
+	size_t header_active;
+	std::vector<flow_item> order;
+	std::vector<line_out> lines;
+	std::vector<edit_slot> edits;
+	std::vector<region> subs;
+	std::vector<region> kids;
+	region() : is_split(false), dir(ui_split::none), size(0),
+	    c0(0), width(0), header_active(0) {}
+    };
+    static void emit_line(region &f, const line_out &l)
+    {
+	flow_item it;
+	it.k = flow_item::kind::line;
+	it.idx = f.lines.size();
+	f.lines.push_back(l);
+	f.order.push_back(it);
+    }
+    // Divide `total` cells among `sizes` (percent; 0 shares the remainder
+    // evenly), `gap` blank cells between adjacent children -- the ONE
+    // proportional divider both axes use (vertical columns at collection,
+    // horizontal rows at paint). Each child gets at least 1 cell when the total
+    // allows; sizes that overflow scale down proportionally.
+    static std::vector<size_t> divide_extents(size_t total,
+	const std::vector<long> &sizes, size_t gap)
+    {
+	size_t n = sizes.size();
+	std::vector<size_t> ext(n, 0);
+	if ( n == 0 )
+	    return ext;
+	size_t gaps = gap * (n - 1);
+	size_t usable = total > gaps ? total - gaps : 0;
+	size_t sized_total = 0, sized_n = 0;
+	for ( size_t i = 0; i < n; ++i )
+	    if ( sizes[i] > 0 )
+	    {
+		size_t e = usable * (size_t)sizes[i] / 100;
+		if ( e < 1 )
+		    e = 1;
+		ext[i] = e;
+		sized_total += e;
+		++sized_n;
+	    }
+	if ( sized_total > usable && sized_total > 0 )
+	{
+	    for ( size_t i = 0; i < n; ++i )
+		if ( sizes[i] > 0 )
+		{
+		    ext[i] = ext[i] * usable / sized_total;
+		    if ( ext[i] < 1 )
+			ext[i] = 1;
+		}
+	    sized_total = 0;
+	    for ( size_t i = 0; i < n; ++i )
+		if ( sizes[i] > 0 )
+		    sized_total += ext[i];
+	}
+	size_t rest = usable > sized_total ? usable - sized_total : 0;
+	size_t unsized_n = n - sized_n;
+	if ( unsized_n )
+	{
+	    size_t each = rest / unsized_n, extra = rest % unsized_n;
+	    for ( size_t i = 0; i < n; ++i )
+		if ( sizes[i] == 0 )
+		{
+		    ext[i] = each + (extra ? 1 : 0);
+		    if ( extra )
+			--extra;
+		    if ( ext[i] < 1 )
+			ext[i] = 1;
+		}
+	}
+	else if ( rest )
+	    ext[n - 1] += rest;
+	return ext;
+    }
+    // A node's tab strip (its `tabs` hint, an ARRAY of {title, active?}) as the
+    // header line a leaf pane heads its content with; empty when the node
+    // carries none (or the integer-marker form).
+    static void read_header(const uinode &n, std::vector<std::string> &header,
+	size_t &active)
+    {
+	active = 0;
+	if ( !n.hints.is_object() )
+	    return;
+	const std::map<std::string, madc::value> &o = n.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator it = o.find("tabs");
+	if ( it == o.end() || !it->second.is_array() )
+	    return;
+	const std::vector<madc::value> &rows = it->second.as_array();
+	for ( size_t i = 0; i < rows.size(); ++i )
+	{
+	    if ( !rows[i].is_object() )
+		continue;
+	    std::string title = hint_str(rows[i], "title");
+	    if ( title.empty() )
+		continue;
+	    if ( hint_of(rows[i], "active", 0) != 0 )
+		active = header.size();
+	    header.push_back(title);
+	}
+    }
+    void collect_flow(const roles &r, const uinode &n, region &fl)
+    {
+	size_t cols = fl.width;
+	ui_split sdir;
+	if ( n.role == r.group
+	  && ui_split_from_name(hint_str(n.hints, "split"), sdir) )
+	{
+	    flow_item si;
+	    si.k = flow_item::kind::sub;
+	    si.idx = fl.subs.size();
+	    fl.subs.push_back(collect_region(r, n, fl.c0, fl.width));
+	    fl.order.push_back(si);
+	    return;
+	}
 	if ( n.role == r.heading )
 	{
 	    // Full-width reverse bar: label left, content right.
@@ -600,14 +737,14 @@ private:
 				      ' ') + right;
 	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
-	    lines.push_back(l);
+	    emit_line(fl, l);
 	}
 	else if ( n.role == r.status )
 	{
 	    line_out l(" " + node_text(n));
 	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
-	    lines.push_back(l);
+	    emit_line(fl, l);
 	}
 	else if ( n.role == r.content )
 	{
@@ -619,7 +756,7 @@ private:
 		for ( size_t i = 0; i <= wrapped.size(); ++i )
 		    if ( i == wrapped.size() || wrapped[i] == '\n' )
 		    {
-			lines.push_back(line_out(wrapped.substr(start,
+			emit_line(fl, line_out(wrapped.substr(start,
 								i - start)));
 			start = i + 1;
 		    }
@@ -627,15 +764,15 @@ private:
 	}
 	else if ( n.role == r.item )
 	{
-	    lines.push_back(line_out("  " + node_text(n)));
+	    emit_line(fl, line_out("  " + node_text(n)));
 	}
 	else if ( n.role == r.action )
 	{
-	    lines.push_back(line_out("[" + prose::text_of(n.label) + "]"));
+	    emit_line(fl, line_out("[" + prose::text_of(n.label) + "]"));
 	}
 	else if ( n.role == r.separator )
 	{
-	    lines.push_back(line_out(std::string()));
+	    emit_line(fl, line_out(std::string()));
 	}
 	else if ( n.role == r.choice )
 	{
@@ -666,7 +803,7 @@ private:
 	    if ( hint_of(n.hints, "list", 0) )
 	    {
 		if ( !n.label.is_null() )
-		    lines.push_back(line_out(prose::text_of(n.label)));
+		    emit_line(fl, line_out(prose::text_of(n.label)));
 		for ( size_t i = 0; i < n.children.size(); ++i )
 		{
 		    line_out l;
@@ -679,7 +816,7 @@ private:
 			s.attr = ui_style::reverse();
 			l.spans.push_back(s);
 		    }
-		    lines.push_back(l);
+		    emit_line(fl, l);
 		}
 		return;	// options consumed — no generic child recursion
 	    }
@@ -701,13 +838,12 @@ private:
 		if ( i + 1 < n.children.size() )
 		    l.text += " ";
 	    }
-	    lines.push_back(l);
+	    emit_line(fl, l);
 	    return;	// options consumed — no generic child recursion
 	}
 	else if ( n.role == r.edit )
 	{
 	    edit_slot e;
-	    e.line_index = lines.size();
 	    e.slot = _focus_st.count();
 	    e.text = prose::text_of(n.content);
 	    e.caret = hint_of(n.hints, "caret", 0);
@@ -749,27 +885,98 @@ private:
 			e.spans.push_back(ds);
 		    }
 	    }
-	    edits.push_back(e);
+	    flow_item ei;
+	    ei.k = flow_item::kind::edit;
+	    ei.idx = fl.edits.size();
+	    fl.edits.push_back(e);
+	    fl.order.push_back(ei);
 	    focusable f;
 	    f.k = focusable::kind::edit;
 	    _focus_st.add(f);
 	}
 	else if ( n.role == r.list && !n.label.is_null() )
 	{
-	    lines.push_back(line_out(prose::text_of(n.label) + ":"));
+	    emit_line(fl, line_out(prose::text_of(n.label) + ":"));
 	}
 	// group / list / unknown: structure only — children carry it.
 
 	for ( size_t i = 0; i < n.children.size(); ++i )
-	    walk(r, n.children[i], cols, lines, edits);
+	    collect_flow(r, n.children[i], fl);
+    }
+    // Collect a LEAF pane -- its header (its tabs strip) then its children as a
+    // flow -- at the given column geometry.
+    region collect_leaf(const roles &r, const uinode &n, size_t c0, size_t width)
+    {
+	region f;
+	f.c0 = c0;
+	f.width = width;
+	f.size = hint_of(n.hints, "size", 0);
+	read_header(n, f.header, f.header_active);
+	for ( size_t i = 0; i < n.children.size(); ++i )
+	    collect_flow(r, n.children[i], f);
+	return f;
+    }
+    // Collect a region: a `split` group (vertical shares the WIDTH here, one
+    // blank column between; horizontal shares the rows at paint) or a leaf.
+    region collect_region(const roles &r, const uinode &n, size_t c0, size_t width)
+    {
+	ui_split dir;
+	if ( n.role == r.group
+	    && ui_split_from_name(hint_str(n.hints, "split"), dir) )
+	{
+	    region g;
+	    g.is_split = true;
+	    g.dir = dir;
+	    g.c0 = c0;
+	    g.width = width;
+	    g.size = hint_of(n.hints, "size", 0);
+	    if ( dir == ui_split::vertical )
+	    {
+		std::vector<long> sizes;
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		    sizes.push_back(hint_of(n.children[i].hints, "size", 0));
+		std::vector<size_t> ext = divide_extents(width, sizes, 1);
+		size_t c = c0;
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		{
+		    g.kids.push_back(collect_region(r, n.children[i], c, ext[i]));
+		    c += ext[i] + 1;
+		}
+	    }
+	    else
+		for ( size_t i = 0; i < n.children.size(); ++i )
+		    g.kids.push_back(collect_region(r, n.children[i], c0, width));
+	    return g;
+	}
+	return collect_leaf(r, n, c0, width);
     }
 
-    void paint_line(size_t row, const line_out &l)
+    void paint_line(size_t row, size_t col0, const line_out &l)
     {
-	_grid.put(row, 0, l.text);
+	_grid.put(row, col0, l.text);
 	for ( size_t i = 0; i < l.spans.size(); ++i )
-	    _grid.fill_attr(row, l.spans[i].col, l.spans[i].len,
-			    l.spans[i].attr);
+	    _grid.fill_attr(row, col0 + l.spans[i].col, l.spans[i].len,
+		l.spans[i].attr);
+    }
+    // A leaf pane's header line: the tab titles, the active one reverse.
+    void paint_header(size_t row, size_t col0,
+	const std::vector<std::string> &titles, size_t active)
+    {
+	line_out l;
+	for ( size_t i = 0; i < titles.size(); ++i )
+	{
+	    std::string seg = " " + titles[i] + " ";
+	    if ( i == active )
+	    {
+		span s;
+		s.col = l.text.size();
+		s.len = seg.size();
+		s.attr = ui_style::reverse();
+		l.spans.push_back(s);
+	    }
+	    l.text += seg;
+	}
+	paint_line(row, col0, l);
     }
 
     // THE byte->display-column expansion for one document line (tabs move
@@ -809,10 +1016,9 @@ private:
     // with the line [begin..end] shown at `row`, converted to display
     // columns through the line's expansion map, honoring the horizontal
     // shift and the column clip.
-    void fill_range_overlap(size_t row, size_t begin, size_t end,
-			    const std::vector<size_t> &dcol,
-			    size_t shift, size_t cols,
-			    long s0, long e0, ui_style attr)
+    void fill_range_overlap(size_t row, size_t col0, size_t begin, size_t end,
+	const std::vector<size_t> &dcol, size_t shift, size_t width,
+	long s0, long e0, ui_style attr)
     {
 	if ( s0 < 0 || e0 <= s0 )
 	    return;
@@ -822,19 +1028,19 @@ private:
 	    return;
 	size_t ds = dcol[s - begin];
 	size_t dt = dcol[t - begin];
-	if ( ds < dt && ds < shift + cols && dt > shift )
+	if ( ds < dt && ds < shift + width && dt > shift )
 	{
 	    size_t c0 = ds < shift ? 0 : ds - shift;
 	    size_t c1 = dt - shift;
-	    _grid.fill_attr(row, c0, c1 - c0, attr);
+	    _grid.fill_attr(row, col0 + c0, c1 - c0, attr);
 	}
     }
 
     // Emit one edit region: a window of the document, scrolled to keep
     // the caret visible, selection byte-range highlighted, the grid
     // cursor on the caret when this edit holds focus.
-    void paint_edit(const edit_slot &e, size_t top_row, size_t height,
-		    size_t cols)
+    void paint_edit(const edit_slot &e, size_t top_row, size_t col0,
+		    size_t height, size_t width)
     {
 	// Line starts (byte offsets); the end sentinel makes every offset
 	// belong to exactly one line, the caret-at-EOF position included.
@@ -869,7 +1075,7 @@ private:
 	if ( top >= starts.size() )
 	    top = starts.size() ? starts.size() - 1 : 0;
 	size_t &shift = _hshift[e.slot];
-	shift = caret_col < cols ? 0 : caret_col - cols + 1;
+	shift = caret_col < width ? 0 : caret_col - width + 1;
 
 	for ( size_t k = 0; k < height; ++k )
 	{
@@ -883,22 +1089,124 @@ private:
 	    std::string disp = expand_line(e.text.substr(begin, end - begin),
 					   dcol, (size_t)e.tabw);
 	    if ( shift < disp.size() )
-		_grid.put(top_row + k, 0, disp.substr(shift, cols));
+		_grid.put(top_row + k, col0, disp.substr(shift, width));
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )
-		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
+		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.spans[si].start, e.spans[si].end,
 				   e.spans[si].attr);
 	    if ( e.sel_start >= 0 && e.sel_end > e.sel_start )
-		fill_range_overlap(top_row + k, begin, end, dcol, shift, cols,
+		fill_range_overlap(top_row + k, col0, begin, end, dcol, shift, width,
 				   e.sel_start, e.sel_end,
 				   ui_style::reverse());
 	    if ( li == caret_line && e.slot == _focus_st.focus() )
 	    {
 		_grid.cursor_row = top_row + k;
-		_grid.cursor_col = caret_col - shift;
+		_grid.cursor_col = col0 + caret_col - shift;
 		_grid.cursor_visible = true;
+	    }
+	}
+    }
+    // Paint a collected region into the row range [r0, r0+h) (columns fixed at
+    // collection).
+    void paint_region(const region &g, size_t r0, size_t h)
+    {
+	if ( g.is_split )
+	    paint_split(g, r0, h);
+	else
+	    paint_flow(g, r0, h);
+    }
+    void paint_split(const region &g, size_t r0, size_t h)
+    {
+	if ( g.dir == ui_split::horizontal )
+	{
+	    std::vector<long> sizes;
+	    for ( size_t i = 0; i < g.kids.size(); ++i )
+		sizes.push_back(g.kids[i].size);
+	    std::vector<size_t> ext = divide_extents(h, sizes, 0);
+	    size_t row = r0;
+	    for ( size_t i = 0; i < g.kids.size(); ++i )
+	    {
+		paint_region(g.kids[i], row, ext[i]);
+		row += ext[i];
+	    }
+	}
+	else
+	    for ( size_t i = 0; i < g.kids.size(); ++i )
+		paint_region(g.kids[i], r0, h);
+    }
+    // A leaf flow: its header (if any), then lines/edits/subs packed top to
+    // bottom -- a rows:N edit is fixed; among the unhinted, the FIRST (an edit
+    // or a nested split) is flexible, the rest one row (byte-identical when
+    // nothing is hinted).
+    void paint_flow(const region &f, size_t r0, size_t h)
+    {
+	if ( !f.header.empty() && h > 0 )
+	{
+	    paint_header(r0, f.c0, f.header, f.header_active);
+	    ++r0;
+	    --h;
+	}
+	size_t fixed = f.lines.size();
+	size_t hinted_sum = 0, unhinted = 0;
+	for ( size_t i = 0; i < f.edits.size(); ++i )
+	{
+	    if ( f.edits[i].rows > 0 )
+		hinted_sum += (size_t)f.edits[i].rows;
+	    else
+		++unhinted;
+	}
+	unhinted += f.subs.size();
+	size_t flexible = 0;
+	if ( unhinted )
+	{
+	    size_t others = unhinted - 1;
+	    size_t taken = fixed + hinted_sum + others;
+	    flexible = h > taken ? h - taken : 1;
+	}
+	size_t row = r0;
+	bool flex_spent = false;
+	for ( size_t oi = 0; oi < f.order.size() && row < r0 + h; ++oi )
+	{
+	    const flow_item &it = f.order[oi];
+	    if ( it.k == flow_item::kind::line )
+	    {
+		paint_line(row, f.c0, f.lines[it.idx]);
+		++row;
+	    }
+	    else if ( it.k == flow_item::kind::edit )
+	    {
+		const edit_slot &e = f.edits[it.idx];
+		size_t he;
+		if ( e.rows > 0 )
+		    he = (size_t)e.rows;
+		else if ( !flex_spent )
+		{
+		    he = flexible;
+		    flex_spent = true;
+		}
+		else
+		    he = 1;
+		if ( he > r0 + h - row )
+		    he = r0 + h - row;
+		paint_edit(e, row, f.c0, he, f.width);
+		row += he;
+	    }
+	    else
+	    {
+		size_t hs;
+		if ( !flex_spent )
+		{
+		    hs = flexible;
+		    flex_spent = true;
+		}
+		else
+		    hs = 1;
+		if ( hs > r0 + h - row )
+		    hs = r0 + h - row;
+		paint_region(f.subs[it.idx], row, hs);
+		row += hs;
 	    }
 	}
     }
@@ -913,69 +1221,111 @@ public:
     size_t focus_slot() const { return _focus_st.focus(); }
     size_t selection_of(size_t slot) const { return _focus_st.selection_of(slot); }
 
-    // Compose the tree onto a rows×cols grid. Edit heights are DATA
-    // (IDE-9e): a node hinted rows:N is FIXED at N; among the unhinted,
-    // the FIRST is the flexible region (it absorbs the rows fixed content
-    // and hinted edits leave free) and the rest get one row each — the
-    // prompt shape, byte-identical when nothing is hinted. The tree
-    // arrives already access-filtered — composition makes no gate
-    // decision.
+    // Compose the tree onto a rows x cols grid. The root's children partition
+    // into chrome bands (region:sidebar|panel) and the centre flow; a chrome
+    // sidebar carves columns (full height), a panel carves rows from the
+    // centre; a `split` in the flow and a leaf's tab strip render through the
+    // region tree. Edit heights stay DATA (IDE-9e). Byte-identical to the
+    // linear stream with no chrome shown and no split (the negative control).
     const tui_grid &compose(const roles &r, const uinode &tree,
-			    size_t rows, size_t cols)
+	size_t rows, size_t cols)
     {
 	_grid.resize(rows, cols);
 	_focus_st.begin_compose();
-	std::vector<line_out> lines;
-	std::vector<edit_slot> edits;
-	walk(r, tree, cols, lines, edits);
-	_focus_st.end_compose();
-
-	size_t fixed = lines.size();
-	size_t hinted_sum = 0, unhinted = 0;
-	for ( size_t i = 0; i < edits.size(); ++i )
+	// Column geometry: sidebars carve columns from the full width; the
+	// centre keeps the rest; panels span the centre columns.
+	size_t centre_c0 = 0, centre_w = cols;
+	std::map<size_t, size_t> band_c0, band_w;
+	for ( size_t i = 0; i < tree.children.size(); ++i )
 	{
-	    if ( edits[i].rows > 0 )
-		hinted_sum += (size_t)edits[i].rows;
-	    else
-		++unhinted;
-	}
-	size_t flexible = 0;
-	if ( unhinted )
-	{
-	    size_t others = unhinted - 1;	// one row each
-	    size_t taken = fixed + hinted_sum + others;
-	    flexible = rows > taken ? rows - taken : 1;
-	}
-	size_t row = 0, li = 0, ei = 0;
-	bool flex_spent = false;
-	while ( row < rows && (li < lines.size() || ei < edits.size()) )
-	{
-	    if ( ei < edits.size() && edits[ei].line_index == li )
+	    const uinode &c = tree.children[i];
+	    if ( hint_str(c.hints, "region") != "sidebar" )
+		continue;
+	    ui_side side = ui_side::left;
+	    ui_side_from_name(hint_str(c.hints, "side"), side);
+	    long sz = hint_of(c.hints, "size", 20);
+	    size_t sw = (size_t)((long)cols * sz / 100);
+	    if ( sw < 12 )
+		sw = 12;
+	    if ( centre_w < 2 || sw > centre_w - 1 )
+		sw = centre_w > 1 ? centre_w - 1 : 1;
+	    size_t bc0;
+	    if ( side == ui_side::right )
 	    {
-		size_t h;
-		if ( edits[ei].rows > 0 )
-		    h = (size_t)edits[ei].rows;
-		else if ( !flex_spent )
+		bc0 = centre_c0 + centre_w - sw;
+		centre_w -= sw;
+	    }
+	    else
+	    {
+		bc0 = centre_c0;
+		centre_c0 += sw;
+		centre_w -= sw;
+	    }
+	    band_c0[i] = bc0;
+	    band_w[i] = sw;
+	}
+	// Collect in tree order (the focusable slots): the centre flow and each
+	// chrome band's content.
+	struct band { ui_side side; long size; size_t c0, w; region content; };
+	std::vector<band> bands;
+	region centre;
+	centre.c0 = centre_c0;
+	centre.width = centre_w;
+	for ( size_t i = 0; i < tree.children.size(); ++i )
+	{
+	    const uinode &c = tree.children[i];
+	    std::string reg = hint_str(c.hints, "region");
+	    if ( reg == "sidebar" || reg == "panel" )
+	    {
+		band b;
+		ui_side side = ui_side::none;
+		ui_side_from_name(hint_str(c.hints, "side"), side);
+		b.side = side;
+		b.size = hint_of(c.hints, "size", reg == "sidebar" ? 20 : 25);
+		if ( reg == "sidebar" )
 		{
-		    h = flexible;
-		    flex_spent = true;
+		    b.c0 = band_c0[i];
+		    b.w = band_w[i];
 		}
 		else
-		    h = 1;
-		if ( h > rows - row )
-		    h = rows - row;
-		paint_edit(edits[ei], row, h, cols);
-		row += h;
-		++ei;
-		continue;
+		{
+		    b.c0 = centre_c0;
+		    b.w = centre_w;
+		}
+		b.content = collect_leaf(r, c, b.c0, b.w);
+		bands.push_back(b);
 	    }
-	    if ( li < lines.size() )
-	    {
-		paint_line(row, lines[li]);
-		++row;
-		++li;
-	    }
+	    else
+		collect_flow(r, c, centre);
 	}
+	_focus_st.end_compose();
+	// Row geometry: panels carve rows from the centre; sidebars are full
+	// height. Paint the panels, the sidebars, then the centre flow.
+	size_t centre_r0 = 0, centre_h = rows;
+	for ( size_t i = 0; i < bands.size(); ++i )
+	{
+	    if ( bands[i].side != ui_side::top && bands[i].side != ui_side::bottom )
+		continue;
+	    size_t ph = (size_t)((long)rows * bands[i].size / 100);
+	    if ( ph < 3 )
+		ph = 3;
+	    if ( centre_h < 2 || ph > centre_h - 1 )
+		ph = centre_h > 1 ? centre_h - 1 : 1;
+	    size_t pr0;
+	    if ( bands[i].side == ui_side::top )
+	    {
+		pr0 = centre_r0;
+		centre_r0 += ph;
+	    }
+	    else
+		pr0 = centre_r0 + centre_h - ph;
+	    centre_h -= ph;
+	    paint_region(bands[i].content, pr0, ph);
+	}
+	for ( size_t i = 0; i < bands.size(); ++i )
+	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
+		paint_region(bands[i].content, 0, rows);
+	paint_region(centre, centre_r0, centre_h);
 	return _grid;
     }
 

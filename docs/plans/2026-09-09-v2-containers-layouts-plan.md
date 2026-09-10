@@ -230,6 +230,29 @@ Order: V2a, V2b, V2c. Each sub-slice's commit carries the trailers (engine
 files change in V2a); pins are VERIFIED on the container before they are
 written (`tmp/logs/`); no battery until the V5 seam.
 
+### Progress
+
+- **V2a — DONE** (three commits on the arc branch): part 1 (`0dec6a0b`) the
+  `.layout` grammar + `parse_layout` / `load_layout` + `ui::split` / `ui::side`
+  enums and name owners; part 2 (`b0bdf2d6`) the tool Views from the layout's
+  chrome via `show_view`, the panel persists; part 3 (this commit) the grid
+  renderer learns rectangles (chrome bands, `split` recursion, pane headers),
+  the DOM's `split` / `side` / `size` op fields and the page's split flex, the
+  composer emits the `side` WORD on the wire. Notable: the madcide integration
+  tests render through the LINE linearizer (`ui::render_tree`), not the grid,
+  so the rectangular compose is exercised by `test_tui_model` alone and the
+  `testmadcide` pins did NOT move; the 17 GUI snapshots are unchanged (the page
+  does not consume `side` / `size` yet — that is V2c — and the composer emits no
+  `split` yet — that is V2b). Targeted gates green on the container
+  (`test_tui_model` 27, `test_web_model` 20, the five madcide tests, the gui
+  stage JIT/exe/obj); no battery (the V5 seam owns it).
+- **NEXT = V2b** — the editor region a real split tree: `pane_tabs` (ring ↔
+  tabs mode, windows ↔ stack mode), JOE's window verbs over the leaf,
+  `viewsplit right|bottom [repr]` / `viewfocus` / `viewtab` / `viewopen` /
+  `viewclose` as registry rows + dispatch + profile spellings, the composer
+  walks `layout["editor"]` emitting a `split` group, `es.fview` = the focused
+  leaf's active tab's View. THE side-by-side the owner asked about.
+
 ## 4. What does not change
 
 - The popups (help, options, build, modes, project) and their `@scope`

@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### madcide: containers and layouts — the workbench is client data (2026-09-09)
+
+- **The layout is data on the client** (client-server design §2.2, slice
+  V2a): a `.layout` profile — the profile-parser family beside the `.keys` /
+  `.menu` / `.theme` loaders — describes where Views live: one editor region
+  (a `pane editor` or a `split`) and fixed-slot chrome panes (`pane sidebar
+  left 20%`, `pane panel bottom 25%`). `parse_layout` / `load_layout` /
+  `default_layout_text()` with a baked default (`profiles/default.layout`);
+  every word converts once at load (`ui::split_code` / `ui::side_code`,
+  `slot_of` / `pmode_of` / `view_of`) and a misspelling refuses the file with
+  its line, the baked default taking over. `ui::split { none, vertical,
+  horizontal }` and `ui::side { none, left, right, top, bottom }` join
+  `bits/ui_enums` (one text for engine and dialect) with the name owners in
+  `madcdis/ui_events.h`; `ide_container` / `ide_pmode` / `slotEDITOR` are the
+  IDE-private vocabulary.
+- **The tool Views come FROM the layout's chrome panes.** One surface,
+  `show_view(kind)` (find the chrome pane hosting a View kind, unhide it,
+  activate its tab, focus it), replaces the `panel` / `paneltab` flags and
+  the diags / outline popup arms; the panel persists like an editor's Output
+  pane until hidden. `haspanel` stops gating the panel — every client's
+  layout has one.
+- **The grid renderer learns RECTANGLES** (`madcdis/tui_model.h`): compose is
+  no longer a linear stream. The root's children partition into chrome bands
+  (a `region:sidebar|panel` node carved by its `side` / `size` — a sidebar
+  takes columns full-height, a panel rows from the centre) and the centre
+  flow; a `split` group divides its rect (vertical shares the columns, one
+  blank divider between; horizontal the rows) recursively; a leaf pane's
+  `tabs` render as its header line. With no chrome shown and no split the grid
+  is BYTE-IDENTICAL to the old stream (the negative control). The DOM
+  (`madcdis/web_model.h` + `ui_web/page.{js,css}`) gains the additive op
+  fields `split` (the direction word), `side` and `size`; a `split` group is a
+  flex row/column whose children flex by their `size` percent.
+- Gates (targeted, per the arc's seam-battery law): `tests/testmadcide_layout`
+  (the shipped file parses to the pinned tree; the baked default parses equal;
+  refusals with their line); `test_tui_model` (side-by-side split, a stacked
+  split, a bottom band + strip, a left band, byte-identity with nothing
+  hinted); `test_web_model` (the op fields + the negative control);
+  `check-madcide-enums` rule 5 (no `"slot"/"side"/"mode"/"dir"` text on a
+  layout node); `testmadcide` / `testmadcide_cli` / `testidepanel` /
+  `testidehints` and the 17 GUI snapshots unchanged.
+
 ### madcide: the `ui::NONE` client — `madcide <file> -c "<command> [arg]"` (2026-09-09)
 
 - **One command, the projection, a verdict** (client-server design §2.3b,

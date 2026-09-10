@@ -721,6 +721,52 @@ TEST_CASE("compose — region / tabs / popup are additive op fields")
     CHECK((*pop).find("region") == (*pop).end());
 }
 
+TEST_CASE("compose — split / side / size are additive op fields (client-server arc V2)")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    // A vertical split group with one child carrying a size%.
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("vertical"));
+    split.hints = madc::value::make_object(sh);
+    uinode child(r.group);
+    std::map<std::string, madc::value> ch;
+    ch["size"] = madc::value((int64_t)40);
+    child.hints = madc::value::make_object(ch);
+    split.add(child);				// 0.0.0
+    root.add(split);				// 0.0
+    // A chrome pane docked bottom, with a side and a size.
+    uinode pane(r.group);
+    std::map<std::string, madc::value> ph;
+    ph["region"] = madc::value(std::string("panel"));
+    ph["side"] = madc::value(std::string("bottom"));
+    ph["size"] = madc::value((int64_t)25);
+    pane.hints = madc::value::make_object(ph);
+    root.add(pane);				// 0.1
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+
+    const nlohmann::json *sp = node_by_key(ops, "0.0");
+    REQUIRE(sp);
+    CHECK((*sp)["split"] == "vertical");
+    CHECK((*sp).find("side") == (*sp).end());		// a split has no side
+
+    const nlohmann::json *kid = node_by_key(ops, "0.0.0");
+    REQUIRE(kid);
+    CHECK((*kid)["size"] == 40);
+    CHECK((*kid).find("split") == (*kid).end());
+
+    const nlohmann::json *pn = node_by_key(ops, "0.1");
+    REQUIRE(pn);
+    CHECK((*pn)["region"] == "panel");
+    CHECK((*pn)["side"] == "bottom");
+    CHECK((*pn)["size"] == 25);
+}
+
 TEST_CASE("compose — a node without layout hints carries no region/popup/tabs (negative control)")
 {
     world w;
@@ -736,6 +782,9 @@ TEST_CASE("compose — a node without layout hints carries no region/popup/tabs 
 	CHECK(ops[i].find("region") == ops[i].end());
 	CHECK(ops[i].find("popup") == ops[i].end());
 	CHECK(ops[i].find("tabs") == ops[i].end());
+	CHECK(ops[i].find("split") == ops[i].end());
+	CHECK(ops[i].find("side") == ops[i].end());
+	CHECK(ops[i].find("size") == ops[i].end());
     }
 }
 
