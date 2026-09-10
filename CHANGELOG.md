@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### madcide: the anchor registry — one splice owner (V3a) (2026-09-10)
+
+- The client-server arc V3 begins (clients + windows + presence). V3a is the
+  foundation: the ONE text-mutation owner's span shifter becomes the **anchor
+  registry** — one primitive (`shift_offset`) reanchors every byte-anchored
+  thing on an edit in one pass (`shift_anchors`), so nothing set before a
+  keystroke goes stale.
+- The **selection markers** (mark / bend) now follow the text: they went stale
+  on every ordinary keystroke before (only `block_copy` shifted them, via a
+  hand-rolled copy of the splice — removed; the registry owns it). The live
+  focused caret stays each edit's own result. Presence carets (V3c) register
+  in the same one pass.
+- Gate `check-one-anchor-owner.sh`: one splice primitive, one pass, no
+  hand-rolled marker shift outside the owner.
+
 ### madcide: the ex / edlin line mode — the `ui::LINE` client (V2.5) (2026-09-10)
 
 - The client-server arc V2.5: `madcide <file> --line` drives the same

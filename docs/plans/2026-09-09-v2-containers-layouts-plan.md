@@ -317,9 +317,17 @@ written (`tmp/logs/`); no battery until the V5 seam.
   a byte-identical direct-`line_input` twin) green jit/exe/obj. Follow-up:
   the colon line reaching the full registry by name (a colon-interpreter
   enhancement, both faces).
-- **NEXT = V3** (clients + windows: viewwindow, `ui::event_any`, presence,
-  the anchor registry). Then V4 (event log), V5 (correlation / `viewsync`) →
-  the V1–V5 SEAM (the ONE battery, lane records, develop merge).
+- **V3 UNDERWAY** (clients + windows; sub-sliced like V2). **V3a the anchor
+  registry LANDED 2026-09-10** (1f0168e5, arc branch, targeted gates): the ONE
+  text-mutation owner's span shifter generalized to `shift_offset` (the one
+  splice primitive) + `shift_anchors` (one pass); mark/bend now follow the
+  text (block_copy's duplicate shifter removed); gate
+  `check-one-anchor-owner.sh`. NEXT = **V3b** (client records + `ui::event_any`
+  + `viewwindow` — a second window on the session; gate
+  `tests/gui/madcide_window2`), then **V3c** (presence carets + `@presence`
+  colours, drawn through the V3a registry). Then V4 (event log), V5
+  (correlation / `viewsync`) → the V1–V5 SEAM (the ONE battery, lane records,
+  develop merge).
 
 ## 4. What does not change
 
