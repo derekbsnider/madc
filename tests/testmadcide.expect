@@ -95,6 +95,11 @@ win-carets: w2=3 w1=9
 win-clamp: snapshot-ok=1 live-ok=1
 win-grow: neighbor-rows=10
 win-only: wins=0 kids=3 caret-kept=1
+view-sole: leaves=1 c0=status c1=edit
+view-split: leaves=2 role=group split=vertical kids=2 left-role=status/edit left-focus=1 left-tag=0 right-tag=1 right-caret=3
+view-close-primary: leaves=2
+view-focus: caret=3 left-snap-caret=9 right-focus=1
+view-collapse: leaves=1 caret=9 c0=status c1=edit
 swap-modal: profile=neovim mode=normal
 swap: profile=pico tree=identical
 motion: caret=42

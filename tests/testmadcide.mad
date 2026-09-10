@@ -78,6 +78,19 @@ void ev_action(var &e, const char *a, const char *seq)
     e = f;
 }
 
+// An action event carrying an ARGUMENT (the shape a menu row / colon word
+// posts: `viewsplit right`) — the dispatcher reads ev["arg"].
+void ev_action_arg(var &e, const char *a, const char *arg, const char *seq)
+{
+    var f;
+    f["event"] = "action";
+    f["event_code"] = ui::event_kind::action;
+    f["action"] = a;
+    f["arg"] = arg;
+    f["seq"] = seq;
+    e = f;
+}
+
 void ev_choose(var &e, long option, const char *a)
 {
     var f;
@@ -1081,6 +1094,71 @@ int main()
     println("win-only: wins={} kids={} caret-kept={}",
 	    window_count(w, es), php::count(tree["children"]),
 	    es_int(w, es, "caret", -1) == wsz ? 1 : 0);
+
+    // -- V2b: the editor region a REAL split tree (viewsplit/viewfocus/viewclose) --
+    // Back to a sole leaf (onlywin cleared the S5 stack): the editor emits
+    // flat — the JOE screen, byte-identical (status + edit, no split group).
+    var lo0;
+    layout_get(lo0, w, es);
+    S.compose_ide_tree(tree, doc);
+    println("view-sole: leaves={} c0={} c1={}",
+	    editor_leaf_count(lo0["editor"]),
+	    tree["children"][0]["role"], tree["children"][1]["role"]);
+    // viewsplit right: the focused leaf becomes a VERTICAL split of two
+    // leaves — a second window on the same subject, side by side. Focus
+    // stays on the left (primary) leaf; the right leaf is a snapshot at the
+    // split-time caret (3).
+    ui::set(w, es, "caret", 3);
+    ev_action_arg(e, "viewsplit", "right", ":viewsplit right");
+    S.apply_ide_event(doc, e);
+    var lo1;
+    layout_get(lo1, w, es);
+    S.compose_ide_tree(tree, doc);
+    var sg = tree["children"][0];
+    var lg0 = sg["children"][0];
+    var lg1 = sg["children"][1];
+    println("view-split: leaves={} role={} split={} kids={} left-role={}/{} left-focus={} left-tag={} right-tag={} right-caret={}",
+	    editor_leaf_count(lo1["editor"]), sg["role"], sg["hints"]["split"],
+	    php::count(sg["children"]),
+	    lg0["children"][0]["role"], lg0["children"][1]["role"],
+	    lg0["children"][1]["hints"]["focus"],
+	    lg0["children"][1]["hints"]["tag"],
+	    lg1["children"][1]["hints"]["tag"],
+	    lg1["children"][1]["hints"]["caret"]);
+    // viewclose while the PRIMARY leaf is focused: refused — it never
+    // closes (quit does). Still two leaves.
+    ev_action(e, "viewclose", ":viewclose");
+    S.apply_ide_event(doc, e);
+    var lo2;
+    layout_get(lo2, w, es);
+    println("view-close-primary: leaves={}", editor_leaf_count(lo2["editor"]));
+    // Move the LIVE caret (leaf 0) to 9, then viewfocus next: the live
+    // caret parks on leaf 0, the right leaf's parked caret (3) becomes
+    // live. Now the right leaf is focused; the left composes a snapshot at 9.
+    ui::set(w, es, "caret", 9);
+    ev_action_arg(e, "viewfocus", "next", ":viewfocus next");
+    S.apply_ide_event(doc, e);
+    var lo3;
+    layout_get(lo3, w, es);
+    S.compose_ide_tree(tree, doc);
+    var sg3 = tree["children"][0];
+    println("view-focus: caret={} left-snap-caret={} right-focus={}",
+	    es_int(w, es, "caret", -1),
+	    sg3["children"][0]["children"][1]["hints"]["caret"],
+	    sg3["children"][1]["children"][1]["hints"]["focus"]);
+    // viewclose the focused (right) leaf: the split collapses to the left
+    // leaf, which takes focus and its parked caret (9) goes live. Back to a
+    // sole leaf — flat compose.
+    ev_action(e, "viewclose", ":viewclose");
+    S.apply_ide_event(doc, e);
+    var lo4;
+    layout_get(lo4, w, es);
+    S.compose_ide_tree(tree, doc);
+    println("view-collapse: leaves={} caret={} c0={} c1={}",
+	    editor_leaf_count(lo4["editor"]), es_int(w, es, "caret", -1),
+	    tree["children"][0]["role"], tree["children"][1]["role"]);
+    ui::set(w, es, "msg", "");		// clear the viewclose message so the
+					// next gate's compose has no overlay
 
     // -- gate 3: a profile swap leaves the composed projection IDENTICAL --
     // The cycle is alphabetical: joe -> neovim -> pico. The neovim hop

@@ -2340,6 +2340,14 @@ void project_rows(long w, long es, long doc);
 // command, interpreted against the EXISTING vocabulary. False = quit.
 bool colon_command(long w, long es, long doc, long caret, var &in);
 
+// The view* verbs (V2b) — defined with the dispatcher, reached from the
+// colon line too (forward-declared for that earlier caller).
+void view_split(long w, long es, long doc, long dir);
+void view_focus(long w, long es, long doc, long dir);
+void view_close(long w, long es, long doc);
+long viewsplit_dir_of(var &arg);
+long viewfocus_dir_of(var &arg);
+
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
@@ -5150,6 +5158,23 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	insert_file(w, es, doc, caret, arg.c_str());
 	return true;
     }
+    // The view* verbs (V2b) reach the colon line too — `:viewsplit right`,
+    // `:viewfocus next`, `:viewclose`; the same owners the dispatcher calls.
+    if ( verb == "viewsplit" )
+    {
+	view_split(w, es, doc, viewsplit_dir_of(arg));
+	return true;
+    }
+    if ( verb == "viewfocus" )
+    {
+	view_focus(w, es, doc, viewfocus_dir_of(arg));
+	return true;
+    }
+    if ( verb == "viewclose" )
+    {
+	view_close(w, es, doc);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -5205,6 +5230,344 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
 	return;			// the header: the window, no position
     long target = nav_doc(w, es, ad);
     edit_pointer(w, es, target, ev, target == ad);
+}
+
+// ---- the view* verbs (V2b): the editor region a real split tree ---------
+// `viewsplit` turns the focused leaf into a `split` holding it and a NEW
+// leaf — a second window on the same subject (JOE's ^K O feel, side by
+// side); `viewfocus` moves the focus between the leaves; `viewclose` closes
+// the focused leaf (its parent split collapses to the sibling). The focused
+// leaf's active container IS the live es caret; an unfocused leaf parks its
+// caret on its node (`pcaret` / `pmark` / `pbend`), read by the composer's
+// snapshot. Every mutation rewrites the value-typed tree (one editor tree,
+// one owner: the bag's "layout").
+
+// The leaf count of an editor tree.
+long editor_leaf_count(var &node)
+{
+    if ( node["kind"] != ctSPLIT )
+	return 1;
+    long n = 0;
+    for ( var c : node["children"] )
+	n = n + editor_leaf_count(c);
+    return n;
+}
+
+// The tree-order index of the focused leaf (-1 = none), a running counter.
+long editor_focus_scan(var &node, long &seen)
+{
+    if ( node["kind"] != ctSPLIT )
+    {
+	long me = seen;
+	seen = seen + 1;
+	return node["focus"].as_integer() != 0 ? me : -1;
+    }
+    for ( var c : node["children"] )
+    {
+	long r = editor_focus_scan(c, seen);
+	if ( r >= 0 )
+	    return r;
+    }
+    return -1;
+}
+long editor_focused_index(var &node)
+{
+    long seen = 0;
+    return editor_focus_scan(node, seen);
+}
+
+// Rewrite: focus=1 on leaf `target` (tree order), 0 elsewhere.
+void editor_focus_set(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_focus_set(nc, c, target, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    leaf["focus"] = seen == target ? 1 : 0;
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_focus(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_focus_set(out, node, target, seen);
+}
+
+// Rewrite: park (caret, mark, bend) on leaf `target`.
+void editor_park_scan(var &out, var &node, long target, long ca, long ma,
+		      long be, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_park_scan(nc, c, target, ca, ma, be, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    if ( seen == target )
+    {
+	leaf["pcaret"] = ca;
+	leaf["pmark"] = ma;
+	leaf["pbend"] = be;
+    }
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_park(var &out, var &node, long target, long ca, long ma,
+		    long be)
+{
+    long seen = 0;
+    editor_park_scan(out, node, target, ca, ma, be, seen);
+}
+
+// Read leaf `target` (a copy); out stays null when not found.
+void editor_read_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	{
+	    editor_read_scan(out, c, target, seen);
+	    if ( !out.is_null() )
+		return;
+	}
+	return;
+    }
+    if ( seen == target )
+	out = node;
+    seen = seen + 1;
+}
+void editor_read_leaf(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_read_scan(out, node, target, seen);
+}
+
+// Rewrite: replace leaf `target` with `repl`.
+void editor_replace_scan(var &out, var &node, long target, var &repl,
+			 long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_replace_scan(nc, c, target, repl, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	out = repl;
+	return;
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_replace(var &out, var &node, long target, var &repl)
+{
+    long seen = 0;
+    editor_replace_scan(out, node, target, repl, seen);
+}
+
+// Rewrite: remove leaf `target`; a split that drops to one child collapses
+// to it. A removed node leaves `out` NULL (the reliable signal — a subscript
+// of a missing key is an empty container here, not null), which the parent
+// filters out.
+void editor_remove_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_remove_scan(nc, c, target, seen);
+	    if ( !nc.is_null() )
+		kids.push(nc);
+	}
+	if ( php::count(kids) == 1 )
+	{
+	    out = kids[0];
+	    return;
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	return;			// out stays null = removed
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_remove(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_remove_scan(out, node, target, seen);
+}
+
+// "right" | "bottom" (the viewsplit direction word) -> the split enum.
+// A missing word splits vertically (the owner's side-by-side default).
+long viewsplit_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return ui::split::vertical;
+    var a = format("{}", arg);
+    if ( a == "bottom" || a == "down" || a == "below" )
+	return ui::split::horizontal;
+    return ui::split::vertical;		// right = side by side (the default)
+}
+
+// "next" | "prev" (the viewfocus direction word) -> +1 / -1.
+long viewfocus_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return 1;
+    var a = format("{}", arg);
+    if ( a == "prev" || a == "up" || a == "left" || a == "back" )
+	return -1;
+    return 1;
+}
+
+// viewsplit: the focused leaf becomes a split of itself and a new leaf — a
+// second window on the current subject (the SAME View), starting at the
+// current caret. Focus stays on the original leaf. Refused while the S5
+// window stack is up (one axis at a time in V2b; the stack is JOE's).
+void view_split(long w, long es, long doc, long dir)
+{
+    if ( window_count(w, es) >= 2 )
+    {
+	ui::set(w, es, "msg",
+		"Close the extra windows (^K 1) before splitting the view.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long fi = editor_focused_index(etree);
+    if ( fi < 0 )
+	fi = 0;
+    long ca = es_int(w, es, "caret", 0);
+    long fv = focused_view(w, es);
+    var tab;
+    layout_tab(tab, viewSOURCE, fv);	// the same View — a second window
+    var tabs = {};
+    tabs.push(tab);
+    long snone = ui::side_code("");
+    long ksed = slotEDITOR;
+    long mtabs = lmTABS;
+    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
+		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
+		    "hidden": 0, "pcaret": ca, "pmark": -1, "pbend": -1 };
+    var focleaf;
+    editor_read_leaf(focleaf, etree, fi);
+    var kids = {};
+    kids.push(focleaf);
+    kids.push(newleaf);
+    var split = { "kind": ctSPLIT, "dir": dir, "size": 0, "children": kids };
+    var newtree;
+    editor_do_replace(newtree, etree, fi, split);
+    lo["editor"] = newtree;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "msg", format("{} views.", editor_leaf_count(newtree)));
+}
+
+// viewfocus: move the focus between leaves. The live caret parks on the
+// leaving leaf; the arriving leaf's parked caret becomes live. Same subject
+// (V2b part 1), so only the caret changes hands.
+void view_focus(long w, long es, long doc, long dir)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long cur = editor_focused_index(etree);
+    if ( cur < 0 )
+	cur = 0;
+    long nx = (cur + dir + n) % n;
+    var parked;
+    editor_do_park(parked, etree, cur, es_int(w, es, "caret", 0),
+		   es_int(w, es, "mark", -1), es_int(w, es, "bend", -1));
+    var focused;
+    editor_do_focus(focused, parked, nx);
+    var tleaf;
+    editor_read_leaf(tleaf, focused, nx);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
+    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
+    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    ui::set(w, es, "msg", format("View {} of {}.", nx + 1, n));
+}
+
+// viewclose: close the focused leaf; its parent split collapses to the
+// sibling and the focus moves to the previous leaf. The primary leaf (tree
+// order's first, the ring host) never closes — quit does that.
+void view_close(long w, long es, long doc)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long fi = editor_focused_index(etree);
+    if ( fi <= 0 )
+    {
+	ui::set(w, es, "msg", "The primary view stays open (^K Q quits).");
+	return;
+    }
+    var removed;
+    editor_do_remove(removed, etree, fi);
+    long nf = fi - 1;
+    var focused;
+    editor_do_focus(focused, removed, nf);
+    var tleaf;
+    editor_read_leaf(tleaf, focused, nf);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
+    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
+    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    ui::set(w, es, "msg", format("View closed — {} left.",
+				 editor_leaf_count(focused)));
 }
 
 // Apply ONE semantic event (the value shapes the engine's event query
@@ -5324,6 +5687,25 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdVIEW:
 	    {
 		cycle_view(w, es, doc);
+		return true;
+	    }
+	    // The view* verbs (V2b): the editor region a real split tree.
+	    // `viewsplit right|bottom`, `viewfocus next|prev`, `viewclose` —
+	    // the direction rides the event's `arg` (the colon line's word,
+	    // a menu row's argument), read once into the split / focus enum.
+	    case cmdVIEWSPLIT:
+	    {
+		view_split(w, es, doc, viewsplit_dir_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWFOCUS:
+	    {
+		view_focus(w, es, doc, viewfocus_dir_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWCLOSE:
+	    {
+		view_close(w, es, doc);
 		return true;
 	    }
 	    case cmdSAVE:
@@ -5956,105 +6338,18 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
     out = g;
 }
 
-void IdeSession::compose_ide_tree(var &root, long doc)
+// ---- the editor region (V2b, design §2.3): the client's editor slot is
+//      `layout["editor"]`, a tree of `split` nodes over editor-pane leaves.
+//      A SOLE leaf emits its status + edit FLAT into the slot — the JOE
+//      screen, byte-identical with the pre-split composition. A `viewsplit`
+//      turns the focused leaf into a split; the split composer (below) wraps
+//      each leaf in its own group. `compose_editor_flat` is the sole-leaf /
+//      primary-leaf emission: the buffer-ring strip (a window's fact) then
+//      the S5 window stack (two-plus windows) or the single status + edit.
+
+void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
+			 long wc)
 {
-    long caret = es_int(w, es, "caret", 0);
-    // The View seam at composition: the edit node presents the focused
-    // View's text (its render buffer while a lens is up) and, for a code
-    // View, carries the lens data — the render language and its
-    // coordinate map — as hints. The identity lens (a source View, or no
-    // View yet) takes neither branch: byte-identical.
-    long fv = focused_view(w, es);
-    var fvrow;
-    view_row(fvrow, w, es, fv);
-    long nav = view_text_entity(fvrow, doc);
-    bool viewing = nav != doc;
-
-    // The JOE screen model (IDE-9b): no heading banner — the path, the
-    // modified/read-only badges, and the view name all render in the
-    // status line's %n / %m / %R / %y seats.
-    var ed;
-    compose_view_node(ed, w, es, fv, doc, caret);
-    // ONE read-modify-write of the edit node's hints: every hint below
-    // lands on this local and it is written back ONCE, after the region
-    // block. A var assignment is a deep copy, and with the highlight
-    // spans aboard (4841 rows on madcide_core.inc) each of the former
-    // three RMW passes cost two ~3 ms copies per composed keystroke
-    // (measured 2026-09-07).
-    var eh = ed["hints"];
-    if ( viewing )
-	view_lens_hints(eh, w, es, fvrow);
-    else
-    {
-	// Highlight spans (AST-2): the bag's themed byte-range rows ride
-	// the hints — the document's stored-space rows, computed at
-	// (re)parse, just attached here (a code View's rows live on its
-	// render buffer — view_spans is the one reader).
-	var hs;
-	view_spans(hs, w, es, fvrow);
-	if ( !hs.is_null() && php::count(hs) > 0 )
-	    eh["spans"] = hs;
-    }
-
-    // The display tab width (IDE-9d ^T option) rides the edit node's
-    // hints like the caret — the model owns the expansion math.
-    long tabw = es_int(w, es, "tabwidth", 0);
-    if ( tabw > 0 )
-	eh["tabwidth"] = tabw;
-
-    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
-    // state read of the buffer's parse handle — stored-space only (a
-    // view's caret is display-space), and only once something opened the
-    // handle; composition never runs the compiler.
-    var fnctx = "";
-    var vw_st;
-    if ( !lens_name(vw_st, w, es) )
-    {
-	long ph = es_int(w, doc, "phandle", 0);
-	if ( ph != 0 )
-	{
-	    long cl = line_of(w, doc, caret);
-	    long cs = line_start_of(w, doc, cl);
-	    var encl;
-	    madc::parse_enclosing(encl, ph, cl, caret - cs);
-	    if ( !encl.is_null() )
-		fnctx = format("fn {}", encl["name"]);
-	}
-    }
-    var status;
-    compose_joe_statusline(status, w, es, nav, caret, fnctx);
-
-    // Layout regions (slice 3, madcide GUI): the edit node is the editor
-    // group (a tab strip when more than one buffer is open), the status
-    // line is the status bar. These are ADDITIVE hint keys the grid model
-    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
-    // so the terminal composition is byte-identical; web_model lays a
-    // region'd node into the workbench grid. The active window's ed and
-    // status are stamped here, before the multi-window branch's own
-    // read-modify-write of ed["hints"] preserves the region.
-    long wc = window_count(w, es);
-    {
-	eh["region"] = "editor";
-	// With two-plus windows the active window carries the focus hint
-	// (the multi-window branch below composes the others); it rides
-	// the same single write-back.
-	if ( wc >= 2 )
-	    eh["focus"] = 1;
-	ed["hints"] = eh;
-    }
-    {
-	// While split (S5), the active window's status line is its HEADER
-	// in the editor slot like every other window's — the JOE shape, one
-	// status line per window, stacked in tree order; the status BAR is
-	// the single window's presentation. The window (the page) stacks a
-	// slot's nodes in order, so no window's node is left unplaced.
-	var sh = status["hints"];
-	sh["region"] = wc >= 2 ? "editor" : "statusbar";
-	status["hints"] = sh;
-    }
-
-    var r = { "role": "group" };
-    var kids = {};
     // The editor TABS (polish P4): under a window's fact, the buffer ring
     // as a tab strip above the window stack — a content node docked FIRST
     // into the editor region whose `tabs` hint carries the strip as data:
@@ -6174,6 +6469,218 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(status);	// JOE: ONE status line at the TOP
 	kids.push(ed);
     }
+}
+
+// One editor leaf's contents: a status header then the edit node, docked in
+// the editor region. The FOCUSED leaf is the live one — the status + edit
+// composed by the caller from es state, focus-hinted, carrying its leaf tag
+// (the pointer arm maps a press back to it). An unfocused leaf is a SNAPSHOT:
+// the primary leaf (tree order's first, the ring host) snapshots the active
+// buffer row (its caret parked there when focus left it); a secondary leaf
+// snapshots its active tree container. No spans / selection on a snapshot
+// (the S5 inactive-window rule).
+void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
+			 bool focused, long myleaf, var &ed, var &status)
+{
+    if ( focused )
+    {
+	var st = status;
+	var sh = st["hints"];
+	sh["region"] = "editor";
+	st["hints"] = sh;
+	lk.push(st);
+	var e = ed;
+	var eh = e["hints"];
+	eh["region"] = "editor";
+	eh["focus"] = 1;
+	eh["tag"] = myleaf;
+	e["hints"] = eh;
+	lk.push(e);
+	return;
+    }
+    // An unfocused leaf snapshots its subject at its PARKED caret (the node's
+    // `pcaret`, set when focus left it or at the split). V2b part 1 splits are
+    // a second window on the SAME subject, so the subject is the composed
+    // document; part 2's code-View leaves read the container's own subject.
+    long sdoc = doc;
+    long sc = clamp_caret_to(w, sdoc, node["pcaret"].as_integer());
+    var wfn = "";
+    var wst;
+    compose_joe_statusline(wst, w, es, sdoc, sc, wfn);
+    var wsh = wst["hints"];
+    wsh["region"] = "editor";
+    wst["hints"] = wsh;
+    lk.push(wst);
+    var wed = { "role": "edit" };
+    var wt;
+    ui::text(wt, w, sdoc);
+    wed["content"] = wt;
+    wed["subject"] = sdoc;
+    var wh = { "caret": sc, "region": "editor", "tag": myleaf };
+    wed["hints"] = wh;
+    lk.push(wed);
+}
+
+// The editor tree as nodes: a split becomes a `split` GROUP (its direction
+// the wire word, the grid dividing its rect and the page a flex box) whose
+// children are the nodes' groups; a leaf becomes a group of [status, edit].
+// `leafno` numbers leaves in tree order — leaf 0 is the PRIMARY. Each node's
+// `size` (its share of the parent split) rides its group's hints.
+void compose_editor_node(var &out, long w, long es, long doc, var &node,
+			 var &ed, var &status, long &leafno)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var gkids = {};
+	for ( var c : node["children"] )
+	{
+	    var cg;
+	    compose_editor_node(cg, w, es, doc, c, ed, status, leafno);
+	    gkids.push(cg);
+	}
+	var g = { "role": "group", "children": gkids };
+	var gh = { "split": ui::split_name(node["dir"].as_integer()) };
+	long ssz = node["size"].as_integer();
+	if ( ssz > 0 )
+	    gh["size"] = ssz;
+	g["hints"] = gh;
+	out = g;
+	return;
+    }
+    long myleaf = leafno;
+    leafno = leafno + 1;
+    bool focused = node["focus"].as_integer() != 0;
+    var lk = {};
+    compose_editor_leaf(lk, w, es, doc, node, focused, myleaf, ed, status);
+    var g = { "role": "group", "children": lk };
+    long sz = node["size"].as_integer();
+    if ( sz > 0 )
+    {
+	var gh = { "size": sz };
+	g["hints"] = gh;
+    }
+    out = g;
+}
+
+// Compose a split editor tree into the editor slot: one `split` group.
+void compose_editor_split(var &kids, long w, long es, long doc, var &node,
+			  var &ed, var &status)
+{
+    long leafno = 0;
+    var g;
+    compose_editor_node(g, w, es, doc, node, ed, status, leafno);
+    kids.push(g);
+}
+
+void IdeSession::compose_ide_tree(var &root, long doc)
+{
+    long caret = es_int(w, es, "caret", 0);
+    // The View seam at composition: the edit node presents the focused
+    // View's text (its render buffer while a lens is up) and, for a code
+    // View, carries the lens data — the render language and its
+    // coordinate map — as hints. The identity lens (a source View, or no
+    // View yet) takes neither branch: byte-identical.
+    long fv = focused_view(w, es);
+    var fvrow;
+    view_row(fvrow, w, es, fv);
+    long nav = view_text_entity(fvrow, doc);
+    bool viewing = nav != doc;
+
+    // The JOE screen model (IDE-9b): no heading banner — the path, the
+    // modified/read-only badges, and the view name all render in the
+    // status line's %n / %m / %R / %y seats.
+    var ed;
+    compose_view_node(ed, w, es, fv, doc, caret);
+    // ONE read-modify-write of the edit node's hints: every hint below
+    // lands on this local and it is written back ONCE, after the region
+    // block. A var assignment is a deep copy, and with the highlight
+    // spans aboard (4841 rows on madcide_core.inc) each of the former
+    // three RMW passes cost two ~3 ms copies per composed keystroke
+    // (measured 2026-09-07).
+    var eh = ed["hints"];
+    if ( viewing )
+	view_lens_hints(eh, w, es, fvrow);
+    else
+    {
+	// Highlight spans (AST-2): the bag's themed byte-range rows ride
+	// the hints — the document's stored-space rows, computed at
+	// (re)parse, just attached here (a code View's rows live on its
+	// render buffer — view_spans is the one reader).
+	var hs;
+	view_spans(hs, w, es, fvrow);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    eh["spans"] = hs;
+    }
+
+    // The display tab width (IDE-9d ^T option) rides the edit node's
+    // hints like the caret — the model owns the expansion math.
+    long tabw = es_int(w, es, "tabwidth", 0);
+    if ( tabw > 0 )
+	eh["tabwidth"] = tabw;
+
+    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
+    // state read of the buffer's parse handle — stored-space only (a
+    // view's caret is display-space), and only once something opened the
+    // handle; composition never runs the compiler.
+    var fnctx = "";
+    var vw_st;
+    if ( !lens_name(vw_st, w, es) )
+    {
+	long ph = es_int(w, doc, "phandle", 0);
+	if ( ph != 0 )
+	{
+	    long cl = line_of(w, doc, caret);
+	    long cs = line_start_of(w, doc, cl);
+	    var encl;
+	    madc::parse_enclosing(encl, ph, cl, caret - cs);
+	    if ( !encl.is_null() )
+		fnctx = format("fn {}", encl["name"]);
+	}
+    }
+    var status;
+    compose_joe_statusline(status, w, es, nav, caret, fnctx);
+
+    // Layout regions (slice 3, madcide GUI): the edit node is the editor
+    // group (a tab strip when more than one buffer is open), the status
+    // line is the status bar. These are ADDITIVE hint keys the grid model
+    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
+    // so the terminal composition is byte-identical; web_model lays a
+    // region'd node into the workbench grid. The active window's ed and
+    // status are stamped here, before the multi-window branch's own
+    // read-modify-write of ed["hints"] preserves the region.
+    long wc = window_count(w, es);
+    {
+	eh["region"] = "editor";
+	// With two-plus windows the active window carries the focus hint
+	// (the multi-window branch below composes the others); it rides
+	// the same single write-back.
+	if ( wc >= 2 )
+	    eh["focus"] = 1;
+	ed["hints"] = eh;
+    }
+    {
+	// While split (S5), the active window's status line is its HEADER
+	// in the editor slot like every other window's — the JOE shape, one
+	// status line per window, stacked in tree order; the status BAR is
+	// the single window's presentation. The window (the page) stacks a
+	// slot's nodes in order, so no window's node is left unplaced.
+	var sh = status["hints"];
+	sh["region"] = wc >= 2 ? "editor" : "statusbar";
+	status["hints"] = sh;
+    }
+
+    var r = { "role": "group" };
+    var kids = {};
+    // The editor slot from the layout's editor tree (V2b). A sole editor
+    // leaf emits flat — the JOE screen, byte-identical; a `viewsplit` makes
+    // it a split and the split composer wraps each leaf in its own group.
+    var elo;
+    layout_get(elo, w, es);
+    var etree = elo["editor"];
+    if ( etree["kind"] == ctSPLIT )
+	compose_editor_split(kids, w, es, doc, etree, ed, status);
+    else
+	compose_editor_flat(kids, w, es, ed, status, wc);
 
     long pane = cur_pane(w, es);
     if ( pane != paneNONE )
