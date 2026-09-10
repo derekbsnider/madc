@@ -77,7 +77,19 @@ struct CirEmitSource {
 // the implementation comment for the full contract.
 void cir_emit_cxx(FILE *f, const CirEmitSource &src);
 
-// Render a cir_node tree (which IS-A c2mir node_t) to C source on `f`.
-void cir_emit_c(FILE *f, node_t tree, CirEmitLang lang);
+// One correlation row (V5 source↔MC11 map): the display byte offset where a
+// statement/declaration's emitted text begins, paired with its SOURCE line.
+// The buffer-owning layer turns the line into a stored byte offset and builds
+// the monotone doc_map (madcdis/doc_lens.h) — a reordered/hoisted or synthetic
+// row that breaks monotonicity "maps to nothing" (design §2.6). Statement/line
+// granularity today; column/expression precision is the named later refinement.
+struct CirEmitMapRow { size_t disp; int line; };
+
+// Render a cir_node tree (which IS-A c2mir node_t) to C source on `f`. When
+// `map` is non-null, append one CirEmitMapRow per emitted statement/declaration
+// that carries a source origin — a pure side channel: the emitted BYTES are
+// identical whether or not a map is collected.
+void cir_emit_c(FILE *f, node_t tree, CirEmitLang lang,
+		std::vector<CirEmitMapRow> *map = nullptr);
 
 #endif // __CIR_EMIT_C_H

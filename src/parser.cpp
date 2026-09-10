@@ -318,7 +318,8 @@ bool internal_program_source_emit_kind(::Program &self,
 				       const std::string &source_text,
 				       int64_t target_kind,
 				       value &out,
-				       const std::string &display_name);
+				       const std::string &display_name,
+				       value *out_map = nullptr);
 // The build surface (madcide IDE-10c; madc_program.cpp beside the child
 // pipeline): the CLI's AOT lane in-process — parse a FILE in a child,
 // emit a native artifact ("exe" | "obj"); diagnostics rows either way.
@@ -985,6 +986,32 @@ bool madc_source_emit_kind(void *result, void *source, void *filename,
 						   out,
 						   disp.empty() ? "<source>"
 								: disp);
+}
+
+// The same render (by KIND) PLUS the source↔display coordinate map (V5): a
+// second madc::value out carrying the {disp, stored, len} rows beside the
+// text. The dialect's five-arg madc::emit overload lands here; an IDE stores
+// the map on the code View and projects carets through ui::lens_to_*.
+bool madc_source_emit_kind_map(void *result, void *result_map, void *source,
+			       void *filename, int64_t target_kind)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::value &out_map = *(madc::value *)result_map;
+    out = madc::value();
+    out_map = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_source_emit_kind(*active, src, target_kind,
+						   out,
+						   disp.empty() ? "<source>"
+								: disp,
+						   &out_map);
 }
 
 // The build bridge (madcide IDE-10c): path/kind/outpath = std::string*,

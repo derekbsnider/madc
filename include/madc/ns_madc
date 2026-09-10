@@ -105,6 +105,14 @@ namespace madc {
     // form is for text that just arrived (a command line).
     bool emit(value &out, const char *source, const char *filename,
 	      int64_t target_kind);
+    // The same KIND render PLUS the source↔display COORDINATE MAP beside the
+    // text (V5): out_map arrives as an array of {disp, stored, len} rows
+    // (empty = nothing corresponds, park at 0) — madcdis/doc_lens.h's codec,
+    // the input to ui::lens_to_display / ui::lens_to_stored. Statement/line-
+    // level correlation today; column/expression precision is the later
+    // refinement. An IDE carries the target as a code; the map rides the View.
+    bool emit(value &out, value &out_map, const char *source,
+	      const char *filename, int64_t target_kind);
 
     // The file-kind vocabulary's boundary converters (<bits/file_kinds>; the
     // engine owns the tables, src/file_kinds.cpp — a standard's spelling is

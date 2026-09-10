@@ -6539,7 +6539,8 @@ static void cir_emit_cxx_source(FILE *out, Program *prog,
 // Build the cir_node tree and render it as C source (no compile/run).
 // Used by `--emit=c11|mc11`.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
-		  CirEmitLang lang)
+		  CirEmitLang lang,
+		  std::vector<CirEmitMapRow> *map)
 {
     // Error-tolerant parse (§3.5): --emit=c++ is a SOURCE view, not a
     // compilation — the retained tokens render exactly even when the parse
@@ -6604,7 +6605,7 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	cir_emit_cxx_source(out, prog, source_name);
     }
     else
-	cir_emit_c(out, tree, lang);
+	cir_emit_c(out, tree, lang, map);
 
     cir_finish(c2m);
     c2mir_finish(ctx);

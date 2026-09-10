@@ -47,6 +47,7 @@ extern thread_local bool madc_verbose;
 #include "madc_dl.h"
 #include "madc_posix_io.h"	// temp files + in-process CPU/resident metrics
 #include "madc_cir.h"
+#include "madcdis/doc_lens.h"	// V5: the {disp,stored,len} coordinate map codec
 #include "rt/rt_task.h"	// fork-Run: __madc_task_atfork_child (parse_run)
 #include "madcdis/process.h"	// fork-Run: map_child_status (THE status mapper);
 				// madcrun:// / madcproj://: Process child_body
@@ -4725,15 +4726,50 @@ bool internal_program_source_outline(::Program &self,
 // a kind the emitter does not render, or a buffer that does not
 // parse/translate; diagnostics stay captured under the mute, never
 // printed. Nothing runs.
+// V5: turn the emitter's {display-offset, source-line} rows into a monotone
+// doc_map value ({disp, stored, len}). `stored` is the source LINE's start
+// byte (statement/line-level correlation; column/expression precision is the
+// named later refinement). doc_map::add drops any row that breaks forward
+// monotonicity in EITHER axis, so a reordered/hoisted emission "maps to
+// nothing" (design §2.6). The result is always an ARRAY (empty → park-at-0),
+// never {} — so ui::lens_to_* reads a clean map even for a rowless emit.
+static madc::value build_emit_doc_map(const std::string &src,
+				      const std::vector<CirEmitMapRow> &rows)
+{
+    // line_start[k] = byte offset of line (k+1) in the source buffer — the
+    // SAME buffer the container's stored-space caret indexes.
+    std::vector<size_t> line_start;
+    line_start.push_back(0);
+    for ( size_t i = 0; i < src.size(); ++i )
+	if ( src[i] == '\n' )
+	    line_start.push_back(i + 1);
+
+    madc::hub::doc_map dm;
+    for ( size_t i = 0; i < rows.size(); ++i )
+    {
+	int line = rows[i].line;
+	if ( line < 1 )
+	    continue;
+	size_t li = (size_t)(line - 1);
+	if ( li >= line_start.size() )
+	    continue;
+	dm.add(rows[i].disp, line_start[li], 1);	// add() enforces monotonicity
+    }
+    return dm.to_value();
+}
+
 bool internal_program_source_emit_kind(::Program &self,
 				       const std::string &source_text,
 				       int64_t target_kind,
 				       madc::value &out,
-				       const std::string &display_name)
+				       const std::string &display_name,
+				       madc::value *out_map = nullptr)
 {
     self.clear_diagnostics();
     self.clear_error();
     out = value();
+    if ( out_map )
+	*out_map = value();
     CirEmitLang lang;
     if ( !cir_emit_lang_of_kind(target_kind, lang) )
 	return false;
@@ -4748,11 +4784,15 @@ bool internal_program_source_emit_kind(::Program &self,
     detail::StringCapture cap;
     if ( !detail::open_string_capture(cap) )
 	return false;
-    int rc = madc_cir_emit(&child, display_name.c_str(), cap.f, lang);
+    std::vector<CirEmitMapRow> rows;
+    int rc = madc_cir_emit(&child, display_name.c_str(), cap.f, lang,
+			   out_map ? &rows : NULL);
     std::string text = detail::finish_string_capture(cap);
     if ( rc != 0 )
 	return false;
     out = value(text);
+    if ( out_map )
+	*out_map = build_emit_doc_map(source_text, rows);
     return true;
 }
 
