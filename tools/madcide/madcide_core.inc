@@ -2991,6 +2991,29 @@ long make_code_view(long w, long es, long subject, long lang)
     return id;
 }
 
+// The edit-history View (client-server arc V4; design doc S2.4): a View of
+// `doc` at a past revision `n` (an event seq), its text the change log
+// replayed to n onto a fresh render buffer. revision = n (0 = current); a
+// non-zero revision is a reconstructed past state, the subject untouched.
+long make_history_view(long w, long es, long doc, long n)
+{
+    var t;
+    clog_replay(t, w, doc, n);
+    long id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, t.c_str());
+    var p;
+    ui::get(p, w, doc, "path");
+    ui::set(w, vd, "path", p);
+    v["revision"] = n;
+    v["generator"] = genNONE;
+    v["vbuf"] = vd;
+    view_store(w, es, v);
+    return id;
+}
+
 // ---- AST-5: buffers (IDE-8) ------------------------------------------
 // JOE's model: ^K E prompts for a file; an open path SWITCHES to that
 // buffer (caret where it was), a new path opens a new buffer, a missing
@@ -3491,6 +3514,67 @@ bool proj_has_manifest(long w, long es)
     return !pf.is_null() && strlen(pf.c_str()) > 0;
 }
 
+// The change-log file beside the manifest (client-server arc V4; design doc
+// S2.4): <base>.prj.events, a sibling of the layout cache. Only once a
+// manifest is open -- the implicit single-file project is memory-only (the
+// no-surprise-artifact law, design S6). false = no manifest.
+bool proj_events_path(var &out, long w, long es)
+{
+    if ( !proj_has_manifest(w, es) )
+	return false;
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.events", base);
+    return true;
+}
+
+// Flush the doc's change log to <base>.prj.events (the whole buffer -> the
+// file; the buffer text IS the file's content -- one serialisation). A
+// no-op with no manifest. Follow-ups: also flush on 	S doc-save; unify to
+// one project events file across docs for a multi-file manifest (the log is
+// per-doc today, single-file being V4's gated case).
+void clog_persist(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 )
+	return;
+    var blob;
+    ui::text(blob, w, le);
+    php::file_put_contents(path.c_str(), blob.c_str());
+}
+
+// Restore the doc's change log from <base>.prj.events on project open; seq
+// resumes at the last record's, so new events continue the sequence. A
+// no-op with no manifest or no file.
+void clog_restore(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    var blob;
+    if ( !php::file_get_contents(blob, path.c_str()) )
+	return;
+    long le = changelog_of(w, doc);
+    ui::text_load(w, le, blob.c_str());
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    long hi = 0;
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( js::parse(rec, ln) )
+	    hi = rec["seq"].as_integer();
+    }
+    ui::set(w, le, "seq", hi);
+}
+
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
 // persistence rule) — the ^T Options row's action (opt-projkind). Only a
 // project with a manifest has a kind to set; the implicit project refuses
@@ -3551,6 +3635,7 @@ bool proj_write(long w, long es, long doc)
     }
     if ( fresh )
 	ui::set(w, es, "msg", format("Project file created: {}", pf));
+    clog_persist(w, es, doc);
     return true;
 }
 
@@ -3752,6 +3837,7 @@ void proj_startup(long w, long es, long doc)
     if ( !php::file_exists(pf) )
 	return;
     proj_load(w, es, pf);
+    clog_restore(w, es, doc);
 }
 
 // File -> Open Project… (polish P2b): the manifest the user chose (the
@@ -3765,6 +3851,7 @@ void proj_open(long w, long es, long doc, const char *path0)
 	return;
     if ( !proj_load(w, es, pf) )
 	return;
+    clog_restore(w, es, doc);
     proj_show(w, es, doc);
 }
 

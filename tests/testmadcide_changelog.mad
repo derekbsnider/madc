@@ -1,0 +1,116 @@
+// V4 (change event log): the redo/replay + compaction gate (design doc S2.4).
+// A scripted edit sequence journals through ed_text_insert / ed_text_erase
+// (the ONE text-mutation owner); replay reconstructs the buffer at any seq
+// (round-trip + historical), a checkpoint bounds replay, and compaction
+// sheds old records while every surviving seq stays replayable and a
+// trimmed seq clamps UP to the oldest checkpoint. Headless -- pure log
+// logic, no frontend. Snapshots capture ACTUAL buffer text at each stage,
+// so the gate is independent of any editor buffer convention.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void okfail(const char *label, bool cond, var got, var want)
+{
+    if ( cond )
+        println("{}: ok", label);
+    else
+        println("{}: FAIL got[{}] want[{}]", label, got, want);
+}
+
+long logline_count(long w, long le)
+{
+    var blob;
+    ui::text(blob, w, le);
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    return php::count(lines);
+}
+
+int main()
+{
+    const char *path = "madc_ide_clog.mad";
+    php::file_put_contents(path, "");
+
+    long w = ui::world_new();
+    long doc = setup_document(w, path, false);
+    bind_lineed_verbs(w);
+    long es = spawn_view_es(w, doc, path);
+    long le = changelog_of(w, doc);
+
+    // Build the text through splices; snapshot ACTUAL text + seq at stages.
+    ed_text_insert(w, es, doc, 0, "alpha");        // seq 1
+    ed_text_insert(w, es, doc, 5, " beta");        // seq 2
+    long segB = es_int(w, le, "seq", 0);
+    var snapB;
+    ui::text(snapB, w, doc);
+    ed_text_insert(w, es, doc, 10, " gamma");      // seq 3
+    ed_text_erase(w, es, doc, 0, 6);               // seq 4 -- drop "alpha "
+    long segD = es_int(w, le, "seq", 0);
+    var snapD;
+    ui::text(snapD, w, doc);
+    ed_text_insert(w, es, doc, 0, "X");            // seq 5
+    long segE = es_int(w, le, "seq", 0);
+    var snapE;
+    ui::text(snapE, w, doc);
+
+    clog_checkpoint(w, doc);                        // seq 6 -- checkpoint snapE
+    ed_text_insert(w, es, doc, 0, "Z");            // seq 7
+    var cur;
+    ui::text(cur, w, doc);
+
+    // Replay: the whole log round-trips to the live buffer, and any past
+    // seq reconstructs the snapshot taken then (checkpoint replay included).
+    var rAll;
+    clog_replay(rAll, w, doc, -1);
+    okfail("V4 replay-all", rAll == cur, rAll, cur);
+    var rE;
+    clog_replay(rE, w, doc, segE);
+    okfail("V4 replay@E", rE == snapE, rE, snapE);
+    var rB;
+    clog_replay(rB, w, doc, segB);
+    okfail("V4 replay@B", rB == snapB, rB, snapB);
+    var rD;
+    clog_replay(rD, w, doc, segD);
+    okfail("V4 replay@D", rD == snapD, rD, snapD);
+
+    // event:N edit-history View: a View of the doc at a past revision
+    // replays onto its own render buffer (before compaction, full history).
+    long hv = make_history_view(w, es, doc, segE);
+    var hvrow;
+    view_row(hvrow, w, es, hv);
+    var hvtext;
+    ui::text(hvtext, w, hvrow["vbuf"].as_integer());
+    okfail("V4 history-view@E", hvtext == snapE, hvtext, snapE);
+
+    // Compaction: force it (limit 1 byte), keep the last 2 records. The log
+    // shrinks, the live text still round-trips, and a seq below the fresh
+    // checkpoint clamps up to it (the retention rule).
+    long before = logline_count(w, le);
+    clog_compact(w, doc, 1, 2);
+    long after = logline_count(w, le);
+    var rC;
+    clog_replay(rC, w, doc, -1);
+    okfail("V4 replay-after-compact", rC == cur, rC, cur);
+    println("V4 compaction-shrank: {}", after < before ? "ok" : "FAIL");
+    var rClamp;
+    clog_replay(rClamp, w, doc, segB);             // segB now below the cut
+    okfail("V4 replay-clamp", rClamp == snapE, rClamp, snapE);
+
+    // Persistence round-trip: a manifest makes .prj.events materialise;
+    // persist, then restore into a FRESH world and replay -> the same text.
+    ui::set(w, es, "projfile", "madc_ide_clog.prj.json");
+    clog_persist(w, es, doc);
+    long w2 = ui::world_new();
+    long doc2 = setup_document(w2, path, false);
+    long es2 = spawn_view_es(w2, doc2, path);
+    ui::set(w2, es2, "projfile", "madc_ide_clog.prj.json");
+    clog_restore(w2, es2, doc2);
+    var rr;
+    clog_replay(rr, w2, doc2, -1);
+    okfail("V4 persist-restore", rr == cur, rr, cur);
+    php::unlink("madc_ide_clog.prj.events");
+
+    php::unlink(path);
+    return 0;
+}

@@ -218,16 +218,174 @@ void es_view_doc(long w, long es, long doc)
     ui::set(w, doc, "anchor_es", reg);
 }
 
+// ---- the change event log (client-server arc V4; design doc S2.4) ------
+// The redo / replication / audit log: every text mutation appends one
+// splice RECORD to the document's log; replay reconstructs the buffer at
+// any seq. `seq` is the LSN -- a monotonic per-document COUNTER, never a
+// byte offset (compaction rewrites the store, so the identity is
+// rewrite-stable). NOT a WAL: no write-ahead, no fsync, tail-loss
+// tolerated. This is the NEUTRAL texteditor-layer core -- a record carries
+// only texteditor nouns (es, doc, at/del/ins); madcide adds the .prj.events
+// file and the event:N View on top. STORE: a per-document "changelog"
+// entity whose piece-table buffer holds JSONL (one record per line) --
+// append is a text_insert at end (O(1) amortised), and the buffer text IS
+// both the persisted form and the wire form (one serialisation). Replay
+// applies each splice to a scratch buffer through the engine's own
+// text_replace (no dialect string surgery). A "kind" token is text only in
+// the persisted line; replay converts it once and ignores an unknown kind
+// -- the enum-boundary rule.
+
+// The document's change-log entity, created on first need; seq lives on it.
+long changelog_of(long w, long doc)
+{
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le > 0 )
+	return le;
+    le = ui::create(w, "changelog");
+    ui::text_load(w, le, "");	// initialise the piece-table component
+    ui::set(w, doc, "changelog", le);
+    ui::set(w, le, "seq", 0);
+    return le;
+}
+
+// Append one record LINE to the log; answer the seq it received.
+long clog_append(long w, long doc, var &rec)
+{
+    long le = changelog_of(w, doc);
+    long seq = es_int(w, le, "seq", 0) + 1;
+    ui::set(w, le, "seq", seq);
+    rec["seq"] = seq;
+    var line = js::stringify(rec);
+    ui::text_insert(w, le, ui::text_size(w, le), format("{}\n", line));
+    return seq;
+}
+
+// The ONE splice record, written by the text-mutation owner below in one
+// pass with the anchor shift: at `at`, remove `del` bytes, insert `ins`.
+long journal_splice(long w, long es, long doc, long at, long del, const char *ins)
+{
+    var rec = { "kind": "splice", "es": es, "doc": doc,
+	"at": at, "del": del, "ins": ins };
+    return clog_append(w, doc, rec);
+}
+
+// A checkpoint: the whole buffer text at the current seq. Replay starts
+// from the newest checkpoint <= its target, so the log can be truncated
+// ahead of one (compaction).
+long clog_checkpoint(long w, long doc)
+{
+    var t;
+    ui::text(t, w, doc);
+    var rec = { "kind": "checkpoint", "doc": doc, "text": t };
+    return clog_append(w, doc, rec);
+}
+
+// The doc's scratch replay buffer (reused across replays), created lazily.
+long replaybuf_of(long w, long doc)
+{
+    long scr = es_int(w, doc, "replaybuf", 0);
+    if ( scr > 0 )
+	return scr;
+    scr = ui::create(w, "replay-buffer");
+    ui::set(w, doc, "replaybuf", scr);
+    return scr;
+}
+
+// Reconstruct the buffer text at seq `upto` (<= 0 = the whole log) by
+// replaying forward from the newest checkpoint whose seq <= `upto`. A seq
+// below the oldest surviving checkpoint clamps to that checkpoint (the
+// retention rule). The engine of the replay gate AND the event:N View.
+void clog_replay(var &out, long w, long doc, long upto)
+{
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 )
+    {
+	ui::text(out, w, doc);	// no log yet: the live text IS revision 0
+	return;
+    }
+    long scr = replaybuf_of(w, doc);
+    ui::text_load(w, scr, "");
+    var blob;
+    ui::text(blob, w, le);
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    bool seen = false;
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) )
+	    continue;		// a torn / partial tail line: stop trusting it
+	long seq = rec["seq"].as_integer();
+	if ( upto > 0 && seq > upto )
+	{
+	    // a target below the oldest surviving record clamps UP to that
+	    // checkpoint (the retention rule) -- never a silent empty answer
+	    if ( rec["kind"] == "checkpoint" && !seen )
+		ui::text_load(w, scr, rec["text"].c_str());
+	    break;
+	}
+	seen = true;
+	if ( rec["kind"] == "checkpoint" )
+	    ui::text_load(w, scr, rec["text"].c_str());
+	else
+	{
+	    long at = rec["at"].as_integer();
+	    long del = rec["del"].as_integer();
+	    var ins = rec["ins"];
+	    ui::text_replace(w, scr, at, del, ins.c_str());
+	}
+    }
+    ui::text(out, w, scr);
+}
+
+// Compaction (design S2.4): when the log exceeds `limit` bytes, rewrite it
+// as a fresh checkpoint at seq `cut` (= head - `keep`) followed by the last
+// `keep` records whole. Every surviving seq stays replayable from that
+// checkpoint -- the INVARIANT: never truncate past a checkpoint a retained
+// event needs. A no-op below the limit or with fewer than `keep` events.
+void clog_compact(long w, long doc, long limit, long keep)
+{
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 || ui::text_size(w, le) < limit )
+	return;
+    long cut = es_int(w, le, "seq", 0) - keep;
+    if ( cut <= 0 )
+	return;
+    var base;
+    clog_replay(base, w, doc, cut);
+    var cp = { "seq": cut, "kind": "checkpoint", "doc": doc, "text": base };
+    var rebuilt = format("{}\n", js::stringify(cp));
+    var blob;
+    ui::text(blob, w, le);
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) )
+	    continue;
+	if ( rec["seq"].as_integer() > cut )
+	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
+    }
+    ui::text_load(w, le, rebuilt.c_str());
+}
+
 void ed_text_insert(long w, long es, long doc, long off, const char *s)
 {
     ui::text_insert(w, doc, off, s);
     shift_anchors(w, es, doc, off, strlen(s));
+    journal_splice(w, es, doc, off, 0, s);
 }
 
 void ed_text_erase(long w, long es, long doc, long off, long n)
 {
     ui::text_erase(w, doc, off, n);
     shift_anchors(w, es, doc, off, -n);
+    journal_splice(w, es, doc, off, n, "");
 }
 
 // A caret on `line` keeping column `col` when the line is long enough —
