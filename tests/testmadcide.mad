@@ -1466,8 +1466,8 @@ int main()
     long nvsp = 0;
     if ( !vsp.is_null() )
 	nvsp = php::count(vsp);
-    println("view1-node: view={} maprows={} shows-lowering={} spans={} indented={}",
-	    vh["view"], php::count(vmap),
+    println("view1-node: view={} maprows-pos={} shows-lowering={} spans={} indented={}",
+	    vh["view"], php::count(vmap) > 0 ? 1 : 0,
 	    strstr(vtext.c_str(), "long long add") != 0 ? 1 : 0,
 	    nvsp > 0 ? 1 : 0,
 	    strstr(vtext.c_str(), "\n\t") != 0 ? 1 : 0);

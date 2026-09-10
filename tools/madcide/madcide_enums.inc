@@ -35,7 +35,7 @@ enum ide_cmd : unsigned short
     cmdREFRESH, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL, cmdSHRINKW,
     cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
-    cmdVIEWSPLIT, cmdVIEWWINDOW,
+    cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
     cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
     // ---- motions: the action name IS the key spelling (edit_key's keys) ----
     cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
@@ -117,6 +117,7 @@ void cmd_table(var &t)
     rows[] = { "name": "viewopen", "code": cmdVIEWOPEN };
     rows[] = { "name": "viewsize", "code": cmdVIEWSIZE };
     rows[] = { "name": "viewsplit", "code": cmdVIEWSPLIT };
+    rows[] = { "name": "viewsync", "code": cmdVIEWSYNC };
     rows[] = { "name": "viewwindow", "code": cmdVIEWWINDOW };
     rows[] = { "name": "vimode", "code": cmdVIMODE };
     rows[] = { "name": "wordleft", "code": cmdWORDLEFT };

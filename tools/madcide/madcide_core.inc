@@ -2492,6 +2492,8 @@ bool colon_command(long w, long es, long doc, long caret, var &in);
 void view_split(long w, long es, long doc, long dir, long lang);
 void view_focus(long w, long es, long doc, long dir);
 void view_close(long w, long es, long doc);
+void view_sync(long w, long es, var &arg);			// V5 cursor sync toggle
+long viewsync_leaf_caret(long w, long es, long vid, long fallback);	// V5 read-side projection
 void view_open(long w, long es, long doc, long lang);
 void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
 void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
@@ -2888,7 +2890,8 @@ bool enter_lens(long w, long es, long doc, long lang)
     var p;
     ui::get(p, w, doc, "path");
     var emitted;
-    if ( !madc::emit(emitted, t.c_str(), p.c_str(), lang) )
+    var vmap;			// V5: the source↔display coordinate map, beside the text
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
@@ -2927,8 +2930,7 @@ bool enter_lens(long w, long es, long doc, long lang)
     v["lang"] = lang;
     v["generator"] = genMADC;
     v["vbuf"] = vd;
-    var nomap = {};
-    v["map"] = nomap;
+    v["map"] = vmap;		// V5: fills the vmap that was EMPTY (design §2.6)
     view_store(w, es, v);
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
@@ -2974,7 +2976,8 @@ long make_code_view(long w, long es, long subject, long lang)
     var p;
     ui::get(p, w, subject, "path");
     var emitted;
-    if ( !madc::emit(emitted, t.c_str(), p.c_str(), lang) )
+    var vmap;			// V5: the source↔display coordinate map
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
 	return 0;
     long id = view_new(w, es, subject, viewCODE, lang);
     var v;
@@ -2987,6 +2990,7 @@ long make_code_view(long w, long es, long subject, long lang)
     spans_to_hspans(w, es, vd, vrows, vd);
     v["generator"] = genMADC;
     v["vbuf"] = vd;
+    v["map"] = vmap;		// V5: the fresh code View carries its map
     view_store(w, es, v);
     return id;
 }
@@ -5513,6 +5517,11 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	view_window(w, es, doc);
 	return true;
     }
+    if ( verb == "viewsync" )
+    {
+	view_sync(w, es, arg);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -5970,6 +5979,70 @@ void view_focus(long w, long es, long doc, long dir)
     ui::set(w, es, "msg", format("View {} of {}.", nx + 1, n));
 }
 
+// viewsync (client-server arc V5; design §2.6): toggle cursor synchronization
+// between a source View and its MC11/C11 View. On = the unfocused pane of a
+// source↔code pair draws its caret PROJECTED from the focused caret through
+// the coordinate map, never its own parked one — the sync is a read-side
+// projection at compose time (viewsync_leaf_caret), so no caret state is
+// duplicated. `arg` is on|off at the input boundary (a boolean flag), bare =
+// toggle; the stored state es "viewsync" is an integer.
+void view_sync(long w, long es, var &arg)
+{
+    long cur = es_int(w, es, "viewsync", 0);
+    var a = arg;
+    long on;
+    if ( a == "on" )
+	on = 1;
+    else if ( a == "off" )
+	on = 0;
+    else
+	on = cur ? 0 : 1;
+    ui::set(w, es, "viewsync", on);
+    ui::set(w, es, "msg", on ? "Cursor sync ON (source ↔ view)."
+			     : "Cursor sync off.");
+}
+
+// V5 read-side projection: the caret an unfocused leaf showing View `vid`
+// should draw when cursor-sync is on — the FOCUSED caret projected into this
+// View's coordinate space through the source↔MC11 pair's map. Only a pair of
+// one code View (carrying the map) and one source View projects; any other
+// combination (same representation, no map, no focused View) returns the
+// leaf's own parked caret (`fallback`). A refused projection (-1: an empty or
+// malformed map) also falls back — never a bad caret.
+long viewsync_leaf_caret(long w, long es, long vid, long fallback)
+{
+    long fvid = focused_view(w, es);
+    if ( fvid == 0 || fvid == vid )
+	return fallback;
+    var fv;
+    var tv;
+    if ( !view_row(fv, w, es, fvid) || !view_row(tv, w, es, vid) )
+	return fallback;
+    long fcaret = es_int(w, es, "caret", 0);
+    bool fcode = fv["kind"].as_integer() == viewCODE;
+    bool tcode = tv["kind"].as_integer() == viewCODE;
+    if ( tcode && !fcode )
+    {
+	// focused = source (stored space) → this = code (display space): the
+	// code View's map carries the stored↔display correspondence.
+	var m = tv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long d = ui::lens_to_display(m, fcaret);
+	return d < 0 ? fallback : d;
+    }
+    if ( fcode && !tcode )
+    {
+	// focused = code (display space) → this = source (stored space).
+	var m = fv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long s = ui::lens_to_stored(m, fcaret);
+	return s < 0 ? fallback : s;
+    }
+    return fallback;		// same representation: nothing to project
+}
+
 // viewclose: close the focused leaf; its parent split collapses to the
 // sibling and the focus moves to the previous leaf. The primary leaf (tree
 // order's first, the ring host) never closes — quit does that.
@@ -6332,6 +6405,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdVIEWWINDOW:
 		view_window(w, es, doc);
+		return true;
+	    case cmdVIEWSYNC:
+		view_sync(w, es, ev["arg"]);
 		return true;
 	    case cmdSAVE:
 		return save_and_check(w, es, doc);
@@ -7140,7 +7216,10 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     var v;
     view_row(v, w, es, vid);
     long sdoc = view_text_entity(v, v["subject"].as_integer());
-    long sc = clamp_caret_to(w, sdoc, node["pcaret"].as_integer());
+    long pc = node["pcaret"].as_integer();
+    if ( es_int(w, es, "viewsync", 0) )
+	pc = viewsync_leaf_caret(w, es, vid, pc);	// V5: draw the projected caret
+    long sc = clamp_caret_to(w, sdoc, pc);
     var wfn = "";
     var wst;
     compose_joe_statusline(wst, w, es, sdoc, sc, wfn);
