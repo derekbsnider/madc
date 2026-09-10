@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### madcide: presence carets + the anchor registry shifts every client (V3c-1) (2026-09-10)
+
+- The client-server arc V3c presence, part 1 — the dialect machinery,
+  es/doc-centric so the direct-drive gate covers it with no run loop. A
+  **document carries a roster of the client es viewing it** (`es_view_doc`,
+  called by the ONE view builder `init_view_es` — the launch window and every
+  `viewwindow` spawn), and each es is **dealt a round-robin presence colour
+  SLOT** at connect (a monotonic per-document counter; a client that leaves
+  does not renumber the others).
+- **The anchor registry now shifts EVERY client, not just the editing es.**
+  `shift_anchors` (the one text-mutation owner) shifts each registered peer
+  client's caret + selection in the same pass — a peer caret was left stale
+  for a compose-time clamp before (the V3a follow-up), and now it **shifts**
+  with the text. `shift_es_anchors` factors the per-es shift: the editing es
+  skips its own caret (the edit call site sets it); a peer shifts caret + mark
+  + bend + spans; a peer that has navigated to another document is skipped.
+- **`compose_edit_node` draws the OTHER clients** on the doc as carets in
+  their dealt slot (`hints["presence"] = [{caret, colour, sel_*}]`); a client
+  never draws itself. Single-client compose is **byte-identical** (no peers →
+  no hint), so `testmadcide` / `_cli` / `_line` are unchanged.
+- The `@presence` palette (slot → colour) and the web render of the presence
+  carets are **V3c-2**; this slice is the machinery + the direct-drive gate.
+- Gate `tests/testmadcide_window2` extended: window B's caret shifts 20 → 29
+  when A inserts nine bytes above it (not clamped); A's node draws B at 29 in
+  slot 1, B's draws A at 9 in slot 0, neither draws itself. Green JIT/exe/obj;
+  `testmadcide`/`_cli`/`_line` byte-identical; `testidespanshift` intact;
+  GUI 18/18 × 3; `check-one-anchor-owner` + dialect/seam/registry/enum gates
+  PASS. The battery runs ONCE at the V1–V5 seam, never per slice (owner law).
+
 ### madcide: the multi-client loop + viewwindow (V3b-2) (2026-09-10)
 
 - The client-server arc V3b-2, machinery-first: `run_ide` grows from one
