@@ -516,3 +516,19 @@ const char *gen_name(long g)
     }
     return "";
 }
+
+// ---- the CLIENT vocabularies (client-server design §2.3, groundwork
+// invariant #1) ---------------------------------------------------------
+// A client of the session is transport/level/capability-GENERAL: a local
+// window, a WebSocket peer and an api / LSP editor differ only in their
+// `transport` and capability set; the `tier` bounds what the client may
+// do. Both are ENUMS (owner law, "enums not strings") — a wire handshake's
+// text converts to a code ONCE at the connection boundary, and an unknown
+// spelling is a refusal there, never a silent mis-route. Dispatch switches
+// on the code.
+enum ide_transport : unsigned char { trLOCAL = 0, trWS, trAPI };
+// The permission ladder (the gateway vision's tiers, born low for a remote
+// peer — V6): an OBSERVER watches, an EDITOR may mutate, an OWNER holds the
+// session. A local window is the OWNER; a fresh remote peer starts OBSERVER
+// and is raised by the owner.
+enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER };
