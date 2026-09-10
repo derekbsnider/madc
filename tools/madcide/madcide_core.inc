@@ -91,6 +91,14 @@ class IdeSession
 					// refused (an argument the command
 					// does not take); cont = the
 					// continue / quit verdict
+	bool line_input(long doc, const char *line, bool &cont);
+					// ONE line of the ex / edlin client
+					// (ui::LINE, V2.5): a ':' line is a
+					// colon command (posted through
+					// command(cmdCOLON, …)); any other
+					// line is text inserted verbatim +
+					// a newline. false = refused; cont =
+					// the continue / quit verdict
 	long error_count();		// ERROR rows in the problems
 					// projection (a one-shot's verdict)
 	void vi_open_line(long doc, bool above);	// o / O / cc's line
@@ -7725,6 +7733,41 @@ bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
 	return true;			// a confirm answered (y / n)
     cont = post(doc, cmdPCOMMIT);
     return true;
+}
+
+// ONE line of the ex / edlin client (ui::LINE, client-server design §2.3b,
+// slice V2.5): the classifier the line frontend's raw-line `text` event
+// feeds (run_line). The engine frontend stays dumb — the tool's line
+// grammar lives HERE, where the registry and the colon interpreter do:
+//   - a ':' line is a colon command — the rest is the ex command, posted
+//     through the ONE argument primitive (post cmdCOLON to open the colon
+//     line, feed the text, commit by code), the SAME path the -c one-shot
+//     and the TUI ':' prompt reach colon_command by. A bare ':' runs
+//     nothing. Every colon verb (w q wq x e r, :N goto, the view* verbs,
+//     !shell) is reached with no new command language (owner: "the vi ':'
+//     mode without the TUI part").
+//   - any other line is TEXT: inserted verbatim (its bytes preserved — no
+//     trim, so indentation survives), then a newline, so successive lines
+//     stack. A read-only view refuses, as it does for a typed key.
+// cont carries the continue / quit verdict (a committed :q ends the loop).
+bool IdeSession::line_input(long doc, const char *line, bool &cont)
+{
+    cont = true;
+    var raw = line;			// ring discipline: own the text first
+    long n = strlen(raw.c_str());
+    if ( n > 0 && raw.c_str()[0] == ':' )
+    {
+	var rest = php::trim(perl::substr(raw, 1, n - 1));
+	if ( strlen(rest.c_str()) == 0 )
+	    return true;		// a bare ':' — nothing to run
+	command(doc, cmdCOLON, rest.c_str(), cont);
+	return cont;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": raw };
+    cont = apply_ide_event(doc, t);
+    if ( cont )
+	cont = post(doc, cmdENTER);
+    return cont;
 }
 
 // ERROR rows in the problems projection after the last command — the

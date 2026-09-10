@@ -293,6 +293,70 @@ struct ui_grid_frontend : ui_frontend
     void refresh() { painted = madc::hub::tui_grid(); }
 };
 
+// The LINE frontend (level ui::LINE): the ex / edlin client (client-server
+// design §2.3b, slice V2.5). No addressable surface — it renders the
+// composed projection tree through the level-0 sequential typesetter
+// (render_text, the SAME linearizer ui::render_tree exposes and the
+// headless one-shot uses) to stdout, and reads ONE line of stdin per
+// event. It works over a pipe, in a dumb terminal, and as an MCP seat's
+// transcript. It stays DUMB by design: a line becomes a `text` event
+// carrying the raw line; the APPLICATION (madcide's run_line) owns the
+// `:`-is-a-colon-command / bare-line-is-text classification — the engine
+// ui:: layer never learns a tool's command syntax (separation of concerns,
+// Rule #5). EOF ends the input, as a closed tty ends the grid's read_keys.
+struct ui_line_frontend : ui_frontend
+{
+    std::string chord;			// no chords at this level (always "")
+    ui_line_frontend() { level = ui::LINE; }
+    bool open(size_t &r, size_t &c)
+    {
+	r = rows = 0;			// no addressable grid; the width is
+	c = cols = 0;			// the typesetter's own (render_text)
+	return true;
+    }
+    void close() {}
+    // Typeset the composed tree sequentially to stdout — the level-0
+    // renderer, byte-identical to ui::render_tree's linearization (the tree
+    // arrives already access-filtered; a renderer never decides what may be
+    // seen). No diff basis: the bottom of the ladder always reprints.
+    void render(ui_session *s, madc::value &tree)
+    {
+	std::string txt = madc::hub::render_text(
+	    s->r, madc::hub::value_to_uinode(s->w, tree));
+	fputs(txt.c_str(), stdout);
+	fflush(stdout);
+    }
+    // One line of stdin -> one `text` event (the raw line, a trailing CR of
+    // a CRLF dropped). A bare EOF ends input; a final unterminated line is
+    // still delivered, then the next call reports EOF. The stdin read is
+    // this frontend's ONE blocking decision, exactly the grid's read_keys
+    // (design §2.3b, the thread contract).
+    bool read_events()
+    {
+	int c = getchar();
+	if ( c == EOF )
+	    return false;		// stdin ended: input is over
+	std::string line;
+	while ( c != EOF && c != '\n' )
+	{
+	    line.push_back((char)c);
+	    c = getchar();
+	}
+	if ( !line.empty() && line[line.size() - 1] == '\r' )
+	    line.resize(line.size() - 1);
+	madc::hub::tui_event e;
+	e.kind = madc::hub::tui_event_kind::text;
+	e.text = line;
+	queue.clear();
+	queue.push_back(e);
+	next_event = 0;
+	return true;
+    }
+    void size(size_t &r, size_t &c) { r = rows; c = cols; }
+    void set_bindings(const madc::hub::tui_bindings &) {}
+    const std::string &pending_chord() const { return chord; }
+};
+
 // The script-hosted target registry: name -> the host's ops table (the
 // fragment's static lives for the program; the engine never copies it).
 // Populated by dynamic initialization before main, read by ui::open.
@@ -1499,11 +1563,13 @@ int64_t open(const char *target)
 // the session directly — the headless harness, `madcide -c` (the one-shot,
 // client-server design §2.3b, V1.5), the api seat (V6) — so there is nothing
 // to open. ui::LINE's frontend (stdin lines in, the level-0 typesetter out)
-// is slice V2.5.
+// is the ex / edlin client (slice V2.5, ui_line_frontend).
 int64_t open(ui::level lvl)
 {
     if ( lvl == ui::TUI )
 	return open_frontend(new ui_grid_frontend(), (ui_dom_frontend *)0);
+    if ( lvl == ui::LINE )
+	return open_frontend(new ui_line_frontend(), (ui_dom_frontend *)0);
     const ui_host_reg *r = ui_host_serving(lvl);
     if ( !r )
     {
