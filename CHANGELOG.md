@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### madcide: the multi-client loop + viewwindow (V3b-2) (2026-09-10)
+
+- The client-server arc V3b-2, machinery-first: `run_ide` grows from one
+  frontend to a roster of **clients** and waits on any of them through
+  `ui::event_any` (V3b-1). For a single client the loop keeps its exact prior
+  shape — compose one, wait, apply — so every single-window / TUI / line path
+  is **byte-identical**; the multiplex only engages when a second client
+  joins.
+- The **client record is transport/level/capability-general from the first
+  window** (groundwork invariant #1): `{id, t, es, transport, level, tier,
+  last_seq, capabilities}`. Only a local window (`trLOCAL` / `tierOWNER`) is
+  built this week, but a remote platform node, an LSP editor and a VS Code
+  extension are the SAME record with a different transport. New enums
+  `ide_transport` / `ide_tier` (enums-not-strings).
+- **`spawn_view_es`** — a second window is a second client with its OWN
+  editor-state bag over the SHARED document; `open()`'s post-document init is
+  factored into ONE builder (`init_view_es`), so a spawned window's bag is
+  constructed by the same code as the launch window's. An edit in either
+  window mutates the one document and the other shows it on its next compose.
+- **`viewwindow`** command (`:viewwindow`, `cmdVIEWWINDOW` + registry row):
+  parks a spawn on the requesting client's es (a windowed client only — a
+  terminal client refuses); `run_ide` drains it (`take_spawn`) and opens the
+  frontend + joins the roster (`spawn_client`). The session never touches a
+  frontend handle (the gateway seam).
+- Gate `tests/testmadcide_window2`: two distinct clients over one document —
+  both open on the file, an edit through client A is seen in BOTH windows,
+  each keeps its own caret; the viewwindow command parks on a windowed client
+  and refuses on a terminal one. Green JIT/exe/obj; GUI 18/18 × 3 unchanged.
+- Ring-discipline fix in the factoring (found via `testmadcide`'s v2c-persist
+  under the runner's `--no-config`): `init_view_es` used the launch path as a
+  ring-lifetime `const char*` late, so the data loads clobbered it and
+  `launchpath` read empty (dropping the manifest + layout at the root base).
+  `init_view_es` / `spawn_view_es` now own the text first.
+- Flagged platform follow-up: the real webview multi-window pump (tick across
+  GTK/Cocoa/Win32) + window-close detection + multi-client teardown per-es
+  cleanup (the GTK smoke + seam lanes).
+
 ### ui: event_any — the blocking decision over N frontends (V3b-1) (2026-09-10)
 
 - The client-server arc V3b (clients + windows), machinery-first: the engine
