@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### ui: event_any — the blocking decision over N frontends (V3b-1) (2026-09-10)
+
+- The client-server arc V3b (clients + windows), machinery-first: the engine
+  primitive a multi-client loop needs. `ui::event_any(out, targets, w)`
+  returns the next event from **any** of N frontends, tagged with
+  `out["target"]` = the handle it came from.
+- A sole target is **byte-identical** to `ui::event` (it blocks in
+  `read_events`, no poll cost), so `madcide --gui`, the terminal and the line
+  client are unchanged (the GUI suite is untouched). N targets share one
+  thread: each is polled a bounded round through the new non-blocking
+  `poll_events`, and the DOM frontend pumps the process-global platform loop
+  via the bounded `tick` op (never the `run` op that blocks on one window and
+  reads another window's event as a close). No window starves another.
+- Gate `testuieventany`: two fake web windows (no display) on one world; an
+  event posted to either is demuxed and tagged by target; one target equals
+  `ui::event`; empty targets return false. The real webview multi-window pump
+  (across GTK/Cocoa/Win32) and window-close detection are the flagged
+  follow-up; V3b-2 grows the dialect client loop and `viewwindow` onto this.
+
 ### madcide: the anchor registry — one splice owner (V3a) (2026-09-10)
 
 - The client-server arc V3 begins (clients + windows + presence). V3a is the
