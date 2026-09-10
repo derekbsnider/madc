@@ -2715,12 +2715,10 @@ void block_copy(long w, long es, long doc, long caret)
     edit_checkpoint(w, es, doc, caret);
     ed_text_insert(w, es, doc, caret, blk.c_str());
     ui::set(w, doc, "modified", true);
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    if ( mark >= 0 && caret <= mark )
-	ui::set(w, es, "mark", mark + n);
-    if ( bend >= 0 && caret <= bend )
-	ui::set(w, es, "bend", bend + n);
+    // The markers past the insertion follow the text so the block keeps
+    // highlighting the ORIGINAL: the anchor registry (shift_anchors, in
+    // ed_text_insert) shifts mark / bend by the inserted length — this used
+    // to be a hand-rolled copy of that splice here (V3a removed it).
 }
 
 // ^K M: move the block to the caret (one undo step; the cursor lands on

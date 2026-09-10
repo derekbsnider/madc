@@ -74,68 +74,109 @@ long line_start_of(long w, long doc, long line)
     return 0;
 }
 
-// ---- the ONE text-mutation owner --------------------------------------
+// ---- the ONE text-mutation owner + the ONE anchor registry ------------
 // Every editor insert/erase routes through ed_text_insert / ed_text_erase,
-// never ui::text_* directly: the es bag carries byte-anchored rows (the
-// themed highlight spans) that must SHIFT with the text they were computed
-// for — without it every keystroke above a span repaints the document one
-// byte off per character (the madcide "typing spaces re-shades everything"
-// defect). Spans still go stale in CONTENT until the next (re)parse
-// replaces them; their geometry stays true. A span an erase fully covers
-// is dropped; one an insert lands inside grows.
-void shift_hspans(long w, long es, long off, long delta)
+// never ui::text_* directly: the es bag carries BYTE-ANCHORED things (the
+// themed highlight spans, the selection markers, and — with presence — the
+// other clients' carets) that must SHIFT with the text they point into.
+// Without it every keystroke above a span repaints the document one byte
+// off per character (the madcide "typing spaces re-shades everything"
+// defect), and a marker set before a keystroke goes stale.
+//
+// The shift is ONE mechanism (client-server arc V3a, the anchor registry;
+// gate check-one-anchor-owner.sh): shift_offset is the ONE splice
+// primitive over a single byte position, and shift_anchors calls it for
+// every registered anchor in ONE pass. A second hand-rolled shift (a
+// `mark + n` under a positional guard) is exactly the drift the gate bans —
+// it lived in block_copy until this slice.
+
+// shift_offset — reanchor ONE byte position `p` across an edit at `off` of
+// `delta` bytes (delta > 0 insert, delta < 0 erase). `at` is the insert
+// gravity: true = an insert exactly AT `p` moves it right (`p` sticks to
+// the text after it — a caret / a span START); false = it stays (a span
+// END, so typing at a span's end does not extend its colour). An erase
+// collapses a position inside the erased range onto `off`. A negative `p`
+// is "unset" (a cleared marker) and passes through untouched.
+long shift_offset(long p, long off, long delta, bool at)
+{
+    if ( p < 0 )
+	return p;
+    if ( delta < 0 )
+    {
+	long dl = -delta;
+	if ( p >= off )
+	    return p >= off + dl ? p + delta : off;
+	return p;
+    }
+    if ( at ? p >= off : p > off )
+	return p + delta;
+    return p;
+}
+
+// Reanchor one es scalar anchor by name (skip when the key is absent or
+// the marker is unset). Right-gravity — a marker sticks to the text after
+// it, as the live caret does.
+void shift_es_offset(long w, long es, const char *key, long off, long delta)
+{
+    var v;
+    ui::get(v, w, es, key);
+    if ( v.is_null() )
+	return;
+    long p = v.as_integer();
+    long np = shift_offset(p, off, delta, true);
+    if ( np != p )
+	ui::set(w, es, key, np);
+}
+
+// The anchor registry: shift EVERY byte-anchored thing on the es for `doc`
+// in one pass. The live focused caret (es "caret") is NOT here — each edit
+// call site sets it as the edit's own result (a paste lands after the
+// clip, a cut on its start), not a passive shift. mark / bend (the
+// selection) ARE passive: they went stale on every keystroke before this
+// (only block_copy shifted them, by a duplicate of shift_offset — removed).
+// Presence carets (V3c) register here too.
+void shift_anchors(long w, long es, long doc, long off, long delta)
 {
     var hs;
     ui::get(hs, w, es, "hspans");
-    if ( hs.is_null() || php::count(hs) == 0 )
-	return;
-    var out = {};
-    for ( var r : hs )
+    if ( !hs.is_null() && php::count(hs) > 0 )
     {
-	long s = r["s"].as_integer();
-	long e = r["e"].as_integer();
-	if ( delta < 0 )
+	var out = {};
+	for ( var r : hs )
 	{
-	    long dl = -delta;
-	    if ( s >= off )
-		s = s >= off + dl ? s + delta : off;
-	    if ( e >= off )
-		e = e >= off + dl ? e + delta : off;
+	    long s = shift_offset(r["s"].as_integer(), off, delta, true);
+	    long e = shift_offset(r["e"].as_integer(), off, delta, false);
+	    if ( e > s )
+	    {
+		// The row is the converter's (spans_to_hspans): carry it
+		// WHOLE and move only its geometry. A field list here is a
+		// second copy of the row shape — when slice 3.1 added a
+		// field the web read, such a list silently dropped it and
+		// killed the web's colour on the first keystroke
+		// (tests/testidespanshift.mad). Today the row is {s, e, c};
+		// this code does not know that, by design.
+		var nr = r;
+		nr["s"] = s;
+		nr["e"] = e;
+		out.push(nr);
+	    }
 	}
-	else
-	{
-	    if ( s >= off )
-		s = s + delta;
-	    if ( e > off )
-		e = e + delta;
-	}
-	if ( e > s )
-	{
-	    // The row is the converter's (spans_to_hspans): carry it WHOLE
-	    // and move only its geometry. A field list here is a second copy
-	    // of the row shape — when slice 3.1 added a field the web read,
-	    // such a list silently dropped it and killed the web's colour on
-	    // the first keystroke (tests/testidespanshift.mad). Today the row
-	    // is {s, e, c}; this code does not know that, by design.
-	    var nr = r;
-	    nr["s"] = s;
-	    nr["e"] = e;
-	    out.push(nr);
-	}
+	ui::set(w, es, "hspans", out);
     }
-    ui::set(w, es, "hspans", out);
+    shift_es_offset(w, es, "mark", off, delta);
+    shift_es_offset(w, es, "bend", off, delta);
 }
 
 void ed_text_insert(long w, long es, long doc, long off, const char *s)
 {
     ui::text_insert(w, doc, off, s);
-    shift_hspans(w, es, off, strlen(s));
+    shift_anchors(w, es, doc, off, strlen(s));
 }
 
 void ed_text_erase(long w, long es, long doc, long off, long n)
 {
     ui::text_erase(w, doc, off, n);
-    shift_hspans(w, es, off, -n);
+    shift_anchors(w, es, doc, off, -n);
 }
 
 // A caret on `line` keeping column `col` when the line is long enough —

@@ -4,3 +4,5 @@ span c=bold s=12 e=16
 span c=bold s=22 e=28
 all c kept: yes
 all shifted: yes
+mark=14 bend=24
+after-erase mark=10 bend=20 unset=-1
