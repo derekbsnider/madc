@@ -246,12 +246,36 @@ written (`tmp/logs/`); no battery until the V5 seam.
   `split` yet — that is V2b). Targeted gates green on the container
   (`test_tui_model` 27, `test_web_model` 20, the five madcide tests, the gui
   stage JIT/exe/obj); no battery (the V5 seam owns it).
-- **NEXT = V2b** — the editor region a real split tree: `pane_tabs` (ring ↔
-  tabs mode, windows ↔ stack mode), JOE's window verbs over the leaf,
-  `viewsplit right|bottom [repr]` / `viewfocus` / `viewtab` / `viewopen` /
-  `viewclose` as registry rows + dispatch + profile spellings, the composer
-  walks `layout["editor"]` emitting a `split` group, `es.fview` = the focused
-  leaf's active tab's View. THE side-by-side the owner asked about.
+- **V2b — the editor region a real split tree (CORE DONE, three commits):**
+  - part 1 (`6e202e7f`) — the composer WALKS `layout["editor"]`: a sole leaf
+    emits flat (the JOE screen, byte-identical); a split emits a `split` group
+    of leaf groups. `viewsplit right|bottom` / `viewfocus next|prev` /
+    `viewclose` as enum + registry rows + dispatch + the colon line; the
+    value-typed tree's mutations (split / collapse / focus-move); an unfocused
+    leaf parks its caret on its node (`pcaret`), the focused leaf IS the live
+    es state.
+  - part 2 (`ae2ef3b5`) — `viewsplit right mc11` = the code-View split (source
+    left, MC11 right): `make_code_view` (enter_lens's standalone sibling); the
+    full focus handoff (`editor_enter_leaf`: fview + caret + the read-only
+    verdict, so a code-View pane refuses edits as itself); `viewopen mc11 |
+    c11 | cpp | source` re-represents the focused leaf's View in place; the
+    composer snapshots a code-View leaf's render buffer with its lens hints.
+  - part 3 (`35d2dff5`) — the split group carries `region: editor` so the
+    page docks it into the editor slot (the leaf's status/edit carry none —
+    each leaf is a flex column); `tests/gui/madcide_layout` is the DOM gate
+    (`split=vertical flex=row cols=2 side-by-side=1 content-differs=1`).
+  - Gates green (targeted, no battery): testmadcide `view-*` pins (5/5
+    madcide tests), GUI 18/18 x3 incl. the new `madcide_layout`,
+    `test_tui_model` 27 / `test_web_model` 20 unaffected, all
+    `check-madcide-*` + dialect gates.
+  - **V2b follow-up (deferred, owner-facing UI — colon access already
+    works):** the `default.menu` titles + JOE/pico/emacs/neovim key
+    spellings; `viewtab` (a second tab on one leaf) + the pane tab strip
+    (`pane_tabs` accessor).
+- **NEXT = V2c** — `viewdock`; `<base>.prj.layout` persistence under the
+  manifest rule; the page's splitter → a `layout` event → the session's
+  size; docs (`docs/madcide.md`, the design doc §4 row V2 ✅), CHANGELOG,
+  mirrors.
 
 ## 4. What does not change
 

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### madcide: the editor region is a real split tree — the side-by-side (2026-09-10)
+
+- The client-server arc V2b: the editor region of a `.layout` is a tree of
+  splits over editor panes, and the composer WALKS it. A sole pane emits the
+  JOE screen, byte-identical; `viewsplit right|bottom` turns the focused pane
+  into a split rendered as a flex row/column of leaf columns (the grid divides
+  a rectangle, the page a flex box).
+- **The side-by-side the owner asked about:** `viewsplit right mc11` puts the
+  source on the left and its MC11 lowering (a code View of the buffer's render)
+  on the right — live source, its IR beside it (`c11` / `cpp` too). `viewfocus
+  next|prev` moves between panes with a full handoff (the focused pane's View
+  is live, its caret its own; a code-View pane is read-only). `viewclose`
+  collapses a pane back to its sibling; `viewopen <repr>` re-represents the
+  focused pane's View in place. Every verb reaches the `:` line
+  (`:viewsplit right mc11`) and the action dispatcher.
+- Deferred to a V2b follow-up: the menu titles + key spellings and `viewtab`
+  (a second tab on one pane); then V2c (`viewdock`, `<base>.prj.layout`
+  persistence, docs).
+
 ### madcide: containers and layouts — the workbench is client data (2026-09-09)
 
 - **The layout is data on the client** (client-server design §2.2, slice
