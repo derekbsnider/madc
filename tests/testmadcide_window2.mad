@@ -90,6 +90,20 @@ int main()
     S.attach(w, esB);
     println("B-shows-edit: {}", client_shows(S, w, doc, "WINDOWTWO") ? "yes" : "no");
 
+    // The viewwindow COMMAND parks a spawn that run_ide's loop turns into a
+    // real second window (the loop half is the GTK smoke / owner gate). A
+    // windowed client parks it; a terminal client refuses — a second window
+    // needs a window target.
+    S.attach(w, esA);
+    S.panel(true);			// esA renders regions: a windowed client
+    S.post(doc, cmdVIEWWINDOW);
+    long sdoc = 0;
+    bool parked = S.take_spawn(sdoc);
+    println("viewwindow-parked: {}", parked && sdoc == doc ? "yes" : "no");
+    S.panel(false);			// a terminal-style client (one tty)
+    S.post(doc, cmdVIEWWINDOW);
+    println("viewwindow-refused: {}", S.take_spawn(sdoc) ? "spawned" : "refused");
+
     S.close();
     return 0;
 }

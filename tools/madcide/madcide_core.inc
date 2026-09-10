@@ -66,6 +66,11 @@ class IdeSession
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
+	long spawn_view(long doc);	// a NEW client view over the shared
+					// world + `doc` (viewwindow): a fresh
+					// es built like open()'s, returned to
+					// the client to open a frontend on;
+					// 0 = the profile + rescue both failed
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
 					// arm: the hit node's window tag
@@ -124,6 +129,9 @@ class IdeSession
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
 	bool take_request(var &out);	// drain the parked terminal request
+	bool take_spawn(long &doc);	// drain a parked viewwindow spawn
+					// (the doc the new window views);
+					// false = none
 	void term_exec(var &req);	// run the guest between the
 					// client's suspend and resume
 	void close();			// stop builds, drain tasks, close
@@ -2469,6 +2477,7 @@ void view_close(long w, long es, long doc);
 void view_open(long w, long es, long doc, long lang);
 void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
 void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
+void view_window(long w, long es, long doc);		// V3b: a second window
 long viewsplit_dir_of(var &arg);
 long viewfocus_dir_of(var &arg);
 long viewrepr_lang_of(var &word);
@@ -5394,6 +5403,11 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	view_size(w, es, zslot, zsize);
 	return true;
     }
+    if ( verb == "viewwindow" )
+    {
+	view_window(w, es, doc);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -6029,6 +6043,25 @@ void view_size(long w, long es, long slot, long size)
     ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
 }
 
+// viewwindow (client-server V3b-2b): a SECOND window on the session — a new
+// client viewing the same document (design §2.3). Opening a frontend is the
+// CLIENT layer's job (the gateway seam: the session never touches a
+// frontend handle), so this parks the doc-to-view on the requesting
+// client's es; run_ide's loop drains it (take_spawn), opens the frontend,
+// and adds the client record. Only a windowed client can host a second
+// window in one process — a terminal client (a single tty) refuses (the
+// TUI's own multi-pane shape is its layout, not a second frontend).
+void view_window(long w, long es, long doc)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "viewwindow: a second window needs a window target (--gui).");
+	return;
+    }
+    ui::set(w, es, "spawnview", doc);
+    ui::set(w, es, "msg", "Opening a new window…");
+}
+
 // Apply ONE semantic event (the value shapes the engine's event query
 // produces — action events from the bindings table included) — the
 // session surface. False = quit.
@@ -6192,6 +6225,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		view_size(w, es, zslot, zsize);
 		return true;
 	    }
+	    case cmdVIEWWINDOW:
+		view_window(w, es, doc);
+		return true;
 	    case cmdSAVE:
 		return save_and_check(w, es, doc);
 	    case cmdSAVEQUIT:
@@ -7482,14 +7518,39 @@ bool init_view_es(long w, long es, long doc, const char *path)
 // failed.
 long spawn_view_es(long w, long doc, const char *path)
 {
+    var p = path;		// ring discipline: own before the ring-using
+				// derive_access / init below clobber the slot
     long es = ui::create(w, "editor-state");
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);
     derive_access(w, es);
-    if ( !init_view_es(w, es, doc, path) )
+    if ( !init_view_es(w, es, doc, p.c_str()) )
 	return 0;
     return es;
+}
+
+// The session half of a viewwindow spawn (client-server V3b-2b): a fresh
+// client VIEW over the shared world + `doc`. The client layer (run_ide)
+// asks for it, then opens a frontend on the returned es and adds the
+// client record — the seam keeps the session free of frontend handles.
+long IdeSession::spawn_view(long doc)
+{
+    var dp;
+    ui::get(dp, w, doc, "path");
+    return spawn_view_es(w, doc, dp.c_str());
+}
+
+// Drain a parked viewwindow spawn: the doc a new window should view, left
+// on the requesting client's es by the viewwindow command. 0 = none.
+bool IdeSession::take_spawn(long &doc)
+{
+    long d = es_int(w, es, "spawnview", 0);
+    if ( d == 0 )
+	return false;
+    ui::set(w, es, "spawnview", 0);
+    doc = d;
+    return true;
 }
 
 // Full session startup: the world, the launch document, the data loads

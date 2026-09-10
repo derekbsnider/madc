@@ -6,3 +6,5 @@ shared-doc: same=yes
 A-caret=9 B-caret=0
 A-shows-edit: yes
 B-shows-edit: yes
+viewwindow-parked: yes
+viewwindow-refused: refused

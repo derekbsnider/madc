@@ -128,6 +128,33 @@ long client_index_by_t(var &clients, long t)
     return -1;
 }
 
+// The client half of a viewwindow spawn (client-server V3b-2b): the session
+// built a fresh es over the shared world (S.spawn_view); here the client
+// opens a FRONTEND on it and joins it to the roster — the seam that keeps
+// frontend handles out of the session. A refused es (profile+rescue both
+// failed) or a refused open (no window host — its reason on stderr) leaves
+// the roster unchanged.
+void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
+		  long &nextid, long sdoc)
+{
+    long nes = S.spawn_view(sdoc);
+    if ( nes == 0 )
+	return;
+    long nt = ui::open(lvl);
+    if ( nt == 0 )
+	return;
+    // The new client's pushed session facts (its own es).
+    S.attach(w, nes);
+    bool ht = ui::level_of(nt) <= ui::TUI;
+    S.terminal(ht);
+    S.dialogs(ui::dialogs(nt));
+    S.panel(!ht);
+    var cN;
+    make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
+    clients.push(cN);
+    nextid = nextid + 1;
+}
+
 void run_ide(const char *path, bool ro, ui::level lvl)
 {
     IdeSession S;
@@ -154,6 +181,7 @@ void run_ide(const char *path, bool ro, ui::level lvl)
     var c0;
     make_client(c0, 0, t, S.es, trLOCAL, lvl, tierOWNER);
     clients.push(c0);
+    long nextid = 1;		// client 0 is the launch window; spawns count up
     bool run = true;
     while ( run )
     {
@@ -205,8 +233,17 @@ void run_ide(const char *path, bool ro, ui::level lvl)
 	long adoc = S.active(doc);
 	run = S.apply_ide_event(adoc, ev);
 	client_service(S, ct);		// the next compose re-binds keys
+	// A viewwindow command parks a spawn on THIS client's es (S is still
+	// attached to it); open the frontend and join it to the roster.
+	long sdoc;
+	if ( S.take_spawn(sdoc) )
+	    spawn_client(clients, S, w, lvl, nextid, sdoc);
     }
-    // Close every client's frontend, then the session (the shared world).
+    // Close the session (task_drain is global, so no spawned client's
+    // background parse outlives the world), then every client's frontend.
+    // Per-spawned-es parse-handle close + a live build's stop on a
+    // non-attached client ride the window-close hardening follow-up (the
+    // process exits here, so the OS reclaims them; task_drain is the safety).
     long nc = php::count(clients);
     S.close();
     for ( long i = 0; i < nc; i = i + 1 )
