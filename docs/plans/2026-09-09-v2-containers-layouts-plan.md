@@ -272,10 +272,40 @@ written (`tmp/logs/`); no battery until the V5 seam.
     works):** the `default.menu` titles + JOE/pico/emacs/neovim key
     spellings; `viewtab` (a second tab on one leaf) + the pane tab strip
     (`pane_tabs` accessor).
-- **NEXT = V2c** — `viewdock`; `<base>.prj.layout` persistence under the
-  manifest rule; the page's splitter → a `layout` event → the session's
-  size; docs (`docs/madcide.md`, the design doc §4 row V2 ✅), CHANGELOG,
-  mirrors.
+- **V2c — `viewdock`; persistence; docs (IN PROGRESS):**
+  - part 1 (`939dce7c`) — `viewdock <left|right|top|bottom>` (cmdVIEWDOCK:
+    enum + registry row + dispatch + the colon line) moves the FOCUSED chrome
+    pane (the last View brought up, `chromelast`) to a slot and side;
+    left/right dock the sidebar, top/bottom the panel; an absent/unknown
+    direction refuses. `layout_to_text` is parse_layout's STRUCTURAL inverse
+    (positions / sizes / modes / hidden — NOT the tabs' contents; an editor
+    pane persists as source); `layout_persist` writes `<base>.prj.layout`
+    beside the manifest SILENTLY and ONLY when a manifest is open (the
+    implicit project writes no artifact); `proj_load` restores it at project
+    open. Gate (the plan's V2c gate, MET): testmadcide_layout round-trips
+    save→parse (`roundtrip-default` / `roundtrip-split` equal=1); testmadcide
+    `v2c-implicit` (docked side=right, file ABSENT), `v2c-persist` (file
+    present once a manifest opens), `v2c-reopen` (the dock comes back from the
+    file after the live layout is reset). 3/3 madcide tests green on the
+    container; `check-madcide-command-registry` / `check-madcide-enums` /
+    `check-dialect-literals` / `check-expect-twins` OK. No battery (V5 seam).
+  - **REMAINING (part 2, a larger ENGINE feature):** the page's splitter drag
+    → a `layout` event → the session's chrome-pane `size` (so the session
+    tree is the one truth; localStorage becomes a per-viewer cache read only
+    when present). It needs a NEW `ui::event_kind::layout` carrying slot+size
+    — unlike `resize` (rows/cols) or `action` (a name), that shape is not an
+    existing `tui_event`, so it touches `bits/ui_enums` (the enum), the
+    `tui_event` struct (fields), `web_model.h` (the parse arm), the
+    tui_event→dialect bridge (`ns_ui.cpp`) and `page.js` (post on drag; read
+    the emitted size when localStorage is empty). Owner: pick the event-
+    carrying shape (new `tui_event` fields vs. reuse) before it lands.
+  - **REMAINING (part 3, docs closeout):** `docs/madcide.md` (the view*
+    commands + layouts + persistence), the design doc §4 row V2 ✅, CHANGELOG
+    complete, mirrors — after part 2 so V2 is documented whole.
+- **V2b follow-up still deferred** (owner-facing UI — colon access works):
+  the `default.menu` titles + JOE/pico/emacs/neovim key spellings for ALL the
+  view* verbs (viewsplit/focus/close/open/dock); `viewtab` + the pane tab
+  strip. The key seats are ONE owner decision, batched.
 
 ## 4. What does not change
 

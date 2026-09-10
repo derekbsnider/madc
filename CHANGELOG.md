@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### madcide: viewdock + the layout persists beside the manifest (2026-09-10)
+
+- The client-server arc V2c (part 1): `viewdock <left|right|top|bottom>`
+  (`:viewdock right`) moves the focused chrome pane (the last View brought up)
+  to a slot and side — left/right dock the sidebar, top/bottom the panel; an
+  absent or unknown direction refuses rather than docking to a default place.
+- **The workbench persists.** `layout_to_text` is `parse_layout`'s structural
+  inverse, and a client's live layout is written beside the manifest as
+  `<base>.prj.layout` (positions, sizes, modes, hidden flags — NOT the tabs'
+  contents; an editor pane persists as a source pane). It is written SILENTLY
+  and ONLY when a manifest is open — the implicit single-file project writes no
+  artifact — and restored at project open. A docked pane comes back on reopen;
+  a round-trip save→parse rebuilds an equal tree.
+- Remaining in V2c: the page's splitter drag → a `layout` event → the
+  session's chrome-pane size (a new `ui::event_kind::layout`; makes the layout
+  the size owner, localStorage a per-viewer cache); then the docs closeout
+  (`docs/madcide.md`, the design doc §4 row V2 ✅). The view* key/menu seats
+  stay a deferred owner decision, batched.
+
 ### madcide: the editor region is a real split tree — the side-by-side (2026-09-10)
 
 - The client-server arc V2b: the editor region of a `.layout` is a tree of
