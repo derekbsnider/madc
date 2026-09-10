@@ -42,9 +42,11 @@ In scope: the View object, containers (pane / tab / window) and layouts as
 data, the multi-client loop (several windows on one UI thread), the change
 event log, correlation maps (source ↔ MC11 first), presence, permission
 tiers, the remote transports and the headless shape, and the
-thread-safety contract of every piece. Out of scope (design-for only):
-federation between Nexus nodes (Nexus §17–§24), the debugger/profiler tier
-(ruled: a track after the nexus axes).
+thread-safety contract of every piece. Out of scope (design-for only, held
+by the §2.8 invariants): federation between Nexus nodes (Nexus §17–§24) — the
+**platform-node build/test mesh** and the external clients (a **VS Code
+extension**, an LSP editor) are its concrete near cases (§2.7) — and the
+debugger/profiler tier (ruled: a track after the nexus axes).
 
 ## 1. Where the code stands (facts, 2026-09-09)
 
@@ -510,16 +512,86 @@ git adapter (the nexus axes slice).
   suits its needs, wants and capabilities (§6). The MCP seat is an adapter over `api`; the LSP endpoint is a
   second adapter (semanticTokens ← spans, publishDiagnostics ← diags rows,
   documentSymbol ← outline, hover ← `parse_enclosing`).
+- **VS Code (and any LSP editor) is a first-class `api` client — the
+  acceptance test that the api is client-general** (owner 2026-09-10). VS
+  Code plays TWO roles at once, both ordinary clients of what this arc
+  builds: (a) an **LSP client** for language features (diagnostics,
+  completion, hover, definition, references, outline, semantic tokens)
+  through the LSP adapter — stock VS Code, essentially no extension code; (b)
+  a rich **`api` client — the EXTENSION** — for what LSP cannot express: the
+  live source↔MC11 View (a webview panel loading the SAME `page.js` over the
+  `api` ws — a ws client already receives the composed tree as DOM ops, the
+  `ws` bullet above), and **operator ORCHESTRATION** of the platform-node
+  mesh (native VS Code tree views / commands over the api's RAW projections:
+  the node mesh + capabilities, build / test dispatch to a node, presence,
+  the edit-history View). If VS Code can orchestrate the whole mesh through
+  the api, the api is complete — and every LSP editor speaks madc as a bonus.
 - **Headless** = a session with zero windows and one or more `api` / `ws`
   clients: `madcide --serve <addr> [file|manifest]`. The fake host
   (`register_host` / `post_event`, display-free) already proves the
   session runs without a display; the headless gates are its first
   formal clients.
-- **Build topology** (owner 2026-09-08): a headless head coordinating
-  headless servers on the build hosts, project mirrored, builds triggered
-  under permission — `remote_build.sh` retires when it exists. This rides
-  the `api` transport + the event log (the mirror's splice stream) + tiers;
-  it is the far slice of this arc, after the MCP seat pays for itself.
+- **The platform-node build/test mesh** (owner 2026-09-08, framed 2026-09-10)
+  — a NAMED post-arc track, not abstract federation. Each machine runs a
+  madcide node offering its platform's services; the authority splits by
+  DOMAIN (Nexus §21 — never one-master-for-everything, never
+  CRDT-for-everything): the **editing** domain has ONE authority (the
+  "master" — a project's source is edited in arrival order, not a CRDT, §2.4),
+  while EACH node is authoritative for ITS OWN platform's **build / run /
+  test** results (the mac-arm64 node alone can say whether it builds on
+  darwin-arm64). "Master" is therefore a ROLE scoped to editing (assignable,
+  Nexus §17: a server node is a peer with different responsibilities), not
+  omni-authority. The project is mirrored by the event log's splice stream
+  (§2.4); a build/test is a node-routed verb (§2.8 invariants 3, 5) whose
+  result streams back attributed to the serving node; capability negotiation
+  is symmetric (a node declares what it OFFERS, §2.8 invariant 2). It rides
+  the `api` transport + the event log + tiers — all laid by V1–V6. The
+  motivating **dogfood is THIS project's own dev environment** — QNAP, the
+  WSL/docker Linux build container, Windows 11, MacBook Pro x86, MacBook Pro
+  arm64 — for which `scripts/remote_build.sh` + the lane ledger are the
+  MANUAL precursor; the mesh makes it first-class and retires them. The far
+  slice of the effort, after the MCP seat pays for itself; the arc is
+  DESIGN-FOR it (§2.8), never building it.
+
+### 2.8 Groundwork invariants — held so the mesh and external clients are reachable
+
+The platform-node mesh (§2.7) and the external clients (a VS Code extension,
+an LSP editor, §2.7) are OUT of the V1–V7 arc, but the arc is DESIGN-FOR them:
+six invariants, held by every slice, keep them a transport + a router + an
+adapter rather than a re-architecture. A slice that breaks one is wrong even
+when its own gate is green — this list is the "does it block the vision?"
+checklist for the arc.
+
+1. **The Client record is transport/level/capability-general from V3b.** A
+   remote platform node, an LSP editor and a VS Code extension are each just a
+   client with a different `transport` (local | ws | api) and capability set —
+   `{id, transport, level, tier, last_seq, capabilities}`. Only local windows
+   use it this week; the record carries the whole shape anyway. A
+   `client == local window` assumption is the corner that costs the mesh.
+2. **Capability negotiation is symmetric — consume AND offer.** An `api`
+   client declares what it CONSUMES (projections, §2.7); a node also declares
+   what it OFFERS — `{platform, toolchains, serves: [build, run, test]}`
+   (Nexus §21 authority-declaration). Bidirectional by design, not
+   one-directional plus a later bolt-on.
+3. **Every command envelope carries a routing slot.** `{cmd, args, seq}` is
+   `{cmd, args, seq, target?}` — `target` = a client/node id or a capability
+   requirement ("needs darwin-arm64"); null = run here. That one optional
+   field is the difference between node-dispatchable and a rewritten dispatcher.
+4. **The change-event log (§2.4) is the ONE replication substrate.** A remote
+   node mirrors code by replaying splices since its `last_seq`; so the log —
+   snapshot + splices, `actor` + `causal_parent`, per project/document (the
+   sync unit, Nexus §19) — is the ONLY mutation path (V3a's one-mutation-owner
+   is its floor). Never a mutation that bypasses the log.
+5. **Services are node-routable verbs whose results are events/projections
+   tagged by the serving node.** Build / Run / Test / Check already produce
+   projections; their results flow as events carrying WHICH node produced
+   them, so a build dispatched to mac-arm64 comes back attributed — build
+   output is never local-only.
+6. **The renderer is decoupled from the local host.** `page.js` / `web_model`
+   run as a REMOTE client (a browser, a VS Code webview over a socket), not
+   only inside the bundled window — the ws-remote-window shape (§2.7) already
+   forces this; no local-host assumption may creep into the renderer, because
+   the VS Code live-View panel IS `page.js` over the `api` ws.
 
 ## 3. Thread-safety contracts (the law: stated per piece)
 
