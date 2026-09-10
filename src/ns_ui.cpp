@@ -206,6 +206,14 @@ struct ui_frontend
     // Refill `queue` with the next batch of semantic events (blocks);
     // false = the input source ended.
     virtual bool read_events() = 0;
+    // The NON-blocking pump for the multi-client demux (ui::event_any, V3b):
+    // make at most one bounded round of progress and refill `queue` if an
+    // event is now available; true = the queue has events. A sole client
+    // (the grid, the line, one window) never reaches here — event_any takes
+    // the blocking read_events path for N == 1 — so the default is that
+    // path; the DOM frontend overrides it with a tick-bounded round so N
+    // windows share one thread without one starving the others.
+    virtual bool poll_events() { return read_events(); }
     virtual void size(size_t &rows, size_t &cols) = 0;
     virtual void set_bindings(const madc::hub::tui_bindings &b) = 0;
     virtual const std::string &pending_chord() const = 0;
@@ -497,6 +505,48 @@ struct ui_dom_frontend : ui_frontend
 	std::string json = inbound.front();
 	inbound.pop_front();
 	queue = model.apply_input(json);
+	next_event = 0;
+	return true;
+    }
+    // The multi-client demux pump (ui::event_any): ONE bounded round toward
+    // an event, never blocking on THIS window's own post. The platform loop
+    // is process-global, so the `tick` op pumps EVERY window's callbacks for
+    // a bounded slice (madcwebview_tick) — an event on any window lands in
+    // its own frontend's `inbound`, and event_any polls each frontend, so no
+    // window starves another (the run() op, which blocks until THIS window
+    // posts and conflates another window's post with a close, is never used
+    // here). Cooperative tasks progress the same as in read_events. Returns
+    // true when this frontend now has a queued event.
+    bool poll_events()
+    {
+	if ( inbound.empty() )
+	{
+	    __madc_task_fire_due();
+	    if ( inbound.empty() && __madc_task_runnable() > 0 )
+	    {
+		__madc_yield();
+		queue.clear();
+		madc::hub::tui_event e;
+		e.kind = madc::hub::tui_event_kind::wake;
+		queue.push_back(e);
+		next_event = 0;
+		return true;
+	    }
+	    if ( inbound.empty() )
+	    {
+		// A bounded pump of the process-global loop. A host without a
+		// tick (a fake/test host) pumps its run once instead — it
+		// posts synchronously and returns, never blocking.
+		if ( ops->tick )
+		    ops->tick(host, WEB_TASK_TICK_MS);
+		else if ( ops->run )
+		    ops->run(host);
+	    }
+	}
+	if ( inbound.empty() )
+	    return false;
+	queue = model.apply_input(inbound.front());
+	inbound.pop_front();
 	next_event = 0;
 	return true;
     }
@@ -1837,6 +1887,67 @@ bool event(madc::value &out, int64_t t, int64_t w)
 	    return false;
     out = ui_event_value(f->queue[f->next_event++], s, f);
     return true;
+}
+
+// ui::event_any — the ONE blocking decision over N frontends (client-server
+// arc V3b, the multi-client loop). `targets` is an array of ui handles; the
+// returned event carries `target` = the handle it came from, so the loop
+// tags each event to its client. A dead handle is skipped; false = every
+// live target ended.
+//
+// A SOLE target is the single-client path, BYTE-IDENTICAL to ui::event: it
+// blocks in read_events (no poll cost), so `madcide --gui` / the TUI / the
+// line client are unchanged. N targets share ONE thread — each is polled a
+// bounded round (poll_events) until one has an event; the process-global
+// platform loop, pumped through the bounded `tick`, fills whichever window
+// posted, so no window starves another (design §2.3). A real window CLOSE
+// (removing a target, and false when the last ends) is the flagged
+// follow-up — it needs the window-destroyed signal, and only the fake host
+// and a GTK smoke exercise N > 1 in-container until then.
+bool event_any(madc::value &out, madc::value &targets, int64_t w)
+{
+    out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    std::vector<int64_t> handles;
+    std::vector<ui_frontend *> fs;
+    if ( targets.is_array() )
+    {
+	const std::vector<madc::value> &ts = targets.as_array();
+	for ( size_t i = 0; i < ts.size(); ++i )
+	{
+	    int64_t h = ts[i].as_integer();
+	    ui_frontend *f = ui_frontend_get(h);
+	    if ( f )
+	    {
+		handles.push_back(h);
+		fs.push_back(f);
+	    }
+	}
+    }
+    if ( fs.empty() )
+	return false;
+    if ( fs.size() == 1 )
+    {
+	if ( !event(out, handles[0], w) )
+	    return false;
+	out.object()["target"] = madc::value((int64_t)handles[0]);
+	return true;
+    }
+    for ( ;; )
+    {
+	for ( size_t i = 0; i < fs.size(); ++i )
+	    if ( fs[i]->next_event < fs[i]->queue.size() )
+	    {
+		out = ui_event_value(fs[i]->queue[fs[i]->next_event++], s,
+				     fs[i]);
+		out.object()["target"] = madc::value((int64_t)handles[i]);
+		return true;
+	    }
+	for ( size_t i = 0; i < fs.size(); ++i )
+	    fs[i]->poll_events();
+    }
 }
 
 // The chord entered so far (canonical spelling, e.g. "^k") — empty when

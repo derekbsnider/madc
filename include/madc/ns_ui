@@ -364,6 +364,11 @@ namespace ui {
     bool    bind_keys(int64_t t, value &table);
     bool    validate_keys(value &table);
     bool    event(value &out, int64_t t, int64_t w);
+    // The multi-client blocking decision (V3b): the next event from ANY of
+    // `targets` (an array of ui handles), tagged with out["target"] = the
+    // handle it came from. A sole target is byte-identical to event();
+    // false when every live target has ended.
+    bool    event_any(value &out, value &targets, int64_t w);
     bool    suspend(int64_t t);
     bool    resume(int64_t t);
     void    refresh(int64_t t);
