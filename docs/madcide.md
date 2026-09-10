@@ -147,3 +147,32 @@ The window arranges the editor with the pieces an IDE user expects:
 Nothing the window shows is a second implementation: every dialog, tab
 and menu item is the same command the terminal's keys run, composed once
 and rendered by each face.
+
+## Split views and layouts
+
+The editor region is a split tree — one pane, or a `split` of panes side by
+side — and the sidebar and bottom panel are fixed-slot chrome. The colon line
+(`^N` then `:`, or a bare `:` in vi) drives it:
+
+- `:viewsplit right [mc11|c11|cpp]` splits the editor: the focused pane on the
+  left, a new pane on the right. With a representation the new pane is a
+  read-only code View of the buffer's lowering — **source on the left, its
+  MC11 on the right** (V5 will correlate their carets). `:viewsplit bottom …`
+  splits horizontally instead.
+- `:viewfocus next|prev` moves the focus between panes; `:viewopen
+  mc11|c11|cpp|source` re-represents the focused pane in place; `:viewclose`
+  closes it (the split collapses to its sibling; the first pane stays open —
+  quit closes that).
+- `:viewdock left|right|top|bottom` moves the focused chrome pane (the sidebar
+  or the panel) to a slot and side; `:viewsize sidebar|panel <percent>` sizes a
+  band — the same size the window's splitter drag sets.
+
+The layout is client data — a `.layout` profile through the same parser family
+as the keys, menu and theme. In a project it is saved beside the manifest as
+`<base>.prj.layout` (positions, sizes, hidden flags — not the panes' contents)
+and restored when the project reopens; a single-file session keeps it in memory
+(no stray artifact). Because the splitter and `:viewsize` set the size the
+session owns, the terminal and a fresh window share it.
+
+Dedicated keys and menu items for the `view*` commands are a coming addition;
+today they reach the colon line — and any client that speaks the registry.

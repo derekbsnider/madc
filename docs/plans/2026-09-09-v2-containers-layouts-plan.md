@@ -289,23 +289,29 @@ written (`tmp/logs/`); no battery until the V5 seam.
     file after the live layout is reset). 3/3 madcide tests green on the
     container; `check-madcide-command-registry` / `check-madcide-enums` /
     `check-dialect-literals` / `check-expect-twins` OK. No battery (V5 seam).
-  - **REMAINING (part 2, a larger ENGINE feature):** the page's splitter drag
-    → a `layout` event → the session's chrome-pane `size` (so the session
-    tree is the one truth; localStorage becomes a per-viewer cache read only
-    when present). It needs a NEW `ui::event_kind::layout` carrying slot+size
-    — unlike `resize` (rows/cols) or `action` (a name), that shape is not an
-    existing `tui_event`, so it touches `bits/ui_enums` (the enum), the
-    `tui_event` struct (fields), `web_model.h` (the parse arm), the
-    tui_event→dialect bridge (`ns_ui.cpp`) and `page.js` (post on drag; read
-    the emitted size when localStorage is empty). Owner: pick the event-
-    carrying shape (new `tui_event` fields vs. reuse) before it lands.
-  - **REMAINING (part 3, docs closeout):** `docs/madcide.md` (the view*
-    commands + layouts + persistence), the design doc §4 row V2 ✅, CHANGELOG
-    complete, mirrors — after part 2 so V2 is documented whole.
+  - part 2 (`4096c832`) — the splitter feeds the session's size (OWNER-approved
+    Option C: a `viewsize` COMMAND, not a new wire event kind). `viewsize
+    <sidebar|panel> <percent>` (cmdVIEWSIZE + colon) sets a chrome band's size
+    on the session and persists it; the page's splitter posts
+    `{action:'viewsize', arg:'sidebar 40'}` on release (reusing the action+arg
+    input path — ZERO engine change); the applier reads the composer's emitted
+    `size` op field into `--sidebar-w` / `--panel-h` when the viewer has no
+    localStorage, so a fresh window matches the TUI. Behaviour change
+    (intended, §2.4): a chrome band comes up at its layout size, not `auto`
+    (`madcide_resize` re-pinned var-set=0→1). Gate: testmadcide v2c-size /
+    v2c-reopen; GUI 18/18 x3 incl. madcide_layout's size probe
+    (`size-pct=35`); check-madcide-* / expect-twins OK.
+  - part 3 (docs) — `docs/madcide.md` "Split views and layouts"; the design
+    doc §4 row V2 ✅; CHANGELOG; mirrors. **V2 is COMPLETE.**
 - **V2b follow-up still deferred** (owner-facing UI — colon access works):
   the `default.menu` titles + JOE/pico/emacs/neovim key spellings for ALL the
-  view* verbs (viewsplit/focus/close/open/dock); `viewtab` + the pane tab
-  strip. The key seats are ONE owner decision, batched.
+  view* verbs (viewsplit/focus/close/open/dock/size); `viewtab` (a second tab
+  on one leaf) + the pane tab strip. The key seats are ONE owner decision,
+  batched.
+- **NEXT = V2.5** (the `ui::LINE` client): `ui_line_frontend`,
+  `ui::open(ui::LINE)`, the colon interpreter as the command language. Then
+  V3 (clients + windows), V4 (event log), V5 (correlation / `viewsync`) → the
+  V1–V5 SEAM (the ONE battery, lane records, develop merge).
 
 ## 4. What does not change
 

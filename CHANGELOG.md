@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### madcide: layouts persist and the splitter feeds the session (V2c) (2026-09-10)
+
+- The client-server arc V2c (part 2): the page's splitter drag now makes the
+  **session's layout the size owner**. `viewsize <sidebar|panel> <percent>`
+  (`:viewsize panel 30`) sets a chrome band's size on the session and persists
+  it; the splitter posts it on release (`{action:'viewsize', arg:'sidebar
+  40'}` — reusing the action+arg path, no new wire event kind), and a fresh
+  web viewer with no localStorage renders the band at the layout size (matching
+  the TUI). This completes V2 (containers + layouts) — the `view*` menu titles,
+  key spellings and `viewtab` remain a deferred owner key-seat decision.
+
 ### madcide: viewdock + the layout persists beside the manifest (2026-09-10)
 
 - The client-server arc V2c (part 1): `viewdock <left|right|top|bottom>`
@@ -15,11 +26,8 @@
   and ONLY when a manifest is open — the implicit single-file project writes no
   artifact — and restored at project open. A docked pane comes back on reopen;
   a round-trip save→parse rebuilds an equal tree.
-- Remaining in V2c: the page's splitter drag → a `layout` event → the
-  session's chrome-pane size (a new `ui::event_kind::layout`; makes the layout
-  the size owner, localStorage a per-viewer cache); then the docs closeout
-  (`docs/madcide.md`, the design doc §4 row V2 ✅). The view* key/menu seats
-  stay a deferred owner decision, batched.
+- (Part 2, above, completes the splitter → the session's size. The view*
+  key/menu seats stay a deferred owner decision, batched.)
 
 ### madcide: the editor region is a real split tree — the side-by-side (2026-09-10)
 
