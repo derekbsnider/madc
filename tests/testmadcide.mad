@@ -2161,9 +2161,16 @@ int main()
     println("v2c-persist: file={} side={}",
 	    php::file_exists(vlay) ? "present" : "absent",
 	    ui::side_name(vlo["chrome"][0]["side"].as_integer()));
+    // viewsize: the splitter's post (`{action:'viewsize', arg:'panel 40'}`)
+    // sets the panel band to 40% on the SESSION and persists it — the layout
+    // owns the size, not the page's localStorage.
+    ev_action_arg(ve, "viewsize", "panel 40", ":viewsize panel 40");
+    V.apply_ide_event(vdoc, ve);
+    ui::get(vlo, V.w, V.es, "layout");
+    println("v2c-size: panel-size={}", vlo["chrome"][1]["size"].as_integer());
     // Reopen: reset the live layout to the default (the outline back on the
-    // LEFT), reload the project — the dock comes back from the FILE, not the
-    // live state we just reset.
+    // LEFT, the panel back to 25%), reload the project — BOTH the dock and the
+    // size come back from the FILE, not the live state we just reset.
     var vdef;
     var vderr;
     parse_layout(vdef, default_layout_text(), vderr);
@@ -2172,7 +2179,9 @@ int main()
     ui::get(vpf, V.w, V.es, "projfile");
     proj_load(V.w, V.es, vpf);
     ui::get(vlo, V.w, V.es, "layout");
-    println("v2c-reopen: side={}", ui::side_name(vlo["chrome"][0]["side"].as_integer()));
+    println("v2c-reopen: side={} panel-size={}",
+	    ui::side_name(vlo["chrome"][0]["side"].as_integer()),
+	    vlo["chrome"][1]["size"].as_integer());
     V.close();
     remove(vlp);
     remove(vlp2);

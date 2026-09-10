@@ -181,4 +181,5 @@ tty-run: prompt=1 answer=1 exit=1 live=0
 colon-quit: cont=0
 v2c-implicit: docked-side=right file=absent
 v2c-persist: file=present side=right
-v2c-reopen: side=right
+v2c-size: panel-size=40
+v2c-reopen: side=right panel-size=40

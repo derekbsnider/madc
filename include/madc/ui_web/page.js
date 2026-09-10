@@ -90,6 +90,19 @@
       v = Math.max(48, Math.min(lim * 0.9, v));
       wb.style.setProperty('--' + varName, Math.round(v) + 'px');
     }
+    // The layout OWNS the size (V2c): a release posts the slot's size as a
+    // percent of the workbench (`{action:'viewsize', arg:'sidebar 40'}`), so
+    // the session tree records it and it rides <base>.prj.layout and the TUI.
+    // localStorage stays the per-viewer cache (below); the post is the shared
+    // truth. slotName ('sidebar' / 'panel') is the session's slot word.
+    function postSize() {
+      var sr = slotOf(wb, slotName).getBoundingClientRect();
+      var wr = wb.getBoundingClientRect();
+      var dim = horizontal ? wr.height : wr.width;
+      if (dim <= 0) return;
+      var pct = Math.max(1, Math.min(90, Math.round((horizontal ? sr.height : sr.width) / dim * 100)));
+      post({ kind: 'action', action: 'viewsize', arg: slotName + ' ' + pct });
+    }
     sp.addEventListener('mousedown', function (e) {
       e.preventDefault(); e.stopPropagation();
       var slot = slotOf(wb, slotName).getBoundingClientRect();
@@ -108,6 +121,7 @@
       dragging = null;
       wb.classList.remove('resizing');
       store(varName, wb.style.getPropertyValue('--' + varName));
+      postSize();
     });
     if (horizontal) {
       sp.addEventListener('dblclick', function (e) {
@@ -122,6 +136,7 @@
           wb.style.setProperty('--' + varName, Math.round(wb.getBoundingClientRect().height * 0.85) + 'px');
         }
         store(varName, wb.style.getPropertyValue('--' + varName));
+        postSize();
       });
     }
   }
@@ -224,6 +239,20 @@
     var container = (op.parent ? nodes.get(op.parent) : null) || root;
     if (container !== root && (op.region || container.classList.contains('workbench'))) {
       makeWorkbench(container);
+      // The layout OWNS the chrome band's size when this viewer has no
+      // localStorage of its own (V2c): the composer emits the pane's `size`
+      // percent, read here into the workbench var (as px against the current
+      // workbench, the unit the splitter uses) so a fresh viewer and the TUI
+      // share the session's size. A stored per-viewer size still wins.
+      if (op.region === 'sidebar' || op.region === 'panel') {
+        var horiz = op.region === 'panel';
+        var vn = horiz ? 'panel-h' : 'sidebar-w';
+        if (op.size && !stored(vn)) {
+          var wr = container.getBoundingClientRect();
+          var px = Math.round((horiz ? wr.height : wr.width) * op.size / 100);
+          if (px > 0) container.style.setProperty('--' + vn, px + 'px');
+        }
+      }
       container = slotOf(container, op.region || 'foot');
     }
     // A split's direct child flexes along the split's axis: a `size` percent

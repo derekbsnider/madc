@@ -65,6 +65,9 @@ int main()
 		continue;
 	    stage = 1;
 	    S.viewport(ui::cols(t), ui::rows(t));
+	    // This viewer owns no per-viewer sizes, so the layout drives the
+	    // chrome band size (V2c) — clear localStorage to be sure.
+	    ui::eval_page(t, "try{localStorage.clear();}catch(e){}");
 	    // viewsplit right mc11: source left, its MC11 render right.
 	    long dir;
 	    long lang;
@@ -102,6 +105,34 @@ int main()
 	    {
 		println("LAYOUT collapse: {}", ev["text"]);
 		stage = 3;
+		// V2c: show the sidebar, size it to 35% via viewsize — the layout
+		// owns the size, so the page reads the emitted percent into
+		// --sidebar-w (this viewer has no localStorage). Probe the VAR
+		// ratio (deterministic, unlike the min-width-clamped width).
+		show_view(w, es, viewOUTLINE);
+		long zs;
+		long zsz;
+		var za = "sidebar 35";
+		viewsize_args(za, zs, zsz);
+		view_size(w, es, zs, zsz);
+		ui::set(w, es, "msg", "");
+		var tree2;
+		S.compose_ide_tree(tree2, doc);
+		ui::render(t, w, tree2);
+		ui::eval_page(t,
+		    "(function(){var wb=document.querySelector('.workbench');"
+		    "if(!wb){window.madc(JSON.stringify({kind:'snapshot',text:'no workbench'}));return;}"
+		    "var sb=wb.querySelector('[data-slot=\\\"sidebar\\\"]');"
+		    "var vw=getComputedStyle(wb).getPropertyValue('--sidebar-w').trim();"
+		    "var wbw=wb.getBoundingClientRect().width;"
+		    "var px=parseFloat(vw)||0;"
+		    "var pct=wbw>0?Math.round(px/wbw*100):0;"
+		    "window.madc(JSON.stringify({kind:'snapshot',text:'sidebar-shown='+(sb&&sb.children.length>0?1:0)+' size-pct='+pct}));})()");
+	    }
+	    else if ( stage == 3 )
+	    {
+		println("LAYOUT size: {}", ev["text"]);
+		stage = 4;
 		ui::close(t);
 	    }
 	}

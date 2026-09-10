@@ -2460,11 +2460,13 @@ void view_focus(long w, long es, long doc, long dir);
 void view_close(long w, long es, long doc);
 void view_open(long w, long es, long doc, long lang);
 void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
+void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
 long viewsplit_dir_of(var &arg);
 long viewfocus_dir_of(var &arg);
 long viewrepr_lang_of(var &word);
 void viewsplit_args(var &arg, long &dir, long &lang);
 void viewdock_target(var &arg, long &slot, long &side);
+void viewsize_args(var &arg, long &slot, long &size);
 
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
@@ -5378,6 +5380,14 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	view_dock(w, es, dslot, dside);
 	return true;
     }
+    if ( verb == "viewsize" )
+    {
+	long zslot;
+	long zsize;
+	viewsize_args(arg, zslot, zsize);
+	view_size(w, es, zslot, zsize);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -5947,6 +5957,72 @@ void view_dock(long w, long es, long slot, long side)
 				 ui::side_name(side)));
 }
 
+// `viewsize <sidebar|panel> <percent>` -> the chrome slot + a clamped size.
+// slotNONE / 0 for a missing or unknown word (view_size refuses). The slot
+// word converts at THIS input boundary (slot_of); the size is runtime numeric
+// data (a splitter's pixel drag turned into a percent), clamped to the
+// grammar's 1%..90%.
+void viewsize_args(var &arg, long &slot, long &size)
+{
+    slot = slotNONE;
+    size = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+	slot = slot_of(words[0]);
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	long v = php::intval(w1);
+	if ( v < 1 )
+	    v = 1;
+	if ( v > 90 )
+	    v = 90;
+	size = v;
+    }
+}
+
+// viewsize: set the chrome pane of a slot to a size percent and PERSIST — so
+// the SESSION's layout owns the size (it rides <base>.prj.layout and the TUI
+// shares it), not the page's per-viewer localStorage. The splitter drag posts
+// it (`{action:'viewsize', arg:'sidebar 40'}`); `:viewsize panel 30` reaches
+// it from the keyboard too. Refuses a non-band slot (the editor's sizing is
+// the split's) or a slot the layout has no pane for.
+void view_size(long w, long es, long slot, long size)
+{
+    if ( slot != slotSIDEBAR && slot != slotPANEL )
+    {
+	ui::set(w, es, "msg", "viewsize: size which? sidebar | panel <percent>.");
+	return;
+    }
+    if ( size < 1 )
+    {
+	ui::set(w, es, "msg", "viewsize: a size 1%..90%.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	c["size"] = size;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	layout_persist(w, es);
+	ui::set(w, es, "msg", format("{} sized to {}%.", slot_name(slot), size));
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
+}
+
 // Apply ONE semantic event (the value shapes the engine's event query
 // produces — action events from the bindings table included) — the
 // session surface. False = quit.
@@ -6100,6 +6176,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		long dside;
 		viewdock_target(ev["arg"], dslot, dside);
 		view_dock(w, es, dslot, dside);
+		return true;
+	    }
+	    case cmdVIEWSIZE:
+	    {
+		long zslot;
+		long zsize;
+		viewsize_args(ev["arg"], zslot, zsize);
+		view_size(w, es, zslot, zsize);
 		return true;
 	    }
 	    case cmdSAVE:
