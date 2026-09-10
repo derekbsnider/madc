@@ -7400,20 +7400,21 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 
 // ---- the session lifecycle (the gateway seam) ---------------------------
 
-// Full session startup: the world, the launch document, the data loads
-// (status format, theme, keybinding profile — all validated handle-free),
-// the buffer table, the project read-back, and the first lexical colour.
-// No terminal anywhere: the TUI client opens its own AFTER this and asks
-// for the key table. > 0 = the launch doc; 0 = unreadable path (the
-// caller reports); -1 = fatal, already reported on stderr.
-long IdeSession::open(const char *path0, bool ro)
+// The per-CLIENT view initialisation (client-server V3b-2). Everything a
+// client's editor-state bag needs once its world + document exist: its own
+// profile / theme / menu / layout, the buffer table's launch row, the
+// project read-back, and the first lexical colour. open() runs it for
+// client 0 over the es setup_editor created; spawn_view_es runs it for
+// every additional window onto the SAME session (viewwindow). ONE builder,
+// so a spawned window's bag is constructed by the same code as the launch
+// window's — a second window that renders the shared document identically.
+// Returns false ONLY when the startup profile AND the built-in rescue
+// bindings both fail (fatal; the caller reports the exit).
+bool init_view_es(long w, long es, long doc, const char *path)
 {
-    var p = path0;		// ring discipline: own the text first
-    w = ui::world_new();
-    long doc = setup_editor(w, p.c_str(), ro);
-    if ( doc == 0 )
-	return 0;
-    es = ui::entity_by_name(w, "editor-state");
+    var p = path;		// ring discipline: own the text first — the
+				// data loads below cycle the ring, so a bare
+				// `path` pointer read empty at launchpath.
     // resolve_profile_dir owns the search: source tree (beside this
     // file, from any cwd — php::dirname splits both separators; '/'
     // alone cost the first genuine-Win validation its keybindings),
@@ -7442,7 +7443,7 @@ long IdeSession::open(const char *path0, bool ro)
 	    var dir;
 	    ui::get(dir, w, es, "profile_dir");
 	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
-	    return -1;
+	    return false;
 	}
     }
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
@@ -7454,7 +7455,10 @@ long IdeSession::open(const char *path0, bool ro)
 				// container's View: the launch tab's
     // The project (owner rulings 2026-08-31): the launch file anchors the
     // implicit single-file project; a <base>.prj.json beside it IS the
-    // project and loads back (announced on the status line).
+    // project and loads back (announced on the status line). launchpath
+    // rides as a VAR (proj_add / layout_persist read it to place the
+    // manifest and the layout beside the file — a bare const char* here
+    // read back empty and dropped both artifacts at the root base).
     ui::set(w, es, "launchpath", p);
     proj_startup(w, es, doc);
     // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
@@ -7464,6 +7468,46 @@ long IdeSession::open(const char *path0, bool ro)
     // mechanism startup and buffer switches share (parse_pending).
     lex_first_spans(w, es, doc);
     ui::set(w, es, "pending_parse", 1);
+    return true;
+}
+
+// A fresh client VIEW onto an existing world + document (client-server
+// V3b-2, viewwindow). A second window is a second CLIENT with its OWN
+// editor-state bag over the SHARED document — its own caret, buffer ring,
+// layout and focus; the documents live in the world both share, so an edit
+// in either window mutates the one document and the other window shows it
+// on its next compose. Mirrors setup_editor's es half (the world verbs are
+// already bound and the document already loaded), then the SAME per-client
+// init open() runs. Returns the new es, or 0 if the profile + rescue both
+// failed.
+long spawn_view_es(long w, long doc, const char *path)
+{
+    long es = ui::create(w, "editor-state");
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);
+    derive_access(w, es);
+    if ( !init_view_es(w, es, doc, path) )
+	return 0;
+    return es;
+}
+
+// Full session startup: the world, the launch document, the data loads
+// (status format, theme, keybinding profile — all validated handle-free),
+// the buffer table, the project read-back, and the first lexical colour.
+// No terminal anywhere: the TUI client opens its own AFTER this and asks
+// for the key table. > 0 = the launch doc; 0 = unreadable path (the
+// caller reports); -1 = fatal, already reported on stderr.
+long IdeSession::open(const char *path0, bool ro)
+{
+    var p = path0;		// ring discipline: own the text first
+    w = ui::world_new();
+    long doc = setup_editor(w, p.c_str(), ro);
+    if ( doc == 0 )
+	return 0;
+    es = ui::entity_by_name(w, "editor-state");
+    if ( !init_view_es(w, es, doc, p.c_str()) )
+	return -1;		// the profile AND rescue bindings both failed
     return doc;
 }
 
