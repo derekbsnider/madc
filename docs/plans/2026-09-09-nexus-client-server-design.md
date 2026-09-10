@@ -451,6 +451,28 @@ ChangeEvent { seq, session, actor (client id), ts, verb, object (entity
 - **Not a CRDT:** one session is the single authority; verbs apply in
   arrival order (RULED); the log is what makes that order durable.
 
+- **Log structure (RECON 2026-09-10, owner-ruled):** the record is the
+  *redo* skeleton of a WAL — LSN-ordered records plus checkpoints — WITHOUT
+  WAL durability. `seq` IS the LSN: a monotonic per-session record COUNTER,
+  never a byte offset (compaction rewrites the file, so the identity must be
+  rewrite-stable; `event:N`, `last_seq`, `causal_parent` are all this
+  counter). Deliberately a redo / replication / audit log, NOT a
+  crash-recovery WAL — no write-ahead, no fsync, tail-loss tolerated; do not
+  "upgrade" it into fsync-per-append (that tanks edit latency and
+  contradicts the persistence ruling above). TWO record kinds in the one
+  JSONL stream, one `seq` axis: a splice record
+  `{seq, …, verb, payload:{at,del,ins}}` and a CHECKPOINT record
+  `{seq, …, checkpoint}` (full text or a snapshot ref), written through the
+  existing `text_checkpoint` primitive. Replay `event:N` = newest checkpoint
+  with `seq ≤ N`, then redo splices `checkpoint.seq+1 … N`. Compaction =
+  write a fresh checkpoint at head, then truncate records older than the
+  oldest checkpoint any retained event still needs. INVARIANT: never
+  truncate past a checkpoint a retained event depends on; `event:N` for a
+  trimmed N clamps to (or refuses at, with registered prose) the oldest
+  surviving checkpoint. Checkpoint cadence: on save AND whenever compaction
+  runs, with a K-event ceiling so an unsaved long session still bounds
+  replay length (K = config).
+
 ### 2.5 Permission tiers
 
 Tiers are LEVELS in one hub domain (`ide`) on the client's credentials —
@@ -616,7 +638,7 @@ checklist for the arc.
 | **V2 Containers + layouts** ✅ 2026-09-10 (arc branch; `view*` via the colon line — the menu titles / key spellings + `viewtab` are a deferred follow-up, an owner key-seat decision) | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data (V2a the layout data + the grid learns rectangles; V2b the editor split tree + the source-left/MC11-right side-by-side; V2c `viewdock` + `<base>.prj.layout` persistence + the splitter's `viewsize` feeds the session) | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout`; `testmadcide_layout` round-trip; `testmadcide` v2c-implicit/persist/reopen/size |
 | **V2.5 The `ui::LINE` client** ✅ LANDED 2026-09-10 (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part"). The engine frontend stays dumb; the line grammar is `IdeSession::line_input`, run by `run_line` (parallel to `run_once`) | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; a twin applies the same lines directly through `line_input` and agrees byte-for-byte on the saved file — green jit/exe/obj |
 | **V3 Clients + windows** ✅ (V3a ✅ anchor registry · V3b ✅ event_any + multi-client loop + viewwindow · V3c ✅ presence: V3c-1 shift+draw machinery, V3c-2 palette+web render) | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` (V3c-1: the doc carries a roster of viewing es — `es_view_doc` — dealt a round-robin colour slot, `shift_anchors` shifts EVERY client's caret in one pass not just the editing es, `compose_edit_node` draws the others as carets in their slot; V3c-2: `web_model` emits `op["presence"]`, `page.js` draws a `.pcaret .pslot-<slot>` bar, the `@presence` palette rides the root hints) — gates `tests/testmadcide_window2`, `tests/gui/madcide_presence`, `test_web_model`, `check-one-anchor-owner.sh` | `tests/testmadcide_window2` (two clients, one edit seen in both; per-client carets; viewwindow park vs refuse — fake-host/direct-drive, no display); `testuieventany`; `check-one-anchor-owner.sh`. The real two-window webview pump is the flagged GTK-smoke + seam-lane follow-up |
-| **V4 Event log** | ChangeEvent written by the mutation owner + verb seam; per-change propagation; `<base>.prj.events`; the edit-history View (`revision: event:N`) | headless replay test (log → text equality); size-rewrite test |
+| **V4 Event log** ✅ 2026-09-10 (arc branch; dialect-side, engine untouched) | Every text mutation appends one splice RECORD at the ONE text-mutation owner (`ed_text_insert`); a per-document `changelog` piece-table buffer holds JSONL (append O(1); the buffer text IS the persisted + wire form); `seq` = the LSN (a rewrite-stable COUNTER, NOT a WAL — no fsync, tail-loss tolerated); `clog_replay` (torn tail dropped, a trimmed seq clamps up to the oldest checkpoint), `clog_checkpoint`, `clog_compact` (last N whole after a fresh checkpoint; never past a needed one); the `event:N` edit-history View (`make_history_view`); `.prj.events` persistence (`clog_persist`/`clog_restore` hooked into `proj_write`/`proj_open`/`proj_startup`). Per-change propagation rides V3b's recompose. Follow-ups: ^S-flush; one project events file across docs for a multi-file manifest | `tests/testmadcide_changelog` (headless): replay round-trip + historical, the event:N View, checkpoint, compaction, the retention clamp, a persist→restore round-trip; the editor/IDE family byte-identical; `check-madcide-single-owners` extended |
 | **V5 Correlation** | the emitter's coordinate map → View `map`; `viewsync` source ↔ MC11 | `testmadcide` map rows > 0 for the MC11 lens; a sync round-trip pin |
 | **V6 Transports + headless** | `listen://` + the WebSocket framer in madcdis; `ws` remote window; `api` line protocol; `--serve`; tiers born low; the MCP seat | a loopback ws test under the runner's caps; an api smoke test; a tier-refusal test |
 | **V7 Pairs 2–3** | external-asm provider (gcc/clang Views); MIR provider; git-revision Views (madcdat adapter) | fixtures per provider; the parity method as a test |

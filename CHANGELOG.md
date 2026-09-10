@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
+
+- **V4 of the client-server arc** (design doc §2.4): every text mutation
+  appends one splice RECORD; replay reconstructs the buffer at any seq; a
+  checkpoint bounds replay; compaction sheds old records; the edit-history
+  View renders the doc at a past revision; `.prj.events` persists beside the
+  manifest. Fully **DIALECT-SIDE** — the engine (`madc/dis`) is untouched.
+- Recon changed the design for the better: text edits **bypass the verb
+  registry** (`ed_text_insert` calls `ui::text_insert` directly, not
+  `ui::act` → `mutation_context`), so the splice is known only at the ONE
+  text-mutation owner — exactly where §2.4 places it. The engine's
+  `mutation_context` journal would never see a keystroke.
+- **Core** (`tools/texteditor/editor_events.inc`): a per-document `changelog`
+  entity whose piece-table buffer holds JSONL (append = a text insert at end,
+  O(1) amortised; the buffer text IS the persisted form AND the wire form —
+  one serialisation). `seq` = the LSN, a monotonic per-document COUNTER, never
+  a byte offset (compaction rewrites the store, so the identity is
+  rewrite-stable). NOT a WAL — no write-ahead, no fsync, tail-loss tolerated.
+  `clog_replay` applies each splice to a scratch buffer via the engine's
+  `text_replace` (no dialect string surgery); a torn tail line is dropped; a
+  seq below the oldest surviving checkpoint clamps UP to it (the retention
+  rule) — never a silent empty. `clog_compact` keeps the last N records whole
+  after a fresh checkpoint (INVARIANT: never truncate past a needed one).
+- **madcide** (`tools/madcide/madcide_core.inc`): `make_history_view` (the
+  `event:N` View over a render buffer); `clog_persist`/`clog_restore`/
+  `proj_events_path` (the `.prj.events` sibling of the layout cache), hooked
+  into `proj_write` / `proj_open` / `proj_startup`.
+- Gate `tests/testmadcide_changelog` (headless): replay round-trip +
+  historical, the event:N View, checkpoint, compaction, the retention clamp,
+  and a persist→restore→replay round-trip. The editor/IDE family
+  (`testmadcide{,_cli,_line,_window2}`, `testidespanshift`) stays
+  byte-identical — journaling is a side entity, no composed output changes.
+  `check-madcide-single-owners` gains `clog_append` (a 4th allowed raw
+  `ui::text_insert`, the `append_build_line` case: a different, non-viewed
+  buffer). All dialect/madcide/seam/registry/enum/style/anchor gates PASS.
+- Follow-ups (single-file is V4's gated case, per the design): flush the log
+  on `^S` doc-save; unify to one project events file across docs for a
+  multi-file manifest (the log is per-doc today). **NEXT = V5** (correlation
+  maps) → the V1–V5 seam (one battery). Battery at the seam only.
+
 ### madcide: the web render of presence carets + the @presence palette (V3c-2) (2026-09-10)
 
 - The render half of V3c presence — the OTHER clients' carets now appear in
