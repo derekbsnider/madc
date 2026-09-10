@@ -254,3 +254,16 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
   letter-spacing: 0; font-size: 12px; }
 .workbench > .slot[data-slot="editor"] > .node.content > .tabstrip .tab { text-transform: none;
   letter-spacing: 0; padding: 0 12px; border-right: 1px solid var(--sb-line, #343b52); }
+/* Presence (client-server V3c): another client's caret as a thin bar in its
+   dealt @presence colour. The slot's colour rides a --pcaret-<slot> custom
+   property the page sets from the root palette; the bar sits on the cell's
+   left edge without recolouring the character under it. */
+.pcaret  { box-shadow: inset 0.12em 0 0 #9fc2ff; }
+.pslot-0 { box-shadow: inset 0.12em 0 0 var(--pcaret-0, #9fc2ff); }
+.pslot-1 { box-shadow: inset 0.12em 0 0 var(--pcaret-1, #9fc2ff); }
+.pslot-2 { box-shadow: inset 0.12em 0 0 var(--pcaret-2, #9fc2ff); }
+.pslot-3 { box-shadow: inset 0.12em 0 0 var(--pcaret-3, #9fc2ff); }
+.pslot-4 { box-shadow: inset 0.12em 0 0 var(--pcaret-4, #9fc2ff); }
+.pslot-5 { box-shadow: inset 0.12em 0 0 var(--pcaret-5, #9fc2ff); }
+.pslot-6 { box-shadow: inset 0.12em 0 0 var(--pcaret-6, #9fc2ff); }
+.pslot-7 { box-shadow: inset 0.12em 0 0 var(--pcaret-7, #9fc2ff); }

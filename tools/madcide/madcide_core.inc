@@ -1306,6 +1306,7 @@ bool load_theme(long w, long es, const char *name)
 	return false;
     var th;
     var gth;			// the @gui scope: CSS custom properties
+    var pth;			// the @presence scope: round-robin caret colours
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -1321,6 +1322,22 @@ bool load_theme(long w, long es, const char *name)
 	// the TUI theme unchanged — one file, two renderings, later lines win.
 	if ( ls[0] == '@' )
 	{
+	    // @presence <slot> <style spec>: the round-robin caret colour a
+	    // client is dealt at connect (client-server V3c). A spec may be
+	    // multi-word ("bold red"), so read the tail whole — the shared scope
+	    // rule (scope_line_parts) keeps only the last word.
+	    if ( perl::index(ls, "@presence ") == 0 )
+	    {
+		var rest = php::trim(ls + 10);
+		const char *rc = rest.c_str();
+		const char *gap = strchr(rc, ' ');
+		if ( gap != 0 )
+		{
+		    var slot = php::trim(perl::substr(rest, 0, gap - rc));
+		    pth[slot.c_str()] = php::trim(gap + 1);
+		}
+		continue;
+	    }
 	    var scope;
 	    var prop;
 	    var val;
@@ -1338,6 +1355,7 @@ bool load_theme(long w, long es, const char *name)
     }
     ui::set(w, es, "theme", th);
     ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
+    ui::set(w, es, "presence_theme", pth);	// empty clears the prior palette
     ui::set(w, es, "scheme", tname);
     return true;
 }
@@ -7423,6 +7441,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var rh;
     if ( !gt.is_null() && php::count(gt) > 0 )
 	rh["theme"] = gt;
+    // The @presence palette (V3c): the scheme's round-robin caret colours
+    // ride the root hints; a client renders another client's presence caret
+    // by its dealt slot. A hint the TUI ignores.
+    var pt;
+    ui::get(pt, w, es, "presence_theme");
+    if ( !pt.is_null() && php::count(pt) > 0 )
+	rh["presence"] = pt;
     // The menu / command data (S1): the bar's menus with their items'
     // ids, titles and enablement — a root hint the TUI ignores and a
     // chrome-rendering client (S2) draws natively.

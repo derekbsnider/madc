@@ -230,6 +230,15 @@
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
     }
+    // The @presence palette (client-server V3c): slot -> colour spec on the
+    // root group; set a --pcaret-<slot> custom property the .pslot-<slot> rule
+    // reads. An edit node's `presence` is a caret ARRAY (handled in applyEdit),
+    // so only the palette-OBJECT case is applied here.
+    if (op.presence && !Array.isArray(op.presence)) {
+      for (var ps in op.presence)
+        if (Object.prototype.hasOwnProperty.call(op.presence, ps))
+          document.documentElement.style.setProperty('--pcaret-' + ps, presenceColour(op.presence[ps]));
+    }
     // Placement: ops arrive pre-order, siblings in order, so each parent's
     // next expected slot is a running count. An element already sitting in
     // its slot is LEFT ALONE — appendChild on an attached node detaches and
@@ -400,6 +409,27 @@
   // caret, selection and span offsets are document byte offsets), the DOM
   // speaks units; this is the ONE conversion, the inverse of the engine's
   // web_byte_col. A column past the text clamps to its length.
+  // A presence caret's colour from its @presence spec ("cyan", "bold red"):
+  // the palette custom property the theme may override, with the page.css
+  // default as the fallback. Bold selects the bright variant.
+  var PRESENCE_PAL = {
+    black:   ['#3b4048', '#5c6370'], red:     ['#e06c75', '#ff7b86'],
+    green:   ['#98c379', '#b5e890'], yellow:  ['#e5c07b', '#ffd78a'],
+    blue:    ['#61afef', '#7cc0ff'], magenta: ['#c678dd', '#d896f0'],
+    cyan:    ['#56b6c2', '#6fd2de'], white:   ['#d9dbe4', '#ffffff']
+  };
+  function presenceColour(spec) {
+    var bold = false, name = '';
+    var ws = String(spec).split(/\s+/);
+    for (var i = 0; i < ws.length; i++) {
+      if (ws[i] === 'bold') bold = true;
+      else if (ws[i]) name = ws[i];
+    }
+    var d = PRESENCE_PAL[name];
+    if (!d) return '';
+    return 'var(--pal-' + name + (bold ? '-bright' : '') + ', ' + (bold ? d[1] : d[0]) + ')';
+  }
+
   function unitsOf(t, bytes) {
     var i = 0, b = 0;
     while (i < t.length && b < bytes) {
@@ -414,7 +444,7 @@
   // caret) coalesced into runs. Columns arrive as BYTE offsets from the
   // engine and are converted to string indices per line (unitsOf), so a
   // multi-byte character costs one cell, not two or three.
-  function renderLine(row, lineNo, caret, sel) {
+  function renderLine(row, lineNo, caret, sel, presence) {
     var t = row.t || '';
     var n = t.length;
     var classes = new Array(n + 1);
@@ -437,6 +467,16 @@
       var cc = unitsOf(t, caret.col);
       classes[cc] += ' caret';
     }
+    // Presence: each OTHER client's caret on this line as a coloured bar cell
+    // (its dealt slot class; the colour rides --pcaret-<slot>). Never the block
+    // cursor — a peer caret marks a place, it does not own the cell.
+    if (presence) {
+      for (var pi = 0; pi < presence.length; pi++) {
+        if (presence[pi].line !== lineNo) continue;
+        var pcc = unitsOf(t, presence[pi].col);
+        classes[pcc] += ' pcaret pslot-' + presence[pi].slot;
+      }
+    }
     var line = document.createElement('div');
     line.className = 'line';
     var run = '', runCls = null;
@@ -457,13 +497,18 @@
   // The caret / selection state one line carries, as a comparable key:
   // two lines with equal keys and equal rows render identically, so a
   // line whose key did not change is left alone.
-  function deco(lineNo, caret, sel) {
+  function deco(lineNo, caret, sel, presence) {
     var d = '';
     if (caret && caret.line === lineNo) d = 'c' + caret.col;
     if (sel) {
       var l0 = sel[0][0], l1 = sel[1][0];
       if (lineNo >= l0 && lineNo <= l1)
         d += '|s' + (lineNo === l0 ? sel[0][1] : 0) + '-' + (lineNo === l1 ? sel[1][1] : 'e');
+    }
+    if (presence) {
+      for (var pi = 0; pi < presence.length; pi++)
+        if (presence[pi].line === lineNo)
+          d += '|p' + presence[pi].col + '.' + presence[pi].slot;
     }
     return d;
   }
@@ -492,13 +537,14 @@
     }
     var caret = op.focus ? op.caret : null;
     var sel = op.sel || null;
+    var presence = op.presence || null;
     if (op.lines) {
       // Full paint: this key's first render, or the first after a resync.
       el.textContent = '';
       el._rows = op.lines;
       for (var l = 0; l < el._rows.length; l++)
-        el.appendChild(renderLine(el._rows[l], l, caret, sel));
-      el._caret = caret; el._sel = sel;
+        el.appendChild(renderLine(el._rows[l], l, caret, sel, presence));
+      el._caret = caret; el._sel = sel; el._pres = presence;
       return true;
     }
     var rows = el._rows || [];
@@ -513,26 +559,26 @@
       post({ kind: 'resync' });
       return false;
     }
-    var oldCaret = el._caret || null, oldSel = el._sel || null;
+    var oldCaret = el._caret || null, oldSel = el._sel || null, oldPres = el._pres || null;
     var at = patch ? patch.at : 0;
     if (patch) {
       var ref = el.children[at + del] || null;   // the line after the splice
       for (var d = 0; d < del; d++) el.removeChild(el.children[at]);
       for (var k = 0; k < ins; k++)
-        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel), ref);
+        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel, presence), ref);
       rows = rows.slice(0, at).concat(patch.ins, rows.slice(at + del));
       el._rows = rows;
     }
     // Every other line kept its row; re-render the ones whose caret /
-    // selection state changed (its old index is its new index shifted
-    // past the splice).
+    // selection / presence state changed (its old index is its new index
+    // shifted past the splice).
     for (var j = 0; j < rows.length; j++) {
       if (patch && j >= at && j < at + ins) continue;
       var i = j < at ? j : j - ins + del;
-      if (deco(i, oldCaret, oldSel) !== deco(j, caret, sel))
-        el.replaceChild(renderLine(rows[j], j, caret, sel), el.children[j]);
+      if (deco(i, oldCaret, oldSel, oldPres) !== deco(j, caret, sel, presence))
+        el.replaceChild(renderLine(rows[j], j, caret, sel, presence), el.children[j]);
     }
-    el._caret = caret; el._sel = sel;
+    el._caret = caret; el._sel = sel; el._pres = presence;
     return !!caret && (!oldCaret || oldCaret.line !== caret.line || oldCaret.col !== caret.col);
   }
 

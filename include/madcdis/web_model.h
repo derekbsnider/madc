@@ -663,6 +663,21 @@ class web_model
 		    if ( !theme.empty() )
 			op["theme"] = theme;
 		}
+		// The @presence palette (client-server V3c): slot -> colour spec
+		// strings, emitted like the theme; the page resolves each slot to a
+		// caret colour. String values only.
+		std::map<std::string, madc::value>::const_iterator pri = ho.find("presence");
+		if ( pri != ho.end() && pri->second.is_object() )
+		{
+		    nlohmann::json pal = nlohmann::json::object();
+		    const std::map<std::string, madc::value> &pv = pri->second.as_object();
+		    for ( std::map<std::string, madc::value>::const_iterator vi = pv.begin();
+			  vi != pv.end(); ++vi )
+			if ( vi->second.is_string() )
+			    pal[vi->first] = vi->second.as_string();
+		    if ( !pal.empty() )
+			op["presence"] = pal;
+		}
 	    }
 	}
 	bool recurse = true;
@@ -912,6 +927,36 @@ class web_model
 	    }
 	    else
 		op["sel"] = nullptr;
+	    // Presence (client-server V3c): the OTHER clients viewing this
+	    // document, drawn as carets in their dealt colour SLOT. Each
+	    // entry's byte caret becomes {line, col} the same way the focused
+	    // caret does; the page resolves the slot to a colour through the
+	    // root @presence palette.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &eho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator pei = eho.find("presence");
+		if ( pei != eho.end() && pei->second.is_array() )
+		{
+		    nlohmann::json pres = nlohmann::json::array();
+		    for ( const madc::value &prow : pei->second.as_array() )
+		    {
+			if ( !prow.is_object() )
+			    continue;
+			long pcar = hint_of(prow, "caret", -1);
+			if ( pcar < 0 )
+			    continue;
+			size_t pl, pcl;
+			web_line_col(text, pcar, pl, pcl);
+			pres.push_back(nlohmann::json{
+			    { "line", (long)pl },
+			    { "col", (long)pcl },
+			    { "slot", hint_of(prow, "colour", 0) } });
+		    }
+		    if ( !pres.empty() )
+			op["presence"] = pres;
+		}
+	    }
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;
