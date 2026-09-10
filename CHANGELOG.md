@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### madcide: correlation maps — the emitter's coordinate map, viewsync source↔MC11 (V5) (2026-09-10)
+
+- **V5 of the client-server arc** (design doc §2.6), the LAST local slice.
+  The emitter (`CEmit`) now counts the bytes it writes and records one
+  `{disp, source-line}` row per statement/declaration; the buffer-owning
+  layer converts the line to a stored byte and feeds `doc_map::add`, which
+  drops any non-monotone (reordered/hoisted) row — "maps to nothing", exactly
+  the approximate many-to-one §2.6 names. The `{disp, stored, len}` array
+  rides beside the text through a new `madc::emit(out, out_map, …)` overload.
+- **The emitted bytes are byte-identical** whether or not a map is collected
+  — the map is a pure side channel (`emit_layout_gate` + `testmadcide`
+  byte-identical composition are the oracle).
+- The lens path stores the map on the View's `map` field (the vmap that was
+  empty): `enter_lens` and `make_code_view` fill it; `view_lens_hints`
+  already forwards it, so `testmadcide`'s MC11 lens now shows `maprows-pos=1`.
+- **`viewsync on|off`** (the fourth view* verb) draws an unfocused source↔code
+  pair's caret PROJECTED from the focused caret through the map at compose
+  time (`viewsync_leaf_caret` — a READ-side projection, no duplicated caret
+  state, matching doc_lens' "projection is the one place display coordinates
+  come from"); `ui::lens_to_display`/`lens_to_stored` become live.
+- Statement/line granularity today; column/expression precision is the named
+  later refinement. Gates: `tests/testemitmap` (engine — rows > 0, monotone,
+  the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
+  a code View's map rows > 0, the projection round-trips both ways, the
+  fallback holds); the editor/IDE family byte-identical.
+- **NEXT = the V1–V5 SEAM** (the owner tests the running editor, then the ONE
+  merge-wave battery + lane records + the develop merge).
+
 ### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
 
 - **V4 of the client-server arc** (design doc §2.4): every text mutation
