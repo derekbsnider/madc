@@ -140,5 +140,33 @@ int main()
     println("fallback: ok={} msg={} chrome={}", fb ? 1 : 0, msg, php::count(live["chrome"]));
     S.close();
     remove(path);
+
+    // 5. layout_to_text is parse_layout's STRUCTURAL inverse (V2c
+    //    persistence, design §5): emit a tree, re-parse, the tree comes back
+    //    equal. The editor region persists as source panes (a code render is
+    //    session state), so a round-tripped tree carries no code tabs.
+    var emitted;
+    layout_to_text(emitted, baked);
+    var reparsed;
+    bool rok = parse_layout(reparsed, emitted.c_str(), err);
+    var sa = js::stringify(baked);		// ring c_str: own each before ==
+    var sb = js::stringify(reparsed);
+    println("roundtrip-default: ok={} equal={}", rok ? 1 : 0, sa == sb ? 1 : 0);
+    // A vertical split of two source editor panes with a docked (right)
+    // sidebar round-trips too — the shape viewdock + a view split produce.
+    const char *rtsrc =
+	"@window main\n"
+	"split vertical\n"
+	"  pane editor 60% tabs views source focus\n"
+	"  pane editor tabs views source\n"
+	"pane sidebar right 20% tabs views outline hidden\n";
+    var rt;
+    parse_layout(rt, rtsrc, err);
+    layout_to_text(emitted, rt);
+    var rt2;
+    rok = parse_layout(rt2, emitted.c_str(), err);
+    var sc = js::stringify(rt);
+    var sd = js::stringify(rt2);
+    println("roundtrip-split: ok={} equal={}", rok ? 1 : 0, sc == sd ? 1 : 0);
     return 0;
 }

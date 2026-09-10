@@ -2130,6 +2130,55 @@ int main()
     ev_key(e, "enter");
     cont = S.apply_ide_event(doc, e);
     println("colon-quit: cont={}", cont ? 1 : 0);
+
+    // -- V2c: the layout persists BESIDE the manifest (viewdock's placement).
+    //    An implicit single-file project writes NO artifact (the no-surprise
+    //    law, design §6); an explicit project's docked pane comes back on the
+    //    next open. A fresh session keeps this isolated from S's state. --
+    const char *vlp = "madc_ide_v2c.mad";
+    const char *vlp2 = "madc_ide_v2c_b.mad";
+    const char *vman = "madc_ide_v2c.prj.json";
+    const char *vlay = "madc_ide_v2c.prj.layout";
+    php::file_put_contents(vlp, "int main() { return 0; }\n");
+    php::file_put_contents(vlp2, "int helper() { return 1; }\n");
+    remove(vman);
+    remove(vlay);
+    IdeSession V;
+    long vdoc = V.open(vlp, false);
+    show_view(V.w, V.es, viewOUTLINE);		// chromelast = the outline pane
+    var ve;
+    ev_action_arg(ve, "viewdock", "right", ":viewdock right");
+    V.apply_ide_event(vdoc, ve);		// implicit project: nothing written
+    var vlo;
+    ui::get(vlo, V.w, V.es, "layout");
+    println("v2c-implicit: docked-side={} file={}",
+	    ui::side_name(vlo["chrome"][0]["side"].as_integer()),
+	    php::file_exists(vlay) ? "present" : "absent");
+    proj_add(V.w, V.es, vdoc, vlp2);		// the second file materializes it
+    ev_action_arg(ve, "viewdock", "right", ":viewdock right");
+    V.apply_ide_event(vdoc, ve);		// a manifest is open now -> persists
+    ui::get(vlo, V.w, V.es, "layout");
+    println("v2c-persist: file={} side={}",
+	    php::file_exists(vlay) ? "present" : "absent",
+	    ui::side_name(vlo["chrome"][0]["side"].as_integer()));
+    // Reopen: reset the live layout to the default (the outline back on the
+    // LEFT), reload the project — the dock comes back from the FILE, not the
+    // live state we just reset.
+    var vdef;
+    var vderr;
+    parse_layout(vdef, default_layout_text(), vderr);
+    ui::set(V.w, V.es, "layout", vdef);
+    var vpf;
+    ui::get(vpf, V.w, V.es, "projfile");
+    proj_load(V.w, V.es, vpf);
+    ui::get(vlo, V.w, V.es, "layout");
+    println("v2c-reopen: side={}", ui::side_name(vlo["chrome"][0]["side"].as_integer()));
+    V.close();
+    remove(vlp);
+    remove(vlp2);
+    remove(vman);
+    remove(vlay);
+
     ui::world_close(w);
     return 0;
 }

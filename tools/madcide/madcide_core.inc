@@ -148,6 +148,18 @@ void path_sans_ext(var &out, var &p)
 	out = perl::substr(p, 0, dot - pc);
 }
 
+// The persisted layout sits BESIDE the manifest (V2c, design §5): the
+// manifest path minus its extension, plus `.layout` — `foo.prj.json` ->
+// `foo.prj.layout`, `myproj.json` -> `myproj.layout`. One derivation for
+// the save (layout_persist) and the load (proj_load), so both name the
+// same file.
+void proj_layout_path(var &out, var &pf)
+{
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.layout", base);
+}
+
 // Where the profile/theme/status data lives (packaging arc PK7): the
 // source tree keeps profiles beside THIS file (__FILE__ is the
 // include-resolved path — from any cwd, and php::dirname splits both
@@ -992,6 +1004,107 @@ bool load_layout(long w, long es, const char *name)
     }
     ui::set(w, es, "layout", layout);
     return true;
+}
+
+// ---- the layout tree -> `.layout` text (parse_layout's inverse) -----------
+// V2c persistence (design §5): the live layout is written beside the manifest
+// so a docked pane / a resized band comes back on the next project open. The
+// emitter is parse_layout's STRUCTURAL inverse — window, the editor region,
+// the chrome panes — so parse_layout(layout_to_text(lo)) rebuilds an equal
+// tree. It omits what the grammar omits (a transient code render, the active
+// tab): those are session state, not layout (design §5: positions / sizes /
+// modes / hidden flags, NOT the tabs' contents).
+
+// One indentation prefix: two spaces per depth level. parse_layout reads a
+// line's depth as its leading-whitespace count and only requires siblings to
+// agree, so any consistent step round-trips.
+void layout_indent(var &out, long depth)
+{
+    var s = "";
+    for ( long i = 0; i < depth; i = i + 1 )
+	s = format("{}  ", s);
+    out = s;
+}
+
+// One pane line: `pane <slot> [<side>] [<size>%] <mode> views <kind>...
+// [focus] [hidden]` — mode and size BEFORE `views` and the flags after (so
+// the `views` list stops at a flag), the exact word order parse_layout reads.
+// An editor pane persists as a SOURCE pane (its tabs' Views are session
+// state); a chrome pane persists its tool tabs (fixed kinds).
+void layout_emit_pane(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    long slot = node["slot"].as_integer();
+    var line = format("{}pane {}", ind, slot_name(slot));
+    long side = node["side"].as_integer();
+    if ( side != ui::side::none )
+	line = format("{} {}", line, ui::side_name(side));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    line = format("{} {} views", line, pmode_name(node["mode"].as_integer()));
+    if ( slot == slotEDITOR )
+	line = format("{} {}", line, view_name(viewSOURCE));
+    else
+	for ( var t : node["tabs"] )
+	    line = format("{} {}", line, view_name(t["kind"].as_integer()));
+    if ( node["focus"].as_integer() != 0 )
+	line = format("{} focus", line);
+    if ( node["hidden"].as_integer() != 0 )
+	line = format("{} hidden", line);
+    out = format("{}\n", line);
+}
+
+// One split header line: `split <dir> [<size>%]`; the children follow indented
+// one level deeper.
+void layout_emit_split(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    var line = format("{}split {}", ind, ui::split_name(node["dir"].as_integer()));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    out = format("{}\n", line);
+}
+
+// A node (a pane or a split subtree) -> its text, children recursed one level
+// deeper.
+void layout_emit_node(var &out, var &node, long depth)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var body;
+	layout_emit_split(body, node, depth);
+	for ( var c : node["children"] )
+	{
+	    var cs;
+	    layout_emit_node(cs, c, depth + 1);
+	    body = format("{}{}", body, cs);
+	}
+	out = body;
+	return;
+    }
+    layout_emit_pane(out, node, depth);
+}
+
+// The whole tree -> text: `@window`, the editor region (a top-level pane or
+// split), then the chrome panes (top-level).
+void layout_to_text(var &out, var &lo)
+{
+    var s = "# madcide layout — written by the session; edit or delete freely\n";
+    s = format("{}@window {}\n", s, lo["window"]);
+    var ed;
+    layout_emit_node(ed, lo["editor"], 0);
+    s = format("{}{}", s, ed);
+    for ( var c : lo["chrome"] )
+    {
+	var cs;
+	layout_emit_pane(cs, c, 0);
+	s = format("{}{}", s, cs);
+    }
+    out = s;
 }
 
 // The client's layout tree; a session that never ran open (the headless
@@ -2346,10 +2459,12 @@ void view_split(long w, long es, long doc, long dir, long lang);
 void view_focus(long w, long es, long doc, long dir);
 void view_close(long w, long es, long doc);
 void view_open(long w, long es, long doc, long lang);
+void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
 long viewsplit_dir_of(var &arg);
 long viewfocus_dir_of(var &arg);
 long viewrepr_lang_of(var &word);
 void viewsplit_args(var &arg, long &dir, long &lang);
+void viewdock_target(var &arg, long &slot, long &side);
 
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
@@ -3404,6 +3519,28 @@ bool proj_write(long w, long es, long doc)
     return true;
 }
 
+// Persist the live layout BESIDE the manifest (V2c) — silently (a layout
+// change carries its own status message; the file is a convenience cache, not
+// a document). ONLY when a manifest is open: the implicit single-file project
+// writes no artifact (the no-surprise-artifact law, design §6). Called by the
+// layout mutators (viewdock today; the splitter's `layout` event next).
+void layout_persist(long w, long es)
+{
+    if ( !proj_has_manifest(w, es) )
+	return;
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+	return;
+    var lf;
+    proj_layout_path(lf, pf);
+    var lo;
+    layout_get(lo, w, es);
+    var txt;
+    layout_to_text(txt, lo);
+    php::file_put_contents(lf.c_str(), txt.c_str());
+}
+
 // projadd — the argument-taking membership verb (a prompt collects the
 // argument for a human client; a remote client passes it in the
 // command). The SECOND file materializes an implicit project's manifest.
@@ -3546,6 +3683,22 @@ bool proj_load(long w, long es, var &pf)
     ui::set(w, es, "proj", proj);
     ui::set(w, es, "projfile", pf);
     proj_touch(w, es);
+    // A persisted layout beside the manifest (V2c) restores the client's
+    // docked panes / band sizes. A missing file keeps the current layout; a
+    // malformed one is ignored (the cache never blocks a project open).
+    var lf;
+    proj_layout_path(lf, pf);
+    if ( php::file_exists(lf) )
+    {
+	var ltxt;
+	if ( php::file_get_contents(ltxt, lf.c_str()) )
+	{
+	    var newlo;
+	    var lerr;
+	    if ( parse_layout(newlo, ltxt.c_str(), lerr) )
+		ui::set(w, es, "layout", newlo);
+	}
+    }
     ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
 				 php::count(tus)));
     return true;
@@ -5217,6 +5370,14 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	view_open(w, es, doc, viewrepr_lang_of(arg));
 	return true;
     }
+    if ( verb == "viewdock" )
+    {
+	long dslot;
+	long dside;
+	viewdock_target(arg, dslot, dside);
+	view_dock(w, es, dslot, dside);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -5722,6 +5883,70 @@ void view_open(long w, long es, long doc, long lang)
 	exit_lens(w, es, doc);
 }
 
+// The viewdock direction word -> a (slot, side): `left`/`right` dock the
+// sidebar, `top`/`bottom` the panel (the slot rule parse_layout enforces). An
+// absent or unknown word is `ui::side::none` — view_dock refuses it, never
+// docks to a default place.
+void viewdock_target(var &arg, long &slot, long &side)
+{
+    side = ui::side::none;
+    slot = slotSIDEBAR;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    if ( php::count(words) < 1 )
+	return;
+    var w0 = words[0];
+    side = ui::side_code(w0.c_str());
+    if ( side == ui::side::top || side == ui::side::bottom )
+	slot = slotPANEL;
+    else
+	slot = slotSIDEBAR;		// left | right (none is refused below)
+}
+
+// viewdock <left|right|top|bottom>: move the FOCUSED chrome pane to a slot and
+// side. "Focused" is the chrome View last brought up (`chromelast`, the @pane
+// esc's target) — viewfocus reaching chrome is a V3 residue, so today docking
+// retargets the pane you just opened. The placement PERSISTS beside the
+// manifest (design §5). No direction, or no chrome open, is a refusal that
+// says what to do.
+void view_dock(long w, long es, long slot, long side)
+{
+    if ( side == ui::side::none )
+    {
+	ui::set(w, es, "msg", "viewdock: dock where? left | right | top | bottom.");
+	return;
+    }
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+    {
+	ui::set(w, es, "msg",
+		"Open a pane (a sidebar or a panel view) before docking it.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, k, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg",
+		format("No chrome pane hosts the {} view.", view_name(k)));
+	return;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["slot"] = slot;
+    c["side"] = side;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    layout_persist(w, es);
+    ui::set(w, es, "msg", format("Docked {} to the {}.", view_name(k),
+				 ui::side_name(side)));
+}
+
 // Apply ONE semantic event (the value shapes the engine's event query
 // produces — action events from the bindings table included) — the
 // session surface. False = quit.
@@ -5867,6 +6092,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdVIEWOPEN:
 	    {
 		view_open(w, es, doc, viewrepr_lang_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWDOCK:
+	    {
+		long dslot;
+		long dside;
+		viewdock_target(ev["arg"], dslot, dside);
+		view_dock(w, es, dslot, dside);
 		return true;
 	    }
 	    case cmdSAVE:

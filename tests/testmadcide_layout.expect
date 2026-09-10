@@ -24,3 +24,5 @@ not-a-line: ok=0 err=line 1: unknown word 'layout'
 no-views: ok=0 err=line 1: pane without views
 session: doc=1 window=main chrome=2
 fallback: ok=0 msg=Layout 'nosuch' no such file — the default layout is in use. chrome=2
+roundtrip-default: ok=1 equal=1
+roundtrip-split: ok=1 equal=1
