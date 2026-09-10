@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### madcide: the web render of presence carets + the @presence palette (V3c-2) (2026-09-10)
+
+- The render half of V3c presence — the OTHER clients' carets now appear in
+  the web window (V3c-1 built the compose hint and parsed the palette; this
+  draws it). **V3c COMPLETE → V3 COMPLETE.**
+- **web_model** (`include/madcdis/web_model.h`): the edit node's
+  `hints["presence"]` becomes `op["presence"] = [{line, col, slot}]` — each
+  peer caret run through `web_line_col` exactly as the focused caret; the root
+  group's `@presence` palette (slot → spec) is emitted like the `@gui` theme.
+- **page.js**: `renderLine` draws each peer caret as a `.pcaret .pslot-<slot>`
+  cell (a coloured bar, never the block cursor); `deco` folds presence in so
+  the incremental patch re-renders a peer-caret move; the root palette sets a
+  `--pcaret-<slot>` custom property (`presenceColour` maps the `@presence` spec
+  to `var(--pal-name[-bright])` with the page.css default). The edit node's
+  presence ARRAY is guarded off the palette-OBJECT apply.
+- **page.css**: `.pslot-0..7` draw the bar in the slot's `--pcaret-<slot>`
+  colour. **Dialect**: `load_theme` parses `@presence <slot> <spec>` into
+  `presence_theme` (multi-word specs kept whole); `compose_ide_tree` wires
+  `rh["presence"]`; the three theme files carry an eight-colour palette.
+- Gate `tests/gui/madcide_presence` (real webview, Xvfb): two clients over one
+  doc, A's window renders B's caret as `.pcaret.pslot-1` with `--pcaret-1` set
+  (`pcaret-count=1 slot=1 palette-set=1`). Plus `test_web_model` unit cases
+  (the `op["presence"]` translation + a no-presence negative control). GUI
+  19/19 × 3; the 18 existing snapshots unchanged; `testmadcide`/`_cli`/`_line`
+  byte-identical; unit 22/22; dialect/seam/registry/enum/style-vocabulary/
+  anchor-owner gates PASS. Battery at the V1–V5 seam only.
+
 ### madcide: presence carets + the anchor registry shifts every client (V3c-1) (2026-09-10)
 
 - The client-server arc V3c presence, part 1 — the dialect machinery,
