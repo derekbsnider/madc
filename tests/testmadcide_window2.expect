@@ -3,7 +3,10 @@ A-initial-file: yes
 B-initial-file: yes
 B-before-edit: no
 shared-doc: same=yes
-A-caret=9 B-caret=0
+A-caret=9 B-caret=29
+A-presence-count=1 B-presence-count=1
+A-sees-B: caret=29 slot=1
+B-sees-A: caret=9 slot=0
 A-shows-edit: yes
 B-shows-edit: yes
 viewwindow-parked: yes

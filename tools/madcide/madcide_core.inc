@@ -7487,6 +7487,11 @@ bool init_view_es(long w, long es, long doc, const char *path)
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
     push_buffer_row(w, es, doc, p.c_str());
     ui::set(w, es, "bufidx", 0);
+    // Presence (client-server V3c): register this client as a viewer of the
+    // launch document — the anchor registry shifts every client's caret in
+    // one pass and compose draws the others, and this deals the es its
+    // round-robin presence colour slot.
+    es_view_doc(w, es, doc);
     ui::set(w, es, "fview", buffer_view(w, es, 0));	// the focused
 				// container's View: the launch tab's
     // The project (owner rulings 2026-08-31): the launch file anchors the

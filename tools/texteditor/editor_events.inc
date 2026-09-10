@@ -128,14 +128,14 @@ void shift_es_offset(long w, long es, const char *key, long off, long delta)
 	ui::set(w, es, key, np);
 }
 
-// The anchor registry: shift EVERY byte-anchored thing on the es for `doc`
-// in one pass. The live focused caret (es "caret") is NOT here — each edit
-// call site sets it as the edit's own result (a paste lands after the
-// clip, a cut on its start), not a passive shift. mark / bend (the
-// selection) ARE passive: they went stale on every keystroke before this
-// (only block_copy shifted them, by a duplicate of shift_offset — removed).
-// Presence carets (V3c) register here too.
-void shift_anchors(long w, long es, long doc, long off, long delta)
+// Shift the anchors carried on ONE es viewing `doc` across an edit: the
+// themed highlight ranges (start-gravity in, end-gravity out) and the
+// selection markers. `with_caret` shifts the es "caret" too — for a PEER
+// (presence) es whose caret is passive; the EDITING es passes false, its
+// caret set by the edit call site (a paste lands after the clip, a cut on
+// its start), never a passive shift.
+void shift_es_anchors(long w, long es, long doc, long off, long delta,
+		      bool with_caret)
 {
     var hs;
     ui::get(hs, w, es, "hspans");
@@ -163,8 +163,59 @@ void shift_anchors(long w, long es, long doc, long off, long delta)
 	}
 	ui::set(w, es, "hspans", out);
     }
+    if ( with_caret )
+	shift_es_offset(w, es, "caret", off, delta);
     shift_es_offset(w, es, "mark", off, delta);
     shift_es_offset(w, es, "bend", off, delta);
+}
+
+// The anchor registry: shift EVERY byte-anchored thing across an edit in one
+// pass. The EDITING es (the one the mutation ran on) shifts its themed
+// ranges + selection but NOT its caret — each edit call site sets that as
+// the edit's own result. Every OTHER es registered as viewing `doc` (another
+// CLIENT's window — client-server V3c presence) is passive: its caret AND
+// selection shift, so one edit moves the other windows' places in the same
+// pass instead of leaving them stale (the compose-time clamp was a lossy
+// stand-in). A peer that has since navigated to another document is skipped
+// — its "caret" now anchors into THAT document.
+void shift_anchors(long w, long es, long doc, long off, long delta)
+{
+    shift_es_anchors(w, es, doc, off, delta, false);
+    var reg;
+    ui::get(reg, w, doc, "anchor_es");
+    if ( reg.is_null() )
+	return;
+    for ( var r : reg )
+    {
+	long peer = r.as_integer();
+	if ( peer == es || es_int(w, peer, "adoc", -1) != doc )
+	    continue;
+	shift_es_anchors(w, peer, doc, off, delta, true);
+    }
+}
+
+// Register `es` as a client viewing `doc`: the presence roster the anchor
+// registry shifts and compose draws (client-server V3c). Idempotent; on the
+// first join it deals the es its round-robin presence colour SLOT from a
+// monotonic per-document counter (a client that later leaves does not
+// renumber the others). Records the viewed doc so a shift/draw skips a peer
+// that has navigated away. init_view_es calls it for every client — open()'s
+// first window and each viewwindow spawn.
+void es_view_doc(long w, long es, long doc)
+{
+    ui::set(w, es, "adoc", doc);
+    var reg;
+    ui::get(reg, w, doc, "anchor_es");
+    if ( reg.is_null() )
+	reg = {};
+    for ( var r : reg )
+	if ( r.as_integer() == es )
+	    return;
+    long dealt = es_int(w, doc, "presence_dealt", 0);
+    ui::set(w, es, "presence_colour", dealt % 8);
+    ui::set(w, doc, "presence_dealt", dealt + 1);
+    reg.push(es);
+    ui::set(w, doc, "anchor_es", reg);
 }
 
 void ed_text_insert(long w, long es, long doc, long off, const char *s)
@@ -524,6 +575,38 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
     {
 	hints["sel_start"] = mark < send ? mark : send;
 	hints["sel_end"] = mark < send ? send : mark;
+    }
+    // Presence (client-server V3c): the OTHER clients viewing this document
+    // draw as carets in their dealt presence colour SLOT. Each es registered
+    // on the doc that still views it (skip this one) contributes its caret
+    // and selection; the anchor registry keeps them current across edits, so
+    // a peer caret points at the same text it did before.
+    var reg;
+    ui::get(reg, w, doc, "anchor_es");
+    if ( !reg.is_null() )
+    {
+	var pres = {};
+	for ( var r : reg )
+	{
+	    long peer = r.as_integer();
+	    if ( peer == es || es_int(w, peer, "adoc", -1) != doc )
+		continue;
+	    long pcaret = es_int(w, peer, "caret", -1);
+	    if ( pcaret < 0 )
+		continue;
+	    var pr = { "caret": pcaret, "colour": es_int(w, peer, "presence_colour", 0) };
+	    long pmark = es_int(w, peer, "mark", -1);
+	    long pbend = es_int(w, peer, "bend", -1);
+	    long psend = pbend >= 0 ? pbend : pcaret;
+	    if ( pmark >= 0 && pmark != psend )
+	    {
+		pr["sel_start"] = pmark < psend ? pmark : psend;
+		pr["sel_end"] = pmark < psend ? psend : pmark;
+	    }
+	    pres.push(pr);
+	}
+	if ( php::count(pres) > 0 )
+	    hints["presence"] = pres;
     }
     e["hints"] = hints;
     ed = e;

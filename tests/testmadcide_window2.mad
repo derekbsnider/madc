@@ -1,10 +1,12 @@
-// Two CLIENTS on ONE session (client-server design 2026-09-09 §2.3, slice
-// V3b-2): a second window is a second CLIENT with its OWN editor-state bag
-// over the SHARED document (spawn_view_es). The gate proves "one edit seen
-// in both windows": an edit applied through client A's session mutates the
-// one document, and client B — a DISTINCT es, its own caret / buffer /
-// layout — shows the edit on its next compose, while each window keeps its
-// own caret.
+// Two CLIENTS on ONE session (client-server design 2026-09-09 §2.3, slices
+// V3b-2 + V3c): a second window is a second CLIENT with its OWN editor-state
+// bag over the SHARED document (spawn_view_es). The gate proves "one edit
+// seen in both windows": an edit applied through client A's session mutates
+// the one document, and client B — a DISTINCT es, its own caret / buffer /
+// layout — shows the edit on its next compose. V3c adds PRESENCE: B's caret
+// is passive to A's edit — the anchor registry SHIFTS it (not the old
+// clamp), and each client's editor node draws the OTHER clients as carets in
+// their dealt colour slot.
 //
 // WHICH client an event belongs to is decided by ui::event_any (pinned by
 // testuieventany, engine-level); the machinery under test HERE is the
@@ -71,6 +73,11 @@ int main()
     long db = S.active(doc);
     println("shared-doc: same={}", (da == db && da == doc) ? "yes" : "no");
 
+    // Give window B a DISTINCT caret so the presence shift is unambiguous:
+    // the anchor registry must MOVE B's caret when A inserts above it (V3c —
+    // shift, not the old clamp-at-compose).
+    ui::set(w, esB, "caret", 20);
+
     // Edit in window A: insert a distinctive token at its caret.
     S.attach(w, esA);
     long adocA = S.active(doc);
@@ -78,10 +85,29 @@ int main()
     ev_text(e, "WINDOWTWO");
     S.apply_ide_event(adocA, e);
 
-    // The one document mutated; each window keeps its OWN caret (A advanced
-    // past the insert, B untouched — per-client state).
+    // The one document mutated. A keeps its own FOCUSED caret (advanced past
+    // its insert to 9); B's caret is PASSIVE to A's edit — the anchor
+    // registry shifted it 20 → 29 (nine bytes inserted above it) instead of
+    // leaving it stale for a compose-time clamp.
     println("A-caret={} B-caret={}", es_int(w, esA, "caret", -1),
 	    es_int(w, esB, "caret", -1));
+
+    // Presence: each client's editor node (compose_edit_node, the shared node
+    // builder) draws the OTHER clients on the doc as carets in their dealt
+    // colour slot — A sees B at 29 in slot 1, B sees A at 9 in slot 0, and
+    // neither draws itself (count 1).
+    var edA;
+    compose_edit_node(edA, w, esA, doc, es_int(w, esA, "caret", 0));
+    var presA = edA["hints"]["presence"];
+    var edB;
+    compose_edit_node(edB, w, esB, doc, es_int(w, esB, "caret", 0));
+    var presB = edB["hints"]["presence"];
+    println("A-presence-count={} B-presence-count={}",
+	    php::count(presA), php::count(presB));
+    println("A-sees-B: caret={} slot={}", presA[0]["caret"].as_integer(),
+	    presA[0]["colour"].as_integer());
+    println("B-sees-A: caret={} slot={}", presB[0]["caret"].as_integer(),
+	    presB[0]["colour"].as_integer());
 
     // Window A shows its own edit; window B — the DISTINCT es — shows the
     // SAME edit through the shared document. THIS is the gate.
