@@ -1,0 +1,112 @@
+// V2b (madcide GUI): the editor region a REAL split tree. `viewsplit right`
+// turns the editor slot into a `split` group — the page renders it as a FLEX
+// ROW (vertical = side by side), one leaf group per column, each its own
+// status + edit; `viewsplit right mc11` makes the right column a code View of
+// the buffer's MC11 render (source left, MC11 right — the owner's
+// side-by-side). `viewclose` collapses back to the single editor. The probe
+// reads the geometry back from the live DOM: the split's flex direction, the
+// two columns' x-order (side by side, not stacked), and each column's status
+// + edit.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+// The split geometry, as one snapshot line.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){var slot=document.querySelector('.workbench > [data-slot=\\\"editor\\\"]');"
+	"if(!slot){window.madc(JSON.stringify({kind:'snapshot',text:'no editor slot'}));return;}"
+	"var sp=slot.querySelector('[data-split]');"
+	"if(!sp){window.madc(JSON.stringify({kind:'snapshot',text:'no split'}));return;}"
+	"var dir=sp.dataset.split;"
+	"var fd=getComputedStyle(sp).flexDirection;"
+	"var cols=Array.prototype.slice.call(sp.children);"
+	"var n=cols.length;"
+	"var rects=cols.map(function(e){return e.getBoundingClientRect();});"
+	"var sidebyside=1;for(var i=1;i<rects.length;i++)if(!(rects[i].left>rects[i-1].left-1))sidebyside=0;"
+	"var txt=cols.map(function(c){var e=c.querySelector('.edit');return e?e.textContent:'';});"
+	"var contentdiff=(n===2&&txt[0]!==txt[1])?1:0;"
+	"var parts=cols.map(function(c){var s=c.querySelector('.status')?'S':'';var e=c.querySelector('.edit')?'E':'';return s+e;}).join('/');"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'split='+dir+' flex='+fd+' cols='+n"
+	"+' side-by-side='+sidebyside+' parts='+parts+' content-differs='+contentdiff}));})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_layout.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b) { return a + b; }\n"
+	"long twice(long x) { return add(x, x); }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+    ui::set(w, es, "fview", buffer_view(w, es, 0));
+
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("LAYOUT open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    // viewsplit right mc11: source left, its MC11 render right.
+	    long dir;
+	    long lang;
+	    var arg = "right mc11";
+	    viewsplit_args(arg, dir, lang);
+	    view_split(w, es, doc, dir, lang);
+	    ui::set(w, es, "msg", "");
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    if ( stage == 1 )
+	    {
+		println("LAYOUT split: {}", ev["text"]);
+		stage = 2;
+		// Close the MC11 pane (focus is on the left/primary, so focus
+		// the right leaf first, then close it): back to one editor.
+		view_focus(w, es, doc, 1);
+		view_close(w, es, doc);
+		ui::set(w, es, "msg", "");
+		var tree;
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		// The editor slot is a single edit again — no split node.
+		ui::eval_page(t,
+		    "(function(){var slot=document.querySelector('.workbench > [data-slot=\\\"editor\\\"]');"
+		    "var sp=slot.querySelector('[data-split]');"
+		    "var e=slot.querySelector('.edit');"
+		    "window.madc(JSON.stringify({kind:'snapshot',text:'split='+(sp?1:0)+' edit='+(e?1:0)}));})()");
+	    }
+	    else if ( stage == 2 )
+	    {
+		println("LAYOUT collapse: {}", ev["text"]);
+		stage = 3;
+		ui::close(t);
+	    }
+	}
+    }
+    println("LAYOUT closed");
+    php::unlink(path);
+    return 0;
+}

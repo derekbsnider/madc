@@ -6644,16 +6644,21 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
 			 bool primary, bool focused, long myleaf, var &ed,
 			 var &status)
 {
+    // A leaf's status + edit are the flex-column CHILDREN of its leaf group
+    // (`.node[data-split] > .node`); the group is what carries `region:
+    // editor` (compose_editor_split), so the nodes inside carry NO region —
+    // a region here would make the page dock them into a nested workbench
+    // instead of stacking them in the column.
     if ( focused )
     {
 	var st = status;
 	var sh = st["hints"];
-	sh["region"] = "editor";
+	sh["region"] = "";
 	st["hints"] = sh;
 	lk.push(st);
 	var e = ed;
 	var eh = e["hints"];
-	eh["region"] = "editor";
+	eh["region"] = "";
 	eh["focus"] = 1;
 	eh["tag"] = myleaf;
 	e["hints"] = eh;
@@ -6675,16 +6680,13 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     var wfn = "";
     var wst;
     compose_joe_statusline(wst, w, es, sdoc, sc, wfn);
-    var wsh = wst["hints"];
-    wsh["region"] = "editor";
-    wst["hints"] = wsh;
     lk.push(wst);
     var wed = { "role": "edit" };
     var wt;
     ui::text(wt, w, sdoc);
     wed["content"] = wt;
     wed["subject"] = sdoc;
-    var wh = { "caret": sc, "region": "editor", "tag": myleaf };
+    var wh = { "caret": sc, "tag": myleaf };
     if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
 	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
     else
@@ -6741,13 +6743,18 @@ void compose_editor_node(var &out, long w, long es, long doc, var &node,
     out = g;
 }
 
-// Compose a split editor tree into the editor slot: one `split` group.
+// Compose a split editor tree into the editor slot: one `split` group carrying
+// `region: editor` so it docks into the editor slot (the page's workbench grid)
+// and the terminal reads it as the centre flow — the leaves inside it flex.
 void compose_editor_split(var &kids, long w, long es, long doc, var &node,
 			  var &ed, var &status)
 {
     long leafno = 0;
     var g;
     compose_editor_node(g, w, es, doc, node, ed, status, leafno);
+    var gh = g["hints"];
+    gh["region"] = "editor";
+    g["hints"] = gh;
     kids.push(g);
 }
 

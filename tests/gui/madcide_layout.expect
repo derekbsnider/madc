@@ -1,0 +1,4 @@
+LAYOUT open
+LAYOUT split: split=vertical flex=row cols=2 side-by-side=1 parts=SE/SE content-differs=1
+LAYOUT collapse: split=0 edit=1
+LAYOUT closed
