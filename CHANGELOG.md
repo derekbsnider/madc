@@ -27,8 +27,16 @@
   the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
   a code View's map rows > 0, the projection round-trips both ways, the
   fallback holds); the editor/IDE family byte-identical.
-- **NEXT = the V1–V5 SEAM** (the owner tests the running editor, then the ONE
-  merge-wave battery + lane records + the develop merge).
+- **viewsync scroll fix** (016b24fe, found in owner testing): the projection
+  was correct but the GUI web frontend discards an unfocused pane's caret
+  (`page.js`: `op.focus ? op.caret : null`), so the synced MC11 pane never
+  scrolled to it — "both sides scroll independently." A general `follow` hint
+  (the composer marks the synced leaf, `web_model` emits it, `page.js` honours
+  the caret and scrolls every `.caret` into its pane) fixes it; inert when
+  viewsync is off (GUI snapshots + `test_web_model` unchanged). The TUI already
+  scrolled to the caret unconditionally.
+- **NEXT = the V1–V5 SEAM** (the owner re-tests the running editor, then the
+  ONE merge-wave battery + lane records + the develop merge).
 
 ### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
 
