@@ -1,0 +1,92 @@
+// V6a duplex (client-server, D1): the headless api seat serves MULTIPLE
+// clients CONCURRENTLY — one cooperative task per accepted connection, each
+// parked on the reactor-backed channel.readline, all sharing one IdeSession.
+// This pins the hand-off seam (channel.detach() -> a long handle a `go` task
+// adopt()s, since `go` carries only long/double/pointer slots and a channel
+// is non-copyable) and the scope-join lifetime (no serve task outlives the
+// session). Deterministic on loopback: each client buffers its request(s) and
+// half-closes, so every task reads request(s) + EOF and returns; the `scope`
+// end joins them before the replies are read. (design doc 2026-09-09 §2.7.)
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_api.inc"
+
+int main()
+{
+    const char *path = "madc_ide_serve_concurrent.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    println("bound: {}", strlen(addr.c_str()) > 0 ? "yes" : "no");
+
+    // Two clients dial the same port. Client A posts a known command (seq 10),
+    // client B an unknown one (seq 20); each half-closes so its serve task
+    // reads request + EOF and finishes. Distinct seqs prove each task served
+    // its OWN client with no cross-talk on the shared session.
+    var uri = format("tcp://{}", addr);
+    madc::channel cli_a(uri.c_str());
+    madc::channel cli_b(uri.c_str());
+    if ( !cli_a.ok() || !cli_b.ok() )
+    {
+	println("dial-fail");
+	return 1;
+    }
+    cli_a.write("{\"cmd\":\"check\",\"seq\":10}\n");
+    cli_a.close_write();
+    cli_b.write("{\"cmd\":\"svae\",\"seq\":20}\n");
+    cli_b.close_write();
+
+    // Accept exactly the two connections and spawn a serve task for each; the
+    // scope joins both before we read the replies (bounded stand-in for
+    // run_serve's endless accept loop).
+    long served = 0;
+    scope
+    {
+	while ( served < 2 )
+	{
+	    if ( !listener.wait_readable() )
+		break;
+	    madc::channel client;
+	    long got = listener.accept(client);
+	    if ( got < 0 )
+		break;
+	    if ( got == 0 )
+		continue;
+	    long conn = client.detach();
+	    go serve_client_task(&S, doc, conn);
+	    served = served + 1;
+	}
+    }
+    println("served: {}", served);
+
+    var ra;
+    cli_a.readline(ra);
+    var rb;
+    cli_b.readline(rb);
+    var pa;
+    js::parse(pa, ra);
+    var pb;
+    js::parse(pb, rb);
+    println("clientA: seq={} ok={}", pa["seq"].as_integer(),
+	    pa["ok"].as_boolean() ? 1 : 0);
+    println("clientB: seq={} ok={} error={}", pb["seq"].as_integer(),
+	    pb["ok"].as_boolean() ? 1 : 0, pb["error"]);
+
+    cli_a.close();
+    cli_b.close();
+    listener.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

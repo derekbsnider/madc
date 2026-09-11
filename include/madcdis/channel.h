@@ -43,6 +43,20 @@ public:
 	int64_t accept(channel &client);
 	const char *local_endpoint();
 
+	// Hand-off facet (V6a duplex serve): a cooperative serve loop spawns
+	// one task per accepted client, but `go` carries only long/double/
+	// pointer slots and this channel is non-copyable — so an accepted
+	// connection rides into a task as a `long` HANDLE. detach() registers
+	// this channel's live endpoint under a fresh handle and re-empties this
+	// object (returns 0 when there is nothing to hand off); adopt() moves a
+	// detached endpoint into an empty channel and consumes the handle
+	// (false = unknown/already-spent handle, or this channel still holds an
+	// endpoint). The handle is a ONE-SHOT transfer token; the registry is
+	// scheduler-thread-only (the taskio single-thread contract). This is NOT
+	// a value-channel (madc::chan_*) handle — the two handle spaces differ.
+	int64_t detach();
+	bool adopt(int64_t handle);
+
 	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);

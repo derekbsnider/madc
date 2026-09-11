@@ -420,6 +420,18 @@ namespace madc {
 	int64_t accept(channel &client);
 	const char *local_endpoint();
 
+	// Hand-off facet (V6a duplex serve): an accepted connection rides into
+	// a `go` serve task as a `long` HANDLE, since `go` carries only long/
+	// double/pointer slots and this channel is non-copyable. detach()
+	// registers this channel's live endpoint under a fresh handle and
+	// re-empties this object (0 = nothing to hand off); adopt() moves a
+	// detached endpoint into an empty channel and consumes the handle
+	// (false = unknown/spent handle, or this channel still holds one). A
+	// one-shot transfer token; the registry is scheduler-thread-only. NOT a
+	// value-channel (chan_*) handle.
+	int64_t detach();
+	bool adopt(int64_t handle);
+
 	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;
 	// write() sends the value's text view.

@@ -5,6 +5,7 @@
 #include "rt/rt_task.h"
 
 #include <cstring>
+#include <map>
 
 namespace madc {
 namespace {
@@ -26,6 +27,17 @@ ChannelState *state(void *impl)
 {
 	return static_cast<ChannelState *>(impl);
 }
+
+// The hand-off registry (V6a duplex serve): detach() parks a channel's whole
+// ChannelState here under a monotonic handle so an accepted connection can
+// ride into a `go` serve task as a `long`; adopt() consumes it. Scheduler-
+// thread-only — the same single-thread cooperative contract taskio's g_io_head
+// and g_chans registries hold; a byte-channel handle never crosses into the
+// value-channel (chan_*) space. A handle is spent by exactly one adopt(); a
+// state left here at shutdown is torn down by close()+delete on the process
+// exit path (the OS reclaims it — this registry never leaks across a run).
+std::map<int64_t, ChannelState *> g_detached;
+int64_t g_detach_next = 1;
 
 void set_state_error(ChannelState *s, const std::string &message)
 {
@@ -183,6 +195,34 @@ const char *channel::local_endpoint()
 		s->channel ? acceptor_surface(s->channel.get()) : nullptr;
 	s->endpoint_label = acceptor ? acceptor->local_endpoint() : std::string();
 	return s->endpoint_label.c_str();
+}
+
+int64_t channel::detach()
+{
+	ChannelState *s = state(impl_);
+	if ( !s->channel )
+		return 0;		// nothing live to hand off
+	// Park the whole state (endpoint + buffered bytes + eof/exit) under a
+	// fresh handle and re-empty THIS object, so its dtor frees only the new
+	// empty state and the accepted stream survives to the adopting task.
+	int64_t handle = g_detach_next++;
+	g_detached[handle] = s;
+	impl_ = new ChannelState();
+	return handle;
+}
+
+bool channel::adopt(int64_t handle)
+{
+	ChannelState *s = state(impl_);
+	if ( s->channel )
+		return false;		// this channel still holds an endpoint
+	std::map<int64_t, ChannelState *>::iterator it = g_detached.find(handle);
+	if ( it == g_detached.end() )
+		return false;		// unknown or already-spent handle
+	delete s;			// drop the empty placeholder state
+	impl_ = it->second;		// take the detached endpoint whole
+	g_detached.erase(it);
+	return true;
 }
 
 int64_t channel::read(void *buffer, int64_t capacity)
