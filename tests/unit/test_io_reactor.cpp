@@ -192,6 +192,50 @@ TEST_CASE("io reactor: a poll op signals readiness without consuming data")
 	::close(listener);
 }
 
+TEST_CASE("io reactor: submit_cancel removes a pending op before it can fire")
+{
+	if ( !madc::io::Reactor::available() )
+		return;
+
+	madc::io::Reactor reactor;
+	uint16_t port = 0;
+	int listener = loopback_listener(port);
+	REQUIRE(listener >= 0);
+	reactor.submit_accept(listener, nullptr);
+	int client = dial(port);
+	REQUIRE(client >= 0);
+
+	madc::io::completion c;
+	REQUIRE(next_completion(reactor, c));
+	REQUIRE(kind_of(c.kind) == kind_of(madc::io::op_kind::accept));
+	int server = c.result;
+	REQUIRE(server >= 0);
+
+	// Arm a poll, cancel it, arm a second poll — all while the socket is
+	// empty — THEN make it readable. FIFO submission processing guarantees
+	// the cancel lands before the second arm, so only the second fires.
+	int tag1 = 0, tag2 = 0;
+	uint64_t cancelled = reactor.submit_poll(server, madc::io::readable, &tag1);
+	reactor.submit_cancel(cancelled);
+	uint64_t live = reactor.submit_poll(server, madc::io::readable, &tag2);
+
+	REQUIRE(::send(client, "x", 1, 0) == 1);
+	REQUIRE(next_completion(reactor, c));
+	CHECK(kind_of(c.kind) == kind_of(madc::io::op_kind::poll));
+	CHECK(c.id == live);		// the cancelled op never fired
+	CHECK(c.user == &tag2);
+
+	// No stray completion from the cancelled op.
+	madc::io::completion more[4];
+	CHECK(reactor.wait(more, 4, 100) == 0);
+
+	char buffer[8] = {};
+	::recv(server, buffer, sizeof(buffer), 0);
+	::close(client);
+	::close(server);
+	::close(listener);
+}
+
 TEST_CASE("io reactor: a read completion reports EOF as zero")
 {
 	if ( !madc::io::Reactor::available() )

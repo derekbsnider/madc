@@ -47,6 +47,7 @@ struct pending
 	void *buf;	// read: destination; write: source (const, held as void*)
 	std::size_t len;
 	int events;	// poll op: the requested poll_flag mask (else unused)
+	uint64_t target;	// cancel op: the id of the op to remove (else unused)
 	void *user;
 };
 
@@ -164,6 +165,33 @@ struct Reactor::impl
 			::epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
 	}
 
+	// Remove a still-pending op by id (a cancel): drop it from its fd's
+	// queue and re-arm or unregister the fd. A no-op if it already fired.
+	void cancel_op(uint64_t target_id)
+	{
+		for ( std::unordered_map<int, std::deque<pending> >::iterator it =
+			      fd_ops.begin(); it != fd_ops.end(); ++it )
+		{
+			std::deque<pending> &q = it->second;
+			for ( std::deque<pending>::iterator pi = q.begin();
+			      pi != q.end(); ++pi )
+			{
+				if ( pi->id != target_id )
+					continue;
+				int fd = it->first;
+				q.erase(pi);
+				if ( q.empty() )
+				{
+					fd_ops.erase(it);
+					::epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
+				}
+				else
+					arm_fd(fd, true);
+				return;
+			}
+		}
+	}
+
 	void complete_op(pending &p, uint32_t revents)
 	{
 		completion c;
@@ -215,6 +243,11 @@ struct Reactor::impl
 		for ( std::deque<pending>::iterator pi = batch.begin();
 		      pi != batch.end(); ++pi )
 		{
+			if ( pi->kind == op_kind::cancel )
+			{
+				cancel_op(pi->target);	// no completion posted
+				continue;
+			}
 			if ( pi->kind == op_kind::close )
 			{
 				unregister_fd(pi->fd);	// drop any pending interest
@@ -359,6 +392,7 @@ uint64_t Reactor::submit_accept(int listen_fd, void *user)
 	p.buf = nullptr;
 	p.len = 0;
 	p.events = 0;
+	p.target = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -372,6 +406,7 @@ uint64_t Reactor::submit_read(int fd, void *buffer, std::size_t len, void *user)
 	p.buf = buffer;
 	p.len = len;
 	p.events = 0;
+	p.target = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -386,6 +421,7 @@ uint64_t Reactor::submit_write(int fd, const void *buffer, std::size_t len,
 	p.buf = const_cast<void *>(buffer);
 	p.len = len;
 	p.events = 0;
+	p.target = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -399,6 +435,7 @@ uint64_t Reactor::submit_close(int fd, void *user)
 	p.buf = nullptr;
 	p.len = 0;
 	p.events = 0;
+	p.target = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -412,8 +449,23 @@ uint64_t Reactor::submit_poll(int fd, int events, void *user)
 	p.buf = nullptr;
 	p.len = 0;
 	p.events = events;
+	p.target = 0;
 	p.user = user;
 	return _->enqueue(p);
+}
+
+void Reactor::submit_cancel(uint64_t target_id)
+{
+	pending p;
+	p.id = _->next_id.fetch_add(1);
+	p.kind = op_kind::cancel;
+	p.fd = -1;
+	p.buf = nullptr;
+	p.len = 0;
+	p.events = 0;
+	p.target = target_id;
+	p.user = nullptr;
+	_->enqueue(p);
 }
 
 std::size_t Reactor::drain(completion *out, std::size_t max)
@@ -507,6 +559,10 @@ uint64_t Reactor::submit_close(int, void *)
 uint64_t Reactor::submit_poll(int, int, void *)
 {
 	return 0;
+}
+
+void Reactor::submit_cancel(uint64_t)
+{
 }
 
 std::size_t Reactor::drain(completion *, std::size_t)

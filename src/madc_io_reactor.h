@@ -34,7 +34,8 @@ enum class op_kind : unsigned char
 	read,
 	write,
 	close,
-	poll
+	poll,
+	cancel	// a control op — removes a pending op; never posts a completion
 };
 
 // Readiness flags for submit_poll's `events` mask and the ready set a poll
@@ -86,6 +87,14 @@ public:
 	// `readable`). This is the primitive the cooperative scheduler's io-wait
 	// rides (the channel then does its own read()).
 	uint64_t submit_poll(int fd, int events, void *user);
+
+	// Cancel the still-pending op with id `target_id` (typically a poll op a
+	// waiter no longer needs): the reactor drops it and stops watching its
+	// fd. A no-op if the op already completed or never existed. The
+	// cancelled op does NOT post a completion, and neither does the cancel
+	// itself — it is fire-and-forget (the caller's own liveness map, keyed by
+	// the op id, gates any late completion that races the cancel).
+	void submit_cancel(uint64_t target_id);
 
 	// Consumer side (single thread). drain() moves up to `max` ready
 	// completions into `out` without blocking and returns the count.
