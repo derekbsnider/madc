@@ -1,0 +1,4 @@
+exists-before: 1
+unlink-ok: 1
+exists-after: 0
+unlink-missing: 0

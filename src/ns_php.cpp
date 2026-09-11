@@ -14,6 +14,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>       // _unlink — win64 UCRT spells POSIX unlink() `_unlink`
+#else
+#include <unistd.h>   // unlink(2)
+#endif
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -553,6 +558,31 @@ int64_t php_file_exists_value(const madc::value *v)
 	// C string for stat.
 	std::string p((const char *)v->data(), v->size());
 	return php_file_exists(p.c_str());
+}
+
+// php::unlink — PHP parity: delete a FILE (unlink fails on a directory,
+// unlike C remove() which rmdir's it). Returns true on success, false on
+// failure (a missing file included). A real host-side builtin so it runs
+// the platform's own delete — POSIX unlink(2), win64 _unlink — never a
+// dlsym'd libc `unlink` (which win64 UCRT does not export; it is _unlink).
+int64_t php_unlink(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_unlink(path) == 0 ? 1 : 0;
+#else
+	return ::unlink(path) == 0 ? 1 : 0;
+#endif
+}
+int64_t php_unlink_value(const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	// The payload is not NUL-terminated by contract — copy to a bounded
+	// C string (as php_file_exists_value does).
+	std::string p((const char *)v->data(), v->size());
+	return php_unlink(p.c_str());
 }
 
 // php::file_get_contents — PHP parity: the whole file as a string
@@ -1101,6 +1131,8 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_unlink(madc::value *a) { return php_unlink_value(a); }
+int64_t __php_unlink_cstr(const char *a) { return php_unlink(a); }
 int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }
 int64_t __php_file_get_contents_vpath(madc::value *a, madc::value *b) { return php_file_get_contents_vpath(a, b); }
 int64_t __php_file_put_contents_cstr(const char *a, const char *b) { return php_file_put_contents_cstr(a, b); }

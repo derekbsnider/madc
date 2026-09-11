@@ -37,6 +37,8 @@ extern "C" {
     int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_file_exists(value *);
     int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_unlink(value *);
+    int64_t __php_unlink_cstr(const char *);
     int64_t __php_file_get_contents(value *, const char *);
     int64_t __php_file_get_contents_vpath(value *, value *);
     int64_t __php_file_put_contents_cstr(const char *, const char *);
@@ -125,6 +127,12 @@ namespace php {
     // no stat-cache emulation, madc answers the live filesystem).
     bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
     bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+
+    // unlink — delete a FILE (PHP parity: fails on a directory). true on
+    // success. A real host-side builtin, so it is win64-portable: the libc
+    // symbol is `_unlink` on win64 UCRT, and the host spells it per platform.
+    bool unlink(value &filename) { return __php_unlink(&filename) != 0; }
+    bool unlink(const char *filename) { return __php_unlink_cstr(filename) != 0; }
 
     // file_get_contents — the whole file as a string-kind value, binary-
     // faithful (PHP parity). PHP's string|false union takes the pre-L3
