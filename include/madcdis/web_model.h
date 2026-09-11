@@ -341,6 +341,31 @@ class web_model
     // already hand them over in source order, so the sort is a contract,
     // not a cost. A row whose style is `normal` paints nothing and is
     // dropped here (the grid paints a no-op; the DOM would gain a span).
+    // The coordinate map's {disp,stored} anchors as JSON (viewsync linked
+    // scroll): the page maps a top line through these to the sibling pane's
+    // line. Only disp+stored are needed (len is for caret projection).
+    static nlohmann::json read_syncmap(const madc::value &hints)
+    {
+	nlohmann::json arr = nlohmann::json::array();
+	if ( !hints.is_object() )
+	    return arr;
+	const std::map<std::string, madc::value> &ho = hints.as_object();
+	std::map<std::string, madc::value>::const_iterator hi = ho.find("map");
+	if ( hi == ho.end() || !hi->second.is_array() )
+	    return arr;
+	for ( const madc::value &row : hi->second.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    long d = hint_of(row, "disp", -1);
+	    long s = hint_of(row, "stored", -1);
+	    if ( d < 0 || s < 0 )
+		continue;
+	    arr.push_back(nlohmann::json{ {"disp", d}, {"stored", s} });
+	}
+	return arr;
+    }
+
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -921,6 +946,16 @@ class web_model
 	    // to this caret though the pane holds no focus.
 	    if ( hint_of(n.hints, "follow", 0) )
 		op["follow"] = true;
+	    // SYNC (viewsync): a linked-scroll partner. The flag marks the pane;
+	    // the code pane also ships the coordinate map's {disp,stored} anchors
+	    // so the page can scroll the sibling to the corresponding statement.
+	    if ( hint_of(n.hints, "sync", 0) )
+	    {
+		op["sync"] = true;
+		nlohmann::json sm = read_syncmap(n.hints);
+		if ( !sm.empty() )
+		    op["map"] = sm;
+	    }
 	    if ( sel_start >= 0 && sel_end > sel_start )
 	    {
 		size_t l0, c0, l1, c1;

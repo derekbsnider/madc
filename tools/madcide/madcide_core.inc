@@ -7211,6 +7211,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
 	eh["region"] = "";
 	eh["focus"] = 1;
 	eh["tag"] = myleaf;
+	if ( es_int(w, es, "viewsync", 0) )
+	    eh["sync"] = 1;		// V5: a linked-scroll partner (the map rides too)
 	e["hints"] = eh;
 	lk.push(e);
 	return;
@@ -7243,6 +7245,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     var wh = { "caret": sc, "tag": myleaf };
     if ( follow )
 	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
+    if ( es_int(w, es, "viewsync", 0) )
+	wh["sync"] = 1;		// V5: a linked-scroll partner (the code pane's map rides too)
     if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
 	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
     else

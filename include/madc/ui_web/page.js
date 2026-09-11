@@ -541,6 +541,11 @@
     var caret = (op.focus || op.follow) ? op.caret : null;
     var sel = op.sel || null;
     var presence = op.presence || null;
+    // viewsync (linked scroll): the sync flag + (code pane only) the byte map.
+    // Cleared line-starts so the correspondence rebuilds against fresh rows.
+    el._sync = !!op.sync;
+    el._map = op.map || null;
+    el._starts = null;
     if (op.lines) {
       // Full paint: this key's first render, or the first after a resync.
       el.textContent = '';
@@ -645,6 +650,78 @@
     });
   }
 
+  // ---- viewsync: linked scrolling between a source pane and its code pane --
+  // Any scroll of one synced pane scrolls its partner to the corresponding
+  // statement, mapped through the code pane's {disp,stored} byte anchors.
+  var vsSyncing = false;
+  function vsStarts(el) {   // byte offset of each line (rows are {t,s} objects)
+    if (el._starts) return el._starts;
+    var rows = el._rows || [], s = [0], acc = 0;
+    for (var i = 0; i < rows.length; i++) { acc += (rows[i].t || '').length + 1; s.push(acc); }
+    el._starts = s;
+    return s;
+  }
+  function vsLineOf(starts, b) {   // largest line index whose start <= b
+    var lo = 0, hi = starts.length - 1;
+    while (lo < hi) { var m = (lo + hi + 1) >> 1; if (starts[m] <= b) lo = m; else hi = m - 1; }
+    return lo;
+  }
+  function vsCorr(code, src) {      // [srcLine,codeLine] anchors from the map
+    var map = code._map;
+    if (!map || !map.length) return null;
+    var cs = vsStarts(code), ss = vsStarts(src), cL = [], sL = [];
+    for (var i = 0; i < map.length; i++) {
+      cL.push(vsLineOf(cs, map[i].disp));
+      sL.push(vsLineOf(ss, map[i].stored));
+    }
+    return { code: cL, src: sL };
+  }
+  function vsProject(a, from, to, line) {  // interpolate a line across axes
+    var f = a[from], g = a[to], n = f.length;
+    if (n === 0) return line;
+    if (line <= f[0]) return g[0] + (line - f[0]);
+    if (line >= f[n - 1]) return g[n - 1] + (line - f[n - 1]);
+    var i = 0;
+    while (i + 1 < n && f[i + 1] <= line) i++;
+    var span = f[i + 1] - f[i];
+    var frac = span > 0 ? (line - f[i]) / span : 0;
+    return g[i] + frac * (g[i + 1] - g[i]);
+  }
+  function vsSync(el) {
+    if (vsSyncing || !el._sync) return;
+    var all = document.querySelectorAll('.edit'), panes = [];
+    for (var i = 0; i < all.length; i++) if (all[i]._sync) panes.push(all[i]);
+    if (panes.length !== 2) return;
+    var partner = panes[0] === el ? panes[1] : panes[0];
+    var code = el._map ? el : (partner._map ? partner : null);
+    if (!code) return;
+    var src = code === el ? partner : el;
+    var a = vsCorr(code, src);
+    if (!a) return;
+    var lh = lineHeight(el) || 1, plh = lineHeight(partner) || 1;
+    var from = (el === code) ? 'code' : 'src', to = (el === code) ? 'src' : 'code';
+    var pLine = vsProject(a, from, to, el.scrollTop / lh);
+    if (pLine < 0) pLine = 0;
+    var target = Math.round(pLine * plh);
+    // The echo guard: setting scrollTop fires the partner's scroll async, which
+    // maps back to here. If the partner is already at the target (the inverse
+    // lands where we are), do nothing — the bounce stops instead of jittering.
+    if (Math.abs(partner.scrollTop - target) <= 2) return;
+    vsSyncing = true;
+    partner.scrollTop = target;
+    requestAnimationFrame(function () { vsSyncing = false; });
+  }
+  function vsBind() {
+    var all = document.querySelectorAll('.edit');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el._sync && !el._vsBound) {
+        el._vsBound = true;
+        (function (e) { e.addEventListener('scroll', function () { vsSync(e); }); })(el);
+      }
+    }
+  }
+
   window.madcApply = function (ops) {
     var moved = false;
     for (var i = 0; i < ops.length; i++) {
@@ -654,6 +731,7 @@
       else if (op.op === 'end') { prune(); markStacks(); }
     }
     kb.focus();
+    vsBind();   // viewsync: bind linked-scroll listeners to any new synced panes
     // Keyboard navigation must move the viewport, not just the caret: the
     // edit div is overflow:auto, so a caret past the fold is off-screen until
     // its element is scrolled into view — ONLY when the caret moved (or an
