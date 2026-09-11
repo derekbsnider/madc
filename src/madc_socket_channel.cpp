@@ -722,9 +722,12 @@ public:
 		socklen_t peer_len = sizeof(peer);
 		int accepted;
 #ifdef _WIN32
-		accepted = (int)::accept((SOCKET)fd_,
-					 reinterpret_cast<sockaddr *>(&peer), &peer_len);
-		if ( accepted < 0 )
+		// Keep the pointer-width SOCKET while touching the handle — an int
+		// fd cannot cast to a 64-bit HANDLE (create_socket's model: the
+		// kernel handle fits in 32 bits, so the int fd is stored LAST).
+		SOCKET a = ::accept((SOCKET)fd_,
+				    reinterpret_cast<sockaddr *>(&peer), &peer_len);
+		if ( a == INVALID_SOCKET )
 		{
 			int code = socket_last_error();
 			if ( code == WSAEWOULDBLOCK )
@@ -735,7 +738,8 @@ public:
 		}
 		// Accepted sockets are born inheritable (as create_socket notes);
 		// clear the flag so a concurrent fork+exec cannot leak the fd.
-		SetHandleInformation((HANDLE)accepted, HANDLE_FLAG_INHERIT, 0);
+		SetHandleInformation((HANDLE)a, HANDLE_FLAG_INHERIT, 0);
+		accepted = (int)a;
 #else
 		do
 			accepted = ::accept(fd_, reinterpret_cast<sockaddr *>(&peer),
