@@ -2707,7 +2707,7 @@ TEST_CASE("v21: skipped-ns-fn-template placeholder restores with its namespace b
 		std::vector<Program::NamespaceFnOverload> &ovset =
 			progB->namespace_fn_overload_sets["w3::w3pick"];
 		REQUIRE(ovset.size() == 1);
-		CHECK(ovset[0].param_spelling == "\x01fn-template-placeholder");
+		CHECK(ovset[0].spelling() == "\x01fn-template-placeholder");
 		CHECK(ovset[0].var == pv);
 	}
 	std::remove(inc_path.c_str());

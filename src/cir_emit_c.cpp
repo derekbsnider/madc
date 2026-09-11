@@ -76,22 +76,26 @@ struct CEmit
 	CirEmitLang lang;
 	int depth;
 	bool bol;	// at the beginning of a line: the next byte indents
+	size_t written;	// running display byte count (== the next byte's offset)
+	std::vector<CirEmitMapRow> *cmap;	// correlation rows, or null (no-op)
 
 	CEmit(FILE *f_, CirEmitLang l, bool at_bol)
-		: f(f_), lang(l), depth(0), bol(at_bol) {}
+		: f(f_), lang(l), depth(0), bol(at_bol), written(0), cmap(NULL) {}
 
 	void put(char c)
 	{
 		if (c == '\n') {
 			fputc('\n', f);
+			written++;
 			bol = true;
 			return;
 		}
 		if (bol) {
-			for (int i = 0; i < depth; i++) fputc('\t', f);
+			for (int i = 0; i < depth; i++) { fputc('\t', f); written++; }
 			bol = false;
 		}
 		fputc(c, f);
+		written++;
 	}
 	void put(const char *s)
 	{
@@ -289,6 +293,24 @@ void emit_pack_pop(CEmit &e, int pack)
 
 void emit(CEmit &e, node_t n, int ctx);
 void emit_initializer(CEmit &e, node_t n);
+
+// V5 correlation: record a map row for a statement/declaration node about to
+// be emitted — its display offset (e.written, the byte count so far, i.e. the
+// start of this emitted line) paired with the node's SOURCE line. A synthetic
+// node (origin_id 0 — a lowering artifact with no source home) is skipped, so
+// it "maps to nothing" (design §2.6). No-op unless a map is being collected.
+static void map_record(CEmit &e, node_t item)
+{
+	if (!e.cmap || !item) return;
+	cir_node *cn = CIR_NODE(item);
+	if (!cn->origin_id) return;
+	int line = cn->src_line();
+	if (line <= 0) return;
+	CirEmitMapRow row;
+	row.disp = e.written;
+	row.line = line;
+	e.cmap->push_back(row);
+}
 
 // Does this declarator render any text? A named id or a pointer/array/
 // function suffix does; the empty declarator of a bare struct definition
@@ -535,11 +557,22 @@ void emit(CEmit &e, node_t n, int ctx)
 	bool paren = prec >= 0 && prec < ctx;
 	if (paren) e.put('(');
 	switch (n->code) {
-	case N_MODULE:
-		// [0] = N_LIST of top-level declarations; one per line.
-		emit_seq(e, op(n, 0), 0, "\n", P_NONE);
+	case N_MODULE: {
+		// [0] = N_LIST of top-level declarations; one per line. Each
+		// carries a correlation row (V5) at its emitted line-start — the
+		// same iteration emit_seq(…,"\n",…) does, with the hook inlined.
+		node_t items = op(n, 0);
+		if (items)
+			for (int i = 0; ; i++) {
+				node_t d = op(items, i);
+				if (!d) break;
+				if (i > 0) e.put('\n');
+				map_record(e, d);
+				emit(e, d, P_NONE);
+			}
 		e.nl();
 		break;
+	}
 	case N_LIST:
 		emit_seq(e, n, 0, " ", P_NONE);
 		break;
@@ -741,6 +774,7 @@ void emit(CEmit &e, node_t n, int ctx)
 			for (int i = 0; ; i++) {
 				node_t s = op(items, i);
 				if (!s) break;
+				map_record(e, s);	// V5 correlation row at the stmt line-start
 				if (is_label_carrier(s)) {
 					emit_labels(e, op(s, 0));
 					if (is_statement(op(items, i + 1)))
@@ -1103,9 +1137,11 @@ void emit(CEmit &e, node_t n, int ctx)
 
 } // namespace
 
-void cir_emit_c(FILE *f, node_t tree, CirEmitLang lang)
+void cir_emit_c(FILE *f, node_t tree, CirEmitLang lang,
+		std::vector<CirEmitMapRow> *map)
 {
 	CEmit e(f, lang, true);
+	e.cmap = map;
 	emit(e, tree, P_NONE);
 }
 

@@ -1,0 +1,9 @@
+V4 replay-all: ok
+V4 replay@E: ok
+V4 replay@B: ok
+V4 replay@D: ok
+V4 history-view@E: ok
+V4 replay-after-compact: ok
+V4 compaction-shrank: ok
+V4 replay-clamp: ok
+V4 persist-restore: ok

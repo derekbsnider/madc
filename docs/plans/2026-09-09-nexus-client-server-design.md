@@ -42,9 +42,11 @@ In scope: the View object, containers (pane / tab / window) and layouts as
 data, the multi-client loop (several windows on one UI thread), the change
 event log, correlation maps (source ↔ MC11 first), presence, permission
 tiers, the remote transports and the headless shape, and the
-thread-safety contract of every piece. Out of scope (design-for only):
-federation between Nexus nodes (Nexus §17–§24), the debugger/profiler tier
-(ruled: a track after the nexus axes).
+thread-safety contract of every piece. Out of scope (design-for only, held
+by the §2.8 invariants): federation between Nexus nodes (Nexus §17–§24) — the
+**platform-node build/test mesh** and the external clients (a **VS Code
+extension**, an LSP editor) are its concrete near cases (§2.7) — and the
+debugger/profiler tier (ruled: a track after the nexus axes).
 
 ## 1. Where the code stands (facts, 2026-09-09)
 
@@ -64,11 +66,48 @@ federation between Nexus nodes (Nexus §17–§24), the debugger/profiler tier
   table generation) and per-document bags (`path`, `modified`, `phandle`).
   Client-pushed FACTS (viewport, terminal presence, dialogs, panel) arrive
   through methods; keys stay client-side.
-- **The lens is session-level.** `enter_view` renders `madc::emit` over the
-  live buffer into ONE view-buffer entity `es.vdoc` with `es.view`,
-  `es.vmap` (EMPTY for a rendered view), `es.ocaret`; `nav_doc` routes
-  navigation to it. One active lens per session, not per window — the gap
-  that blocks "source beside its MC11".
+- **The lens is a View (V1, landed 2026-09-09).** `es.views` holds the View
+  rows (§2.1: `{id, subject, kind, lang, revision, generator, vbuf, rbuf,
+  map}`); every editor tab (buffer row) carries its View as `view`, and
+  `es.fview` is the focused container's. `enter_lens` re-represents the
+  focused View as a code View (`kind = viewCODE`, `lang = madc::fkMC11 /
+  fkC11 / fkCPP`, `generator = genMADC`, its text the View's own render
+  buffer); `exit_lens` returns it to the source View; `nav_doc` and the
+  composer read the View's text entity (`view_text_entity`, one routing
+  rule); `cycle_view` switches on the language CODE. Navigation (caret /
+  mark / bend, the parked `ocaret`) stays the CONTAINER's (§6 Q1). The
+  former `es.vdoc / view / vmap` bag strings are gone. Still one lens at a
+  time: a tab switch exits it — "source beside its MC11" needs V2's
+  containers (a second leaf pane holding a second View over the same
+  subject).
+- **The file-kind vocabulary exists (V1).** `<bits/file_kinds>` is the ONE
+  enum (`madc::fk*`, ranges: text / C / C++ / madc / other / binary, each
+  with a family head and a `_LAST` marker); `Program::LanguageStd`'s
+  enumerators are its C / C++ / madc values (forest format v47: the
+  producer-config word's `language_std` bits moved); the boundary
+  converters `madc::file_kind_name / file_kind_of / file_kind_of_path`
+  (src/file_kinds.cpp) draw a standard's spelling from the one `--std=`
+  table; the emitter's depth table `cir_emit_lang_of_kind` says which kinds
+  it renders and `--emit=`'s name form rides it; `madc::emit` takes the
+  kind. A document's kind is stamped ONCE at open / new-file / save-as
+  (`doc_set_path`, lined_core.inc) — `cxx_view_applies` is a range test on
+  it, no extension ladder.
+- **The `ui::NONE` client exists (V1.5, landed 2026-09-09).** `madcide
+  <file> -c "<command> [arg]"` (tools/madcide/madcide_once.inc, `run_once`):
+  the command NAME converts once at the command-line boundary through the
+  registry's table (`cmd_of`; an unknown name refuses with exit 2 before a
+  session opens), the session opens exactly as the TUI client's does,
+  `IdeSession::command(doc, code, arg, cont)` posts the code through the one
+  dispatcher and feeds the argument to the prompt the command opened
+  (committed by CODE — `cmdPCOMMIT` through `scope_action_named`), the
+  composed tree is typeset by `ui::render_tree` (the headless harness's
+  shape) onto stdout, and the exit status is the verdict (0 clean; 1 the
+  file unreadable or ERROR rows in the problems projection; 2 the line
+  refused). No target is opened: `ui::NONE` has no frontend by design — a
+  client at that level drives the session directly. `IdeSession::post(doc,
+  code)` is the code-speaking primitive the vi grammar (`vi_exec`), the
+  one-shot and the api seat share; `IdeSession::error_count()` the verdict
+  query. Gate: `tests/testmadcide_cli`.
 - **Views already exist in all but name:** the edit node (a document's
   text), a lens (its render), Problems (`diag_items`), Output (the `[build]`
   buffer), the Terminal (`term_feed` into the `[terminal]` buffer through
@@ -338,8 +377,8 @@ the IDE already has, without the TUI part (owner) — no new command language.
 
 | Level | The IDE client | Today | Slice |
 |---|---|---|---|
-| `ui::NONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | the headless harness (`testmadcide` drives the session with no frontend at all) IS (a) without a command line | V1.5 (a); V6 (b) |
-| `ui::LINE` | the **ex / edlin client**: a line frontend over the colon interpreter — `:` verbs (`w q e r`, `goto`, `find`, and every registry command by name) read from stdin, the level-0 sequential renderer prints the projection to stdout (numbered choices; the edit node's lines by range, the way `ex` prints). No cursor addressing: it works over a pipe, in a dumb terminal, and as an MCP seat's transcript. | the colon line (`do_verb`) and `render_tree`'s level-0 print exist; no line frontend | V2.5 |
+| `ui::NONE` | (a) **one-shot**: `madcide <file> -c "<command> [arg]"` — the session opens, ONE registry command runs (its name resolved at the command-line boundary, the same table the profiles use), the resulting projection prints to stdout as text (problems rows, the outline, a lens) and the exit status is the verdict; (b) the **headless server** `madcide --serve` (no window; `api` / `ws` seats). | (a) LANDED 2026-09-09 (`madcide_once.inc`, `run_once`; `IdeSession::post` / `command` / `error_count`; gate `testmadcide_cli`): the headless harness with a command line, no frontend opened; the argument is what the command's prompt would have been typed, committed by code. Verdict: 0 clean, 1 unreadable file or error rows, 2 the line refused (unknown name; an argument the command does not take). A command's OWN refusal speaks on the status line and reads as 0 until (b)'s per-reply verdicts. | V1.5 (a) ✅; V6 (b) |
+| `ui::LINE` | the **ex / edlin client**: a line frontend over the colon interpreter — `:` verbs (`w q e r`, `goto`, `find`, and every registry command by name) read from stdin, the level-0 sequential renderer prints the projection to stdout (numbered choices; the edit node's lines by range, the way `ex` prints). No cursor addressing: it works over a pipe, in a dumb terminal, and as an MCP seat's transcript. | **LANDED 2026-09-10** (`ui_line_frontend`; `run_line` / `IdeSession::line_input`; `--line`): the colon verbs it already has (`w q wq x e r`, `:N`, the view* verbs, `!shell`) + bare-line text. Follow-up: the colon line reaching the FULL registry by name (`:check`, `:find x`) — a colon-interpreter enhancement that improves the TUI colon line equally, wants a generic name→dispatch bridge. | V2.5 ✅ |
 | `ui::TUI` | the grid client (the JOE personality and the other profiles) | landed | — |
 | `ui::WEB` | the webview window | landed | — |
 | `ui::GUI` and above | native chrome, 2D, 3D | out of scope | — |
@@ -355,8 +394,14 @@ Consequences for the design:
 - A `ui::NONE` client gets PROJECTIONS, never a layout: the client record's
   `level` gates what the session composes for it.
 - The registry-command name → code table (slice V0.5) is the one converter
-  every input boundary uses: profiles, menus, the `-c` command line and the
-  `:` line.
+  every input boundary uses: profiles, menus, the `-c` command line (V1.5:
+  `run_once` converts once, refuses with exit 2) and the `:` line.
+- A command WITH AN ARGUMENT is one session primitive
+  (`IdeSession::command(doc, code, arg, cont)`, V1.5): post the code, then
+  the argument is what the prompt the command opened would have been typed,
+  committed by CODE. The `-c` line posts through it now; the `:` line's
+  `:find x` (V2.5) and the api seat's `{"cmd", "args"}` (V6) post through
+  the same method.
 - Thread contract: unchanged — every frontend runs on the UI thread; the
   line frontend's stdin read is the blocking decision, exactly the grid's
   `read_keys`.
@@ -406,6 +451,28 @@ ChangeEvent { seq, session, actor (client id), ts, verb, object (entity
 - **Not a CRDT:** one session is the single authority; verbs apply in
   arrival order (RULED); the log is what makes that order durable.
 
+- **Log structure (RECON 2026-09-10, owner-ruled):** the record is the
+  *redo* skeleton of a WAL — LSN-ordered records plus checkpoints — WITHOUT
+  WAL durability. `seq` IS the LSN: a monotonic per-session record COUNTER,
+  never a byte offset (compaction rewrites the file, so the identity must be
+  rewrite-stable; `event:N`, `last_seq`, `causal_parent` are all this
+  counter). Deliberately a redo / replication / audit log, NOT a
+  crash-recovery WAL — no write-ahead, no fsync, tail-loss tolerated; do not
+  "upgrade" it into fsync-per-append (that tanks edit latency and
+  contradicts the persistence ruling above). TWO record kinds in the one
+  JSONL stream, one `seq` axis: a splice record
+  `{seq, …, verb, payload:{at,del,ins}}` and a CHECKPOINT record
+  `{seq, …, checkpoint}` (full text or a snapshot ref), written through the
+  existing `text_checkpoint` primitive. Replay `event:N` = newest checkpoint
+  with `seq ≤ N`, then redo splices `checkpoint.seq+1 … N`. Compaction =
+  write a fresh checkpoint at head, then truncate records older than the
+  oldest checkpoint any retained event still needs. INVARIANT: never
+  truncate past a checkpoint a retained event depends on; `event:N` for a
+  trimmed N clamps to (or refuses at, with registered prose) the oldest
+  surviving checkpoint. Checkpoint cadence: on save AND whenever compaction
+  runs, with a K-event ceiling so an unsaved long session still bounds
+  replay length (K = config).
+
 ### 2.5 Permission tiers
 
 Tiers are LEVELS in one hub domain (`ide`) on the client's credentials —
@@ -422,6 +489,17 @@ reviewable side log the admin lands or drops — the log shape already
 carries it (actor + causal parent); design when an agent client exists.
 
 ### 2.6 Correlation maps — source ↔ MC11 first (RULED order)
+
+**`viewsync` = LINKED SCROLLING (owner ruling 2026-09-11).** The correlation
+map's user-facing behaviour is linked scrolling: scroll either pane by any
+means (wheel, scrollbar, keys) and the other pane scrolls to the corresponding
+statement, aligned through the map (not merely proportional). "Cursor
+synchronization" below was the first reading and shipped first (caret-follow);
+the owner clarified the intent is the scroll POSITION, and linked scroll landed
+in the frontend (the page maps its top line through the code pane's
+`{disp,stored}` anchors to the partner's line; the doc_map codec stays the
+engine's). The caret-follow stays as a complementary trigger.
+
 
 The IR already holds the map: every `cir_node` carries its originating
 tokens with file/line/col. The emitter (`CEmit`, the one layout owner)
@@ -467,16 +545,86 @@ git adapter (the nexus axes slice).
   suits its needs, wants and capabilities (§6). The MCP seat is an adapter over `api`; the LSP endpoint is a
   second adapter (semanticTokens ← spans, publishDiagnostics ← diags rows,
   documentSymbol ← outline, hover ← `parse_enclosing`).
+- **VS Code (and any LSP editor) is a first-class `api` client — the
+  acceptance test that the api is client-general** (owner 2026-09-10). VS
+  Code plays TWO roles at once, both ordinary clients of what this arc
+  builds: (a) an **LSP client** for language features (diagnostics,
+  completion, hover, definition, references, outline, semantic tokens)
+  through the LSP adapter — stock VS Code, essentially no extension code; (b)
+  a rich **`api` client — the EXTENSION** — for what LSP cannot express: the
+  live source↔MC11 View (a webview panel loading the SAME `page.js` over the
+  `api` ws — a ws client already receives the composed tree as DOM ops, the
+  `ws` bullet above), and **operator ORCHESTRATION** of the platform-node
+  mesh (native VS Code tree views / commands over the api's RAW projections:
+  the node mesh + capabilities, build / test dispatch to a node, presence,
+  the edit-history View). If VS Code can orchestrate the whole mesh through
+  the api, the api is complete — and every LSP editor speaks madc as a bonus.
 - **Headless** = a session with zero windows and one or more `api` / `ws`
   clients: `madcide --serve <addr> [file|manifest]`. The fake host
   (`register_host` / `post_event`, display-free) already proves the
   session runs without a display; the headless gates are its first
   formal clients.
-- **Build topology** (owner 2026-09-08): a headless head coordinating
-  headless servers on the build hosts, project mirrored, builds triggered
-  under permission — `remote_build.sh` retires when it exists. This rides
-  the `api` transport + the event log (the mirror's splice stream) + tiers;
-  it is the far slice of this arc, after the MCP seat pays for itself.
+- **The platform-node build/test mesh** (owner 2026-09-08, framed 2026-09-10)
+  — a NAMED post-arc track, not abstract federation. Each machine runs a
+  madcide node offering its platform's services; the authority splits by
+  DOMAIN (Nexus §21 — never one-master-for-everything, never
+  CRDT-for-everything): the **editing** domain has ONE authority (the
+  "master" — a project's source is edited in arrival order, not a CRDT, §2.4),
+  while EACH node is authoritative for ITS OWN platform's **build / run /
+  test** results (the mac-arm64 node alone can say whether it builds on
+  darwin-arm64). "Master" is therefore a ROLE scoped to editing (assignable,
+  Nexus §17: a server node is a peer with different responsibilities), not
+  omni-authority. The project is mirrored by the event log's splice stream
+  (§2.4); a build/test is a node-routed verb (§2.8 invariants 3, 5) whose
+  result streams back attributed to the serving node; capability negotiation
+  is symmetric (a node declares what it OFFERS, §2.8 invariant 2). It rides
+  the `api` transport + the event log + tiers — all laid by V1–V6. The
+  motivating **dogfood is THIS project's own dev environment** — QNAP, the
+  WSL/docker Linux build container, Windows 11, MacBook Pro x86, MacBook Pro
+  arm64 — for which `scripts/remote_build.sh` + the lane ledger are the
+  MANUAL precursor; the mesh makes it first-class and retires them. The far
+  slice of the effort, after the MCP seat pays for itself; the arc is
+  DESIGN-FOR it (§2.8), never building it.
+
+### 2.8 Groundwork invariants — held so the mesh and external clients are reachable
+
+The platform-node mesh (§2.7) and the external clients (a VS Code extension,
+an LSP editor, §2.7) are OUT of the V1–V7 arc, but the arc is DESIGN-FOR them:
+six invariants, held by every slice, keep them a transport + a router + an
+adapter rather than a re-architecture. A slice that breaks one is wrong even
+when its own gate is green — this list is the "does it block the vision?"
+checklist for the arc.
+
+1. **The Client record is transport/level/capability-general from V3b.** A
+   remote platform node, an LSP editor and a VS Code extension are each just a
+   client with a different `transport` (local | ws | api) and capability set —
+   `{id, transport, level, tier, last_seq, capabilities}`. Only local windows
+   use it this week; the record carries the whole shape anyway. A
+   `client == local window` assumption is the corner that costs the mesh.
+2. **Capability negotiation is symmetric — consume AND offer.** An `api`
+   client declares what it CONSUMES (projections, §2.7); a node also declares
+   what it OFFERS — `{platform, toolchains, serves: [build, run, test]}`
+   (Nexus §21 authority-declaration). Bidirectional by design, not
+   one-directional plus a later bolt-on.
+3. **Every command envelope carries a routing slot.** `{cmd, args, seq}` is
+   `{cmd, args, seq, target?}` — `target` = a client/node id or a capability
+   requirement ("needs darwin-arm64"); null = run here. That one optional
+   field is the difference between node-dispatchable and a rewritten dispatcher.
+4. **The change-event log (§2.4) is the ONE replication substrate.** A remote
+   node mirrors code by replaying splices since its `last_seq`; so the log —
+   snapshot + splices, `actor` + `causal_parent`, per project/document (the
+   sync unit, Nexus §19) — is the ONLY mutation path (V3a's one-mutation-owner
+   is its floor). Never a mutation that bypasses the log.
+5. **Services are node-routable verbs whose results are events/projections
+   tagged by the serving node.** Build / Run / Test / Check already produce
+   projections; their results flow as events carrying WHICH node produced
+   them, so a build dispatched to mac-arm64 comes back attributed — build
+   output is never local-only.
+6. **The renderer is decoupled from the local host.** `page.js` / `web_model`
+   run as a REMOTE client (a browser, a VS Code webview over a socket), not
+   only inside the bundled window — the ws-remote-window shape (§2.7) already
+   forces this; no local-host assumption may creep into the renderer, because
+   the VS Code live-View panel IS `page.js` over the `api` ws.
 
 ## 3. Thread-safety contracts (the law: stated per piece)
 
@@ -496,13 +644,13 @@ git adapter (the nexus axes slice).
 |---|---|---|
 | **V0** ✅ 2026-09-09 | Emitted views indented + coloured (the emitter's layout; lens spans) | `emit_layout_gate.sh`; `testmadcide` view rows |
 | **V0.5 Enums, not strings** (OWNER LAW 2026-09-09) | The UI level enum in `bits/ui_enums` + a target declares its level (`ui::open(uiLevel)`); a dialect event carries the engine's key / kind codes and the handlers switch on them; profile action names resolve to registry ids at load (a misspelling refuses the profile with its line); the view / region / tab / pane discriminators become enums | a gate that fails a string compare against an event field or a discriminator in dialect dispatch (negative control); `testmadcide` byte-identical; a misspelled-action profile fixture refuses |
-| **V1 Views** | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_edit_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View | `testmadcide` byte-identical composition for the identity lens; GUI DOM snapshots unchanged |
-| **V1.5 The `ui::NONE` client** (OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command; a misspelled command refuses with exit 2 |
-| **V2 Containers + layouts** | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout` |
-| **V2.5 The `ui::LINE` client** (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part") | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; the same commands on the TUI twin agree on the document text |
-| **V3 Clients + windows** | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` | `tests/gui/madcide_window2` (two windows, one edit seen in both); `check-one-anchor-owner.sh` |
-| **V4 Event log** | ChangeEvent written by the mutation owner + verb seam; per-change propagation; `<base>.prj.events`; the edit-history View (`revision: event:N`) | headless replay test (log → text equality); size-rewrite test |
-| **V5 Correlation** | the emitter's coordinate map → View `map`; `viewsync` source ↔ MC11 | `testmadcide` map rows > 0 for the MC11 lens; a sync round-trip pin |
+| **V1 Views** ✅ 2026-09-09 (arc branch) | `es.views` table; the lens = View{doc, mc11}; `nav_doc` → focused View; `compose_view_node` by View id; caret/mark/scroll per CONTAINER (the tab showing the View), never on the View; the file-kind vocabulary `<bits/file_kinds>` (+ `ide_view` / `ide_gen` enums) | `testmadcide` byte-identical composition for the identity lens (+ `view-row` / `view-row-lens` / `view-kinds` pins: one row through the cycle, the refusals); GUI DOM snapshots unchanged; `test_cir` file-kind unit test (LanguageStd = the ranges, name round-trips, the emitter's depth table == `CIR_EMIT_TARGETS`) |
+| **V1.5 The `ui::NONE` client** ✅ 2026-09-09 (arc branch; OWNER 2026-09-09, §2.3b) | `madcide <file> -c "<command> [arg]"`: one registry command against the session, the projection to stdout, the verdict as exit status — the headless harness with a command line (`madcide_once.inc`; `IdeSession::post` / `command` / `error_count`) | `tests/testmadcide_cli.*`: the `-c` output pinned against the headless harness for the same command (`cli-pin: identical=1`); a misspelled command refuses with exit 2; the argument feeds the prompt (`gotoline 3`, `find add`); `testmadcide` byte-identical |
+| **V2 Containers + layouts** ✅ 2026-09-10 (arc branch; `view*` via the colon line — the menu titles / key spellings + `viewtab` are a deferred follow-up, an owner key-seat decision) | pane/tab/window as client layout data; `default.layout` (inline baked default) through the profile parser family; the editor region a split tree (leaves in `tabs`/`stack` mode), the chrome panes fixed-slot; the S5 stack, the panel and the editor tabs re-expressed; TUI panes + tabs; `view*` commands as registry data (V2a the layout data + the grid learns rectangles; V2b the editor split tree + the source-left/MC11-right side-by-side; V2c `viewdock` + `<base>.prj.layout` persistence + the splitter's `viewsize` feeds the session) | new `.layout` parse gate with a negative control; TUI composition pinned; `tests/gui/madcide_layout`; `testmadcide_layout` round-trip; `testmadcide` v2c-implicit/persist/reopen/size |
+| **V2.5 The `ui::LINE` client** ✅ LANDED 2026-09-10 (OWNER 2026-09-09, §2.3b) | `ui_line_frontend` (stdin lines → events, the level-0 printer → stdout); `ui::open(ui::LINE)`; the colon interpreter is the command language ("the vi `:` mode without the TUI part"). The engine frontend stays dumb; the line grammar is `IdeSession::line_input`, run by `run_line` (parallel to `run_once`) | `tests/testmadcide_line.*`: a scripted stdin transcript through the line frontend, output pinned; a twin applies the same lines directly through `line_input` and agrees byte-for-byte on the saved file — green jit/exe/obj |
+| **V3 Clients + windows** ✅ (V3a ✅ anchor registry · V3b ✅ event_any + multi-client loop + viewwindow · V3c ✅ presence: V3c-1 shift+draw machinery, V3c-2 palette+web render) | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` (V3c-1: the doc carries a roster of viewing es — `es_view_doc` — dealt a round-robin colour slot, `shift_anchors` shifts EVERY client's caret in one pass not just the editing es, `compose_edit_node` draws the others as carets in their slot; V3c-2: `web_model` emits `op["presence"]`, `page.js` draws a `.pcaret .pslot-<slot>` bar, the `@presence` palette rides the root hints) — gates `tests/testmadcide_window2`, `tests/gui/madcide_presence`, `test_web_model`, `check-one-anchor-owner.sh` | `tests/testmadcide_window2` (two clients, one edit seen in both; per-client carets; viewwindow park vs refuse — fake-host/direct-drive, no display); `testuieventany`; `check-one-anchor-owner.sh`. The real two-window webview pump is the flagged GTK-smoke + seam-lane follow-up |
+| **V4 Event log** ✅ 2026-09-10 (arc branch; dialect-side, engine untouched) | Every text mutation appends one splice RECORD at the ONE text-mutation owner (`ed_text_insert`); a per-document `changelog` piece-table buffer holds JSONL (append O(1); the buffer text IS the persisted + wire form); `seq` = the LSN (a rewrite-stable COUNTER, NOT a WAL — no fsync, tail-loss tolerated); `clog_replay` (torn tail dropped, a trimmed seq clamps up to the oldest checkpoint), `clog_checkpoint`, `clog_compact` (last N whole after a fresh checkpoint; never past a needed one); the `event:N` edit-history View (`make_history_view`); `.prj.events` persistence (`clog_persist`/`clog_restore` hooked into `proj_write`/`proj_open`/`proj_startup`). Per-change propagation rides V3b's recompose. Follow-ups: ^S-flush; one project events file across docs for a multi-file manifest | `tests/testmadcide_changelog` (headless): replay round-trip + historical, the event:N View, checkpoint, compaction, the retention clamp, a persist→restore round-trip; the editor/IDE family byte-identical; `check-madcide-single-owners` extended |
+| **V5 Correlation** ✅ 2026-09-10 (arc branch, targeted gates; the LAST local slice — the V1–V5 seam battery is next, after the owner tests the running editor) | the emitter's coordinate map → View `map`; `viewsync` source ↔ MC11. The emitter (`CEmit`) counts the bytes it writes and records one `{disp, source-line}` row per statement/declaration; the buffer-owning layer converts the line → a stored byte and feeds `doc_map::add` (which drops any non-monotone/hoisted row — "maps to nothing"), returning the `{disp, stored, len}` array beside the text through a new `madc::emit(out, out_map, …)` overload. `enter_lens`/`make_code_view` store it on the View's `map` (the vmap that was empty); `viewsync on\|off` draws an unfocused source↔code pair's caret PROJECTED from the focused caret through the map at compose time (`viewsync_leaf_caret` — read-side, no duplicated caret state; `ui::lens_to_display`/`lens_to_stored` become live). Byte-identical emitted text (the map is a pure side channel). Statement/line granularity; column/expression precision is the named later refinement | `tests/testemitmap` (rows > 0, monotone, lens round-trip, empty→park); `tests/testmadcide_correlation` (a code View's map rows > 0, the projection round-trips both ways, the fallback holds); `testmadcide` MC11 lens `maprows-pos=1`; the editor/IDE family byte-identical; engine-purity + emit-layout + dialect gates green |
 | **V6 Transports + headless** | `listen://` + the WebSocket framer in madcdis; `ws` remote window; `api` line protocol; `--serve`; tiers born low; the MCP seat | a loopback ws test under the runner's caps; an api smoke test; a tier-refusal test |
 | **V7 Pairs 2–3** | external-asm provider (gcc/clang Views); MIR provider; git-revision Views (madcdat adapter) | fixtures per provider; the parity method as a test |
 
@@ -521,8 +669,16 @@ the file-kind vocabulary, §2.2 layout flexibility + nesting, §6 the first
 three questions, and this boundary are ruled; §6's fourth (entity
 identity across history) stays the named hard problem. V0.5 landed
 2026-09-09 (its battery ran in error — the seam is V5, per the owner; a
-slice never gets the battery, `testing-fulltest.md`); V1 begins on the arc's
-feature branch, and the next battery is the V5 seam.
+slice never gets the battery, `testing-fulltest.md`); V1 landed 2026-09-09
+on the arc's feature branch (`feature/client-server-views-claude`, targeted
+gates only); V1.5 landed 2026-09-09 on the same branch (targeted gates
+only); V2, V2.5, V3, V4 and V5 all landed on the arc branch with targeted
+gates only (2026-09-10/11). **V5 is the LAST local slice, and the owner has
+APPROVED viewsync in the running GUI (2026-09-11, "it's good now")** — after
+four feedback rounds (caret-follow → linked-scroll → end-pin → one-way
+master/slave; viewsync is LINKED SCROLLING, the actively-scrolled pane is
+master). **The V1–V5 SEAM is now DUE**: the ONE merge-wave battery + lane
+records + the develop merge. The battery runs at the seam, never per slice.
 
 ## 5. Standing defaults (owner veto welcome)
 

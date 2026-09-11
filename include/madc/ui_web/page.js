@@ -90,6 +90,19 @@
       v = Math.max(48, Math.min(lim * 0.9, v));
       wb.style.setProperty('--' + varName, Math.round(v) + 'px');
     }
+    // The layout OWNS the size (V2c): a release posts the slot's size as a
+    // percent of the workbench (`{action:'viewsize', arg:'sidebar 40'}`), so
+    // the session tree records it and it rides <base>.prj.layout and the TUI.
+    // localStorage stays the per-viewer cache (below); the post is the shared
+    // truth. slotName ('sidebar' / 'panel') is the session's slot word.
+    function postSize() {
+      var sr = slotOf(wb, slotName).getBoundingClientRect();
+      var wr = wb.getBoundingClientRect();
+      var dim = horizontal ? wr.height : wr.width;
+      if (dim <= 0) return;
+      var pct = Math.max(1, Math.min(90, Math.round((horizontal ? sr.height : sr.width) / dim * 100)));
+      post({ kind: 'action', action: 'viewsize', arg: slotName + ' ' + pct });
+    }
     sp.addEventListener('mousedown', function (e) {
       e.preventDefault(); e.stopPropagation();
       var slot = slotOf(wb, slotName).getBoundingClientRect();
@@ -108,6 +121,7 @@
       dragging = null;
       wb.classList.remove('resizing');
       store(varName, wb.style.getPropertyValue('--' + varName));
+      postSize();
     });
     if (horizontal) {
       sp.addEventListener('dblclick', function (e) {
@@ -122,6 +136,7 @@
           wb.style.setProperty('--' + varName, Math.round(wb.getBoundingClientRect().height * 0.85) + 'px');
         }
         store(varName, wb.style.getPropertyValue('--' + varName));
+        postSize();
       });
     }
   }
@@ -198,6 +213,12 @@
     // region'd children re-add it). data-region on the node itself names
     // where it asked to go.
     if (op.region) el.dataset.region = op.region; else delete el.dataset.region;
+    // A SPLIT group (client-server arc V2): a flex container dividing its
+    // rect — a vertical split rows its panes side by side, a horizontal one
+    // columns them; the direction is the wire WORD (ui_split_name). Its
+    // direct children flex by their `size` percent (applied at placement
+    // below). Additive: no split hint, no flex box (the negative control).
+    if (op.split) el.dataset.split = op.split; else delete el.dataset.split;
     // A popup's dismissal (S6): the action a press OUTSIDE it fires — on any
     // popup node (a prompt row, a list dialog), not only a content row.
     if (op.dismiss) el.dataset.dismiss = op.dismiss; else delete el.dataset.dismiss;
@@ -209,6 +230,15 @@
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
     }
+    // The @presence palette (client-server V3c): slot -> colour spec on the
+    // root group; set a --pcaret-<slot> custom property the .pslot-<slot> rule
+    // reads. An edit node's `presence` is a caret ARRAY (handled in applyEdit),
+    // so only the palette-OBJECT case is applied here.
+    if (op.presence && !Array.isArray(op.presence)) {
+      for (var ps in op.presence)
+        if (Object.prototype.hasOwnProperty.call(op.presence, ps))
+          document.documentElement.style.setProperty('--pcaret-' + ps, presenceColour(op.presence[ps]));
+    }
     // Placement: ops arrive pre-order, siblings in order, so each parent's
     // next expected slot is a running count. An element already sitting in
     // its slot is LEFT ALONE — appendChild on an attached node detaches and
@@ -218,8 +248,27 @@
     var container = (op.parent ? nodes.get(op.parent) : null) || root;
     if (container !== root && (op.region || container.classList.contains('workbench'))) {
       makeWorkbench(container);
+      // The layout OWNS the chrome band's size when this viewer has no
+      // localStorage of its own (V2c): the composer emits the pane's `size`
+      // percent, read here into the workbench var (as px against the current
+      // workbench, the unit the splitter uses) so a fresh viewer and the TUI
+      // share the session's size. A stored per-viewer size still wins.
+      if (op.region === 'sidebar' || op.region === 'panel') {
+        var horiz = op.region === 'panel';
+        var vn = horiz ? 'panel-h' : 'sidebar-w';
+        if (op.size && !stored(vn)) {
+          var wr = container.getBoundingClientRect();
+          var px = Math.round((horiz ? wr.height : wr.width) * op.size / 100);
+          if (px > 0) container.style.setProperty('--' + vn, px + 'px');
+        }
+      }
       container = slotOf(container, op.region || 'foot');
     }
+    // A split's direct child flexes along the split's axis: a `size` percent
+    // is a fixed basis, an unsized child grows to share the rest (V2b emits
+    // the split; the leaf's own status+edit column is the CSS below).
+    if (container !== root && container.dataset && container.dataset.split)
+      el.style.flex = op.size ? ('0 0 ' + op.size + '%') : '1 1 0';
     var slot = placed.get(container) || 0;
     if (container.children[slot] !== el)
       container.insertBefore(el, container.children[slot] || null);
@@ -360,6 +409,27 @@
   // caret, selection and span offsets are document byte offsets), the DOM
   // speaks units; this is the ONE conversion, the inverse of the engine's
   // web_byte_col. A column past the text clamps to its length.
+  // A presence caret's colour from its @presence spec ("cyan", "bold red"):
+  // the palette custom property the theme may override, with the page.css
+  // default as the fallback. Bold selects the bright variant.
+  var PRESENCE_PAL = {
+    black:   ['#3b4048', '#5c6370'], red:     ['#e06c75', '#ff7b86'],
+    green:   ['#98c379', '#b5e890'], yellow:  ['#e5c07b', '#ffd78a'],
+    blue:    ['#61afef', '#7cc0ff'], magenta: ['#c678dd', '#d896f0'],
+    cyan:    ['#56b6c2', '#6fd2de'], white:   ['#d9dbe4', '#ffffff']
+  };
+  function presenceColour(spec) {
+    var bold = false, name = '';
+    var ws = String(spec).split(/\s+/);
+    for (var i = 0; i < ws.length; i++) {
+      if (ws[i] === 'bold') bold = true;
+      else if (ws[i]) name = ws[i];
+    }
+    var d = PRESENCE_PAL[name];
+    if (!d) return '';
+    return 'var(--pal-' + name + (bold ? '-bright' : '') + ', ' + (bold ? d[1] : d[0]) + ')';
+  }
+
   function unitsOf(t, bytes) {
     var i = 0, b = 0;
     while (i < t.length && b < bytes) {
@@ -374,7 +444,7 @@
   // caret) coalesced into runs. Columns arrive as BYTE offsets from the
   // engine and are converted to string indices per line (unitsOf), so a
   // multi-byte character costs one cell, not two or three.
-  function renderLine(row, lineNo, caret, sel) {
+  function renderLine(row, lineNo, caret, sel, presence) {
     var t = row.t || '';
     var n = t.length;
     var classes = new Array(n + 1);
@@ -397,6 +467,16 @@
       var cc = unitsOf(t, caret.col);
       classes[cc] += ' caret';
     }
+    // Presence: each OTHER client's caret on this line as a coloured bar cell
+    // (its dealt slot class; the colour rides --pcaret-<slot>). Never the block
+    // cursor — a peer caret marks a place, it does not own the cell.
+    if (presence) {
+      for (var pi = 0; pi < presence.length; pi++) {
+        if (presence[pi].line !== lineNo) continue;
+        var pcc = unitsOf(t, presence[pi].col);
+        classes[pcc] += ' pcaret pslot-' + presence[pi].slot;
+      }
+    }
     var line = document.createElement('div');
     line.className = 'line';
     var run = '', runCls = null;
@@ -417,13 +497,18 @@
   // The caret / selection state one line carries, as a comparable key:
   // two lines with equal keys and equal rows render identically, so a
   // line whose key did not change is left alone.
-  function deco(lineNo, caret, sel) {
+  function deco(lineNo, caret, sel, presence) {
     var d = '';
     if (caret && caret.line === lineNo) d = 'c' + caret.col;
     if (sel) {
       var l0 = sel[0][0], l1 = sel[1][0];
       if (lineNo >= l0 && lineNo <= l1)
         d += '|s' + (lineNo === l0 ? sel[0][1] : 0) + '-' + (lineNo === l1 ? sel[1][1] : 'e');
+    }
+    if (presence) {
+      for (var pi = 0; pi < presence.length; pi++)
+        if (presence[pi].line === lineNo)
+          d += '|p' + presence[pi].col + '.' + presence[pi].slot;
     }
     return d;
   }
@@ -450,15 +535,24 @@
       delete el.dataset.rows;
       el.style.flex = '';
     }
-    var caret = op.focus ? op.caret : null;
+    // The focused pane draws + scrolls its caret; a FOLLOW pane (a cursor-
+    // synced source↔view partner) does too, though it holds no focus — that
+    // is what makes the two panes track one cursor.
+    var caret = (op.focus || op.follow) ? op.caret : null;
     var sel = op.sel || null;
+    var presence = op.presence || null;
+    // viewsync (linked scroll): the sync flag + (code pane only) the byte map.
+    // Cleared line-starts so the correspondence rebuilds against fresh rows.
+    el._sync = !!op.sync;
+    el._map = op.map || null;
+    el._starts = null;
     if (op.lines) {
       // Full paint: this key's first render, or the first after a resync.
       el.textContent = '';
       el._rows = op.lines;
       for (var l = 0; l < el._rows.length; l++)
-        el.appendChild(renderLine(el._rows[l], l, caret, sel));
-      el._caret = caret; el._sel = sel;
+        el.appendChild(renderLine(el._rows[l], l, caret, sel, presence));
+      el._caret = caret; el._sel = sel; el._pres = presence;
       return true;
     }
     var rows = el._rows || [];
@@ -473,26 +567,26 @@
       post({ kind: 'resync' });
       return false;
     }
-    var oldCaret = el._caret || null, oldSel = el._sel || null;
+    var oldCaret = el._caret || null, oldSel = el._sel || null, oldPres = el._pres || null;
     var at = patch ? patch.at : 0;
     if (patch) {
       var ref = el.children[at + del] || null;   // the line after the splice
       for (var d = 0; d < del; d++) el.removeChild(el.children[at]);
       for (var k = 0; k < ins; k++)
-        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel), ref);
+        el.insertBefore(renderLine(patch.ins[k], at + k, caret, sel, presence), ref);
       rows = rows.slice(0, at).concat(patch.ins, rows.slice(at + del));
       el._rows = rows;
     }
     // Every other line kept its row; re-render the ones whose caret /
-    // selection state changed (its old index is its new index shifted
-    // past the splice).
+    // selection / presence state changed (its old index is its new index
+    // shifted past the splice).
     for (var j = 0; j < rows.length; j++) {
       if (patch && j >= at && j < at + ins) continue;
       var i = j < at ? j : j - ins + del;
-      if (deco(i, oldCaret, oldSel) !== deco(j, caret, sel))
-        el.replaceChild(renderLine(rows[j], j, caret, sel), el.children[j]);
+      if (deco(i, oldCaret, oldSel, oldPres) !== deco(j, caret, sel, presence))
+        el.replaceChild(renderLine(rows[j], j, caret, sel, presence), el.children[j]);
     }
-    el._caret = caret; el._sel = sel;
+    el._caret = caret; el._sel = sel; el._pres = presence;
     return !!caret && (!oldCaret || oldCaret.line !== caret.line || oldCaret.col !== caret.col);
   }
 
@@ -556,6 +650,103 @@
     });
   }
 
+  // ---- viewsync: linked scrolling between a source pane and its code pane --
+  // Any scroll of one synced pane scrolls its partner to the corresponding
+  // statement, mapped through the code pane's {disp,stored} byte anchors.
+  // Driver/passenger guard: the pane the user is actively scrolling is the
+  // DRIVER; the partner's scroll events (echoes of our programmatic set) are
+  // ignored until the driver goes idle. This is echo-proof regardless of the
+  // mapping's invertibility — the short source's last screenful maps to a whole
+  // range of MC11 code (a dead zone), so a flag/tolerance guard would let the
+  // echo snap the driver back and lock scrolling. The driver releases 120ms
+  // after its last scroll, so the other pane can then take over.
+  var vsDriver = null, vsIdle = null;
+  function vsStarts(el) {   // byte offset of each line (rows are {t,s} objects)
+    if (el._starts) return el._starts;
+    var rows = el._rows || [], s = [0], acc = 0;
+    for (var i = 0; i < rows.length; i++) { acc += (rows[i].t || '').length + 1; s.push(acc); }
+    el._starts = s;
+    return s;
+  }
+  function vsLineOf(starts, b) {   // largest line index whose start <= b
+    var lo = 0, hi = starts.length - 1;
+    while (lo < hi) { var m = (lo + hi + 1) >> 1; if (starts[m] <= b) lo = m; else hi = m - 1; }
+    return lo;
+  }
+  function vsCorr(code, src) {      // [srcLine,codeLine] anchors from the map
+    var map = code._map;
+    if (!map || !map.length) return null;
+    var cs = vsStarts(code), ss = vsStarts(src), cL = [], sL = [];
+    for (var i = 0; i < map.length; i++) {
+      cL.push(vsLineOf(cs, map[i].disp));
+      sL.push(vsLineOf(ss, map[i].stored));
+    }
+    return { code: cL, src: sL };
+  }
+  // Anchor pairs in SCROLLTOP (pixel) space: each statement anchor's top-line
+  // position on both axes (clamped to each pane's max scroll), BOOKENDED by
+  // (0,0) and (thisMax, partnerMax). Scrolling to either END lands on a
+  // bookend, so both panes reach their ends together; statements align in
+  // between. `el` is the pane being scrolled.
+  function vsPieces(el, partner, code, a, lh, plh) {
+    var maxThis = el.scrollHeight - el.clientHeight;
+    var maxP = partner.scrollHeight - partner.clientHeight;
+    var thisL = (el === code) ? a.code : a.src;
+    var pL = (el === code) ? a.src : a.code;
+    var xs = [0], ys = [0];
+    for (var i = 0; i < thisL.length; i++) {
+      var x = Math.min(Math.max(thisL[i] * lh, 0), maxThis);
+      var y = Math.min(Math.max(pL[i] * plh, 0), maxP);
+      if (x > xs[xs.length - 1] + 0.5 && y >= ys[ys.length - 1]) { xs.push(x); ys.push(y); }
+    }
+    if (maxThis > xs[xs.length - 1] + 0.5) { xs.push(maxThis); ys.push(maxP); }
+    else { ys[ys.length - 1] = maxP; }   // the last anchor already sits at the end
+    return { xs: xs, ys: ys };
+  }
+  function vsSync(el) {
+    if (!el._sync) return;
+    if (vsDriver && vsDriver !== el) return;   // el is the driven partner — its scroll is our echo
+    var all = document.querySelectorAll('.edit'), panes = [];
+    for (var i = 0; i < all.length; i++) if (all[i]._sync) panes.push(all[i]);
+    if (panes.length !== 2) return;
+    var partner = panes[0] === el ? panes[1] : panes[0];
+    var code = el._map ? el : (partner._map ? partner : null);
+    if (!code) return;
+    var src = code === el ? partner : el;
+    var a = vsCorr(code, src);
+    if (!a) return;
+    // el is the driver now; hold the role until 120ms after its last scroll, so
+    // the partner's echoes are ignored and the driver is never snapped back.
+    vsDriver = el;
+    if (vsIdle) clearTimeout(vsIdle);
+    vsIdle = setTimeout(function () { vsDriver = null; }, 120);
+    var lh = lineHeight(el) || 1, plh = lineHeight(partner) || 1;
+    var pc = vsPieces(el, partner, code, a, lh, plh);
+    var xs = pc.xs, ys = pc.ys, st = el.scrollTop, target;
+    if (st <= xs[0]) target = ys[0];
+    else if (st >= xs[xs.length - 1]) target = ys[ys.length - 1];
+    else {
+      var i = 0;
+      while (i + 1 < xs.length && xs[i + 1] <= st) i++;
+      var dx = xs[i + 1] - xs[i];
+      var f = dx > 0 ? (st - xs[i]) / dx : 0;
+      target = ys[i] + f * (ys[i + 1] - ys[i]);
+    }
+    target = Math.round(target);
+    if (Math.abs(partner.scrollTop - target) <= 2) return;
+    partner.scrollTop = target;
+  }
+  function vsBind() {
+    var all = document.querySelectorAll('.edit');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el._sync && !el._vsBound) {
+        el._vsBound = true;
+        (function (e) { e.addEventListener('scroll', function () { vsSync(e); }); })(el);
+      }
+    }
+  }
+
   window.madcApply = function (ops) {
     var moved = false;
     for (var i = 0; i < ops.length; i++) {
@@ -565,13 +756,18 @@
       else if (op.op === 'end') { prune(); markStacks(); }
     }
     kb.focus();
+    vsBind();   // viewsync: bind linked-scroll listeners to any new synced panes
     // Keyboard navigation must move the viewport, not just the caret: the
     // edit div is overflow:auto, so a caret past the fold is off-screen until
     // its element is scrolled into view — ONLY when the caret moved (or an
     // editor was painted in full): a recompose that left the caret where it
     // was (a resize, a wake) never pulls a wheel-scrolled view back to it.
     if (!moved) return;
-    var car = document.querySelector('.caret');
+    // Scroll only the FOCUSED pane's caret into view. A follow pane's caret is
+    // a passive marker — scrolling to it would claim the linked-scroll driver
+    // (viewsync) and fight the user; with viewsync on, the focused pane's own
+    // scroll-to-caret drives the partner through linked scroll instead.
+    var car = document.querySelector('.edit.focus .caret');
     if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 

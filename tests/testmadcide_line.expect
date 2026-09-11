@@ -1,0 +1,6 @@
+madc_ide_line.mad Row 1 Col 1
+long add(long a, long b) { return a + b; }
+madc_ide_line.mad (Modified) Row 2 Col 1
+hello
+Wrote 49 bytes.
+line-twin: doc-equal=1 cont=1

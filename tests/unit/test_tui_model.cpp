@@ -410,6 +410,161 @@ TEST_CASE("compose — the rows hint partitions edit windows (IDE-9e); the "
     CHECK(gp.row_text(5) == "prompt-line");	// one row
 }
 
+// ---- V2 rectangular compose (client-server arc): chrome bands + splits ----
+
+// A leaf pane group: one edit child (the editor region's leaf).
+static uinode split_pane(world &w, const std::string &doc, long caret,
+			 bool focus = false)
+{
+    roles r = roles::standard(w);
+    uinode g(r.group);
+    uinode e(r.edit);
+    e.content = madc::value(doc);
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)caret);
+    if ( focus )
+	h["focus"] = madc::value((int64_t)1);
+    e.hints = madc::value::make_object(h);
+    g.add(e);
+    return g;
+}
+
+// A chrome pane group: region/side/size hints, an optional 2-tab strip, and
+// one content child — the shape compose_chrome_pane emits (words on the wire).
+static uinode chrome_pane(world &w, const char *region, const char *side,
+			  long size, const uinode &child, bool strip)
+{
+    roles r = roles::standard(w);
+    uinode g(r.group);
+    std::map<std::string, madc::value> h;
+    h["region"] = madc::value(std::string(region));
+    h["side"] = madc::value(std::string(side));
+    h["size"] = madc::value((int64_t)size);
+    if ( strip )
+    {
+	std::map<std::string, madc::value> t0, t1;
+	t0["title"] = madc::value(std::string("Problems"));
+	t0["active"] = madc::value((int64_t)1);
+	t1["title"] = madc::value(std::string("Output"));
+	std::vector<madc::value> tabs;
+	tabs.push_back(madc::value::make_object(t0));
+	tabs.push_back(madc::value::make_object(t1));
+	h["tabs"] = madc::value::make_array(tabs);
+    }
+    g.hints = madc::value::make_object(h);
+    g.add(child);
+    return g;
+}
+
+TEST_CASE("compose — no chrome, no split: the linear stream is byte-identical")
+{
+    world w;
+    roles r = roles::standard(w);
+    tui_model m;
+    const tui_grid &g = m.compose(r, editor_tree(w, "one\ntwo", 4), 6, 20);
+    CHECK(g.row_text(0) == " notes.txt" + std::string(6, ' ') + "[+]");
+    CHECK(g.row_text(1) == "one");
+    CHECK(g.row_text(2) == "two");
+    CHECK(g.row_text(4) == " Ln 1");
+    CHECK(g.row_text(5) == " Save   Find   Quit");
+}
+
+TEST_CASE("compose — a vertical split lays two panes side by side")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("vertical"));
+    split.hints = madc::value::make_object(sh);
+    split.add(split_pane(w, "LL\nLL", 0));
+    split.add(split_pane(w, "RR\nRR", 0, true));	// right pane focused
+    root.add(split);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 41);
+    // width 41, one divider column -> each pane 20 cols: left 0..19, the
+    // blank divider at 20, right 21..40.
+    CHECK(g.at(0, 0).ch == 'L');
+    CHECK(g.at(0, 1).ch == 'L');
+    CHECK(g.at(1, 0).ch == 'L');
+    CHECK(g.at(0, 20).ch == ' ');
+    CHECK(g.at(0, 21).ch == 'R');
+    CHECK(g.at(0, 22).ch == 'R');
+    CHECK(g.at(1, 21).ch == 'R');
+    // Two edits -> two focusables; the focused (right) pane holds the cursor.
+    REQUIRE(m.focusables().size() == 2u);
+    CHECK(m.focus_slot() == 1u);
+    CHECK(g.cursor_visible);
+    CHECK(g.cursor_row == 0u);
+    CHECK(g.cursor_col == 21u);
+}
+
+TEST_CASE("compose — a horizontal split stacks two panes; sizes divide rows")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("horizontal"));
+    split.hints = madc::value::make_object(sh);
+    uinode top = split_pane(w, "T", 0);
+    std::map<std::string, madc::value> th;
+    th["size"] = madc::value((int64_t)25);		// top pane 25% of rows
+    top.hints = madc::value::make_object(th);
+    split.add(top);
+    split.add(split_pane(w, "B", 0));
+    root.add(split);
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 10);
+    // 25% of 8 = 2 rows for the top pane; the rest (6) for the bottom.
+    CHECK(g.at(0, 0).ch == 'T');
+    CHECK(g.at(2, 0).ch == 'B');		// bottom pane starts at row 2
+}
+
+TEST_CASE("compose — a bottom panel carves a band with a tab strip")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_node(w, "top.mad"));
+    root.add(edit_node(w, "a\nb", 0));
+    uinode content(r.content);
+    content.content = madc::value(std::string("hi"));
+    root.add(chrome_pane(w, "panel", "bottom", 25, content, true));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 8, 20);
+    // 25% of 8 = 2 -> min 3 rows -> panel at rows 5..7; centre rows 0..4.
+    CHECK(g.row_text(0) == " top.mad");			// centre status
+    CHECK(g.row_text(5) == " Problems  Output");	// the strip header
+    CHECK(g.at(5, 0).attr == ui_style::reverse());	// active tab reversed
+    CHECK(g.at(5, 9).attr == ui_style::reverse());
+    CHECK(g.at(5, 11).attr != ui_style::reverse());	// Output not active
+    CHECK(g.row_text(6) == "hi");			// the panel content
+}
+
+TEST_CASE("compose — a left sidebar carves a full-height column band")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_node(w, "main.mad"));
+    root.add(edit_node(w, "x\ny", 0));
+    uinode content(r.content);
+    content.content = madc::value(std::string("def"));
+    root.add(chrome_pane(w, "sidebar", "left", 25, content, false));
+    tui_model m;
+    const tui_grid &g = m.compose(r, root, 6, 40);
+    // 25% of 40 = 10 -> min 12 cols -> sidebar cols 0..11; centre 12..39.
+    CHECK(g.at(0, 0).ch == 'd');			// sidebar content
+    CHECK(g.at(0, 1).ch == 'e');
+    CHECK(g.at(0, 2).ch == 'f');
+    CHECK(g.at(0, 12).ch == ' ');			// centre status " main.mad"
+    CHECK(g.at(0, 13).ch == 'm');
+    CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
+}
+
 // One span row { s, e, c } for the hints["spans"] array.
 static madc::value span_row(long s, long e, const char *colour)
 {

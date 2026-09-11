@@ -1,0 +1,7 @@
+opened -> yes yes
+two frontends -> yes
+solo: text=solo target-t1=yes
+first: text=AAA target=t1
+second: text=BBB target=t2
+b-only: target=t2 text=CCC
+empty -> false

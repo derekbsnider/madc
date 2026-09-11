@@ -206,6 +206,14 @@ struct ui_frontend
     // Refill `queue` with the next batch of semantic events (blocks);
     // false = the input source ended.
     virtual bool read_events() = 0;
+    // The NON-blocking pump for the multi-client demux (ui::event_any, V3b):
+    // make at most one bounded round of progress and refill `queue` if an
+    // event is now available; true = the queue has events. A sole client
+    // (the grid, the line, one window) never reaches here — event_any takes
+    // the blocking read_events path for N == 1 — so the default is that
+    // path; the DOM frontend overrides it with a tick-bounded round so N
+    // windows share one thread without one starving the others.
+    virtual bool poll_events() { return read_events(); }
     virtual void size(size_t &rows, size_t &cols) = 0;
     virtual void set_bindings(const madc::hub::tui_bindings &b) = 0;
     virtual const std::string &pending_chord() const = 0;
@@ -291,6 +299,70 @@ struct ui_grid_frontend : ui_frontend
 	return true;
     }
     void refresh() { painted = madc::hub::tui_grid(); }
+};
+
+// The LINE frontend (level ui::LINE): the ex / edlin client (client-server
+// design §2.3b, slice V2.5). No addressable surface — it renders the
+// composed projection tree through the level-0 sequential typesetter
+// (render_text, the SAME linearizer ui::render_tree exposes and the
+// headless one-shot uses) to stdout, and reads ONE line of stdin per
+// event. It works over a pipe, in a dumb terminal, and as an MCP seat's
+// transcript. It stays DUMB by design: a line becomes a `text` event
+// carrying the raw line; the APPLICATION (madcide's run_line) owns the
+// `:`-is-a-colon-command / bare-line-is-text classification — the engine
+// ui:: layer never learns a tool's command syntax (separation of concerns,
+// Rule #5). EOF ends the input, as a closed tty ends the grid's read_keys.
+struct ui_line_frontend : ui_frontend
+{
+    std::string chord;			// no chords at this level (always "")
+    ui_line_frontend() { level = ui::LINE; }
+    bool open(size_t &r, size_t &c)
+    {
+	r = rows = 0;			// no addressable grid; the width is
+	c = cols = 0;			// the typesetter's own (render_text)
+	return true;
+    }
+    void close() {}
+    // Typeset the composed tree sequentially to stdout — the level-0
+    // renderer, byte-identical to ui::render_tree's linearization (the tree
+    // arrives already access-filtered; a renderer never decides what may be
+    // seen). No diff basis: the bottom of the ladder always reprints.
+    void render(ui_session *s, madc::value &tree)
+    {
+	std::string txt = madc::hub::render_text(
+	    s->r, madc::hub::value_to_uinode(s->w, tree));
+	fputs(txt.c_str(), stdout);
+	fflush(stdout);
+    }
+    // One line of stdin -> one `text` event (the raw line, a trailing CR of
+    // a CRLF dropped). A bare EOF ends input; a final unterminated line is
+    // still delivered, then the next call reports EOF. The stdin read is
+    // this frontend's ONE blocking decision, exactly the grid's read_keys
+    // (design §2.3b, the thread contract).
+    bool read_events()
+    {
+	int c = getchar();
+	if ( c == EOF )
+	    return false;		// stdin ended: input is over
+	std::string line;
+	while ( c != EOF && c != '\n' )
+	{
+	    line.push_back((char)c);
+	    c = getchar();
+	}
+	if ( !line.empty() && line[line.size() - 1] == '\r' )
+	    line.resize(line.size() - 1);
+	madc::hub::tui_event e;
+	e.kind = madc::hub::tui_event_kind::text;
+	e.text = line;
+	queue.clear();
+	queue.push_back(e);
+	next_event = 0;
+	return true;
+    }
+    void size(size_t &r, size_t &c) { r = rows; c = cols; }
+    void set_bindings(const madc::hub::tui_bindings &) {}
+    const std::string &pending_chord() const { return chord; }
 };
 
 // The script-hosted target registry: name -> the host's ops table (the
@@ -433,6 +505,48 @@ struct ui_dom_frontend : ui_frontend
 	std::string json = inbound.front();
 	inbound.pop_front();
 	queue = model.apply_input(json);
+	next_event = 0;
+	return true;
+    }
+    // The multi-client demux pump (ui::event_any): ONE bounded round toward
+    // an event, never blocking on THIS window's own post. The platform loop
+    // is process-global, so the `tick` op pumps EVERY window's callbacks for
+    // a bounded slice (madcwebview_tick) — an event on any window lands in
+    // its own frontend's `inbound`, and event_any polls each frontend, so no
+    // window starves another (the run() op, which blocks until THIS window
+    // posts and conflates another window's post with a close, is never used
+    // here). Cooperative tasks progress the same as in read_events. Returns
+    // true when this frontend now has a queued event.
+    bool poll_events()
+    {
+	if ( inbound.empty() )
+	{
+	    __madc_task_fire_due();
+	    if ( inbound.empty() && __madc_task_runnable() > 0 )
+	    {
+		__madc_yield();
+		queue.clear();
+		madc::hub::tui_event e;
+		e.kind = madc::hub::tui_event_kind::wake;
+		queue.push_back(e);
+		next_event = 0;
+		return true;
+	    }
+	    if ( inbound.empty() )
+	    {
+		// A bounded pump of the process-global loop. A host without a
+		// tick (a fake/test host) pumps its run once instead — it
+		// posts synchronously and returns, never blocking.
+		if ( ops->tick )
+		    ops->tick(host, WEB_TASK_TICK_MS);
+		else if ( ops->run )
+		    ops->run(host);
+	    }
+	}
+	if ( inbound.empty() )
+	    return false;
+	queue = model.apply_input(inbound.front());
+	inbound.pop_front();
 	next_event = 0;
 	return true;
     }
@@ -1494,12 +1608,18 @@ int64_t open(const char *target)
 // the RENDERING MODEL it wants — ui::level, ordered by requirement — never a
 // target's spelling): ui::TUI is the grid frontend; any other level is the
 // first registered host declaring it. 0 + stderr when no target serves the
-// level here (ui::NONE and ui::LINE have no frontend yet — slices V1.5 / V2.5 of
-// the client-server design), or when that target cannot serve (as open(name)).
+// level here, or when that target cannot serve (as open(name)). ui::NONE has
+// no frontend BY DESIGN: a client at that level has no surface and drives
+// the session directly — the headless harness, `madcide -c` (the one-shot,
+// client-server design §2.3b, V1.5), the api seat (V6) — so there is nothing
+// to open. ui::LINE's frontend (stdin lines in, the level-0 typesetter out)
+// is the ex / edlin client (slice V2.5, ui_line_frontend).
 int64_t open(ui::level lvl)
 {
     if ( lvl == ui::TUI )
 	return open_frontend(new ui_grid_frontend(), (ui_dom_frontend *)0);
+    if ( lvl == ui::LINE )
+	return open_frontend(new ui_line_frontend(), (ui_dom_frontend *)0);
     const ui_host_reg *r = ui_host_serving(lvl);
     if ( !r )
     {
@@ -1769,6 +1889,67 @@ bool event(madc::value &out, int64_t t, int64_t w)
     return true;
 }
 
+// ui::event_any — the ONE blocking decision over N frontends (client-server
+// arc V3b, the multi-client loop). `targets` is an array of ui handles; the
+// returned event carries `target` = the handle it came from, so the loop
+// tags each event to its client. A dead handle is skipped; false = every
+// live target ended.
+//
+// A SOLE target is the single-client path, BYTE-IDENTICAL to ui::event: it
+// blocks in read_events (no poll cost), so `madcide --gui` / the TUI / the
+// line client are unchanged. N targets share ONE thread — each is polled a
+// bounded round (poll_events) until one has an event; the process-global
+// platform loop, pumped through the bounded `tick`, fills whichever window
+// posted, so no window starves another (design §2.3). A real window CLOSE
+// (removing a target, and false when the last ends) is the flagged
+// follow-up — it needs the window-destroyed signal, and only the fake host
+// and a GTK smoke exercise N > 1 in-container until then.
+bool event_any(madc::value &out, madc::value &targets, int64_t w)
+{
+    out = madc::value();
+    ui_session *s = ui_get(w);
+    if ( !s )
+	return false;
+    std::vector<int64_t> handles;
+    std::vector<ui_frontend *> fs;
+    if ( targets.is_array() )
+    {
+	const std::vector<madc::value> &ts = targets.as_array();
+	for ( size_t i = 0; i < ts.size(); ++i )
+	{
+	    int64_t h = ts[i].as_integer();
+	    ui_frontend *f = ui_frontend_get(h);
+	    if ( f )
+	    {
+		handles.push_back(h);
+		fs.push_back(f);
+	    }
+	}
+    }
+    if ( fs.empty() )
+	return false;
+    if ( fs.size() == 1 )
+    {
+	if ( !event(out, handles[0], w) )
+	    return false;
+	out.object()["target"] = madc::value((int64_t)handles[0]);
+	return true;
+    }
+    for ( ;; )
+    {
+	for ( size_t i = 0; i < fs.size(); ++i )
+	    if ( fs[i]->next_event < fs[i]->queue.size() )
+	    {
+		out = ui_event_value(fs[i]->queue[fs[i]->next_event++], s,
+				     fs[i]);
+		out.object()["target"] = madc::value((int64_t)handles[i]);
+		return true;
+	    }
+	for ( size_t i = 0; i < fs.size(); ++i )
+	    fs[i]->poll_events();
+    }
+}
+
 // The chord entered so far (canonical spelling, e.g. "^k") — empty when
 // no chord is pending or the handle is bad. A status line's chord-echo
 // seat (JOE's %k) reads it at compose time; presentation state stays in
@@ -1802,6 +1983,38 @@ bool key_bytes(madc::value &out, const char *name)
     std::string bytes = madc::hub::tui_key_bytes(k);
     out = madc::value(bytes);
     return !bytes.empty();
+}
+
+// The layout vocabulary at its boundaries (V2): the spellings are
+// madcdis/ui_events.h's; unknown = none / "".
+int64_t split_code(const char *name)
+{
+    madc::hub::ui_split d;
+    if ( !name || !madc::hub::ui_split_from_name(name, d) )
+	return (int64_t)ui::split::none;
+    return (int64_t)d;
+}
+
+int64_t side_code(const char *name)
+{
+    madc::hub::ui_side sd;
+    if ( !name || !madc::hub::ui_side_from_name(name, sd) )
+	return (int64_t)ui::side::none;
+    return (int64_t)sd;
+}
+
+const char *split_name(int64_t code)
+{
+    if ( code < (int64_t)ui::split::none || code > (int64_t)ui::split::horizontal )
+	return "";
+    return madc::hub::ui_split_name((ui::split)code);
+}
+
+const char *side_name(int64_t code)
+{
+    if ( code < (int64_t)ui::side::none || code > (int64_t)ui::side::bottom )
+	return "";
+    return madc::hub::ui_side_name((ui::side)code);
 }
 
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------

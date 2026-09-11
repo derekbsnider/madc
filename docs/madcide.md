@@ -12,8 +12,30 @@ the same commands; the window adds a workbench around the editor.
 ```sh
 madcide file.mad            # in the terminal
 madcide file.mad --gui      # in a window
+madcide file.mad --line     # the ex / edlin line mode: stdin lines, text out
+madcide file.mad -c check   # no surface: one command, the projection, a verdict
 madc tools/madcide/madcide.mad file.mad   # from a source checkout
 ```
+
+`--line` is the **ex / edlin client**: the same live-parse session driven
+over stdin/stdout with no cursor addressing — it works over a pipe, in a
+dumb terminal, and as an MCP seat's transcript. Each cycle typesets the
+projection (the status line, the document, any message) to stdout and reads
+one line: a `:` line is a colon command (the vi `:` mode — `w q wq x e r`,
+`:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+shell), and any other line is text inserted at the caret. It is the same
+composer and the same commands as the terminal and the window; only the
+rendering model (level `line`) is lower.
+
+`-c "<command> [arg]"` runs ONE command of the registry (the names are the
+`.menu` / `.keys` files' — `check`, `outline`, `gotoline 3`, `find add`,
+`colon w`) against the opened file with no terminal or window at all,
+prints what the IDE would have shown — the status line, the text, the
+problems rows or the outline — and exits with the verdict: `0` clean, `1`
+the file could not be read or the problems projection carries errors
+(`-c check` on a broken file), `2` an unknown command or an argument the
+command does not take. The argument is what you would have typed at the
+prompt the command opens.
 
 The packaged `madcide` binary ships with the Linux, Windows and macOS
 releases (`bin/madcide`, `bin\madcide.exe`); the window needs the platform
@@ -136,3 +158,32 @@ The window arranges the editor with the pieces an IDE user expects:
 Nothing the window shows is a second implementation: every dialog, tab
 and menu item is the same command the terminal's keys run, composed once
 and rendered by each face.
+
+## Split views and layouts
+
+The editor region is a split tree — one pane, or a `split` of panes side by
+side — and the sidebar and bottom panel are fixed-slot chrome. The colon line
+(`^N` then `:`, or a bare `:` in vi) drives it:
+
+- `:viewsplit right [mc11|c11|cpp]` splits the editor: the focused pane on the
+  left, a new pane on the right. With a representation the new pane is a
+  read-only code View of the buffer's lowering — **source on the left, its
+  MC11 on the right** (V5 will correlate their carets). `:viewsplit bottom …`
+  splits horizontally instead.
+- `:viewfocus next|prev` moves the focus between panes; `:viewopen
+  mc11|c11|cpp|source` re-represents the focused pane in place; `:viewclose`
+  closes it (the split collapses to its sibling; the first pane stays open —
+  quit closes that).
+- `:viewdock left|right|top|bottom` moves the focused chrome pane (the sidebar
+  or the panel) to a slot and side; `:viewsize sidebar|panel <percent>` sizes a
+  band — the same size the window's splitter drag sets.
+
+The layout is client data — a `.layout` profile through the same parser family
+as the keys, menu and theme. In a project it is saved beside the manifest as
+`<base>.prj.layout` (positions, sizes, hidden flags — not the panes' contents)
+and restored when the project reopens; a single-file session keeps it in memory
+(no stray artifact). Because the splitter and `:viewsize` set the size the
+session owns, the terminal and a fresh window share it.
+
+Dedicated keys and menu items for the `view*` commands are a coming addition;
+today they reach the colon line — and any client that speaks the registry.

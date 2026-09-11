@@ -341,6 +341,31 @@ class web_model
     // already hand them over in source order, so the sort is a contract,
     // not a cost. A row whose style is `normal` paints nothing and is
     // dropped here (the grid paints a no-op; the DOM would gain a span).
+    // The coordinate map's {disp,stored} anchors as JSON (viewsync linked
+    // scroll): the page maps a top line through these to the sibling pane's
+    // line. Only disp+stored are needed (len is for caret projection).
+    static nlohmann::json read_syncmap(const madc::value &hints)
+    {
+	nlohmann::json arr = nlohmann::json::array();
+	if ( !hints.is_object() )
+	    return arr;
+	const std::map<std::string, madc::value> &ho = hints.as_object();
+	std::map<std::string, madc::value>::const_iterator hi = ho.find("map");
+	if ( hi == ho.end() || !hi->second.is_array() )
+	    return arr;
+	for ( const madc::value &row : hi->second.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    long d = hint_of(row, "disp", -1);
+	    long s = hint_of(row, "stored", -1);
+	    if ( d < 0 || s < 0 )
+		continue;
+	    arr.push_back(nlohmann::json{ {"disp", d}, {"stored", s} });
+	}
+	return arr;
+    }
+
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -571,6 +596,20 @@ class web_model
 	    std::string region = hint_str(n.hints, "region");
 	    if ( !region.empty() )
 		op["region"] = region;
+	    // The layout DISCRIMINATORS (client-server arc V2): a `split`
+	    // group's direction, a chrome pane's `side` and a `size` percent
+	    // -- the words the composer put on the wire (ui_split_name /
+	    // ui_side_name) and the page divides by. Additive: no hint, no
+	    // field (the test_web_model negative control).
+	    std::string split = hint_str(n.hints, "split");
+	    if ( !split.empty() )
+		op["split"] = split;
+	    std::string side = hint_str(n.hints, "side");
+	    if ( !side.empty() )
+		op["side"] = side;
+	    long lsize = hint_of(n.hints, "size", 0);
+	    if ( lsize > 0 )
+		op["size"] = lsize;
 	    if ( hint_of(n.hints, "popup", 0) )
 		op["popup"] = true;
 	    // `dismiss` (S6): the action a press OUTSIDE a popup fires —
@@ -648,6 +687,21 @@ class web_model
 			    theme[vi->first] = vi->second.as_string();
 		    if ( !theme.empty() )
 			op["theme"] = theme;
+		}
+		// The @presence palette (client-server V3c): slot -> colour spec
+		// strings, emitted like the theme; the page resolves each slot to a
+		// caret colour. String values only.
+		std::map<std::string, madc::value>::const_iterator pri = ho.find("presence");
+		if ( pri != ho.end() && pri->second.is_object() )
+		{
+		    nlohmann::json pal = nlohmann::json::object();
+		    const std::map<std::string, madc::value> &pv = pri->second.as_object();
+		    for ( std::map<std::string, madc::value>::const_iterator vi = pv.begin();
+			  vi != pv.end(); ++vi )
+			if ( vi->second.is_string() )
+			    pal[vi->first] = vi->second.as_string();
+		    if ( !pal.empty() )
+			op["presence"] = pal;
 		}
 	    }
 	}
@@ -887,6 +941,21 @@ class web_model
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
+	    // FOLLOW: an unfocused pane the composer asks to track its caret
+	    // (a cursor-synced source↔view pair) — the page honours + scrolls
+	    // to this caret though the pane holds no focus.
+	    if ( hint_of(n.hints, "follow", 0) )
+		op["follow"] = true;
+	    // SYNC (viewsync): a linked-scroll partner. The flag marks the pane;
+	    // the code pane also ships the coordinate map's {disp,stored} anchors
+	    // so the page can scroll the sibling to the corresponding statement.
+	    if ( hint_of(n.hints, "sync", 0) )
+	    {
+		op["sync"] = true;
+		nlohmann::json sm = read_syncmap(n.hints);
+		if ( !sm.empty() )
+		    op["map"] = sm;
+	    }
 	    if ( sel_start >= 0 && sel_end > sel_start )
 	    {
 		size_t l0, c0, l1, c1;
@@ -898,6 +967,36 @@ class web_model
 	    }
 	    else
 		op["sel"] = nullptr;
+	    // Presence (client-server V3c): the OTHER clients viewing this
+	    // document, drawn as carets in their dealt colour SLOT. Each
+	    // entry's byte caret becomes {line, col} the same way the focused
+	    // caret does; the page resolves the slot to a colour through the
+	    // root @presence palette.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &eho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator pei = eho.find("presence");
+		if ( pei != eho.end() && pei->second.is_array() )
+		{
+		    nlohmann::json pres = nlohmann::json::array();
+		    for ( const madc::value &prow : pei->second.as_array() )
+		    {
+			if ( !prow.is_object() )
+			    continue;
+			long pcar = hint_of(prow, "caret", -1);
+			if ( pcar < 0 )
+			    continue;
+			size_t pl, pcl;
+			web_line_col(text, pcar, pl, pcl);
+			pres.push_back(nlohmann::json{
+			    { "line", (long)pl },
+			    { "col", (long)pcl },
+			    { "slot", hint_of(prow, "colour", 0) } });
+		    }
+		    if ( !pres.empty() )
+			op["presence"] = pres;
+		}
+	    }
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;

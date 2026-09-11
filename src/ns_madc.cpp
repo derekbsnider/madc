@@ -207,6 +207,21 @@ value &outline(value &out, const char *source, const char *filename)
 bool emit(value &out, const char *source, const char *filename,
 	  const char *target)
 	{ std::string s = source ? source : "", f = filename ? filename : "", t = target ? target : ""; return madc_source_emit(&out, &s, &f, &t); }
+// The same render by the target's KIND (madc::file_kind, <bits/file_kinds>)
+// — an IDE carries the enumerator, never the spelling. The converters
+// file_kind_name / file_kind_of / file_kind_of_path the fragment declares
+// beside this live in src/file_kinds.cpp (the vocabulary's one text owner).
+bool emit(value &out, const char *source, const char *filename,
+	  int64_t target_kind)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_source_emit_kind(&out, &s, &f, target_kind); }
+// The same KIND render PLUS the source↔display COORDINATE MAP beside the text
+// (V5): out_map arrives as an array of {disp, stored, len} rows (empty =
+// nothing corresponds — park at 0), the input to ui::lens_to_display /
+// ui::lens_to_stored. An IDE stores it on the code View. Statement/line-level
+// today; column/expression precision is the named later refinement.
+bool emit(value &out, value &out_map, const char *source, const char *filename,
+	  int64_t target_kind)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_source_emit_kind_map(&out, &out_map, &s, &f, target_kind); }
 
 // Persistent parse handles (madcide AST-1): the compiler-data surfaces
 // above given a LIFETIME — open a live parse per TU, refresh it whole

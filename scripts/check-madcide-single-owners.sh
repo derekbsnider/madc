@@ -21,11 +21,11 @@ count_rows()
 }
 
 n=$(count_rows "$FILE")
-if [ "$n" -ne 2 ]; then
-	echo "check-madcide-single-owners: FAIL — $n buffer-row shape sites" \
-	     "in tools/madcide/madcide_core.inc (expected 2: push_buffer_row" \
-	     "+ edit_file's live-state seed). Route new rows through" \
-	     "push_buffer_row." >&2
+if [ "$n" -ne 3 ]; then
+	echo "check-madcide-single-owners: FAIL — $n container-navigation row" \
+	     "shape sites in tools/madcide/madcide_core.inc (expected 3:" \
+	     "push_buffer_row + edit_file's live-state seed + layout_tab, the" \
+	     "layout tab's owner (V2)). Route new rows through those owners." >&2
 	exit 1
 fi
 
@@ -33,7 +33,7 @@ fi
 tmp=$(mktemp)
 cat "$FILE" > "$tmp"
 echo '    b["bend"] = -1;	// synthetic' >> "$tmp"
-if [ "$(count_rows "$tmp")" -ne 3 ]; then
+if [ "$(count_rows "$tmp")" -ne 4 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic row site (the marker went blind)." >&2
@@ -78,8 +78,9 @@ rm -f "$tmp"
 # spans with the edit; a raw ui::text_insert/text_erase elsewhere leaves
 # spans repainting one byte off per keystroke (the "typing spaces
 # re-shades everything" defect). Allowed raw sites: the two owner bodies,
-# and madcide's [build]-buffer append (a different doc — shifting the
-# es's spans by its bytes would corrupt them).
+# madcide's [build]-buffer append, and clog_append's change-log buffer
+# append (both a different, non-viewed entity — shifting the es's spans by
+# its bytes would corrupt them).
 EVENTS="$(dirname "$0")/../tools/texteditor/editor_events.inc"
 
 count_raw_mutations()
@@ -88,12 +89,13 @@ count_raw_mutations()
 }
 
 n=$(count_raw_mutations "$FILE" "$EVENTS")
-if [ "$n" -ne 3 ]; then
+if [ "$n" -ne 4 ]; then
 	echo "check-madcide-single-owners: FAIL — $n raw ui::text_insert/" \
 	     "text_erase sites across madcide_core.inc + editor_events.inc" \
-	     "(expected 3: the ed_text_insert/ed_text_erase owner bodies +" \
-	     "append_build_line's cross-doc append). Route edits through" \
-	     "the owners so highlight spans shift with the text." >&2
+	     "(expected 4: the ed_text_insert/ed_text_erase owner bodies +" \
+	     "append_build_line's cross-doc append + clog_append's change-log" \
+	     "buffer append). Route edits through the owners so highlight" \
+	     "spans shift with the text." >&2
 	exit 1
 fi
 
@@ -101,7 +103,7 @@ fi
 tmp=$(mktemp)
 cat "$FILE" > "$tmp"
 echo '    ui::text_insert(w, doc, caret, "x");	// synthetic' >> "$tmp"
-if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 4 ]; then
+if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 5 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic raw mutation (the marker went blind)." >&2

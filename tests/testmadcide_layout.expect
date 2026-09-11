@@ -1,0 +1,28 @@
+shipped: ok=1 window=main chrome=2
+editor: editor  0% tabs [source] focus=1 hidden=0
+chrome0: sidebar left 20% tabs [outline] focus=0 hidden=1
+chrome1: panel bottom 25% tabs [problems,output,terminal] focus=0 hidden=1
+baked: ok=1 identical=1
+nested: ok=1 window=dev chrome=1 err=
+nested-editor: split(vertical 0%)[editor  60% tabs [source] focus=1 hidden=0 | split(horizontal 40%)[editor  0% tabs [source] focus=0 hidden=0 | editor  30% stack [source,code] focus=0 hidden=0]]
+nested-chrome0: panel top 30% tabs [problems,output] focus=0 hidden=0
+default-focus: ok=1 window=main editor=editor  0% tabs [source] focus=1 hidden=0
+unknown-view: ok=0 err=line 1: unknown view 'sourse'
+unknown-side: ok=0 err=line 2: unknown word 'up'
+panel-side: ok=0 err=line 2: a panel pane cannot dock 'left'
+unknown-word: ok=0 err=line 1: unknown word 'tabz'
+bad-size: ok=0 err=line 2: bad size '120%' (1%..90%)
+ragged: ok=0 err=line 3: ragged layout
+indented-top: ok=0 err=line 1: ragged layout
+chrome-in-split: ok=0 err=line 3: a sidebar pane never splits
+one-child: ok=0 err=line 1: a split needs two or more children
+two-editors: ok=0 err=line 2: a second editor region
+two-windows: ok=0 err=line 2: a second window (one window; V3 adds windows)
+no-editor: ok=0 err=no editor region (a `pane editor` or a `split`)
+two-focus: ok=0 err=more than one pane carries focus
+not-a-line: ok=0 err=line 1: unknown word 'layout'
+no-views: ok=0 err=line 1: pane without views
+session: doc=1 window=main chrome=2
+fallback: ok=0 msg=Layout 'nosuch' no such file — the default layout is in use. chrome=2
+roundtrip-default: ok=1 equal=1
+roundtrip-split: ok=1 equal=1

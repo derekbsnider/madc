@@ -2,9 +2,9 @@ roles: status=status edit=edit
 region: status=statusbar editor=editor
 tabs: none
 pane: role=choice popup=yes
-pane-diags: role=choice region=panel popup=none
+pane-diags: role=group region=panel popup=none
 caret-hint: 0
-split: kids=5 regions=editor/editor/editor/editor rows-hint=yes
+split: kids=6 regions=editor/editor/editor/editor rows-hint=yes
 split-msg: role=content region=none
 split-tags: active=0 other=1
 split-press: text-window=1 text-caret=12 header-window=0 header-caret=5

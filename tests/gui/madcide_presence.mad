@@ -1,0 +1,76 @@
+// V3c (madcide GUI): PRESENCE — another client's caret drawn in the web
+// window. Two CLIENTS over one document (spawn_view_es, like
+// testmadcide_window2, but rendered through the ui::WEB target): client A is
+// the one whose window we open; client B is a peer with its caret parked at a
+// known offset. A's composed view carries B as a presence caret in its dealt
+// colour SLOT (compose_edit_node → web_model → page.js), and the root @presence
+// palette rides the root hints so the page can colour it. The probe reads the
+// live DOM: a `.pcaret` element with B's slot class, and the `--pcaret-<slot>`
+// custom property the root palette set.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+// The presence carets in the live DOM, as one snapshot line.
+void probe(long t)
+{
+    ui::eval_page(t,
+	"(function(){"
+	"var pcs=document.querySelectorAll('.edit .pcaret');"
+	"var slot='';"
+	"for(var i=0;i<pcs.length;i++){var m=pcs[i].className.match(/pslot-(\\d+)/);"
+	"if(m){slot=m[1];break;}}"
+	"var col=getComputedStyle(document.documentElement)"
+	".getPropertyValue('--pcaret-'+(slot||'1')).trim();"
+	"window.madc(JSON.stringify({kind:'snapshot',"
+	"text:'pcaret-count='+pcs.length+' slot='+slot+' palette-set='+(col?1:0)}));"
+	"})()");
+}
+
+int main()
+{
+    const char *path = "madc_ide_presence.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+
+    long w = ui::world_new();
+    long doc = setup_document(w, path, false);	// the ONE shared document
+    bind_lineed_verbs(w);
+
+    // Two windows = two clients over the one document (the SAME per-client init
+    // the launch window uses). A is the window we open; B is the peer.
+    long esA = spawn_view_es(w, doc, path);
+    long esB = spawn_view_es(w, doc, path);
+    ui::set(w, esB, "caret", 5);		// B's cursor, inside "main"
+
+    IdeSession S;
+    S.attach(w, esA);
+
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("PRESENCE open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    probe(t);
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("PRESENCE: {}", ev["text"]);
+	    ui::close(t);
+	}
+    }
+    println("PRESENCE closed");
+    php::unlink(path);
+    return 0;
+}

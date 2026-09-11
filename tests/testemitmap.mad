@@ -1,0 +1,58 @@
+// V5 (correlation maps): the emitter's coordinate map, produced BESIDE the
+// emitted text by madc::emit's second-value-out overload (design §2.6). The
+// rows are {disp, stored, len} — statement/line granularity, stored = the
+// source line's start byte — monotone-forward in both axes (doc_map's add()
+// drops any that aren't, so a reordered emission "maps to nothing"). Headless:
+// the pure engine seam, no frontend.
+
+void okfail(const char *label, bool cond)
+{
+    println("{}: {}", label, cond ? "ok" : "FAIL");
+}
+
+int main()
+{
+    var src = "int add(int a, int b)\n{\n\tint s = a + b;\n\treturn s;\n}\n";
+    var text;
+    var map;
+    bool ok = madc::emit(text, map, src.c_str(), "add.mad", madc::fkMC11);
+    okfail("V5 emit-ok", ok);
+    okfail("V5 emit-text", text != "");
+    okfail("V5 map-rows>0", php::count(map) > 0);
+
+    // Every row is {disp, stored, len>=1}, strictly forward in BOTH axes.
+    bool mono = true;
+    long pd = -1;
+    long ps = -1;
+    long i = 0;
+    while ( i < php::count(map) )
+    {
+        var row = map[i];
+        long d = row["disp"].as_integer();
+        long s = row["stored"].as_integer();
+        long n = row["len"].as_integer();
+        if ( n < 1 || d <= pd || s <= ps )
+            mono = false;
+        pd = d;
+        ps = s;
+        i = i + 1;
+    }
+    okfail("V5 map-monotone", mono);
+
+    // The map round-trips through the lens projection: a stored offset a row
+    // names maps to that row's disp, and back (exact at a segment start).
+    var m = map;
+    long s0 = map[0]["stored"].as_integer();
+    long d0 = map[0]["disp"].as_integer();
+    long fwd = ui::lens_to_display(m, s0);
+    long back = ui::lens_to_stored(m, fwd);
+    okfail("V5 lens-forward", fwd == d0);
+    okfail("V5 lens-roundtrip", back == s0);
+
+    // A rowless / empty map is an ARRAY that parks every caret at 0 (never a
+    // refusal).
+    var empty = {};
+    okfail("V5 empty-park", ui::lens_to_display(empty, 7) == 0);
+
+    return 0;
+}

@@ -195,6 +195,16 @@ void *madc_source_outline(void *result, void *source, void *filename);
 // False = unknown target or a buffer that does not parse/translate.
 bool madc_source_emit(void *result, void *source, void *filename,
 		      void *target);
+// The same render by the target's KIND (madc::file_kind, <bits/file_kinds>)
+// — the dialect's madc::emit(…, int64_t) overload; a kind the emitter has
+// no rendering for is false, like an unknown name.
+bool madc_source_emit_kind(void *result, void *source, void *filename,
+			   int64_t target_kind);
+// The same KIND render PLUS the source↔display coordinate map (V5): result_map
+// receives the {disp, stored, len} rows (madcdis/doc_lens.h) beside the text —
+// the input to ui::lens_to_display / ui::lens_to_stored.
+bool madc_source_emit_kind_map(void *result, void *result_map, void *source,
+			       void *filename, int64_t target_kind);
 // madc::build_native — the CLI's AOT lane in-process (madcide IDE-10c):
 // parse a FILE in a child Program, emit a native artifact. kind = "exe"
 // (PIE executable, the -o default) | "obj" (relocatable .o). result =

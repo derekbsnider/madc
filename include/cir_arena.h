@@ -359,6 +359,16 @@ struct defrec {
 	uint32_t friendfn_count;
 	uint32_t friendcls_begin;	// word run: DataDefCLASS::friend_class_names
 	uint32_t friendcls_count;
+	// FUNC (DK_FUNC) overload-set DECLARATION IDENTITY (v46) — the ranker's
+	// inputs, FuncDef::overload_spelling (intern id, 0 = none) and
+	// overload_template_args (word run of intern ids). Without them a
+	// restored namespace-function member ranked BLANK: the explicit-
+	// template-argument prefix match never bound a restored instance (a
+	// bound consumer minted a third std::min<uint64_t>), and the ambiguity
+	// verdict could not see its provenance. Empty on a method.
+	uint32_t ovl_spelling_id;
+	uint32_t ovl_targ_begin;
+	uint32_t ovl_targ_count;
 };
 
 // A class-scope name -> type binding (type_aliases / static_member_types).

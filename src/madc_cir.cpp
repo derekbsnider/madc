@@ -3358,6 +3358,19 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 			}
 		}
 	}
+	// v46: the overload-set DECLARATION IDENTITY the ranker reads —
+	// FuncDef::overload_spelling (one intern id) and overload_template_args
+	// (a word run of intern ids, appended BEFORE the paramrec run so that
+	// run stays contiguous). 0 / empty on a method. Restored by the RC2
+	// free-function restore; without them a restored ns-function member
+	// ranked with no spelling and no template args.
+	r.ovl_spelling_id = fd->overload_spelling.empty()
+			  ? 0u : forest_arena.strings.intern(fd->overload_spelling.c_str());
+	r.ovl_targ_begin = (uint32_t)forest_arena.payload.size();
+	r.ovl_targ_count = (uint32_t)fd->overload_template_args.size();
+	for (size_t t = 0; t < fd->overload_template_args.size(); ++t)
+		forest_arena.add_word(forest_arena.strings.intern(
+			fd->overload_template_args[t].c_str()));
 	r.params_begin = (uint32_t)forest_arena.payload.size();
 	r.params_count = (uint32_t)fd->parameters.size();
 	for (size_t p = 0; p < prs.size(); ++p)
@@ -4730,8 +4743,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			for (size_t ei = 0; ei < osi.second.size(); ++ei) {
 				const Program::NamespaceFnOverload &e = osi.second[ei];
 				if (!e.var || !e.var->type
-				    || (!e.param_spelling.empty()
-					&& e.param_spelling[0] == '\x01'))
+				    || (!e.spelling().empty()
+					&& e.spelling()[0] == '\x01'))
 					continue;	// the fn-template placeholder seed
 				FuncDef *fd = dynamic_cast<FuncDef *>(e.var->type);
 				if (!fd)
@@ -6526,7 +6539,8 @@ static void cir_emit_cxx_source(FILE *out, Program *prog,
 // Build the cir_node tree and render it as C source (no compile/run).
 // Used by `--emit=c11|mc11`.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
-		  CirEmitLang lang)
+		  CirEmitLang lang,
+		  std::vector<CirEmitMapRow> *map)
 {
     // Error-tolerant parse (§3.5): --emit=c++ is a SOURCE view, not a
     // compilation — the retained tokens render exactly even when the parse
@@ -6591,7 +6605,7 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	cir_emit_cxx_source(out, prog, source_name);
     }
     else
-	cir_emit_c(out, tree, lang);
+	cir_emit_c(out, tree, lang, map);
 
     cir_finish(c2m);
     c2mir_finish(ctx);

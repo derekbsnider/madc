@@ -88,6 +88,20 @@ namespace ui {
 	GFX2D,		// full-screen 2D graphics
 	GFX3D		// 3D
     };
+
+    // A LAYOUT split's direction (client-server arc V2, design §2.2): a
+    // `split` group lays its children side by side (vertical: the divider
+    // runs vertically) or one above the other (horizontal). A composed
+    // tree carries it as the group's `split` hint; both renderers (the grid
+    // and the page) divide the group's rectangle by it. `none` = not a
+    // split.
+    enum class split : unsigned char { none = 0, vertical, horizontal };
+
+    // A chrome pane's SIDE of the window (V2): where a fixed-slot pane
+    // docks — the sidebar left or right, the panel bottom or top. A
+    // composed chrome node carries it as its `side` hint beside `size`
+    // (a percent of the window's columns or rows).
+    enum class side : unsigned char { none = 0, left, right, top, bottom };
 }
 
 #endif // __MADC_BITS_UI_ENUMS

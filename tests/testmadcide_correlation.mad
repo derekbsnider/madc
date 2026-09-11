@@ -1,0 +1,68 @@
+// V5 (correlation maps): source↔MC11 cursor sync (design §2.6). A code View
+// created over a document carries the emitter's coordinate map (v["map"],
+// rows > 0). The read-side projection viewsync_leaf_caret maps the focused
+// source caret into the code View's display space (and the lens codec maps it
+// back), so a source pane and its MC11 pane track one cursor. Headless -- the
+// projection mechanism, no frontend.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void okfail(const char *label, bool cond)
+{
+    println("{}: {}", label, cond ? "ok" : "FAIL");
+}
+
+int main()
+{
+    const char *path = "madc_ide_corr.mad";
+    php::file_put_contents(path,
+        "int add(int a, int b)\n{\n\tint s = a + b;\n\treturn s;\n}\n");
+
+    long w = ui::world_new();
+    long doc = setup_document(w, path, false);
+    bind_lineed_verbs(w);
+    long es = spawn_view_es(w, doc, path);
+
+    // The focused View is the source View; make a sibling MC11 code View.
+    long sv = ensure_focused_view(w, es, doc);
+    long cv = make_code_view(w, es, doc, madc::fkMC11);
+    okfail("V5 code-view", cv != 0);
+
+    var v;
+    view_row(v, w, es, cv);
+    var vmap = v["map"];
+    okfail("V5 view-map-rows>0", php::count(vmap) > 0);
+
+    // The map round-trips through the lens codec (exact at a mapped start).
+    long s0 = vmap[0]["stored"].as_integer();
+    long d0 = vmap[0]["disp"].as_integer();
+    long fwd = ui::lens_to_display(vmap, s0);
+    long back = ui::lens_to_stored(vmap, fwd);
+    okfail("V5 project-forward", fwd == d0);
+    okfail("V5 project-roundtrip", back == s0);
+
+    // viewsync_leaf_caret: the source View focused at a stored caret, the code
+    // View's leaf draws the PROJECTED display caret and asks to follow it.
+    ui::set(w, es, "fview", sv);
+    ui::set(w, es, "caret", s0);
+    long fol = 0;
+    long proj = viewsync_leaf_caret(w, es, cv, -99, fol);
+    okfail("V5 viewsync-project", proj == d0);
+    okfail("V5 viewsync-follow", fol == 1);
+
+    // The inverse: with the CODE View focused at a display caret, the source
+    // leaf draws the projected stored caret.
+    ui::set(w, es, "fview", cv);
+    ui::set(w, es, "caret", d0);
+    long inv = viewsync_leaf_caret(w, es, sv, -99, fol);
+    okfail("V5 viewsync-inverse", inv == s0);
+
+    // A leaf that IS the focused View (or no map / same representation)
+    // returns the fallback and does NOT follow -- never a bad caret.
+    long fb = viewsync_leaf_caret(w, es, cv, -99, fol);
+    okfail("V5 viewsync-fallback", fb == -99 && fol == 0);
+
+    php::unlink(path);
+    return 0;
+}

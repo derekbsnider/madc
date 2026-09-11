@@ -82,6 +82,79 @@ void client_service(IdeSession &S, long t)
 // terminal-request path (a window captures build output into the panel
 // region instead of suspending; interactive Run and the shell refuse
 // until the embedded terminal lands).
+// A CLIENT of the session (design §2.3, groundwork invariant #1). The
+// record is transport/level/capability-GENERAL from the first window: a
+// local window this week, but a remote platform node, an LSP editor and a
+// VS Code extension are the SAME record with a different `transport` and
+// capability set — a `client == local window` assumption is the corner
+// that costs the mesh, so the whole shape lands now even though only
+// trLOCAL is built. `t` is the frontend handle and `es` the client's own
+// editor-state entity (the bag compose reads); the shared world holds the
+// documents. `keysgen` is the client-local cache of the key-table
+// generation it last installed (-1 = none yet); `last_seq` is its cursor
+// into the change-event log (V4). `capabilities` is the symmetric
+// consume/offer pair (invariant #2): a local window consumes the
+// interactive surface and offers no services — a compute node fills
+// `offer` with {build, run, test} later.
+void make_client(var &out, long id, long t, long es, long xport, long lvl,
+		 long tier)
+{
+    var consume = { "render": true, "input": true, "edit": true };
+    var offer = {};		// a compute node fills this: build / run / test
+    var caps = { "consume": consume, "offer": offer };
+    var c = {
+	"id": id,
+	"t": t,
+	"es": es,
+	"transport": xport,
+	"level": lvl,
+	"tier": tier,
+	"last_seq": 0,
+	"capabilities": caps,
+	"keysgen": -1
+    };
+    out = c;
+}
+
+// The client that spoke: ui::event_any tags the event with the frontend
+// handle it came from (out["target"]); find its record. -1 = none (a
+// handle that left the roster between the wait and the drain).
+long client_index_by_t(var &clients, long t)
+{
+    long n = php::count(clients);
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( clients[i]["t"].as_integer() == t )
+	    return i;
+    return -1;
+}
+
+// The client half of a viewwindow spawn (client-server V3b-2b): the session
+// built a fresh es over the shared world (S.spawn_view); here the client
+// opens a FRONTEND on it and joins it to the roster — the seam that keeps
+// frontend handles out of the session. A refused es (profile+rescue both
+// failed) or a refused open (no window host — its reason on stderr) leaves
+// the roster unchanged.
+void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
+		  long &nextid, long sdoc)
+{
+    long nes = S.spawn_view(sdoc);
+    if ( nes == 0 )
+	return;
+    long nt = ui::open(lvl);
+    if ( nt == 0 )
+	return;
+    // The new client's pushed session facts (its own es).
+    S.attach(w, nes);
+    bool ht = ui::level_of(nt) <= ui::TUI;
+    S.terminal(ht);
+    S.dialogs(ui::dialogs(nt));
+    S.panel(!ht);
+    var cN;
+    make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
+    clients.push(cN);
+    nextid = nextid + 1;
+}
+
 void run_ide(const char *path, bool ro, ui::level lvl)
 {
     IdeSession S;
@@ -90,38 +163,89 @@ void run_ide(const char *path, bool ro, ui::level lvl)
 	printf("cannot read %s\n", path);
     if ( doc <= 0 )
 	return;			// -1 already reported on stderr
+    long w = S.world();		// the shared world (documents + every es)
     long t = ui::open(lvl);
     if ( t == 0 )
 	return;			// open refused (e.g. no webview) with a reason
+    // The client-pushed session facts (terminal / dialogs / panel) are
+    // per-client — they write into THIS client's es, so set them on the
+    // es open() built before it joins the roster.
     bool has_term = ui::level_of(t) <= ui::TUI;
     S.terminal(has_term);
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
-    long keysgen = -1;
-    client_bind_keys(S, t, keysgen);
+    // Client 0 = the launching window/terminal over open()'s es. `clients`
+    // is a dialect var array of the general records; ONE IdeSession is
+    // re-pointed per client via S.attach(w, es) — attach is the seam.
+    var clients = {};
+    var c0;
+    make_client(c0, 0, t, S.es, trLOCAL, lvl, tierOWNER);
+    clients.push(c0);
+    long nextid = 1;		// client 0 is the launch window; spawns count up
     bool run = true;
     while ( run )
     {
-	// What the target knows arrives as facts, pushed before every
-	// compose: the viewport (resizes land between events) and the
-	// pending chord (the status line's %k echo).
-	S.viewport(ui::cols(t), ui::rows(t));
-	var pc;
-	ui::pending(pc, t);
-	S.pending_chord(pc.is_null() ? "" : pc.c_str());
-	long adoc = S.active(doc);
-	var tree;
-	S.compose_ide_tree(tree, adoc);
-	ui::render(t, S.world(), tree);
-	if ( S.parse_pending(adoc) )
-	    continue;		// keep serving keystrokes while it runs
+	// Compose + render EVERY client, then wait on ANY of them. For a
+	// single client this is byte-identical to the pre-multi-client loop:
+	// compose one, wait, apply. `targets` collects the frontends the
+	// blocking decision (ui::event_any) chooses among.
+	bool parked = false;
+	var targets = {};
+	long n = php::count(clients);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var c = clients[i];
+	    long ct = c["t"].as_integer();
+	    S.attach(w, c["es"].as_integer());
+	    // What the target knows arrives as facts, pushed before every
+	    // compose: the viewport (resizes land between events) and the
+	    // pending chord (the status line's %k echo).
+	    S.viewport(ui::cols(ct), ui::rows(ct));
+	    var pc;
+	    ui::pending(pc, ct);
+	    S.pending_chord(pc.is_null() ? "" : pc.c_str());
+	    long adoc = S.active(doc);
+	    var tree;
+	    S.compose_ide_tree(tree, adoc);
+	    ui::render(ct, w, tree);
+	    if ( S.parse_pending(adoc) )
+		parked = true;		// keep serving keystrokes while it runs
+	    // Install this client's key table when its generation moves; the
+	    // cache rides the client record (copy-mutate-store).
+	    long gen = c["keysgen"].as_integer();
+	    client_bind_keys(S, ct, gen);
+	    c["keysgen"] = gen;
+	    clients[i] = c;
+	    targets.push(ct);
+	}
+	if ( parked )
+	    continue;
 	var ev;
-	if ( !ui::event(ev, t, S.world()) )
+	if ( !ui::event_any(ev, targets, w) )
 	    break;
+	// Apply the event to the client it came from (event_any tagged it).
+	long idx = client_index_by_t(clients, ev["target"].as_integer());
+	if ( idx < 0 )
+	    continue;			// a handle that left the roster
+	var cc = clients[idx];
+	long ct = cc["t"].as_integer();
+	S.attach(w, cc["es"].as_integer());
+	long adoc = S.active(doc);
 	run = S.apply_ide_event(adoc, ev);
-	client_bind_keys(S, t, keysgen);
-	client_service(S, t);
+	client_service(S, ct);		// the next compose re-binds keys
+	// A viewwindow command parks a spawn on THIS client's es (S is still
+	// attached to it); open the frontend and join it to the roster.
+	long sdoc;
+	if ( S.take_spawn(sdoc) )
+	    spawn_client(clients, S, w, lvl, nextid, sdoc);
     }
+    // Close the session (task_drain is global, so no spawned client's
+    // background parse outlives the world), then every client's frontend.
+    // Per-spawned-es parse-handle close + a live build's stop on a
+    // non-attached client ride the window-close hardening follow-up (the
+    // process exits here, so the OS reclaims them; task_drain is the safety).
+    long nc = php::count(clients);
     S.close();
-    ui::close(t);
+    for ( long i = 0; i < nc; i = i + 1 )
+	ui::close(clients[i]["t"].as_integer());
 }

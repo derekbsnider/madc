@@ -2,6 +2,425 @@
 
 ## [Unreleased]
 
+### madcide: correlation maps — the emitter's coordinate map, viewsync source↔MC11 (V5) (2026-09-10)
+
+- **V5 of the client-server arc** (design doc §2.6), the LAST local slice.
+  The emitter (`CEmit`) now counts the bytes it writes and records one
+  `{disp, source-line}` row per statement/declaration; the buffer-owning
+  layer converts the line to a stored byte and feeds `doc_map::add`, which
+  drops any non-monotone (reordered/hoisted) row — "maps to nothing", exactly
+  the approximate many-to-one §2.6 names. The `{disp, stored, len}` array
+  rides beside the text through a new `madc::emit(out, out_map, …)` overload.
+- **The emitted bytes are byte-identical** whether or not a map is collected
+  — the map is a pure side channel (`emit_layout_gate` + `testmadcide`
+  byte-identical composition are the oracle).
+- The lens path stores the map on the View's `map` field (the vmap that was
+  empty): `enter_lens` and `make_code_view` fill it; `view_lens_hints`
+  already forwards it, so `testmadcide`'s MC11 lens now shows `maprows-pos=1`.
+- **`viewsync on|off`** (the fourth view* verb) draws an unfocused source↔code
+  pair's caret PROJECTED from the focused caret through the map at compose
+  time (`viewsync_leaf_caret` — a READ-side projection, no duplicated caret
+  state, matching doc_lens' "projection is the one place display coordinates
+  come from"); `ui::lens_to_display`/`lens_to_stored` become live.
+- Statement/line granularity today; column/expression precision is the named
+  later refinement. Gates: `tests/testemitmap` (engine — rows > 0, monotone,
+  the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
+  a code View's map rows > 0, the projection round-trips both ways, the
+  fallback holds); the editor/IDE family byte-identical.
+- **viewsync linked scroll — one-way MASTER/SLAVE** (c4716c2f, owner ruling):
+  the pane you actively scroll is the master; the other follows one-way and
+  never pushes the master back. The prior echo guard let the slave snap the
+  master at the extremes (a dead zone where the short source's bottom maps to a
+  range of MC11 code), locking scrolling. Fixed with a driver/passenger guard
+  (the scrolled pane drives for 120ms; the partner's echoes are ignored), and
+  the follow-marker no longer scrolls (only the focused caret does). Verified:
+  ends meet, no lock, one-way.
+- **viewsync linked scroll — ends pinned** (db40b59b, owner feedback): the
+  panes drifted apart at the extremes (source at its end left the MC11 short of
+  its own end). The mapping now works in scrolltop space through anchor pairs
+  bookended by `(0,0)` and `(thisMax, partnerMax)`, so both panes reach top and
+  bottom together while statements still align in between. The padding route
+  was rejected (the MC11 is ~10× the source's length → the source pane would be
+  mostly whitespace). Verified in the real webview.
+- **viewsync = LINKED SCROLLING** (991302a9, owner ruling 2026-09-11): scroll
+  either pane by any means (wheel, bar, keys) and the other scrolls to the
+  corresponding statement, aligned through the coordinate map. The dialect
+  marks both editor panes `sync`; `web_model` ships the code pane's
+  `{disp,stored}` anchors; `page.js` maps a pane's top line through them to the
+  partner's line and scrolls it there (echo-guarded). Verified in the real
+  webview both directions; inert when viewsync is off (GUI snapshots +
+  `test_web_model` byte-identical). The caret-follow below stays as a
+  complementary trigger.
+- **viewsync scroll fix** (016b24fe, found in owner testing): the projection
+  was correct but the GUI web frontend discards an unfocused pane's caret
+  (`page.js`: `op.focus ? op.caret : null`), so the synced MC11 pane never
+  scrolled to it — "both sides scroll independently." A general `follow` hint
+  (the composer marks the synced leaf, `web_model` emits it, `page.js` honours
+  the caret and scrolls every `.caret` into its pane) fixes it; inert when
+  viewsync is off (GUI snapshots + `test_web_model` unchanged). The TUI already
+  scrolled to the caret unconditionally.
+- **The V1–V5 SEAM merge wave — the ONE battery, all lanes GREEN, arc merged
+  to develop (2026-09-11).** The owner tested viewsync in the running editor and
+  approved it ("it's good now"), passing the owner-tests-before-the-battery gate.
+  The seam battery on the sealed commit (89540d1b): linux-battery (fulltest jit
+  1347/0/9skip · exe/obj 1286/0 · packed 1347/0 · headerless 1313/0/43skip · gui
+  19/19 ×3; check-rule-trailers 0-missing; forest_crosstu OK), c-testsuite 220/220
+  gnu11, wine64 1286/0/70skip, macos both arches (836 units each, macho-verified,
+  packaged). All four develop-gated lanes fresh; `lane_ledger check --promote` green.
+- **Defect fixed on the way — the php::unlink win64 gap.** `testmadcide_correlation`
+  (V5) and `testmadcide_changelog` (V4) clean up with `php::unlink`, which lowers to
+  libc `unlink`; win64 UCRT exports only `_unlink`, so the packed PE fails at MIR
+  link ("undefined item unlink") before the test body runs. Both get a
+  `.win64_skip` (matching `testsmaug_requests`); the V4/V5 logic itself is win64-clean
+  (verified: all 8 V5 checks pass under wine with the cleanup removed, rc=0). Mapping
+  libc `unlink`→`_unlink` on win64 is a separate embedded-headers slice.
+- **Deferred (pre-existing, non-gated):** `testimplicitlibcproto{,c17}` fail only on
+  the win64-headerless lane — the win64 forest pack doesn't make `printf` adoptable
+  (K&R fallback) the way the linux pack does, so the shared `.headerless_expect`
+  (adopted prototype) mismatches. Not arc-caused (the adoption code 5393bf34 is on
+  develop; the arc's parser diff doesn't touch it; the test passes native,
+  linux-headerless, and plain win64). A win64-pack / per-arch-headerless-fixture
+  follow-up.
+
+### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
+
+- **V4 of the client-server arc** (design doc §2.4): every text mutation
+  appends one splice RECORD; replay reconstructs the buffer at any seq; a
+  checkpoint bounds replay; compaction sheds old records; the edit-history
+  View renders the doc at a past revision; `.prj.events` persists beside the
+  manifest. Fully **DIALECT-SIDE** — the engine (`madc/dis`) is untouched.
+- Recon changed the design for the better: text edits **bypass the verb
+  registry** (`ed_text_insert` calls `ui::text_insert` directly, not
+  `ui::act` → `mutation_context`), so the splice is known only at the ONE
+  text-mutation owner — exactly where §2.4 places it. The engine's
+  `mutation_context` journal would never see a keystroke.
+- **Core** (`tools/texteditor/editor_events.inc`): a per-document `changelog`
+  entity whose piece-table buffer holds JSONL (append = a text insert at end,
+  O(1) amortised; the buffer text IS the persisted form AND the wire form —
+  one serialisation). `seq` = the LSN, a monotonic per-document COUNTER, never
+  a byte offset (compaction rewrites the store, so the identity is
+  rewrite-stable). NOT a WAL — no write-ahead, no fsync, tail-loss tolerated.
+  `clog_replay` applies each splice to a scratch buffer via the engine's
+  `text_replace` (no dialect string surgery); a torn tail line is dropped; a
+  seq below the oldest surviving checkpoint clamps UP to it (the retention
+  rule) — never a silent empty. `clog_compact` keeps the last N records whole
+  after a fresh checkpoint (INVARIANT: never truncate past a needed one).
+- **madcide** (`tools/madcide/madcide_core.inc`): `make_history_view` (the
+  `event:N` View over a render buffer); `clog_persist`/`clog_restore`/
+  `proj_events_path` (the `.prj.events` sibling of the layout cache), hooked
+  into `proj_write` / `proj_open` / `proj_startup`.
+- Gate `tests/testmadcide_changelog` (headless): replay round-trip +
+  historical, the event:N View, checkpoint, compaction, the retention clamp,
+  and a persist→restore→replay round-trip. The editor/IDE family
+  (`testmadcide{,_cli,_line,_window2}`, `testidespanshift`) stays
+  byte-identical — journaling is a side entity, no composed output changes.
+  `check-madcide-single-owners` gains `clog_append` (a 4th allowed raw
+  `ui::text_insert`, the `append_build_line` case: a different, non-viewed
+  buffer). All dialect/madcide/seam/registry/enum/style/anchor gates PASS.
+- Follow-ups (single-file is V4's gated case, per the design): flush the log
+  on `^S` doc-save; unify to one project events file across docs for a
+  multi-file manifest (the log is per-doc today). **NEXT = V5** (correlation
+  maps) → the V1–V5 seam (one battery). Battery at the seam only.
+
+### madcide: the web render of presence carets + the @presence palette (V3c-2) (2026-09-10)
+
+- The render half of V3c presence — the OTHER clients' carets now appear in
+  the web window (V3c-1 built the compose hint and parsed the palette; this
+  draws it). **V3c COMPLETE → V3 COMPLETE.**
+- **web_model** (`include/madcdis/web_model.h`): the edit node's
+  `hints["presence"]` becomes `op["presence"] = [{line, col, slot}]` — each
+  peer caret run through `web_line_col` exactly as the focused caret; the root
+  group's `@presence` palette (slot → spec) is emitted like the `@gui` theme.
+- **page.js**: `renderLine` draws each peer caret as a `.pcaret .pslot-<slot>`
+  cell (a coloured bar, never the block cursor); `deco` folds presence in so
+  the incremental patch re-renders a peer-caret move; the root palette sets a
+  `--pcaret-<slot>` custom property (`presenceColour` maps the `@presence` spec
+  to `var(--pal-name[-bright])` with the page.css default). The edit node's
+  presence ARRAY is guarded off the palette-OBJECT apply.
+- **page.css**: `.pslot-0..7` draw the bar in the slot's `--pcaret-<slot>`
+  colour. **Dialect**: `load_theme` parses `@presence <slot> <spec>` into
+  `presence_theme` (multi-word specs kept whole); `compose_ide_tree` wires
+  `rh["presence"]`; the three theme files carry an eight-colour palette.
+- Gate `tests/gui/madcide_presence` (real webview, Xvfb): two clients over one
+  doc, A's window renders B's caret as `.pcaret.pslot-1` with `--pcaret-1` set
+  (`pcaret-count=1 slot=1 palette-set=1`). Plus `test_web_model` unit cases
+  (the `op["presence"]` translation + a no-presence negative control). GUI
+  19/19 × 3; the 18 existing snapshots unchanged; `testmadcide`/`_cli`/`_line`
+  byte-identical; unit 22/22; dialect/seam/registry/enum/style-vocabulary/
+  anchor-owner gates PASS. Battery at the V1–V5 seam only.
+
+### madcide: presence carets + the anchor registry shifts every client (V3c-1) (2026-09-10)
+
+- The client-server arc V3c presence, part 1 — the dialect machinery,
+  es/doc-centric so the direct-drive gate covers it with no run loop. A
+  **document carries a roster of the client es viewing it** (`es_view_doc`,
+  called by the ONE view builder `init_view_es` — the launch window and every
+  `viewwindow` spawn), and each es is **dealt a round-robin presence colour
+  SLOT** at connect (a monotonic per-document counter; a client that leaves
+  does not renumber the others).
+- **The anchor registry now shifts EVERY client, not just the editing es.**
+  `shift_anchors` (the one text-mutation owner) shifts each registered peer
+  client's caret + selection in the same pass — a peer caret was left stale
+  for a compose-time clamp before (the V3a follow-up), and now it **shifts**
+  with the text. `shift_es_anchors` factors the per-es shift: the editing es
+  skips its own caret (the edit call site sets it); a peer shifts caret + mark
+  + bend + spans; a peer that has navigated to another document is skipped.
+- **`compose_edit_node` draws the OTHER clients** on the doc as carets in
+  their dealt slot (`hints["presence"] = [{caret, colour, sel_*}]`); a client
+  never draws itself. Single-client compose is **byte-identical** (no peers →
+  no hint), so `testmadcide` / `_cli` / `_line` are unchanged.
+- The `@presence` palette (slot → colour) and the web render of the presence
+  carets are **V3c-2**; this slice is the machinery + the direct-drive gate.
+- Gate `tests/testmadcide_window2` extended: window B's caret shifts 20 → 29
+  when A inserts nine bytes above it (not clamped); A's node draws B at 29 in
+  slot 1, B's draws A at 9 in slot 0, neither draws itself. Green JIT/exe/obj;
+  `testmadcide`/`_cli`/`_line` byte-identical; `testidespanshift` intact;
+  GUI 18/18 × 3; `check-one-anchor-owner` + dialect/seam/registry/enum gates
+  PASS. The battery runs ONCE at the V1–V5 seam, never per slice (owner law).
+
+### madcide: the multi-client loop + viewwindow (V3b-2) (2026-09-10)
+
+- The client-server arc V3b-2, machinery-first: `run_ide` grows from one
+  frontend to a roster of **clients** and waits on any of them through
+  `ui::event_any` (V3b-1). For a single client the loop keeps its exact prior
+  shape — compose one, wait, apply — so every single-window / TUI / line path
+  is **byte-identical**; the multiplex only engages when a second client
+  joins.
+- The **client record is transport/level/capability-general from the first
+  window** (groundwork invariant #1): `{id, t, es, transport, level, tier,
+  last_seq, capabilities}`. Only a local window (`trLOCAL` / `tierOWNER`) is
+  built this week, but a remote platform node, an LSP editor and a VS Code
+  extension are the SAME record with a different transport. New enums
+  `ide_transport` / `ide_tier` (enums-not-strings).
+- **`spawn_view_es`** — a second window is a second client with its OWN
+  editor-state bag over the SHARED document; `open()`'s post-document init is
+  factored into ONE builder (`init_view_es`), so a spawned window's bag is
+  constructed by the same code as the launch window's. An edit in either
+  window mutates the one document and the other shows it on its next compose.
+- **`viewwindow`** command (`:viewwindow`, `cmdVIEWWINDOW` + registry row):
+  parks a spawn on the requesting client's es (a windowed client only — a
+  terminal client refuses); `run_ide` drains it (`take_spawn`) and opens the
+  frontend + joins the roster (`spawn_client`). The session never touches a
+  frontend handle (the gateway seam).
+- Gate `tests/testmadcide_window2`: two distinct clients over one document —
+  both open on the file, an edit through client A is seen in BOTH windows,
+  each keeps its own caret; the viewwindow command parks on a windowed client
+  and refuses on a terminal one. Green JIT/exe/obj; GUI 18/18 × 3 unchanged.
+- Ring-discipline fix in the factoring (found via `testmadcide`'s v2c-persist
+  under the runner's `--no-config`): `init_view_es` used the launch path as a
+  ring-lifetime `const char*` late, so the data loads clobbered it and
+  `launchpath` read empty (dropping the manifest + layout at the root base).
+  `init_view_es` / `spawn_view_es` now own the text first.
+- Flagged platform follow-up: the real webview multi-window pump (tick across
+  GTK/Cocoa/Win32) + window-close detection + multi-client teardown per-es
+  cleanup (the GTK smoke + seam lanes).
+
+### ui: event_any — the blocking decision over N frontends (V3b-1) (2026-09-10)
+
+- The client-server arc V3b (clients + windows), machinery-first: the engine
+  primitive a multi-client loop needs. `ui::event_any(out, targets, w)`
+  returns the next event from **any** of N frontends, tagged with
+  `out["target"]` = the handle it came from.
+- A sole target is **byte-identical** to `ui::event` (it blocks in
+  `read_events`, no poll cost), so `madcide --gui`, the terminal and the line
+  client are unchanged (the GUI suite is untouched). N targets share one
+  thread: each is polled a bounded round through the new non-blocking
+  `poll_events`, and the DOM frontend pumps the process-global platform loop
+  via the bounded `tick` op (never the `run` op that blocks on one window and
+  reads another window's event as a close). No window starves another.
+- Gate `testuieventany`: two fake web windows (no display) on one world; an
+  event posted to either is demuxed and tagged by target; one target equals
+  `ui::event`; empty targets return false. The real webview multi-window pump
+  (across GTK/Cocoa/Win32) and window-close detection are the flagged
+  follow-up; V3b-2 grows the dialect client loop and `viewwindow` onto this.
+
+### madcide: the anchor registry — one splice owner (V3a) (2026-09-10)
+
+- The client-server arc V3 begins (clients + windows + presence). V3a is the
+  foundation: the ONE text-mutation owner's span shifter becomes the **anchor
+  registry** — one primitive (`shift_offset`) reanchors every byte-anchored
+  thing on an edit in one pass (`shift_anchors`), so nothing set before a
+  keystroke goes stale.
+- The **selection markers** (mark / bend) now follow the text: they went stale
+  on every ordinary keystroke before (only `block_copy` shifted them, via a
+  hand-rolled copy of the splice — removed; the registry owns it). The live
+  focused caret stays each edit's own result. Presence carets (V3c) register
+  in the same one pass.
+- Gate `check-one-anchor-owner.sh`: one splice primitive, one pass, no
+  hand-rolled marker shift outside the owner.
+
+### madcide: the ex / edlin line mode — the `ui::LINE` client (V2.5) (2026-09-10)
+
+- The client-server arc V2.5: `madcide <file> --line` drives the same
+  live-parse session over **stdin/stdout with no cursor addressing** — the vi
+  `:` command mode without the TUI. It works over a pipe, in a dumb terminal,
+  and as an MCP seat's transcript. `ui::open(ui::LINE)` gains a real frontend
+  (`ui_line_frontend`): each cycle typesets the projection (the status line,
+  the document, any message) through the level-0 sequential renderer to stdout
+  and reads one line of stdin. A `:` line is a colon command (`w q wq x e r`,
+  `:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+  shell); any other line is text inserted at the caret.
+- The engine frontend stays **dumb** — a line becomes a `text` event; the
+  tool's line grammar lives in the session (`IdeSession::line_input`), next to
+  the registry and the colon interpreter, and posts `:` lines through the one
+  argument primitive (`command(cmdCOLON, …)`, the same path the `-c` one-shot
+  and the TUI `:` prompt take). No new command language. `run_line` is the loop
+  for `--line`, parallel to the `-c` one-shot's `run_once`.
+- Follow-up (deferred): the colon line reaching the FULL registry by name
+  (`:check`, `:find x`) — a colon-interpreter enhancement that improves the TUI
+  colon line equally.
+
+### madcide: layouts persist and the splitter feeds the session (V2c) (2026-09-10)
+
+- The client-server arc V2c (part 2): the page's splitter drag now makes the
+  **session's layout the size owner**. `viewsize <sidebar|panel> <percent>`
+  (`:viewsize panel 30`) sets a chrome band's size on the session and persists
+  it; the splitter posts it on release (`{action:'viewsize', arg:'sidebar
+  40'}` — reusing the action+arg path, no new wire event kind), and a fresh
+  web viewer with no localStorage renders the band at the layout size (matching
+  the TUI). This completes V2 (containers + layouts) — the `view*` menu titles,
+  key spellings and `viewtab` remain a deferred owner key-seat decision.
+
+### madcide: viewdock + the layout persists beside the manifest (2026-09-10)
+
+- The client-server arc V2c (part 1): `viewdock <left|right|top|bottom>`
+  (`:viewdock right`) moves the focused chrome pane (the last View brought up)
+  to a slot and side — left/right dock the sidebar, top/bottom the panel; an
+  absent or unknown direction refuses rather than docking to a default place.
+- **The workbench persists.** `layout_to_text` is `parse_layout`'s structural
+  inverse, and a client's live layout is written beside the manifest as
+  `<base>.prj.layout` (positions, sizes, modes, hidden flags — NOT the tabs'
+  contents; an editor pane persists as a source pane). It is written SILENTLY
+  and ONLY when a manifest is open — the implicit single-file project writes no
+  artifact — and restored at project open. A docked pane comes back on reopen;
+  a round-trip save→parse rebuilds an equal tree.
+- (Part 2, above, completes the splitter → the session's size. The view*
+  key/menu seats stay a deferred owner decision, batched.)
+
+### madcide: the editor region is a real split tree — the side-by-side (2026-09-10)
+
+- The client-server arc V2b: the editor region of a `.layout` is a tree of
+  splits over editor panes, and the composer WALKS it. A sole pane emits the
+  JOE screen, byte-identical; `viewsplit right|bottom` turns the focused pane
+  into a split rendered as a flex row/column of leaf columns (the grid divides
+  a rectangle, the page a flex box).
+- **The side-by-side the owner asked about:** `viewsplit right mc11` puts the
+  source on the left and its MC11 lowering (a code View of the buffer's render)
+  on the right — live source, its IR beside it (`c11` / `cpp` too). `viewfocus
+  next|prev` moves between panes with a full handoff (the focused pane's View
+  is live, its caret its own; a code-View pane is read-only). `viewclose`
+  collapses a pane back to its sibling; `viewopen <repr>` re-represents the
+  focused pane's View in place. Every verb reaches the `:` line
+  (`:viewsplit right mc11`) and the action dispatcher.
+- Deferred to a V2b follow-up: the menu titles + key spellings and `viewtab`
+  (a second tab on one pane); then V2c (`viewdock`, `<base>.prj.layout`
+  persistence, docs).
+
+### madcide: containers and layouts — the workbench is client data (2026-09-09)
+
+- **The layout is data on the client** (client-server design §2.2, slice
+  V2a): a `.layout` profile — the profile-parser family beside the `.keys` /
+  `.menu` / `.theme` loaders — describes where Views live: one editor region
+  (a `pane editor` or a `split`) and fixed-slot chrome panes (`pane sidebar
+  left 20%`, `pane panel bottom 25%`). `parse_layout` / `load_layout` /
+  `default_layout_text()` with a baked default (`profiles/default.layout`);
+  every word converts once at load (`ui::split_code` / `ui::side_code`,
+  `slot_of` / `pmode_of` / `view_of`) and a misspelling refuses the file with
+  its line, the baked default taking over. `ui::split { none, vertical,
+  horizontal }` and `ui::side { none, left, right, top, bottom }` join
+  `bits/ui_enums` (one text for engine and dialect) with the name owners in
+  `madcdis/ui_events.h`; `ide_container` / `ide_pmode` / `slotEDITOR` are the
+  IDE-private vocabulary.
+- **The tool Views come FROM the layout's chrome panes.** One surface,
+  `show_view(kind)` (find the chrome pane hosting a View kind, unhide it,
+  activate its tab, focus it), replaces the `panel` / `paneltab` flags and
+  the diags / outline popup arms; the panel persists like an editor's Output
+  pane until hidden. `haspanel` stops gating the panel — every client's
+  layout has one.
+- **The grid renderer learns RECTANGLES** (`madcdis/tui_model.h`): compose is
+  no longer a linear stream. The root's children partition into chrome bands
+  (a `region:sidebar|panel` node carved by its `side` / `size` — a sidebar
+  takes columns full-height, a panel rows from the centre) and the centre
+  flow; a `split` group divides its rect (vertical shares the columns, one
+  blank divider between; horizontal the rows) recursively; a leaf pane's
+  `tabs` render as its header line. With no chrome shown and no split the grid
+  is BYTE-IDENTICAL to the old stream (the negative control). The DOM
+  (`madcdis/web_model.h` + `ui_web/page.{js,css}`) gains the additive op
+  fields `split` (the direction word), `side` and `size`; a `split` group is a
+  flex row/column whose children flex by their `size` percent.
+- Gates (targeted, per the arc's seam-battery law): `tests/testmadcide_layout`
+  (the shipped file parses to the pinned tree; the baked default parses equal;
+  refusals with their line); `test_tui_model` (side-by-side split, a stacked
+  split, a bottom band + strip, a left band, byte-identity with nothing
+  hinted); `test_web_model` (the op fields + the negative control);
+  `check-madcide-enums` rule 5 (no `"slot"/"side"/"mode"/"dir"` text on a
+  layout node); `testmadcide` / `testmadcide_cli` / `testidepanel` /
+  `testidehints` and the 17 GUI snapshots unchanged.
+
+### madcide: the `ui::NONE` client — `madcide <file> -c "<command> [arg]"` (2026-09-09)
+
+- **One command, the projection, a verdict** (client-server design §2.3b,
+  slice V1.5): `madcide <file> -c "<command> [arg]"` opens the session with no
+  surface at all, posts ONE registry command (the name converts once at the
+  command-line boundary through the registry's table; an unknown name
+  refuses with exit 2 before a session opens), typesets the composed tree
+  through the level-0 renderer onto stdout — the headless harness's shape —
+  and exits with the verdict: 0 clean; 1 the file unreadable or ERROR rows
+  in the problems projection (`-c check` on a broken file); 2 the line
+  refused. The argument is what the prompt the command opens would have been
+  typed (`gotoline 3`, `find add`, `colon w`), committed by code.
+- `IdeSession::post(doc, code)` — one command by code through the one
+  dispatcher (the vi grammar's `vi_exec` rides it); `IdeSession::command(doc,
+  code, arg, cont)` — a command with its argument, the primitive the `-c`
+  line, the `:` line (V2.5) and the api seat (V6) share;
+  `IdeSession::error_count()` — the verdict query. New client file
+  `tools/madcide/madcide_once.inc`; `check-madcide-enums.sh` and
+  `check-madcide-seam.sh` scan it. `ui::open(ui::NONE)` keeps refusing: the
+  level has no frontend by design (a client there drives the session).
+- Gate: `tests/testmadcide_cli` (the `-c` output pinned against the session
+  driven directly for the same command, the verdicts, the argument feed);
+  `testmadcide` byte-identical.
+
+### Views — the lens is a View row; the ONE file-kind vocabulary (2026-09-09)
+
+- madcide's code lens (`^K A`) is a **View** (client-server design §2.1,
+  slice V1): `es.views` rows `{id, subject, kind, lang, revision, generator,
+  vbuf, rbuf, map}`; every editor tab carries its View, `es.fview` names the
+  focused container's; the cycle REPLACES the focused View's representation
+  in place (source → mc11 → c11 [→ c++] → source) and switches on the
+  language CODE; the composer composes the View by id. Navigation (caret /
+  mark / bend, the parked stored-space caret) is the CONTAINER's, never the
+  View's (owner ruling, §6 Q1). The `vdoc` / `view` / `vmap` bag strings are
+  gone. The identity lens composes byte-identically (`testmadcide`, the GUI
+  DOM snapshots); new `view-row` / `view-row-lens` / `view-kinds` pins hold
+  the row through the cycle and the misspelling refusals.
+- **`<bits/file_kinds>`** — the ONE file-kind vocabulary the IDE and the
+  compiler share (`madc::fk*`): text formats, the C standards, the C++
+  standards, madc's own (`madc`, `mc11`), other languages, binary formats,
+  GROUPED IN RANGES with a family head (`fkC`, `fkCPP`) and a `_LAST` marker
+  so membership is a range test. `Program::LanguageStd`'s enumerators ARE the
+  C / C++ / madc ranges (every `--std=` row keeps its enumerator; forest
+  format **v47**: the producer-config word's `language_std` bits carry the new
+  values, so a v46 pack refuses until `release` rebuilds it). The boundary
+  converters `madc::file_kind_name` / `file_kind_of` / `file_kind_of_path`
+  (src/file_kinds.cpp; dialect-visible through `<ns_madc>`) draw a standard's
+  spelling from the one `--std=` table ("c" and "c++" are the FAMILIES there,
+  not `--std=`'s aliases); a misspelling converts to `madc::fkUNKNOWN`. A
+  document's kind is stamped once at open / new-file / save-as
+  (`doc_set_path`); the c++ lens applies by a range test on it, no extension
+  ladder.
+- The emitter's depth-of-support table `cir_emit_lang_of_kind` (src/
+  cir_emit_c.h) is the ONE kind → `CirEmitLang` conversion; `--emit=`'s name
+  form converts through the vocabulary and rides it, so no render target is
+  spelled in the emitter; `madc::emit(out, src, file, int64_t kind)` renders
+  by kind. `test_cir`: LanguageStd = the ranges; every canonical `--std=`
+  name round-trips; `CIR_EMIT_TARGETS` names exactly the kinds the table
+  renders.
+- `ide_view` (`viewSOURCE | viewCODE | viewPROBLEMS | viewOUTPUT |
+  viewTERMINAL | viewPROJECT | viewOUTLINE | viewHELP`) and `ide_gen`
+  (`genMADC | genGCC | genCLANG`) join madcide's enums with `view_name` /
+  `view_of` / `gen_name`; `view_of` of a misspelling is `viewNONE`.
+
 ### UI levels — a program opens the rendering model it wants (2026-09-09)
 
 - `ui::level` (`<bits/ui_enums>`): the ordered enum `ui::NONE < ui::LINE < ui::TUI
@@ -113,13 +532,35 @@
   (`pr::take("k", cmdSAVE)` against `take(const char *, long)` /
   `take(const char *, bool)` picked the `long` overload). A non-template
   still beats a template specialization on an equal total. The verdict
-  rests on PROVEN facts only: both candidates live-declared concrete
-  overloads (a forest-restored or using-imported member carries no
-  provenance and never ties ambiguously) and their parameter types
-  proven distinct by the scorer's own identity (typedef-transparent,
-  cv stripped) — two restored twins of one `std::min` specialization
-  are one function. Reducer: `tests/testoverloadambig.mad`
-  (`.expect_err`); `forest_crosstu_gate` pins the twin case.
+  rests on PROVEN facts only: both candidates concrete overloads whose
+  declaration identity is known, and their parameter types proven
+  distinct by the scorer's own identity (typedef-transparent, cv
+  stripped) — two restored twins of one `std::min` specialization are
+  one function. Reducer: `tests/testoverloadambig.mad` (`.expect_err`);
+  `forest_crosstu_gate` pins the twin case.
+- The forest restores an overload-set member WITH its declaration
+  identity. A namespace function's parameter spelling (with a template
+  instantiation's identity suffix) and an instantiation product's
+  template-argument spellings — the overload ranker's inputs — now live
+  on the `FuncDef` (`overload_spelling`, `overload_template_args`), ride
+  the frozen DK_FUNC record (format v46; the pack rebuilds) and come back
+  with the free-function restore; the set entry is just the Variable and
+  reads through, so no restore or using-import site can mint a blank one.
+  Before, a bound consumer's explicit-template-argument call
+  (`std::min<unsigned long>(a, b)` against a restored `<vector>`) found
+  no candidate with recorded template arguments, instantiated a THIRD
+  `std::min<uint64_t>` (`…__o2`) beside the two it restored, and the
+  ambiguity verdict could not see a restored member at all. The
+  instantiation MEMO comes back with it: a restored instantiation product
+  re-enters `fn_template_instantiated` under the `inst_key` its spelling
+  carries, so a bound consumer's use of a specialization the forest holds
+  hits the memo (as the TU's own earlier instantiation would live) instead
+  of instantiating it again — with the restored spelling matching, that
+  second body had landed under the RESTORED symbol (MIR "Repeated item
+  declaration"; `forest_bind_gate [statmem]` printed nothing). Gate:
+  `forest_crosstu_gate` leg D — per candidate both runs know, the live
+  and bound ranker inputs are identical and the bound run re-mints
+  nothing (LOADED == parsed on the overload set and the memo).
 - An anonymous function-pointer parameter in a function DEFINITION
   (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
   other unnamed parameter shape already was; c2mir refused the abstract

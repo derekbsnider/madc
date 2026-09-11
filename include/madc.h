@@ -28,6 +28,7 @@
 
 #include "libmadc/value.h"
 #include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
+#include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
 #include "madcdis/intern_table.h"
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
 #include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
@@ -303,6 +304,22 @@ public:
     std::string function_display_name;
     std::string namespace_name;
     std::string inline_builtin_kind;
+    // Overload-set DECLARATION IDENTITY — the ranker's inputs, owned by the
+    // declaration (g++: the FUNCTION_DECL carries its parameter-type-list and
+    // DECL_TEMPLATE_INFO; the overload set is a list of decls) and frozen on
+    // the DK_FUNC record with it (LOADED == parsed). overload_spelling is the
+    // normalized source spelling of the parameter list (parseFunction's
+    // peek), with the "\x01@<identity>" suffix on a template-instantiation
+    // product; a seed's spelling starts with '\x01' (the fn-template
+    // placeholder, the pre-existing source-named first). It tells a
+    // re-declaration of the SAME overload (reuse its Variable) from a NEW one
+    // (mint a fresh symbol), and marks a PLAIN concrete member for the
+    // ambiguity verdict. overload_template_args are the identity spellings
+    // (template_binding_identity_spelling) of an instantiation product's bound
+    // template arguments, pack elements flattened positionally — the
+    // explicit-template-argument prefix match binds a call to the instance.
+    std::string overload_spelling;
+    std::vector<std::string> overload_template_args;
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call
@@ -3530,13 +3547,19 @@ public:
     // internal symbol (unique_overload_symbol); this registry — keyed
     // "ns::name" — lets the call site enumerate and rank them by arg types
     // (the same generic score_arg_to_param ranking methods use).
-    // param_spelling is the normalized source spelling of the parameter list,
-    // used to tell a re-declaration of the SAME overload (reuse its Variable)
-    // from a NEW overload (mint a fresh symbol).
+    // A set member is its Variable; the declaration identity the ranker reads
+    // (the parameter spelling, an instantiation product's template-argument
+    // spellings) lives on the member's FuncDef (FuncDef::overload_spelling /
+    // overload_template_args) — ONE owner, frozen with the DK_FUNC record, so
+    // a forest-restored or using-imported member ranks exactly as the live
+    // declaration did. The accessors read through; a member with no FuncDef
+    // answers empty.
     struct NamespaceFnOverload {
-	std::string param_spelling;
-	std::vector<std::string> template_arg_names;
 	Variable *var;
+	NamespaceFnOverload() : var(NULL) {}
+	FuncDef *funcdef() const;
+	const std::string &spelling() const;
+	const std::vector<std::string> &template_args() const;
     };
     registration_map<std::string, std::vector<NamespaceFnOverload> >
 	namespace_fn_overload_sets;
@@ -3554,10 +3577,10 @@ public:
     // PLAIN concrete candidates tie for the best conversion total with
     // distinct parameter types — the call is ambiguous ([over.match.best];
     // g++ and clang++ reject it); the returned winner is then only the
-    // first-declared, and the caller that reports must not compile it. Only
-    // a LIVE-declared member carries the provenance the verdict needs — a
-    // forest-restored or using-imported member (no spelling) never ties
-    // ambiguously — and "distinct" is the scorer's own type identity
+    // first-declared, and the caller that reports must not compile it. The
+    // verdict reads each member's declaration identity from its FuncDef
+    // (overload_spelling — frozen with the declaration, so a restored member
+    // carries it too), and "distinct" is the scorer's own type identity
     // (typedef-transparent, cv stripped), never object identity.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
@@ -4919,10 +4942,24 @@ public:
     }
 
     bool colors;
+    // The language standard the front end parses under. Its enumerators
+    // ARE the file-kind vocabulary's C / C++ / madc ranges (<bits/file_kinds>
+    // — the ONE enum the IDE and the compiler share, design doc §2.1 of the
+    // client-server arc), so a LanguageStd value is a madc::file_kind value:
+    // `(madc::file_kind)language_std` names the kind, and the range
+    // predicates below (is_c_mode / is_cpp_mode) are range tests on it.
+    // Each `--std=` row keeps its enumerator; the numeric values moved
+    // (v47 forest config word).
     enum LanguageStd {
-	STD_MADC,	// default: C++ keywords reserved
-	STD_C78, STD_C86, STD_C88, STD_C89, STD_C90, STD_C94, STD_C95, STD_C99, STD_C11, STD_C17, STD_C23,
-	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
+	STD_MADC = madc::fkMADC,	// default: C++ keywords reserved
+	STD_C78 = madc::fkC78, STD_C86 = madc::fkC86, STD_C88 = madc::fkC88,
+	STD_C89 = madc::fkC89, STD_C90 = madc::fkC90, STD_C94 = madc::fkC94,
+	STD_C95 = madc::fkC95, STD_C99 = madc::fkC99, STD_C11 = madc::fkC11,
+	STD_C17 = madc::fkC17, STD_C23 = madc::fkC23,
+	STD_CPP98 = madc::fkCPP98, STD_CPP03 = madc::fkCPP03,
+	STD_CPP11 = madc::fkCPP11, STD_CPP14 = madc::fkCPP14,
+	STD_CPP17 = madc::fkCPP17, STD_CPP20 = madc::fkCPP20,
+	STD_CPP23 = madc::fkCPP23, STD_CPP26 = madc::fkCPP26
     } language_std;
     // The C++ level that plain madc (STD_MADC) — and any non-C++ selection that
     // still presents as C++ — targets: the single configurable "default bar",
@@ -5063,6 +5100,14 @@ public:
     // not a standard, so it is excluded here too.
     static std::vector<std::string> supported_c_standard_names();
     static std::vector<std::string> supported_cpp_standard_names();
+    // The same table, one row at a time, for the file-kind vocabulary's
+    // boundary converters (madc::file_kind_name / file_kind_of, src/
+    // file_kinds.cpp): the CANONICAL spelling of a standard ("" when the
+    // value is not a standard's), and the standard a canonical spelling names
+    // (false for an alias or an unknown word — the aliases are `--std=`'s own
+    // conveniences, not file-kind names: "c" is the C FAMILY there).
+    static const char *standard_canonical_name(LanguageStd std);
+    static bool standard_of_canonical_name(const char *name, LanguageStd &out);
     bool aot_tracking;
     bool aot_skip_eval_shims;	// this build's artifact can never be host-called
 				// through the value ABI (standalone executable; any

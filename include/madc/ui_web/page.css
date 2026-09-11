@@ -153,6 +153,19 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .slot.stacked > .status.active { background: var(--sb-active, #2f3a55);
                                  box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
 .slot.stacked > .edit.focus { box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); }
+/* A split group (client-server arc V2): the editor region as a flex tree —
+   a vertical split rows its panes side by side, a horizontal one columns
+   them. A pane divides by its `size` percent (page.js sets the child flex);
+   each leaf is itself a column (its status heads its edit) filling its share.
+   A divider line sits between adjacent panes (the TUI's blank column). V2b
+   emits the split; this renders it. */
+.node[data-split] { display: flex; flex: 1 1 auto; min-height: 0; min-width: 0; }
+.node[data-split="vertical"] { flex-direction: row; }
+.node[data-split="horizontal"] { flex-direction: column; }
+.node[data-split] > .node { display: flex; flex-direction: column;
+                            min-height: 0; min-width: 0; overflow: hidden; }
+.node[data-split="vertical"] > .node + .node { border-left: 1px solid var(--sb-line, #343b52); }
+.node[data-split="horizontal"] > .node + .node { border-top: 1px solid var(--sb-line, #343b52); }
 /* The message line (the foot): a message bar in the chrome font. */
 .workbench > .slot[data-slot="foot"] > .content:not(.popup) {
   font: 12.5px/1.7 var(--chrome-font, system-ui, -apple-system, "Segoe UI", "Cantarell", sans-serif);
@@ -241,3 +254,16 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
   letter-spacing: 0; font-size: 12px; }
 .workbench > .slot[data-slot="editor"] > .node.content > .tabstrip .tab { text-transform: none;
   letter-spacing: 0; padding: 0 12px; border-right: 1px solid var(--sb-line, #343b52); }
+/* Presence (client-server V3c): another client's caret as a thin bar in its
+   dealt @presence colour. The slot's colour rides a --pcaret-<slot> custom
+   property the page sets from the root palette; the bar sits on the cell's
+   left edge without recolouring the character under it. */
+.pcaret  { box-shadow: inset 0.12em 0 0 #9fc2ff; }
+.pslot-0 { box-shadow: inset 0.12em 0 0 var(--pcaret-0, #9fc2ff); }
+.pslot-1 { box-shadow: inset 0.12em 0 0 var(--pcaret-1, #9fc2ff); }
+.pslot-2 { box-shadow: inset 0.12em 0 0 var(--pcaret-2, #9fc2ff); }
+.pslot-3 { box-shadow: inset 0.12em 0 0 var(--pcaret-3, #9fc2ff); }
+.pslot-4 { box-shadow: inset 0.12em 0 0 var(--pcaret-4, #9fc2ff); }
+.pslot-5 { box-shadow: inset 0.12em 0 0 var(--pcaret-5, #9fc2ff); }
+.pslot-6 { box-shadow: inset 0.12em 0 0 var(--pcaret-6, #9fc2ff); }
+.pslot-7 { box-shadow: inset 0.12em 0 0 var(--pcaret-7, #9fc2ff); }

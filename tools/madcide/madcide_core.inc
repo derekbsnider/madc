@@ -66,6 +66,11 @@ class IdeSession
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
+	long spawn_view(long doc);	// a NEW client view over the shared
+					// world + `doc` (viewwindow): a fresh
+					// es built like open()'s, returned to
+					// the client to open a frontend on;
+					// 0 = the profile + rescue both failed
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
 					// arm: the hit node's window tag
@@ -79,6 +84,28 @@ class IdeSession
 	bool vi_exec(long doc, long code, long n);	// one command (its
 					// code), n times, through
 					// apply_ide_event
+	bool post(long doc, long code);	// ONE command by CODE through the
+					// one dispatcher (a client that
+					// speaks codes); false = quit
+	bool command(long doc, long code, const char *arg, bool &cont);
+					// a command WITH ITS ARGUMENT
+					// (the -c line, the api seat, a
+					// `:` verb): the argument is what
+					// the prompt the command opens
+					// would have been typed; false =
+					// refused (an argument the command
+					// does not take); cont = the
+					// continue / quit verdict
+	bool line_input(long doc, const char *line, bool &cont);
+					// ONE line of the ex / edlin client
+					// (ui::LINE, V2.5): a ':' line is a
+					// colon command (posted through
+					// command(cmdCOLON, …)); any other
+					// line is text inserted verbatim +
+					// a newline. false = refused; cont =
+					// the continue / quit verdict
+	long error_count();		// ERROR rows in the problems
+					// projection (a one-shot's verdict)
 	void vi_open_line(long doc, bool above);	// o / O / cc's line
 	long world();
 	long active(long fallback);	// the active buffer's document
@@ -90,8 +117,10 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
-	void panel(bool has);		// the client renders regions (P3a): the
-					// bottom PANEL with tabs is composed
+	void panel(bool has);		// the client renders REGIONS (a
+					// window): runs and the shell go to a
+					// pty in the Terminal tab; the panel
+					// itself is the layout's (V2)
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
 	void request_refused(var &req);	// the client cannot hand over a
@@ -100,6 +129,9 @@ class IdeSession
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
 	bool take_request(var &out);	// drain the parked terminal request
+	bool take_spawn(long &doc);	// drain a parked viewwindow spawn
+					// (the doc the new window views);
+					// false = none
 	void term_exec(var &req);	// run the guest between the
 					// client's suspend and resume
 	void close();			// stop builds, drain tasks, close
@@ -130,6 +162,18 @@ void path_sans_ext(var &out, var &p)
     const char *dot = strrchr(pc, '.');
     if ( dot != 0 )
 	out = perl::substr(p, 0, dot - pc);
+}
+
+// The persisted layout sits BESIDE the manifest (V2c, design §5): the
+// manifest path minus its extension, plus `.layout` — `foo.prj.json` ->
+// `foo.prj.layout`, `myproj.json` -> `myproj.layout`. One derivation for
+// the save (layout_persist) and the load (proj_load), so both name the
+// same file.
+void proj_layout_path(var &out, var &pf)
+{
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.layout", base);
 }
 
 // Where the profile/theme/status data lives (packaging arc PK7): the
@@ -506,6 +550,742 @@ bool bind_rescue_keys(long w, long es)
     return true;
 }
 
+// ---- layouts as data (client-server arc V2; design doc §2.2; plan
+//      2026-09-09-v2-containers-layouts-plan.md) ----------------------------
+// A LAYOUT is a tree of containers holding Views, owned by the client and
+// stored on the bag as "layout":
+//   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden" }
+//   tab   = layout_tab(kind, view): the CONTAINER — its View and its own navigation (caret, mark, bend, grow)
+//   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
+// The `.layout` text is the input boundary (profiles/default.layout, the
+// grammar in its header): every word converts ONCE here — slot_of, pmode_of,
+// view_of, ui::side_code, ui::split_code — and an unknown word REFUSES the
+// text with its line; a ragged indentation, a chrome pane inside a split, a
+// pane with children, a split with fewer than two children, two editor
+// regions or two windows refuse the same way (parse_keys' shape). The baked
+// default rides the same parser (the rescue-keys pattern).
+
+// THE layout-tab row shape, one owner (the single-owners gate counts the
+// container-navigation shape: this, push_buffer_row and edit_file's seed): a
+// fresh CONTAINER over a View of `kind` — its navigation starts at the top
+// with no block (design §6 Q1: caret / mark / bend live on the container).
+void layout_tab(var &out, long kind, long view)
+{
+    out = { "kind": kind, "view": view, "caret": 0, "mark": -1, "bend": -1,
+	    "grow": 0 };
+}
+
+// Split a trimmed line into its whitespace-separated words.
+void layout_words(var &out, var &line)
+{
+    var words = {};
+    const char *ls = line.c_str();
+    long n = strlen(ls);
+    long start = -1;
+    for ( long i = 0; i <= n; i = i + 1 )
+    {
+	bool sep = i == n || ls[i] == ' ' || ls[i] == '\t';
+	if ( !sep && start < 0 )
+	    start = i;
+	else if ( sep && start >= 0 )
+	{
+	    var wd = perl::substr(line, start, i - start);
+	    words.push(wd);
+	    start = -1;
+	}
+    }
+    out = words;
+}
+
+// A size word "NN%" -> NN (1..90); -1 when the word is not a size.
+long layout_size_of(var &word)
+{
+    const char *ws = word.c_str();
+    long n = strlen(ws);
+    if ( n < 2 || ws[n - 1] != '%' )
+	return -1;
+    for ( long i = 0; i < n - 1; i = i + 1 )
+	if ( ws[i] < '0' || ws[i] > '9' )
+	    return -1;
+    long v = php::intval(perl::substr(word, 0, n - 1));
+    if ( v < 1 || v > 90 )
+	return -1;
+    return v;
+}
+
+// The leading whitespace of a raw line (its nesting depth).
+long layout_depth_of(var &raw)
+{
+    const char *rs = raw.c_str();
+    long d = 0;
+    while ( rs[d] == ' ' || rs[d] == '\t' )
+	d = d + 1;
+    return d;
+}
+
+// One `pane` line's words (after the keyword) into a flat row. False + err.
+bool layout_pane_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: pane without a slot", lineno);
+	return false;
+    }
+    var sw = words[1];
+    long slot = slot_of(sw);
+    if ( slot == slotNONE || slot == slotPOPUP )
+    {
+	err = format("line {}: unknown slot '{}'", lineno, sw);
+	return false;
+    }
+    long side = ui::side_code("");
+    long size = 0;
+    long mode = lmNONE;
+    bool collecting = false;
+    bool focus = false;
+    bool hidden = false;
+    var tabs = {};
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	if ( wd == "views" )
+	{
+	    collecting = true;
+	    continue;
+	}
+	if ( wd == "focus" )
+	{
+	    focus = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( wd == "hidden" )
+	{
+	    hidden = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( collecting )
+	{
+	    long k = view_of(wd);
+	    if ( k == viewNONE )
+	    {
+		err = format("line {}: unknown view '{}'", lineno, wd);
+		return false;
+	    }
+	    var tb;
+	    layout_tab(tb, k, 0);
+	    tabs.push(tb);
+	    continue;
+	}
+	long sz = layout_size_of(wd);
+	if ( sz > 0 )
+	{
+	    size = sz;
+	    continue;
+	}
+	const char *wds = wd.c_str();
+	if ( strlen(wds) > 1 && wds[strlen(wds) - 1] == '%' )
+	{
+	    err = format("line {}: bad size '{}' (1%..90%)", lineno, wd);
+	    return false;
+	}
+	long sd = ui::side_code(wd.c_str());
+	if ( sd != ui::side_code("") )
+	{
+	    side = sd;
+	    continue;
+	}
+	long pm = pmode_of(wd);
+	if ( pm != lmNONE )
+	{
+	    mode = pm;
+	    continue;
+	}
+	err = format("line {}: unknown word '{}'", lineno, wd);
+	return false;
+    }
+    if ( php::count(tabs) == 0 )
+    {
+	err = format("line {}: pane without views", lineno);
+	return false;
+    }
+    // The slot's side rule: a sidebar docks left or right, a panel bottom or
+    // top, the editor region has no side.
+    var sidev = side;
+    bool sideok = true;
+    if ( slot == slotSIDEBAR )
+	sideok = sidev == ui::side::left || sidev == ui::side::right;
+    else if ( slot == slotPANEL )
+	sideok = sidev == ui::side::bottom || sidev == ui::side::top;
+    else
+	sideok = sidev == ui::side::none;
+    if ( !sideok )
+    {
+	err = format("line {}: a {} pane cannot dock '{}'", lineno,
+		     slot_name(slot), ui::side_name(side));
+	return false;
+    }
+    if ( size == 0 && slot == slotSIDEBAR )
+	size = 20;
+    if ( size == 0 && slot == slotPANEL )
+	size = 25;
+    if ( mode == lmNONE )
+	mode = lmTABS;
+    long f = focus ? 1 : 0;
+    long h = hidden ? 1 : 0;
+    row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
+	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h };
+    return true;
+}
+
+// One `split` line's words into a flat row. False + err.
+bool layout_split_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: split without a direction", lineno);
+	return false;
+    }
+    var dw = words[1];
+    long dir = ui::split_code(dw.c_str());
+    if ( dir == ui::split_code("") )
+    {
+	err = format("line {}: unknown split direction '{}'", lineno, dw);
+	return false;
+    }
+    long size = 0;
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	long sz = layout_size_of(wd);
+	if ( sz <= 0 )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, wd);
+	    return false;
+	}
+	size = sz;
+    }
+    row = { "kind": ctSPLIT, "dir": dir, "size": size };
+    return true;
+}
+
+// Build the tree node for flat row `idx`: a pane as is; a split with its
+// children (the rows whose parent is idx, in order) built recursively.
+void layout_build(var &node, var &rows, long idx)
+{
+    var r = rows[idx];
+    if ( r["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	long n = php::count(rows);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var c = rows[i];
+	    if ( c["parent"] == idx )
+	    {
+		var child;
+		layout_build(child, rows, i);
+		kids.push(child);
+	    }
+	}
+	node = { "kind": ctSPLIT, "dir": r["dir"], "size": r["size"],
+		 "children": kids };
+	return;
+    }
+    node = { "kind": ctPANE, "slot": r["slot"], "side": r["side"],
+	     "size": r["size"], "mode": r["mode"], "tabs": r["tabs"],
+	     "active": r["active"], "focus": r["focus"],
+	     "hidden": r["hidden"] };
+}
+
+// The parser: text -> the layout tree. False + err (the line and the word).
+bool parse_layout(var &layout, const char *text, var &err)
+{
+    var window = "";
+    var rows = {};		// flat: every pane / split with depth + parent
+    var open = {};		// indices of the split rows still open
+    array lines;
+    php::explode(lines, "\n", text);
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var raw = php::array_get_cstr(lines, i);
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	long lineno = i + 1;
+	var words;
+	layout_words(words, line);
+	var kw = words[0];
+	if ( kw == "@window" )
+	{
+	    if ( strlen(window.c_str()) > 0 )
+	    {
+		err = format("line {}: a second window (one window; V3 adds windows)", lineno);
+		return false;
+	    }
+	    if ( php::count(words) < 2 )
+	    {
+		err = format("line {}: window without a name", lineno);
+		return false;
+	    }
+	    window = words[1];
+	    continue;
+	}
+	long ct = container_of(kw);
+	if ( ct == ctNONE )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, kw);
+	    return false;
+	}
+	long depth = layout_depth_of(raw);
+	// The open splits: a line at or above an open split's depth closes it.
+	while ( php::count(open) > 0 )
+	{
+	    var top = rows[open[php::count(open) - 1].as_integer()];
+	    if ( top["depth"].as_integer() < depth )
+		break;
+	    var shorter = {};
+	    long no = php::count(open) - 1;
+	    for ( long k = 0; k < no; k = k + 1 )
+		shorter.push(open[k]);
+	    open = shorter;
+	}
+	long parent = -1;
+	if ( php::count(open) > 0 )
+	{
+	    parent = open[php::count(open) - 1].as_integer();
+	    var pr = rows[parent];
+	    long cd = pr["childdepth"].as_integer();
+	    if ( cd == 0 )
+	    {
+		pr["childdepth"] = depth;
+		rows[parent] = pr;
+	    }
+	    else if ( cd != depth )
+	    {
+		err = format("line {}: ragged layout", lineno);
+		return false;
+	    }
+	}
+	else if ( depth > 0 )
+	{
+	    err = format("line {}: ragged layout", lineno);
+	    return false;
+	}
+	var row;
+	if ( ct == ctPANE )
+	{
+	    if ( !layout_pane_row(row, words, lineno, err) )
+		return false;
+	    if ( parent >= 0 && row["slot"] != slotEDITOR )
+	    {
+		err = format("line {}: a {} pane never splits", lineno,
+			     slot_name(row["slot"].as_integer()));
+		return false;
+	    }
+	}
+	else
+	{
+	    if ( !layout_split_row(row, words, lineno, err) )
+		return false;
+	}
+	row["depth"] = depth;
+	row["parent"] = parent;
+	row["childdepth"] = 0;
+	row["line"] = lineno;
+	rows.push(row);
+	if ( ct == ctSPLIT )
+	    open.push(php::count(rows) - 1);
+    }
+    // Every split holds two or more children; exactly one editor region;
+    // the chrome panes are top-level; one focus (the first editor pane when
+    // none is named).
+    long nr = php::count(rows);
+    long editor = -1;
+    long focused = 0;
+    var chrome = {};
+    for ( long i = 0; i < nr; i = i + 1 )
+    {
+	var r = rows[i];
+	if ( r["kind"] == ctSPLIT )
+	{
+	    long kids = 0;
+	    for ( long j = 0; j < nr; j = j + 1 )
+	    {
+		var c = rows[j];
+		if ( c["parent"] == i )
+		    kids = kids + 1;
+	    }
+	    if ( kids < 2 )
+	    {
+		err = format("line {}: a split needs two or more children", r["line"]);
+		return false;
+	    }
+	}
+	else if ( r["focus"].as_integer() != 0 )
+	    focused = focused + 1;
+	if ( r["parent"].as_integer() != -1 )
+	    continue;
+	if ( r["kind"] == ctSPLIT || r["slot"] == slotEDITOR )
+	{
+	    if ( editor >= 0 )
+	    {
+		err = format("line {}: a second editor region", r["line"]);
+		return false;
+	    }
+	    editor = i;
+	}
+	else
+	    chrome.push(i);
+    }
+    if ( editor < 0 )
+    {
+	err = "no editor region (a `pane editor` or a `split`)";
+	return false;
+    }
+    if ( focused > 1 )
+    {
+	err = "more than one pane carries focus";
+	return false;
+    }
+    if ( focused == 0 )
+    {
+	for ( long i = 0; i < nr; i = i + 1 )
+	{
+	    var r = rows[i];
+	    if ( r["kind"] == ctPANE && r["slot"] == slotEDITOR )
+	    {
+		r["focus"] = 1;
+		rows[i] = r;
+		break;
+	    }
+	}
+    }
+    var ed;
+    layout_build(ed, rows, editor);
+    var ch = {};
+    for ( var ci : chrome )
+    {
+	var cnode;
+	layout_build(cnode, rows, ci.as_integer());
+	ch.push(cnode);
+    }
+    if ( strlen(window.c_str()) == 0 )
+	window = "main";
+    layout = { "window": window, "editor": ed, "chrome": ch };
+    return true;
+}
+
+// The baked default: the shipped profiles/default.layout as inline data
+// through the SAME parser — what a missing or broken file falls back to.
+const char *default_layout_text()
+{
+    return "# baked default layout — profile data\n"
+	   "@window main\n"
+	   "pane editor tabs views source focus\n"
+	   "pane sidebar left 20% tabs views outline hidden\n"
+	   "pane panel bottom 25% tabs views problems output terminal hidden\n";
+}
+
+// Load a named layout from the profile directory onto the bag ("layout");
+// a missing or refused file falls back to the baked default and SAYS so on
+// the status line (a layout must exist: the composer places by it). False =
+// the fallback was taken.
+bool load_layout(long w, long es, const char *name)
+{
+    var lname = name;		// ring discipline: own the text first
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    var txt;
+    var layout;
+    var err;
+    bool ok = php::file_get_contents(txt, format("{}/{}.layout", dir, lname));
+    if ( ok )
+	ok = parse_layout(layout, txt.c_str(), err);
+    else
+	err = "no such file";
+    if ( !ok )
+    {
+	var fallback;
+	var ferr;
+	parse_layout(fallback, default_layout_text(), ferr);
+	ui::set(w, es, "layout", fallback);
+	ui::set(w, es, "msg", format("Layout '{}' {} — the default layout is in use.", lname, err));
+	return false;
+    }
+    ui::set(w, es, "layout", layout);
+    return true;
+}
+
+// ---- the layout tree -> `.layout` text (parse_layout's inverse) -----------
+// V2c persistence (design §5): the live layout is written beside the manifest
+// so a docked pane / a resized band comes back on the next project open. The
+// emitter is parse_layout's STRUCTURAL inverse — window, the editor region,
+// the chrome panes — so parse_layout(layout_to_text(lo)) rebuilds an equal
+// tree. It omits what the grammar omits (a transient code render, the active
+// tab): those are session state, not layout (design §5: positions / sizes /
+// modes / hidden flags, NOT the tabs' contents).
+
+// One indentation prefix: two spaces per depth level. parse_layout reads a
+// line's depth as its leading-whitespace count and only requires siblings to
+// agree, so any consistent step round-trips.
+void layout_indent(var &out, long depth)
+{
+    var s = "";
+    for ( long i = 0; i < depth; i = i + 1 )
+	s = format("{}  ", s);
+    out = s;
+}
+
+// One pane line: `pane <slot> [<side>] [<size>%] <mode> views <kind>...
+// [focus] [hidden]` — mode and size BEFORE `views` and the flags after (so
+// the `views` list stops at a flag), the exact word order parse_layout reads.
+// An editor pane persists as a SOURCE pane (its tabs' Views are session
+// state); a chrome pane persists its tool tabs (fixed kinds).
+void layout_emit_pane(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    long slot = node["slot"].as_integer();
+    var line = format("{}pane {}", ind, slot_name(slot));
+    long side = node["side"].as_integer();
+    if ( side != ui::side::none )
+	line = format("{} {}", line, ui::side_name(side));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    line = format("{} {} views", line, pmode_name(node["mode"].as_integer()));
+    if ( slot == slotEDITOR )
+	line = format("{} {}", line, view_name(viewSOURCE));
+    else
+	for ( var t : node["tabs"] )
+	    line = format("{} {}", line, view_name(t["kind"].as_integer()));
+    if ( node["focus"].as_integer() != 0 )
+	line = format("{} focus", line);
+    if ( node["hidden"].as_integer() != 0 )
+	line = format("{} hidden", line);
+    out = format("{}\n", line);
+}
+
+// One split header line: `split <dir> [<size>%]`; the children follow indented
+// one level deeper.
+void layout_emit_split(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    var line = format("{}split {}", ind, ui::split_name(node["dir"].as_integer()));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    out = format("{}\n", line);
+}
+
+// A node (a pane or a split subtree) -> its text, children recursed one level
+// deeper.
+void layout_emit_node(var &out, var &node, long depth)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var body;
+	layout_emit_split(body, node, depth);
+	for ( var c : node["children"] )
+	{
+	    var cs;
+	    layout_emit_node(cs, c, depth + 1);
+	    body = format("{}{}", body, cs);
+	}
+	out = body;
+	return;
+    }
+    layout_emit_pane(out, node, depth);
+}
+
+// The whole tree -> text: `@window`, the editor region (a top-level pane or
+// split), then the chrome panes (top-level).
+void layout_to_text(var &out, var &lo)
+{
+    var s = "# madcide layout — written by the session; edit or delete freely\n";
+    s = format("{}@window {}\n", s, lo["window"]);
+    var ed;
+    layout_emit_node(ed, lo["editor"], 0);
+    s = format("{}{}", s, ed);
+    for ( var c : lo["chrome"] )
+    {
+	var cs;
+	layout_emit_pane(cs, c, 0);
+	s = format("{}{}", s, cs);
+    }
+    out = s;
+}
+
+// The client's layout tree; a session that never ran open (the headless
+// harness attaches over its own world) gets the baked default on first use.
+void layout_get(var &lo, long w, long es)
+{
+    ui::get(lo, w, es, "layout");
+    if ( lo.is_null() )
+    {
+	var err;
+	parse_layout(lo, default_layout_text(), err);
+	ui::set(w, es, "layout", lo);
+    }
+}
+
+// The chrome pane hosting a View KIND: its index in the layout's chrome and
+// the tab's index within it; -1 when no pane hosts the kind.
+long chrome_hosting(var &lo, long kind, long &tab)
+{
+    long ci = 0;
+    for ( var c : lo["chrome"] )
+    {
+	long ti = 0;
+	for ( var t : c["tabs"] )
+	{
+	    if ( t["kind"] == kind )
+	    {
+		tab = ti;
+		return ci;
+	    }
+	    ti = ti + 1;
+	}
+	ci = ci + 1;
+    }
+    tab = -1;
+    return -1;
+}
+
+// The kind a chrome pane SHOWS: its active tab's, viewNONE while hidden.
+long chrome_shown(var &c)
+{
+    if ( c["hidden"].as_integer() != 0 )
+	return viewNONE;
+    var tabs = c["tabs"];
+    long a = c["active"].as_integer();
+    if ( a < 0 || a >= php::count(tabs) )
+	return viewNONE;
+    var t = tabs[a];
+    return t["kind"].as_integer();
+}
+
+// The kind shown in the chrome pane of a SLOT (viewNONE: hidden or no such
+// pane) — a probe's read.
+long slot_shown(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
+	if ( c["slot"] == slot )
+	    return chrome_shown(c);
+    return viewNONE;
+}
+
+// Is a tool View SHOWN (its pane visible with it the active tab)?
+bool view_shown(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var c = lo["chrome"][ci];
+    return c["hidden"].as_integer() == 0 && c["active"].as_integer() == tab;
+}
+
+// SHOW a tool View: the chrome pane hosting it comes up with that tab active
+// — the ONE surface (the terminal's diags pane and the window's panel used
+// to be two). Focus stays where it is (Tab reaches the rows, as ever; V2b's
+// viewfocus moves it). Remembers the kind as the one the @pane esc hides.
+// False + a status message for a kind no pane of this layout hosts.
+bool show_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg", format("No pane of the layout hosts the {} view.",
+				     view_name(kind)));
+	return false;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["hidden"] = 0;
+    c["active"] = tab;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "chromelast", kind);
+    return true;
+}
+
+// HIDE the chrome pane hosting a kind; true when it was visible.
+bool hide_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    bool was = c["hidden"].as_integer() == 0;
+    c["hidden"] = 1;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    if ( es_int(w, es, "chromelast", viewNONE) == kind )
+    {
+	long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    }
+    return was;
+}
+
+// The @pane esc on the chrome: hide the pane that showed the LAST kind; false
+// when nothing is up to hide (the key falls through).
+bool hide_last_view(long w, long es)
+{
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+	return false;
+    long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    return hide_view(w, es, k);
+}
+
+// TOGGLE a slot's chrome pane (the `panel` command): hidden <-> shown with
+// its active tab; a layout without that slot says so.
+void toggle_slot(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	bool hide = c["hidden"].as_integer() == 0;
+	c["hidden"] = hide ? 1 : 0;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	long last = hide ? viewNONE : chrome_shown(c);
+	ui::set(w, es, "chromelast", last);
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
+}
+
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
 // One `class SPEC` pair per line: the class is the FIRST word, the spec
 // the rest — JOE's style vocabulary (attribute words + a colour +
@@ -526,6 +1306,7 @@ bool load_theme(long w, long es, const char *name)
 	return false;
     var th;
     var gth;			// the @gui scope: CSS custom properties
+    var pth;			// the @presence scope: round-robin caret colours
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -541,6 +1322,22 @@ bool load_theme(long w, long es, const char *name)
 	// the TUI theme unchanged — one file, two renderings, later lines win.
 	if ( ls[0] == '@' )
 	{
+	    // @presence <slot> <style spec>: the round-robin caret colour a
+	    // client is dealt at connect (client-server V3c). A spec may be
+	    // multi-word ("bold red"), so read the tail whole — the shared scope
+	    // rule (scope_line_parts) keeps only the last word.
+	    if ( perl::index(ls, "@presence ") == 0 )
+	    {
+		var rest = php::trim(ls + 10);
+		const char *rc = rest.c_str();
+		const char *gap = strchr(rc, ' ');
+		if ( gap != 0 )
+		{
+		    var slot = php::trim(perl::substr(rest, 0, gap - rc));
+		    pth[slot.c_str()] = php::trim(gap + 1);
+		}
+		continue;
+	    }
 	    var scope;
 	    var prop;
 	    var val;
@@ -558,6 +1355,7 @@ bool load_theme(long w, long es, const char *name)
     }
     ui::set(w, es, "theme", th);
     ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
+    ui::set(w, es, "presence_theme", pth);	// empty clears the prior palette
     ui::set(w, es, "scheme", tname);
     return true;
 }
@@ -978,37 +1776,19 @@ long diag_error_count(var &diags)
     return errs;
 }
 
-// ---- the bottom PANEL (polish P3a) --------------------------------------
-// A region-rendering client (the window) pushes `haspanel`; under it the
-// composer adds a persistent, optionally visible tool window with TABS —
-// Problems (the diagnostics projection) and Output (the [build] stream):
-// VS Code's bottom pane in our palette. State on the bag: `panel`
-// (visible), `paneltab` (the active tab). The terminal never composes it
-// (byte-identical). Commands in the one vocabulary: panel (toggle),
-// problems, output (show that tab).
-void show_panel_tab(long w, long es, long tab)
-{
-    ui::set(w, es, "panel", 1);
-    ui::set(w, es, "paneltab", tab);
-}
-
-// ONE way to surface the diagnostics: the terminal's diags pane, or — in
-// a window — the panel's Problems tab. Six sites used to set the pane by
-// hand; a second surface is where they would have drifted.
+// ---- the tool Views' ONE surface (V2: the layout's chrome panes) ----------
+// The diagnostics show where the layout puts the problems View (the panel's
+// Problems tab by default — in the terminal too, the ruled relaxation); a
+// build's stream where it puts the output View. Six sites used to set the
+// pane by hand; a second surface is where they would have drifted.
 void show_diags(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, tabPROBLEMS);
-    else
-	set_pane(w, es, paneDIAGS);
+    show_view(w, es, viewPROBLEMS);
 }
 
-// A build starting: a window shows its stream in the Output tab; the
-// terminal reaches [build] via ^P as before.
 void show_output(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, tabOUTPUT);
+    show_view(w, es, viewOUTPUT);
 }
 
 // The check ACTION: refresh + report + show the pane.
@@ -1076,10 +1856,10 @@ void toggle_profile(long w, long es)
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 long active_doc(long w, long es, long fallback);
-void goto_pane_row(long w, long es, long doc, long option)
+void goto_pane_row(long w, long es, long doc, long option, bool outline)
 {
     var rows;
-    if ( cur_pane(w, es) == paneOUTLINE )
+    if ( outline )
 	ui::get(rows, w, es, "outline");
     else
 	ui::get(rows, w, es, "diags");
@@ -1109,18 +1889,127 @@ void goto_pane_row(long w, long es, long doc, long option)
     }
 }
 
-// THE view-active rule, one seat (dupaudit family view_active_predicate):
-// a view is active iff the editor-state bag carries a non-empty "view"
-// name. Out = the name; false = the original (identity lens). Defined
-// here, ahead of the prompt machinery (the theme completion consults it)
-// and of the view seam below.
-bool view_name(var &out, long w, long es)
+// ---- Views (client-server arc V1; design doc §2.1) ------------------------
+// A View is DATA on the session — es "views", rows
+//   { id, subject, kind, lang, revision, generator, vbuf, rbuf, map }
+// id: 1-based, never reused in a session (the row's index + 1); subject:
+// the document entity the View projects (an entity handle, never a byte
+// offset); kind: ide_view; lang: the representation's language (madc::fk*,
+// <bits/file_kinds>) — the subject's own kind for a source View, the render
+// target for a code View; revision: 0 = current (an event sequence number
+// from V4); generator: ide_gen (genMADC for a render, genNONE for stored
+// text); vbuf: the entity holding the View's TEXT — the subject for stored
+// text, the View's own render buffer for a code View (rbuf: that buffer,
+// allocated once per View and kept between renders); map: the coordinate
+// map to the subject's stored space (EMPTY for a wholly rendered view,
+// ui::lens_to_display; V5 fills it). A View's highlight SPANS live on its
+// text entity — the render buffer's "hspans" for a code View, the state
+// bag's stored-space "hspans" (edit-shifted by ed_text_insert / erase) for
+// stored text; view_spans is the one reader.
+// NAVIGATION (caret / mark / bend, the parked stored-space caret "ocaret")
+// is NOT View state (OWNER 2026-09-09, design §6 Q1): it belongs to the
+// CONTAINER that shows the View — the state bag for the focused editor tab
+// (the shared editor machinery's live cursor), the buffer row for the other
+// tabs, the window row for the S5 stack — so every client sits at its own
+// place in one shared text.
+// The FOCUSED View is es "fview": the View the focused container (the
+// active editor tab) shows; every buffer row carries its View as "view". A
+// session without the buffer table (the headless harness) gets its focused
+// View created on first need, over the document it drives. Defined here,
+// ahead of the prompt machinery (the theme completion consults the lens
+// predicate) and of the lens seam below.
+
+bool view_row(var &out, long w, long es, long id)
 {
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+    if ( id <= 0 )
 	return false;
-    out = vw;
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() || php::count(vs) < id )
+	return false;
+    out = vs[id - 1];
+    return true;
+}
+
+void view_store(long w, long es, var &v)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    vs[v["id"].as_integer() - 1] = v;
+    ui::set(w, es, "views", vs);
+}
+
+// A new View over `subject`, its text the subject's own buffer; the id.
+long view_new(long w, long es, long subject, long kind, long lang)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() )
+    {
+	var fresh = {};
+	vs = fresh;
+    }
+    long id = php::count(vs) + 1;
+    var nomap = {};
+    vs[] = { "id": id, "subject": subject, "kind": kind, "lang": lang,
+	     "revision": 0, "generator": genNONE, "vbuf": subject,
+	     "rbuf": 0, "map": nomap };
+    ui::set(w, es, "views", vs);
+    return id;
+}
+
+long focused_view(long w, long es)
+{
+    return es_int(w, es, "fview", 0);
+}
+
+// The focused View, created over `doc` (a source View) when the session
+// has none yet.
+long ensure_focused_view(long w, long es, long doc)
+{
+    long id = focused_view(w, es);
+    var v;
+    if ( view_row(v, w, es, id) )
+	return id;
+    id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    ui::set(w, es, "fview", id);
+    return id;
+}
+
+// The entity a View's text is read from: its render buffer while it is a
+// code View, else the document — the ONE place display-vs-stored routing
+// happens (nav_doc and the composer both read it). A null row (a session
+// with no View yet) is the document.
+long view_text_entity(var &v, long doc)
+{
+    if ( v.is_null() || v["kind"].as_integer() != viewCODE )
+	return doc;
+    long vb = v["vbuf"].as_integer();
+    return vb != 0 ? vb : doc;
+}
+
+// The one reader of a View's highlight rows (see the table comment).
+void view_spans(var &out, long w, long es, var &v)
+{
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	ui::get(out, w, v["vbuf"].as_integer(), "hspans");
+    else
+	ui::get(out, w, es, "hspans");
+}
+
+// THE lens-up rule, one seat (dupaudit family view_active_predicate): a
+// lens is up iff the focused View is a code render (viewCODE). Out = the
+// render language's name (madc::file_kind_name: "mc11" / "c11" / "c++"),
+// "" otherwise; false = the identity lens (a source View, or no View yet).
+bool lens_name(var &out, long w, long es)
+{
+    out = "";
+    var v;
+    if ( !view_row(v, w, es, focused_view(w, es)) )
+	return false;
+    if ( v["kind"].as_integer() != viewCODE )
+	return false;
+    out = madc::file_kind_name(v["lang"].as_integer());
     return true;
 }
 
@@ -1252,7 +2141,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'y' )
 	{
 	    var vw;
-	    if ( view_name(vw, w, es) )
+	    if ( lens_name(vw, w, es) )
 		seat = format("({}) ", vw);
 	}
 	long pad = width - strlen(seat.c_str());
@@ -1598,6 +2487,24 @@ void project_rows(long w, long es, long doc);
 // command, interpreted against the EXISTING vocabulary. False = quit.
 bool colon_command(long w, long es, long doc, long caret, var &in);
 
+// The view* verbs (V2b) — defined with the dispatcher, reached from the
+// colon line too (forward-declared for that earlier caller).
+void view_split(long w, long es, long doc, long dir, long lang);
+void view_focus(long w, long es, long doc, long dir);
+void view_close(long w, long es, long doc);
+void view_sync(long w, long es, var &arg);			// V5 cursor sync toggle
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow);	// V5 read-side projection
+void view_open(long w, long es, long doc, long lang);
+void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
+void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
+void view_window(long w, long es, long doc);		// V3b: a second window
+long viewsplit_dir_of(var &arg);
+long viewfocus_dir_of(var &arg);
+long viewrepr_lang_of(var &word);
+void viewsplit_args(var &arg, long &dir, long &lang);
+void viewdock_target(var &arg, long &slot, long &side);
+void viewsize_args(var &arg, long &slot, long &size);
+
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
@@ -1696,7 +2603,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	    return true;
 	}
 	var vw;
-	if ( !view_name(vw, w, es) )
+	if ( !lens_name(vw, w, es) )
 	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
 	ui::set(w, es, "msg", format("Theme: {}.", in));
     }
@@ -1837,12 +2744,10 @@ void block_copy(long w, long es, long doc, long caret)
     edit_checkpoint(w, es, doc, caret);
     ed_text_insert(w, es, doc, caret, blk.c_str());
     ui::set(w, doc, "modified", true);
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    if ( mark >= 0 && caret <= mark )
-	ui::set(w, es, "mark", mark + n);
-    if ( bend >= 0 && caret <= bend )
-	ui::set(w, es, "bend", bend + n);
+    // The markers past the insertion follow the text so the block keeps
+    // highlighting the ORIGINAL: the anchor registry (shift_anchors, in
+    // ed_text_insert) shifts mark / bend by the inserted length — this used
+    // to be a hand-rolled copy of that splice here (V3a removed it).
 }
 
 // ^K M: move the block to the caret (one undo step; the cursor lands on
@@ -1952,85 +2857,165 @@ void delete_word(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
-// ---- the view seam (AST-3): read-only code views -----------------------
-// A VIEW is a document lens applied at composition: the stored text stays
-// the document truth; what is DISPLAYED is the lens's rendered text
-// (madc::emit over the live buffer), held in a view-buffer entity so the
-// ONE shared navigation implementation (edit_key, find, goto-line) works
-// over the display space unchanged. The lens's coordinate map rides as
-// data on the bag ("vmap" — EMPTY for a wholly rendered view: nothing
-// corresponds; see ui::lens_to_display) and onto the edit node's hints;
-// the stored caret parks on "ocaret" and returns on exit; mutations and
-// stored-space history are refused through the one editable gate. The
-// identity lens (no view) adds NOTHING — the composed tree stays
-// byte-identical to today's.
+// ---- the lens seam (AST-3, re-expressed on Views in V1): read-only code
+//      views ---------------------------------------------------------------
+// A LENS is the focused View re-represented as a code View: the stored text
+// stays the document truth; what is DISPLAYED is the render (madc::emit
+// over the live buffer, by the target's KIND), held in the View's own
+// render buffer so the ONE shared navigation implementation (edit_key,
+// find, goto-line) works over the display space unchanged. The View's
+// coordinate map (EMPTY for a wholly rendered view: nothing corresponds;
+// see ui::lens_to_display) rides onto the edit node's hints; the
+// container's stored-space caret parks on "ocaret" and returns on exit;
+// mutations and stored-space history are refused through the one editable
+// gate. The identity lens (a source View) adds NOTHING — the composed tree
+// stays byte-identical.
 
-// The navigation target: the view buffer while a view is up, else the
-// document — the ONE place display-vs-stored routing happens.
+// The navigation target: the View's text entity — the render buffer while
+// a lens is up, else the document (view_text_entity, the one routing rule).
 long nav_doc(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
-	return doc;
-    long vd = es_int(w, es, "vdoc", 0);
-    return vd != 0 ? vd : doc;
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    return view_text_entity(v, doc);
 }
 
-bool enter_view(long w, long es, long doc, const char *name)
+// Re-represent the focused View as a code View in `lang` (madc::fkMC11 /
+// fkC11 / fkCPP — the kinds the emitter renders). False = the buffer does
+// not translate (the compiler's own rows surface; the View is unchanged).
+bool enter_lens(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
     var p;
     ui::get(p, w, doc, "path");
     var emitted;
-    if ( !madc::emit(emitted, t.c_str(), p.c_str(), name) )
+    var vmap;			// V5: the source↔display coordinate map, beside the text
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
 	run_check(w, es, doc);
 	return false;
     }
-    long vd = es_int(w, es, "vdoc", 0);
+    long id = ensure_focused_view(w, es, doc);
+    var v;
+    view_row(v, w, es, id);
+    long vd = v["rbuf"].as_integer();
     if ( vd == 0 )
     {
 	vd = ui::create(w, "view-buffer");
-	ui::set(w, es, "vdoc", vd);
+	v["rbuf"] = vd;
     }
     ui::text_load(w, vd, emitted.c_str());
-    ui::set(w, vd, "path", p);	// the status %n seat: a view is a lens
-				// over the file — its name IS the file's
+    ui::set(w, vd, "path", p);	// the status %n seat: a lens is over the
+				// file — its name IS the file's (a display
+				// path only: the render buffer is no
+				// document and carries no kind)
     // Colour on the lens (owner 2026-09-09: every emitted code view is
-    // syntax-coloured): the view buffer carries its OWN highlight spans —
+    // syntax-coloured): the render buffer carries its OWN highlight spans —
     // the lexer-alone classification (the colour-at-load path) over the
-    // EMITTED text, through the one converter, landing on the view
+    // EMITTED text, through the one converter, landing on the render
     // buffer; the composer attaches the spans of whichever buffer it
-    // shows. The emitted text is already indented — the emitter's own
-    // layout (src/cir_emit_c.cpp), one owner for --emit and every lens.
+    // shows (view_spans). The emitted text is already indented — the
+    // emitter's own layout (src/cir_emit_c.cpp), one owner for --emit and
+    // every lens.
     var vrows;
     madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
-    var cur;
-    if ( !view_name(cur, w, es) )
-	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
-    ui::set(w, es, "view", name);
-    var vm = {};
-    ui::set(w, es, "vmap", vm);
+    if ( v["kind"].as_integer() != viewCODE )
+	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));	// the CONTAINER
+				// parks its stored-space caret (never the row)
+    v["kind"] = viewCODE;
+    v["lang"] = lang;
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    v["map"] = vmap;		// V5: fills the vmap that was EMPTY (design §2.6)
+    view_store(w, es, v);
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     ui::set(w, es, "editable", false);
     ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
-    ui::set(w, es, "msg", format("View: {}", name));
+    ui::set(w, es, "msg", format("View: {}", madc::file_kind_name(lang)));
     return true;
 }
 
-void exit_view(long w, long es, long doc)
+// Back to the source View: the row's representation returns to the
+// subject's own text and kind; the container's parked caret returns.
+void exit_lens(long w, long es, long doc)
 {
-    ui::set(w, es, "view", "");
+    var v;
+    if ( view_row(v, w, es, focused_view(w, es)) )
+    {
+	long subject = v["subject"].as_integer();
+	v["kind"] = viewSOURCE;
+	v["lang"] = doc_kind(w, subject);
+	v["generator"] = genNONE;
+	v["vbuf"] = subject;
+	var nomap = {};
+	v["map"] = nomap;
+	view_store(w, es, v);
+    }
     ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
+}
+
+// A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
+// fkCPP): a NEW View with its own render buffer, coloured like the lens, the
+// subject untouched — for a `viewsplit right mc11` second pane (source left,
+// MC11 right) that does NOT re-represent the focused View. 0 = the subject
+// does not translate. The focused re-representation stays enter_lens; this is
+// its sibling for a fresh View (the emit / colour body is the same shape).
+long make_code_view(long w, long es, long subject, long lang)
+{
+    var t;
+    ui::text(t, w, subject);
+    var p;
+    ui::get(p, w, subject, "path");
+    var emitted;
+    var vmap;			// V5: the source↔display coordinate map
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+	return 0;
+    long id = view_new(w, es, subject, viewCODE, lang);
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, emitted.c_str());
+    ui::set(w, vd, "path", p);		// the status %n seat: a display path
+    var vrows;
+    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
+    spans_to_hspans(w, es, vd, vrows, vd);
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    v["map"] = vmap;		// V5: the fresh code View carries its map
+    view_store(w, es, v);
+    return id;
+}
+
+// The edit-history View (client-server arc V4; design doc S2.4): a View of
+// `doc` at a past revision `n` (an event seq), its text the change log
+// replayed to n onto a fresh render buffer. revision = n (0 = current); a
+// non-zero revision is a reconstructed past state, the subject untouched.
+long make_history_view(long w, long es, long doc, long n)
+{
+    var t;
+    clog_replay(t, w, doc, n);
+    long id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, t.c_str());
+    var p;
+    ui::get(p, w, doc, "path");
+    ui::set(w, vd, "path", p);
+    v["revision"] = n;
+    v["generator"] = genNONE;
+    v["vbuf"] = vd;
+    view_store(w, es, v);
+    return id;
 }
 
 // ---- AST-5: buffers (IDE-8) ------------------------------------------
@@ -2060,9 +3045,29 @@ long open_buffer_doc(long w, long es, const char *path)
 	return nd;
     nd = ui::create(w, "document");
     ui::text_load(w, nd, "");
-    ui::set(w, nd, "path", path);
+    doc_set_path(w, nd, path);
     ui::set(w, nd, "modified", false);
     return nd;
+}
+
+// The View a buffer row (an editor tab) shows; a row from before the table
+// carried Views gets its source View here.
+long buffer_view(long w, long es, long idx)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) <= idx )
+	return 0;
+    var r = bufs[idx];
+    var v = r["view"];
+    if ( !v.is_null() && v.as_integer() != 0 )
+	return v.as_integer();
+    long vid = view_new(w, es, r["doc"].as_integer(), viewSOURCE,
+			doc_kind(w, r["doc"].as_integer()));
+    r["view"] = vid;
+    bufs[idx] = r;
+    ui::set(w, es, "buffers", bufs);
+    return vid;
 }
 
 // Switch the active buffer: leave any view (it lenses the OLD buffer),
@@ -2073,8 +3078,8 @@ long open_buffer_doc(long w, long es, const char *path)
 void switch_buffer(long w, long es, long olddoc, long idx)
 {
     var vw;
-    if ( view_name(vw, w, es) )
-	exit_view(w, es, olddoc);
+    if ( lens_name(vw, w, es) )
+	exit_lens(w, es, olddoc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
     long cur = es_int(w, es, "bufidx", 0);
@@ -2088,6 +3093,8 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     long nd = t["doc"].as_integer();
     ui::set(w, es, "bufidx", idx);
     ui::set(w, es, "adoc", nd);
+    ui::set(w, es, "fview", buffer_view(w, es, idx));	// the focused
+				// container's View is the tab's
     ui::set(w, es, "caret", t["caret"].as_integer());
     ui::set(w, es, "mark", t["mark"].as_integer());
     ui::set(w, es, "bend", t["bend"].as_integer());
@@ -2110,8 +3117,10 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	var fresh = {};
 	bufs = fresh;
     }
+    long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
+				// View: the source View over its document
     bufs[] = { "doc": nd, "path": path, "caret": 0,
-	       "mark": -1, "bend": -1 };
+	       "mark": -1, "bend": -1, "view": vid };
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -2133,9 +3142,10 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	var seed = {};
 	var op;
 	ui::get(op, w, olddoc, "path");
+	long lv = ensure_focused_view(w, es, olddoc);	// the live View too
 	seed[] = { "doc": olddoc, "path": op,
 		   "caret": es_int(w, es, "caret", 0),
-		   "mark": -1, "bend": -1 };
+		   "mark": -1, "bend": -1, "view": lv };
 	ui::set(w, es, "buffers", seed);
 	ui::set(w, es, "bufidx", 0);
 	ui::set(w, es, "adoc", olddoc);
@@ -2508,6 +3518,67 @@ bool proj_has_manifest(long w, long es)
     return !pf.is_null() && strlen(pf.c_str()) > 0;
 }
 
+// The change-log file beside the manifest (client-server arc V4; design doc
+// S2.4): <base>.prj.events, a sibling of the layout cache. Only once a
+// manifest is open -- the implicit single-file project is memory-only (the
+// no-surprise-artifact law, design S6). false = no manifest.
+bool proj_events_path(var &out, long w, long es)
+{
+    if ( !proj_has_manifest(w, es) )
+	return false;
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.events", base);
+    return true;
+}
+
+// Flush the doc's change log to <base>.prj.events (the whole buffer -> the
+// file; the buffer text IS the file's content -- one serialisation). A
+// no-op with no manifest. Follow-ups: also flush on 	S doc-save; unify to
+// one project events file across docs for a multi-file manifest (the log is
+// per-doc today, single-file being V4's gated case).
+void clog_persist(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 )
+	return;
+    var blob;
+    ui::text(blob, w, le);
+    php::file_put_contents(path.c_str(), blob.c_str());
+}
+
+// Restore the doc's change log from <base>.prj.events on project open; seq
+// resumes at the last record's, so new events continue the sequence. A
+// no-op with no manifest or no file.
+void clog_restore(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    var blob;
+    if ( !php::file_get_contents(blob, path.c_str()) )
+	return;
+    long le = changelog_of(w, doc);
+    ui::text_load(w, le, blob.c_str());
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    long hi = 0;
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( js::parse(rec, ln) )
+	    hi = rec["seq"].as_integer();
+    }
+    ui::set(w, le, "seq", hi);
+}
+
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
 // persistence rule) — the ^T Options row's action (opt-projkind). Only a
 // project with a manifest has a kind to set; the implicit project refuses
@@ -2568,7 +3639,30 @@ bool proj_write(long w, long es, long doc)
     }
     if ( fresh )
 	ui::set(w, es, "msg", format("Project file created: {}", pf));
+    clog_persist(w, es, doc);
     return true;
+}
+
+// Persist the live layout BESIDE the manifest (V2c) — silently (a layout
+// change carries its own status message; the file is a convenience cache, not
+// a document). ONLY when a manifest is open: the implicit single-file project
+// writes no artifact (the no-surprise-artifact law, design §6). Called by the
+// layout mutators (viewdock today; the splitter's `layout` event next).
+void layout_persist(long w, long es)
+{
+    if ( !proj_has_manifest(w, es) )
+	return;
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+	return;
+    var lf;
+    proj_layout_path(lf, pf);
+    var lo;
+    layout_get(lo, w, es);
+    var txt;
+    layout_to_text(txt, lo);
+    php::file_put_contents(lf.c_str(), txt.c_str());
 }
 
 // projadd — the argument-taking membership verb (a prompt collects the
@@ -2713,6 +3807,22 @@ bool proj_load(long w, long es, var &pf)
     ui::set(w, es, "proj", proj);
     ui::set(w, es, "projfile", pf);
     proj_touch(w, es);
+    // A persisted layout beside the manifest (V2c) restores the client's
+    // docked panes / band sizes. A missing file keeps the current layout; a
+    // malformed one is ignored (the cache never blocks a project open).
+    var lf;
+    proj_layout_path(lf, pf);
+    if ( php::file_exists(lf) )
+    {
+	var ltxt;
+	if ( php::file_get_contents(ltxt, lf.c_str()) )
+	{
+	    var newlo;
+	    var lerr;
+	    if ( parse_layout(newlo, ltxt.c_str(), lerr) )
+		ui::set(w, es, "layout", newlo);
+	}
+    }
     ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
 				 php::count(tus)));
     return true;
@@ -2731,6 +3841,7 @@ void proj_startup(long w, long es, long doc)
     if ( !php::file_exists(pf) )
 	return;
     proj_load(w, es, pf);
+    clog_restore(w, es, doc);
 }
 
 // File -> Open Project… (polish P2b): the manifest the user chose (the
@@ -2744,6 +3855,7 @@ void proj_open(long w, long es, long doc, const char *path0)
 	return;
     if ( !proj_load(w, es, pf) )
 	return;
+    clog_restore(w, es, doc);
     proj_show(w, es, doc);
 }
 
@@ -3372,10 +4484,7 @@ void start_capture(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
-    if ( es_flag(w, es, "haspanel") )
-	ui::set(w, es, "msg", format("{} — Output shows it.", t));
-    else
-	ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+    ui::set(w, es, "msg", format("{} — the Output tab shows it.", t));
 }
 
 void start_build(long w, long es, const char *cmd)
@@ -3518,7 +4627,7 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "termsrc", u);
     ui::set(w, es, "termlive", 1);
     ui::set(w, es, "termfocus", 1);
-    show_panel_tab(w, es, tabTERMINAL);
+    show_view(w, es, viewTERMINAL);
     go term_pump(w, es, tdoc, stopc, inc);
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
@@ -3752,7 +4861,7 @@ bool save_as(long w, long es, long doc, const char *path0)
     var p = path0;			// ring discipline: own the text first
     if ( strlen(p.c_str()) == 0 )
 	return true;
-    ui::set(w, doc, "path", p);
+    doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     var bufs;
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
@@ -4211,48 +5320,52 @@ void build_choose(long w, long es, long doc, long option)
 	start_build(w, es, cmd.c_str());
 }
 
-// The c++ view applies when the BUFFER'S OWN language is C/C++ (by
-// extension — the app's document-kind rule): its render is source-shaped
-// (madc::emit "c++" echoes the retained source), and a madc-dialect
-// buffer has no C++ respelling yet (the named seat, design doc §3.2).
+// The c++ view applies when the BUFFER'S OWN kind is in the C or C++
+// family (doc_kind — stamped once at open from the file name, never
+// re-derived here): its render is source-shaped (madc::emit for madc::fkCPP
+// echoes the retained source), and a madc-dialect buffer has no C++
+// respelling yet (the named seat, design doc §3.2). A range test on the
+// one file-kind vocabulary, never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    var p;
-    ui::get(p, w, doc, "path");
-    const char *pc = p.c_str();
-    const char *dot = strrchr(pc, '.');
-    if ( dot == 0 )
-	return false;
-    var ext = format("{}", dot);
-    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx"
-	|| ext == ".h" || ext == ".hpp";
+    long k = doc_kind(w, doc);
+    return (k >= madc::fkC && k <= madc::fkC_LAST)
+	|| (k >= madc::fkCPP && k <= madc::fkCPP_LAST);
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
 // [-> c++ on a C/C++ buffer] -> original.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
+// The cycle REPLACES the focused View's representation in place (one View
+// per tab; its navigation stays the container's). A switch on the render
+// language's code, never its spelling.
 void cycle_view(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
+    var v;
+    bool up = view_row(v, w, es, focused_view(w, es))
+	   && v["kind"].as_integer() == viewCODE;
+    if ( !up )
     {
-	enter_view(w, es, doc, "mc11");
+	enter_lens(w, es, doc, madc::fkMC11);
 	return;
     }
-    if ( vw == "mc11" )
+    switch ( v["lang"].as_integer() )
     {
-	if ( !enter_view(w, es, doc, "c11") )
-	    exit_view(w, es, doc);
-	return;
+	case madc::fkMC11:
+	    if ( !enter_lens(w, es, doc, madc::fkC11) )
+		exit_lens(w, es, doc);
+	    return;
+	case madc::fkC11:
+	    if ( cxx_view_applies(w, es, doc) )
+	    {
+		if ( !enter_lens(w, es, doc, madc::fkCPP) )
+		    exit_lens(w, es, doc);
+		return;
+	    }
+	    break;
     }
-    if ( vw == "c11" && cxx_view_applies(w, es, doc) )
-    {
-	if ( !enter_view(w, es, doc, "c++") )
-	    exit_view(w, es, doc);
-	return;
-    }
-    exit_view(w, es, doc);
+    exit_lens(w, es, doc);
 }
 
 // ---- ^K Z: hand the terminal to a shell -------------------------------
@@ -4357,6 +5470,58 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	insert_file(w, es, doc, caret, arg.c_str());
 	return true;
     }
+    // The view* verbs (V2b) reach the colon line too — `:viewsplit right
+    // mc11`, `:viewfocus next`, `:viewclose`, `:viewopen mc11`; the same
+    // owners the dispatcher calls.
+    if ( verb == "viewsplit" )
+    {
+	long vdir;
+	long vlang;
+	viewsplit_args(arg, vdir, vlang);
+	view_split(w, es, doc, vdir, vlang);
+	return true;
+    }
+    if ( verb == "viewfocus" )
+    {
+	view_focus(w, es, doc, viewfocus_dir_of(arg));
+	return true;
+    }
+    if ( verb == "viewclose" )
+    {
+	view_close(w, es, doc);
+	return true;
+    }
+    if ( verb == "viewopen" )
+    {
+	view_open(w, es, doc, viewrepr_lang_of(arg));
+	return true;
+    }
+    if ( verb == "viewdock" )
+    {
+	long dslot;
+	long dside;
+	viewdock_target(arg, dslot, dside);
+	view_dock(w, es, dslot, dside);
+	return true;
+    }
+    if ( verb == "viewsize" )
+    {
+	long zslot;
+	long zsize;
+	viewsize_args(arg, zslot, zsize);
+	view_size(w, es, zslot, zsize);
+	return true;
+    }
+    if ( verb == "viewwindow" )
+    {
+	view_window(w, es, doc);
+	return true;
+    }
+    if ( verb == "viewsync" )
+    {
+	view_sync(w, es, arg);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
@@ -4412,6 +5577,677 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
 	return;			// the header: the window, no position
     long target = nav_doc(w, es, ad);
     edit_pointer(w, es, target, ev, target == ad);
+}
+
+// ---- the view* verbs (V2b): the editor region a real split tree ---------
+// `viewsplit` turns the focused leaf into a `split` holding it and a NEW
+// leaf — a second window on the same subject (JOE's ^K O feel, side by
+// side); `viewfocus` moves the focus between the leaves; `viewclose` closes
+// the focused leaf (its parent split collapses to the sibling). The focused
+// leaf's active container IS the live es caret; an unfocused leaf parks its
+// caret on its node (`pcaret` / `pmark` / `pbend`), read by the composer's
+// snapshot. Every mutation rewrites the value-typed tree (one editor tree,
+// one owner: the bag's "layout").
+
+// The leaf count of an editor tree.
+long editor_leaf_count(var &node)
+{
+    if ( node["kind"] != ctSPLIT )
+	return 1;
+    long n = 0;
+    for ( var c : node["children"] )
+	n = n + editor_leaf_count(c);
+    return n;
+}
+
+// The tree-order index of the focused leaf (-1 = none), a running counter.
+long editor_focus_scan(var &node, long &seen)
+{
+    if ( node["kind"] != ctSPLIT )
+    {
+	long me = seen;
+	seen = seen + 1;
+	return node["focus"].as_integer() != 0 ? me : -1;
+    }
+    for ( var c : node["children"] )
+    {
+	long r = editor_focus_scan(c, seen);
+	if ( r >= 0 )
+	    return r;
+    }
+    return -1;
+}
+long editor_focused_index(var &node)
+{
+    long seen = 0;
+    return editor_focus_scan(node, seen);
+}
+
+// Rewrite: focus=1 on leaf `target` (tree order), 0 elsewhere.
+void editor_focus_set(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_focus_set(nc, c, target, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    leaf["focus"] = seen == target ? 1 : 0;
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_focus(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_focus_set(out, node, target, seen);
+}
+
+// Rewrite: park (caret, mark, bend) on leaf `target`.
+void editor_park_scan(var &out, var &node, long target, long ca, long ma,
+		      long be, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_park_scan(nc, c, target, ca, ma, be, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    if ( seen == target )
+    {
+	leaf["pcaret"] = ca;
+	leaf["pmark"] = ma;
+	leaf["pbend"] = be;
+    }
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_park(var &out, var &node, long target, long ca, long ma,
+		    long be)
+{
+    long seen = 0;
+    editor_park_scan(out, node, target, ca, ma, be, seen);
+}
+
+// Read leaf `target` (a copy); out stays null when not found.
+void editor_read_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	{
+	    editor_read_scan(out, c, target, seen);
+	    if ( !out.is_null() )
+		return;
+	}
+	return;
+    }
+    if ( seen == target )
+	out = node;
+    seen = seen + 1;
+}
+void editor_read_leaf(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_read_scan(out, node, target, seen);
+}
+
+// Rewrite: replace leaf `target` with `repl`.
+void editor_replace_scan(var &out, var &node, long target, var &repl,
+			 long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_replace_scan(nc, c, target, repl, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	out = repl;
+	return;
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_replace(var &out, var &node, long target, var &repl)
+{
+    long seen = 0;
+    editor_replace_scan(out, node, target, repl, seen);
+}
+
+// Rewrite: remove leaf `target`; a split that drops to one child collapses
+// to it. A removed node leaves `out` NULL (the reliable signal — a subscript
+// of a missing key is an empty container here, not null), which the parent
+// filters out.
+void editor_remove_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_remove_scan(nc, c, target, seen);
+	    if ( !nc.is_null() )
+		kids.push(nc);
+	}
+	if ( php::count(kids) == 1 )
+	{
+	    out = kids[0];
+	    return;
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	return;			// out stays null = removed
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_remove(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_remove_scan(out, node, target, seen);
+}
+
+// "right" | "bottom" (the viewsplit direction word) -> the split enum.
+// A missing word splits vertically (the owner's side-by-side default).
+long viewsplit_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return ui::split::vertical;
+    var a = format("{}", arg);
+    if ( a == "bottom" || a == "down" || a == "below" )
+	return ui::split::horizontal;
+    return ui::split::vertical;		// right = side by side (the default)
+}
+
+// "next" | "prev" (the viewfocus direction word) -> +1 / -1.
+long viewfocus_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return 1;
+    var a = format("{}", arg);
+    if ( a == "prev" || a == "up" || a == "left" || a == "back" )
+	return -1;
+    return 1;
+}
+
+// A viewsplit / viewtab / viewopen REPR word -> its render language
+// (madc::fkMC11 / fkC11 / fkCPP); 0 = a source pane (no code render).
+long viewrepr_lang_of(var &word)
+{
+    if ( word.is_null() )
+	return 0;
+    var a = format("{}", word);
+    if ( a == "mc11" )
+	return madc::fkMC11;
+    if ( a == "c11" )
+	return madc::fkC11;
+    if ( a == "cpp" || a == "c++" || a == "cxx" )
+	return madc::fkCPP;
+    return 0;			// source / src / unknown = a source pane
+}
+
+// `viewsplit right mc11` -> dir + render language: the FIRST word the
+// direction, the SECOND the representation (both optional).
+void viewsplit_args(var &arg, long &dir, long &lang)
+{
+    dir = ui::split::vertical;
+    lang = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+    {
+	var w0 = words[0];
+	dir = viewsplit_dir_of(w0);
+    }
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	lang = viewrepr_lang_of(w1);
+    }
+}
+
+// The View a leaf's active container shows: the primary leaf (tree order's
+// first, the ring host) shows the ring's current View; a secondary leaf its
+// active tab's. One reader for the composer's snapshot and the focus handoff.
+long leaf_view_of(long w, long es, var &leaf, bool primary)
+{
+    if ( primary )
+	return buffer_view(w, es, es_int(w, es, "bufidx", 0));
+    var tabs = leaf["tabs"];
+    var tab = tabs[leaf["active"].as_integer()];
+    return tab["view"].as_integer();
+}
+
+// viewsplit: the focused leaf becomes a split of itself and a NEW leaf. With
+// no repr the new leaf is a second window on the current subject (the SAME
+// View, JOE's ^K O feel); with a repr (`mc11` / `c11` / `cpp`) it is a code
+// View of that representation over the subject (source left, MC11 right — the
+// owner's side-by-side). Focus stays on the original leaf. Refused while the
+// S5 window stack is up (one axis at a time in V2b; the stack is JOE's).
+void view_split(long w, long es, long doc, long dir, long lang)
+{
+    if ( window_count(w, es) >= 2 )
+    {
+	ui::set(w, es, "msg",
+		"Close the extra windows (^K 1) before splitting the view.");
+	return;
+    }
+    long subject = active_doc(w, es, doc);
+    long ca = es_int(w, es, "caret", 0);
+    long nv;
+    long pcar;
+    long tkind;
+    if ( lang != 0 )
+    {
+	nv = make_code_view(w, es, subject, lang);
+	if ( nv == 0 )
+	{
+	    ui::set(w, es, "msg",
+		    format("Cannot render {} — the buffer does not translate.",
+			   madc::file_kind_name(lang)));
+	    return;
+	}
+	pcar = 0;			// a fresh code render starts at the top
+	tkind = viewCODE;
+    }
+    else
+    {
+	nv = focused_view(w, es);	// the same View — a second window
+	pcar = ca;
+	tkind = viewSOURCE;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long fi = editor_focused_index(etree);
+    if ( fi < 0 )
+	fi = 0;
+    var tab;
+    layout_tab(tab, tkind, nv);
+    var tabs = {};
+    tabs.push(tab);
+    long snone = ui::side_code("");
+    long ksed = slotEDITOR;
+    long mtabs = lmTABS;
+    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
+		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
+		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
+    var focleaf;
+    editor_read_leaf(focleaf, etree, fi);
+    var kids = {};
+    kids.push(focleaf);
+    kids.push(newleaf);
+    var split = { "kind": ctSPLIT, "dir": dir, "size": 0, "children": kids };
+    var newtree;
+    editor_do_replace(newtree, etree, fi, split);
+    lo["editor"] = newtree;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "msg", format("{} views.", editor_leaf_count(newtree)));
+}
+
+// Make the leaf `arriving` (tree order) the live one: its parked caret goes
+// live, and its container's View becomes es "fview" — so the focused edit is
+// that leaf's (a code View routes display-vs-stored through nav_doc, and its
+// read-only verdict returns). The primary leaf's View is the ring's current;
+// a secondary's is its tab's.
+void editor_enter_leaf(long w, long es, var &tree, long arriving)
+{
+    var tleaf;
+    editor_read_leaf(tleaf, tree, arriving);
+    bool primary = arriving == 0;
+    long vid = leaf_view_of(w, es, tleaf, primary);
+    ui::set(w, es, "fview", vid);
+    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
+    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
+    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    var v;
+    view_row(v, w, es, vid);
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+    {
+	// A code View is read-only — the lens contract (enter_lens's rule).
+	ui::set(w, es, "editable", false);
+	ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
+    }
+    else
+	derive_access(w, es);		// the file's own verdict
+}
+
+// viewfocus: move the focus between leaves. The live caret parks on the
+// leaving leaf's node; the arriving leaf becomes live (its View, its caret) —
+// the full handoff, so a code-View pane edits (refuses) as itself.
+void view_focus(long w, long es, long doc, long dir)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long cur = editor_focused_index(etree);
+    if ( cur < 0 )
+	cur = 0;
+    long nx = (cur + dir + n) % n;
+    var parked;
+    editor_do_park(parked, etree, cur, es_int(w, es, "caret", 0),
+		   es_int(w, es, "mark", -1), es_int(w, es, "bend", -1));
+    var focused;
+    editor_do_focus(focused, parked, nx);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    editor_enter_leaf(w, es, focused, nx);
+    ui::set(w, es, "msg", format("View {} of {}.", nx + 1, n));
+}
+
+// viewsync (client-server arc V5; design §2.6): toggle cursor synchronization
+// between a source View and its MC11/C11 View. On = the unfocused pane of a
+// source↔code pair draws its caret PROJECTED from the focused caret through
+// the coordinate map, never its own parked one — the sync is a read-side
+// projection at compose time (viewsync_leaf_caret), so no caret state is
+// duplicated. `arg` is on|off at the input boundary (a boolean flag), bare =
+// toggle; the stored state es "viewsync" is an integer.
+void view_sync(long w, long es, var &arg)
+{
+    long cur = es_int(w, es, "viewsync", 0);
+    var a = arg;
+    long on;
+    if ( a == "on" )
+	on = 1;
+    else if ( a == "off" )
+	on = 0;
+    else
+	on = cur ? 0 : 1;
+    ui::set(w, es, "viewsync", on);
+    ui::set(w, es, "msg", on ? "Cursor sync ON (source ↔ view)."
+			     : "Cursor sync off.");
+}
+
+// V5 read-side projection: the caret an unfocused leaf showing View `vid`
+// should draw when cursor-sync is on — the FOCUSED caret projected into this
+// View's coordinate space through the source↔MC11 pair's map. Only a pair of
+// one code View (carrying the map) and one source View projects; any other
+// combination (same representation, no map, no focused View) returns the
+// leaf's own parked caret (`fallback`). A refused projection (-1: an empty or
+// malformed map) also falls back — never a bad caret. `follow` is set to 1
+// only when a projection actually happened: the composer marks that leaf so
+// the frontend SCROLLS to (and marks) the synced caret, an unfocused pane it
+// would otherwise leave parked.
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow)
+{
+    follow = 0;
+    long fvid = focused_view(w, es);
+    if ( fvid == 0 || fvid == vid )
+	return fallback;
+    var fv;
+    var tv;
+    if ( !view_row(fv, w, es, fvid) || !view_row(tv, w, es, vid) )
+	return fallback;
+    long fcaret = es_int(w, es, "caret", 0);
+    bool fcode = fv["kind"].as_integer() == viewCODE;
+    bool tcode = tv["kind"].as_integer() == viewCODE;
+    if ( tcode && !fcode )
+    {
+	// focused = source (stored space) → this = code (display space): the
+	// code View's map carries the stored↔display correspondence.
+	var m = tv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long d = ui::lens_to_display(m, fcaret);
+	if ( d < 0 )
+	    return fallback;
+	follow = 1;
+	return d;
+    }
+    if ( fcode && !tcode )
+    {
+	// focused = code (display space) → this = source (stored space).
+	var m = fv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long s = ui::lens_to_stored(m, fcaret);
+	if ( s < 0 )
+	    return fallback;
+	follow = 1;
+	return s;
+    }
+    return fallback;		// same representation: nothing to project
+}
+
+// viewclose: close the focused leaf; its parent split collapses to the
+// sibling and the focus moves to the previous leaf. The primary leaf (tree
+// order's first, the ring host) never closes — quit does that.
+void view_close(long w, long es, long doc)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long fi = editor_focused_index(etree);
+    if ( fi <= 0 )
+    {
+	ui::set(w, es, "msg", "The primary view stays open (^K Q quits).");
+	return;
+    }
+    var removed;
+    editor_do_remove(removed, etree, fi);
+    long nf = fi - 1;
+    var focused;
+    editor_do_focus(focused, removed, nf);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    editor_enter_leaf(w, es, focused, nf);	// the survivor becomes live
+    ui::set(w, es, "msg", format("View closed — {} left.",
+				 editor_leaf_count(focused)));
+}
+
+// viewopen: re-represent the FOCUSED leaf's View as `lang` (a code render) or
+// back to source (lang 0). es "fview" IS the focused leaf's View, so this is
+// the lens re-representation the `view` cycle already owns — one owner for
+// the focused View whichever leaf holds it.
+void view_open(long w, long es, long doc, long lang)
+{
+    if ( lang == 0 )
+    {
+	exit_lens(w, es, doc);
+	ui::set(w, es, "msg", "View: source");
+	return;
+    }
+    if ( !enter_lens(w, es, doc, lang) )
+	exit_lens(w, es, doc);
+}
+
+// The viewdock direction word -> a (slot, side): `left`/`right` dock the
+// sidebar, `top`/`bottom` the panel (the slot rule parse_layout enforces). An
+// absent or unknown word is `ui::side::none` — view_dock refuses it, never
+// docks to a default place.
+void viewdock_target(var &arg, long &slot, long &side)
+{
+    side = ui::side::none;
+    slot = slotSIDEBAR;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    if ( php::count(words) < 1 )
+	return;
+    var w0 = words[0];
+    side = ui::side_code(w0.c_str());
+    if ( side == ui::side::top || side == ui::side::bottom )
+	slot = slotPANEL;
+    else
+	slot = slotSIDEBAR;		// left | right (none is refused below)
+}
+
+// viewdock <left|right|top|bottom>: move the FOCUSED chrome pane to a slot and
+// side. "Focused" is the chrome View last brought up (`chromelast`, the @pane
+// esc's target) — viewfocus reaching chrome is a V3 residue, so today docking
+// retargets the pane you just opened. The placement PERSISTS beside the
+// manifest (design §5). No direction, or no chrome open, is a refusal that
+// says what to do.
+void view_dock(long w, long es, long slot, long side)
+{
+    if ( side == ui::side::none )
+    {
+	ui::set(w, es, "msg", "viewdock: dock where? left | right | top | bottom.");
+	return;
+    }
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+    {
+	ui::set(w, es, "msg",
+		"Open a pane (a sidebar or a panel view) before docking it.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, k, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg",
+		format("No chrome pane hosts the {} view.", view_name(k)));
+	return;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["slot"] = slot;
+    c["side"] = side;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    layout_persist(w, es);
+    ui::set(w, es, "msg", format("Docked {} to the {}.", view_name(k),
+				 ui::side_name(side)));
+}
+
+// `viewsize <sidebar|panel> <percent>` -> the chrome slot + a clamped size.
+// slotNONE / 0 for a missing or unknown word (view_size refuses). The slot
+// word converts at THIS input boundary (slot_of); the size is runtime numeric
+// data (a splitter's pixel drag turned into a percent), clamped to the
+// grammar's 1%..90%.
+void viewsize_args(var &arg, long &slot, long &size)
+{
+    slot = slotNONE;
+    size = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+	slot = slot_of(words[0]);
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	long v = php::intval(w1);
+	if ( v < 1 )
+	    v = 1;
+	if ( v > 90 )
+	    v = 90;
+	size = v;
+    }
+}
+
+// viewsize: set the chrome pane of a slot to a size percent and PERSIST — so
+// the SESSION's layout owns the size (it rides <base>.prj.layout and the TUI
+// shares it), not the page's per-viewer localStorage. The splitter drag posts
+// it (`{action:'viewsize', arg:'sidebar 40'}`); `:viewsize panel 30` reaches
+// it from the keyboard too. Refuses a non-band slot (the editor's sizing is
+// the split's) or a slot the layout has no pane for.
+void view_size(long w, long es, long slot, long size)
+{
+    if ( slot != slotSIDEBAR && slot != slotPANEL )
+    {
+	ui::set(w, es, "msg", "viewsize: size which? sidebar | panel <percent>.");
+	return;
+    }
+    if ( size < 1 )
+    {
+	ui::set(w, es, "msg", "viewsize: a size 1%..90%.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	c["size"] = size;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	layout_persist(w, es);
+	ui::set(w, es, "msg", format("{} sized to {}%.", slot_name(slot), size));
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
+}
+
+// viewwindow (client-server V3b-2b): a SECOND window on the session — a new
+// client viewing the same document (design §2.3). Opening a frontend is the
+// CLIENT layer's job (the gateway seam: the session never touches a
+// frontend handle), so this parks the doc-to-view on the requesting
+// client's es; run_ide's loop drains it (take_spawn), opens the frontend,
+// and adds the client record. Only a windowed client can host a second
+// window in one process — a terminal client (a single tty) refuses (the
+// TUI's own multi-pane shape is its layout, not a second frontend).
+void view_window(long w, long es, long doc)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "viewwindow: a second window needs a window target (--gui).");
+	return;
+    }
+    ui::set(w, es, "spawnview", doc);
+    ui::set(w, es, "msg", "Opening a new window…");
 }
 
 // Apply ONE semantic event (the value shapes the engine's event query
@@ -4533,6 +6369,56 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		cycle_view(w, es, doc);
 		return true;
 	    }
+	    // The view* verbs (V2b): the editor region a real split tree.
+	    // `viewsplit right|bottom [repr]`, `viewfocus next|prev`,
+	    // `viewclose`, `viewopen [repr]` — the words ride the event's
+	    // `arg` (the colon line, a menu row's argument), read once into
+	    // the split / focus enum and the render language.
+	    case cmdVIEWSPLIT:
+	    {
+		long vdir;
+		long vlang;
+		viewsplit_args(ev["arg"], vdir, vlang);
+		view_split(w, es, doc, vdir, vlang);
+		return true;
+	    }
+	    case cmdVIEWFOCUS:
+	    {
+		view_focus(w, es, doc, viewfocus_dir_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWCLOSE:
+	    {
+		view_close(w, es, doc);
+		return true;
+	    }
+	    case cmdVIEWOPEN:
+	    {
+		view_open(w, es, doc, viewrepr_lang_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWDOCK:
+	    {
+		long dslot;
+		long dside;
+		viewdock_target(ev["arg"], dslot, dside);
+		view_dock(w, es, dslot, dside);
+		return true;
+	    }
+	    case cmdVIEWSIZE:
+	    {
+		long zslot;
+		long zsize;
+		viewsize_args(ev["arg"], zslot, zsize);
+		view_size(w, es, zslot, zsize);
+		return true;
+	    }
+	    case cmdVIEWWINDOW:
+		view_window(w, es, doc);
+		return true;
+	    case cmdVIEWSYNC:
+		view_sync(w, es, ev["arg"]);
+		return true;
 	    case cmdSAVE:
 		return save_and_check(w, es, doc);
 	    case cmdSAVEQUIT:
@@ -4650,12 +6536,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdOUTLINE:
 	    {
-		if ( cur_pane(w, es) == paneOUTLINE )
-		    set_pane(w, es, paneNONE);
+		// The outline View toggles where the layout hosts it (the
+		// sidebar by default): shown -> hidden; else refresh + show.
+		if ( view_shown(w, es, viewOUTLINE) )
+		    hide_view(w, es, viewOUTLINE);
 		else
 		{
 		    refresh_outline(w, es, doc);
-		    set_pane(w, es, paneOUTLINE);
+		    show_view(w, es, viewOUTLINE);
 		}
 		return true;
 	    }
@@ -4740,24 +6628,24 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdPANEL:
 	    {
-		// The bottom panel's visibility (polish P3a) — data a window
-		// renders; the terminal composes no panel either way.
-		ui::set(w, es, "panel", es_int(w, es, "panel", 0) != 0 ? 0 : 1);
+		// The panel pane's visibility (V2: the layout's chrome; every
+		// client renders it — the terminal as a band).
+		toggle_slot(w, es, slotPANEL);
 		return true;
 	    }
 	    case cmdPROBLEMS:
 	    {
-		show_panel_tab(w, es, tabPROBLEMS);
+		show_view(w, es, viewPROBLEMS);
 		return true;
 	    }
 	    case cmdOUTPUT:
 	    {
-		show_panel_tab(w, es, tabOUTPUT);
+		show_view(w, es, viewOUTPUT);
 		return true;
 	    }
 	    case cmdTERMINAL:
 	    {
-		show_panel_tab(w, es, tabTERMINAL);
+		show_view(w, es, viewTERMINAL);
 		if ( es_int(w, es, "termlive", 0) != 0 )
 		    ui::set(w, es, "termfocus", 1);
 		return true;
@@ -4848,7 +6736,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	var pc;
 	if ( scope_action_named(pc, w, es, "pane", ev) && pc == cmdPANECLOSE )
 	{
-	    set_pane(w, es, paneNONE);
+	    // A popup closes first; with none up, the chrome pane shown last
+	    // hides (V2) — the pick list's Close and the panel's esc share the
+	    // one @pane action.
+	    if ( cur_pane(w, es) != paneNONE )
+		set_pane(w, es, paneNONE);
+	    else
+		hide_last_view(w, es);
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -4897,12 +6791,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		build_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdGOTO:
+	    case cmdGOTODEF:
 		// Pane rows carry STORED line numbers — meaningless against a
-		// displayed view.
+		// displayed view. Two verbs, one handler: a problems row's
+		// goto and a definition's gotodef never make a choose guess
+		// which list it came from (both lists can be up at once).
 		if ( viewing )
 		    refuse_edit(w, es);
 		else
-		    goto_pane_row(w, es, doc, ev["option"].as_integer());
+		    goto_pane_row(w, es, doc, ev["option"].as_integer(),
+				  ev_code(ev) == cmdGOTODEF);
 		return true;
 	    // The shared editor menu's rows (compose_menu: Save / Find / Quit).
 	    case cmdW:
@@ -4946,6 +6844,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    return true;
 	}
     }
+    else if ( es_int(w, es, "chromelast", viewNONE) != viewNONE )
+    {
+	// The chrome pane shown last hides on the @pane esc (V2).
+	var pa;
+	if ( scoped_action(pa, w, es, "pane", ev) && pa == cmdPANECLOSE
+	  && hide_last_view(w, es) )
+	    return true;
+    }
     edit_key(w, es, nav, caret, ev);
     return true;	// unbound keys are inert (chords arrive as actions)
 }
@@ -4987,7 +6893,8 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{}:{} {} {}", row["line"],
 				   row["column"], row["severity"],
 				   row["message"]);
-	var gh = { "code": cmdGOTO };	// a navigable row: its verb as a code
+	long verb = outline_pane ? cmdGOTODEF : cmdGOTO;
+	var gh = { "code": verb };	// a navigable row: its verb as a code
 	it["hints"] = gh;
 	items[] = it;
 	nrows = nrows + 1;
@@ -4995,113 +6902,165 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
     return nrows;
 }
 
-void IdeSession::compose_ide_tree(var &root, long doc)
+// Compose the edit node of a View, by id: the node presents the View's TEXT
+// entity (its render buffer, or the subject's own buffer for stored text)
+// through the ONE shared edit-node composer; the caller's single hints RMW
+// attaches the lens data — never a second read-modify-write of the hints
+// (the measured 3 ms copies, 2026-09-07). A session with no View yet
+// composes the document itself: byte-identical.
+void compose_view_node(var &ed, long w, long es, long id, long doc,
+		       long caret)
 {
-    long caret = es_int(w, es, "caret", 0);
-    // The view seam at composition: the edit node presents the NAV
-    // target's text (the lens's get) and, while a view is up, carries the
-    // lens data — the view name and its coordinate map — as hints. The
-    // identity lens (no view) takes neither branch: byte-identical.
-    long nav = nav_doc(w, es, doc);
-    bool viewing = nav != doc;
+    var v;
+    view_row(v, w, es, id);
+    compose_edit_node(ed, w, es, view_text_entity(v, doc), caret);
+}
 
-    // The JOE screen model (IDE-9b): no heading banner — the path, the
-    // modified/read-only badges, and the view name all render in the
-    // status line's %n / %m / %R / %y seats.
-    var ed;
-    compose_edit_node(ed, w, es, nav, caret);
-    // ONE read-modify-write of the edit node's hints: every hint below
-    // lands on this local and it is written back ONCE, after the region
-    // block. A var assignment is a deep copy, and with the highlight
-    // spans aboard (4841 rows on madcide_core.inc) each of the former
-    // three RMW passes cost two ~3 ms copies per composed keystroke
-    // (measured 2026-09-07).
-    var eh = ed["hints"];
-    if ( viewing )
+// The lens data a code View's edit node carries as hints: the render
+// language — its enumerator ("lang_code", what a client switches on) and
+// its name ("view", what a client shows) — the coordinate map, and the
+// View's own highlight spans. A source View adds nothing.
+void view_lens_hints(var &eh, long w, long es, var &v)
+{
+    long lang = v["lang"].as_integer();
+    eh["view"] = madc::file_kind_name(lang);
+    eh["lang_code"] = lang;
+    eh["map"] = v["map"];
+    var vhs;
+    view_spans(vhs, w, es, v);
+    if ( !vhs.is_null() && php::count(vhs) > 0 )
+	eh["spans"] = vhs;
+}
+
+// ---- the chrome panes (V2): composed FROM the layout ----------------------
+// A visible chrome pane is a group docked by its slot (`region`, the wire
+// word), placed by its `side` and `size` (the grid carves a band; the page
+// sets the slot's track), heading its tabs as a strip when it holds more
+// than one (each tab posts the command that shows its View — the S1 rule),
+// and holding the active tab's projection: Problems = the diagnostics rows,
+// Outline = the definitions (both through diag_items, the one builder),
+// Output = the [build] text (its tail), Terminal = the [terminal] screen. A
+// kind with no builder yet names itself. The pane's `focus` autofocuses its
+// list; Tab reaches it as ever.
+void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
+{
+    var strip = {};
+    long active = c["active"].as_integer();
+    long ntabs = php::count(c["tabs"]);
+    long shown = viewNONE;
+    long ti = 0;
+    for ( var t : c["tabs"] )
     {
-	var vw;
-	view_name(vw, w, es);
-	eh["view"] = vw;
-	var vm;
-	ui::get(vm, w, es, "vmap");
-	eh["map"] = vm;
-	// The lens's own highlight spans (enter_view lexed the emitted
-	// text onto the view buffer): the view renders in colour too.
-	var vhs;
-	ui::get(vhs, w, nav, "hspans");
-	if ( !vhs.is_null() && php::count(vhs) > 0 )
-	    eh["spans"] = vhs;
+	long k = t["kind"].as_integer();
+	if ( ti == active )
+	    shown = k;
+	var nm = view_name(k);
+	var title = php::ucfirst(nm);
+	long sc = view_show_cmd(k);
+	var an;
+	cmd_name(an, sc);
+	var tb = { "title": title, "action": an, "code": sc };
+	if ( ti == active )
+	    tb["active"] = 1;
+	strip.push(tb);
+	ti = ti + 1;
     }
-    else
+    bool focus = c["focus"].as_integer() != 0;
+    var pkids = {};
+    switch ( shown )
     {
-	// Highlight spans (AST-2): the bag's themed byte-range rows ride
-	// the hints — the document's stored-space rows, computed at
-	// (re)parse, just attached here (a view's rows live on its buffer).
-	var hs;
-	ui::get(hs, w, es, "hspans");
-	if ( !hs.is_null() && php::count(hs) > 0 )
-	    eh["spans"] = hs;
-    }
-
-    // The display tab width (IDE-9d ^T option) rides the edit node's
-    // hints like the caret — the model owns the expansion math.
-    long tabw = es_int(w, es, "tabwidth", 0);
-    if ( tabw > 0 )
-	eh["tabwidth"] = tabw;
-
-    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
-    // state read of the buffer's parse handle — stored-space only (a
-    // view's caret is display-space), and only once something opened the
-    // handle; composition never runs the compiler.
-    var fnctx = "";
-    var vw_st;
-    if ( !view_name(vw_st, w, es) )
-    {
-	long ph = es_int(w, doc, "phandle", 0);
-	if ( ph != 0 )
+	case viewTERMINAL:
 	{
-	    long cl = line_of(w, doc, caret);
-	    long cs = line_start_of(w, doc, cl);
-	    var encl;
-	    madc::parse_enclosing(encl, ph, cl, caret - cs);
-	    if ( !encl.is_null() )
-		fnctx = format("fn {}", encl["name"]);
+	    // The screen: an edit node over the [terminal] buffer (the
+	    // line-DOM, the caret at the end) whose subject is that buffer —
+	    // a press on it is how the program gets the keyboard
+	    // (pointer_event). Empty until something ran.
+	    long tdoc = term_doc_if_any(w, es);
+	    var tt = "";
+	    long tsz = 0;
+	    if ( tdoc != 0 )
+	    {
+		ui::text(tt, w, tdoc);
+		tsz = ui::text_size(w, tdoc);
+	    }
+	    var term = { "role": "edit" };
+	    term["content"] = tt;
+	    if ( tdoc != 0 )
+		term["subject"] = tdoc;
+	    var th = { "terminal": 1 };
+	    th["caret"] = tsz;
+	    if ( es_int(w, es, "termfocus", 0) != 0 )
+		th["focus"] = 1;
+	    term["hints"] = th;
+	    pkids.push(term);
+	    break;
+	}
+	case viewOUTPUT:
+	{
+	    var outn = { "role": "content" };
+	    var bt = "";
+	    long bdoc = build_doc_if_any(w, es);
+	    if ( bdoc != 0 )
+		ui::text(bt, w, bdoc);
+	    outn["content"] = bt;
+	    outn["hints"] = { "tail": 1 };	// a band shows the stream's END
+	    pkids.push(outn);
+	    break;
+	}
+	case viewOUTLINE:
+	case viewPROBLEMS:
+	{
+	    bool outline = shown == viewOUTLINE;
+	    var pb = { "role": "choice" };
+	    pb["label"] = outline ? "Outline" : "Problems";
+	    var pitems = {};
+	    long pn = diag_items(pitems, w, es, doc, outline);
+	    if ( pn == 0 )
+		pitems[] = { "role": "item",
+			     "content": outline ? "(no definitions)" : "(clean)" };
+	    pb["children"] = pitems;
+	    var ph = { "list": 1 };
+	    if ( focus )
+		ph["focus"] = 1;
+	    pb["hints"] = ph;
+	    pkids.push(pb);
+	    break;
+	}
+	default:
+	{
+	    var nn = { "role": "content" };
+	    nn["content"] = format("({} view)", view_name(shown));
+	    pkids.push(nn);
+	    break;
 	}
     }
-    var status;
-    compose_joe_statusline(status, w, es, nav, caret, fnctx);
+    var g = { "role": "group" };
+    long slot = c["slot"].as_integer();
+    // The wire carries the WORDS for the layout discriminators (the `region`
+    // precedent): slot -> region, the side enum -> its name; the renderers
+    // convert once back to the enum. `size` is the percent int.
+    var gh = { "region": slot_name(slot),
+	       "side": ui::side_name(c["side"].as_integer()),
+	       "size": c["size"] };
+    if ( ntabs > 1 )
+	gh["tabs"] = strip;
+    g["hints"] = gh;
+    g["children"] = pkids;
+    out = g;
+}
 
-    // Layout regions (slice 3, madcide GUI): the edit node is the editor
-    // group (a tab strip when more than one buffer is open), the status
-    // line is the status bar. These are ADDITIVE hint keys the grid model
-    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
-    // so the terminal composition is byte-identical; web_model lays a
-    // region'd node into the workbench grid. The active window's ed and
-    // status are stamped here, before the multi-window branch's own
-    // read-modify-write of ed["hints"] preserves the region.
-    long wc = window_count(w, es);
-    {
-	eh["region"] = "editor";
-	// With two-plus windows the active window carries the focus hint
-	// (the multi-window branch below composes the others); it rides
-	// the same single write-back.
-	if ( wc >= 2 )
-	    eh["focus"] = 1;
-	ed["hints"] = eh;
-    }
-    {
-	// While split (S5), the active window's status line is its HEADER
-	// in the editor slot like every other window's — the JOE shape, one
-	// status line per window, stacked in tree order; the status BAR is
-	// the single window's presentation. The window (the page) stacks a
-	// slot's nodes in order, so no window's node is left unplaced.
-	var sh = status["hints"];
-	sh["region"] = wc >= 2 ? "editor" : "statusbar";
-	status["hints"] = sh;
-    }
+// ---- the editor region (V2b, design §2.3): the client's editor slot is
+//      `layout["editor"]`, a tree of `split` nodes over editor-pane leaves.
+//      A SOLE leaf emits its status + edit FLAT into the slot — the JOE
+//      screen, byte-identical with the pre-split composition. A `viewsplit`
+//      turns the focused leaf into a split; the split composer (below) wraps
+//      each leaf in its own group. `compose_editor_flat` is the sole-leaf /
+//      primary-leaf emission: the buffer-ring strip (a window's fact) then
+//      the S5 window stack (two-plus windows) or the single status + edit.
 
-    var r = { "role": "group" };
-    var kids = {};
+void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
+			 long wc)
+{
     // The editor TABS (polish P4): under a window's fact, the buffer ring
     // as a tab strip above the window stack — a content node docked FIRST
     // into the editor region whose `tabs` hint carries the strip as data:
@@ -5221,6 +7180,253 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(status);	// JOE: ONE status line at the TOP
 	kids.push(ed);
     }
+}
+
+// One editor leaf's contents: a status header then the edit node, docked in
+// the editor region. The FOCUSED leaf is the live one — the status + edit
+// composed by the caller from es state, focus-hinted, carrying its leaf tag
+// (the pointer arm maps a press back to it). An unfocused leaf is a SNAPSHOT:
+// the primary leaf (tree order's first, the ring host) snapshots the active
+// buffer row (its caret parked there when focus left it); a secondary leaf
+// snapshots its active tree container. No spans / selection on a snapshot
+// (the S5 inactive-window rule).
+void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
+			 bool primary, bool focused, long myleaf, var &ed,
+			 var &status)
+{
+    // A leaf's status + edit are the flex-column CHILDREN of its leaf group
+    // (`.node[data-split] > .node`); the group is what carries `region:
+    // editor` (compose_editor_split), so the nodes inside carry NO region —
+    // a region here would make the page dock them into a nested workbench
+    // instead of stacking them in the column.
+    if ( focused )
+    {
+	var st = status;
+	var sh = st["hints"];
+	sh["region"] = "";
+	st["hints"] = sh;
+	lk.push(st);
+	var e = ed;
+	var eh = e["hints"];
+	eh["region"] = "";
+	eh["focus"] = 1;
+	eh["tag"] = myleaf;
+	if ( es_int(w, es, "viewsync", 0) )
+	    eh["sync"] = 1;		// V5: a linked-scroll partner (the map rides too)
+	e["hints"] = eh;
+	lk.push(e);
+	return;
+    }
+    // An unfocused leaf is a SNAPSHOT of its container's View at its parked
+    // caret (`pcaret`): the primary leaf shows the ring's current View, a
+    // secondary its active tab's. A code View snapshots its RENDER buffer and
+    // carries the lens hints (its name, coordinate map, colours); a source
+    // View its subject text and the doc's spans — the composer's single
+    // display-vs-stored routing (view_text_entity), the S5 inactive rule (no
+    // selection).
+    long vid = leaf_view_of(w, es, node, primary);
+    var v;
+    view_row(v, w, es, vid);
+    long sdoc = view_text_entity(v, v["subject"].as_integer());
+    long pc = node["pcaret"].as_integer();
+    long follow = 0;
+    if ( es_int(w, es, "viewsync", 0) )
+	pc = viewsync_leaf_caret(w, es, vid, pc, follow);	// V5: draw the projected caret
+    long sc = clamp_caret_to(w, sdoc, pc);
+    var wfn = "";
+    var wst;
+    compose_joe_statusline(wst, w, es, sdoc, sc, wfn);
+    lk.push(wst);
+    var wed = { "role": "edit" };
+    var wt;
+    ui::text(wt, w, sdoc);
+    wed["content"] = wt;
+    wed["subject"] = sdoc;
+    var wh = { "caret": sc, "tag": myleaf };
+    if ( follow )
+	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
+    if ( es_int(w, es, "viewsync", 0) )
+	wh["sync"] = 1;		// V5: a linked-scroll partner (the code pane's map rides too)
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
+    else
+    {
+	var hs;
+	view_spans(hs, w, es, v);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    wh["spans"] = hs;
+    }
+    wed["hints"] = wh;
+    lk.push(wed);
+}
+
+// The editor tree as nodes: a split becomes a `split` GROUP (its direction
+// the wire word, the grid dividing its rect and the page a flex box) whose
+// children are the nodes' groups; a leaf becomes a group of [status, edit].
+// `leafno` numbers leaves in tree order — leaf 0 is the PRIMARY. Each node's
+// `size` (its share of the parent split) rides its group's hints.
+void compose_editor_node(var &out, long w, long es, long doc, var &node,
+			 var &ed, var &status, long &leafno)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var gkids = {};
+	for ( var c : node["children"] )
+	{
+	    var cg;
+	    compose_editor_node(cg, w, es, doc, c, ed, status, leafno);
+	    gkids.push(cg);
+	}
+	var g = { "role": "group", "children": gkids };
+	var gh = { "split": ui::split_name(node["dir"].as_integer()) };
+	long ssz = node["size"].as_integer();
+	if ( ssz > 0 )
+	    gh["size"] = ssz;
+	g["hints"] = gh;
+	out = g;
+	return;
+    }
+    long myleaf = leafno;
+    bool primary = leafno == 0;
+    leafno = leafno + 1;
+    bool focused = node["focus"].as_integer() != 0;
+    var lk = {};
+    compose_editor_leaf(lk, w, es, doc, node, primary, focused, myleaf, ed,
+			status);
+    var g = { "role": "group", "children": lk };
+    long sz = node["size"].as_integer();
+    if ( sz > 0 )
+    {
+	var gh = { "size": sz };
+	g["hints"] = gh;
+    }
+    out = g;
+}
+
+// Compose a split editor tree into the editor slot: one `split` group carrying
+// `region: editor` so it docks into the editor slot (the page's workbench grid)
+// and the terminal reads it as the centre flow — the leaves inside it flex.
+void compose_editor_split(var &kids, long w, long es, long doc, var &node,
+			  var &ed, var &status)
+{
+    long leafno = 0;
+    var g;
+    compose_editor_node(g, w, es, doc, node, ed, status, leafno);
+    var gh = g["hints"];
+    gh["region"] = "editor";
+    g["hints"] = gh;
+    kids.push(g);
+}
+
+void IdeSession::compose_ide_tree(var &root, long doc)
+{
+    long caret = es_int(w, es, "caret", 0);
+    // The View seam at composition: the edit node presents the focused
+    // View's text (its render buffer while a lens is up) and, for a code
+    // View, carries the lens data — the render language and its
+    // coordinate map — as hints. The identity lens (a source View, or no
+    // View yet) takes neither branch: byte-identical.
+    long fv = focused_view(w, es);
+    var fvrow;
+    view_row(fvrow, w, es, fv);
+    long nav = view_text_entity(fvrow, doc);
+    bool viewing = nav != doc;
+
+    // The JOE screen model (IDE-9b): no heading banner — the path, the
+    // modified/read-only badges, and the view name all render in the
+    // status line's %n / %m / %R / %y seats.
+    var ed;
+    compose_view_node(ed, w, es, fv, doc, caret);
+    // ONE read-modify-write of the edit node's hints: every hint below
+    // lands on this local and it is written back ONCE, after the region
+    // block. A var assignment is a deep copy, and with the highlight
+    // spans aboard (4841 rows on madcide_core.inc) each of the former
+    // three RMW passes cost two ~3 ms copies per composed keystroke
+    // (measured 2026-09-07).
+    var eh = ed["hints"];
+    if ( viewing )
+	view_lens_hints(eh, w, es, fvrow);
+    else
+    {
+	// Highlight spans (AST-2): the bag's themed byte-range rows ride
+	// the hints — the document's stored-space rows, computed at
+	// (re)parse, just attached here (a code View's rows live on its
+	// render buffer — view_spans is the one reader).
+	var hs;
+	view_spans(hs, w, es, fvrow);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    eh["spans"] = hs;
+    }
+
+    // The display tab width (IDE-9d ^T option) rides the edit node's
+    // hints like the caret — the model owns the expansion math.
+    long tabw = es_int(w, es, "tabwidth", 0);
+    if ( tabw > 0 )
+	eh["tabwidth"] = tabw;
+
+    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
+    // state read of the buffer's parse handle — stored-space only (a
+    // view's caret is display-space), and only once something opened the
+    // handle; composition never runs the compiler.
+    var fnctx = "";
+    var vw_st;
+    if ( !lens_name(vw_st, w, es) )
+    {
+	long ph = es_int(w, doc, "phandle", 0);
+	if ( ph != 0 )
+	{
+	    long cl = line_of(w, doc, caret);
+	    long cs = line_start_of(w, doc, cl);
+	    var encl;
+	    madc::parse_enclosing(encl, ph, cl, caret - cs);
+	    if ( !encl.is_null() )
+		fnctx = format("fn {}", encl["name"]);
+	}
+    }
+    var status;
+    compose_joe_statusline(status, w, es, nav, caret, fnctx);
+
+    // Layout regions (slice 3, madcide GUI): the edit node is the editor
+    // group (a tab strip when more than one buffer is open), the status
+    // line is the status bar. These are ADDITIVE hint keys the grid model
+    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
+    // so the terminal composition is byte-identical; web_model lays a
+    // region'd node into the workbench grid. The active window's ed and
+    // status are stamped here, before the multi-window branch's own
+    // read-modify-write of ed["hints"] preserves the region.
+    long wc = window_count(w, es);
+    {
+	eh["region"] = "editor";
+	// With two-plus windows the active window carries the focus hint
+	// (the multi-window branch below composes the others); it rides
+	// the same single write-back.
+	if ( wc >= 2 )
+	    eh["focus"] = 1;
+	ed["hints"] = eh;
+    }
+    {
+	// While split (S5), the active window's status line is its HEADER
+	// in the editor slot like every other window's — the JOE shape, one
+	// status line per window, stacked in tree order; the status BAR is
+	// the single window's presentation. The window (the page) stacks a
+	// slot's nodes in order, so no window's node is left unplaced.
+	var sh = status["hints"];
+	sh["region"] = wc >= 2 ? "editor" : "statusbar";
+	status["hints"] = sh;
+    }
+
+    var r = { "role": "group" };
+    var kids = {};
+    // The editor slot from the layout's editor tree (V2b). A sole editor
+    // leaf emits flat — the JOE screen, byte-identical; a `viewsplit` makes
+    // it a split and the split composer wraps each leaf in its own group.
+    var elo;
+    layout_get(elo, w, es);
+    var etree = elo["editor"];
+    if ( etree["kind"] == ctSPLIT )
+	compose_editor_split(kids, w, es, doc, etree, ed, status);
+    else
+	compose_editor_flat(kids, w, es, ed, status, wc);
 
     long pane = cur_pane(w, es);
     if ( pane != paneNONE )
@@ -5369,141 +7575,25 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    dh["dialog"] = dg;
 	    box["hints"] = dh;
 	}
-	else
-	{
-	    // diagnostics / outline: projections of the STORED compiler
-	    // data — navigable rows carrying the `goto` action.
-	    bool outline_pane = pane == paneOUTLINE;
-	    if ( outline_pane )
-		box["label"] = "Outline";
-	    else
-		box["label"] = "Diagnostics";
-	    nrows = diag_items(items, w, es, doc, outline_pane);
-	    if ( nrows == 0 )
-		items[] = { "role": "item",
-			    "content": outline_pane ? "(no definitions)"
-						    : "(clean)" };
-	}
 	box["children"] = items;
-	// The pane's workbench slot (slice 3) is madcide's OWN presentation
-	// policy for its OWN panes, expressed as DATA — a docked side view, a
-	// bottom panel, or a floating popup — never a name test in general
-	// machinery. A `popup` hint floats the choice as an overlay; a
-	// `region` hint docks it. Both are hints the grid model ignores.
-	long slot = pane_slot_of(pane);
-	if ( slot != slotNONE )
-	{
-	    var bh = box["hints"];
-	    if ( slot == slotPOPUP )
-		bh["popup"] = 1;
-	    else
-		bh["region"] = slot_name(slot);
-	    box["hints"] = bh;
-	}
+	// Every pane here is a PICK LIST (V2: the tool Views live in the
+	// layout's chrome panes below); dialog_hints floated it as a popup.
 	kids.push(box);
     }
 
-    // The live-build output panel (slice 3 Task 6): while a build streams,
-    // dock the [build] buffer's output as a panel region in the workbench
-    // (VS Code's Output shape). ADDITIVE and gated on buildlive — the TUI
-    // ignores region:panel and reaches [build] via ^P, and a drained build
-    // (buildlive == 0) composes no panel, so the terminal shape and every
-    // testmadcide compose-shape assertion are unchanged. Non-creating
-    // lookup: composition never mints a buffer.
-    if ( es_flag(w, es, "haspanel") )
+    // The CHROME panes (V2, design §2.2): every visible fixed-slot pane of
+    // the client's layout — after the popup, so a pick list keeps its place
+    // in the tree. The grid carves their bands by `side` / `size`; the page
+    // docks them by `region`.
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
     {
-	// The bottom PANEL (polish P3a): a `group` docked into the panel
-	// region whose `tabs` hint carries the STRIP as data — one tab per
-	// tool, each naming the command that shows it (a click posts it by
-	// name, the S1 rule) — and whose one child is the active tab's
-	// content: Problems = the diagnostics rows (diag_items, the same
-	// builder the terminal's pane uses), Output = the [build] buffer's
-	// text (live or last; empty when nothing was built). Composed only
-	// while `panel` is up.
-	if ( es_int(w, es, "panel", 0) != 0 )
-	{
-	    long tab = es_int(w, es, "paneltab", tabPROBLEMS);
-	    var strip = {};
-	    var t1 = { "title": "Problems", "action": "problems", "code": cmdPROBLEMS };
-	    if ( tab == tabPROBLEMS )
-		t1["active"] = 1;
-	    strip.push(t1);
-	    var t2 = { "title": "Output", "action": "output", "code": cmdOUTPUT };
-	    if ( tab == tabOUTPUT )
-		t2["active"] = 1;
-	    strip.push(t2);
-	    var t3 = { "title": "Terminal", "action": "terminal", "code": cmdTERMINAL };
-	    if ( tab == tabTERMINAL )
-		t3["active"] = 1;
-	    strip.push(t3);
-	    var pkids = {};
-	    if ( tab == tabTERMINAL )
-	    {
-		// The screen: an edit node over the [terminal] buffer (the
-		// line-DOM, the caret at the end) whose subject is that
-		// buffer — a press on it is how the program gets the
-		// keyboard (pointer_event). Empty until something ran.
-		long tdoc = term_doc_if_any(w, es);
-		var tt = "";
-		long tsz = 0;
-		if ( tdoc != 0 )
-		{
-		    ui::text(tt, w, tdoc);
-		    tsz = ui::text_size(w, tdoc);
-		}
-		var term = { "role": "edit" };
-		term["content"] = tt;
-		if ( tdoc != 0 )
-		    term["subject"] = tdoc;
-		var th = { "terminal": 1 };
-		th["caret"] = tsz;
-		if ( es_int(w, es, "termfocus", 0) != 0 )
-		    th["focus"] = 1;
-		term["hints"] = th;
-		pkids.push(term);
-	    }
-	    else if ( tab == tabOUTPUT )
-	    {
-		var out = { "role": "content" };
-		var bt = "";
-		long bdoc = build_doc_if_any(w, es);
-		if ( bdoc != 0 )
-		    ui::text(bt, w, bdoc);
-		out["content"] = bt;
-		pkids.push(out);
-	    }
-	    else
-	    {
-		var pb = { "role": "choice", "label": "Problems" };
-		var pitems = {};
-		long pn = diag_items(pitems, w, es, doc, false);
-		if ( pn == 0 )
-		    pitems[] = { "role": "item", "content": "(clean)" };
-		pb["children"] = pitems;
-		pb["hints"] = { "list": 1 };
-		pkids.push(pb);
-	    }
-	    var panel = { "role": "group" };
-	    var ph = { "region": "panel" };
-	    ph["tabs"] = strip;
-	    panel["hints"] = ph;
-	    panel["children"] = pkids;
-	    kids.push(panel);
-	}
-    }
-    else if ( es_int(w, es, "buildlive", 0) != 0 )
-    {
-	long bdoc = build_doc_if_any(w, es);
-	if ( bdoc != 0 )
-	{
-	    var bt;
-	    ui::text(bt, w, bdoc);
-	    var panel = { "role": "content" };
-	    panel["content"] = bt;
-	    var ph = { "region": "panel" };
-	    panel["hints"] = ph;
-	    kids.push(panel);
-	}
+	if ( c["hidden"].as_integer() != 0 )
+	    continue;
+	var cp;
+	compose_chrome_pane(cp, w, es, doc, c);
+	kids.push(cp);
     }
 
     // The bottom message line (JOE's msgbuf): prompts, the search
@@ -5534,6 +7624,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var rh;
     if ( !gt.is_null() && php::count(gt) > 0 )
 	rh["theme"] = gt;
+    // The @presence palette (V3c): the scheme's round-robin caret colours
+    // ride the root hints; a client renders another client's presence caret
+    // by its dealt slot. A hint the TUI ignores.
+    var pt;
+    ui::get(pt, w, es, "presence_theme");
+    if ( !pt.is_null() && php::count(pt) > 0 )
+	rh["presence"] = pt;
     // The menu / command data (S1): the bar's menus with their items'
     // ids, titles and enablement — a root hint the TUI ignores and a
     // chrome-rendering client (S2) draws natively.
@@ -5546,6 +7643,128 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 }
 
 // ---- the session lifecycle (the gateway seam) ---------------------------
+
+// The per-CLIENT view initialisation (client-server V3b-2). Everything a
+// client's editor-state bag needs once its world + document exist: its own
+// profile / theme / menu / layout, the buffer table's launch row, the
+// project read-back, and the first lexical colour. open() runs it for
+// client 0 over the es setup_editor created; spawn_view_es runs it for
+// every additional window onto the SAME session (viewwindow). ONE builder,
+// so a spawned window's bag is constructed by the same code as the launch
+// window's — a second window that renders the shared document identically.
+// Returns false ONLY when the startup profile AND the built-in rescue
+// bindings both fail (fatal; the caller reports the exit).
+bool init_view_es(long w, long es, long doc, const char *path)
+{
+    var p = path;		// ring discipline: own the text first — the
+				// data loads below cycle the ring, so a bare
+				// `path` pointer read empty at launchpath.
+    // resolve_profile_dir owns the search: source tree (beside this
+    // file, from any cwd — php::dirname splits both separators; '/'
+    // alone cost the first genuine-Win validation its keybindings),
+    // then the installed layouts anchored on the running binary (PK7).
+    var pdir;
+    resolve_profile_dir(pdir);
+    ui::set(w, es, "profile_dir", pdir.c_str());
+    load_status(w, es, "joe");	// the status FORMAT rides the profile
+    if ( !load_theme(w, es, "default") )
+	ui::set(w, es, "msg", "No theme 'default' — colours off.");
+    load_menu(w, es, "default");	// the menu/command data (optional, S1)
+    load_layout(w, es, "default");	// WHERE Views live (V2): the client's
+					// layout; the baked default when the
+					// file is missing or refused
+    // The profile loads LAST of the three data loads: a broken layout
+    // fails the theme too, and its message must not bury the rescue
+    // announcement — the status line has to SAY the fallback is active.
+    if ( !load_profile(w, es, "joe") )
+    {
+	// No profile file = NO bindings at all (they are pure data), so a
+	// silent continue traps the session in a bindingless editor (the
+	// first genuine-Win validation hit exactly this). The baked-in
+	// rescue set keeps the session usable — only ITS failure is fatal.
+	if ( !bind_rescue_keys(w, es) )
+	{
+	    var dir;
+	    ui::get(dir, w, es, "profile_dir");
+	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
+	    return false;
+	}
+    }
+    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
+    // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
+    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
+    push_buffer_row(w, es, doc, p.c_str());
+    ui::set(w, es, "bufidx", 0);
+    // Presence (client-server V3c): register this client as a viewer of the
+    // launch document — the anchor registry shifts every client's caret in
+    // one pass and compose draws the others, and this deals the es its
+    // round-robin presence colour slot.
+    es_view_doc(w, es, doc);
+    ui::set(w, es, "fview", buffer_view(w, es, 0));	// the focused
+				// container's View: the launch tab's
+    // The project (owner rulings 2026-08-31): the launch file anchors the
+    // implicit single-file project; a <base>.prj.json beside it IS the
+    // project and loads back (announced on the status line). launchpath
+    // rides as a VAR (proj_add / layout_persist read it to place the
+    // manifest and the layout beside the file — a bare const char* here
+    // read back empty and dropped both artifacts at the root base).
+    ui::set(w, es, "launchpath", p);
+    proj_startup(w, es, doc);
+    // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
+    // blocked the first render for seconds on a real C++ file): colour
+    // rides the first paint from the LEXICAL spans; the full parse runs
+    // as the client loop's pending step AFTER a render — the ONE
+    // mechanism startup and buffer switches share (parse_pending).
+    lex_first_spans(w, es, doc);
+    ui::set(w, es, "pending_parse", 1);
+    return true;
+}
+
+// A fresh client VIEW onto an existing world + document (client-server
+// V3b-2, viewwindow). A second window is a second CLIENT with its OWN
+// editor-state bag over the SHARED document — its own caret, buffer ring,
+// layout and focus; the documents live in the world both share, so an edit
+// in either window mutates the one document and the other window shows it
+// on its next compose. Mirrors setup_editor's es half (the world verbs are
+// already bound and the document already loaded), then the SAME per-client
+// init open() runs. Returns the new es, or 0 if the profile + rescue both
+// failed.
+long spawn_view_es(long w, long doc, const char *path)
+{
+    var p = path;		// ring discipline: own before the ring-using
+				// derive_access / init below clobber the slot
+    long es = ui::create(w, "editor-state");
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);
+    derive_access(w, es);
+    if ( !init_view_es(w, es, doc, p.c_str()) )
+	return 0;
+    return es;
+}
+
+// The session half of a viewwindow spawn (client-server V3b-2b): a fresh
+// client VIEW over the shared world + `doc`. The client layer (run_ide)
+// asks for it, then opens a frontend on the returned es and adds the
+// client record — the seam keeps the session free of frontend handles.
+long IdeSession::spawn_view(long doc)
+{
+    var dp;
+    ui::get(dp, w, doc, "path");
+    return spawn_view_es(w, doc, dp.c_str());
+}
+
+// Drain a parked viewwindow spawn: the doc a new window should view, left
+// on the requesting client's es by the viewwindow command. 0 = none.
+bool IdeSession::take_spawn(long &doc)
+{
+    long d = es_int(w, es, "spawnview", 0);
+    if ( d == 0 )
+	return false;
+    ui::set(w, es, "spawnview", 0);
+    doc = d;
+    return true;
+}
 
 // Full session startup: the world, the launch document, the data loads
 // (status format, theme, keybinding profile — all validated handle-free),
@@ -5561,51 +7780,8 @@ long IdeSession::open(const char *path0, bool ro)
     if ( doc == 0 )
 	return 0;
     es = ui::entity_by_name(w, "editor-state");
-    // resolve_profile_dir owns the search: source tree (beside this
-    // file, from any cwd — php::dirname splits both separators; '/'
-    // alone cost the first genuine-Win validation its keybindings),
-    // then the installed layouts anchored on the running binary (PK7).
-    var pdir;
-    resolve_profile_dir(pdir);
-    ui::set(w, es, "profile_dir", pdir.c_str());
-    load_status(w, es, "joe");	// the status FORMAT rides the profile
-    if ( !load_theme(w, es, "default") )
-	ui::set(w, es, "msg", "No theme 'default' — colours off.");
-    load_menu(w, es, "default");	// the menu/command data (optional, S1)
-    // The profile loads LAST of the three data loads: a broken layout
-    // fails the theme too, and its message must not bury the rescue
-    // announcement — the status line has to SAY the fallback is active.
-    if ( !load_profile(w, es, "joe") )
-    {
-	// No profile file = NO bindings at all (they are pure data), so a
-	// silent continue traps the session in a bindingless editor (the
-	// first genuine-Win validation hit exactly this). The baked-in
-	// rescue set keeps the session usable — only ITS failure is fatal.
-	if ( !bind_rescue_keys(w, es) )
-	{
-	    var dir;
-	    ui::get(dir, w, es, "profile_dir");
-	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
-	    return -1;
-	}
-    }
-    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
-    // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
-    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
-    push_buffer_row(w, es, doc, p.c_str());
-    ui::set(w, es, "bufidx", 0);
-    // The project (owner rulings 2026-08-31): the launch file anchors the
-    // implicit single-file project; a <base>.prj.json beside it IS the
-    // project and loads back (announced on the status line).
-    ui::set(w, es, "launchpath", p);
-    proj_startup(w, es, doc);
-    // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
-    // blocked the first render for seconds on a real C++ file): colour
-    // rides the first paint from the LEXICAL spans; the full parse runs
-    // as the client loop's pending step AFTER a render — the ONE
-    // mechanism startup and buffer switches share (parse_pending).
-    lex_first_spans(w, es, doc);
-    ui::set(w, es, "pending_parse", 1);
+    if ( !init_view_es(w, es, doc, p.c_str()) )
+	return -1;		// the profile AND rescue bindings both failed
     return doc;
 }
 
@@ -5821,20 +7997,105 @@ void IdeSession::close()
 
 // ---- the vi arm (modes-as-scopes — the session owns mode routing) -------
 
-// Run a named action n times through the ONE dispatcher (apply_ide_event
-// recursion — kind "action" never re-enters the vi arm, so motions, the
-// edit keys, and the IDE verbs all serve the grammar without a second
-// dispatch). False = the session ended (a quit propagates).
+// ONE command by CODE through the ONE dispatcher: the action event a
+// code-bound chord produces, without the chord (kind "action" never
+// re-enters the vi arm, so motions, the edit keys, and the IDE verbs all
+// serve a code-speaking client without a second dispatch). The vi grammar
+// (vi_exec), the `-c` one-shot and the api seat post through here. False =
+// the session ended (a quit propagates).
+bool IdeSession::post(long doc, long code)
+{
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "", "action_code": code };
+    return apply_ide_event(doc, e);
+}
+
+// Run a named action n times through the ONE dispatcher.
 bool IdeSession::vi_exec(long doc, long code, long n)
 {
     for ( long i = 0; i < n; i = i + 1 )
-    {
-	var e = { "event": "action", "event_code": ui::event_kind::action,
-		  "action": "", "action_code": code };
-	if ( !apply_ide_event(doc, e) )
+	if ( !post(doc, code) )
 	    return false;
-    }
     return true;
+}
+
+// A command WITH ITS ARGUMENT — the shape every non-interactive input
+// boundary posts (client-server design §2.3b: the `-c` command line now;
+// the `:` line's `:find x` and the api seat's {"cmd", "args"} later). The
+// argument is what the PROMPT the command opens would have been typed:
+// `find add` = the find prompt, "add", commit; `gotoline 7`; `colon w`; a
+// confirm reads it as its answer (`quit y`). The commit posts the @prompt
+// scope's pcommit by CODE (scope_action_named: a code reaches exactly what
+// a key can), so a profile's spelling of the commit key is not this
+// method's concern. False = refused: an argument for a command that opened
+// no prompt (the message says so — the caller's exit status 2). `cont` is
+// the continue / quit verdict the dispatcher returned.
+bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
+{
+    var a = arg;			// ring discipline: own the text first
+    cont = post(doc, code);
+    if ( !cont || strlen(a.c_str()) == 0 )
+	return true;
+    if ( !prompt_active(w, es) )
+    {
+	var nm;
+	cmd_name(nm, code);
+	ui::set(w, es, "msg", format("'{}' takes no argument.", nm));
+	return false;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": a };
+    cont = apply_ide_event(doc, t);
+    if ( !cont || !prompt_active(w, es) )
+	return true;			// a confirm answered (y / n)
+    cont = post(doc, cmdPCOMMIT);
+    return true;
+}
+
+// ONE line of the ex / edlin client (ui::LINE, client-server design §2.3b,
+// slice V2.5): the classifier the line frontend's raw-line `text` event
+// feeds (run_line). The engine frontend stays dumb — the tool's line
+// grammar lives HERE, where the registry and the colon interpreter do:
+//   - a ':' line is a colon command — the rest is the ex command, posted
+//     through the ONE argument primitive (post cmdCOLON to open the colon
+//     line, feed the text, commit by code), the SAME path the -c one-shot
+//     and the TUI ':' prompt reach colon_command by. A bare ':' runs
+//     nothing. Every colon verb (w q wq x e r, :N goto, the view* verbs,
+//     !shell) is reached with no new command language (owner: "the vi ':'
+//     mode without the TUI part").
+//   - any other line is TEXT: inserted verbatim (its bytes preserved — no
+//     trim, so indentation survives), then a newline, so successive lines
+//     stack. A read-only view refuses, as it does for a typed key.
+// cont carries the continue / quit verdict (a committed :q ends the loop).
+bool IdeSession::line_input(long doc, const char *line, bool &cont)
+{
+    cont = true;
+    var raw = line;			// ring discipline: own the text first
+    long n = strlen(raw.c_str());
+    if ( n > 0 && raw.c_str()[0] == ':' )
+    {
+	var rest = php::trim(perl::substr(raw, 1, n - 1));
+	if ( strlen(rest.c_str()) == 0 )
+	    return true;		// a bare ':' — nothing to run
+	command(doc, cmdCOLON, rest.c_str(), cont);
+	return cont;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": raw };
+    cont = apply_ide_event(doc, t);
+    if ( cont )
+	cont = post(doc, cmdENTER);
+    return cont;
+}
+
+// ERROR rows in the problems projection after the last command — the
+// one-shot's verdict (`madcide f -c check` exits 1 on a broken file);
+// warnings never count, exactly as they never bar a build.
+long IdeSession::error_count()
+{
+    var diags;
+    ui::get(diags, w, es, "diags");
+    if ( diags.is_null() )
+	return 0;
+    return diag_error_count(diags);
 }
 
 // o / O (and cc's emptied line): break the line at the caret, land on

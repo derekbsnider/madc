@@ -349,8 +349,9 @@ namespace ui {
     // ui::GUI < ui::GFX2D < ui::GFX3D, ordered by requirement) and the target that
     // declares that level serves it: ui::TUI is the grid frontend; a
     // script-hosted target registers with its level (ui::WEB — <ns_ui_web>).
-    // 0 + stderr reason when no target serves the level here (ui::NONE and
-    // ui::LINE have no frontend yet). level_of(t) reports the opened target's
+    // 0 + stderr reason when no target serves the level here (ui::NONE has
+    // none by design — a one-shot or an api seat drives the session with no
+    // surface; ui::LINE's arrives with slice V2.5). level_of(t) reports the opened target's
     // level (-1 for a bad handle) — "a real terminal exists" is
     // level_of(t) <= ui::TUI, the ONE per-target fact a client loop needs.
     // open(name) stays for name-addressed opening (a test's fake host).
@@ -363,6 +364,11 @@ namespace ui {
     bool    bind_keys(int64_t t, value &table);
     bool    validate_keys(value &table);
     bool    event(value &out, int64_t t, int64_t w);
+    // The multi-client blocking decision (V3b): the next event from ANY of
+    // `targets` (an array of ui handles), tagged with out["target"] = the
+    // handle it came from. A sole target is byte-identical to event();
+    // false when every live target has ended.
+    bool    event_any(value &out, value &targets, int64_t w);
     bool    suspend(int64_t t);
     bool    resume(int64_t t);
     void    refresh(int64_t t);
@@ -377,6 +383,15 @@ namespace ui {
     // terminal's pty when the user types at it. False (out empty) when the
     // name is not a key spelling. A text run is its own bytes already.
     bool    key_bytes(value &out, const char *name);
+    // The LAYOUT vocabulary's boundary converters (client-server arc V2,
+    // <bits/ui_enums> ui::split / ui::side): a `.layout` profile's word ->
+    // its code (none for a word that is not one — the loader's refusal),
+    // and a code -> its spelling (a probe, a message). The engine owns the
+    // spellings (madcdis/ui_events.h), so a word is typed in ONE place.
+    int64_t split_code(const char *name);
+    int64_t side_code(const char *name);
+    const char *split_name(int64_t code);
+    const char *side_name(int64_t code);
 
     // ---- script-hosted targets (the web target is one; a test fake is
     // another). A host is a table of C function pointers a madc fragment

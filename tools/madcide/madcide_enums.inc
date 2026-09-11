@@ -34,6 +34,8 @@ enum ide_cmd : unsigned short
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL, cmdSHRINKW,
     cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
+    cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
+    cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
     cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
     // ---- motions: the action name IS the key spelling (edit_key's keys) ----
     cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
@@ -47,7 +49,7 @@ enum ide_cmd : unsigned short
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
     // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
     //      the ^T Options rows, the ^B palette's rows ----
-    cmdGOTO, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
+    cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
     cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
     cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
     cmdBUILDROW				// a Build MENU row "build-<n>": the
@@ -109,6 +111,14 @@ void cmd_table(var &t)
     rows[] = { "name": "top", "code": cmdTOP };
     rows[] = { "name": "undo", "code": cmdUNDO };
     rows[] = { "name": "view", "code": cmdVIEW };
+    rows[] = { "name": "viewclose", "code": cmdVIEWCLOSE };
+    rows[] = { "name": "viewdock", "code": cmdVIEWDOCK };
+    rows[] = { "name": "viewfocus", "code": cmdVIEWFOCUS };
+    rows[] = { "name": "viewopen", "code": cmdVIEWOPEN };
+    rows[] = { "name": "viewsize", "code": cmdVIEWSIZE };
+    rows[] = { "name": "viewsplit", "code": cmdVIEWSPLIT };
+    rows[] = { "name": "viewsync", "code": cmdVIEWSYNC };
+    rows[] = { "name": "viewwindow", "code": cmdVIEWWINDOW };
     rows[] = { "name": "vimode", "code": cmdVIMODE };
     rows[] = { "name": "wordleft", "code": cmdWORDLEFT };
     rows[] = { "name": "wordright", "code": cmdWORDRIGHT };
@@ -147,6 +157,7 @@ void cmd_table(var &t)
     rows[] = { "name": "viopenbelow", "code": cmdVIOPENBELOW };
     rows[] = { "name": "viopenabove", "code": cmdVIOPENABOVE };
     rows[] = { "name": "goto", "code": cmdGOTO };
+    rows[] = { "name": "gotodef", "code": cmdGOTODEF };
     rows[] = { "name": "w", "code": cmdW };
     rows[] = { "name": "f", "code": cmdF };
     rows[] = { "name": "q", "code": cmdQ };
@@ -240,25 +251,26 @@ ui::key motion_key_of(long code)
 }
 
 // ---- the IDE's STATE discriminators (V0.5d) -------------------------------
-// The bag's slots — pane, paneltab, pmode, vimode — and the kinds that ride
+// The bag's slots — pane, pmode, vimode — and the kinds that ride
 // a request, a row or the manifest are INTEGERS (es_int reads them, a switch
 // dispatches them); a NAME appears only where text leaves the program: a
 // probe's print, a message, the page's region hook, the host's dialog mode,
 // the manifest file — through the converters here, never a literal at the
 // site. Prefixed unscoped enums with a fixed base (the owner's spelling).
 
-// The side pane a terminal shows (paneNONE = none up).
+// The POPUP pane a client shows (paneNONE = none up): the pick lists — help,
+// options, the build palette, the modes palette, the project window. The
+// tool Views (problems, outline, output, terminal) are not panes here: they
+// live in the layout's chrome panes (V2, design §2.2) and show through
+// show_view.
 enum ide_pane : unsigned char
 {
-    paneNONE = 0, paneDIAGS, paneOUTLINE, paneHELP, paneOPTIONS, paneBUILD,
-    paneMODES, panePROJECT
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT
 };
 const char *pane_name(long p)
 {
     switch ( p )
     {
-	case paneDIAGS: return "diags";
-	case paneOUTLINE: return "outline";
 	case paneHELP: return "help";
 	case paneOPTIONS: return "options";
 	case paneBUILD: return "build";
@@ -266,18 +278,6 @@ const char *pane_name(long p)
 	case panePROJECT: return "project";
     }
     return "";
-}
-
-// The window's bottom-panel tab (tabPROBLEMS = the default when unset).
-enum ide_tab : unsigned char { tabPROBLEMS = 0, tabOUTPUT, tabTERMINAL };
-const char *tab_name(long t)
-{
-    switch ( t )
-    {
-	case tabOUTPUT: return "output";
-	case tabTERMINAL: return "terminal";
-    }
-    return "problems";
 }
 
 // The prompt that is up (pmNONE = none): what enter's answer means.
@@ -371,15 +371,12 @@ long bmode_of(var &m)
     return m == "terminal" ? bmTERMINAL : bmCAPTURE;
 }
 
-// Where a window lays a pane: a floating popup or a docked region (the
-// page's region hook spells the name — the workbench grid's sidebar and
-// bottom panel). The IDE's default layout policy for its OWN panes, as
-// data — the interim default until V2's .layout profiles make placement
-// the user's (owner 2026-09-09: layout flexibility within the UI). The
-// diagnostics pane docks in the bottom PANEL (owner: its original home is
-// the panel's Problems tab); a former name table keyed it "diagnostics"
-// while the pane spells "diags", so it never docked at all — fixed here.
-enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL };
+// A layout SLOT (V2, design §2.2): where a pane sits — a popup (a pick list
+// floating over the workbench), the sidebar or the panel (the fixed-slot
+// chrome, docked by the client's layout), or the editor region. Placement is
+// the layout's data (profiles/default.layout); slot_name is its wire word
+// (the page docks by `region`).
+enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
 const char *slot_name(long s)
 {
     switch ( s )
@@ -387,20 +384,153 @@ const char *slot_name(long s)
 	case slotPOPUP: return "popup";
 	case slotSIDEBAR: return "sidebar";
 	case slotPANEL: return "panel";
+	case slotEDITOR: return "editor";
     }
     return "";
 }
-long pane_slot_of(long p)
+// The INPUT converter for a `.layout` line's slot word (V2): the chrome
+// slots and the editor region; slotNONE = not a slot word (the refusal).
+long slot_of(var &name)
 {
-    switch ( p )
-    {
-	case paneDIAGS:
-	    return slotPANEL;
-	case paneOUTLINE:
-	    return slotSIDEBAR;
-	case paneBUILD: case panePROJECT: case paneMODES: case paneHELP:
-	case paneOPTIONS:
-	    return slotPOPUP;
-    }
+    if ( name.is_null() )
+	return slotNONE;
+    for ( long k = slotPOPUP; k <= slotEDITOR; k = k + 1 )
+	if ( name == slot_name(k) )
+	    return k;
     return slotNONE;
 }
+
+// ---- containers (client-server arc V2; design doc §2.2) -------------------
+// A layout node's KIND: a pane (a region holding Views, in `tabs` or `stack`
+// mode) or a split (children side by side or one above the other — the
+// direction is the engine's ui::split, <bits/ui_enums>, a chrome pane's side
+// its ui::side). The layout file's words convert once at load (parse_layout,
+// madcide_core.inc); a misspelling refuses the profile with its line.
+enum ide_container : unsigned char { ctNONE = 0, ctPANE, ctSPLIT };
+const char *container_name(long c)
+{
+    switch ( c )
+    {
+	case ctPANE: return "pane";
+	case ctSPLIT: return "split";
+    }
+    return "";
+}
+long container_of(var &name)
+{
+    if ( name.is_null() )
+	return ctNONE;
+    for ( long k = ctPANE; k <= ctSPLIT; k = k + 1 )
+	if ( name == container_name(k) )
+	    return k;
+    return ctNONE;
+}
+
+// A pane's stacking MODE: `tabs` shows one View at a time behind a strip;
+// `stack` shows every View one above the other, each with its header (the
+// S5 window stack's shape).
+enum ide_pmode : unsigned char { lmNONE = 0, lmTABS, lmSTACK };
+const char *pmode_name(long m)
+{
+    switch ( m )
+    {
+	case lmTABS: return "tabs";
+	case lmSTACK: return "stack";
+    }
+    return "";
+}
+long pmode_of(var &name)
+{
+    if ( name.is_null() )
+	return lmNONE;
+    for ( long k = lmTABS; k <= lmSTACK; k = k + 1 )
+	if ( name == pmode_name(k) )
+	    return k;
+    return lmNONE;
+}
+
+// ---- Views (client-server arc V1; design doc §2.1) -------------------------
+// A View's projection KIND — what a View shows. A code View's LANGUAGE is the
+// engine's file-kind vocabulary (<bits/file_kinds>, madc::fk*; its names are
+// the engine's, madc::file_kind_name / file_kind_of); the two fields are the
+// representation. These names are OUTPUT (a probe's print, a hint a client
+// shows) and, from V2, the layout profile's INPUT words (`views source
+// problems`) — view_of converts once at load; a misspelling is viewNONE, the
+// caller's refusal, never a dead View.
+enum ide_view : unsigned char
+{
+    viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
+    viewPROJECT, viewOUTLINE, viewHELP
+};
+const char *view_name(long k)
+{
+    switch ( k )
+    {
+	case viewSOURCE: return "source";
+	case viewCODE: return "code";
+	case viewPROBLEMS: return "problems";
+	case viewOUTPUT: return "output";
+	case viewTERMINAL: return "terminal";
+	case viewPROJECT: return "project";
+	case viewOUTLINE: return "outline";
+	case viewHELP: return "help";
+    }
+    return "";
+}
+long view_of(var &name)
+{
+    if ( name.is_null() )
+	return viewNONE;
+    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
+	if ( name == view_name(k) )
+	    return k;
+    return viewNONE;
+}
+
+// The registry command that SHOWS a tool View (V2): what a chrome pane's tab
+// posts when clicked — the same command the profiles bind. cmdNONE = a kind
+// no command shows (a source View: the buffer ring's own commands).
+long view_show_cmd(long kind)
+{
+    switch ( kind )
+    {
+	case viewPROBLEMS: return cmdPROBLEMS;
+	case viewOUTPUT: return cmdOUTPUT;
+	case viewTERMINAL: return cmdTERMINAL;
+	case viewOUTLINE: return cmdOUTLINE;
+	case viewPROJECT: return cmdPROJECT;
+	case viewHELP: return cmdHELP;
+    }
+    return cmdNONE;
+}
+
+// A rendered View's GENERATOR — the compiler that produced its text: genNONE
+// for stored text, genMADC for every render this compiler makes, gcc / clang
+// for the external-assembly Views (V7).
+enum ide_gen : unsigned char { genNONE = 0, genMADC, genGCC, genCLANG };
+const char *gen_name(long g)
+{
+    switch ( g )
+    {
+	case genMADC: return "madc";
+	case genGCC: return "gcc";
+	case genCLANG: return "clang";
+    }
+    return "";
+}
+
+// ---- the CLIENT vocabularies (client-server design §2.3, groundwork
+// invariant #1) ---------------------------------------------------------
+// A client of the session is transport/level/capability-GENERAL: a local
+// window, a WebSocket peer and an api / LSP editor differ only in their
+// `transport` and capability set; the `tier` bounds what the client may
+// do. Both are ENUMS (owner law, "enums not strings") — a wire handshake's
+// text converts to a code ONCE at the connection boundary, and an unknown
+// spelling is a refusal there, never a silent mis-route. Dispatch switches
+// on the code.
+enum ide_transport : unsigned char { trLOCAL = 0, trWS, trAPI };
+// The permission ladder (the gateway vision's tiers, born low for a remote
+// peer — V6): an OBSERVER watches, an EDITOR may mutate, an OWNER holds the
+// session. A local window is the OWNER; a fresh remote peer starts OBSERVER
+// and is raised by the owner.
+enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER };
