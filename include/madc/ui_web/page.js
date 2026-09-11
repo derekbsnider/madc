@@ -14,10 +14,16 @@
   var visited = new Set();          // keys seen since the last "root" op
   var placed = new Map();           // parent element -> children placed this cycle
   var lastRows = 0, lastCols = 0;
+  var ws = null;                    // the ws transport (V6b), when served over HTTP
 
   function post(obj) {
+    var s = JSON.stringify(obj);
+    if (ws && ws.readyState === 1) {
+      try { ws.send(s); } catch (e) { /* the socket dropped */ }
+      return;
+    }
     if (typeof window.madc === 'function') {
-      try { window.madc(JSON.stringify(obj)); } catch (e) { /* the host is gone */ }
+      try { window.madc(s); } catch (e) { /* the host is gone */ }
     }
   }
 
@@ -997,6 +1003,32 @@
   }
   if (typeof ResizeObserver === 'function') new ResizeObserver(reportSize).observe(root);
   window.addEventListener('resize', reportSize);
+
+  // ---- ws transport (client-server V6b) ----------------------------------
+  // Loaded over HTTP (no webview `window.madc` bind), open a WebSocket back to
+  // the serving madcide: the server sends the SAME DOM-op strings the webview
+  // host evals ("madcApply([...])") and receives the page's event JSON. On
+  // connect, re-report the real viewport so the server composes at our size.
+  function wsConnect() {
+    if (typeof window.madc === 'function') return;   // a webview host: use the bind
+    if (typeof WebSocket === 'undefined') return;
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    try { ws = new WebSocket(proto + location.host + '/'); } catch (e) { return; }
+    ws.onmessage = function (e) {
+      var d = e.data;
+      // The server ships the webview host's eval string, "madcApply([...])":
+      // apply its ops array as data (no eval — the wrapper is a fixed shape).
+      if (typeof d === 'string' && d.slice(0, 10) === 'madcApply(' &&
+          d.charAt(d.length - 1) === ')') {
+        try { window.madcApply(JSON.parse(d.slice(10, -1))); } catch (err) { /* torn op */ }
+      }
+    };
+    ws.onopen = function () {
+      lastRows = 0; lastCols = 0;                    // force a resize at true size
+      reportSize();
+    };
+  }
+  wsConnect();
 
   // ---- the test seam: the rendered text as one event -------------------
   // One line per text-bearing node, in tree order: a bar as "label text",

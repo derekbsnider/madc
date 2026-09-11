@@ -147,6 +147,7 @@ bool read_http_headers(ChannelState *s, std::string &headers,
 		       std::string &leftover)
 {
 	std::string buf;
+	buf.swap(s->pending);		// consume anything already peeked/buffered
 	for ( ;; )
 	{
 		std::size_t end = buf.find("\r\n\r\n");
@@ -422,6 +423,68 @@ bool channel::connect_websocket(const char *resource)
 	s->wsc = ws.get();
 	s->channel = std::move(ws);
 	return true;
+}
+
+// One accepted connection, classified and served (V6b-3): an api client opens
+// with a JSON line (return 2, `pending` left for the reader); a browser opens
+// with an HTTP request — a WebSocket upgrade becomes a ws message channel
+// (return 1), any other GET is answered with `page` as an HTTP 200 (return 0,
+// close). -1 on error. One --serve port thus carries api + ws + the page.
+int64_t channel::serve_web(const char *page)
+{
+	ChannelState *s = state(impl_);
+	if ( s->wsc )
+		return 1;		// already a WebSocket channel
+	if ( !s->channel )
+	{
+		set_state_error(s, "serve_web on a channel with no endpoint");
+		return -1;
+	}
+	// Peek the first byte — an api JSON line ('{'/'[') vs an HTTP request
+	// method — leaving it in `pending` for the api reader.
+	if ( s->pending.empty() )
+	{
+		if ( !fill_pending(s) )
+			return -1;
+		if ( s->pending.empty() )
+			return -1;	// EOF before any byte
+	}
+	char c0 = s->pending[0];
+	if ( c0 == '{' || c0 == '[' )
+		return 2;		// an api JSON client
+
+	std::string request, leftover;
+	if ( !read_http_headers(s, request, leftover) )
+		return -1;
+	std::string response, reason;
+	if ( websocket_server_handshake(request, response, reason) )
+	{
+		if ( !write_all(*s->channel, response.data(), response.size(),
+				&s->last_error) )
+		{
+			s->failed = true;
+			return -1;
+		}
+		std::unique_ptr<WebSocketDataChannel> ws(new WebSocketDataChannel(
+			std::move(s->channel),
+			WebSocketDataChannel::Role::server, leftover));
+		s->wsc = ws.get();
+		s->channel = std::move(ws);
+		return 1;		// a WebSocket window
+	}
+	// A plain GET (or any non-upgrade request): serve the page.
+	std::string body = page ? page : "";
+	std::string resp =
+		"HTTP/1.1 200 OK\r\n"
+		"Content-Type: text/html; charset=utf-8\r\n"
+		"Content-Length: " + std::to_string(body.size()) + "\r\n"
+		"Connection: close\r\n\r\n" + body;
+	if ( !write_all(*s->channel, resp.data(), resp.size(), &s->last_error) )
+	{
+		s->failed = true;
+		return -1;
+	}
+	return 0;			// the page was served; close the connection
 }
 
 int64_t channel::read(void *buffer, int64_t capacity)

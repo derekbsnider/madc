@@ -469,6 +469,13 @@ namespace madc {
 	bool upgrade_websocket();
 	bool connect_websocket(const char *resource);
 
+	// Serve facet (V6b-3): classify + route one accepted connection so a
+	// single --serve port carries all three seats. 2 = an api client (a
+	// JSON line, left buffered for readline); 1 = a WebSocket upgrade (the
+	// channel is now a message channel — run the ws window); 0 = a
+	// non-upgrade HTTP GET answered with `page` (close it); -1 = error.
+	int64_t serve_web(const char *page);
+
 	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;
 	// write() sends the value's text view.

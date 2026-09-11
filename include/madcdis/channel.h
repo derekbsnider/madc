@@ -83,6 +83,14 @@ public:
 	bool upgrade_websocket();
 	bool connect_websocket(const char *resource);
 
+	// Serve facet (V6b-3): classify one accepted connection and route it so
+	// a single --serve port carries all three seats. Returns 2 for an api
+	// client (a JSON line — the bytes stay buffered for readline), 1 for a
+	// WebSocket upgrade (this channel is now a message channel — run the ws
+	// window on it), 0 when a non-upgrade HTTP request was answered with
+	// `page` as an HTTP 200 (close the connection), -1 on error.
+	int64_t serve_web(const char *page);
+
 	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);

@@ -46,6 +46,8 @@
 #include "madcide_once.inc"
 #include "madcide_line.inc"
 #include "madcide_api.inc"
+#include "madcide_ws.inc"
+#include "madcide_serve.inc"
 
 int main(int argc, char **argv)
 {
@@ -108,8 +110,11 @@ int main(int argc, char **argv)
     }
     if ( serve != NULL )
     {
-	// The headless api server (V6a): no window, one JSON-line seat per
-	// accepted client, the SAME session and registry the windows drive.
+	// The headless server (V6a api + V6b ws/http): no local window, one
+	// port carrying api JSON-line clients, ws WINDOW clients (a browser's
+	// page.js over the socket) and plain HTTP GETs for the page — the SAME
+	// session and registry the local windows drive (run_serve classifies
+	// each connection with serve_web).
 	return run_serve(argv[1], ro, serve);
     }
     if ( lvl == ui::LINE )

@@ -209,73 +209,25 @@ void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_
 // so a client's command runs to completion against the shared session between
 // yields (the single-thread task contract — no lock, the thread-safety law's
 // stated cooperative contract).
+// Run the api seat over an ALREADY-ADOPTED channel: share its write side for
+// the hub fan-out (D2), grant its tier (V6a tiers: first connection owns the
+// session, the rest observe until clienttier promotes them), serve, unshare.
+// One owner of the seat setup — both the plain api serve task and the unified
+// serve (madcide_serve.inc, where serve_web detects an api client) drive a
+// connection through here.
+void serve_api_on(IdeSession &S, long doc, madc::channel &client)
+{
+    long id = client.share();
+    madc::conn_set_cookie(id, grant_tier(id));
+    serve_api_client(S, doc, client, id);
+    client.unshare(id);
+}
+
 void serve_client_task(IdeSession *S, long doc, long conn)
 {
     madc::channel client;
     if ( !client.adopt(conn) )
 	return;			// a spent handle — never on this path
-    // Share this client's WRITE side so a peer's task can push change events
-    // down it (the hub fan-out, D2); unshare before close so no broadcast
-    // ever reaches a torn-down channel.
-    long id = client.share();
-    // Grant its permission tier (V6a tiers): the first connection owns the
-    // session, the rest observe until an owner promotes them (clienttier).
-    madc::conn_set_cookie(id, grant_tier(id));
-    serve_api_client(*S, doc, client, id);
-    client.unshare(id);
+    serve_api_on(*S, doc, client);
     client.close();
-}
-
-// The trAPI SERVER: open the session headless (no window), bind a listener,
-// and serve every accepted client CONCURRENTLY — each on its own cooperative
-// task parked on the reactor-backed channel.readline (design §2.7: cooperative
-// tasks, no thread). `addr` is the listen authority (host:port; :0 asks the OS
-// for an ephemeral port, which the startup line reports). Returns 1 only when
-// the file or the listener could not open (the reason on stderr); the serve
-// loop itself runs until the listener dies (the process is stopped).
-long run_serve(const char *path, bool ro, const char *addr)
-{
-    IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
-    if ( doc <= 0 )
-	return 1;			// -1 already reported on stderr
-    S.terminal(false);		// headless: no interactive terminal
-
-    var uri = format("listen://{}", addr);
-    madc::channel listener(uri.c_str());
-    if ( !listener.ok() )
-    {
-	println(stderr, "madcide: cannot serve on {}: {}",
-		addr, listener.last_error());
-	S.close();
-	return 1;
-    }
-    println(stderr, "madcide: serving {} on {} (api)",
-	    path, listener.local_endpoint());
-
-    // The accept loop parks on the listener between connections, so the
-    // scheduler runs the parked client tasks meanwhile; `scope` joins every
-    // client task before S tears down — no serve task may touch the session
-    // after run_serve returns.
-    scope
-    {
-	bool serving = true;
-	while ( serving )
-	{
-	    if ( !listener.wait_readable() )
-		break;			// the listener died
-	    madc::channel client;
-	    long got = listener.accept(client);
-	    if ( got < 0 )
-		break;			// accept failed
-	    if ( got == 0 )
-		continue;			// spurious wake — nothing pending
-	    long conn = client.detach();	// hand the stream off as a long
-	    go serve_client_task(&S, doc, conn);
-	}
-    }
-    S.close();
-    return 0;
 }

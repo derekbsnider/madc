@@ -1,0 +1,88 @@
+// V6b-3: one `--serve` port carries all three seats. madc::channel::serve_web
+// classifies each accepted connection and the unified seat (madcide_serve.inc)
+// dispatches it: a plain HTTP GET gets the embedded page (so a browser loads
+// page.js and connects back), a WebSocket upgrade becomes a ws WINDOW, and a
+// JSON line is an api client. This drives serve_conn_task for one of each and
+// pins that all three route correctly over the same listener.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
+
+int main()
+{
+    const char *path = "madc_ide_serve_web.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    // --- Route 1: a plain HTTP GET is answered with the embedded page. ---
+    madc::channel http(uri.c_str());
+    madc::channel a1;
+    listener.wait_readable();
+    listener.accept(a1);
+    long c1 = a1.detach();
+    go serve_conn_task(&S, doc, c1);
+    http.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    var resp;
+    http.readall(resp);
+    println("http-200: {}", strstr(resp.c_str(), "HTTP/1.1 200") != 0 ? 1 : 0);
+    println("http-page: {}", strstr(resp.c_str(), "madcApply") != 0 ? 1 : 0);
+    http.close();
+    madc::task_drain();
+
+    // --- Route 2: a WebSocket upgrade becomes a ws WINDOW (edit round-trip). ---
+    madc::channel wsc(uri.c_str());
+    madc::channel a2;
+    listener.wait_readable();
+    listener.accept(a2);
+    long c2 = a2.detach();
+    go serve_conn_task(&S, doc, c2);
+    wsc.connect_websocket("/");
+    var ops1;
+    wsc.readline(ops1);
+    println("ws-domops: {}", strstr(ops1.c_str(), "madcApply") != 0 ? 1 : 0);
+    wsc.write("{\"kind\":\"text\",\"text\":\"Z\"}");
+    var ops2;
+    wsc.readline(ops2);
+    println("ws-round-trip: {}", (ops2 != ops1) ? 1 : 0);
+    wsc.close_write();
+    madc::task_drain();
+
+    // --- Route 3: a JSON line is an api client. ---
+    madc::channel api(uri.c_str());
+    madc::channel a3;
+    listener.wait_readable();
+    listener.accept(a3);
+    long c3 = a3.detach();
+    go serve_conn_task(&S, doc, c3);
+    api.write("{\"cmd\":\"check\",\"seq\":1}\n");
+    var reply;
+    api.readline(reply);
+    var rp;
+    js::parse(rp, reply);
+    println("api-reply-seq: {}", rp["seq"].as_integer());
+    api.close_write();
+    madc::task_drain();
+
+    api.close();
+    wsc.close();
+    listener.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

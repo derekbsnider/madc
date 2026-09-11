@@ -442,6 +442,10 @@ namespace ui {
     // registered host of that level. False + stderr: no name, no table,
     // no level (ui::NONE), or a name already taken.
     bool register_host(const char *target, level lvl, const ui_host_ops *ops);
+    // The engine's ONE embedded web page (page.js + page.css): a ws serve
+    // seat sends this to a browser over HTTP so page.js connects the socket
+    // back (V6b-3). The webview host loads the same HTML directly.
+    void page_html(value &out);
     // The host's ONE inbound door: the page's event object (JSON text —
     // {"kind":"key","key":"^k"} / {"kind":"text","text":"abc"} /
     // {"kind":"resize","rows":R,"cols":C} / {"kind":"snapshot","text":..} /
