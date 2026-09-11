@@ -33,7 +33,20 @@ enum class op_kind : unsigned char
 	accept,
 	read,
 	write,
-	close
+	close,
+	poll
+};
+
+// Readiness flags for submit_poll's `events` mask and the ready set a poll
+// completion reports in `result`. accept/read/write are the COMPLETION ops
+// (the reactor does the syscall); poll is the READINESS op — it fires when
+// the fd is ready and the CALLER does its own syscall (the taskio /
+// channel-read model). A hangup or error counts as `readable` so the
+// caller's read surfaces it (poll(2)'s POLLHUP/POLLERR contract).
+enum poll_flag : int
+{
+	readable = 1,
+	writable = 2
 };
 
 // The result of one submitted operation. `result` is >= 0 on success (bytes
@@ -67,6 +80,12 @@ public:
 	uint64_t submit_write(int fd, const void *buffer, std::size_t len,
 			      void *user);
 	uint64_t submit_close(int fd, void *user);
+	// The READINESS op: fire a completion when `fd` is ready for any of
+	// `events` (a poll_flag mask), performing NO syscall — the completion's
+	// `result` carries the ready poll_flag set (a hangup/error reports as
+	// `readable`). This is the primitive the cooperative scheduler's io-wait
+	// rides (the channel then does its own read()).
+	uint64_t submit_poll(int fd, int events, void *user);
 
 	// Consumer side (single thread). drain() moves up to `max` ready
 	// completions into `out` without blocking and returns the count.

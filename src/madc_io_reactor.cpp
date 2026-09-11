@@ -46,13 +46,26 @@ struct pending
 	int fd;
 	void *buf;	// read: destination; write: source (const, held as void*)
 	std::size_t len;
+	int events;	// poll op: the requested poll_flag mask (else unused)
 	void *user;
 };
 
-// accept + read wait for readability; write waits for writability.
-uint32_t epoll_events_for(op_kind k)
+// accept + read wait for readability; write for writability; a poll op waits
+// on the direction(s) its events mask names.
+uint32_t epoll_events_for(const pending &p)
 {
-	return (k == op_kind::write) ? (uint32_t)EPOLLOUT : (uint32_t)EPOLLIN;
+	if ( p.kind == op_kind::write )
+		return (uint32_t)EPOLLOUT;
+	if ( p.kind == op_kind::poll )
+	{
+		uint32_t mask = 0;
+		if ( p.events & readable )
+			mask |= (uint32_t)EPOLLIN;
+		if ( p.events & writable )
+			mask |= (uint32_t)EPOLLOUT;
+		return mask ? mask : (uint32_t)EPOLLIN;
+	}
+	return (uint32_t)EPOLLIN;	// accept, read
 }
 
 } // namespace
@@ -129,7 +142,7 @@ struct Reactor::impl
 		uint32_t mask = 0;
 		for ( std::deque<pending>::iterator p = it->second.begin();
 		      p != it->second.end(); ++p )
-			mask |= epoll_events_for(p->kind);
+			mask |= epoll_events_for(*p);
 		return mask;
 	}
 
@@ -151,14 +164,25 @@ struct Reactor::impl
 			::epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
 	}
 
-	void complete_op(pending &p)
+	void complete_op(pending &p, uint32_t revents)
 	{
 		completion c;
 		c.id = p.id;
 		c.kind = p.kind;
 		c.user = p.user;
 		int result;
-		if ( p.kind == op_kind::accept )
+		if ( p.kind == op_kind::poll )
+		{
+			// Readiness only — no syscall; report the ready set (a
+			// hangup/error is readable so the caller's read surfaces it).
+			int flags = 0;
+			if ( revents & (EPOLLIN | EPOLLHUP | EPOLLERR) )
+				flags |= readable;
+			if ( revents & (EPOLLOUT | EPOLLHUP | EPOLLERR) )
+				flags |= writable;
+			result = flags;
+		}
+		else if ( p.kind == op_kind::accept )
 		{
 #if defined(SOCK_CLOEXEC)
 			int a = ::accept4(p.fd, nullptr, nullptr, SOCK_CLOEXEC);
@@ -217,20 +241,27 @@ struct Reactor::impl
 			return;
 		std::deque<pending> &q = it->second;
 
-		bool readable = (revents & (EPOLLIN | EPOLLHUP | EPOLLERR)) != 0;
-		bool writable = (revents & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0;
+		bool fd_readable = (revents & (EPOLLIN | EPOLLHUP | EPOLLERR)) != 0;
+		bool fd_writable = (revents & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0;
 
 		// One op per readiness signal; level-triggered epoll re-reports if
 		// more remain, so we never starve a queued op.
 		for ( std::deque<pending>::iterator pi = q.begin(); pi != q.end();
 		      ++pi )
 		{
-			bool want_write = (pi->kind == op_kind::write);
-			if ( want_write ? !writable : !readable )
+			bool ready;
+			if ( pi->kind == op_kind::write )
+				ready = fd_writable;
+			else if ( pi->kind == op_kind::poll )
+				ready = ((pi->events & readable) && fd_readable)
+				     || ((pi->events & writable) && fd_writable);
+			else	// accept, read
+				ready = fd_readable;
+			if ( !ready )
 				continue;
 			pending p = *pi;
 			q.erase(pi);
-			complete_op(p);
+			complete_op(p, revents);
 			break;
 		}
 		if ( q.empty() )
@@ -327,6 +358,7 @@ uint64_t Reactor::submit_accept(int listen_fd, void *user)
 	p.fd = listen_fd;
 	p.buf = nullptr;
 	p.len = 0;
+	p.events = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -339,6 +371,7 @@ uint64_t Reactor::submit_read(int fd, void *buffer, std::size_t len, void *user)
 	p.fd = fd;
 	p.buf = buffer;
 	p.len = len;
+	p.events = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -352,6 +385,7 @@ uint64_t Reactor::submit_write(int fd, const void *buffer, std::size_t len,
 	p.fd = fd;
 	p.buf = const_cast<void *>(buffer);
 	p.len = len;
+	p.events = 0;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -364,6 +398,20 @@ uint64_t Reactor::submit_close(int fd, void *user)
 	p.fd = fd;
 	p.buf = nullptr;
 	p.len = 0;
+	p.events = 0;
+	p.user = user;
+	return _->enqueue(p);
+}
+
+uint64_t Reactor::submit_poll(int fd, int events, void *user)
+{
+	pending p;
+	p.id = _->next_id.fetch_add(1);
+	p.kind = op_kind::poll;
+	p.fd = fd;
+	p.buf = nullptr;
+	p.len = 0;
+	p.events = events;
 	p.user = user;
 	return _->enqueue(p);
 }
@@ -452,6 +500,11 @@ uint64_t Reactor::submit_write(int, const void *, std::size_t, void *)
 }
 
 uint64_t Reactor::submit_close(int, void *)
+{
+	return 0;
+}
+
+uint64_t Reactor::submit_poll(int, int, void *)
 {
 	return 0;
 }

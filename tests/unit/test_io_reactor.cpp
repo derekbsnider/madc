@@ -145,6 +145,53 @@ TEST_CASE("io reactor: accept, read, write, close completions over loopback")
 	// reactor's destructor stops + joins the I/O thread.
 }
 
+TEST_CASE("io reactor: a poll op signals readiness without consuming data")
+{
+	if ( !madc::io::Reactor::available() )
+		return;
+
+	madc::io::Reactor reactor;
+	uint16_t port = 0;
+	int listener = loopback_listener(port);
+	REQUIRE(listener >= 0);
+	reactor.submit_accept(listener, nullptr);
+	int client = dial(port);
+	REQUIRE(client >= 0);
+
+	madc::io::completion c;
+	REQUIRE(next_completion(reactor, c));
+	REQUIRE(kind_of(c.kind) == kind_of(madc::io::op_kind::accept));
+	int server = c.result;
+	REQUIRE(server >= 0);
+
+	// Poll for readability with nothing pending: it must NOT complete yet.
+	int tag = 0;
+	uint64_t poll_id = reactor.submit_poll(server, madc::io::readable, &tag);
+	madc::io::completion probe[4];
+	CHECK(reactor.wait(probe, 4, 100) == 0);
+
+	// The client sends; the poll fires readable and the bytes remain on the
+	// socket (the reactor performed no recv).
+	const char message[] = "ready?";
+	REQUIRE(::send(client, message, sizeof(message) - 1, 0)
+		== static_cast<ssize_t>(sizeof(message) - 1));
+	REQUIRE(next_completion(reactor, c));
+	CHECK(kind_of(c.kind) == kind_of(madc::io::op_kind::poll));
+	CHECK(c.id == poll_id);
+	CHECK(c.user == &tag);
+	CHECK((c.result & madc::io::readable) != 0);
+
+	// The caller does its OWN read — the data is intact.
+	char buffer[16] = {};
+	ssize_t got = ::recv(server, buffer, sizeof(buffer), 0);
+	REQUIRE(got == static_cast<ssize_t>(sizeof(message) - 1));
+	CHECK(std::string(buffer, got) == "ready?");
+
+	::close(client);
+	::close(server);
+	::close(listener);
+}
+
 TEST_CASE("io reactor: a read completion reports EOF as zero")
 {
 	if ( !madc::io::Reactor::available() )
