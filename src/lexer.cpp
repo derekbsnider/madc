@@ -1285,6 +1285,7 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
 	{"ui_web", "ns_ui_web"},
+	{"ui_ws", "ns_ui_ws"},
 	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
 	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
 	// wants the target that serves it — <ns_ui_web>, whose initializer
@@ -1386,6 +1387,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_madc",
 	"ns_ui",
 	"ns_ui_web",
+	"ns_ui_ws",
 	NULL
     };
 

@@ -1,0 +1,77 @@
+// V6b-2: the `ws` transport is a remote WINDOW. A scripted ws framer connects,
+// receives the composed tree as DOM ops (one "madcApply([...])" ws message per
+// render — the SAME payload the local webview host evals), sends a page event
+// up the socket, and the edit round-trips: the next render's DOM ops differ.
+// This proves the ws window seat end to end — the RFC6455 handshake over a
+// socket, DOM ops down / event JSON up through ui::post_event, apply, re-render
+// — with no browser, exactly the plan's V6b-2 gate.
+//
+// One cooperative task serves the client (the V6a serve model): it parks on
+// the ws readline, so the single thread never blocks. The client is `main`.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_ws.inc"
+
+// A DOM-ops message is the webview-shaped "madcApply([...])" the engine evals.
+long is_domops(var &s)
+{
+    return strstr(s.c_str(), "madcApply") != 0 ? 1 : 0;
+}
+
+int main()
+{
+    const char *path = "madc_ide_serve_ws.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    madc::channel cli(uri.c_str());
+    madc::channel t1;
+    listener.wait_readable();
+    listener.accept(t1);
+    long conn = t1.detach();
+    go serve_ws_task(&S, doc, conn);
+
+    // The handshake parks reading the 101, which lets the server task upgrade
+    // and produce its first render — the interleave the scheduler provides.
+    if ( !cli.connect_websocket("/") )
+    {
+	println("client-connect-fail: {}", cli.last_error());
+	return 1;
+    }
+    println("ws-handshake: ok");
+
+    // First render: the composed tree as DOM ops.
+    var ops1;
+    cli.readline(ops1);
+    println("render-1-domops: {}", is_domops(ops1));
+
+    // Send a page text event; the edit lands and the server re-renders.
+    cli.write("{\"kind\":\"text\",\"text\":\"Z\"}");
+    var ops2;
+    cli.readline(ops2);
+    println("render-2-domops: {}", is_domops(ops2));
+    println("edit-round-trip: {}", (ops2 != ops1) ? 1 : 0);
+
+    cli.close_write();			// a close frame ends the window loop
+    madc::task_drain();
+
+    cli.close();
+    listener.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

@@ -1,0 +1,91 @@
+// madc embedded <ns_ui_ws> — the WEB target over a BYTE CHANNEL (client-server
+// arc V6b): the same engine page.js and the same web_model, but the DOM ops go
+// down a madc::channel (an RFC6455 WebSocket channel) and the page's event JSON
+// comes back up it — instead of a platform webview. It registers ui target
+// "ws" at ui::WEB; a serve seat opens it BY NAME (ui::open("ws")), never by
+// level, so it never collides with the webview host that also serves ui::WEB.
+//
+// The channel is the SEAT'S: this host borrows it for the frontend's lifetime
+// and never closes it (the serve task that accepted + upgraded it owns that).
+// The engine seam is the same as the webview host's — register_host declares
+// the ops table; the page's events arrive through ui::post_event(ctx, json).
+//
+// THREAD CONTRACT: a host is confined to the cooperative scheduler thread that
+// opened it (the serve task). run()'s readline PARKS that task on the socket,
+// so other clients' tasks run while this one idles — no OS-thread block.
+
+namespace ui_ws {
+    // The host state the engine sees only as an opaque handle. `ch` is the
+    // upgraded ws channel (borrowed); `ctx` is the engine frontend that
+    // ui::post_event routes an inbound event to.
+    struct host {
+	madc::channel *ch;
+	void *ctx;
+    };
+
+    // The connection the NEXT open("ws") binds. The serve seat sets it with
+    // attach() immediately before ui::open("ws"); the cooperative scheduler
+    // never yields between those two calls (attach is a bare store, ui::open
+    // reaches open() with no park in between), so two seats can never race
+    // this single slot.
+    madc::channel *__pending = 0;
+
+    void attach(madc::channel *ch)
+    {
+	__pending = ch;
+    }
+
+    // open(title, page, ctx): bind the pending channel to a new frontend.
+    // `page` (the engine's HTML) is ignored — a ws client loaded it over HTTP
+    // before dialing the socket, so this host ships DOM ops, not the page.
+    void *open(const char *title, const char *page, void *ctx)
+    {
+	if ( !__pending )
+	{
+	    println(stderr, "ui_ws: open with no pending connection (attach first)");
+	    return 0;
+	}
+	host *h = (host *)malloc(sizeof(host));
+	if ( !h )
+	    return 0;
+	h->ch = __pending;
+	h->ctx = ctx;
+	__pending = 0;
+	return h;
+    }
+
+    // close(host): drop the host struct only — the channel is the seat's.
+    void close(void *hv)
+    {
+	host *h = (host *)hv;
+	free(h);
+    }
+
+    // eval(host, js): send the script text (the engine's "madcApply([...])")
+    // as ONE ws text frame. 0 = sent, 1 = the socket failed.
+    int64_t eval(void *hv, const char *js)
+    {
+	host *h = (host *)hv;
+	return h->ch->write(js) ? 0 : 1;
+    }
+
+    // run(host): the engine's ONE-event pump. Read one message off the socket
+    // (readline PARKS the serve task cooperatively) and post it as the page's
+    // event, then 0; a closed / failed channel is the window ending: 1.
+    int64_t run(void *hv)
+    {
+	host *h = (host *)hv;
+	var msg;
+	if ( !h->ch->readline(msg) )
+	    return 1;
+	ui::post_event(h->ctx, msg.c_str());
+	return 0;
+    }
+}
+
+// No menu / dialog / tick op: a ws window has no native menu bar or file
+// dialog, and no platform loop to bound (readline is the cooperative wait).
+static ui::ui_host_ops __ui_ws_ops = {
+    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0
+};
+static bool __ui_ws_registered = ui::register_host("ws", ui::WEB, &__ui_ws_ops);
