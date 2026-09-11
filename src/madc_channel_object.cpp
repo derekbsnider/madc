@@ -1,4 +1,5 @@
 #include "madcdis/channel.h"
+#include "madcdis/websocket_channel.h"
 #include "madc_datachannel_internal.h"
 #include "madc_task_io.h"
 #include "ns_common.h"
@@ -21,6 +22,11 @@ struct ChannelState
 	bool eof = false;
 	bool failed = false;
 	int exit_status = -1;	// kept past close(): the reaped child's status
+	// When set, the channel speaks RFC6455 messages (V6b): the framer owns
+	// the inner socket and IS `channel` above; this typed alias lets the
+	// message path call feed()/next_message()/encode_text() without a
+	// dynamic_cast per readline. Nulled with `channel` in close()/accept().
+	WebSocketDataChannel *wsc = nullptr;
 };
 
 ChannelState *state(void *impl)
@@ -133,6 +139,89 @@ bool fill_pending(ChannelState *s)
 	return true;
 }
 
+// Read HTTP headers off the current channel until the blank line, parking on
+// the socket between reads (the WebSocket handshake runs inside a serve task,
+// so it must not block the OS thread). `leftover` receives any bytes read past
+// the "\r\n\r\n" boundary — the first frame bytes of the message stream.
+bool read_http_headers(ChannelState *s, std::string &headers,
+		       std::string &leftover)
+{
+	std::string buf;
+	for ( ;; )
+	{
+		std::size_t end = buf.find("\r\n\r\n");
+		if ( end != std::string::npos )
+		{
+			headers = buf.substr(0, end + 4);
+			leftover = buf.substr(end + 4);
+			return true;
+		}
+		if ( buf.size() > 65536 )
+		{
+			set_state_error(s, "websocket handshake: header too large");
+			return false;
+		}
+		char chunk[4096];
+		std::size_t count = 0;
+		park_until_readable(s);
+		if ( !s->channel->read(chunk, sizeof(chunk), count, &s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		if ( count == 0 )
+		{
+			set_state_error(s, "websocket handshake: EOF before headers");
+			return false;
+		}
+		buf.append(chunk, count);
+	}
+}
+
+// One WebSocket message off a ws-upgraded channel (V6b): pull complete frames
+// from the decoder, pumping raw bytes (parking) when it needs more, and writing
+// back any control response (a pong, a close echo) the decoder produced. false
+// at a close frame or a socket EOF.
+bool ws_recv(ChannelState *s, std::string &out)
+{
+	out.clear();
+	if ( s->failed || s->eof )
+		return false;
+	for ( ;; )
+	{
+		bool eof = false;
+		std::string reply;
+		bool got = s->wsc->next_message(out, eof, reply);
+		if ( !reply.empty()
+		  && !s->wsc->write_raw(reply.data(), reply.size(), &s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		if ( got )
+			return true;
+		if ( eof )
+		{
+			s->eof = true;
+			return false;
+		}
+		char chunk[4096];
+		std::size_t count = 0;
+		park_until_readable(s);
+		if ( !s->wsc->read_raw(chunk, sizeof(chunk), count, &s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		if ( count == 0 )
+		{
+			s->eof = true;		// socket closed mid-stream
+			return false;
+		}
+		s->wsc->feed(chunk, count);
+	}
+}
+
 } // namespace
 
 channel::channel()
@@ -197,6 +286,7 @@ int64_t channel::accept(channel &client)
 	// (a fresh accept target is empty; a reused one is closed by the move).
 	ChannelState *cs = state(client.impl_);
 	cs->channel = std::move(accepted);
+	cs->wsc = nullptr;		// a fresh accepted byte stream, not ws yet
 	cs->pending.clear();
 	cs->eof = false;
 	cs->failed = false;
@@ -256,11 +346,95 @@ void channel::unshare(int64_t id)
 	g_shared.erase(id);
 }
 
+// WebSocket facet (V6b): upgrade an accepted byte channel to an RFC6455
+// message channel, SERVER role — read the HTTP upgrade request (parking, so a
+// serve task never blocks the thread), send the 101 accept, and wrap the inner
+// socket in the framer. After this readline() returns one text message and
+// write() sends one text frame. false (with last_error) on a request that is
+// not a WebSocket upgrade.
+bool channel::upgrade_websocket()
+{
+	ChannelState *s = state(impl_);
+	if ( s->wsc )
+		return true;		// already a WebSocket channel
+	if ( !s->channel )
+	{
+		set_state_error(s, "upgrade_websocket on a channel with no endpoint");
+		return false;
+	}
+	std::string headers, leftover;
+	if ( !read_http_headers(s, headers, leftover) )
+		return false;
+	std::string response, reason;
+	if ( !websocket_server_handshake(headers, response, reason) )
+	{
+		set_state_error(s, "upgrade_websocket: " + reason);
+		return false;
+	}
+	if ( !write_all(*s->channel, response.data(), response.size(),
+			&s->last_error) )
+	{
+		s->failed = true;
+		return false;
+	}
+	std::unique_ptr<WebSocketDataChannel> ws(new WebSocketDataChannel(
+		std::move(s->channel), WebSocketDataChannel::Role::server,
+		leftover));
+	s->wsc = ws.get();
+	s->channel = std::move(ws);
+	return true;
+}
+
+// The CLIENT role twin: send the upgrade request for `resource`, consume and
+// validate the server's 101, then speak masked frames. Makes a madc::channel a
+// WebSocket client of any RFC6455 server.
+bool channel::connect_websocket(const char *resource)
+{
+	ChannelState *s = state(impl_);
+	if ( s->wsc )
+		return true;
+	if ( !s->channel )
+	{
+		set_state_error(s, "connect_websocket on a channel with no endpoint");
+		return false;
+	}
+	std::string key;
+	std::string request = websocket_client_request(
+		resource ? resource : "/", std::string(), key);
+	if ( !write_all(*s->channel, request.data(), request.size(),
+			&s->last_error) )
+	{
+		s->failed = true;
+		return false;
+	}
+	std::string headers, leftover;
+	if ( !read_http_headers(s, headers, leftover) )
+		return false;
+	std::string reason;
+	if ( !websocket_client_validate(headers, key, reason) )
+	{
+		set_state_error(s, "connect_websocket: " + reason);
+		return false;
+	}
+	std::unique_ptr<WebSocketDataChannel> ws(new WebSocketDataChannel(
+		std::move(s->channel), WebSocketDataChannel::Role::client,
+		leftover));
+	s->wsc = ws.get();
+	s->channel = std::move(ws);
+	return true;
+}
+
 int64_t channel::read(void *buffer, int64_t capacity)
 {
 	ChannelState *s = state(impl_);
 	if ( !buffer || capacity <= 0 )
 		return 0;
+	if ( s->wsc )
+	{
+		set_state_error(s, "websocket channel is message-oriented;"
+				   " use readline()");
+		return -1;
+	}
 	if ( !s->pending.empty() )
 	{
 		std::size_t count = s->pending.size();
@@ -295,6 +469,8 @@ int64_t channel::read(void *buffer, int64_t capacity)
 bool channel::readline(std::string &out)
 {
 	ChannelState *s = state(impl_);
+	if ( s->wsc )
+		return ws_recv(s, out);		// one WebSocket message
 	out.clear();
 	if ( s->failed )
 		return false;
@@ -326,6 +502,12 @@ bool channel::readall(std::string &out)
 {
 	ChannelState *s = state(impl_);
 	out.clear();
+	if ( s->wsc )
+	{
+		set_state_error(s, "websocket channel is message-oriented;"
+				   " use readline()");
+		return false;
+	}
 	if ( s->failed )
 		return false;
 	while ( s->channel && !s->eof )
@@ -371,6 +553,18 @@ bool channel::write(const char *buffer, int64_t size)
 	}
 	if ( !buffer || size <= 0 )
 		return size <= 0;
+	if ( s->wsc )		// message channel: one text frame per write
+	{
+		std::string frame = s->wsc->encode_text(
+			buffer, static_cast<std::size_t>(size));
+		if ( !s->wsc->write_raw(frame.data(), frame.size(),
+					&s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		return true;
+	}
 	if ( !write_all(*s->channel, buffer, static_cast<std::size_t>(size),
 			&s->last_error) )
 	{
@@ -422,6 +616,7 @@ void channel::close()
 		s->channel->close();
 		s->exit_status = s->channel->exit_status();
 		s->channel.reset();
+		s->wsc = nullptr;	// the framer went with the channel
 	}
 }
 

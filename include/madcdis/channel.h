@@ -69,6 +69,20 @@ public:
 	int64_t share();
 	void unshare(int64_t id);
 
+	// WebSocket facet (V6b): upgrade an accepted (or connected) byte
+	// channel to an RFC6455 message channel. upgrade_websocket() is the
+	// SERVER role — it reads the HTTP upgrade request (parking, so a serve
+	// task never blocks the thread), sends the 101 accept, and puts this
+	// channel in message mode; connect_websocket(resource) is the CLIENT
+	// role — it sends the upgrade request for `resource` and consumes the
+	// 101. Both return false (with last_error) on a non-WebSocket / failed
+	// handshake. Afterwards the channel speaks MESSAGES: readline() returns
+	// one text message, write() sends one text frame, and read()/readall()
+	// refuse (message-oriented). Control frames (ping/pong/close) are
+	// handled internally; a close frame surfaces as readline() EOF.
+	bool upgrade_websocket();
+	bool connect_websocket(const char *resource);
+
 	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);

@@ -457,6 +457,18 @@ namespace madc {
 	int64_t share();
 	void unshare(int64_t id);
 
+	// WebSocket facet (V6b): upgrade an accepted (or connected) byte
+	// channel to an RFC6455 message channel. upgrade_websocket() is the
+	// SERVER role — read the HTTP upgrade request (parking), send the 101
+	// accept, enter message mode; connect_websocket(resource) is the
+	// CLIENT role — send the upgrade request for `resource`, consume the
+	// 101. Both return false (with last_error) on a non-WebSocket / failed
+	// handshake. Afterwards readline() returns one text message, write()
+	// sends one text frame, read()/readall() refuse; ping/pong/close are
+	// handled internally and a close surfaces as readline() EOF.
+	bool upgrade_websocket();
+	bool connect_websocket(const char *resource);
+
 	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;
 	// write() sends the value's text view.

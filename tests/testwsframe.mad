@@ -1,0 +1,84 @@
+// V6b slice 1: the RFC6455 WebSocket framer over a byte channel. A server task
+// upgrades an accepted connection (reads the HTTP upgrade, sends the 101, then
+// speaks frames); a client channel connect_websocket()s the same port and a
+// text message round-trips both ways. This exercises the whole engine slice on
+// the wire: the handshake (SHA-1 accept token) over a real socket, the masked
+// client frame / unmasked server frame, and the cooperative park — the server
+// task parks on the ws channel's readline (its poll handle forwards to the
+// inner socket) exactly as a plain socket does, so the single thread never
+// blocks. A clean close_write() sends a close frame that surfaces as EOF.
+
+void ws_server_task(long conn)
+{
+    madc::channel srv;
+    if ( !srv.adopt(conn) )
+    {
+	println("server-adopt-fail");
+	return;
+    }
+    if ( !srv.upgrade_websocket() )
+    {
+	println("server-upgrade-fail: {}", srv.last_error());
+	srv.close();
+	return;
+    }
+    var msg;
+    while ( srv.readline(msg) )		// one text message per iteration
+    {
+	var reply = format("echo:{}", msg);
+	srv.write(reply);		// one text frame back
+    }
+    srv.close();
+}
+
+int main()
+{
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    madc::channel cli(uri.c_str());
+    if ( !cli.ok() )
+    {
+	println("dial-fail: {}", cli.last_error());
+	return 1;
+    }
+
+    madc::channel t1;
+    listener.wait_readable();
+    listener.accept(t1);
+    long conn = t1.detach();
+    go ws_server_task(conn);		// upgrades + echoes; parks between frames
+
+    // The client handshake parks reading the 101, which lets the server task
+    // run its upgrade and reply — the interleave the cooperative scheduler
+    // provides with no explicit yield.
+    if ( !cli.connect_websocket("/") )
+    {
+	println("client-connect-fail: {}", cli.last_error());
+	return 1;
+    }
+    println("handshake: ok");
+
+    cli.write("hello");
+    var got1;
+    cli.readline(got1);
+    println("client-got: {}", got1);
+
+    cli.write("world");
+    var got2;
+    cli.readline(got2);
+    println("client-got: {}", got2);
+
+    cli.close_write();			// a close frame -> server readline EOFs
+    madc::task_drain();			// run the server task to completion
+
+    cli.close();
+    listener.close();
+    return 0;
+}
