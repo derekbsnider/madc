@@ -129,6 +129,40 @@ public:
 // dynamic_cast the mixin themselves.
 PollableDataChannel *pollable_surface(DataChannel *channel);
 
+// The outcome of one AcceptorDataChannel::accept(): a connection was accepted
+// (out holds it), none was pending on the non-blocking listener (park on
+// read_poll_handle() and retry), or the accept failed (err set).
+enum class AcceptResult
+{
+	accepted,
+	would_block,
+	error
+};
+
+// Optional extension for LISTENING channels: a bound endpoint that yields
+// accepted connections instead of carrying bytes itself. A listener is also a
+// PollableDataChannel — read_poll_handle() reads readable when a connection is
+// pending — so the cooperative scheduler parks on it and calls accept() with
+// no dedicated thread. Each accepted channel is an ordinary byte-stream
+// DataChannel over the accepted endpoint. read()/write() on the listener are a
+// category error: the bytes flow on the children.
+class AcceptorDataChannel
+{
+public:
+	virtual ~AcceptorDataChannel() {}
+
+	virtual AcceptResult accept(std::unique_ptr<DataChannel> &out,
+				    error *err = nullptr) = 0;
+	// The address the listener actually bound — host:port after an ephemeral
+	// :0 (what a `--serve :0` host reports back), or the socket path.
+	virtual std::string local_endpoint() const = 0;
+};
+
+// The one truthful-acceptor probe (pollable_surface's sibling): the interface
+// present on the channel. Returns nullptr otherwise — consumers never
+// dynamic_cast the mixin themselves.
+AcceptorDataChannel *acceptor_surface(DataChannel *channel);
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err = nullptr);
 // Pump source to destination until EOF, flushing at the end. The counted

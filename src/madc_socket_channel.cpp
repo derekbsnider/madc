@@ -11,6 +11,7 @@
 #include <afunix.h>	// AF_UNIX sockaddr_un (Windows 10 1803+)
 #include <limits.h>
 #else
+#include <fcntl.h>	// fcntl/O_NONBLOCK — the listener's non-blocking accept
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -87,6 +88,37 @@ void socket_shutdown(int fd, bool read_side)
 #else
 	::shutdown(fd, read_side ? SHUT_RD : SHUT_WR);
 #endif
+}
+
+// A listener accepts without blocking so the cooperative scheduler (not a
+// thread) drives it: readable on the poll handle == a connection is pending.
+void set_socket_nonblocking(int fd)
+{
+#ifdef _WIN32
+	u_long mode = 1;
+	::ioctlsocket((SOCKET)fd, FIONBIO, &mode);
+#else
+	int flags = ::fcntl(fd, F_GETFL, 0);
+	if ( flags >= 0 )
+		::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+// Render a bound/peer socket address back to the URI authority shape
+// (host:port, [v6]:port). Empty on failure — a best-effort label, never a
+// control value.
+std::string format_socket_endpoint(const sockaddr_storage &address,
+				   socklen_t length)
+{
+	char host[NI_MAXHOST];
+	char service[NI_MAXSERV];
+	if ( ::getnameinfo(reinterpret_cast<const sockaddr *>(&address), length,
+			   host, sizeof(host), service, sizeof(service),
+			   NI_NUMERICHOST | NI_NUMERICSERV) != 0 )
+		return std::string();
+	if ( address.ss_family == AF_INET6 )
+		return std::string("[") + host + "]:" + service;
+	return std::string(host) + ":" + service;
 }
 
 int create_socket(int domain, int socket_type, int protocol)
@@ -293,6 +325,67 @@ int connect_unix_socket(const DataSource &source, error *err)
 		set_socket_error_code(err, "unix socket connect failed", path, number);
 		return -1;
 	}
+	return fd;
+}
+
+// The listen twin of connect_network_socket: resolve host:port for a passive
+// bind (AI_PASSIVE), bind + listen the first address that takes it, and return
+// the listening fd. SO_REUSEADDR only on POSIX — on Windows it lets a second
+// socket steal the port, so it is deliberately omitted there.
+int bind_listen_network_socket(const DataSource &source, int socket_type,
+			       int protocol, error *err)
+{
+	std::string host;
+	std::string service;
+	if ( !split_network_endpoint(source, host, service, err) )
+		return -1;
+	if ( !socket_stack_ready() )
+	{
+		detail::set_channel_error(err, "socket listen failed",
+					  "socket stack initialization failed");
+		return -1;
+	}
+
+	addrinfo hints;
+	std::memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = socket_type;
+	hints.ai_protocol = protocol;
+	hints.ai_flags = AI_PASSIVE;
+	addrinfo *addresses = nullptr;
+	int lookup = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses);
+	if ( lookup != 0 )
+	{
+		detail::set_channel_error(err, "socket address lookup failed",
+					  source.authority() + ": " + ::gai_strerror(lookup));
+		return -1;
+	}
+
+	int fd = -1;
+	int last_error = EADDRNOTAVAIL;
+	for ( addrinfo *address = addresses; address; address = address->ai_next )
+	{
+		fd = create_socket(address->ai_family, address->ai_socktype,
+				   address->ai_protocol);
+		if ( fd < 0 )
+		{
+			last_error = socket_last_error();
+			continue;
+		}
+#ifndef _WIN32
+		int reuse = 1;
+		::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
+		if ( ::bind(fd, address->ai_addr, (socklen_t)address->ai_addrlen) == 0
+		  && ::listen(fd, SOMAXCONN) == 0 )
+			break;
+		last_error = socket_last_error();
+		close_socket_fd(fd);
+	}
+	::freeaddrinfo(addresses);
+	if ( fd < 0 )
+		set_socket_error_code(err, "socket listen failed",
+				      source.authority(), last_error);
 	return fd;
 }
 
@@ -558,6 +651,137 @@ public:
 	}
 };
 
+// A LISTENING channel: it binds an endpoint and yields accepted connections
+// as ordinary byte-stream children, rather than carrying bytes itself. Non-
+// blocking, so the cooperative scheduler parks on read_poll_handle() (readable
+// == a connection pending) and calls accept() with no thread — design §2.7.
+class ListenSocketDataChannel : public DataChannel,
+				public PollableDataChannel,
+				public AcceptorDataChannel
+{
+public:
+	ListenSocketDataChannel(int fd, const std::string &scheme,
+				const std::string &child_scheme,
+				const std::string &endpoint)
+		: fd_(fd), scheme_(scheme), child_scheme_(child_scheme),
+		  endpoint_(endpoint)
+	{
+		set_socket_nonblocking(fd_);
+	}
+
+	~ListenSocketDataChannel() override { close(); }
+
+	const char *name() const override { return scheme_.c_str(); }
+	// A listener is neither a byte reader nor a writer; it is an acceptor.
+	ChannelCapabilities capabilities() const override
+	{
+		return ChannelCapabilities();
+	}
+
+	// read()/write() are a category error on a listener — the bytes flow on
+	// the accepted children (probe acceptor_surface() and call accept()).
+	bool read(void *, std::size_t, std::size_t &bytes_read,
+		  error *err = nullptr) override
+	{
+		bytes_read = 0;
+		detail::set_channel_error(
+			err, scheme_ + " read failed",
+			endpoint_ + ": a listening channel yields accepted"
+			" connections via accept(), not bytes");
+		return false;
+	}
+
+	bool write(const void *, std::size_t, std::size_t &bytes_written,
+		   error *err = nullptr) override
+	{
+		bytes_written = 0;
+		detail::set_channel_error(
+			err, scheme_ + " write failed",
+			endpoint_ + ": a listening channel yields accepted"
+			" connections via accept(), not bytes");
+		return false;
+	}
+
+	void close() override { close_socket_fd(fd_); }
+
+	intptr_t read_poll_handle() const override { return fd_; }
+
+	AcceptResult accept(std::unique_ptr<DataChannel> &out,
+			    error *err = nullptr) override
+	{
+		out.reset();
+		if ( fd_ < 0 )
+		{
+			detail::set_channel_error(err, scheme_ + " accept failed",
+						  endpoint_ + ": listener is closed");
+			return AcceptResult::error;
+		}
+
+		sockaddr_storage peer;
+		std::memset(&peer, 0, sizeof(peer));
+		socklen_t peer_len = sizeof(peer);
+		int accepted;
+#ifdef _WIN32
+		accepted = (int)::accept((SOCKET)fd_,
+					 reinterpret_cast<sockaddr *>(&peer), &peer_len);
+		if ( accepted < 0 )
+		{
+			int code = socket_last_error();
+			if ( code == WSAEWOULDBLOCK )
+				return AcceptResult::would_block;
+			set_socket_error_code(err, scheme_ + " accept failed",
+					      endpoint_, code);
+			return AcceptResult::error;
+		}
+		// Accepted sockets are born inheritable (as create_socket notes);
+		// clear the flag so a concurrent fork+exec cannot leak the fd.
+		SetHandleInformation((HANDLE)accepted, HANDLE_FLAG_INHERIT, 0);
+#else
+		do
+			accepted = ::accept(fd_, reinterpret_cast<sockaddr *>(&peer),
+					    &peer_len);
+		while ( accepted < 0 && errno == EINTR );
+		if ( accepted < 0 )
+		{
+			if ( errno == EAGAIN || errno == EWOULDBLOCK )
+				return AcceptResult::would_block;
+			set_socket_error_code(err, scheme_ + " accept failed",
+					      endpoint_, socket_last_error());
+			return AcceptResult::error;
+		}
+		detail::set_fd_close_on_exec(accepted);
+#endif
+
+		ChannelCapabilities capabilities;
+		capabilities.read = true;
+		capabilities.write = true;
+		capabilities.half_close = true;
+		out.reset(new SocketDataChannel(
+			accepted, child_scheme_,
+			format_socket_endpoint(peer, peer_len), capabilities,
+			SocketSemantics::byte_stream));
+		return AcceptResult::accepted;
+	}
+
+	std::string local_endpoint() const override
+	{
+		sockaddr_storage bound;
+		std::memset(&bound, 0, sizeof(bound));
+		socklen_t length = sizeof(bound);
+		if ( fd_ < 0
+		  || ::getsockname(fd_, reinterpret_cast<sockaddr *>(&bound),
+				   &length) != 0 )
+			return endpoint_;
+		return format_socket_endpoint(bound, length);
+	}
+
+private:
+	int fd_;
+	std::string scheme_;
+	std::string child_scheme_;
+	std::string endpoint_;
+};
+
 class NetworkSocketChannelFactory : public DataChannelRegistry::Factory
 {
 public:
@@ -618,6 +842,44 @@ private:
 	std::string scheme_;
 };
 
+// The `listen://host:port` scheme: a passive endpoint. Its `open` binds +
+// listens; the ChannelOpenMode is about the accepted children (any non-append
+// mode is legitimate), so it is not threaded through to a byte capability.
+class ListenSocketChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+	ListenSocketChannelFactory(const std::string &scheme,
+				   const std::string &child_scheme,
+				   int socket_type, int protocol)
+		: scheme_(scheme), child_scheme_(child_scheme),
+		  socket_type_(socket_type), protocol_(protocol)
+	{}
+
+	std::unique_ptr<DataChannel> open(const DataSource &source,
+					  ChannelOpenMode mode,
+					  error *err = nullptr) const override
+	{
+		if ( mode == ChannelOpenMode::append )
+		{
+			detail::set_channel_error(
+				err, "listen channel open failed",
+				"append mode is not meaningful for a listener");
+			return std::unique_ptr<DataChannel>();
+		}
+		int fd = bind_listen_network_socket(source, socket_type_, protocol_, err);
+		if ( fd < 0 )
+			return std::unique_ptr<DataChannel>();
+		return std::unique_ptr<DataChannel>(new ListenSocketDataChannel(
+			fd, scheme_, child_scheme_, source.authority()));
+	}
+
+private:
+	std::string scheme_;
+	std::string child_scheme_;
+	int socket_type_;
+	int protocol_;
+};
+
 } // namespace
 
 namespace detail {
@@ -640,6 +902,12 @@ void register_socket_channel_factories(DataChannelRegistry &registry)
 	registry.register_factory(
 		"unix", std::unique_ptr<DataChannelRegistry::Factory>(
 				new UnixSocketChannelFactory("unix")));
+	// The passive twin of `tcp`: bind + listen + accept byte-stream children.
+	registry.register_factory(
+		"listen", std::unique_ptr<DataChannelRegistry::Factory>(
+				  new ListenSocketChannelFactory(
+					  "listen", "tcp", SOCK_STREAM,
+					  IPPROTO_TCP)));
 }
 
 } // namespace detail

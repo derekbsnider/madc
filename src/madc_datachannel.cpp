@@ -278,6 +278,13 @@ PollableDataChannel *pollable_surface(DataChannel *channel)
 	return pollable;
 }
 
+AcceptorDataChannel *acceptor_surface(DataChannel *channel)
+{
+	if ( !channel )
+		return nullptr;
+	return dynamic_cast<AcceptorDataChannel *>(channel);
+}
+
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
 	       error *err)
 {
