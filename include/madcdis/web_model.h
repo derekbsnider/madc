@@ -916,6 +916,11 @@ class web_model
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
+	    // FOLLOW: an unfocused pane the composer asks to track its caret
+	    // (a cursor-synced source↔view pair) — the page honours + scrolls
+	    // to this caret though the pane holds no focus.
+	    if ( hint_of(n.hints, "follow", 0) )
+		op["follow"] = true;
 	    if ( sel_start >= 0 && sel_end > sel_start )
 	    {
 		size_t l0, c0, l1, c1;

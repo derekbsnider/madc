@@ -535,7 +535,10 @@
       delete el.dataset.rows;
       el.style.flex = '';
     }
-    var caret = op.focus ? op.caret : null;
+    // The focused pane draws + scrolls its caret; a FOLLOW pane (a cursor-
+    // synced source↔view partner) does too, though it holds no focus — that
+    // is what makes the two panes track one cursor.
+    var caret = (op.focus || op.follow) ? op.caret : null;
     var sel = op.sel || null;
     var presence = op.presence || null;
     if (op.lines) {
@@ -657,8 +660,13 @@
     // editor was painted in full): a recompose that left the caret where it
     // was (a resize, a wake) never pulls a wheel-scrolled view back to it.
     if (!moved) return;
-    var car = document.querySelector('.caret');
-    if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // Scroll EVERY caret into its own pane — the focused editor and any
+    // follow pane (a cursor-synced partner) each pull their overflow:auto
+    // box to the caret. querySelector (first match) would scroll only one,
+    // leaving the synced pane parked.
+    var cars = document.querySelectorAll('.caret');
+    for (var ci = 0; ci < cars.length; ci++)
+      if (cars[ci].scrollIntoView) cars[ci].scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   // ---- input: raw keys in the TUI vocabulary, printable runs as text ----

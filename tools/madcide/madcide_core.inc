@@ -2493,7 +2493,7 @@ void view_split(long w, long es, long doc, long dir, long lang);
 void view_focus(long w, long es, long doc, long dir);
 void view_close(long w, long es, long doc);
 void view_sync(long w, long es, var &arg);			// V5 cursor sync toggle
-long viewsync_leaf_caret(long w, long es, long vid, long fallback);	// V5 read-side projection
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow);	// V5 read-side projection
 void view_open(long w, long es, long doc, long lang);
 void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
 void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
@@ -6008,9 +6008,13 @@ void view_sync(long w, long es, var &arg)
 // one code View (carrying the map) and one source View projects; any other
 // combination (same representation, no map, no focused View) returns the
 // leaf's own parked caret (`fallback`). A refused projection (-1: an empty or
-// malformed map) also falls back — never a bad caret.
-long viewsync_leaf_caret(long w, long es, long vid, long fallback)
+// malformed map) also falls back — never a bad caret. `follow` is set to 1
+// only when a projection actually happened: the composer marks that leaf so
+// the frontend SCROLLS to (and marks) the synced caret, an unfocused pane it
+// would otherwise leave parked.
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow)
 {
+    follow = 0;
     long fvid = focused_view(w, es);
     if ( fvid == 0 || fvid == vid )
 	return fallback;
@@ -6029,7 +6033,10 @@ long viewsync_leaf_caret(long w, long es, long vid, long fallback)
 	if ( php::count(m) == 0 )
 	    return fallback;
 	long d = ui::lens_to_display(m, fcaret);
-	return d < 0 ? fallback : d;
+	if ( d < 0 )
+	    return fallback;
+	follow = 1;
+	return d;
     }
     if ( fcode && !tcode )
     {
@@ -6038,7 +6045,10 @@ long viewsync_leaf_caret(long w, long es, long vid, long fallback)
 	if ( php::count(m) == 0 )
 	    return fallback;
 	long s = ui::lens_to_stored(m, fcaret);
-	return s < 0 ? fallback : s;
+	if ( s < 0 )
+	    return fallback;
+	follow = 1;
+	return s;
     }
     return fallback;		// same representation: nothing to project
 }
@@ -7217,8 +7227,9 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     view_row(v, w, es, vid);
     long sdoc = view_text_entity(v, v["subject"].as_integer());
     long pc = node["pcaret"].as_integer();
+    long follow = 0;
     if ( es_int(w, es, "viewsync", 0) )
-	pc = viewsync_leaf_caret(w, es, vid, pc);	// V5: draw the projected caret
+	pc = viewsync_leaf_caret(w, es, vid, pc, follow);	// V5: draw the projected caret
     long sc = clamp_caret_to(w, sdoc, pc);
     var wfn = "";
     var wst;
@@ -7230,6 +7241,8 @@ void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
     wed["content"] = wt;
     wed["subject"] = sdoc;
     var wh = { "caret": sc, "tag": myleaf };
+    if ( follow )
+	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
     if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
 	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
     else

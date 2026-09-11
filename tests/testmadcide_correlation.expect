@@ -3,5 +3,6 @@ V5 view-map-rows>0: ok
 V5 project-forward: ok
 V5 project-roundtrip: ok
 V5 viewsync-project: ok
+V5 viewsync-follow: ok
 V5 viewsync-inverse: ok
 V5 viewsync-fallback: ok
