@@ -653,7 +653,14 @@
   // ---- viewsync: linked scrolling between a source pane and its code pane --
   // Any scroll of one synced pane scrolls its partner to the corresponding
   // statement, mapped through the code pane's {disp,stored} byte anchors.
-  var vsSyncing = false;
+  // Driver/passenger guard: the pane the user is actively scrolling is the
+  // DRIVER; the partner's scroll events (echoes of our programmatic set) are
+  // ignored until the driver goes idle. This is echo-proof regardless of the
+  // mapping's invertibility — the short source's last screenful maps to a whole
+  // range of MC11 code (a dead zone), so a flag/tolerance guard would let the
+  // echo snap the driver back and lock scrolling. The driver releases 120ms
+  // after its last scroll, so the other pane can then take over.
+  var vsDriver = null, vsIdle = null;
   function vsStarts(el) {   // byte offset of each line (rows are {t,s} objects)
     if (el._starts) return el._starts;
     var rows = el._rows || [], s = [0], acc = 0;
@@ -697,7 +704,8 @@
     return { xs: xs, ys: ys };
   }
   function vsSync(el) {
-    if (vsSyncing || !el._sync) return;
+    if (!el._sync) return;
+    if (vsDriver && vsDriver !== el) return;   // el is the driven partner — its scroll is our echo
     var all = document.querySelectorAll('.edit'), panes = [];
     for (var i = 0; i < all.length; i++) if (all[i]._sync) panes.push(all[i]);
     if (panes.length !== 2) return;
@@ -707,6 +715,11 @@
     var src = code === el ? partner : el;
     var a = vsCorr(code, src);
     if (!a) return;
+    // el is the driver now; hold the role until 120ms after its last scroll, so
+    // the partner's echoes are ignored and the driver is never snapped back.
+    vsDriver = el;
+    if (vsIdle) clearTimeout(vsIdle);
+    vsIdle = setTimeout(function () { vsDriver = null; }, 120);
     var lh = lineHeight(el) || 1, plh = lineHeight(partner) || 1;
     var pc = vsPieces(el, partner, code, a, lh, plh);
     var xs = pc.xs, ys = pc.ys, st = el.scrollTop, target;
@@ -720,13 +733,8 @@
       target = ys[i] + f * (ys[i + 1] - ys[i]);
     }
     target = Math.round(target);
-    // The echo guard: setting scrollTop fires the partner's scroll async, which
-    // maps back to here. If the partner is already at the target (the inverse
-    // lands where we are), do nothing — the bounce stops instead of jittering.
     if (Math.abs(partner.scrollTop - target) <= 2) return;
-    vsSyncing = true;
     partner.scrollTop = target;
-    requestAnimationFrame(function () { vsSyncing = false; });
   }
   function vsBind() {
     var all = document.querySelectorAll('.edit');
@@ -755,13 +763,12 @@
     // editor was painted in full): a recompose that left the caret where it
     // was (a resize, a wake) never pulls a wheel-scrolled view back to it.
     if (!moved) return;
-    // Scroll EVERY caret into its own pane — the focused editor and any
-    // follow pane (a cursor-synced partner) each pull their overflow:auto
-    // box to the caret. querySelector (first match) would scroll only one,
-    // leaving the synced pane parked.
-    var cars = document.querySelectorAll('.caret');
-    for (var ci = 0; ci < cars.length; ci++)
-      if (cars[ci].scrollIntoView) cars[ci].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // Scroll only the FOCUSED pane's caret into view. A follow pane's caret is
+    // a passive marker — scrolling to it would claim the linked-scroll driver
+    // (viewsync) and fight the user; with viewsync on, the focused pane's own
+    // scroll-to-caret drives the partner through linked scroll instead.
+    var car = document.querySelector('.edit.focus .caret');
+    if (car && car.scrollIntoView) car.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   // ---- input: raw keys in the TUI vocabulary, printable runs as text ----
