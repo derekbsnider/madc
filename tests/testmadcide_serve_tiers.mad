@@ -1,0 +1,85 @@
+// V6a duplex (client-server, D3): permission TIERS. Each connection carries a
+// tier (observer < editor < owner); the seat gates every command by its
+// minimum tier and refuses — with prose, never silently — anything above the
+// client's tier. The first connection owns the headless session; the rest
+// observe until the owner promotes them with `clienttier <id> <tier>`.
+//
+// The gate: an OBSERVER's edit (delline, tierEDITOR) is refused; the OWNER
+// promotes it to editor; the same edit then lands. Deterministic: the owner
+// connects first (share id 1), the observer second (id 2); both park idle.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_api.inc"
+
+int main()
+{
+    const char *path = "madc_ide_serve_tiers.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    madc::channel listener("listen://127.0.0.1:0");
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+
+    // Owner connects first (id 1), observer second (id 2); accept both, then
+    // spawn owner first so it is granted the owner tier.
+    madc::channel own(uri.c_str());
+    madc::channel obs(uri.c_str());
+    madc::channel t1;
+    listener.wait_readable();
+    listener.accept(t1);
+    long conn_own = t1.detach();
+    madc::channel t2;
+    listener.wait_readable();
+    listener.accept(t2);
+    long conn_obs = t2.detach();
+
+    go serve_client_task(&S, doc, conn_own);
+    yield();			// owner (share id 1) parks idle
+    go serve_client_task(&S, doc, conn_obs);
+    yield();			// observer (share id 2) parks idle
+
+    // 1) The observer tries to edit — refused with prose.
+    obs.write("{\"cmd\":\"delline\",\"seq\":1}\n");
+    yield();
+    var r1;
+    obs.readline(r1);
+    var p1;
+    js::parse(p1, r1);
+    println("observer-edit: ok={} error={}",
+	    p1["ok"].as_boolean() ? 1 : 0, p1["error"]);
+
+    // 2) The owner promotes the observer (id 2) to editor.
+    own.write("{\"cmd\":\"clienttier\",\"args\":\"2 editor\",\"seq\":2}\n");
+    yield();
+    var r2;
+    own.readline(r2);
+    var p2;
+    js::parse(p2, r2);
+    println("promote: ok={} tier={}",
+	    p2["ok"].as_boolean() ? 1 : 0, p2["tier"]);
+
+    // 3) The now-editor observer edits again — it lands.
+    obs.write("{\"cmd\":\"delline\",\"seq\":3}\n");
+    yield();
+    var r3;
+    obs.readline(r3);
+    var p3;
+    js::parse(p3, r3);
+    println("editor-edit: ok={}", p3["ok"].as_boolean() ? 1 : 0);
+
+    own.close_write();
+    obs.close_write();
+    madc::task_drain();
+
+    own.close();
+    obs.close();
+    listener.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

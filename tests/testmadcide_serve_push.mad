@@ -4,9 +4,11 @@
 // event(s) down every OTHER connected client's socket (broadcast-at-append,
 // the industry-standard server-authoritative hub). This pins that an IDLE
 // observer, parked on its own readline having sent nothing, still receives a
-// peer's edit — the whole point of duplex. Deterministic on loopback by
-// ordering: the observer connects and parks FIRST, THEN the editor edits, so
-// the observer is share()-registered before the broadcast runs.
+// peer's edit — the whole point of duplex.
+//
+// The EDITOR connects first (first connection = owner, so it may edit, V6a
+// tiers), the observer second; both park idle, THEN the editor edits — so the
+// observer is share()-registered before the broadcast runs.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -30,29 +32,28 @@ int main()
     var addr = listener.local_endpoint();
     var uri = format("tcp://{}", addr);
 
-    // 1) The OBSERVER dials and is served first; it sends nothing, so its task
-    //    shares its write side and parks on readline — established before any
-    //    edit happens.
-    madc::channel obs(uri.c_str());
-    madc::channel tb;
-    listener.wait_readable();
-    listener.accept(tb);
-    long conn_obs = tb.detach();
-    go serve_client_task(&S, doc, conn_obs);
-    yield();			// task shares + parks (observer sent nothing)
-
-    // 2) The EDITOR dials, posts one editing command (delline), half-closes.
+    // Both clients dial (editor first on the backlog); accept both before
+    // spawning, so the editor's task shares first and is granted owner.
     madc::channel ed(uri.c_str());
-    ed.write("{\"cmd\":\"delline\",\"seq\":7}\n");
-    ed.close_write();
-    madc::channel ta;
+    madc::channel obs(uri.c_str());
+    madc::channel te;
     listener.wait_readable();
-    listener.accept(ta);
-    long conn_ed = ta.detach();
-    go serve_client_task(&S, doc, conn_ed);
-    yield();			// task edits, broadcasts to the observer, replies, ends
+    listener.accept(te);
+    long conn_ed = te.detach();
+    madc::channel to;
+    listener.wait_readable();
+    listener.accept(to);
+    long conn_obs = to.detach();
 
-    // 3) The observer received the editor's change as a pushed event line.
+    go serve_client_task(&S, doc, conn_ed);
+    yield();			// editor shares (owner), parks idle
+    go serve_client_task(&S, doc, conn_obs);
+    yield();			// observer shares (observer), parks idle
+
+    // The editor edits; its task wakes, mutates, broadcasts to the observer.
+    ed.write("{\"cmd\":\"delline\",\"seq\":7}\n");
+    yield();
+
     var evline;
     obs.readline(evline);
     var ev;
@@ -60,7 +61,6 @@ int main()
     println("observer-event: kind={} seq={}",
 	    ev["event"]["kind"], ev["event"]["seq"].as_integer());
 
-    // 4) The editor got its own reply (never the event echoed back).
     var rl;
     ed.readline(rl);
     var reply;
@@ -68,12 +68,12 @@ int main()
     println("editor-reply: seq={} ok={}", reply["seq"].as_integer(),
 	    reply["ok"].as_boolean() ? 1 : 0);
 
-    // 5) End the observer so its task reaches EOF, then join.
+    ed.close_write();
     obs.close_write();
     madc::task_drain();
 
-    obs.close();
     ed.close();
+    obs.close();
     listener.close();
     S.close();
     php::unlink(path);

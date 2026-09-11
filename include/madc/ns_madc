@@ -277,6 +277,14 @@ namespace madc {
     // fan-out a serve task calls after its command appends change events.
     void conn_broadcast(int64_t except_id, const char *line);
 
+    // Per-connection cookie (V6a tiers): an OPAQUE int the application stores
+    // against a share() id — madcide keeps the permission tier there. The
+    // engine never interprets it. conn_cookie returns -1 for an unknown id;
+    // conn_ids fills `out` with every live connection id (ascending).
+    void conn_set_cookie(int64_t id, int64_t cookie);
+    int64_t conn_cookie(int64_t id);
+    void conn_ids(value &out);
+
     // Park this task for `ms` milliseconds of SCHEDULER time (real
     // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
     // jumps when only sleepers remain, so timed tests run instantly).

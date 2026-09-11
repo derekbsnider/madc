@@ -65,6 +65,74 @@ void broadcast_events(long w, long doc, long since, long self_id)
     }
 }
 
+// The tier a newly-connected client is granted (V6a tiers): OWNER if the
+// session has no live owner yet — the operator who launched --serve connects
+// first — else OBSERVER, promotable later by an owner via clienttier. (The
+// design's "local=admin" has no local window in a headless server, so
+// first-owner stands in.) `self_id` is already share()d (cookie still 0), so
+// the scan of the roster only finds an owner among the OTHER connections.
+long grant_tier(long self_id)
+{
+    var ids;
+    madc::conn_ids(ids);
+    for ( var idv : ids )
+    {
+	long cid = idv.as_integer();
+	if ( cid == self_id )
+	    continue;
+	if ( madc::conn_cookie(cid) == tierOWNER )
+	    return tierOBSERVER;
+    }
+    return tierOWNER;
+}
+
+// The EFFECTIVE tier of a connection id. An untracked id (-1 — a direct,
+// local caller such as the -c / headless-harness seat that never shared) is
+// the operator itself: full rights (owner). A real network client always has
+// a share()d id with a granted tier, so this only widens the local path.
+long eff_tier(long id)
+{
+    long t = madc::conn_cookie(id);
+    return t < 0 ? tierOWNER : t;
+}
+
+// clienttier <id> <tier> — the OWNER verb that re-tiers a connection (it acts
+// on the SEAT's connections, not the document, so the seat owns it, not the
+// editor registry). Owner-only; a bad id or tier spelling refuses with prose.
+void handle_clienttier(madc::channel &client, long seq, long self_id, const char *arg)
+{
+    if ( eff_tier(self_id) < tierOWNER )
+    {
+	api_refuse(client, seq, "clienttier requires owner");
+	return;
+    }
+    var parts;
+    php::explode(parts, " ", arg);
+    if ( php::count(parts) < 2 )
+    {
+	api_refuse(client, seq, "clienttier <id> <tier>");
+	return;
+    }
+    long target = php::intval(parts[0]);
+    long tier = tier_of_name(parts[1].c_str());
+    if ( tier < 0 )
+    {
+	var why = format("unknown tier '{}'", parts[1]);
+	api_refuse(client, seq, why.c_str());
+	return;
+    }
+    if ( madc::conn_cookie(target) < 0 )
+    {
+	var why = format("no client {}", target);
+	api_refuse(client, seq, why.c_str());
+	return;
+    }
+    madc::conn_set_cookie(target, tier);
+    var reply = { "seq": seq, "ok": true,
+	"clienttier": target, "tier": tier_name(tier) };
+    api_write(client, reply);
+}
+
 // Serve ONE connected client: read JSON-line requests until EOF, running each
 // on the shared session, replying with the verdict + the composed projection
 // (the same tree ui::render_tree typesets for the -c seat), and — when the
@@ -89,10 +157,28 @@ void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_
 	    api_refuse(client, seq, "request has no 'cmd'");
 	    continue;
 	}
+	// clienttier <id> <tier> — an OWNER verb the SEAT owns (it re-tiers a
+	// connection, not the document); handled before the editor registry.
+	if ( strcmp(name.c_str(), "clienttier") == 0 )
+	{
+	    handle_clienttier(client, seq, self_id, api_arg(req));
+	    continue;
+	}
 	long code = cmd_of(name.c_str());
 	if ( code == cmdNONE )
 	{
 	    var why = format("unknown command '{}'", name);
+	    api_refuse(client, seq, why.c_str());
+	    continue;
+	}
+	// Permission gate (V6a tiers): a command above this client's tier is
+	// refused with prose, never run silently.
+	long my_tier = eff_tier(self_id);
+	long need = cmd_min_tier(code);
+	if ( my_tier < need )
+	{
+	    var why = format("'{}' requires {} (you are {})",
+		    name, tier_name(need), tier_name(my_tier));
 	    api_refuse(client, seq, why.c_str());
 	    continue;
 	}
@@ -132,6 +218,9 @@ void serve_client_task(IdeSession *S, long doc, long conn)
     // down it (the hub fan-out, D2); unshare before close so no broadcast
     // ever reaches a torn-down channel.
     long id = client.share();
+    // Grant its permission tier (V6a tiers): the first connection owns the
+    // session, the rest observe until an owner promotes them (clienttier).
+    madc::conn_set_cookie(id, grant_tier(id));
     serve_api_client(*S, doc, client, id);
     client.unshare(id);
     client.close();

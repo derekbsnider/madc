@@ -44,7 +44,15 @@ int64_t g_detach_next = 1;
 // down it (the hub fan-out). Distinct from g_detached (ownership transfer) —
 // share() never empties the channel, and the entry is a borrowed pointer the
 // owning task removes with unshare() before it closes. Scheduler-thread-only.
-std::map<int64_t, channel *> g_shared;
+// `cookie` is an OPAQUE per-connection value the application owns (madcide
+// stores the permission tier there — V6a tiers); the engine never interprets
+// it, so the connection registry stays application-agnostic.
+struct ConnEntry
+{
+	channel *ch;
+	int64_t cookie;
+};
+std::map<int64_t, ConnEntry> g_shared;
 int64_t g_share_next = 1;
 
 void set_state_error(ChannelState *s, const std::string &message)
@@ -236,7 +244,10 @@ bool channel::adopt(int64_t handle)
 int64_t channel::share()
 {
 	int64_t id = g_share_next++;
-	g_shared[id] = this;		// a borrowed pointer; unshare() removes it
+	ConnEntry e;
+	e.ch = this;			// a borrowed pointer; unshare() removes it
+	e.cookie = 0;			// application sets it (madcide: the tier)
+	g_shared[id] = e;
 	return id;
 }
 
@@ -481,13 +492,40 @@ void conn_broadcast(int64_t except_id, const char *line)
 {
 	if ( !line )
 		return;
-	for ( std::map<int64_t, channel *>::iterator it = g_shared.begin();
+	for ( std::map<int64_t, ConnEntry>::iterator it = g_shared.begin();
 	      it != g_shared.end(); ++it )
 	{
 		if ( it->first == except_id )
 			continue;
-		it->second->write(line);
+		it->second.ch->write(line);
 	}
+}
+
+// Set / read the opaque per-connection cookie (madcide's permission tier).
+// conn_cookie returns -1 for an unknown id (a client that left). These are
+// how a serve task reads its own tier and how the owner's clienttier verb
+// re-tiers another connection by id.
+void conn_set_cookie(int64_t id, int64_t cookie)
+{
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	if ( it != g_shared.end() )
+		it->second.cookie = cookie;
+}
+
+int64_t conn_cookie(int64_t id)
+{
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	return it != g_shared.end() ? it->second.cookie : -1;
+}
+
+// Every live connection id, ascending — the roster the seat scans (is there
+// already an owner? which ids may an admin re-tier?).
+void conn_ids(value &out)
+{
+	out = value::make_array();
+	for ( std::map<int64_t, ConnEntry>::iterator it = g_shared.begin();
+	      it != g_shared.end(); ++it )
+		out.array().push_back(value((int64_t)it->first));
 }
 
 } // namespace madc

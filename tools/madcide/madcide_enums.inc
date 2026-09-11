@@ -534,3 +534,90 @@ enum ide_transport : unsigned char { trLOCAL = 0, trWS, trAPI };
 // session. A local window is the OWNER; a fresh remote peer starts OBSERVER
 // and is raised by the owner.
 enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER };
+
+// ---- tier <-> name (V6a tiers) -----------------------------------------
+// Text only at the wire boundary: convert ONCE, refuse a misspelling, never
+// mis-route (the enums-not-strings law). tier_name spells a code for a
+// reply/refusal; tier_of_name resolves clienttier's <tier> argument (-1 =
+// unknown spelling).
+const char *tier_name(long tier)
+{
+    switch ( tier )
+    {
+    case tierOBSERVER: return "observer";
+    case tierEDITOR:   return "editor";
+    case tierOWNER:    return "owner";
+    }
+    return "?";
+}
+
+long tier_of_name(const char *name)
+{
+    if ( strcmp(name, "observer") == 0 ) return tierOBSERVER;
+    if ( strcmp(name, "editor") == 0 )   return tierEDITOR;
+    if ( strcmp(name, "owner") == 0 )    return tierOWNER;
+    return -1;
+}
+
+// The minimum tier a command requires (V6a tiers). Read-only queries and
+// navigation are tierOBSERVER (the default); commands that MUTATE the
+// document/project, write files, or spend build/run resources are tierEDITOR;
+// arbitrary shell/terminal execution is tierOWNER. The tier POLICY, one
+// switch over the command enum (the shape cmd_table is), listing only the
+// elevated codes — everything else observes. First pass; refined as the
+// surface grows (e.g. per-argument gating of the `:` line's sub-verbs).
+long cmd_min_tier(long code)
+{
+    switch ( code )
+    {
+    // owner — arbitrary execution
+    case cmdSHELL:
+    case cmdTERMINAL:
+	return tierOWNER;
+    // editor — text mutation
+    case cmdBLOCKDEL:
+    case cmdBLOCKMOVE:
+    case cmdDELLINE:
+    case cmdDELWORD:
+    case cmdBACKSPACE:
+    case cmdDEL:
+    case cmdENTER:
+    case cmdDISCARD:
+    case cmdINSERTFILE:
+    case cmdUNDO:
+    case cmdREDO:
+    case cmdVIDELETE:
+    case cmdVICHANGE:
+    case cmdVIINSERT:
+    case cmdVIINSERTBOL:
+    case cmdVIAPPEND:
+    case cmdVIAPPENDEOL:
+    case cmdVIOPENBELOW:
+    case cmdVIOPENABOVE:
+    // editor — file writes
+    case cmdSAVE:
+    case cmdSAVEAS:
+    case cmdSAVEQUIT:
+    // editor — project mutation / opening
+    case cmdOPENPROJECT:
+    case cmdEDITFILE:
+    case cmdPROJADDCUR:
+    case cmdPROJADD:
+    case cmdPROJDEL:
+    case cmdPROJCLOSE:
+    case cmdOPT_PROJKIND:
+    // editor — builds / runs (produce artifacts, execute the project)
+    case cmdBUILD:
+    case cmdBLD_NATIVE:
+    case cmdBLD_RUN:
+    case cmdBLD_RUN_CMD:
+    case cmdBLD_STOP:
+    case cmdBLD_PROJ_BUILD:
+    case cmdBLD_PROJ_RUN:
+    // editor — the `:` line can mutate/save (its `:!` shell gap is a
+    // refinement: gate the parsed sub-verb, not the gateway)
+    case cmdCOLON:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
