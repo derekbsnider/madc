@@ -27,6 +27,15 @@
   the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
   a code View's map rows > 0, the projection round-trips both ways, the
   fallback holds); the editor/IDE family byte-identical.
+- **viewsync = LINKED SCROLLING** (991302a9, owner ruling 2026-09-11): scroll
+  either pane by any means (wheel, bar, keys) and the other scrolls to the
+  corresponding statement, aligned through the coordinate map. The dialect
+  marks both editor panes `sync`; `web_model` ships the code pane's
+  `{disp,stored}` anchors; `page.js` maps a pane's top line through them to the
+  partner's line and scrolls it there (echo-guarded). Verified in the real
+  webview both directions; inert when viewsync is off (GUI snapshots +
+  `test_web_model` byte-identical). The caret-follow below stays as a
+  complementary trigger.
 - **viewsync scroll fix** (016b24fe, found in owner testing): the projection
   was correct but the GUI web frontend discards an unfocused pane's caret
   (`page.js`: `op.focus ? op.caret : null`), so the synced MC11 pane never

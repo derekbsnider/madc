@@ -490,6 +490,17 @@ carries it (actor + causal parent); design when an agent client exists.
 
 ### 2.6 Correlation maps — source ↔ MC11 first (RULED order)
 
+**`viewsync` = LINKED SCROLLING (owner ruling 2026-09-11).** The correlation
+map's user-facing behaviour is linked scrolling: scroll either pane by any
+means (wheel, scrollbar, keys) and the other pane scrolls to the corresponding
+statement, aligned through the map (not merely proportional). "Cursor
+synchronization" below was the first reading and shipped first (caret-follow);
+the owner clarified the intent is the scroll POSITION, and linked scroll landed
+in the frontend (the page maps its top line through the code pane's
+`{disp,stored}` anchors to the partner's line; the doc_map codec stays the
+engine's). The caret-follow stays as a complementary trigger.
+
+
 The IR already holds the map: every `cir_node` carries its originating
 tokens with file/line/col. The emitter (`CEmit`, the one layout owner)
 counts the bytes it writes; a hook per statement/declaration node records
