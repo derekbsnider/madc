@@ -673,10 +673,12 @@ slice never gets the battery, `testing-fulltest.md`); V1 landed 2026-09-09
 on the arc's feature branch (`feature/client-server-views-claude`, targeted
 gates only); V1.5 landed 2026-09-09 on the same branch (targeted gates
 only); V2, V2.5, V3, V4 and V5 all landed on the arc branch with targeted
-gates only (2026-09-10). **V5 is the LAST local slice — the V1–V5 SEAM is now
-due**: the owner tests the running editor (viewsync is a felt cursor-sync
-behavior), then the ONE merge-wave battery + lane records + the develop merge.
-The battery runs at the seam, never per slice.
+gates only (2026-09-10/11). **V5 is the LAST local slice, and the owner has
+APPROVED viewsync in the running GUI (2026-09-11, "it's good now")** — after
+four feedback rounds (caret-follow → linked-scroll → end-pin → one-way
+master/slave; viewsync is LINKED SCROLLING, the actively-scrolled pane is
+master). **The V1–V5 SEAM is now DUE**: the ONE merge-wave battery + lane
+records + the develop merge. The battery runs at the seam, never per slice.
 
 ## 5. Standing defaults (owner veto welcome)
 
