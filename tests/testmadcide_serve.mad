@@ -1,0 +1,75 @@
+// V6a (client-server, the headless api seat): a scripted api client posts
+// JSON-line commands over a real loopback socket; the seat resolves each by
+// NAME through the one registry table, runs it on the session, and replies
+// with a JSON line carrying the verdict + the composed projection. The MCP
+// seat and LSP endpoint (V6c) are adapters over exactly this protocol.
+//
+// Single-threaded + deterministic on loopback: the client dials, posts both
+// requests, then half-closes (close_write) so the seat reads request,
+// request, EOF and returns — no cooperative tasks, no timing. (design doc
+// 2026-09-09 §2.7; the listen://accept primitive is V6a step 1/2a.)
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_api.inc"
+
+int main()
+{
+    const char *path = "madc_ide_serve.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    // Bind an ephemeral loopback listener; report the bound address exists.
+    madc::channel listener("listen://127.0.0.1:0");
+    if ( !listener.ok() )
+    {
+	println("listen-fail: {}", listener.last_error());
+	return 1;
+    }
+    var addr = listener.local_endpoint();
+    println("bound: {}", strlen(addr.c_str()) > 0 ? "yes" : "no");
+
+    // A client dials the bound port and posts two requests: a known command
+    // (check, clean file) and an unknown one; then half-closes.
+    var uri = format("tcp://{}", addr);
+    madc::channel cli(uri.c_str());
+    if ( !cli.ok() )
+    {
+	println("dial-fail: {}", cli.last_error());
+	return 1;
+    }
+    cli.write("{\"cmd\":\"check\",\"seq\":1}\n");
+    cli.write("{\"cmd\":\"svae\",\"seq\":2}\n");
+    cli.close_write();
+
+    // Accept the connection and serve it to EOF.
+    madc::channel server_side;
+    long accepted = listener.accept(server_side);
+    println("accepted: {}", accepted);
+    serve_api_client(S, doc, server_side);
+    server_side.close();
+
+    // Read the two JSON-line replies the seat wrote back.
+    var r1;
+    cli.readline(r1);
+    var r2;
+    cli.readline(r2);
+    var p1;
+    js::parse(p1, r1);
+    var p2;
+    js::parse(p2, r2);
+    println("reply1: seq={} ok={} errors={} has-text={}",
+	    p1["seq"].as_integer(), p1["ok"].as_boolean() ? 1 : 0,
+	    p1["errors"].as_integer(), p1["text"].is_null() ? 0 : 1);
+    println("reply2: seq={} ok={} error={}",
+	    p2["seq"].as_integer(), p2["ok"].as_boolean() ? 1 : 0, p2["error"]);
+
+    cli.close();
+    listener.close();
+    S.close();
+    php::unlink(path);		// clean up the scratch file (test convention)
+    return 0;
+}

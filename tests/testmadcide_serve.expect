@@ -1,0 +1,4 @@
+bound: yes
+accepted: 1
+reply1: seq=1 ok=1 errors=0 has-text=1
+reply2: seq=2 ok=0 error=unknown command 'svae'
