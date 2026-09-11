@@ -59,8 +59,28 @@
   the caret and scrolls every `.caret` into its pane) fixes it; inert when
   viewsync is off (GUI snapshots + `test_web_model` unchanged). The TUI already
   scrolled to the caret unconditionally.
-- **NEXT = the V1–V5 SEAM** (the owner re-tests the running editor, then the
-  ONE merge-wave battery + lane records + the develop merge).
+- **The V1–V5 SEAM merge wave — the ONE battery, all lanes GREEN, arc merged
+  to develop (2026-09-11).** The owner tested viewsync in the running editor and
+  approved it ("it's good now"), passing the owner-tests-before-the-battery gate.
+  The seam battery on the sealed commit (89540d1b): linux-battery (fulltest jit
+  1347/0/9skip · exe/obj 1286/0 · packed 1347/0 · headerless 1313/0/43skip · gui
+  19/19 ×3; check-rule-trailers 0-missing; forest_crosstu OK), c-testsuite 220/220
+  gnu11, wine64 1286/0/70skip, macos both arches (836 units each, macho-verified,
+  packaged). All four develop-gated lanes fresh; `lane_ledger check --promote` green.
+- **Defect fixed on the way — the php::unlink win64 gap.** `testmadcide_correlation`
+  (V5) and `testmadcide_changelog` (V4) clean up with `php::unlink`, which lowers to
+  libc `unlink`; win64 UCRT exports only `_unlink`, so the packed PE fails at MIR
+  link ("undefined item unlink") before the test body runs. Both get a
+  `.win64_skip` (matching `testsmaug_requests`); the V4/V5 logic itself is win64-clean
+  (verified: all 8 V5 checks pass under wine with the cleanup removed, rc=0). Mapping
+  libc `unlink`→`_unlink` on win64 is a separate embedded-headers slice.
+- **Deferred (pre-existing, non-gated):** `testimplicitlibcproto{,c17}` fail only on
+  the win64-headerless lane — the win64 forest pack doesn't make `printf` adoptable
+  (K&R fallback) the way the linux pack does, so the shared `.headerless_expect`
+  (adopted prototype) mismatches. Not arc-caused (the adoption code 5393bf34 is on
+  develop; the arc's parser diff doesn't touch it; the test passes native,
+  linux-headerless, and plain win64). A win64-pack / per-arch-headerless-fixture
+  follow-up.
 
 ### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
 
