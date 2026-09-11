@@ -57,6 +57,18 @@ public:
 	int64_t detach();
 	bool adopt(int64_t handle);
 
+	// Broadcast facet (V6a duplex push): a serve loop keeps ownership of
+	// its channel but shares WRITE access so a peer's task can push change
+	// events down this socket (the hub fan-out). share() registers this
+	// channel under a fresh id and returns it; unshare() removes it (call
+	// it before close()). The free conn_broadcast(except_id, line) writes
+	// `line` to every shared channel but `except_id`. Scheduler-thread-only,
+	// and safe because a cooperative write never yields mid-line: a peer
+	// broadcasts only while this channel's owning task is parked in
+	// readline, and writes complete atomically between yields.
+	int64_t share();
+	void unshare(int64_t id);
+
 	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);
 	bool readall(std::string &out);

@@ -49,7 +49,7 @@ int main()
     madc::channel server_side;
     long accepted = listener.accept(server_side);
     println("accepted: {}", accepted);
-    serve_api_client(S, doc, server_side);
+    serve_api_client(S, doc, server_side, -1);
     server_side.close();
 
     // Read the two JSON-line replies the seat wrote back.

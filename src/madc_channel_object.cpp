@@ -39,6 +39,14 @@ ChannelState *state(void *impl)
 std::map<int64_t, ChannelState *> g_detached;
 int64_t g_detach_next = 1;
 
+// The broadcast registry (V6a duplex push): a serve loop KEEPS ownership of
+// its channel and registers it here so a peer's task can push change events
+// down it (the hub fan-out). Distinct from g_detached (ownership transfer) —
+// share() never empties the channel, and the entry is a borrowed pointer the
+// owning task removes with unshare() before it closes. Scheduler-thread-only.
+std::map<int64_t, channel *> g_shared;
+int64_t g_share_next = 1;
+
 void set_state_error(ChannelState *s, const std::string &message)
 {
 	s->failed = true;
@@ -223,6 +231,18 @@ bool channel::adopt(int64_t handle)
 	impl_ = it->second;		// take the detached endpoint whole
 	g_detached.erase(it);
 	return true;
+}
+
+int64_t channel::share()
+{
+	int64_t id = g_share_next++;
+	g_shared[id] = this;		// a borrowed pointer; unshare() removes it
+	return id;
+}
+
+void channel::unshare(int64_t id)
+{
+	g_shared.erase(id);
 }
 
 int64_t channel::read(void *buffer, int64_t capacity)
@@ -450,6 +470,24 @@ void channel::cancel()
 	ChannelState *s = state(impl_);
 	if ( s->channel )
 		s->channel->cancel();
+}
+
+// Write `line` to every share()-registered channel except `except_id` (the
+// hub fan-out — V6a duplex push). Best-effort: a peer whose write fails
+// (dead/closed) is skipped, its own serve task removes it on EOF. A
+// cooperative write never yields mid-line, so this whole pass is atomic
+// against the parked reader tasks it writes into.
+void conn_broadcast(int64_t except_id, const char *line)
+{
+	if ( !line )
+		return;
+	for ( std::map<int64_t, channel *>::iterator it = g_shared.begin();
+	      it != g_shared.end(); ++it )
+	{
+		if ( it->first == except_id )
+			continue;
+		it->second->write(line);
+	}
 }
 
 } // namespace madc

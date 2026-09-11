@@ -271,6 +271,12 @@ namespace madc {
     int64_t chan_select(value &out, value &chans);
     int64_t chan_try_recv(value &out, int64_t chan);
 
+    // Byte-channel broadcast (V6a duplex push): write `line` to every channel
+    // registered via channel::share() except `except_id` (pass -1 to reach
+    // all). Best-effort — a dead peer is skipped, never fatal. The hub
+    // fan-out a serve task calls after its command appends change events.
+    void conn_broadcast(int64_t except_id, const char *line);
+
     // Park this task for `ms` milliseconds of SCHEDULER time (real
     // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
     // jumps when only sleepers remain, so timed tests run instantly).
@@ -431,6 +437,17 @@ namespace madc {
 	// value-channel (chan_*) handle.
 	int64_t detach();
 	bool adopt(int64_t handle);
+
+	// Broadcast facet (V6a duplex push): a serve loop keeps its channel but
+	// shares WRITE access so a peer's task can push change events down this
+	// socket (the hub fan-out). share() registers this channel and returns
+	// its id; unshare() removes it (before close()). The free
+	// madc::conn_broadcast(except_id, line) writes `line` to every shared
+	// channel but `except_id`. Scheduler-thread-only; a cooperative write
+	// never yields mid-line, so a broadcast into a task parked in readline
+	// is atomic.
+	int64_t share();
+	void unshare(int64_t id);
 
 	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;

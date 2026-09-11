@@ -48,11 +48,31 @@ void api_refuse(madc::channel &client, long seq, const char *why)
     api_write(client, reply);
 }
 
-// Serve ONE connected client: read JSON-line requests until EOF, running
-// each on the shared session and replying with the verdict + the composed
-// projection (the same tree ui::render_tree typesets for the -c seat).
-void serve_api_client(IdeSession &S, long doc, madc::channel &client)
+// Fan the change events past `since` on `doc` out to every OTHER connected
+// api client — one {"event":rec} JSON line each — the hub broadcast-at-append
+// (V6a duplex D2). `self_id` is the acting client's share id, excluded so it
+// sees its edit only through its own reply, never echoed back as an event.
+void broadcast_events(long w, long doc, long since, long self_id)
 {
+    var evs;
+    events_since(evs, w, doc, since);
+    for ( var e : evs )
+    {
+	var push = { "event": e };
+	var js = js::stringify(push);
+	var pl = format("{}\n", js);
+	madc::conn_broadcast(self_id, pl.c_str());
+    }
+}
+
+// Serve ONE connected client: read JSON-line requests until EOF, running each
+// on the shared session, replying with the verdict + the composed projection
+// (the same tree ui::render_tree typesets for the -c seat), and — when the
+// command advanced the change log — pushing the new events to the OTHER
+// clients (V6a duplex D2). `self_id` is this client's share id.
+void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_id)
+{
+    long w = S.world();
     var line;
     while ( client.readline(line) )
     {
@@ -77,6 +97,7 @@ void serve_api_client(IdeSession &S, long doc, madc::channel &client)
 	    continue;
 	}
 	long adoc = S.active(doc);
+	long head_before = clog_head(w, adoc);
 	bool cont = true;
 	bool ok = S.command(adoc, code, api_arg(req), cont);
 	long errors = S.error_count();
@@ -86,6 +107,10 @@ void serve_api_client(IdeSession &S, long doc, madc::channel &client)
 	ui::render_tree(text, S.world(), tree);
 	var reply = { "seq": seq, "ok": ok, "errors": errors, "text": text };
 	api_write(client, reply);
+	// An editing command advanced the change log — push the new events to
+	// the other connected clients (the hub fan-out, D2).
+	if ( clog_head(w, adoc) > head_before )
+	    broadcast_events(w, adoc, head_before, self_id);
     }
 }
 
@@ -103,7 +128,12 @@ void serve_client_task(IdeSession *S, long doc, long conn)
     madc::channel client;
     if ( !client.adopt(conn) )
 	return;			// a spent handle — never on this path
-    serve_api_client(*S, doc, client);
+    // Share this client's WRITE side so a peer's task can push change events
+    // down it (the hub fan-out, D2); unshare before close so no broadcast
+    // ever reaches a torn-down channel.
+    long id = client.share();
+    serve_api_client(*S, doc, client, id);
+    client.unshare(id);
     client.close();
 }
 

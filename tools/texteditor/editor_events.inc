@@ -340,6 +340,44 @@ void clog_replay(var &out, long w, long doc, long upto)
     ui::text(out, w, scr);
 }
 
+// The changelog head seq for `doc` WITHOUT creating the log (0 = none yet) —
+// the cheap "did this edit advance the log?" probe the broadcast feed reads
+// before and after a command (V6a duplex D2).
+long clog_head(long w, long doc)
+{
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 )
+	return 0;
+    return es_int(w, le, "seq", 0);
+}
+
+// The raw change-event records with seq > `since`, oldest-first — the
+// replication feed a client reads incrementally (V6a duplex D2, the
+// {"event":…} push). Unlike clog_replay (which reconstructs BUFFER TEXT at a
+// revision), this returns the events THEMSELVES, for a peer to apply/observe.
+// A torn/partial tail line stops the scan (never a half-parsed event).
+void events_since(var &out, long w, long doc, long since)
+{
+    out = {};
+    long le = es_int(w, doc, "changelog", 0);
+    if ( le <= 0 )
+	return;
+    var blob;
+    ui::text(blob, w, le);
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) )
+	    break;		// a torn tail line: stop trusting the rest
+	if ( rec["seq"].as_integer() > since )
+	    out.push(rec);
+    }
+}
+
 // Compaction (design S2.4): when the log exceeds `limit` bytes, rewrite it
 // as a fresh checkpoint at seq `cut` (= head - `keep`) followed by the last
 // `keep` records whole. Every surviving seq stays replayable from that
