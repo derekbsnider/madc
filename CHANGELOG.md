@@ -27,6 +27,21 @@
   the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
   a code View's map rows > 0, the projection round-trips both ways, the
   fallback holds); the editor/IDE family byte-identical.
+- **viewsync linked scroll — one-way MASTER/SLAVE** (c4716c2f, owner ruling):
+  the pane you actively scroll is the master; the other follows one-way and
+  never pushes the master back. The prior echo guard let the slave snap the
+  master at the extremes (a dead zone where the short source's bottom maps to a
+  range of MC11 code), locking scrolling. Fixed with a driver/passenger guard
+  (the scrolled pane drives for 120ms; the partner's echoes are ignored), and
+  the follow-marker no longer scrolls (only the focused caret does). Verified:
+  ends meet, no lock, one-way.
+- **viewsync linked scroll — ends pinned** (db40b59b, owner feedback): the
+  panes drifted apart at the extremes (source at its end left the MC11 short of
+  its own end). The mapping now works in scrolltop space through anchor pairs
+  bookended by `(0,0)` and `(thisMax, partnerMax)`, so both panes reach top and
+  bottom together while statements still align in between. The padding route
+  was rejected (the MC11 is ~10× the source's length → the source pane would be
+  mostly whitespace). Verified in the real webview.
 - **viewsync = LINKED SCROLLING** (991302a9, owner ruling 2026-09-11): scroll
   either pane by any means (wheel, bar, keys) and the other scrolls to the
   corresponding statement, aligned through the coordinate map. The dialect
