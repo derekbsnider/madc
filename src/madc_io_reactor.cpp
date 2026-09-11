@@ -95,14 +95,14 @@ struct Reactor::impl
 	void wake_iothread()
 	{
 		uint64_t one = 1;
-		ssize_t r = ::write(submit_evt, &one, sizeof(one));
+		ssize_t r = ::write(submit_evt, &one, sizeof(one)); // EVENTFD-WAKE
 		(void)r;
 	}
 
 	void ring_doorbell()
 	{
 		uint64_t one = 1;
-		ssize_t r = ::write(doorbell_evt, &one, sizeof(one));
+		ssize_t r = ::write(doorbell_evt, &one, sizeof(one)); // EVENTFD-WAKE
 		(void)r;
 	}
 
@@ -506,6 +506,21 @@ std::size_t Reactor::wait(completion *out, std::size_t max, int timeout_ms)
 	return drain(out, max);
 }
 
+int Reactor::wait_doorbell(int timeout_ms)
+{
+	pollfd pfd;
+	pfd.fd = _->doorbell_evt;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	int pr = ::poll(&pfd, 1, timeout_ms);
+	if ( pr > 0 )
+	{
+		_->clear_doorbell();
+		return 1;
+	}
+	return pr == 0 ? 0 : -1;	// 0 = timeout; -1 = EINTR / error
+}
+
 } // namespace io
 } // namespace madc
 
@@ -578,6 +593,11 @@ intptr_t Reactor::doorbell() const
 std::size_t Reactor::wait(completion *, std::size_t, int)
 {
 	return 0;
+}
+
+int Reactor::wait_doorbell(int)
+{
+	return -1;
 }
 
 } // namespace io

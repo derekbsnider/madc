@@ -63,6 +63,7 @@
 #include "libmadc/value.h"
 #include "madcdis/channel.h"
 #include "madc_task_io.h"
+#include "madc_io_reactor.h"
 #include "rt/rt_task.h"
 #include "rt/rt_except.h"
 
@@ -141,6 +142,7 @@ struct IoWaiter {
 	SelectGroup *group = 0;   // NULL = plain wait_readable
 	int64_t index = 0;
 	bool fired = false;
+	uint64_t reactor_id = 0;  // the reactor poll-op id (0 = not armed)
 	IoWaiter *next = 0;
 };
 
@@ -266,6 +268,84 @@ bool io_fire_waiter(IoWaiter *w)
 	return select_fire(w->group, w->index, w->task);
 }
 
+// The async I/O reactor backing the io-wait where a backend exists (epoll on
+// Linux today; macOS/Windows keep the poll() path below until kqueue/IOCP
+// land). Scheduler-thread-owned: created lazily on the first genuine block,
+// abandoned on fork.
+//
+// The reactor is the BLOCKING-WAKEUP mechanism only: its I/O thread watches
+// every armed waiter's fd and rings the doorbell when any turns ready, so the
+// scheduler blocks on one fd (the doorbell) instead of poll()ing N. Readiness
+// DETERMINATION stays synchronous — io_probe_readable over g_io_head, exactly
+// as the poll() path — because the hook's zero-timeout probe and its
+// fd-beats-synthetic pass must observe a just-happened write NOW, before the
+// I/O thread has posted its async completion. So completions are drained and
+// DISCARDED (the probe is the source of truth); the poll op only has to fire
+// once to ring the doorbell.
+madc::io::Reactor *g_reactor;
+
+// The reactor for this platform, created on first use — or NULL where no
+// backend is compiled yet (the caller falls back to poll()). A creation
+// failure (fd exhaustion) also falls back to poll() rather than throwing
+// out of a blocking verb.
+madc::io::Reactor *reactor_or_null()
+{
+	if (!madc::io::Reactor::available())
+		return 0;
+	if (!g_reactor) {
+		try {
+			g_reactor = new madc::io::Reactor();
+		} catch (...) {
+			g_reactor = 0;
+		}
+	}
+	return g_reactor;
+}
+
+// Arm a blocking waiter's readiness watch (the doorbell will ring when its fd
+// turns ready). The op id rides the waiter so io_unregister can cancel it.
+void reactor_arm(IoWaiter *w)
+{
+	w->reactor_id = g_reactor->submit_poll((int)w->handle,
+					       madc::io::readable, 0);
+}
+
+// Retract a waiter's watch when it is torn down (fired or cancelled): cancel
+// the still-armed op (a no-op if it already fired) and clear the id.
+void reactor_disarm(IoWaiter *w)
+{
+	if (!w->reactor_id)
+		return;
+	g_reactor->submit_cancel(w->reactor_id);
+	w->reactor_id = 0;
+}
+
+// These two ride ONLY the hook's POSIX reactor branch below (Windows waits on
+// its own console/pipe path and never reaches the reactor), so they are unused
+// on _WIN32 — define them only where the branch that calls them compiles.
+#if !defined(_WIN32)
+// Empty the completion queue (and the doorbell it signalled). The completions
+// are the reactor's "an fd is ready" notices; the synchronous probe already
+// acted on them, so here they are only reclaimed.
+void reactor_drain_discard()
+{
+	madc::io::completion cs[64];
+	while (g_reactor->drain(cs, sizeof(cs) / sizeof(cs[0])) != 0) {
+	}
+}
+
+// One synchronous probe pass over the waiter list (the poll() path's readiness
+// determination): fire every waiter whose fd would make a read progress now.
+int io_probe_and_fire()
+{
+	int woke = 0;
+	for (IoWaiter *w = g_io_head; w; w = w->next)
+		if (!w->fired && io_probe_readable(w->handle))
+			woke += io_fire_waiter(w) ? 1 : 0;
+	return woke;
+}
+#endif
+
 // The scheduler's io wait (rt_task.h contract): -1 = no waiters (did not
 // wait); 0 = waited up to timeout_ms, nothing fired; >0 = tasks enqueued.
 int io_wait_hook(long long timeout_ms)
@@ -335,6 +415,39 @@ int io_wait_hook(long long timeout_ms)
 						   : (DWORD)step);
 	}
 #else
+	if (g_reactor) {
+		// Reactor path (Linux): readiness is determined SYNCHRONOUSLY
+		// (io_probe_and_fire — the poll() path's determination, so a
+		// just-happened write is seen NOW); the reactor's I/O thread only
+		// supplies the blocking WAKEUP via its doorbell. The host
+		// synthetic/deadline/EINTR discipline is unchanged from the poll()
+		// path — only the block itself moves off the scheduler thread.
+		int woke = io_probe_and_fire();
+		reactor_drain_discard();
+		if (woke)
+			return woke;			// fd readiness beats the host
+		if (timeout_ms == 0)
+			return 0;			// probe pass — nothing ready
+		if (host_pending)
+			return io_wake_host_synthetic();
+		int tmo = timeout_ms < 0 ? -1
+			: timeout_ms > (long long)INT_MAX ? INT_MAX
+			: (int)timeout_ms;
+		long long host_rem = host_deadline_remaining(timeout_ms);
+		if (host_rem >= 0 && (tmo < 0 || host_rem < (long long)tmo))
+			tmo = (int)host_rem;		// the host deadline bounds it
+		int wr = g_reactor->wait_doorbell(tmo);
+		woke = io_probe_and_fire();
+		reactor_drain_discard();
+		if (woke)
+			return woke;
+		if (wr < 0 && g_host && !g_host->fired)
+			return io_wake_host_synthetic();	// EINTR: SIGWINCH
+								// must reach the host
+		if (host_deadline_remaining(timeout_ms) == 0)
+			return io_wake_host_deadline();
+		return 0;	// timeout, or EINTR with no host (spurious)
+	}
 	int n = 0;
 	for (IoWaiter *w = g_io_head; w; w = w->next)
 		n++;
@@ -388,6 +501,12 @@ static void io_atfork_child()
 	g_host_mark = 0;
 	g_host_deadline = 0;
 	g_host_woke_deadline = false;
+	// The reactor's I/O thread did NOT survive the fork (fork copies only
+	// the calling thread), so its std::thread refers to a dead thread —
+	// never delete it (that would join the missing thread). Abandon the
+	// object (its fds leak in the short-lived child, as parent stacks do)
+	// and reset to never-used; the child re-creates on its first block.
+	g_reactor = 0;
 }
 
 void io_register(IoWaiter *w)
@@ -396,10 +515,14 @@ void io_register(IoWaiter *w)
 	__madc_task_io_atfork_hook = io_atfork_child;
 	w->next = g_io_head;
 	g_io_head = w;
+	if (reactor_or_null())
+		reactor_arm(w);		// the I/O thread watches its fd
 }
 
 void io_unregister(IoWaiter *w)
 {
+	if (g_reactor)
+		reactor_disarm(w);	// cancel the watch (no-op once fired)
 	for (IoWaiter **pp = &g_io_head; *pp; pp = &(*pp)->next) {
 		if (*pp == w) {
 			*pp = w->next;

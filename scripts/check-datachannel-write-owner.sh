@@ -24,13 +24,23 @@ if [ "$file_delegate" -ne 1 ] || [ "$process_delegate" -ne 1 ] \
 	exit 1
 fi
 
+# A raw ::write(2) is sanctioned only with an in-line marker naming WHY it is
+# outside the stream-write owner:
+#   SIGPIPE-OWNER     — the one write_fd_without_sigpipe body itself.
+#   ASYNC-CHILD-WRITE — a post-fork/pre-exec child write (async-signal-safe).
+#   EVENTFD-WAKE      — an eventfd counter write (the async I/O reactor's I/O-
+#                       thread wake + doorbell): a control-plane 8-byte write
+#                       that cannot SIGPIPE and must not pay the owner's
+#                       pthread_sigmask cost on its hot path.
 raw=$(grep -rnE --include='*.cpp' '^[[:space:]]+.*::write\(' src/ \
 	| grep -v 'SIGPIPE-OWNER' \
-	| grep -v 'ASYNC-CHILD-WRITE' || true)
+	| grep -v 'ASYNC-CHILD-WRITE' \
+	| grep -v 'EVENTFD-WAKE' || true)
 if [ -n "$raw" ]; then
 	echo "unowned raw write(2) call(s):"
 	printf '%s\n' "$raw" | sed 's/^/  /'
-	echo "  -> use write_fd_without_sigpipe, or document an async-child exception."
+	echo "  -> use write_fd_without_sigpipe, or mark an ASYNC-CHILD-WRITE /"
+	echo "     EVENTFD-WAKE exception."
 	exit 1
 fi
 

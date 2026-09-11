@@ -106,6 +106,13 @@ public:
 	intptr_t doorbell() const;
 	std::size_t wait(completion *out, std::size_t max, int timeout_ms);
 
+	// Block up to timeout_ms (< 0 = forever) for the doorbell to signal
+	// pending completions, clearing it: 1 = ready (drain() now), 0 = the
+	// timeout elapsed, -1 = interrupted (EINTR, e.g. a signal) or error. An
+	// event loop that must OBSERVE interruption — the tui's SIGWINCH reaching
+	// the scheduler — uses this + drain(), where wait() would hide it.
+	int wait_doorbell(int timeout_ms);
+
 private:
 	struct impl;
 	impl *_;
