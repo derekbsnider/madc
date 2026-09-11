@@ -676,16 +676,25 @@
     }
     return { code: cL, src: sL };
   }
-  function vsProject(a, from, to, line) {  // interpolate a line across axes
-    var f = a[from], g = a[to], n = f.length;
-    if (n === 0) return line;
-    if (line <= f[0]) return g[0] + (line - f[0]);
-    if (line >= f[n - 1]) return g[n - 1] + (line - f[n - 1]);
-    var i = 0;
-    while (i + 1 < n && f[i + 1] <= line) i++;
-    var span = f[i + 1] - f[i];
-    var frac = span > 0 ? (line - f[i]) / span : 0;
-    return g[i] + frac * (g[i + 1] - g[i]);
+  // Anchor pairs in SCROLLTOP (pixel) space: each statement anchor's top-line
+  // position on both axes (clamped to each pane's max scroll), BOOKENDED by
+  // (0,0) and (thisMax, partnerMax). Scrolling to either END lands on a
+  // bookend, so both panes reach their ends together; statements align in
+  // between. `el` is the pane being scrolled.
+  function vsPieces(el, partner, code, a, lh, plh) {
+    var maxThis = el.scrollHeight - el.clientHeight;
+    var maxP = partner.scrollHeight - partner.clientHeight;
+    var thisL = (el === code) ? a.code : a.src;
+    var pL = (el === code) ? a.src : a.code;
+    var xs = [0], ys = [0];
+    for (var i = 0; i < thisL.length; i++) {
+      var x = Math.min(Math.max(thisL[i] * lh, 0), maxThis);
+      var y = Math.min(Math.max(pL[i] * plh, 0), maxP);
+      if (x > xs[xs.length - 1] + 0.5 && y >= ys[ys.length - 1]) { xs.push(x); ys.push(y); }
+    }
+    if (maxThis > xs[xs.length - 1] + 0.5) { xs.push(maxThis); ys.push(maxP); }
+    else { ys[ys.length - 1] = maxP; }   // the last anchor already sits at the end
+    return { xs: xs, ys: ys };
   }
   function vsSync(el) {
     if (vsSyncing || !el._sync) return;
@@ -699,10 +708,18 @@
     var a = vsCorr(code, src);
     if (!a) return;
     var lh = lineHeight(el) || 1, plh = lineHeight(partner) || 1;
-    var from = (el === code) ? 'code' : 'src', to = (el === code) ? 'src' : 'code';
-    var pLine = vsProject(a, from, to, el.scrollTop / lh);
-    if (pLine < 0) pLine = 0;
-    var target = Math.round(pLine * plh);
+    var pc = vsPieces(el, partner, code, a, lh, plh);
+    var xs = pc.xs, ys = pc.ys, st = el.scrollTop, target;
+    if (st <= xs[0]) target = ys[0];
+    else if (st >= xs[xs.length - 1]) target = ys[ys.length - 1];
+    else {
+      var i = 0;
+      while (i + 1 < xs.length && xs[i + 1] <= st) i++;
+      var dx = xs[i + 1] - xs[i];
+      var f = dx > 0 ? (st - xs[i]) / dx : 0;
+      target = ys[i] + f * (ys[i + 1] - ys[i]);
+    }
+    target = Math.round(target);
     // The echo guard: setting scrollTop fires the partner's scroll async, which
     // maps back to here. If the partner is already at the target (the inverse
     // lands where we are), do nothing — the bounce stops instead of jittering.
