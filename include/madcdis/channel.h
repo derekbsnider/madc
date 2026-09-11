@@ -24,12 +24,24 @@ namespace madc {
 class channel
 {
 public:
+	// An empty channel with no endpoint yet — the target accept() fills.
+	channel();
 	explicit channel(const char *uri);
 	channel(const char *uri, const char *mode);
 	~channel();
 
 	bool ok() const;
 	const char *last_error() const;
+
+	// Listener facet (a `listen://host:port` channel). accept() takes the
+	// next pending connection into `client` (an empty channel), returning 1
+	// on accept, 0 when none is pending (park via wait_readable() and retry
+	// — the listener is poll_state/wait_readable-driven), -1 on error or a
+	// non-listener channel. local_endpoint() reports the address actually
+	// bound (host:port after an ephemeral :0), "" for a non-listener; the
+	// pointer is ring-lifetime (copy it before the next call).
+	int64_t accept(channel &client);
+	const char *local_endpoint();
 
 	int64_t read(void *buffer, int64_t capacity);
 	bool readline(std::string &out);

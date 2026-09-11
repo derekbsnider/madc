@@ -16,6 +16,7 @@ struct ChannelState
 	std::unique_ptr<DataChannel> channel;
 	error last_error;
 	std::string pending;
+	std::string endpoint_label;	// ring-lifetime backing for local_endpoint()
 	bool eof = false;
 	bool failed = false;
 	int exit_status = -1;	// kept past close(): the reaped child's status
@@ -106,6 +107,12 @@ bool fill_pending(ChannelState *s)
 
 } // namespace
 
+channel::channel()
+	: impl_(new ChannelState())
+{
+	// Empty: no endpoint until accept() moves one in. ok() stays false.
+}
+
 channel::channel(const char *uri)
 	: impl_(new ChannelState())
 {
@@ -133,6 +140,49 @@ bool channel::ok() const
 const char *channel::last_error() const
 {
 	return state(impl_)->last_error.message.c_str();
+}
+
+int64_t channel::accept(channel &client)
+{
+	ChannelState *s = state(impl_);
+	if ( !s->channel )
+	{
+		set_state_error(s, "accept on a channel with no endpoint");
+		return -1;
+	}
+	AcceptorDataChannel *acceptor = acceptor_surface(s->channel.get());
+	if ( !acceptor )
+	{
+		set_state_error(s, "channel is not a listener");
+		return -1;
+	}
+	std::unique_ptr<DataChannel> accepted;
+	AcceptResult result = acceptor->accept(accepted, &s->last_error);
+	if ( result == AcceptResult::would_block )
+		return 0;
+	if ( result == AcceptResult::error )
+	{
+		s->failed = true;
+		return -1;
+	}
+	// Hand the accepted byte stream to `client`, replacing whatever it held
+	// (a fresh accept target is empty; a reused one is closed by the move).
+	ChannelState *cs = state(client.impl_);
+	cs->channel = std::move(accepted);
+	cs->pending.clear();
+	cs->eof = false;
+	cs->failed = false;
+	cs->last_error = error();
+	return 1;
+}
+
+const char *channel::local_endpoint()
+{
+	ChannelState *s = state(impl_);
+	AcceptorDataChannel *acceptor =
+		s->channel ? acceptor_surface(s->channel.get()) : nullptr;
+	s->endpoint_label = acceptor ? acceptor->local_endpoint() : std::string();
+	return s->endpoint_label.c_str();
 }
 
 int64_t channel::read(void *buffer, int64_t capacity)
