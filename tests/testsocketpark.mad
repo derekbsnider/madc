@@ -1,0 +1,49 @@
+// A cooperative task PARKS on a connected socket's readline when no data is
+// pending, and WAKES when a later write arrives — instead of blocking the OS
+// thread in recv. This pins that a connected SocketDataChannel exposes a poll
+// handle (read_poll_handle): the reactor/taskio seat parks the task on the fd
+// the same way the listener parks for accept. Without it readline blocks the
+// whole thread and this test HANGS at yield() (the D1/duplex-serve concurrency
+// defect: one idle client would freeze every other).
+//
+// The ordering is the proof: "main: post-park write" MUST print BEFORE
+// "task-got: hello" — main only regains control if the reader truly parked
+// (yielded the CPU) rather than blocking inside recv.
+
+void reader_task(long conn)
+{
+    madc::channel c;
+    if ( !c.adopt(conn) )
+    {
+	println("adopt-fail");
+	return;
+    }
+    var line;
+    if ( c.readline(line) )
+	println("task-got: {}", line);
+    else
+	println("task-eof");
+    c.close();
+}
+
+int main()
+{
+    madc::channel listener("listen://127.0.0.1:0");
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+    madc::channel cli(uri.c_str());
+    madc::channel srv;
+    listener.wait_readable();
+    listener.accept(srv);
+    long conn = srv.detach();
+
+    go reader_task(conn);
+    yield();			// the reader parks on readline (no data yet)
+    println("main: post-park write");
+    cli.write("hello\n");	// the parked reader must WAKE on this
+    madc::task_drain();		// run the reader to completion
+
+    cli.close();
+    listener.close();
+    return 0;
+}

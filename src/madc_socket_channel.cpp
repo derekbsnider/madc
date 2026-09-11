@@ -389,7 +389,7 @@ int bind_listen_network_socket(const DataSource &source, int socket_type,
 	return fd;
 }
 
-class SocketDataChannel : public DataChannel
+class SocketDataChannel : public DataChannel, public PollableDataChannel
 {
 public:
 	SocketDataChannel(int fd, const std::string &scheme,
@@ -404,6 +404,15 @@ public:
 
 	const char *name() const override { return scheme_.c_str(); }
 	ChannelCapabilities capabilities() const override { return capabilities_; }
+
+	// A connected socket IS waitable: the cooperative scheduler parks on
+	// this fd (readable = data pending, a half-close, or an error a read
+	// surfaces) instead of blocking the OS thread in recv — the same seam
+	// the listener exposes for accept. Without it a serve task idling
+	// between a client's requests would block every other client (the D1
+	// concurrency defect); the socket stays BLOCKING, so the recv that
+	// follows a readable wake returns at once (data, or 0 for EOF).
+	intptr_t read_poll_handle() const override { return fd_; }
 
 	bool read(void *buffer, std::size_t capacity, std::size_t &bytes_read,
 		  error *err = nullptr) override
