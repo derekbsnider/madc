@@ -116,6 +116,36 @@ void graph_tool_descriptors(var &out)
 	"description": "structural descent from any node (a body id or a function id)",
 	"inputSchema": childargs };
     tools[] = t8;
+    // Code-graph MCP L2 (design 2026-09-12): the derived-edge verbs.
+    var kindprop = { "type": "string", "description": "a node kind filter (optional; v1: Function, Global)" };
+    var subprop = { "type": "string", "description": "a name substring to match" };
+    var searchprops = { "kind": kindprop, "name": subprop };
+    var searchargs = { "type": "object", "properties": searchprops };
+    var funcargprops = { "func": funcprop };
+    var funcargs = { "type": "object", "properties": funcargprops };
+    var defprop = { "type": "integer", "description": "a function type-id or a global decl-id" };
+    var defprops = { "func": defprop };
+    var defargs = { "type": "object", "properties": defprops };
+    var t9 = { "name": "graph.callees",
+	"description": "the functions a function calls (CALLS out-edges)",
+	"inputSchema": funcargs };
+    tools[] = t9;
+    var t10 = { "name": "graph.callers",
+	"description": "the functions that call a function (CALLS in-edges)",
+	"inputSchema": funcargs };
+    tools[] = t10;
+    var t11 = { "name": "graph.references",
+	"description": "every use-site of a function or global (REFERENCES + enclosing)",
+	"inputSchema": defargs };
+    tools[] = t11;
+    var t12 = { "name": "graph.search",
+	"description": "find decl nodes by kind + name substring (v1: functions, globals)",
+	"inputSchema": searchargs };
+    tools[] = t12;
+    var t13 = { "name": "graph.impact",
+	"description": "batched callers + references + enclosing for a function or global",
+	"inputSchema": idargs };
+    tools[] = t13;
     out = tools;
 }
 
@@ -239,6 +269,19 @@ void graph_call(var &out, IdeSession &S, long doc, var &nm, var &params)
 	long d = dv.is_null() ? 1 : dv.as_integer();
 	madc::graph_children(snap, h, args["id"].as_integer(), d);
     }
+    // Code-graph MCP L2 (design 2026-09-12): the derived-edge verbs. func is a
+    // function type-id; references/impact accept a function type-id OR a global
+    // decl-id (from graph.search).
+    else if ( strcmp(verb, "graph.callees") == 0 )
+	madc::graph_callees(snap, h, args["func"].as_integer());
+    else if ( strcmp(verb, "graph.callers") == 0 )
+	madc::graph_callers(snap, h, args["func"].as_integer());
+    else if ( strcmp(verb, "graph.references") == 0 )
+	madc::graph_references(snap, h, args["func"].as_integer());
+    else if ( strcmp(verb, "graph.search") == 0 )
+	madc::graph_search(snap, h, args["kind"].c_str(), args["name"].c_str());
+    else if ( strcmp(verb, "graph.impact") == 0 )
+	madc::graph_impact(snap, h, args["id"].as_integer());
     else
 	known = false;
     var content = {};

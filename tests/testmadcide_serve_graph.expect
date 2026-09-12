@@ -4,6 +4,11 @@
 "name":"graph.members"
 "name":"graph.body"
 "name":"graph.children"
+"name":"graph.callees"
+"name":"graph.callers"
+"name":"graph.references"
+"name":"graph.search"
+"name":"graph.impact"
 Function
 Struct
 "isError":false
@@ -13,3 +18,5 @@ Block
 Statement
 Call
 CONTAINS
+CALLS
+REFERENCES

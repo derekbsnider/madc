@@ -50,6 +50,7 @@ int main()
     // graph.body (a static .input line cannot know a live type-id).
     var line;
     var func_id;
+    var add_id;
     while ( madc::getline(line) )
     {
 	var req;
@@ -85,8 +86,12 @@ int main()
 	for ( var n : nodes )
 	{
 	    var nm = n["name"];
-	    if ( !nm.is_null() && strcmp(nm.c_str(), "run") == 0 )
+	    if ( nm.is_null() )
+		continue;
+	    if ( strcmp(nm.c_str(), "run") == 0 )
 		func_id = n["id"];
+	    if ( strcmp(nm.c_str(), "add") == 0 )
+		add_id = n["id"];
 	}
     }
 
@@ -128,6 +133,49 @@ int main()
 	    println("{}", js::stringify(cresp));
 	}
     }
+
+    // Phase 3: the L2 derived-edge tools over the seat — callees/callers/
+    // references/search/impact, chained from the real ids. `run` calls `add`,
+    // so a CALLS edge (callees(run)/callers(add)/impact(add)) and a REFERENCES
+    // edge (references(add)/impact(add)) must appear in the structured content.
+    if ( !func_id.is_null() )
+    {
+	var ceargs = { "func": func_id };
+	var ceparams = { "name": "graph.callees", "arguments": ceargs };
+	var cereq = { "jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": ceparams };
+	var ceresp;
+	mcp_handle(S, doc, -1, cereq, ceresp);
+	println("{}", js::stringify(ceresp));
+    }
+    if ( !add_id.is_null() )
+    {
+	var crargs = { "func": add_id };
+	var crparams = { "name": "graph.callers", "arguments": crargs };
+	var crreq = { "jsonrpc": "2.0", "id": 201, "method": "tools/call", "params": crparams };
+	var crresp;
+	mcp_handle(S, doc, -1, crreq, crresp);
+	println("{}", js::stringify(crresp));
+
+	var rfargs = { "func": add_id };
+	var rfparams = { "name": "graph.references", "arguments": rfargs };
+	var rfreq = { "jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": rfparams };
+	var rfresp;
+	mcp_handle(S, doc, -1, rfreq, rfresp);
+	println("{}", js::stringify(rfresp));
+
+	var imargs = { "id": add_id };
+	var imparams = { "name": "graph.impact", "arguments": imargs };
+	var imreq = { "jsonrpc": "2.0", "id": 203, "method": "tools/call", "params": imparams };
+	var imresp;
+	mcp_handle(S, doc, -1, imreq, imresp);
+	println("{}", js::stringify(imresp));
+    }
+    var seargs = { "kind": "Function", "name": "add" };
+    var separams = { "name": "graph.search", "arguments": seargs };
+    var sereq = { "jsonrpc": "2.0", "id": 204, "method": "tools/call", "params": separams };
+    var seresp;
+    mcp_handle(S, doc, -1, sereq, seresp);
+    println("{}", js::stringify(seresp));
 
     php::unlink(path);
     return 0;

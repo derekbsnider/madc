@@ -1,0 +1,138 @@
+// Code-graph MCP L2: the DERIVED-EDGE verbs over the live parse-handle forest.
+// callees/callers/references/impact walk every call site (resolved via the ONE
+// overload-aware resolver) and every name-use (by Variable identity), reporting
+// CALLS/REFERENCES edges — all compiler ground truth. Covers a global variable
+// referenced across two functions. Compile-NEVER-execute (.expect_quiet proves
+// it — an executed buffer would print and break .expect).
+int main()
+{
+    var src = "long g_total = 0;\n"
+	      "long helper(long x) { return x * 2; }\n"
+	      "long twice(long x) { g_total = g_total + 1; return helper(x); }\n"
+	      "long run(long n) {\n"
+	      "    long t = 0;\n"
+	      "    for (long i = 0; i < n; i = i + 1)\n"
+	      "        t = t + twice(i) + helper(i) + g_total;\n"
+	      "    return t;\n"
+	      "}\n";
+    long h = madc::parse_open(src.c_str(), "graphedges.mad");
+    println("opened: {}", h > 0 ? 1 : 0);
+
+    // Function ids from graph.symbols.
+    var sy;
+    madc::graph_symbols(sy, h);
+    long id_helper = 0, id_twice = 0, id_run = 0;
+    for ( var n : sy["nodes"] )
+    {
+	if ( n["name"] == "helper" ) id_helper = n["id"].as_integer();
+	if ( n["name"] == "twice" )  id_twice  = n["id"].as_integer();
+	if ( n["name"] == "run" )    id_run    = n["id"].as_integer();
+    }
+    println("found funcs: {}", (id_helper && id_twice && id_run) ? 1 : 0);
+
+    // The global id from graph.search(kind=Global).
+    var gs;
+    madc::graph_search(gs, h, "Global", "g_total");
+    long id_global = 0;
+    var gkind;
+    for ( var n : gs["nodes"] )
+	if ( n["name"] == "g_total" ) { id_global = n["id"].as_integer(); gkind = n["kind"]; }
+    println("found global: {}", id_global != 0 ? 1 : 0);
+    println("global kind is Global: {}", (gkind == "Global") ? 1 : 0);
+
+    // callees(run) -> {twice, helper}; all edges CALLS.
+    var ce;
+    madc::graph_callees(ce, h, id_run);
+    var seen_callee;
+    for ( var n : ce["nodes"] )
+	seen_callee[n["name"].c_str()] = true;
+    println("run calls twice: {}", seen_callee["twice"].is_null() ? 0 : 1);
+    println("run calls helper: {}", seen_callee["helper"].is_null() ? 0 : 1);
+    bool ce_all_calls = true;
+    for ( var e : ce["edges"] )
+	if ( !(e["kind"] == "CALLS") ) ce_all_calls = false;
+    println("callees edges all CALLS: {}", ce_all_calls ? 1 : 0);
+
+    // callers(helper) -> {twice, run}; callers(twice) -> {run}.
+    var cr;
+    madc::graph_callers(cr, h, id_helper);
+    var seen_caller;
+    for ( var n : cr["nodes"] )
+	seen_caller[n["name"].c_str()] = true;
+    println("helper called by twice: {}", seen_caller["twice"].is_null() ? 0 : 1);
+    println("helper called by run: {}", seen_caller["run"].is_null() ? 0 : 1);
+    var cr2;
+    madc::graph_callers(cr2, h, id_twice);
+    var seen_caller2;
+    for ( var n : cr2["nodes"] )
+	seen_caller2[n["name"].c_str()] = true;
+    println("twice called by run: {}", seen_caller2["run"].is_null() ? 0 : 1);
+
+    // references(helper): >= 2 call-sites; all REFERENCES.
+    var rf;
+    madc::graph_references(rf, h, id_helper);
+    long refedges = 0;
+    bool rf_all_refs = true;
+    for ( var e : rf["edges"] )
+    { refedges = refedges + 1; if ( !(e["kind"] == "REFERENCES") ) rf_all_refs = false; }
+    println("helper reference edges >= 2: {}", refedges >= 2 ? 1 : 0);
+    println("references edges all REFERENCES: {}", rf_all_refs ? 1 : 0);
+
+    // references(g_total): the global is used in twice and run -> >= 2
+    // REFERENCES sites; all REFERENCES.
+    var gr;
+    madc::graph_references(gr, h, id_global);
+    long grefs = 0;
+    bool gr_all_refs = true;
+    for ( var e : gr["edges"] )
+    { grefs = grefs + 1; if ( !(e["kind"] == "REFERENCES") ) gr_all_refs = false; }
+    println("global reference edges >= 2: {}", grefs >= 2 ? 1 : 0);
+    println("global references all REFERENCES: {}", gr_all_refs ? 1 : 0);
+
+    // search kind=Function name~"help" finds helper.
+    var se;
+    madc::graph_search(se, h, "Function", "help");
+    bool found_helper = false;
+    for ( var n : se["nodes"] )
+	if ( n["name"] == "helper" ) found_helper = true;
+    println("search help finds helper: {}", found_helper ? 1 : 0);
+
+    // impact(helper): CALLS and REFERENCES present.
+    var im;
+    madc::graph_impact(im, h, id_helper);
+    bool im_calls = false, im_refs = false;
+    for ( var e : im["edges"] )
+    { if ( e["kind"] == "CALLS" ) im_calls = true; if ( e["kind"] == "REFERENCES" ) im_refs = true; }
+    println("impact has CALLS: {}", im_calls ? 1 : 0);
+    println("impact has REFERENCES: {}", im_refs ? 1 : 0);
+
+    // impact(g_total): REFERENCES present, no CALLS (globals aren't called).
+    var gim;
+    madc::graph_impact(gim, h, id_global);
+    bool gim_calls = false, gim_refs = false;
+    for ( var e : gim["edges"] )
+    { if ( e["kind"] == "CALLS" ) gim_calls = true; if ( e["kind"] == "REFERENCES" ) gim_refs = true; }
+    println("global impact has REFERENCES: {}", gim_refs ? 1 : 0);
+    println("global impact has no CALLS: {}", gim_calls ? 0 : 1);
+
+    // Ground-truth guards: unknown id -> empty; callees(global) -> empty
+    // (a global has no callees).
+    var none;
+    madc::graph_callees(none, h, 999999);
+    println("callees unknown func nodes: {}", php::count(none["nodes"]));
+    var gce;
+    madc::graph_callees(gce, h, id_global);
+    println("callees of a global nodes: {}", php::count(gce["nodes"]));
+
+    // Re-query stability (recon Q1 residual): a second callees(run) is unchanged.
+    var ce2;
+    madc::graph_callees(ce2, h, id_run);
+    var seen2;
+    for ( var n : ce2["nodes"] )
+	seen2[n["name"].c_str()] = true;
+    println("requery stable: {}",
+	    (!seen2["twice"].is_null() && !seen2["helper"].is_null()) ? 1 : 0);
+
+    madc::parse_close(h);
+    return 0;
+}

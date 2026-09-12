@@ -1,0 +1,22 @@
+opened: 1
+found funcs: 1
+found global: 1
+global kind is Global: 1
+run calls twice: 1
+run calls helper: 1
+callees edges all CALLS: 1
+helper called by twice: 1
+helper called by run: 1
+twice called by run: 1
+helper reference edges >= 2: 1
+references edges all REFERENCES: 1
+global reference edges >= 2: 1
+global references all REFERENCES: 1
+search help finds helper: 1
+impact has CALLS: 1
+impact has REFERENCES: 1
+global impact has REFERENCES: 1
+global impact has no CALLS: 1
+callees unknown func nodes: 0
+callees of a global nodes: 0
+requery stable: 1
