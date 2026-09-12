@@ -1,0 +1,28 @@
+// V6c-1: the MCP seat. `madcide <file> --mcp` is a headless Model Context
+// Protocol server over stdio (JSON-RPC 2.0, one message per line). A tool call
+// is an `api` command by NAME — run_mcp is an adapter over api_run, the SAME
+// command core the --serve api seat drives. This test IS run_mcp: the JSON-RPC
+// requests arrive on stdin (the .input fixture), the responses go to stdout
+// (matched by .expect), exactly as a real MCP client drives the deployed
+// `--mcp` process. It exercises the whole surface: initialize, a notification
+// (no reply), tools/list (the registry as tools), tools/call on a real command
+// (isError:false), and tools/call on an unknown tool (isError:true + prose).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+
+int main()
+{
+    const char *path = "madc_ide_mcp.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+
+    // The MCP server over stdin/stdout — the deployed `--mcp` path end to end.
+    // stdin is the .input JSON-RPC stream; stdout is the JSON-RPC responses.
+    long rc = run_mcp(path, false);
+
+    php::unlink(path);
+    return rc;
+}

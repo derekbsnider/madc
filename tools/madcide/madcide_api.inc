@@ -99,18 +99,21 @@ long eff_tier(long id)
 // clienttier <id> <tier> — the OWNER verb that re-tiers a connection (it acts
 // on the SEAT's connections, not the document, so the seat owns it, not the
 // editor registry). Owner-only; a bad id or tier spelling refuses with prose.
-void handle_clienttier(madc::channel &client, long seq, long self_id, const char *arg)
+// Fills `out` with the reply BODY (the "seq" is the wire seat's to stamp, V6c):
+// a transport-agnostic result the api seat and the MCP adapter both render. An
+// out-parameter, the dialect's carrier-return convention (pre-L3 value-return).
+void handle_clienttier(var &out, long self_id, const char *arg)
 {
     if ( eff_tier(self_id) < tierOWNER )
     {
-	api_refuse(client, seq, "clienttier requires owner");
+	out = { "ok": false, "error": "clienttier requires owner" };
 	return;
     }
     var parts;
     php::explode(parts, " ", arg);
     if ( php::count(parts) < 2 )
     {
-	api_refuse(client, seq, "clienttier <id> <tier>");
+	out = { "ok": false, "error": "clienttier <id> <tier>" };
 	return;
     }
     long target = php::intval(parts[0]);
@@ -118,29 +121,83 @@ void handle_clienttier(madc::channel &client, long seq, long self_id, const char
     if ( tier < 0 )
     {
 	var why = format("unknown tier '{}'", parts[1]);
-	api_refuse(client, seq, why.c_str());
+	out = { "ok": false, "error": why };
 	return;
     }
     if ( madc::conn_cookie(target) < 0 )
     {
 	var why = format("no client {}", target);
-	api_refuse(client, seq, why.c_str());
+	out = { "ok": false, "error": why };
 	return;
     }
     madc::conn_set_cookie(target, tier);
-    var reply = { "seq": seq, "ok": true,
-	"clienttier": target, "tier": tier_name(tier) };
-    api_write(client, reply);
+    out = { "ok": true, "clienttier": target, "tier": tier_name(tier) };
+}
+
+// Run ONE command by NAME on the shared session and return the reply BODY —
+// the transport-agnostic api core (V6c). The command NAME resolves ONCE here
+// (cmd_of, the registry's one table); the tier gate refuses a command above
+// the caller's tier with prose; a mutating command fans its new events to the
+// OTHER connected clients (the hub broadcast, D2). Every seat over `api` — the
+// JSON-line api seat AND the MCP adapter (madcide_mcp.inc) — drives a command
+// through HERE, so there is ONE command core, not one per transport. The
+// returned body carries "ok" plus either "errors"+"text" (ran), "error"
+// (refused/unknown), or the clienttier fields; the wire seat stamps "seq" /
+// wraps it in its own envelope. `self_id` is the caller's share id (-1 = a
+// local, untracked caller — the operator, full rights via eff_tier).
+void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, const char *arg)
+{
+    // clienttier <id> <tier> — an OWNER verb the SEAT owns (it re-tiers a
+    // connection, not the document); handled before the editor registry.
+    if ( strcmp(name, "clienttier") == 0 )
+    {
+	handle_clienttier(out, self_id, arg);
+	return;
+    }
+    long code = cmd_of(name);
+    if ( code == cmdNONE )
+    {
+	var why = format("unknown command '{}'", name);
+	out = { "ok": false, "error": why };
+	return;
+    }
+    // Permission gate (V6a tiers): a command above this caller's tier is
+    // refused with prose, never run silently.
+    long my_tier = eff_tier(self_id);
+    long need = cmd_min_tier(code);
+    if ( my_tier < need )
+    {
+	var why = format("'{}' requires {} (you are {})",
+		name, tier_name(need), tier_name(my_tier));
+	out = { "ok": false, "error": why };
+	return;
+    }
+    long w = S.world();
+    long adoc = S.active(doc);
+    long head_before = clog_head(w, adoc);
+    bool cont = true;
+    bool ok = S.command(adoc, code, arg, cont);
+    long errors = S.error_count();
+    var tree;
+    S.compose_ide_tree(tree, S.active(adoc));
+    var text;
+    ui::render_tree(text, S.world(), tree);
+    out = { "ok": ok, "errors": errors, "text": text };
+    // An editing command advanced the change log — push the new events to the
+    // other connected clients (the hub fan-out, D2).
+    if ( clog_head(w, adoc) > head_before )
+	broadcast_events(w, adoc, head_before, self_id);
 }
 
 // Serve ONE connected client: read JSON-line requests until EOF, running each
-// on the shared session, replying with the verdict + the composed projection
-// (the same tree ui::render_tree typesets for the -c seat), and — when the
-// command advanced the change log — pushing the new events to the OTHER
-// clients (V6a duplex D2). `self_id` is this client's share id.
+// through api_run (the shared command core) on the shared session, and writing
+// the reply body back as a JSON line with this request's `seq` stamped on it.
+// The command semantics — name resolution, the tier gate, the compose, the
+// hub fan-out — live in api_run; the seat owns only the JSON-LINE envelope
+// (parse a line, read seq/cmd, stamp seq on the reply). `self_id` is this
+// client's share id.
 void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_id)
 {
-    long w = S.world();
     var line;
     while ( client.readline(line) )
     {
@@ -157,46 +214,10 @@ void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_
 	    api_refuse(client, seq, "request has no 'cmd'");
 	    continue;
 	}
-	// clienttier <id> <tier> — an OWNER verb the SEAT owns (it re-tiers a
-	// connection, not the document); handled before the editor registry.
-	if ( strcmp(name.c_str(), "clienttier") == 0 )
-	{
-	    handle_clienttier(client, seq, self_id, api_arg(req));
-	    continue;
-	}
-	long code = cmd_of(name.c_str());
-	if ( code == cmdNONE )
-	{
-	    var why = format("unknown command '{}'", name);
-	    api_refuse(client, seq, why.c_str());
-	    continue;
-	}
-	// Permission gate (V6a tiers): a command above this client's tier is
-	// refused with prose, never run silently.
-	long my_tier = eff_tier(self_id);
-	long need = cmd_min_tier(code);
-	if ( my_tier < need )
-	{
-	    var why = format("'{}' requires {} (you are {})",
-		    name, tier_name(need), tier_name(my_tier));
-	    api_refuse(client, seq, why.c_str());
-	    continue;
-	}
-	long adoc = S.active(doc);
-	long head_before = clog_head(w, adoc);
-	bool cont = true;
-	bool ok = S.command(adoc, code, api_arg(req), cont);
-	long errors = S.error_count();
-	var tree;
-	S.compose_ide_tree(tree, S.active(adoc));
-	var text;
-	ui::render_tree(text, S.world(), tree);
-	var reply = { "seq": seq, "ok": ok, "errors": errors, "text": text };
+	var reply;
+	api_run(reply, S, doc, self_id, name.c_str(), api_arg(req));
+	reply["seq"] = seq;
 	api_write(client, reply);
-	// An editing command advanced the change log — push the new events to
-	// the other connected clients (the hub fan-out, D2).
-	if ( clog_head(w, adoc) > head_before )
-	    broadcast_events(w, adoc, head_before, self_id);
     }
 }
 
