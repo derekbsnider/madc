@@ -2,8 +2,14 @@
 "name":"graph.definition"
 "name":"graph.node"
 "name":"graph.members"
+"name":"graph.body"
+"name":"graph.children"
 Function
 Struct
 "isError":false
 "isError":true
 unknown graph verb 'graph.bogus'
+Block
+Statement
+Call
+CONTAINS

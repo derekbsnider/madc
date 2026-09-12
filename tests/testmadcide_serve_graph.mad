@@ -1,8 +1,18 @@
-// Code-graph MCP L1 over the SEAT: the graph.* tool family driven by a real
-// MCP client (the .input JSON-RPC stream). tools/list advertises the graph
-// verbs; tools/call graph.symbols / graph.definition return terse node
-// results; an unknown graph verb is isError. run_mcp is the deployed --mcp
-// path end to end.
+// Code-graph MCP L1 + L1b over the SEAT: the graph.* tool family driven by a
+// real MCP client (the .input JSON-RPC stream). tools/list advertises the
+// graph verbs (including the two L1b body-graph tools); tools/call
+// graph.symbols / graph.definition return terse node results; an unknown
+// graph verb is isError. run_mcp is the deployed --mcp path end to end.
+//
+// L1b coverage (graph.body / graph.children) cannot ride the static .input
+// fixture: their `func`/`id` arguments are LIVE ids (type-ids / body handles)
+// that only exist once the fixture is parsed — a static JSON-RPC line cannot
+// know them ahead of time (this is exactly the substrate finding the L1b
+// plan records). So phase 2 below drives mcp_handle directly with requests
+// built in code, chaining the real ids out of each prior reply — same
+// JSON-RPC frame shape (jsonrpc/id/method/params), same mcp_handle/graph_call
+// production path .input's phase 1 uses, just constructed in-process instead
+// of read from stdin.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -14,8 +24,111 @@ int main()
 {
     const char *path = "madc_ide_graph.mad";
     php::file_put_contents(path,
-	"struct Point { long x; long y; };\nlong add(long a, long b) { return a + b; }\n");
-    long rc = run_mcp(path, false);
+	"struct Point { long x; long y; };\n"
+	"long add(long a, long b) { return a + b; }\n"
+	"long run(long n) {\n"
+	"    long total = 0;\n"
+	"    for (long i = 0; i < n; i = i + 1) {\n"
+	"        if (i > 0) { total = add(total, i); }\n"
+	"    }\n"
+	"    return total;\n"
+	"}\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "madcide: cannot read {}", path);
+	php::unlink(path);
+	return 1;
+    }
+    S.terminal(false);
+
+    // Phase 1: the static JSON-RPC requests from the fixture (.input) — the
+    // existing L1 coverage, unchanged frame shape. Along the way, capture
+    // the graph.symbols reply so phase 2 can chain a REAL function id into
+    // graph.body (a static .input line cannot know a live type-id).
+    var line;
+    var func_id;
+    while ( madc::getline(line) )
+    {
+	var req;
+	if ( !js::parse(req, line) )
+	{
+	    var nullid;
+	    var resp;
+	    mcp_error(resp, nullid, -32700, "Parse error");
+	    var js = js::stringify(resp);
+	    println("{}", js);
+	    continue;
+	}
+	var resp;
+	if ( !mcp_handle(S, doc, -1, req, resp) )
+	    continue;
+	var js = js::stringify(resp);
+	println("{}", js);
+
+	var params = req["params"];
+	if ( params.is_null() )
+	    continue;
+	var nmv = params["name"];
+	if ( nmv.is_null() || strcmp(nmv.c_str(), "graph.symbols") != 0 )
+	    continue;
+	var result = resp["result"];
+	var content = result["content"];
+	var item0 = content[0];
+	var txt = item0["text"];
+	var snap;
+	if ( !js::parse(snap, txt.c_str()) )
+	    continue;
+	var nodes = snap["nodes"];
+	for ( var n : nodes )
+	{
+	    var nm = n["name"];
+	    if ( !nm.is_null() && strcmp(nm.c_str(), "run") == 0 )
+		func_id = n["id"];
+	}
+    }
+
+    // Phase 2: graph.body(func) + graph.children(id) — the two L1b tools,
+    // chained from the REAL "run" function id resolved above. `run` has a
+    // for/if/call/literal-rich body so the walk exercises every body-node
+    // kind (Block/Statement/Call/NameRef/Expr/Literal).
+    if ( !func_id.is_null() )
+    {
+	var bodyargs = { "func": func_id };
+	var bparams = { "name": "graph.body", "arguments": bodyargs };
+	var breq = { "jsonrpc": "2.0", "id": 100, "method": "tools/call", "params": bparams };
+	var bresp;
+	mcp_handle(S, doc, -1, breq, bresp);
+	println("{}", js::stringify(bresp));
+
+	var bresult = bresp["result"];
+	var bcontent = bresult["content"];
+	var bitem0 = bcontent[0];
+	var btxt = bitem0["text"];
+	var bsnap;
+	var child_id;
+	if ( js::parse(bsnap, btxt.c_str()) )
+	{
+	    var edges = bsnap["edges"];
+	    if ( php::count(edges) > 0 )
+	    {
+		var e0 = edges[0];
+		child_id = e0["to"];
+	    }
+	}
+	if ( !child_id.is_null() )
+	{
+	    var childargs = { "id": child_id };
+	    var cparams = { "name": "graph.children", "arguments": childargs };
+	    var creq = { "jsonrpc": "2.0", "id": 101, "method": "tools/call", "params": cparams };
+	    var cresp;
+	    mcp_handle(S, doc, -1, creq, cresp);
+	    println("{}", js::stringify(cresp));
+	}
+    }
+
     php::unlink(path);
-    return rc;
+    return 0;
 }

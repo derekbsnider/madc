@@ -1,0 +1,125 @@
+// Code-graph MCP L1b: the BODY graph over the live parse-handle TokenBase
+// AST — graph.body(func, depth?) walks a function's statement/expression
+// tree; graph.children(id, depth?) descends from any node (a body handle or
+// a function type-id). Compile-NEVER-execute (.expect_quiet is the proof —
+// an executed buffer would print EXECUTED and break .expect).
+int main()
+{
+    var src = "long add(long a, long b) { return a + b; }\n"
+	      "long run(long n) {\n"
+	      "    long total = 0;\n"
+	      "    for (long i = 0; i < n; i = i + 1) {\n"
+	      "        if (i > 0) { total = add(total, i); }\n"
+	      "    }\n"
+	      "    return total;\n"
+	      "}\n";
+    long h = madc::parse_open(src.c_str(), "graphbody.mad");
+    println("opened: {}", h > 0 ? 1 : 0);
+
+    // graph.symbols to find "run"'s live type-id (Task 1b substrate: this is
+    // the SAME id space graph.body/graph.children's func_id argument uses).
+    var sy;
+    madc::graph_symbols(sy, h);
+    long func_id = 0;
+    for ( var n : sy["nodes"] )
+	if ( n["name"] == "run" )
+	    func_id = n["id"].as_integer();
+    println("found run: {}", func_id != 0 ? 1 : 0);
+
+    // graph.body(run, -1): the whole body subtree (server-side capped).
+    var body;
+    madc::graph_body(body, h, func_id, -1);
+    var bnodes = body["nodes"];
+    var bedges = body["edges"];
+    println("body nodes: {}", php::count(bnodes) > 0 ? 1 : 0);
+    println("body edges: {}", php::count(bedges) > 0 ? 1 : 0);
+
+    // Tally each kind seen so the .expect can assert PRESENCE without
+    // depending on exact counts/order.
+    var seen;
+    for ( var n : bnodes )
+    {
+	var k = n["kind"];
+	seen[k.c_str()] = true;
+    }
+    println("kind Block: {}", seen["Block"].is_null() ? 0 : 1);
+    println("kind Statement: {}", seen["Statement"].is_null() ? 0 : 1);
+    println("kind Call: {}", seen["Call"].is_null() ? 0 : 1);
+    println("kind NameRef: {}", seen["NameRef"].is_null() ? 0 : 1);
+    println("kind Expr: {}", seen["Expr"].is_null() ? 0 : 1);
+    println("kind Literal: {}", seen["Literal"].is_null() ? 0 : 1);
+
+    // Every edge is a CONTAINS edge (spec §6.2).
+    bool all_contains = true;
+    for ( var e : bedges )
+	if ( !(e["kind"] == "CONTAINS") )
+	    all_contains = false;
+    println("edges all CONTAINS: {}", all_contains ? 1 : 0);
+
+    // graph.children(id, 1) from a body-node id (the first edge's `to`) —
+    // the body-id routing branch (id >= GRAPH_BODY_ID_BASE).
+    var e0 = bedges[0];
+    long child_id = e0["to"].as_integer();
+    var kids;
+    madc::graph_children(kids, h, child_id, 1);
+    println("children nodes: {}", php::count(kids["nodes"]) > 0 ? 1 : 0);
+
+    // graph.children on a FUNCTION type-id (func_id) is the same result
+    // shape as graph.body — the type-id routing branch.
+    var fkids;
+    madc::graph_children(fkids, h, func_id, -1);
+    println("children(func) nodes: {}", php::count(fkids["nodes"]) > 0 ? 1 : 0);
+
+    // A depth-0 walk returns exactly the root node, no edges.
+    var d0;
+    madc::graph_body(d0, h, func_id, 0);
+    println("depth0 nodes: {}", php::count(d0["nodes"]));
+    println("depth0 edges: {}", php::count(d0["edges"]));
+
+    // Regression guard: the walk ROOT (the function token itself) must
+    // report a real kind, never "Unknown" — TokenFunc overrides type() to
+    // ttFunction (distinct from its TokenCpnd base's ttCompound; verified
+    // against include/madc.h during Task 3), a gap the classifier now
+    // covers explicitly.
+    println("depth0 root kind: {}", d0["nodes"][0]["kind"]);
+
+    // Regression guard: a local declaration's initializer must be reachable
+    // via CONTAINS (TokenDecl's initialize/init_list/ctor_args were not
+    // enumerated in the plan's literal Task 2 code; fixed during
+    // verification). Find the "total" declaration node, then confirm a
+    // Literal is reachable within two CONTAINS hops — the initializer is a
+    // TokenAssign (decl -> Expr) whose right-hand side is the literal
+    // (Expr -> Literal), verified against Program::parseDeclaration
+    // (src/parser.cpp:69341-69369): `T x = expr;` wraps the initializer in
+    // an assignment `x = expr`, it is not the bare expr directly.
+    long decl_id = -1;
+    for ( var n : bnodes )
+	if ( n["kind"] == "Statement" && n["name"] == "total" )
+	    decl_id = n["id"].as_integer();
+    bool decl_reaches_literal = false;
+    for ( var e1 : bedges )
+	if ( e1["from"].as_integer() == decl_id )
+	{
+	    long mid = e1["to"].as_integer();
+	    for ( var n2 : bnodes )
+		if ( n2["id"].as_integer() == mid && n2["kind"] == "Literal" )
+		    decl_reaches_literal = true;
+	    for ( var e2 : bedges )
+		if ( e2["from"].as_integer() == mid )
+		{
+		    long leaf = e2["to"].as_integer();
+		    for ( var n3 : bnodes )
+			if ( n3["id"].as_integer() == leaf && n3["kind"] == "Literal" )
+			    decl_reaches_literal = true;
+		}
+	}
+    println("decl total has literal descendant: {}", decl_reaches_literal ? 1 : 0);
+
+    // An unknown function id yields empty nodes on a valid handle.
+    var none;
+    madc::graph_body(none, h, 999999, -1);
+    println("body unknown func: {}", php::count(none["nodes"]));
+
+    madc::parse_close(h);
+    return 0;
+}

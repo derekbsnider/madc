@@ -1,0 +1,18 @@
+opened: 1
+found run: 1
+body nodes: 1
+body edges: 1
+kind Block: 1
+kind Statement: 1
+kind Call: 1
+kind NameRef: 1
+kind Expr: 1
+kind Literal: 1
+edges all CONTAINS: 1
+children nodes: 1
+children(func) nodes: 1
+depth0 nodes: 1
+depth0 edges: 0
+depth0 root kind: Block
+decl total has literal descendant: 1
+body unknown func: 0

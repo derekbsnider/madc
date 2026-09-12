@@ -44,8 +44,9 @@ void mcp_error(var &out, var &id, long code, const char *message)
     out = { "jsonrpc": "2.0", "id": id, "error": err };
 }
 
-// Code-graph MCP L1 (design 2026-09-12): the seven L1 graph verbs, with
-// their argument shape, for tools/list. A distinct family from the editor
+// Code-graph MCP L1 (design 2026-09-12): the seven L1 graph verbs, PLUS the
+// two L1b body-graph verbs (graph.body/graph.children), with their argument
+// shape, for tools/list. A distinct family from the editor
 // registry commands below: an agent chooses a semantic navigation verb
 // over a keystroke command. Defined here (ahead of mcp_tools, which calls
 // it) — madc resolves a call against what has been defined/declared
@@ -70,6 +71,15 @@ void graph_tool_descriptors(var &out)
     var nameargs = { "type": "object", "properties": nameprops };
     var posprops = { "line": lineprop, "column": colprop };
     var posargs = { "type": "object", "properties": posprops };
+    // Code-graph MCP L1b (design 2026-09-12): graph.body/graph.children —
+    // the body-graph verbs. `depth` is optional on both (server-side
+    // default: graph.children -> 1, graph.body -> -1/full).
+    var funcprop = { "type": "integer", "description": "a function node id (type-id)" };
+    var depthprop = { "type": "integer", "description": "subtree depth (optional; default: full for graph.body, 1 for graph.children)" };
+    var bodyprops = { "func": funcprop, "depth": depthprop };
+    var bodyargs = { "type": "object", "properties": bodyprops };
+    var childprops = { "id": idprop, "depth": depthprop };
+    var childargs = { "type": "object", "properties": childprops };
     var tools = {};
     var t0 = { "name": "graph.symbols",
 	"description": "the TU's own functions as graph nodes {id,kind,name,span}",
@@ -98,6 +108,14 @@ void graph_tool_descriptors(var &out)
 	"description": "the innermost enclosing function at a position (ENCLOSES)",
 	"inputSchema": posargs };
     tools[] = t6;
+    var t7 = { "name": "graph.body",
+	"description": "a function's body subtree {nodes,edges:CONTAINS} over the live parse tree",
+	"inputSchema": bodyargs };
+    tools[] = t7;
+    var t8 = { "name": "graph.children",
+	"description": "structural descent from any node (a body id or a function id)",
+	"inputSchema": childargs };
+    tools[] = t8;
     out = tools;
 }
 
@@ -205,6 +223,22 @@ void graph_call(var &out, IdeSession &S, long doc, var &nm, var &params)
     else if ( strcmp(verb, "graph.enclosing") == 0 )
 	madc::graph_enclosing(snap, h, args["line"].as_integer(),
 			      args["column"].as_integer());
+    // Code-graph MCP L1b (design 2026-09-12): the body-graph verbs. `depth`
+    // is optional — unset means "the natural default for this verb"
+    // (graph.body: -1/full, server-capped; graph.children: 1, immediate
+    // children), never a required argument.
+    else if ( strcmp(verb, "graph.body") == 0 )
+    {
+	var dv = args["depth"];
+	long d = dv.is_null() ? -1 : dv.as_integer();
+	madc::graph_body(snap, h, args["func"].as_integer(), d);
+    }
+    else if ( strcmp(verb, "graph.children") == 0 )
+    {
+	var dv = args["depth"];
+	long d = dv.is_null() ? 1 : dv.as_integer();
+	madc::graph_children(snap, h, args["id"].as_integer(), d);
+    }
     else
 	known = false;
     var content = {};
