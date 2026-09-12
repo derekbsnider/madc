@@ -7,14 +7,21 @@
 int main()
 {
     var src = "long g_total = 0;\n"
+	      "long g_addr_only = 0;\n"     // used ONLY via &g_addr_only (I1: TokenAddrOf)
+	      "long *g_ptr = 0;\n"          // used ONLY via *g_ptr (I1: TokenDeref)
 	      "long helper(long x) { return x * 2; }\n"
 	      "long twice(long x) { g_total = g_total + 1; return helper(x); }\n"
+	      "long take(long *p) { return *p; }\n"
 	      "long run(long n) {\n"
 	      "    long t = 0;\n"
+	      "    long *pa = &g_addr_only;\n"
+	      "    long dv = *g_ptr;\n"
 	      "    for (long i = 0; i < n; i = i + 1)\n"
-	      "        t = t + twice(i) + helper(i) + g_total;\n"
-	      "    return t;\n"
-	      "}\n";
+	      "        t = t + twice(i) + helper(i) + g_total + take(pa);\n"
+	      "    return t + dv;\n"
+	      "}\n"
+	      "long shadow() { long g_total = 99; return g_total + 1; }\n"  // LOCAL g_total shadows the global
+	      "long fib(long n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }\n";  // self-recursion (M1)
     long h = madc::parse_open(src.c_str(), "graphedges.mad");
     println("opened: {}", h > 0 ? 1 : 0);
 
@@ -132,6 +139,61 @@ int main()
 	seen2[n["name"].c_str()] = true;
     println("requery stable: {}",
 	    (!seen2["twice"].is_null() && !seen2["helper"].is_null()) ? 1 : 0);
+
+    // I1 (review): a global used ONLY via address-of (&g_addr_only, a
+    // TokenAddrOf that holds the Variable directly — not a child TokenVar) must
+    // still be found. Before the fix this returned 0 sites.
+    var ga;
+    madc::graph_search(ga, h, "Global", "g_addr_only");
+    long id_addr = 0;
+    for ( var n : ga["nodes"] )
+	if ( n["name"] == "g_addr_only" ) id_addr = n["id"].as_integer();
+    var ra;
+    madc::graph_references(ra, h, id_addr);
+    println("addr-only global refs >= 1: {}", php::count(ra["edges"]) >= 1 ? 1 : 0);
+
+    // I1 (review): a global used ONLY via dereference (*g_ptr, a TokenDeref).
+    var gp;
+    madc::graph_search(gp, h, "Global", "g_ptr");
+    long id_ptr = 0;
+    for ( var n : gp["nodes"] )
+	if ( n["name"] == "g_ptr" ) id_ptr = n["id"].as_integer();
+    var rp;
+    madc::graph_references(rp, h, id_ptr);
+    println("deref-only global refs >= 1: {}", php::count(rp["edges"]) >= 1 ? 1 : 0);
+
+    // T1 (review): graph.node on a GLOBAL decl-id returns the Global node — the
+    // decl-id routing + the graph.node global branch + the truncation guard.
+    var gn;
+    madc::graph_node(gn, h, id_global);
+    println("graph.node(global) kind Global: {}", (gn["kind"] == "Global") ? 1 : 0);
+
+    // Variable-identity exclusion: `shadow` has a LOCAL `g_total` shadowing the
+    // global; references(global g_total) must NOT include any site in `shadow`
+    // (its uses bind to a DIFFERENT Variable*). Checked via the REFERENCES
+    // edge's `in` (enclosing function id).
+    long id_shadow = 0, id_fib = 0;
+    for ( var n : sy["nodes"] )
+    {
+	if ( n["name"] == "shadow" ) id_shadow = n["id"].as_integer();
+	if ( n["name"] == "fib" )    id_fib    = n["id"].as_integer();
+    }
+    var gt2;
+    madc::graph_references(gt2, h, id_global);
+    bool shadow_excluded = true;
+    for ( var e : gt2["edges"] )
+	if ( e["in"].as_integer() == id_shadow )
+	    shadow_excluded = false;
+    println("shadow local excluded: {}", shadow_excluded ? 1 : 0);
+
+    // M1 (review): self-recursion — callees(fib) lists fib exactly ONCE
+    // (the subject node is not duplicated as its own callee).
+    var fce;
+    madc::graph_callees(fce, h, id_fib);
+    long fib_count = 0;
+    for ( var n : fce["nodes"] )
+	if ( n["name"] == "fib" ) fib_count = fib_count + 1;
+    println("fib callee node count == 1: {}", fib_count == 1 ? 1 : 0);
 
     madc::parse_close(h);
     return 0;

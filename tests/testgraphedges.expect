@@ -20,3 +20,8 @@ global impact has no CALLS: 1
 callees unknown func nodes: 0
 callees of a global nodes: 0
 requery stable: 1
+addr-only global refs >= 1: 1
+deref-only global refs >= 1: 1
+graph.node(global) kind Global: 1
+shadow local excluded: 1
+fib callee node count == 1: 1

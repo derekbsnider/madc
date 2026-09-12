@@ -6363,6 +6363,30 @@ static void graph_body_walk(parse_tu_state *st, const TokenBase *root,
 // the per-body GRAPH_BODY_NODE_CAP.
 static const size_t GRAPH_EDGE_RESULT_CAP = 2000;
 
+// A cycle safety net for the collectors (review M3): the live TokenBase AST is
+// acyclic, so a body walk terminates at body size and this is never hit on real
+// code — it only guarantees a hypothetical shared/cyclic node can't loop. NOT a
+// functional limit (far above any real function body), so unlike L1b's
+// GRAPH_BODY_NODE_CAP it never truncates a legitimate complete-body walk (the
+// collectors must see EVERY call/use, not the first N nodes).
+static const size_t GRAPH_COLLECT_VISIT_CAP = 1000000;
+
+// The Variable a node names as a referent, or NULL. A bare use is a TokenVar;
+// `&g` / `*g` / `*g++` wrap the SAME Variable in a TokenAddrOf / TokenDeref /
+// TokenDerefStep that hold it DIRECTLY (not via a child TokenVar), so a global
+// reference through address-of or dereference must be matched here too (review
+// I1 — `&global` is pervasive in C89/SMAUG). `g.field` (member access THROUGH a
+// global) stays deferred: that is a TokenMember on the field, a different shape.
+static const Variable *graph_referent_variable(const TokenBase *t)
+{
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    if ( TokenVar *v = nt->as_var_tok() )              return &v->var;
+    if ( TokenAddrOf *a = nt->as_addr_of_tok() )       return &a->var;
+    if ( TokenDeref *d = nt->as_deref_tok() )          return &d->var;
+    if ( TokenDerefStep *s = nt->as_deref_step_tok() ) return &s->var;
+    return (const Variable *)0;
+}
+
 // A resolved STATIC call site inside one function body: the call token and its
 // resolved callee. Indirect (fn-ptr) calls — resolved_call_funcdef -> NULL —
 // are dropped (no static callee, so no ground-truth CALLS edge; §5.5).
@@ -6379,7 +6403,7 @@ static void graph_collect_callsites(::Program &child, TokenFunc *fn,
 	return;
     std::vector<const TokenBase *> q;
     q.push_back(fn);
-    for ( size_t qi = 0; qi < q.size(); ++qi )
+    for ( size_t qi = 0; qi < q.size() && qi < GRAPH_COLLECT_VISIT_CAP; ++qi )
     {
 	if ( out.size() >= cap )
 	    break;
@@ -6415,15 +6439,13 @@ static void graph_collect_var_uses(TokenFunc *fn, const Variable *target,
 	return;
     std::vector<const TokenBase *> q;
     q.push_back(fn);
-    for ( size_t qi = 0; qi < q.size(); ++qi )
+    for ( size_t qi = 0; qi < q.size() && qi < GRAPH_COLLECT_VISIT_CAP; ++qi )
     {
 	if ( out.size() >= cap )
 	    break;
 	const TokenBase *n = q[qi];
-	TokenBase *nt = const_cast<TokenBase *>(n);
-	if ( TokenVar *v = nt->as_var_tok() )
-	    if ( &v->var == target )
-		out.push_back(n);
+	if ( graph_referent_variable(n) == target )   // TokenVar / &g / *g / *g++ (I1)
+	    out.push_back(n);
 	std::vector<const TokenBase *> kids;
 	graph_body_children(n, kids);
 	for ( size_t i = 0; i < kids.size(); ++i )
@@ -6531,6 +6553,7 @@ bool internal_program_graph_callees(int64_t handle, int64_t func_id,
 	    std::vector<GraphCallSite> sites;
 	    graph_collect_callsites(child, tf, sites, GRAPH_EDGE_RESULT_CAP);
 	    std::set<uint32_t> seen_callee;
+	    seen_callee.insert((uint32_t)func_id);   // M1: self-recursion isn't a duplicate callee node (edge still emitted)
 	    for ( size_t i = 0; i < sites.size(); ++i )
 	    {
 		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
@@ -6580,6 +6603,7 @@ bool internal_program_graph_callers(int64_t handle, int64_t func_id,
 	{
 	    nodes.push_back(graph_func_node_value(child, target));
 	    std::set<uint32_t> seen_caller;
+	    seen_caller.insert((uint32_t)func_id);   // M1: self-recursion isn't a duplicate caller node (edge still emitted)
 	    for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
 	    {
 		TokenFunc *caller = child.pending_funcs[f]
@@ -6649,6 +6673,8 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     if ( ftarget || gvar )
     {
 	std::set<uint32_t> seen_encl;
+	if ( ftarget )
+	    seen_encl.insert((uint32_t)def_id);   // M1: self-reference isn't a duplicate enclosing-func node
 	for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
 	{
 	    TokenFunc *encl = child.pending_funcs[f]
@@ -6799,7 +6825,8 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 	    bool first = seen_caller.insert(encl_id).second;
 	    if ( first )
 	    {
-		nodes.push_back(graph_func_node_value(child, encl));
+		if ( !(ftarget && encl_id == (uint32_t)id) )   // M1: subject already pushed (self-recursion)
+		    nodes.push_back(graph_func_node_value(child, encl));
 		if ( ftarget )   // a CALLS in-edge only for a function target
 		{
 		    std::map<std::string, madc::value> ce;
