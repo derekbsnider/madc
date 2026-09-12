@@ -6354,6 +6354,9 @@ static void graph_body_walk(parse_tu_state *st, const TokenBase *root,
 // guarded type lookup, and the global-node helpers are defined earlier (above
 // the L1 graph verbs, which route through them). The collectors below are the
 // L2-only derivation owners.
+// Edge field convention: a CALLS edge carries `at` = the call-site body-id
+// (where the call physically is); a REFERENCES edge carries `in` = the
+// enclosing function's id (which function the use-site sits inside).
 
 // A whole-forest edge scan can span every function body; cap the RESULT so a
 // graph.callers/references over a large TU stays terse (§6.5). Independent of
@@ -6679,6 +6682,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
 		e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
 		e["from"] = value(sid);
 		e["to"]   = value((int64_t)def_id);
+		e["in"]   = value((int64_t)encl_id);   // the enclosing function
 		edges.push_back(value::make_object(e));
 	    }
 	}
@@ -6815,7 +6819,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 		re["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
 		re["from"] = value(sid);
 		re["to"]   = value((int64_t)id);
-		re["at"]   = value((int64_t)encl_id);   // the enclosing function
+		re["in"]   = value((int64_t)encl_id);   // the enclosing function
 		edges.push_back(value::make_object(re));
 	    }
 	}
