@@ -32,6 +32,11 @@ struct StorageProbe
     double ratio;
 };
 
+// These probe-construction helpers are used ONLY by the HAVE_GDBM test case
+// below; guard them so a build WITHOUT gdbm (the #else "not built" case)
+// does not trip -Werror=unused-function. (StorageProbe itself stays outside
+// the guard — MapperRegistration<StorageProbe> below always needs it.)
+#ifdef HAVE_GDBM
 namespace {
 
 void assign_short_name(StorageProbe &p, const std::string &name)
@@ -86,6 +91,7 @@ bool has_id(const std::vector<int64_t> &ids, int64_t id)
 }
 
 } // namespace
+#endif // HAVE_GDBM
 
 namespace madc {
 
