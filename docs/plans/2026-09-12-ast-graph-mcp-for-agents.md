@@ -172,7 +172,7 @@ enum for `cir_node` bodies. Represent as enums; convert to wire names once.
 | Node kind (labels) | Source |
 |---|---|
 | Function, Struct, Union, Class, Enum, Typedef, Var, Param, Member, Pointer, Ref, Const, FuncPtr, Namespace | `DefArena` `DK_*` (exists) |
-| TranslationUnit, Block, Statement, Call, NameRef, Expr, Literal | `cir_node` bodies (**new**) |
+| TranslationUnit, Block, Statement, Call, NameRef, Expr, Literal | the live `TokenBase` AST (the persistent MC11-IR high-level face); the transient c2mir `node_t` arena is not retained on a parse handle (**new**) |
 
 | Edge kind | Meaning | Source |
 |---|---|---|
@@ -192,9 +192,11 @@ These CODE edges are the *present*-axis subset of the nexus relation vocabulary
 `requested_by`, `tests`, `fixes`) at L4.
 
 ### 6.3 Addressing & node identity
-- **Within a parse snapshot:** a node id is `cir_ref{seg,idx}` (tree nodes) or the
-  type-id (DefArena decls), surfaced as an opaque stable handle. Stable for the
-  handle's current parse; after a mutating command the agent re-queries.
+- **Within a parse snapshot:** for body/tree nodes, a per-handle opaque body
+  handle (`GRAPH_BODY_ID_BASE`-partitioned), since the `cir_ref` arena is
+  rebuilt per compile; for decl nodes, the type-id. Surfaced as an opaque
+  stable handle either way. Stable for the handle's current parse; after a
+  mutating command the agent re-queries.
 - **Across edits/time (the hard crux, deferred to L3/L4):** node identity across
   re-parses is the GumTree/AST-diff problem, named in the substrate vision §3.
   L1/L2 do not need it; L3 confronts it (informed by GumTree), L4 needs it for the
@@ -265,7 +267,7 @@ subtree) — settled in the L3 writing-plans pass.
 Running-madc-IS-the-compiler (live handle only) · no-user-program-cache (any
 projection is disposable) · entity-handles-never-byte-offsets · index-is-not-the-
 graph (each verb states which structure answers it: declindex = name lookup,
-DefArena = type graph, cir_node = bodies) · enums-not-strings (`DK_*` + a body-kind
+DefArena = type graph, persistent `TokenBase` AST = bodies) · enums-not-strings (`DK_*` + a body-kind
 + an edge-kind enum) · thread-safety (UI-thread-confined; MCP = cooperative tasks)
 · no-parallel-implementations (projection over the one arena+tree+log) ·
 every-mutation-through-a-verb · MCP-is-an-adapter · madcdis-stays-DataDef-agnostic.
