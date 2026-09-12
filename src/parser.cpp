@@ -366,6 +366,14 @@ bool internal_program_graph_body(int64_t handle, int64_t func_id,
 				 int64_t depth, value &out);
 bool internal_program_graph_children(int64_t handle, int64_t id,
 				     int64_t depth, value &out);
+// Code-graph MCP L2 (design 2026-09-12): derived CALLS/REFERENCES edges
+// (functions + globals) over the live forest — see madc_program.cpp.
+bool internal_program_graph_callees(int64_t handle, int64_t func_id, value &out);
+bool internal_program_graph_callers(int64_t handle, int64_t func_id, value &out);
+bool internal_program_graph_references(int64_t handle, int64_t def_id, value &out);
+bool internal_program_graph_search(int64_t handle, const std::string &kind,
+				   const std::string &name_sub, value &out);
+bool internal_program_graph_impact(int64_t handle, int64_t id, value &out);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1183,6 +1191,39 @@ void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t dept
 {
     madc::value &out = *(madc::value *)result;
     madc::internal_program_graph_children(handle, id, depth, out);
+    return result;
+}
+// Code-graph MCP L2 bridges (design 2026-09-12): same thin-thunk shape as L1/L1b.
+void *madc_graph_callees(void *result, int64_t handle, int64_t func_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_callees(handle, func_id, out);
+    return result;
+}
+void *madc_graph_callers(void *result, int64_t handle, int64_t func_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_callers(handle, func_id, out);
+    return result;
+}
+void *madc_graph_references(void *result, int64_t handle, int64_t def_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_references(handle, def_id, out);
+    return result;
+}
+void *madc_graph_search(void *result, int64_t handle, void *kind, void *name_sub)
+{
+    madc::value &out = *(madc::value *)result;
+    std::string k = kind ? *(std::string *)kind : std::string();
+    std::string n = name_sub ? *(std::string *)name_sub : std::string();
+    madc::internal_program_graph_search(handle, k, n, out);
+    return result;
+}
+void *madc_graph_impact(void *result, int64_t handle, int64_t id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_impact(handle, id, out);
     return result;
 }
 

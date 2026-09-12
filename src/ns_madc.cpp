@@ -273,6 +273,22 @@ value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth)
 value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth)
 	{ madc_graph_children(&out, handle, id, depth); return out; }
 
+// Code-graph MCP L2 (design 2026-09-12): derived-edge verbs over the live
+// parse-handle forest. func_id is a FUNCTION type-id; def_id/id may be a
+// function type-id OR a global decl-id (from graph_search). Each returns
+// { nodes, edges?, truncated? }.
+value &graph_callees(value &out, int64_t handle, int64_t func_id)
+	{ madc_graph_callees(&out, handle, func_id); return out; }
+value &graph_callers(value &out, int64_t handle, int64_t func_id)
+	{ madc_graph_callers(&out, handle, func_id); return out; }
+value &graph_references(value &out, int64_t handle, int64_t def_id)
+	{ madc_graph_references(&out, handle, def_id); return out; }
+value &graph_search(value &out, int64_t handle, const char *kind, const char *name_sub)
+	{ std::string k = kind ? kind : ""; std::string n = name_sub ? name_sub : "";
+	  madc_graph_search(&out, handle, &k, &n); return out; }
+value &graph_impact(value &out, int64_t handle, int64_t id)
+	{ madc_graph_impact(&out, handle, id); return out; }
+
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):
 // parse_build emits a native artifact from the handle's EXISTING parsed

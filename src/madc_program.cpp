@@ -5621,6 +5621,75 @@ static madc::value graph_node_value(::Program &child, DataDef *dd)
     return value::make_object(f);
 }
 
+// ---- Code-graph MCP node-id partition (L1b body ids + L2 decl/global ids) ----
+// A single integer node id self-identifies its space, so it can be passed to
+// any verb without ambiguity or truncation (via (uint32_t)) into a wrong id.
+// Three partitions, each a power-of-two ceiling type-ids never reach:
+//   type-id       [0, GRAPH_DECL_ID_BASE)         — L1 decl/type nodes
+//   global decl   [GRAPH_DECL_ID_BASE, BODY_BASE) — a top_decls dkGlobalVar idx
+//   body node     [GRAPH_BODY_ID_BASE, ...)       — L1b per-handle body handle
+// Defined here, above the L1 graph verbs, because they now route id -> DataDef
+// through the guarded lookup below (decl-ids share the integer id space).
+static const int64_t GRAPH_DECL_ID_BASE = 0x2000000000000000LL;
+static const int64_t GRAPH_BODY_ID_BASE = 0x4000000000000000LL;
+
+enum class GraphIdSpace { Type, Global, Body };
+static GraphIdSpace graph_id_space(int64_t id)
+{
+    if ( id >= GRAPH_BODY_ID_BASE ) return GraphIdSpace::Body;
+    if ( id >= GRAPH_DECL_ID_BASE ) return GraphIdSpace::Global;
+    return GraphIdSpace::Type;
+}
+
+// type_from_id keyed lookup GUARDED by the id partition: only a Type-space id
+// resolves to a DataDef; a Global/Body id returns NULL (never truncates into a
+// wrong type-id via (uint32_t)). Every graph verb that maps an id to a DataDef
+// routes through this now that decl-ids share the integer id space.
+static DataDef *graph_type_from_id_guarded(::Program &child, int64_t id)
+{
+    if ( graph_id_space(id) != GraphIdSpace::Type )
+	return (DataDef *)0;
+    return child.type_from_id((uint32_t)id);
+}
+
+// A global's node id is GRAPH_DECL_ID_BASE + its index in child.top_decls; the
+// index is stable within one parse snapshot (top_decls is append-only during a
+// parse, rebuilt on refresh — §6.3). Resolves back to the TopDecl ONLY when
+// that slot is a dkGlobalVar (other decl kinds — struct/typedef/... — are
+// L1-addressed via type-id, not this space).
+static const ::Program::TopDecl *graph_global_resolve(::Program &child, int64_t id)
+{
+    if ( graph_id_space(id) != GraphIdSpace::Global )
+	return (const ::Program::TopDecl *)0;
+    size_t idx = (size_t)(id - GRAPH_DECL_ID_BASE);
+    if ( idx >= child.top_decls.size() )
+	return (const ::Program::TopDecl *)0;
+    const ::Program::TopDecl &td = child.top_decls[idx];
+    return td.kind == ::Program::DeclKind::dkGlobalVar
+	? &td : (const ::Program::TopDecl *)0;
+}
+
+// A global variable's terse node: { id, kind:"Global", name, line, column? }.
+// A global is not derivable from graph_kind_name (its DataDef is its TYPE, e.g.
+// int) — it is a "Global" by virtue of being a dkGlobalVar decl. Span from the
+// origin token when present, else the TopDecl's recorded line.
+static madc::value graph_global_node_value(const ::Program::TopDecl &td, int64_t id)
+{
+    std::map<std::string, madc::value> f;
+    f["id"]   = value(id);
+    f["kind"] = value(std::string("Global"));
+    if ( !td.name.empty() )
+	f["name"] = value(td.name);
+    if ( td.origin )
+    {
+	f["line"]   = value((int64_t)td.origin->line);
+	f["column"] = value((int64_t)td.origin->column);
+    }
+    else if ( td.line )
+	f["line"] = value((int64_t)td.line);
+    return value::make_object(f);
+}
+
 // graph.symbols(handle): the TU's OWN top-level functions as graph nodes —
 // the same TU-own filter (tu_own_function) outline uses, so it is
 // file-accurate and spanned. Types are reached by name/id (definition /
@@ -5662,7 +5731,22 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
-    DataDef *dd = st->child->type_from_id((uint32_t)node_id);
+    // L2: a global decl-id (from graph.search / an L2 edge) resolves to its
+    // Global node here; a Body id stays graph.children's job (empty here);
+    // a type-id falls through to the guarded type lookup.
+    if ( graph_id_space(node_id) == GraphIdSpace::Global )
+    {
+	const ::Program::TopDecl *td = graph_global_resolve(*st->child, node_id);
+	if ( td )
+	    out = graph_global_node_value(*td, node_id);
+	else
+	{
+	    std::map<std::string, madc::value> empty;
+	    out = value::make_object(empty);
+	}
+	return true;
+    }
+    DataDef *dd = graph_type_from_id_guarded(*st->child, node_id);
     if ( !dd )
     {
 	std::map<std::string, madc::value> empty;
@@ -5694,7 +5778,7 @@ bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
     if ( !st )
 	return false;
     ::Program &child = *st->child;
-    DataDef *dd = child.type_from_id((uint32_t)node_id);
+    DataDef *dd = graph_type_from_id_guarded(child, node_id);
     if ( !dd )
     {
 	std::map<std::string, madc::value> empty;
@@ -5779,7 +5863,7 @@ bool internal_program_graph_members(int64_t handle, int64_t type_id,
 	return false;
     ::Program &child = *st->child;
     std::vector<madc::value> nodes;
-    DataDef *dd = child.type_from_id((uint32_t)type_id);
+    DataDef *dd = graph_type_from_id_guarded(child, type_id);
     if ( dd && (dd->basetype() == BaseType::btStruct
 	     || dd->basetype() == BaseType::btClass) )
     {
@@ -5814,7 +5898,7 @@ bool internal_program_graph_bases(int64_t handle, int64_t type_id,
 	return false;
     ::Program &child = *st->child;
     std::vector<madc::value> nodes;
-    DataDef *dd = child.type_from_id((uint32_t)type_id);
+    DataDef *dd = graph_type_from_id_guarded(child, type_id);
     if ( dd && dd->basetype() == BaseType::btClass )
     {
 	DataDefCLASS *cd = (DataDefCLASS *)dd;
@@ -6015,11 +6099,25 @@ static const char *graph_stmt_subkind_name(TokenID id)
     }
 }
 
-// Body-node ids live above every plausible type-id so a single integer id is
-// self-identifying (graph.children routes on it). Type-ids are small table
-// indices; 2^62 is unreachable by them.
-static const int64_t GRAPH_BODY_ID_BASE = 0x4000000000000000LL;
+// Edge kinds are enums (invariant §5.4 / §6.2), converted to a wire name ONCE.
+// L1b emitted "CONTAINS" as a bare string; L2 adds CALLS/REFERENCES, so the
+// enum now earns its keep — the L1b literal is retrofitted below to
+// graph_edge_kind_name(GraphEdgeKind::Contains): one owner of the edge vocab.
+enum class GraphEdgeKind { Contains, Calls, References };
 
+static const char *graph_edge_kind_name(GraphEdgeKind k)
+{
+    switch ( k )
+    {
+    case GraphEdgeKind::Contains:  return "CONTAINS";
+    case GraphEdgeKind::Calls:     return "CALLS";
+    case GraphEdgeKind::References: return "REFERENCES";
+    }
+    return "CONTAINS";
+}
+
+// GRAPH_BODY_ID_BASE / GRAPH_DECL_ID_BASE and the id-partition helpers are
+// defined earlier (above the L1 graph verbs, which now route through them).
 static int64_t graph_body_intern(parse_tu_state *st, const TokenBase *t)
 {
     if ( !st || !t )
@@ -6242,12 +6340,91 @@ static void graph_body_walk(parse_tu_state *st, const TokenBase *root,
 	for ( size_t i = 0; i < kids.size(); ++i )
 	{
 	    std::map<std::string, madc::value> e;
-	    e["kind"] = value(std::string("CONTAINS"));
+	    e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Contains)));
 	    e["from"] = value(nid);
 	    e["to"]   = value(graph_body_intern(st, kids[i]));
 	    edges.push_back(value::make_object(e));
 	    q.push_back(std::make_pair(kids[i], lvl + 1));
 	}
+    }
+}
+
+// ---- Code-graph MCP L2 (design 2026-09-12): derived CALLS/REFERENCES edges --
+// The id-partition (GRAPH_DECL_ID_BASE / GraphIdSpace / graph_id_space), the
+// guarded type lookup, and the global-node helpers are defined earlier (above
+// the L1 graph verbs, which route through them). The collectors below are the
+// L2-only derivation owners.
+
+// A whole-forest edge scan can span every function body; cap the RESULT so a
+// graph.callers/references over a large TU stays terse (§6.5). Independent of
+// the per-body GRAPH_BODY_NODE_CAP.
+static const size_t GRAPH_EDGE_RESULT_CAP = 2000;
+
+// A resolved STATIC call site inside one function body: the call token and its
+// resolved callee. Indirect (fn-ptr) calls — resolved_call_funcdef -> NULL —
+// are dropped (no static callee, so no ground-truth CALLS edge; §5.5).
+struct GraphCallSite { const TokenBase *site; ::FuncDef *callee; };
+
+// Collector #1 — call sites. Descends fn's body with the L1b
+// graph_body_children() descent (the ONE descent owner) and resolves each
+// TokenCallFunc through resolved_call_funcdef (the ONE overload-aware callee
+// resolver). callees/callers/references(function)/impact(function) compose this.
+static void graph_collect_callsites(::Program &child, TokenFunc *fn,
+				    std::vector<GraphCallSite> &out, size_t cap)
+{
+    if ( !fn )
+	return;
+    std::vector<const TokenBase *> q;
+    q.push_back(fn);
+    for ( size_t qi = 0; qi < q.size(); ++qi )
+    {
+	if ( out.size() >= cap )
+	    break;
+	const TokenBase *n = q[qi];
+	TokenBase *nt = const_cast<TokenBase *>(n);
+	if ( TokenCallFunc *cf = nt->as_callfunc_tok() )
+	{
+	    ::FuncDef *callee = child.resolved_call_funcdef(cf);
+	    if ( callee )
+	    {
+		GraphCallSite cs;
+		cs.site = n;
+		cs.callee = callee;
+		out.push_back(cs);
+	    }
+	}
+	std::vector<const TokenBase *> kids;
+	graph_body_children(n, kids);
+	for ( size_t i = 0; i < kids.size(); ++i )
+	    q.push_back(kids[i]);
+    }
+}
+
+// Collector #2 — name-use sites of one target Variable (a global). Same descent
+// owner; matches a TokenVar whose `var` IS the target (pointer identity — a
+// use-site is new TokenVar(*findVariable(name)), so &v->var == the global's
+// top_decls[i].var). A call node's var is a function, never the global target,
+// so it is naturally excluded. references(global)/impact(global) compose this.
+static void graph_collect_var_uses(TokenFunc *fn, const Variable *target,
+				   std::vector<const TokenBase *> &out, size_t cap)
+{
+    if ( !fn || !target )
+	return;
+    std::vector<const TokenBase *> q;
+    q.push_back(fn);
+    for ( size_t qi = 0; qi < q.size(); ++qi )
+    {
+	if ( out.size() >= cap )
+	    break;
+	const TokenBase *n = q[qi];
+	TokenBase *nt = const_cast<TokenBase *>(n);
+	if ( TokenVar *v = nt->as_var_tok() )
+	    if ( &v->var == target )
+		out.push_back(n);
+	std::vector<const TokenBase *> kids;
+	graph_body_children(n, kids);
+	for ( size_t i = 0; i < kids.size(); ++i )
+	    q.push_back(kids[i]);
     }
 }
 
@@ -6267,7 +6444,7 @@ bool internal_program_graph_body(int64_t handle, int64_t func_id,
     if ( !st )
 	return false;
     ::Program &child = *st->child;
-    DataDef *dd = child.type_from_id((uint32_t)func_id);   // binds child's table (M-5)
+    DataDef *dd = graph_type_from_id_guarded(child, func_id);   // binds child's table (M-5); decl/body id -> NULL
     TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6310,11 +6487,338 @@ bool internal_program_graph_children(int64_t handle, int64_t id,
     }
     else
     {
-	DataDef *dd = child.type_from_id((uint32_t)id);        // binds child's table (M-5)
+	DataDef *dd = graph_type_from_id_guarded(child, id);        // binds child's table (M-5); global id -> NULL (empty)
 	TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
 	if ( tf )
 	    graph_body_walk(st, tf, depth, GRAPH_BODY_NODE_CAP, nodes, edges, truncated);
 	// non-function type-id: members are graph.members' job (L1); empty here.
+    }
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.callees(handle, func_id): the functions func_id calls. func_id is a
+// function type-id. Resolve to the live TokenFunc, collect its call sites (the
+// ONE collector), emit one CALLS edge per site {from: func_id, to: callee-id,
+// at: call-site body id} + the DISTINCT callee function nodes. A global id (or
+// any non-function) yields empty (a global has no callees). Ground truth only:
+// indirect calls are dropped by the collector.
+bool internal_program_graph_callees(int64_t handle, int64_t func_id,
+				    madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+    if ( graph_id_space(func_id) == GraphIdSpace::Type )
+    {
+	DataDef *dd = graph_type_from_id_guarded(child, func_id);
+	TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
+	if ( tf )
+	{
+	    nodes.push_back(graph_func_node_value(child, tf));
+	    std::vector<GraphCallSite> sites;
+	    graph_collect_callsites(child, tf, sites, GRAPH_EDGE_RESULT_CAP);
+	    std::set<uint32_t> seen_callee;
+	    for ( size_t i = 0; i < sites.size(); ++i )
+	    {
+		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
+		{ truncated = true; break; }
+		uint32_t cid = child.type_id_for((DataDef *)sites[i].callee);
+		if ( seen_callee.insert(cid).second )
+		    nodes.push_back(graph_node_value(child, (DataDef *)sites[i].callee));
+		std::map<std::string, madc::value> e;
+		e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
+		e["from"] = value((int64_t)func_id);
+		e["to"]   = value((int64_t)cid);
+		e["at"]   = value(graph_body_intern(st, sites[i].site));
+		edges.push_back(value::make_object(e));
+	    }
+	}
+    }
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.callers(handle, func_id): the functions that call func_id — a
+// whole-forest scan of pending_funcs (a caller is a caller regardless of TU
+// origin, unfiltered, matching graph_function_token). For each caller's call
+// site whose resolved callee == func_id, emit a CALLS edge {from: caller-id,
+// to: func_id, at: call-site body id}; caller nodes DISTINCT. A non-function id
+// yields empty.
+bool internal_program_graph_callers(int64_t handle, int64_t func_id,
+				    madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+    if ( graph_id_space(func_id) == GraphIdSpace::Type )
+    {
+	DataDef *dd = graph_type_from_id_guarded(child, func_id);
+	TokenFunc *target = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
+	if ( target )
+	{
+	    nodes.push_back(graph_func_node_value(child, target));
+	    std::set<uint32_t> seen_caller;
+	    for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
+	    {
+		TokenFunc *caller = child.pending_funcs[f]
+		    ? child.pending_funcs[f]->as_func_tok() : (TokenFunc *)0;
+		if ( !caller )
+		    continue;
+		std::vector<GraphCallSite> sites;
+		graph_collect_callsites(child, caller, sites, GRAPH_EDGE_RESULT_CAP);
+		uint32_t caller_id = child.type_id_for(caller->var.type);
+		for ( size_t i = 0; i < sites.size(); ++i )
+		{
+		    if ( child.type_id_for((DataDef *)sites[i].callee) != (uint32_t)func_id )
+			continue;
+		    if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
+		    { truncated = true; break; }
+		    if ( seen_caller.insert(caller_id).second )
+			nodes.push_back(graph_func_node_value(child, caller));
+		    std::map<std::string, madc::value> e;
+		    e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
+		    e["from"] = value((int64_t)caller_id);
+		    e["to"]   = value((int64_t)func_id);
+		    e["at"]   = value(graph_body_intern(st, sites[i].site));
+		    edges.push_back(value::make_object(e));
+		}
+	    }
+	}
+    }
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.references(handle, def_id): every use-SITE of def_id across the TU —
+// the site granularity that complements graph.callers' function granularity.
+//  - FUNCTION (type-id): call sites (collector #1).
+//  - GLOBAL (decl-id): name-use sites of the global's Variable (collector #2).
+// For each site, emit the use-site body node + a REFERENCES edge {from:
+// site-body-id, to: def_id} + the enclosing function node.
+bool internal_program_graph_references(int64_t handle, int64_t def_id,
+				       madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+
+    GraphIdSpace space = graph_id_space(def_id);
+    DataDef *fdd = (space == GraphIdSpace::Type)
+	? graph_type_from_id_guarded(child, def_id) : (DataDef *)0;
+    TokenFunc *ftarget = fdd ? graph_function_token(child, fdd) : (TokenFunc *)0;
+    const ::Program::TopDecl *gtd = (space == GraphIdSpace::Global)
+	? graph_global_resolve(child, def_id) : (const ::Program::TopDecl *)0;
+    const Variable *gvar = gtd ? gtd->var : (const Variable *)0;
+
+    if ( ftarget )
+	nodes.push_back(graph_func_node_value(child, ftarget));
+    else if ( gtd )
+	nodes.push_back(graph_global_node_value(*gtd, def_id));
+
+    if ( ftarget || gvar )
+    {
+	std::set<uint32_t> seen_encl;
+	for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
+	{
+	    TokenFunc *encl = child.pending_funcs[f]
+		? child.pending_funcs[f]->as_func_tok() : (TokenFunc *)0;
+	    if ( !encl )
+		continue;
+	    std::vector<const TokenBase *> sites;
+	    if ( ftarget )
+	    {
+		std::vector<GraphCallSite> cs;
+		graph_collect_callsites(child, encl, cs, GRAPH_EDGE_RESULT_CAP);
+		for ( size_t i = 0; i < cs.size(); ++i )
+		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)def_id )
+			sites.push_back(cs[i].site);
+	    }
+	    else
+		graph_collect_var_uses(encl, gvar, sites, GRAPH_EDGE_RESULT_CAP);
+
+	    if ( sites.empty() )
+		continue;
+	    uint32_t encl_id = child.type_id_for(encl->var.type);
+	    if ( seen_encl.insert(encl_id).second )
+		nodes.push_back(graph_func_node_value(child, encl));
+	    for ( size_t i = 0; i < sites.size(); ++i )
+	    {
+		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
+		{ truncated = true; break; }
+		int64_t sid = graph_body_intern(st, sites[i]);
+		nodes.push_back(graph_body_node_value(st, sites[i]));
+		std::map<std::string, madc::value> e;
+		e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
+		e["from"] = value(sid);
+		e["to"]   = value((int64_t)def_id);
+		edges.push_back(value::make_object(e));
+	    }
+	}
+    }
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.search(handle, kind, name~): decl nodes whose kind matches `kind`
+// (empty = any; "Function" = functions; "Global" = globals; other kinds ->
+// none in v1) and whose name CONTAINS `name~` (case-sensitive substring in v1).
+// v1 covers FUNCTIONS (pending_funcs / tu_own_function — the graph.symbols
+// surface) and GLOBALS (top_decls dkGlobalVar). Struct/typedef/enum search
+// needs the decl-map iterators — documented next increment.
+bool internal_program_graph_search(int64_t handle, const std::string &kind,
+				   const std::string &name_sub, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes;
+    bool truncated = false;
+    bool any = kind.empty();
+    if ( any || kind == "Function" )
+	for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+	{
+	    TokenFunc *tf = tu_own_function(child.pending_funcs[i], st->display_name);
+	    if ( !tf )
+		continue;
+	    if ( !name_sub.empty() && tf->var.name.find(name_sub) == std::string::npos )
+		continue;
+	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
+	    { truncated = true; break; }
+	    nodes.push_back(graph_func_node_value(child, tf));
+	}
+    if ( (any || kind == "Global") && !truncated )
+	for ( size_t i = 0; i < child.top_decls.size(); ++i )
+	{
+	    const ::Program::TopDecl &td = child.top_decls[i];
+	    if ( td.kind != ::Program::DeclKind::dkGlobalVar )
+		continue;
+	    if ( !name_sub.empty() && td.name.find(name_sub) == std::string::npos )
+		continue;
+	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
+	    { truncated = true; break; }
+	    nodes.push_back(graph_global_node_value(td, GRAPH_DECL_ID_BASE + (int64_t)i));
+	}
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.impact(handle, id): the one-call impact view (§6.4).
+//  - FUNCTION: callers (CALLS, distinct) + references (site-granularity
+//    REFERENCES) + enclosing, in ONE forest pass.
+//  - GLOBAL: references (name-use sites) + enclosing — a global has no CALLS.
+bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+
+    GraphIdSpace space = graph_id_space(id);
+    DataDef *fdd = (space == GraphIdSpace::Type)
+	? graph_type_from_id_guarded(child, id) : (DataDef *)0;
+    TokenFunc *ftarget = fdd ? graph_function_token(child, fdd) : (TokenFunc *)0;
+    const ::Program::TopDecl *gtd = (space == GraphIdSpace::Global)
+	? graph_global_resolve(child, id) : (const ::Program::TopDecl *)0;
+    const Variable *gvar = gtd ? gtd->var : (const Variable *)0;
+
+    if ( ftarget )
+	nodes.push_back(graph_func_node_value(child, ftarget));
+    else if ( gtd )
+	nodes.push_back(graph_global_node_value(*gtd, id));
+
+    if ( ftarget || gvar )
+    {
+	std::set<uint32_t> seen_caller;
+	for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
+	{
+	    TokenFunc *encl = child.pending_funcs[f]
+		? child.pending_funcs[f]->as_func_tok() : (TokenFunc *)0;
+	    if ( !encl )
+		continue;
+	    std::vector<const TokenBase *> sites;
+	    if ( ftarget )
+	    {
+		std::vector<GraphCallSite> cs;
+		graph_collect_callsites(child, encl, cs, GRAPH_EDGE_RESULT_CAP);
+		for ( size_t i = 0; i < cs.size(); ++i )
+		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)id )
+			sites.push_back(cs[i].site);
+	    }
+	    else
+		graph_collect_var_uses(encl, gvar, sites, GRAPH_EDGE_RESULT_CAP);
+
+	    if ( sites.empty() )
+		continue;
+	    uint32_t encl_id = child.type_id_for(encl->var.type);
+	    bool first = seen_caller.insert(encl_id).second;
+	    if ( first )
+	    {
+		nodes.push_back(graph_func_node_value(child, encl));
+		if ( ftarget )   // a CALLS in-edge only for a function target
+		{
+		    std::map<std::string, madc::value> ce;
+		    ce["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
+		    ce["from"] = value((int64_t)encl_id);
+		    ce["to"]   = value((int64_t)id);
+		    edges.push_back(value::make_object(ce));
+		}
+	    }
+	    for ( size_t i = 0; i < sites.size(); ++i )
+	    {
+		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
+		{ truncated = true; break; }
+		int64_t sid = graph_body_intern(st, sites[i]);
+		nodes.push_back(graph_body_node_value(st, sites[i]));
+		std::map<std::string, madc::value> re;
+		re["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
+		re["from"] = value(sid);
+		re["to"]   = value((int64_t)id);
+		re["at"]   = value((int64_t)encl_id);   // the enclosing function
+		edges.push_back(value::make_object(re));
+	    }
+	}
     }
     std::map<std::string, madc::value> r;
     r["nodes"] = value::make_array(nodes);

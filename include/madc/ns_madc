@@ -201,6 +201,21 @@ namespace madc {
     value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth);
     value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth);
 
+    // Code-graph MCP L2 (design 2026-09-12): derived CALLS/REFERENCES edges.
+    //   graph_callees(handle, func_id): functions func_id calls (CALLS out).
+    //   graph_callers(handle, func_id): functions that call func_id (CALLS in).
+    //   graph_references(handle, def_id): every use-site of def_id (REFERENCES,
+    //     site granularity + enclosing) — def_id a FUNCTION type-id OR a GLOBAL
+    //     decl-id (from graph_search). graph_search(handle, kind, name~): decl
+    //     nodes by kind + name substring (v1: Function, Global). graph_impact(
+    //     handle, id): batched callers + references + enclosing in one call.
+    //   Each returns { nodes, edges?, truncated? }.
+    value &graph_callees(value &out, int64_t handle, int64_t func_id);
+    value &graph_callers(value &out, int64_t handle, int64_t func_id);
+    value &graph_references(value &out, int64_t handle, int64_t def_id);
+    value &graph_search(value &out, int64_t handle, const char *kind, const char *name_sub);
+    value &graph_impact(value &out, int64_t handle, int64_t id);
+
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):
     //   parse_build: emit a native artifact from the handle's EXISTING

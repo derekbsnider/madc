@@ -244,6 +244,12 @@ void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
 // unbounded (capped server-side).
 void *madc_graph_body(void *result, int64_t handle, int64_t func_id, int64_t depth);
 void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t depth);
+// Code-graph MCP L2 (design 2026-09-12): derived-edge verbs (functions + globals).
+void *madc_graph_callees(void *result, int64_t handle, int64_t func_id);
+void *madc_graph_callers(void *result, int64_t handle, int64_t func_id);
+void *madc_graph_references(void *result, int64_t handle, int64_t def_id);
+void *madc_graph_search(void *result, int64_t handle, void *kind, void *name_sub);
+void *madc_graph_impact(void *result, int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =
