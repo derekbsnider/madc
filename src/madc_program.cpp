@@ -4672,6 +4672,35 @@ static TokenFunc *tu_own_function(TokenBase *tb,
     return tf;
 }
 
+// The INNERMOST-enclosing-function search (madcide AST-1's parse_enclosing
+// AND the code-graph MCP's graph.enclosing, design 2026-09-12): the
+// TU's-own function definition whose [line .. end_line] range contains
+// (line, column), latest-starting match wins (a nested definition beats
+// its enclosing one). NULL = no enclosing definition. ONE owner — both
+// the status-line query and the graph verb read this, not two copies of
+// the loop (helper-methods.md / no-parallel-implementations.md).
+static TokenFunc *enclosing_func_at(::Program &child,
+				    const std::string &display_name,
+				    int64_t line, int64_t column)
+{
+    TokenFunc *best = (TokenFunc *)0;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i], display_name);
+	if ( !tf )
+	    continue;
+	if ( (int64_t)tf->line > line
+	  || ((int64_t)tf->line == line && (int64_t)tf->column > column) )
+	    continue;
+	if ( (int64_t)tf->end_line < line )
+	    continue;
+	if ( !best || tf->line > best->line
+	  || (tf->line == best->line && tf->column > best->column) )
+	    best = tf;
+    }
+    return best;
+}
+
 static void outline_rows_from_child(::Program &child,
 				    const std::string &display_name,
 				    madc::value &out)
@@ -5279,23 +5308,9 @@ bool internal_program_parse_enclosing(int64_t handle, int64_t line,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
-    TokenFunc *best = (TokenFunc *)0;
     ::Program &child = *st->child;
-    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
-    {
-	TokenFunc *tf = tu_own_function(child.pending_funcs[i],
-					st->display_name);
-	if ( !tf )
-	    continue;
-	if ( (int64_t)tf->line > line
-	  || ((int64_t)tf->line == line && (int64_t)tf->column > column) )
-	    continue;
-	if ( (int64_t)tf->end_line < line )
-	    continue;
-	if ( !best || tf->line > best->line
-	  || (tf->line == best->line && tf->column > best->column) )
-	    best = tf;
-    }
+    TokenFunc *best = enclosing_func_at(child, st->display_name, line,
+					column);
     if ( !best )
 	return true;
     std::map<std::string, madc::value> f;
@@ -5495,6 +5510,303 @@ bool internal_program_parse_spans(int64_t handle, madc::value &out)
     std::vector<madc::value> rows;
     highlight_token_rows(child, st->display_name, fn_heads, rows);
     out = value::make_array(rows);
+    return true;
+}
+
+// ---- Code-graph MCP L1 (design 2026-09-12): the live declaration/type
+// graph as node-addressed accessors, beside the parse-handle surface. A
+// node id is a TYPE-ID (madc_type_id_for); the graph is the child's LIVE
+// project_types + name maps + pending_funcs — never the freeze-only
+// DefArena (empty off-Windows). "Index is not the graph": the name maps
+// are the declindex, project_types is the type graph.
+
+// Kind wire name from the live kind discriminator — enum-law: switch on
+// basetype(), with the two derived-type predicates first (a pointer /
+// reference DataDef reports basetype() btSimple but overrides is_pointer /
+// is_reference). Searched "BaseType -> display name": no existing helper
+// (grep src/ include/ 2026-09-12) — this is the one home.
+static const char *graph_kind_name(DataDef *dd)
+{
+    if ( dd->is_pointer() )   return "Pointer";
+    if ( dd->is_reference() ) return "Reference";
+    switch ( dd->basetype() )
+    {
+    case BaseType::btFunct:         return "Function";
+    case BaseType::btStruct:        return "Struct";
+    case BaseType::btClass:         return "Class";
+    case BaseType::btTemplateParam: return "TemplateParam";
+    case BaseType::btSimple:        return "Type";
+    }
+    return "Type";
+}
+
+// A FuncDef's OWN DataDef::name is never populated by the parser — verified
+// against parseFunction's creation site (src/parser.cpp ~65018: `func = new
+// FuncDef(...); funcdef_map[id] = func;`, no `func->name = ...` anywhere on
+// any of the 14 `new FuncDef(` sites) and function_display_name is a
+// narrower "tracked overload" slot (empty for an ordinary function like
+// `add`), NOT a general display name. A function's identifier lives on the
+// funcdef_map KEY / the TokenFunc's Variable — the same source
+// graph_func_node_value already reads. Resolve it by identity over the
+// child's own function tokens (pending_funcs, unfiltered by TU — a node id
+// is not TU-scoped either, so a header-defined function still names
+// itself); empty only for a function with no live token (a compiler
+// synthesized builtin never surfaced as a node here).
+static std::string graph_function_name(::Program &child, DataDef *dd)
+{
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = child.pending_funcs[i]
+	    ? child.pending_funcs[i]->as_func_tok() : (TokenFunc *)0;
+	if ( tf && tf->var.type == dd )
+	    return tf->var.name;
+    }
+    return dd->name;			// fallback: whatever DataDef::name holds
+}
+
+// The terse node projection (spec §6.5): { id, kind, name }. id is the
+// stamped type-id (stable for this parse); a source span is added only for
+// a source-anchored node (graph_func_node_value).
+static madc::value graph_node_value(::Program &child, DataDef *dd)
+{
+    std::map<std::string, madc::value> f;
+    f["id"] = value((int64_t)madc_type_id_for(dd));
+    f["kind"] = value(std::string(graph_kind_name(dd)));
+    std::string nm = dd->basetype() == BaseType::btFunct
+	? graph_function_name(child, dd) : dd->name;
+    f["name"] = value(nm);
+    return value::make_object(f);
+}
+
+// A function node from its parse token: the FuncDef's type-id + the source
+// span (line/column/end_line — the outline coordinates).
+static madc::value graph_func_node_value(TokenFunc *tf)
+{
+    std::map<std::string, madc::value> f;
+    f["id"] = value((int64_t)madc_type_id_for(tf->var.type));
+    f["kind"] = value(std::string("Function"));
+    f["name"] = value(tf->var.name);
+    f["line"] = value((int64_t)tf->line);
+    f["column"] = value((int64_t)tf->column);
+    f["end_line"] = value((int64_t)tf->end_line);
+    return value::make_object(f);
+}
+
+// graph.symbols(handle): the TU's OWN top-level functions as graph nodes —
+// the same TU-own filter (tu_own_function) outline uses, so it is
+// file-accurate and spanned. Types are reached by name/id (definition /
+// node / members / bases), not by an unfiltered header dump (spec §6.5).
+bool internal_program_graph_symbols(int64_t handle, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i],
+					st->display_name);
+	if ( !tf )
+	    continue;
+	nodes.push_back(graph_func_node_value(tf));
+    }
+    std::map<std::string, madc::value> res;
+    res["nodes"] = value::make_array(nodes);
+    out = value::make_object(res);
+    return true;
+}
+
+// graph.node(handle, id): the node for a type-id, from the child's LIVE
+// type table. type_from_id is the segment-dispatching reverse lookup
+// (madc.h:2767) — it covers the PRIMITIVE segment (long, int, ...) as well
+// as the project segment, unlike a bare project_types.get() (id_table.h:
+// "NULL for an id below this segment's base" — a primitive id is always
+// below the project base, so the bare table alone would silently drop
+// every builtin-typed node). Empty object = a valid handle with no such
+// node (a foreign/out-of-range id); false = a bad handle.
+bool internal_program_graph_node(int64_t handle, int64_t node_id,
+				 madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    DataDef *dd = st->child->type_from_id((uint32_t)node_id);
+    if ( !dd )
+    {
+	std::map<std::string, madc::value> empty;
+	out = value::make_object(empty);
+	return true;
+    }
+    out = graph_node_value(*st->child, dd);
+    return true;
+}
+
+// graph.type_of(handle, id): the HAS_TYPE edge. A function -> its return
+// type; a pointer/reference -> its operand (base_type; DataDefREF derives
+// from DataDefPTR, so the cast reads both); anything else -> itself with
+// top-level const peeled (unqualified()).
+bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
+				    madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    DataDef *dd = st->child->type_from_id((uint32_t)node_id);
+    if ( !dd )
+    {
+	std::map<std::string, madc::value> empty;
+	out = value::make_object(empty);
+	return true;
+    }
+    DataDef *ty;
+    if ( dd->basetype() == BaseType::btFunct )
+	ty = &((FuncDef *)dd)->returns;
+    else if ( dd->is_pointer() || dd->is_reference() )
+	ty = ((DataDefPTR *)dd)->base_type;
+    else
+	ty = dd->unqualified();
+    out = graph_node_value(*st->child, ty ? ty : dd);
+    return true;
+}
+
+// graph.definition(handle, name): the declindex face — resolve a bare name
+// to its node(s) through the child's LIVE name maps (funcdef_map for
+// functions, struct_map for aggregates, datatype_map for other named
+// types). Returns { nodes: [...] } (0, 1, or several). This is name lookup,
+// NOT the type graph (spec §8: index is not the graph).
+//
+// Confirm-before-build note (resolved against include/madc.h 2026-09-12):
+// the plan's guessed spellings were wrong on two counts —
+//   struct_map.get(name)     does not exist; StructRegistry only has
+//                            .find(name) -> const_iterator over its
+//                            datadef_map_t (a plain std::map), ->second
+//                            is the DataDef*.
+//   datatype_map.find(name)  returns TokenDataType** (intern_keyed_map's
+//                            V* with V=TokenDataType*), NOT a
+//                            TokenDataType* directly; and the struct has
+//                            no `datadef` member — it is `DataDef
+//                            &definition` (a REFERENCE, taken by address).
+bool internal_program_graph_definition(int64_t handle,
+				       const std::string &name,
+				       madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes;
+    // Function definitions (funcdef_map -> FuncDef*, which is a DataDef).
+    funcdef_map_iter fi = child.funcdef_map.find(name);
+    if ( fi != child.funcdef_map.end() && fi->second )
+	nodes.push_back(graph_node_value(child, fi->second));
+    // Aggregate definitions (struct_map, a name -> DataDef* map).
+    StructRegistry::const_iterator sit = child.struct_map.find(name);
+    if ( sit != child.struct_map.end() && sit->second )
+	nodes.push_back(graph_node_value(child, sit->second));
+    else
+    {
+	// Other named types (datatype_map, interned name -> TokenDataType*;
+	// the DataDef lives in the token's `definition` reference member).
+	TokenDataType **tdp = child.datatype_map.find(name);
+	if ( tdp && *tdp )
+	    nodes.push_back(graph_node_value(child, &(*tdp)->definition));
+    }
+    std::map<std::string, madc::value> res;
+    res["nodes"] = value::make_array(nodes);
+    out = value::make_object(res);
+    return true;
+}
+
+// graph.members(handle, type_id): the MEMBER_OF edges — each member with
+// its byte offset and its type node inline (the member -> type HAS_TYPE
+// edge, so the agent gets structure + types in one call). Empty nodes for
+// a non-aggregate. Uses type_from_id (see graph.node) — a member's type
+// can itself be a primitive-segment id.
+bool internal_program_graph_members(int64_t handle, int64_t type_id,
+				    madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes;
+    DataDef *dd = child.type_from_id((uint32_t)type_id);
+    if ( dd && (dd->basetype() == BaseType::btStruct
+	     || dd->basetype() == BaseType::btClass) )
+    {
+	DataDefSTRUCT *sd = (DataDefSTRUCT *)dd;
+	for ( size_t i = 0; i < sd->members.size(); ++i )
+	{
+	    if ( sd->members[i].first.empty() )
+		continue;			// an unnamed bitfield slot
+	    std::map<std::string, madc::value> m;
+	    m["name"] = value(sd->members[i].first);
+	    if ( i < sd->member_offsets.size() )
+		m["offset"] = value((int64_t)sd->member_offsets[i]);
+	    if ( sd->members[i].second )
+		m["type"] = graph_node_value(child, sd->members[i].second);
+	    nodes.push_back(value::make_object(m));
+	}
+    }
+    std::map<std::string, madc::value> res;
+    res["nodes"] = value::make_array(nodes);
+    out = value::make_object(res);
+    return true;
+}
+
+// graph.bases(handle, type_id): the INHERITS edges — a class's direct bases
+// as type nodes. Empty for a non-class.
+bool internal_program_graph_bases(int64_t handle, int64_t type_id,
+				  madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes;
+    DataDef *dd = child.type_from_id((uint32_t)type_id);
+    if ( dd && dd->basetype() == BaseType::btClass )
+    {
+	DataDefCLASS *cd = (DataDefCLASS *)dd;
+	for ( size_t i = 0; i < cd->bases.size(); ++i )
+	    if ( cd->bases[i].base )
+		nodes.push_back(graph_node_value(child, cd->bases[i].base));
+    }
+    std::map<std::string, madc::value> res;
+    res["nodes"] = value::make_array(nodes);
+    out = value::make_object(res);
+    return true;
+}
+
+// graph.enclosing(handle, line, column): the ENCLOSES edge — the innermost
+// enclosing function definition at a position, as a graph node (id + span),
+// so the agent can chain type_of / node. The innermost-by-(line,column)
+// search is enclosing_func_at (shared with parse_enclosing) — only the
+// result shape differs (a node, not the outline row).
+bool internal_program_graph_enclosing(int64_t handle, int64_t line,
+				      int64_t column, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    TokenFunc *best = enclosing_func_at(child, st->display_name, line,
+					column);
+    if ( !best )
+    {
+	std::map<std::string, madc::value> empty;
+	out = value::make_object(empty);
+	return true;
+    }
+    out = graph_func_node_value(best);
     return true;
 }
 

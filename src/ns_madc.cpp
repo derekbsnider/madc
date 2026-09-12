@@ -246,6 +246,24 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
 
+// Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
+// as node-addressed reads over a parse handle. The <ns_madc> declaration
+// carries the node/result shapes.
+value &graph_symbols(value &out, int64_t handle)
+	{ madc_graph_symbols(&out, handle); return out; }
+value &graph_node(value &out, int64_t handle, int64_t node_id)
+	{ madc_graph_node(&out, handle, node_id); return out; }
+value &graph_type_of(value &out, int64_t handle, int64_t node_id)
+	{ madc_graph_type_of(&out, handle, node_id); return out; }
+value &graph_definition(value &out, int64_t handle, const char *name)
+	{ std::string n = name ? name : ""; madc_graph_definition(&out, handle, &n); return out; }
+value &graph_members(value &out, int64_t handle, int64_t type_id)
+	{ madc_graph_members(&out, handle, type_id); return out; }
+value &graph_bases(value &out, int64_t handle, int64_t type_id)
+	{ madc_graph_bases(&out, handle, type_id); return out; }
+value &graph_enclosing(value &out, int64_t handle, int64_t line, int64_t column)
+	{ madc_graph_enclosing(&out, handle, line, column); return out; }
+
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):
 // parse_build emits a native artifact from the handle's EXISTING parsed

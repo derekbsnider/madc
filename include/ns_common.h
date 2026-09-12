@@ -228,6 +228,16 @@ void *madc_parse_diagnostics(void *result, int64_t handle);
 void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
 			   int64_t column);
 void *madc_parse_spans(void *result, int64_t handle);
+// Code-graph MCP L1 bridges (design 2026-09-12): the live declaration/type
+// graph as node-addressed reads over a parse handle. result = madc::value*.
+void *madc_graph_symbols(void *result, int64_t handle);
+void *madc_graph_node(void *result, int64_t handle, int64_t node_id);
+void *madc_graph_type_of(void *result, int64_t handle, int64_t node_id);
+void *madc_graph_definition(void *result, int64_t handle, void *name);
+void *madc_graph_members(void *result, int64_t handle, int64_t type_id);
+void *madc_graph_bases(void *result, int64_t handle, int64_t type_id);
+void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =

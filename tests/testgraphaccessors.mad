@@ -1,0 +1,71 @@
+// Code-graph MCP L1: the live declaration/type graph accessors, given a
+// LIFETIME by a parse handle. Compile-NEVER-execute (.expect_quiet is the
+// proof — an executed buffer would print EXECUTED and break .expect).
+int main()
+{
+    var src = "struct Point { long x; long y; };\n"
+	      "long add(long a, long b) { return a + b; }\n"
+	      "long twice(long n) { return add(n, n); }\n";
+    long h = madc::parse_open(src.c_str(), "graph.mad");
+    println("opened: {}", h > 0 ? 1 : 0);
+
+    // graph.symbols — the TU's own functions (file-accurate, spanned).
+    var sy;
+    madc::graph_symbols(sy, h);
+    var nodes = sy["nodes"];
+    println("symbols: {}", php::count(nodes));
+    for ( var n : nodes )
+	println("  {} {} @ {}:{}", n["kind"], n["name"], n["line"],
+		n["column"]);
+
+    // graph.node(id) round-trips a symbol id back to its node; graph.type_of
+    // on a function id yields its return-type node.
+    var first = nodes[0];
+    long fid = first["id"].as_integer();
+    var nd;
+    madc::graph_node(nd, h, fid);
+    println("node: {} {}", nd["kind"], nd["name"]);
+    var ty;
+    madc::graph_type_of(ty, h, fid);
+    println("type_of: {}", ty["kind"]);
+    var none;
+    madc::graph_node(none, h, 0);
+    println("node@0 empty: {}", none.is_null() || php::count(none) == 0 ? 1 : 0);
+
+    // graph.definition(name) resolves a name to its node(s): a function,
+    // then a struct type; an unknown name yields zero nodes.
+    var df;
+    madc::graph_definition(df, h, "add");
+    println("def add: {} {}", php::count(df["nodes"]),
+	    df["nodes"][0]["kind"]);
+    var ds;
+    madc::graph_definition(ds, h, "Point");
+    println("def Point: {} {}", php::count(ds["nodes"]),
+	    ds["nodes"][0]["kind"]);
+    var dn;
+    madc::graph_definition(dn, h, "nope");
+    println("def nope: {}", php::count(dn["nodes"]));
+
+    // graph.members / graph.bases on the Point struct id.
+    long pid = ds["nodes"][0]["id"].as_integer();
+    var mem;
+    madc::graph_members(mem, h, pid);
+    println("members: {}", php::count(mem["nodes"]));
+    for ( var m : mem["nodes"] )
+	println("  {} : {}", m["name"], m["type"]["kind"]);
+    var bz;
+    madc::graph_bases(bz, h, pid);
+    println("bases: {}", php::count(bz["nodes"]));
+
+    // graph.enclosing(line, column): the function around a caret, as a node
+    // (line 2 is inside add; line 99 is inside nothing).
+    var en;
+    madc::graph_enclosing(en, h, 2, 20);
+    println("encl: {} {}", en["kind"], en["name"]);
+    var en2;
+    madc::graph_enclosing(en2, h, 99, 1);
+    println("encl none: {}", php::count(en2) == 0 ? 1 : 0);
+
+    madc::parse_close(h);
+    return 0;
+}

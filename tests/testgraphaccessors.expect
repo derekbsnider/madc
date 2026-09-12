@@ -1,0 +1,16 @@
+opened: 1
+symbols: 2
+Function add @ 2:
+Function twice @ 3:
+node: Function add
+type_of: Type
+node@0 empty: 1
+def add: 1 Function
+def Point: 1 Struct
+def nope: 0
+members: 2
+  x : Type
+  y : Type
+bases: 0
+encl: Function add
+encl none: 1

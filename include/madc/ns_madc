@@ -167,6 +167,20 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+
+    // Code-graph MCP L1 (design 2026-09-12): the live declaration/type
+    // graph as node-addressed reads over a parse handle. A node id is a
+    // type-id; a node is { id, kind, name } (+ line/column/end_line for a
+    // function). graph_symbols returns { nodes: [...] } — the TU's own
+    // top-level functions.
+    value &graph_symbols(value &out, int64_t handle);
+    value &graph_node(value &out, int64_t handle, int64_t node_id);
+    value &graph_type_of(value &out, int64_t handle, int64_t node_id);
+    value &graph_definition(value &out, int64_t handle, const char *name);
+    value &graph_members(value &out, int64_t handle, int64_t type_id);
+    value &graph_bases(value &out, int64_t handle, int64_t type_id);
+    value &graph_enclosing(value &out, int64_t handle, int64_t line,
+			   int64_t column);
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):
     //   parse_build: emit a native artifact from the handle's EXISTING

@@ -345,6 +345,21 @@ bool internal_program_parse_diagnostics(int64_t handle, value &out);
 bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
 bool internal_program_parse_spans(int64_t handle, value &out);
+// Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
+// as node-addressed accessors over a parse handle's child Program — see
+// madc_program.cpp beside the parse-handle block.
+bool internal_program_graph_symbols(int64_t handle, value &out);
+bool internal_program_graph_node(int64_t handle, int64_t node_id, value &out);
+bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
+				    value &out);
+bool internal_program_graph_definition(int64_t handle,
+				       const std::string &name, value &out);
+bool internal_program_graph_members(int64_t handle, int64_t type_id,
+				    value &out);
+bool internal_program_graph_bases(int64_t handle, int64_t type_id,
+				  value &out);
+bool internal_program_graph_enclosing(int64_t handle, int64_t line,
+				      int64_t column, value &out);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1101,6 +1116,53 @@ void *madc_parse_spans(void *result, int64_t handle)
 {
     madc::value &out = *(madc::value *)result;
     madc::internal_program_parse_spans(handle, out);
+    return result;
+}
+
+// Code-graph MCP L1 bridges (design 2026-09-12): result = madc::value*,
+// handle = a parse handle. Thin thunks over internal_program_graph_*.
+void *madc_graph_symbols(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_symbols(handle, out);
+    return result;
+}
+void *madc_graph_node(void *result, int64_t handle, int64_t node_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_node(handle, node_id, out);
+    return result;
+}
+void *madc_graph_type_of(void *result, int64_t handle, int64_t node_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_type_of(handle, node_id, out);
+    return result;
+}
+void *madc_graph_definition(void *result, int64_t handle, void *name)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_definition(handle,
+					    *(const std::string *)name, out);
+    return result;
+}
+void *madc_graph_members(void *result, int64_t handle, int64_t type_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_members(handle, type_id, out);
+    return result;
+}
+void *madc_graph_bases(void *result, int64_t handle, int64_t type_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_bases(handle, type_id, out);
+    return result;
+}
+void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_enclosing(handle, line, column, out);
     return result;
 }
 
