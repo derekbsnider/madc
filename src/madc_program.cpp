@@ -5955,10 +5955,32 @@ static GraphBodyKind graph_body_kind_of(const TokenBase *t)
     // exotic-long-tail escape hatch.
     case TokenType::ttSymbol:    return GraphBodyKind::Statement;
     case TokenType::ttBase:
-	// ttBase-typed expression tokens (cast, addr-of, addr-expr, deref-step).
+	// A labeled statement (`name: stmt`, ttBase) wraps the statement it
+	// prefixes — classify as the Statement it is (F1, independent review
+	// 2026-09-12). Pervasive as goto targets in C89/SMAUG; without this it
+	// reported Unknown and its labeled child was dropped.
+	if ( nt->as_label_tok() )
+	    return GraphBodyKind::Statement;
+	// ttBase-typed expression tokens: cast, addr-of, addr-expr, deref-step,
+	// plus the RTTI/sizeof family dynamic_cast/typeid/typeQuery (F2).
 	if ( nt->as_cast_tok() || nt->as_addr_of_tok()
-	  || nt->as_addr_expr_tok() || nt->as_deref_step_tok() )
+	  || nt->as_addr_expr_tok() || nt->as_deref_step_tok()
+	  || nt->as_dyncast_tok() || nt->as_typeid_tok()
+	  || nt->as_typequery_tok() )
 	    return GraphBodyKind::Expr;
+	// madc-dialect cooperative-task heads (STD_MADC, all ttBase): go/scope/
+	// yield are statements, await is an expression. Classified by id() —
+	// they carry no as_X_tok downcast and are niche enough not to widen the
+	// hot TokenBase; their sub-expressions (call/body/chan) are a documented
+	// deferral in graph_body_children (F2b, independent review 2026-09-12).
+	switch ( t->id() )
+	{
+	case TokenID::tkGO:
+	case TokenID::tkSCOPE:
+	case TokenID::tkYIELD:  return GraphBodyKind::Statement;
+	case TokenID::tkAWAIT:  return GraphBodyKind::Expr;
+	default:                break;
+	}
 	return GraphBodyKind::Unknown;
     default:                      return GraphBodyKind::Unknown;
     }
@@ -6103,10 +6125,11 @@ static void graph_body_children(const TokenBase *t, std::vector<const TokenBase 
 	for ( size_t i = 0; i < d->ctor_args.size(); ++i ) raw.push_back(d->ctor_args[i]);
     }
     else if ( TokenMember *m = nt->as_member_tok() )   // also covers TokenCallMethod
-    { raw.push_back(m->parent_expr);
+    { raw.push_back(m->parent_expr); raw.push_back(m->src_node);   // F5: computed callee
       for ( size_t i = 0; i < m->parameters.size(); ++i ) raw.push_back(m->parameters[i]); }
     else if ( TokenCallFunc *cf = nt->as_callfunc_tok() )
-      for ( size_t i = 0; i < cf->parameters.size(); ++i ) raw.push_back(cf->parameters[i]);
+    { raw.push_back(cf->src_node);   // F5: fn-ptr from a sub-expr (c.fn(x)/arr[i].fn())
+      for ( size_t i = 0; i < cf->parameters.size(); ++i ) raw.push_back(cf->parameters[i]); }
     else if ( TokenSubscript *s = nt->as_subscript_tok() )
     { raw.push_back(s->index);
       for ( size_t i = 0; i < s->extra_indices.size(); ++i ) raw.push_back(s->extra_indices[i]); }
@@ -6121,6 +6144,20 @@ static void graph_body_children(const TokenBase *t, std::vector<const TokenBase 
     // the plan's enumerator never read it.
     else if ( TokenAddrExpr *s = nt->as_addr_expr_tok() )
 	raw.push_back(s->expr);
+    // Independent review 2026-09-12 (F1/F2/F3): the ttBase/aggregate long tail
+    // that carries real children. Each is a direct TokenBase subclass (not
+    // is-a operator/callfunc), so placement here is order-independent.
+    else if ( TokenLabel *s = nt->as_label_tok() )          // F1: `name: stmt`
+	raw.push_back(s->labeled);
+    else if ( TokenStructLit *s = nt->as_struct_lit_tok() ) // F3: {..}/(T){..} elems
+	for ( size_t i = 0; i < s->inits.size(); ++i ) raw.push_back(s->inits[i]);
+    else if ( TokenDynamicCast *s = nt->as_dyncast_tok() )  // F2: dynamic_cast<T>(e)
+	raw.push_back(s->operand);
+    else if ( TokenTypeid *s = nt->as_typeid_tok() )        // F2: typeid(e)
+	raw.push_back(s->operand);
+    else if ( TokenTypeQuery *s = nt->as_typequery_tok() )  // F2: sizeof VLA side-effects
+	for ( size_t i = 0; i < s->operand_side_effects.size(); ++i )
+	    raw.push_back(s->operand_side_effects[i]);
     // Found verifying Task 2 (beyond the 3 official checkpoints): TokenTerQ
     // (include/tokens.h:985) is a TokenOperator subclass but does NOT use
     // the inherited left/right — its parse site (src/parser.cpp:40601-40626)
@@ -6135,7 +6172,10 @@ static void graph_body_children(const TokenBase *t, std::vector<const TokenBase 
     else if ( TokenOperator *op = nt->as_operator_tok() ) // assign/multiop (ternary handled above)
     { raw.push_back(op->left); raw.push_back(op->right); }
     // else: leaf (literals, TokenVar, TokenIdent, addr-of/deref-of-var,
-    // CASE/BREAK/CONT/GOTO, and the exotic long tail).
+    // CASE/BREAK/CONT/GOTO, the exotic long tail, and the dialect
+    // cooperative-task heads go/scope/await/yield — F2b: classified by id() in
+    // graph_body_kind_of but their call/body/chan children are deferred pending
+    // as_X_tok downcasts, niche enough not to widen the hot TokenBase).
 
     for ( size_t i = 0; i < raw.size(); ++i )
 	if ( raw[i] )

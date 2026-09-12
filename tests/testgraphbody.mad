@@ -10,7 +10,9 @@ int main()
 	      "    long total = 0;\n"
 	      "    for (long i = 0; i < n; i = i + 1) {\n"
 	      "        if (i > 0) { total = add(total, i); }\n"
+	      "        if (total > 100) goto done;\n"
 	      "    }\n"
+	      "done:\n"
 	      "    return total;\n"
 	      "}\n";
     long h = madc::parse_open(src.c_str(), "graphbody.mad");
@@ -48,6 +50,12 @@ int main()
     println("kind NameRef: {}", seen["NameRef"].is_null() ? 0 : 1);
     println("kind Expr: {}", seen["Expr"].is_null() ? 0 : 1);
     println("kind Literal: {}", seen["Literal"].is_null() ? 0 : 1);
+
+    // Regression guard (independent review F1 2026-09-12): the labeled statement
+    // `done: return total;` (a goto target — TokenLabel, ttBase) must classify
+    // as the Statement it is, with its `return` child reachable — NOT an Unknown
+    // leaf with the labeled subtree dropped. No body node here may be Unknown.
+    println("kind Unknown present: {}", seen["Unknown"].is_null() ? 0 : 1);
 
     // Every edge is a CONTAINS edge (spec §6.2).
     bool all_contains = true;
