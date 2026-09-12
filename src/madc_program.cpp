@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stack>
 #include <string>
+#include <unordered_map>	// L1b body-node id registry (parse_tu_state::body_ids)
 #include <utility>
 #include <vector>
 
@@ -4950,6 +4951,13 @@ struct parse_tu_state
 {
     ::Program *child;
     std::string display_name;
+    // L1b body-node id registry (snapshot-stable handles; spec §6.3). Body
+    // nodes are TokenBase* (not DataDefs), so they need their own id space,
+    // partitioned from L1's type-ids by GRAPH_BODY_ID_BASE. Populated lazily
+    // as body verbs surface nodes; CLEARED on refresh (a re-parse frees the
+    // arena these pointers came from). Same-snapshot dedup via body_ids.
+    std::vector<const TokenBase *> body_nodes;                    // id = BASE + index
+    std::unordered_map<const TokenBase *, int64_t> body_ids;      // node -> id
     parse_tu_state() : child((::Program *)0) {}
     ~parse_tu_state() { delete child; }
 };
@@ -5266,6 +5274,12 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     parse_handle_child_init(*st->child);
     compile_source_child_frontend(self, *st->child, source_text,
 				  st->display_name);
+    // L1b: the old body-node registry points at the just-deleted child's
+    // TokenBase tree — a re-parse dangles every one of those pointers, so
+    // the registry is cleared here (spec §6.3: "after a mutating command the
+    // agent re-queries").
+    st->body_nodes.clear();
+    st->body_ids.clear();
     return true;
 }
 
@@ -5836,6 +5850,438 @@ bool internal_program_graph_enclosing(int64_t handle, int64_t line,
 	return true;
     }
     out = graph_func_node_value(child, best);
+    return true;
+}
+
+// ---- Code-graph MCP L1b (design 2026-09-12): the BODY graph -------------
+// L1 above exposes the decl/type graph (types + functions, id = type-id).
+// L1b adds the body graph: a function's statement/expression tree, walked
+// over the LIVE parse-handle TokenBase AST reachable from the same
+// TokenFunc* graph_function_token already resolves — NEVER the c2mir
+// node_t/cir_node arena (transient; freed after every compile by
+// CirBuilder's destructor, src/madc_cir.cpp:6613) and NEVER DefArena/
+// get_def_at. Two new verbs: graph.body(func, depth?), graph.children(id,
+// depth?). Substrate finding + doc clarification: Task 7 below.
+
+// Body-node kinds (spec §6.2 "cir_node bodies") over the LIVE TokenBase AST.
+// Enum-over-strings: convert to a wire name EXACTLY ONCE here. Error is the
+// contained-parse-error citizen (TokenError); Unknown is the exhaustive
+// fallback so the classifier switch stays total (no -Wswitch).
+enum class GraphBodyKind {
+    TranslationUnit, Block, Statement, Call, NameRef, Expr, Literal, Error, Unknown
+};
+
+static const char *graph_body_kind_name(GraphBodyKind k)
+{
+    switch ( k )
+    {
+    case GraphBodyKind::TranslationUnit: return "TranslationUnit";
+    case GraphBodyKind::Block:           return "Block";
+    case GraphBodyKind::Statement:       return "Statement";
+    case GraphBodyKind::Call:            return "Call";
+    case GraphBodyKind::NameRef:         return "NameRef";
+    case GraphBodyKind::Expr:            return "Expr";
+    case GraphBodyKind::Literal:         return "Literal";
+    case GraphBodyKind::Error:           return "Error";
+    case GraphBodyKind::Unknown:         return "Unknown";
+    }
+    return "Unknown";
+}
+
+// The classifier: TokenType-primary, as_X_tok() tiebreakers for the
+// ttMember/ttBase-overloaded cases (verified: TokenDeref/TokenDerefExpr
+// report ttMember but are dereference EXPRESSIONS, not member access;
+// TokenCast/TokenDerefStep/TokenAddrOf/TokenAddrExpr report ttBase).
+static GraphBodyKind graph_body_kind_of(const TokenBase *t)
+{
+    if ( !t )
+	return GraphBodyKind::Unknown;
+    TokenBase *nt = const_cast<TokenBase *>(t);   // as_X_tok() are non-const
+    switch ( t->type() )
+    {
+    case TokenType::ttProgram:   return GraphBodyKind::TranslationUnit;
+    case TokenType::ttCompound:  return GraphBodyKind::Block;
+    // Found verifying Task 3 (beyond the plan's 3 official checkpoints,
+    // same "read the header, don't assume" discipline): TokenFunc IS-A
+    // TokenCpnd (madc.h:792) but OVERRIDES type() to ttFunction, not
+    // ttCompound (madc.h:810) — confirmed by reading the class. Tasks 4/5
+    // always walk a TokenFunc* as the root, and the walker visits the root
+    // itself as a node (graph_body_walk below), so without this case EVERY
+    // graph.body call's first node — the function itself — fell through to
+    // `default` and reported kind "Unknown". A TokenFunc's body IS its
+    // statements (same shape as any other TokenCpnd), so Block is the
+    // faithful body-graph kind; the function's decl-graph identity (kind
+    // "Function") is unaffected — that stays L1's graph.symbols/node/
+    // definition, a different view of the same token.
+    case TokenType::ttFunction:  return GraphBodyKind::Block;
+    case TokenType::ttKeyword:   return GraphBodyKind::Statement;  // subkind = id()
+    case TokenType::ttStatement: return GraphBodyKind::Statement;
+    case TokenType::ttDeclare:
+    case TokenType::ttTypedefDecl:
+    case TokenType::ttStructDef: return GraphBodyKind::Statement;  // decl-statement
+    case TokenType::ttCallFunc:
+    case TokenType::ttCallMethod: return GraphBodyKind::Call;
+    case TokenType::ttVariable:
+    case TokenType::ttIdentifier: return GraphBodyKind::NameRef;
+    case TokenType::ttMember:
+	// ttMember is overloaded: real member access (NameRef) vs. deref exprs.
+	if ( nt->as_member_tok() )       return GraphBodyKind::NameRef;
+	return GraphBodyKind::Expr;      // TokenDeref/TokenDerefExpr/TokenComplexPart
+    case TokenType::ttOperator:
+    case TokenType::ttMultiOp:
+    case TokenType::ttSubscript:  return GraphBodyKind::Expr;
+    case TokenType::ttString:
+    case TokenType::ttChar:
+    case TokenType::ttInteger:
+    case TokenType::ttReal:
+    case TokenType::ttStructLit:  return GraphBodyKind::Literal;
+    case TokenType::ttError:      return GraphBodyKind::Error;
+    // Found running Task 7's fixture (beyond the plan's 3 official
+    // checkpoints and beyond static source reading — this one surfaced only
+    // by actually WALKING a real function body): `T name = expr;` leaves its
+    // trailing `;` UNCONSUMED (verified: Program::parseDeclaration's
+    // ordinary scalar-initializer path, src/parser.cpp:69330-69369, never
+    // consumes it, unlike the ctor-args path a few lines above which
+    // explicitly does), so parseCompound's statement loop
+    // (src/parser.cpp:64228-64256) re-tokenizes it as its OWN bare
+    // TokenSemi statement — a real, legitimate (if incidental) empty
+    // statement ([stmt.stmt]: `;` alone is a null statement), pushed right
+    // after EVERY scalar declaration-with-initializer. TokenSemi is-a
+    // TokenSymbol (type()==ttSymbol, include/tokens.h:1231) — unhandled by
+    // this switch, so it fell to `default` and reported "Unknown" on what
+    // is close to the single most common statement shape in real C. `;`
+    // alone is exactly a Statement (an empty one); reported here instead of
+    // via `default` so it reads as the ordinary construct it is, not the
+    // exotic-long-tail escape hatch.
+    case TokenType::ttSymbol:    return GraphBodyKind::Statement;
+    case TokenType::ttBase:
+	// ttBase-typed expression tokens (cast, addr-of, addr-expr, deref-step).
+	if ( nt->as_cast_tok() || nt->as_addr_of_tok()
+	  || nt->as_addr_expr_tok() || nt->as_deref_step_tok() )
+	    return GraphBodyKind::Expr;
+	return GraphBodyKind::Unknown;
+    default:                      return GraphBodyKind::Unknown;
+    }
+}
+
+// Statement subkind (only surfaced when fields includes "subkind"): the
+// control-flow keyword. Keyed on TokenID (an enum), not a string compare.
+// Reserved for a future `fields`-opt-in parameter on graph.body/children
+// (neither verb's signature carries `fields` yet — spec §6.5's `fields`
+// opt-in is not otherwise wired in this slice) — genuinely unused today, so
+// -Wunused-function is silenced explicitly rather than deleting infra the
+// plan's Task 1 names as a deliverable, or growing scope to wire `fields`
+// through two verb signatures this slice does not otherwise touch.
+__attribute__((unused))
+static const char *graph_stmt_subkind_name(TokenID id)
+{
+    switch ( id )
+    {
+    case TokenID::tkIF:     return "if";
+    case TokenID::tkFOR:    return "for";     // TokenFOR and TokenFOREACH both
+    case TokenID::tkWHILE:  return "while";
+    case TokenID::tkDO:     return "do";
+    case TokenID::tkRETURN: return "return";
+    case TokenID::tkSWITCH: return "switch";
+    case TokenID::tkCASE:   return "case";
+    case TokenID::tkBREAK:  return "break";
+    case TokenID::tkCONT:   return "continue";
+    case TokenID::tkGOTO:   return "goto";
+    case TokenID::tkTRY:    return "try";
+    case TokenID::tkTHROW:  return "throw";
+    default:                return "";
+    }
+}
+
+// Body-node ids live above every plausible type-id so a single integer id is
+// self-identifying (graph.children routes on it). Type-ids are small table
+// indices; 2^62 is unreachable by them.
+static const int64_t GRAPH_BODY_ID_BASE = 0x4000000000000000LL;
+
+static int64_t graph_body_intern(parse_tu_state *st, const TokenBase *t)
+{
+    if ( !st || !t )
+	return 0;
+    std::unordered_map<const TokenBase *, int64_t>::iterator it = st->body_ids.find(t);
+    if ( it != st->body_ids.end() )
+	return it->second;
+    int64_t id = GRAPH_BODY_ID_BASE + (int64_t)st->body_nodes.size();
+    st->body_nodes.push_back(t);
+    st->body_ids[t] = id;
+    return id;
+}
+
+static const TokenBase *graph_body_resolve(parse_tu_state *st, int64_t id)
+{
+    if ( !st || id < GRAPH_BODY_ID_BASE )
+	return (const TokenBase *)0;
+    size_t idx = (size_t)(id - GRAPH_BODY_ID_BASE);
+    return idx < st->body_nodes.size() ? st->body_nodes[idx] : (const TokenBase *)0;
+}
+
+// Direct children of a body node, in source order. Reaches each type via its
+// O(1) as_X_tok() downcast (null-checked receiver) and reads the members from
+// the recon appendix. A node with no recognized child-bearing shape yields no
+// children (safe leaf) — the exotic long tail (NEW/DELETE/OBJTEMP/MATCH/
+// PACK/COMPLEXPART) is additive follow-up, never a crash; CASE/BREAK/CONT/
+// GOTO have no as_X_tok() downcast (plan ruling) and stay leaves too, so a
+// switch's case BODIES are not descended into yet (the case label itself is
+// still a node, reached via TokenSWITCH::cases below) — a documented,
+// deliberate limitation, not silent.
+static void graph_body_children(const TokenBase *t, std::vector<const TokenBase *> &out)
+{
+    if ( !t )
+	return;
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    std::vector<const TokenBase *> raw;
+
+    if ( TokenCpnd *c = nt->as_cpnd_tok() )          // Block / TranslationUnit / Func body
+	for ( size_t i = 0; i < c->statements.size(); ++i )
+	    raw.push_back(c->statements[i]);
+    else if ( TokenIF *s = nt->as_if_tok() )
+    { raw.push_back(s->init_stmt); raw.push_back(s->condition_decl);
+      raw.push_back(s->condition); raw.push_back(s->statement); raw.push_back(s->elsestmt); }
+    else if ( TokenFOR *s = nt->as_for_tok() )
+    { raw.push_back(s->initialize);
+      for ( size_t i = 0; i < s->init_extras.size(); ++i ) raw.push_back(s->init_extras[i]);
+      raw.push_back(s->condition); raw.push_back(s->increment);
+      for ( size_t i = 0; i < s->incr_extras.size(); ++i ) raw.push_back(s->incr_extras[i]);
+      raw.push_back(s->statement); }
+    else if ( TokenFOREACH *s = nt->as_foreach_tok() )
+    { raw.push_back(s->container); raw.push_back(s->statement); }
+    else if ( TokenDO *s = nt->as_do_tok() )
+    { raw.push_back(s->statement); raw.push_back(s->condition); }
+    // Confirm-before-build (Task 2, official checkpoint #1): `while (x) {}`
+    // is a live TokenWHILE (TokenWHILE::parse returns `this`,
+    // src/parser.cpp:50090; read back via dynamic_cast<TokenWHILE*> at
+    // src/parser.cpp:66744) — NOT lowered to TokenFOR. as_while_tok() added
+    // to TokenBase/TokenWHILE (include/tokens.h), mirroring as_for_tok.
+    else if ( TokenWHILE *s = nt->as_while_tok() )
+    { raw.push_back(s->condition); raw.push_back(s->statement); }
+    else if ( TokenRETURN *s = nt->as_return_tok() )
+    { raw.push_back(s->returns);
+      for ( size_t i = 0; i < s->return_exprs.size(); ++i ) raw.push_back(s->return_exprs[i]); }
+    // Confirm-before-build (Task 2, official checkpoint #2): TokenSWITCH
+    // (include/tokens.h:1715) — init_stmt/expression/pre_case_stmts/cases/
+    // defaultcase. Verified against Program::parse_switch_label
+    // (src/parser.cpp:52369): defaultcase is a SEPARATE TokenCASE, never
+    // also pushed into `cases` (default_index is only its logical position
+    // among cases, not a cases[] index) — so no double-counting.
+    else if ( TokenSWITCH *s = nt->as_switch_tok() )
+    {
+	raw.push_back(s->init_stmt);
+	raw.push_back(s->expression);
+	for ( size_t i = 0; i < s->pre_case_stmts.size(); ++i ) raw.push_back(s->pre_case_stmts[i]);
+	for ( size_t i = 0; i < s->cases.size(); ++i ) raw.push_back(s->cases[i]);
+	raw.push_back(s->defaultcase);
+    }
+    // Confirm-before-build (Task 2, official checkpoint #2): TokenTRY
+    // (include/tokens.h:1689) — try_body + catch_bodies (parallel to
+    // catch_types/catch_varnames, int/string vectors with nothing to walk).
+    else if ( TokenTRY *s = nt->as_try_tok() )
+    {
+	raw.push_back(s->try_body);
+	for ( size_t i = 0; i < s->catch_bodies.size(); ++i ) raw.push_back(s->catch_bodies[i]);
+    }
+    // Confirm-before-build (Task 2, official checkpoint #2): TokenTHROW
+    // (include/tokens.h:1705) — throw_expr only (NULL for a bare rethrow;
+    // filtered by the null check below).
+    else if ( TokenTHROW *s = nt->as_throw_tok() )
+	raw.push_back(s->throw_expr);
+    // Found verifying Task 2 (beyond the 3 official checkpoints): TokenDecl
+    // (include/madc.h:814) is a declaration STATEMENT (ttDeclare ->
+    // Statement) whose initializer lives in initialize/init_list/ctor_args —
+    // the plan's enumerator had no branch for it, which would have silently
+    // dropped every local variable's initializer (`long total = 0;`) from
+    // the body graph. A decl uses at most one of the three initializer forms
+    // in practice; pushing all three is safe (the unused ones are empty/
+    // NULL and filtered below).
+    else if ( TokenDecl *d = nt->as_decl_tok() )
+    {
+	raw.push_back(d->initialize);
+	for ( size_t i = 0; i < d->init_list.size(); ++i ) raw.push_back(d->init_list[i]);
+	for ( size_t i = 0; i < d->ctor_args.size(); ++i ) raw.push_back(d->ctor_args[i]);
+    }
+    else if ( TokenMember *m = nt->as_member_tok() )   // also covers TokenCallMethod
+    { raw.push_back(m->parent_expr);
+      for ( size_t i = 0; i < m->parameters.size(); ++i ) raw.push_back(m->parameters[i]); }
+    else if ( TokenCallFunc *cf = nt->as_callfunc_tok() )
+      for ( size_t i = 0; i < cf->parameters.size(); ++i ) raw.push_back(cf->parameters[i]);
+    else if ( TokenSubscript *s = nt->as_subscript_tok() )
+    { raw.push_back(s->index);
+      for ( size_t i = 0; i < s->extra_indices.size(); ++i ) raw.push_back(s->extra_indices[i]); }
+    else if ( TokenSubscriptExpr *s = nt->as_subscript_expr_tok() )
+    { raw.push_back(s->base_expr); raw.push_back(s->index); }
+    else if ( TokenCast *s = nt->as_cast_tok() )       raw.push_back(s->expr);
+    else if ( TokenDerefExpr *s = nt->as_deref_expr_tok() ) raw.push_back(s->expr);
+    // Found verifying Task 2 (beyond the 3 official checkpoints):
+    // TokenAddrExpr (include/madc.h:1070) — unlike TokenAddrOf (Variable&,
+    // no token child) — carries a real `TokenBase *expr` sub-expression
+    // (`&arr[i]`, `&obj.field`); the recon appendix documents the member but
+    // the plan's enumerator never read it.
+    else if ( TokenAddrExpr *s = nt->as_addr_expr_tok() )
+	raw.push_back(s->expr);
+    // Found verifying Task 2 (beyond the 3 official checkpoints): TokenTerQ
+    // (include/tokens.h:985) is a TokenOperator subclass but does NOT use
+    // the inherited left/right — its parse site (src/parser.cpp:40601-40626)
+    // sets condition/true_expr/false_expr directly, and TokenTerQ::argc()
+    // overrides to 1, so popOperator (src/parser.cpp:28168-28204) never
+    // populates left/right for it either (only argc()>1 sets `left`). Must
+    // be checked BEFORE as_operator_tok() (TokenTerQ is-a TokenOperator, so
+    // that branch would otherwise match first and push two NULLs — every
+    // ternary would silently report zero children).
+    else if ( TokenTerQ *s = nt->as_terq_tok() )
+    { raw.push_back(s->condition); raw.push_back(s->true_expr); raw.push_back(s->false_expr); }
+    else if ( TokenOperator *op = nt->as_operator_tok() ) // assign/multiop (ternary handled above)
+    { raw.push_back(op->left); raw.push_back(op->right); }
+    // else: leaf (literals, TokenVar, TokenIdent, addr-of/deref-of-var,
+    // CASE/BREAK/CONT/GOTO, and the exotic long tail).
+
+    for ( size_t i = 0; i < raw.size(); ++i )
+	if ( raw[i] )
+	    out.push_back(raw[i]);
+}
+
+// A body node's terse projection: { id, kind, name?, line, column }, plus
+// end_line for a compound (it records the closing brace). name only where the
+// node carries an identifier/spelling. id is the per-handle body handle.
+static madc::value graph_body_node_value(parse_tu_state *st, const TokenBase *t)
+{
+    std::map<std::string, madc::value> f;
+    f["id"]   = value(graph_body_intern(st, t));
+    f["kind"] = value(std::string(graph_body_kind_name(graph_body_kind_of(t))));
+
+    TokenBase *nt = const_cast<TokenBase *>(t);
+    if ( TokenVar *v = nt->as_var_tok() )                 // covers callfunc/member (is-a TokenVar)
+	{ if ( !v->var.name.empty() ) f["name"] = value(v->var.name); }
+    else if ( TokenIdent *id = nt->as_ident_tok() )       // ident/str leaves
+	{ const char *s = id->spelling(); if ( s && *s ) f["name"] = value(std::string(s)); }
+    // Confirm-before-build (Task 3, official checkpoint #3): TokenInt
+    // (include/tokens.h:1256), TokenReal (1373), TokenChar (1241) have NO
+    // spelling() (they derive from TokenBase directly, not TokenIdent) — the
+    // plan's own fallback applies verbatim: "prefer spelling() when present;
+    // otherwise omit name." Both branches above already fail to match these
+    // three (they are neither TokenVar nor TokenIdent), so `name` is omitted
+    // for int/real/char literals with no further code needed here. A string
+    // literal (TokenStr IS-A TokenIdent, overrides spelling() to its `str`)
+    // still gets its content as `name` via the TokenIdent branch.
+
+    f["line"]   = value((int64_t)t->line);
+    f["column"] = value((int64_t)t->column);
+    if ( TokenCpnd *c = nt->as_cpnd_tok() )
+	f["end_line"] = value((int64_t)c->end_line);
+    return value::make_object(f);
+}
+
+// Walk `root`'s subtree to `depth` (root is depth 0; depth<0 = unbounded but
+// still capped). Appends each visited node's projection to `nodes` and a
+// {kind:"CONTAINS", from, to} edge for each parent->child. Stops at `cap`
+// nodes, setting `truncated` (spec §6.5: never dump an unbounded subtree;
+// cursor pagination is deferred to L2).
+static void graph_body_walk(parse_tu_state *st, const TokenBase *root,
+			    int64_t depth, size_t cap,
+			    std::vector<madc::value> &nodes,
+			    std::vector<madc::value> &edges, bool &truncated)
+{
+    if ( !st || !root )
+	return;
+    // BFS so a shallow `depth` returns the top of the tree, not one deep spine.
+    std::vector<std::pair<const TokenBase *, int64_t> > q;   // (node, level)
+    q.push_back(std::make_pair(root, (int64_t)0));
+    for ( size_t qi = 0; qi < q.size(); ++qi )
+    {
+	if ( nodes.size() >= cap ) { truncated = true; break; }
+	const TokenBase *n = q[qi].first;
+	int64_t lvl = q[qi].second;
+	int64_t nid = graph_body_intern(st, n);
+	nodes.push_back(graph_body_node_value(st, n));
+	if ( depth >= 0 && lvl >= depth )
+	    continue;
+	std::vector<const TokenBase *> kids;
+	graph_body_children(n, kids);
+	for ( size_t i = 0; i < kids.size(); ++i )
+	{
+	    std::map<std::string, madc::value> e;
+	    e["kind"] = value(std::string("CONTAINS"));
+	    e["from"] = value(nid);
+	    e["to"]   = value(graph_body_intern(st, kids[i]));
+	    edges.push_back(value::make_object(e));
+	    q.push_back(std::make_pair(kids[i], lvl + 1));
+	}
+    }
+}
+
+// graph.body(handle, func_id, depth): the function's body subtree. func_id is
+// a type-id (from graph.symbols/definition/enclosing); resolve it to the live
+// TokenFunc (graph_function_token), then walk the function node itself as the
+// root (a TokenFunc is-a TokenCpnd, so its children are the body statements).
+// depth<0 = full (capped). Result: { nodes:[...], edges:[CONTAINS...],
+// truncated? }. Empty nodes + true = valid handle, no such function.
+static const size_t GRAPH_BODY_NODE_CAP = 2000;
+
+bool internal_program_graph_body(int64_t handle, int64_t func_id,
+				 int64_t depth, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    DataDef *dd = child.type_from_id((uint32_t)func_id);   // binds child's table (M-5)
+    TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+    if ( tf )
+	graph_body_walk(st, tf, depth, GRAPH_BODY_NODE_CAP, nodes, edges, truncated);
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
+    return true;
+}
+
+// graph.children(handle, id, depth): structural descent from any node.
+//  - id in the body space (>= GRAPH_BODY_ID_BASE): resolve to the TokenBase and
+//    walk its subtree to `depth` (default 1 = immediate children).
+//  - id a type-id for a FUNCTION: descend into its body (same as graph.body at
+//    the given depth) — a function's structural children are its body nodes.
+//  - id a type-id for a non-function (struct/etc.): its structural children are
+//    its members; defer to graph.members (return empty here + a note) — L1b
+//    owns BODY descent only; the decl-graph children stay L1's graph.members.
+// Result shape identical to graph.body.
+bool internal_program_graph_children(int64_t handle, int64_t id,
+				     int64_t depth, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    std::vector<madc::value> nodes, edges;
+    bool truncated = false;
+
+    if ( id >= GRAPH_BODY_ID_BASE )
+    {
+	const TokenBase *n = graph_body_resolve(st, id);
+	if ( n )
+	    graph_body_walk(st, n, depth, GRAPH_BODY_NODE_CAP, nodes, edges, truncated);
+    }
+    else
+    {
+	DataDef *dd = child.type_from_id((uint32_t)id);        // binds child's table (M-5)
+	TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
+	if ( tf )
+	    graph_body_walk(st, tf, depth, GRAPH_BODY_NODE_CAP, nodes, edges, truncated);
+	// non-function type-id: members are graph.members' job (L1); empty here.
+    }
+    std::map<std::string, madc::value> r;
+    r["nodes"] = value::make_array(nodes);
+    r["edges"] = value::make_array(edges);
+    if ( truncated )
+	r["truncated"] = value(true);
+    out = value::make_object(r);
     return true;
 }
 

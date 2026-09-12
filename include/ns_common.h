@@ -238,6 +238,12 @@ void *madc_graph_members(void *result, int64_t handle, int64_t type_id);
 void *madc_graph_bases(void *result, int64_t handle, int64_t type_id);
 void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
 			   int64_t column);
+// Code-graph MCP L1b bridges (design 2026-09-12): the body graph over the
+// live parse-handle TokenBase AST. func_id/id is a body handle OR a type-id
+// (graph_children routes on the GRAPH_BODY_ID_BASE partition); depth < 0 =
+// unbounded (capped server-side).
+void *madc_graph_body(void *result, int64_t handle, int64_t func_id, int64_t depth);
+void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t depth);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =

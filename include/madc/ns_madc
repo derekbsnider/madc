@@ -181,6 +181,26 @@ namespace madc {
     value &graph_bases(value &out, int64_t handle, int64_t type_id);
     value &graph_enclosing(value &out, int64_t handle, int64_t line,
 			   int64_t column);
+
+    // Code-graph MCP L1b (design 2026-09-12): the BODY graph over the live
+    // parse-handle TokenBase AST (a function's statement/expression tree),
+    // beside L1's decl/type graph above. A body node is { id, kind, name?,
+    // line, column } (+ end_line for a block); id is either a per-handle
+    // body handle or (only as an INPUT to graph_children) a type-id.
+    //   graph_body(handle, func_id, depth): func_id is a type-id (from
+    //     graph_symbols/definition/enclosing); returns the function's own
+    //     body subtree as { nodes:[...], edges:[{kind:"CONTAINS",from,to}],
+    //     truncated? }. depth < 0 = full (server-side capped); depth = 0 =
+    //     the function node alone.
+    //   graph_children(handle, id, depth): structural descent from ANY node
+    //     — id may be a body handle (returned by graph_body/graph_children
+    //     itself) or a function type-id (same result as graph_body); a
+    //     non-function type-id yields empty nodes (its children are
+    //     graph_members' job, not this verb's). depth < 0 = full; the
+    //     natural default at the call site is 1 (immediate children).
+    value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth);
+    value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth);
+
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):
     //   parse_build: emit a native artifact from the handle's EXISTING

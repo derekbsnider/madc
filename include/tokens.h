@@ -42,6 +42,7 @@ class TokenExplicitDtor;
 class TokenIF;
 class TokenRETURN;
 class TokenDO;
+class TokenWHILE;
 class TokenFOR;
 class TokenFOREACH;
 class TokenVar;
@@ -370,6 +371,15 @@ public:
     virtual TokenIF            *as_if_tok()         { return NULL; }
     virtual TokenRETURN        *as_return_tok()     { return NULL; }
     virtual TokenDO            *as_do_tok()         { return NULL; }
+    // Code-graph MCP L1b confirm-before-build (2026-09-12): `while (x) {}`
+    // genuinely lives as a TokenWHILE in the live tree — TokenWHILE::parse()
+    // (src/parser.cpp:50090) returns `this` (not lowered to TokenFOR), and
+    // it is read back via dynamic_cast<TokenWHILE*> elsewhere
+    // (src/parser.cpp:66744, deduce_return_type_from_stmt). No downcast
+    // existed for it (unlike as_do_tok/as_for_tok/as_foreach_tok beside it),
+    // so the body-graph walker had no O(1) way to reach condition/statement.
+    // Added here, mirroring the family.
+    virtual TokenWHILE         *as_while_tok()      { return NULL; }
     virtual TokenFOR           *as_for_tok()        { return NULL; }
     virtual TokenFOREACH       *as_foreach_tok()    { return NULL; }
     virtual TokenVar           *as_var_tok()        { return NULL; }
@@ -2085,6 +2095,7 @@ public:
     virtual TokenBase *parse(Program &) override;
     virtual TokenID id() const override { return TokenID::tkWHILE; }
     virtual TokenBase *clone() override { return new TokenWHILE(); }
+    virtual TokenWHILE *as_while_tok() override { return this; }
 };
 
 class TokenFOR: public TokenKeyword

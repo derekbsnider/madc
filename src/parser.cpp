@@ -360,6 +360,12 @@ bool internal_program_graph_bases(int64_t handle, int64_t type_id,
 				  value &out);
 bool internal_program_graph_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
+// Code-graph MCP L1b (design 2026-09-12): the BODY graph over the live
+// parse-handle TokenBase AST — see madc_program.cpp beside the L1 block.
+bool internal_program_graph_body(int64_t handle, int64_t func_id,
+				 int64_t depth, value &out);
+bool internal_program_graph_children(int64_t handle, int64_t id,
+				     int64_t depth, value &out);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1163,6 +1169,20 @@ void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
 {
     madc::value &out = *(madc::value *)result;
     madc::internal_program_graph_enclosing(handle, line, column, out);
+    return result;
+}
+// Code-graph MCP L1b bridges (design 2026-09-12): the two body-graph verbs,
+// same thin-thunk shape as the L1 bridges above.
+void *madc_graph_body(void *result, int64_t handle, int64_t func_id, int64_t depth)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_body(handle, func_id, depth, out);
+    return result;
+}
+void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t depth)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_children(handle, id, depth, out);
     return result;
 }
 

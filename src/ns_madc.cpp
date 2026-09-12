@@ -264,6 +264,15 @@ value &graph_bases(value &out, int64_t handle, int64_t type_id)
 value &graph_enclosing(value &out, int64_t handle, int64_t line, int64_t column)
 	{ madc_graph_enclosing(&out, handle, line, column); return out; }
 
+// Code-graph MCP L1b (design 2026-09-12): the body graph over the live
+// parse-handle TokenBase AST. graph_body(func) is the function's own
+// statement tree; graph_children(id) descends from any node (a body handle
+// or a function type-id). depth < 0 = unbounded (server-side capped).
+value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth)
+	{ madc_graph_body(&out, handle, func_id, depth); return out; }
+value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth)
+	{ madc_graph_children(&out, handle, id, depth); return out; }
+
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):
 // parse_build emits a native artifact from the handle's EXISTING parsed
