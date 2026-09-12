@@ -1,16 +1,19 @@
 opened: 1
 symbols: 2
-Function add @ 2:
-Function twice @ 3:
+Function add @ 3:
+Function twice @ 4:
 node: Function add
 type_of: Type
 node@0 empty: 1
 def add: 1 Function
 def Point: 1 Struct
 def nope: 0
-members: 2
+def myint: 1 Type
+members: 3
   x : Type
   y : Type
+  p : Pointer
 bases: 0
+p type_of: Type
 encl: Function add
 encl none: 1

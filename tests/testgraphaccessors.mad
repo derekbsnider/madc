@@ -3,7 +3,8 @@
 // proof — an executed buffer would print EXECUTED and break .expect).
 int main()
 {
-    var src = "struct Point { long x; long y; };\n"
+    var src = "typedef long myint;\n"
+	      "struct Point { long x; long y; long *p; };\n"
 	      "long add(long a, long b) { return a + b; }\n"
 	      "long twice(long n) { return add(n, n); }\n";
     long h = madc::parse_open(src.c_str(), "graph.mad");
@@ -46,7 +47,15 @@ int main()
     madc::graph_definition(dn, h, "nope");
     println("def nope: {}", php::count(dn["nodes"]));
 
-    // graph.members / graph.bases on the Point struct id.
+    // graph.definition("myint") resolves the typedef — the datatype_map
+    // branch (I-1: previously untested).
+    var dm;
+    madc::graph_definition(dm, h, "myint");
+    println("def myint: {} {}", php::count(dm["nodes"]),
+	    dm["nodes"][0]["kind"]);
+
+    // graph.members / graph.bases on the Point struct id. Point now carries
+    // a pointer member `p` (long *) so its type node's kind is Pointer.
     long pid = ds["nodes"][0]["id"].as_integer();
     var mem;
     madc::graph_members(mem, h, pid);
@@ -57,10 +66,22 @@ int main()
     madc::graph_bases(bz, h, pid);
     println("bases: {}", php::count(bz["nodes"]));
 
+    // graph.type_of on the pointer member's type node — the pointer/
+    // reference branch (I-1: previously untested) — reaches the pointee
+    // (long, kind Type).
+    for ( var m : mem["nodes"] )
+	if ( m["name"] == "p" )
+	{
+	    long ptr_id = m["type"]["id"].as_integer();
+	    var pointee;
+	    madc::graph_type_of(pointee, h, ptr_id);
+	    println("p type_of: {}", pointee["kind"]);
+	}
+
     // graph.enclosing(line, column): the function around a caret, as a node
-    // (line 2 is inside add; line 99 is inside nothing).
+    // (line 3 is inside add; line 99 is inside nothing).
     var en;
-    madc::graph_enclosing(en, h, 2, 20);
+    madc::graph_enclosing(en, h, 3, 20);
     println("encl: {} {}", en["kind"], en["name"]);
     var en2;
     madc::graph_enclosing(en2, h, 99, 1);

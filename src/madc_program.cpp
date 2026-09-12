@@ -5535,6 +5535,8 @@ static const char *graph_kind_name(DataDef *dd)
     case BaseType::btStruct:        return "Struct";
     case BaseType::btClass:         return "Class";
     case BaseType::btTemplateParam: return "TemplateParam";
+    // L2/L4: a finer Union/Enum/Typedef split is DefArena-DK_*-sourced
+    // (deferred; btSimple covers all of them here at L1).
     case BaseType::btSimple:        return "Type";
     }
     return "Type";
@@ -5545,50 +5547,63 @@ static const char *graph_kind_name(DataDef *dd)
 // FuncDef(...); funcdef_map[id] = func;`, no `func->name = ...` anywhere on
 // any of the 14 `new FuncDef(` sites) and function_display_name is a
 // narrower "tracked overload" slot (empty for an ordinary function like
-// `add`), NOT a general display name. A function's identifier lives on the
-// funcdef_map KEY / the TokenFunc's Variable — the same source
-// graph_func_node_value already reads. Resolve it by identity over the
-// child's own function tokens (pending_funcs, unfiltered by TU — a node id
-// is not TU-scoped either, so a header-defined function still names
-// itself); empty only for a function with no live token (a compiler
-// synthesized builtin never surfaced as a node here).
-static std::string graph_function_name(::Program &child, DataDef *dd)
+// `add`), NOT a general display name. A function's identifier — and its
+// source span — lives on the TokenFunc's Variable, the same source
+// graph_symbols/graph_enclosing already read. Resolve the TOKEN by identity
+// over the child's own function tokens (pending_funcs, unfiltered by TU —
+// a node id is not TU-scoped either, so a header-defined function still
+// resolves); NULL for a function with no live token (a compiler-synthesized
+// or tsubst-pattern FuncDef never surfaced as a node here — L1b/M-2: the
+// caller falls back to the terse {id,kind,name} shape, unreachable at L1's
+// TU-own surface today).
+static TokenFunc *graph_function_token(::Program &child, DataDef *dd)
 {
     for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
     {
 	TokenFunc *tf = child.pending_funcs[i]
 	    ? child.pending_funcs[i]->as_func_tok() : (TokenFunc *)0;
 	if ( tf && tf->var.type == dd )
-	    return tf->var.name;
+	    return tf;
     }
-    return dd->name;			// fallback: whatever DataDef::name holds
+    return (TokenFunc *)0;
 }
 
-// The terse node projection (spec §6.5): { id, kind, name }. id is the
-// stamped type-id (stable for this parse); a source span is added only for
-// a source-anchored node (graph_func_node_value).
-static madc::value graph_node_value(::Program &child, DataDef *dd)
-{
-    std::map<std::string, madc::value> f;
-    f["id"] = value((int64_t)madc_type_id_for(dd));
-    f["kind"] = value(std::string(graph_kind_name(dd)));
-    std::string nm = dd->basetype() == BaseType::btFunct
-	? graph_function_name(child, dd) : dd->name;
-    f["name"] = value(nm);
-    return value::make_object(f);
-}
-
-// A function node from its parse token: the FuncDef's type-id + the source
+// A function node from its parse token: the FuncDef's CHILD-BOUND type-id
+// (child.type_id_for — the id→node walkers already bind this child's table
+// via type_from_id before they ever reach a node builder, M-5) + the source
 // span (line/column/end_line — the outline coordinates).
-static madc::value graph_func_node_value(TokenFunc *tf)
+static madc::value graph_func_node_value(::Program &child, TokenFunc *tf)
 {
     std::map<std::string, madc::value> f;
-    f["id"] = value((int64_t)madc_type_id_for(tf->var.type));
+    f["id"] = value((int64_t)child.type_id_for(tf->var.type));
     f["kind"] = value(std::string("Function"));
     f["name"] = value(tf->var.name);
     f["line"] = value((int64_t)tf->line);
     f["column"] = value((int64_t)tf->column);
     f["end_line"] = value((int64_t)tf->end_line);
+    return value::make_object(f);
+}
+
+// The terse node projection (spec §6.5): { id, kind, name }, PLUS the
+// source span for a Function node — M-1 shape consistency: graph.symbols/
+// graph.enclosing already return a spanned Function node
+// (graph_func_node_value); graph.node/definition/type_of must return the
+// SAME shape for the SAME kind of node, not a narrower one. When dd is a
+// Function with a live token, delegate to graph_func_node_value so every
+// verb agrees; otherwise (a non-function, or a tokenless FuncDef — L1b/M-2)
+// fall back to the plain {id,kind,name} object.
+static madc::value graph_node_value(::Program &child, DataDef *dd)
+{
+    if ( dd->basetype() == BaseType::btFunct )
+    {
+	TokenFunc *tf = graph_function_token(child, dd);
+	if ( tf )
+	    return graph_func_node_value(child, tf);
+    }
+    std::map<std::string, madc::value> f;
+    f["id"] = value((int64_t)child.type_id_for(dd));
+    f["kind"] = value(std::string(graph_kind_name(dd)));
+    f["name"] = value(dd->name);
     return value::make_object(f);
 }
 
@@ -5610,7 +5625,7 @@ bool internal_program_graph_symbols(int64_t handle, madc::value &out)
 					st->display_name);
 	if ( !tf )
 	    continue;
-	nodes.push_back(graph_func_node_value(tf));
+	nodes.push_back(graph_func_node_value(child, tf));
     }
     std::map<std::string, madc::value> res;
     res["nodes"] = value::make_array(nodes);
@@ -5646,8 +5661,17 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
 
 // graph.type_of(handle, id): the HAS_TYPE edge. A function -> its return
 // type; a pointer/reference -> its operand (base_type; DataDefREF derives
-// from DataDefPTR, so the cast reads both); anything else -> itself with
-// top-level const peeled (unqualified()).
+// from DataDefPTR, so the cast reads both); anything else -> itself.
+//
+// M-3 (const-cast hazard, fixed): DataDefCONST forwards is_pointer()/
+// is_reference() to its wrapped base_type but is NOT ITSELF a DataDefPTR —
+// `((DataDefPTR *)dd)->base_type` on a const-qualified pointer (`int *
+// const`, or a const-qualified typedef of one) would have been an unsafe
+// cross-class cast reading a DataDefCONST through a DataDefPTR* lens.
+// Peel const FIRST (`dd->unqualified()` — a no-op on anything that is not
+// a DataDefCONST, so a FuncDef/DataDefPTR/DataDefREF/etc. passes through
+// unchanged), THEN dispatch on the unqualified `base`: the pointer/
+// reference cast now only ever sees a genuine DataDefPTR/DataDefREF.
 bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
 				    madc::value &out)
 {
@@ -5655,21 +5679,23 @@ bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
-    DataDef *dd = st->child->type_from_id((uint32_t)node_id);
+    ::Program &child = *st->child;
+    DataDef *dd = child.type_from_id((uint32_t)node_id);
     if ( !dd )
     {
 	std::map<std::string, madc::value> empty;
 	out = value::make_object(empty);
 	return true;
     }
+    DataDef *base = dd->unqualified();
     DataDef *ty;
-    if ( dd->basetype() == BaseType::btFunct )
-	ty = &((FuncDef *)dd)->returns;
-    else if ( dd->is_pointer() || dd->is_reference() )
-	ty = ((DataDefPTR *)dd)->base_type;
+    if ( base->basetype() == BaseType::btFunct )
+	ty = &((FuncDef *)base)->returns;
+    else if ( base->is_pointer() || base->is_reference() )
+	ty = ((DataDefPTR *)base)->base_type;
     else
-	ty = dd->unqualified();
-    out = graph_node_value(*st->child, ty ? ty : dd);
+	ty = base;
+    out = graph_node_value(child, ty ? ty : dd);
     return true;
 }
 
@@ -5727,6 +5753,9 @@ bool internal_program_graph_definition(int64_t handle,
 // edge, so the agent gets structure + types in one call). Empty nodes for
 // a non-aggregate. Uses type_from_id (see graph.node) — a member's type
 // can itself be a primitive-segment id.
+// L2: a member is an inline {name,offset,type} row here, not its own
+// addressable node (no member id to graph.node()/graph.type_of() into
+// directly) — deferred.
 bool internal_program_graph_members(int64_t handle, int64_t type_id,
 				    madc::value &out)
 {
@@ -5806,7 +5835,7 @@ bool internal_program_graph_enclosing(int64_t handle, int64_t line,
 	out = value::make_object(empty);
 	return true;
     }
-    out = graph_func_node_value(best);
+    out = graph_func_node_value(child, best);
     return true;
 }
 
