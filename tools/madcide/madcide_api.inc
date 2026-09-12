@@ -189,6 +189,39 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
 	broadcast_events(w, adoc, head_before, self_id);
 }
 
+// The RAW STRUCTURED projections of a doc's current parse state (V6c) — the
+// compiler data AS DATA, for a programmatic client (the MCP seat, and the LSP
+// adapter to come) that drives madcide as an API rather than reading the
+// rendered editor tree. Reads the RETAINED parse state (parse_check / outline /
+// enclosing are pure reads, no re-parse per query); a buffer-mutating command
+// (check / save) refreshes it, so `check` before reading diagnostics after an
+// edit. This is the api's "raw projections" offer (design §2.7); the composed
+// tree stays available as api_run's `text`.
+//   cursor:      { line, column, function }  — the caret + its enclosing fn
+//   diagnostics: parse_check rows  — { severity, severity_code, message, line, column, ... }
+//   outline:     parse_outline rows — { kind, name, line, column, end_line }
+void session_state(var &out, IdeSession &S, long doc)
+{
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    long h = ensure_phandle(w, es, adoc);
+    long caret = es_int(w, es, "caret", 0);
+    long line = line_of(w, adoc, caret);
+    long column = caret - line_start_of(w, adoc, line) + 1;
+    var diags;
+    madc::parse_check(diags, h);
+    var outl;
+    madc::parse_outline(outl, h);
+    var enc;
+    madc::parse_enclosing(enc, h, line, column);
+    var fn = enc["name"];
+    if ( fn.is_null() )
+	fn = "";
+    var cursor = { "line": line, "column": column, "function": fn };
+    out = { "cursor": cursor, "diagnostics": diags, "outline": outl };
+}
+
 // Serve ONE connected client: read JSON-line requests until EOF, running each
 // through api_run (the shared command core) on the shared session, and writing
 // the reply body back as a JSON line with this request's `seq` stamped on it.

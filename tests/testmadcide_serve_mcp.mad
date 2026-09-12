@@ -17,7 +17,10 @@
 int main()
 {
     const char *path = "madc_ide_mcp.mad";
-    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    // A deliberate arity error so `check` yields a structured diagnostic, plus
+    // `add` for the structured outline — the lean API result (not the tree).
+    php::file_put_contents(path,
+	"long add(long a, long b) { return a + b; }\nint main() { return add(1); }\n");
 
     // The MCP server over stdin/stdout — the deployed `--mcp` path end to end.
     // stdin is the .input JSON-RPC stream; stdout is the JSON-RPC responses.

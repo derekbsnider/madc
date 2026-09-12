@@ -69,11 +69,15 @@ void mcp_tools(var &out)
     out = tools;
 }
 
-// One `tools/call`: run the named tool through api_run and shape its reply body
-// as an MCP tool result. The tool's optional argument is `arguments.args`; a
-// refusal (body carries "error") becomes isError content; a run's composed
-// projection (body "text") is the content, and a body with neither (clienttier)
-// serializes as its own text.
+// One `tools/call`: run the named tool through api_run, then return the
+// resulting STRUCTURED STATE as the tool's content — the programmatic API the
+// owner asked for, NOT the rendered editor tree. The tool's optional argument
+// is `arguments.args`. A refusal (body carries "error") is isError content
+// (the prose). Otherwise the content is a compact JSON snapshot — ok, errors,
+// and the raw projections (cursor / diagnostics / outline, session_state) — so
+// an agent reads the compiler's data, not the whole composed view. (The
+// composed tree stays available on the api seat's `text`; a follow-on can add
+// a `fields`/`view` selector for a client that wants it or wants less.)
 void mcp_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &params)
 {
     const char *argstr = "";
@@ -89,15 +93,15 @@ void mcp_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &par
     bool iserr = !err.is_null();
     var txt;
     if ( iserr )
-	txt = err;
+	txt = err;			// a refusal: the prose, flagged isError
     else
     {
-	txt = body["text"];
-	if ( txt.is_null() )
-	{
-	    var js = js::stringify(body);	// copy the ring const char*
-	    txt = js;
-	}
+	var snap;
+	session_state(snap, S, doc);	// the raw projections after the command
+	snap["ok"] = true;
+	snap["errors"] = body["errors"];
+	var js = js::stringify(snap);	// copy the ring const char*
+	txt = js;
     }
     var item = { "type": "text", "text": txt };
     var content = {};

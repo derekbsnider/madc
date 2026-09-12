@@ -2,7 +2,10 @@
 "protocolVersion"
 "listChanged":false
 "inputSchema"
-"outline"
+diagnostics
+cursor
+Incorrect number of parameters
+end_line
 "isError":false
 "isError":true
 unknown command 'bogus'
