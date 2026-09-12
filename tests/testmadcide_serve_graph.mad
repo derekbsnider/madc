@@ -1,0 +1,21 @@
+// Code-graph MCP L1 over the SEAT: the graph.* tool family driven by a real
+// MCP client (the .input JSON-RPC stream). tools/list advertises the graph
+// verbs; tools/call graph.symbols / graph.definition return terse node
+// results; an unknown graph verb is isError. run_mcp is the deployed --mcp
+// path end to end.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+
+int main()
+{
+    const char *path = "madc_ide_graph.mad";
+    php::file_put_contents(path,
+	"struct Point { long x; long y; };\nlong add(long a, long b) { return a + b; }\n");
+    long rc = run_mcp(path, false);
+    php::unlink(path);
+    return rc;
+}

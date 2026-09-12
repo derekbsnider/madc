@@ -44,6 +44,63 @@ void mcp_error(var &out, var &id, long code, const char *message)
     out = { "jsonrpc": "2.0", "id": id, "error": err };
 }
 
+// Code-graph MCP L1 (design 2026-09-12): the seven L1 graph verbs, with
+// their argument shape, for tools/list. A distinct family from the editor
+// registry commands below: an agent chooses a semantic navigation verb
+// over a keystroke command. Defined here (ahead of mcp_tools, which calls
+// it) — madc resolves a call against what has been defined/declared
+// earlier in the same file, not a whole-file prescan (confirmed against a
+// tmp/ reducer before wiring this in).
+void graph_tool_descriptors(var &out)
+{
+    var idprop = { "type": "integer", "description": "a node id (type-id)" };
+    var nameprop = { "type": "string", "description": "a symbol name" };
+    var lineprop = { "type": "integer", "description": "1-based line" };
+    var colprop = { "type": "integer", "description": "1-based column" };
+    // Every "properties" object is built as its own named var first — a
+    // literal cannot nest a brace list directly as another literal's value
+    // (confirmed against a tmp/ reducer: "Nested brace list in a value
+    // literal is not supported (yet)"), so pre-build then reference by name,
+    // the same idiom mcp_tools already uses for `props`/`schema`.
+    var noprops = {};
+    var noargs = { "type": "object", "properties": noprops };
+    var idprops = { "id": idprop };
+    var idargs = { "type": "object", "properties": idprops };
+    var nameprops = { "name": nameprop };
+    var nameargs = { "type": "object", "properties": nameprops };
+    var posprops = { "line": lineprop, "column": colprop };
+    var posargs = { "type": "object", "properties": posprops };
+    var tools = {};
+    var t0 = { "name": "graph.symbols",
+	"description": "the TU's own functions as graph nodes {id,kind,name,span}",
+	"inputSchema": noargs };
+    tools[] = t0;
+    var t1 = { "name": "graph.definition",
+	"description": "resolve a name to its definition node(s)",
+	"inputSchema": nameargs };
+    tools[] = t1;
+    var t2 = { "name": "graph.node",
+	"description": "the node for a node id", "inputSchema": idargs };
+    tools[] = t2;
+    var t3 = { "name": "graph.type_of",
+	"description": "the type node of a node (HAS_TYPE)",
+	"inputSchema": idargs };
+    tools[] = t3;
+    var t4 = { "name": "graph.members",
+	"description": "a struct/class's members with their types (MEMBER_OF)",
+	"inputSchema": idargs };
+    tools[] = t4;
+    var t5 = { "name": "graph.bases",
+	"description": "a class's direct base types (INHERITS)",
+	"inputSchema": idargs };
+    tools[] = t5;
+    var t6 = { "name": "graph.enclosing",
+	"description": "the innermost enclosing function at a position (ENCLOSES)",
+	"inputSchema": posargs };
+    tools[] = t6;
+    out = tools;
+}
+
 // The tool list: every registry command (cmd_table) as an MCP tool. One shared
 // input schema — a single optional `args` string (IdeSession::command takes one
 // argument string) — and a description that names the tier the command needs,
@@ -66,6 +123,10 @@ void mcp_tools(var &out)
 	var tool = { "name": nm, "description": desc, "inputSchema": schema };
 	tools[] = tool;
     }
+    var gtools;
+    graph_tool_descriptors(gtools);
+    for ( var gt : gtools )
+	tools[] = gt;
     out = tools;
 }
 
@@ -107,6 +168,59 @@ void mcp_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &par
     var content = {};
     content[] = item;
     out = { "content": content, "isError": iserr };
+}
+
+// Code-graph MCP L1 (design 2026-09-12): a distinct graph.* tool family, a
+// semantic navigation surface beside the editor-registry commands above. One
+// graph.* tool call: resolve the served doc's parse handle (the SAME
+// ensure_phandle session_state uses — one handle, never a second), dispatch
+// by verb NAME to the matching madc::graph_* accessor, and return the terse
+// node projection as the tool's structured content. An unknown graph verb
+// is isError content (never a silent drop). `params.arguments` carries the
+// verb args (id / name / line / column).
+void graph_call(var &out, IdeSession &S, long doc, var &nm, var &params)
+{
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    long h = ensure_phandle(w, es, adoc);
+    var args = params["arguments"];
+    if ( args.is_null() )
+	args = {};
+    const char *verb = nm.c_str();
+    var snap;
+    bool known = true;
+    if ( strcmp(verb, "graph.symbols") == 0 )
+	madc::graph_symbols(snap, h);
+    else if ( strcmp(verb, "graph.node") == 0 )
+	madc::graph_node(snap, h, args["id"].as_integer());
+    else if ( strcmp(verb, "graph.type_of") == 0 )
+	madc::graph_type_of(snap, h, args["id"].as_integer());
+    else if ( strcmp(verb, "graph.definition") == 0 )
+	madc::graph_definition(snap, h, args["name"].c_str());
+    else if ( strcmp(verb, "graph.members") == 0 )
+	madc::graph_members(snap, h, args["id"].as_integer());
+    else if ( strcmp(verb, "graph.bases") == 0 )
+	madc::graph_bases(snap, h, args["id"].as_integer());
+    else if ( strcmp(verb, "graph.enclosing") == 0 )
+	madc::graph_enclosing(snap, h, args["line"].as_integer(),
+			      args["column"].as_integer());
+    else
+	known = false;
+    var content = {};
+    if ( !known )
+    {
+	var why = format("unknown graph verb '{}'", nm);
+	var item = { "type": "text", "text": why };
+	content[] = item;
+	out = { "content": content, "isError": true };
+	return;
+    }
+    var js = js::stringify(snap);		// copy the ring const char*
+    var txt = js;
+    var item = { "type": "text", "text": txt };
+    content[] = item;
+    out = { "content": content, "isError": false };
 }
 
 // Handle ONE parsed JSON-RPC message. Returns true with `out` filled when there
@@ -170,6 +284,19 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	if ( nm.is_null() )
 	{
 	    mcp_error(out, idv, -32602, "tools/call needs a tool name");
+	    return true;
+	}
+	// Code-graph MCP L1: a graph.* verb is a distinct tool family, dispatched
+	// by name BEFORE the editor-registry path (api_run/mcp_call), so it never
+	// falls through as an unknown registry command. strncmp over the
+	// dialect's c_str() — the plan's guessed php::substr does not exist in
+	// this namespace (grep include/madc/ns_php* 2026-09-12: no `substr`
+	// public); a prefix test dispatched once, not a per-verb ladder here.
+	if ( strncmp(nm.c_str(), "graph.", 6) == 0 )
+	{
+	    var result;
+	    graph_call(result, S, doc, nm, params);
+	    mcp_reply(out, idv, result);
 	    return true;
 	}
 	var result;

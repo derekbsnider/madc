@@ -1,0 +1,9 @@
+"name":"graph.symbols"
+"name":"graph.definition"
+"name":"graph.node"
+"name":"graph.members"
+Function
+Struct
+"isError":false
+"isError":true
+unknown graph verb 'graph.bogus'
