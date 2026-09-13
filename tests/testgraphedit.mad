@@ -136,5 +136,27 @@ int main()
     println("fresh id resolves: {}", span_is(sh3, 2, 0, 2, 37) ? 1 : 0);
 
     madc::parse_close(h);
+
+    // A lambda registers a FUNCTION inside a statement that returns a node: the
+    // statement keeps its identity (graph_at answers the statement, never the
+    // lambda) and the enclosing function — which registered TWO functions in
+    // its statement — still has its extent {1,0,4,1}.
+    var lsrc = "long lam(long n) {\n"
+	       "    auto f = [](long v) { return v + 1; };\n"
+	       "    return f(n);\n"
+	       "}\n";
+    long h2 = madc::parse_open(lsrc.c_str(), "graphlam.mad");
+    var sy3;
+    madc::graph_symbols(sy3, h2);
+    long id_lam = 0;
+    for ( var n : sy3["nodes"] )
+	if ( n["name"] == "lam" ) id_lam = n["id"].as_integer();
+    var slam;
+    madc::graph_span(slam, h2, id_lam);
+    println("lambda-holding func span: {}", span_is(slam, 1, 0, 4, 1) ? 1 : 0);
+    var alam;
+    madc::graph_at(alam, h2, 2, 4);
+    println("lambda stmt at is statement: {}", alam["kind"] == "Statement" ? 1 : 0);
+    madc::parse_close(h2);
     return 0;
 }

@@ -16,3 +16,5 @@ old id stale: 1
 ids re-minted: 1
 new return span: 1
 fresh id resolves: 1
+lambda-holding func span: 1
+lambda stmt at is statement: 1

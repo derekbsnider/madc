@@ -70168,19 +70168,30 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	r->end_column = TokenBase::_parse_column;
 	if ( r->as_decl_tok() )
 	{
+	    // Same line only: a ';' further down is a separate statement.
 	    TokenBase *pk = peekToken();
-	    if ( pk && pk->id() == TokenID::tkSemi && !pk->is_synthetic_position() )
+	    if ( pk && pk->id() == TokenID::tkSemi && !pk->is_synthetic_position()
+	      && pk->line == r->end_line )
 	    {
 		r->end_line = pk->line;
 		r->end_column = pk->column;
 	    }
 	}
     }
-    if ( pending_funcs.size() == funcs_before + 1 )
+    else if ( pending_funcs.size() > funcs_before )
     {
+	// A statement that returned NO node but registered function(s): the one
+	// it DEFINED is the outermost — pushed last (inner lambdas / nested
+	// functions register first) — and it finished exactly where this
+	// statement finished (parseCompound's '}' stamp == the static parse
+	// position). A class body's last method ends at its own '}', not at the
+	// class statement's '};', so it fails the match; a lambda inside a
+	// statement that RETURNS a node never reaches this branch.
 	TokenFunc *tf = pending_funcs.back()
 	    ? pending_funcs.back()->as_func_tok() : (TokenFunc *)0;
-	if ( tf && !tf->head_tok )
+	if ( tf && !tf->head_tok
+	  && tf->end_line == TokenBase::_parse_line
+	  && tf->end_column == TokenBase::_parse_column )
 	    tf->head_tok = tb;
     }
     return r;
