@@ -386,32 +386,39 @@ A proposal's `preview` is text because the reviewer reads text.
   goes upstream first). History preserved like MIR (`docs/plans/mir-into-madc-
   repo-2026-08-11.md` §4.2).
 - **Build**: libgit2 ships CMake; we do not run it. A madc-owned
-  `third_party/libgit2/Makefile.madc` (a local addition inside the subtree
-  directory; a subtree pull is a merge, so it survives and upstream never
-  names it) lists the sources and builds `obj/libgit2/<variant>/libgit2.a`, invoked from
-  `src/Makefile` exactly like `$(MIRLIB)` (`FORCE` delegation, per-variant
-  dirs, `git2clean` beside `mirclean`). Committed, hand-written
-  `git2_features.h` per platform family (posix / win32).
+  `third_party/libgit2-madc/Makefile.madc` (BESIDE the subtree, so a subtree
+  pull can never touch a madc file — the webview precedent) lists the same
+  sources and defines CMake would use and builds `obj/libgit2/<variant>/libgit2.a`,
+  invoked from `src/Makefile` exactly like `$(MIRLIB)` (`FORCE` delegation,
+  per-variant dirs, `git2clean` beside `mirclean`). Beside it, the two headers
+  CMake would generate, committed per platform (`linux/`, `darwin/`, `win32/`):
+  `git2_features.h` and the bundled pcre2's `config.h`. (SHIPPED as L4a,
+  2026-09-13 — the plan `2026-09-13-nexus-L4a-git-substrate-plan.md`.)
 - **Features** (the owner's "network off"): `GIT_THREADS 1` (libgit2's own
-  locking; we still confine use to one thread, §7), `GIT_HTTPS 0`,
-  `GIT_SSH 0`, `GIT_NTLM 0`, `GIT_GSSAPI 0`, no `winhttp`; regex = the
-  bundled `deps/pcre` (`GIT_REGEX_BUILTIN` — one behaviour on all three
-  lanes; mingw has no `regcomp`); `GIT_SHA1_BUILTIN` + `GIT_SHA256_BUILTIN`
-  (no OpenSSL/CommonCrypto dependency); zlib = the system `-lz` madc already
-  links (every lane); `deps/xdiff` in (diff/blame need it);
-  `deps/llhttp`, `deps/ntlmclient`, `deps/zlib`, `deps/chromium-zlib` OUT.
-  The `local` and `git://` transports compile in (upstream's transport table
-  references them; unused; ~100 KB) rather than patching upstream.
+  locking; we still confine use to one thread, §7); `GIT_HTTPS`, `GIT_SSH`,
+  `GIT_NTLM`, `GIT_GSSAPI`, `GIT_WINHTTP` and every TLS backend UNDEFINED;
+  regex = the bundled `deps/pcre2` (`GIT_REGEX_BUILTIN` — one behaviour on all
+  three lanes; mingw has no `regcomp`); SHA1 = the bundled collision-detecting
+  backend (`GIT_SHA1_COLLISIONDETECT` — libgit2 1.9 has no plain builtin SHA1)
+  + `GIT_SHA256_BUILTIN` (no OpenSSL/CommonCrypto dependency); zlib = the
+  system `-lz` madc already links (every lane); `deps/xdiff` (diff/blame) and
+  `deps/llhttp` (the http parser upstream compiles unconditionally) in;
+  `deps/ntlmclient`, `deps/winhttp`, `deps/zlib`, `deps/chromium-zlib` OUT.
+  The plain-HTTP / smart-protocol / `local` transport objects still link
+  (`branch.c → remote.c → transport.c`'s table references them; ~150 KB;
+  unreachable from madc — the one-git-owner gate) rather than patching
+  upstream.
 - **Gate** `scripts/check-libgit2-features.sh` (fulltest): fails when any
   committed features header enables HTTPS / SSH / NTLM / GSSAPI, and fails
   when a file under `deps/{llhttp,ntlmclient}` appears in `Makefile.madc`;
   negative control = a temp copy with `GIT_HTTPS 1`.
-- **Size**: estimated 1.5–2 MB static; the FIRST task of L4a is a spike that
-  builds it on linux and reports the stripped `bin/madc` growth. Proceed if
-  ≤ 3 MB; above that stop and ask (a size trade is the owner's,
-  `feedback_size_tradeoffs`). darwin and win64 lanes build it through the
-  same per-variant rules; libgit2 CI covers MinGW and macOS, so the risk is
-  our feature header, not upstream.
+- **Size — MEASURED 2026-09-13** (the L4a spike, this container, clang 18
+  -O2): archive 3.2 MB; a program linking exactly the read API `GitRepo` uses
+  is 1.40 MB stripped; zero warnings under upstream's own warning set. Under
+  the 3 MB stop-and-ask line, so the slice proceeded. darwin and win64 lanes
+  build it through the same per-variant rules with their toolchains; libgit2
+  CI covers MinGW and macOS, so the risk is our feature header, not upstream
+  — a wrong macro is a compile error there, never a silent difference.
 
 ### 4.2 `madc::GitRepo` + the `git` source adapter (L4a, C++ in madcdis)
 
@@ -439,12 +446,17 @@ wrapper). Errors go through `madc::error` with libgit2's message; a
 non-repository path answers `false` + prose, never a crash.
 
 The **source adapter** `git_source_adapter : SourceAdapter` (in
-`src/madcdis_source_adapter.cpp`, beside the existing ones) accepts
-`git://<repo path>` (a new `{ "git", storage, file, path_like, local }` row in
-`DataSource::scheme_info`) and extracts record families `commit`, `ref`,
-`blame` (with `?path=&line=&count=` in the locator) as `value` objects with a
-`SourceLocator` — the madcdis query layer's face on history (a
-`DataSet<commit>` later; not built until it has a caller).
+`src/madcdis_git_repo.cpp` with `GitRepo` — one TU for the substrate) accepts
+`git://<repo path>[?path=<file>]` (a `{ "git", storage, file, path_like, local }`
+row in `DataSource::scheme_info`; the adapter owns the one split of its query)
+and extracts record families `commit` (the log, path-filtered when `?path=`
+is given), `ref` (every branch and tag) and `blame` (over the whole file
+named by `?path=`) as `value` objects with a `SourceLocator` — the madcdis
+query layer's face on history (a `DataSet<commit>` later; not built until it
+has a caller). The row shapers (`git_commit_value` / `git_ref_value` /
+`git_blame_value`) are declared beside the structs so the adapter and the
+engine face (`src/madc_git.cpp`: the handle table + the value-shaped
+`internal_program_git_*`) answer ONE spelling of each row.
 
 The **dialect face** (how the seat reaches it — the `parse_*` precedent,
 mangled-direct in `include/madc/ns_madc`): `madc::git_open(path) → handle`,

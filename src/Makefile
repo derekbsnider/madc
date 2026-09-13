@@ -1119,6 +1119,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
 	@cd .. && bash scripts/check-libgit2-features.sh
+	@cd .. && bash scripts/check-one-git-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-handle-table.sh
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
