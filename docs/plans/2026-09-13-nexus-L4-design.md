@@ -1,0 +1,592 @@
+# The Nexus (code-graph MCP L4) — PAST via libgit2, the `propose` tier, nexus records + an MCP client
+
+**Status:** DESIGN — written 2026-09-13 for owner review; the writing-plans pass
+follows approval. Track: the code-graph MCP
+(`2026-09-12-ast-graph-mcp-for-agents.md` §7 L4) on the arc branch
+`feature/client-server-views-claude`. Battery: the V6 arc RELEASE seam only —
+never per slice (`testing-fulltest.md`).
+
+**Owner decisions already SETTLED (2026-09-13, do not re-ask):**
+1. PAST axis FIRST, via **libgit2** vendored the MIR way (a `third_party`
+   subtree built by the Makefile into `obj/`, static, network transports OFF —
+   the Nexus only READS local history; push/fetch stay git's) behind a
+   **madcdis source adapter** so no consumer sees the engine.
+2. The **`propose` tier** is the FUTURE axis's first verb family: an agent
+   between observe and edit issues the L3 verbs; its node-ops are STORED as
+   proposals in the ONE JSONL stream; a human lands or drops them.
+3. Project management = **ONE native nexus record vocabulary** in madcdis
+   (task, requirement, decision, workset) + **N source adapters** for external
+   systems (mycenode's MCP first, Jira's MCP second) → an **MCP CLIENT** in madc
+   (today madc is only an MCP server), per-server tool→vocabulary mappings as
+   DATA. Naming: `madcdat` = the storage backends under `madcdis`; drivers and
+   source adapters live in `madcdis`.
+4. ORDER: PAST → propose → MCP client + mycenode adapter.
+
+This document turns those four into a buildable model: records, ids, tiers,
+verbs, components, data flow, refusals, thread-safety, gates and slices.
+
+---
+
+## 1. Goal
+
+Give the agent (and every other client) the two axes the code graph lacks:
+
+- **PAST** — "who changed this node, when, why; what did it look like at
+  commit X; what changed between X and Y" — answered from the session's own
+  change log AND the repository's git history, through one verb family.
+- **FUTURE** — an agent's edit as a **reviewable proposal**: validated by the
+  real parser, previewed, stored with actor and causal parent, landed or
+  dropped by a human through the ordinary L3 path.
+
+And the first **intent → code** edges: native nexus records (task,
+requirement, decision, workset) linked to symbols, commits and proposals, with
+external project-management systems projected in through an MCP client.
+
+## 2. Where this sits — facts (recon 2026-09-13, at HEAD 870ad3e2)
+
+Shipped substrate this design projects over (reuse; nothing is rebuilt):
+
+| Fact | Where |
+|---|---|
+| The change event log: `changelog_of / clog_append / journal_splice / clog_checkpoint / clog_replay / clog_head / events_since / clog_compact`; records `{seq, kind: splice\|checkpoint\|nodeop, es, doc, …}`; `seq` = the LSN (a rewrite-stable counter); replay applies `splice` + `checkpoint` only | `tools/texteditor/editor_events.inc:230-416` |
+| Persistence: `<base>.prj.events` beside the manifest via `clog_persist / clog_restore`, hooked into `proj_write / proj_open / proj_startup`; memory-only for the implicit project (RULED) | `tools/madcide/madcide_core.inc:3529-3865` |
+| ONE text-mutation owner `ed_text_insert / ed_text_erase` (buffer + `shift_anchors` + `journal_splice`) | `editor_events.inc:418-429`; `shift_anchors` at 181 |
+| L3 node-ops: `graph_edit_apply` (sync precondition → read-only rule → span → splice → candidate on the scratch buffer → `parse_refresh_checked` → ONE checkpoint → `nodeop` record → `ed_text_*` → spans → broadcast → `graph.at`) | `tools/madcide/madcide_mcp.inc:312-518` |
+| Generation-stamped ids (bits 40..60), `graph_id_stamp/raw/gen/fresh`, stale = `{error, stale:true}`; `parse_refresh_checked` = fresh child, swap iff the error count does not rise | `src/madc_program.cpp`; `include/madc/ns_madc:153-235` |
+| Tiers: `enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER }`; `cmd_min_tier`, `graph_min_tier` (mutations = tierEDITOR); a connection's tier = `madc::conn_cookie`; `clienttier <id> <tier>`; a real two-connection harness exists | `tools/madcide/madcide_enums.inc:536-660`; `madcide_api.inc:70-134`; `tests/testmadcide_serve_tiers.mad` |
+| The MCP **server** seat: `mcp_handle` (JSON-RPC 2.0, one line per message) over `api_run`; `run_mcp` over stdio; `graph_call` = enum switch + tier gate | `tools/madcide/madcide_mcp.inc` |
+| madcdis extension points: `SourceAdapter` (`name / can_read / discover_types / extract`) with `world_text_adapter` as the in-tree precedent; `DataDriver` + `DataDriverRegistry` (`dsv/flr/vlr` core; `sqlite/bdb/gdbm/qdbm` = madcdat, optional) | `include/madcdis/source_adapter.h`; `include/madcdis/world_text.h:568`; `include/madcdis/driver.h` |
+| `DataSource` already knows the schemes `mcp` (service/service_api) and `exec` (execution/process); a `git` scheme does not exist yet | `include/libmadc/datasource.h:113-152` |
+| `madc::channel`: `exec://` (spawn a child, read its stdout / write its stdin, `readline`, `wait_readable`, `exit_status`), `tcp://`, `listen://`, the WebSocket facet | `include/madc/ns_madc:476-596`; `src/madc_process.cpp` |
+| Parse handles: `parse_open(source, filename)` compiles text into a child (never executes); every `graph_*` accessor takes a handle | `include/madc/ns_madc:131-235` |
+
+Searches that came back EMPTY (rule #4, recorded so the new names below are
+not reinventions): `libgit2` anywhere outside `tmp/` and `third_party/`;
+an MCP *client* (`mcp_client`, `jsonrpc … client`, `mcp_connect`) in `src/`,
+`include/`, `tools/`; any git integration (`"git `, `git_`) in
+`tools/madcide`, `src/madc_project.cpp`, `include/madc/ns_madc`. The
+container has `git 2.43` and `cmake`; no system libgit2.
+
+External recon (`tmp/sdd-ast-graph-mcp-L4/recon.md`, summarised in
+`claude_status.json` UPDATE 10): yailPeralta/ast-mcp-server's
+prepare → review → apply (hash-bound plan, diagnostic delta, retained diff,
+`AMBIGUOUS_APPLY` on lost ownership) IS the propose tier; codegraph's
+`status` / batched explore / provenance labels are cheap adoptions;
+OpenRewrite's recipe (scan → edit → per-file diff → PR review) is the
+programmatic form of a proposal. Adopted below: `graph.status`,
+`graph.source`, the preview as the proposal's review artifact, a proposal
+that holds a LIST of ops (a recipe = one proposal), byte-exact target
+re-check at landing. Not copied: regenerating the tree per run; warning on
+staleness (we refuse).
+
+## 3. The model
+
+### 3.1 ONE project-scoped event stream (extends the V4 log; RULED shape)
+
+The change log is today a per-document JSONL stream (`changelog_of(w, doc)`),
+persisted as ONE file `<base>.prj.events` (V4's "one project events file
+across docs for a multi-file manifest" is a recorded follow-up). L4 makes the
+stream **project-scoped**: one `changelog` entity per session, every record
+carries `doc` (splice / checkpoint / nodeop already do), `clog_replay(doc)`
+folds only that doc's `splice` + `checkpoint` records, `clog_compact` writes
+one checkpoint PER DOC at the cut, `clog_persist / clog_restore` are unchanged
+(one file). `changelog_of(w, doc)` keeps its signature and returns the one
+entity — no caller moves.
+
+Why one stream (not a second log for proposals and records): cross-reference
+ruling 1 — "one record that edit history, the mirror, provenance and replay
+all read … prevents three parallel logs later". Proposals and nexus records
+are project-level facts with the same actor / causal-parent / `seq` needs;
+a second file would be the parallel log the ruling bans. State is
+`events + snapshots` (Nexus §20): the stream is the truth, any index over it
+is a disposable derivative.
+
+Record kinds become an ENUM at the reader (enum law; today `clog_replay`
+compares `rec["kind"] == "splice"` as text — the L3 nodeop was the second
+such compare, so the boundary conversion lands now):
+
+```
+enum clog_kind : unsigned char {
+    ckNONE = 0,        // unknown / torn — never trusted
+    ckSPLICE,          // {es, doc, at, del, ins}          text redo
+    ckCHECKPOINT,      // {doc, text}                       text snapshot
+    ckNODEOP,          // {es, doc, verb, target, src}      L3 annotation
+    ckPROPOSAL,        // §3.4                               FUTURE
+    ckDECISION,        // {proposal, decision, actor, landed_seq, reason}
+    ckRECORD,          // §3.5 a nexus record event (create/update/close)
+    ckLINK             // §3.5 {from, rel, to} / unlink
+};
+long clog_kind_of(const char *text);   // ONE boundary; misspelling = ckNONE
+```
+
+`clog_replay` / `events_since` / `clog_compact` switch on the code. A record
+of kind `ckNONE` is skipped exactly like a torn line (never applied, never
+counted). Gate: the single-owners check fails a literal `rec["kind"] == "…"`
+compare anywhere in `tools/` (negative control included).
+
+### 3.2 Actors
+
+Every record already carries `es` (the editing-state entity of the client
+that posted it). L4 adds nothing to the actor model; the seat's connection
+cookie (`madc::conn_cookie`) is the tier, `es` is the identity, and a
+proposal's `actor` is the `es` that created it. A landed proposal's `nodeop`
+carries `proposal: <id>` so BOTH actors are on the record (the proposer on
+the proposal, the lander on the nodeop + decision) — Nexus §10 provenance
+("who changed it, what process generated the change, who reviewed it").
+
+### 3.3 Ids across handles — revision handles carry a generation TAG
+
+A PAST query at a commit opens a **revision handle**: libgit2 yields the
+served file's blob at `rev`, `parse_open(text, filename)` compiles it (the
+proven path; never executes), and every `graph_*` read verb answers against
+it. Its ids must not be confusable with the live handle's: gen-0 ids of two
+handles are bit-identical today.
+
+Rule: a revision handle's `parse_tu_state::generation` is set at open to a
+**tag** from the range `[2^20, 2^21)` — the top bit of the 21-bit field
+(`GRAPH_GEN_MASK` = `0x1FFFFF`) marks "not the live handle". Live generations
+count up from 0 per refresh and never reach 2^20 in a handle's lifetime (a
+million accepted edits; the seat's `reparse_buffer` bumps too — still far).
+The seat keeps `doc.rev_handles: tag → {handle, sha}` and routes an incoming
+id by its generation: live gen → the live handle; a tag in the table → that
+revision handle; anything else → the ordinary stale refusal. A revision id
+passed after its handle was closed is stale — loud, never a wrong node.
+
+Engine surface: `parse_open` gains a sibling `parse_open_tagged(source,
+filename, tag)` (same body, one extra assignment) — one implementation, the
+tag an argument. Revision handles are READ-ONLY at the seat (mutations refuse
+"revision handles are read-only"; the engine never sees the request).
+
+Bound: at most `N` revision handles per doc (config, default 8), LRU-closed
+through `parse_close` — a bounded cache of derived state, never persisted
+(no-program-cache law).
+
+### 3.4 Proposals (the FUTURE axis, v1)
+
+A proposal is ONE record in the stream holding a LIST of node-ops (one op in
+v1; a recipe later is the same record with N ops — additive):
+
+```
+{ seq, kind: "proposal", es, doc, base_seq,
+  ops: [ { verb: insert|replace|delete, where?: before|after,
+           target: { id, kind, name, span, text },   // graph.span + graph.source at creation
+           src,                                       // the fragment
+           splice: { at, del, ins } } ],
+  preview: { line0, line1, before, after },          // the touched lines, live vs candidate
+  diagnostics: [ … ],                                // the candidate's delta (may be empty)
+  status: "open" }                                   // derived: the last ckDECISION wins
+```
+
+- `base_seq` = `clog_head` when created (the causal parent — "based on").
+- `target.text` is the span's bytes at creation: the byte-exact re-check at
+  landing (yailPeralta's hash check, spelled as the text itself — the L3
+  `phandle_text` precedent: exact, no checksum function in the dialect).
+- The candidate is validated with the SAME machinery as an edit
+  (`parse_refresh_checked`'s child parse + error-count rule) but WITHOUT the
+  swap: a `commit` flag on the one internal
+  (`internal_program_parse_refresh_checked(…, bool commit)`), exposed as
+  `madc::parse_would_accept(out_diags, handle, source)`. No second validator.
+- `status` is DERIVED: `open` until a `ckDECISION` record names the proposal;
+  `accepted` / `rejected` / `withdrawn` then. Decisions are records too
+  (actor, reason, `landed_seq` = the nodeop's seq on accept) — Nexus §16's
+  `proposal.created / reviewed / accepted` shape in the one stream.
+
+Landing (`graph.accept`) = the ORDINARY `graph_edit_apply` with the
+proposal's op, after three re-checks in order: (1) the doc is text-synced
+(the L3 precondition); (2) `graph.at(target.span.start)` yields a node of the
+same kind + name; (3) `graph.source` of it equals `target.text` byte-exact.
+Any miss → refuse `"proposal target changed since seq N; re-propose against
+fresh ids"` and the proposal stays `open` (the human decides; nothing lands
+silently on other bytes). On success the nodeop carries `proposal: seq`, and
+a `ckDECISION {decision: accepted, landed_seq}` follows it.
+
+### 3.5 Nexus records and links (intent; ruling 2)
+
+Native records when no external tool owns them; identity + links + a cached
+projection when one does. Both are events in the stream:
+
+```
+{ seq, kind: "record", es, op: create|update|close,
+  id,                       // = the seq of the creating record (rewrite-stable)
+  rkind: task|requirement|decision|workset,
+  origin: "" | "<source name>",   // "" = native; else the adapter that owns it
+  ext_key: "",              // the owner system's key (mycenode id, MADC-42)
+  fields: { title, body, state, … } }             // rkind-specific, sorted keys
+
+{ seq, kind: "link", es, op: link|unlink,
+  from: <ref>, rel: <relation>, to: <ref> }
+```
+
+A **ref** is one of (an enum `ref_kind`, text only on the wire):
+`rkRECORD {id}` · `rkSYMBOL {file, kind, name}` — a durable code key, NEVER
+a raw graph id (ids are generation-bound; a symbol key survives edits and
+re-resolves through `graph.definition`) · `rkCOMMIT {sha}` · `rkPROPOSAL
+{seq}` · `rkEXTERNAL {source, key}`.
+
+**Relations** (an enum, the Nexus §2 vocabulary that is INTENT, not code —
+code edges stay the graph's `calls/references/…` ground truth):
+`implements · tests · fixes · affects · requested_by · documents · supersedes
+· blocked_by · planned_for · reviewed_by · generated_by · introduced_by ·
+modified_by`.
+
+Reads FOLD the stream (the same walk `clog_replay` does; one reader
+`nexus_fold(out, w)` yields `{records: id → record, links: [...]}`), cached on
+the session entity and invalidated by `seq` (a record or link appended
+advances `seq`; the fold is recomputed lazily on the next read — v1 sizes are
+hundreds of records). A derived index in a madcdat backend is a later,
+disposable optimisation, never the truth.
+
+The enums (`clog_kind`, `ref_kind`, `nexus_rel`, `record_kind`,
+`proposal_status`) live in `tools/madcide/madcide_enums.inc` beside
+`ide_tier` for L4 (dialect-only consumers); they move to a
+`<bits/nexus_enums>` fragment the day the engine reads them (the
+`bits/ui_enums` precedent — one enum text for both sides).
+
+### 3.6 Tiers: `proposer` is a fourth level in the ONE ladder
+
+```
+enum ide_tier : unsigned char { tierOBSERVER = 0, tierPROPOSER, tierEDITOR, tierOWNER };
+```
+
+Every existing `<` / `>=` comparison keeps its meaning (the ladder stays
+monotone); `tier_name / tier_of` learn `"proposer"`; `clienttier <id>
+proposer` promotes. An MCP client is still born `observer`.
+
+| Verb family | observer | proposer | editor | owner |
+|---|---|---|---|---|
+| graph.* reads (L1–L2, PAST) | ✓ | ✓ | ✓ | ✓ |
+| graph.insert / replace / delete | ✗ | **stored as a proposal** | applied (or stored with `propose: true`) | applied |
+| graph.accept / graph.reject | ✗ | ✗ | ✓ | ✓ |
+| graph.withdraw | ✗ | own proposals | ✓ | ✓ |
+| nexus.* reads (record, records, context, sources) | ✓ | ✓ | ✓ | ✓ |
+| nexus.create / update / close / link / unlink | ✗ | ✓ (records are reviewable data, not source) | ✓ | ✓ |
+| nexus.sync (pull from an external source) | ✗ | ✗ | ✓ | ✓ |
+
+The seat's gate stays ONE function per family (`graph_min_tier`, a new
+`nexus_min_tier`); the proposer's reroute is inside `graph_call`: a mutation
+verb at exactly `tierPROPOSER` (or any tier ≥ proposer with `propose: true`)
+runs `graph_edit_apply` in PROPOSE mode. One code path up to the candidate's
+validation; the mode decides commit-or-store.
+
+## 4. Components
+
+### 4.1 `third_party/libgit2` — vendored the MIR way (L4a)
+
+- **Subtree** of upstream `libgit2/libgit2` at a release tag (1.9.x), no
+  source edits (ZERO divergence — unlike MIR, we carry no fixes; a needed fix
+  goes upstream first). History preserved like MIR (`docs/plans/mir-into-madc-
+  repo-2026-08-11.md` §4.2).
+- **Build**: libgit2 ships CMake; we do not run it. A madc-owned
+  `third_party/libgit2/Makefile.madc` (a local addition inside the subtree
+  directory; a subtree pull is a merge, so it survives and upstream never
+  names it) lists the sources and builds `obj/libgit2/<variant>/libgit2.a`, invoked from
+  `src/Makefile` exactly like `$(MIRLIB)` (`FORCE` delegation, per-variant
+  dirs, `git2clean` beside `mirclean`). Committed, hand-written
+  `git2_features.h` per platform family (posix / win32).
+- **Features** (the owner's "network off"): `GIT_THREADS 1` (libgit2's own
+  locking; we still confine use to one thread, §7), `GIT_HTTPS 0`,
+  `GIT_SSH 0`, `GIT_NTLM 0`, `GIT_GSSAPI 0`, no `winhttp`; regex = the
+  bundled `deps/pcre` (`GIT_REGEX_BUILTIN` — one behaviour on all three
+  lanes; mingw has no `regcomp`); `GIT_SHA1_BUILTIN` + `GIT_SHA256_BUILTIN`
+  (no OpenSSL/CommonCrypto dependency); zlib = the system `-lz` madc already
+  links (every lane); `deps/xdiff` in (diff/blame need it);
+  `deps/llhttp`, `deps/ntlmclient`, `deps/zlib`, `deps/chromium-zlib` OUT.
+  The `local` and `git://` transports compile in (upstream's transport table
+  references them; unused; ~100 KB) rather than patching upstream.
+- **Gate** `scripts/check-libgit2-features.sh` (fulltest): fails when any
+  committed features header enables HTTPS / SSH / NTLM / GSSAPI, and fails
+  when a file under `deps/{llhttp,ntlmclient}` appears in `Makefile.madc`;
+  negative control = a temp copy with `GIT_HTTPS 1`.
+- **Size**: estimated 1.5–2 MB static; the FIRST task of L4a is a spike that
+  builds it on linux and reports the stripped `bin/madc` growth. Proceed if
+  ≤ 3 MB; above that stop and ask (a size trade is the owner's,
+  `feedback_size_tradeoffs`). darwin and win64 lanes build it through the
+  same per-variant rules; libgit2 CI covers MinGW and macOS, so the risk is
+  our feature header, not upstream.
+
+### 4.2 `madc::GitRepo` + the `git` source adapter (L4a, C++ in madcdis)
+
+ONE libgit2 wrapper (`include/madcdis/git_repo.h`, `src/madcdis_git_repo.cpp`)
+— the single owner of every `git_*` call in madc. READ-ONLY by design:
+
+```
+class GitRepo {                       // open(path) discovers the repo upward
+    bool open(const std::string &path, error *err);   // worktree or .git
+    bool head(GitRef &out);            // {sha, branch, detached}
+    bool revparse(const std::string &spec, std::string &sha);
+    bool log(std::vector<GitCommit> &out, const std::string &path, size_t limit);
+                                       // revwalk time-ordered; `path` filters by
+                                       // comparing the entry OID with each parent's
+                                       // (exact, two tree lookups per commit)
+    bool show(const std::string &sha, const std::string &path, std::string &text);
+    bool blame(std::vector<GitBlameRow> &out, const std::string &path,
+               size_t line0, size_t count);           // {line, sha, author, when, summary}
+    bool status_dirty(const std::string &path, bool &dirty);
+};
+```
+
+`git_libgit2_init / shutdown` happen once per process (a static guard in the
+wrapper). Errors go through `madc::error` with libgit2's message; a
+non-repository path answers `false` + prose, never a crash.
+
+The **source adapter** `git_source_adapter : SourceAdapter` (in
+`src/madcdis_source_adapter.cpp`, beside the existing ones) accepts
+`git://<repo path>` (a new `{ "git", storage, file, path_like, local }` row in
+`DataSource::scheme_info`) and extracts record families `commit`, `ref`,
+`blame` (with `?path=&line=&count=` in the locator) as `value` objects with a
+`SourceLocator` — the madcdis query layer's face on history (a
+`DataSet<commit>` later; not built until it has a caller).
+
+The **dialect face** (how the seat reaches it — the `parse_*` precedent,
+mangled-direct in `include/madc/ns_madc`): `madc::git_open(path) → handle`,
+`git_close`, `git_head(out, h)`, `git_revparse(out, h, spec)`,
+`git_log(out, h, path, limit)`, `git_show(out, h, sha, path)`,
+`git_blame(out, h, path, line0, count)`, `git_dirty(h, path)`. All are thin
+`value`-shaped wrappers over `GitRepo` (five-layer plumbing as L1–L3).
+
+Why libgit2 in-process and not `exec://git` (the client-server design §3
+anticipated a subprocess provider): the release lanes must not depend on a
+`git` binary at runtime (Windows/mac installs), blame per node needs
+structured rows not text scraping, and revision handles need blob bytes fast.
+The exec form stays available to TESTS for building fixtures (§8).
+
+Gate `scripts/check-one-git-owner.sh`: no `git_` call and no `exec://git`
+outside `madcdis_git_repo.cpp` in `src/`, `include/`, `tools/` (tests exempt
+for fixtures); negative control included.
+
+### 4.3 PAST verbs in the seat (L4b; all observer-tier reads)
+
+Added to the ONE descriptor table + `graph_verb` enum + `graph_call` switch
+(which structure answers each — the index-is-not-the-graph law):
+
+| Verb | Answer | Structure |
+|---|---|---|
+| `graph.status()` | `{handle, generation, synced, errors, log_head, revisions: [tags], git: {head, branch, dirty}}` | the doc bag + `clog_head` + `GitRepo::head/status_dirty` |
+| `graph.source(id)` | `{node, text}` — the span's bytes (live or revision handle) | `graph_span` + the handle's text |
+| `graph.history(id)` | `{node, rows: [{source: git\|session, when, actor, sha?, seq?, verb?, summary}]}` merged oldest → newest | git: `blame` over the span's lines, folded to distinct commits; session: `nodeop` records whose target symbol key matches + `splice` records that intersected the span AT THEIR TIME (the span walked backwards through newer splices with the inverse of `shift_anchors`' arithmetic — one helper `span_before_splice`, beside the owner, never a copy) |
+| `graph.commits(limit, path?)` | `{rows: [{sha, author, when, summary}]}` | `GitRepo::log` |
+| `graph.revision(rev)` | `{sha, tag}` — opens (or reuses) the revision handle; every id it later answers carries `tag` | `git_show` → `parse_open_tagged` |
+| `graph.diff(rev_a, rev_b)` | `{added, removed, changed}` at DECLARATION granularity: `graph.symbols` of both, keyed `{kind, name}`, `changed` = span text differs; `""` = the live buffer | two handles' `graph_symbols` + `graph_source` |
+
+`graph.history` is labelled by `source` (an enum on the wire as text, the
+value rows the agent reads); nothing in it is heuristic. Rename / move
+survival (Nexus §9 "Moved … Renamed …") is NOT v1: history follows the symbol
+KEY within its file; a renamed symbol's history begins at the rename, and the
+row says so — the named hard problem stays named (client-server §6).
+
+Every other `graph.*` read verb is unchanged and transparently answers for a
+revision id (§3.3 routing). The three mutation verbs refuse a revision id.
+
+### 4.4 The `propose` tier in the seat (L4c)
+
+- `tierPROPOSER` (§3.6); `graph_edit_apply(…, mode)` with
+  `enum edit_mode { emAPPLY, emPROPOSE }`: identical through the candidate's
+  validation; `emPROPOSE` calls `parse_would_accept`, computes `preview`,
+  appends the `ckPROPOSAL` record, answers `{ok, proposal: seq, preview,
+  diagnostics}`; nothing else changes (not the buffer, not the tree, not the
+  undo stack). A rejected candidate still answers `{ok:false, diagnostics}`
+  and stores NOTHING (a proposal that cannot parse is not a proposal).
+- New verbs (descriptor rows + enum + switch): `graph.proposals(status?)`,
+  `graph.proposal(seq)`, `graph.accept(seq)`, `graph.reject(seq, reason)`,
+  `graph.withdraw(seq)`; the fold `proposal_status_of(seq)` reads the
+  stream's decisions (§3.4).
+- The connection-level wiring test the L3 review deferred lands HERE with
+  the `testmadcide_serve_tiers` harness: a real observer refused, a real
+  proposer stored, a real editor landing — through `serve_client_task`.
+
+### 4.5 Nexus records + the MCP client + the mycenode adapter (L4d)
+
+- **`nexus.*` verb family** (a third family beside the registry commands and
+  `graph.*`; `nexus_verb` enum, `nexus_min_tier`, one switch):
+  `nexus.record(id)`, `nexus.records(rkind, state?)`, `nexus.create(rkind,
+  fields)`, `nexus.update(id, fields)`, `nexus.close(id)`, `nexus.link(from,
+  rel, to)`, `nexus.unlink(...)`, `nexus.context(ref)` — everything linked to
+  a ref plus, for a symbol ref, `graph.history` and the open proposals
+  touching it (the Context view, Nexus §6, as data), `nexus.sources()`,
+  `nexus.sync(source)`.
+- **The MCP client** (`tools/madcide/madcide_mcpclient.inc`, dialect, over
+  `madc::channel`): `mcp_client_open(out, manifest)` spawns the server
+  (`exec://<command…>`), performs `initialize` + `notifications/initialized`;
+  `mcp_client_tools(out, c)`; `mcp_client_call(out, c, tool, args)` with
+  JSON-RPC ids, replies matched by id, a deadline through `poll_state` /
+  `sleep_ms` in the cooperative loop (never a blocking read), a dead child
+  answered as `{error}` with `exit_status`. Transport = `enum mcp_transport {
+  mtSTDIO, mtHTTP }`; **stdio only in L4** — Streamable HTTP needs an
+  `http://` channel in madcdis (the WebSocket framer already writes the
+  handshake half), a later madcdis slice; until then a stdio ↔ HTTP bridge
+  process (the standard `mcp-remote`) is the owner's configuration, not
+  our code.
+- **Server manifests as DATA**: `profiles/mcp/<source>.mcp.json`:
+  `{ name, transport: "stdio", command: [...], env: {...}, vocabulary: {
+  list_tasks: { tool, args, map }, get_task: …, create_task: …, update_task:
+  …, comment: … } }`. Loaded ONCE into an enum-indexed table
+  (`enum nexus_op { noLIST_TASKS, noGET_TASK, noCREATE_TASK, noUPDATE_TASK,
+  noCOMMENT }`); an unknown vocabulary key or a tool the server's
+  `tools/list` does not advertise REFUSES the manifest with its line — the
+  enum-law boundary. `map` = result field → record field (a flat rename
+  table; a nested path is `a.b`).
+- **The source adapter** (dialect, `nexus_sync(source)`): pulls through the
+  client, folds results into `ckRECORD` events with `origin = source`,
+  `ext_key` = the owner system's id, `state` mapped — the cached projection of
+  ruling 2; native records (`origin ""`) are never touched by a sync. A
+  `nexus.create` on an external-owned kind with `origin` set pushes through
+  `create_task` and records the returned key.
+- **mycenode first** (the owner wires its manifest — command, auth, scope);
+  the test's server is a small dialect MCP FIXTURE server
+  (`tests/mcp_fixture_server.mad` + `.helper`) advertising the five tools with
+  canned rows — the external system's stand-in (we cannot ship mycenode). Jira
+  second: only a manifest, IF its transport is stdio-bridged; otherwise it
+  waits for the `http://` channel.
+
+## 5. Data flow (the four paths)
+
+1. **History**: `graph.history(id)` → route id (§3.3) → `graph_span` →
+   [git] `git_blame(path, l0, n)` → distinct shas → rows; [session] walk the
+   stream newest → oldest: `nodeop` with the same symbol key → row; `splice`
+   → intersect with the span-before-this-splice → row; merge by time; answer.
+2. **Revision**: `graph.revision("HEAD~3")` → `git_revparse` → `git_show(sha,
+   path)` → `parse_open_tagged(text, path, tag)` → cache → `{sha, tag}`; a
+   later `graph.symbols`/`graph.body`/… with a tagged id → the revision
+   handle; LRU close through `parse_close`.
+3. **Propose → land**: proposer `graph.replace(id, src)` → sync precondition →
+   read-only rule → span → splice → candidate on the scratch buffer →
+   `parse_would_accept` → preview → `ckPROPOSAL` → answer. Editor
+   `graph.accept(seq)` → fold status (`open`?) → the three re-checks (§3.4) →
+   `graph_edit_apply(emAPPLY)` on the recorded op → nodeop carries `proposal`
+   → `ckDECISION accepted {landed_seq}` → broadcast → answer `{ok, node, seq}`.
+4. **Sync**: `nexus.sync("mycenode")` → manifest (loaded once) →
+   `mcp_client_call(list_tasks)` → map → for each row: `ckRECORD` upsert by
+   `(origin, ext_key)` (the fold dedupes: latest wins) → answer counts.
+
+## 6. Refusals (never silent; the registered-prose rule)
+
+| Condition | Answer |
+|---|---|
+| not a git repository / rev unknown / path not in tree at rev | `{error: "<libgit2 message>"}` isError |
+| a revision id to a mutation verb | `"revision handles are read-only"` |
+| a tagged id whose handle was closed | the ordinary stale refusal `{stale:true}` |
+| proposer calls a mutation without a stored proposal path (e.g. `graph.accept`) | the tier refusal shape (`graph_min_tier`) |
+| proposal not `open` / target changed / doc moved | `"proposal <seq> is <status>"` · `"proposal target changed since seq N; re-propose against fresh ids"` · the L3 re-sync refusal |
+| candidate rejected at propose time | `{ok:false, diagnostics}`; nothing stored |
+| manifest names an unknown vocabulary key / tool not advertised / server exits | refuse the manifest with its line · `{error, exit_status}` |
+| a `ref` of unknown kind or a relation not in the enum | refused at the boundary (`ref_kind_of` / `nexus_rel_of` = NONE) |
+| `graph.diff` between two revisions with different files | `"path <p> absent at <sha>"` |
+
+## 7. Thread-safety contracts (the law: stated per piece)
+
+| Piece | Contract |
+|---|---|
+| `GitRepo` / libgit2 | CONFINED to the session (UI) thread like every handle; `GIT_THREADS` is on for libgit2's internal correctness only. `git_libgit2_init` once per process behind a static guard. A blame or a log over a large history runs synchronously on the session thread in v1 (bounded by `limit`); the cooperative-task pump for long walks is the F2 seam, signatures unchanged. |
+| Revision handles | Per-doc, session-thread-owned, closed with the doc. Same contract as the live handle. |
+| The one event stream | Appended by the session thread only (unchanged); the nexus fold is a per-session cache invalidated by `seq`. |
+| The MCP client | A child process over `exec://`; reads/writes from cooperative tasks on the session thread (channels park, never block a thread); one outstanding request per client in v1. |
+| Manifests | Loaded once at session start (or `nexus.sources` reload, an owner verb); immutable after load. |
+
+## 8. Testing / gates (targeted per slice; the battery at the V6 seam)
+
+- **L4a** unit `tests/unit/test_gitrepo.cpp`: builds a fixture repository IN
+  THE TEST through libgit2's own write API (init, two commits touching one
+  file, a rename), then asserts `head`, `revparse`, `log` filtered by path,
+  `show` bytes, `blame` rows, a non-repo path refuses. Dialect
+  `tests/testgit.mad`: the fixture built with `git` via `exec://` (every lane
+  that runs the suite checked the repo out with git), then the `madc::git_*`
+  publics. Gates: `check-libgit2-features.sh`, `check-one-git-owner.sh`,
+  the size report. Rule trailers on every `src/`/`include/` commit.
+- **L4b** `tests/testgraphpast.mad`: `graph.status` shape; `graph.source` ==
+  the span bytes; `graph.revision` → tagged ids route (a live verb answers
+  the revision's node; a mutation refuses; a closed tag is stale);
+  `graph.diff` added/removed/changed on a two-commit fixture;
+  `graph.history` rows from a splice + a nodeop + a commit, ordered.
+  `tests/testmadcide_changelog` byte-identical for one doc + a two-doc
+  project-stream case; the single-owners gate extended to `clog_kind_of`.
+- **L4c** `tests/testmadcide_serve_propose.mad` (the `serve_tiers` harness,
+  real connections): observer refused; proposer's `graph.replace` stored
+  (preview + diagnostics; buffer unchanged; log has `ckPROPOSAL`); editor
+  `graph.accept` lands (nodeop carries `proposal`; decision record; `seq`
+  advanced); a second proposal whose target then changes is refused at
+  accept; `graph.reject` + `graph.withdraw`; `graph.proposals(open)` counts.
+- **L4d** `tests/testnexus_records.mad`: create / update / close / link /
+  unlink / records / context; persist → restore round trip; a bad relation
+  refused. `tests/testmcpclient.mad`: spawns the fixture server, `tools/list`,
+  a call, a dead-server error; `nexus.sync` folds five rows with `origin`;
+  a manifest with a misspelled vocabulary key refuses with its line.
+- Every new refusal in §6 is asserted as `isError` in the seat tests.
+
+## 9. Slices (each banks on the arc branch with targeted gates)
+
+| Slice | Content | Gate |
+|---|---|---|
+| **L4a** git substrate | libgit2 subtree + `Makefile.madc` + features headers + Makefile wiring (all variants) + size spike; `GitRepo`; `git_source_adapter` + the `git` scheme row; `madc::git_*` publics | §8 L4a |
+| **L4b** PAST verbs | project-scoped stream + `clog_kind` enum; `parse_open_tagged` + revision-handle routing; `graph.status / source / history / commits / revision / diff` | §8 L4b |
+| **L4c** propose | `tierPROPOSER`; `parse_would_accept`; `edit_mode`; proposal + decision records; `graph.proposals / proposal / accept / reject / withdraw`; the connection-level wiring test | §8 L4c |
+| **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot | §8 L4d |
+| later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments) | own plans |
+
+Engine commits (`src/`, `include/`, `third_party/libgit2/Makefile.madc`)
+carry the four rule trailers; dialect and doc commits ride without.
+`/dupaudit` scoped to madcdis + the seat before the seam merge.
+
+## 10. Decided defaults (owner veto welcome) and the forks behind them
+
+1. **One project-scoped stream for proposals and records** (chosen) vs a
+   separate madcdat-backed store. One stream = one `seq`, one persistence
+   rule, one compaction, one fold; the store is a later disposable index.
+   Cost if wrong: a very large record set makes the fold slow — the index
+   arrives then.
+2. **Revision ids by generation TAG** (chosen) vs a `rev` argument on every
+   id-taking call vs a parallel `graph.rev.*` family. The tag makes a wrong
+   handle impossible (a mismatch is the stale refusal), keeps every verb's
+   signature, and costs one assignment in the engine.
+3. **The MCP client in dialect over `exec://`** (chosen) vs a C++ `mcp://`
+   DataDriver. The server seat is dialect; the client mirrors it; `madc::channel`
+   already spawns and pumps a child. The `mcp` scheme row stays reserved for
+   the C++ driver the query layer may want later (one implementation then —
+   the dialect client would move behind it, not beside it).
+4. **`proposer` as a fourth tier level** (chosen) vs a per-client flag. A
+   level rides every existing gate and `clienttier`; a flag is a second
+   mechanism (client-server §2.5: "no third mechanism").
+5. **Byte-exact target re-check at landing** (chosen) vs. re-locating a moved
+   target. Exact and loud; re-location (yailPeralta re-anchors by symbol
+   path) is a later refinement once rename survival exists.
+6. **Records fold in dialect** (chosen) vs. an engine-side query. Hundreds of
+   records; the same walk `clog_replay` does; the engine's madcdis DataSet face
+   arrives with the `git://` adapter's first caller.
+7. **Bundled pcre for libgit2's regex on every lane** (chosen) vs. POSIX
+   `regcomp` on posix + pcre on win64. One behaviour everywhere; +~300 KB.
+
+## 11. Owner laws honoured
+
+Running-madc-IS-the-compiler (revision handles are parse handles of the same
+process) · no-user-program-cache (revision handles and the fold are bounded
+derivatives; the stream is the owner's record) · entity-handles-never-byte-
+offsets (a proposal's op re-checks the NODE, the splice is derived) · index-is-
+not-the-graph (each verb names its structure, §4.3) · enums-not-strings
+(`clog_kind`, `ref_kind`, `nexus_rel`, `record_kind`, `edit_mode`,
+`mcp_transport`, `nexus_op`, `tierPROPOSER`; text only on the wire, converted
+once) · thread-safety (§7) · no-parallel-implementations (one validator with a
+`commit` flag; one git owner; one stream; one fold) · every-mutation-through-
+a-verb (landing = `graph_edit_apply`) · MCP-is-an-adapter (the client is a
+channel + a manifest) · madcdis-stays-DataDef-agnostic (the git adapter emits
+`value` records) · dialect-lean / value-first (`var`, out-param carriers, no
+`std::` in `.inc`) · push only to owner remotes · the battery at the seam.
+
+## 12. Deferred (named, not blockers)
+
+Rename/move survival (GumTree / semantic diff); body-level `graph.diff`;
+recipes as N-op proposals with a per-file diff View; `http://` channel and
+Streamable HTTP MCP; a madcdat index over the stream; test records + the
+`tests` edge (test candidates); the L2 increments (`graph.explore`, `detail`
+enum, `graph.impact(depth)`); the parser `;` quirk (its own session); L3
+minors M5/M8; fixture leaks in `testmadcide*`.
+
+## 13. Traceability
+
+- Design doc §7 L4 → this document; client-server design §2.4 / §2.5 / §2.7 /
+  §3; Nexus vision §2 / §6 / §7 / §8 / §9 / §10 / §16 / §20 / §21 / §22 / §25;
+  cross-reference §5 rulings 1 / 2 / 6.
+- Recon: `tmp/sdd-ast-graph-mcp-L4/recon.md` (gitignored; verdict in
+  `claude_status.json` UPDATE 10).
+- KG: Feature `code_graph_mcp` L4 opened; Decisions `nexus_past_via_libgit2`,
+  `nexus_propose_tier_fourth_level`, `nexus_one_stream_for_records`,
+  `nexus_revision_ids_by_generation_tag`, `nexus_mcp_client_dialect_stdio` to
+  land with the owner's approval of this document.
