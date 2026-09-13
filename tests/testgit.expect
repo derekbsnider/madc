@@ -1,0 +1,16 @@
+opened: 1
+head-sha-len: 40
+head-has-branch-or-detached: 1
+revparse-head-matches: 1
+log-rows-positive: 1
+log-row-shape: 1
+show-matches-file: 1
+blame-rows-positive: 1
+blame-row-shape: 1
+dirty-is-bool: 1
+missing-path-error: 1
+bad-ref-error: 1
+closed: 1
+stale-after-close: 1
+stale-handle-error: 1
+nonrepo: 1

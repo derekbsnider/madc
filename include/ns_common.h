@@ -255,6 +255,17 @@ void *madc_graph_impact(void *result, int64_t handle, int64_t id);
 void *madc_graph_span(void *result, int64_t handle, int64_t id);
 void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
 bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
+// The git substrate (Nexus L4a, design 2026-09-13 §4.2): read-only repository
+// facts through madc::GitRepo. path/spec/rev = std::string*, result =
+// madc::value*; git_open answers 0 for a path with no repository above it.
+int64_t madc_git_open(void *path);
+bool  madc_git_close(int64_t handle);
+void *madc_git_head(void *result, int64_t handle);
+void *madc_git_revparse(void *result, int64_t handle, void *spec);
+void *madc_git_log(void *result, int64_t handle, void *path, int64_t limit);
+void *madc_git_show(void *result, int64_t handle, void *rev, void *path);
+void *madc_git_blame(void *result, int64_t handle, void *path, int64_t line, int64_t count);
+void *madc_git_dirty(void *result, int64_t handle, void *path);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =
