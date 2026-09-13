@@ -393,19 +393,30 @@ the engine already holds — never guessed, never assumed by a verb:
 
 ```
 enum asset_layer : unsigned char {
-    alTEXT     = 1,   // the bytes; a text kind is editable, a binary kind is opened by name
-    alHISTORY  = 2,   // a repository above the asset AND a project manifest
-    alTRACKING = 4,   // a project manifest (records, links, provenance — binary assets too)
-    alLEXED    = 8,   // the file kind has a lexer (fkTEXT range with a lexer, fkC/fkCPP/fkMADC, fkOTHER with rows)
-    alPARSED   = 16,  // the file kind has a parser: fkC / fkCPP / fkMADC ranges -> the MC11 tree, the graph verbs
-    alTESTABLE = 32,  // a project manifest: tests are records here
-    alRUNNABLE = 64   // a runner exists for the asset's tests: internal (madc compiles + runs
-                      // the kind: parse_build / parse_run, madcrun:// / madcproj://) or
-                      // external (the manifest names a command)
+    alTEXT       = 1,   // the bytes — ALWAYS; a text kind is editable, a binary kind is opened by name
+    alVERSIONED  = 2,   // a repository above the asset AND a project manifest (git history)
+    alMANAGED    = 4,   // a project manifest (records, links, provenance — binary assets too)
+    alLEXABLE    = 8,   // the file kind has a lexer (fkTEXT range with a lexer, fkC/fkCPP/fkMADC, fkOTHER with rows)
+    alPARSEABLE  = 16,  // the file kind has a parser: fkC / fkCPP / fkMADC ranges -> the MC11 tree, the
+                        // graph verbs. In madc parseable IS semantic: the parser attributes types and an
+                        // error-tolerant parse keeps the tree, so one flag names both
+    alEXECUTABLE = 32,  // madc itself can build and run the kind on THIS node (parse_build / parse_run,
+                        // madcrun:// / madcproj://) — the internal runner
+    alTESTABLE   = 64   // tests exist as records for the project AND a runner can run them on the
+                        // target node: internal (executable) or external (a manifest-named command)
 };
-long asset_layers_of(long w, long doc);   // ONE owner, in the seat; reads file kind,
-                                          // manifest presence, GitRepo::open, the runner table
+long asset_layers_of(long w, long doc, long node);   // ONE owner, in the seat; reads file kind,
+                                                     // manifest presence, GitRepo::open, the node's
+                                                     // offers (§3.11); node 0 = here
 ```
+
+The wire words are the review's discovery vocabulary — `text`, `versioned`,
+`managed`, `lexable`, `parseable`, `executable`, `testable` — converted once;
+an agent reads them from `graph.status` / `nexus.explain` and knows which
+operations are valid for THIS asset on THIS node instead of assuming every
+layer exists. `executable` and `testable` are NODE-relative (a Windows-only
+test is testable on the Windows node, not here); the other five are properties
+of the asset and its project.
 
 Rules the layers encode (each a fact, not a policy knob):
 - **Text is always there** — even a binary asset has bytes and a name; only
@@ -430,23 +441,27 @@ Rules the layers encode (each a fact, not a policy knob):
 
 Every verb family declares the layer(s) it needs as DATA beside its tier
 (`graph_min_layer` next to `graph_min_tier`; `nexus_min_layer`,
-`test_min_layer`): `graph.*` → `alPARSED`; `graph.history` → `alHISTORY`
-(+ `alPARSED` for a node, `alTEXT` suffices for the asset's own history);
-`graph.revision / diff / blame-backed rows` → `alHISTORY` on a text kind;
-`nexus.*` → `alTRACKING`; `test.list / results` → `alTESTABLE`; `test.run` →
-`alRUNNABLE`. The gate runs at `graph_call`/`nexus_call`/`test_call` entry, after
-the tier gate, before any structure is touched. `graph.status` and
-`nexus.explain` report the asset's layer set (as text names on the wire,
-converted once) so an agent learns in one call what this asset can answer —
-per-asset capability negotiation, the §2.8 invariant 2 shape applied inward.
+`test_min_layer`): `graph.*` → `alPARSEABLE`; `graph.history` → `alVERSIONED`
+(+ `alPARSEABLE` for a node, `alTEXT` suffices for the asset's own history);
+`graph.revision / diff / blame-backed rows` → `alVERSIONED` on a text kind;
+`nexus.*` → `alMANAGED`; `test.list / results` → `alMANAGED`; `test.run` →
+`alTESTABLE` on the target node. The gate runs at `graph_call`/`nexus_call`/
+`test_call` entry, after the tier gate, before any structure is touched.
+`graph.status` and `nexus.explain` report the asset's layer set (as the text
+names above, converted once) so an agent learns in one call what this asset
+can answer — per-asset capability negotiation, the §2.8 invariant 2 shape
+applied inward. The model is a capability-layered one, not a fixed pipeline:
+no verb assumes a layer below it exists.
 
-### 3.10 The verification axis — tests as records, runs as events (owner, 2026-09-13)
+### 3.10 The verification axis — tests as records, runs as EVIDENCE events (owner, 2026-09-13)
 
 The triad (git = past, AST = present, intent = future) neglected the axis
 that says whether any of it WORKS. Nexus §11 names it ("build, test, debug
-and profile as one model"); the external review's transactional mutation
-("validate, run checks/tests, commit") needs it; the proposal record already
-carries the `checks` seat for it. The model:
+and profile as one model"); the external review names it the EVIDENCE axis —
+beside semantics (what the code is), history (how it got here) and intent
+(why it exists), it answers what DEMONSTRATES that it works; the review's
+transactional mutation ("validate, run checks/tests, commit") needs it; the
+proposal record already carries the `checks` seat for it. The model:
 
 - **A test is a record** (`rkind: test`) with the envelope of §3.5 and fields
   `{name, family, asset, command}` — `family` an enum `test_family { tfMAD
@@ -496,9 +511,61 @@ carries the `checks` seat for it. The model:
   stays `open` with the runs attached.
 - **Verbs** (a fourth family, `test.*`; tiers: reads observer, `test.run`
   editor — it spends build/run resources, `cmd_min_tier`'s rule): `test.list
-  (family?)`, `test.discover`, `test.candidates(ref)`, `test.run(ids…)`,
-  `test.results(test?, since?)`. Layers: `alTESTABLE` for the reads,
-  `alRUNNABLE` for `run`.
+  (family?)`, `test.discover`, `test.candidates(ref)`, `test.run(ids…,
+  target?)`, `test.results(test?, since?, node?)`. Layers: `alMANAGED` for
+  the reads, `alTESTABLE` on the target node for `run`.
+
+### 3.11 Multi-master builds and tests across platform nodes (owner, 2026-09-13)
+
+The owner's plan for running builds on the other platforms rides this axis:
+the platform-node mesh the client-server design named as the post-arc track
+(§2.7 "the platform-node build/test mesh"; §2.8 invariants 1–6; Nexus §17
+server nodes, §21 authority). It is MULTI-MASTER by domain, never one master
+for everything and never a CRDT for everything:
+
+- **The editing domain has ONE authority** — the session that owns the
+  project's text applies verbs in arrival order (§2.4); "master" is that ROLE,
+  scoped to editing, assignable (Nexus §17: a server node is a peer with
+  different responsibilities).
+- **Each node is authoritative for ITS OWN platform's evidence.** The
+  mac-arm64 node alone can say whether the project builds and passes on
+  darwin-arm64; the Windows node for win64; the container for linux and the
+  cross lanes. Their results are EVENTS (`buildrun`, `testrun`) tagged with
+  the `node` that produced them (§2.8 invariant 5) — a local PASS and a CI
+  FAIL coexist as information (Nexus §21). The evidence axis is therefore
+  many-mastered by construction: one record kind, N authoritative writers,
+  each for its own platform.
+- **A node is a Client** (§2.8 invariant 1: `{id, transport, level, tier,
+  last_seq, capabilities}`) that OFFERS `{platform, toolchains, serves:
+  [build, run, test]}` at connect (invariant 2, symmetric negotiation). The
+  asset layers `executable` / `testable` are evaluated against a node's
+  offers — `asset_layers_of(w, doc, node)`.
+- **Dispatch is the command envelope's `target`** (invariant 3): `test.run
+  (ids, target: <node id | capability such as "darwin-arm64">)` and its
+  build twin `build.run(kind, target)` route to the node; `null` = here. A
+  target no node offers refuses with the missing capability, never runs
+  locally by surprise.
+- **The project reaches the node through the ONE stream** (invariant 4): a
+  node mirrors the project by replaying splices since its `last_seq`
+  (snapshot + splices), builds or tests its mirror with its own toolchain
+  (internal or external runner, §3.10), and streams the result events back
+  attributed to itself. No second mutation path, no copy of the sources
+  outside the log's replication.
+- **Dogfood = this project's own lanes**: QNAP (the NAS the sessions run on;
+  never builds — owner law), the WSL/docker Linux container (the host of every
+  build, the cross builds and the wine lane), Windows 11, the x86 MacBook Pro
+  and the arm64 MacBook Pro. `scripts/remote_build.sh` and the lane ledger
+  (`scripts/lane_ledger.sh`, the push gate) are the MANUAL precursor; the mesh
+  makes them first-class — a release's "every lane green" (owner law
+  2026-09-04) becomes a query over `buildrun`/`testrun` events per node — and
+  retires them when it has proven itself on this project.
+- **Sequencing.** L4e lands the local half with the mesh's SHAPE (the
+  `target` slot accepted and refused, results tagged `node` = here, offers
+  recorded on the Client record); the remote half — a node process
+  (`madcide --serve` with offers), the mirror-and-run loop, the result stream
+  — is the mesh track itself, after L4, when the MCP seat has paid for
+  itself (the client-server design's own ordering). Nothing in L4 may assume
+  a single node: every evidence row already names its node.
 
 ## 4. Components
 
@@ -909,6 +976,15 @@ From the external review, deferred with their seats named:
   records, runs as events, the canonical runner as the one harness), §9
   (slice L4e; `test` records in L4d), §10 (11–14). KG Decisions
   `nexus_asset_layers`, `nexus_verification_axis`.
+- Second amendment the same day (the external review's capability-layered
+  model and evidence-axis framing, relayed by the owner; the owner's
+  multi-platform build plan): §3.9 adopts the review's discovery vocabulary
+  as the wire words (`versioned / managed / lexable / parseable / executable
+  / testable`, `text` always) and makes `executable` / `testable`
+  node-relative; §3.10 names the axis EVIDENCE; §3.11 the multi-master
+  build/test mesh (one editing authority, each node authoritative for its
+  platform's evidence, offers + `target` + node-tagged events, the lane
+  ledger as the precursor). KG Decision `nexus_multi_master_evidence`.
 - KG: Feature `code_graph_mcp` L4 opened; Decisions `nexus_past_via_libgit2`,
   `nexus_propose_tier_fourth_level`, `nexus_one_stream_for_records`,
   `nexus_revision_ids_by_generation_tag`, `nexus_mcp_client_dialect_stdio` to
