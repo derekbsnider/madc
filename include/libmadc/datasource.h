@@ -119,6 +119,10 @@ private:
 	    { "bdb", domain::storage, family::keyed_database, true, true },
 	    { "gdbm", domain::storage, family::keyed_database, true, true },
 	    { "qdbm", domain::storage, family::keyed_database, true, true },
+	    // a git repository (working tree or .git) read through
+	    // madc::GitRepo — local history only (Nexus L4a, design
+	    // 2026-09-13 §4.2); `?path=<file>` rides the path for the adapter
+	    { "git", domain::storage, family::file, true, true },
 	    { "mysql", domain::storage, family::relational_database, false, false },
 	    { "pgsql", domain::storage, family::relational_database, false, false },
 	    { "postgres", domain::storage, family::relational_database, false, false },
