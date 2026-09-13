@@ -29,6 +29,10 @@
 // Depends on madcide_api.inc (api_run) and the registry (madcide_enums.inc:
 // cmd_table / cmd_min_tier / tier_name).
 
+// The PAST axis (Nexus L4b): revision handles, the id/rev routing and the six
+// graph.status / source / history / commits / revision / diff bodies.
+#include "madcide_past.inc"
+
 // A JSON-RPC 2.0 success envelope: this request's id echoed, its result.
 // Fills `out` (the dialect carrier-return convention, pre-L3 value-return).
 void mcp_reply(var &out, var &id, var &result)
@@ -180,6 +184,39 @@ void graph_tool_descriptors(var &out)
 	"description": "delete a node (editor tier; validated, logged, undoable)",
 	"inputSchema": idargs };
     tools[] = t18;
+    // Nexus L4b (design 2026-09-13 §4.3): the PAST verbs. `rev` is any
+    // rev-parse spec or a sha; "" = the live buffer. Every id-less read also
+    // accepts `rev`; an id routes itself to the handle that minted it.
+    var revprop = { "type": "string", "description": "a git revision (rev-parse spec or sha); \"\" = the live buffer" };
+    var limitprop = { "type": "integer", "description": "at most this many rows (optional; default 20)" };
+    var revprops = { "rev": revprop };
+    var revargs = { "type": "object", "properties": revprops };
+    var limitprops = { "limit": limitprop };
+    var limitargs = { "type": "object", "properties": limitprops };
+    var diffprops = { "a": revprop, "b": revprop };
+    var diffargs = { "type": "object", "properties": diffprops };
+    var t19 = { "name": "graph.status", "code": gvSTATUS,
+	"description": "the served asset in one call: handle, generation, synced, error count, log head, open revisions, git head/branch/dirty, layers",
+	"inputSchema": noargs };
+    tools[] = t19;
+    var t20 = { "name": "graph.source", "code": gvSOURCE,
+	"description": "a node's source text (a live or revision id)", "inputSchema": idargs };
+    tools[] = t20;
+    var t21 = { "name": "graph.history", "code": gvHISTORY,
+	"description": "who changed this node and when: git commits (blame) + session events (node-ops, text edits), provenance-tagged",
+	"inputSchema": idargs };
+    tools[] = t21;
+    var t22 = { "name": "graph.commits", "code": gvCOMMITS,
+	"description": "the commits touching the served file, newest first", "inputSchema": limitargs };
+    tools[] = t22;
+    var t23 = { "name": "graph.revision", "code": gvREVISION,
+	"description": "open the served file at a git revision as a read-only handle; its ids route themselves to it",
+	"inputSchema": revargs };
+    tools[] = t23;
+    var t24 = { "name": "graph.diff", "code": gvDIFF,
+	"description": "declaration-level diff between two revisions (\"\" = live): added / removed / changed symbols",
+	"inputSchema": diffargs };
+    tools[] = t24;
     out = tools;
 }
 
@@ -559,16 +596,29 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	out = { "content": content, "isError": true };
 	return;
     }
+    // L4b routing (design §3.3): an id names its handle (graph_route), an
+    // id-less read may name a revision (`rev`); `hh` is the handle a read runs
+    // against. A mutation aimed at a revision refuses — revision handles are
+    // read-only (the engine refuses their refresh too).
+    bool is_rev = false;
+    long hh = route_handle(w, es, adoc, h, args, is_rev);
+    if ( is_rev && need >= tierEDITOR )
+    {
+	var item = { "type": "text", "text": "revision handles are read-only" };
+	content[] = item;
+	out = { "content": content, "isError": true };
+	return;
+    }
     var snap;
     switch ( gv )
     {
-    case gvSYMBOLS:    madc::graph_symbols(snap, h); break;
-    case gvNODE:       madc::graph_node(snap, h, args["id"].as_integer()); break;
-    case gvTYPE_OF:    madc::graph_type_of(snap, h, args["id"].as_integer()); break;
-    case gvDEFINITION: madc::graph_definition(snap, h, args["name"].c_str()); break;
-    case gvMEMBERS:    madc::graph_members(snap, h, args["id"].as_integer()); break;
-    case gvBASES:      madc::graph_bases(snap, h, args["id"].as_integer()); break;
-    case gvENCLOSING:  madc::graph_enclosing(snap, h, args["line"].as_integer(), args["column"].as_integer()); break;
+    case gvSYMBOLS:    madc::graph_symbols(snap, hh); break;
+    case gvNODE:       madc::graph_node(snap, hh, args["id"].as_integer()); break;
+    case gvTYPE_OF:    madc::graph_type_of(snap, hh, args["id"].as_integer()); break;
+    case gvDEFINITION: madc::graph_definition(snap, hh, args["name"].c_str()); break;
+    case gvMEMBERS:    madc::graph_members(snap, hh, args["id"].as_integer()); break;
+    case gvBASES:      madc::graph_bases(snap, hh, args["id"].as_integer()); break;
+    case gvENCLOSING:  madc::graph_enclosing(snap, hh, args["line"].as_integer(), args["column"].as_integer()); break;
     // Code-graph MCP L1b: the body-graph verbs. `depth` is optional — unset
     // means "the natural default for this verb" (graph.body: -1/full,
     // server-capped; graph.children: 1, immediate children).
@@ -576,29 +626,65 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     {
 	var dv = args["depth"];
 	long d = dv.is_null() ? -1 : dv.as_integer();
-	madc::graph_body(snap, h, args["func"].as_integer(), d);
+	madc::graph_body(snap, hh, args["func"].as_integer(), d);
 	break;
     }
     case gvCHILDREN:
     {
 	var dv = args["depth"];
 	long d = dv.is_null() ? 1 : dv.as_integer();
-	madc::graph_children(snap, h, args["id"].as_integer(), d);
+	madc::graph_children(snap, hh, args["id"].as_integer(), d);
 	break;
     }
     // Code-graph MCP L2: the derived-edge verbs. func is a function type-id;
     // references/impact accept a function type-id OR a global decl-id.
-    case gvCALLEES:    madc::graph_callees(snap, h, args["func"].as_integer()); break;
-    case gvCALLERS:    madc::graph_callers(snap, h, args["func"].as_integer()); break;
-    case gvREFERENCES: madc::graph_references(snap, h, args["func"].as_integer()); break;
-    case gvSEARCH:     madc::graph_search(snap, h, args["kind"].c_str(), args["name"].c_str()); break;
-    case gvIMPACT:     madc::graph_impact(snap, h, args["id"].as_integer()); break;
+    case gvCALLEES:    madc::graph_callees(snap, hh, args["func"].as_integer()); break;
+    case gvCALLERS:    madc::graph_callers(snap, hh, args["func"].as_integer()); break;
+    case gvREFERENCES: madc::graph_references(snap, hh, args["func"].as_integer()); break;
+    case gvSEARCH:     madc::graph_search(snap, hh, args["kind"].c_str(), args["name"].c_str()); break;
+    case gvIMPACT:     madc::graph_impact(snap, hh, args["id"].as_integer()); break;
     // Code-graph MCP L3: extents, position lookup and the three mutations.
-    case gvSPAN:       madc::graph_span(snap, h, args["id"].as_integer()); break;
-    case gvAT:         madc::graph_at(snap, h, args["line"].as_integer(), args["column"].as_integer()); break;
+    case gvSPAN:       madc::graph_span(snap, hh, args["id"].as_integer()); break;
+    case gvAT:         madc::graph_at(snap, hh, args["line"].as_integer(), args["column"].as_integer()); break;
     case gvINSERT:
     case gvREPLACE:
     case gvDELETE:     graph_edit_apply(snap, S, doc, self_id, gv, args); break;
+    // Nexus L4b: the PAST verbs (madcide_past.inc).
+    case gvSTATUS:     graph_status(snap, w, es, adoc, h); break;
+    case gvSOURCE:     graph_source(snap, w, adoc, h, hh, args["id"].as_integer()); break;
+    case gvHISTORY:    graph_history(snap, w, es, adoc, h, args["id"].as_integer()); break;
+    case gvCOMMITS:
+    {
+	var lv;
+	arg_of(lv, args, "limit");
+	graph_commits(snap, w, es, adoc, lv.is_null() ? 20 : lv.as_integer());
+	break;
+    }
+    case gvREVISION:
+    {
+	var rv;
+	arg_of(rv, args, "rev");
+	var spec = "HEAD";
+	if ( !rv.is_null() )
+	    spec = rv;
+	graph_revision(snap, w, es, adoc, spec.c_str());
+	break;
+    }
+    case gvDIFF:
+    {
+	var av;
+	arg_of(av, args, "a");
+	var bv;
+	arg_of(bv, args, "b");
+	var a = "";
+	var b = "";
+	if ( !av.is_null() )
+	    a = av;
+	if ( !bv.is_null() )
+	    b = bv;
+	graph_diff(snap, w, es, adoc, h, a.c_str(), b.c_str());
+	break;
+    }
     }
     // A result that carries an error (a stale id, a non-editable target, a
     // rejected edit) is isError content — an agent must notice, never read

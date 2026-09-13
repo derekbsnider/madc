@@ -1,0 +1,124 @@
+// Nexus L4b through the SEAT: the PAST verbs over the repository this test runs
+// in (tests/testint.mad — tracked, clean, ancient). Git rows by SHAPE (history
+// moves), event rows and the diff EXACTLY; the in-session edit never touches
+// the disk. stderr stays empty (.expect_quiet).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+
+// One tools/call through the seat (self_id -1 = the operator); `snap` = the
+// parsed structured content, `iserr` = the envelope's isError.
+bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var resp;
+    mcp_handle(S, doc, -1, req, resp);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    return js::parse(snap, txt.c_str());
+}
+
+int main()
+{
+    IdeSession S;
+    long doc = S.open("tests/testint.mad", false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "cannot open tests/testint.mad");
+	return 1;
+    }
+    S.terminal(false);
+    var snap;
+    bool err;
+    var none = {};
+
+    call_tool(snap, err, S, doc, 1, "graph.status", none);
+    var git = snap["git"];
+    println("status: synced={} errors={} git={} branch-set={} layers={}",
+	    snap["synced"].as_boolean() ? 1 : 0, snap["errors"],
+	    git.is_null() ? 0 : 1,
+	    strlen(git["branch"].c_str()) > 0 ? 1 : 0, php::count(snap["layers"]));
+
+    call_tool(snap, err, S, doc, 2, "graph.commits", none);
+    var c0 = snap["rows"][0];
+    println("commits: rows-positive={} sha-len={}", php::count(snap["rows"]) > 0 ? 1 : 0, strlen(c0["sha"].c_str()));
+
+    var revargs = { "rev": "HEAD" };
+    call_tool(snap, err, S, doc, 3, "graph.revision", revargs);
+    long tag = snap["tag"].as_integer();
+    var sha = snap["sha"];
+    println("revision: sha-len={} tag-tagged={}", strlen(sha.c_str()), tag >= 1048576 ? 1 : 0);
+
+    call_tool(snap, err, S, doc, 4, "graph.symbols", revargs);
+    var rn = snap["nodes"][0];
+    long rid = rn["id"].as_integer();
+    println("rev-symbols: name={}", rn["name"]);
+
+    var idargs = { "id": rid };
+    call_tool(snap, err, S, doc, 5, "graph.node", idargs);
+    println("rev-id-routes: name={} err={}", snap["name"], err ? 1 : 0);
+    var repargs = { "id": rid, "src": "int main() { return 1; }" };
+    call_tool(snap, err, S, doc, 6, "graph.replace", repargs);
+    println("rev-mutation-refused: {}", err ? 1 : 0);
+
+    var diffargs = { "a": "HEAD", "b": "" };
+    call_tool(snap, err, S, doc, 7, "graph.diff", diffargs);
+    println("diff-clean: added={} removed={} changed={}",
+	    php::count(snap["added"]), php::count(snap["removed"]), php::count(snap["changed"]));
+
+    call_tool(snap, err, S, doc, 8, "graph.symbols", none);
+    var ln = snap["nodes"][0];
+    long lid = ln["id"].as_integer();
+    var srcargs = { "id": lid };
+    call_tool(snap, err, S, doc, 9, "graph.source", srcargs);
+    var text = snap["text"];
+    var head8 = perl::substr(text, 0, 8);
+    println("source: starts-int-main={}", head8 == "int main" ? 1 : 0);
+
+    // edit main in-session: a statement after `printstr("123: ");` (line 8)
+    var atargs = { "line": 8, "column": 4 };
+    call_tool(snap, err, S, doc, 10, "graph.at", atargs);
+    var stmt = snap["id"];
+    var insargs = { "id": stmt, "where": "after", "src": "puti(7);" };
+    call_tool(snap, err, S, doc, 11, "graph.insert", insargs);
+    println("insert: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+
+    call_tool(snap, err, S, doc, 12, "graph.diff", diffargs);
+    var ch = snap["changed"][0];
+    var chb = ch["b"];
+    println("diff-after-edit: added={} removed={} changed={} name={}",
+	    php::count(snap["added"]), php::count(snap["removed"]), php::count(snap["changed"]), chb["name"]);
+
+    call_tool(snap, err, S, doc, 13, "graph.symbols", none);
+    var ln2 = snap["nodes"][0];
+    var hargs = { "id": ln2["id"] };
+    call_tool(snap, err, S, doc, 14, "graph.history", hargs);
+    long gitrows = 0;
+    long evrows = 0;
+    long splices = 0;
+    for ( var r : snap["rows"] )
+    {
+	if ( r["provenance"] == "git" )
+	    gitrows = gitrows + 1;
+	if ( r["provenance"] == "event" )
+	{
+	    evrows = evrows + 1;
+	    if ( r["verb"] == "splice" )
+		splices = splices + 1;
+	}
+    }
+    println("history: git-rows-positive={} event-rows={} splice-rows={} complete={}",
+	    gitrows > 0 ? 1 : 0, evrows, splices, snap["complete"].as_boolean() ? 1 : 0);
+
+    call_tool(snap, err, S, doc, 15, "graph.status", none);
+    println("status-after: synced={} log_head={} revisions={}",
+	    snap["synced"].as_boolean() ? 1 : 0, snap["log_head"], php::count(snap["revisions"]));
+    return 0;
+}

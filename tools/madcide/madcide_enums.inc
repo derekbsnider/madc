@@ -631,8 +631,37 @@ enum graph_verb : unsigned char {
     gvSYMBOLS, gvDEFINITION, gvNODE, gvTYPE_OF, gvMEMBERS, gvBASES, gvENCLOSING,
     gvBODY, gvCHILDREN,
     gvCALLEES, gvCALLERS, gvREFERENCES, gvSEARCH, gvIMPACT,
-    gvSPAN, gvAT, gvINSERT, gvREPLACE, gvDELETE
+    gvSPAN, gvAT, gvINSERT, gvREPLACE, gvDELETE,
+    // Nexus L4b (design 2026-09-13 §4.3): the PAST verbs — reads, observer tier.
+    gvSTATUS, gvSOURCE, gvHISTORY, gvCOMMITS, gvREVISION, gvDIFF
 };
+
+// The annotation kinds madcide writes into the ONE change stream (design
+// §3.1); the texteditor layer's reader sees them as ckOTHER. Text on the
+// persisted line, a code in the reader (nexus_kind_of) — the enum law. Only
+// nkNODEOP has a writer today; the later kinds are the design's vocabulary
+// and their writers arrive with L4c–L4e.
+enum nexus_kind : unsigned char {
+    nkNONE = 0, nkNODEOP, nkPROPOSAL, nkDECISION, nkRECORD, nkLINK, nkTESTRUN
+};
+
+long nexus_kind_of(var &rec)
+{
+    var k = rec["kind"];
+    if ( k.is_null() )
+	return nkNONE;
+    if ( k == "nodeop" )   return nkNODEOP;
+    if ( k == "proposal" ) return nkPROPOSAL;
+    if ( k == "decision" ) return nkDECISION;
+    if ( k == "record" )   return nkRECORD;
+    if ( k == "link" )     return nkLINK;
+    if ( k == "testrun" )  return nkTESTRUN;
+    return nkNONE;
+}
+
+// Revision handles kept open per document (design §3.3: a bounded LRU cache of
+// derived state; never persisted).
+const long REV_HANDLES_MAX = 8;
 
 // graph.insert's placement relative to its target; text only on the wire.
 enum graph_where : unsigned char { gwNONE = 0, gwBEFORE, gwAFTER };

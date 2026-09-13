@@ -111,7 +111,39 @@ if [ "$(count_raw_mutations "$tmp" "$EVENTS")" -ne 5 ]; then
 fi
 rm -f "$tmp"
 
+# The change-log record KIND has ONE reader per layer (Nexus L4b, the enum
+# law): clog_kind_of (editor_events.inc) and nexus_kind_of (madcide_enums.inc)
+# convert the persisted word ONCE; every consumer switches on the code.
+# Marker: a literal `["kind"] == "` compare anywhere in the dialect tools
+# must count 0 — a new one is a second reader of the wire word.
+count_kind_compares()
+{
+	cat "$@" | grep -c '\["kind"\] == "'
+}
+
+KIND_FILES="$(dirname "$0")/../tools/texteditor/*.inc $(dirname "$0")/../tools/madcide/*.inc"
+n=$(count_kind_compares $KIND_FILES)
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n literal record-kind" \
+	     "compare(s) in tools/texteditor + tools/madcide (expected 0)." \
+	     "Read the kind through clog_kind_of / nexus_kind_of and switch" \
+	     "on the code." >&2
+	grep -n '\["kind"\] == "' $KIND_FILES >&2
+	exit 1
+fi
+
+# Negative control for the kind-compare marker.
+tmp=$(mktemp)
+echo '    if ( rec["kind"] == "splice" )	// synthetic' > "$tmp"
+if [ "$(count_kind_compares "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic kind compare (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
-     "ed_text_insert/ed_text_erase)"
+     "ed_text_insert/ed_text_erase; one record-kind reader per layer)"
 exit 0

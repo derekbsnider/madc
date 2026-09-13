@@ -237,6 +237,26 @@ void es_view_doc(long w, long es, long doc)
 // the same stream AHEAD of the splices it caused, and changes no text) --
 // the enum-boundary rule.
 
+// The log's record KIND is text only on the persisted line (the wire word);
+// the ONE reader converts it here and every consumer switches on the code —
+// the enum-boundary rule (Nexus L4b). ckOTHER = an annotation kind another
+// layer owns (madcide's nodeop / proposal / record …, madcide_enums.inc
+// nexus_kind): this layer replays splices and checkpoints and skips every
+// other kind by construction.
+enum clog_kind : unsigned char { ckNONE = 0, ckSPLICE, ckCHECKPOINT, ckOTHER };
+
+long clog_kind_of(var &rec)
+{
+    var k = rec["kind"];
+    if ( k.is_null() )
+	return ckNONE;
+    if ( k == "splice" )
+	return ckSPLICE;
+    if ( k == "checkpoint" )
+	return ckCHECKPOINT;
+    return ckOTHER;
+}
+
 // The document's change-log entity, created on first need; seq lives on it.
 long changelog_of(long w, long doc)
 {
@@ -257,6 +277,7 @@ long clog_append(long w, long doc, var &rec)
     long seq = es_int(w, le, "seq", 0) + 1;
     ui::set(w, le, "seq", seq);
     rec["seq"] = seq;
+    rec["ts"] = php::time();		// when (design §2.4's ChangeEvent.ts; L4b)
     var line = js::stringify(rec);
     ui::text_insert(w, le, ui::text_size(w, le), format("{}\n", line));
     return seq;
@@ -320,18 +341,19 @@ void clog_replay(var &out, long w, long doc, long upto)
 	if ( !js::parse(rec, ln) )
 	    continue;		// a torn / partial tail line: stop trusting it
 	long seq = rec["seq"].as_integer();
+	long kind = clog_kind_of(rec);
 	if ( upto > 0 && seq > upto )
 	{
 	    // a target below the oldest surviving record clamps UP to that
 	    // checkpoint (the retention rule) -- never a silent empty answer
-	    if ( rec["kind"] == "checkpoint" && !seen )
+	    if ( kind == ckCHECKPOINT && !seen )
 		ui::text_load(w, scr, rec["text"].c_str());
 	    break;
 	}
 	seen = true;
-	if ( rec["kind"] == "checkpoint" )
+	if ( kind == ckCHECKPOINT )
 	    ui::text_load(w, scr, rec["text"].c_str());
-	else if ( rec["kind"] == "splice" )
+	else if ( kind == ckSPLICE )
 	{
 	    long at = rec["at"].as_integer();
 	    long del = rec["del"].as_integer();

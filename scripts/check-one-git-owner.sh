@@ -15,10 +15,15 @@ cd "$(dirname "$0")/.."
 fail=0
 api='\bgit_(repository|revwalk|commit|blame|tree|blob|reference|status|revparse|object|remote|clone|index|signature|libgit2)_[a-z_]+[[:space:]]*\('
 inc='#include[[:space:]]*[<"]git2(/|\.h|>)'
-# madc's own row shapers (value git_<record>_value(...)) share the git_ prefix
-# by design; their names are READ from the owner's header, never listed here.
-shapers=$(grep -oE 'value[[:space:]]+(git_[a-z_]+_value)[[:space:]]*\(' include/madcdis/git_repo.h \
-	| sed -E 's/value[[:space:]]+//; s/[[:space:]]*\($//' | paste -sd'|' -)
+# madc's own git_* names share the prefix by design: the row shapers
+# (value git_<record>_value(...)) declared in the owner's header, and the
+# dialect publics (madc::git_open / git_blame_text / …) declared in
+# include/madc/ns_madc. Both lists are READ from those headers, never
+# listed here — a new public joins the exemption by being declared.
+shapers=$( { grep -oE 'value[[:space:]]+(git_[a-z_]+_value)[[:space:]]*\(' include/madcdis/git_repo.h \
+		| sed -E 's/value[[:space:]]+//; s/[[:space:]]*\($//';
+	     grep -oE '\b(git_[a-z_]+)[[:space:]]*\(' include/madc/ns_madc \
+		| sed -E 's/[[:space:]]*\($//'; } | sort -u | paste -sd'|' -)
 [ -z "$shapers" ] && shapers='__no_shapers__'
 
 hits=$(grep -rnE "$inc|$api" src include tools \
