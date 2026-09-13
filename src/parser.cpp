@@ -374,6 +374,14 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id, value &ou
 bool internal_program_graph_search(int64_t handle, const std::string &kind,
 				   const std::string &name_sub, value &out);
 bool internal_program_graph_impact(int64_t handle, int64_t id, value &out);
+// Code-graph MCP L3 (design 2026-09-12): node extents, position lookup and the
+// VALIDATED refresh the edit verbs commit through — see madc_program.cpp.
+bool internal_program_graph_span(int64_t handle, int64_t id, value &out);
+bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
+			       value &out);
+bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
+					    const std::string &source_text,
+					    value &out_diags);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1225,6 +1233,33 @@ void *madc_graph_impact(void *result, int64_t handle, int64_t id)
     madc::value &out = *(madc::value *)result;
     madc::internal_program_graph_impact(handle, id, out);
     return result;
+}
+
+// Code-graph MCP L3 bridges (design 2026-09-12): same thin-thunk shape.
+void *madc_graph_span(void *result, int64_t handle, int64_t id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_span(handle, id, out);
+    return result;
+}
+void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_at(handle, line, column, out);
+    return result;
+}
+// The validated refresh: result = diagnostics rows (the candidate's), true =
+// the candidate was swapped in. Same active-program discipline as
+// madc_parse_refresh.
+bool madc_parse_refresh_checked(void *result, int64_t handle, void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    madc::value &out = *(madc::value *)result;
+    return madc::internal_program_parse_refresh_checked(
+	*active, handle, *(const std::string *)source, out);
 }
 
 // The live-tree build/run bridges (OWNER RULING 2026-08-27): kind/outpath
@@ -45892,6 +45927,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	tf->statements = tc->statements;
 	tf->deferred = tc->deferred;
 	tf->end_line = tc->end_line;
+	tf->end_column = tc->end_column;
 	if ( FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type) )
 	    if ( &cur->return_value_type() == &ddAUTO )
 	    {
@@ -64271,6 +64307,7 @@ TokenBase *Program::parseCompound()
 	if ( tb->id() == TokenID::tkClBrc )
 	{
 	    code->end_line = tb->line;
+	    code->end_column = tb->column;
 	    popCompound();
 	    DBG(std::cout << "parseCompound() ends" << std::endl);
 	    return code;
@@ -66682,6 +66719,7 @@ paramdecl:
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
     tf->end_line = tc->end_line;
+    tf->end_column = tc->end_column;
     if ( &func->return_value_type() == &ddAUTO )
     {
 	DataDef *deduced = NULL;
@@ -70095,7 +70133,60 @@ TokenBase *Program::parse_yield_statement(TokenBase *tb)
     return y;
 }
 
+// The ONE extent stamp (code-graph MCP L3, design §6.6/§9). Every construct
+// parseStatement returns records its source extent as it finishes: head_tok =
+// the first token this statement was handed (the stream head — Program::parse
+// and parseCompound hand the real token), end = the static parse position, i.e.
+// the END of the last token nextToken() consumed (a simple statement's ';', a
+// compound's '}' — peek/pushToken never move it). A definition statement that
+// returns no node but registered exactly ONE free function (parseDeclaration ->
+// parseFunction, whose body parses eagerly inside this statement) stamps that
+// function's head; parseCompound's '}' + parseFunction's end copy already gave
+// it its end. A statement that registered several functions (a class body)
+// stamps nothing — no extent beats a wrong one; an inner statement's stamp (a
+// namespace member parsed by the enclosing loop) is never overwritten. (Every
+// function carries a Method object — parseFunction's `new Method(*var)` — so
+// `tf->method` is NOT a "this is a class method" test; a single out-of-line
+// definition's head is exactly the statement's head either way.)
+// This wrapper ANNOTATES; it never consumes, pushes back or reshapes anything:
+// the grammar below is exactly the parser the suite has validated. In
+// particular an initialized declaration (`T x = e;`) leaves its ';' to the
+// caller (parseDeclaration's contract — TokenFOR::parse reads the for-init
+// terminator itself; parseCompound / Program::parse see it as a bare ';'
+// statement). The declaration STATEMENT still ends at that ';' in the
+// grammar, so its extent is stamped from the peeked terminator's own END
+// stamp — read, not consumed.
 TokenBase *Program::parseStatement(TokenBase *tb)
+{
+    size_t funcs_before = pending_funcs.size();
+    TokenBase *r = parseStatementBody(tb);
+    if ( r )
+    {
+	if ( !r->head_tok )
+	    r->head_tok = tb;
+	r->end_line = TokenBase::_parse_line;
+	r->end_column = TokenBase::_parse_column;
+	if ( r->as_decl_tok() )
+	{
+	    TokenBase *pk = peekToken();
+	    if ( pk && pk->id() == TokenID::tkSemi && !pk->is_synthetic_position() )
+	    {
+		r->end_line = pk->line;
+		r->end_column = pk->column;
+	    }
+	}
+    }
+    if ( pending_funcs.size() == funcs_before + 1 )
+    {
+	TokenFunc *tf = pending_funcs.back()
+	    ? pending_funcs.back()->as_func_tok() : (TokenFunc *)0;
+	if ( tf && !tf->head_tok )
+	    tf->head_tok = tb;
+    }
+    return r;
+}
+
+TokenBase *Program::parseStatementBody(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
     // Skip C23 [[...]] attributes before declarations/definitions.

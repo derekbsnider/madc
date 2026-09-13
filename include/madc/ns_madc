@@ -216,6 +216,25 @@ namespace madc {
     value &graph_search(value &out, int64_t handle, const char *kind, const char *name_sub);
     value &graph_impact(value &out, int64_t handle, int64_t id);
 
+    // Code-graph MCP L3 (design 2026-09-12): node editing primitives.
+    //   graph_span(handle, id): the node + span {line, column, end_line,
+    //     end_column} — 1-based lines, 0-based byte columns, start inclusive /
+    //     end exclusive — for a TU-own function definition, a global
+    //     declaration or a statement-level body node; {error} otherwise (an
+    //     expression node has no extent of its own: edit its statement).
+    //   graph_at(handle, line, column): the editable node whose span STARTS
+    //     there (a function, a global, or a statement of the enclosing
+    //     function); {} = none.
+    //   parse_refresh_checked(out_diags, handle, source): parse `source` into
+    //     a fresh tree and SWAP it in only if it adds no error over the live
+    //     one (true); false = rejected, the live tree and every id untouched.
+    //     out_diags = the candidate's diagnostics rows either way. A swap
+    //     advances the handle's generation: every earlier id is refused as
+    //     stale by every graph verb — re-query (or read the edit result's node).
+    value &graph_span(value &out, int64_t handle, int64_t id);
+    value &graph_at(value &out, int64_t handle, int64_t line, int64_t column);
+    bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
+
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):
     //   parse_build: emit a native artifact from the handle's EXISTING

@@ -763,9 +763,10 @@ public:
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)
-    int end_line;			// line of closing } (set by parseCompound)
+    // The closing-brace extent (end_line / end_column) lives on TokenBase now
+    // (code-graph MCP L3): parseCompound stamps it at the '}'.
     bool is_stmt_expr = false;		// true: a GNU statement-expression `({...})`, not a plain `{...}` block
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; end_line = 0; }
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const override { return TokenType::ttCompound; }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
@@ -6070,6 +6071,7 @@ public:
 		const std::string &opname, TokenBase *right);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
+    TokenBase *parseStatementBody(TokenBase *);	// the grammar; parseStatement stamps its extent
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
     DataDefSIMD *simd_type(DataDef *elem, size_t bytes);

@@ -289,6 +289,18 @@ value &graph_search(value &out, int64_t handle, const char *kind, const char *na
 value &graph_impact(value &out, int64_t handle, int64_t id)
 	{ madc_graph_impact(&out, handle, id); return out; }
 
+// Code-graph MCP L3 (design 2026-09-12): a node's exact source extent, the node
+// starting at a position, and the validated whole-TU refresh (true = the
+// candidate replaced the live tree; false = rejected, nothing changed;
+// out_diags = the candidate's diagnostics either way).
+value &graph_span(value &out, int64_t handle, int64_t id)
+	{ madc_graph_span(&out, handle, id); return out; }
+value &graph_at(value &out, int64_t handle, int64_t line, int64_t column)
+	{ madc_graph_at(&out, handle, line, column); return out; }
+bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source)
+	{ std::string s = source ? source : "";
+	  return madc_parse_refresh_checked(&out_diags, handle, &s); }
+
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):
 // parse_build emits a native artifact from the handle's EXISTING parsed

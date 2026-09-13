@@ -250,6 +250,11 @@ void *madc_graph_callers(void *result, int64_t handle, int64_t func_id);
 void *madc_graph_references(void *result, int64_t handle, int64_t def_id);
 void *madc_graph_search(void *result, int64_t handle, void *kind, void *name_sub);
 void *madc_graph_impact(void *result, int64_t handle, int64_t id);
+// Code-graph MCP L3 (design 2026-09-12): extents + position lookup + the
+// validated refresh (result = the candidate's diagnostics rows; true = swapped).
+void *madc_graph_span(void *result, int64_t handle, int64_t id);
+void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
+bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =

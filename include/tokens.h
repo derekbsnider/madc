@@ -252,7 +252,21 @@ public:
     TokenBase *parent;
     int line;
     int column;
-    std::streampos pos;
+    // Source EXTENT of a parsed construct (code-graph MCP L3, design §6.6/§9:
+    // the statement is the edit unit). Stamped by the PARSER, the one owner
+    // (Program::parseStatement's wrapper, parseCompound's '}', parseFunction):
+    //   head_tok   — the FIRST source token of the construct (the token
+    //                parseStatement was handed); its START is the extent start
+    //   end_line / end_column — the END of the LAST consumed token: the static
+    //                parse position when the construct finished (a simple
+    //                statement's ';', a compound's '}'). Columns are END-
+    //                anchored (the byte after the token's last char).
+    // NULL / 0 = no extent (a leaf, an expression node, a synthesized token).
+    // TokenCpnd's former end_line (the closing-brace line) lives here now.
+    // Replaced the never-read, never-written `std::streampos pos`.
+    TokenBase *head_tok;
+    int end_line;
+    int end_column;
     // Flat POD data record (Phase 2). See TokenRec above.
     TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
@@ -279,8 +293,8 @@ public:
     // payloads live here under TokenInt::wide_handle. Same active-owner
     // discipline as _active_strpool above.
     static madc::dis::value_pool *_active_valpool;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; head_tok = NULL; end_line = 0; end_column = 0; read_count = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; head_tok = NULL; end_line = 0; end_column = 0; read_count = 0; }
     virtual ~TokenBase() {}
     // Every token (and every clone()) allocates from the per-process TokenArena
     // (token_arena.h). operator delete is a no-op: tokens are never individually

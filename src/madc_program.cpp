@@ -4958,7 +4958,11 @@ struct parse_tu_state
     // arena these pointers came from). Same-snapshot dedup via body_ids.
     std::vector<const TokenBase *> body_nodes;                    // id = BASE + index
     std::unordered_map<const TokenBase *, int64_t> body_ids;      // node -> id
-    parse_tu_state() : child((::Program *)0) {}
+    // L3: the parse GENERATION — 0 at open, +1 per (checked) refresh. Every id
+    // this handle mints carries it (graph_id_stamp); an id from an older
+    // generation is refused as stale by every verb (design §6.3).
+    uint32_t generation;
+    parse_tu_state() : child((::Program *)0), generation(0) {}
     ~parse_tu_state() { delete child; }
 };
 
@@ -5280,6 +5284,57 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     // agent re-queries").
     st->body_nodes.clear();
     st->body_ids.clear();
+    // L3: every id minted so far is now stale (design §6.3) — the generation
+    // advances so each verb refuses them loudly instead of resolving them
+    // against the new tree.
+    ++st->generation;
+    return true;
+}
+
+// Error-severity diagnostics + synthesized error nodes: the count an edit must
+// not raise (warnings never gate — the diag_error_count rule).
+static size_t child_error_count(::Program &child)
+{
+    size_t n = child.error_nodes;
+    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
+	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
+	    ++n;
+    return n;
+}
+
+// The VALIDATED whole-TU refresh (code-graph MCP L3, design §6.6: "validated by
+// the same parser/sema before commit … atomic to tree-well-formedness"). Parse +
+// compile the candidate text into a FRESH child; if it carries MORE errors than
+// the live child, delete it and answer false — the live tree, its ids and the
+// caller's buffer are untouched. Otherwise swap it in (the L1b registry clears,
+// the generation advances — every prior id is now loudly stale) and answer
+// true. out_diags = the candidate's diagnostics rows either way, so a rejected
+// edit says why. One parse per attempt; a rejected attempt costs one parse and
+// changes nothing.
+bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
+					    const std::string &source_text,
+					    madc::value &out_diags)
+{
+    out_diags = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    self.clear_diagnostics();
+    self.clear_error();
+    ::Program *cand = new ::Program(self.engine);
+    parse_handle_child_init(*cand);
+    compile_source_child_frontend(self, *cand, source_text, st->display_name);
+    diagnostic_rows_from_child(*cand, out_diags);
+    if ( child_error_count(*cand) > child_error_count(*st->child) )
+    {
+	delete cand;
+	return false;
+    }
+    delete st->child;
+    st->child = cand;
+    st->body_nodes.clear();
+    st->body_ids.clear();
+    ++st->generation;
     return true;
 }
 
@@ -5582,14 +5637,55 @@ static TokenFunc *graph_function_token(::Program &child, DataDef *dd)
     return (TokenFunc *)0;
 }
 
-// A function node from its parse token: the FuncDef's CHILD-BOUND type-id
-// (child.type_id_for — the id→node walkers already bind this child's table
-// via type_from_id before they ever reach a node builder, M-5) + the source
-// span (line/column/end_line — the outline coordinates).
-static madc::value graph_func_node_value(::Program &child, TokenFunc *tf)
+// ---- L3: parse-generation-stamped ids (design §6.3 — identity across edits)
+// Bits 40..60 of every id carry the handle's parse GENERATION; the space bits
+// (61/62) and the index / type-id bits (0..39) are untouched, so a generation-0
+// id is bit-identical to the pre-L3 id. A refresh bumps the generation; an id
+// minted under an older one is STALE and every verb refuses it with
+// {error, stale:true} — never resolved against the wrong tree (a silent wrong
+// answer is the one failure a graph an agent edits through must not have).
+// Defined above the node builders (the makers stamp) and the partition
+// helpers (the resolvers read the RAW id).
+static const int     GRAPH_GEN_SHIFT = 40;
+static const int64_t GRAPH_GEN_MASK  = 0x1FFFFFLL;			// 21 bits
+static const int64_t GRAPH_GEN_FIELD = GRAPH_GEN_MASK << GRAPH_GEN_SHIFT;
+
+static int64_t graph_id_stamp(const parse_tu_state *st, int64_t raw)
+{
+    int64_t gen = (int64_t)st->generation & GRAPH_GEN_MASK;
+    return (raw & ~GRAPH_GEN_FIELD) | (gen << GRAPH_GEN_SHIFT);
+}
+static int64_t  graph_id_raw(int64_t id) { return id & ~GRAPH_GEN_FIELD; }
+static uint32_t graph_id_gen(int64_t id)
+{
+    return (uint32_t)((id >> GRAPH_GEN_SHIFT) & GRAPH_GEN_MASK);
+}
+static bool graph_id_fresh(const parse_tu_state *st, int64_t id)
+{
+    return graph_id_gen(id) == (uint32_t)((int64_t)st->generation & GRAPH_GEN_MASK);
+}
+static madc::value graph_stale_result(const parse_tu_state *st, int64_t id)
 {
     std::map<std::string, madc::value> f;
-    f["id"] = value((int64_t)child.type_id_for(tf->var.type));
+    f["error"] = value(std::string("stale node id: minted at parse generation ")
+	+ std::to_string(graph_id_gen(id)) + ", the handle is at generation "
+	+ std::to_string(st->generation) + " (a refresh or an edit re-parsed the"
+	" TU) - re-query");
+    f["stale"] = value(true);
+    f["nodes"] = value::make_array(std::vector<madc::value>());
+    f["edges"] = value::make_array(std::vector<madc::value>());
+    return value::make_object(f);
+}
+
+// A function node from its parse token: the FuncDef's CHILD-BOUND type-id
+// (child.type_id_for — the id→node walkers already bind this child's table
+// via type_from_id before they ever reach a node builder, M-5), STAMPED with
+// the handle's generation (L3), + the source span (line/column/end_line — the
+// outline coordinates).
+static madc::value graph_func_node_value(parse_tu_state *st, TokenFunc *tf)
+{
+    std::map<std::string, madc::value> f;
+    f["id"] = value(graph_id_stamp(st, (int64_t)st->child->type_id_for(tf->var.type)));
     f["kind"] = value(std::string("Function"));
     f["name"] = value(tf->var.name);
     f["line"] = value((int64_t)tf->line);
@@ -5606,16 +5702,16 @@ static madc::value graph_func_node_value(::Program &child, TokenFunc *tf)
 // Function with a live token, delegate to graph_func_node_value so every
 // verb agrees; otherwise (a non-function, or a tokenless FuncDef — L1b/M-2)
 // fall back to the plain {id,kind,name} object.
-static madc::value graph_node_value(::Program &child, DataDef *dd)
+static madc::value graph_node_value(parse_tu_state *st, DataDef *dd)
 {
     if ( dd->basetype() == BaseType::btFunct )
     {
-	TokenFunc *tf = graph_function_token(child, dd);
+	TokenFunc *tf = graph_function_token(*st->child, dd);
 	if ( tf )
-	    return graph_func_node_value(child, tf);
+	    return graph_func_node_value(st, tf);
     }
     std::map<std::string, madc::value> f;
-    f["id"] = value((int64_t)child.type_id_for(dd));
+    f["id"] = value(graph_id_stamp(st, (int64_t)st->child->type_id_for(dd)));
     f["kind"] = value(std::string(graph_kind_name(dd)));
     f["name"] = value(dd->name);
     return value::make_object(f);
@@ -5649,7 +5745,7 @@ static DataDef *graph_type_from_id_guarded(::Program &child, int64_t id)
 {
     if ( graph_id_space(id) != GraphIdSpace::Type )
 	return (DataDef *)0;
-    return child.type_from_id((uint32_t)id);
+    return child.type_from_id((uint32_t)graph_id_raw(id));
 }
 
 // A global's node id is GRAPH_DECL_ID_BASE + its index in child.top_decls; the
@@ -5661,7 +5757,7 @@ static const ::Program::TopDecl *graph_global_resolve(::Program &child, int64_t 
 {
     if ( graph_id_space(id) != GraphIdSpace::Global )
 	return (const ::Program::TopDecl *)0;
-    size_t idx = (size_t)(id - GRAPH_DECL_ID_BASE);
+    size_t idx = (size_t)(graph_id_raw(id) - GRAPH_DECL_ID_BASE);
     if ( idx >= child.top_decls.size() )
 	return (const ::Program::TopDecl *)0;
     const ::Program::TopDecl &td = child.top_decls[idx];
@@ -5708,7 +5804,7 @@ bool internal_program_graph_symbols(int64_t handle, madc::value &out)
 					st->display_name);
 	if ( !tf )
 	    continue;
-	nodes.push_back(graph_func_node_value(child, tf));
+	nodes.push_back(graph_func_node_value(st,tf));
     }
     std::map<std::string, madc::value> res;
     res["nodes"] = value::make_array(nodes);
@@ -5731,6 +5827,11 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, node_id) )
+    {
+	out = graph_stale_result(st, node_id);
+	return true;
+    }
     // L2: a global decl-id (from graph.search / an L2 edge) resolves to its
     // Global node here; a Body id stays graph.children's job (empty here);
     // a type-id falls through to the guarded type lookup.
@@ -5753,7 +5854,7 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
 	out = value::make_object(empty);
 	return true;
     }
-    out = graph_node_value(*st->child, dd);
+    out = graph_node_value(st, dd);
     return true;
 }
 
@@ -5777,6 +5878,11 @@ bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, node_id) )
+    {
+	out = graph_stale_result(st, node_id);
+	return true;
+    }
     ::Program &child = *st->child;
     DataDef *dd = graph_type_from_id_guarded(child, node_id);
     if ( !dd )
@@ -5793,7 +5899,7 @@ bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
 	ty = ((DataDefPTR *)base)->base_type;
     else
 	ty = base;
-    out = graph_node_value(child, ty ? ty : dd);
+    out = graph_node_value(st,ty ? ty : dd);
     return true;
 }
 
@@ -5827,18 +5933,18 @@ bool internal_program_graph_definition(int64_t handle,
     // Function definitions (funcdef_map -> FuncDef*, which is a DataDef).
     funcdef_map_iter fi = child.funcdef_map.find(name);
     if ( fi != child.funcdef_map.end() && fi->second )
-	nodes.push_back(graph_node_value(child, fi->second));
+	nodes.push_back(graph_node_value(st,fi->second));
     // Aggregate definitions (struct_map, a name -> DataDef* map).
     StructRegistry::const_iterator sit = child.struct_map.find(name);
     if ( sit != child.struct_map.end() && sit->second )
-	nodes.push_back(graph_node_value(child, sit->second));
+	nodes.push_back(graph_node_value(st,sit->second));
     else
     {
 	// Other named types (datatype_map, interned name -> TokenDataType*;
 	// the DataDef lives in the token's `definition` reference member).
 	TokenDataType **tdp = child.datatype_map.find(name);
 	if ( tdp && *tdp )
-	    nodes.push_back(graph_node_value(child, &(*tdp)->definition));
+	    nodes.push_back(graph_node_value(st,&(*tdp)->definition));
     }
     std::map<std::string, madc::value> res;
     res["nodes"] = value::make_array(nodes);
@@ -5861,6 +5967,11 @@ bool internal_program_graph_members(int64_t handle, int64_t type_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, type_id) )
+    {
+	out = graph_stale_result(st, type_id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes;
     DataDef *dd = graph_type_from_id_guarded(child, type_id);
@@ -5877,7 +5988,7 @@ bool internal_program_graph_members(int64_t handle, int64_t type_id,
 	    if ( i < sd->member_offsets.size() )
 		m["offset"] = value((int64_t)sd->member_offsets[i]);
 	    if ( sd->members[i].second )
-		m["type"] = graph_node_value(child, sd->members[i].second);
+		m["type"] = graph_node_value(st,sd->members[i].second);
 	    nodes.push_back(value::make_object(m));
 	}
     }
@@ -5896,6 +6007,11 @@ bool internal_program_graph_bases(int64_t handle, int64_t type_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, type_id) )
+    {
+	out = graph_stale_result(st, type_id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes;
     DataDef *dd = graph_type_from_id_guarded(child, type_id);
@@ -5904,7 +6020,7 @@ bool internal_program_graph_bases(int64_t handle, int64_t type_id,
 	DataDefCLASS *cd = (DataDefCLASS *)dd;
 	for ( size_t i = 0; i < cd->bases.size(); ++i )
 	    if ( cd->bases[i].base )
-		nodes.push_back(graph_node_value(child, cd->bases[i].base));
+		nodes.push_back(graph_node_value(st,cd->bases[i].base));
     }
     std::map<std::string, madc::value> res;
     res["nodes"] = value::make_array(nodes);
@@ -5933,7 +6049,7 @@ bool internal_program_graph_enclosing(int64_t handle, int64_t line,
 	out = value::make_object(empty);
 	return true;
     }
-    out = graph_func_node_value(child, best);
+    out = graph_func_node_value(st,best);
     return true;
 }
 
@@ -6125,7 +6241,7 @@ static int64_t graph_body_intern(parse_tu_state *st, const TokenBase *t)
     std::unordered_map<const TokenBase *, int64_t>::iterator it = st->body_ids.find(t);
     if ( it != st->body_ids.end() )
 	return it->second;
-    int64_t id = GRAPH_BODY_ID_BASE + (int64_t)st->body_nodes.size();
+    int64_t id = graph_id_stamp(st, GRAPH_BODY_ID_BASE + (int64_t)st->body_nodes.size());
     st->body_nodes.push_back(t);
     st->body_ids[t] = id;
     return id;
@@ -6133,9 +6249,9 @@ static int64_t graph_body_intern(parse_tu_state *st, const TokenBase *t)
 
 static const TokenBase *graph_body_resolve(parse_tu_state *st, int64_t id)
 {
-    if ( !st || id < GRAPH_BODY_ID_BASE )
+    if ( !st || graph_id_space(id) != GraphIdSpace::Body )
 	return (const TokenBase *)0;
-    size_t idx = (size_t)(id - GRAPH_BODY_ID_BASE);
+    size_t idx = (size_t)(graph_id_raw(id) - GRAPH_BODY_ID_BASE);
     return idx < st->body_nodes.size() ? st->body_nodes[idx] : (const TokenBase *)0;
 }
 
@@ -6468,6 +6584,11 @@ bool internal_program_graph_body(int64_t handle, int64_t func_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, func_id) )
+    {
+	out = graph_stale_result(st, func_id);
+	return true;
+    }
     ::Program &child = *st->child;
     DataDef *dd = graph_type_from_id_guarded(child, func_id);   // binds child's table (M-5); decl/body id -> NULL
     TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
@@ -6500,6 +6621,11 @@ bool internal_program_graph_children(int64_t handle, int64_t id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, id) )
+    {
+	out = graph_stale_result(st, id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6540,6 +6666,11 @@ bool internal_program_graph_callees(int64_t handle, int64_t func_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, func_id) )
+    {
+	out = graph_stale_result(st, func_id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6549,22 +6680,22 @@ bool internal_program_graph_callees(int64_t handle, int64_t func_id,
 	TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
 	if ( tf )
 	{
-	    nodes.push_back(graph_func_node_value(child, tf));
+	    nodes.push_back(graph_func_node_value(st,tf));
 	    std::vector<GraphCallSite> sites;
 	    graph_collect_callsites(child, tf, sites, GRAPH_EDGE_RESULT_CAP);
 	    std::set<uint32_t> seen_callee;
-	    seen_callee.insert((uint32_t)func_id);   // M1: self-recursion isn't a duplicate callee node (edge still emitted)
+	    seen_callee.insert((uint32_t)graph_id_raw(func_id));   // M1: self-recursion isn't a duplicate callee node (edge still emitted)
 	    for ( size_t i = 0; i < sites.size(); ++i )
 	    {
 		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
 		{ truncated = true; break; }
 		uint32_t cid = child.type_id_for((DataDef *)sites[i].callee);
 		if ( seen_callee.insert(cid).second )
-		    nodes.push_back(graph_node_value(child, (DataDef *)sites[i].callee));
+		    nodes.push_back(graph_node_value(st,(DataDef *)sites[i].callee));
 		std::map<std::string, madc::value> e;
 		e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
 		e["from"] = value((int64_t)func_id);
-		e["to"]   = value((int64_t)cid);
+		e["to"]   = value(graph_id_stamp(st, (int64_t)cid));
 		e["at"]   = value(graph_body_intern(st, sites[i].site));
 		edges.push_back(value::make_object(e));
 	    }
@@ -6592,6 +6723,11 @@ bool internal_program_graph_callers(int64_t handle, int64_t func_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, func_id) )
+    {
+	out = graph_stale_result(st, func_id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6601,9 +6737,9 @@ bool internal_program_graph_callers(int64_t handle, int64_t func_id,
 	TokenFunc *target = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
 	if ( target )
 	{
-	    nodes.push_back(graph_func_node_value(child, target));
+	    nodes.push_back(graph_func_node_value(st,target));
 	    std::set<uint32_t> seen_caller;
-	    seen_caller.insert((uint32_t)func_id);   // M1: self-recursion isn't a duplicate caller node (edge still emitted)
+	    seen_caller.insert((uint32_t)graph_id_raw(func_id));   // M1: self-recursion isn't a duplicate caller node (edge still emitted)
 	    for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
 	    {
 		TokenFunc *caller = child.pending_funcs[f]
@@ -6615,15 +6751,15 @@ bool internal_program_graph_callers(int64_t handle, int64_t func_id,
 		uint32_t caller_id = child.type_id_for(caller->var.type);
 		for ( size_t i = 0; i < sites.size(); ++i )
 		{
-		    if ( child.type_id_for((DataDef *)sites[i].callee) != (uint32_t)func_id )
+		    if ( child.type_id_for((DataDef *)sites[i].callee) != (uint32_t)graph_id_raw(func_id) )
 			continue;
 		    if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
 		    { truncated = true; break; }
 		    if ( seen_caller.insert(caller_id).second )
-			nodes.push_back(graph_func_node_value(child, caller));
+			nodes.push_back(graph_func_node_value(st,caller));
 		    std::map<std::string, madc::value> e;
 		    e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
-		    e["from"] = value((int64_t)caller_id);
+		    e["from"] = value(graph_id_stamp(st, (int64_t)caller_id));
 		    e["to"]   = value((int64_t)func_id);
 		    e["at"]   = value(graph_body_intern(st, sites[i].site));
 		    edges.push_back(value::make_object(e));
@@ -6653,6 +6789,11 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, def_id) )
+    {
+	out = graph_stale_result(st, def_id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6666,7 +6807,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     const Variable *gvar = gtd ? gtd->var : (const Variable *)0;
 
     if ( ftarget )
-	nodes.push_back(graph_func_node_value(child, ftarget));
+	nodes.push_back(graph_func_node_value(st,ftarget));
     else if ( gtd )
 	nodes.push_back(graph_global_node_value(*gtd, def_id));
 
@@ -6674,7 +6815,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     {
 	std::set<uint32_t> seen_encl;
 	if ( ftarget )
-	    seen_encl.insert((uint32_t)def_id);   // M1: self-reference isn't a duplicate enclosing-func node
+	    seen_encl.insert((uint32_t)graph_id_raw(def_id));   // M1: self-reference isn't a duplicate enclosing-func node
 	for ( size_t f = 0; f < child.pending_funcs.size() && !truncated; ++f )
 	{
 	    TokenFunc *encl = child.pending_funcs[f]
@@ -6687,7 +6828,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
 		std::vector<GraphCallSite> cs;
 		graph_collect_callsites(child, encl, cs, GRAPH_EDGE_RESULT_CAP);
 		for ( size_t i = 0; i < cs.size(); ++i )
-		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)def_id )
+		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)graph_id_raw(def_id) )
 			sites.push_back(cs[i].site);
 	    }
 	    else
@@ -6697,7 +6838,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
 		continue;
 	    uint32_t encl_id = child.type_id_for(encl->var.type);
 	    if ( seen_encl.insert(encl_id).second )
-		nodes.push_back(graph_func_node_value(child, encl));
+		nodes.push_back(graph_func_node_value(st,encl));
 	    for ( size_t i = 0; i < sites.size(); ++i )
 	    {
 		if ( nodes.size() + edges.size() >= GRAPH_EDGE_RESULT_CAP )
@@ -6708,7 +6849,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
 		e["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
 		e["from"] = value(sid);
 		e["to"]   = value((int64_t)def_id);
-		e["in"]   = value((int64_t)encl_id);   // the enclosing function
+		e["in"]   = value(graph_id_stamp(st, (int64_t)encl_id));   // the enclosing function
 		edges.push_back(value::make_object(e));
 	    }
 	}
@@ -6749,7 +6890,7 @@ bool internal_program_graph_search(int64_t handle, const std::string &kind,
 		continue;
 	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
 	    { truncated = true; break; }
-	    nodes.push_back(graph_func_node_value(child, tf));
+	    nodes.push_back(graph_func_node_value(st,tf));
 	}
     if ( (any || kind == "Global") && !truncated )
 	for ( size_t i = 0; i < child.top_decls.size(); ++i )
@@ -6761,7 +6902,7 @@ bool internal_program_graph_search(int64_t handle, const std::string &kind,
 		continue;
 	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
 	    { truncated = true; break; }
-	    nodes.push_back(graph_global_node_value(td, GRAPH_DECL_ID_BASE + (int64_t)i));
+	    nodes.push_back(graph_global_node_value(td, graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i)));
 	}
     std::map<std::string, madc::value> r;
     r["nodes"] = value::make_array(nodes);
@@ -6781,6 +6922,11 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( !graph_id_fresh(st, id) )
+    {
+	out = graph_stale_result(st, id);
+	return true;
+    }
     ::Program &child = *st->child;
     std::vector<madc::value> nodes, edges;
     bool truncated = false;
@@ -6794,7 +6940,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
     const Variable *gvar = gtd ? gtd->var : (const Variable *)0;
 
     if ( ftarget )
-	nodes.push_back(graph_func_node_value(child, ftarget));
+	nodes.push_back(graph_func_node_value(st,ftarget));
     else if ( gtd )
 	nodes.push_back(graph_global_node_value(*gtd, id));
 
@@ -6813,7 +6959,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 		std::vector<GraphCallSite> cs;
 		graph_collect_callsites(child, encl, cs, GRAPH_EDGE_RESULT_CAP);
 		for ( size_t i = 0; i < cs.size(); ++i )
-		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)id )
+		    if ( child.type_id_for((DataDef *)cs[i].callee) == (uint32_t)graph_id_raw(id) )
 			sites.push_back(cs[i].site);
 	    }
 	    else
@@ -6825,13 +6971,13 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 	    bool first = seen_caller.insert(encl_id).second;
 	    if ( first )
 	    {
-		if ( !(ftarget && encl_id == (uint32_t)id) )   // M1: subject already pushed (self-recursion)
-		    nodes.push_back(graph_func_node_value(child, encl));
+		if ( !(ftarget && encl_id == (uint32_t)graph_id_raw(id)) )   // M1: subject already pushed (self-recursion)
+		    nodes.push_back(graph_func_node_value(st,encl));
 		if ( ftarget )   // a CALLS in-edge only for a function target
 		{
 		    std::map<std::string, madc::value> ce;
 		    ce["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::Calls)));
-		    ce["from"] = value((int64_t)encl_id);
+		    ce["from"] = value(graph_id_stamp(st, (int64_t)encl_id));
 		    ce["to"]   = value((int64_t)id);
 		    edges.push_back(value::make_object(ce));
 		}
@@ -6846,7 +6992,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 		re["kind"] = value(std::string(graph_edge_kind_name(GraphEdgeKind::References)));
 		re["from"] = value(sid);
 		re["to"]   = value((int64_t)id);
-		re["in"]   = value((int64_t)encl_id);   // the enclosing function
+		re["in"]   = value(graph_id_stamp(st, (int64_t)encl_id));   // the enclosing function
 		edges.push_back(value::make_object(re));
 	    }
 	}
@@ -6857,6 +7003,264 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
     if ( truncated )
 	r["truncated"] = value(true);
     out = value::make_object(r);
+    return true;
+}
+
+// ---- L3: source extents (design §6.6/§9 — the statement is the edit unit) ----
+// An EDITABLE node's extent = [START of its head token, END of its last consumed
+// token], both stamped by the parser (TokenBase::head_tok / end_line /
+// end_column — Task 1). Editable = a statement-level node (an element of some
+// TokenCpnd::statements list reachable from a TU-own function body, nested
+// blocks included), a TU-own free function definition, or a global declaration
+// with a recorded TokenDecl. Expression nodes have no extent of their own — the
+// enclosing statement is the reverse-render unit (§9). This layer READS the
+// stamps; it never scans the token stream for a terminator.
+struct GraphExtent { int line, column, end_line, end_column; };
+
+// START of a token: stamps are END-anchored (column = the byte after the last
+// char — highlight_token_rows' convention), so start = column - spelling; a
+// string literal reads its lex-recorded first piece. False = a synthetic-
+// position head (a macro expansion: the spelling occupies no source bytes) —
+// no extent rather than a wrong one.
+static bool graph_token_start(TokenBase *t, int &line, int &column)
+{
+    if ( !t || t->is_synthetic_position() )
+	return false;
+    if ( TokenStr *ts = t->as_str_tok() )
+	if ( !ts->src_pieces.empty() )
+	{
+	    line = ts->src_pieces.front().line;
+	    column = ts->src_pieces.front().col;
+	    return true;
+	}
+    std::string sp = madc_token_spelling(t);
+    line = t->line;
+    column = t->column - (int)sp.size();
+    if ( column < 0 )
+	column = 0;
+    return true;
+}
+
+static bool graph_extent_of(const TokenBase *n, GraphExtent &x)
+{
+    if ( !n || !n->head_tok || n->end_line <= 0 )
+	return false;
+    if ( !graph_token_start(n->head_tok, x.line, x.column) )
+	return false;
+    x.end_line = n->end_line;
+    x.end_column = n->end_column;
+    // A stamp skewed by a pushback (the parser consumed past the terminator and
+    // handed the token back) could read before its own start: refuse, never a
+    // negative span.
+    if ( x.end_line < x.line || (x.end_line == x.line && x.end_column <= x.column) )
+	return false;
+    return true;
+}
+
+static madc::value graph_span_value(const madc::value &node, const GraphExtent &x)
+{
+    std::map<std::string, madc::value> f = node.as_object();
+    std::map<std::string, madc::value> s;
+    s["line"] = value((int64_t)x.line);
+    s["column"] = value((int64_t)x.column);
+    s["end_line"] = value((int64_t)x.end_line);
+    s["end_column"] = value((int64_t)x.end_column);
+    f["span"] = value::make_object(s);
+    return value::make_object(f);
+}
+
+static madc::value graph_error_result(const char *why)
+{
+    std::map<std::string, madc::value> f;
+    f["error"] = value(std::string(why));
+    return value::make_object(f);
+}
+
+// Is `t` a statement-level node under `root` (a TokenFunc IS-A TokenCpnd)? BFS
+// the subtree with the L1b descent; at every compound, its `statements` are the
+// statement-level nodes. Bounded by the L2 visit cap (a cycle net, never a
+// truncation of a legitimate body).
+static bool graph_is_statement_level(const TokenBase *root, const TokenBase *t)
+{
+    std::vector<const TokenBase *> q;
+    q.push_back(root);
+    for ( size_t qi = 0; qi < q.size() && qi < GRAPH_COLLECT_VISIT_CAP; ++qi )
+    {
+	const TokenBase *n = q[qi];
+	if ( TokenCpnd *c = const_cast<TokenBase *>(n)->as_cpnd_tok() )
+	    for ( size_t i = 0; i < c->statements.size(); ++i )
+		if ( (const TokenBase *)c->statements[i] == t )
+		    return true;
+	std::vector<const TokenBase *> kids;
+	graph_body_children(n, kids);
+	q.insert(q.end(), kids.begin(), kids.end());
+    }
+    return false;
+}
+
+// The TU-own function whose body holds `t` as a statement-level node; NULL if
+// `t` is an expression node (or foreign). The position-innermost function is
+// tried first (enclosing_func_at), then every TU-own function — a node's
+// minting token can sit on a line the enclosing test does not cover.
+static TokenFunc *graph_owner_function(parse_tu_state *st, const TokenBase *t)
+{
+    ::Program &child = *st->child;
+    TokenFunc *guess = enclosing_func_at(child, st->display_name, t->line, t->column);
+    if ( guess && graph_is_statement_level(guess, t) )
+	return guess;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i], st->display_name);
+	if ( tf && tf != guess && graph_is_statement_level(tf, t) )
+	    return tf;
+    }
+    return (TokenFunc *)0;
+}
+
+// graph.span(handle, id): the node + its exact source extent {line, column,
+// end_line, end_column} (0-based byte columns, start inclusive / end exclusive;
+// 1-based lines) — the edit verbs' one coordinate source, and the read an agent
+// uses to quote a node's text. Routes on the id space: a TU-own function's
+// definition, a global's declaration (its recorded TokenDecl), or a statement-
+// level body node. Anything else answers {error} — an expression node, a
+// method, a macro-headed statement, a node with no stamp — never a guess.
+bool internal_program_graph_span(int64_t handle, int64_t id, madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    if ( !graph_id_fresh(st, id) )
+    {
+	out = graph_stale_result(st, id);
+	return true;
+    }
+    ::Program &child = *st->child;
+    GraphExtent x;
+    switch ( graph_id_space(id) )
+    {
+    case GraphIdSpace::Type:
+    {
+	DataDef *dd = graph_type_from_id_guarded(child, id);
+	TokenFunc *tf = dd ? graph_function_token(child, dd) : (TokenFunc *)0;
+	if ( !tf || !tu_own_function(tf, st->display_name) )
+	{
+	    out = graph_error_result("not an editable node: only a TU-own function definition, a global declaration or a statement-level body node has a span");
+	    return true;
+	}
+	if ( !graph_extent_of(tf, x) )
+	{
+	    out = graph_error_result("no extent recorded for this function (a method, a definition registered together with others, or a macro-headed definition)");
+	    return true;
+	}
+	out = graph_span_value(graph_func_node_value(st, tf), x);
+	return true;
+    }
+    case GraphIdSpace::Global:
+    {
+	const ::Program::TopDecl *td = graph_global_resolve(child, id);
+	if ( !td )
+	{
+	    out = graph_error_result("unknown global decl-id");
+	    return true;
+	}
+	if ( !td->decl || !graph_extent_of(td->decl, x) )
+	{
+	    out = graph_error_result("no extent recorded for this global (no declaration statement was retained for it)");
+	    return true;
+	}
+	out = graph_span_value(graph_global_node_value(*td, id), x);
+	return true;
+    }
+    case GraphIdSpace::Body:
+    {
+	const TokenBase *n = graph_body_resolve(st, id);
+	if ( !n )
+	{
+	    out = graph_error_result("unknown body node id");
+	    return true;
+	}
+	if ( !graph_owner_function(st, n) )
+	{
+	    out = graph_error_result("not a statement-level node: edit its enclosing statement (graph.children of the block lists the statements)");
+	    return true;
+	}
+	if ( !graph_extent_of(n, x) )
+	{
+	    out = graph_error_result("no extent recorded for this statement (a macro-headed statement, or a synthesized node)");
+	    return true;
+	}
+	out = graph_span_value(graph_body_node_value(st, n), x);
+	return true;
+    }
+    }
+    return true;
+}
+
+// graph.at(handle, line, column): the editable node whose extent STARTS exactly
+// at (line, 0-based column) — how an edit answers "what is the node I just
+// wrote": TU-own functions and globals first (top-level definitions), then the
+// statement-level nodes of the function enclosing the position (BFS over the
+// L1b descent; the FIRST start match wins — a fragment that produced several
+// statements answers with its first). Empty {} = nothing starts there.
+bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
+			       madc::value &out)
+{
+    out = value();
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return false;
+    ::Program &child = *st->child;
+    GraphExtent x;
+    for ( size_t i = 0; i < child.pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = tu_own_function(child.pending_funcs[i], st->display_name);
+	if ( tf && graph_extent_of(tf, x) && x.line == line && x.column == column )
+	{
+	    out = graph_span_value(graph_func_node_value(st, tf), x);
+	    return true;
+	}
+    }
+    for ( size_t i = 0; i < child.top_decls.size(); ++i )
+    {
+	const ::Program::TopDecl &td = child.top_decls[i];
+	if ( td.kind != ::Program::DeclKind::dkGlobalVar || !td.decl )
+	    continue;
+	if ( graph_extent_of(td.decl, x) && x.line == line && x.column == column )
+	{
+	    int64_t gid = graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i);
+	    out = graph_span_value(graph_global_node_value(td, gid), x);
+	    return true;
+	}
+    }
+    TokenFunc *encl = enclosing_func_at(child, st->display_name, line, column);
+    if ( !encl )
+    {
+	std::map<std::string, madc::value> empty;
+	out = value::make_object(empty);
+	return true;
+    }
+    std::vector<const TokenBase *> q;
+    q.push_back(encl);
+    for ( size_t qi = 0; qi < q.size() && qi < GRAPH_COLLECT_VISIT_CAP; ++qi )
+    {
+	const TokenBase *n = q[qi];
+	if ( TokenCpnd *c = const_cast<TokenBase *>(n)->as_cpnd_tok() )
+	    for ( size_t i = 0; i < c->statements.size(); ++i )
+	    {
+		const TokenBase *s = c->statements[i];
+		if ( graph_extent_of(s, x) && x.line == line && x.column == column )
+		{
+		    out = graph_span_value(graph_body_node_value(st, s), x);
+		    return true;
+		}
+	    }
+	std::vector<const TokenBase *> kids;
+	graph_body_children(n, kids);
+	q.insert(q.end(), kids.begin(), kids.end());
+    }
+    std::map<std::string, madc::value> empty;
+    out = value::make_object(empty);
     return true;
 }
 
