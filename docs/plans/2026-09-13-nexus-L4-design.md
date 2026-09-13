@@ -135,6 +135,10 @@ one checkpoint PER DOC at the cut, `clog_persist / clog_restore` are unchanged
 (one file). `changelog_of(w, doc)` keeps its signature and returns the one
 entity — no caller moves.
 
+(Sequencing, 2026-09-13: the scoping lands in L4c with its first
+cross-document consumer, the proposal record; L4b kept V4's per-document log
+and landed the reader-side enum below.)
+
 Why one stream (not a second log for proposals and records): cross-reference
 ruling 1 — "one record that edit history, the mirror, provenance and replay
 all read … prevents three parallel logs later". Proposals and nexus records
@@ -848,8 +852,8 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 | Slice | Content | Gate |
 |---|---|---|
 | **L4a** git substrate | libgit2 subtree + `Makefile.madc` + features headers + Makefile wiring (all variants) + size spike; `GitRepo`; `git_source_adapter` + the `git` scheme row; `madc::git_*` publics | §8 L4a |
-| **L4b** PAST verbs | project-scoped stream + `clog_kind` enum; `parse_open_tagged` + revision-handle routing; `graph.status / source / history / commits / revision / diff` | §8 L4b |
-| **L4c** propose | `tierPROPOSER`; `parse_would_accept`; `edit_mode`; proposal + decision records; `graph.proposals / proposal / accept / reject / withdraw`; the connection-level wiring test | §8 L4c |
+| **L4b** PAST verbs — SHIPPED 2026-09-13 (plan `2026-09-13-nexus-L4b-past-verbs-plan.md`) | `clog_kind` enum at the reader + `ts` on every record; `parse_open_tagged` / `parse_generation` / `graph_route` (engine-allocated tags; a tagged handle refuses refresh); `GitRepo::blame_buffer`, `git_relpath` (the promoted canonicalizer), `php::time()`; `graph.status / source / history / commits / revision / diff` in `madcide_past.inc`, routed in `graph_call`. The project-scoped stream moved to L4c (its first cross-document consumer) | `testgraphtagged`, `testgraphpast`, `test_gitrepo`, the single-owners gate's kind-compare marker |
+| **L4c** propose | the project-scoped stream (one entity per session, records carry `doc`, per-doc checkpoints at compaction); `tierPROPOSER`; `parse_would_accept`; `edit_mode`; proposal + decision records; `graph.proposals / proposal / accept / reject / withdraw`; the connection-level wiring test | §8 L4c + a two-document changelog case |
 | **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot; the `test` record kind + `tests` relation + `test.discover` (records only) | §8 L4d |
 | **L4e** verification | `asset_layers_of` + per-family `*_min_layer` gates (retrofits `graph.*` and `nexus.*`; `graph.status` / `nexus.explain` report the layer set); `--report=json` on the canonical runner; `test.list / candidates / run / results`; `testrun` events tagged by node; proposal `checks` on accept/propose | a two-asset fixture project (a `.mad` and a binary) refused/served per layer; a run through the real runner yields a `testrun` event; a proposal with a linked failing test stays open with the run attached |
 | later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments); the `.mad` family run in-process behind the one fixture owner | own plans |
