@@ -251,6 +251,11 @@ namespace madc {
     //   git_blame(out, h, path, line, count) -> {rows: [{line, count, sha, author, when, summary}]}
     //                                       1-based line; count 0 = to the end
     //   git_dirty(out, h, path)          -> {dirty: bool}
+    //   git_blame_text(out, h, path, text, line, count) -> blame the LIVE text
+    //                                       `text` against path's committed history;
+    //                                       an uncommitted hunk has sha "" (L4b)
+    //   git_relpath(out, h, path)        -> {path} relative to the working tree,
+    //                                       both sides canonicalised; {error} outside (L4b)
     int64_t git_open(const char *path);
     bool    git_close(int64_t handle);
     value  &git_head(value &out, int64_t handle);
@@ -259,6 +264,21 @@ namespace madc {
     value  &git_show(value &out, int64_t handle, const char *rev, const char *path);
     value  &git_blame(value &out, int64_t handle, const char *path, int64_t line, int64_t count);
     value  &git_dirty(value &out, int64_t handle, const char *path);
+    value  &git_blame_text(value &out, int64_t handle, const char *path, const char *text, int64_t line, int64_t count);
+    value  &git_relpath(value &out, int64_t handle, const char *path);
+
+    // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
+    // opens a READ-ONLY parse handle of `source` whose generation is a fresh
+    // TAG (>= 2^20, engine-allocated) — every id it mints names it, so
+    // graph_route(handle, id) answers the handle an id belongs to: `handle`
+    // itself when the id carries its generation, the open tagged handle whose
+    // tag the id carries, or 0 (stale / unknown — run the verb on `handle`
+    // and its refusal says why). parse_refresh / parse_refresh_checked refuse
+    // a tagged handle; parse_close forgets its tag. parse_generation answers
+    // a handle's current generation (a tag for a revision handle), -1 = none.
+    int64_t parse_open_tagged(const char *source, const char *filename);
+    int64_t parse_generation(int64_t handle);
+    int64_t graph_route(int64_t handle, int64_t id);
 
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):

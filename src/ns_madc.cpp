@@ -321,6 +321,18 @@ value &git_blame(value &out, int64_t handle, const char *path, int64_t line, int
 	{ std::string p = path ? path : ""; madc_git_blame(&out, handle, &p, line, count); return out; }
 value &git_dirty(value &out, int64_t handle, const char *path)
 	{ std::string p = path ? path : ""; madc_git_dirty(&out, handle, &p); return out; }
+value &git_blame_text(value &out, int64_t handle, const char *path, const char *text, int64_t line, int64_t count)
+	{ std::string p = path ? path : "", t = text ? text : "";
+	  madc_git_blame_text(&out, handle, &p, &t, line, count); return out; }
+value &git_relpath(value &out, int64_t handle, const char *path)
+	{ std::string p = path ? path : ""; madc_git_relpath(&out, handle, &p); return out; }
+
+// L4b (design §3.3): revision handles by generation TAG.
+int64_t parse_open_tagged(const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : "";
+	  return madc_parse_open_tagged(&s, &f); }
+int64_t parse_generation(int64_t handle) { return madc_parse_generation(handle); }
+int64_t graph_route(int64_t handle, int64_t id) { return madc_graph_route(handle, id); }
 
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):

@@ -1,0 +1,51 @@
+// Nexus L4b: revision handles carry a generation TAG so their ids route to
+// them (madc::graph_route); a tagged handle is read-only at the engine; a
+// closed tag is forgotten. Compile-NEVER-execute (.expect_quiet).
+int main()
+{
+    var src = "long g = 1;\nlong f(long x) { return x + g; }\n";
+    long live = madc::parse_open(src.c_str(), "tagged.mad");
+    long rev = madc::parse_open_tagged(src.c_str(), "tagged.mad");
+    println("opened: {}", live > 0 && rev > 0 && live != rev ? 1 : 0);
+    long glive = madc::parse_generation(live);
+    long grev = madc::parse_generation(rev);
+    println("live-gen-zero: {}", glive == 0 ? 1 : 0);
+    println("rev-gen-tagged: {}", grev >= 1048576 && grev < 2097152 ? 1 : 0);
+
+    var sl;
+    madc::graph_symbols(sl, live);
+    var sr;
+    madc::graph_symbols(sr, rev);
+    var nl = sl["nodes"][0];
+    var nr = sr["nodes"][0];
+    long idl = nl["id"].as_integer();
+    long idr = nr["id"].as_integer();
+    println("same-name: {}", nl["name"] == nr["name"] ? 1 : 0);
+    println("ids-differ: {}", idl != idr ? 1 : 0);
+    println("route-live: {}", madc::graph_route(live, idl) == live ? 1 : 0);
+    println("route-rev: {}", madc::graph_route(live, idr) == rev ? 1 : 0);
+    println("route-rev-self: {}", madc::graph_route(rev, idr) == rev ? 1 : 0);
+    println("route-unknown: {}", madc::graph_route(live, idr + 1099511627776) == 0 ? 1 : 0);
+
+    var node;
+    madc::graph_node(node, rev, idr);
+    println("rev-node-answers: {}", node["name"] == nr["name"] ? 1 : 0);
+    var stale;
+    madc::graph_node(stale, live, idr);
+    println("rev-id-on-live-stale: {}", !stale["stale"].is_null() && stale["stale"].as_boolean() ? 1 : 0);
+
+    println("refresh-refused: {}", madc::parse_refresh(rev, src.c_str()) ? 0 : 1);
+    var diags;
+    println("checked-refresh-refused: {}", madc::parse_refresh_checked(diags, rev, src.c_str()) ? 0 : 1);
+    println("refusal-has-row: {}", php::count(diags) >= 1 ? 1 : 0);
+    println("rev-gen-unchanged: {}", madc::parse_generation(rev) == grev ? 1 : 0);
+
+    long rev2 = madc::parse_open_tagged(src.c_str(), "tagged.mad");
+    println("second-tag-distinct: {}", madc::parse_generation(rev2) != grev ? 1 : 0);
+    println("closed: {}", madc::parse_close(rev) ? 1 : 0);
+    println("route-after-close: {}", madc::graph_route(live, idr) == 0 ? 1 : 0);
+    println("gen-after-close: {}", madc::parse_generation(rev) == -1 ? 1 : 0);
+    madc::parse_close(rev2);
+    madc::parse_close(live);
+    return 0;
+}

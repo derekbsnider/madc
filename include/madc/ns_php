@@ -16,6 +16,7 @@
 extern "C" {
     void __php_explode(array *, const char *, const char *);
     int64_t __php_count(array *);
+    int64_t __php_time();
     int64_t __php_array_push(array *, const char *);
     int64_t __php_array_push_int(array *, int64_t);
     int64_t __php_array_push_real(array *, double);
@@ -89,6 +90,9 @@ extern "C" {
 namespace php {
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
     int64_t count(array &values) { return __php_count(&values); }
+    // PHP parity (time): the current Unix timestamp in seconds. The dialect's
+    // wall clock (Nexus L4b: the change log's `ts`).
+    int64_t time() { return __php_time(); }
     // array_push is ONE overloaded name, PHP parity: it accepts any value
     // type and RETURNS the array's new element count. ONE carrier overload
     // serves both `value` and `array` arguments — the two spellings are the

@@ -4721,11 +4721,17 @@ void Program::forest_install_pp(uint32_t unit)
 // resolve — a cross/hosted table may name a sysroot absent from this machine.
 // NOT for resolving argv[0] or a dladdr image name; those are different rules
 // with their own call sites.
-static std::string canonical_path_for_compare(const std::string &path)
+// Declared in madc_posix_io.h (promoted from a file-static in L4b so the git
+// substrate reads the same rule); the unqualified callers below keep their
+// spelling through the using-declaration.
+namespace madc { namespace detail {
+std::string canonical_path_for_compare(const std::string &path)
 {
-    std::string out = madc::detail::resolve_real_path(path.c_str());
+    std::string out = resolve_real_path(path.c_str());
     return out.empty() ? path : out;
 }
+} } // namespace madc::detail
+using madc::detail::canonical_path_for_compare;
 
 static const char *madc_fallback_include_paths[] = {
     "/usr/local/include/",

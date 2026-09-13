@@ -44,6 +44,21 @@ int main()
     madc::git_dirty(dt, h, "VERSION");
     println("dirty-is-bool: {}", dt["dirty"].is_boolean() ? 1 : 0);
 
+    // L4b: the live-text blame and the canonical relative path
+    var edited = format("{}an uncommitted line\n", disk);
+    var bt;
+    madc::git_blame_text(bt, h, "VERSION", edited.c_str(), 1, 0);
+    var last = bt["rows"][php::count(bt["rows"]) - 1];
+    println("blame-text-rows-positive: {}", php::count(bt["rows"]) > 0 ? 1 : 0);
+    println("blame-text-uncommitted-sha-empty: {}", strlen(last["sha"].c_str()) == 0 ? 1 : 0);
+    var rp2;
+    madc::git_relpath(rp2, h, "tests/../tests/testgit.mad");
+    var relp = rp2["path"];
+    println("relpath: {}", relp == "tests/testgit.mad" ? 1 : 0);
+    var rp3;
+    madc::git_relpath(rp3, h, "/");
+    println("relpath-outside-error: {}", strlen(rp3["error"].c_str()) > 0 ? 1 : 0);
+
     var bad;
     madc::git_show(bad, h, "HEAD", "no/such/file.txt");
     println("missing-path-error: {}", strlen(bad["error"].c_str()) > 0 ? 1 : 0);

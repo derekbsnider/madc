@@ -7,6 +7,7 @@
 
 #include <git2.h>
 
+#include <cstdint>
 #include <cstring>
 #include <map>
 
@@ -278,19 +279,13 @@ bool GitRepo::show(const std::string &rev, const std::string &path, std::string 
     return ok;
 }
 
-bool GitRepo::blame(std::vector<GitBlameRow> &out, const std::string &path,
-		    size_t line0, size_t count, error *err) const
+namespace {
+
+// The ONE hunk -> row mapping, shared by blame (the committed file) and
+// blame_buffer (the live text). A zero oid is an uncommitted hunk: sha "",
+// no author, no summary.
+void blame_rows(git_repository *repo, git_blame *bl, std::vector<GitBlameRow> &out)
 {
-    out.clear();
-    git_blame_options opts = GIT_BLAME_OPTIONS_INIT;
-    opts.min_line = line0;
-    opts.max_line = count ? line0 + count - 1 : 0;
-    git_blame *bl = (git_blame *)0;
-    if ( !_->repo || git_blame_file(&bl, _->repo, path.c_str(), &opts) < 0 )
-    {
-	set_err(err, "git blame");
-	return false;
-    }
     uint32_t n = git_blame_get_hunk_count(bl);
     for ( uint32_t i = 0; i < n; ++i )
     {
@@ -300,6 +295,11 @@ bool GitRepo::blame(std::vector<GitBlameRow> &out, const std::string &path,
 	GitBlameRow row;
 	row.line = (int64_t)h->final_start_line_number;
 	row.count = (int64_t)h->lines_in_hunk;
+	if ( git_oid_is_zero(&h->final_commit_id) )
+	{
+	    out.push_back(row);		// uncommitted: sha stays ""
+	    continue;
+	}
 	row.sha = oid_str(&h->final_commit_id);
 	if ( h->final_signature )
 	{
@@ -307,7 +307,7 @@ bool GitRepo::blame(std::vector<GitBlameRow> &out, const std::string &path,
 	    row.when = (int64_t)h->final_signature->when.time;
 	}
 	git_commit *c = (git_commit *)0;
-	if ( git_commit_lookup(&c, _->repo, &h->final_commit_id) == 0 )
+	if ( git_commit_lookup(&c, repo, &h->final_commit_id) == 0 )
 	{
 	    const char *s = git_commit_summary(c);
 	    row.summary = s ? s : "";
@@ -315,7 +315,77 @@ bool GitRepo::blame(std::vector<GitBlameRow> &out, const std::string &path,
 	}
 	out.push_back(row);
     }
+}
+
+git_blame_options blame_opts(size_t line0, size_t count)
+{
+    git_blame_options opts = GIT_BLAME_OPTIONS_INIT;
+    opts.min_line = line0;
+    opts.max_line = count ? line0 + count - 1 : 0;
+    return opts;
+}
+
+} // namespace
+
+bool GitRepo::blame(std::vector<GitBlameRow> &out, const std::string &path,
+		    size_t line0, size_t count, error *err) const
+{
+    out.clear();
+    git_blame_options opts = blame_opts(line0, count);
+    git_blame *bl = (git_blame *)0;
+    if ( !_->repo || git_blame_file(&bl, _->repo, path.c_str(), &opts) < 0 )
+    {
+	set_err(err, "git blame");
+	return false;
+    }
+    blame_rows(_->repo, bl, out);
     git_blame_free(bl);
+    return true;
+}
+
+bool GitRepo::blame_buffer(std::vector<GitBlameRow> &out, const std::string &path,
+			   const std::string &text, size_t line0, size_t count,
+			   error *err) const
+{
+    out.clear();
+    // The line range names lines of the BUFFER, not of the committed file, so
+    // the reference blame runs over the whole file and the buffer's hunks are
+    // clipped to the range afterwards (a hunk straddling an edge is trimmed).
+    git_blame_options opts = GIT_BLAME_OPTIONS_INIT;
+    git_blame *ref = (git_blame *)0;
+    if ( !_->repo || git_blame_file(&ref, _->repo, path.c_str(), &opts) < 0 )
+    {
+	set_err(err, "git blame");
+	return false;
+    }
+    git_blame *bl = (git_blame *)0;
+    if ( git_blame_buffer(&bl, ref, text.data(), text.size()) < 0 )
+    {
+	git_blame_free(ref);
+	set_err(err, "git blame (buffer)");
+	return false;
+    }
+    std::vector<GitBlameRow> all;
+    blame_rows(_->repo, bl, all);
+    git_blame_free(bl);
+    git_blame_free(ref);
+    int64_t lo = line0 ? (int64_t)line0 : 1;
+    int64_t hi = count ? lo + (int64_t)count - 1 : INT64_MAX;	// inclusive
+    for ( size_t i = 0; i < all.size(); ++i )
+    {
+	GitBlameRow row = all[i];
+	int64_t first = row.line;
+	int64_t last = row.line + row.count - 1;
+	if ( last < lo || first > hi )
+	    continue;
+	if ( first < lo )
+	    first = lo;
+	if ( last > hi )
+	    last = hi;
+	row.line = first;
+	row.count = last - first + 1;
+	out.push_back(row);
+    }
     return true;
 }
 

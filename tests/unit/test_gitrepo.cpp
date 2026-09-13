@@ -223,6 +223,28 @@ TEST_CASE("GitRepo opens a repository and answers head/refs/revparse/log/show/bl
     CHECK(d == true);
 }
 
+TEST_CASE("GitRepo blames a modified buffer against the committed file")
+{
+    Fixture fx;
+    madc::GitRepo repo;
+    madc::error err;
+    REQUIRE(repo.open(fx.dir, &err));
+    std::vector<madc::GitBlameRow> b;
+    REQUIRE(repo.blame_buffer(b, "a.txt", "one\ntwo\nthree\n", 1, 0, &err));
+    REQUIRE(b.size() == 3);
+    CHECK(b[0].line == 1);
+    CHECK(b[0].sha == fx.first_sha);
+    CHECK(b[1].line == 2);
+    CHECK(b[1].sha == fx.second_sha);
+    CHECK(b[2].line == 3);
+    CHECK(b[2].sha.empty());			// the uncommitted line
+    CHECK(b[2].summary.empty());
+    REQUIRE(repo.blame_buffer(b, "a.txt", "one\ntwo\nthree\n", 3, 1, &err));
+    REQUIRE(b.size() == 1);
+    CHECK(b[0].sha.empty());
+    CHECK(!repo.blame_buffer(b, "nope.txt", "x\n", 1, 0, &err));
+}
+
 TEST_CASE("GitRepo refuses a non-repository, a missing path and a bad ref with prose")
 {
     madc::GitRepo repo;

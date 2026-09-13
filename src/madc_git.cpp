@@ -16,6 +16,7 @@
 #include "madcdis/git_repo.h"
 #include "handle_table.h"
 #include "libmadc/value.h"
+#include "madc_posix_io.h"	// canonical_path_for_compare — THE path canonicalizer
 
 #include <map>
 #include <string>
@@ -175,6 +176,54 @@ bool internal_program_git_blame(int64_t handle, const std::string &path, int64_t
     for ( size_t i = 0; i < hunks.size(); ++i )
 	rows.push_back(git_blame_value(hunks[i]));
     out = rows_value(rows);
+    return true;
+}
+
+// L4b: blame the LIVE buffer text (not the file on disk) against the committed
+// history; uncommitted hunks come back with sha "" (the event log covers them).
+bool internal_program_git_blame_text(int64_t handle, const std::string &path,
+				     const std::string &text, int64_t line, int64_t count,
+				     value &out)
+{
+    git_repo_state *st = state_or_refuse(handle, out);
+    if ( !st )
+	return false;
+    std::vector<GitBlameRow> hunks;
+    error err;
+    if ( !st->repo.blame_buffer(hunks, path, text, line > 0 ? (size_t)line : 1,
+				count > 0 ? (size_t)count : 0, &err) )
+    {
+	out = error_value(err.message);
+	return false;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < hunks.size(); ++i )
+	rows.push_back(git_blame_value(hunks[i]));
+    out = rows_value(rows);
+    return true;
+}
+
+// L4b: a path relative to the repository's working tree, both sides
+// canonicalised by the ONE path canonicalizer madc has (the lexer's include
+// resolution uses the same one) — never a string prefix test on raw spellings.
+bool internal_program_git_relpath(int64_t handle, const std::string &path, value &out)
+{
+    git_repo_state *st = state_or_refuse(handle, out);
+    if ( !st )
+	return false;
+    std::string wd = detail::canonical_path_for_compare(st->repo.workdir());
+    while ( wd.size() > 1 && (wd[wd.size() - 1] == '/' || wd[wd.size() - 1] == '\\') )
+	wd.erase(wd.size() - 1);
+    std::string p = detail::canonical_path_for_compare(path);
+    if ( wd.empty() || p.size() <= wd.size() + 1 || p.compare(0, wd.size(), wd) != 0
+	 || (p[wd.size()] != '/' && p[wd.size()] != '\\') )
+    {
+	out = error_value("git: `" + path + "` is not inside the repository's working tree");
+	return false;
+    }
+    std::map<std::string, value> f;
+    f["path"] = value(p.substr(wd.size() + 1));
+    out = value::make_object(f);
     return true;
 }
 

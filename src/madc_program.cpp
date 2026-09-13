@@ -4992,6 +4992,11 @@ static parse_tu_state *parse_tu_get(int64_t handle)
     return parse_tu_handles().get(handle);
 }
 
+// L4b (design §3.3): a REVISION handle's generation is a TAG; defined with the
+// id helpers below, used by refresh/close above them.
+static bool graph_handle_is_tagged(const parse_tu_state *st);
+static void graph_forget_tag(const parse_tu_state *st);
+
 // ---- the live parse / the project as a DATA SOURCE (madcide polish P3b-1)
 // madcrun://<parse handle> runs the handle's parsed tree, madcproj://
 // <manifest> the --project JIT lane, each in a CHILD whose stdout (stderr
@@ -5269,6 +5274,8 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( graph_handle_is_tagged(st) )	// L4b: a revision handle is read-only
+	return false;
     self.clear_diagnostics();
     self.clear_error();
     // Whole-TU re-parse: a Program is not resettable, so refresh is a
@@ -5319,6 +5326,22 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
+    if ( graph_handle_is_tagged(st) )
+    {
+	// L4b: a revision handle is read-only — one error row says so (the
+	// diagnostics row shape, so a consumer reads it like any other).
+	std::map<std::string, madc::value> f;
+	f["severity"] = value(std::string("error"));
+	f["severity_code"] = value((int64_t)::Program::DiagnosticSeverity::error);
+	f["message"] = value(std::string("revision handles are read-only"));
+	f["file"] = value(st->display_name);
+	f["line"] = value((int64_t)0);
+	f["column"] = value((int64_t)0);
+	std::vector<madc::value> rows;
+	rows.push_back(value::make_object(f));
+	out_diags = value::make_array(rows);
+	return false;
+    }
     self.clear_diagnostics();
     self.clear_error();
     // Owned until accepted: a throw out of the candidate's parse/compile frees it.
@@ -5338,6 +5361,9 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 
 bool internal_program_parse_close(int64_t handle)
 {
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( st )
+	graph_forget_tag(st);		// L4b: a closed revision's ids route nowhere
     return parse_tu_handles().close(handle);
 }
 
@@ -5679,6 +5705,82 @@ static madc::value graph_stale_result(const parse_tu_state *st, int64_t id)
     f["nodes"] = value::make_array(std::vector<madc::value>());
     f["edges"] = value::make_array(std::vector<madc::value>());
     return value::make_object(f);
+}
+
+// ---- L4b: revision handles carry a generation TAG (design §3.3) -------------
+// The live handle's generation counts up from 0 per refresh; a REVISION handle
+// (a blob at a commit parsed by this same engine) is stamped once with a tag
+// from [2^20, 2^21) — the top bit of the 21-bit field — so every id it mints
+// names it and can be routed back (graph_route). Tags are ENGINE-allocated (a
+// caller never touches id bits); a tagged handle refuses refresh (a bump would
+// make its generation collide with the next tag) and parse_close forgets its
+// tag. Thread contract: the parse-handle confinement — one thread opens,
+// routes and closes.
+static const uint32_t GRAPH_GEN_TAG_BASE = 1u << 20;
+
+static uint32_t &graph_next_tag()
+{
+    static uint32_t next = GRAPH_GEN_TAG_BASE;
+    return next;
+}
+
+static std::map<uint32_t, int64_t> &graph_tagged_handles()
+{
+    static std::map<uint32_t, int64_t> tags;	// tag -> handle; erased on close
+    return tags;
+}
+
+static bool graph_handle_is_tagged(const parse_tu_state *st)
+{
+    return st->generation >= GRAPH_GEN_TAG_BASE;
+}
+
+static void graph_forget_tag(const parse_tu_state *st)
+{
+    if ( graph_handle_is_tagged(st) )
+	graph_tagged_handles().erase(st->generation);
+}
+
+int64_t internal_program_parse_open_tagged(::Program &self,
+					   const std::string &source_text,
+					   const std::string &display_name)
+{
+    int64_t h = internal_program_parse_open(self, source_text, display_name);
+    if ( h <= 0 )
+	return h;
+    parse_tu_state *st = parse_tu_get(h);
+    uint32_t &next = graph_next_tag();
+    if ( !st || next >= (GRAPH_GEN_TAG_BASE << 1) )	// the 21-bit field is spent
+    {
+	internal_program_parse_close(h);
+	return 0;
+    }
+    st->generation = next++;
+    graph_tagged_handles()[st->generation] = h;
+    return h;
+}
+
+int64_t internal_program_parse_generation(int64_t handle)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    return st ? (int64_t)st->generation : -1;
+}
+
+// The handle an id belongs to: `handle` when the id carries its generation,
+// else the OPEN tagged handle whose tag the id carries, else 0 (stale or
+// unknown — the caller runs the verb on `handle`, whose refusal says why).
+int64_t internal_program_graph_route(int64_t handle, int64_t id)
+{
+    parse_tu_state *st = parse_tu_get(handle);
+    if ( !st )
+	return 0;
+    if ( graph_id_fresh(st, id) )
+	return handle;
+    std::map<uint32_t, int64_t>::const_iterator it =
+	graph_tagged_handles().find(graph_id_gen(id));
+    if ( it == graph_tagged_handles().end() || !parse_tu_get(it->second) )
+	return 0;
+    return it->second;
 }
 
 // A function node from its parse token: the FuncDef's CHILD-BOUND type-id

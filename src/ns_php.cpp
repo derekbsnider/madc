@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>	// php::time
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <io.h>       // _unlink — win64 UCRT spells POSIX unlink() `_unlink`
@@ -1076,6 +1077,8 @@ std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return 
 void __php_explode(madc::value *a, const char *b, const char *c) { php_explode(a, b, c); }
 std::string *__php_implode(std::string *a, const char *b, madc::value *c) { return php_implode(a, b, c); }
 int64_t __php_count(madc::value *a) { return php_count(a); }
+// PHP time(): seconds since the Unix epoch (the dialect's wall clock; L4b).
+int64_t __php_time() { return (int64_t)::time((time_t *)0); }
 int64_t __php_array_push(madc::value *a, const char *b) { return php_array_push_str(a, b); }
 int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_int(a, b); }
 int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }

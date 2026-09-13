@@ -91,6 +91,12 @@ public:
     // Blame `count` lines from 1-based `line0` (count 0 = to the end).
     bool blame(std::vector<GitBlameRow> &out, const std::string &path,
 	       size_t line0, size_t count, error *err = (error *)0) const;
+    // Blame a MODIFIED buffer (the live editor text) against `path`'s committed
+    // history: lines the buffer changed blame to a zero oid — row.sha "" (the
+    // caller's own event log covers them). Same line convention as blame.
+    bool blame_buffer(std::vector<GitBlameRow> &out, const std::string &path,
+		      const std::string &text, size_t line0, size_t count,
+		      error *err = (error *)0) const;
     // True when `path`'s working-tree state differs from HEAD/index.
     bool dirty(const std::string &path, bool &out, error *err = (error *)0) const;
 

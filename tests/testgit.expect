@@ -8,6 +8,10 @@ show-matches-file: 1
 blame-rows-positive: 1
 blame-row-shape: 1
 dirty-is-bool: 1
+blame-text-rows-positive: 1
+blame-text-uncommitted-sha-empty: 1
+relpath: 1
+relpath-outside-error: 1
 missing-path-error: 1
 bad-ref-error: 1
 closed: 1

@@ -395,6 +395,15 @@ bool internal_program_git_show(int64_t handle, const std::string &rev,
 bool internal_program_git_blame(int64_t handle, const std::string &path, int64_t line,
 				int64_t count, value &out);
 bool internal_program_git_dirty(int64_t handle, const std::string &path, value &out);
+bool internal_program_git_blame_text(int64_t handle, const std::string &path,
+				     const std::string &text, int64_t line, int64_t count,
+				     value &out);
+bool internal_program_git_relpath(int64_t handle, const std::string &path, value &out);
+// L4b (design §3.3): revision handles by generation TAG — see madc_program.cpp.
+int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
+					   const std::string &display_name);
+int64_t internal_program_parse_generation(int64_t handle);
+int64_t internal_program_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1309,6 +1318,43 @@ void *madc_git_dirty(void *result, int64_t handle, void *path)
     madc::value &out = *(madc::value *)result;
     madc::internal_program_git_dirty(handle, *(const std::string *)path, out);
     return result;
+}
+
+void *madc_git_blame_text(void *result, int64_t handle, void *path, void *text,
+			  int64_t line, int64_t count)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_git_blame_text(handle, *(const std::string *)path,
+					  *(const std::string *)text, line, count, out);
+    return result;
+}
+void *madc_git_relpath(void *result, int64_t handle, void *path)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_git_relpath(handle, *(const std::string *)path, out);
+    return result;
+}
+
+// L4b: revision handles by generation TAG. parse_open_tagged needs the active
+// Program exactly as madc_parse_open does; generation/route read the registry.
+int64_t madc_parse_open_tagged(void *source, void *filename)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_parse_open_tagged(*active, src,
+						    disp.empty() ? "<source>" : disp);
+}
+int64_t madc_parse_generation(int64_t handle)
+{
+    return madc::internal_program_parse_generation(handle);
+}
+int64_t madc_graph_route(int64_t handle, int64_t id)
+{
+    return madc::internal_program_graph_route(handle, id);
 }
 // The validated refresh: result = diagnostics rows (the candidate's), true =
 // the candidate was swapped in. Same active-program discipline as

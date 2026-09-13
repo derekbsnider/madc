@@ -266,6 +266,12 @@ void *madc_git_log(void *result, int64_t handle, void *path, int64_t limit);
 void *madc_git_show(void *result, int64_t handle, void *rev, void *path);
 void *madc_git_blame(void *result, int64_t handle, void *path, int64_t line, int64_t count);
 void *madc_git_dirty(void *result, int64_t handle, void *path);
+void *madc_git_blame_text(void *result, int64_t handle, void *path, void *text, int64_t line, int64_t count);
+void *madc_git_relpath(void *result, int64_t handle, void *path);
+// L4b (design §3.3): revision handles by generation TAG (engine-allocated).
+int64_t madc_parse_open_tagged(void *source, void *filename);
+int64_t madc_parse_generation(int64_t handle);
+int64_t madc_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =
