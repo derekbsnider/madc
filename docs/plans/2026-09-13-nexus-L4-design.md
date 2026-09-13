@@ -42,6 +42,20 @@ And the first **intent → code** edges: native nexus records (task,
 requirement, decision, workset) linked to symbols, commits and proposals, with
 external project-management systems projected in through an MCP client.
 
+The positioning (the external review's wording, adopted): madc does not merely
+give agents access to an AST — it **maintains a live semantic model of a
+software project across time**: compiler-resolved present state, semantic
+development history, and explicit development intent, so humans and agents do
+not reconstruct the project from source files every time. Four questions, one
+verb family each:
+
+| Question | Authority | Verbs |
+|---|---|---|
+| What does this code mean now? | the compiler (L1–L3) | `graph.node / type_of / members / body / references / callers / callees / impact` |
+| How did it get this way? | git + the event stream (L4b) | `graph.history / commits / revision / diff` |
+| Why does it exist? | records, decisions, proposals, provenance (L4c–d) | `nexus.context / explain` (its `why` section) |
+| Where is it supposed to go? | the intent graph (L4d) | `nexus.records(planned_for…) / explain` (its `plan` section) |
+
 ## 2. Where this sits — facts (recon 2026-09-13, at HEAD 870ad3e2)
 
 Shipped substrate this design projects over (reuse; nothing is rebuilt):
@@ -78,6 +92,27 @@ programmatic form of a proposal. Adopted below: `graph.status`,
 that holds a LIST of ops (a recipe = one proposal), byte-exact target
 re-check at landing. Not copied: regenerating the tree per run; warning on
 staleness (we refuse).
+
+### 2.1 Cross-reference: the external review (ChatGPT, handed over 2026-09-13)
+
+The owner supplied an independent review of the Nexus concept as a
+cross-reference guide, with the caveat that the reviewer did not read the
+madc code — so each premise below is checked against the code, not accepted.
+Point by point against this design:
+
+| Review point | Standing | Where |
+|---|---|---|
+| Live compiler graph as ground truth; no second semantic index | already an invariant | design doc §5 (1)(7)(8); §2 here |
+| Generation numbers in temporary handles so stale refs fail deterministically | shipped (L3) | §3.3 extends it to revision handles |
+| Persistent semantic identity SEPARATE from temporary node identity | v1 = the symbol KEY (`rkSYMBOL`); a persistent `entity` record with lineage is the review's step 7 and ours | §3.5; §12 |
+| History attached to semantic entities; rich ChangeEvents (rename / move / signature-change / subtree-replace / extract) recorded, not reconstructed from diffs | the `nodeop` record is the seat; the verbs are L3 increments recorded as semantic ops; `graph.rename` = the first N-op proposal | §3.4 (ops list), §12 |
+| Intent as a first-class graph with provenance, date and status so obsolete plans are never mistaken for current truth | ADOPTED: a common record envelope `{state, created_seq, updated_seq, actor, origin}`; reads default to live states; `milestone` added as the target of `planned_for` | §3.5 |
+| Clear authorities; inference explicitly marked | ADOPTED: §3.7 authority table + a `provenance` enum on every history/context row (`compiler / git / event / record / inferred`); v1 emits no `inferred` row | §3.7, §4.3 |
+| Bounded semantic operations, not a query language; `history / lineage / why / plan / constraints / explain` | `history` L4b; `explain` ADOPTED as ONE compound verb with `what / depends / history / why / plan / constraints` sections (`why(this)` = its `why` section); `lineage` deferred with persistent identity; `constraints` = decisions linked to the target, attached to every proposal answer | §4.5, §3.4 |
+| Mutation = fragments, never ranges; transactional (candidate → validate → checks → commit → render); invalid intermediate states never touch the live project | fragments: settled (L3); ADOPTED: the proposal's `ops[]` IS the transaction — `graph_edit_apply(ops)` is all-or-nothing from day one (one candidate, one validation, one checkpoint, all splices or none) | §3.4, §4.4 |
+| Source stays the durable representation "until MC11-IR is lossless for comments / macros / pragmas" | the PREMISE is stale for madc (the review did not read the code): MC11-IR already retains comments (trivia), macro origins and definitions, include directives and error NODES; source stays durable for the replication/one-mutation-owner reason instead, and a node-level render becomes a refinement, not a prerequisite | §3.8 |
+| No Cypher/GQL or graph database until use demonstrates the need | settled invariant | design doc §5 (1)(2) |
+| Order: live reads → compound queries → git + lineage → intent → rich events → transactions → persistent identity | ours: PAST → propose → intent (owner-settled). Differences: `explain` lands when all three axes exist (L4d); the single-op propose tier precedes intent because it is cheap and the record shape carries the N-op transaction | §9, §10 |
 
 ## 3. The model
 
@@ -163,8 +198,9 @@ through `parse_close` — a bounded cache of derived state, never persisted
 
 ### 3.4 Proposals (the FUTURE axis, v1)
 
-A proposal is ONE record in the stream holding a LIST of node-ops (one op in
-v1; a recipe later is the same record with N ops — additive):
+A proposal is ONE record in the stream holding a LIST of node-ops. The list
+IS the transaction: v1 proposals hold one op, a rename or a recipe later holds
+N — the same record, the same landing contract:
 
 ```
 { seq, kind: "proposal", es, doc, base_seq,
@@ -174,9 +210,18 @@ v1; a recipe later is the same record with N ops — additive):
            splice: { at, del, ins } } ],
   preview: { line0, line1, before, after },          // the touched lines, live vs candidate
   diagnostics: [ … ],                                // the candidate's delta (may be empty)
+  constraints: [ <decision refs> ],                  // decisions linked to the target (L4d; informs, never blocks)
+  checks: [ ],                                       // the seat for test/check results (later)
   status: "open" }                                   // derived: the last ckDECISION wins
 ```
 
+- **All-or-nothing** (the review's transactional model): `graph_edit_apply`
+  takes the `ops` LIST — every splice is applied to ONE candidate (descending
+  offsets, so earlier splices never move later targets), the candidate is
+  validated ONCE, one checkpoint is taken, and every splice commits through
+  `ed_text_*` or none does. An invalid intermediate state never touches the
+  live buffer, the tree, or the log. The L3 function becomes the one-element
+  case of this contract in L4c (no second path when N arrives).
 - `base_seq` = `clog_head` when created (the causal parent — "based on").
 - `target.text` is the span's bytes at creation: the byte-exact re-check at
   landing (yailPeralta's hash check, spelled as the text itself — the L3
@@ -208,14 +253,26 @@ projection when one does. Both are events in the stream:
 ```
 { seq, kind: "record", es, op: create|update|close,
   id,                       // = the seq of the creating record (rewrite-stable)
-  rkind: task|requirement|decision|workset,
+  rkind: task|requirement|decision|workset|milestone,
+  state: open|active|done|superseded|rejected,      // enum; the fold's default reads exclude superseded/rejected
   origin: "" | "<source name>",   // "" = native; else the adapter that owns it
   ext_key: "",              // the owner system's key (mycenode id, MADC-42)
-  fields: { title, body, state, … } }             // rkind-specific, sorted keys
+  fields: { title, body, … } }                    // rkind-specific, sorted keys
 
 { seq, kind: "link", es, op: link|unlink,
   from: <ref>, rel: <relation>, to: <ref> }
 ```
+
+Every record carries the same **envelope** — `state`, `created_seq`,
+`updated_seq` (both derived by the fold from the stream: the stream IS the
+date), `actor` (`es`), `origin`, `ext_key` — so an obsolete plan is never
+mistaken for current truth (the review's point): a superseded requirement or a
+rejected decision stays, with its provenance, and answers only when asked for
+(`nexus.records(rkind, state)`; the default is the live states). `milestone`
+is the target of `planned_for` (the owner's four kinds plus this one; §10).
+A decision's `fields` carry `reason` and `alternatives` (Nexus §8) — a
+rejected approach is a decision with `state: rejected`, or an alternative
+inside the decision that won.
 
 A **ref** is one of (an enum `ref_kind`, text only on the wire):
 `rkRECORD {id}` · `rkSYMBOL {file, kind, name}` — a durable code key, NEVER
@@ -267,6 +324,58 @@ The seat's gate stays ONE function per family (`graph_min_tier`, a new
 verb at exactly `tierPROPOSER` (or any tier ≥ proposer with `propose: true`)
 runs `graph_edit_apply` in PROPOSE mode. One code path up to the candidate's
 validation; the mode decides commit-or-store.
+
+### 3.7 Authorities and provenance (Nexus §21; the review's table)
+
+Every answer names the authority that produced it; nothing is blended
+silently:
+
+| Question | Authority | How the answer is marked |
+|---|---|---|
+| What does the code mean? | the compiler (the live handle) | graph nodes/edges — ground truth by construction, unmarked |
+| What changed textually, when, by whom (committed)? | git | `provenance: git` |
+| What semantic operation occurred (uncommitted / madc-originated)? | the event stream (`nodeop`, `splice`) | `provenance: event` |
+| Why was it changed / what is planned? | records, decisions, proposals | `provenance: record` |
+| What is inferred? | nothing in v1 | `provenance: inferred` — the enum value exists so a future heuristic (rename survival, dynamic dispatch) is LABELLED, never passed off as truth |
+
+```
+enum provenance : unsigned char { pvNONE = 0, pvCOMPILER, pvGIT, pvEVENT, pvRECORD, pvINFERRED };
+```
+
+`graph.history` rows, `nexus.context` rows and every `nexus.explain` section
+entry carry `provenance` (text on the wire, the enum inside). Conflicting
+observations coexist as separate rows (Nexus §21 — a local PASS beside a CI
+FAIL is information, not a sync error).
+
+### 3.8 Source stays the durable representation (invariant) — and why
+
+The review's premise — "keep source durable UNTIL the IR can preserve
+comments, macros, formatting, pragmas losslessly" — does not describe madc
+(the owner's caveat: the review did not read the code). MC11-IR already
+retains what it names: every `cir_node` carries `origin_id` (its originating
+token's arena slot — the single source of truth for position and provenance),
+`datadef_id`, `src_lang`, `synth_from_origin`, `tree1_origin`; parse handles
+lex in fidelity mode (`Program::keep_trivia`), so every token keeps its
+`leading_trivia` (whitespace + comments; `TokenREM` carries comment content;
+`trivia_comment_rows` projects them); macro-expanded tokens are marked
+`tfSYNTHPOS` and name their invocation site, `MacroDef`/`macro_map` retain the
+definitions, `fidelity_include_directives` the include lines; syntax errors are
+NODES (`TokenError` holes + debris with spellings, positions and trivia
+retained; `cir_node::error_msg_id`; `Program::error_nodes` gates translate).
+The `--emit=c++` reverse-render already echoes the retained tokens with their
+trivia and include records (`madc_program.cpp:4807`).
+
+Source is durable for a different reason: the ONE replication and mutation
+substrate is the text splice log (client-server §2.8 invariant 4; the one
+text-mutation owner), and the running madc IS the compiler — the tree is
+what the parser says about the buffer, never a second truth to reconcile. So
+L3's statement-granularity rule (the fragment IS the render of the new
+statement; the buffer IS the render of an unchanged one) holds through L4
+because it is the cheapest exact render, not because the IR is lossy. A
+node-level render (tree → text through the retained tokens) is therefore a
+REFINEMENT the faithful IR permits when a verb needs it (a `graph.rename`
+rendering N reference sites is the first candidate), not a prerequisite.
+A proposal's `preview` is text because the reviewer reads text.
 
 ## 4. Components
 
@@ -363,13 +472,13 @@ Added to the ONE descriptor table + `graph_verb` enum + `graph_call` switch
 |---|---|---|
 | `graph.status()` | `{handle, generation, synced, errors, log_head, revisions: [tags], git: {head, branch, dirty}}` | the doc bag + `clog_head` + `GitRepo::head/status_dirty` |
 | `graph.source(id)` | `{node, text}` — the span's bytes (live or revision handle) | `graph_span` + the handle's text |
-| `graph.history(id)` | `{node, rows: [{source: git\|session, when, actor, sha?, seq?, verb?, summary}]}` merged oldest → newest | git: `blame` over the span's lines, folded to distinct commits; session: `nodeop` records whose target symbol key matches + `splice` records that intersected the span AT THEIR TIME (the span walked backwards through newer splices with the inverse of `shift_anchors`' arithmetic — one helper `span_before_splice`, beside the owner, never a copy) |
+| `graph.history(id)` | `{node, rows: [{provenance: git\|event, when, actor, sha?, seq?, verb?, summary}]}` merged oldest → newest | git: `blame` over the span's lines, folded to distinct commits; event: `nodeop` records whose target symbol key matches + `splice` records that intersected the span AT THEIR TIME (the span walked backwards through newer splices with the inverse of `shift_anchors`' arithmetic — one helper `span_before_splice`, beside the owner, never a copy) |
 | `graph.commits(limit, path?)` | `{rows: [{sha, author, when, summary}]}` | `GitRepo::log` |
 | `graph.revision(rev)` | `{sha, tag}` — opens (or reuses) the revision handle; every id it later answers carries `tag` | `git_show` → `parse_open_tagged` |
 | `graph.diff(rev_a, rev_b)` | `{added, removed, changed}` at DECLARATION granularity: `graph.symbols` of both, keyed `{kind, name}`, `changed` = span text differs; `""` = the live buffer | two handles' `graph_symbols` + `graph_source` |
 
-`graph.history` is labelled by `source` (an enum on the wire as text, the
-value rows the agent reads); nothing in it is heuristic. Rename / move
+`graph.history` rows carry `provenance` (§3.7); nothing in it is heuristic
+(no `inferred` row exists in v1). Rename / move
 survival (Nexus §9 "Moved … Renamed …") is NOT v1: history follows the symbol
 KEY within its file; a renamed symbol's history begins at the rename, and the
 row says so — the named hard problem stays named (client-server §6).
@@ -379,13 +488,19 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 
 ### 4.4 The `propose` tier in the seat (L4c)
 
-- `tierPROPOSER` (§3.6); `graph_edit_apply(…, mode)` with
-  `enum edit_mode { emAPPLY, emPROPOSE }`: identical through the candidate's
-  validation; `emPROPOSE` calls `parse_would_accept`, computes `preview`,
-  appends the `ckPROPOSAL` record, answers `{ok, proposal: seq, preview,
-  diagnostics}`; nothing else changes (not the buffer, not the tree, not the
-  undo stack). A rejected candidate still answers `{ok:false, diagnostics}`
-  and stores NOTHING (a proposal that cannot parse is not a proposal).
+- `tierPROPOSER` (§3.6); `graph_edit_apply(…, ops, mode)` with
+  `enum edit_mode { emAPPLY, emPROPOSE }` over the ops LIST (§3.4 — the L3
+  single-op body becomes the one-element case: one candidate carrying every
+  splice, one validation, one checkpoint, all splices or none): identical
+  through the candidate's validation; `emPROPOSE` calls `parse_would_accept`,
+  computes `preview`, appends the `ckPROPOSAL` record, answers `{ok,
+  proposal: seq, preview, diagnostics, constraints}`; nothing else changes
+  (not the buffer, not the tree, not the undo stack). A rejected candidate
+  still answers `{ok:false, diagnostics}` and stores NOTHING (a proposal that
+  cannot parse is not a proposal). `constraints` is empty until L4d's
+  records exist; then it lists the decisions linked (`affects`, `documents`)
+  to the target's symbol key — informing the proposer (Nexus §8: "this
+  proposal conflicts with Decision #37"), never blocking.
 - New verbs (descriptor rows + enum + switch): `graph.proposals(status?)`,
   `graph.proposal(seq)`, `graph.accept(seq)`, `graph.reject(seq, reason)`,
   `graph.withdraw(seq)`; the fold `proposal_status_of(seq)` reads the
@@ -400,10 +515,22 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
   `graph.*`; `nexus_verb` enum, `nexus_min_tier`, one switch):
   `nexus.record(id)`, `nexus.records(rkind, state?)`, `nexus.create(rkind,
   fields)`, `nexus.update(id, fields)`, `nexus.close(id)`, `nexus.link(from,
-  rel, to)`, `nexus.unlink(...)`, `nexus.context(ref)` — everything linked to
-  a ref plus, for a symbol ref, `graph.history` and the open proposals
-  touching it (the Context view, Nexus §6, as data), `nexus.sources()`,
-  `nexus.sync(source)`.
+  rel, to)`, `nexus.unlink(...)`, `nexus.context(ref)` — the RAW list of
+  everything linked to a ref (records, links, proposals, commits), each row
+  with `provenance` (the Context view, Nexus §6, as data), `nexus.sources()`,
+  `nexus.sync(source)`, and ONE compound verb:
+  **`nexus.explain(ref, detail?)`** — the review's `explain(entity)` and the
+  codegraph "one call instead of eight" lesson in one: a compact projection
+  over the existing verbs, no new structure —
+  `{ what: graph.node + type_of + span (compiler),
+     depends: callers/callees counts + impact summary (compiler),
+     history: graph.history rows (git + event),
+     why: linked decisions + requirements + the proposals that touched it (record),
+     plan: open tasks / milestones linked by planned_for / requested_by (record),
+     constraints: the decisions that affect it (record) }`.
+  `why(this)` is `explain`'s `why` section; `plan(this)` its `plan` section
+  — sections, not separate verbs (one implementation, one shape). `detail`
+  is an enum (`summary | full`; the L2 `detail` increment shares it).
 - **The MCP client** (`tools/madcide/madcide_mcpclient.inc`, dialect, over
   `madc::channel`): `mcp_client_open(out, manifest)` spawns the server
   (`exec://<command…>`), performs `initialize` + `notifications/initialized`;
@@ -449,11 +576,13 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
    later `graph.symbols`/`graph.body`/… with a tagged id → the revision
    handle; LRU close through `parse_close`.
 3. **Propose → land**: proposer `graph.replace(id, src)` → sync precondition →
-   read-only rule → span → splice → candidate on the scratch buffer →
-   `parse_would_accept` → preview → `ckPROPOSAL` → answer. Editor
-   `graph.accept(seq)` → fold status (`open`?) → the three re-checks (§3.4) →
-   `graph_edit_apply(emAPPLY)` on the recorded op → nodeop carries `proposal`
-   → `ckDECISION accepted {landed_seq}` → broadcast → answer `{ok, node, seq}`.
+   read-only rule → span → splice(s) → ONE candidate on the scratch buffer →
+   `parse_would_accept` → preview → constraints (decisions linked to the
+   target, L4d) → `ckPROPOSAL` → answer. Editor `graph.accept(seq)` → fold
+   status (`open`?) → the three re-checks (§3.4) per op →
+   `graph_edit_apply(ops, emAPPLY)` — all splices or none → nodeop carries
+   `proposal` → `ckDECISION accepted {landed_seq}` → broadcast → answer
+   `{ok, node, seq}`.
 4. **Sync**: `nexus.sync("mycenode")` → manifest (loaded once) →
    `mcp_client_call(list_tasks)` → map → for each row: `ckRECORD` upsert by
    `(origin, ext_key)` (the fold dedupes: latest wins) → answer counts.
@@ -553,6 +682,17 @@ carry the four rule trailers; dialect and doc commits ride without.
    arrives with the `git://` adapter's first caller.
 7. **Bundled pcre for libgit2's regex on every lane** (chosen) vs. POSIX
    `regcomp` on posix + pcre on win64. One behaviour everywhere; +~300 KB.
+8. **`milestone` as a fifth record kind** (chosen; the owner named four) vs.
+   a task with a flag. `planned_for` needs a target that is not itself work;
+   a milestone is that target (Nexus §7 "Target v1.1").
+9. **`nexus.explain` as ONE compound verb with sections** (chosen) vs.
+   separate `why / plan / constraints / explain` verbs (the review's list).
+   One implementation, one shape, one call for the agent; the sections keep
+   the review's names.
+10. **Order PAST → propose → intent** (owner-settled) vs. the review's
+    "intent before transactions". Kept: the propose tier v1 is single-op and
+    cheap, and its record already carries the N-op transaction, so nothing is
+    built twice; `explain` lands last because it projects all three axes.
 
 ## 11. Owner laws honoured
 
@@ -575,9 +715,26 @@ channel + a manifest) · madcdis-stays-DataDef-agnostic (the git adapter emits
 Rename/move survival (GumTree / semantic diff); body-level `graph.diff`;
 recipes as N-op proposals with a per-file diff View; `http://` channel and
 Streamable HTTP MCP; a madcdat index over the stream; test records + the
-`tests` edge (test candidates); the L2 increments (`graph.explore`, `detail`
-enum, `graph.impact(depth)`); the parser `;` quirk (its own session); L3
-minors M5/M8; fixture leaks in `testmadcide*`.
+`tests` edge (test candidates; the proposal's `checks` seat); the L2
+increments (`graph.explore`, `detail` enum, `graph.impact(depth)`); the
+parser `;` quirk (its own session); L3 minors M5/M8; fixture leaks in
+`testmadcide*`.
+
+From the external review, deferred with their seats named:
+- **Rich ChangeEvents** — `rename`, `move`, `signature-change`,
+  `subtree-replace`, `extract-function` as SEMANTIC verbs recorded in the
+  `nodeop` record (the `graph_verb` enum grows; `graph.history` reads them
+  generically). `graph.rename(id, name)` is the first: an N-op proposal
+  (the declaration + every L2 reference) landing all-or-nothing under §3.4's
+  contract — the transactional mutation the review describes, built on the
+  seat this design lays.
+- **Persistent semantic identity** (the review's step 7, our named hard
+  problem): an `entity` record kind whose lineage links (`renamed_from`,
+  `moved_from`, `signature_changed_from`) are CREATED by the rich
+  ChangeEvents above — never reconstructed from diffs. `rkSYMBOL` refs
+  re-resolve through the entity when it exists. `graph.lineage(ref)` reads
+  that chain. No enum value is reserved ahead of use (cruft law); the wire
+  names above are the design's, so a later slice does not collide.
 
 ## 13. Traceability
 
@@ -586,6 +743,11 @@ minors M5/M8; fixture leaks in `testmadcide*`.
   cross-reference §5 rulings 1 / 2 / 6.
 - Recon: `tmp/sdd-ast-graph-mcp-L4/recon.md` (gitignored; verdict in
   `claude_status.json` UPDATE 10).
+- The external review (ChatGPT, 2026-09-13, supplied by the owner) → §2.1
+  point by point; it changed §1 (positioning), §3.4 (transactional ops,
+  `constraints`, `checks`), §3.5 (envelope, `state`, `milestone`), §3.7
+  (authorities + `provenance`), §3.8 (source durable), §4.5 (`explain`), §10
+  (8–10), §12 (rich ChangeEvents, persistent identity).
 - KG: Feature `code_graph_mcp` L4 opened; Decisions `nexus_past_via_libgit2`,
   `nexus_propose_tier_fourth_level`, `nexus_one_stream_for_records`,
   `nexus_revision_ids_by_generation_tag`, `nexus_mcp_client_dialect_stdio` to
