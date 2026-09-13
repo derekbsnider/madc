@@ -1723,6 +1723,12 @@ long ensure_phandle(long w, long es, long doc)
 	return 0;
     }
     refresh_spans(w, es, doc, h);
+    // The TEXT this handle was parsed from (code-graph MCP L3): an edit verb
+    // computes byte offsets from the tree's extents, so it must first know the
+    // live buffer IS that text — typing, undo or a remote splice moves the
+    // buffer without re-parsing. reparse_buffer and an accepted node-op keep
+    // it current.
+    ui::set(w, doc, "phandle_text", t);
     return h;
 }
 
@@ -1745,6 +1751,7 @@ long reparse_buffer(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
+    ui::set(w, doc, "phandle_text", t);	// the tree now describes THIS text
     refresh_spans(w, es, doc, h);
     return h;
 }

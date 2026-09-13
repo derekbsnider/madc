@@ -54,7 +54,7 @@ void mcp_error(var &out, var &id, long code, const char *message)
 // tmp/ reducer before wiring this in).
 void graph_tool_descriptors(var &out)
 {
-    var idprop = { "type": "integer", "description": "a node id (type-id)" };
+    var idprop = { "type": "integer", "description": "a node id from a graph.* result (a type-id, a global decl-id or a body node id)" };
     var nameprop = { "type": "string", "description": "a symbol name" };
     var lineprop = { "type": "integer", "description": "1-based line" };
     var colprop = { "type": "integer", "description": "1-based column" };
@@ -151,6 +151,11 @@ void graph_tool_descriptors(var &out)
     // no builder DSL); `where` is before|after the target.
     var srcprop = { "type": "string", "description": "source text: the statement(s) or definition to place (validated by the parser before commit)" };
     var whereprop = { "type": "string", "description": "before | after (relative to the target node)" };
+    // graph.at's column is the SPAN convention (0-based byte column), unlike the
+    // 1-based cursor column graph.enclosing takes — its own schema says so.
+    var atcolprop = { "type": "integer", "description": "0-based byte column (the span convention: where the node's text starts)" };
+    var atprops = { "line": lineprop, "column": atcolprop };
+    var atargs = { "type": "object", "properties": atprops };
     var insprops = { "id": idprop, "where": whereprop, "src": srcprop };
     var insargs = { "type": "object", "properties": insprops };
     var repprops = { "id": idprop, "src": srcprop };
@@ -161,7 +166,7 @@ void graph_tool_descriptors(var &out)
     tools[] = t14;
     var t15 = { "name": "graph.at", "code": gvAT,
 	"description": "the editable node whose span starts at a position (1-based line, 0-based column)",
-	"inputSchema": posargs };
+	"inputSchema": atargs };
     tools[] = t15;
     var t16 = { "name": "graph.insert", "code": gvINSERT,
 	"description": "insert src before|after a node (editor tier; validated, logged, undoable)",
@@ -272,29 +277,32 @@ void mcp_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &par
 void line_indent_at(var &out, var &t, long w, long doc, long line)
 {
     long ls = line_start_of(w, doc, line);
-    long n = strlen(t.c_str());
+    const char *s = t.c_str();		// ONE copy per scan: a c_str() copies the whole text
+    long n = strlen(s);
     long i = ls;
-    while ( i < n && (t.c_str()[i] == ' ' || t.c_str()[i] == '\t') )
+    while ( i < n && (s[i] == ' ' || s[i] == '\t') )
 	i = i + 1;
     out = perl::substr(t, ls, i - ls);
 }
 
 // Does [at, end) own its line(s): only whitespace before it on its first line
-// and after it on its last? Then a delete takes the whole line(s).
+// and after it on its last? Then a delete takes the whole line(s) and an
+// insert takes a line of its own; a node sharing its line is placed inline.
 bool region_owns_lines(var &t, long at, long end)
 {
-    long n = strlen(t.c_str());
+    const char *s = t.c_str();		// ONE copy per scan
+    long n = strlen(s);
     long i = at - 1;
-    while ( i >= 0 && t.c_str()[i] != '\n' )
+    while ( i >= 0 && s[i] != '\n' )
     {
-	if ( t.c_str()[i] != ' ' && t.c_str()[i] != '\t' )
+	if ( s[i] != ' ' && s[i] != '\t' )
 	    return false;
 	i = i - 1;
     }
     long j = end;
-    while ( j < n && t.c_str()[j] != '\n' )
+    while ( j < n && s[j] != '\n' )
     {
-	if ( t.c_str()[j] != ' ' && t.c_str()[j] != '\t' )
+	if ( s[j] != ' ' && s[j] != '\t' )
 	    return false;
 	j = j + 1;
     }
@@ -344,6 +352,36 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
 	out = { "ok": false, "error": "src is empty (use graph.delete to remove a node)" };
 	return;
     }
+    // The ONE read-only rule: derive_access's verdict on the es bag, the same
+    // check the typing verbs consult — an editor-tier client cannot mutate a
+    // read-only document or a read-only code view through this verb either.
+    if ( !es_flag(w, es, "editable") )
+    {
+	var ro;
+	ui::get(ro, w, es, "ro_msg");
+	var why = "the document is read-only";
+	if ( !ro.is_null() )
+	    why = ro;
+	out = { "ok": false, "error": why };
+	return;
+    }
+    // 0. the tree must be THIS text's parse: the handle re-parses only on
+    // check / save / outline / an accepted node-op — typing, undo or a remote
+    // splice moves the buffer under ids that are still "fresh". The text the
+    // handle was parsed from rides the doc bag (ensure_phandle / reparse_buffer
+    // / this verb); a mismatch re-syncs the tree (the generation advances, so
+    // the caller's ids go loudly stale) and refuses — never a splice at
+    // coordinates that belong to other bytes.
+    var t;
+    ui::text(t, w, adoc);
+    var pt;
+    ui::get(pt, w, adoc, "phandle_text");
+    if ( pt.is_null() || !(pt == t) )
+    {
+	reparse_buffer(w, es, adoc);
+	out = { "ok": false, "error": "the buffer changed since these ids were minted (the tree has been re-synced to it) - re-query" };
+	return;
+    }
     // 1. the extent
     var sp;
     madc::graph_span(sp, h, id);
@@ -357,9 +395,7 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
     long c0 = span["column"].as_integer();
     long l1 = span["end_line"].as_integer();
     long c1 = span["end_column"].as_integer();
-    var t;
-    ui::text(t, w, adoc);
-    long size = strlen(t.c_str());
+    long size = ui::text_size(w, adoc);
     long at = line_start_of(w, adoc, l0) + c0;
     long end = line_start_of(w, adoc, l1) + c1;
     // 2. the splice
@@ -370,6 +406,7 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
     var indent;
     line_indent_at(indent, t, w, adoc, l0);
     long indent_len = strlen(indent.c_str());
+    bool owns = region_owns_lines(t, at, end);	// nothing but whitespace beside it on its line(s)
     switch ( gv )
     {
     case gvREPLACE:
@@ -377,32 +414,61 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
 	ins = src;
 	break;
     case gvDELETE:
-	if ( region_owns_lines(t, at, end) )
+	if ( owns )
 	{
+	    // The node owns its line(s): take them whole, newline included.
+	    const char *s = t.c_str();		// ONE copy for this scan
 	    at = line_start_of(w, adoc, l0);
 	    long nl = end;
-	    while ( nl < size && t.c_str()[nl] != '\n' )
+	    while ( nl < size && s[nl] != '\n' )
 		nl = nl + 1;
 	    end = nl < size ? nl + 1 : size;
 	}
 	del = end - at;
 	break;
     case gvINSERT:
+	if ( !owns )
+	{
+	    // The target shares its line (`x = 1; y = 2;`): place at the
+	    // target's exact boundary, one space apart — never at the line's
+	    // edge, which would land beside the NEIGHBOUR.
+	    if ( where == gwBEFORE )
+		ins = format("{} ", src);
+	    else
+	    {
+		at = end;
+		ins = format(" {}", src);
+		new_line = l1;
+		new_col = c1 + 1;
+	    }
+	    break;
+	}
 	if ( where == gwBEFORE )
 	    at = line_start_of(w, adoc, l0);
 	else
 	{
+	    const char *s = t.c_str();		// ONE copy for this scan
 	    long nl = end;
-	    while ( nl < size && t.c_str()[nl] != '\n' )
+	    while ( nl < size && s[nl] != '\n' )
 		nl = nl + 1;
 	    at = nl < size ? nl + 1 : size;
 	    new_line = l1 + 1;
+	    if ( nl >= size && (size == 0 || s[size - 1] != '\n') )
+	    {
+		// The target ends the file with no trailing newline: the
+		// fragment still gets a line of its own.
+		ins = format("\n{}{}\n", indent, src);
+		new_col = indent_len;
+		break;
+	    }
 	}
 	ins = format("{}{}\n", indent, src);
 	new_col = indent_len;
 	break;
     }
-    // 3. the candidate, through the engine's text_replace on the scratch buffer
+    // 3. the candidate, through the engine's text_replace on the doc's scratch
+    //    buffer (replaybuf_of: clog_replay's scratch, re-loaded by every user —
+    //    one scratch per doc, no text surgery in the dialect)
     long scr = replaybuf_of(w, adoc);
     ui::text_load(w, scr, t.c_str());
     ui::text_replace(w, scr, at, del, ins.c_str());
@@ -425,6 +491,7 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
 	out = { "ok": false, "error": "buffer changed while validating: nothing applied, re-query" };
 	return;
     }
+    ui::set(w, adoc, "phandle_text", cand);	// the swapped tree describes the post-splice text
     // 5. commit
     long head_before = clog_head(w, adoc);
     edit_checkpoint(w, es, adoc, clamped_caret(w, es, adoc));

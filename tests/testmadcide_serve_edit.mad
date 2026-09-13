@@ -11,8 +11,8 @@
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_mcp.inc"
 
-// One tools/call through the seat; `snap` = the parsed structured content,
-// `iserr` = the envelope's isError.
+// One tools/call through the seat (self_id -1 = the operator); `snap` = the
+// parsed structured content, `iserr` = the envelope's isError.
 bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
 {
     var params = { "name": name, "arguments": args };
@@ -140,6 +140,70 @@ int main()
     var l3c;
     buffer_line(l3c, w, doc, 3);
     println("undo restores: {}", l3c == "    long extra = 0;" ? 1 : 0);
+
+    // The buffer moved WITHOUT a re-parse (the undo): an edit through ids that
+    // are still "fresh" is refused and the tree is re-synced — never a splice at
+    // coordinates that belong to other bytes. After the re-sync a fresh id works.
+    var ret3;
+    call_tool(ret3, err, S, doc, 9, "graph.at", at2args);
+    long rid4 = ret3["id"].as_integer();
+    var mvargs = { "id": rid4, "src": "return a + b + 2;" };
+    var mv;
+    call_tool(mv, err, S, doc, 10, "graph.replace", mvargs);
+    var l2c;
+    buffer_line(l2c, w, doc, 2);
+    println("moved buffer refused: {}", (err && l2c == "    return a + b + 1;") ? 1 : 0);
+    var ret4;
+    call_tool(ret4, err, S, doc, 11, "graph.at", at2args);
+    long rid5 = ret4["id"].as_integer();
+    var mv2args = { "id": rid5, "src": "return a + b + 2;" };
+    var mv2;
+    call_tool(mv2, err, S, doc, 12, "graph.replace", mv2args);
+    var l2d;
+    buffer_line(l2d, w, doc, 2);
+    println("edit after resync ok: {}", (!err && l2d == "    return a + b + 2;") ? 1 : 0);
+
+    // A target that SHARES its line is placed inline at its own boundary, not
+    // at the line's edge beside the neighbour.
+    var at5args = { "line": 6, "column": 4 };
+    var tot;
+    call_tool(tot, err, S, doc, 13, "graph.at", at5args);
+    long tid = tot["id"].as_integer();
+    var twoargs = { "id": tid, "src": "long total = 0; long k = 1;" };
+    var two;
+    call_tool(two, err, S, doc, 14, "graph.replace", twoargs);
+    var tnode = two["node"];
+    long tid2 = tnode["id"].as_integer();
+    var inlargs = { "id": tid2, "where": "after", "src": "total = total + 1;" };
+    var inl;
+    call_tool(inl, err, S, doc, 15, "graph.insert", inlargs);
+    var l6;
+    buffer_line(l6, w, doc, 6);
+    println("inline insert placed: {}", (!err && l6 == "    long total = 0; total = total + 1; long k = 1;") ? 1 : 0);
+
+    // Refusals are isError content, never a silent drop.
+    var noargs = {};
+    var uk;
+    call_tool(uk, err, S, doc, 16, "graph.bogus", noargs);
+    println("unknown verb is error: {}", err ? 1 : 0);
+    var nowhere = { "id": tid2, "src": "long z = 0;" };
+    var nw;
+    call_tool(nw, err, S, doc, 17, "graph.insert", nowhere);
+    println("missing where refused: {}", err ? 1 : 0);
+    var empty = { "id": tid2, "src": "" };
+    var em;
+    call_tool(em, err, S, doc, 18, "graph.replace", empty);
+    println("empty src refused: {}", err ? 1 : 0);
+    var zero = { "id": 0 };
+    var zr;
+    call_tool(zr, err, S, doc, 19, "graph.span", zero);
+    println("id zero refused: {}", err ? 1 : 0);
+
+    // The tier GATE's wiring (an observer connection refused with the registry
+    // prose) needs a LIVE connection: madc::conn_set_cookie on an id that is not
+    // a connection is a no-op (cookie stays -1 = the operator), so that assertion
+    // belongs to a connection harness (testmadcide_serve_tiers' shape) — deferred.
+    // The policy table the gate reads is asserted below.
 
     // The tier policy is data.
     println("replace needs editor: {}", graph_min_tier(gvREPLACE) == tierEDITOR ? 1 : 0);

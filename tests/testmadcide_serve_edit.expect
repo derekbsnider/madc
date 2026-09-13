@@ -18,6 +18,13 @@ reject is error: 1
 reject leaves buffer: 1
 reject has diagnostics: 1
 undo restores: 1
+moved buffer refused: 1
+edit after resync ok: 1
+inline insert placed: 1
+unknown verb is error: 1
+missing where refused: 1
+empty src refused: 1
+id zero refused: 1
 replace needs editor: 1
 span is observer: 1
 unknown where refused: 1
