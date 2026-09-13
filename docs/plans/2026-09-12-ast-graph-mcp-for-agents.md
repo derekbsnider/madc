@@ -202,6 +202,13 @@ These CODE edges are the *present*-axis subset of the nexus relation vocabulary
   L1/L2 do not need it; L3 confronts it (informed by GumTree), L4 needs it for the
   PAST axis. Prefer a persistent/content-derived id over a positional one (NLS's
   positional numbering broke under edits).
+- **L3 v1 (shipped 2026-09-13):** every id carries the handle's parse GENERATION
+  (bits 40..60; a generation-0 id is bit-identical to the pre-L3 id); a refresh
+  or an accepted edit advances it and every verb refuses a stale id with
+  `{error, stale:true}` — never a silent resolve against the new tree; the edit
+  result names the edited node's NEW id (`graph.at` at the splice position).
+  Content-derived ids that survive edits elsewhere remain the GumTree increment
+  over the same `graph_id_stamp` seam.
 
 ### 6.4 The verb set (MCP tools — a new family)
 A distinct `tools/call` family in `madcide_mcp.inc`, dispatched by tool name
@@ -237,9 +244,19 @@ multi-client propagation for free. Before commit: the edit is validated by the
 same parser/sema (reject an ill-formed tree — the syntax-directed-editor
 guarantee); on commit it is **logged as a node-op** (a new ChangeEvent payload
 kind beside `{at,del,ins}`) and the buffer text is **reverse-rendered** from the
-tree (the existing view-seam `emit`), never hand-patched. Node specs are supplied
-in a structural form (a small builder DSL or an MC11/C11 fragment parsed to a
-subtree) — settled in the L3 writing-plans pass.
+tree (the existing view-seam `emit`), never hand-patched. **Settled (L3 plan,
+2026-09-12; shipped 2026-09-13):** node specs are SOURCE FRAGMENTS validated by
+the same parser through a whole-TU checked refresh (`parse_refresh_checked` —
+parse into a fresh child, swap only if no error is introduced: atomic); the
+splice boundaries are the target's PARSER-STAMPED extent
+(`TokenBase::head_tok` / `end_line` / `end_column`, read by `graph.span`); at
+statement granularity the buffer text IS the tree's render (§9), so nothing is
+hand-patched. The mutation flows through madcide's one text-mutation owner
+(`ed_text_insert` / `ed_text_erase`) after one undo checkpoint; the change log
+gets a `nodeop` record ahead of the splices (the second record kind beside
+`splice` / `checkpoint`, client-server §2.4); the tier gate is `graph_min_tier`
+(mutations = editor). Scope v1: statement-level body nodes, TU-own free function
+definitions, globals with a retained declaration; `where` = before | after.
 
 ## 7. Layering
 
@@ -291,7 +308,8 @@ every-mutation-through-a-verb · MCP-is-an-adapter · madcdis-stays-DataDef-agno
   the arc branch as a distinct track with its own slice gates; the V6 seam battery
   still gates the develop merge.
 - **Verb wire-naming** (`graph.*` vs a namespace) and the exact L1 tool set.
-- **Node-spec form for L3** (builder DSL vs. parse-a-fragment).
+- **Node-spec form for L3** (builder DSL vs. parse-a-fragment) — **SETTLED:
+  parse-a-fragment** (L3 plan §Decisions 1; §6.6 above).
 - **Whether L2 edges are computed on demand vs. cached-per-handle-incremental.**
 
 ## 11. Testing / seam
