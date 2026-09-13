@@ -55,6 +55,13 @@ verb family each:
 | How did it get this way? | git + the event stream (L4b) | `graph.history / commits / revision / diff` |
 | Why does it exist? | records, decisions, proposals, provenance (L4c–d) | `nexus.context / explain` (its `why` section) |
 | Where is it supposed to go? | the intent graph (L4d) | `nexus.records(planned_for…) / explain` (its `plan` section) |
+| Does it still work? | the verification axis: tests as records, runs as events (L4e) | `test.list / test.run / test.results`; a proposal's `checks` |
+
+Every axis is a LAYER an asset may or may not have (§3.9): the source text is
+always there; git and tracking exist for project members; lexing and parsing
+exist for the formats the engine knows; testing exists for projects and RUNS
+only where a runner exists. A verb refuses with the layer it lacks, never
+pretends.
 
 ## 2. Where this sits — facts (recon 2026-09-13, at HEAD 870ad3e2)
 
@@ -377,6 +384,122 @@ REFINEMENT the faithful IR permits when a verb needs it (a `graph.rename`
 rendering N reference sites is the first candidate), not a prerequisite.
 A proposal's `preview` is text because the reviewer reads text.
 
+### 3.9 Asset layers — every axis is optional per asset (owner, 2026-09-13)
+
+An asset (a file in a project, or the one buffer of the implicit project) has
+its bytes and then some subset of the axes, each a LAYER the asset either has
+or lacks. The layers are a capability set computed by ONE function from facts
+the engine already holds — never guessed, never assumed by a verb:
+
+```
+enum asset_layer : unsigned char {
+    alTEXT     = 1,   // the bytes; a text kind is editable, a binary kind is opened by name
+    alHISTORY  = 2,   // a repository above the asset AND a project manifest
+    alTRACKING = 4,   // a project manifest (records, links, provenance — binary assets too)
+    alLEXED    = 8,   // the file kind has a lexer (fkTEXT range with a lexer, fkC/fkCPP/fkMADC, fkOTHER with rows)
+    alPARSED   = 16,  // the file kind has a parser: fkC / fkCPP / fkMADC ranges -> the MC11 tree, the graph verbs
+    alTESTABLE = 32,  // a project manifest: tests are records here
+    alRUNNABLE = 64   // a runner exists for the asset's tests: internal (madc compiles + runs
+                      // the kind: parse_build / parse_run, madcrun:// / madcproj://) or
+                      // external (the manifest names a command)
+};
+long asset_layers_of(long w, long doc);   // ONE owner, in the seat; reads file kind,
+                                          // manifest presence, GitRepo::open, the runner table
+```
+
+Rules the layers encode (each a fact, not a policy knob):
+- **Text is always there** — even a binary asset has bytes and a name; only
+  `alTEXT`'s editable half is a text-kind property (the `fkBINARY` range is
+  opened by name, never edited as text — `<bits/file_kinds>` already says so).
+- **History needs a project.** The git layer exists for project members with a
+  repository above them. Binary members get COMMIT-level history (`log`,
+  `show` of the bytes); LINE-level verbs (`blame`, revision handles,
+  `graph.diff`) exist for text kinds only — a blame of a PNG is not an answer.
+- **Tracking needs a project, nothing else.** A binary asset is a first-class
+  record target (identity + links + provenance): an image a task references, a
+  fixture blob a test needs.
+- **Lexing and parsing follow the file-kind registry**, not a flag here: a
+  kind gains the lexed layer when its lexer rows land and the parsed layer
+  when its parser rows land (`<bits/file_kinds>`'s own rule). The MC11 tree —
+  and with it every `graph.*` verb — exists only for parseable kinds; a JSON
+  member has history, tracking and colour, and `graph.symbols` on it refuses
+  with `"no parsing layer for kind json"`.
+- **Testing needs a project; RUNNING needs a runner.** Test records exist for
+  any project; `test.run` refuses on a project with no runner rather than
+  faking a result — and says which runner it looked for.
+
+Every verb family declares the layer(s) it needs as DATA beside its tier
+(`graph_min_layer` next to `graph_min_tier`; `nexus_min_layer`,
+`test_min_layer`): `graph.*` → `alPARSED`; `graph.history` → `alHISTORY`
+(+ `alPARSED` for a node, `alTEXT` suffices for the asset's own history);
+`graph.revision / diff / blame-backed rows` → `alHISTORY` on a text kind;
+`nexus.*` → `alTRACKING`; `test.list / results` → `alTESTABLE`; `test.run` →
+`alRUNNABLE`. The gate runs at `graph_call`/`nexus_call`/`test_call` entry, after
+the tier gate, before any structure is touched. `graph.status` and
+`nexus.explain` report the asset's layer set (as text names on the wire,
+converted once) so an agent learns in one call what this asset can answer —
+per-asset capability negotiation, the §2.8 invariant 2 shape applied inward.
+
+### 3.10 The verification axis — tests as records, runs as events (owner, 2026-09-13)
+
+The triad (git = past, AST = present, intent = future) neglected the axis
+that says whether any of it WORKS. Nexus §11 names it ("build, test, debug
+and profile as one model"); the external review's transactional mutation
+("validate, run checks/tests, commit") needs it; the proposal record already
+carries the `checks` seat for it. The model:
+
+- **A test is a record** (`rkind: test`) with the envelope of §3.5 and fields
+  `{name, family, asset, command}` — `family` an enum `test_family { tfMAD
+  (tests/*.mad with its fixtures), tfUNIT (tests/unit/*.cpp), tfEXTERNAL (a
+  manifest-declared command) }`; `asset` the test's own file (a ref); a
+  `tests` link from the test record to the symbols / assets it covers (the
+  `tests` edge the recon found in yailPeralta's test candidates and codegraph's
+  blast radius — here it is a RECORD, ground truth by declaration, never
+  inferred from names).
+- **Discovery is convention, not a hand list**: `test.discover` folds the
+  project's test families from the SAME conventions the canonical runner reads
+  (`.claude/rules/test-fixtures.md`: `tests/<name>.mad` + `.expect / .input /
+  .argv / .flags / …`; `tests/unit/*.cpp`) into `origin: "convention"` records;
+  a manifest may add `tfEXTERNAL` tests as data (`tests: [{name, command}]`).
+  Rule #7: no per-test knowledge in the discoverer.
+- **A run is an event** in the ONE stream: `{kind: "testrun", test, actor,
+  node, when, result: pass|fail|skip|timeout|error, exit, output_ref}` —
+  `result` an enum, `node` the client/node that ran it (client-server §2.8
+  invariant 5: a result is tagged by the serving node — a local PASS and a CI
+  FAIL coexist, Nexus §21). The latest run per test is the derived `state`
+  the fold shows; history is the stream.
+- **ONE runner, two execution seats.** The canonical runner
+  (`scripts/run_tests.sh`) owns the fixture protocol and the pass/fail
+  verdict; the Nexus is its CLIENT, never a second implementation of the
+  protocol (no-parallel-implementations): v1 `test.run` spawns the runner for
+  the named test(s) through the process owner (`exec://`, the §3 subprocess
+  contract) and reads a machine-readable result line the runner gains
+  (`--report=json`: one JSON object per test — the boundary conversion, once).
+  The two seats are the owner's "preferably internal, but might require
+  external": **internal** = the test's program is compiled and run by madc
+  itself (`.mad` tests, C-family sources madc parses — the running madc IS
+  the compiler; the runner already invokes `bin/madc`, and a later refinement
+  may hand the `.mad` family to `parse_run` in-process behind the SAME
+  fixture owner); **external** = a toolchain madc does not embody (the g++
+  doctest binaries, a gcc/clang oracle, a project's own command) — the
+  manifest names the command, the runner or the process owner runs it,
+  the result is the same event. `alRUNNABLE` is true when either seat can
+  serve the asset's family on this node.
+- **Proposals get their `checks`**: `graph.accept` (and `graph.propose` when
+  asked with `checks: true`) runs the tests linked by `tests` to the touched
+  symbols (`test.candidates(ref)` — explicit links only; the honest fallback
+  when none are linked is the family's whole suite, named as such) and
+  records the `testrun` events under the proposal (`proposal: seq`), so the
+  Nexus §16 shape (`Tests 281/281 passed` beside `Diagnostics 0 errors`) is
+  data on the record. A failing check never blocks a human's `accept` — it
+  informs (the §3.4 constraints rule); an agent's proposal with failing checks
+  stays `open` with the runs attached.
+- **Verbs** (a fourth family, `test.*`; tiers: reads observer, `test.run`
+  editor — it spends build/run resources, `cmd_min_tier`'s rule): `test.list
+  (family?)`, `test.discover`, `test.candidates(ref)`, `test.run(ids…)`,
+  `test.results(test?, since?)`. Layers: `alTESTABLE` for the reads,
+  `alRUNNABLE` for `run`.
+
 ## 4. Components
 
 ### 4.1 `third_party/libgit2` — vendored the MIR way (L4a)
@@ -660,8 +783,9 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 | **L4a** git substrate | libgit2 subtree + `Makefile.madc` + features headers + Makefile wiring (all variants) + size spike; `GitRepo`; `git_source_adapter` + the `git` scheme row; `madc::git_*` publics | §8 L4a |
 | **L4b** PAST verbs | project-scoped stream + `clog_kind` enum; `parse_open_tagged` + revision-handle routing; `graph.status / source / history / commits / revision / diff` | §8 L4b |
 | **L4c** propose | `tierPROPOSER`; `parse_would_accept`; `edit_mode`; proposal + decision records; `graph.proposals / proposal / accept / reject / withdraw`; the connection-level wiring test | §8 L4c |
-| **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot | §8 L4d |
-| later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments) | own plans |
+| **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot; the `test` record kind + `tests` relation + `test.discover` (records only) | §8 L4d |
+| **L4e** verification | `asset_layers_of` + per-family `*_min_layer` gates (retrofits `graph.*` and `nexus.*`; `graph.status` / `nexus.explain` report the layer set); `--report=json` on the canonical runner; `test.list / candidates / run / results`; `testrun` events tagged by node; proposal `checks` on accept/propose | a two-asset fixture project (a `.mad` and a binary) refused/served per layer; a run through the real runner yields a `testrun` event; a proposal with a linked failing test stays open with the run attached |
+| later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments); the `.mad` family run in-process behind the one fixture owner | own plans |
 
 Engine commits (`src/`, `include/`, `third_party/libgit2/Makefile.madc`)
 carry the four rule trailers; dialect and doc commits ride without.
@@ -705,6 +829,25 @@ carry the four rule trailers; dialect and doc commits ride without.
     "intent before transactions". Kept: the propose tier v1 is single-op and
     cheap, and its record already carries the N-op transaction, so nothing is
     built twice; `explain` lands last because it projects all three axes.
+11. **Asset layers as a capability bitset computed by ONE function** (chosen)
+    vs. per-verb ad-hoc checks. One owner reads the file-kind registry, the
+    manifest, the repository and the runner table; every verb family declares
+    its layer as data beside its tier; refusals name the missing layer.
+12. **Binary project members keep COMMIT-level git history** (`log`, `show`
+    bytes) while the LINE-level verbs (`blame`, revision handles, `diff`) are
+    text-only (chosen) vs. no git layer at all for binaries (the owner's first
+    phrasing). A binary asset's "who last changed this" is still a fact worth
+    answering; only line semantics are meaningless for it.
+13. **The canonical runner stays the ONE test harness; the Nexus is its
+    client** (chosen) vs. a dialect re-implementation of the fixture protocol.
+    Two readers of `.claude/rules/test-fixtures.md` would be the divergence
+    class `/dupaudit` hunts; the runner gains a machine-readable report line
+    instead. Moving the `.mad` family in-process later happens behind that one
+    owner, not beside it.
+14. **Verification lands as its own slice L4e after intent** (chosen) vs.
+    folding it into L4c/L4d. Test records need L4d's record machinery; the
+    runner seat and the layer gates are one coherent slice with one gate.
+    Owner veto welcome if tests should come before the MCP client.
 
 ## 11. Owner laws honoured
 
@@ -760,6 +903,12 @@ From the external review, deferred with their seats named:
   `constraints`, `checks`), §3.5 (envelope, `state`, `milestone`), §3.7
   (authorities + `provenance`), §3.8 (source durable), §4.5 (`explain`), §10
   (8–10), §12 (rich ChangeEvents, persistent identity).
+- Owner amendment 2026-09-13 (after L4a shipped): the neglected verification
+  axis and the optional layering of every axis per asset → §1 (a fifth
+  question + the layer sentence), §3.9 (asset layers), §3.10 (tests as
+  records, runs as events, the canonical runner as the one harness), §9
+  (slice L4e; `test` records in L4d), §10 (11–14). KG Decisions
+  `nexus_asset_layers`, `nexus_verification_axis`.
 - KG: Feature `code_graph_mcp` L4 opened; Decisions `nexus_past_via_libgit2`,
   `nexus_propose_tier_fourth_level`, `nexus_one_stream_for_records`,
   `nexus_revision_ids_by_generation_tag`, `nexus_mcp_client_dialect_stdio` to
