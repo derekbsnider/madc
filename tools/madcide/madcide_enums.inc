@@ -621,3 +621,41 @@ long cmd_min_tier(long code)
     }
     return tierOBSERVER;
 }
+
+// ---- the code-graph MCP tool family (design 2026-09-12) --------------------
+// The graph.* verbs as CODES (enums-not-strings): the wire name converts ONCE
+// (graph_verb_of, over the descriptor table — one list of names) and every
+// dispatch / policy is a switch on the code. gvNONE = unknown verb (a refusal).
+enum graph_verb : unsigned char {
+    gvNONE = 0,
+    gvSYMBOLS, gvDEFINITION, gvNODE, gvTYPE_OF, gvMEMBERS, gvBASES, gvENCLOSING,
+    gvBODY, gvCHILDREN,
+    gvCALLEES, gvCALLERS, gvREFERENCES, gvSEARCH, gvIMPACT,
+    gvSPAN, gvAT, gvINSERT, gvREPLACE, gvDELETE
+};
+
+// graph.insert's placement relative to its target; text only on the wire.
+enum graph_where : unsigned char { gwNONE = 0, gwBEFORE, gwAFTER };
+
+long graph_where_of(const char *name)
+{
+    if ( strcmp(name, "before") == 0 ) return gwBEFORE;
+    if ( strcmp(name, "after") == 0 )  return gwAFTER;
+    return gwNONE;
+}
+
+// The minimum tier a graph verb requires — the SAME ladder cmd_min_tier is
+// (V6a tiers): reads and navigation observe; the three mutations are text
+// mutation, so tierEDITOR (an MCP client is born observer and promoted by
+// clienttier — design §2.5).
+long graph_min_tier(long code)
+{
+    switch ( code )
+    {
+    case gvINSERT:
+    case gvREPLACE:
+    case gvDELETE:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}

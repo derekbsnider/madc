@@ -1,0 +1,23 @@
+"name":"graph.span"
+"name":"graph.at"
+"name":"graph.insert"
+"name":"graph.replace"
+"name":"graph.delete"
+code leaks: 0
+at found statement: 1
+replace ok: 1
+replace applied: 1
+log records: 3
+nodeop logged: 1
+nodeop before splice: 1
+replace answers node: 1
+stale is error: 1
+insert after applied: 1
+delete applied: 1
+reject is error: 1
+reject leaves buffer: 1
+reject has diagnostics: 1
+undo restores: 1
+replace needs editor: 1
+span is observer: 1
+unknown where refused: 1

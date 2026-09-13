@@ -232,8 +232,10 @@ void es_view_doc(long w, long es, long doc)
 // both the persisted form and the wire form (one serialisation). Replay
 // applies each splice to a scratch buffer through the engine's own
 // text_replace (no dialect string surgery). A "kind" token is text only in
-// the persisted line; replay converts it once and ignores an unknown kind
-// -- the enum-boundary rule.
+// the persisted line; replay applies "checkpoint" and "splice" records and
+// skips every other kind (a "nodeop" annotation -- code-graph MCP L3 -- rides
+// the same stream AHEAD of the splices it caused, and changes no text) --
+// the enum-boundary rule.
 
 // The document's change-log entity, created on first need; seq lives on it.
 long changelog_of(long w, long doc)
@@ -329,13 +331,14 @@ void clog_replay(var &out, long w, long doc, long upto)
 	seen = true;
 	if ( rec["kind"] == "checkpoint" )
 	    ui::text_load(w, scr, rec["text"].c_str());
-	else
+	else if ( rec["kind"] == "splice" )
 	{
 	    long at = rec["at"].as_integer();
 	    long del = rec["del"].as_integer();
 	    var ins = rec["ins"];
 	    ui::text_replace(w, scr, at, del, ins.c_str());
 	}
+	// any other kind (a node-op annotation, code-graph L3) changes no text: skipped
     }
     ui::text(out, w, scr);
 }
