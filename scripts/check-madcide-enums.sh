@@ -22,6 +22,9 @@
 #   5. (V2 layouts) no layout node carries its discriminator as text — a
 #      `"slot": "…"`, `"side": "…"`, `"mode": "…"` or `"dir": "…"` literal
 #      field (ide_slot / ui::side / ide_pmode / ui::split belong there).
+# The seat files (madcide_mcp / _past / _propose / _seat.inc) are checked by
+# the same rules (Nexus L4c): the tier and proposal-status words joined the
+# converter list (tier_name, proposal_status_name).
 # Each rule carries a negative control.
 set -u
 
@@ -30,11 +33,14 @@ CORE="$ROOT/tools/madcide/madcide_core.inc"
 CLIENT="$ROOT/tools/madcide/madcide_client.inc"
 ONCE="$ROOT/tools/madcide/madcide_once.inc"
 ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
+# The seat layer (Nexus L4c): checked with the same rules.
+SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_mcp.inc "$ROOT"/tools/madcide/madcide_past.inc \
+	"$ROOT"/tools/madcide/madcide_propose.inc "$ROOT"/tools/madcide/madcide_seat.inc 2>/dev/null)
 
 # The name words: every `return "word";` inside the five name converters.
 name_words()
 {
-	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode)_name\(long/ { on = 1 }
+	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status)_name\(long/ { on = 1 }
 	     on { print }
 	     on && /^}/ { on = 0 }' "$1" |
 	grep -o 'return "[a-z]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u
@@ -51,35 +57,35 @@ check()
 		return 1
 	fi
 	alt=$(echo "$words" | paste -sd'|' -)
-	bad=$(grep -n -E 'ui::set\([a-z0-9]+, [a-z0-9]+, "(pane|paneltab|pmode|vimode|dlgkind|fview)", "' "$core" "$client" "$once")
+	bad=$(grep -n -E 'ui::set\([a-z0-9]+, [a-z0-9]+, "(pane|paneltab|pmode|vimode|dlgkind|fview)", "' "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a string literal is written" \
 		     "to a discriminator slot:" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E "[!=]= \"($alt)\"" "$core" "$client" "$once")
+	bad=$(grep -n -E "[!=]= \"($alt)\"" "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a compare against a" \
 		     "discriminator's name word (an enumerator belongs there):" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E 'rq = \{ "kind": "' "$core" "$client" "$once")
+	bad=$(grep -n -E 'rq = \{ "kind": "' "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a request literal names its" \
 		     "kind as text:" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E '"(lang|generator)": "' "$core" "$client" "$once")
+	bad=$(grep -n -E '"(lang|generator)": "' "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a View row carries its" \
 		     "representation as text (madc::fk* / ide_gen belong there):" >&2
 		echo "$bad" >&2
 		rc=1
 	fi
-	bad=$(grep -n -E '"(slot|side|mode|dir)": "' "$core" "$client" "$once")
+	bad=$(grep -n -E '"(slot|side|mode|dir)": "' "$core" "$client" "$once" $SEAT_FILES)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-enums: FAIL ($label) — a layout node carries a" \
 		     "discriminator as text (ide_slot / ui::side / ide_pmode / ui::split belong there):" >&2

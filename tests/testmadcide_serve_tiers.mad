@@ -11,6 +11,8 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_seat.inc"
 
 int main()
 {

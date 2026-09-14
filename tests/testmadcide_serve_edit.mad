@@ -205,8 +205,10 @@ int main()
     // belongs to a connection harness (testmadcide_serve_tiers' shape) — deferred.
     // The policy table the gate reads is asserted below.
 
-    // The tier policy is data.
-    println("replace needs editor: {}", graph_min_tier(gvREPLACE) == tierEDITOR ? 1 : 0);
+    // The tier policy is data (Nexus L4c: a mutation needs the PROPOSER tier —
+    // at exactly that tier it is stored as a proposal; landing one needs an editor).
+    println("replace needs proposer: {}", graph_min_tier(gvREPLACE) == tierPROPOSER ? 1 : 0);
+    println("accept needs editor: {}", graph_min_tier(gvACCEPT) == tierEDITOR ? 1 : 0);
     println("span is observer: {}", graph_min_tier(gvSPAN) == tierOBSERVER ? 1 : 0);
     println("unknown where refused: {}", graph_where_of("sideways") == gwNONE ? 1 : 0);
 

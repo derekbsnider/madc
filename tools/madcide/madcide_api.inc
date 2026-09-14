@@ -11,17 +11,15 @@
 // -c one-shot load through: separation of concerns, Rule #5); the rest is
 // the command's ARGUMENT, exactly as IdeSession::command takes it. The seat
 // never learns a command's grammar — it drives the session directly, as the
-// headless harness and run_once do. The MCP seat and the LSP endpoint (V6c)
-// are adapters over THIS protocol.
+// headless harness and run_once do. The MCP seat (madcide_mcp.inc) and the
+// LSP endpoint (V6c) are adapters over THIS command core (api_run); the
+// connection LOOP that carries this envelope — and the JSON-RPC envelope
+// beside it (Nexus L4c) — is madcide_seat.inc.
 //
 // Transport: the accepted connection is an ordinary madc::channel byte
-// stream (the listen:// acceptor, V6a step 1/2a). Every accepted client is
-// served CONCURRENTLY — one cooperative task per connection, each parked on
-// the reactor-backed channel.readline (V6a duplex, D1). Still to come on this
-// substrate: the {"event":…} push feed off the V4 change-event log (a client's
-// last_seq cursor) and the permission tiers. A remote ":q" ends only that
-// client's connection, never the server (cont is not honored here — a client
-// leaves by disconnecting).
+// stream (the listen:// acceptor, V6a step 1/2a); the {"event":…} push feed
+// (broadcast_events) and the permission tiers (grant_tier / eff_tier /
+// clienttier) live here beside the command core.
 
 // Read the request's optional text ARGUMENT as a C string ("" when absent).
 const char *api_arg(var &req)
@@ -222,66 +220,3 @@ void session_state(var &out, IdeSession &S, long doc)
     out = { "cursor": cursor, "diagnostics": diags, "outline": outl };
 }
 
-// Serve ONE connected client: read JSON-line requests until EOF, running each
-// through api_run (the shared command core) on the shared session, and writing
-// the reply body back as a JSON line with this request's `seq` stamped on it.
-// The command semantics — name resolution, the tier gate, the compose, the
-// hub fan-out — live in api_run; the seat owns only the JSON-LINE envelope
-// (parse a line, read seq/cmd, stamp seq on the reply). `self_id` is this
-// client's share id.
-void serve_api_client(IdeSession &S, long doc, madc::channel &client, long self_id)
-{
-    var line;
-    while ( client.readline(line) )
-    {
-	var req;
-	if ( !js::parse(req, line) )
-	{
-	    api_refuse(client, 0, "malformed JSON request");
-	    continue;
-	}
-	long seq = req["seq"].as_integer();
-	var name = req["cmd"];
-	if ( name.is_null() )
-	{
-	    api_refuse(client, seq, "request has no 'cmd'");
-	    continue;
-	}
-	var reply;
-	api_run(reply, S, doc, self_id, name.c_str(), api_arg(req));
-	reply["seq"] = seq;
-	api_write(client, reply);
-    }
-}
-
-// One spawnable client task (V6a duplex): adopt the handed-off connection
-// and run the seat loop on it until the client hangs up. `S` rides as a
-// POINTER — `go` carries only long/double/pointer slots, not the non-copyable
-// channel or a session reference — and the session outlives every task
-// (run_serve's `scope` joins them before it returns, so `&S` never dangles).
-// Cooperative: only one task runs at a time and yields only inside readline,
-// so a client's command runs to completion against the shared session between
-// yields (the single-thread task contract — no lock, the thread-safety law's
-// stated cooperative contract).
-// Run the api seat over an ALREADY-ADOPTED channel: share its write side for
-// the hub fan-out (D2), grant its tier (V6a tiers: first connection owns the
-// session, the rest observe until clienttier promotes them), serve, unshare.
-// One owner of the seat setup — both the plain api serve task and the unified
-// serve (madcide_serve.inc, where serve_web detects an api client) drive a
-// connection through here.
-void serve_api_on(IdeSession &S, long doc, madc::channel &client)
-{
-    long id = client.share();
-    madc::conn_set_cookie(id, grant_tier(id));
-    serve_api_client(S, doc, client, id);
-    client.unshare(id);
-}
-
-void serve_client_task(IdeSession *S, long doc, long conn)
-{
-    madc::channel client;
-    if ( !client.adopt(conn) )
-	return;			// a spent handle — never on this path
-    serve_api_on(*S, doc, client);
-    client.close();
-}

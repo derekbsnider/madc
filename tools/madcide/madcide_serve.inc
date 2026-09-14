@@ -5,8 +5,9 @@
 // back). madc::channel::serve_web classifies each accepted connection — an api
 // JSON line, a WebSocket upgrade, or a page request — and this seat dispatches
 // it. Every connection is served CONCURRENTLY on its own cooperative task (the
-// V6a serve model), parked on its own socket. Depends on madcide_api.inc
-// (serve_api_on) and madcide_ws.inc (serve_ws_client).
+// V6a serve model), parked on its own socket. Depends on madcide_seat.inc
+// (serve_api_on — the JSON-line seat, api AND JSON-RPC envelopes) and
+// madcide_ws.inc (serve_ws_client).
 
 // One accepted connection, classified by serve_web and dispatched: a WebSocket
 // window, an api client, or a page GET (already answered — nothing more). The

@@ -47,6 +47,7 @@
 #include "madcide_line.inc"
 #include "madcide_api.inc"
 #include "madcide_mcp.inc"
+#include "madcide_seat.inc"
 #include "madcide_ws.inc"
 #include "madcide_serve.inc"
 

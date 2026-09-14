@@ -160,10 +160,15 @@ void graph_tool_descriptors(var &out)
     var atcolprop = { "type": "integer", "description": "0-based byte column (the span convention: where the node's text starts)" };
     var atprops = { "line": lineprop, "column": atcolprop };
     var atargs = { "type": "object", "properties": atprops };
-    var insprops = { "id": idprop, "where": whereprop, "src": srcprop };
+    // Nexus L4c (design §3.6): `propose` stores the op as a PROPOSAL instead of
+    // applying it — the proposer tier always does, an editor may ask for it.
+    var proposeprop = { "type": "boolean", "description": "store the edit as a PROPOSAL for an editor to accept instead of applying it (the proposer tier always does; optional)" };
+    var insprops = { "id": idprop, "where": whereprop, "src": srcprop, "propose": proposeprop };
     var insargs = { "type": "object", "properties": insprops };
-    var repprops = { "id": idprop, "src": srcprop };
+    var repprops = { "id": idprop, "src": srcprop, "propose": proposeprop };
     var repargs = { "type": "object", "properties": repprops };
+    var delprops = { "id": idprop, "propose": proposeprop };
+    var delargs = { "type": "object", "properties": delprops };
     var t14 = { "name": "graph.span", "code": gvSPAN,
 	"description": "a node's exact source extent {span:{line,column,end_line,end_column}} (statement / function / global)",
 	"inputSchema": idargs };
@@ -173,16 +178,16 @@ void graph_tool_descriptors(var &out)
 	"inputSchema": atargs };
     tools[] = t15;
     var t16 = { "name": "graph.insert", "code": gvINSERT,
-	"description": "insert src before|after a node (editor tier; validated, logged, undoable)",
+	"description": "insert src before|after a node (proposer tier stores a proposal; editor tier applies: validated, logged, undoable)",
 	"inputSchema": insargs };
     tools[] = t16;
     var t17 = { "name": "graph.replace", "code": gvREPLACE,
-	"description": "replace a node's source with src (editor tier; validated, logged, undoable)",
+	"description": "replace a node's source with src (proposer tier stores a proposal; editor tier applies: validated, logged, undoable)",
 	"inputSchema": repargs };
     tools[] = t17;
     var t18 = { "name": "graph.delete", "code": gvDELETE,
-	"description": "delete a node (editor tier; validated, logged, undoable)",
-	"inputSchema": idargs };
+	"description": "delete a node (proposer tier stores a proposal; editor tier applies: validated, logged, undoable)",
+	"inputSchema": delargs };
     tools[] = t18;
     // Nexus L4b (design 2026-09-13 §4.3): the PAST verbs. `rev` is any
     // rev-parse spec or a sha; "" = the live buffer. Every id-less read also
@@ -217,6 +222,38 @@ void graph_tool_descriptors(var &out)
 	"description": "declaration-level diff between two revisions (\"\" = live): added / removed / changed symbols",
 	"inputSchema": diffargs };
     tools[] = t24;
+    // Nexus L4c (design §3.4, §4.4): the FUTURE verbs. A proposal is a stored,
+    // validated, previewed node-op transaction; its status is derived from the
+    // decision records; landing re-checks the target byte-exact.
+    var seqprop = { "type": "integer", "description": "a proposal seq (from a proposer's graph.insert/replace/delete answer or graph.proposals)" };
+    var statusprop = { "type": "string", "description": "open | accepted | rejected | withdrawn (optional; default: every status)" };
+    var reasonprop = { "type": "string", "description": "why (optional)" };
+    var seqprops = { "seq": seqprop };
+    var seqargs = { "type": "object", "properties": seqprops };
+    var statusprops = { "status": statusprop };
+    var statusargs = { "type": "object", "properties": statusprops };
+    var rejprops = { "seq": seqprop, "reason": reasonprop };
+    var rejargs = { "type": "object", "properties": rejprops };
+    var t25 = { "name": "graph.proposals", "code": gvPROPOSALS,
+	"description": "the served file's proposals (compact rows; optional status filter)",
+	"inputSchema": statusargs };
+    tools[] = t25;
+    var t26 = { "name": "graph.proposal", "code": gvPROPOSAL,
+	"description": "one proposal in full: ops, preview, diagnostics, status, decision",
+	"inputSchema": seqargs };
+    tools[] = t26;
+    var t27 = { "name": "graph.accept", "code": gvACCEPT,
+	"description": "land an open proposal (editor tier): re-checks the target byte-exact, applies, records the decision",
+	"inputSchema": seqargs };
+    tools[] = t27;
+    var t28 = { "name": "graph.reject", "code": gvREJECT,
+	"description": "reject an open proposal with a reason (editor tier)",
+	"inputSchema": rejargs };
+    tools[] = t28;
+    var t29 = { "name": "graph.withdraw", "code": gvWITHDRAW,
+	"description": "withdraw an open proposal (its proposer, or an editor)",
+	"inputSchema": seqargs };
+    tools[] = t29;
     out = tools;
 }
 
@@ -232,6 +269,21 @@ long graph_verb_of(const char *name)
 	if ( t["name"] == nm )		// var == var compares text (tmp reducer 2026-09-13)
 	    return t["code"].as_integer();
     return gvNONE;
+}
+
+// The OUTPUT converter: a verb code to the wire name (the nodeop record's
+// `verb`, a proposal op's `verb`), over the same descriptor table.
+void graph_verb_name(var &out, long gv)
+{
+    var tools;
+    graph_tool_descriptors(tools);
+    for ( var t : tools )
+	if ( t["code"] == gv )
+	{
+	    out = t["name"];
+	    return;
+	}
+    out = "";
 }
 
 // The tool list: every registry command (cmd_table) as an MCP tool. One shared
@@ -346,78 +398,98 @@ bool region_owns_lines(var &t, long at, long end)
     return true;
 }
 
-// ONE node-op (code-graph MCP L3, design §6.6): span -> splice -> candidate ->
-// VALIDATED swap -> commit through the ONE text-mutation owner. Order matters:
-//   1. the target's extent from the tree (graph.span) — never an agent offset
-//   2. the splice {at, del, ins} for the op (replace / delete / insert)
-//   3. the candidate = the live buffer with that splice, built in the doc's
-//      scratch buffer through the engine's text_replace (no string surgery)
-//   4. parse_refresh_checked(candidate): rejected -> {ok:false, diagnostics},
-//      nothing changed (not the tree, not the buffer, not the log)
-//   5. accepted -> one undo checkpoint; the node-op RECORD; the splice(s) via
-//      ed_text_erase / ed_text_insert (anchors shift, journal_splice logs);
-//      spans refresh from the already-swapped handle; the hub fan-out
-//   6. the answer: the node now at the edit position (graph.at) + seq
+// ONE node-op (code-graph MCP L3, design §6.6; the TRANSACTION over an ops
+// LIST since Nexus L4c, design §3.4): span -> splice -> candidate -> VALIDATED
+// swap -> commit through the ONE text-mutation owner. Order matters, one
+// helper per step:
+//   0. edit_preconditions — the document is editable and the tree is THIS
+//      text's parse (a desynced tree is re-synced; the caller's ids go stale)
+//   1. edit_op_plan — the target's extent from the tree (graph.span, never an
+//      agent offset) and the splice {at, del, ins} for the op (replace /
+//      delete / insert), plus the node's bytes (the landing re-check)
+//   2. edit_candidate — the live buffer with EVERY op's splice, highest offset
+//      first, built in the doc's scratch buffer through the engine's
+//      text_replace (no string surgery)
+//   3. graph_edit_apply — ONE validation: emAPPLY parse_refresh_checked (swap)
+//      or emPROPOSE parse_would_accept (verdict only); rejected -> {ok:false,
+//      diagnostics}, nothing changed and nothing stored
+//   4. emAPPLY accepted -> one undo checkpoint; per op the node-op RECORD then
+//      its splice(s) via ed_text_erase / ed_text_insert (anchors shift,
+//      journal_splice logs); spans refresh from the already-swapped handle;
+//      the hub fan-out; the answer = the node now at the edit position + seq.
+//      emPROPOSE accepted -> the preview (edit_preview), ONE proposal record,
+//      the answer = {proposal: seq, preview, diagnostics}
 // The checked refresh may yield (Stage-2 slices): if the buffer changed under
 // it, abort — re-sync the handle to the live text and refuse (the agent
 // retries against fresh ids).
-void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, var &args)
+
+// The L3 preconditions every mutation shares: the document is editable (the
+// ONE read-only rule — derive_access's verdict on the es bag, the same check
+// the typing verbs consult) and the tree is THIS text's parse (the handle
+// re-parses only on check / save / outline / an accepted node-op — typing,
+// undo or a remote splice moves the buffer under ids that are still "fresh";
+// the text the handle was parsed from rides the doc bag; a mismatch re-syncs
+// the tree so the caller's ids go loudly stale). false with `why` = the
+// refusal prose; `t` = the live text either way.
+bool edit_preconditions(var &why, long w, long es, long adoc, var &t)
 {
-    long w = S.world();
-    long es = S.es;
-    long adoc = S.active(doc);
-    long h = ensure_phandle(w, es, adoc);
-    long id = args["id"].as_integer();
-    var srcv = args["src"];
-    var src = "";
-    if ( !srcv.is_null() )
-	src = srcv;
-    long where = gwNONE;
-    if ( gv == gvINSERT )
-    {
-	var wv = args["where"];
-	if ( !wv.is_null() )
-	    where = graph_where_of(wv.c_str());
-	if ( where == gwNONE )
-	{
-	    out = { "ok": false, "error": "graph.insert needs where = before | after" };
-	    return;
-	}
-    }
-    if ( gv != gvDELETE && strlen(src.c_str()) == 0 )
-    {
-	out = { "ok": false, "error": "src is empty (use graph.delete to remove a node)" };
-	return;
-    }
-    // The ONE read-only rule: derive_access's verdict on the es bag, the same
-    // check the typing verbs consult — an editor-tier client cannot mutate a
-    // read-only document or a read-only code view through this verb either.
+    ui::text(t, w, adoc);
     if ( !es_flag(w, es, "editable") )
     {
 	var ro;
 	ui::get(ro, w, es, "ro_msg");
-	var why = "the document is read-only";
+	why = "the document is read-only";
 	if ( !ro.is_null() )
 	    why = ro;
-	out = { "ok": false, "error": why };
-	return;
+	return false;
     }
-    // 0. the tree must be THIS text's parse: the handle re-parses only on
-    // check / save / outline / an accepted node-op — typing, undo or a remote
-    // splice moves the buffer under ids that are still "fresh". The text the
-    // handle was parsed from rides the doc bag (ensure_phandle / reparse_buffer
-    // / this verb); a mismatch re-syncs the tree (the generation advances, so
-    // the caller's ids go loudly stale) and refuses — never a splice at
-    // coordinates that belong to other bytes.
-    var t;
-    ui::text(t, w, adoc);
     var pt;
     ui::get(pt, w, adoc, "phandle_text");
     if ( pt.is_null() || !(pt == t) )
     {
 	reparse_buffer(w, es, adoc);
-	out = { "ok": false, "error": "the buffer changed since these ids were minted (the tree has been re-synced to it) - re-query" };
-	return;
+	why = "the buffer changed since these ids were minted (the tree has been re-synced to it) - re-query";
+	return false;
+    }
+    return true;
+}
+
+// ONE node-op PLAN: verb + args -> the op (design §3.4's ops[] element):
+//   target = graph_span's answer {id, kind, name, span} (the tree's extent)
+//   text   = the node's bytes NOW — the byte-exact re-check at landing
+//   splice = {at, del, ins} with the L3 line rules (a node that owns its
+//            line(s) is deleted whole / gets a line of its own)
+//   line / column = where the edited node starts afterwards (the answer's graph.at)
+// false with op = {error} on a miss.
+bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args)
+{
+    long id = args["id"].as_integer();
+    var srcv;
+    arg_of(srcv, args, "src");
+    var src = "";
+    if ( !srcv.is_null() )
+	src = srcv;
+    long where = gwNONE;
+    var wherev = "";
+    if ( gv == gvINSERT )
+    {
+	var wv;
+	arg_of(wv, args, "where");
+	if ( !wv.is_null() )
+	{
+	    where = graph_where_of(wv.c_str());
+	    wherev = wv;
+	}
+	if ( where == gwNONE )
+	{
+	    op = { "error": "graph.insert needs where = before | after" };
+	    return false;
+	}
+    }
+    if ( gv != gvDELETE && strlen(src.c_str()) == 0 )
+    {
+	op = { "error": "src is empty (use graph.delete to remove a node)" };
+	return false;
     }
     // 1. the extent
     var sp;
@@ -425,8 +497,8 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
     var span = sp["span"];		// probe the SUCCESS key: an error answer has
     if ( span.is_null() )		// no span (and `sp` is the logged target below —
     {					// a subscript probe would add an "error":null key)
-	out = { "ok": false, "error": sp["error"] };
-	return;
+	op = { "error": sp["error"] };
+	return false;
     }
     long l0 = span["line"].as_integer();
     long c0 = span["column"].as_integer();
@@ -435,6 +507,8 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
     long size = ui::text_size(w, adoc);
     long at = line_start_of(w, adoc, l0) + c0;
     long end = line_start_of(w, adoc, l1) + c1;
+    long at0 = at;			// the node's own extent (before a delete widens it)
+    long end0 = end;
     // 2. the splice
     long del = 0;
     var ins = "";
@@ -503,16 +577,140 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
 	new_col = indent_len;
 	break;
     }
-    // 3. the candidate, through the engine's text_replace on the doc's scratch
-    //    buffer (replaybuf_of: clog_replay's scratch, re-loaded by every user —
-    //    one scratch per doc, no text surgery in the dialect)
+    var text = perl::substr(t, at0, end0 - at0);
+    var verb;
+    graph_verb_name(verb, gv);
+    var splice = { "at": at, "del": del, "ins": ins };
+    op = { "verb": verb, "where": wherev, "target": sp, "text": text, "src": src,
+	   "splice": splice, "line": new_line, "column": new_col };
+    return true;
+}
+
+// The CANDIDATE: the live text with EVERY op's splice applied on the doc's
+// scratch buffer (replaybuf_of: clog_replay's scratch, re-loaded by every
+// user — one scratch per doc, the engine's text_replace, no string surgery),
+// HIGHEST offset first so an earlier splice never moves a later target
+// (design §3.4: N ops, one candidate). `order` = the op indices in that
+// order — the commit walks the same order.
+void edit_candidate(var &cand, var &order, long w, long adoc, var &t, var &ops)
+{
+    long n = php::count(ops);
+    var taken = {};
+    for ( long i = 0; i < n; i = i + 1 )
+	taken.push(0);
+    order = {};
+    for ( long k = 0; k < n; k = k + 1 )
+    {
+	long best = -1;
+	long bestat = -1;
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    if ( taken[i].as_integer() != 0 )
+		continue;
+	    var s = ops[i]["splice"];
+	    long at = s["at"].as_integer();
+	    if ( best < 0 || at > bestat )
+	    {
+		best = i;
+		bestat = at;
+	    }
+	}
+	taken[best] = 1;
+	order.push(best);
+    }
     long scr = replaybuf_of(w, adoc);
     ui::text_load(w, scr, t.c_str());
-    ui::text_replace(w, scr, at, del, ins.c_str());
-    var cand;
+    for ( var iv : order )
+    {
+	var s = ops[iv.as_integer()]["splice"];
+	var ins = s["ins"];
+	ui::text_replace(w, scr, s["at"].as_integer(), s["del"].as_integer(), ins.c_str());
+    }
     ui::text(cand, w, scr);
-    // 4. validate + swap (atomic)
+}
+
+// The proposal's PREVIEW (design §3.4): the touched LINES, live vs candidate.
+// line0/line1 = the first and last live line any splice touches; `before` =
+// those lines' text, `after` = the same region in the candidate (its end
+// shifted by the net byte delta).
+void edit_preview(var &out, long w, long adoc, var &t, var &cand, var &ops)
+{
+    long lo = -1;
+    long hi = -1;
+    long delta = 0;
+    for ( var op : ops )
+    {
+	var s = op["splice"];
+	long at = s["at"].as_integer();
+	long del = s["del"].as_integer();
+	if ( lo < 0 || at < lo )
+	    lo = at;
+	if ( at + del > hi )
+	    hi = at + del;
+	delta = delta + strlen(s["ins"].c_str()) - del;
+    }
+    long line0 = line_of(w, adoc, lo);
+    long line1 = line_of(w, adoc, hi > lo ? hi - 1 : hi);
+    long rs = line_start_of(w, adoc, line0);
+    long re = line_start_of(w, adoc, line1) + ui::text_line_len(w, adoc, line1);
+    if ( re < hi )
+	re = hi;
+    var before = perl::substr(t, rs, re - rs);
+    var after = perl::substr(cand, rs, re + delta - rs);
+    out = { "line0": line0, "line1": line1, "before": before, "after": after };
+}
+
+// The TRANSACTION (design §3.4): every op's splice on ONE candidate, ONE
+// validation, then — emAPPLY — one undo checkpoint, a nodeop record per op
+// AHEAD of its splices, every splice through the ONE text-mutation owner
+// (highest offset first), spans refreshed, the hub fan-out; or — emPROPOSE —
+// the candidate's verdict WITHOUT the swap (parse_would_accept), the preview,
+// ONE proposal record {ops, preview, diagnostics, constraints, checks,
+// base_seq, actor}, and nothing else touched (not the buffer, not the tree,
+// not the undo stack). A rejected candidate answers {ok:false, diagnostics}
+// and stores NOTHING in either mode. `proposal_seq` > 0 = this landing is a
+// proposal's: the nodeops carry it. The ONE seat of both validator calls
+// (gate: check-madcide-single-owners.sh). `actor` = the connection's share id
+// (-1 = the local operator) — design §3.2 as amended by the L4c plan.
+void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, var &ops, long mode, long proposal_seq)
+{
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    long h = ensure_phandle(w, es, adoc);
+    var t;
+    var why;
+    if ( !edit_preconditions(why, w, es, adoc, t) )
+    {
+	out = { "ok": false, "error": why };
+	return;
+    }
+    var cand;
+    var order;
+    edit_candidate(cand, order, w, adoc, t, ops);
     var diags;
+    if ( mode == emPROPOSE )
+    {
+	if ( !madc::parse_would_accept(diags, h, cand.c_str()) )
+	{
+	    out = { "ok": false, "error": "proposal rejected: the result introduces a parse/semantic error (nothing stored)",
+		    "diagnostics": diags };
+	    return;
+	}
+	var preview;
+	edit_preview(preview, w, adoc, t, cand, ops);
+	var constraints = {};		// L4d: the decisions linked to the target's symbol key
+	var checks = {};		// L4e: linked test runs
+	long base = clog_head(w, adoc);
+	var rec = { "kind": "proposal", "es": es, "doc": adoc, "actor": self_id, "base_seq": base,
+		    "ops": ops, "preview": preview, "diagnostics": diags,
+		    "constraints": constraints, "checks": checks };
+	long pseq = clog_append(w, adoc, rec);
+	broadcast_events(w, adoc, base, self_id);
+	out = { "ok": true, "proposal": pseq, "preview": preview, "diagnostics": diags,
+		"constraints": constraints };
+	return;
+    }
     bool accepted = madc::parse_refresh_checked(diags, h, cand.c_str());
     if ( !accepted )
     {
@@ -529,30 +727,43 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, long gv, 
 	return;
     }
     ui::set(w, adoc, "phandle_text", cand);	// the swapped tree describes the post-splice text
-    // 5. commit
     long head_before = clog_head(w, adoc);
-    edit_checkpoint(w, es, adoc, clamped_caret(w, es, adoc));
-    var verb = "graph.insert";
-    if ( gv == gvREPLACE )
-	verb = "graph.replace";
-    else if ( gv == gvDELETE )
-	verb = "graph.delete";
-    var rec = { "kind": "nodeop", "es": es, "doc": adoc, "verb": verb,
-		"target": sp, "src": src };
-    clog_append(w, adoc, rec);
-    if ( del > 0 )
-	ed_text_erase(w, es, adoc, at, del);
-    if ( strlen(ins.c_str()) > 0 )
-	ed_text_insert(w, es, adoc, at, ins.c_str());
+    edit_checkpoint(w, es, adoc, clamped_caret(w, es, adoc));	// ONE undo step for the transaction
+    long nodeop_seq = 0;
+    for ( var iv : order )
+    {
+	var op = ops[iv.as_integer()];
+	var rec = { "kind": "nodeop", "es": es, "doc": adoc, "actor": self_id, "verb": op["verb"],
+		    "target": op["target"], "src": op["src"] };
+	if ( proposal_seq > 0 )
+	    rec["proposal"] = proposal_seq;
+	long ns = clog_append(w, adoc, rec);
+	if ( nodeop_seq == 0 )
+	    nodeop_seq = ns;
+	var s = op["splice"];
+	long at = s["at"].as_integer();
+	long del = s["del"].as_integer();
+	var ins = s["ins"];
+	if ( del > 0 )
+	    ed_text_erase(w, es, adoc, at, del);
+	if ( strlen(ins.c_str()) > 0 )
+	    ed_text_insert(w, es, adoc, at, ins.c_str());
+    }
     refresh_spans(w, es, adoc, h);
     broadcast_events(w, adoc, head_before, self_id);
-    // 6. the answer
+    var first = ops[0];
     var node = {};
-    if ( gv != gvDELETE )
-	madc::graph_at(node, h, new_line, new_col);
+    if ( graph_verb_of(first["verb"].c_str()) != gvDELETE )
+	madc::graph_at(node, h, first["line"].as_integer(), first["column"].as_integer());
+    var fs = first["splice"];
     long seq = clog_head(w, adoc);
-    out = { "ok": true, "node": node, "seq": seq, "splice_at": at, "splice_del": del };
+    out = { "ok": true, "node": node, "seq": seq, "nodeop_seq": nodeop_seq,
+	    "splice_at": fs["at"], "splice_del": fs["del"] };
 }
+
+// The FUTURE axis (Nexus L4c): the proposal fold and the five verbs — after
+// graph_edit_apply (graph_accept lands through it), before graph_call.
+#include "madcide_propose.inc"
 
 // Code-graph MCP L1..L3 (design 2026-09-12): a distinct graph.* tool family, a
 // semantic navigation + EDITING surface beside the editor-registry commands
@@ -598,11 +809,11 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     }
     // L4b routing (design §3.3): an id names its handle (graph_route), an
     // id-less read may name a revision (`rev`); `hh` is the handle a read runs
-    // against. A mutation aimed at a revision refuses — revision handles are
-    // read-only (the engine refuses their refresh too).
+    // against. A mutation — or a proposal — aimed at a revision refuses:
+    // revision handles are read-only (the engine refuses their refresh too).
     bool is_rev = false;
     long hh = route_handle(w, es, adoc, h, args, is_rev);
-    if ( is_rev && need >= tierEDITOR )
+    if ( is_rev && need >= tierPROPOSER )
     {
 	var item = { "type": "text", "text": "revision handles are read-only" };
 	content[] = item;
@@ -648,7 +859,70 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case gvAT:         madc::graph_at(snap, hh, args["line"].as_integer(), args["column"].as_integer()); break;
     case gvINSERT:
     case gvREPLACE:
-    case gvDELETE:     graph_edit_apply(snap, S, doc, self_id, gv, args); break;
+    case gvDELETE:
+    {
+	// The proposer's reroute (design §3.6): at exactly tierPROPOSER — or
+	// any higher tier asking `propose: true` — the op is STORED as a
+	// proposal; an editor's plain call lands it. ONE path up to the
+	// candidate's validation (graph_edit_apply); the mode decides.
+	long mode = emAPPLY;
+	var pv;
+	arg_of(pv, args, "propose");
+	bool asked = !pv.is_null() && pv.as_boolean();
+	if ( my_tier == tierPROPOSER || asked )
+	    mode = emPROPOSE;
+	var t;
+	var why;
+	if ( !edit_preconditions(why, w, es, adoc, t) )
+	{
+	    snap = { "ok": false, "error": why };
+	    break;
+	}
+	var op;
+	if ( !edit_op_plan(op, w, adoc, h, t, gv, args) )
+	{
+	    snap = { "ok": false, "error": op["error"] };
+	    break;
+	}
+	var ops = {};
+	ops.push(op);
+	graph_edit_apply(snap, S, doc, self_id, ops, mode, 0);
+	break;
+    }
+    // Nexus L4c: the FUTURE verbs (madcide_propose.inc).
+    case gvPROPOSALS:
+    {
+	var sv;
+	arg_of(sv, args, "status");
+	long want = psNONE;
+	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
+	{
+	    want = proposal_status_of(sv);
+	    if ( want == psNONE )
+	    {
+		var why = format("unknown proposal status '{}'", sv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	graph_proposals(snap, w, adoc, want);
+	break;
+    }
+    case gvPROPOSAL: graph_proposal(snap, w, adoc, args["seq"].as_integer()); break;
+    case gvACCEPT:   graph_accept(snap, S, doc, self_id, args["seq"].as_integer()); break;
+    case gvREJECT:
+    {
+	var rv;
+	arg_of(rv, args, "reason");
+	var reason = "";
+	if ( !rv.is_null() )
+	    reason = rv;
+	proposal_decide(snap, w, es, adoc, self_id, args["seq"].as_integer(), psREJECTED, reason.c_str(), false);
+	break;
+    }
+    case gvWITHDRAW:
+	proposal_decide(snap, w, es, adoc, self_id, args["seq"].as_integer(), psWITHDRAWN, "", my_tier < tierEDITOR);
+	break;
     // Nexus L4b: the PAST verbs (madcide_past.inc).
     case gvSTATUS:     graph_status(snap, w, es, adoc, h); break;
     case gvSOURCE:     graph_source(snap, w, adoc, h, hh, args["id"].as_integer()); break;

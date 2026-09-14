@@ -143,7 +143,40 @@ if [ "$(count_kind_compares "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
+# The candidate VALIDATOR has ONE seat (Nexus L4c, design §3.4): the engine's
+# one body with a commit flag is called as parse_refresh_checked (swap) and
+# parse_would_accept (verdict only) — each EXACTLY ONCE across the dialect
+# tools, both inside graph_edit_apply. A second call site is a second edit
+# path that will drift from the all-or-nothing transaction.
+count_validator_calls()
+{
+	cat "$@" | grep -c 'madc::parse_refresh_checked(\|madc::parse_would_accept('
+}
+
+VALIDATOR_FILES="$(dirname "$0")/../tools/madcide/*.inc $(dirname "$0")/../tools/texteditor/*.inc"
+n=$(count_validator_calls $VALIDATOR_FILES)
+if [ "$n" -ne 2 ]; then
+	echo "check-madcide-single-owners: FAIL — $n validator call sites in" \
+	     "tools/madcide + tools/texteditor (expected 2: parse_refresh_checked" \
+	     "+ parse_would_accept, both in graph_edit_apply). ONE validator with" \
+	     "a commit flag — route every candidate through graph_edit_apply." >&2
+	grep -n 'madc::parse_refresh_checked(\|madc::parse_would_accept(' $VALIDATOR_FILES >&2
+	exit 1
+fi
+
+# Negative control for the validator marker.
+tmp=$(mktemp)
+echo '    bool ok = madc::parse_would_accept(d, h, s.c_str());	// synthetic' > "$tmp"
+if [ "$(count_validator_calls $VALIDATOR_FILES "$tmp")" -ne 3 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic validator call (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
-     "ed_text_insert/ed_text_erase; one record-kind reader per layer)"
+     "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
+     "validator seat: graph_edit_apply)"
 exit 0

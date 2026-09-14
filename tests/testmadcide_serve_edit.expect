@@ -25,6 +25,7 @@ unknown verb is error: 1
 missing where refused: 1
 empty src refused: 1
 id zero refused: 1
-replace needs editor: 1
+replace needs proposer: 1
+accept needs editor: 1
 span is observer: 1
 unknown where refused: 1

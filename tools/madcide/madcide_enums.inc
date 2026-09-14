@@ -530,10 +530,12 @@ const char *gen_name(long g)
 // on the code.
 enum ide_transport : unsigned char { trLOCAL = 0, trWS, trAPI };
 // The permission ladder (the gateway vision's tiers, born low for a remote
-// peer — V6): an OBSERVER watches, an EDITOR may mutate, an OWNER holds the
-// session. A local window is the OWNER; a fresh remote peer starts OBSERVER
-// and is raised by the owner.
-enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER };
+// peer — V6): an OBSERVER watches, a PROPOSER may not mutate but may STORE a
+// proposal for an editor to land (Nexus L4c, design §3.6 — the fourth level
+// rides every existing gate; every `<` / `>=` keeps its meaning), an EDITOR
+// may mutate, an OWNER holds the session. A local window is the OWNER; a
+// fresh remote peer starts OBSERVER and is raised by the owner.
+enum ide_tier : unsigned char { tierOBSERVER = 0, tierPROPOSER, tierEDITOR, tierOWNER };
 
 // ---- tier <-> name (V6a tiers) -----------------------------------------
 // Text only at the wire boundary: convert ONCE, refuse a misspelling, never
@@ -545,6 +547,7 @@ const char *tier_name(long tier)
     switch ( tier )
     {
     case tierOBSERVER: return "observer";
+    case tierPROPOSER: return "proposer";
     case tierEDITOR:   return "editor";
     case tierOWNER:    return "owner";
     }
@@ -554,6 +557,7 @@ const char *tier_name(long tier)
 long tier_of_name(const char *name)
 {
     if ( strcmp(name, "observer") == 0 ) return tierOBSERVER;
+    if ( strcmp(name, "proposer") == 0 ) return tierPROPOSER;
     if ( strcmp(name, "editor") == 0 )   return tierEDITOR;
     if ( strcmp(name, "owner") == 0 )    return tierOWNER;
     return -1;
@@ -633,7 +637,9 @@ enum graph_verb : unsigned char {
     gvCALLEES, gvCALLERS, gvREFERENCES, gvSEARCH, gvIMPACT,
     gvSPAN, gvAT, gvINSERT, gvREPLACE, gvDELETE,
     // Nexus L4b (design 2026-09-13 §4.3): the PAST verbs — reads, observer tier.
-    gvSTATUS, gvSOURCE, gvHISTORY, gvCOMMITS, gvREVISION, gvDIFF
+    gvSTATUS, gvSOURCE, gvHISTORY, gvCOMMITS, gvREVISION, gvDIFF,
+    // Nexus L4c (design §3.4, §4.4): the FUTURE verbs — the proposal fold + decisions.
+    gvPROPOSALS, gvPROPOSAL, gvACCEPT, gvREJECT, gvWITHDRAW
 };
 
 // The annotation kinds madcide writes into the ONE change stream (design
@@ -663,6 +669,51 @@ long nexus_kind_of(var &rec)
 // derived state; never persisted).
 const long REV_HANDLES_MAX = 8;
 
+// How graph_edit_apply ends (Nexus L4c, design §3.4): APPLY commits the
+// validated candidate; PROPOSE stores it as a proposal record and touches
+// nothing else. One path up to the candidate's validation; the mode decides.
+enum edit_mode : unsigned char { emAPPLY = 0, emPROPOSE };
+
+// A proposal's status — DERIVED from the stream (design §3.4): open until a
+// decision record names the proposal. The word is the wire form (a decision
+// record's `decision`, a fold row's `status`); converted ONCE by
+// proposal_status_of, written only through proposal_status_name.
+enum proposal_status : unsigned char { psNONE = 0, psOPEN, psACCEPTED, psREJECTED, psWITHDRAWN };
+const char *proposal_status_name(long s)
+{
+    switch ( s )
+    {
+	case psOPEN: return "open";
+	case psACCEPTED: return "accepted";
+	case psREJECTED: return "rejected";
+	case psWITHDRAWN: return "withdrawn";
+    }
+    return "";
+}
+long proposal_status_of(var &word)
+{
+    if ( word.is_null() )
+	return psNONE;
+    for ( long k = psOPEN; k <= psWITHDRAWN; k = k + 1 )
+	if ( word == proposal_status_name(k) )
+	    return k;
+    return psNONE;
+}
+
+// The ENVELOPE a JSON line on the connection seat carries (Nexus L4c): the api
+// shape {"cmd", "args", "seq"} or a JSON-RPC 2.0 message {"jsonrpc", "id",
+// "method", "params"} — the MCP seat over the same socket. Read ONCE at the
+// line; the loop switches on the code. envNONE = neither (a refusal).
+enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC };
+long envelope_of(var &req)
+{
+    if ( !req["jsonrpc"].is_null() )
+	return envRPC;
+    if ( !req["cmd"].is_null() )
+	return envAPI;
+    return envNONE;
+}
+
 // graph.insert's placement relative to its target; text only on the wire.
 enum graph_where : unsigned char { gwNONE = 0, gwBEFORE, gwAFTER };
 
@@ -674,9 +725,11 @@ long graph_where_of(const char *name)
 }
 
 // The minimum tier a graph verb requires — the SAME ladder cmd_min_tier is
-// (V6a tiers): reads and navigation observe; the three mutations are text
-// mutation, so tierEDITOR (an MCP client is born observer and promoted by
-// clienttier — design §2.5).
+// (V6a tiers): reads and navigation observe; the three mutations need the
+// PROPOSER tier (Nexus L4c, design §3.6) — at exactly that tier graph_call
+// STORES a proposal, above it the edit lands; accept / reject are editor
+// decisions; withdraw is the proposer's own or an editor's. An MCP client is
+// born observer and promoted by clienttier — design §2.5.
 long graph_min_tier(long code)
 {
     switch ( code )
@@ -684,6 +737,10 @@ long graph_min_tier(long code)
     case gvINSERT:
     case gvREPLACE:
     case gvDELETE:
+    case gvWITHDRAW:
+	return tierPROPOSER;
+    case gvACCEPT:
+    case gvREJECT:
 	return tierEDITOR;
     }
     return tierOBSERVER;
