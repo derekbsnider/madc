@@ -1,0 +1,27 @@
+create-decision: ok=1 id=1
+create-task: id=2
+create-milestone: id=3
+create-requirement: id=4
+link-affects: ok=1
+link-implements: ok=1
+link-planned: ok=1
+link-documents: ok=1
+records-all: 4
+records-task: 1
+update: ok=1
+record-2: state=active owner=me title=speed up add updated-gt-created=1
+context-add: record=3 compiler=1 git=0 event=0 proposal=0
+propose: ok=1 constraints=1 title=add stays pure
+context-add-2: proposal=1
+explain: name=add callers=1 why=3 plan=1 constraints=1 type-null=1
+explain-full: type-set=1
+close-rejected: ok=1
+records-live: 3
+records-rejected: 1
+unlink: ok=1
+explain-plan-after-unlink: 0
+refuse-rel: err=1 why=unknown relation 'depends_on'
+refuse-ref: err=1
+refuse-kind: err=1 why=unknown record kind 'bug'
+tiers: create=proposer sync=editor discover=proposer
+persist-restore: records=3 title=add stays pure

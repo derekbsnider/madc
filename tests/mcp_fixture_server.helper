@@ -1,0 +1,1 @@
+the MCP fixture server tests/testmcpclient.mad spawns over exec:// — not a standalone test
