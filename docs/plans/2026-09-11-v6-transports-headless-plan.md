@@ -110,6 +110,38 @@ The substrate ws/MCP/LSP all ride. Engine + dialect.
    Gates: `testmadcide_lsp` (in process), `testmadcide_lsp_stdio` (the
    deployed process over exec://, framing and exit status included),
    `test_header_channel`, `test_text_utf16`, `testcanonicalpath`.
+3. **The VS Code extension** — SHIPPED 2026-09-14 (plan
+   `2026-09-14-v6c3a-vscode-extension-plan.md`): `tools/vscode-madcide/`, the
+   client that points VS Code at `madc tools/madcide/madcide.mad <file> --lsp`
+   on stdio. This is the arc's stated acceptance criterion — VS Code as a
+   first-class api client — and it needed no socket work: with Remote-SSH the
+   extension host runs beside the binary.
+
+   **As landed.** The extension contributes the `madc` language and NO
+   TextMate grammar: `parse_spans` reaches the editor as semantic tokens from
+   the same parse handle that produces the diagnostics and the outline, and a
+   grammar would be a second classification of the same text. A real client
+   built on Microsoft's own protocol machinery
+   (`tools/vscode-madcide/test/protocol_probe.js` — `vscode-jsonrpc`, no VS
+   Code, no display, no network) drove the deployed server and found three
+   defects the repo's gates had not: `references` highlighted the call's first
+   ARGUMENT (a graph Call node's column anchors at its argument list and the
+   old gate pinned only the line), `documentSymbol`'s `selectionRange` covered
+   the whole declaration line, and three conforming-client notifications
+   (`$/setTrace`, `workspace/didChangeConfiguration`, `textDocument/willSave`)
+   reached stderr as "unknown" — which VS Code shows in its output channel. The
+   first two are now one owner, `lsp_name_span`: the projection reports what a
+   thing is CALLED, so the range is found from the NAME and validated as a
+   whole word, never guessed from a column that anchors elsewhere. A conforming
+   session now prints empty stderr and exits 0.
+   Gates: `testmadcide_lsp` extended (the reference's COLUMN, the
+   selectionRange, the ignored notifications), both range fixes
+   negative-controlled. The probe is the instrument, not a battery member —
+   the battery runs with no network and no node.
+   Next: V6c-3b (`workspace/executeCommand` onto the command registry,
+   `$/madc/*` notifications, a webview on the `--serve` page) and V6c-3c (the
+   attach relay: one session behind VS Code, an agent's MCP client and a
+   browser).
 
 ## Invariants to hold (design §2.8)
 General client record (done); symmetric capability negotiation (consume AND
