@@ -1201,3 +1201,167 @@ long graph_min_tier(long code)
     }
     return tierOBSERVER;
 }
+
+// ---- the LSP face's vocabulary (V6c-2; plan 2026-09-14-v6c2-lsp-adapter) ---
+// The Language Server Protocol is JSON-RPC 2.0 whose METHOD is a string on the
+// wire. Text at an input boundary converts ONCE (lsp_method_of) and the seat
+// switches on the code — the owner law, and the reason a misspelled method is
+// a refusal naming it rather than a silently ignored message.
+
+enum lsp_method : unsigned char {
+    lmNONE = 0,
+    // lifecycle
+    lmINITIALIZE, lmINITIALIZED, lmSHUTDOWN, lmEXIT, lmCANCEL,
+    // document synchronisation
+    lmDIDOPEN, lmDIDCHANGE, lmDIDSAVE, lmDIDCLOSE,
+    // the answering methods (each one an existing projection or graph verb)
+    lmDOCUMENTSYMBOL, lmHOVER, lmDEFINITION, lmREFERENCES, lmSEMANTICTOKENS
+};
+const char *lsp_method_name(long m)
+{
+    switch ( m )
+    {
+	case lmINITIALIZE: return "initialize";
+	case lmINITIALIZED: return "initialized";
+	case lmSHUTDOWN: return "shutdown";
+	case lmEXIT: return "exit";
+	case lmCANCEL: return "$/cancelRequest";
+	case lmDIDOPEN: return "textDocument/didOpen";
+	case lmDIDCHANGE: return "textDocument/didChange";
+	case lmDIDSAVE: return "textDocument/didSave";
+	case lmDIDCLOSE: return "textDocument/didClose";
+	case lmDOCUMENTSYMBOL: return "textDocument/documentSymbol";
+	case lmHOVER: return "textDocument/hover";
+	case lmDEFINITION: return "textDocument/definition";
+	case lmREFERENCES: return "textDocument/references";
+	case lmSEMANTICTOKENS: return "textDocument/semanticTokens/full";
+    }
+    return "";
+}
+long lsp_method_of(var &word)
+{
+    if ( word.is_null() )
+	return lmNONE;
+    for ( long k = lmINITIALIZE; k <= lmSEMANTICTOKENS; k = k + 1 )
+	if ( word == lsp_method_name(k) )
+	    return k;
+    return lmNONE;
+}
+
+// Which of a message's methods are NOTIFICATIONS — no reply, ever, even when
+// refused (a reply to a notification is a protocol violation, and a client
+// that gets one may abort the session). The id's absence says so on the wire
+// too; this table is the server's own statement of intent.
+bool lsp_is_notification(long m)
+{
+    switch ( m )
+    {
+	case lmINITIALIZED:
+	case lmEXIT:
+	case lmCANCEL:
+	case lmDIDOPEN:
+	case lmDIDCHANGE:
+	case lmDIDSAVE:
+	case lmDIDCLOSE:
+	    return true;
+    }
+    return false;
+}
+
+// The POSITION ENCODING a client and server agree on (LSP 3.17
+// `general.positionEncodings` / `capabilities.positionEncoding`). The
+// protocol's default is UTF-16 code units; utf-8 means a column IS a byte
+// offset and needs no conversion. NEGOTIATED at initialize and stored on the
+// session — reading a utf-16 column as a byte silently mis-places every
+// position on a line with a non-ASCII character before it.
+enum pos_encoding : unsigned char { peNONE = 0, peUTF8, peUTF16 };
+const char *pos_encoding_name(long e)
+{
+    switch ( e )
+    {
+	case peUTF8: return "utf-8";
+	case peUTF16: return "utf-16";
+    }
+    return "";
+}
+long pos_encoding_of(var &word)
+{
+    if ( word.is_null() )
+	return peNONE;
+    for ( long k = peUTF8; k <= peUTF16; k = k + 1 )
+	if ( word == pos_encoding_name(k) )
+	    return k;
+    return peNONE;
+}
+
+// An outline row's kind as the protocol's SymbolKind (documentSymbol). The
+// outline answers "function" today and names classes/globals as its extension
+// seat; a kind it grows maps HERE, never at the call site.
+enum lsp_symbol_kind : unsigned char { lskNONE = 0, lskFUNCTION };
+long lsp_symbol_of(var &word)
+{
+    if ( word.is_null() )
+	return lskNONE;
+    if ( word == "function" )
+	return lskFUNCTION;
+    return lskNONE;
+}
+long lsp_symbol_number(long k)
+{
+    switch ( k )
+    {
+	case lskFUNCTION: return 12;	// SymbolKind.Function
+    }
+    return 13;				// SymbolKind.Variable — the honest floor
+}
+
+// A parse_spans class as a semantic token type. The LEGEND is this enum in
+// order (lsp_token_name over lttKEYWORD..lttFUNCTION), so a token's `type`
+// field is its index in that list — the protocol's own encoding. The theme is
+// NOT consulted: LSP carries semantics and the client owns colour.
+enum lsp_token_type : unsigned char {
+    lttNONE = 0, lttKEYWORD, lttVARIABLE, lttNUMBER, lttSTRING, lttCOMMENT,
+    lttTYPE, lttFUNCTION
+};
+const char *lsp_token_name(long t)
+{
+    switch ( t )
+    {
+	case lttKEYWORD: return "keyword";
+	case lttVARIABLE: return "variable";
+	case lttNUMBER: return "number";
+	case lttSTRING: return "string";
+	case lttCOMMENT: return "comment";
+	case lttTYPE: return "type";
+	case lttFUNCTION: return "function";
+    }
+    return "";
+}
+// The span class -> the token type. `ident` is the protocol's `variable`;
+// every other class is spelled the same on both sides, so the name table
+// answers it.
+long lsp_token_of_class(var &cls)
+{
+    if ( cls.is_null() )
+	return lttNONE;
+    if ( cls == "ident" )
+	return lttVARIABLE;
+    for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
+	if ( cls == lsp_token_name(k) )
+	    return k;
+    return lttNONE;
+}
+
+// How a client sends changes (the `textDocumentSync.change` number the server
+// advertises, and what a didChange carries): a change with a `range` is
+// INCREMENTAL, one without is the whole document.
+enum lsp_sync : unsigned char { lsNONE = 0, lsFULL, lsINCREMENTAL };
+long lsp_sync_number(long s)
+{
+    switch ( s )
+    {
+	case lsFULL: return 1;
+	case lsINCREMENTAL: return 2;
+    }
+    return 0;				// TextDocumentSyncKind.None
+}
