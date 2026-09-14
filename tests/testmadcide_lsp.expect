@@ -50,6 +50,9 @@ exec-check-diagnostics-note: 1
 exec-edit-event-note: 1
 exec-unknown: ok=false error=unknown command 'nosuchthing'
 exec-unprefixed-refused: 1
+other-client-encoding: utf-8
+this-client-encoding-kept: utf-16
+other-client-encoding-kept: utf-8
 serve-note-when-not-serving: 0
 didsave-notes: 1
 didclose-replies: 0

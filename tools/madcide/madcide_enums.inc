@@ -705,14 +705,45 @@ long proposal_status_of(var &word)
 // shape {"cmd", "args", "seq"} or a JSON-RPC 2.0 message {"jsonrpc", "id",
 // "method", "params"} — the MCP seat over the same socket. Read ONCE at the
 // line; the loop switches on the code. envNONE = neither (a refusal).
-enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC };
+// envHELLO {"madc":"<protocol>"} is the third (V6c-3c): a connection SAYS what
+// JSON-RPC dialect it speaks, because `initialize` exists in BOTH LSP and MCP
+// and routing by method name is therefore ambiguous at exactly the first
+// message. Sniffing the params would be a guess; the relay is madcide's own
+// code on both ends, so it can simply say. A connection that never sends one
+// stays MCP — the behaviour every existing client already has.
+enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO };
 long envelope_of(var &req)
 {
     if ( !req["jsonrpc"].is_null() )
 	return envRPC;
     if ( !req["cmd"].is_null() )
 	return envAPI;
+    if ( !req["madc"].is_null() )
+	return envHELLO;
     return envNONE;
+}
+
+// Which JSON-RPC dialect a connection speaks. MCP is the default because it is
+// what the socket seat has always answered; an unknown word is REFUSED by name,
+// never quietly treated as one of them.
+enum seat_protocol : unsigned char { spNONE = 0, spMCP, spLSP };
+const char *seat_protocol_name(long p)
+{
+    switch ( p )
+    {
+	case spMCP: return "mcp";
+	case spLSP: return "lsp";
+    }
+    return "";
+}
+long seat_protocol_of(var &word)
+{
+    if ( word.is_null() )
+	return spNONE;
+    for ( long k = spMCP; k <= spLSP; k = k + 1 )
+	if ( word == seat_protocol_name(k) )
+	    return k;
+    return spNONE;
 }
 
 // ---- the INTENT axis's vocabulary (Nexus L4d; design §3.5, §3.7, §3.10,

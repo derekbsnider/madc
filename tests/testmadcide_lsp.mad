@@ -13,13 +13,14 @@
 #include "../tools/madcide/madcide_client.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_mcp.inc"
-// The serve seats, in madcide.mad's own order: the LSP face can wear the serve
-// face too (V6c-3b), so it names serve_conn_task and must follow it. The gate
-// compiles the composition the PROGRAM compiles, not a smaller one.
+// madcide.mad's own order: the LSP DISPATCHER, then the connection seat that
+// routes a socket client's LSP traffic to it (V6c-3c), then the serving
+// processes. The gate compiles the composition the PROGRAM compiles, not a
+// smaller one.
+#include "../tools/madcide/madcide_lsp.inc"
 #include "../tools/madcide/madcide_seat.inc"
 #include "../tools/madcide/madcide_ws.inc"
 #include "../tools/madcide/madcide_serve.inc"
-#include "../tools/madcide/madcide_lsp.inc"
 
 // One request through the dispatcher: `res` is the reply's `result` (null
 // when the message is a notification), `notes` the server -> client
@@ -341,6 +342,25 @@ int main()
     rchanges[] = restore;
     var restorep = { "textDocument": vtdoc, "contentChanges": rchanges };
     notify_lsp(notes, S, doc, "textDocument/didChange", restorep);
+
+    // ---- the encoding is PER CONNECTION (V6c-3c) -------------------------
+    // One session serves an editor, an agent and a browser at once, and each
+    // negotiates its own encoding. On a shared slot the second client's
+    // initialize would overwrite the first's and silently mis-place every
+    // position on a line with a non-ASCII character before it. Client 7 asks
+    // for utf-8; the local seat (-1) must still read the utf-16 it negotiated.
+    var offer8 = {};
+    offer8[] = "utf-8";
+    var gen8 = { "positionEncodings": offer8 };
+    var initp8 = { "general": gen8 };
+    var req8 = { "jsonrpc": "2.0", "id": 40, "method": "initialize", "params": initp8 };
+    var resp8;
+    var notes8 = {};
+    lsp_handle(S, doc, 7, req8, resp8, notes8);
+    println("other-client-encoding: {}",
+	    resp8["result"]["capabilities"]["positionEncoding"]);
+    println("this-client-encoding-kept: {}", pos_encoding_name(lsp_encoding(w, es, -1)));
+    println("other-client-encoding-kept: {}", pos_encoding_name(lsp_encoding(w, es, 7)));
 
     // A plain --lsp process has no second face, so it says nothing about one.
     println("serve-note-when-not-serving: {}",

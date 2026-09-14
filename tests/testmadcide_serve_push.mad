@@ -14,6 +14,9 @@
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_mcp.inc"
+// The connection seat routes a client's LSP traffic to lsp_handle (V6c-3c),
+// so the dispatcher comes first — madcide.mad's own order.
+#include "../tools/madcide/madcide_lsp.inc"
 #include "../tools/madcide/madcide_seat.inc"
 
 int main()

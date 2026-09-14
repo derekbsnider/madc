@@ -19,10 +19,13 @@
 // any other.
 //
 // Rulings carried here:
-//   - the position ENCODING is negotiated at initialize and stored on the bag
-//     (`penc`); LSP's default is UTF-16 code units, and reading one as a byte
-//     offset silently mis-places every position on a line with a non-ASCII
-//     character before it;
+//   - the position ENCODING is negotiated at initialize and stored PER
+//     CONNECTION (lsp_encoding / lsp_set_encoding); LSP's default is UTF-16
+//     code units, and reading one as a byte offset silently mis-places every
+//     position on a line with a non-ASCII character before it. It is resolved
+//     ONCE per message, at the dispatcher, and passed down — never re-read from
+//     a shared slot inside a handler, because the handlers yield (a parse does)
+//     and a session serves many clients;
 //   - a URI resolves to a document through edit_file — the ^K E open-or-
 //     switch owner — with canonical path comparison, so one file is one
 //     buffer however the client spells it;
@@ -35,7 +38,11 @@
 //
 // Depends on madcide_core.inc (the session), madcide_api.inc (session_state)
 // and madcide_mcp.inc (the tier gate's eff_tier, the layer owner). Included
-// after all three.
+// after all three, and BEFORE madcide_seat.inc — the connection seat routes a
+// socket client's LSP traffic to lsp_handle (V6c-3c). This file is the
+// DISPATCHER and its answers; the process-level entry points that wear it
+// (run_lsp, the serve face, the attach relay) live with run_serve in
+// madcide_serve.inc, because that is where madcide's serving processes live.
 
 // ---- JSON-RPC envelopes ------------------------------------------------
 
@@ -95,6 +102,35 @@ void lsp_path_uri(var &out, var &path)
     }
     var joined = php::implode("/", enc);
     out = format("file://{}", joined);
+}
+
+// ---- the negotiated position encoding, PER CONNECTION -------------------
+// One session serves many clients (a VS Code editor, an agent's MCP client, a
+// browser window — V6c-3b/3c), and each negotiates its own encoding at its own
+// initialize. On a shared slot the second client's negotiation would overwrite
+// the first's, and every position on every line with a non-ASCII character
+// before it would then be silently mis-placed for one of them — the exact
+// failure the negotiation exists to prevent. The connection's own share id
+// keys it; the local stdio seat's id is -1, which is a key like any other, not
+// a special case.
+
+void lsp_encoding_slot(var &out, long self_id)
+{
+    out = format("penc{}", self_id);
+}
+
+long lsp_encoding(long w, long es, long self_id)
+{
+    var slot;
+    lsp_encoding_slot(slot, self_id);
+    return es_int(w, es, slot.c_str(), peUTF16);
+}
+
+void lsp_set_encoding(long w, long es, long self_id, long enc)
+{
+    var slot;
+    lsp_encoding_slot(slot, self_id);
+    ui::set(w, es, slot.c_str(), enc);
 }
 
 // ---- positions ---------------------------------------------------------
@@ -348,11 +384,10 @@ long lsp_severity_of(var &row)
 // The whole publishDiagnostics notification for `adoc`, appended to `notes`.
 // Reparses through the ONE compiler entry first (refresh_diags), so what the
 // client sees describes the text it just sent.
-void lsp_publish(var &notes, IdeSession &S, long adoc)
+void lsp_publish(var &notes, IdeSession &S, long adoc, long enc)
 {
     long w = S.world();
     long es = S.es;
-    long enc = es_int(w, es, "penc", peUTF16);
     refresh_diags(w, es, adoc);
     var rows;
     ui::get(rows, w, es, "diags");
@@ -382,10 +417,9 @@ void lsp_publish(var &notes, IdeSession &S, long adoc)
 // documentSymbol <- parse_outline. A row's kind converts through
 // lsp_symbol_of/lsp_symbol_number; `range` is the definition's whole extent,
 // `selectionRange` the name's own line.
-void lsp_document_symbol(var &out, IdeSession &S, long adoc, long h)
+void lsp_document_symbol(var &out, IdeSession &S, long adoc, long h, long enc)
 {
     long w = S.world();
-    long enc = es_int(w, S.es, "penc", peUTF16);
     var rows;
     madc::parse_outline(rows, h);
     var syms = {};
@@ -438,10 +472,9 @@ void lsp_node_location(var &out, long w, long adoc, long enc, var &node)
 // definition <- graph_definition on the identifier under the position. An
 // unknown word answers an EMPTY list, never an error: "nothing is defined
 // here" is an answer, and a client shows it as "no definition found".
-void lsp_definition(var &out, IdeSession &S, long adoc, long h, var &params)
+void lsp_definition(var &out, IdeSession &S, long adoc, long h, long enc, var &params)
 {
     long w = S.world();
-    long enc = es_int(w, S.es, "penc", peUTF16);
     var pos = params["position"];
     long off = lsp_offset_of(w, adoc, enc, pos);
     var word;
@@ -488,10 +521,9 @@ void lsp_node_by_id(var &out, var &nodes, long id)
     }
 }
 
-void lsp_references(var &out, IdeSession &S, long adoc, long h, var &params)
+void lsp_references(var &out, IdeSession &S, long adoc, long h, long enc, var &params)
 {
     long w = S.world();
-    long enc = es_int(w, S.es, "penc", peUTF16);
     var pos = params["position"];
     long off = lsp_offset_of(w, adoc, enc, pos);
     var word;
@@ -559,10 +591,9 @@ void lsp_references(var &out, IdeSession &S, long adoc, long h, var &params)
 
 // hover <- the graph for what the word IS, with parse_enclosing as the
 // fallback when it resolves to nothing (the status line's own query).
-void lsp_hover(var &out, IdeSession &S, long adoc, long h, var &params)
+void lsp_hover(var &out, IdeSession &S, long adoc, long h, long enc, var &params)
 {
     long w = S.world();
-    long enc = es_int(w, S.es, "penc", peUTF16);
     var pos = params["position"];
     long off = lsp_offset_of(w, adoc, enc, pos);
     var word;
@@ -628,10 +659,9 @@ void lsp_token_legend(var &out)
     out = { "tokenTypes": types, "tokenModifiers": mods };
 }
 
-void lsp_semantic_tokens(var &out, IdeSession &S, long adoc, long h)
+void lsp_semantic_tokens(var &out, IdeSession &S, long adoc, long h, long enc)
 {
     long w = S.world();
-    long enc = es_int(w, S.es, "penc", peUTF16);
     var rows;
     madc::parse_spans(rows, h);
     var data = {};
@@ -723,8 +753,8 @@ void lsp_msg_of(var &out, long w, long es)
 // SAME records broadcast_events fans to api clients — one event shape for every
 // transport, never a second one modelled here — and the diagnostics republish
 // because `check` and `save` are exactly when they change.
-void lsp_session_notes(var &notes, IdeSession &S, long adoc, long head_before,
-		       var &msg_before)
+void lsp_session_notes(var &notes, IdeSession &S, long adoc, long enc,
+		       long head_before, var &msg_before)
 {
     long w = S.world();
     long es = S.es;
@@ -745,7 +775,7 @@ void lsp_session_notes(var &notes, IdeSession &S, long adoc, long head_before,
 	lsp_notify(note, madc_note_name(mnMESSAGE), params);
 	notes[] = note;
     }
-    lsp_publish(notes, S, adoc);
+    lsp_publish(notes, S, adoc, enc);
 }
 
 // workspace/executeCommand: {"command":"madcide.<name>", "arguments":["<arg>"]}.
@@ -755,7 +785,7 @@ void lsp_session_notes(var &notes, IdeSession &S, long adoc, long head_before,
 // composed here rather than in the dispatcher, because a dialect `switch` case
 // takes no compound statement with declarations in it.
 void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
-			 long self_id, var &idv, var &params)
+			 long self_id, long enc, var &idv, var &params)
 {
     var cmd = params.is_null() ? params : params["command"];
     if ( cmd.is_null() )
@@ -794,7 +824,7 @@ void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
     var body;
     api_run(body, S, doc, self_id, name.c_str(), arg);
     lsp_reply(out, idv, body);
-    lsp_session_notes(notes, S, S.active(doc), head_before, msg_before);
+    lsp_session_notes(notes, S, S.active(doc), enc, head_before, msg_before);
 }
 
 // ---- the server's capabilities -----------------------------------------
@@ -861,7 +891,7 @@ void lsp_capabilities(var &out, long enc)
 
 // ---- document synchronisation ------------------------------------------
 
-void lsp_did_open(var &notes, IdeSession &S, long doc, var &params)
+void lsp_did_open(var &notes, IdeSession &S, long doc, long enc, var &params)
 {
     var tdoc = params["textDocument"];
     long adoc = lsp_doc_for(S, doc, tdoc);
@@ -870,14 +900,14 @@ void lsp_did_open(var &notes, IdeSession &S, long doc, var &params)
     var text = tdoc["text"];
     if ( !text.is_null() )
 	ui::text_load(S.world(), adoc, text.c_str());	// a LOAD, not an edit
-    lsp_publish(notes, S, adoc);
+    lsp_publish(notes, S, adoc, enc);
 }
 
 // Every change in order, each against the text the previous one left. A
 // change WITH a range is a splice through the one text-mutation owner (so the
 // project stream and every other client see it); one without is the whole
 // document, which is a load.
-void lsp_did_change(var &notes, IdeSession &S, long doc, var &params)
+void lsp_did_change(var &notes, IdeSession &S, long doc, long enc, var &params)
 {
     var tdoc = params["textDocument"];
     long adoc = lsp_doc_for(S, doc, tdoc);
@@ -885,7 +915,6 @@ void lsp_did_change(var &notes, IdeSession &S, long doc, var &params)
 	return;
     long w = S.world();
     long es = S.es;
-    long enc = es_int(w, es, "penc", peUTF16);
     var changes = params["contentChanges"];
     long n = changes.is_null() ? 0 : php::count(changes);
     for ( long i = 0; i < n; i = i + 1 )
@@ -909,23 +938,23 @@ void lsp_did_change(var &notes, IdeSession &S, long doc, var &params)
 	if ( !text.is_null() && strlen(text.c_str()) > 0 )
 	    ed_text_insert(w, es, adoc, s, text.c_str());
     }
-    lsp_publish(notes, S, adoc);
+    lsp_publish(notes, S, adoc, enc);
 }
 
-void lsp_did_save(var &notes, IdeSession &S, long doc, var &params)
+void lsp_did_save(var &notes, IdeSession &S, long doc, long enc, var &params)
 {
     var tdoc = params["textDocument"];
     long adoc = lsp_doc_for(S, doc, tdoc);
     if ( adoc == 0 )
 	return;
-    lsp_publish(notes, S, adoc);
+    lsp_publish(notes, S, adoc, enc);
 }
 
 // initialize: negotiate the encoding, store it, answer the capability set.
-void lsp_initialize(var &out, IdeSession &S, var &idv, var &params)
+void lsp_initialize(var &out, IdeSession &S, long self_id, var &idv, var &params)
 {
     long enc = lsp_negotiate_encoding(params);
-    ui::set(S.world(), S.es, "penc", enc);
+    lsp_set_encoding(S.world(), S.es, self_id, enc);
     var caps;
     lsp_capabilities(caps, enc);
     var info = { "name": "madcide", "version": "1.0.0" };
@@ -953,6 +982,11 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 {
     long w = S.world();
     long es = S.es;
+    // This CONNECTION's negotiated encoding, resolved once for the whole
+    // message and passed down. A handler must never re-read it: the handlers
+    // yield (a parse does), the session serves many clients, and a shared slot
+    // read after a yield could be another client's answer.
+    long enc = lsp_encoding(w, es, self_id);
     var idv = req["id"];
     var method = req["method"];
     long m = lsp_method_of(method);
@@ -980,7 +1014,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
     switch ( m )
     {
     case lmINITIALIZE:
-	lsp_initialize(out, S, idv, params);
+	lsp_initialize(out, S, self_id, idv, params);
 	return true;
     case lmINITIALIZED:
 	// The client's own ready signal is the first legal moment to push a
@@ -1008,13 +1042,13 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	ui::set(w, es, "lspexit", 1);
 	return false;
     case lmDIDOPEN:
-	lsp_did_open(notes, S, doc, params);
+	lsp_did_open(notes, S, doc, enc, params);
 	return false;
     case lmDIDCHANGE:
-	lsp_did_change(notes, S, doc, params);
+	lsp_did_change(notes, S, doc, enc, params);
 	return false;
     case lmDIDSAVE:
-	lsp_did_save(notes, S, doc, params);
+	lsp_did_save(notes, S, doc, enc, params);
 	return false;
     case lmDIDCLOSE:
 	// The client stopped tracking the file; madcide does NOT close the
@@ -1025,7 +1059,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	// A command acts on the SESSION, not on a document the request names,
 	// so it resolves no textDocument and skips the layer gate below. Its
 	// own gate is api_run's tier check.
-	lsp_execute_command(out, notes, S, doc, self_id, idv, params);
+	lsp_execute_command(out, notes, S, doc, self_id, enc, idv, params);
 	return true;
     }
 
@@ -1059,159 +1093,12 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
     var result;
     switch ( m )
     {
-    case lmDOCUMENTSYMBOL: lsp_document_symbol(result, S, adoc, h); break;
-    case lmHOVER:          lsp_hover(result, S, adoc, h, params); break;
-    case lmDEFINITION:     lsp_definition(result, S, adoc, h, params); break;
-    case lmREFERENCES:     lsp_references(result, S, adoc, h, params); break;
-    case lmSEMANTICTOKENS: lsp_semantic_tokens(result, S, adoc, h); break;
+    case lmDOCUMENTSYMBOL: lsp_document_symbol(result, S, adoc, h, enc); break;
+    case lmHOVER:          lsp_hover(result, S, adoc, h, enc, params); break;
+    case lmDEFINITION:     lsp_definition(result, S, adoc, h, enc, params); break;
+    case lmREFERENCES:     lsp_references(result, S, adoc, h, enc, params); break;
+    case lmSEMANTICTOKENS: lsp_semantic_tokens(result, S, adoc, h, enc); break;
     }
     lsp_reply(out, idv, result);
     return true;
-}
-
-// ---- the server ---------------------------------------------------------
-// `madcide <file> --lsp`: the standard deployment — an editor spawns this
-// process and speaks over the pipe. stdio is a CHANNEL (stdio://) and the
-// framing is the channel's (frame_headers), so this loop is the MCP seat's
-// loop with one framing swapped. The lone stdio client is the operator:
-// self_id -1 (untracked -> owner via eff_tier), so it may edit and save.
-
-// The message loop itself — ONE loop, whether or not this process is also
-// wearing the serve face (two copies would be two protocols).
-void lsp_stdio_loop(IdeSession &S, long doc, madc::channel &io, long w, long es)
-{
-    var line;
-    while ( io.readline(line) )
-    {
-	var req;
-	var resp;
-	var notes = {};
-	if ( !js::parse(req, line.c_str()) )
-	{
-	    var nullid;
-	    lsp_error(resp, nullid, -32700, "Parse error");
-	    var js = js::stringify(resp);
-	    io.write(js.c_str());
-	    continue;
-	}
-	if ( lsp_handle(S, doc, -1, req, resp, notes) )
-	{
-	    var js = js::stringify(resp);
-	    io.write(js.c_str());
-	}
-	long n = php::count(notes);
-	for ( long i = 0; i < n; i = i + 1 )
-	{
-	    var note = notes[i];
-	    var js = js::stringify(note);
-	    io.write(js.c_str());
-	}
-	if ( es_int(w, es, "lspexit", 0) != 0 )
-	    break;				// the client said exit
-    }
-}
-
-// The SERVE FACE of an LSP process (V6c-3b): run_serve's accept loop, on a
-// listener the caller already bound and detached, spawning the SAME
-// serve_conn_task every --serve connection gets. One session, two faces — a
-// second process would be a second session on the same file, which is two
-// carets, two undo histories and last-save-wins.
-//
-// Shutdown: this task parks in accept, and `scope` joins it before run_lsp
-// returns, so something must make accept return. Closing the listener's fd
-// under a parked poller does not reliably wake it; a CONNECTION does — run_lsp
-// pokes its own endpoint once the LSP client has said exit, and the flag tells
-// this loop the connection is that poke and not a client.
-void lsp_serve_task(IdeSession *S, long doc, long listen_handle, long w, long es)
-{
-    madc::channel listener;
-    if ( !listener.adopt(listen_handle) )
-	return;					// a spent handle — never on this path
-    scope
-    {
-	while ( es_int(w, es, "lspexit", 0) == 0 )
-	{
-	    if ( !listener.wait_readable() )
-		break;				// the listener died
-	    madc::channel client;
-	    long got = listener.accept(client);
-	    if ( got < 0 )
-		break;
-	    if ( got == 0 )
-		continue;			// spurious wake — nothing pending
-	    if ( es_int(w, es, "lspexit", 0) != 0 )
-		break;				// the exit poke, not a client
-	    long conn = client.detach();
-	    go serve_conn_task(S, doc, conn);
-	}
-    }
-    listener.close();
-}
-
-long run_lsp(const char *path, bool ro, const char *serve)
-{
-    IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
-    if ( doc <= 0 )
-	return 1;
-    S.terminal(false);				// headless: no interactive terminal
-    long w = S.world();
-    long es = S.es;
-    long enc0 = peUTF16;			// an ENUMERATOR into a slot goes
-    ui::set(w, es, "penc", enc0);		// through a long (the dialect's rule)
-
-    madc::channel io("stdio://");
-    if ( !io.ok() || !io.frame_headers() )
-    {
-	println(stderr, "madcide --lsp: {}", io.last_error());
-	S.close();
-	return 1;
-    }
-
-    // The serve face, when asked for. The listener is bound HERE so its real
-    // endpoint (`:0` asks the OS for a port) is known before the task starts
-    // and can be told to the client in-protocol ($/madc/serve, on initialized).
-    long listen_handle = 0;
-    var endpoint = "";
-    if ( serve != NULL )
-    {
-	var uri = format("listen://{}", serve);
-	madc::channel listener(uri.c_str());
-	if ( !listener.ok() )
-	{
-	    println(stderr, "madcide --lsp: cannot serve on {}: {}",
-		    serve, listener.last_error());
-	    io.close();
-	    S.close();
-	    return 1;
-	}
-	endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
-	ui::set(w, es, "lspserve", endpoint);
-	println(stderr, "madcide: serving {} on {} (api + ws + http) beside --lsp",
-		path, endpoint);
-	listen_handle = listener.detach();
-    }
-
-    scope
-    {
-	if ( listen_handle != 0 )
-	    go lsp_serve_task(&S, doc, listen_handle, w, es);
-	lsp_stdio_loop(S, doc, io, w, es);
-	if ( listen_handle != 0 )
-	{
-	    // Wake the accept park so `scope` can join it (see lsp_serve_task).
-	    ui::set(w, es, "lspexit", 1);
-	    var poke_uri = format("tcp://{}", endpoint);
-	    madc::channel poke(poke_uri.c_str());
-	    poke.close();
-	}
-    }
-    // The spec's own verdict: exit after a shutdown is success, without one
-    // is an error the client reports.
-    long rc = es_int(w, es, "lspdown", 0) != 0 ? 0 : 1;
-    io.close();
-    S.close();
-    return rc;
 }

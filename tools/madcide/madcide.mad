@@ -47,19 +47,21 @@
 #include "madcide_line.inc"
 #include "madcide_api.inc"
 #include "madcide_mcp.inc"
+// The LSP face sits BEFORE the connection seat, which routes LSP traffic to
+// lsp_handle (V6c-3c), and forward-declares the one thing it needs from the
+// serve seat below it (serve_conn_task — `--lsp --serve` is ONE process
+// wearing both faces, V6c-3b).
+#include "madcide_lsp.inc"
 #include "madcide_seat.inc"
 #include "madcide_ws.inc"
 #include "madcide_serve.inc"
-// LAST: the LSP face can wear the serve face too (V6c-3b — `--lsp --serve`
-// is ONE process with ONE session, so run_lsp drives serve_conn_task), and a
-// dialect file must be included after the callees it names.
-#include "madcide_lsp.inc"
 
 int main(int argc, char **argv)
 {
     if ( argc < 2 )
     {
 	printf("usage: madcide <file> [ro] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n");
+	printf("       madcide <file> --lsp|--mcp --attach <host:port>   (join a running session; <file> unused)\n");
 	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
@@ -80,6 +82,7 @@ int main(int argc, char **argv)
     const char *serve = NULL;
     bool mcp = false;
     bool lsp = false;
+    const char *attach = NULL;
     for ( int i = 2; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "--gui") == 0 )
@@ -112,6 +115,30 @@ int main(int argc, char **argv)
 	    i++;
 	    serve = argv[i];
 	}
+	else if ( strcmp(argv[i], "--attach") == 0 )
+	{
+	    if ( i + 1 >= argc )
+	    {
+		println(stderr, "madcide: --attach needs <host:port>");
+		return 2;
+	    }
+	    i++;
+	    attach = argv[i];
+	}
+    }
+    if ( attach != NULL )
+    {
+	// The ATTACH RELAY (V6c-3c): become a client of a session that is
+	// ALREADY RUNNING instead of opening a private one, so an editor, an
+	// agent and a browser share one session's buffers. Pure transport — no
+	// session opens here, and <file> is unused (the session has its own
+	// documents; the editor adds others with didOpen).
+	if ( !lsp && !mcp )
+	{
+	    println(stderr, "madcide: --attach needs --lsp or --mcp");
+	    return 2;
+	}
+	return run_attach(attach, lsp);
     }
     if ( once != NULL )
     {

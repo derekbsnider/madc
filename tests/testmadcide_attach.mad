@@ -1,0 +1,201 @@
+// V6c-3c: the ATTACH RELAY — an editor joins a session that is ALREADY
+// RUNNING. This test IS the whole picture: it holds a live session with a real
+// listener (the `--serve` side), spawns `madcide <file> --lsp --attach <addr>`
+// as a child (the editor's side), and drives LSP down the child's stdio. Every
+// answer must come from THIS process's session, not a private one the child
+// opened — that is the gatekeeper shape, and the thing a second session would
+// silently break.
+//
+// It also pins the two rulings the slice makes: a connection DECLARES its
+// JSON-RPC dialect (initialize exists in both LSP and MCP, so the first message
+// is otherwise ambiguous — and a connection with no hello stays MCP), and
+// lifecycle belongs to the CONNECTION (the relay answers shutdown/exit itself,
+// so one editor quitting leaves the session standing for everyone else).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
+
+void send(madc::channel &c, var &msg)
+{
+    var js = js::stringify(msg);
+    c.write(js.c_str());
+}
+
+// Read one framed message off the relay, collecting notifications (no id).
+bool read_reply(var &out, var &notes, madc::channel &c)
+{
+    var line;
+    for ( ;; )
+    {
+	if ( !c.readline(line) )
+	    return false;
+	var msg;
+	if ( !js::parse(msg, line.c_str()) )
+	    return false;
+	if ( msg["id"].is_null() )
+	{
+	    notes.push(msg);
+	    continue;
+	}
+	out = msg;
+	return true;
+    }
+}
+
+void note_named(var &out, var &notes, const char *want)
+{
+    var nm = want;
+    for ( var n : notes )
+	if ( n["method"] == nm )
+	{
+	    out = n;
+	    return;
+	}
+}
+
+int main()
+{
+    const char *path = "madc_ide_attach.mad";
+    php::file_put_contents(path,
+	"long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\treturn twice(21);\n}\n");
+
+    // ---- the RUNNING session, here in this process ----------------------
+    IdeSession S;
+    long doc = S.open(path, false);
+    println("session: {}", doc > 0 ? 1 : 0);
+    S.terminal(false);
+    long w = S.world();
+
+    madc::channel listener("listen://127.0.0.1:0");
+    println("listening: {}", listener.ok() ? 1 : 0);
+    var addr = listener.local_endpoint();
+
+    // ---- the editor's side: a spawned relay ------------------------------
+    var self = madc::compiler_path();
+    var uri = format("exec://{} --no-config tools/madcide/madcide.mad {} --lsp --attach {}",
+		     self, path, addr);
+    madc::channel relay(uri.c_str());
+    println("relay-open: {}", relay.ok() ? 1 : 0);
+    println("relay-framed: {}", relay.frame_headers() ? 1 : 0);
+
+    scope
+    {
+	// Accept the relay's connection and serve it on its own task, exactly
+	// as run_serve would — the seat is the same seat.
+	listener.wait_readable();
+	madc::channel client;
+	long got = listener.accept(client);
+	println("accepted: {}", got > 0 ? 1 : 0);
+	long conn = client.detach();
+	go serve_client_task(&S, doc, conn);
+
+	// The editor initializes THROUGH the relay. The capabilities must be
+	// the session's, which means the hello routed this connection to the
+	// LSP dispatcher and not to the MCP one.
+	var noparams;
+	var init = { "jsonrpc": "2.0", "id": 1, "method": "initialize" };
+	send(relay, init);
+	var reply;
+	var notes = {};
+	read_reply(reply, notes, relay);
+	var caps = reply["result"]["capabilities"];
+	println("caps-from-lsp-dispatcher: {}", caps["semanticTokensProvider"].is_null() ? 0 : 1);
+	println("caps-encoding: {}", caps["positionEncoding"]);
+
+	var ready = { "jsonrpc": "2.0", "method": "initialized", "params": noparams };
+	send(relay, ready);
+
+	// A read that can only be answered from the SESSION's buffer. The
+	// child opened no document of its own — it is pure transport.
+	var canon;
+	var pathv = path;
+	madc::canonical_path(canon, pathv.c_str());
+	var duri = format("file://{}", canon);
+	var tdoc = { "uri": duri };
+	var symp = { "textDocument": tdoc };
+	var symreq = { "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+		       "params": symp };
+	send(relay, symreq);
+	read_reply(reply, notes, relay);
+	var syms = reply["result"];
+	println("symbols-through-relay: {}", php::count(syms));
+	var s0 = syms[0];
+	println("symbol0: {}", s0["name"]);
+
+	// A COMMAND through the relay, onto the shared session's registry.
+	var delargs = {};
+	var gargs = {};
+	gargs[] = "8";
+	var gp = { "command": "madcide.gotoline", "arguments": gargs };
+	var greq = { "jsonrpc": "2.0", "id": 3, "method": "workspace/executeCommand",
+		     "params": gp };
+	send(relay, greq);
+	read_reply(reply, notes, relay);
+	var dp = { "command": "madcide.delline", "arguments": delargs };
+	var dreq = { "jsonrpc": "2.0", "id": 4, "method": "workspace/executeCommand",
+		     "params": dp };
+	send(relay, dreq);
+	read_reply(reply, notes, relay);
+	println("command-through-relay: {}", reply["result"]["ok"]);
+
+	// THE POINT: the edit landed in THIS process's session, so the local
+	// buffer has lost the line. A private session in the child would leave
+	// this text untouched.
+	long adoc = S.active(doc);
+	var text;
+	ui::text(text, w, adoc);
+	println("session-sees-relay-edit: {}",
+		perl::index(text.c_str(), "return twice(21);") < 0 ? 1 : 0);
+
+	// The relay carries the session's NOTIFICATIONS back too — an attached
+	// editor must get diagnostics and $/madc/*, not only a spawned one. A
+	// command's notes are written after its reply, so they are collected on
+	// the way to the next SESSION-answered reply. `shutdown` cannot serve as
+	// that barrier: the relay answers it LOCALLY (lifecycle is the
+	// connection's), so its reply can overtake traffic still in flight from
+	// the session.
+	var symreq2 = { "jsonrpc": "2.0", "id": 5, "method": "textDocument/documentSymbol",
+			"params": symp };
+	send(relay, symreq2);
+	read_reply(reply, notes, relay);
+	var dgnote;
+	note_named(dgnote, notes, "textDocument/publishDiagnostics");
+	println("diagnostics-through-relay: {}", dgnote.is_null() ? 0 : 1);
+	var evnote;
+	note_named(evnote, notes, "$/madc/event");
+	println("events-through-relay: {}", evnote.is_null() ? 0 : 1);
+
+	// shutdown is answered by the RELAY, never forwarded: a shared session
+	// must not be told to stop because one editor closed.
+	var down = { "jsonrpc": "2.0", "id": 6, "method": "shutdown" };
+	send(relay, down);
+	read_reply(reply, notes, relay);
+	println("shutdown-result-null: {}", reply["result"].is_null() ? 1 : 0);
+
+	// exit ends the RELAY. The session must still be standing afterwards —
+	// one editor quitting never tears down a session others are on.
+	var bye = { "jsonrpc": "2.0", "method": "exit", "params": noparams };
+	send(relay, bye);
+	relay.close_write();
+	var tail;
+	while ( relay.readline(tail) )
+	    ;
+	relay.close();
+	println("relay-exit-status: {}", relay.exit_status());
+	listener.close();
+    }
+
+    var alive;
+    ui::text(alive, w, S.active(doc));
+    println("session-alive-after-relay-exit: {}", strlen(alive.c_str()) > 0 ? 1 : 0);
+    S.close();
+    php::unlink(path);
+    return 0;
+}
