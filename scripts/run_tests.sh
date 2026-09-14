@@ -45,6 +45,12 @@
 #           the in-process loader (`madc foo.o` — the precompiled-cache
 #           lane). Failures are reported as "FAIL(obj): ..." separately.
 #
+#   --report=json
+#           Machine-readable output: one JSON object per line (a verdict per
+#           test, a skip, a lane result, a caveat note, the summary) in place
+#           of the human lines; the exit status is unchanged. The Nexus's
+#           test.run reads this (Nexus L4e) — the runner stays the ONE harness.
+#
 #   --stdlib=NAME
 #           Run the whole suite against a NON-DEFAULT C++ standard library
 #           flavor (`--stdlib=libc++`). This is the parity lane: the measure of
@@ -111,6 +117,39 @@ MADC_WRAPPER="${MADC_WRAPPER:-}"
 MADC_EXE_FLAGS="${MADC_EXE_FLAGS:-}"
 MADC_FAIL_DETAIL="${MADC_FAIL_DETAIL:-0}"
 MADC_EXE_ADVISORY="${MADC_EXE_ADVISORY:-}"
+# --report=json (Nexus L4e, design §3.10): the runner is the ONE test harness
+# and the Nexus its CLIENT — every verdict, skip, lane result, caveat and the
+# summary leaves as ONE JSON object per line instead of the human lines, so a
+# machine reads the fixture protocol's answer without re-implementing it:
+#   {"test","family":"mad","result":"pass|fail|timeout","exit","seconds","detail"}
+#   {"test","family":"mad","result":"skip","reason":"mir|stdlib|domain"}
+#   {"test","family":"mad","lane":"exe|obj","result":"pass|fail"}
+#   {"note": "<a caveat line>"}   {"summary":{"passed","failed","timed_out","skipped"}}
+# The exit status is unchanged. Human output is untouched without the flag.
+REPORT=""
+json_str() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g'
+}
+# verdict <base> <result> <rc> <seconds> <detail>
+verdict() {
+    [ "$REPORT" = json ] || return 0
+    printf '{"test":"%s","family":"mad","result":"%s","exit":%s,"seconds":%s,"detail":"%s"}\n' \
+        "$1" "$2" "$3" "$4" "$(json_str "$5")"
+}
+# skipped <base> <reason>
+skipped() {
+    [ "$REPORT" = json ] || return 0
+    printf '{"test":"%s","family":"mad","result":"skip","reason":"%s"}\n' "$1" "$2"
+}
+# lane <base> <lane> <result>
+lane() {
+    [ "$REPORT" = json ] || return 0
+    printf '{"test":"%s","family":"mad","lane":"%s","result":"%s"}\n' "$1" "$2" "$3"
+}
+# say <human line>: the human line, or {note} in report mode
+say() {
+    if [ "$REPORT" = json ]; then printf '{"note":"%s"}\n' "$(json_str "$1")"; else echo "$1"; fi
+}
 # detail <label> <text>: the first $MADC_FAIL_DETAIL lines of <text>, indented.
 detail() {
     [ "$MADC_FAIL_DETAIL" -gt 0 ] || return 0
@@ -124,9 +163,14 @@ while [ $# -gt 0 ]; do
         --obj) RUN_OBJ=1; shift ;;
         --backend=*) BACKEND_FLAG="$1"; shift ;;
         --stdlib=*) STDLIB_NAME="${1#--stdlib=}"; shift ;;
+        --report=*) REPORT="${1#--report=}"; shift ;;
         *) break ;;
     esac
 done
+if [ -n "$REPORT" ] && [ "$REPORT" != json ]; then
+    echo "run_tests.sh: --report takes json (got '$REPORT')" >&2
+    exit 2
+fi
 if [ -n "$STDLIB_NAME" ]; then
     HERMETIC_FLAGS="$HERMETIC_FLAGS -stdlib=$STDLIB_NAME"
     # Per-flavor skip fixture, discovered by CONVENTION like every other
@@ -174,7 +218,7 @@ if ! compgen -G "$TEST_DIR/*.mad" >/dev/null; then
     echo "No .mad tests in $TEST_DIR" >&2
     exit 1
 fi
-if [ "$TEST_DIR" != tests ]; then echo "TEST DIRECTORY: $TEST_DIR (not the default suite)"; fi
+if [ "$TEST_DIR" != tests ]; then say "TEST DIRECTORY: $TEST_DIR (not the default suite)"; fi
 
 PASS=0
 FAIL=0
@@ -215,6 +259,7 @@ for t in "$TEST_DIR"/*.mad; do
     # Skip tests marked as not transpilable (MIR is the default backend)
     if [ -f "$mir_skip_file" ]; then
         SKIP=$((SKIP+1))
+        skipped "$base" mir
         continue
     fi
 
@@ -224,6 +269,7 @@ for t in "$TEST_DIR"/*.mad; do
     if [ -n "$STDLIB_SKIP_EXT" ] && [ -f "${TEST_DIR}/$base.$STDLIB_SKIP_EXT""_skip" ]; then
         SKIP=$((SKIP+1))
         STDLIB_SKIPPED=$((STDLIB_SKIPPED+1))
+        skipped "$base" stdlib
         continue
     fi
 
@@ -241,6 +287,7 @@ for t in "$TEST_DIR"/*.mad; do
     if [ $domain_skip -eq 1 ]; then
         SKIP=$((SKIP+1))
         DOMAIN_SKIPPED=$((DOMAIN_SKIPPED+1))
+        skipped "$base" domain
         continue
     fi
 
@@ -272,6 +319,7 @@ for t in "$TEST_DIR"/*.mad; do
     tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
+    t0=$SECONDS
     if [ -f "$expect_err_file" ]; then
         # Compile-error test: capture stderr — the diagnostics ARE the
         # expected output.
@@ -330,7 +378,8 @@ for t in "$TEST_DIR"/*.mad; do
                 done < "$expect_file"
             fi
             if [ $ok -eq 1 ] && [ -f "$expect_quiet_file" ] && [ -s "$errf" ]; then
-                echo "NOISY(stderr): $t"
+                [ "$REPORT" = json ] || echo "NOISY(stderr): $t"
+                unmet="noisy stderr"
                 ok=0
             fi
         fi
@@ -339,15 +388,19 @@ for t in "$TEST_DIR"/*.mad; do
         rm -f "$errf"
     fi
 
+    secs=$((SECONDS - t0))
     if [ $ok -eq 1 ]; then
         PASS=$((PASS+1))
+        verdict "$base" pass "$rc" "$secs" ""
     else
         if [ $timed_out -eq 1 ]; then
-            echo "TIMEOUT: $t"
+            [ "$REPORT" = json ] || echo "TIMEOUT: $t"
             TIMEOUTS=$((TIMEOUTS+1))
+            verdict "$base" timeout "$rc" "$secs" ""
         else
-            echo "FAIL: $t"
+            [ "$REPORT" = json ] || echo "FAIL: $t"
             FAIL=$((FAIL+1))
+            verdict "$base" fail "$rc" "$secs" "${unmet:-rc=$rc}"
         fi
         if [ "$MADC_FAIL_DETAIL" -gt 0 ]; then
             printf '  | rc=%s\n' "$rc"
@@ -415,14 +468,17 @@ for t in "$TEST_DIR"/*.mad; do
             fi
             if [ $obj_ok -eq 1 ]; then
                 OBJ_PASS=$((OBJ_PASS+1))
+                lane "$base" obj pass
             else
-                echo "FAIL(obj): $t"
+                [ "$REPORT" = json ] || echo "FAIL(obj): $t"
                 OBJ_FAIL=$((OBJ_FAIL+1))
+                lane "$base" obj fail
             fi
             rm -f "$obj_path"
         else
-            echo "FAIL(obj-build): $t"
+            [ "$REPORT" = json ] || echo "FAIL(obj-build): $t"
             OBJ_FAIL=$((OBJ_FAIL+1))
+            lane "$base" obj fail
         fi
     fi
 
@@ -458,9 +514,11 @@ for t in "$TEST_DIR"/*.mad; do
             fi
             if [ $exe_ok -eq 1 ]; then
                 EXE_PASS=$((EXE_PASS+1))
+                lane "$base" exe pass
             else
-                echo "FAIL(exe): $t"
+                [ "$REPORT" = json ] || echo "FAIL(exe): $t"
                 EXE_FAIL=$((EXE_FAIL+1))
+                lane "$base" exe fail
                 if [ "$MADC_FAIL_DETAIL" -gt 0 ]; then
                     printf '  | exe rc=%s\n' "$exe_rc"
                     detail "exe stdout" "$exe_out"
@@ -468,8 +526,9 @@ for t in "$TEST_DIR"/*.mad; do
             fi
             rm -f "$exe_path"
         else
-            echo "FAIL(exe-build): $t"
+            [ "$REPORT" = json ] || echo "FAIL(exe-build): $t"
             EXE_FAIL=$((EXE_FAIL+1))
+            lane "$base" exe fail
             detail "exe-build output" "$build_out"
         fi
     fi
@@ -478,25 +537,29 @@ if [ -n "$TEST_GLOBS" ]; then
     # Never let a filtered run read as a full one. A subset that says
     # only "N passed" is indistinguishable from the suite at a glance,
     # and that is exactly how a partial run gets quoted as a baseline.
-    echo "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
+    say "SUBSET RUN — filter: $TEST_GLOBS ($SELECTED of $(ls "$TEST_DIR"/*.mad | wc -l) tests; NOT a suite baseline)"
 fi
 if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes
     # measure different libraries and legitimately have different skip sets.
-    echo "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
+    say "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
 fi
 if [ -n "$MADC_SKIP_EXT" ]; then
-    echo "DOMAIN RUN — $MADC_SKIP_EXT ($DOMAIN_SKIPPED test(s) carry a domain skip fixture); NOT the default-lane baseline"
+    say "DOMAIN RUN — $MADC_SKIP_EXT ($DOMAIN_SKIPPED test(s) carry a domain skip fixture); NOT the default-lane baseline"
 fi
-echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
-if [ $RUN_EXE -eq 1 ]; then
+if [ "$REPORT" = json ]; then
+    printf '{"summary":{"passed":%s,"failed":%s,"timed_out":%s,"skipped":%s}}\n' "$PASS" "$FAIL" "$TIMEOUTS" "$SKIP"
+else
+    echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
+fi
+if [ $RUN_EXE -eq 1 ] && [ "$REPORT" != json ]; then
     if [ -n "$MADC_EXE_ADVISORY" ]; then
         echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests) — ADVISORY, not gating: $MADC_EXE_ADVISORY"
     else
         echo "EXE: $EXE_PASS passed, $EXE_FAIL failed (of $PASS JIT-passing tests)"
     fi
 fi
-if [ $RUN_OBJ -eq 1 ]; then
+if [ $RUN_OBJ -eq 1 ] && [ "$REPORT" != json ]; then
     echo "OBJ: $OBJ_PASS passed, $OBJ_FAIL failed (of $PASS JIT-passing tests)"
 fi
 [ $FAIL -eq 0 ] || exit 1
