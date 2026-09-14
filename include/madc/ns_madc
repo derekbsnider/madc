@@ -592,6 +592,16 @@ namespace madc {
 	bool upgrade_websocket();
 	bool connect_websocket(const char *resource);
 
+	// Header-framing facet (V6c-2): switch this channel into Content-Length
+	// MESSAGE mode — the framing the Language Server Protocol (and DAP, and
+	// BSP) uses: a header block, a blank line, then exactly that many bytes.
+	// A mode switch, not a handshake. Afterwards readline() returns one
+	// complete message body and write() emits the header plus the body;
+	// read()/readall() refuse (message-oriented), as they do for a
+	// WebSocket. false (with last_error) on a channel with no endpoint, or
+	// one already speaking another framing — a channel speaks one framing.
+	bool frame_headers();
+
 	// Serve facet (V6b-3): classify + route one accepted connection so a
 	// single --serve port carries all three seats. 2 = an api client (a
 	// JSON line, left buffered for readline); 1 = a WebSocket upgrade (the

@@ -1,5 +1,6 @@
 #include "madcdis/channel.h"
 #include "madcdis/websocket_channel.h"
+#include "madcdis/header_channel.h"
 #include "madc_datachannel_internal.h"
 #include "madc_task_io.h"
 #include "ns_common.h"
@@ -27,6 +28,12 @@ struct ChannelState
 	// message path call feed()/next_message()/encode_text() without a
 	// dynamic_cast per readline. Nulled with `channel` in close()/accept().
 	WebSocketDataChannel *wsc = nullptr;
+	// When set, the channel speaks Content-Length framed MESSAGES (V6c-2,
+	// the LSP/DAP/BSP framing): the framer owns the inner endpoint and IS
+	// `channel` above; the same typed-alias rule as `wsc` — no dynamic_cast
+	// per readline, nulled with `channel` in close()/accept(). The two are
+	// mutually exclusive: a channel speaks one framing.
+	HeaderFramedDataChannel *hfc = nullptr;
 };
 
 ChannelState *state(void *impl)
@@ -223,6 +230,45 @@ bool ws_recv(ChannelState *s, std::string &out)
 	}
 }
 
+// One Content-Length framed message off a header-framed channel (V6c-2): pull
+// from the decoder, pumping raw bytes (parking) when it needs more. false at a
+// refused header block (the stream cannot be resynced past one) or a socket
+// EOF; the refusal's reason lands in last_error so the caller can say why.
+bool hdr_recv(ChannelState *s, std::string &out)
+{
+	out.clear();
+	if ( s->failed || s->eof )
+		return false;
+	for ( ;; )
+	{
+		bool eof = false;
+		std::string why;
+		if ( s->hfc->next_message(out, eof, why) )
+			return true;
+		if ( eof )
+		{
+			s->eof = true;
+			if ( !why.empty() )
+				set_state_error(s, "framed read failed: " + why);
+			return false;
+		}
+		char chunk[4096];
+		std::size_t count = 0;
+		park_until_readable(s);
+		if ( !s->hfc->read_raw(chunk, sizeof(chunk), count, &s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		if ( count == 0 )
+		{
+			s->eof = true;		// the peer closed between messages
+			return false;
+		}
+		s->hfc->feed(chunk, count);
+	}
+}
+
 } // namespace
 
 channel::channel()
@@ -288,6 +334,7 @@ int64_t channel::accept(channel &client)
 	ChannelState *cs = state(client.impl_);
 	cs->channel = std::move(accepted);
 	cs->wsc = nullptr;		// a fresh accepted byte stream, not ws yet
+	cs->hfc = nullptr;		// ... and not header-framed either
 	cs->pending.clear();
 	cs->eof = false;
 	cs->failed = false;
@@ -425,6 +472,37 @@ bool channel::connect_websocket(const char *resource)
 	return true;
 }
 
+// Header-framing facet (V6c-2): switch this channel into Content-Length
+// MESSAGE mode — the framing LSP, DAP and BSP share. There is no handshake to
+// perform (unlike the WebSocket upgrade), so this is a mode switch, not a
+// negotiation: afterwards readline() returns one complete message body and
+// write() emits the header block plus the body. Anything the byte reader had
+// already buffered is the head of the message stream and rides in as leftover.
+bool channel::frame_headers()
+{
+	ChannelState *s = state(impl_);
+	if ( s->hfc )
+		return true;		// already header-framed
+	if ( s->wsc )
+	{
+		set_state_error(s, "frame_headers on a WebSocket channel:"
+				   " a channel speaks one framing");
+		return false;
+	}
+	if ( !s->channel )
+	{
+		set_state_error(s, "frame_headers on a channel with no endpoint");
+		return false;
+	}
+	std::string leftover;
+	leftover.swap(s->pending);
+	std::unique_ptr<HeaderFramedDataChannel> hdr(
+		new HeaderFramedDataChannel(std::move(s->channel), leftover));
+	s->hfc = hdr.get();
+	s->channel = std::move(hdr);
+	return true;
+}
+
 // One accepted connection, classified and served (V6b-3): an api client opens
 // with a JSON line (return 2, `pending` left for the reader); a browser opens
 // with an HTTP request — a WebSocket upgrade becomes a ws message channel
@@ -492,9 +570,9 @@ int64_t channel::read(void *buffer, int64_t capacity)
 	ChannelState *s = state(impl_);
 	if ( !buffer || capacity <= 0 )
 		return 0;
-	if ( s->wsc )
+	if ( s->wsc || s->hfc )
 	{
-		set_state_error(s, "websocket channel is message-oriented;"
+		set_state_error(s, "this channel is message-oriented;"
 				   " use readline()");
 		return -1;
 	}
@@ -534,6 +612,8 @@ bool channel::readline(std::string &out)
 	ChannelState *s = state(impl_);
 	if ( s->wsc )
 		return ws_recv(s, out);		// one WebSocket message
+	if ( s->hfc )
+		return hdr_recv(s, out);	// one Content-Length framed message
 	out.clear();
 	if ( s->failed )
 		return false;
@@ -565,9 +645,9 @@ bool channel::readall(std::string &out)
 {
 	ChannelState *s = state(impl_);
 	out.clear();
-	if ( s->wsc )
+	if ( s->wsc || s->hfc )
 	{
-		set_state_error(s, "websocket channel is message-oriented;"
+		set_state_error(s, "this channel is message-oriented;"
 				   " use readline()");
 		return false;
 	}
@@ -616,6 +696,18 @@ bool channel::write(const char *buffer, int64_t size)
 	}
 	if ( !buffer || size <= 0 )
 		return size <= 0;
+	if ( s->hfc )		// message channel: one framed message per write
+	{
+		std::string msg = s->hfc->encode_message(
+			buffer, static_cast<std::size_t>(size));
+		if ( !s->hfc->write_raw(msg.data(), msg.size(),
+					&s->last_error) )
+		{
+			s->failed = true;
+			return false;
+		}
+		return true;
+	}
 	if ( s->wsc )		// message channel: one text frame per write
 	{
 		std::string frame = s->wsc->encode_text(
@@ -680,6 +772,7 @@ void channel::close()
 		s->exit_status = s->channel->exit_status();
 		s->channel.reset();
 		s->wsc = nullptr;	// the framer went with the channel
+		s->hfc = nullptr;
 	}
 }
 

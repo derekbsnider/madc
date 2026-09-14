@@ -6,6 +6,7 @@
 // self-contained. See include/madcdis/websocket_channel.h for the layering.
 
 #include "madcdis/websocket_channel.h"
+#include "madcdis/header_channel.h"	// the ONE header-block reader
 
 #include <cctype>
 #include <ctime>
@@ -85,47 +86,14 @@ std::string base64_encode(const unsigned char *in, std::size_t len)
 }
 
 // ---- header parsing helpers ------------------------------------------------
+// The header-block rule itself (trim, case-insensitive name match, the
+// "Name: value" CRLF lines) is ONE owner in madcdis/header_channel.h, shared
+// with the Content-Length framer (V6c-2): two private copies of it is how one
+// reader learns to accept a header the other rejects.
 
-std::string trim(const std::string &s)
-{
-	std::size_t a = 0, b = s.size();
-	while ( a < b && std::isspace((unsigned char)s[a]) ) ++a;
-	while ( b > a && std::isspace((unsigned char)s[b - 1]) ) --b;
-	return s.substr(a, b - a);
-}
-
-bool iequals(const std::string &a, const std::string &b)
-{
-	if ( a.size() != b.size() )
-		return false;
-	for ( std::size_t i = 0; i < a.size(); ++i )
-		if ( std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]) )
-			return false;
-	return true;
-}
-
-// The value of header `name` (case-insensitive) in an HTTP header block, or
-// false when absent. Header lines are "Name: value" separated by CRLF.
-bool header_value(const std::string &block, const char *name, std::string &out)
-{
-	std::string want(name);
-	std::size_t pos = 0;
-	while ( pos < block.size() )
-	{
-		std::size_t eol = block.find("\r\n", pos);
-		if ( eol == std::string::npos )
-			eol = block.size();
-		std::string line = block.substr(pos, eol - pos);
-		std::size_t colon = line.find(':');
-		if ( colon != std::string::npos && iequals(trim(line.substr(0, colon)), want) )
-		{
-			out = trim(line.substr(colon + 1));
-			return true;
-		}
-		pos = eol + 2;
-	}
-	return false;
-}
+using detail::header_iequals;
+using detail::header_trim;
+using detail::header_value;
 
 std::string first_line(const std::string &block)
 {
@@ -151,13 +119,13 @@ bool websocket_server_handshake(const std::string &request,
 {
 	std::string upgrade;
 	if ( !header_value(request, "upgrade", upgrade)
-	  || !iequals(trim(upgrade), "websocket") )
+	  || !header_iequals(header_trim(upgrade), "websocket") )
 	{
 		reason = "not a WebSocket upgrade (missing Upgrade: websocket)";
 		return false;
 	}
 	std::string key;
-	if ( !header_value(request, "sec-websocket-key", key) || trim(key).empty() )
+	if ( !header_value(request, "sec-websocket-key", key) || header_trim(key).empty() )
 	{
 		reason = "missing Sec-WebSocket-Key";
 		return false;
@@ -165,7 +133,7 @@ bool websocket_server_handshake(const std::string &request,
 	response = "HTTP/1.1 101 Switching Protocols\r\n"
 		   "Upgrade: websocket\r\n"
 		   "Connection: Upgrade\r\n"
-		   "Sec-WebSocket-Accept: " + websocket_accept_token(trim(key))
+		   "Sec-WebSocket-Accept: " + websocket_accept_token(header_trim(key))
 		 + "\r\n\r\n";
 	return true;
 }
@@ -208,7 +176,7 @@ bool websocket_client_validate(const std::string &response,
 		reason = "missing Sec-WebSocket-Accept";
 		return false;
 	}
-	if ( trim(accept) != websocket_accept_token(key) )
+	if ( header_trim(accept) != websocket_accept_token(key) )
 	{
 		reason = "Sec-WebSocket-Accept token mismatch";
 		return false;
