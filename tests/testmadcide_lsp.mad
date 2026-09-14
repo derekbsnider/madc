@@ -1,0 +1,310 @@
+// V6c-2: the LSP face, in process. `madcide <file> --lsp` is a Language
+// Server over stdio — the standard deployment an editor spawns — and this
+// test drives its dispatcher (lsp_handle) directly with real JSON-RPC
+// messages, exactly as run_lsp does after the framer hands it one. The
+// framing and the deployed process are the sibling gate
+// (testmadcide_lsp_stdio); here the protocol semantics are pinned:
+// lifecycle, the position-encoding NEGOTIATION, document sync through the one
+// text-mutation owner, and the six answering methods over the existing
+// projections and graph verbs.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_lsp.inc"
+
+// One request through the dispatcher: `res` is the reply's `result` (null
+// when the message is a notification), `notes` the server -> client
+// notifications the work produced.
+bool call_lsp(var &res, var &notes, IdeSession &S, long doc, long id,
+	      const char *method, var &params)
+{
+    var req = { "jsonrpc": "2.0", "id": id, "method": method, "params": params };
+    var resp;
+    notes = {};
+    bool replied = lsp_handle(S, doc, -1, req, resp, notes);
+    res = resp["result"];
+    return replied;
+}
+
+// A NOTIFICATION (no id) — the sync messages.
+bool notify_lsp(var &notes, IdeSession &S, long doc, const char *method, var &params)
+{
+    var req = { "jsonrpc": "2.0", "method": method, "params": params };
+    var resp;
+    notes = {};
+    return lsp_handle(S, doc, -1, req, resp, notes);
+}
+
+// The error object of a request that refused.
+void call_err(var &err, IdeSession &S, long doc, long id, const char *method, var &params)
+{
+    var req = { "jsonrpc": "2.0", "id": id, "method": method, "params": params };
+    var resp;
+    var notes = {};
+    lsp_handle(S, doc, -1, req, resp, notes);
+    err = resp["error"];
+}
+
+// How many files the session has open (one buffer row each). A dialect
+// function never RETURNS a carrier — the count is what this asks for.
+long buffer_count(long w, long es)
+{
+    var rows;
+    ui::get(rows, w, es, "buffers");
+    return rows.is_null() ? 0 : php::count(rows);
+}
+
+void position(var &out, long line, long character)
+{
+    out = { "line": line, "character": character };
+}
+
+int main()
+{
+    const char *path = "madc_ide_lsp.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b)\n{\n\treturn a + b;\n}\n\nint main()\n{\n\tlong s = add(1, 2);\n\treturn s;\n}\n");
+    var uri;
+    var pathv = path;
+    lsp_path_uri(uri, pathv);
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "cannot open {}", path);
+	return 1;
+    }
+    S.terminal(false);
+    long w = S.world();
+    long es = S.es;
+
+    // ---- lifecycle + the encoding negotiation --------------------------
+    var none;
+    var res;
+    var notes;
+    call_lsp(res, notes, S, doc, 1, "initialize", none);
+    var caps = res["capabilities"];
+    println("init-encoding-default: {}", caps["positionEncoding"]);
+    println("init-sync-change: {}", caps["textDocumentSync"]["change"]);
+    println("init-providers: hover={} def={} refs={} sym={}",
+	    caps["hoverProvider"].as_boolean() ? 1 : 0,
+	    caps["definitionProvider"].as_boolean() ? 1 : 0,
+	    caps["referencesProvider"].as_boolean() ? 1 : 0,
+	    caps["documentSymbolProvider"].as_boolean() ? 1 : 0);
+    var legend = caps["semanticTokensProvider"]["legend"];
+    println("init-legend: {}", js::stringify(legend["tokenTypes"]));
+    println("init-server: {}", res["serverInfo"]["name"]);
+
+    // A client that OFFERS utf-8 gets it (no conversion at all after that).
+    var offers = {};
+    offers[] = "utf-8";
+    offers[] = "utf-16";
+    var general = { "positionEncodings": offers };
+    var initp = { "general": general };
+    call_lsp(res, notes, S, doc, 2, "initialize", initp);
+    println("init-encoding-negotiated: {}", res["capabilities"]["positionEncoding"]);
+
+    // ... and one that offers only what we cannot take keeps the default.
+    var only32 = {};
+    only32[] = "utf-32";
+    var general32 = { "positionEncodings": only32 };
+    var init32 = { "general": general32 };
+    call_lsp(res, notes, S, doc, 3, "initialize", init32);
+    println("init-encoding-unoffered: {}", res["capabilities"]["positionEncoding"]);
+
+    // Back to utf-16 (the protocol's default) for the rest of the run.
+    call_lsp(res, notes, S, doc, 4, "initialize", none);
+
+    // `initialized` is a notification: no reply, ever.
+    println("initialized-replies: {}", notify_lsp(notes, S, doc, "initialized", none) ? 1 : 0);
+
+    // ---- didOpen: the client's text is authoritative, diagnostics follow
+    var tdoc = { "uri": uri, "languageId": "madc", "version": 1,
+		 "text": "long add(long a, long b)\n{\n\treturn a + b;\n}\n\nint main()\n{\n\tlong s = add(1, 2);\n\treturn s;\n}\n" };
+    var openp = { "textDocument": tdoc };
+    println("didopen-replies: {}", notify_lsp(notes, S, doc, "textDocument/didOpen", openp) ? 1 : 0);
+    println("didopen-notes: {}", php::count(notes));
+    var note0 = notes[0];
+    println("didopen-method: {}", note0["method"]);
+    println("didopen-clean: {}", php::count(note0["params"]["diagnostics"]));
+    println("didopen-uri-matches: {}", note0["params"]["uri"] == uri ? 1 : 0);
+    // The session opened `madc_ide_lsp.mad`; the client addressed the same
+    // file by ABSOLUTE uri. One file is one BUFFER — a second row here would
+    // mean every later edit lands in a buffer nobody is reading.
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    println("didopen-buffers: {}", bufs.is_null() ? 0 : php::count(bufs));
+
+    // ---- documentSymbol <- parse_outline --------------------------------
+    var symp = { "textDocument": tdoc };
+    call_lsp(res, notes, S, doc, 10, "textDocument/documentSymbol", symp);
+    println("symbols: {}", php::count(res));
+    var sym0 = res[0];
+    println("symbol0: name={} kind={} startline={} endline={}",
+	    sym0["name"], sym0["kind"],
+	    sym0["range"]["start"]["line"], sym0["range"]["end"]["line"]);
+
+    // ---- definition: the call site resolves to the definition -----------
+    // Line 8 (0-based 7) is "\tlong s = add(1, 2);" — the caret inside `add`.
+    var pos;
+    position(pos, 7, 11);
+    var defp = { "textDocument": tdoc, "position": pos };
+    call_lsp(res, notes, S, doc, 11, "textDocument/definition", defp);
+    println("definition-count: {}", php::count(res));
+    var loc0 = res[0];
+    println("definition-line: {}", loc0["range"]["start"]["line"]);
+    println("definition-uri-matches: {}", loc0["uri"] == uri ? 1 : 0);
+
+    // A position on whitespace defines nothing — an EMPTY list, not an error.
+    var blank;
+    position(blank, 4, 0);
+    var nodefp = { "textDocument": tdoc, "position": blank };
+    call_lsp(res, notes, S, doc, 12, "textDocument/definition", nodefp);
+    println("definition-nowhere: {}", php::count(res));
+
+    // ---- references: the definition finds its call site ------------------
+    var dpos;
+    position(dpos, 0, 6);			// inside `add` on the signature
+    var refp = { "textDocument": tdoc, "position": dpos };
+    call_lsp(res, notes, S, doc, 13, "textDocument/references", refp);
+    println("references: {}", php::count(res));
+    var ref0 = res[0];
+    println("reference-line: {}", ref0["range"]["start"]["line"]);
+
+    var ctx = { "includeDeclaration": true };
+    var refp2 = { "textDocument": tdoc, "position": dpos, "context": ctx };
+    call_lsp(res, notes, S, doc, 14, "textDocument/references", refp2);
+    println("references-with-decl: {}", php::count(res));
+
+    // ---- hover ----------------------------------------------------------
+    call_lsp(res, notes, S, doc, 15, "textDocument/hover", defp);
+    println("hover: {}", res["contents"]["value"]);
+    call_lsp(res, notes, S, doc, 16, "textDocument/hover", nodefp);
+    println("hover-blank-null: {}", res.is_null() ? 1 : 0);
+
+    // ---- semanticTokens/full --------------------------------------------
+    call_lsp(res, notes, S, doc, 17, "textDocument/semanticTokens/full", symp);
+    var data = res["data"];
+    long dn = php::count(data);
+    println("tokens-multiple-of-5: {}", dn % 5 == 0 ? 1 : 0);
+    println("tokens-count: {}", dn / 5);
+    println("token0: dline={} dchar={} len={} type={} mods={}",
+	    data[0], data[1], data[2], data[3], data[4]);
+    long legend_n = php::count(legend["tokenTypes"]);
+    bool in_legend = true;
+    for ( long i = 3; i < dn; i = i + 5 )
+	if ( data[i].as_integer() >= legend_n )
+	    in_legend = false;
+    println("tokens-in-legend: {}", in_legend ? 1 : 0);
+
+    // ---- didChange: an incremental splice through the ONE owner ---------
+    // Replace `add` with `sum` on the signature line: [0,5)-[0,8).
+    var cstart;
+    position(cstart, 0, 5);
+    var cend;
+    position(cend, 0, 8);
+    var crange = { "start": cstart, "end": cend };
+    var change = { "range": crange, "text": "sum" };
+    var changes = {};
+    changes[] = change;
+    var vtdoc = { "uri": uri, "version": 2 };
+    var changep = { "textDocument": vtdoc, "contentChanges": changes };
+    notify_lsp(notes, S, doc, "textDocument/didChange", changep);
+    long adoc = S.active(doc);
+    var t;
+    ui::text(t, w, adoc);
+    println("after-change-line1: {}", perl::substr(t, 0, 24));
+    // The call site now names a function that no longer exists: one error.
+    var dnote = notes[0];
+    var diags = dnote["params"]["diagnostics"];
+    println("change-diags: {}", php::count(diags));
+    var d0 = diags[0];
+    println("diag-severity: {}", d0["severity"]);
+    println("diag-line: {}", d0["range"]["start"]["line"]);
+    println("diag-range-nonempty: {}",
+	    d0["range"]["end"]["character"].as_integer()
+	    > d0["range"]["start"]["character"].as_integer() ? 1 : 0);
+    println("diag-source: {}", d0["source"]);
+
+    // Put it back with a FULL-document change (no range).
+    var whole = { "text": "long add(long a, long b)\n{\n\treturn a + b;\n}\n\nint main()\n{\n\tlong s = add(1, 2);\n\treturn s;\n}\n" };
+    var wchanges = {};
+    wchanges[] = whole;
+    var wholep = { "textDocument": vtdoc, "contentChanges": wchanges };
+    notify_lsp(notes, S, doc, "textDocument/didChange", wholep);
+    var dnote2 = notes[0];
+    println("after-full-change-diags: {}", php::count(dnote2["params"]["diagnostics"]));
+
+    // didSave republishes; didClose keeps the buffer open for other clients.
+    notify_lsp(notes, S, doc, "textDocument/didSave", symp);
+    println("didsave-notes: {}", php::count(notes));
+    println("didclose-replies: {}", notify_lsp(notes, S, doc, "textDocument/didClose", symp) ? 1 : 0);
+    call_lsp(res, notes, S, doc, 18, "textDocument/documentSymbol", symp);
+    println("after-close-symbols: {}", php::count(res));
+
+    // ---- positions in UTF-16 vs UTF-8 -----------------------------------
+    // A line whose caret sits after a two-byte character: the byte offset and
+    // the UTF-16 column disagree, and the seat must follow the negotiation.
+    const char *upath = "madc_ide_lsp_u.mad";
+    php::file_put_contents(upath, "long caf\xC3\xA9 = 1;\n");
+    var upathv = upath;
+    var uuri;
+    lsp_path_uri(uuri, upathv);
+    var utdoc = { "uri": uuri, "languageId": "madc", "version": 1,
+		  "text": "long caf\xC3\xA9 = 1;\n" };
+    var uopen = { "textDocument": utdoc };
+    notify_lsp(notes, S, doc, "textDocument/didOpen", uopen);
+    long udoc = S.active(doc);
+    var upos;
+    position(upos, 0, 9);		// UTF-16 column 9 = byte 10
+    println("utf16-offset: {}", lsp_offset_of(w, udoc, peUTF16, upos));
+    println("utf8-offset: {}", lsp_offset_of(w, udoc, peUTF8, upos));
+    var back;
+    lsp_position_of(back, w, udoc, peUTF16, 10);
+    println("utf16-roundtrip: {}", back["character"]);
+    println("second-doc-buffers: {}", buffer_count(w, es));
+
+    // Back to the FIRST document, addressed by its absolute uri while the
+    // buffer table still spells it the relative way the session was launched
+    // with. The table is the uri -> document map, so this must SWITCH to the
+    // existing buffer, never open a third one (edit_file compares paths
+    // canonically — without that every later edit lands in a buffer nobody
+    // is reading).
+    call_lsp(res, notes, S, doc, 19, "textDocument/documentSymbol", symp);
+    println("reopen-first-symbols: {}", php::count(res));
+    println("reopen-first-buffers: {}", buffer_count(w, es));
+
+    // ---- refusals -------------------------------------------------------
+    var err;
+    call_err(err, S, doc, 20, "textDocument/codeLens", symp);
+    println("unknown-method: code={} msg={}", err["code"], err["message"]);
+
+    var bad = { "uri": "untitled:Untitled-1" };
+    var badp = { "textDocument": bad };
+    call_err(err, S, doc, 21, "textDocument/documentSymbol", badp);
+    println("bad-uri: code={}", err["code"]);
+
+    // A notification with an id is answered rather than left hanging.
+    call_err(err, S, doc, 22, "textDocument/didSave", symp);
+    println("notification-with-id: code={}", err["code"]);
+
+    // An unknown NOTIFICATION is never answered (a reply can abort a client).
+    println("unknown-notification-replies: {}",
+	    notify_lsp(notes, S, doc, "$/setTrace", none) ? 1 : 0);
+
+    // ---- shutdown / exit -------------------------------------------------
+    println("shutdown-replies: {}", call_lsp(res, notes, S, doc, 30, "shutdown", none) ? 1 : 0);
+    println("shutdown-result-null: {}", res.is_null() ? 1 : 0);
+    println("shutdown-flag: {}", es_int(w, es, "lspdown", 0));
+    notify_lsp(notes, S, doc, "exit", none);
+    println("exit-flag: {}", es_int(w, es, "lspexit", 0));
+
+    S.close();
+    php::unlink(path);
+    php::unlink(upath);
+    return 0;
+}
