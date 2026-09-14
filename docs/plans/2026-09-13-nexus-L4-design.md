@@ -791,6 +791,24 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
   canned rows — the external system's stand-in (we cannot ship mycenode). Jira
   second: only a manifest, IF its transport is stdio-bridged; otherwise it
   waits for the `http://` channel.
+- **As landed (L4d, 2026-09-14):** manifests live in `<profile_dir>/mcp/*.mcp.json`
+  (`resolve_profile_dir`'s owner) and `nexus.sources(dir)` — owner tier when
+  `dir` is given — (re)loads from another directory (the tests load their
+  scratch manifests so). A manifest's `command` is an array joined by single
+  spaces (the `exec://` factory's rule; `{madc}` / `{project}` substitute
+  through `build_subst`, the ONE owner); its `env` map renders as an `env K=V …`
+  prefix on posix and REFUSES at load on win32 (the factory carries args only —
+  `ProcessOptions.environment` is a later channel spelling); a refusal names the
+  FILE and the KEY (a parsed JSON value has no line). ONE child per `nexus.sync`
+  (a channel is not a value; a sync is rare): spawn → `initialize` →
+  `notifications/initialized` → `tools/list` validated against the vocabulary →
+  `list_tasks` → close; the rows are the tool's first text content parsed as
+  JSON (an array, or `{rows}`), `map` renames result fields to record fields,
+  `key` → `ext_key`, `state` through `record_state_of`; upsert by `(origin,
+  ext_key)`. A record's `id` is the seq of its `create` event, DERIVED by the
+  fold (update / close name `id`). `nexus.explain` takes a SYMBOL ref in v1 and
+  counts call EDGES for `depends`. The `--mcp` stdio server flushes every reply
+  (a piped reply had sat in libc's buffer).
 
 ## 5. Data flow (the four paths)
 
@@ -875,7 +893,7 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 | **L4a** git substrate | libgit2 subtree + `Makefile.madc` + features headers + Makefile wiring (all variants) + size spike; `GitRepo`; `git_source_adapter` + the `git` scheme row; `madc::git_*` publics | §8 L4a |
 | **L4b** PAST verbs — SHIPPED 2026-09-13 (plan `2026-09-13-nexus-L4b-past-verbs-plan.md`) | `clog_kind` enum at the reader + `ts` on every record; `parse_open_tagged` / `parse_generation` / `graph_route` (engine-allocated tags; a tagged handle refuses refresh); `GitRepo::blame_buffer`, `git_relpath` (the promoted canonicalizer), `php::time()`; `graph.status / source / history / commits / revision / diff` in `madcide_past.inc`, routed in `graph_call`. The project-scoped stream moved to L4c (its first cross-document consumer) | `testgraphtagged`, `testgraphpast`, `test_gitrepo`, the single-owners gate's kind-compare marker |
 | **L4c** propose — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4c-propose-plan.md`) | the project-scoped stream (ONE entity per session found by name, records carry `doc` + `path`, per-document replay / `events_since` / compaction checkpoints, `clog_adopt` re-attaches a restored log by path, restore refuses over a live session); `tierPROPOSER`; `parse_would_accept` (the ONE validator's commit flag); `edit_mode`; `graph_edit_apply` over an ops LIST (one candidate, one validation, one checkpoint, all splices or none); proposal + decision records with `actor`; `graph.proposals / proposal / accept / reject / withdraw` in `madcide_propose.inc`; the JSON-line seat (`madcide_seat.inc`) carrying the api AND the JSON-RPC envelope; the connection-level wiring test | `testparsewould`, `testmadcide_changelog` (+ the two-document case), `testmadcide_serve_propose` (three real connections), the ONE-validator marker in the single-owners gate, the enum gate over the seat files |
-| **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot; the `test` record kind + `tests` relation + `test.discover` (records only) | §8 L4d |
+| **L4d** intent — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4d-intent-plan.md`) | `php::array_keys / mkdir / rmdir` (PHP parity — the dialect's key enumeration and directory verbs); the INTENT vocabulary (record kind / state / op, link op, ref kind, relations, provenance, verbs, test family, manifest ops, transport, detail — one converter pair each); `madcide_nexus.inc`: record + link EVENTS in the one stream, `nexus_fold` (id = the create seq; cached by seq), refs `{ref: word, …}` with ONE canonical key, `nexus.record / records / create / update / close / link / unlink / context / explain`, `nexus_constraints` on proposals; `madcide_tests.inc`: `test.discover` by the runner's conventions; `madcide_mcpclient.inc`: manifests `<profiles>/mcp/*.mcp.json` (+ `nexus.sources(dir)` owner reload; `{madc}` via `build_subst`; `env` as a prefix), the client over `exec://` (ids matched, cooperative deadline, exit status after close), `nexus.sync` = one child per sync, upsert by `(origin, ext_key)`; the `--mcp` server flushes every reply; mycenode = a manifest in that directory | `testphpdirs`, `testnexus_records` (27), `testmcpclient` (12, the fixture server as the child), the enum gate over the seat files |
 | **L4e** verification | `asset_layers_of` + per-family `*_min_layer` gates (retrofits `graph.*` and `nexus.*`; `graph.status` / `nexus.explain` report the layer set); `--report=json` on the canonical runner; `test.list / candidates / run / results`; `testrun` events tagged by node; proposal `checks` on accept/propose | a two-asset fixture project (a `.mad` and a binary) refused/served per layer; a run through the real runner yields a `testrun` event; a proposal with a linked failing test stays open with the run attached |
 | later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments); the `.mad` family run in-process behind the one fixture owner | own plans |
 
