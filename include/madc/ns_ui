@@ -223,6 +223,18 @@ namespace ui {
     // word; both clamp, -1 = no text component.
     int64_t text_word_left(int64_t w, int64_t entity, int64_t from);
     int64_t text_word_right(int64_t w, int64_t entity, int64_t from);
+    // UTF-16 column conversion over ONE line (madcdis/text_utf16.h is the
+    // owner; the web hit test and the LSP face are its two consumers). A
+    // protocol whose positions are UTF-16 code units — LSP's default — needs
+    // both directions, and treating such a column as a byte offset silently
+    // mis-places every caret on a line with a non-ASCII character before it.
+    //   text_bytecol: a 0-based UTF-16 column on 1-based `line` -> the byte
+    //       column within that line (clamped; inside a surrogate pair snaps
+    //       to the pair's start)
+    //   text_col16:   the inverse, a 0-based byte column -> the UTF-16 column
+    // -1 = no text component, or `line` is not a line of this text.
+    int64_t text_bytecol(int64_t w, int64_t entity, int64_t line, int64_t col16);
+    int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol);
     // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
     // mutation, carrying an OPAQUE application payload (store the caret
     // there — it rides with the state it belongs to); one semantic edit,

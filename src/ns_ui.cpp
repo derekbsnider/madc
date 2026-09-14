@@ -58,6 +58,7 @@
 #include "madcdis/term_screen.h"	// term_feed: the embedded Terminal's screen
 #include "madcdis/tui_model.h"
 #include "madcdis/tui_provider.h"
+#include "madcdis/text_utf16.h"	// col16_to_byte / col16_of_byte: the ONE owner
 #include "madcdis/web_model.h"
 #include "madcdis/world_text.h"
 #include "rt/rt_task.h"	// the window's wait = the cooperative scheduler's (fire_due / runnable / yield / live)
@@ -1528,6 +1529,30 @@ int64_t text_word_right(int64_t w, int64_t entity, int64_t from)
     if ( !b || from < 0 )
 	return -1;
     return (int64_t)b->word_right((size_t)from);
+}
+
+// UTF-16 column conversion over one line (V6c-2): the dialect face of the
+// ONE owner in madcdis/text_utf16.h — no byte walking here, or the LSP face
+// and the web hit test would answer differently on the same line. `line` is
+// 1-based (the text_line_* convention); both columns are 0-based.
+int64_t text_bytecol(int64_t w, int64_t entity, int64_t line, int64_t col16)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    size_t off = 0, len = 0;
+    if ( !b || line <= 0 || !b->line_span((size_t)line, off, len) )
+	return -1;
+    return (int64_t)madc::col16_to_byte(b->slice(off, len), (long)col16);
+}
+
+int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    size_t off = 0, len = 0;
+    if ( !b || line <= 0 || !b->line_span((size_t)line, off, len) )
+	return -1;
+    if ( bytecol < 0 )
+	bytecol = 0;
+    return (int64_t)madc::col16_of_byte(b->slice(off, len), (size_t)bytecol);
 }
 
 // ---- the view seam's coordinate map (madcide AST-3) --------------------
