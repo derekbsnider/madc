@@ -524,7 +524,12 @@ namespace madc {
     extern SysInfo sys;
 
     // madc::channel — one URI-addressed byte channel with line helpers
-    // (exec://, tcp://, file://, ... via the host channel registry).
+    // (exec://, tcp://, file://, stdio://, ... via the host channel
+    // registry). `stdio://` is THIS process's standard streams (read fd 0,
+    // write fd 1): the stdio deployment of a protocol server is a channel
+    // like any other, so one seat loop serves stdio and a socket. Its
+    // close() leaves fd 0/1 open (libc's stdout still owns fd 1);
+    // close_write() does close fd 1, so the peer sees EOF.
     // Declaration-only: methods resolve mangled-direct to the host class
     // (src/madc_channel_object.cpp). LAYOUT CONTRACT with
     // include/madcdis/channel.h — a single void* member, append-only,
