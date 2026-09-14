@@ -472,6 +472,30 @@ can answer — per-asset capability negotiation, the §2.8 invariant 2 shape
 applied inward. The model is a capability-layered one, not a fixed pipeline:
 no verb assumes a layer below it exists.
 
+**As landed (L4e, 2026-09-14; `tools/madcide/madcide_layers.inc`):**
+`asset_layers_of(w, es, doc, node)` takes the editor-state bag too (the
+repository handle and the project ride it). The SESSION is a project:
+`managed` holds for every asset document of the session — the implicit
+single-file project and every manifest member alike — and is false only for
+a pseudo-buffer (`[build]`, `[terminal]`). `versioned` = a repository above
+the file AND the file inside its work tree (an untracked file inside the
+checkout has the layer with zero rows). `lexable` and `parseable` are the
+compiler's kind ranges (C, C++, madc) through ONE range predicate — the
+seat's support table for both layers until a lexer-only kind gains rows. On
+this node `executable` = `parseable` (the running madc runs what it parses)
+and `testable` = at least one live `test` record whose family has a runner
+here (`mad`: `scripts/run_tests.sh` under the project root on posix;
+`external`: the record's `command`; `unit`: none — `make -C src test` owns
+it). Another node has no offers yet: its node-relative layers are 0. The gate
+runs after the tier gate and the parse handle opens ONLY for a parseable
+asset — a binary member never reaches `parse_open`; the refusal spells `no
+parseable layer for kind image ('graph.symbols' needs it; this asset has:
+text, versioned, managed)`. The tables: `graph_min_layer` (status → text;
+commits → versioned; history / revision / diff → versioned + parseable; the
+rest → parseable), `nexus_min_layer` (explain → managed + parseable; the
+rest → managed), `test_min_layer` (run → managed + testable; the rest →
+managed).
+
 ### 3.10 The verification axis — tests as records, runs as EVIDENCE events (owner, 2026-09-13)
 
 The triad (git = past, AST = present, intent = future) neglected the axis
@@ -533,6 +557,30 @@ proposal record already carries the `checks` seat for it. The model:
   (family?)`, `test.discover`, `test.candidates(ref)`, `test.run(ids…,
   target?)`, `test.results(test?, since?, node?)`. Layers: `alMANAGED` for
   the reads, `alTESTABLE` on the target node for `run`.
+- **As landed (L4e, 2026-09-14):** the runner's `--report=json` answers one
+  JSON object per line — a verdict `{test, family, result: pass|fail|timeout,
+  exit, seconds, detail}`, a skip `{…, result: skip, reason}`, a lane row
+  `{…, lane: exe|obj, result}`, a caveat `{note}`, the summary — with the
+  exit status unchanged. `test.run(ids, target?, proposal?)` groups the `mad`
+  records by DIRECTORY (one runner spawn per directory: `env MADC_BIN=<the
+  running madc> MADC_TEST_DIR=<dir> bash scripts/run_tests.sh --report=json
+  <bases>`), runs an `external` record's `command` through `build_subst`
+  (exit 0 = pass; silence past the idle deadline = timeout after `cancel`),
+  and REFUSES the whole call when a record's family has no runner here
+  (`unit`: `make -C src test` owns it) — nothing half-runs. Every verdict is
+  ONE `testrun` event `{test, name, family, node: 0, result, exit, seconds,
+  detail, output_ref: "", synced, proposal?}`; `synced` says whether the
+  served buffer equals its file on disk — the runner tests the DISK, so an
+  unsaved buffer's runs are labelled, never blocked. `test.candidates` answers
+  the explicit `tests` links only; with none it NAMES the fallback (`{fallback:
+  true, suite: {family: mad, count}}`) and nothing runs — `proposal_checks`
+  runs explicit candidates only (a whole-suite run inside an accept would
+  park the seat for minutes; the agent runs it with `test.run`). `graph.accept`
+  always runs the linked tests after landing; a proposal with `checks: true`
+  runs them right after its record is appended; the runs carry `proposal:
+  seq` and the proposal fold attaches them as `checks` (derived, like
+  `status`). The `.mad` fixture families keep the runner as their one seat;
+  the in-process refinement stays a later slice.
 
 ### 3.11 Multi-master builds and tests across platform nodes (owner, 2026-09-13)
 
@@ -585,6 +633,17 @@ for everything and never a CRDT for everything:
   — is the mesh track itself, after L4, when the MCP seat has paid for
   itself (the client-server design's own ordering). Nothing in L4 may assume
   a single node: every evidence row already names its node.
+- **As landed (L4e, 2026-09-14):** this node's Client record is
+  `node_offers` `{node: 0, platform: madc::sys.platform, toolchains: [madc],
+  serves: [build, run, test]}` (the `node_serve` enum's words), computed once
+  onto the editor-state bag and reported by `graph.status` as `node`. The
+  `target` slot resolves through `target_node_of`: null / "" / 0 / this
+  node's platform word = here (node 0); anything else refuses `no node offers
+  '<target>' (this node: <platform>; serves build, run, test)` before anything
+  spawns. `testrun` events carry `node: 0`; the build pump appends a
+  `buildrun` event `{node: 0, uri, exit, stopped}` at its end (a session-thread
+  task: one append, pushed to other clients by the next command's fan-out —
+  a named residue).
 
 ## 4. Components
 
@@ -894,7 +953,7 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 | **L4b** PAST verbs — SHIPPED 2026-09-13 (plan `2026-09-13-nexus-L4b-past-verbs-plan.md`) | `clog_kind` enum at the reader + `ts` on every record; `parse_open_tagged` / `parse_generation` / `graph_route` (engine-allocated tags; a tagged handle refuses refresh); `GitRepo::blame_buffer`, `git_relpath` (the promoted canonicalizer), `php::time()`; `graph.status / source / history / commits / revision / diff` in `madcide_past.inc`, routed in `graph_call`. The project-scoped stream moved to L4c (its first cross-document consumer) | `testgraphtagged`, `testgraphpast`, `test_gitrepo`, the single-owners gate's kind-compare marker |
 | **L4c** propose — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4c-propose-plan.md`) | the project-scoped stream (ONE entity per session found by name, records carry `doc` + `path`, per-document replay / `events_since` / compaction checkpoints, `clog_adopt` re-attaches a restored log by path, restore refuses over a live session); `tierPROPOSER`; `parse_would_accept` (the ONE validator's commit flag); `edit_mode`; `graph_edit_apply` over an ops LIST (one candidate, one validation, one checkpoint, all splices or none); proposal + decision records with `actor`; `graph.proposals / proposal / accept / reject / withdraw` in `madcide_propose.inc`; the JSON-line seat (`madcide_seat.inc`) carrying the api AND the JSON-RPC envelope; the connection-level wiring test | `testparsewould`, `testmadcide_changelog` (+ the two-document case), `testmadcide_serve_propose` (three real connections), the ONE-validator marker in the single-owners gate, the enum gate over the seat files |
 | **L4d** intent — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4d-intent-plan.md`) | `php::array_keys / mkdir / rmdir` (PHP parity — the dialect's key enumeration and directory verbs); the INTENT vocabulary (record kind / state / op, link op, ref kind, relations, provenance, verbs, test family, manifest ops, transport, detail — one converter pair each); `madcide_nexus.inc`: record + link EVENTS in the one stream, `nexus_fold` (id = the create seq; cached by seq), refs `{ref: word, …}` with ONE canonical key, `nexus.record / records / create / update / close / link / unlink / context / explain`, `nexus_constraints` on proposals; `madcide_tests.inc`: `test.discover` by the runner's conventions; `madcide_mcpclient.inc`: manifests `<profiles>/mcp/*.mcp.json` (+ `nexus.sources(dir)` owner reload; `{madc}` via `build_subst`; `env` as a prefix), the client over `exec://` (ids matched, cooperative deadline, exit status after close), `nexus.sync` = one child per sync, upsert by `(origin, ext_key)`; the `--mcp` server flushes every reply; mycenode = a manifest in that directory | `testphpdirs`, `testnexus_records` (27), `testmcpclient` (12, the fixture server as the child), the enum gate over the seat files |
-| **L4e** verification | `asset_layers_of` + per-family `*_min_layer` gates (retrofits `graph.*` and `nexus.*`; `graph.status` / `nexus.explain` report the layer set); `--report=json` on the canonical runner; `test.list / candidates / run / results`; `testrun` events tagged by node; proposal `checks` on accept/propose | a two-asset fixture project (a `.mad` and a binary) refused/served per layer; a run through the real runner yields a `testrun` event; a proposal with a linked failing test stays open with the run attached |
+| **L4e** verification — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4e-verification-plan.md`) | `php::basename` (PHP parity); `asset_layer` bits + `layer_name / layer_of / layer_words / layer_missing`, `test_result`, `node_serve`, the four runner verbs, `nkBUILDRUN`; `madcide_layers.inc` = `asset_layers_of` (the ONE owner), `node_offers`, `target_node_of`, `layer_refuse`; the layer gate after the tier gate in `graph_call / nexus_call / test_call` with the parse handle opened only for a parseable asset; `graph.status` (layers + node) and `nexus.explain` (layers) report the set; `--report=json` on the canonical runner; `madcide_tests.inc` = the testrun fold, `test.list / candidates / run / results`, `proposal_checks`; `testrun` events (one per verdict, node 0, `synced`) and the build pump's `buildrun`; the proposal fold attaches `checks`; `graph.accept` and `propose + checks: true` run the linked tests | `testphpbasename` (9), `testnexus_layers` (35: the two-asset project refused / served per layer; the real runner's pass / fail / timeout as events; results / list / candidates; external + unit families; the `target` slot; checks with a linked failing test), `testgraphpast` (layers = 6), the enum gate over `madcide_layers.inc` |
 | later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments); the `.mad` family run in-process behind the one fixture owner | own plans |
 
 Engine commits (`src/`, `include/`, `third_party/libgit2/Makefile.madc`)
@@ -1019,6 +1078,11 @@ From the external review, deferred with their seats named:
   records, runs as events, the canonical runner as the one harness), §9
   (slice L4e; `test` records in L4d), §10 (11–14). KG Decisions
   `nexus_asset_layers`, `nexus_verification_axis`.
+- L4e landed 2026-09-14: the "as landed" paragraphs of §3.9, §3.10 and §3.11
+  (the session is a project; the compiler's kind ranges; one runner spawn per
+  directory; the fallback named, never run; checks derived by the fold; the
+  `target` resolver and this node's offers; the build pump's `buildrun`). KG
+  Decisions `nexus_layers_session_is_project`, `nexus_checks_explicit_only`.
 - Second amendment the same day (the external review's capability-layered
   model and evidence-axis framing, relayed by the owner; the owner's
   multi-platform build plan): §3.9 adopts the review's discovery vocabulary
