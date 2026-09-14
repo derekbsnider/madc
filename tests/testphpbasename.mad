@@ -1,0 +1,18 @@
+// PHP parity (Nexus L4e task 0): php::basename — the last path component
+// after trailing separators trim, an optional suffix cut, the empty and
+// all-separator paths answer "", a var path works like a C string.
+int main()
+{
+    println("plain: {}", php::basename("/a/b/c.mad"));
+    println("suffix: {}", php::basename("/a/b/c.mad", ".mad"));
+    println("suffix-whole: {}", php::basename("/a/b/c.mad", "c.mad"));
+    println("suffix-miss: {}", php::basename("/a/b/c.mad", ".c"));
+    println("trailing: {}", php::basename("/a/b/"));
+    println("bare: {}", php::basename("c"));
+    println("root: [{}]", php::basename("/"));
+    println("empty: [{}]", php::basename(""));
+    var p = "madc_ide_ltests/ok.mad";
+    var b = php::basename(p, ".mad");
+    println("var: {}", b);
+    return 0;
+}

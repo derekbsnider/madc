@@ -943,6 +943,49 @@ const char *php_dirname_value(const madc::value *v, int64_t levels)
 	return php_dirname_slot(slot, levels);
 }
 
+// php::basename — php_basename parity (PHP 8): trailing separators trim,
+// the LAST component answers ("" for an empty or all-separator path); a
+// non-empty `suffix` that ends the component — and is shorter than it —
+// is cut. The separator rule is dirname's (one owner: php_dirname_is_sep),
+// and a WINDOWS-HOST drive prefix ("C:") is skipped like dirname skips it.
+static const char *php_basename_slot(std::string &slot, const char *suffix)
+{
+	std::string &s = slot;
+	size_t base = 0;
+	size_t end = s.size();
+#ifdef _WIN32
+	if ( s.size() >= 2 && s[1] == ':'
+	     && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) )
+		base = 2;
+#endif
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 1) trailing separators
+	size_t start = end;
+	while ( start > base && !php_dirname_is_sep(s[start - 1]) )
+		--start;		// 2) back to the separator before the component
+	std::string comp = s.substr(start, end - start);
+	if ( suffix && *suffix )
+	{
+		size_t sl = strlen(suffix);
+		if ( comp.size() > sl && comp.compare(comp.size() - sl, sl, suffix) == 0 )
+			comp.resize(comp.size() - sl);
+	}
+	slot = comp;
+	return slot.c_str();
+}
+
+const char *php_basename_cstr(const char *path, const char *suffix)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = path ? path : "";
+	return php_basename_slot(slot, suffix);
+}
+const char *php_basename_value(const madc::value *v, const char *suffix)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_basename_slot(slot, suffix);
+}
+
 // Value-out element returns — PHP's array_pop/array_shift return the
 // element itself (mixed), which only the carrier can represent.
 madc::value *php_array_pop_value(madc::value *out, madc::value *arr)
@@ -1176,6 +1219,8 @@ const char *__php_number_format_sep(int64_t a, const char *b) { return php_numbe
 const char *__php_wordwrap_cstr(const char *a, int64_t b, const char *c) { return php_wordwrap_cstr(a, b, c); }
 const char *__php_dirname_cstr(const char *a, int64_t b) { return php_dirname_cstr(a, b); }
 const char *__php_dirname_value(madc::value *a, int64_t b) { return php_dirname_value(a, b); }
+const char *__php_basename_cstr(const char *a, const char *b) { return php_basename_cstr(a, b); }
+const char *__php_basename_value(madc::value *a, const char *b) { return php_basename_value(a, b); }
 const char *__php_wordwrap_value(madc::value *a, int64_t b, const char *c) { return php_wordwrap_value(a, b, c); }
 const char *__php_implode_cstr(const char *a, madc::value *b) { return php_implode_cstr(a, b); }
 madc::value *__php_array_pop_value(madc::value *a, madc::value *b) { return php_array_pop_value(a, b); }
