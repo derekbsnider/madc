@@ -381,7 +381,7 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 			       value &out);
 bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 					    const std::string &source_text,
-					    value &out_diags);
+					    value &out_diags, bool commit);
 // The git substrate (Nexus L4a, design 2026-09-13 §4.2): read-only repository
 // facts through madc::GitRepo — see madc_git.cpp (no Program involved).
 int64_t internal_program_git_open(const std::string &path);
@@ -1367,7 +1367,19 @@ bool madc_parse_refresh_checked(void *result, int64_t handle, void *source)
 	return false;
     madc::value &out = *(madc::value *)result;
     return madc::internal_program_parse_refresh_checked(
-	*active, handle, *(const std::string *)source, out);
+	*active, handle, *(const std::string *)source, out, true);
+}
+// The same validator WITHOUT the swap (Nexus L4c, design §3.4): the
+// candidate's verdict + diagnostics, the live tree untouched.
+bool madc_parse_would_accept(void *result, int64_t handle, void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    madc::value &out = *(madc::value *)result;
+    return madc::internal_program_parse_refresh_checked(
+	*active, handle, *(const std::string *)source, out, false);
 }
 
 // The live-tree build/run bridges (OWNER RULING 2026-08-27): kind/outpath

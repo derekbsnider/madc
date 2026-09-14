@@ -5318,15 +5318,21 @@ static size_t child_error_count(::Program &child)
 // true. out_diags = the candidate's diagnostics rows either way, so a rejected
 // edit says why. One parse per attempt; a rejected attempt costs one parse and
 // changes nothing.
+//
+// ONE body, two modes (Nexus L4c, design §3.4): commit=true IS parse_refresh_checked
+// (validate + swap); commit=false IS parse_would_accept (validate, discard) — the
+// propose tier's verdict, the same error-count rule, never a second validator.
+// A would-accept touches nothing, so a revision (tagged) handle answers it too;
+// only the swap is refused there.
 bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 					    const std::string &source_text,
-					    madc::value &out_diags)
+					    madc::value &out_diags, bool commit)
 {
     out_diags = value();
     parse_tu_state *st = parse_tu_get(handle);
     if ( !st )
 	return false;
-    if ( graph_handle_is_tagged(st) )
+    if ( commit && graph_handle_is_tagged(st) )
     {
 	// L4b: a revision handle is read-only — one error row says so (the
 	// diagnostics row shape, so a consumer reads it like any other).
@@ -5351,6 +5357,8 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
     diagnostic_rows_from_child(*cand, out_diags);
     if ( child_error_count(*cand) > child_error_count(*st->child) )
 	return false;					// cand deleted here
+    if ( !commit )
+	return true;					// would accept — nothing swapped, cand deleted here
     delete st->child;
     st->child = cand.release();
     st->body_nodes.clear();

@@ -231,9 +231,14 @@ namespace madc {
     //     out_diags = the candidate's diagnostics rows either way. A swap
     //     advances the handle's generation: every earlier id is refused as
     //     stale by every graph verb — re-query (or read the edit result's node).
+    //   parse_would_accept(out_diags, handle, source): the SAME verdict WITHOUT
+    //     the swap (Nexus L4c, the propose tier's validator) — the live tree,
+    //     its generation and every id untouched either way; a revision handle
+    //     answers it too (nothing to bump). One validator, a commit flag inside.
     value &graph_span(value &out, int64_t handle, int64_t id);
     value &graph_at(value &out, int64_t handle, int64_t line, int64_t column);
     bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
+    bool parse_would_accept(value &out_diags, int64_t handle, const char *source);
 
     // The git substrate (Nexus L4a; design 2026-09-13 §4.2): a READ-ONLY view of
     // a local repository through madc::GitRepo (libgit2 vendored with every

@@ -300,6 +300,9 @@ value &graph_at(value &out, int64_t handle, int64_t line, int64_t column)
 bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source)
 	{ std::string s = source ? source : "";
 	  return madc_parse_refresh_checked(&out_diags, handle, &s); }
+bool parse_would_accept(value &out_diags, int64_t handle, const char *source)
+	{ std::string s = source ? source : "";
+	  return madc_parse_would_accept(&out_diags, handle, &s); }
 
 // The git substrate (Nexus L4a, design 2026-09-13 §4.2): a READ-ONLY view of a
 // local repository through madc::GitRepo, answered as values ({error: prose}

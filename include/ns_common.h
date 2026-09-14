@@ -255,6 +255,8 @@ void *madc_graph_impact(void *result, int64_t handle, int64_t id);
 void *madc_graph_span(void *result, int64_t handle, int64_t id);
 void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
 bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
+// Nexus L4c: the same validator without the swap (the propose tier's verdict).
+bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
 // The git substrate (Nexus L4a, design 2026-09-13 §4.2): read-only repository
 // facts through madc::GitRepo. path/spec/rev = std::string*, result =
 // madc::value*; git_open answers 0 for a path with no repository above it.
