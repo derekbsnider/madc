@@ -138,10 +138,40 @@ The substrate ws/MCP/LSP all ride. Engine + dialect.
    selectionRange, the ignored notifications), both range fixes
    negative-controlled. The probe is the instrument, not a battery member —
    the battery runs with no network and no node.
-   Next: V6c-3b (`workspace/executeCommand` onto the command registry,
-   `$/madc/*` notifications, a webview on the `--serve` page) and V6c-3c (the
-   attach relay: one session behind VS Code, an agent's MCP client and a
-   browser).
+4. **madcide's real controls in VS Code** — SHIPPED 2026-09-14 (plan
+   `2026-09-14-v6c3b-executecommand-webview-plan.md`): `workspace/executeCommand`
+   onto the command registry, `$/madc/*` notifications, and the window.
+
+   **As landed.** The adapter holds no command grammar: it strips the wire
+   prefix (`madcide.<name>` — a client merges every server's command list into
+   one namespace) and hands the name to `api_run`, the one command core every
+   transport drives. The tier gate and the unknown-command refusal are already
+   `api_run`'s. `executeCommandProvider` is built from `cmd_table`, so what is
+   advertised is exactly what dispatch accepts — 110 commands. A command's side
+   effects arrive as notifications: `$/madc/event` carries each change-log
+   record VERBATIM (the same payload `broadcast_events` fans to api clients —
+   one event shape for every transport), `$/madc/message` the status line, and
+   `publishDiagnostics` republishes.
+
+   **The slice's one design decision: one process, two faces.** The webview
+   needs a served port and `--serve` is a *session*, so two processes would be
+   two sessions on one file — two carets, two undo histories, last save wins.
+   `--lsp` and `--serve` are therefore combinable: the accept loop is
+   `run_serve`'s, spawned with `go` inside a `scope`, and the stdio reader parks
+   cooperatively the moment a task is live — which is what V6c-2 built
+   `stdio://` as a pollable channel for. The endpoint reaches the client
+   in-protocol (`$/madc/serve`, on `initialized`). Shutdown is a self-connect
+   poke, because closing an fd under a parked poller does not reliably wake it.
+   Found on the way: `lsp_method_of`'s loop bound was the last enumerator, so a
+   method added after it converted to `lmNONE`; the bound is now an `lmLAST`
+   sentinel.
+   Gates: `testmadcide_lsp` extended (and now compiling the same composition
+   the program does); NEW `testmadcide_lsp_serve` drives BOTH faces of one
+   spawned process, proves the api client sees the line the LSP client deleted,
+   and proves the process still exits 0.
+   Next: V6c-3c — the attach relay (`--lsp/--mcp --attach <addr>`) plus LSP
+   routing on the socket seat, so VS Code, an agent's MCP client and a browser
+   share an ALREADY-RUNNING session.
 
 ## Invariants to hold (design §2.8)
 General client record (done); symmetric capability negotiation (consume AND
