@@ -286,6 +286,126 @@ void graph_verb_name(var &out, long gv)
     out = "";
 }
 
+// Nexus L4d (design §3.5, §4.5): the nexus.* family — records, links, context
+// and the ONE compound explain — as MCP tools; the same descriptor shape as
+// graph.* (name, code, description, inputSchema). A ref is an OBJECT
+// {ref: record|symbol|commit|proposal|external, …}.
+void nexus_tool_descriptors(var &out)
+{
+    var refprop = { "type": "object", "description": "a ref: {ref: record|symbol|commit|proposal|external, ...} — record {id}, symbol {file, kind, name}, commit {sha}, proposal {seq}, external {source, key}" };
+    var idprop = { "type": "integer", "description": "a record id (the seq of its creating event)" };
+    var rkindprop = { "type": "string", "description": "task | requirement | decision | workset | milestone | test" };
+    var stateprop = { "type": "string", "description": "open | active | done | superseded | rejected (optional)" };
+    var fieldsprop = { "type": "object", "description": "the record's fields (title, body, reason, ...)" };
+    var relprop = { "type": "string", "description": "implements | tests | fixes | affects | requested_by | documents | supersedes | blocked_by | planned_for | reviewed_by | generated_by | introduced_by | modified_by" };
+    var dirprop = { "type": "string", "description": "a directory to (re)load manifests from (optional; owner tier)" };
+    var sourceprop = { "type": "string", "description": "a loaded source's name (see nexus.sources)" };
+    var detailprop = { "type": "string", "description": "summary | full (optional; default summary)" };
+    var idprops = { "id": idprop };
+    var idargs = { "type": "object", "properties": idprops };
+    var recsprops = { "rkind": rkindprop, "state": stateprop };
+    var recsargs = { "type": "object", "properties": recsprops };
+    var createprops = { "rkind": rkindprop, "fields": fieldsprop, "state": stateprop };
+    var createargs = { "type": "object", "properties": createprops };
+    var updprops = { "id": idprop, "fields": fieldsprop, "state": stateprop };
+    var updargs = { "type": "object", "properties": updprops };
+    var closeprops = { "id": idprop, "state": stateprop };
+    var closeargs = { "type": "object", "properties": closeprops };
+    var linkprops = { "from": refprop, "rel": relprop, "to": refprop };
+    var linkargs = { "type": "object", "properties": linkprops };
+    var refprops = { "ref": refprop };
+    var refargs = { "type": "object", "properties": refprops };
+    var srcprops = { "dir": dirprop };
+    var srcargs = { "type": "object", "properties": srcprops };
+    var syncprops = { "source": sourceprop };
+    var syncargs = { "type": "object", "properties": syncprops };
+    var explprops = { "ref": refprop, "detail": detailprop };
+    var explargs = { "type": "object", "properties": explprops };
+    var tools = {};
+    var n0 = { "name": "nexus.record", "code": nvRECORD,
+	"description": "one intent record by id (task / requirement / decision / workset / milestone / test)",
+	"inputSchema": idargs };
+    tools[] = n0;
+    var n1 = { "name": "nexus.records", "code": nvRECORDS,
+	"description": "the records (optional kind and state filters; without a state: the live ones — superseded / rejected answer only when asked)",
+	"inputSchema": recsargs };
+    tools[] = n1;
+    var n2 = { "name": "nexus.create", "code": nvCREATE,
+	"description": "create a record (proposer tier): {rkind, fields, state?} -> its id",
+	"inputSchema": createargs };
+    tools[] = n2;
+    var n3 = { "name": "nexus.update", "code": nvUPDATE,
+	"description": "merge fields into a record and/or set its state (proposer tier)",
+	"inputSchema": updargs };
+    tools[] = n3;
+    var n4 = { "name": "nexus.close", "code": nvCLOSE,
+	"description": "close a record: state done (default), superseded or rejected (proposer tier)",
+	"inputSchema": closeargs };
+    tools[] = n4;
+    var n5 = { "name": "nexus.link", "code": nvLINK,
+	"description": "link two refs by a relation (proposer tier): from --rel--> to",
+	"inputSchema": linkargs };
+    tools[] = n5;
+    var n6 = { "name": "nexus.unlink", "code": nvUNLINK,
+	"description": "remove exactly that link (proposer tier)",
+	"inputSchema": linkargs };
+    tools[] = n6;
+    var n7 = { "name": "nexus.context", "code": nvCONTEXT,
+	"description": "everything linked to a ref, provenance-tagged: records and links, the proposals that touched a symbol, its git/event rows, its node",
+	"inputSchema": refargs };
+    tools[] = n7;
+    var n8 = { "name": "nexus.sources", "code": nvSOURCES,
+	"description": "the external MCP sources loaded from <profiles>/mcp/*.mcp.json (dir: reload from another directory — owner tier)",
+	"inputSchema": srcargs };
+    tools[] = n8;
+    var n9 = { "name": "nexus.sync", "code": nvSYNC,
+	"description": "pull a source's tasks through its MCP server into records with origin = source (editor tier)",
+	"inputSchema": syncargs };
+    tools[] = n9;
+    var n10 = { "name": "nexus.explain", "code": nvEXPLAIN,
+	"description": "one call for a symbol: what (compiler), depends, history (git + events), why / plan / constraints (records) — every row names its authority",
+	"inputSchema": explargs };
+    tools[] = n10;
+    out = tools;
+}
+
+// Nexus L4d (design §3.10): the test.* family — records only in L4d (L4e adds
+// the runner seat).
+void test_tool_descriptors(var &out)
+{
+    var dirprop = { "type": "string", "description": "the tests directory (optional; default tests)" };
+    var dirprops = { "dir": dirprop };
+    var dirargs = { "type": "object", "properties": dirprops };
+    var tools = {};
+    var t0 = { "name": "test.discover", "code": tvDISCOVER,
+	"description": "fold the project's test families (tests/*.mad with fixtures, tests/unit/*.cpp) into test records by the canonical conventions (proposer tier)",
+	"inputSchema": dirargs };
+    tools[] = t0;
+    out = tools;
+}
+
+long nexus_verb_of(const char *name)
+{
+    var nm = name;			// own the text first (ring discipline)
+    var tools;
+    nexus_tool_descriptors(tools);
+    for ( var t : tools )
+	if ( t["name"] == nm )
+	    return t["code"].as_integer();
+    return nvNONE;
+}
+
+long test_verb_of(const char *name)
+{
+    var nm = name;
+    var tools;
+    test_tool_descriptors(tools);
+    for ( var t : tools )
+	if ( t["name"] == nm )
+	    return t["code"].as_integer();
+    return tvNONE;
+}
+
 // The tool list: every registry command (cmd_table) as an MCP tool. One shared
 // input schema — a single optional `args` string (IdeSession::command takes one
 // argument string) — and a description that names the tier the command needs,
@@ -316,6 +436,23 @@ void mcp_tools(var &out)
     {
 	var tool = { "name": gt["name"], "description": gt["description"],
 		     "inputSchema": gt["inputSchema"] };
+	tools[] = tool;
+    }
+    // The nexus.* and test.* families (Nexus L4d), the same projection.
+    var ntools;
+    nexus_tool_descriptors(ntools);
+    for ( var nt : ntools )
+    {
+	var tool = { "name": nt["name"], "description": nt["description"],
+		     "inputSchema": nt["inputSchema"] };
+	tools[] = tool;
+    }
+    var ttools;
+    test_tool_descriptors(ttools);
+    for ( var tt : ttools )
+    {
+	var tool = { "name": tt["name"], "description": tt["description"],
+		     "inputSchema": tt["inputSchema"] };
 	tools[] = tool;
     }
     out = tools;
@@ -660,6 +797,11 @@ void edit_preview(var &out, long w, long adoc, var &t, var &cand, var &ops)
     out = { "line0": line0, "line1": line1, "before": before, "after": after };
 }
 
+// The decisions that constrain a node (madcide_nexus.inc, included after the
+// proposal fold below — a declaration is enough for the call here): a
+// proposal's `constraints` (Nexus L4d; design §3.4 — informing, never blocking).
+void nexus_constraints(var &out, long w, long adoc, var &target);
+
 // The TRANSACTION (design §3.4): every op's splice on ONE candidate, ONE
 // validation, then — emAPPLY — one undo checkpoint, a nodeop record per op
 // AHEAD of its splices, every splice through the ONE text-mutation owner
@@ -699,7 +841,17 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, var &ops,
 	}
 	var preview;
 	edit_preview(preview, w, adoc, t, cand, ops);
-	var constraints = {};		// L4d: the decisions linked to the target's symbol key
+	// The decisions that constrain each op's target (L4d, design §3.4):
+	// informing the proposer, never blocking.
+	var constraints = {};
+	for ( var op : ops )
+	{
+	    var tgt = op["target"];
+	    var cs;
+	    nexus_constraints(cs, w, adoc, tgt);
+	    for ( var c : cs )
+		constraints.push(c);
+	}
 	var checks = {};		// L4e: linked test runs
 	long base = clog_head(w, adoc);
 	var rec = { "kind": "proposal", "es": es, "doc": adoc, "actor": self_id, "base_seq": base,
@@ -764,6 +916,12 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, var &ops,
 // The FUTURE axis (Nexus L4c): the proposal fold and the five verbs — after
 // graph_edit_apply (graph_accept lands through it), before graph_call.
 #include "madcide_propose.inc"
+// The INTENT axis (Nexus L4d): records + links + the fold, refs, context,
+// explain, the constraints graph_edit_apply reaches through the declaration
+// above; the EVIDENCE records (test.discover); the MCP client (sources, sync).
+#include "madcide_nexus.inc"
+#include "madcide_tests.inc"
+#include "madcide_mcpclient.inc"
 
 // Code-graph MCP L1..L3 (design 2026-09-12): a distinct graph.* tool family, a
 // semantic navigation + EDITING surface beside the editor-registry commands
@@ -973,6 +1131,339 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     out = { "content": content, "isError": iserr };
 }
 
+// The refusal envelope every family shares: prose, isError.
+void tool_refuse(var &out, var &why)
+{
+    var item = { "type": "text", "text": why };
+    var content = {};
+    content[] = item;
+    out = { "content": content, "isError": true };
+}
+
+// The answer envelope every family shares: the structured snapshot as text; a
+// result carrying "error" is isError content (serialise FIRST — a subscript
+// probe would add the key).
+void tool_answer(var &out, var &snap)
+{
+    var js = js::stringify(snap);
+    var txt = js;
+    bool iserr = !snap["error"].is_null();
+    var item = { "type": "text", "text": txt };
+    var content = {};
+    content[] = item;
+    out = { "content": content, "isError": iserr };
+}
+
+// A ref argument read once (ref_of): refused with the shape when malformed.
+bool ref_arg(var &ref, var &out, var &args, const char *key)
+{
+    var wire;
+    arg_of(wire, args, key);
+    if ( ref_of(ref, wire) != refNONE )
+	return true;
+    var why = format("{} needs a ref object: ref = record | symbol | commit | proposal | external, plus its fields", key);
+    tool_refuse(out, why);
+    return false;
+}
+
+// Nexus L4d (design §4.5): one nexus.* tool call — the verb code (nexus_verb_of,
+// once), the tier gate (nexus_min_tier, the registry's refusal shape), a switch
+// on the code to the madcide_nexus.inc / madcide_mcpclient.inc bodies. A write
+// fans its new events to the other clients (the hub feed).
+void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &params)
+{
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    long h = ensure_phandle(w, es, adoc);
+    var args = params["arguments"];
+    if ( args.is_null() )
+	args = {};
+    long nv = nexus_verb_of(nm.c_str());
+    if ( nv == nvNONE )
+    {
+	var why = format("unknown nexus verb '{}'", nm);
+	tool_refuse(out, why);
+	return;
+    }
+    long my_tier = eff_tier(self_id);
+    long need = nexus_min_tier(nv);
+    if ( my_tier < need )
+    {
+	var why = format("'{}' requires {} (you are {})", nm, tier_name(need), tier_name(my_tier));
+	tool_refuse(out, why);
+	return;
+    }
+    long head_before = clog_head(w, adoc);
+    var snap;
+    switch ( nv )
+    {
+    case nvRECORD:
+    {
+	var idv;
+	arg_of(idv, args, "id");
+	long id = 0;
+	if ( !idv.is_null() )
+	    id = idv.as_integer();
+	nexus_record(snap, w, id);
+	break;
+    }
+    case nvRECORDS:
+    {
+	var kv;
+	arg_of(kv, args, "rkind");
+	long rk = rkNONE;
+	if ( !kv.is_null() && strlen(kv.c_str()) > 0 )
+	{
+	    rk = record_kind_of(kv);
+	    if ( rk == rkNONE )
+	    {
+		var why = format("unknown record kind '{}'", kv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	var sv;
+	arg_of(sv, args, "state");
+	long st = rsNONE;
+	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
+	{
+	    st = record_state_of(sv);
+	    if ( st == rsNONE )
+	    {
+		var why = format("unknown record state '{}'", sv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	nexus_records(snap, w, rk, st);
+	break;
+    }
+    case nvCREATE:
+    {
+	var kv;
+	arg_of(kv, args, "rkind");
+	long rk = record_kind_of(kv);
+	if ( rk == rkNONE )
+	{
+	    var why = format("unknown record kind '{}'", kv);
+	    snap = { "error": why };
+	    break;
+	}
+	var fields;
+	arg_of(fields, args, "fields");
+	var sv;
+	arg_of(sv, args, "state");
+	long st = rsNONE;
+	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
+	{
+	    st = record_state_of(sv);
+	    if ( st == rsNONE )
+	    {
+		var why = format("unknown record state '{}'", sv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	long id = record_create(w, es, adoc, self_id, rk, fields, "", "", st);
+	snap = { "ok": true, "id": id };
+	break;
+    }
+    case nvUPDATE:
+    case nvCLOSE:
+    {
+	var idv;
+	arg_of(idv, args, "id");
+	long id = 0;
+	if ( !idv.is_null() )
+	    id = idv.as_integer();
+	var have;
+	nexus_record(have, w, id);
+	if ( !have["error"].is_null() )
+	{
+	    snap = { "error": have["error"] };
+	    break;
+	}
+	var fields;
+	arg_of(fields, args, "fields");
+	var sv;
+	arg_of(sv, args, "state");
+	long st = rsNONE;
+	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
+	{
+	    st = record_state_of(sv);
+	    if ( st == rsNONE )
+	    {
+		var why = format("unknown record state '{}'", sv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	long op = roUPDATE;
+	if ( nv == nvCLOSE )
+	{
+	    op = roCLOSE;
+	    if ( st == rsNONE )
+		st = rsDONE;
+	}
+	long seq = record_update(w, es, adoc, self_id, id, fields, st, op);
+	snap = { "ok": true, "id": id, "seq": seq };
+	break;
+    }
+    case nvLINK:
+    case nvUNLINK:
+    {
+	var from;
+	if ( !ref_arg(from, out, args, "from") )
+	    return;
+	var to;
+	if ( !ref_arg(to, out, args, "to") )
+	    return;
+	var rv;
+	arg_of(rv, args, "rel");
+	long rel = rel_of(rv);
+	if ( rel == relNONE )
+	{
+	    var why = format("unknown relation '{}'", rv);
+	    snap = { "error": why };
+	    break;
+	}
+	long op = loLINK;
+	if ( nv == nvUNLINK )
+	    op = loUNLINK;
+	long seq = link_write(w, es, adoc, self_id, op, from, rel, to);
+	snap = { "ok": true, "seq": seq };
+	break;
+    }
+    case nvCONTEXT:
+    {
+	var ref;
+	if ( !ref_arg(ref, out, args, "ref") )
+	    return;
+	nexus_context(snap, w, es, adoc, h, ref);
+	break;
+    }
+    case nvSOURCES:
+    {
+	var dv;
+	arg_of(dv, args, "dir");
+	if ( !dv.is_null() && strlen(dv.c_str()) > 0 )
+	{
+	    if ( my_tier < tierOWNER )
+	    {
+		var why = format("'nexus.sources' with a dir requires owner (you are {})", tier_name(my_tier));
+		tool_refuse(out, why);
+		return;
+	    }
+	    var err;
+	    if ( !manifests_load(err, w, es, doc, dv.c_str()) )
+	    {
+		snap = { "error": err };
+		break;
+	    }
+	}
+	else
+	{
+	    long se = sources_entity(w);
+	    var names;
+	    ui::get(names, w, se, "names");
+	    if ( names.is_null() || php::count(names) == 0 )
+	    {
+		// first use: the profile directory's mcp/ (a missing directory =
+		// zero sources, no error — the refusals are for a BAD manifest)
+		var pd;
+		resolve_profile_dir(pd);
+		var mdir = format("{}/mcp", pd);
+		var err;
+		if ( php::file_exists(mdir) && !manifests_load(err, w, es, doc, mdir.c_str()) )
+		{
+		    snap = { "error": err };
+		    break;
+		}
+	    }
+	}
+	nexus_sources(snap, w);
+	break;
+    }
+    case nvSYNC:
+    {
+	var sv;
+	arg_of(sv, args, "source");
+	if ( sv.is_null() || strlen(sv.c_str()) == 0 )
+	{
+	    snap = { "error": "nexus.sync needs a source name (nexus.sources lists them)" };
+	    break;
+	}
+	nexus_sync(snap, w, es, adoc, self_id, sv.c_str());
+	break;
+    }
+    case nvEXPLAIN:
+    {
+	var ref;
+	if ( !ref_arg(ref, out, args, "ref") )
+	    return;
+	var dv;
+	arg_of(dv, args, "detail");
+	long detail = explain_detail_of(dv);
+	if ( detail < 0 )
+	{
+	    var why = format("unknown detail '{}' (summary | full)", dv);
+	    snap = { "error": why };
+	    break;
+	}
+	nexus_explain(snap, w, es, adoc, h, ref, detail);
+	break;
+    }
+    }
+    if ( clog_head(w, adoc) > head_before )
+	broadcast_events(w, adoc, head_before, self_id);
+    tool_answer(out, snap);
+}
+
+// Nexus L4d (design §3.10): one test.* tool call — records only in L4d.
+void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &params)
+{
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    var args = params["arguments"];
+    if ( args.is_null() )
+	args = {};
+    long tv = test_verb_of(nm.c_str());
+    if ( tv == tvNONE )
+    {
+	var why = format("unknown test verb '{}'", nm);
+	tool_refuse(out, why);
+	return;
+    }
+    long my_tier = eff_tier(self_id);
+    long need = test_min_tier(tv);
+    if ( my_tier < need )
+    {
+	var why = format("'{}' requires {} (you are {})", nm, tier_name(need), tier_name(my_tier));
+	tool_refuse(out, why);
+	return;
+    }
+    long head_before = clog_head(w, adoc);
+    var snap;
+    switch ( tv )
+    {
+    case tvDISCOVER:
+    {
+	var dv;
+	arg_of(dv, args, "dir");
+	var dir = "";
+	if ( !dv.is_null() )
+	    dir = dv;
+	test_discover(snap, w, es, adoc, self_id, dir.c_str());
+	break;
+    }
+    }
+    if ( clog_head(w, adoc) > head_before )
+	broadcast_events(w, adoc, head_before, self_id);
+    tool_answer(out, snap);
+}
+
 // Handle ONE parsed JSON-RPC message. Returns true with `out` filled when there
 // is a reply to send; false for a notification (no id — no reply). The dispatch
 // is on the MCP method; every path that touches the document goes through
@@ -1049,6 +1540,21 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	    mcp_reply(out, idv, result);
 	    return true;
 	}
+	// Nexus L4d: the nexus.* (intent) and test.* (evidence) families.
+	if ( strncmp(nm.c_str(), "nexus.", 6) == 0 )
+	{
+	    var result;
+	    nexus_call(result, S, doc, self_id, nm, params);
+	    mcp_reply(out, idv, result);
+	    return true;
+	}
+	if ( strncmp(nm.c_str(), "test.", 5) == 0 )
+	{
+	    var result;
+	    test_call(result, S, doc, self_id, nm, params);
+	    mcp_reply(out, idv, result);
+	    return true;
+	}
 	var result;
 	mcp_call(result, S, doc, self_id, nm, params);
 	mcp_reply(out, idv, result);
@@ -1087,6 +1593,7 @@ long run_mcp(const char *path, bool ro)
 	    mcp_error(resp, nullid, -32700, "Parse error");
 	    var js = js::stringify(resp);
 	    println("{}", js);
+	    fflush(stdout);		// a piped reply must leave libc's buffer now — the client waits on it
 	    continue;
 	}
 	var resp;
@@ -1094,6 +1601,7 @@ long run_mcp(const char *path, bool ro)
 	{
 	    var js = js::stringify(resp);
 	    println("{}", js);
+	    fflush(stdout);
 	}
     }
     S.close();

@@ -472,7 +472,7 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 		if ( strlen(sha.c_str()) == 0 || !was.is_null() )
 		    continue;
 		seen[sha.c_str()] = 1;
-		var row = { "provenance": "git", "sha": sha, "author": hk["author"],
+		var row = { "provenance": provenance_name(pvGIT), "sha": sha, "author": hk["author"],
 			    "when": hk["when"], "summary": hk["summary"] };
 		rows.push(row);
 	    }
@@ -515,7 +515,7 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 		}
 		else if ( at < b )
 		{   // intersects: the most recent text edit touching this node
-		    var row = { "provenance": "event", "seq": rec["seq"], "ts": rec["ts"],
+		    var row = { "provenance": provenance_name(pvEVENT), "seq": rec["seq"], "ts": rec["ts"],
 				"es": rec["es"], "verb": "splice", "at": at, "del": del, "ins": ins };
 		    evrows.push(row);
 		    walking = false;	// earlier coordinates are not derivable
@@ -527,7 +527,7 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 		var tgt = rec["target"];
 		if ( !tgt.is_null() && tgt["kind"] == sp["kind"] && tgt["name"] == sp["name"] )
 		{
-		    var row = { "provenance": "event", "seq": rec["seq"], "ts": rec["ts"],
+		    var row = { "provenance": provenance_name(pvEVENT), "seq": rec["seq"], "ts": rec["ts"],
 				"es": rec["es"], "verb": rec["verb"] };
 		    evrows.push(row);
 		}

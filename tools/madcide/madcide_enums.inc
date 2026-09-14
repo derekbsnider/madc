@@ -714,6 +714,322 @@ long envelope_of(var &req)
     return envNONE;
 }
 
+// ---- the INTENT axis's vocabulary (Nexus L4d; design §3.5, §3.7, §3.10,
+// §4.5): text on the wire and on the persisted line, a code in every reader.
+// Each enum has its OUTPUT converter (X_name) and its INPUT converter (X_of —
+// NONE = unknown or null, the caller's refusal). ----------------------------
+
+// A record's kind (the owner's four + milestone + test).
+enum record_kind : unsigned char { rkNONE = 0, rkTASK, rkREQUIREMENT, rkDECISION, rkWORKSET, rkMILESTONE, rkTEST };
+const char *record_kind_name(long k)
+{
+    switch ( k )
+    {
+	case rkTASK: return "task";
+	case rkREQUIREMENT: return "requirement";
+	case rkDECISION: return "decision";
+	case rkWORKSET: return "workset";
+	case rkMILESTONE: return "milestone";
+	case rkTEST: return "test";
+    }
+    return "";
+}
+long record_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return rkNONE;
+    for ( long k = rkTASK; k <= rkTEST; k = k + 1 )
+	if ( word == record_kind_name(k) )
+	    return k;
+    return rkNONE;
+}
+
+// A record's state (the envelope): the fold's default reads exclude
+// superseded / rejected — an obsolete plan is never mistaken for truth.
+enum record_state : unsigned char { rsNONE = 0, rsOPEN, rsACTIVE, rsDONE, rsSUPERSEDED, rsREJECTED };
+const char *record_state_name(long s)
+{
+    switch ( s )
+    {
+	case rsOPEN: return "open";
+	case rsACTIVE: return "active";
+	case rsDONE: return "done";
+	case rsSUPERSEDED: return "superseded";
+	case rsREJECTED: return "rejected";
+    }
+    return "";
+}
+long record_state_of(var &word)
+{
+    if ( word.is_null() )
+	return rsNONE;
+    for ( long k = rsOPEN; k <= rsREJECTED; k = k + 1 )
+	if ( word == record_state_name(k) )
+	    return k;
+    return rsNONE;
+}
+
+// A record event's operation.
+enum record_op : unsigned char { roNONE = 0, roCREATE, roUPDATE, roCLOSE };
+const char *record_op_name(long o)
+{
+    switch ( o )
+    {
+	case roCREATE: return "create";
+	case roUPDATE: return "update";
+	case roCLOSE: return "close";
+    }
+    return "";
+}
+long record_op_of(var &word)
+{
+    if ( word.is_null() )
+	return roNONE;
+    for ( long k = roCREATE; k <= roCLOSE; k = k + 1 )
+	if ( word == record_op_name(k) )
+	    return k;
+    return roNONE;
+}
+
+// A link event's operation.
+enum link_op : unsigned char { loNONE = 0, loLINK, loUNLINK };
+const char *link_op_name(long o)
+{
+    switch ( o )
+    {
+	case loLINK: return "link";
+	case loUNLINK: return "unlink";
+    }
+    return "";
+}
+long link_op_of(var &word)
+{
+    if ( word.is_null() )
+	return loNONE;
+    for ( long k = loLINK; k <= loUNLINK; k = k + 1 )
+	if ( word == link_op_name(k) )
+	    return k;
+    return loNONE;
+}
+
+// A ref's kind — a durable key, never a raw graph id (design §3.5): a record
+// by id, a symbol by file + kind + name, a commit by sha, a proposal by seq,
+// an external system's row by source + key. The wire shape is {ref: word, …}.
+enum ref_kind : unsigned char { refNONE = 0, refRECORD, refSYMBOL, refCOMMIT, refPROPOSAL, refEXTERNAL };
+const char *ref_kind_name(long k)
+{
+    switch ( k )
+    {
+	case refRECORD: return "record";
+	case refSYMBOL: return "symbol";
+	case refCOMMIT: return "commit";
+	case refPROPOSAL: return "proposal";
+	case refEXTERNAL: return "external";
+    }
+    return "";
+}
+long ref_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return refNONE;
+    for ( long k = refRECORD; k <= refEXTERNAL; k = k + 1 )
+	if ( word == ref_kind_name(k) )
+	    return k;
+    return refNONE;
+}
+
+// The relations (the Nexus §2 vocabulary that is INTENT, not code — code edges
+// stay the graph's calls / references ground truth).
+enum nexus_rel : unsigned char {
+    relNONE = 0, relIMPLEMENTS, relTESTS, relFIXES, relAFFECTS, relREQUESTED_BY, relDOCUMENTS,
+    relSUPERSEDES, relBLOCKED_BY, relPLANNED_FOR, relREVIEWED_BY, relGENERATED_BY,
+    relINTRODUCED_BY, relMODIFIED_BY
+};
+const char *rel_name(long r)
+{
+    switch ( r )
+    {
+	case relIMPLEMENTS: return "implements";
+	case relTESTS: return "tests";
+	case relFIXES: return "fixes";
+	case relAFFECTS: return "affects";
+	case relREQUESTED_BY: return "requested_by";
+	case relDOCUMENTS: return "documents";
+	case relSUPERSEDES: return "supersedes";
+	case relBLOCKED_BY: return "blocked_by";
+	case relPLANNED_FOR: return "planned_for";
+	case relREVIEWED_BY: return "reviewed_by";
+	case relGENERATED_BY: return "generated_by";
+	case relINTRODUCED_BY: return "introduced_by";
+	case relMODIFIED_BY: return "modified_by";
+    }
+    return "";
+}
+long rel_of(var &word)
+{
+    if ( word.is_null() )
+	return relNONE;
+    for ( long k = relIMPLEMENTS; k <= relMODIFIED_BY; k = k + 1 )
+	if ( word == rel_name(k) )
+	    return k;
+    return relNONE;
+}
+
+// The authority that produced an answer row (design §3.7): every history /
+// context / explain row names it; nothing is blended silently. pvINFERRED
+// exists so a future heuristic is LABELLED — v1 emits none.
+enum provenance : unsigned char { pvNONE = 0, pvCOMPILER, pvGIT, pvEVENT, pvRECORD, pvINFERRED };
+const char *provenance_name(long p)
+{
+    switch ( p )
+    {
+	case pvCOMPILER: return "compiler";
+	case pvGIT: return "git";
+	case pvEVENT: return "event";
+	case pvRECORD: return "record";
+	case pvINFERRED: return "inferred";
+    }
+    return "";
+}
+long provenance_of(var &word)
+{
+    if ( word.is_null() )
+	return pvNONE;
+    for ( long k = pvCOMPILER; k <= pvINFERRED; k = k + 1 )
+	if ( word == provenance_name(k) )
+	    return k;
+    return pvNONE;
+}
+
+// The nexus.* verbs (the third tool family) and the test.* verbs (the fourth;
+// L4d = discover, L4e adds the runner seat).
+enum nexus_verb : unsigned char {
+    nvNONE = 0, nvRECORD, nvRECORDS, nvCREATE, nvUPDATE, nvCLOSE, nvLINK, nvUNLINK,
+    nvCONTEXT, nvSOURCES, nvSYNC, nvEXPLAIN
+};
+enum test_verb : unsigned char { tvNONE = 0, tvDISCOVER };
+
+// A test record's family (design §3.10): the .mad family with its fixtures,
+// the doctest unit binaries, a manifest-declared external command.
+enum test_family : unsigned char { tfNONE = 0, tfMAD, tfUNIT, tfEXTERNAL };
+const char *test_family_name(long f)
+{
+    switch ( f )
+    {
+	case tfMAD: return "mad";
+	case tfUNIT: return "unit";
+	case tfEXTERNAL: return "external";
+    }
+    return "";
+}
+long test_family_of(var &word)
+{
+    if ( word.is_null() )
+	return tfNONE;
+    for ( long k = tfMAD; k <= tfEXTERNAL; k = k + 1 )
+	if ( word == test_family_name(k) )
+	    return k;
+    return tfNONE;
+}
+
+// An MCP source manifest's vocabulary: the operations the Nexus asks an
+// external system for; the manifest maps each to that server's tool. An
+// unknown key refuses the manifest at load (the enum-law boundary).
+enum nexus_op : unsigned char { noNONE = 0, noLIST_TASKS, noGET_TASK, noCREATE_TASK, noUPDATE_TASK, noCOMMENT };
+const char *nexus_op_name(long o)
+{
+    switch ( o )
+    {
+	case noLIST_TASKS: return "list_tasks";
+	case noGET_TASK: return "get_task";
+	case noCREATE_TASK: return "create_task";
+	case noUPDATE_TASK: return "update_task";
+	case noCOMMENT: return "comment";
+    }
+    return "";
+}
+long nexus_op_of(var &word)
+{
+    if ( word.is_null() )
+	return noNONE;
+    for ( long k = noLIST_TASKS; k <= noCOMMENT; k = k + 1 )
+	if ( word == nexus_op_name(k) )
+	    return k;
+    return noNONE;
+}
+
+// An MCP source's transport: stdio (a child over exec://) today; http waits on
+// a madcdis channel (a stdio<->HTTP bridge process serves meanwhile).
+enum mcp_transport : unsigned char { mtNONE = 0, mtSTDIO, mtHTTP };
+const char *mcp_transport_name(long t)
+{
+    switch ( t )
+    {
+	case mtSTDIO: return "stdio";
+	case mtHTTP: return "http";
+    }
+    return "";
+}
+long mcp_transport_of(var &word)
+{
+    if ( word.is_null() )
+	return mtNONE;
+    for ( long k = mtSTDIO; k <= mtHTTP; k = k + 1 )
+	if ( word == mcp_transport_name(k) )
+	    return k;
+    return mtNONE;
+}
+
+// nexus.explain's detail (the L2 `detail` increment shares it).
+enum explain_detail : unsigned char { edSUMMARY = 0, edFULL };
+const char *explain_detail_name(long d)
+{
+    return d == edFULL ? "full" : "summary";
+}
+long explain_detail_of(var &word)
+{
+    if ( word.is_null() )
+	return edSUMMARY;
+    if ( word == explain_detail_name(edFULL) )
+	return edFULL;
+    if ( word == explain_detail_name(edSUMMARY) )
+	return edSUMMARY;
+    return -1;
+}
+
+// The nexus.* ladder (design §3.6's table): reads observe; a record is
+// reviewable DATA, not source — create / update / close / link / unlink need
+// the proposer tier; sync (pull from an external source) needs an editor;
+// sources(dir) — a reload from another directory — is owner-only inside the
+// verb (the plain listing observes).
+long nexus_min_tier(long code)
+{
+    switch ( code )
+    {
+    case nvCREATE:
+    case nvUPDATE:
+    case nvCLOSE:
+    case nvLINK:
+    case nvUNLINK:
+	return tierPROPOSER;
+    case nvSYNC:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
+
+// The test.* ladder: discover writes records (proposer); L4e's run spends
+// build resources (editor).
+long test_min_tier(long code)
+{
+    switch ( code )
+    {
+    case tvDISCOVER:
+	return tierPROPOSER;
+    }
+    return tierOBSERVER;
+}
+
 // graph.insert's placement relative to its target; text only on the wire.
 enum graph_where : unsigned char { gwNONE = 0, gwBEFORE, gwAFTER };
 
