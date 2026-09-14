@@ -7,7 +7,8 @@
 // Included by madcide_mcp.inc.
 //
 // Which structure answers what (the index-is-not-the-graph law):
-//   status   — the doc bag (phandle_text), parse_check, clog_head, git head/dirty
+//   status   — the doc bag (phandle_text), parse_check, clog_head, git head/dirty,
+//              the layer owner (asset_layers_of) and this node's offers (L4e)
 //   source   — graph_span + the handle's TEXT entity (the live doc or a revision's)
 //   history  — GIT: git_blame_text over the live text folded to commits;
 //              EVENT: nodeop records with the node's kind+name, splices that
@@ -254,17 +255,27 @@ void graph_source(var &out, long w, long adoc, long live, long h, long id)
     out = { "node": sp, "text": text };
 }
 
-// graph.status: what this asset can answer, in one call.
+// graph.status: what this asset can answer, in one call — its LAYERS (the
+// design §3.9 wire words from the ONE owner, asset_layers_of) and this node's
+// offers beside the handle facts. `live` is 0 for an asset with no parseable
+// layer (a binary member): no tree, no diagnostics, nothing to be out of sync.
 void graph_status(var &out, long w, long es, long adoc, long live)
 {
-    var t;
-    ui::text(t, w, adoc);
-    var pt;
-    ui::get(pt, w, adoc, "phandle_text");
-    bool synced = !pt.is_null() && pt == t;
-    var diags;
-    madc::parse_check(diags, live);
-    long errors = diag_error_count(diags);	// the ONE reader of the severity code (madcide_core.inc)
+    bool synced = true;
+    long errors = 0;
+    long gen = 0;
+    if ( live != 0 )
+    {
+	var t;
+	ui::text(t, w, adoc);
+	var pt;
+	ui::get(pt, w, adoc, "phandle_text");
+	synced = !pt.is_null() && pt == t;
+	var diags;
+	madc::parse_check(diags, live);
+	errors = diag_error_count(diags);	// the ONE reader of the severity code (madcide_core.inc)
+	gen = madc::parse_generation(live);
+    }
     var revs;
     revs_of(revs, w, adoc);
     var order;
@@ -279,14 +290,8 @@ void graph_status(var &out, long w, long es, long adoc, long live)
 	var row = { "sha": e["sha"], "tag": e["tag"] };
 	revrows.push(row);
     }
-    // The asset's layers as the design §3.9 wire words. A PREVIEW: the served
-    // doc is a parse handle, so it is lexable + parseable; versioned when a
-    // repository is above it. L4e replaces this with asset_layers_of (managed,
-    // executable, testable need the manifest and the node's offers).
-    var layers = {};
-    layers.push("text");
-    layers.push("lexable");
-    layers.push("parseable");
+    var layers;
+    layer_words(layers, asset_layers_of(w, es, adoc, 0));
     long gh = git_handle_of(w, es, adoc);
     var git;
     if ( gh > 0 )
@@ -300,12 +305,12 @@ void graph_status(var &out, long w, long es, long adoc, long live)
 	var dirty = dt["dirty"];
 	git = { "head": hd["sha"], "branch": hd["branch"], "detached": hd["detached"],
 		"dirty": dirty, "path": rel };
-	layers.push("versioned");
     }
-    long gen = madc::parse_generation(live);
+    var offers;
+    node_offers(offers, w, es);
     long head = clog_head(w, adoc);
     out = { "handle": live, "generation": gen, "synced": synced, "errors": errors,
-	    "log_head": head, "revisions": revrows, "git": git, "layers": layers };
+	    "log_head": head, "revisions": revrows, "git": git, "layers": layers, "node": offers };
 }
 
 // graph.commits: the commits touching the served file, newest first.

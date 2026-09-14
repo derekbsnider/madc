@@ -4486,6 +4486,17 @@ void build_pump(long w, long es, long bdoc, long stopc)
     else
 	append_build_line(w, es, bdoc, "[done]");
     ui::set(w, es, "buildlive", 0);
+    // The EVIDENCE record (Nexus L4e, design §3.11): this node's build / run
+    // verdict in the ONE stream, tagged by the node that produced it (0 =
+    // here). The pump is a session-thread task: one clog_append, no push —
+    // the next command's fan-out carries it.
+    long adoc = active_doc(w, es, 0);
+    if ( adoc != 0 )
+    {
+	var brec = { "kind": "buildrun", "es": es, "doc": adoc, "actor": -1, "node": 0, "uri": uri,
+		     "exit": xc, "stopped": stopped };
+	clog_append(w, adoc, brec);
+    }
 }
 
 // ONE capture starter for every stream the [build] buffer / the Output

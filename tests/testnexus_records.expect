@@ -23,5 +23,5 @@ explain-plan-after-unlink: 0
 refuse-rel: err=1 why=unknown relation 'depends_on'
 refuse-ref: err=1
 refuse-kind: err=1 why=unknown record kind 'bug'
-tiers: create=proposer sync=editor discover=proposer
+tiers: create=proposer sync=editor discover=proposer run=editor
 persist-restore: records=3 title=add stays pure

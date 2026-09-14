@@ -7,7 +7,8 @@
 // Which structure answers what (the index-is-not-the-graph law):
 //   proposals / proposal — this doc's proposal records + the decision naming
 //                          each (status DERIVED: open until a decision; the
-//                          last decision wins)
+//                          last decision wins) + the testrun events recorded
+//                          under each (its `checks`, L4e — derived too)
 //   accept   — the fold (open?), the L3 preconditions, the three re-checks PER
 //              OP against the fresh tree, the ordinary graph_edit_apply(emAPPLY),
 //              then a decision record {accepted, landed_seq}
@@ -55,6 +56,25 @@ void proposal_fold(var &seqs, var &props, long w, long adoc)
 		continue;		// a decision naming no proposal here: never trusted
 	    p["status"] = rec["decision"];	// the LAST decision wins (design §3.4)
 	    p["decision"] = rec;
+	    props[key.c_str()] = p;
+	}
+	else if ( nk == nkTESTRUN )
+	{
+	    // A run recorded under a proposal (L4e, design §3.10): its CHECKS
+	    // are derived like its status — the events, never a rewrite.
+	    var pv = rec["proposal"];
+	    if ( pv.is_null() )
+		continue;
+	    var key = format("{}", pv);
+	    var p;
+	    keyed_get(p, props, key.c_str());
+	    if ( p.is_null() )
+		continue;
+	    var chk = p["checks"];
+	    if ( chk.is_null() )
+		chk = {};
+	    chk.push(rec);
+	    p["checks"] = chk;
 	    props[key.c_str()] = p;
 	}
     }
@@ -183,9 +203,14 @@ void graph_accept(var &out, IdeSession &S, long doc, long self_id, long seq)
     var dec = { "kind": "decision", "es": es, "doc": adoc, "actor": self_id, "proposal": seq,
 		"decision": proposal_status_name(psACCEPTED), "landed_seq": landed["nodeop_seq"], "reason": "" };
     clog_append(w, adoc, dec);
+    // The CHECKS (L4e, design §3.10): the tests linked to every op's target,
+    // run here and recorded under the proposal — informing, never blocking
+    // (the decision stands; the runs ride the same push).
+    var chk;
+    proposal_checks(chk, S, doc, self_id, p["ops"], seq);
     broadcast_events(w, adoc, head, self_id);
     out = { "ok": true, "proposal": seq, "node": landed["node"], "seq": landed["seq"],
-	    "landed_seq": landed["nodeop_seq"] };
+	    "landed_seq": landed["nodeop_seq"], "checks": chk };
 }
 
 // A decision on an OPEN proposal (graph.reject / graph.withdraw): the record

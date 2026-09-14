@@ -1,4 +1,4 @@
-status: synced=1 errors=0 git=1 branch-set=1 layers=4
+status: synced=1 errors=0 git=1 branch-set=1 layers=6
 commits: rows-positive=1 sha-len=40
 revision: sha-len=40 tag-tagged=1
 rev-symbols: name=main

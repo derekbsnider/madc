@@ -193,6 +193,8 @@ void symbol_ref_of_doc(var &out, long w, long adoc, var &node)
 // node here.
 bool symbol_node_of(var &node, long w, long es, long adoc, long h, var &ref)
 {
+    if ( h == 0 )
+	return false;			// no parseable layer: no tree to resolve against (L4e)
     var p;
     ui::get(p, w, adoc, "path");
     if ( !(ref["file"] == p) )
@@ -510,6 +512,10 @@ void nexus_explain(var &out, long w, long es, long adoc, long h, var &ref, long 
 	    why.push(cr);
     var constraints;
     nexus_constraints(constraints, w, adoc, node);
+    // The asset's layers (design §3.9): what this asset can answer, in the
+    // same call — an agent learns the valid operations without a second probe.
+    var layers;
+    layer_words(layers, asset_layers_of(w, es, adoc, 0));
     out = { "ref": ref, "what": what, "depends": depends, "history": history, "why": why, "plan": plan,
-	    "constraints": constraints };
+	    "constraints": constraints, "layers": layers };
 }

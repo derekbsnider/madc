@@ -644,11 +644,11 @@ enum graph_verb : unsigned char {
 
 // The annotation kinds madcide writes into the ONE change stream (design
 // §3.1); the texteditor layer's reader sees them as ckOTHER. Text on the
-// persisted line, a code in the reader (nexus_kind_of) — the enum law. Only
-// nkNODEOP has a writer today; the later kinds are the design's vocabulary
-// and their writers arrive with L4c–L4e.
+// persisted line, a code in the reader (nexus_kind_of) — the enum law. The
+// writers: nodeop (L3), proposal / decision (L4c), record / link (L4d),
+// testrun / buildrun (L4e — the EVIDENCE events, tagged by the node).
 enum nexus_kind : unsigned char {
-    nkNONE = 0, nkNODEOP, nkPROPOSAL, nkDECISION, nkRECORD, nkLINK, nkTESTRUN
+    nkNONE = 0, nkNODEOP, nkPROPOSAL, nkDECISION, nkRECORD, nkLINK, nkTESTRUN, nkBUILDRUN
 };
 
 long nexus_kind_of(var &rec)
@@ -662,6 +662,7 @@ long nexus_kind_of(var &rec)
     if ( k == "record" )   return nkRECORD;
     if ( k == "link" )     return nkLINK;
     if ( k == "testrun" )  return nkTESTRUN;
+    if ( k == "buildrun" ) return nkBUILDRUN;
     return nkNONE;
 }
 
@@ -901,13 +902,14 @@ long provenance_of(var &word)
     return pvNONE;
 }
 
-// The nexus.* verbs (the third tool family) and the test.* verbs (the fourth;
-// L4d = discover, L4e adds the runner seat).
+// The nexus.* verbs (the third tool family) and the test.* verbs (the fourth:
+// discover = L4d's records; list / candidates / run / results = L4e's runner
+// seat, design §3.10).
 enum nexus_verb : unsigned char {
     nvNONE = 0, nvRECORD, nvRECORDS, nvCREATE, nvUPDATE, nvCLOSE, nvLINK, nvUNLINK,
     nvCONTEXT, nvSOURCES, nvSYNC, nvEXPLAIN
 };
-enum test_verb : unsigned char { tvNONE = 0, tvDISCOVER };
+enum test_verb : unsigned char { tvNONE = 0, tvDISCOVER, tvLIST, tvCANDIDATES, tvRUN, tvRESULTS };
 
 // A test record's family (design §3.10): the .mad family with its fixtures,
 // the doctest unit binaries, a manifest-declared external command.
@@ -1018,16 +1020,154 @@ long nexus_min_tier(long code)
     return tierOBSERVER;
 }
 
-// The test.* ladder: discover writes records (proposer); L4e's run spends
-// build resources (editor).
+// The test.* ladder: discover writes records (proposer); run spends build /
+// run resources (editor — cmd_min_tier's rule); list / candidates / results
+// observe.
 long test_min_tier(long code)
 {
     switch ( code )
     {
     case tvDISCOVER:
 	return tierPROPOSER;
+    case tvRUN:
+	return tierEDITOR;
     }
     return tierOBSERVER;
+}
+
+// ---- asset LAYERS (Nexus L4e; design §3.9) ----------------------------------
+// Every axis is a layer an asset has or lacks, computed by ONE function
+// (asset_layers_of, madcide_layers.inc) from facts the engine holds — never
+// assumed by a verb. A BITSET: the wire words are the review's discovery
+// vocabulary, converted once (layer_words out, layer_of in). executable and
+// testable are NODE-relative (this node's offers); the rest are the asset's.
+enum asset_layer : unsigned char {
+    alTEXT = 1, alVERSIONED = 2, alMANAGED = 4, alLEXABLE = 8, alPARSEABLE = 16,
+    alEXECUTABLE = 32, alTESTABLE = 64
+};
+const char *layer_name(long bit)
+{
+    switch ( bit )
+    {
+	case alTEXT: return "text";
+	case alVERSIONED: return "versioned";
+	case alMANAGED: return "managed";
+	case alLEXABLE: return "lexable";
+	case alPARSEABLE: return "parseable";
+	case alEXECUTABLE: return "executable";
+	case alTESTABLE: return "testable";
+    }
+    return "";
+}
+long layer_of(var &word)
+{
+    if ( word.is_null() )
+	return 0;
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( word == layer_name(b) )
+	    return b;
+    return 0;
+}
+// The set as wire words, ascending bit order.
+void layer_words(var &out, long bits)
+{
+    out = {};
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( (bits & b) != 0 )
+	    out.push(layer_name(b));
+}
+// The first layer `need` asks for that `have` lacks; 0 = every layer present.
+long layer_missing(long have, long need)
+{
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( (need & b) != 0 && (have & b) == 0 )
+	    return b;
+    return 0;
+}
+
+// The layers a verb family needs, DATA beside its tier (design §3.9): the
+// gate runs at graph_call / nexus_call / test_call entry after the tier gate,
+// before any structure is touched. graph.status needs only the bytes (it
+// REPORTS the layers); the commit-level history verb needs the repository
+// (a binary member has commit history); the line-level PAST verbs need the
+// tree too; every other graph verb reads the tree.
+long graph_min_layer(long code)
+{
+    switch ( code )
+    {
+    case gvSTATUS:
+	return alTEXT;
+    case gvCOMMITS:
+	return alVERSIONED;
+    case gvHISTORY:
+    case gvREVISION:
+    case gvDIFF:
+	return alVERSIONED | alPARSEABLE;
+    }
+    return alPARSEABLE;
+}
+// Records, links, context and the sources need tracking (a project — every
+// session asset has it); explain projects the tree too.
+long nexus_min_layer(long code)
+{
+    if ( code == nvEXPLAIN )
+	return alMANAGED | alPARSEABLE;
+    return alMANAGED;
+}
+// Test records need tracking; RUNNING needs a runner on the target node.
+long test_min_layer(long code)
+{
+    if ( code == tvRUN )
+	return alMANAGED | alTESTABLE;
+    return alMANAGED;
+}
+
+// A test run's verdict (design §3.10) — the runner's word converted once
+// (the boundary), the enum in every reader and on every testrun event.
+enum test_result : unsigned char { trNONE = 0, trPASS, trFAIL, trSKIP, trTIMEOUT, trERROR };
+const char *test_result_name(long r)
+{
+    switch ( r )
+    {
+	case trPASS: return "pass";
+	case trFAIL: return "fail";
+	case trSKIP: return "skip";
+	case trTIMEOUT: return "timeout";
+	case trERROR: return "error";
+    }
+    return "";
+}
+long test_result_of(var &word)
+{
+    if ( word.is_null() )
+	return trNONE;
+    for ( long k = trPASS; k <= trERROR; k = k + 1 )
+	if ( word == test_result_name(k) )
+	    return k;
+    return trNONE;
+}
+
+// What a node OFFERS (design §3.11, client-server §2.8 invariant 2): the
+// services its Client record advertises. This node serves all three.
+enum node_serve : unsigned char { nsNONE = 0, nsBUILD, nsRUN, nsTEST };
+const char *node_serve_name(long s)
+{
+    switch ( s )
+    {
+	case nsBUILD: return "build";
+	case nsRUN: return "run";
+	case nsTEST: return "test";
+    }
+    return "";
+}
+long node_serve_of(var &word)
+{
+    if ( word.is_null() )
+	return nsNONE;
+    for ( long k = nsBUILD; k <= nsTEST; k = k + 1 )
+	if ( word == node_serve_name(k) )
+	    return k;
+    return nsNONE;
 }
 
 // graph.insert's placement relative to its target; text only on the wire.

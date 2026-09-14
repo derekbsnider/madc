@@ -22,9 +22,10 @@
 #   5. (V2 layouts) no layout node carries its discriminator as text — a
 #      `"slot": "…"`, `"side": "…"`, `"mode": "…"` or `"dir": "…"` literal
 #      field (ide_slot / ui::side / ide_pmode / ui::split belong there).
-# The seat files (madcide_mcp / _past / _propose / _seat.inc) are checked by
-# the same rules (Nexus L4c): the tier and proposal-status words joined the
-# converter list (tier_name, proposal_status_name).
+# The seat files (madcide_mcp / _past / _propose / _seat / _nexus / _tests /
+# _mcpclient / _layers.inc) are checked by the same rules (Nexus L4c–L4e):
+# the tier, proposal-status, intent-vocabulary, layer, test-result and
+# node-serve words joined the converter list.
 # Each rule carries a negative control.
 set -u
 
@@ -37,12 +38,12 @@ ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
 SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_mcp.inc "$ROOT"/tools/madcide/madcide_past.inc \
 	"$ROOT"/tools/madcide/madcide_propose.inc "$ROOT"/tools/madcide/madcide_seat.inc \
 	"$ROOT"/tools/madcide/madcide_nexus.inc "$ROOT"/tools/madcide/madcide_tests.inc \
-	"$ROOT"/tools/madcide/madcide_mcpclient.inc 2>/dev/null)
+	"$ROOT"/tools/madcide/madcide_mcpclient.inc "$ROOT"/tools/madcide/madcide_layers.inc 2>/dev/null)
 
 # The name words: every `return "word";` inside the five name converters.
 name_words()
 {
-	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status|record_kind|record_state|record_op|link_op|ref_kind|rel|provenance|test_family|nexus_op|mcp_transport|explain_detail)_name\(long/ { on = 1 }
+	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status|record_kind|record_state|record_op|link_op|ref_kind|rel|provenance|test_family|nexus_op|mcp_transport|explain_detail|layer|test_result|node_serve)_name\(long/ { on = 1 }
 	     on { print }
 	     on && /^}/ { on = 0 }' "$1" |
 	grep -o 'return "[a-z]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u

@@ -29,9 +29,42 @@
 // Depends on madcide_api.inc (api_run) and the registry (madcide_enums.inc:
 // cmd_table / cmd_min_tier / tier_name).
 
+// The refusal envelope every tool family shares: prose, isError. Ahead of the
+// includes below — the layer gate (madcide_layers.inc) refuses through it.
+void tool_refuse(var &out, var &why)
+{
+    var item = { "type": "text", "text": why };
+    var content = {};
+    content[] = item;
+    out = { "content": content, "isError": true };
+}
+
+// The answer envelope every family shares: the structured snapshot as text; a
+// result carrying "error" is isError content (serialise FIRST — a subscript
+// probe would add the key).
+void tool_answer(var &out, var &snap)
+{
+    var js = js::stringify(snap);
+    var txt = js;
+    bool iserr = !snap["error"].is_null();
+    var item = { "type": "text", "text": txt };
+    var content = {};
+    content[] = item;
+    out = { "content": content, "isError": iserr };
+}
+
+// The layer owner and this node's offers (madcide_layers.inc, included right
+// after the PAST axis — it reads git_handle_of from there): graph.status
+// reports both, so the declarations come first (Nexus L4e).
+long asset_layers_of(long w, long es, long doc, long node);
+void node_offers(var &out, long w, long es);
+
 // The PAST axis (Nexus L4b): revision handles, the id/rev routing and the six
 // graph.status / source / history / commits / revision / diff bodies.
 #include "madcide_past.inc"
+// The asset LAYERS (Nexus L4e, design §3.9): the ONE capability owner every
+// family gates on, this node's offers and the `target` slot (§3.11).
+#include "madcide_layers.inc"
 
 // A JSON-RPC 2.0 success envelope: this request's id echoed, its result.
 // Fills `out` (the dialect carrier-return convention, pre-L3 value-return).
@@ -163,11 +196,14 @@ void graph_tool_descriptors(var &out)
     // Nexus L4c (design §3.6): `propose` stores the op as a PROPOSAL instead of
     // applying it — the proposer tier always does, an editor may ask for it.
     var proposeprop = { "type": "boolean", "description": "store the edit as a PROPOSAL for an editor to accept instead of applying it (the proposer tier always does; optional)" };
-    var insprops = { "id": idprop, "where": whereprop, "src": srcprop, "propose": proposeprop };
+    // Nexus L4e (design §3.10): with propose, `checks` runs the tests linked
+    // to the target and records them under the proposal.
+    var checksprop = { "type": "boolean", "description": "with propose: run the tests linked `tests` to the target now and attach the runs to the proposal as its checks (optional)" };
+    var insprops = { "id": idprop, "where": whereprop, "src": srcprop, "propose": proposeprop, "checks": checksprop };
     var insargs = { "type": "object", "properties": insprops };
-    var repprops = { "id": idprop, "src": srcprop, "propose": proposeprop };
+    var repprops = { "id": idprop, "src": srcprop, "propose": proposeprop, "checks": checksprop };
     var repargs = { "type": "object", "properties": repprops };
-    var delprops = { "id": idprop, "propose": proposeprop };
+    var delprops = { "id": idprop, "propose": proposeprop, "checks": checksprop };
     var delargs = { "type": "object", "properties": delprops };
     var t14 = { "name": "graph.span", "code": gvSPAN,
 	"description": "a node's exact source extent {span:{line,column,end_line,end_column}} (statement / function / global)",
@@ -243,7 +279,7 @@ void graph_tool_descriptors(var &out)
 	"inputSchema": seqargs };
     tools[] = t26;
     var t27 = { "name": "graph.accept", "code": gvACCEPT,
-	"description": "land an open proposal (editor tier): re-checks the target byte-exact, applies, records the decision",
+	"description": "land an open proposal (editor tier): re-checks the target byte-exact, applies, records the decision, runs the tests linked to the target as its checks (informing, never blocking)",
 	"inputSchema": seqargs };
     tools[] = t27;
     var t28 = { "name": "graph.reject", "code": gvREJECT,
@@ -369,18 +405,52 @@ void nexus_tool_descriptors(var &out)
     out = tools;
 }
 
-// Nexus L4d (design §3.10): the test.* family — records only in L4d (L4e adds
-// the runner seat).
+// Nexus L4d / L4e (design §3.10, §3.11): the test.* family — the records
+// (discover) and the runner seat (list / candidates / run / results). A run
+// spawns the canonical runner (the ONE harness) and records one testrun event
+// per verdict, tagged by the node that ran it; `target` names the node.
 void test_tool_descriptors(var &out)
 {
     var dirprop = { "type": "string", "description": "the tests directory (optional; default tests)" };
     var dirprops = { "dir": dirprop };
     var dirargs = { "type": "object", "properties": dirprops };
+    var familyprop = { "type": "string", "description": "mad | unit | external (optional; default every family)" };
+    var familyprops = { "family": familyprop };
+    var familyargs = { "type": "object", "properties": familyprops };
+    var refprop = { "type": "object", "description": "a ref: {ref: symbol, file, kind, name} (or a record / commit / proposal / external ref)" };
+    var refprops = { "ref": refprop };
+    var refargs = { "type": "object", "properties": refprops };
+    var idsprop = { "type": "array", "description": "test record ids (test.list names them)" };
+    var targetprop = { "type": "string", "description": "the node to run on: a node id or a platform word (optional; null = here) — a node no one offers refuses" };
+    var proposalprop = { "type": "integer", "description": "record the runs under this proposal (optional)" };
+    var runprops = { "ids": idsprop, "target": targetprop, "proposal": proposalprop };
+    var runargs = { "type": "object", "properties": runprops };
+    var testprop = { "type": "integer", "description": "one test record id (optional)" };
+    var sinceprop = { "type": "integer", "description": "only runs after this seq (optional)" };
+    var nodeprop = { "type": "integer", "description": "only runs by this node (optional)" };
+    var resprops = { "test": testprop, "since": sinceprop, "node": nodeprop };
+    var resargs = { "type": "object", "properties": resprops };
     var tools = {};
     var t0 = { "name": "test.discover", "code": tvDISCOVER,
 	"description": "fold the project's test families (tests/*.mad with fixtures, tests/unit/*.cpp) into test records by the canonical conventions (proposer tier)",
 	"inputSchema": dirargs };
     tools[] = t0;
+    var t1 = { "name": "test.list", "code": tvLIST,
+	"description": "the live test records with each one's latest run (optional family filter)",
+	"inputSchema": familyargs };
+    tools[] = t1;
+    var t2 = { "name": "test.candidates", "code": tvCANDIDATES,
+	"description": "the tests linked `tests` to a ref (explicit links only); none linked = the mad family's whole suite NAMED as the fallback, never run",
+	"inputSchema": refargs };
+    tools[] = t2;
+    var t3 = { "name": "test.run", "code": tvRUN,
+	"description": "run test records on a node (editor tier): the canonical runner per directory (--report=json) or an external record's command; one testrun event per verdict",
+	"inputSchema": runargs };
+    tools[] = t3;
+    var t4 = { "name": "test.results", "code": tvRESULTS,
+	"description": "the testrun events (optional test / since / node filters) and the latest run per test",
+	"inputSchema": resargs };
+    tools[] = t4;
     out = tools;
 }
 
@@ -913,6 +983,11 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, var &ops,
 	    "splice_at": fs["at"], "splice_del": fs["del"] };
 }
 
+// A proposal's CHECKS (madcide_tests.inc, included after the proposal fold —
+// a declaration is enough for graph_accept's call): the tests linked to every
+// op's target, run and recorded under the proposal (Nexus L4e; design §3.10).
+void proposal_checks(var &out, IdeSession &S, long doc, long self_id, var &ops, long seq);
+
 // The FUTURE axis (Nexus L4c): the proposal fold and the five verbs — after
 // graph_edit_apply (graph_accept lands through it), before graph_call.
 #include "madcide_propose.inc"
@@ -939,7 +1014,6 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     long w = S.world();
     long es = S.es;
     long adoc = S.active(doc);
-    long h = ensure_phandle(w, es, adoc);
     var args = params["arguments"];
     if ( args.is_null() )
 	args = {};
@@ -965,6 +1039,19 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	out = { "content": content, "isError": true };
 	return;
     }
+    // The LAYER gate (Nexus L4e, design §3.9): the verb's layers as data
+    // beside its tier; the parse handle opens ONLY for a parseable asset (a
+    // binary member never reaches parse_open).
+    long have = asset_layers_of(w, es, adoc, 0);
+    long miss = layer_missing(have, graph_min_layer(gv));
+    if ( miss != 0 )
+    {
+	layer_refuse(out, nm, miss, have, w, adoc);
+	return;
+    }
+    long h = 0;
+    if ( (have & alPARSEABLE) != 0 )
+	h = ensure_phandle(w, es, adoc);
     // L4b routing (design §3.3): an id names its handle (graph_route), an
     // id-less read may name a revision (`rev`); `hh` is the handle a read runs
     // against. A mutation — or a proposal — aimed at a revision refuses:
@@ -1029,6 +1116,9 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	bool asked = !pv.is_null() && pv.as_boolean();
 	if ( my_tier == tierPROPOSER || asked )
 	    mode = emPROPOSE;
+	var cv;
+	arg_of(cv, args, "checks");
+	bool want_checks = !cv.is_null() && cv.as_boolean();
 	var t;
 	var why;
 	if ( !edit_preconditions(why, w, es, adoc, t) )
@@ -1045,6 +1135,16 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	var ops = {};
 	ops.push(op);
 	graph_edit_apply(snap, S, doc, self_id, ops, mode, 0);
+	// A proposal asked for its CHECKS (L4e, design §3.10): the tests linked
+	// to the target run now, recorded under the proposal's seq (the record
+	// exists first — the runs need it).
+	var pseq = snap["proposal"];
+	if ( mode == emPROPOSE && want_checks && !pseq.is_null() )
+	{
+	    var chk;
+	    proposal_checks(chk, S, doc, self_id, ops, pseq.as_integer());
+	    snap["checks"] = chk;
+	}
 	break;
     }
     // Nexus L4c: the FUTURE verbs (madcide_propose.inc).
@@ -1131,28 +1231,9 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     out = { "content": content, "isError": iserr };
 }
 
-// The refusal envelope every family shares: prose, isError.
-void tool_refuse(var &out, var &why)
-{
-    var item = { "type": "text", "text": why };
-    var content = {};
-    content[] = item;
-    out = { "content": content, "isError": true };
-}
-
-// The answer envelope every family shares: the structured snapshot as text; a
-// result carrying "error" is isError content (serialise FIRST — a subscript
-// probe would add the key).
-void tool_answer(var &out, var &snap)
-{
-    var js = js::stringify(snap);
-    var txt = js;
-    bool iserr = !snap["error"].is_null();
-    var item = { "type": "text", "text": txt };
-    var content = {};
-    content[] = item;
-    out = { "content": content, "isError": iserr };
-}
+// (tool_refuse / tool_answer — the two envelopes every family shares — sit
+// ahead of the includes at the top of this file since Nexus L4e: the layer
+// gate refuses through them.)
 
 // A ref argument read once (ref_of): refused with the shape when malformed.
 bool ref_arg(var &ref, var &out, var &args, const char *key)
@@ -1175,7 +1256,6 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     long w = S.world();
     long es = S.es;
     long adoc = S.active(doc);
-    long h = ensure_phandle(w, es, adoc);
     var args = params["arguments"];
     if ( args.is_null() )
 	args = {};
@@ -1194,6 +1274,18 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	tool_refuse(out, why);
 	return;
     }
+    // The LAYER gate (L4e, design §3.9); the tree only for a parseable asset
+    // (context on a binary member answers its links and records, no node).
+    long have = asset_layers_of(w, es, adoc, 0);
+    long miss = layer_missing(have, nexus_min_layer(nv));
+    if ( miss != 0 )
+    {
+	layer_refuse(out, nm, miss, have, w, adoc);
+	return;
+    }
+    long h = 0;
+    if ( (have & alPARSEABLE) != 0 )
+	h = ensure_phandle(w, es, adoc);
     long head_before = clog_head(w, adoc);
     var snap;
     switch ( nv )
@@ -1420,7 +1512,10 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     tool_answer(out, snap);
 }
 
-// Nexus L4d (design §3.10): one test.* tool call — records only in L4d.
+// Nexus L4d / L4e (design §3.10, §3.11): one test.* tool call — the verb code
+// once, the tier gate, the layer gate (run needs a runner on the target node),
+// a switch to the madcide_tests.inc bodies; a run's `target` resolves to a
+// node before anything spawns.
 void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &params)
 {
     long w = S.world();
@@ -1444,6 +1539,13 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
 	tool_refuse(out, why);
 	return;
     }
+    long have = asset_layers_of(w, es, adoc, 0);
+    long miss = layer_missing(have, test_min_layer(tv));
+    if ( miss != 0 )
+    {
+	layer_refuse(out, nm, miss, have, w, adoc);
+	return;
+    }
     long head_before = clog_head(w, adoc);
     var snap;
     switch ( tv )
@@ -1456,6 +1558,78 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
 	if ( !dv.is_null() )
 	    dir = dv;
 	test_discover(snap, w, es, adoc, self_id, dir.c_str());
+	break;
+    }
+    case tvLIST:
+    {
+	var fv;
+	arg_of(fv, args, "family");
+	long fam = tfNONE;
+	if ( !fv.is_null() && strlen(fv.c_str()) > 0 )
+	{
+	    fam = test_family_of(fv);
+	    if ( fam == tfNONE )
+	    {
+		var why = format("unknown test family '{}'", fv);
+		snap = { "error": why };
+		break;
+	    }
+	}
+	test_list(snap, w, fam);
+	break;
+    }
+    case tvCANDIDATES:
+    {
+	var ref;
+	if ( !ref_arg(ref, out, args, "ref") )
+	    return;
+	test_candidates(snap, w, ref);
+	break;
+    }
+    case tvRUN:
+    {
+	var idsv;
+	arg_of(idsv, args, "ids");
+	if ( idsv.is_null() || php::count(idsv) == 0 )
+	{
+	    snap = { "error": "test.run needs ids: [record id, ...] (test.list names them)" };
+	    break;
+	}
+	var tgt;
+	arg_of(tgt, args, "target");
+	long node = 0;
+	var why;
+	if ( !target_node_of(node, why, tgt, w, es) )
+	{
+	    snap = { "error": why };
+	    break;
+	}
+	var pv;
+	arg_of(pv, args, "proposal");
+	long prop = 0;
+	if ( !pv.is_null() )
+	    prop = pv.as_integer();
+	test_run_ids(snap, S, doc, self_id, idsv, node, prop);
+	break;
+    }
+    case tvRESULTS:
+    {
+	var tv2;
+	arg_of(tv2, args, "test");
+	var sv;
+	arg_of(sv, args, "since");
+	var nv2;
+	arg_of(nv2, args, "node");
+	long test = 0;
+	long since = 0;
+	long node = -1;
+	if ( !tv2.is_null() )
+	    test = tv2.as_integer();
+	if ( !sv.is_null() )
+	    since = sv.as_integer();
+	if ( !nv2.is_null() )
+	    node = nv2.as_integer();
+	test_results(snap, w, test, since, node);
 	break;
     }
     }

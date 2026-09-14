@@ -166,8 +166,8 @@ int main()
     var bad3 = { "rkind": "bug" };
     call_tool(snap, err, S, doc, 26, "nexus.records", bad3);
     println("refuse-kind: err={} why={}", err ? 1 : 0, snap["error"]);
-    println("tiers: create={} sync={} discover={}", tier_name(nexus_min_tier(nvCREATE)), tier_name(nexus_min_tier(nvSYNC)),
-	    tier_name(test_min_tier(tvDISCOVER)));
+    println("tiers: create={} sync={} discover={} run={}", tier_name(nexus_min_tier(nvCREATE)), tier_name(nexus_min_tier(nvSYNC)),
+	    tier_name(test_min_tier(tvDISCOVER)), tier_name(test_min_tier(tvRUN)));
 
     // persist -> restore into a fresh session: the records survive the stream
     long w = S.world();
