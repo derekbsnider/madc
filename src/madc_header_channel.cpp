@@ -51,7 +51,17 @@ void HeaderFramedDataChannel::close_read() { inner_->close_read(); }
 
 void HeaderFramedDataChannel::close_write() { inner_->close_write(); }
 
+void HeaderFramedDataChannel::cancel() { inner_->cancel(); }
+
 void HeaderFramedDataChannel::close() { inner_->close(); }
+
+// The framer OWNS the inner endpoint, so every fact about that endpoint is
+// answered by delegation — a framed exec:// channel must still report its
+// child's exit status (the caller asks this channel; there is nothing else
+// left to ask).
+int HeaderFramedDataChannel::exit_status() const { return inner_->exit_status(); }
+
+bool HeaderFramedDataChannel::is_terminal() const { return inner_->is_terminal(); }
 
 intptr_t HeaderFramedDataChannel::read_poll_handle() const
 {

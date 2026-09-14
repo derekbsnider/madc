@@ -44,7 +44,10 @@ public:
 	bool flush(error *err = nullptr) override;
 	void close_read() override;
 	void close_write() override;
+	void cancel() override;
 	void close() override;
+	int exit_status() const override;
+	bool is_terminal() const override;
 
 	// PollableDataChannel — a serve task parks on the inner socket fd.
 	intptr_t read_poll_handle() const override;

@@ -241,7 +241,16 @@ void WebSocketDataChannel::close_write()
 	inner_->close_write();
 }
 
+void WebSocketDataChannel::cancel() { inner_->cancel(); }
+
 void WebSocketDataChannel::close() { inner_->close(); }
+
+// The framer OWNS the inner endpoint: facts about it are answered by
+// delegation, or a framed channel silently reports the DataChannel defaults
+// (exit status -1, "not a terminal") for an endpoint that knows better.
+int WebSocketDataChannel::exit_status() const { return inner_->exit_status(); }
+
+bool WebSocketDataChannel::is_terminal() const { return inner_->is_terminal(); }
 
 intptr_t WebSocketDataChannel::read_poll_handle() const
 {
