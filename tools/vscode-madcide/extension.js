@@ -160,12 +160,20 @@ async function runCommandPalette() {
 // makes the loopback port reachable when the extension host is remote
 // (Remote-SSH, containers): VS Code forwards it. The port is never exposed.
 async function openWindow() {
-	if (!serveUrl) {
+	// A spawned server reports its own face ($/madc/serve); an ATTACHED one
+	// needs no announcement — the session it joined is the address we were
+	// told to attach to.
+	let url = serveUrl;
+	if (!url) {
+		const attach = (vscode.workspace.getConfiguration('madcide').get('attach') || '').trim();
+		if (attach) url = 'http://' + attach + '/';
+	}
+	if (!url) {
 		vscode.window.showWarningMessage(
 			'madcide: this server has no window face. Set madcide.window and restart the server.');
 		return;
 	}
-	const external = await vscode.env.asExternalUri(vscode.Uri.parse(serveUrl));
+	const external = await vscode.env.asExternalUri(vscode.Uri.parse(url));
 	if (windowPanel) {
 		windowPanel.reveal();
 		return;
@@ -201,9 +209,19 @@ async function startClient(context) {
 		return;
 	}
 
+	// Two modes. ATTACH joins a session that is already running, so this
+	// editor, an agent's MCP client and a browser share one set of buffers —
+	// and the server must NOT be given a window face, because the session it
+	// attaches to already has one. Otherwise madcide opens a private session,
+	// and the window face is what `madcide: Open Window` needs.
+	const attach = (cfg.get('attach') || '').trim();
 	let args = ['--no-config', madcide, file, '--lsp'];
-	if (cfg.get('window'))
+	if (attach) {
+		args = args.concat(['--attach', attach]);
+		out.appendLine('mode: attaching to the session at ' + attach);
+	} else if (cfg.get('window')) {
 		args = args.concat(['--serve', '127.0.0.1:0']);	// loopback only: no auth exists
+	}
 	args = args.concat(cfg.get('extraArgs') || []);
 	out.appendLine('spawning: ' + madc + ' ' + args.join(' '));
 	out.appendLine('cwd: ' + root);

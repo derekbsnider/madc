@@ -50,10 +50,38 @@ so VS Code forwards it when the extension host is remote. **The port is
 loopback-only and never exposed: madcide has no authentication or TLS.** Set
 `madcide.window` to `false` to run without the second face.
 
-Not here yet, and each its own slice: one shared session behind VS Code, an
-agent's MCP client and a browser *at once*, by attaching to an already-running
-session (V6c-3c). Also deferred: `workspace/symbol` (Ctrl+T), completion,
-signature help, formatting, code actions and rename.
+### Joining a session someone else started
+
+Set `madcide.attach` to a running session's address and the extension spawns
+`--lsp --attach <addr>` instead of a private server. The same session can then
+carry this editor, an agent's MCP client and a browser window at once — the
+three of them editing the same buffers.
+
+```bash
+# the session (on the machine where madc is built)
+bin/madc tools/madcide/madcide.mad src/thing.mad --serve 127.0.0.1:7777
+
+# an agent host, in its MCP config
+bin/madc tools/madcide/madcide.mad src/thing.mad --mcp --attach 127.0.0.1:7777
+```
+
+then `"madcide.attach": "127.0.0.1:7777"` in VS Code. **madcide has no
+authentication and no TLS.** Bind loopback and reach a session on another
+machine through an ssh tunnel (`ssh -N -L 7777:127.0.0.1:7777 host`) — never by
+binding a public address.
+
+**Tiers.** The first connection to a session is granted OWNER and every later
+one OBSERVER, so a second client is read-only until an owner promotes it:
+
+```json
+{"cmd": "clienttier", "args": "<id> editor", "seq": 1}
+```
+
+That is the gatekeeper behaving as designed — attaching does not hand out edit
+rights.
+
+Not here yet: `workspace/symbol` (Ctrl+T), completion, signature help,
+formatting, code actions and rename.
 
 ## Install
 
@@ -83,7 +111,8 @@ Then either:
 | `madcide.madcPath` | *(empty)* | The `madc` binary. Empty = `bin/madc` under the workspace folder, else `madc` on PATH. |
 | `madcide.madcidePath` | `tools/madcide/madcide.mad` | The madcide script madc runs. |
 | `madcide.serverFile` | *(empty)* | The document madcide opens with. Empty = the active `.mad` editor, else the first `.mad` in the workspace. Other files join the session on demand. |
-| `madcide.window` | `true` | Give the server its second face (`--serve 127.0.0.1:0`) so **Open Window** works against the same session. |
+| `madcide.window` | `true` | Give the server its second face (`--serve 127.0.0.1:0`) so **Open Window** works against the same session. Ignored when `madcide.attach` is set — that session already has one. |
+| `madcide.attach` | *(empty)* | Join an already-running session at `host:port` instead of opening a private one. Loopback / ssh tunnel only. |
 | `madcide.extraArgs` | `[]` | Extra arguments for madcide. |
 | `madcide.trace.server` | `off` | Log the LSP traffic in the **madcide** output channel. |
 
@@ -119,3 +148,15 @@ and no node.
 
 A conforming session prints **nothing on stderr but the serve banner** and
 exits **0**.
+
+`test/attach_probe.js` is the same idea for the shared-session shape: it drives
+a real LSP editor through `--lsp --attach` and a plain api client against **one**
+running session, and checks that the api client sees the editor's edit. Start a
+session first:
+
+```bash
+bin/madc tools/madcide/madcide.mad tmp/attach_doc.mad --serve 127.0.0.1:45998 &
+node test/attach_probe.js
+```
+
+`tests/testmadcide_attach` is the gate; this is the instrument.
