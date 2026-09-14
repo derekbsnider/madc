@@ -169,9 +169,50 @@ The substrate ws/MCP/LSP all ride. Engine + dialect.
    the program does); NEW `testmadcide_lsp_serve` drives BOTH faces of one
    spawned process, proves the api client sees the line the LSP client deleted,
    and proves the process still exits 0.
-   Next: V6c-3c — the attach relay (`--lsp/--mcp --attach <addr>`) plus LSP
-   routing on the socket seat, so VS Code, an agent's MCP client and a browser
-   share an ALREADY-RUNNING session.
+5. **The attach relay** — SHIPPED 2026-09-14 (plan
+   `2026-09-14-v6c3c-attach-relay-plan.md`): `madcide <file> --lsp --attach
+   <addr>` (and `--mcp`) makes an editor or an agent a client of a session that
+   is **already running**, instead of the owner of a private one.
+
+   **As landed.** Two rulings. A connection **declares** its JSON-RPC dialect —
+   `initialize` exists in both LSP and MCP, so routing by method name is
+   ambiguous at exactly the first message and sniffing the params would be a
+   guess; the relay is madcide's own code on both ends, so a third envelope
+   (`{"madc":"lsp"}`, `envHELLO`) says it. A connection that sends no hello
+   stays MCP, so no existing client moved. And **lifecycle belongs to the
+   connection**: the relay answers `shutdown`/`exit` itself and never forwards
+   them, because a session other clients are on must outlive one editor
+   quitting. The relay opens no session — it is pure transport, two cooperative
+   pumps.
+
+   **The prerequisite bug.** `penc` — the negotiated position encoding — lived
+   on the SESSION bag, so a second attached editor's `initialize` overwrote the
+   first's and silently mis-placed every position on a line with a non-ASCII
+   character before it. It is now per connection (`lsp_encoding` /
+   `lsp_set_encoding`, keyed by share id) and resolved ONCE per message at the
+   dispatcher, then passed down — a handler must never re-read it, because
+   handlers yield and a shared slot read after a yield can hold another
+   client's answer. Negative-controlled.
+
+   Also: `madcide_lsp.inc` is now the dispatcher alone; `run_lsp`,
+   `lsp_serve_task` and `run_attach` moved beside `run_serve`, where madcide's
+   serving processes live — which is also what breaks the include cycle the
+   routing creates (the seat needs `lsp_handle`, the serve face needs
+   `serve_conn_task`). The relay's down-pump hit the same parked-poller trap as
+   the accept loop; half-closing solves it properly (the seat reads EOF and
+   closes its end, which is a real readable event).
+   Gates: `testmadcide_attach` holds a live session with a real listener,
+   spawns the relay, drives LSP down its stdio, and proves the edit landed in
+   the holding process's session, that diagnostics and `$/madc/*` come back,
+   that the relay exits 0, and that the session still stands afterwards.
+   Confirmed with real clients (`tools/vscode-madcide/test/attach_probe.js`): an
+   LSP editor and an api client on one session, the api client seeing the
+   editor's edit.
+
+**V6 is COMPLETE.** The remaining step is the arc's RELEASE seam — the owner's
+call: `/dupaudit` scoped to `madcdis` + `tools/madcide`, the ONE battery
+(`make -C src fulltest` + `--exe` + `--obj` + the packed / headerless / lane
+runs), `scripts/lane_ledger.sh record`, merge to develop.
 
 ## Invariants to hold (design §2.8)
 General client record (done); symmetric capability negotiation (consume AND
