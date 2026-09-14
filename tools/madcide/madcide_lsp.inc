@@ -685,6 +685,118 @@ void lsp_semantic_tokens(var &out, IdeSession &S, long adoc, long h)
     out = { "data": data };
 }
 
+// This process's OTHER face, when it has one: the api/ws/http endpoint a
+// window can join on the SAME session (`--lsp --serve <addr>`). Told
+// in-protocol so the client never has to scrape stderr for it.
+void lsp_serve_note(var &notes, long w, long es)
+{
+    var ep;
+    ui::get(ep, w, es, "lspserve");
+    if ( ep.is_null() || strlen(ep.c_str()) == 0 )
+	return;
+    var url = format("http://{}/", ep);
+    var params = { "endpoint": ep, "url": url };
+    var note;
+    lsp_notify(note, madc_note_name(mnSERVE), params);
+    notes[] = note;
+}
+
+// ---- doing things: the command registry as an LSP method ----------------
+// Everything madcide DOES is a registry command, and api_run is the ONE
+// command core every transport drives (the api JSON-line seat, the MCP seat,
+// the -c one-shot). This adapter therefore holds no command grammar at all:
+// it strips the wire prefix, hands the name and the argument to api_run, and
+// returns api_run's body. The tier gate (cmd_min_tier) and the unknown-command
+// refusal are already api_run's — adding either here would be a second copy of
+// a rule that must not diverge.
+
+// What the session was SAYING before a command ran, so a message the command
+// set can be told apart from one already on the status line.
+void lsp_msg_of(var &out, long w, long es)
+{
+    ui::get(out, w, es, "msg");
+    if ( out.is_null() )
+	out = "";
+}
+
+// The notifications a command's side effects earn. The change events are the
+// SAME records broadcast_events fans to api clients — one event shape for every
+// transport, never a second one modelled here — and the diagnostics republish
+// because `check` and `save` are exactly when they change.
+void lsp_session_notes(var &notes, IdeSession &S, long adoc, long head_before,
+		       var &msg_before)
+{
+    long w = S.world();
+    long es = S.es;
+    var evs;
+    events_since(evs, w, adoc, head_before);
+    for ( var e : evs )
+    {
+	var note;
+	lsp_notify(note, madc_note_name(mnEVENT), e);
+	notes[] = note;
+    }
+    var msg;
+    lsp_msg_of(msg, w, es);
+    if ( !(msg == msg_before) && strlen(msg.c_str()) > 0 )
+    {
+	var params = { "message": msg };
+	var note;
+	lsp_notify(note, madc_note_name(mnMESSAGE), params);
+	notes[] = note;
+    }
+    lsp_publish(notes, S, adoc);
+}
+
+// workspace/executeCommand: {"command":"madcide.<name>", "arguments":["<arg>"]}.
+// IdeSession::command takes ONE argument string (the same reason the MCP tool
+// schema has exactly one `args` property), so arguments[0] is it.
+// `out` is the whole REPLY (the body is api_run's, carried as the result) —
+// composed here rather than in the dispatcher, because a dialect `switch` case
+// takes no compound statement with declarations in it.
+void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
+			 long self_id, var &idv, var &params)
+{
+    var cmd = params.is_null() ? params : params["command"];
+    if ( cmd.is_null() )
+    {
+	var nocmd = { "ok": false,
+		      "error": "workspace/executeCommand needs a command" };
+	lsp_reply(out, idv, nocmd);
+	return;
+    }
+    const char *wire = cmd.c_str();
+    const char *pfx = lsp_command_prefix();
+    long plen = strlen(pfx);
+    if ( strncmp(wire, pfx, plen) != 0 )
+    {
+	var why = format("'{}' is not a madcide command (they are spelled '{}<name>')",
+			 cmd, pfx);
+	var bad = { "ok": false, "error": why };
+	lsp_reply(out, idv, bad);
+	return;
+    }
+    var name = wire + plen;
+    const char *arg = "";
+    var args = params["arguments"];
+    if ( !args.is_null() && php::count(args) > 0 )
+    {
+	var a0 = args[0];
+	if ( !a0.is_null() )
+	    arg = a0.c_str();
+    }
+    long w = S.world();
+    long es = S.es;
+    long adoc = S.active(doc);
+    long head_before = clog_head(w, adoc);
+    var msg_before;
+    lsp_msg_of(msg_before, w, es);
+    var body;
+    api_run(body, S, doc, self_id, name.c_str(), arg);
+    lsp_reply(out, idv, body);
+    lsp_session_notes(notes, S, S.active(doc), head_before, msg_before);
+}
+
 // ---- the server's capabilities -----------------------------------------
 // The position ENCODING is the one real negotiation: a client offering utf-8
 // saves every conversion, a client that does not gets the protocol's utf-16
@@ -710,6 +822,24 @@ long lsp_negotiate_encoding(var &params)
     return peUTF16;
 }
 
+// The command ids this server accepts: every registry command (cmd_table — the
+// SAME table the profiles, the menus, the -c one-shot and the MCP tool list
+// load through), each wearing the wire prefix. What is advertised is exactly
+// what dispatch accepts, because both read this one list.
+void lsp_command_ids(var &out)
+{
+    var ct;
+    cmd_table(ct);
+    var ids = {};
+    for ( var r : ct )
+    {
+	var nm = r["name"];
+	var id = format("{}{}", lsp_command_prefix(), nm);
+	ids[] = id;
+    }
+    out = ids;
+}
+
 void lsp_capabilities(var &out, long enc)
 {
     long incremental = lsp_sync_number(lsINCREMENTAL);
@@ -719,10 +849,14 @@ void lsp_capabilities(var &out, long enc)
     lsp_token_legend(legend);
     var semantic = { "legend": legend, "full": true };
     var encoding = pos_encoding_name(enc);
+    var ids;
+    lsp_command_ids(ids);
+    var exec = { "commands": ids };
     out = { "positionEncoding": encoding, "textDocumentSync": sync,
 	    "hoverProvider": true, "definitionProvider": true,
 	    "referencesProvider": true, "documentSymbolProvider": true,
-	    "semanticTokensProvider": semantic };
+	    "semanticTokensProvider": semantic,
+	    "executeCommandProvider": exec };
 }
 
 // ---- document synchronisation ------------------------------------------
@@ -849,6 +983,12 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	lsp_initialize(out, S, idv, params);
 	return true;
     case lmINITIALIZED:
+	// The client's own ready signal is the first legal moment to push a
+	// notification, so it is where this process tells the client about its
+	// OTHER face: the api/ws/http endpoint a window can join, on the same
+	// session. No endpoint (plain --lsp) means no notification.
+	lsp_serve_note(notes, w, es);
+	return false;
     case lmCANCEL:
     // The notifications this server KNOWS and deliberately ignores: trace
     // level, configuration, watched files, workspace folders, the pre-save
@@ -881,6 +1021,12 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	// buffer — other clients may be viewing it, and the session owns its
 	// documents. Nothing to publish either.
 	return false;
+    case lmEXECUTECOMMAND:
+	// A command acts on the SESSION, not on a document the request names,
+	// so it resolves no textDocument and skips the layer gate below. Its
+	// own gate is api_run's tier check.
+	lsp_execute_command(out, notes, S, doc, self_id, idv, params);
+	return true;
     }
 
     // What is left are the READS, and they all need the document, its layers
@@ -930,27 +1076,10 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 // loop with one framing swapped. The lone stdio client is the operator:
 // self_id -1 (untracked -> owner via eff_tier), so it may edit and save.
 
-long run_lsp(const char *path, bool ro)
+// The message loop itself — ONE loop, whether or not this process is also
+// wearing the serve face (two copies would be two protocols).
+void lsp_stdio_loop(IdeSession &S, long doc, madc::channel &io, long w, long es)
 {
-    IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
-    if ( doc <= 0 )
-	return 1;
-    S.terminal(false);				// headless: no interactive terminal
-    long w = S.world();
-    long es = S.es;
-    long enc0 = peUTF16;			// an ENUMERATOR into a slot goes
-    ui::set(w, es, "penc", enc0);		// through a long (the dialect's rule)
-
-    madc::channel io("stdio://");
-    if ( !io.ok() || !io.frame_headers() )
-    {
-	println(stderr, "madcide --lsp: {}", io.last_error());
-	S.close();
-	return 1;
-    }
     var line;
     while ( io.readline(line) )
     {
@@ -979,6 +1108,105 @@ long run_lsp(const char *path, bool ro)
 	}
 	if ( es_int(w, es, "lspexit", 0) != 0 )
 	    break;				// the client said exit
+    }
+}
+
+// The SERVE FACE of an LSP process (V6c-3b): run_serve's accept loop, on a
+// listener the caller already bound and detached, spawning the SAME
+// serve_conn_task every --serve connection gets. One session, two faces — a
+// second process would be a second session on the same file, which is two
+// carets, two undo histories and last-save-wins.
+//
+// Shutdown: this task parks in accept, and `scope` joins it before run_lsp
+// returns, so something must make accept return. Closing the listener's fd
+// under a parked poller does not reliably wake it; a CONNECTION does — run_lsp
+// pokes its own endpoint once the LSP client has said exit, and the flag tells
+// this loop the connection is that poke and not a client.
+void lsp_serve_task(IdeSession *S, long doc, long listen_handle, long w, long es)
+{
+    madc::channel listener;
+    if ( !listener.adopt(listen_handle) )
+	return;					// a spent handle — never on this path
+    scope
+    {
+	while ( es_int(w, es, "lspexit", 0) == 0 )
+	{
+	    if ( !listener.wait_readable() )
+		break;				// the listener died
+	    madc::channel client;
+	    long got = listener.accept(client);
+	    if ( got < 0 )
+		break;
+	    if ( got == 0 )
+		continue;			// spurious wake — nothing pending
+	    if ( es_int(w, es, "lspexit", 0) != 0 )
+		break;				// the exit poke, not a client
+	    long conn = client.detach();
+	    go serve_conn_task(S, doc, conn);
+	}
+    }
+    listener.close();
+}
+
+long run_lsp(const char *path, bool ro, const char *serve)
+{
+    IdeSession S;
+    long doc = S.open(path, ro);
+    if ( doc == 0 )
+	println(stderr, "madcide: cannot read {}", path);
+    if ( doc <= 0 )
+	return 1;
+    S.terminal(false);				// headless: no interactive terminal
+    long w = S.world();
+    long es = S.es;
+    long enc0 = peUTF16;			// an ENUMERATOR into a slot goes
+    ui::set(w, es, "penc", enc0);		// through a long (the dialect's rule)
+
+    madc::channel io("stdio://");
+    if ( !io.ok() || !io.frame_headers() )
+    {
+	println(stderr, "madcide --lsp: {}", io.last_error());
+	S.close();
+	return 1;
+    }
+
+    // The serve face, when asked for. The listener is bound HERE so its real
+    // endpoint (`:0` asks the OS for a port) is known before the task starts
+    // and can be told to the client in-protocol ($/madc/serve, on initialized).
+    long listen_handle = 0;
+    var endpoint = "";
+    if ( serve != NULL )
+    {
+	var uri = format("listen://{}", serve);
+	madc::channel listener(uri.c_str());
+	if ( !listener.ok() )
+	{
+	    println(stderr, "madcide --lsp: cannot serve on {}: {}",
+		    serve, listener.last_error());
+	    io.close();
+	    S.close();
+	    return 1;
+	}
+	endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
+	ui::set(w, es, "lspserve", endpoint);
+	println(stderr, "madcide: serving {} on {} (api + ws + http) beside --lsp",
+		path, endpoint);
+	listen_handle = listener.detach();
+    }
+
+    scope
+    {
+	if ( listen_handle != 0 )
+	    go lsp_serve_task(&S, doc, listen_handle, w, es);
+	lsp_stdio_loop(S, doc, io, w, es);
+	if ( listen_handle != 0 )
+	{
+	    // Wake the accept park so `scope` can join it (see lsp_serve_task).
+	    ui::set(w, es, "lspexit", 1);
+	    var poke_uri = format("tcp://{}", endpoint);
+	    madc::channel poke(poke_uri.c_str());
+	    poke.close();
+	}
     }
     // The spec's own verdict: exit after a shutdown is success, without one
     // is an error the client reports.

@@ -13,6 +13,12 @@
 #include "../tools/madcide/madcide_client.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_mcp.inc"
+// The serve seats, in madcide.mad's own order: the LSP face can wear the serve
+// face too (V6c-3b), so it names serve_conn_task and must follow it. The gate
+// compiles the composition the PROGRAM compiles, not a smaller one.
+#include "../tools/madcide/madcide_seat.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
 #include "../tools/madcide/madcide_lsp.inc"
 
 // One request through the dispatcher: `res` is the reply's `result` (null
@@ -274,6 +280,71 @@ int main()
     var unk;
     call_err(unk, S, doc, 31, "textDocument/completion", symp);
     println("unknown-method-code: {}", unk["code"]);
+
+    // ---- workspace/executeCommand: madcide's REAL controls (V6c-3b) ------
+    // The adapter holds NO command grammar: it strips the wire prefix and hands
+    // the name to api_run, the one command core every transport drives. What
+    // initialize advertises is exactly what dispatch accepts, because both read
+    // cmd_table.
+    var ct;
+    cmd_table(ct);
+    var execp = caps["executeCommandProvider"];
+    var ids = execp["commands"];
+    println("exec-advertised-matches-table: {}",
+	    php::count(ids) == php::count(ct) ? 1 : 0);
+    bool has_check = false;
+    for ( var id : ids )
+	if ( id == "madcide.check" )
+	    has_check = true;
+    println("exec-advertises-check: {}", has_check ? 1 : 0);
+
+    var noargs = {};
+    var runp = { "command": "madcide.check", "arguments": noargs };
+    call_lsp(res, notes, S, doc, 20, "workspace/executeCommand", runp);
+    println("exec-check-ok: {} errors: {}", res["ok"], res["errors"]);
+    var msgnote;
+    for ( var n : notes )
+	if ( n["method"] == "$/madc/message" )
+	    msgnote = n;
+    println("exec-check-message-note: {}", msgnote.is_null() ? 0 : 1);
+    var dgnote;
+    for ( var n : notes )
+	if ( n["method"] == "textDocument/publishDiagnostics" )
+	    dgnote = n;
+    println("exec-check-diagnostics-note: {}", dgnote.is_null() ? 0 : 1);
+
+    // An EDITING command earns a change event — the SAME record the api seat
+    // broadcasts, so there is one event shape for every transport.
+    var lineargs = {};
+    lineargs[] = "8";
+    var gotop = { "command": "madcide.gotoline", "arguments": lineargs };
+    call_lsp(res, notes, S, doc, 21, "workspace/executeCommand", gotop);
+    var delp = { "command": "madcide.delline", "arguments": noargs };
+    call_lsp(res, notes, S, doc, 22, "workspace/executeCommand", delp);
+    var evnote;
+    for ( var n : notes )
+	if ( n["method"] == "$/madc/event" )
+	    evnote = n;
+    println("exec-edit-event-note: {}", evnote.is_null() ? 0 : 1);
+
+    // The refusals belong to api_run and to the boundary, one each.
+    var unkp = { "command": "madcide.nosuchthing", "arguments": noargs };
+    call_lsp(res, notes, S, doc, 23, "workspace/executeCommand", unkp);
+    println("exec-unknown: ok={} error={}", res["ok"], res["error"]);
+    var barep = { "command": "check", "arguments": noargs };
+    call_lsp(res, notes, S, doc, 24, "workspace/executeCommand", barep);
+    println("exec-unprefixed-refused: {}", res["ok"].as_boolean() ? 0 : 1);
+
+    // Put the deleted line back so the later assertions read the same document.
+    var restore = { "text": "long add(long a, long b)\n{\n\treturn a + b;\n}\n\nint main()\n{\n\tlong s = add(1, 2);\n\treturn s;\n}\n" };
+    var rchanges = {};
+    rchanges[] = restore;
+    var restorep = { "textDocument": vtdoc, "contentChanges": rchanges };
+    notify_lsp(notes, S, doc, "textDocument/didChange", restorep);
+
+    // A plain --lsp process has no second face, so it says nothing about one.
+    println("serve-note-when-not-serving: {}",
+	    notify_lsp(notes, S, doc, "initialized", symp) ? 1 : php::count(notes));
 
     // didSave republishes; didClose keeps the buffer open for other clients.
     notify_lsp(notes, S, doc, "textDocument/didSave", symp);

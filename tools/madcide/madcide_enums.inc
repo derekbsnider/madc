@@ -1223,8 +1223,19 @@ enum lsp_method : unsigned char {
     lmSETTRACE, lmDIDCHANGECONFIG, lmDIDCHANGEWATCHED, lmDIDCHANGEFOLDERS,
     lmWILLSAVE,
     // the answering methods (each one an existing projection or graph verb)
-    lmDOCUMENTSYMBOL, lmHOVER, lmDEFINITION, lmREFERENCES, lmSEMANTICTOKENS
+    lmDOCUMENTSYMBOL, lmHOVER, lmDEFINITION, lmREFERENCES, lmSEMANTICTOKENS,
+    // the DOING method (V6c-3b): every madcide registry command, through the
+    // one command core (api_run) — the tier gate and the unknown-command
+    // refusal are already its, so this adapter adds neither
+    lmEXECUTECOMMAND,
+    lmLAST				// the converter's bound — add ABOVE this
 };
+
+// The prefix a madcide registry command wears on the LSP wire. A client merges
+// every server's executeCommand list into ONE namespace, so a bare `save` would
+// collide; the prefix is stripped ONCE here, at the boundary, and cmd_of never
+// sees it (the enum law: text converts at the input boundary, once).
+const char *lsp_command_prefix() { return "madcide."; }
 const char *lsp_method_name(long m)
 {
     switch ( m )
@@ -1248,14 +1259,35 @@ const char *lsp_method_name(long m)
 	case lmDEFINITION: return "textDocument/definition";
 	case lmREFERENCES: return "textDocument/references";
 	case lmSEMANTICTOKENS: return "textDocument/semanticTokens/full";
+	case lmEXECUTECOMMAND: return "workspace/executeCommand";
     }
     return "";
 }
+
+// The server -> client notifications madcide adds to the protocol (V6c-3b).
+// The `$/` space is the protocol's own for implementation-defined messages, so
+// a client that does not know them ignores them by the spec's own rule.
+enum madc_note : unsigned char { mnNONE = 0, mnEVENT, mnMESSAGE, mnSERVE };
+const char *madc_note_name(long n)
+{
+    switch ( n )
+    {
+	case mnEVENT: return "$/madc/event";
+	case mnMESSAGE: return "$/madc/message";
+	case mnSERVE: return "$/madc/serve";
+    }
+    return "";
+}
+// The bound is the SENTINEL, never the last name: a method added below the
+// previous last enumerator was silently unconvertible — lmEXECUTECOMMAND
+// arrived as lmNONE and the dispatcher answered "Method not found" for a method
+// it implements. Every enumerator between lmINITIALIZE and lmLAST has a name,
+// so the empty string never matches.
 long lsp_method_of(var &word)
 {
     if ( word.is_null() )
 	return lmNONE;
-    for ( long k = lmINITIALIZE; k <= lmSEMANTICTOKENS; k = k + 1 )
+    for ( long k = lmINITIALIZE; k < lmLAST; k = k + 1 )
 	if ( word == lsp_method_name(k) )
 	    return k;
     return lmNONE;

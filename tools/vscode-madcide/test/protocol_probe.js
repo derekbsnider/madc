@@ -38,8 +38,11 @@ const TEXT = 'long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\tlong
 fs.mkdirSync(path.dirname(DOC), { recursive: true });
 fs.writeFileSync(DOC, TEXT);
 
+// The serve FACE beside the LSP one (V6c-3b): one process, one session, so a
+// window joins the same buffers the editor is editing.
 const child = cp.spawn(MADC,
-	['--no-config', 'tools/madcide/madcide.mad', DOC, '--lsp'],
+	['--no-config', 'tools/madcide/madcide.mad', DOC, '--lsp',
+	 '--serve', '127.0.0.1:0'],
 	{ cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'] });
 
 let stderr = '';
@@ -53,7 +56,12 @@ const conn = rpc.createMessageConnection(
 	new rpc.StreamMessageWriter(child.stdin));
 
 const diags = [];
+const madcNotes = [];
+let serveUrl = null;
 conn.onNotification('textDocument/publishDiagnostics', p => diags.push(p));
+conn.onNotification('$/madc/serve', p => { serveUrl = p.url; madcNotes.push('$/madc/serve'); });
+conn.onNotification('$/madc/message', p => madcNotes.push('$/madc/message: ' + p.message));
+conn.onNotification('$/madc/event', p => madcNotes.push('$/madc/event: ' + p.kind));
 conn.onUnhandledNotification(n => console.log('UNHANDLED NOTIFICATION: ' + n.method));
 conn.onError(e => console.log('CONNECTION ERROR: ' + e));
 conn.listen();
@@ -122,10 +130,15 @@ const settle = ms => new Promise(r => setTimeout(r, ms));
 
 async function main() {
 	const init = await conn.sendRequest('initialize', initParams);
-	show('initialize.capabilities', init.capabilities);
+	const cmds = (init.capabilities.executeCommandProvider || {}).commands || [];
+	show('initialize.capabilities', Object.assign({}, init.capabilities, {
+		executeCommandProvider: { commands: cmds.length + ' commands, e.g. ' + cmds.slice(0, 4).join(', ') }
+	}));
 	show('initialize.serverInfo', init.serverInfo);
 
 	conn.sendNotification('initialized', {});
+	await settle(300);
+	show('serve.url', serveUrl);
 	// The notifications a real client sends unasked. Nothing may come back,
 	// and nothing may reach stderr.
 	conn.sendNotification('$/setTrace', { value: 'verbose' });
@@ -162,6 +175,31 @@ async function main() {
 	await settle(1500);
 	show('after-change.diagnostics', diags.length ? diags[diags.length - 1].diagnostics : null);
 
+	// workspace/executeCommand: madcide's real controls, through api_run.
+	madcNotes.length = 0;
+	show('executeCommand(madcide.check)', await conn.sendRequest('workspace/executeCommand', {
+		command: 'madcide.check', arguments: []
+	}).then(r => ({ ok: r.ok, errors: r.errors })));
+	await conn.sendRequest('workspace/executeCommand', { command: 'madcide.gotoline', arguments: ['8'] });
+	await conn.sendRequest('workspace/executeCommand', { command: 'madcide.delline', arguments: [] });
+	await settle(500);
+	show('madc.notifications', madcNotes);
+	show('executeCommand(unknown)', await conn.sendRequest('workspace/executeCommand', {
+		command: 'madcide.nosuchthing', arguments: []
+	}));
+
+	// The served face reaches the SAME session: the page is the engine's own.
+	if (serveUrl) {
+		const page = await new Promise(resolve => {
+			require('http').get(serveUrl, res => {
+				let body = '';
+				res.on('data', d => { body += d; });
+				res.on('end', () => resolve({ status: res.statusCode, bytes: body.length }));
+			}).on('error', e => resolve({ error: String(e) }));
+		});
+		show('serve.page', page);
+	}
+
 	conn.sendNotification('textDocument/willSave', { textDocument: { uri }, reason: 1 });
 	conn.sendNotification('textDocument/didSave', { textDocument: { uri } });
 	await settle(1200);
@@ -179,7 +217,10 @@ async function main() {
 	for (let i = 0; i < 100 && !exited; i++)
 		await settle(100);
 	show('exit', exited);
-	console.log('--- stderr (must be empty for a conforming session) ---');
+	// A conforming session says nothing on stderr but the serve banner (which
+	// names the window's URL and is deliberate). Anything else is a defect:
+	// VS Code shows this channel to the user.
+	console.log('--- stderr (only the serve banner is expected) ---');
 	console.log(stderr.trim() || '(empty)');
 }
 
