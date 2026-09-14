@@ -137,7 +137,14 @@ entity — no caller moves.
 
 (Sequencing, 2026-09-13: the scoping lands in L4c with its first
 cross-document consumer, the proposal record; L4b kept V4's per-document log
-and landed the reader-side enum below.)
+and landed the reader-side enum below. Landed 2026-09-14, L4c: the entity is
+found by name — `clog_find(w)` — and every record ALSO carries `path`, the
+asset's durable identity: a record's `doc` is an entity id of the session that
+wrote it, so `clog_restore` re-attaches the restoring document's records by
+path (`clog_adopt`, also run when a project member opens later) and REFUSES to
+load a file over a session that already logged events — with ONE stream that
+would drop the other documents' records. A document with no record in the
+stream replays to its live text: revision 0.)
 
 Why one stream (not a second log for proposals and records): cross-reference
 ruling 1 — "one record that edit history, the mirror, provenance and replay
@@ -173,10 +180,14 @@ compare anywhere in `tools/` (negative control included).
 ### 3.2 Actors
 
 Every record already carries `es` (the editing-state entity of the client
-that posted it). L4 adds nothing to the actor model; the seat's connection
-cookie (`madc::conn_cookie`) is the tier, `es` is the identity, and a
-proposal's `actor` is the `es` that created it. A landed proposal's `nodeop`
-carries `proposal: <id>` so BOTH actors are on the record (the proposer on
+that posted it). The seat's connection cookie (`madc::conn_cookie`) is the
+tier; the IDENTITY of a remote actor is its connection's share id — in a
+headless session every connection acts through the ONE `S.es`, so `es` cannot
+tell a proposer from the editor who lands its proposal (L4c amendment,
+2026-09-14). The records the seat writes (`nodeop`, `proposal`, `decision`)
+carry `actor: <share id>` (`-1` = the local operator) beside `es`; `graph.withdraw`
+at the proposer tier requires `actor == self`. A landed proposal's `nodeop`
+carries `proposal: <seq>` so BOTH actors are on the record (the proposer on
 the proposal, the lander on the nodeop + decision) — Nexus §10 provenance
 ("who changed it, what process generated the change, who reviewed it").
 
@@ -236,7 +247,11 @@ N — the same record, the same landing contract:
 - `base_seq` = `clog_head` when created (the causal parent — "based on").
 - `target.text` is the span's bytes at creation: the byte-exact re-check at
   landing (yailPeralta's hash check, spelled as the text itself — the L3
-  `phandle_text` precedent: exact, no checksum function in the dialect).
+  `phandle_text` precedent: exact, no checksum function in the dialect). As
+  landed (L4c): the bytes ride the OP as `ops[i].text`, one level up — the
+  `target` stays `graph_span`'s answer shape so the nodeop record (which
+  needs no bytes) keeps its L3 shape and the log does not carry every edited
+  node's text twice.
 - The candidate is validated with the SAME machinery as an edit
   (`parse_refresh_checked`'s child parse + error-count rule) but WITHOUT the
   swap: a `commit` flag on the one internal
@@ -713,7 +728,13 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
   stream's decisions (§3.4).
 - The connection-level wiring test the L3 review deferred lands HERE with
   the `testmadcide_serve_tiers` harness: a real observer refused, a real
-  proposer stored, a real editor landing — through `serve_client_task`.
+  proposer stored, a real editor landing — through `serve_client_task`. To
+  reach `graph.*` over a real socket the JSON-line connection loop moved to
+  `tools/madcide/madcide_seat.inc` and dispatches by ENVELOPE (`enum
+  ide_envelope`, read once): the api shape → `api_run`, a JSON-RPC message →
+  `mcp_handle` — ONE loop, two envelopes, one tier roster; an MCP client now
+  speaks to `--serve` directly (the engine's `serve_web` already classified
+  either as a JSON client).
 
 ### 4.5 Nexus records + the MCP client + the mycenode adapter (L4d)
 
@@ -853,7 +874,7 @@ revision id (§3.3 routing). The three mutation verbs refuse a revision id.
 |---|---|---|
 | **L4a** git substrate | libgit2 subtree + `Makefile.madc` + features headers + Makefile wiring (all variants) + size spike; `GitRepo`; `git_source_adapter` + the `git` scheme row; `madc::git_*` publics | §8 L4a |
 | **L4b** PAST verbs — SHIPPED 2026-09-13 (plan `2026-09-13-nexus-L4b-past-verbs-plan.md`) | `clog_kind` enum at the reader + `ts` on every record; `parse_open_tagged` / `parse_generation` / `graph_route` (engine-allocated tags; a tagged handle refuses refresh); `GitRepo::blame_buffer`, `git_relpath` (the promoted canonicalizer), `php::time()`; `graph.status / source / history / commits / revision / diff` in `madcide_past.inc`, routed in `graph_call`. The project-scoped stream moved to L4c (its first cross-document consumer) | `testgraphtagged`, `testgraphpast`, `test_gitrepo`, the single-owners gate's kind-compare marker |
-| **L4c** propose | the project-scoped stream (one entity per session, records carry `doc`, per-doc checkpoints at compaction); `tierPROPOSER`; `parse_would_accept`; `edit_mode`; proposal + decision records; `graph.proposals / proposal / accept / reject / withdraw`; the connection-level wiring test | §8 L4c + a two-document changelog case |
+| **L4c** propose — SHIPPED 2026-09-14 (plan `2026-09-14-nexus-L4c-propose-plan.md`) | the project-scoped stream (ONE entity per session found by name, records carry `doc` + `path`, per-document replay / `events_since` / compaction checkpoints, `clog_adopt` re-attaches a restored log by path, restore refuses over a live session); `tierPROPOSER`; `parse_would_accept` (the ONE validator's commit flag); `edit_mode`; `graph_edit_apply` over an ops LIST (one candidate, one validation, one checkpoint, all splices or none); proposal + decision records with `actor`; `graph.proposals / proposal / accept / reject / withdraw` in `madcide_propose.inc`; the JSON-line seat (`madcide_seat.inc`) carrying the api AND the JSON-RPC envelope; the connection-level wiring test | `testparsewould`, `testmadcide_changelog` (+ the two-document case), `testmadcide_serve_propose` (three real connections), the ONE-validator marker in the single-owners gate, the enum gate over the seat files |
 | **L4d** intent | record/link kinds + `nexus_fold`; `nexus.*` verbs; the MCP client (stdio); manifests as data; `nexus_sync`; the fixture server; mycenode manifest slot; the `test` record kind + `tests` relation + `test.discover` (records only) | §8 L4d |
 | **L4e** verification | `asset_layers_of` + per-family `*_min_layer` gates (retrofits `graph.*` and `nexus.*`; `graph.status` / `nexus.explain` report the layer set); `--report=json` on the canonical runner; `test.list / candidates / run / results`; `testrun` events tagged by node; proposal `checks` on accept/propose | a two-asset fixture project (a `.mad` and a binary) refused/served per layer; a run through the real runner yields a `testrun` event; a proposal with a linked failing test stays open with the run attached |
 | later (not L4) | `http://` channel → Streamable HTTP MCP servers (Jira); recipes (N-op proposals with a per-file diff view); rename/move survival; a madcdat index over the stream; `graph.explore` / `detail` enum / `graph.impact(depth)` (L2 increments); the `.mad` family run in-process behind the one fixture owner | own plans |
