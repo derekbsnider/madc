@@ -33,6 +33,23 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "commands": [
+      {
+        "command": "madcide.runCommand",
+        "title": "Run Command…",
+        "category": "madcide"
+      },
+      {
+        "command": "madcide.openWindow",
+        "title": "Open Window",
+        "category": "madcide"
+      },
+      {
+        "command": "madcide.restart",
+        "title": "Restart Server",
+        "category": "madcide"
+      }
+    ],
     "configuration": {
       "title": "madcide",
       "properties": {
@@ -50,6 +67,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "The document madcide opens at startup. Empty means: the active `.mad` editor, else the first `.mad` file in the workspace. Every other file the editor opens is added to the same session on demand."
+        },
+        "madcide.window": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Give the server its second face: `--serve 127.0.0.1:0` beside `--lsp`, so **madcide: Open Window** can show the real madcide UI against the *same* session. The port is loopback-only and reached through VS Code's own forwarding; it is never exposed (madcide has no authentication)."
         },
         "madcide.extraArgs": {
           "type": "array",
