@@ -1,0 +1,40 @@
+// madc::canonical_path — the comparison spelling of a path (V6c-2). Two
+// spellings of ONE file must compare equal, or a client that addresses a
+// document by absolute URI opens a SECOND buffer for a file the session
+// already has open and every edit lands in the wrong one. The engine's
+// standing canonicalizer (canonical_path_for_compare — AGENTS.md rule #4)
+// gets a dialect face here; nothing new is invented.
+int main()
+{
+	const char *name = "madc_canon_probe.txt";
+	php::file_put_contents(name, "x\n");
+
+	var plain;
+	madc::canonical_path(plain, name);
+	var dotted;
+	madc::canonical_path(dotted, "./madc_canon_probe.txt");
+	var through;
+	madc::canonical_path(through, "tests/../madc_canon_probe.txt");
+
+	println("absolute: {}", plain.c_str()[0] == '/' ? 1 : 0);
+	println("dot-form-agrees: {}", plain == dotted ? 1 : 0);
+	println("dotdot-form-agrees: {}", plain == through ? 1 : 0);
+	println("ends-with-name: {}", php::basename(plain));
+
+	// A path that does not exist still answers — its own spelling, never
+	// an empty string (a caller compares it; an empty answer would make
+	// every missing file equal to every other).
+	var missing;
+	madc::canonical_path(missing, "no/such/file/anywhere.txt");
+	println("missing-kept: {}", missing);
+
+	// The relative spelling of an existing DIRECTORY resolves too.
+	var dir;
+	madc::canonical_path(dir, "tests");
+	var dir2;
+	madc::canonical_path(dir2, "./tests/");
+	println("dir-agrees: {}", dir == dir2 ? 1 : 0);
+
+	php::unlink(name);
+	return 0;
+}

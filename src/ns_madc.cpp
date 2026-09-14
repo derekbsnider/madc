@@ -330,6 +330,17 @@ value &git_blame_text(value &out, int64_t handle, const char *path, const char *
 value &git_relpath(value &out, int64_t handle, const char *path)
 	{ std::string p = path ? path : ""; madc_git_relpath(&out, handle, &p); return out; }
 
+// The comparison spelling of a path (V6c-2): the standing canonicalizer
+// (detail::canonical_path_for_compare — realpath when it resolves, the input
+// spelling otherwise) given a dialect face. Two spellings of one file must
+// compare EQUAL: a protocol client addresses a document by absolute URI while
+// a session may have opened it by a relative path, and without this the two
+// are different documents. Never answers empty — a caller compares the
+// result, and an empty answer would make every unresolvable path equal to
+// every other.
+value &canonical_path(value &out, const char *path)
+	{ out = detail::canonical_path_for_compare(path ? path : ""); return out; }
+
 // L4b (design §3.3): revision handles by generation TAG.
 int64_t parse_open_tagged(const char *source, const char *filename)
 	{ std::string s = source ? source : "", f = filename ? filename : "";

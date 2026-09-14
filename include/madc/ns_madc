@@ -272,6 +272,14 @@ namespace madc {
     value  &git_blame_text(value &out, int64_t handle, const char *path, const char *text, int64_t line, int64_t count);
     value  &git_relpath(value &out, int64_t handle, const char *path);
 
+    // The COMPARISON spelling of a path (V6c-2): symlinks, `.` and `..`
+    // resolved (POSIX realpath) when the path exists, the input spelling
+    // unchanged when it does not — never empty. THE canonicalizer the engine
+    // uses for path identity, so a file opened as `src/x.mad` and the same
+    // file named `/abs/src/x.mad` compare equal. Use it wherever two path
+    // spellings must name one document; do not write a second normalizer.
+    value &canonical_path(value &out, const char *path);
+
     // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
     // opens a READ-ONLY parse handle of `source` whose generation is a fresh
     // TAG (>= 2^20, engine-allocated) — every id it mints names it, so
