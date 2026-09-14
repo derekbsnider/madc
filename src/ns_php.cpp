@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <io.h>       // _unlink — win64 UCRT spells POSIX unlink() `_unlink`
+#include <direct.h>   // _mkdir / _rmdir — the UCRT spellings (php::mkdir / rmdir)
 #else
 #include <unistd.h>   // unlink(2)
 #endif
@@ -259,6 +260,57 @@ std::string *php_implode(std::string *result, const char *glue, madc::value *arr
 int64_t php_count(madc::value *arr)
 {
 	return (int64_t)ns_common::value_count(*arr);
+}
+
+// php::array_keys — PHP array_keys(): the keys of a map (an object-kind
+// carrier: its keys in the carrier's own order) or the indices 0..n-1 of a
+// list; anything else answers an empty array. The dialect's ONE way to
+// enumerate an object's keys (range-for over an object-kind carrier reads
+// size 0 by the madarray_size rule) — Nexus L4d's fold and manifests ride it.
+void php_array_keys(madc::value *out, madc::value *arr)
+{
+	std::vector<madc::value> keys;
+	if ( arr && arr->is_object() )
+	{
+		const std::map<std::string, madc::value> &m = arr->as_object();
+		for ( std::map<std::string, madc::value>::const_iterator it = m.begin();
+		      it != m.end(); ++it )
+			keys.push_back(madc::value(it->first));
+	}
+	else if ( arr && arr->is_array() )
+	{
+		int64_t n = (int64_t)ns_common::value_count(*arr);
+		for ( int64_t i = 0; i < n; ++i )
+			keys.push_back(madc::value(i));
+	}
+	*out = madc::value::make_array(keys);
+}
+
+// php::mkdir / php::rmdir — PHP mkdir() / rmdir(): true on success, false on
+// failure (an existing directory, a non-empty one, a missing one) — never a
+// throw. Host-side builtins, so win64-portable: the UCRT spells them _mkdir
+// (no mode) / _rmdir, and the host picks the spelling, as php::unlink does.
+int64_t php_mkdir(const char *path, int64_t mode)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	(void)mode;
+	return ::_mkdir(path) == 0 ? 1 : 0;
+#else
+	return ::mkdir(path, (mode_t)mode) == 0 ? 1 : 0;
+#endif
+}
+
+int64_t php_rmdir(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_rmdir(path) == 0 ? 1 : 0;
+#else
+	return ::rmdir(path) == 0 ? 1 : 0;
+#endif
 }
 
 // php::array_push — ONE overloaded name (PHP parity: no array_push_int
@@ -1079,6 +1131,10 @@ std::string *__php_implode(std::string *a, const char *b, madc::value *c) { retu
 int64_t __php_count(madc::value *a) { return php_count(a); }
 // PHP time(): seconds since the Unix epoch (the dialect's wall clock; L4b).
 int64_t __php_time() { return (int64_t)::time((time_t *)0); }
+// PHP array_keys / mkdir / rmdir (Nexus L4d task 0).
+void __php_array_keys(madc::value *a, madc::value *b) { php_array_keys(a, b); }
+int64_t __php_mkdir(const char *a, int64_t b) { return php_mkdir(a, b); }
+int64_t __php_rmdir(const char *a) { return php_rmdir(a); }
 int64_t __php_array_push(madc::value *a, const char *b) { return php_array_push_str(a, b); }
 int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_int(a, b); }
 int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }
