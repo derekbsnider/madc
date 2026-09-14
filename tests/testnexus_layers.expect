@@ -1,0 +1,35 @@
+status: layers=text,versioned,managed,lexable,parseable,executable platform-set=1 serves=3 node=0
+png-status: err=0 layers=text,versioned,managed handle=0 errors=0
+png-symbols: err=1 names-layer=1
+png-commits: err=0
+png-records: err=0 rows=0
+png-explain: err=1 names-layer=1
+png-list: err=0 rows=0
+png-run: err=1 names-layer=1
+back: layers=6 handle-set=1
+discover: created=3
+status-testable: 1
+list: rows=3 ids-set=1 last-null=1
+run: ok=1 ran=3 passed=1 failed=2 synced=1 node=0
+run-ok: result=pass exit=0 detail=[]
+run-bad: result=fail exit=0 detail=[hello]
+run-slow: result=timeout exit=124
+results: rows=3 latest=3 node0=0 synced=1 test0=1
+results-one: rows=1
+results-node7: rows=0
+list-last: ok=pass bad=fail
+results-since: rows=1
+external: ran=2 ok=pass ok-exit=0 three=fail three-exit=3 three-detail=[exit 3]
+unit: err=1 names-runner=1
+target-foreign: err=1 names-node=1
+target-here: ok=1 node=0
+candidates-add: tests=1 fallback=0 first=1
+candidates-run: tests=0 fallback=1 suite=mad count=3
+propose-checks: ok=1 ran=1 passed=1 fallback=0
+proposal-checks: rows=1 tagged=1 result=pass status=open
+accept: ok=1 checks-ran=1 checks-passed=1
+results-grew: 2
+failing-check: ran=1 failed=1 status=open attached=1 result=fail
+propose-fallback: ok=1 ran=0 fallback=1 suite=mad
+explain: err=0 layers=7
+policy: run-tier=editor run-needs-testable=1 commits-needs-versioned=1 explain-needs-parseable=1 status-needs-text=1
