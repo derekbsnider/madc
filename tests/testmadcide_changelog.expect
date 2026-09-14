@@ -7,3 +7,10 @@ V4 replay-after-compact: ok
 V4 compaction-shrank: ok
 V4 replay-clamp: ok
 V4 persist-restore: ok
+L4c replay-doc-A: ok
+L4c replay-doc-B: ok
+L4c events-since: all=6 docB=2
+L4c per-doc-checkpoints: 2
+L4c replay-A-after-compact: ok
+L4c replay-B-after-compact: ok
+L4c persist-restore-B: ok

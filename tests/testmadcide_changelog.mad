@@ -97,8 +97,60 @@ int main()
     clog_replay(rClamp, w, doc, segB);             // segB now below the cut
     okfail("V4 replay-clamp", rClamp == snapE, rClamp, snapE);
 
+    // Nexus L4c: ONE stream per session. A second document's splices ride the
+    // same log; each document replays ONLY its own records; compaction writes
+    // one checkpoint PER document at the cut; events_since(doc) filters and
+    // events_since(0) answers everything.
+    const char *pathB = "madc_ide_clog_b.mad";
+    php::file_put_contents(pathB, "");
+    long docB = setup_document(w, pathB, false);
+    long esB = spawn_view_es(w, docB, pathB);
+    ed_text_insert(w, esB, docB, 0, "one");        // seq 8
+    ed_text_insert(w, es, doc, 0, "Y");            // seq 9 -- interleaved
+    ed_text_insert(w, esB, docB, 3, " two");       // seq 10
+    var curB;
+    ui::text(curB, w, docB);
+    var cur2;
+    ui::text(cur2, w, doc);
+    var rA;
+    clog_replay(rA, w, doc, -1);
+    okfail("L4c replay-doc-A", rA == cur2, rA, cur2);
+    var rBB;
+    clog_replay(rBB, w, docB, -1);
+    okfail("L4c replay-doc-B", rBB == curB, rBB, curB);
+    var evAll;
+    events_since(evAll, w, 0, 0);
+    var evB;
+    events_since(evB, w, docB, 0);
+    // all = the 3 survivors of the first compaction (checkpoint@5, 6, 7) + the
+    // three splices above; docB = its two splices.
+    println("L4c events-since: all={} docB={}", php::count(evAll), php::count(evB));
+    clog_compact(w, doc, 1, 1);                    // cut = 9: both docs have records at or below it
+    long cps = 0;
+    var blob2;
+    ui::text(blob2, w, le);
+    var lines2;
+    php::explode(lines2, "\n", blob2.c_str());
+    for ( var ln : lines2 )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( js::parse(rec, ln) && clog_kind_of(rec) == ckCHECKPOINT )
+	    cps = cps + 1;
+    }
+    println("L4c per-doc-checkpoints: {}", cps);
+    var rA2;
+    clog_replay(rA2, w, doc, -1);
+    okfail("L4c replay-A-after-compact", rA2 == cur2, rA2, cur2);
+    var rB2;
+    clog_replay(rB2, w, docB, -1);
+    okfail("L4c replay-B-after-compact", rB2 == curB, rB2, curB);
+
     // Persistence round-trip: a manifest makes .prj.events materialise;
     // persist, then restore into a FRESH world and replay -> the same text.
+    // The restored records carry the WRITING session's doc ids; clog_restore
+    // re-attaches the restoring document's by path, a later open adopts its own.
     ui::set(w, es, "projfile", "madc_ide_clog.prj.json");
     clog_persist(w, es, doc);
     long w2 = ui::world_new();
@@ -108,9 +160,15 @@ int main()
     clog_restore(w2, es2, doc2);
     var rr;
     clog_replay(rr, w2, doc2, -1);
-    okfail("V4 persist-restore", rr == cur, rr, cur);
+    okfail("V4 persist-restore", rr == cur2, rr, cur2);
+    long docB2 = setup_document(w2, pathB, false);	// opened later: adopts its records by path
+    clog_adopt(w2, docB2);
+    var rrB;
+    clog_replay(rrB, w2, docB2, -1);
+    okfail("L4c persist-restore-B", rrB == curB, rrB, curB);
     php::unlink("madc_ide_clog.prj.events");
 
+    php::unlink(pathB);
     php::unlink(path);
     return 0;
 }

@@ -226,13 +226,18 @@ void es_view_doc(long w, long es, long doc)
 // rewrite-stable). NOT a WAL: no write-ahead, no fsync, tail-loss
 // tolerated. This is the NEUTRAL texteditor-layer core -- a record carries
 // only texteditor nouns (es, doc, at/del/ins); madcide adds the .prj.events
-// file and the event:N View on top. STORE: a per-document "changelog"
-// entity whose piece-table buffer holds JSONL (one record per line) --
-// append is a text_insert at end (O(1) amortised), and the buffer text IS
-// both the persisted form and the wire form (one serialisation). Replay
-// applies each splice to a scratch buffer through the engine's own
-// text_replace (no dialect string surgery). A "kind" token is text only in
-// the persisted line; replay applies "checkpoint" and "splice" records and
+// file and the event:N View on top. STORE: ONE "changelog" entity per
+// SESSION (world), found by name (clog_find) -- the project-scoped stream
+// (Nexus L4c, design 2026-09-13 §3.1) -- whose piece-table buffer holds JSONL
+// (one record per line): append is a text_insert at end (O(1) amortised),
+// and the buffer text IS both the persisted form and the wire form (one
+// serialisation). Every record carries `doc` (the entity) and `path` (the
+// asset's durable identity -- clog_adopt re-attaches a restored log's records
+// to this session's ids by it); the readers fold ONE document's splice /
+// checkpoint records; compaction writes one checkpoint per document at the
+// cut. Replay applies each splice to a scratch buffer through the engine's
+// own text_replace (no dialect string surgery). A "kind" token is text only
+// in the persisted line; replay applies "checkpoint" and "splice" records and
 // skips every other kind (a "nodeop" annotation -- code-graph MCP L3 -- rides
 // the same stream AHEAD of the splices it caused, and changes no text) --
 // the enum-boundary rule.
@@ -257,15 +262,31 @@ long clog_kind_of(var &rec)
     return ckOTHER;
 }
 
-// The document's change-log entity, created on first need; seq lives on it.
+// One keyed READ of a map that may still be null or the empty container (`{}`
+// is an empty ARRAY; a keyed read before the first keyed write throws). out
+// stays null for a missing key. (Promoted from madcide_past.inc, Nexus L4c.)
+void keyed_get(var &out, var &map, const char *key)
+{
+    if ( map.is_object() )
+	out = map[key];
+}
+
+// The session's change-log entity WITHOUT creating it (0 = none yet): the
+// ONE stream every document's records ride (Nexus L4c, design §3.1).
+long clog_find(long w)
+{
+    return ui::entity_by_name(w, "changelog");
+}
+
+// The change-log entity, created on first need; seq lives on it. `doc` is the
+// caller's document (kept so no caller moves); the entity is the SESSION's.
 long changelog_of(long w, long doc)
 {
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le > 0 )
 	return le;
     le = ui::create(w, "changelog");
     ui::text_load(w, le, "");	// initialise the piece-table component
-    ui::set(w, doc, "changelog", le);
     ui::set(w, le, "seq", 0);
     return le;
 }
@@ -278,6 +299,10 @@ long clog_append(long w, long doc, var &rec)
     ui::set(w, le, "seq", seq);
     rec["seq"] = seq;
     rec["ts"] = php::time();		// when (design §2.4's ChangeEvent.ts; L4b)
+    var p;
+    ui::get(p, w, doc, "path");
+    if ( !p.is_null() )
+	rec["path"] = p;		// the asset's durable identity (clog_adopt re-attaches by it)
     var line = js::stringify(rec);
     ui::text_insert(w, le, ui::text_size(w, le), format("{}\n", line));
     return seq;
@@ -317,10 +342,12 @@ long replaybuf_of(long w, long doc)
 // Reconstruct the buffer text at seq `upto` (<= 0 = the whole log) by
 // replaying forward from the newest checkpoint whose seq <= `upto`. A seq
 // below the oldest surviving checkpoint clamps to that checkpoint (the
-// retention rule). The engine of the replay gate AND the event:N View.
+// retention rule). Folds ONE document's records out of the session stream; a
+// document with no record yet IS at revision 0 (its live text). The engine of
+// the replay gate AND the event:N View.
 void clog_replay(var &out, long w, long doc, long upto)
 {
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le <= 0 )
     {
 	ui::text(out, w, doc);	// no log yet: the live text IS revision 0
@@ -332,7 +359,8 @@ void clog_replay(var &out, long w, long doc, long upto)
     ui::text(blob, w, le);
     var lines;
     php::explode(lines, "\n", blob.c_str());
-    bool seen = false;
+    bool seen = false;		// a record of this doc within range
+    bool any = false;		// any record of this doc applied
     for ( var ln : lines )
     {
 	if ( strlen(ln.c_str()) == 0 )
@@ -340,6 +368,8 @@ void clog_replay(var &out, long w, long doc, long upto)
 	var rec;
 	if ( !js::parse(rec, ln) )
 	    continue;		// a torn / partial tail line: stop trusting it
+	if ( rec["doc"].as_integer() != doc )
+	    continue;		// another document's record (the ONE stream)
 	long seq = rec["seq"].as_integer();
 	long kind = clog_kind_of(rec);
 	if ( upto > 0 && seq > upto )
@@ -347,30 +377,43 @@ void clog_replay(var &out, long w, long doc, long upto)
 	    // a target below the oldest surviving record clamps UP to that
 	    // checkpoint (the retention rule) -- never a silent empty answer
 	    if ( kind == ckCHECKPOINT && !seen )
+	    {
 		ui::text_load(w, scr, rec["text"].c_str());
+		any = true;
+	    }
 	    break;
 	}
 	seen = true;
 	if ( kind == ckCHECKPOINT )
+	{
 	    ui::text_load(w, scr, rec["text"].c_str());
+	    any = true;
+	}
 	else if ( kind == ckSPLICE )
 	{
 	    long at = rec["at"].as_integer();
 	    long del = rec["del"].as_integer();
 	    var ins = rec["ins"];
 	    ui::text_replace(w, scr, at, del, ins.c_str());
+	    any = true;
 	}
 	// any other kind (a node-op annotation, code-graph L3) changes no text: skipped
+    }
+    if ( !any )
+    {
+	ui::text(out, w, doc);	// no record of this doc: the live text IS revision 0
+	return;
     }
     ui::text(out, w, scr);
 }
 
-// The changelog head seq for `doc` WITHOUT creating the log (0 = none yet) —
-// the cheap "did this edit advance the log?" probe the broadcast feed reads
-// before and after a command (V6a duplex D2).
+// The changelog head seq WITHOUT creating the log (0 = none yet) — the cheap
+// "did this edit advance the log?" probe the broadcast feed reads before and
+// after a command (V6a duplex D2). The SESSION's head (one stream); `doc` is
+// kept so no caller moves.
 long clog_head(long w, long doc)
 {
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le <= 0 )
 	return 0;
     return es_int(w, le, "seq", 0);
@@ -380,11 +423,12 @@ long clog_head(long w, long doc)
 // replication feed a client reads incrementally (V6a duplex D2, the
 // {"event":…} push). Unlike clog_replay (which reconstructs BUFFER TEXT at a
 // revision), this returns the events THEMSELVES, for a peer to apply/observe.
-// A torn/partial tail line stops the scan (never a half-parsed event).
+// `doc` 0 = every document's events. A torn/partial tail line stops the scan
+// (never a half-parsed event).
 void events_since(var &out, long w, long doc, long since)
 {
     out = {};
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le <= 0 )
 	return;
     var blob;
@@ -398,6 +442,8 @@ void events_since(var &out, long w, long doc, long since)
 	var rec;
 	if ( !js::parse(rec, ln) )
 	    break;		// a torn tail line: stop trusting the rest
+	if ( doc != 0 && rec["doc"].as_integer() != doc )
+	    continue;		// doc 0 = every document's events
 	if ( rec["seq"].as_integer() > since )
 	    out.push(rec);
     }
@@ -405,25 +451,61 @@ void events_since(var &out, long w, long doc, long since)
 
 // Compaction (design S2.4): when the log exceeds `limit` bytes, rewrite it
 // as a fresh checkpoint at seq `cut` (= head - `keep`) followed by the last
-// `keep` records whole. Every surviving seq stays replayable from that
-// checkpoint -- the INVARIANT: never truncate past a checkpoint a retained
-// event needs. A no-op below the limit or with fewer than `keep` events.
+// `keep` records whole. ONE checkpoint PER DOCUMENT that has a record at or
+// below the cut (each document's replay starts from its own). Every
+// surviving seq stays replayable from its checkpoint -- the INVARIANT: never
+// truncate past a checkpoint a retained event needs. A no-op below the limit
+// or with fewer than `keep` events.
 void clog_compact(long w, long doc, long limit, long keep)
 {
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le <= 0 || ui::text_size(w, le) < limit )
 	return;
     long cut = es_int(w, le, "seq", 0) - keep;
     if ( cut <= 0 )
 	return;
-    var base;
-    clog_replay(base, w, doc, cut);
-    var cp = { "seq": cut, "kind": "checkpoint", "doc": doc, "text": base };
-    var rebuilt = format("{}\n", js::stringify(cp));
     var blob;
     ui::text(blob, w, le);
     var lines;
     php::explode(lines, "\n", blob.c_str());
+    // The documents with a record at or below the cut, in first-seen order,
+    // and the path each last carried (the doc entity may be gone by now).
+    var docs = {};
+    var seen;			// doc-key -> 1 (a null var becomes the map on its first keyed write)
+    var paths;			// doc-key -> path
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) || rec["seq"].as_integer() > cut )
+	    continue;
+	var key = format("{}", rec["doc"]);
+	var hit;
+	keyed_get(hit, seen, key.c_str());
+	if ( hit.is_null() )
+	{
+	    seen[key.c_str()] = 1;
+	    docs.push(rec["doc"]);
+	}
+	var rp = rec["path"];
+	if ( !rp.is_null() )
+	    paths[key.c_str()] = rp;
+    }
+    var rebuilt = "";
+    for ( var d : docs )
+    {
+	var base;
+	clog_replay(base, w, d.as_integer(), cut);
+	var cp = { "seq": cut, "kind": "checkpoint", "doc": d, "text": base, "ts": php::time() };
+	var key = format("{}", d);
+	var rp;
+	keyed_get(rp, paths, key.c_str());
+	if ( !rp.is_null() )
+	    cp["path"] = rp;
+	var js = js::stringify(cp);
+	rebuilt = format("{}{}\n", rebuilt, js);
+    }
     for ( var ln : lines )
     {
 	if ( strlen(ln.c_str()) == 0 )
@@ -435,6 +517,51 @@ void clog_compact(long w, long doc, long limit, long keep)
 	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
     }
     ui::text_load(w, le, rebuilt.c_str());
+}
+
+// A restored record's `doc` is an entity id of the SESSION THAT WROTE IT; the
+// asset's durable identity is its path. Rewrite every record whose `path` is
+// this document's to this document's id, so the per-document fold finds them.
+// Called by clog_restore for the restoring document and by a later open of a
+// project member; a no-op when nothing matches.
+void clog_adopt(long w, long doc)
+{
+    long le = clog_find(w);
+    if ( le <= 0 )
+	return;
+    var p;
+    ui::get(p, w, doc, "path");
+    if ( p.is_null() )
+	return;
+    var blob;
+    ui::text(blob, w, le);
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    var rebuilt = "";
+    bool changed = false;
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) )
+	{
+	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
+	    continue;
+	}
+	var rp = rec["path"];
+	if ( !rp.is_null() && rp == p && rec["doc"].as_integer() != doc )
+	{
+	    rec["doc"] = doc;
+	    changed = true;
+	    var js = js::stringify(rec);
+	    rebuilt = format("{}{}\n", rebuilt, js);
+	}
+	else
+	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
+    }
+    if ( changed )
+	ui::text_load(w, le, rebuilt.c_str());
 }
 
 void ed_text_insert(long w, long es, long doc, long off, const char *s)

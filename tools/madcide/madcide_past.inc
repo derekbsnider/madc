@@ -50,14 +50,9 @@ void git_relpath_of(var &out, long w, long adoc)
 	out = "";
 }
 
-// One keyed READ of a map that may still be the empty container (`{}` becomes
-// an object on its first keyed WRITE; a keyed read before that throws). out
-// stays null for a missing key.
-void keyed_get(var &out, var &map, const char *key)
-{
-    if ( map.is_object() )
-	out = map[key];
-}
+// (keyed_get — the one keyed READ of a map that may still be null / the empty
+// container — lives in editor_events.inc since Nexus L4c; the stream's
+// compaction needs it one layer down.)
 
 // ---- the revision cache: sha -> {sha, tag, handle, ent}, LRU-bounded ---------
 // A revision's text lives in its own text ENTITY so line_start_of and every
@@ -269,10 +264,7 @@ void graph_status(var &out, long w, long es, long adoc, long live)
     bool synced = !pt.is_null() && pt == t;
     var diags;
     madc::parse_check(diags, live);
-    long errors = 0;
-    for ( var d : diags )
-	if ( d["severity"] == "error" )
-	    errors = errors + 1;
+    long errors = diag_error_count(diags);	// the ONE reader of the severity code (madcide_core.inc)
     var revs;
     revs_of(revs, w, adoc);
     var order;
@@ -485,9 +477,9 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 		rows.push(row);
 	    }
     }
-    // EVENT: walk the doc's log newest -> oldest
+    // EVENT: walk the session stream newest -> oldest (this doc's records)
     bool complete = true;
-    long le = es_int(w, adoc, "changelog", 0);
+    long le = clog_find(w);
     if ( le > 0 )
     {
 	var blob;

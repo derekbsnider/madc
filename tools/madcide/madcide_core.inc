@@ -3049,7 +3049,10 @@ long open_buffer_doc(long w, long es, const char *path)
 {
     long nd = setup_document(w, path, false);
     if ( nd != 0 )
+    {
+	clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
 	return nd;
+    }
     nd = ui::create(w, "document");
     ui::text_load(w, nd, "");
     doc_set_path(w, nd, path);
@@ -3541,17 +3544,16 @@ bool proj_events_path(var &out, long w, long es)
     return true;
 }
 
-// Flush the doc's change log to <base>.prj.events (the whole buffer -> the
-// file; the buffer text IS the file's content -- one serialisation). A
-// no-op with no manifest. Follow-ups: also flush on 	S doc-save; unify to
-// one project events file across docs for a multi-file manifest (the log is
-// per-doc today, single-file being V4's gated case).
+// Flush the SESSION's change log -- the ONE stream every document's records
+// ride (Nexus L4c) -- to <base>.prj.events (the whole buffer -> the file; the
+// buffer text IS the file's content -- one serialisation). A no-op with no
+// manifest. Follow-up: also flush on ^K S doc-save.
 void clog_persist(long w, long es, long doc)
 {
     var path;
     if ( !proj_events_path(path, w, es) )
 	return;
-    long le = es_int(w, doc, "changelog", 0);
+    long le = clog_find(w);
     if ( le <= 0 )
 	return;
     var blob;
@@ -3559,9 +3561,13 @@ void clog_persist(long w, long es, long doc)
     php::file_put_contents(path.c_str(), blob.c_str());
 }
 
-// Restore the doc's change log from <base>.prj.events on project open; seq
-// resumes at the last record's, so new events continue the sequence. A
-// no-op with no manifest or no file.
+// Restore the session's change log from <base>.prj.events on project open;
+// seq resumes at the last record's, so new events continue the sequence; the
+// restoring document's records are re-attached to it by path (clog_adopt --
+// their `doc` ids belong to the session that wrote them). A no-op with no
+// manifest or no file. ONE stream: loading a file over a session that already
+// logged events would drop the other documents' records (and collide their
+// seqs) -- refused with the reason, never silently (Nexus L4c).
 void clog_restore(long w, long es, long doc)
 {
     var path;
@@ -3570,6 +3576,18 @@ void clog_restore(long w, long es, long doc)
     var blob;
     if ( !php::file_get_contents(blob, path.c_str()) )
 	return;
+    if ( clog_head(w, doc) > 0 )
+    {
+	// Beside the caller's message (the project announcement), never over it.
+	var prior;
+	ui::get(prior, w, es, "msg");
+	var note = "Events not restored: this session already logged events.";
+	if ( prior.is_null() || strlen(prior.c_str()) == 0 )
+	    ui::set(w, es, "msg", note.c_str());
+	else
+	    ui::set(w, es, "msg", format("{} {}", prior, note));
+	return;
+    }
     long le = changelog_of(w, doc);
     ui::text_load(w, le, blob.c_str());
     var lines;
@@ -3584,6 +3602,7 @@ void clog_restore(long w, long es, long doc)
 	    hi = rec["seq"].as_integer();
     }
     ui::set(w, le, "seq", hi);
+    clog_adopt(w, doc);
 }
 
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
