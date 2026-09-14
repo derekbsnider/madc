@@ -5,6 +5,10 @@
 
 #include "madcdis/git_repo.h"
 
+#include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
+					// runtime-error composer (gate:
+					// check-one-error-composer.sh)
+
 #include <git2.h>
 
 #include <cstdint>
@@ -35,8 +39,7 @@ void set_err(error *err, const char *what)
     if ( !err )
 	return;
     const git_error *e = git_error_last();
-    *err = error(error::severity::error, error::phase::runtime,
-		 std::string(what) + ": "
+    detail::set_channel_error(err, std::string(what) + ": "
 		 + (e && e->message ? e->message : "unknown libgit2 error"));
 }
 
@@ -451,8 +454,7 @@ void split_query(const std::string &location, std::string &repo, std::string &fi
 
 void adapter_err(error *err, const std::string &why)
 {
-    if ( err )
-	*err = error(error::severity::error, error::phase::runtime, "git: " + why);
+    detail::set_channel_error(err, "git: " + why);
 }
 
 } // namespace
