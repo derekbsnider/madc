@@ -82,11 +82,34 @@ The substrate ws/MCP/LSP all ride. Engine + dialect.
    and an edit round-trips; the local window is byte-identical (N=1).
 
 ### V6c — the MCP seat + the LSP adapter (adapters over `api`)
-1. **MCP seat**: an adapter translating MCP tool calls ↔ `api` commands (the
-   seat pays for itself first — design §2.7 far-slice ordering).
-2. **LSP endpoint**: `semanticTokens ← spans`, `publishDiagnostics ← diags`,
-   `documentSymbol ← outline`, `hover ← parse_enclosing` — VS Code as the
-   first-class `api` client (the acceptance test the api is client-general).
+1. **MCP seat** — SHIPPED 2026-09-12 (`2be5687da`, structured state
+   `9620e32b5`): an adapter translating MCP tool calls ↔ `api` commands (the
+   seat pays for itself first — design §2.7 far-slice ordering). It then grew
+   its own arc: the code-graph MCP ladder L1 → L4e (design
+   `2026-09-12-ast-graph-mcp-for-agents.md`, `2026-09-13-nexus-L4-design.md`).
+2. **LSP endpoint** — SHIPPED 2026-09-14 (plan
+   `2026-09-14-v6c2-lsp-adapter-plan.md`): `semanticTokens ← spans`,
+   `publishDiagnostics ← diags`, `documentSymbol ← outline`, `hover ←
+   parse_enclosing`, plus `definition` / `references` ← the L1/L2 graph verbs
+   — every editor that speaks LSP drives madcide without adopting madcide's
+   frontend, and the api's client-generality gets its acceptance test.
+
+   **As landed.** The FRAMING is an engine channel facet, not seat code:
+   `channel::frame_headers()` (`madcdis/header_channel.h`) turns a byte
+   channel into a Content-Length message channel, the V6b-1 WebSocket-framer
+   shape, named for the framing because DAP and BSP share it. stdio became an
+   ordinary channel (`stdio://`) so one seat loop serves stdio today and a
+   socket later. The position ENCODING is negotiated at `initialize` and the
+   UTF-16 ↔ byte column arithmetic got one owner (`madcdis/text_utf16.h`,
+   `ui::text_bytecol` / `ui::text_col16`) shared with the web hit test.
+   `madcide_lsp.inc` holds no analysis: every answer is an existing
+   projection or graph verb, run after the same L4e layer check, and every
+   edit rides the ONE text-mutation owner. Deferred and named: LSP over the
+   `--serve` port, `workspace/*`, completion, formatting, rename (an L4c
+   proposal), and the background reparse.
+   Gates: `testmadcide_lsp` (in process), `testmadcide_lsp_stdio` (the
+   deployed process over exec://, framing and exit status included),
+   `test_header_channel`, `test_text_utf16`, `testcanonicalpath`.
 
 ## Invariants to hold (design §2.8)
 General client record (done); symmetric capability negotiation (consume AND
