@@ -14,12 +14,14 @@ didopen-uri-matches: 1
 didopen-buffers: 1
 symbols: 2
 symbol0: name=add kind=12 startline=0 endline=3
+symbol0-selection: line=0 5..8
 definition-count: 1
 definition-line: 0
 definition-uri-matches: 1
 definition-nowhere: 0
 references: 1
 reference-line: 7
+reference-range: 10..13
 references-with-decl: 2
 hover: Function add — defined on line 1
 hover-blank-null: 1
@@ -34,6 +36,12 @@ diag-line: 7
 diag-range-nonempty: 1
 diag-source: madc
 after-full-change-diags: 0
+settrace-replies: 0
+settrace-notes: 0
+didchangeconfig-replies: 0
+willsave-replies: 0
+settrace-with-id-code: -32600
+unknown-method-code: -32601
 didsave-notes: 1
 didclose-replies: 0
 after-close-symbols: 2

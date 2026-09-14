@@ -246,6 +246,61 @@ bool lsp_word_at(var &out, long &from, long &to, long w, long doc, long off)
     return strlen(word.c_str()) > 0;
 }
 
+// ---- the span of a NAME the projection already told us ------------------
+// A projection reports what a thing IS CALLED and a column that anchors
+// somewhere else in the construct: a graph Call node's column is its ARGUMENT
+// LIST (measured: `twice(21)` reports column 16, where `twice` spans 10..15),
+// an outline row's is the start of the whole declaration. A client highlights
+// the NAME, so the range is found FROM the name — searched on the line the
+// projection named and VALIDATED as one whole word by the word owner — never
+// guessed from the column. This is presentation arithmetic over data already
+// returned (lsp_diag_range is the same shape); the seat still performs no
+// analysis of its own.
+//
+// `limit` bounds the search to what lies before a byte offset (a call's
+// argument column; < 0 = the whole line). `last` picks which occurrence:
+// a callee's name is the LAST one before its arguments (so the inner call in
+// `twice(twice(1))` resolves to the inner name), a definition's name is the
+// FIRST on its line (it precedes the parameter list). False leaves the
+// caller's own fallback in charge.
+bool lsp_name_span(long &from, long &to, long w, long doc, long line,
+		   long limit, var &name, bool last)
+{
+    if ( name.is_null() )
+	return false;
+    long nlen = strlen(name.c_str());
+    if ( nlen <= 0 )
+	return false;
+    long lstart = ui::text_line_start(w, doc, line);
+    if ( lstart < 0 )
+	return false;
+    long stop = lstart + ui::text_line_len(w, doc, line);
+    if ( limit >= lstart && limit < stop )
+	stop = limit;
+    if ( stop - lstart < nlen )
+	return false;
+    var t;
+    ui::text(t, w, doc);
+    var span = perl::substr(t, lstart, stop - lstart);
+    long p = -1;
+    if ( last )
+	p = perl::rindex(span.c_str(), name.c_str());
+    else
+	p = perl::index(span.c_str(), name.c_str());
+    if ( p < 0 )
+	return false;
+    long s = lstart + p;
+    long a = 0;
+    long b = 0;
+    if ( !lsp_word_span(a, b, w, doc, s) )
+	return false;
+    if ( a != s || b != s + nlen )
+	return false;				// the hit sits inside a longer word
+    from = a;
+    to = b;
+    return true;
+}
+
 // ---- diagnostics --------------------------------------------------------
 // parse_check rows carry a 1-based line and an END-anchored 1-based column
 // (the span rows are start-anchored — the two conventions differ, and the
@@ -344,11 +399,21 @@ void lsp_document_symbol(var &out, IdeSession &S, long adoc, long h)
 	    endl = line;
 	var range;
 	lsp_line_range(range, w, adoc, enc, line, endl);
+	// selectionRange is where the client puts the caret on Go-to-Symbol and
+	// what the breadcrumb paints: the NAME, not the whole signature line.
+	// An outline row's column is the start of the declaration, so the name
+	// is found from the name (first occurrence — it precedes the parameter
+	// list); the line stays the fallback.
+	var nm = row["name"];
+	long ns = 0;
+	long ne = 0;
 	var sel;
-	lsp_line_range(sel, w, adoc, enc, line, line);
+	if ( lsp_name_span(ns, ne, w, adoc, line, -1, nm, false) )
+	    lsp_range_of(sel, w, adoc, enc, ns, ne);
+	else
+	    lsp_line_range(sel, w, adoc, enc, line, line);
 	var kindw = row["kind"];
 	long kind = lsp_symbol_number(lsp_symbol_of(kindw));
-	var nm = row["name"];
 	var sym = { "name": nm, "kind": kind, "range": range,
 		    "selectionRange": sel };
 	syms[] = sym;
@@ -405,8 +470,10 @@ void lsp_definition(var &out, IdeSession &S, long adoc, long h, var &params)
 // references <- graph_references over the definition's id. The answer's EDGES
 // carry the use sites (`from` names a Call node in `nodes`, the dialect's
 // standing trap: the subject rides in `nodes` too). A Call node's column
-// anchors at its argument list, so the reported range is the identifier the
-// word owner finds immediately before it.
+// anchors at its ARGUMENT LIST and the node carries the callee's own `name`,
+// so the reported range is that name found before the arguments
+// (lsp_name_span) — reading the column as the identifier's start highlights
+// the first argument instead.
 void lsp_node_by_id(var &out, var &nodes, long id)
 {
     long n = nodes.is_null() ? 0 : php::count(nodes);
@@ -467,9 +534,9 @@ void lsp_references(var &out, IdeSession &S, long adoc, long h, var &params)
 	long at = lstart + site["column"].as_integer();
 	long s = 0;
 	long e = 0;
-	var got;
 	var range;
-	if ( lsp_word_at(got, s, e, w, adoc, at) )
+	var nm = site["name"];
+	if ( lsp_name_span(s, e, w, adoc, line, at, nm, true) )
 	    lsp_range_of(range, w, adoc, enc, s, e);
 	else
 	    lsp_line_range(range, w, adoc, enc, line, line);
@@ -783,6 +850,16 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	return true;
     case lmINITIALIZED:
     case lmCANCEL:
+    // The notifications this server KNOWS and deliberately ignores: trace
+    // level, configuration, watched files, workspace folders, the pre-save
+    // warning. A conforming client sends them unasked, and the editor shows
+    // the server's stderr — so answering them with the unknown-method
+    // complaint made every clean session look like three errors.
+    case lmSETTRACE:
+    case lmDIDCHANGECONFIG:
+    case lmDIDCHANGEWATCHED:
+    case lmDIDCHANGEFOLDERS:
+    case lmWILLSAVE:
 	return false;					// nothing to do, nothing to say
     case lmSHUTDOWN:
 	lsp_shutdown(out, S, idv);

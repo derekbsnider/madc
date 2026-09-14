@@ -1214,6 +1214,14 @@ enum lsp_method : unsigned char {
     lmINITIALIZE, lmINITIALIZED, lmSHUTDOWN, lmEXIT, lmCANCEL,
     // document synchronisation
     lmDIDOPEN, lmDIDCHANGE, lmDIDSAVE, lmDIDCLOSE,
+    // the notifications a conforming client sends that this server
+    // deliberately IGNORES — known and answered with silence, never mistaken
+    // for a misspelling (V6c-3a: a real VS Code client sends $/setTrace and
+    // workspace/didChangeConfiguration at startup, and the editor shows the
+    // server's stderr, so "unknown notification" read as three errors on every
+    // session)
+    lmSETTRACE, lmDIDCHANGECONFIG, lmDIDCHANGEWATCHED, lmDIDCHANGEFOLDERS,
+    lmWILLSAVE,
     // the answering methods (each one an existing projection or graph verb)
     lmDOCUMENTSYMBOL, lmHOVER, lmDEFINITION, lmREFERENCES, lmSEMANTICTOKENS
 };
@@ -1230,6 +1238,11 @@ const char *lsp_method_name(long m)
 	case lmDIDCHANGE: return "textDocument/didChange";
 	case lmDIDSAVE: return "textDocument/didSave";
 	case lmDIDCLOSE: return "textDocument/didClose";
+	case lmSETTRACE: return "$/setTrace";
+	case lmDIDCHANGECONFIG: return "workspace/didChangeConfiguration";
+	case lmDIDCHANGEWATCHED: return "workspace/didChangeWatchedFiles";
+	case lmDIDCHANGEFOLDERS: return "workspace/didChangeWorkspaceFolders";
+	case lmWILLSAVE: return "textDocument/willSave";
 	case lmDOCUMENTSYMBOL: return "textDocument/documentSymbol";
 	case lmHOVER: return "textDocument/hover";
 	case lmDEFINITION: return "textDocument/definition";
@@ -1263,6 +1276,11 @@ bool lsp_is_notification(long m)
 	case lmDIDCHANGE:
 	case lmDIDSAVE:
 	case lmDIDCLOSE:
+	case lmSETTRACE:
+	case lmDIDCHANGECONFIG:
+	case lmDIDCHANGEWATCHED:
+	case lmDIDCHANGEFOLDERS:
+	case lmWILLSAVE:
 	    return true;
     }
     return false;

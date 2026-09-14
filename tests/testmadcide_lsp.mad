@@ -147,6 +147,13 @@ int main()
     println("symbol0: name={} kind={} startline={} endline={}",
 	    sym0["name"], sym0["kind"],
 	    sym0["range"]["start"]["line"], sym0["range"]["end"]["line"]);
+    // selectionRange is where the client puts the caret on Go-to-Symbol: the
+    // NAME, not the signature line. Line 1 is "long add(long a, long b)", so
+    // `add` spans characters 5..8 — a whole-line selection here would put the
+    // caret on `long` and paint the whole signature in the breadcrumb.
+    var sel0 = sym0["selectionRange"];
+    println("symbol0-selection: line={} {}..{}", sel0["start"]["line"],
+	    sel0["start"]["character"], sel0["end"]["character"]);
 
     // ---- definition: the call site resolves to the definition -----------
     // Line 8 (0-based 7) is "\tlong s = add(1, 2);" — the caret inside `add`.
@@ -174,6 +181,12 @@ int main()
     println("references: {}", php::count(res));
     var ref0 = res[0];
     println("reference-line: {}", ref0["range"]["start"]["line"]);
+    // The range must cover the CALLEE, not its first argument. Line 8 is
+    // "\tlong s = add(1, 2);" — `add` spans characters 10..13, the `1` spans
+    // 14..15. A graph Call node's column anchors at the ARGUMENT LIST, so
+    // reading it as the identifier's start highlights the argument.
+    println("reference-range: {}..{}", ref0["range"]["start"]["character"],
+	    ref0["range"]["end"]["character"]);
 
     var ctx = { "includeDeclaration": true };
     var refp2 = { "textDocument": tdoc, "position": dpos, "context": ctx };
@@ -238,6 +251,29 @@ int main()
     notify_lsp(notes, S, doc, "textDocument/didChange", wholep);
     var dnote2 = notes[0];
     println("after-full-change-diags: {}", php::count(dnote2["params"]["diagnostics"]));
+
+    // ---- the notifications a real client sends and this server ignores ---
+    // VS Code sends $/setTrace and workspace/didChangeConfiguration unasked at
+    // startup, and the editor surfaces the server's stderr — so these must be
+    // KNOWN (silence, no reply, no complaint), not mistaken for misspellings.
+    var tracep = { "value": "verbose" };
+    println("settrace-replies: {}", notify_lsp(notes, S, doc, "$/setTrace", tracep) ? 1 : 0);
+    println("settrace-notes: {}", php::count(notes));
+    var nosettings = {};
+    var cfgp = { "settings": nosettings };
+    println("didchangeconfig-replies: {}",
+	    notify_lsp(notes, S, doc, "workspace/didChangeConfiguration", cfgp) ? 1 : 0);
+    println("willsave-replies: {}",
+	    notify_lsp(notes, S, doc, "textDocument/willSave", symp) ? 1 : 0);
+    // Known, but still a notification: an id on one is a protocol error the
+    // client is TOLD about, never a silent wait.
+    var ignerr;
+    call_err(ignerr, S, doc, 30, "$/setTrace", tracep);
+    println("settrace-with-id-code: {}", ignerr["code"]);
+    // A genuinely unknown method still refuses by name.
+    var unk;
+    call_err(unk, S, doc, 31, "textDocument/completion", symp);
+    println("unknown-method-code: {}", unk["code"]);
 
     // didSave republishes; didClose keeps the buffer open for other clients.
     notify_lsp(notes, S, doc, "textDocument/didSave", symp);
