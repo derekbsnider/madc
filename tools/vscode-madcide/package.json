@@ -1,0 +1,82 @@
+{
+  "name": "madcide",
+  "displayName": "madcide",
+  "description": "Mad-C language support, served by madcide's own compiler over LSP.",
+  "version": "0.1.0",
+  "publisher": "derekbsnider",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/derekbsnider/madc.git"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:madc"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "madc",
+        "aliases": [
+          "Mad-C",
+          "madc"
+        ],
+        "extensions": [
+          ".mad"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "madcide",
+      "properties": {
+        "madcide.madcPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `madc` binary. Empty means: look for `bin/madc` under the workspace folder, then `madc` on PATH."
+        },
+        "madcide.madcidePath": {
+          "type": "string",
+          "default": "tools/madcide/madcide.mad",
+          "markdownDescription": "Path to `madcide.mad`, relative to the workspace folder (or absolute). madc runs this script; `--lsp` makes it a language server."
+        },
+        "madcide.serverFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The document madcide opens at startup. Empty means: the active `.mad` editor, else the first `.mad` file in the workspace. Every other file the editor opens is added to the same session on demand."
+        },
+        "madcide.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments appended to the madcide command line."
+        },
+        "madcide.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the LSP traffic between VS Code and madcide in the madcide output channel."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.82.0",
+    "vscode-languageserver-protocol": "^3.17.5"
+  }
+}
