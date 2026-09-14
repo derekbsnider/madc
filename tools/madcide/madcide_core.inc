@@ -3162,10 +3162,19 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	ui::get(bufs, w, es, "buffers");
     }
     long n = php::count(bufs);
+    // Two spellings of one file are one BUFFER (V6c-2): compare canonically,
+    // or `^K E /abs/path/x.mad` opens a second buffer on the file already open
+    // as `x.mad` and the two then edit past each other. madc::canonical_path
+    // is the engine's standing canonicalizer, not a rule invented here.
+    var want;
+    madc::canonical_path(want, p.c_str());
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == p )
+	var rp = r["path"];
+	var have;
+	madc::canonical_path(have, rp.is_null() ? "" : rp.c_str());
+	if ( have == want )
 	{
 	    if ( i == es_int(w, es, "bufidx", 0) )
 	    {
