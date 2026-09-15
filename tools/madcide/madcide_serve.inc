@@ -1,4 +1,5 @@
-// madcide_serve.inc — the UNIFIED headless serve (client-server V6b-3). One
+// madcide_serve.inc — madcide's SERVING PROCESSES, and the one accept loop
+// they share (client-server V6b-3, V6c-2/3b/3c, V6c-4). One
 // `--serve <host:port>` port carries all three seats: the `api` (JSON lines,
 // V6a), the `ws` WINDOW (a browser's page.js over an RFC6455 socket, V6b), and
 // plain HTTP GETs (the page itself, so a browser can load page.js and connect
@@ -29,6 +30,61 @@ void serve_conn_task(IdeSession *S, long doc, long conn)
     client.close();
 }
 
+// THE SERVE FACE as a cooperative task (V6c-3b, generalized in V6c-4): the
+// accept loop, on a listener the caller already bound and detached, spawning
+// the SAME serve_conn_task every --serve connection gets. ONE accept task
+// serves every process that wears a second face — the language server
+// (run_lsp) and the editor itself (run_tui) — so there is one loop, not one
+// per face. One session, two faces; a second process would be a second session
+// on the same file, which is two carets, two undo histories and last-save-wins.
+//
+// Shutdown: this task parks in accept, and `scope` joins it before its host
+// returns, so something must make accept return. Closing the listener's fd
+// under a parked poller does not reliably wake it; a CONNECTION does — the
+// host sets `srvexit` and pokes its own endpoint once its own loop is over
+// (serve_accept_stop), and the flag tells this loop the connection is that
+// poke and not a client.
+void serve_accept_task(IdeSession *S, long doc, long listen_handle, long w, long es)
+{
+    madc::channel listener;
+    if ( !listener.adopt(listen_handle) )
+	return;					// a spent handle — never on this path
+    scope
+    {
+	while ( es_int(w, es, "srvexit", 0) == 0 )
+	{
+	    if ( !listener.wait_readable() )
+		break;				// the listener died
+	    madc::channel client;
+	    long got = listener.accept(client);
+	    if ( got < 0 )
+		break;
+	    if ( got == 0 )
+		continue;			// spurious wake — nothing pending
+	    if ( es_int(w, es, "srvexit", 0) != 0 )
+		break;				// the exit poke, not a client
+	    // A client arriving is exactly when the advertisement's document
+	    // list is worth re-publishing (V6c-4): free here, and it is what a
+	    // discovering client reads next.
+	    session_refresh(*S, doc);
+	    long conn = client.detach();
+	    go serve_conn_task(S, doc, conn);
+	}
+    }
+    listener.close();
+}
+
+// End the accept task so `scope` can join it: set the flag, then make the one
+// connection that makes accept return. ONE owner — every face that spawns the
+// task ends it the same way.
+void serve_accept_stop(long w, long es, var &endpoint)
+{
+    ui::set(w, es, "srvexit", 1);
+    var poke_uri = format("tcp://{}", endpoint);
+    madc::channel poke(poke_uri.c_str());
+    poke.close();
+}
+
 // The headless server: open the session with no window, bind a listener, and
 // serve every accepted connection concurrently (design §2.7: cooperative
 // tasks, no thread). `addr` is the listen authority (host:port; :0 asks the OS
@@ -54,42 +110,127 @@ long run_serve(const char *path, bool ro, const char *addr)
 	S.close();
 	return 1;
     }
-    println(stderr, "madcide: serving {} on {} (api + ws + http)",
-	    path, listener.local_endpoint());
+    var endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
+    println(stderr, "madcide: serving {} on {} (api + ws + http)", path, endpoint);
+    // Publish how to reach this session (V6c-4), so a client discovers it
+    // instead of being told its address.
+    session_advertise(S, doc, endpoint);
 
-    // The accept loop parks on the listener between connections, so the
-    // scheduler runs the parked connection tasks meanwhile; `scope` joins
-    // every task before S tears down — no serve task may touch the session
-    // after run_serve returns.
-    scope
-    {
-	bool serving = true;
-	while ( serving )
-	{
-	    if ( !listener.wait_readable() )
-		break;			// the listener died
-	    madc::channel client;
-	    long got = listener.accept(client);
-	    if ( got < 0 )
-		break;			// accept failed
-	    if ( got == 0 )
-		continue;			// spurious wake — nothing pending
-	    long conn = client.detach();	// hand the stream off as a long
-	    go serve_conn_task(&S, doc, conn);
-	}
-    }
+    // THE accept loop — the same function the LSP process and the editor spawn
+    // as a task (V6c-4). A headless server has nothing else to do, so it runs
+    // it in its own flow rather than beside itself; the loop's own `scope`
+    // joins every connection task before it returns, so no serve task touches
+    // the session after this.
+    serve_accept_task(&S, doc, listener.detach(), S.world(), S.es);
+    session_withdraw(S);
     S.close();
     return 0;
 }
 
+// ---- the EDITOR that also serves (V6c-4) ---------------------------------
+// `madcide <file>` — the TUI (and `--gui`), which by default LISTENS on a
+// loopback ephemeral port and advertises it, so an LSP editor, an agent's MCP
+// client or a browser can join THIS session instead of opening a second one on
+// the same file. Ruling R2 of the V6c-4 plan: nothing is discoverable unless
+// the editor listens, so it listens; `--no-serve` (addr == NULL) opts out.
+//
+// ⚠️ NO AUTH, NO TLS — the existing --serve caveat, now on by default: bind
+// loopback and tunnel over ssh, never a public bind.
+//
+// The session's LIFETIME lives here rather than in the loop, because the accept
+// task must be joined BEFORE IdeSession::close() (which drains every task — a
+// parked accept would hang that drain). The client loop therefore closes its
+// frontends and returns, and the session closes here, after the join.
+long run_tui(const char *path, bool ro, ui::level lvl, const char *addr)
+{
+    IdeSession S;
+    long doc = S.open(path, ro);
+    if ( doc == 0 )
+	println(stderr, "madcide: cannot read {}", path);
+    if ( doc <= 0 )
+	return 1;			// -1 already reported on stderr
+    long w = S.world();
+    long es = S.es;
+
+    // Someone else may already hold this file. That is not a refusal — madcide
+    // has never refused an open file — it is worth SAYING, with the one command
+    // that joins them (ruling R3: a second TUI does not silently become a
+    // remote client; that needs the thin client, which is its own slice).
+    var other;
+    if ( session_find(other, path) )
+    {
+	var line;
+	session_report(line, other);
+	var ep = other["endpoint"];
+	ui::set(w, es, "msg",
+		format("Also open in session {} — join it: madcide {} --lsp --attach {}",
+		       line, path, ep));
+    }
+
+    // The serve face. Bound HERE so the real endpoint (`:0` asks the OS for a
+    // port) is known before the task starts and before it is advertised.
+    long listen_handle = 0;
+    var endpoint = "";
+    if ( addr != NULL )
+    {
+	var uri = format("listen://{}", addr);
+	madc::channel listener(uri.c_str());
+	if ( listener.ok() )
+	{
+	    endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
+	    session_advertise(S, doc, endpoint);
+	    listen_handle = listener.detach();
+	}
+	// A port that will not bind is NOT fatal: the editor opens, unadvertised.
+    }
+
+    scope
+    {
+	if ( listen_handle != 0 )
+	    go serve_accept_task(&S, doc, listen_handle, w, es);
+	run_ide(S, doc, lvl);
+	if ( listen_handle != 0 )
+	    serve_accept_stop(w, es, endpoint);
+    }
+    session_withdraw(S);
+    S.close();
+    return 0;
+}
+
+// Every live session, for a human (`madcide --sessions`). Returns 0 when any
+// were found — a shell can branch on it.
+long run_sessions()
+{
+    var all;
+    session_scan(all);
+    long n = php::count(all);
+    if ( n == 0 )
+    {
+	println("no madcide sessions running");
+	return 1;
+    }
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var rec = all[i];
+	var line;
+	session_report(line, rec);
+	println("{}", line);
+    }
+    println("");
+    println("join one:  madcide <file> --lsp --attach <endpoint>   (or --mcp)");
+    println("           madcide <file> --lsp --attach              (discovers)");
+    println("⚠️  a madcide port has NO AUTH and NO TLS: loopback only, tunnel over ssh.");
+    return 0;
+}
+
 // ---- the LSP-wearing processes (V6c-2 / V6c-3b / V6c-3c) -----------------
-// madcide's serving PROCESSES live here, beside run_serve: the language server
-// (run_lsp), the second face it can wear at the same time (lsp_serve_task —
-// one process, one session, LSP on stdio AND api/ws/http on a port), and the
-// attach relay (run_attach — become a client of a session that is already
-// running). The LSP dispatcher itself is madcide_lsp.inc; these are the
-// entry points that wear it, and they land after serve_conn_task because that
-// is what the serve face spawns per connection.
+// madcide's serving PROCESSES live here, beside run_serve and run_tui: the
+// language server (run_lsp), the second face it can wear at the same time (the
+// shared serve_accept_task — one process, one session, LSP on stdio AND
+// api/ws/http on a port), and the attach relay (run_attach — become a client of
+// a session that is already running). The LSP dispatcher itself is
+// madcide_lsp.inc; these are the entry points that wear it, and they land after
+// serve_conn_task because that is what the serve face spawns per connection.
 
 // ---- the server ---------------------------------------------------------
 // `madcide <file> --lsp`: the standard deployment — an editor spawns this
@@ -131,43 +272,6 @@ void lsp_stdio_loop(IdeSession &S, long doc, madc::channel &io, long w, long es)
 	if ( es_int(w, es, "lspexit", 0) != 0 )
 	    break;				// the client said exit
     }
-}
-
-// The SERVE FACE of an LSP process (V6c-3b): run_serve's accept loop, on a
-// listener the caller already bound and detached, spawning the SAME
-// serve_conn_task every --serve connection gets. One session, two faces — a
-// second process would be a second session on the same file, which is two
-// carets, two undo histories and last-save-wins.
-//
-// Shutdown: this task parks in accept, and `scope` joins it before run_lsp
-// returns, so something must make accept return. Closing the listener's fd
-// under a parked poller does not reliably wake it; a CONNECTION does — run_lsp
-// pokes its own endpoint once the LSP client has said exit, and the flag tells
-// this loop the connection is that poke and not a client.
-void lsp_serve_task(IdeSession *S, long doc, long listen_handle, long w, long es)
-{
-    madc::channel listener;
-    if ( !listener.adopt(listen_handle) )
-	return;					// a spent handle — never on this path
-    scope
-    {
-	while ( es_int(w, es, "lspexit", 0) == 0 )
-	{
-	    if ( !listener.wait_readable() )
-		break;				// the listener died
-	    madc::channel client;
-	    long got = listener.accept(client);
-	    if ( got < 0 )
-		break;
-	    if ( got == 0 )
-		continue;			// spurious wake — nothing pending
-	    if ( es_int(w, es, "lspexit", 0) != 0 )
-		break;				// the exit poke, not a client
-	    long conn = client.detach();
-	    go serve_conn_task(S, doc, conn);
-	}
-    }
-    listener.close();
 }
 
 // ---- the ATTACH RELAY (V6c-3c) -------------------------------------------
@@ -315,26 +419,23 @@ long run_lsp(const char *path, bool ro, const char *serve)
 	    return 1;
 	}
 	endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
-	ui::set(w, es, "lspserve", endpoint);
 	println(stderr, "madcide: serving {} on {} (api + ws + http) beside --lsp",
 		path, endpoint);
+	// Publishes the endpoint on the session bag (`advertep`) as well as to the
+	// state directory — the ONE slot $/madc/serve announces from.
+	session_advertise(S, doc, endpoint);	// discoverable (V6c-4)
 	listen_handle = listener.detach();
     }
 
     scope
     {
 	if ( listen_handle != 0 )
-	    go lsp_serve_task(&S, doc, listen_handle, w, es);
+	    go serve_accept_task(&S, doc, listen_handle, w, es);
 	lsp_stdio_loop(S, doc, io, w, es);
 	if ( listen_handle != 0 )
-	{
-	    // Wake the accept park so `scope` can join it (see lsp_serve_task).
-	    ui::set(w, es, "lspexit", 1);
-	    var poke_uri = format("tcp://{}", endpoint);
-	    madc::channel poke(poke_uri.c_str());
-	    poke.close();
-	}
+	    serve_accept_stop(w, es, endpoint);
     }
+    session_withdraw(S);
     // The spec's own verdict: exit after a shutdown is success, without one
     // is an error the client reports.
     long rc = es_int(w, es, "lspdown", 0) != 0 ? 0 : 1;

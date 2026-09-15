@@ -720,8 +720,13 @@ void lsp_semantic_tokens(var &out, IdeSession &S, long adoc, long h, long enc)
 // in-protocol so the client never has to scrape stderr for it.
 void lsp_serve_note(var &notes, long w, long es)
 {
+    // ONE slot holds "the endpoint this session listens on" (V6c-4): the one
+    // the advertisement publishes, set by every face that binds — the headless
+    // server, `--lsp --serve`, and the editor itself. A second slot for the LSP
+    // face alone would mean an editor attached to a TUI session was told the
+    // session has no window face when it does.
     var ep;
-    ui::get(ep, w, es, "lspserve");
+    ui::get(ep, w, es, "advertep");
     if ( ep.is_null() || strlen(ep.c_str()) == 0 )
 	return;
     var url = format("http://{}/", ep);

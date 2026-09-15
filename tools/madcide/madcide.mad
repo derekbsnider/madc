@@ -42,6 +42,11 @@
 #include "../texteditor/lined_core.inc"
 #include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
+// SESSION DISCOVERY (V6c-4) sits directly on the session: the ADVERTISEMENT a
+// client finds a running session by, so nobody has to be told an address. It
+// is read by every face that listens (the serving processes below) and by the
+// editor itself, which listens by default.
+#include "madcide_discover.inc"
 #include "madcide_client.inc"
 #include "madcide_once.inc"
 #include "madcide_line.inc"
@@ -58,10 +63,16 @@
 
 int main(int argc, char **argv)
 {
+    // `--sessions` answers before anything else: it needs no file, because it
+    // is the question "what is already running?" (V6c-4).
+    for ( int i = 1; i < argc; i++ )
+	if ( strcmp(argv[i], "--sessions") == 0 )
+	    return run_sessions();
     if ( argc < 2 )
     {
-	printf("usage: madcide <file> [ro] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n");
-	printf("       madcide <file> --lsp|--mcp --attach <host:port>   (join a running session; <file> unused)\n");
+	printf("usage: madcide <file> [ro] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]] [--no-serve]\n");
+	printf("       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n");
+	printf("       madcide --sessions                                 (what is running, and how to join it)\n");
 	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
@@ -82,7 +93,9 @@ int main(int argc, char **argv)
     const char *serve = NULL;
     bool mcp = false;
     bool lsp = false;
-    const char *attach = NULL;
+    bool attach = false;		// --attach was asked for
+    const char *attach_addr = NULL;	// ... at this address, or NULL = discover
+    bool no_serve = false;
     for ( int i = 2; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "--gui") == 0 )
@@ -115,18 +128,22 @@ int main(int argc, char **argv)
 	    i++;
 	    serve = argv[i];
 	}
+	else if ( strcmp(argv[i], "--no-serve") == 0 )
+	    no_serve = true;
 	else if ( strcmp(argv[i], "--attach") == 0 )
 	{
-	    if ( i + 1 >= argc )
+	    // The address is OPTIONAL (V6c-4): without one, DISCOVER the
+	    // session that holds this file. A following word that starts with
+	    // '-' is the next flag, not an address.
+	    attach = true;
+	    if ( i + 1 < argc && argv[i + 1][0] != '-' )
 	    {
-		println(stderr, "madcide: --attach needs <host:port>");
-		return 2;
+		i++;
+		attach_addr = argv[i];
 	    }
-	    i++;
-	    attach = argv[i];
 	}
     }
-    if ( attach != NULL )
+    if ( attach )
     {
 	// The ATTACH RELAY (V6c-3c): become a client of a session that is
 	// ALREADY RUNNING instead of opening a private one, so an editor, an
@@ -138,7 +155,27 @@ int main(int argc, char **argv)
 	    println(stderr, "madcide: --attach needs --lsp or --mcp");
 	    return 2;
 	}
-	return run_attach(attach, lsp);
+	// No address given: DISCOVER the session that holds <file> (V6c-4) —
+	// which is the whole point of the advertisement, and what the VS Code
+	// extension's `madcide.attach: "auto"` passes.
+	var found_addr = "";
+	if ( attach_addr == NULL )
+	{
+	    var rec;
+	    if ( !session_find(rec, argv[1]) )
+	    {
+		println(stderr,
+			"madcide: no running session holds {} — start one, or give --attach <host:port>",
+			argv[1]);
+		return 2;
+	    }
+	    found_addr = rec["endpoint"];
+	    var line;
+	    session_report(line, rec);
+	    println(stderr, "madcide: discovered {}", line);
+	    return run_attach(found_addr.c_str(), lsp);
+	}
+	return run_attach(attach_addr, lsp);
     }
     if ( once != NULL )
     {
@@ -187,6 +224,10 @@ int main(int argc, char **argv)
 	run_line(argv[1], ro);
 	return 0;
     }
-    run_ide(argv[1], ro, lvl);
-    return 0;
+    // The editor — which LISTENS by default (V6c-4 ruling R2) on a loopback
+    // ephemeral port and advertises it, so an LSP editor, an agent's MCP client
+    // or a browser joins THIS session instead of opening a second one on the
+    // same file. `--no-serve` opts out. ⚠️ NO AUTH, NO TLS: loopback only.
+    const char *listen_at = no_serve ? NULL : "127.0.0.1:0";
+    return run_tui(argv[1], ro, lvl, listen_at);
 }
