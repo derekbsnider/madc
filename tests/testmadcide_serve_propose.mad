@@ -1,0 +1,233 @@
+// Nexus L4c through REAL connections (the connection-level wiring test the
+// L3 review deferred): three clients on one --serve seat — the owner (api
+// envelope, share id 1) and two agents (JSON-RPC envelope, ids 2 and 3). An
+// observer's mutation is refused; a proposer's is STORED (preview, the buffer
+// untouched, the ids still fresh); accept needs an editor; a broken proposal
+// stores nothing; the editor lands it (nodeop carries the proposal, a decision
+// follows); a proposal whose target then changes is refused at accept and
+// stays open; reject / withdraw; a proposer may withdraw only its own.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+// The connection seat routes a client's LSP traffic to lsp_handle (V6c-3c),
+// so the dispatcher comes first — madcide.mad's own order.
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
+
+// The next REPLY on a connection: the hub pushes every other client's change
+// events down this socket too ({"event":rec} lines, V6a duplex D2 — here the
+// proposals, nodeops, splices and decisions the others make), so a reply reader
+// skips the pushes until the reply arrives.
+void next_reply(var &out, madc::channel &c)
+{
+    bool got = false;
+    while ( !got )
+    {
+	var r;
+	c.readline(r);
+	js::parse(out, r);
+	if ( out["event"].is_null() )
+	    got = true;
+    }
+}
+
+// One JSON-RPC tools/call over a connection: `snap` = the parsed structured
+// content, `iserr` = the envelope's isError (a refusal is prose -> {error}).
+void rpc(var &snap, bool &iserr, madc::channel &c, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var js = js::stringify(req);
+    var line = format("{}\n", js);
+    c.write(line.c_str());
+    yield();
+    var resp;
+    next_reply(resp, c);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    if ( !js::parse(snap, txt.c_str()) )
+	snap = { "error": txt };
+}
+
+// One api-envelope command over a connection (the owner's clienttier).
+void api(var &reply, madc::channel &c, long seq, const char *cmd, const char *args)
+{
+    var req = { "cmd": cmd, "args": args, "seq": seq };
+    var js = js::stringify(req);
+    var line = format("{}\n", js);
+    c.write(line.c_str());
+    yield();
+    next_reply(reply, c);
+}
+
+int main()
+{
+    const char *path = "madc_ide_serve_propose.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b) {\n"
+	"    return a + b;\n"
+	"}\n"
+	"long run(long n) {\n"
+	"    return add(n, 1);\n"
+	"}\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    S.terminal(false);
+
+    madc::channel listener("listen://127.0.0.1:0");
+    var addr = listener.local_endpoint();
+    var uri = format("tcp://{}", addr);
+    madc::channel own(uri.c_str());
+    madc::channel a2(uri.c_str());
+    madc::channel a3(uri.c_str());
+    madc::channel t1;
+    listener.wait_readable();
+    listener.accept(t1);
+    long c1 = t1.detach();
+    madc::channel t2;
+    listener.wait_readable();
+    listener.accept(t2);
+    long c2 = t2.detach();
+    madc::channel t3;
+    listener.wait_readable();
+    listener.accept(t3);
+    long c3 = t3.detach();
+    go serve_conn_task(&S, doc, c1);
+    go serve_conn_task(&S, doc, c2);
+    go serve_conn_task(&S, doc, c3);
+    yield();				// all three park on their first byte
+
+    // The seat shares and tiers a connection when it FIRST SPEAKS, so the
+    // clients speak in the order the clienttier calls below name: the owner
+    // (share id 1), agent 2 (id 2, observer), agent 3 (id 3, observer).
+    var hello;
+    api(hello, own, 0, "check", "");
+
+    var snap;
+    bool err;
+    var none;
+    rpc(snap, err, a2, 1, "graph.symbols", none);
+    var hs;
+    bool herr;
+    rpc(hs, herr, a3, 0, "graph.status", none);
+    var add = snap["nodes"][0];
+    int64_t addid = add["id"].as_integer();
+    println("observer-read: err={} name={}", err ? 1 : 0, add["name"]);
+    var rep1 = { "id": addid, "src": "long add(long a, long b) {\n    return a - b;\n}" };
+    rpc(snap, err, a2, 2, "graph.replace", rep1);
+    println("observer-propose: err={} why={}", err ? 1 : 0, snap["error"]);
+
+    var reply;
+    api(reply, own, 1, "clienttier", "2 proposer");
+    println("promote-proposer: ok={} tier={}", reply["ok"].as_boolean() ? 1 : 0, reply["tier"]);
+
+    rpc(snap, err, a2, 3, "graph.replace", rep1);
+    var pv = snap["preview"];
+    var before = pv["before"];
+    var after = pv["after"];
+    println("propose: ok={} proposal={} before-has-plus={} after-has-minus={}",
+	    snap["ok"].as_boolean() ? 1 : 0, snap["proposal"],
+	    before.index("a + b") >= 0 ? 1 : 0, after.index("a - b") >= 0 ? 1 : 0);
+    var idargs = { "id": addid };
+    rpc(snap, err, a2, 4, "graph.source", idargs);
+    var stext = snap["text"];
+    rpc(snap, err, a2, 5, "graph.status", none);
+    println("buffer-unchanged: err={} source-has-plus={} log_head={}", err ? 1 : 0,
+	    stext.index("a + b") >= 0 ? 1 : 0, snap["log_head"]);
+    var openargs = { "status": "open" };
+    rpc(snap, err, a2, 6, "graph.proposals", openargs);
+    println("proposals-open: {}", php::count(snap["rows"]));
+    var seq1 = { "seq": 1 };
+    rpc(snap, err, a2, 7, "graph.proposal", seq1);
+    println("proposal: status={} ops={} actor={}", snap["status"], php::count(snap["ops"]), snap["actor"]);
+    rpc(snap, err, a2, 8, "graph.accept", seq1);
+    println("proposer-accept: err={} why={}", err ? 1 : 0, snap["error"]);
+    var broken = { "id": addid, "src": "long add(long a, long b) {\n    return a - ;\n}" };
+    rpc(snap, err, a2, 9, "graph.replace", broken);
+    bool berr = err;
+    long ndiag = php::count(snap["diagnostics"]);
+    rpc(snap, err, a2, 10, "graph.proposals", openargs);
+    println("propose-broken: err={} diags-positive={} open-still={}", berr ? 1 : 0, ndiag > 0 ? 1 : 0, php::count(snap["rows"]));
+
+    api(reply, own, 2, "clienttier", "2 editor");
+    println("promote-editor: ok={} tier={}", reply["ok"].as_boolean() ? 1 : 0, reply["tier"]);
+    rpc(snap, err, a2, 11, "graph.accept", seq1);
+    var landed = snap["node"];
+    int64_t newid = landed["id"].as_integer();
+    println("accept: ok={} landed_seq={} seq={} node={}", snap["ok"].as_boolean() ? 1 : 0,
+	    snap["landed_seq"], snap["seq"], landed["name"]);
+    var nidargs = { "id": newid };
+    rpc(snap, err, a2, 12, "graph.source", nidargs);
+    var stext2 = snap["text"];
+    rpc(snap, err, a2, 13, "graph.proposal", seq1);
+    var dec = snap["decision"];
+    var st1 = snap["status"];
+    rpc(snap, err, a2, 14, "graph.status", none);
+    println("after-accept: source-has-minus={} status={} decision-landed={} log_head={}",
+	    stext2.index("a - b") >= 0 ? 1 : 0, st1, dec["landed_seq"], snap["log_head"]);
+
+    // An editor proposes explicitly; then edits the same node directly; the
+    // proposal's target has changed -> accept refuses, the proposal stays open.
+    var rep2 = { "id": newid, "src": "long add(long a, long b) {\n    return a * b;\n}", "propose": true };
+    rpc(snap, err, a2, 15, "graph.replace", rep2);
+    long p2 = snap["proposal"].as_integer();
+    println("editor-propose: ok={} proposal={}", snap["ok"].as_boolean() ? 1 : 0, p2);
+    var rep3 = { "id": newid, "src": "long add(long a, long b) {\n    return a / b;\n}" };
+    rpc(snap, err, a2, 16, "graph.replace", rep3);
+    println("direct-edit: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    var seq2 = { "seq": p2 };
+    rpc(snap, err, a2, 17, "graph.accept", seq2);
+    println("accept-moved: err={} why={}", err ? 1 : 0, snap["error"]);
+    rpc(snap, err, a2, 18, "graph.proposal", seq2);
+    println("still-open: status={}", snap["status"]);
+    var rej = { "seq": p2, "reason": "superseded by the direct edit" };
+    rpc(snap, err, a2, 19, "graph.reject", rej);
+    println("reject: ok={} status={}", snap["ok"].as_boolean() ? 1 : 0, snap["status"]);
+    rpc(snap, err, a2, 20, "graph.accept", seq2);
+    println("accept-rejected: err={} why={}", err ? 1 : 0, snap["error"]);
+
+    // Withdraw: a proposer may withdraw only its own; an editor any.
+    rpc(snap, err, a2, 21, "graph.symbols", none);
+    var add3 = snap["nodes"][0];
+    var rep4 = { "id": add3["id"], "src": "long add(long a, long b) {\n    return b;\n}", "propose": true };
+    rpc(snap, err, a2, 22, "graph.replace", rep4);
+    long p3 = snap["proposal"].as_integer();
+    println("third-propose: ok={} proposal={}", snap["ok"].as_boolean() ? 1 : 0, p3);
+    api(reply, own, 3, "clienttier", "3 proposer");
+    println("promote-3: ok={} tier={}", reply["ok"].as_boolean() ? 1 : 0, reply["tier"]);
+    var seq3 = { "seq": p3 };
+    rpc(snap, err, a3, 23, "graph.withdraw", seq3);
+    println("withdraw-other: err={} why={}", err ? 1 : 0, snap["error"]);
+    api(reply, own, 4, "clienttier", "2 proposer");
+    rpc(snap, err, a2, 24, "graph.withdraw", seq3);
+    println("withdraw-own: ok={} status={}", snap["ok"].as_boolean() ? 1 : 0, snap["status"]);
+    rpc(snap, err, a2, 25, "graph.proposals", none);
+    long total = php::count(snap["rows"]);
+    rpc(snap, err, a2, 26, "graph.proposals", openargs);
+    println("proposals: all={} open={}", total, php::count(snap["rows"]));
+    var bogus = { "status": "pending" };
+    rpc(snap, err, a2, 27, "graph.proposals", bogus);
+    println("bad-status: err={}", err ? 1 : 0);
+
+    own.close_write();
+    a2.close_write();
+    a3.close_write();
+    madc::task_drain();
+    own.close();
+    a2.close();
+    a3.close();
+    listener.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

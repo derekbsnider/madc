@@ -1,0 +1,10 @@
+keys-map: n=2 k0=alpha k1=beta
+keys-list: n=2 i0=0 i1=1
+keys-null: n=0
+mkdir: 1
+exists: 1
+mkdir-again: 0
+rmdir-nonempty: 0
+rmdir: 1
+gone: 1
+rmdir-missing: 1

@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -162,6 +162,12 @@ HAVE_MADCDAT ?= 1
 # removes them.
 MIRDIR	= $(abspath ../third_party/mir)
 MIRBUILD = $(abspath ../obj/mir)
+# libgit2 is NOT in this repository and NOT in libmadc (owner ruling
+# 2026-09-15, superseding the L4a vendoring): madc carries no fixes to it, so
+# it is an ordinary dependency of the IDE's nexus — the SYSTEM library, bound
+# by the optional madcgit MODULE (src/madcgit.mk, lib/libmadcgit.so), never
+# linked into a madc image. The engine's export surface carries no git_*
+# symbol (scripts/check-c-abi-surface.sh).
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
@@ -448,7 +454,7 @@ MADC_STORAGE_DB_OFILES =
 # in -Bdynamic mode, where ld prefers the stage's libstdc++.dll.a over
 # its .a. System DLLs stay imports either way (ws2_32/kernel32/ucrt are
 # import libs).
-LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
+LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -lsecur32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
 # The compat thunks join every link via the object list (compile rule beside
 # the other per-mode rules below); riding CORE_OFILES also puts them in the
 # per-mode libmadc archives, where any downstream consumer link needs them.
@@ -727,10 +733,13 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
+# The madcgit module's unit test links the module and the system libgit2:
+# madcgit.mk builds it (and adds it to TESTBINS) where pkg-config finds libgit2.
+MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp
 ifeq ($(HAVE_MADCDAT),1)
-ACTIVE_TESTSRCS = $(TESTSRCS)
+ACTIVE_TESTSRCS = $(filter-out $(MODULE_TESTSRCS), $(TESTSRCS))
 else
-ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS), $(TESTSRCS))
+ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS) $(MODULE_TESTSRCS), $(TESTSRCS))
 endif
 ALL_TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
@@ -752,9 +761,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT)
 endif
 
 
@@ -767,6 +776,7 @@ all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
 include webview.mk
+include madcgit.mk
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
@@ -1086,6 +1096,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-aggregate-layout.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
+	@cd .. && bash scripts/check-one-git-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-handle-table.sh
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
@@ -1117,6 +1128,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-madcide-seam.sh
 	@cd .. && bash scripts/check-madcide-command-registry.sh
 	@cd .. && bash scripts/check-madcide-enums.sh
+	@cd .. && bash scripts/check-madcide-one-accept-loop.sh
+	@cd .. && bash scripts/check-madcide-id-width.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh

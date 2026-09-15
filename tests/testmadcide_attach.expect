@@ -1,0 +1,16 @@
+session: 1
+listening: 1
+relay-open: 1
+relay-framed: 1
+accepted: 1
+caps-from-lsp-dispatcher: 1
+caps-encoding: utf-16
+symbols-through-relay: 2
+symbol0: twice
+command-through-relay: true
+session-sees-relay-edit: 1
+diagnostics-through-relay: 1
+events-through-relay: 1
+shutdown-result-null: 1
+relay-exit-status: 0
+session-alive-after-relay-exit: 1

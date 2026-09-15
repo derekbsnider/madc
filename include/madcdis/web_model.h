@@ -165,6 +165,7 @@
 #include "madcdis/ui_focus.h"
 #include "madcdis/ui_input.h"
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/text_utf16.h"	// col16_to_byte: the ONE UTF-16 column owner
 #include "madcdis/uinode.h"
 
 namespace madc {
@@ -208,29 +209,10 @@ inline void web_line_col(const std::string &text, long off,
     col = (size_t)off - line_start;
 }
 
-// A UTF-16 column (what a page's hit test reports — JavaScript string
-// indices) → the byte index in the line's UTF-8 text: one unit per code
-// point below U+10000, two for a four-byte sequence (a surrogate pair); a
-// column past the end clamps to the line's length, one inside a pair snaps
-// to the pair's start. The inverse of the page decoding the row's bytes.
-inline size_t web_byte_col(const std::string &t, long col16)
-{
-    size_t i = 0;
-    long units = 0;
-    while ( i < t.size() && units < col16 )
-    {
-	const unsigned char lead = (unsigned char)t[i];
-	size_t n = lead < 0x80 ? 1 : lead < 0xC0 ? 1 : lead < 0xE0 ? 2
-		 : lead < 0xF0 ? 3 : 4;	// a stray continuation byte: one unit
-	if ( i + n > t.size() )
-	    n = t.size() - i;
-	units += n == 4 ? 2 : 1;
-	if ( units > col16 )
-	    break;
-	i += n;
-    }
-    return i;
-}
+// A page's hit test reports a JavaScript string index — a UTF-16 code-unit
+// column — and the buffer stores bytes. That arithmetic is ONE owner,
+// madcdis/text_utf16.h (madc::col16_to_byte / col16_of_byte), shared with the
+// LSP face whose protocol default is the same encoding (V6c-2).
 
 class web_model
 {
@@ -1174,7 +1156,7 @@ public:
 		for ( long i = 0; i < line; ++i )
 		    offset += (long)rows[i].t.size() + 1;
 		offset += (long)(past_end ? rows[line].t.size()
-					  : web_byte_col(rows[line].t, col));
+					  : col16_to_byte(rows[line].t, col));
 	    }
 	    _focus.set_focus(bi->second.slot);
 	    tui_event e;

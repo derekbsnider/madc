@@ -155,14 +155,13 @@ void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
     nextid = nextid + 1;
 }
 
-void run_ide(const char *path, bool ro, ui::level lvl)
+// The IDE loop over a session the CALLER owns (V6c-4). The session's lifetime
+// moved out to run_tui (madcide_serve.inc) because an editor that also serves
+// must join its accept task before IdeSession::close() drains every task; the
+// loop itself — compose, render, event, apply — is unchanged and still lives
+// here, in the one file that holds a frontend handle.
+void run_ide(IdeSession &S, long doc, ui::level lvl)
 {
-    IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	printf("cannot read %s\n", path);
-    if ( doc <= 0 )
-	return;			// -1 already reported on stderr
     long w = S.world();		// the shared world (documents + every es)
     long t = ui::open(lvl);
     if ( t == 0 )
@@ -239,13 +238,15 @@ void run_ide(const char *path, bool ro, ui::level lvl)
 	if ( S.take_spawn(sdoc) )
 	    spawn_client(clients, S, w, lvl, nextid, sdoc);
     }
-    // Close the session (task_drain is global, so no spawned client's
-    // background parse outlives the world), then every client's frontend.
-    // Per-spawned-es parse-handle close + a live build's stop on a
-    // non-attached client ride the window-close hardening follow-up (the
-    // process exits here, so the OS reclaims them; task_drain is the safety).
+    // Close every client's frontend and return; the SESSION closes in the
+    // caller (run_tui), AFTER it has joined any serve task it spawned — a task
+    // parked in accept would hang IdeSession::close()'s task_drain. A frontend
+    // is not something a serve task touches, so handing the terminal back
+    // first is safe, and prompter. Per-spawned-es parse-handle close + a live
+    // build's stop on a non-attached client ride the window-close hardening
+    // follow-up (the process exits here, so the OS reclaims them; task_drain
+    // is the safety).
     long nc = php::count(clients);
-    S.close();
     for ( long i = 0; i < nc; i = i + 1 )
 	ui::close(clients[i]["t"].as_integer());
 }

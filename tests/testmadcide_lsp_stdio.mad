@@ -1,0 +1,148 @@
+// V6c-2 end to end: the DEPLOYED language server. An editor spawns
+// `madcide <file> --lsp` and speaks JSON-RPC 2.0 over the pipe, framed by
+// Content-Length — this test is that editor. It drives the real process
+// through a real exec:// channel, so it covers what the in-process gate
+// (testmadcide_lsp) structurally cannot: the stdio:// channel, the
+// Content-Length framing in both directions, the flush discipline a waiting
+// client depends on, and the exit status the spec defines.
+//
+// Two children: the first proves the WIRE FORMAT by reading the reply's raw
+// header line; the second holds a framed conversation.
+#include "../tools/texteditor/lined_core.inc"
+
+// One framed message, written by hand — the parent's end of the framing for
+// the raw-format child.
+void framed(var &out, const char *body)
+{
+	long n = strlen(body);
+	out = format("Content-Length: {}\r\n\r\n{}", n, body);
+}
+
+// Read one message off a framed channel, skipping the server's NOTIFICATIONS
+// (a message with no id) until a reply arrives. `note_count` counts what was
+// skipped, and the last notification seen lands in `note`.
+bool read_reply(var &out, var &note, long &note_count, madc::channel &c)
+{
+	var line;
+	for ( ;; )
+	{
+		if ( !c.readline(line) )
+			return false;
+		var msg;
+		if ( !js::parse(msg, line.c_str()) )
+			return false;
+		if ( msg["id"].is_null() )
+		{
+			note = msg;
+			note_count = note_count + 1;
+			continue;
+		}
+		out = msg;
+		return true;
+	}
+}
+
+void send(madc::channel &c, var &msg)
+{
+	var js = js::stringify(msg);
+	c.write(js.c_str());
+}
+
+int main()
+{
+	const char *path = "madc_ide_lspio.mad";
+	php::file_put_contents(path,
+	    "long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\treturn twice(21);\n}\n");
+	var self = madc::compiler_path();
+	var uri = format("exec://{} --no-config tools/madcide/madcide.mad {} --lsp",
+			 self, path);
+
+	// ---- child 1: the wire format ----------------------------------
+	madc::channel raw(uri.c_str());
+	println("raw-open: {}", raw.ok() ? 1 : 0);
+	var req = { "jsonrpc": "2.0", "id": 1, "method": "initialize" };
+	var reqjs = js::stringify(req);
+	var wire;
+	framed(wire, reqjs.c_str());
+	raw.write(wire.c_str());
+	var header;
+	raw.readline(header);
+	println("wire-header: {}", strncmp(header.c_str(), "Content-Length: ", 16) == 0 ? 1 : 0);
+	var blank;
+	raw.readline(blank);
+	println("wire-blank-line: {}", strlen(blank.c_str()) == 0 ? 1 : 0);
+	raw.cancel();
+	raw.close();
+
+	// ---- child 2: a framed conversation ----------------------------
+	madc::channel c(uri.c_str());
+	println("open: {}", c.ok() ? 1 : 0);
+	println("framed: {}", c.frame_headers() ? 1 : 0);
+
+	var init = { "jsonrpc": "2.0", "id": 1, "method": "initialize" };
+	send(c, init);
+	var reply;
+	var note;
+	long notes = 0;
+	read_reply(reply, note, notes, c);
+	var caps = reply["result"]["capabilities"];
+	println("capabilities-encoding: {}", caps["positionEncoding"]);
+	println("capabilities-sync: {}", caps["textDocumentSync"]["change"]);
+
+	var noparams;
+	var ready = { "jsonrpc": "2.0", "method": "initialized", "params": noparams };
+	send(c, ready);
+
+	// didOpen: the server answers with a publishDiagnostics NOTIFICATION,
+	// which the next reply-read skips over and counts.
+	var text = "long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\treturn twice(21);\n}\n";
+	var canon;
+	var pathv = path;
+	madc::canonical_path(canon, pathv.c_str());
+	var duri = format("file://{}", canon);
+	var tdoc = { "uri": duri, "languageId": "madc", "version": 1, "text": text };
+	var openp = { "textDocument": tdoc };
+	var didopen = { "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": openp };
+	send(c, didopen);
+
+	var symp = { "textDocument": tdoc };
+	var symreq = { "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+		       "params": symp };
+	send(c, symreq);
+	read_reply(reply, note, notes, c);
+	println("diagnostics-notification: {}", notes);
+	println("diagnostics-method: {}", note["method"]);
+	println("diagnostics-clean: {}", php::count(note["params"]["diagnostics"]));
+	var syms = reply["result"];
+	println("symbols: {}", php::count(syms));
+	var s0 = syms[0];
+	println("symbol0: {}", s0["name"]);
+
+	// A read that needs the graph, over the wire.
+	var pos = { "line": 7, "character": 10 };
+	var defp = { "textDocument": tdoc, "position": pos };
+	var defreq = { "jsonrpc": "2.0", "id": 3, "method": "textDocument/definition",
+		       "params": defp };
+	send(c, defreq);
+	read_reply(reply, note, notes, c);
+	var locs = reply["result"];
+	println("definition-count: {}", php::count(locs));
+	var l0 = locs[0];
+	println("definition-line: {}", l0["range"]["start"]["line"]);
+
+	// shutdown + exit: the spec's own verdict is the exit STATUS.
+	var down = { "jsonrpc": "2.0", "id": 4, "method": "shutdown" };
+	send(c, down);
+	read_reply(reply, note, notes, c);
+	println("shutdown-result-null: {}", reply["result"].is_null() ? 1 : 0);
+	var bye = { "jsonrpc": "2.0", "method": "exit", "params": noparams };
+	send(c, bye);
+	c.close_write();
+	var tail;
+	println("stream-ends: {}", c.readline(tail) ? 0 : 1);
+	c.close();
+	println("exit-status: {}", c.exit_status());
+
+	php::unlink(path);
+	return 0;
+}

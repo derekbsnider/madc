@@ -1,0 +1,162 @@
+// Code-graph MCP L3: extents (graph_span / graph_at) from the parser's stamps,
+// generation-stamped ids (a stale id is a LOUD refusal), and the validated
+// refresh (reject leaves the tree; accept swaps it and advances the generation).
+// Every expected span is hand-computed from the fixture bytes below (1-based
+// lines, 0-based byte columns, end exclusive). Compile-NEVER-execute
+// (.expect_quiet proves it).
+bool span_is(var &r, long l0, long c0, long l1, long c1)
+{
+    var s = r["span"];
+    if ( s.is_null() )
+	return false;
+    return s["line"].as_integer() == l0 && s["column"].as_integer() == c0
+	&& s["end_line"].as_integer() == l1 && s["end_column"].as_integer() == c1;
+}
+
+int main()
+{
+    var src = "long g_total = 0;\n"
+	      "long helper(long x) { return x * 2; }\n"
+	      "long run(long n) {\n"
+	      "    long t = 0;\n"
+	      "    for (long i = 0; i < n; i = i + 1)\n"
+	      "        t = t + helper(i) + g_total;\n"
+	      "    return t;\n"
+	      "}\n";
+    long h = madc::parse_open(src.c_str(), "graphedit.mad");
+    println("opened: {}", h > 0 ? 1 : 0);
+
+    var sy;
+    madc::graph_symbols(sy, h);
+    int64_t id_helper = 0;
+    int64_t id_run = 0;
+    for ( var n : sy["nodes"] )
+    {
+	if ( n["name"] == "helper" ) id_helper = n["id"].as_integer();
+	if ( n["name"] == "run" )    id_run    = n["id"].as_integer();
+    }
+    var sh;
+    madc::graph_span(sh, h, id_helper);
+    println("helper span: {}", span_is(sh, 2, 0, 2, 37) ? 1 : 0);
+    var sr;
+    madc::graph_span(sr, h, id_run);
+    println("run span: {}", span_is(sr, 3, 0, 8, 1) ? 1 : 0);
+
+    var gs;
+    madc::graph_search(gs, h, "Global", "g_total");
+    int64_t id_global = 0;
+    for ( var n : gs["nodes"] )
+	if ( n["name"] == "g_total" ) id_global = n["id"].as_integer();
+    var sg;
+    madc::graph_span(sg, h, id_global);
+    println("global span: {}", span_is(sg, 1, 0, 1, 17) ? 1 : 0);
+
+    // Statement-level nodes of run, found by their minting line via graph_body.
+    var body;
+    madc::graph_body(body, h, id_run, -1);
+    int64_t id_decl = 0;
+    int64_t id_for = 0;
+    int64_t id_ret = 0;
+    int64_t id_leaf = 0;
+    for ( var n : body["nodes"] )
+    {
+	long ln = n["line"].as_integer();
+	var k = n["kind"];
+	if ( ln == 4 && id_decl == 0 && !(k == "NameRef") && !(k == "Literal") ) id_decl = n["id"].as_integer();
+	if ( ln == 5 && id_for == 0 && !(k == "NameRef") && !(k == "Literal") && !(k == "Expr") ) id_for = n["id"].as_integer();
+	if ( ln == 7 && id_ret == 0 && !(k == "NameRef") ) id_ret = n["id"].as_integer();
+	if ( ln == 7 && k == "NameRef" ) id_leaf = n["id"].as_integer();
+    }
+    var sd;
+    madc::graph_span(sd, h, id_decl);
+    println("decl stmt span: {}", span_is(sd, 4, 4, 4, 15) ? 1 : 0);
+    var sf;
+    madc::graph_span(sf, h, id_for);
+    println("for stmt span: {}", span_is(sf, 5, 4, 6, 36) ? 1 : 0);
+    var st;
+    madc::graph_span(st, h, id_ret);
+    println("return stmt span: {}", span_is(st, 7, 4, 7, 13) ? 1 : 0);
+    var sl;
+    madc::graph_span(sl, h, id_leaf);
+    println("leaf has no span: {}", sl["error"].is_null() ? 0 : 1);
+
+    // graph_at round-trips a statement and a function by their span START.
+    var at1;
+    madc::graph_at(at1, h, 7, 4);
+    println("at round-trip stmt: {}", at1["id"].as_integer() == id_ret ? 1 : 0);
+    var at2;
+    madc::graph_at(at2, h, 2, 0);
+    println("at round-trip func: {}", at2["id"].as_integer() == id_helper ? 1 : 0);
+
+    // REJECT: a broken candidate answers false, carries diagnostics, and the
+    // live tree (and its ids) are untouched.
+    var bad = "long g_total = 0;\n"
+	      "long helper(long x) { return x * 2; }\n"
+	      "long run(long n) {\n"
+	      "    long t = 0;\n"
+	      "    for (long i = 0; i < n; i = i + 1)\n"
+	      "        t = t + helper(i) + g_total;\n"
+	      "    return t +;\n"
+	      "}\n";
+    var d1;
+    bool ok1 = madc::parse_refresh_checked(d1, h, bad.c_str());
+    println("reject returns false: {}", ok1 ? 0 : 1);
+    println("reject has diagnostics: {}", php::count(d1) >= 1 ? 1 : 0);
+    var sh2;
+    madc::graph_span(sh2, h, id_helper);
+    println("reject keeps handle: {}", span_is(sh2, 2, 0, 2, 37) ? 1 : 0);
+
+    // ACCEPT: the return statement becomes `return t + 1;` — the swap advances
+    // the generation, every old id is refused as stale, fresh ids work.
+    var good = "long g_total = 0;\n"
+	       "long helper(long x) { return x * 2; }\n"
+	       "long run(long n) {\n"
+	       "    long t = 0;\n"
+	       "    for (long i = 0; i < n; i = i + 1)\n"
+	       "        t = t + helper(i) + g_total;\n"
+	       "    return t + 1;\n"
+	       "}\n";
+    var d2;
+    bool ok2 = madc::parse_refresh_checked(d2, h, good.c_str());
+    println("accept returns true: {}", ok2 ? 1 : 0);
+    var stale;
+    madc::graph_span(stale, h, id_helper);
+    println("old id stale: {}", (!stale["stale"].is_null() && stale["stale"].as_boolean()) ? 1 : 0);
+    var sy2;
+    madc::graph_symbols(sy2, h);
+    int64_t id_helper2 = 0;
+    for ( var n : sy2["nodes"] )
+	if ( n["name"] == "helper" ) id_helper2 = n["id"].as_integer();
+    println("ids re-minted: {}", (id_helper2 != 0 && id_helper2 != id_helper) ? 1 : 0);
+    var at3;
+    madc::graph_at(at3, h, 7, 4);
+    println("new return span: {}", span_is(at3, 7, 4, 7, 17) ? 1 : 0);
+    var sh3;
+    madc::graph_span(sh3, h, id_helper2);
+    println("fresh id resolves: {}", span_is(sh3, 2, 0, 2, 37) ? 1 : 0);
+
+    madc::parse_close(h);
+
+    // A lambda registers a FUNCTION inside a statement that returns a node: the
+    // statement keeps its identity (graph_at answers the statement, never the
+    // lambda) and the enclosing function — which registered TWO functions in
+    // its statement — still has its extent {1,0,4,1}.
+    var lsrc = "long lam(long n) {\n"
+	       "    auto f = [](long v) { return v + 1; };\n"
+	       "    return f(n);\n"
+	       "}\n";
+    long h2 = madc::parse_open(lsrc.c_str(), "graphlam.mad");
+    var sy3;
+    madc::graph_symbols(sy3, h2);
+    int64_t id_lam = 0;
+    for ( var n : sy3["nodes"] )
+	if ( n["name"] == "lam" ) id_lam = n["id"].as_integer();
+    var slam;
+    madc::graph_span(slam, h2, id_lam);
+    println("lambda-holding func span: {}", span_is(slam, 1, 0, 4, 1) ? 1 : 0);
+    var alam;
+    madc::graph_at(alam, h2, 2, 4);
+    println("lambda stmt at is statement: {}", alam["kind"] == "Statement" ? 1 : 0);
+    madc::parse_close(h2);
+    return 0;
+}

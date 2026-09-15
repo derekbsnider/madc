@@ -38,6 +38,8 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline)
 	var rest = perl::substr(line, sp + 1, strlen(line.c_str()) - sp - 1);
 	arg = php::trim(rest.c_str());
     }
+    // The command-line BOUNDARY: the name converts once here so an unknown
+    // command refuses BEFORE any session opens (exit 2, nothing on stdout).
     long code = cmd_of(name.c_str());
     if ( code == cmdNONE )
     {
@@ -51,16 +53,19 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline)
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);		// the level says so: nothing to hand over
-    long adoc = S.active(doc);
-    bool cont = true;
+    // ONE command core: this client drives api_run (madcide_api.inc) like
+    // every other transport — run, count the error rows, compose, typeset —
+    // and maps the reply body to its exit status. self_id -1 is the local
+    // operator (full rights), so the tier gate never refuses here. Until the
+    // V6 seam this client restated the core's run/compose/render sequence.
+    var reply;
+    api_run(reply, S, doc, -1, name.c_str(), arg.c_str());
     long rc = 0;
-    if ( !S.command(adoc, code, arg.c_str(), cont) )
+    if ( !reply["ok"].as_boolean() )
 	rc = 2;
-    else if ( S.error_count() > 0 )
+    else if ( reply["errors"].as_integer() > 0 )
 	rc = 1;
-    var tree;
-    S.compose_ide_tree(tree, S.active(adoc));
-    ui::render_tree(out, S.world(), tree);
+    out = reply["text"];
     S.close();
     return rc;
 }

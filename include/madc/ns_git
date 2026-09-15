@@ -1,0 +1,35 @@
+// madc embedded <ns_git> — the git namespace: a READ-ONLY view of a local
+// repository through the madcgit MODULE (libgit2 — the SYSTEM library, a
+// dependency of the IDE's nexus and never part of madc: owner ruling
+// 2026-09-15, superseding the L4a vendoring). Pulled in by any mention of
+// git:: (auto-include). The module row is LAZY: this fragment compiles and
+// runs on a system without the library; a program asks git::available()
+// before opening, and the nexus degrades to "no repository" (handle 0)
+// where it answers false. Every answer is an object, or {error: <prose>};
+// open answers 0 for a path with no repository above it. The wrappers are
+// the dialect's carrier-return convention (the out-parameter, returned).
+// THREAD CONTRACT: a handle is used only from the thread that opened it.
+import madcgit;
+
+namespace git {
+    bool available() { return madc::module_available("madcgit"); }
+    int64_t open(const char *path) { return madcgit_open(path); }
+    bool close(int64_t handle) { return madcgit_close(handle); }
+    value &head(value &out, int64_t handle)
+	{ madcgit_head(&out, handle); return out; }
+    value &revparse(value &out, int64_t handle, const char *spec)
+	{ madcgit_revparse(&out, handle, spec); return out; }
+    value &log(value &out, int64_t handle, const char *path, int64_t limit)
+	{ madcgit_log(&out, handle, path, limit); return out; }
+    value &show(value &out, int64_t handle, const char *rev, const char *path)
+	{ madcgit_show(&out, handle, rev, path); return out; }
+    value &blame(value &out, int64_t handle, const char *path, int64_t line, int64_t count)
+	{ madcgit_blame(&out, handle, path, line, count); return out; }
+    value &dirty(value &out, int64_t handle, const char *path)
+	{ madcgit_dirty(&out, handle, path); return out; }
+    value &blame_text(value &out, int64_t handle, const char *path, const char *text,
+		      int64_t line, int64_t count)
+	{ madcgit_blame_text(&out, handle, path, text, line, count); return out; }
+    value &relpath(value &out, int64_t handle, const char *path)
+	{ madcgit_relpath(&out, handle, path); return out; }
+}

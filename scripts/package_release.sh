@@ -24,6 +24,9 @@
 #   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
 #                                               native chrome; GUI programs: import madcwebview) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
+#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view over the
+#                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
+#                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
@@ -101,6 +104,10 @@ make -C src -j"$(nproc)" release > /dev/null
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
 make -C src -j"$(nproc)" libmadcwebview > /dev/null
+# The madcgit module (src/madcgit.mk): the read-only git view over the build
+# host's libgit2 (libgit2-dev in release.yml), shipped as a WEAK dependency —
+# the nexus degrades to "no repository" without it.
+make -C src -j"$(nproc)" libmadcgit > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -158,6 +165,7 @@ stage() {
     # (the tarball's lib/), then the system search (the deb/rpm libdir,
     # registered by the ldconfig trigger).
     install -m 755 lib/libmadcwebview.so "$root/$libdir/libmadcwebview.so"
+    install -m 755 lib/libmadcgit.so "$root/$libdir/libmadcgit.so"
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
@@ -189,7 +197,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: ${MAINT}
 Depends: libc6 (>= 2.38), libstdc++6, libgcc-s1, zlib1g, libzstd1
-Recommends: libwebkitgtk-6.0-4, libgtk-4-1
+Recommends: libwebkitgtk-6.0-4, libgtk-4-1, libgit2-1.7
 Homepage: ${HOMEPAGE}
 Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
@@ -217,7 +225,7 @@ Recommends: gtk4
 # The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/libmadcwebview\\.so\$
+%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit)\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -234,6 +242,7 @@ ${DESC_BODY}
 /usr/lib64/libmadc.so
 /usr/lib64/libmadc_rt.a
 /usr/lib64/libmadcwebview.so
+/usr/lib64/libmadcgit.so
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/webview-copyright
@@ -283,6 +292,12 @@ program that says \`import madcwebview;\` (madc's ui "web" target) loads
 it from this lib/; madcide's window mode is one:
 
     bin/madcide file.c --gui
+
+Git: lib/libmadcgit.so is madc's read-only view of a git repository over
+the system libgit2 (the \`git::\` namespace; madcide's MCP seat reads
+history, blame and revisions through it). It is loaded on first use, so
+without libgit2 installed madc runs unchanged and the IDE's history
+answers as for a file outside any repository.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed
 (Debian/Ubuntu: libwebkitgtk-6.0-4 libgtk-4-1; Fedora: webkitgtk6.0

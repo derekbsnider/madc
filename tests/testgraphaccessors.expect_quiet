@@ -1,0 +1,1 @@
+compile-never-execute: no buffer with a main runs through the graph accessors

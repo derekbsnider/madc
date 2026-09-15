@@ -15,6 +15,12 @@ static const MadcModuleSpec madc_modules[] = {
 	{ "c", NULL,     "libc.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
 	{ "m", "math.h", "libm.so.6", "libSystem.B.dylib", "ucrtbase.dll", 0 },
 	{ "madcwebview", "webview.h", "libmadcwebview.so", "libmadcwebview.dylib", "madcwebview.dll", MADC_MODULE_GUI | MADC_MODULE_LAZY },
+	// The git substrate (Nexus L4a → the V6 seam): a READ-ONLY view of a
+	// local repository over the SYSTEM libgit2 — a dependency of the IDE's
+	// nexus, never part of madc (owner ruling 2026-09-15). Built by
+	// src/madcgit.mk where pkg-config finds libgit2; the <ns_git> fragment
+	// imports it and asks madc::module_available before the first call.
+	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY },
 	{ NULL, NULL, NULL, NULL, NULL, 0 }
 };
 

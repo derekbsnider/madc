@@ -115,7 +115,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             g++-13 clang make autoconf rpm cpio libzstd-dev zlib1g-dev \
-            libwebkitgtk-6.0-dev
+            libwebkitgtk-6.0-dev libgit2-dev
       - name: configure
         # configure and include/config.h.in are autoconf/autoheader OUTPUT,
         # untracked by design — a clean checkout regenerates them

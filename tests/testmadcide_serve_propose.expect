@@ -1,0 +1,24 @@
+observer-read: err=0 name=add
+observer-propose: err=1 why='graph.replace' requires proposer (you are observer)
+promote-proposer: ok=1 tier=proposer
+propose: ok=1 proposal=1 before-has-plus=1 after-has-minus=1
+buffer-unchanged: err=0 source-has-plus=1 log_head=1
+proposals-open: 1
+proposal: status=open ops=1 actor=2
+proposer-accept: err=1 why='graph.accept' requires editor (you are proposer)
+propose-broken: err=1 diags-positive=1 open-still=1
+promote-editor: ok=1 tier=editor
+accept: ok=1 landed_seq=2 seq=4 node=add
+after-accept: source-has-minus=1 status=accepted decision-landed=2 log_head=5
+editor-propose: ok=1 proposal=6
+direct-edit: ok=1
+accept-moved: err=1 why=proposal target changed since seq 6; re-propose against fresh ids
+still-open: status=open
+reject: ok=1 status=rejected
+accept-rejected: err=1 why=proposal 6 is rejected
+third-propose: ok=1 proposal=11
+promote-3: ok=1 tier=proposer
+withdraw-other: err=1 why=proposal 11 is not yours (actor 2)
+withdraw-own: ok=1 status=withdrawn
+proposals: all=3 open=0
+bad-status: err=1

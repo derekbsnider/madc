@@ -1,0 +1,12 @@
+status: synced=1 errors=0 git=1 branch-set=1 layers=6
+commits: rows-positive=1 sha-len=40
+revision: sha-len=40 tag-tagged=1
+rev-symbols: name=main
+rev-id-routes: name=main err=0
+rev-mutation-refused: 1
+diff-clean: added=0 removed=0 changed=0
+source: starts-int-main=1
+insert: ok=1
+diff-after-edit: added=0 removed=0 changed=1 name=main
+history: git-rows-positive=1 event-rows=1 splice-rows=1 complete=0
+status-after: synced=1 log_head=2 revisions=1

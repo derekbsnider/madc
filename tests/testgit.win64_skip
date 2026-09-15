@@ -1,0 +1,1 @@
+the madcgit module binds the SYSTEM libgit2 (a dependency of the nexus, never part of madc); the mingw cross lane on the build container has no libgit2 for the win64 target, so the module is not built there and the nexus degrades to "no repository"

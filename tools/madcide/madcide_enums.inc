@@ -530,7 +530,982 @@ const char *gen_name(long g)
 // on the code.
 enum ide_transport : unsigned char { trLOCAL = 0, trWS, trAPI };
 // The permission ladder (the gateway vision's tiers, born low for a remote
-// peer — V6): an OBSERVER watches, an EDITOR may mutate, an OWNER holds the
-// session. A local window is the OWNER; a fresh remote peer starts OBSERVER
-// and is raised by the owner.
-enum ide_tier : unsigned char { tierOBSERVER = 0, tierEDITOR, tierOWNER };
+// peer — V6): an OBSERVER watches, a PROPOSER may not mutate but may STORE a
+// proposal for an editor to land (Nexus L4c, design §3.6 — the fourth level
+// rides every existing gate; every `<` / `>=` keeps its meaning), an EDITOR
+// may mutate, an OWNER holds the session. A local window is the OWNER; a
+// fresh remote peer starts OBSERVER and is raised by the owner.
+enum ide_tier : unsigned char { tierOBSERVER = 0, tierPROPOSER, tierEDITOR, tierOWNER };
+
+// ---- tier <-> name (V6a tiers) -----------------------------------------
+// Text only at the wire boundary: convert ONCE, refuse a misspelling, never
+// mis-route (the enums-not-strings law). tier_name spells a code for a
+// reply/refusal; tier_of_name resolves clienttier's <tier> argument (-1 =
+// unknown spelling).
+const char *tier_name(long tier)
+{
+    switch ( tier )
+    {
+    case tierOBSERVER: return "observer";
+    case tierPROPOSER: return "proposer";
+    case tierEDITOR:   return "editor";
+    case tierOWNER:    return "owner";
+    }
+    return "?";
+}
+
+long tier_of_name(const char *name)
+{
+    if ( strcmp(name, "observer") == 0 ) return tierOBSERVER;
+    if ( strcmp(name, "proposer") == 0 ) return tierPROPOSER;
+    if ( strcmp(name, "editor") == 0 )   return tierEDITOR;
+    if ( strcmp(name, "owner") == 0 )    return tierOWNER;
+    return -1;
+}
+
+// The minimum tier a command requires (V6a tiers). Read-only queries and
+// navigation are tierOBSERVER (the default); commands that MUTATE the
+// document/project, write files, or spend build/run resources are tierEDITOR;
+// arbitrary shell/terminal execution is tierOWNER. The tier POLICY, one
+// switch over the command enum (the shape cmd_table is), listing only the
+// elevated codes — everything else observes. First pass; refined as the
+// surface grows (e.g. per-argument gating of the `:` line's sub-verbs).
+long cmd_min_tier(long code)
+{
+    switch ( code )
+    {
+    // owner — arbitrary execution
+    case cmdSHELL:
+    case cmdTERMINAL:
+	return tierOWNER;
+    // editor — text mutation
+    case cmdBLOCKDEL:
+    case cmdBLOCKMOVE:
+    case cmdDELLINE:
+    case cmdDELWORD:
+    case cmdBACKSPACE:
+    case cmdDEL:
+    case cmdENTER:
+    case cmdDISCARD:
+    case cmdINSERTFILE:
+    case cmdUNDO:
+    case cmdREDO:
+    case cmdVIDELETE:
+    case cmdVICHANGE:
+    case cmdVIINSERT:
+    case cmdVIINSERTBOL:
+    case cmdVIAPPEND:
+    case cmdVIAPPENDEOL:
+    case cmdVIOPENBELOW:
+    case cmdVIOPENABOVE:
+    // editor — file writes
+    case cmdSAVE:
+    case cmdSAVEAS:
+    case cmdSAVEQUIT:
+    // editor — project mutation / opening
+    case cmdOPENPROJECT:
+    case cmdEDITFILE:
+    case cmdPROJADDCUR:
+    case cmdPROJADD:
+    case cmdPROJDEL:
+    case cmdPROJCLOSE:
+    case cmdOPT_PROJKIND:
+    // editor — builds / runs (produce artifacts, execute the project)
+    case cmdBUILD:
+    case cmdBLD_NATIVE:
+    case cmdBLD_RUN:
+    case cmdBLD_RUN_CMD:
+    case cmdBLD_STOP:
+    case cmdBLD_PROJ_BUILD:
+    case cmdBLD_PROJ_RUN:
+    // editor — the `:` line can mutate/save (its `:!` shell gap is a
+    // refinement: gate the parsed sub-verb, not the gateway)
+    case cmdCOLON:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
+
+// ---- the code-graph MCP tool family (design 2026-09-12) --------------------
+// The graph.* verbs as CODES (enums-not-strings): the wire name converts ONCE
+// (graph_verb_of, over the descriptor table — one list of names) and every
+// dispatch / policy is a switch on the code. gvNONE = unknown verb (a refusal).
+enum graph_verb : unsigned char {
+    gvNONE = 0,
+    gvSYMBOLS, gvDEFINITION, gvNODE, gvTYPE_OF, gvMEMBERS, gvBASES, gvENCLOSING,
+    gvBODY, gvCHILDREN,
+    gvCALLEES, gvCALLERS, gvREFERENCES, gvSEARCH, gvIMPACT,
+    gvSPAN, gvAT, gvINSERT, gvREPLACE, gvDELETE,
+    // Nexus L4b (design 2026-09-13 §4.3): the PAST verbs — reads, observer tier.
+    gvSTATUS, gvSOURCE, gvHISTORY, gvCOMMITS, gvREVISION, gvDIFF,
+    // Nexus L4c (design §3.4, §4.4): the FUTURE verbs — the proposal fold + decisions.
+    gvPROPOSALS, gvPROPOSAL, gvACCEPT, gvREJECT, gvWITHDRAW
+};
+
+// The annotation kinds madcide writes into the ONE change stream (design
+// §3.1); the texteditor layer's reader sees them as ckOTHER. Text on the
+// persisted line, a code in the reader (nexus_kind_of) — the enum law. The
+// writers: nodeop (L3), proposal / decision (L4c), record / link (L4d),
+// testrun / buildrun (L4e — the EVIDENCE events, tagged by the node).
+enum nexus_kind : unsigned char {
+    nkNONE = 0, nkNODEOP, nkPROPOSAL, nkDECISION, nkRECORD, nkLINK, nkTESTRUN, nkBUILDRUN
+};
+
+long nexus_kind_of(var &rec)
+{
+    var k = rec["kind"];
+    if ( k.is_null() )
+	return nkNONE;
+    if ( k == "nodeop" )   return nkNODEOP;
+    if ( k == "proposal" ) return nkPROPOSAL;
+    if ( k == "decision" ) return nkDECISION;
+    if ( k == "record" )   return nkRECORD;
+    if ( k == "link" )     return nkLINK;
+    if ( k == "testrun" )  return nkTESTRUN;
+    if ( k == "buildrun" ) return nkBUILDRUN;
+    return nkNONE;
+}
+
+// Revision handles kept open per document (design §3.3: a bounded LRU cache of
+// derived state; never persisted).
+const long REV_HANDLES_MAX = 8;
+
+// How graph_edit_apply ends (Nexus L4c, design §3.4): APPLY commits the
+// validated candidate; PROPOSE stores it as a proposal record and touches
+// nothing else. One path up to the candidate's validation; the mode decides.
+enum edit_mode : unsigned char { emAPPLY = 0, emPROPOSE };
+
+// A proposal's status — DERIVED from the stream (design §3.4): open until a
+// decision record names the proposal. The word is the wire form (a decision
+// record's `decision`, a fold row's `status`); converted ONCE by
+// proposal_status_of, written only through proposal_status_name.
+enum proposal_status : unsigned char { psNONE = 0, psOPEN, psACCEPTED, psREJECTED, psWITHDRAWN };
+const char *proposal_status_name(long s)
+{
+    switch ( s )
+    {
+	case psOPEN: return "open";
+	case psACCEPTED: return "accepted";
+	case psREJECTED: return "rejected";
+	case psWITHDRAWN: return "withdrawn";
+    }
+    return "";
+}
+long proposal_status_of(var &word)
+{
+    if ( word.is_null() )
+	return psNONE;
+    for ( long k = psOPEN; k <= psWITHDRAWN; k = k + 1 )
+	if ( word == proposal_status_name(k) )
+	    return k;
+    return psNONE;
+}
+
+// The ENVELOPE a JSON line on the connection seat carries (Nexus L4c): the api
+// shape {"cmd", "args", "seq"} or a JSON-RPC 2.0 message {"jsonrpc", "id",
+// "method", "params"} — the MCP seat over the same socket. Read ONCE at the
+// line; the loop switches on the code. envNONE = neither (a refusal).
+// envHELLO {"madc":"<protocol>"} is the third (V6c-3c): a connection SAYS what
+// JSON-RPC dialect it speaks, because `initialize` exists in BOTH LSP and MCP
+// and routing by method name is therefore ambiguous at exactly the first
+// message. Sniffing the params would be a guess; the relay is madcide's own
+// code on both ends, so it can simply say. A connection that never sends one
+// stays MCP — the behaviour every existing client already has.
+enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO };
+long envelope_of(var &req)
+{
+    if ( !req["jsonrpc"].is_null() )
+	return envRPC;
+    if ( !req["cmd"].is_null() )
+	return envAPI;
+    if ( !req["madc"].is_null() )
+	return envHELLO;
+    return envNONE;
+}
+
+// Which JSON-RPC dialect a connection speaks. MCP is the default because it is
+// what the socket seat has always answered; an unknown word is REFUSED by name,
+// never quietly treated as one of them.
+enum seat_protocol : unsigned char { spNONE = 0, spMCP, spLSP };
+const char *seat_protocol_name(long p)
+{
+    switch ( p )
+    {
+	case spMCP: return "mcp";
+	case spLSP: return "lsp";
+    }
+    return "";
+}
+long seat_protocol_of(var &word)
+{
+    if ( word.is_null() )
+	return spNONE;
+    for ( long k = spMCP; k <= spLSP; k = k + 1 )
+	if ( word == seat_protocol_name(k) )
+	    return k;
+    return spNONE;
+}
+
+// ---- the INTENT axis's vocabulary (Nexus L4d; design §3.5, §3.7, §3.10,
+// §4.5): text on the wire and on the persisted line, a code in every reader.
+// Each enum has its OUTPUT converter (X_name) and its INPUT converter (X_of —
+// NONE = unknown or null, the caller's refusal). ----------------------------
+
+// A record's kind (the owner's four + milestone + test).
+enum record_kind : unsigned char { rkNONE = 0, rkTASK, rkREQUIREMENT, rkDECISION, rkWORKSET, rkMILESTONE, rkTEST };
+const char *record_kind_name(long k)
+{
+    switch ( k )
+    {
+	case rkTASK: return "task";
+	case rkREQUIREMENT: return "requirement";
+	case rkDECISION: return "decision";
+	case rkWORKSET: return "workset";
+	case rkMILESTONE: return "milestone";
+	case rkTEST: return "test";
+    }
+    return "";
+}
+long record_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return rkNONE;
+    for ( long k = rkTASK; k <= rkTEST; k = k + 1 )
+	if ( word == record_kind_name(k) )
+	    return k;
+    return rkNONE;
+}
+
+// A record's state (the envelope): the fold's default reads exclude
+// superseded / rejected — an obsolete plan is never mistaken for truth.
+enum record_state : unsigned char { rsNONE = 0, rsOPEN, rsACTIVE, rsDONE, rsSUPERSEDED, rsREJECTED };
+const char *record_state_name(long s)
+{
+    switch ( s )
+    {
+	case rsOPEN: return "open";
+	case rsACTIVE: return "active";
+	case rsDONE: return "done";
+	case rsSUPERSEDED: return "superseded";
+	case rsREJECTED: return "rejected";
+    }
+    return "";
+}
+long record_state_of(var &word)
+{
+    if ( word.is_null() )
+	return rsNONE;
+    for ( long k = rsOPEN; k <= rsREJECTED; k = k + 1 )
+	if ( word == record_state_name(k) )
+	    return k;
+    return rsNONE;
+}
+
+// A record event's operation.
+enum record_op : unsigned char { roNONE = 0, roCREATE, roUPDATE, roCLOSE };
+const char *record_op_name(long o)
+{
+    switch ( o )
+    {
+	case roCREATE: return "create";
+	case roUPDATE: return "update";
+	case roCLOSE: return "close";
+    }
+    return "";
+}
+long record_op_of(var &word)
+{
+    if ( word.is_null() )
+	return roNONE;
+    for ( long k = roCREATE; k <= roCLOSE; k = k + 1 )
+	if ( word == record_op_name(k) )
+	    return k;
+    return roNONE;
+}
+
+// A link event's operation.
+enum link_op : unsigned char { loNONE = 0, loLINK, loUNLINK };
+const char *link_op_name(long o)
+{
+    switch ( o )
+    {
+	case loLINK: return "link";
+	case loUNLINK: return "unlink";
+    }
+    return "";
+}
+long link_op_of(var &word)
+{
+    if ( word.is_null() )
+	return loNONE;
+    for ( long k = loLINK; k <= loUNLINK; k = k + 1 )
+	if ( word == link_op_name(k) )
+	    return k;
+    return loNONE;
+}
+
+// A ref's kind — a durable key, never a raw graph id (design §3.5): a record
+// by id, a symbol by file + kind + name, a commit by sha, a proposal by seq,
+// an external system's row by source + key. The wire shape is {ref: word, …}.
+enum ref_kind : unsigned char { refNONE = 0, refRECORD, refSYMBOL, refCOMMIT, refPROPOSAL, refEXTERNAL };
+const char *ref_kind_name(long k)
+{
+    switch ( k )
+    {
+	case refRECORD: return "record";
+	case refSYMBOL: return "symbol";
+	case refCOMMIT: return "commit";
+	case refPROPOSAL: return "proposal";
+	case refEXTERNAL: return "external";
+    }
+    return "";
+}
+long ref_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return refNONE;
+    for ( long k = refRECORD; k <= refEXTERNAL; k = k + 1 )
+	if ( word == ref_kind_name(k) )
+	    return k;
+    return refNONE;
+}
+
+// The relations (the Nexus §2 vocabulary that is INTENT, not code — code edges
+// stay the graph's calls / references ground truth).
+enum nexus_rel : unsigned char {
+    relNONE = 0, relIMPLEMENTS, relTESTS, relFIXES, relAFFECTS, relREQUESTED_BY, relDOCUMENTS,
+    relSUPERSEDES, relBLOCKED_BY, relPLANNED_FOR, relREVIEWED_BY, relGENERATED_BY,
+    relINTRODUCED_BY, relMODIFIED_BY
+};
+const char *rel_name(long r)
+{
+    switch ( r )
+    {
+	case relIMPLEMENTS: return "implements";
+	case relTESTS: return "tests";
+	case relFIXES: return "fixes";
+	case relAFFECTS: return "affects";
+	case relREQUESTED_BY: return "requested_by";
+	case relDOCUMENTS: return "documents";
+	case relSUPERSEDES: return "supersedes";
+	case relBLOCKED_BY: return "blocked_by";
+	case relPLANNED_FOR: return "planned_for";
+	case relREVIEWED_BY: return "reviewed_by";
+	case relGENERATED_BY: return "generated_by";
+	case relINTRODUCED_BY: return "introduced_by";
+	case relMODIFIED_BY: return "modified_by";
+    }
+    return "";
+}
+long rel_of(var &word)
+{
+    if ( word.is_null() )
+	return relNONE;
+    for ( long k = relIMPLEMENTS; k <= relMODIFIED_BY; k = k + 1 )
+	if ( word == rel_name(k) )
+	    return k;
+    return relNONE;
+}
+
+// The authority that produced an answer row (design §3.7): every history /
+// context / explain row names it; nothing is blended silently. pvINFERRED
+// exists so a future heuristic is LABELLED — v1 emits none.
+enum provenance : unsigned char { pvNONE = 0, pvCOMPILER, pvGIT, pvEVENT, pvRECORD, pvINFERRED };
+const char *provenance_name(long p)
+{
+    switch ( p )
+    {
+	case pvCOMPILER: return "compiler";
+	case pvGIT: return "git";
+	case pvEVENT: return "event";
+	case pvRECORD: return "record";
+	case pvINFERRED: return "inferred";
+    }
+    return "";
+}
+long provenance_of(var &word)
+{
+    if ( word.is_null() )
+	return pvNONE;
+    for ( long k = pvCOMPILER; k <= pvINFERRED; k = k + 1 )
+	if ( word == provenance_name(k) )
+	    return k;
+    return pvNONE;
+}
+
+// The nexus.* verbs (the third tool family) and the test.* verbs (the fourth:
+// discover = L4d's records; list / candidates / run / results = L4e's runner
+// seat, design §3.10).
+enum nexus_verb : unsigned char {
+    nvNONE = 0, nvRECORD, nvRECORDS, nvCREATE, nvUPDATE, nvCLOSE, nvLINK, nvUNLINK,
+    nvCONTEXT, nvSOURCES, nvSYNC, nvEXPLAIN
+};
+enum test_verb : unsigned char { tvNONE = 0, tvDISCOVER, tvLIST, tvCANDIDATES, tvRUN, tvRESULTS };
+
+// A test record's family (design §3.10): the .mad family with its fixtures,
+// the doctest unit binaries, a manifest-declared external command.
+enum test_family : unsigned char { tfNONE = 0, tfMAD, tfUNIT, tfEXTERNAL };
+const char *test_family_name(long f)
+{
+    switch ( f )
+    {
+	case tfMAD: return "mad";
+	case tfUNIT: return "unit";
+	case tfEXTERNAL: return "external";
+    }
+    return "";
+}
+long test_family_of(var &word)
+{
+    if ( word.is_null() )
+	return tfNONE;
+    for ( long k = tfMAD; k <= tfEXTERNAL; k = k + 1 )
+	if ( word == test_family_name(k) )
+	    return k;
+    return tfNONE;
+}
+
+// An MCP source manifest's vocabulary: the operations the Nexus asks an
+// external system for; the manifest maps each to that server's tool. An
+// unknown key refuses the manifest at load (the enum-law boundary).
+enum nexus_op : unsigned char { noNONE = 0, noLIST_TASKS, noGET_TASK, noCREATE_TASK, noUPDATE_TASK, noCOMMENT };
+const char *nexus_op_name(long o)
+{
+    switch ( o )
+    {
+	case noLIST_TASKS: return "list_tasks";
+	case noGET_TASK: return "get_task";
+	case noCREATE_TASK: return "create_task";
+	case noUPDATE_TASK: return "update_task";
+	case noCOMMENT: return "comment";
+    }
+    return "";
+}
+long nexus_op_of(var &word)
+{
+    if ( word.is_null() )
+	return noNONE;
+    for ( long k = noLIST_TASKS; k <= noCOMMENT; k = k + 1 )
+	if ( word == nexus_op_name(k) )
+	    return k;
+    return noNONE;
+}
+
+// An MCP source's transport: stdio (a child over exec://) today; http waits on
+// a madcdis channel (a stdio<->HTTP bridge process serves meanwhile).
+enum mcp_transport : unsigned char { mtNONE = 0, mtSTDIO, mtHTTP };
+const char *mcp_transport_name(long t)
+{
+    switch ( t )
+    {
+	case mtSTDIO: return "stdio";
+	case mtHTTP: return "http";
+    }
+    return "";
+}
+long mcp_transport_of(var &word)
+{
+    if ( word.is_null() )
+	return mtNONE;
+    for ( long k = mtSTDIO; k <= mtHTTP; k = k + 1 )
+	if ( word == mcp_transport_name(k) )
+	    return k;
+    return mtNONE;
+}
+
+// nexus.explain's detail (the L2 `detail` increment shares it).
+enum explain_detail : unsigned char { edSUMMARY = 0, edFULL };
+const char *explain_detail_name(long d)
+{
+    return d == edFULL ? "full" : "summary";
+}
+long explain_detail_of(var &word)
+{
+    if ( word.is_null() )
+	return edSUMMARY;
+    if ( word == explain_detail_name(edFULL) )
+	return edFULL;
+    if ( word == explain_detail_name(edSUMMARY) )
+	return edSUMMARY;
+    return -1;
+}
+
+// The nexus.* ladder (design §3.6's table): reads observe; a record is
+// reviewable DATA, not source — create / update / close / link / unlink need
+// the proposer tier; sync (pull from an external source) needs an editor;
+// sources(dir) — a reload from another directory — is owner-only inside the
+// verb (the plain listing observes).
+long nexus_min_tier(long code)
+{
+    switch ( code )
+    {
+    case nvCREATE:
+    case nvUPDATE:
+    case nvCLOSE:
+    case nvLINK:
+    case nvUNLINK:
+	return tierPROPOSER;
+    case nvSYNC:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
+
+// The test.* ladder: discover writes records (proposer); run spends build /
+// run resources (editor — cmd_min_tier's rule); list / candidates / results
+// observe.
+long test_min_tier(long code)
+{
+    switch ( code )
+    {
+    case tvDISCOVER:
+	return tierPROPOSER;
+    case tvRUN:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
+
+// ---- asset LAYERS (Nexus L4e; design §3.9) ----------------------------------
+// Every axis is a layer an asset has or lacks, computed by ONE function
+// (asset_layers_of, madcide_layers.inc) from facts the engine holds — never
+// assumed by a verb. A BITSET: the wire words are the review's discovery
+// vocabulary, converted once (layer_words out, layer_of in). executable and
+// testable are NODE-relative (this node's offers); the rest are the asset's.
+enum asset_layer : unsigned char {
+    alTEXT = 1, alVERSIONED = 2, alMANAGED = 4, alLEXABLE = 8, alPARSEABLE = 16,
+    alEXECUTABLE = 32, alTESTABLE = 64
+};
+const char *layer_name(long bit)
+{
+    switch ( bit )
+    {
+	case alTEXT: return "text";
+	case alVERSIONED: return "versioned";
+	case alMANAGED: return "managed";
+	case alLEXABLE: return "lexable";
+	case alPARSEABLE: return "parseable";
+	case alEXECUTABLE: return "executable";
+	case alTESTABLE: return "testable";
+    }
+    return "";
+}
+long layer_of(var &word)
+{
+    if ( word.is_null() )
+	return 0;
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( word == layer_name(b) )
+	    return b;
+    return 0;
+}
+// The set as wire words, ascending bit order.
+void layer_words(var &out, long bits)
+{
+    out = {};
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( (bits & b) != 0 )
+	    out.push(layer_name(b));
+}
+// The first layer `need` asks for that `have` lacks; 0 = every layer present.
+long layer_missing(long have, long need)
+{
+    for ( long b = alTEXT; b <= alTESTABLE; b = b * 2 )
+	if ( (need & b) != 0 && (have & b) == 0 )
+	    return b;
+    return 0;
+}
+
+// The layers a verb family needs, DATA beside its tier (design §3.9): the
+// gate runs at graph_call / nexus_call / test_call entry after the tier gate,
+// before any structure is touched. graph.status needs only the bytes (it
+// REPORTS the layers); the commit-level history verb needs the repository
+// (a binary member has commit history); the line-level PAST verbs need the
+// tree too; every other graph verb reads the tree.
+long graph_min_layer(long code)
+{
+    switch ( code )
+    {
+    case gvSTATUS:
+	return alTEXT;
+    case gvCOMMITS:
+	return alVERSIONED;
+    case gvHISTORY:
+    case gvREVISION:
+    case gvDIFF:
+	return alVERSIONED | alPARSEABLE;
+    }
+    return alPARSEABLE;
+}
+// Records, links, context and the sources need tracking (a project — every
+// session asset has it); explain projects the tree too.
+long nexus_min_layer(long code)
+{
+    if ( code == nvEXPLAIN )
+	return alMANAGED | alPARSEABLE;
+    return alMANAGED;
+}
+// Test records need tracking; RUNNING needs a runner on the target node.
+long test_min_layer(long code)
+{
+    if ( code == tvRUN )
+	return alMANAGED | alTESTABLE;
+    return alMANAGED;
+}
+
+// A test run's verdict (design §3.10) — the runner's word converted once
+// (the boundary), the enum in every reader and on every testrun event.
+enum test_result : unsigned char { trNONE = 0, trPASS, trFAIL, trSKIP, trTIMEOUT, trERROR };
+const char *test_result_name(long r)
+{
+    switch ( r )
+    {
+	case trPASS: return "pass";
+	case trFAIL: return "fail";
+	case trSKIP: return "skip";
+	case trTIMEOUT: return "timeout";
+	case trERROR: return "error";
+    }
+    return "";
+}
+long test_result_of(var &word)
+{
+    if ( word.is_null() )
+	return trNONE;
+    for ( long k = trPASS; k <= trERROR; k = k + 1 )
+	if ( word == test_result_name(k) )
+	    return k;
+    return trNONE;
+}
+
+// What a node OFFERS (design §3.11, client-server §2.8 invariant 2): the
+// services its Client record advertises. This node serves all three.
+enum node_serve : unsigned char { nsNONE = 0, nsBUILD, nsRUN, nsTEST };
+const char *node_serve_name(long s)
+{
+    switch ( s )
+    {
+	case nsBUILD: return "build";
+	case nsRUN: return "run";
+	case nsTEST: return "test";
+    }
+    return "";
+}
+long node_serve_of(var &word)
+{
+    if ( word.is_null() )
+	return nsNONE;
+    for ( long k = nsBUILD; k <= nsTEST; k = k + 1 )
+	if ( word == node_serve_name(k) )
+	    return k;
+    return nsNONE;
+}
+
+// graph.insert's placement relative to its target; text only on the wire.
+enum graph_where : unsigned char { gwNONE = 0, gwBEFORE, gwAFTER };
+
+long graph_where_of(const char *name)
+{
+    if ( strcmp(name, "before") == 0 ) return gwBEFORE;
+    if ( strcmp(name, "after") == 0 )  return gwAFTER;
+    return gwNONE;
+}
+
+// The minimum tier a graph verb requires — the SAME ladder cmd_min_tier is
+// (V6a tiers): reads and navigation observe; the three mutations need the
+// PROPOSER tier (Nexus L4c, design §3.6) — at exactly that tier graph_call
+// STORES a proposal, above it the edit lands; accept / reject are editor
+// decisions; withdraw is the proposer's own or an editor's. An MCP client is
+// born observer and promoted by clienttier — design §2.5.
+long graph_min_tier(long code)
+{
+    switch ( code )
+    {
+    case gvINSERT:
+    case gvREPLACE:
+    case gvDELETE:
+    case gvWITHDRAW:
+	return tierPROPOSER;
+    case gvACCEPT:
+    case gvREJECT:
+	return tierEDITOR;
+    }
+    return tierOBSERVER;
+}
+
+// ---- the LSP face's vocabulary (V6c-2; plan 2026-09-14-v6c2-lsp-adapter) ---
+// The Language Server Protocol is JSON-RPC 2.0 whose METHOD is a string on the
+// wire. Text at an input boundary converts ONCE (lsp_method_of) and the seat
+// switches on the code — the owner law, and the reason a misspelled method is
+// a refusal naming it rather than a silently ignored message.
+
+enum lsp_method : unsigned char {
+    lmNONE = 0,
+    // lifecycle
+    lmINITIALIZE, lmINITIALIZED, lmSHUTDOWN, lmEXIT, lmCANCEL,
+    // document synchronisation
+    lmDIDOPEN, lmDIDCHANGE, lmDIDSAVE, lmDIDCLOSE,
+    // the notifications a conforming client sends that this server
+    // deliberately IGNORES — known and answered with silence, never mistaken
+    // for a misspelling (V6c-3a: a real VS Code client sends $/setTrace and
+    // workspace/didChangeConfiguration at startup, and the editor shows the
+    // server's stderr, so "unknown notification" read as three errors on every
+    // session)
+    lmSETTRACE, lmDIDCHANGECONFIG, lmDIDCHANGEWATCHED, lmDIDCHANGEFOLDERS,
+    lmWILLSAVE,
+    // the answering methods (each one an existing projection or graph verb)
+    lmDOCUMENTSYMBOL, lmHOVER, lmDEFINITION, lmREFERENCES, lmSEMANTICTOKENS,
+    // the DOING method (V6c-3b): every madcide registry command, through the
+    // one command core (api_run) — the tier gate and the unknown-command
+    // refusal are already its, so this adapter adds neither
+    lmEXECUTECOMMAND,
+    lmLAST				// the converter's bound — add ABOVE this
+};
+
+// The prefix a madcide registry command wears on the LSP wire. A client merges
+// every server's executeCommand list into ONE namespace, so a bare `save` would
+// collide; the prefix is stripped ONCE here, at the boundary, and cmd_of never
+// sees it (the enum law: text converts at the input boundary, once).
+const char *lsp_command_prefix() { return "madcide."; }
+const char *lsp_method_name(long m)
+{
+    switch ( m )
+    {
+	case lmINITIALIZE: return "initialize";
+	case lmINITIALIZED: return "initialized";
+	case lmSHUTDOWN: return "shutdown";
+	case lmEXIT: return "exit";
+	case lmCANCEL: return "$/cancelRequest";
+	case lmDIDOPEN: return "textDocument/didOpen";
+	case lmDIDCHANGE: return "textDocument/didChange";
+	case lmDIDSAVE: return "textDocument/didSave";
+	case lmDIDCLOSE: return "textDocument/didClose";
+	case lmSETTRACE: return "$/setTrace";
+	case lmDIDCHANGECONFIG: return "workspace/didChangeConfiguration";
+	case lmDIDCHANGEWATCHED: return "workspace/didChangeWatchedFiles";
+	case lmDIDCHANGEFOLDERS: return "workspace/didChangeWorkspaceFolders";
+	case lmWILLSAVE: return "textDocument/willSave";
+	case lmDOCUMENTSYMBOL: return "textDocument/documentSymbol";
+	case lmHOVER: return "textDocument/hover";
+	case lmDEFINITION: return "textDocument/definition";
+	case lmREFERENCES: return "textDocument/references";
+	case lmSEMANTICTOKENS: return "textDocument/semanticTokens/full";
+	case lmEXECUTECOMMAND: return "workspace/executeCommand";
+    }
+    return "";
+}
+
+// The server -> client notifications madcide adds to the protocol (V6c-3b).
+// The `$/` space is the protocol's own for implementation-defined messages, so
+// a client that does not know them ignores them by the spec's own rule.
+enum madc_note : unsigned char { mnNONE = 0, mnEVENT, mnMESSAGE, mnSERVE };
+const char *madc_note_name(long n)
+{
+    switch ( n )
+    {
+	case mnEVENT: return "$/madc/event";
+	case mnMESSAGE: return "$/madc/message";
+	case mnSERVE: return "$/madc/serve";
+    }
+    return "";
+}
+// The bound is the SENTINEL, never the last name: a method added below the
+// previous last enumerator was silently unconvertible — lmEXECUTECOMMAND
+// arrived as lmNONE and the dispatcher answered "Method not found" for a method
+// it implements. Every enumerator between lmINITIALIZE and lmLAST has a name,
+// so the empty string never matches.
+long lsp_method_of(var &word)
+{
+    if ( word.is_null() )
+	return lmNONE;
+    for ( long k = lmINITIALIZE; k < lmLAST; k = k + 1 )
+	if ( word == lsp_method_name(k) )
+	    return k;
+    return lmNONE;
+}
+
+// Which of a message's methods are NOTIFICATIONS — no reply, ever, even when
+// refused (a reply to a notification is a protocol violation, and a client
+// that gets one may abort the session). The id's absence says so on the wire
+// too; this table is the server's own statement of intent.
+bool lsp_is_notification(long m)
+{
+    switch ( m )
+    {
+	case lmINITIALIZED:
+	case lmEXIT:
+	case lmCANCEL:
+	case lmDIDOPEN:
+	case lmDIDCHANGE:
+	case lmDIDSAVE:
+	case lmDIDCLOSE:
+	case lmSETTRACE:
+	case lmDIDCHANGECONFIG:
+	case lmDIDCHANGEWATCHED:
+	case lmDIDCHANGEFOLDERS:
+	case lmWILLSAVE:
+	    return true;
+    }
+    return false;
+}
+
+// The POSITION ENCODING a client and server agree on (LSP 3.17
+// `general.positionEncodings` / `capabilities.positionEncoding`). The
+// protocol's default is UTF-16 code units; utf-8 means a column IS a byte
+// offset and needs no conversion. NEGOTIATED at initialize and stored on the
+// session — reading a utf-16 column as a byte silently mis-places every
+// position on a line with a non-ASCII character before it.
+enum pos_encoding : unsigned char { peNONE = 0, peUTF8, peUTF16 };
+const char *pos_encoding_name(long e)
+{
+    switch ( e )
+    {
+	case peUTF8: return "utf-8";
+	case peUTF16: return "utf-16";
+    }
+    return "";
+}
+long pos_encoding_of(var &word)
+{
+    if ( word.is_null() )
+	return peNONE;
+    for ( long k = peUTF8; k <= peUTF16; k = k + 1 )
+	if ( word == pos_encoding_name(k) )
+	    return k;
+    return peNONE;
+}
+
+// An outline row's kind as the protocol's SymbolKind (documentSymbol). The
+// outline answers "function" today and names classes/globals as its extension
+// seat; a kind it grows maps HERE, never at the call site.
+enum lsp_symbol_kind : unsigned char { lskNONE = 0, lskFUNCTION };
+long lsp_symbol_of(var &word)
+{
+    if ( word.is_null() )
+	return lskNONE;
+    if ( word == "function" )
+	return lskFUNCTION;
+    return lskNONE;
+}
+long lsp_symbol_number(long k)
+{
+    switch ( k )
+    {
+	case lskFUNCTION: return 12;	// SymbolKind.Function
+    }
+    return 13;				// SymbolKind.Variable — the honest floor
+}
+
+// A parse_spans class as a semantic token type. The LEGEND is this enum in
+// order (lsp_token_name over lttKEYWORD..lttFUNCTION), so a token's `type`
+// field is its index in that list — the protocol's own encoding. The theme is
+// NOT consulted: LSP carries semantics and the client owns colour.
+enum lsp_token_type : unsigned char {
+    lttNONE = 0, lttKEYWORD, lttVARIABLE, lttNUMBER, lttSTRING, lttCOMMENT,
+    lttTYPE, lttFUNCTION
+};
+const char *lsp_token_name(long t)
+{
+    switch ( t )
+    {
+	case lttKEYWORD: return "keyword";
+	case lttVARIABLE: return "variable";
+	case lttNUMBER: return "number";
+	case lttSTRING: return "string";
+	case lttCOMMENT: return "comment";
+	case lttTYPE: return "type";
+	case lttFUNCTION: return "function";
+    }
+    return "";
+}
+// The span class -> the token type. `ident` is the protocol's `variable`;
+// every other class is spelled the same on both sides, so the name table
+// answers it.
+long lsp_token_of_class(var &cls)
+{
+    if ( cls.is_null() )
+	return lttNONE;
+    if ( cls == "ident" )
+	return lttVARIABLE;
+    for ( long k = lttKEYWORD; k <= lttFUNCTION; k = k + 1 )
+	if ( cls == lsp_token_name(k) )
+	    return k;
+    return lttNONE;
+}
+
+// How a client sends changes (the `textDocumentSync.change` number the server
+// advertises, and what a didChange carries): a change with a `range` is
+// INCREMENTAL, one without is the whole document.
+enum lsp_sync : unsigned char { lsNONE = 0, lsFULL, lsINCREMENTAL };
+long lsp_sync_number(long s)
+{
+    switch ( s )
+    {
+	case lsFULL: return 1;
+	case lsINCREMENTAL: return 2;
+    }
+    return 0;				// TextDocumentSyncKind.None
+}
+
+// ---- the MCP seat's vocabulary (V6c-1; enum'd at the V6 seam) --------------
+// MCP is JSON-RPC 2.0 whose METHOD is a string on the wire, exactly as the LSP
+// face's is: text converts ONCE (mcp_method_of) and the seat switches on the
+// code — the owner law. Until the V6 seam mcp_handle dispatched on a ladder of
+// strcmp()s while its own tool families (graph_verb_of, nexus_verb_of,
+// test_verb_of) and the LSP face converted once; check-madcide-enums rule 6
+// now refuses a strcmp against a method word.
+
+enum mcp_method : unsigned char {
+    mmNONE = 0,
+    mmINITIALIZE, mmPING, mmTOOLSLIST, mmTOOLSCALL,
+    mmLAST				// the converter's bound — add ABOVE this
+};
+const char *mcp_method_name(long m)
+{
+    switch ( m )
+    {
+	case mmINITIALIZE: return "initialize";
+	case mmPING: return "ping";
+	case mmTOOLSLIST: return "tools/list";
+	case mmTOOLSCALL: return "tools/call";
+    }
+    return "";
+}
+// The bound is the SENTINEL (mmLAST), never the last name — the lsp_method_of
+// lesson: a method added below the previous last enumerator was silently
+// unconvertible.
+long mcp_method_of(var &word)
+{
+    if ( word.is_null() )
+	return mmNONE;
+    for ( long k = mmINITIALIZE; k < mmLAST; k = k + 1 )
+	if ( word == mcp_method_name(k) )
+	    return k;
+    return mmNONE;
+}
+
+// A tool's FAMILY, by the dotted prefix of its name: graph.* (the code graph),
+// nexus.* (intent records), test.* (evidence) — and everything else is a
+// madcide registry command (mcp_call -> api_run). The prefix is text at the
+// wire boundary, converted once here; tools/call switches on the code.
+enum tool_family : unsigned char { tfREGISTRY = 0, tfGRAPH, tfNEXUS, tfTEST, tfLAST };
+const char *tool_family_prefix(long f)
+{
+    switch ( f )
+    {
+	case tfGRAPH: return "graph.";
+	case tfNEXUS: return "nexus.";
+	case tfTEST: return "test.";
+    }
+    return "";
+}
+long tool_family_of(const char *name)
+{
+    for ( long k = tfGRAPH; k < tfLAST; k = k + 1 )
+    {
+	const char *p = tool_family_prefix(k);
+	if ( strncmp(name, p, strlen(p)) == 0 )
+	    return k;
+    }
+    return tfREGISTRY;
+}

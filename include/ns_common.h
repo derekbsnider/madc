@@ -228,6 +228,41 @@ void *madc_parse_diagnostics(void *result, int64_t handle);
 void *madc_parse_enclosing(void *result, int64_t handle, int64_t line,
 			   int64_t column);
 void *madc_parse_spans(void *result, int64_t handle);
+// Code-graph MCP L1 bridges (design 2026-09-12): the live declaration/type
+// graph as node-addressed reads over a parse handle. result = madc::value*.
+void *madc_graph_symbols(void *result, int64_t handle);
+void *madc_graph_node(void *result, int64_t handle, int64_t node_id);
+void *madc_graph_type_of(void *result, int64_t handle, int64_t node_id);
+void *madc_graph_definition(void *result, int64_t handle, void *name);
+void *madc_graph_members(void *result, int64_t handle, int64_t type_id);
+void *madc_graph_bases(void *result, int64_t handle, int64_t type_id);
+void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column);
+// Code-graph MCP L1b bridges (design 2026-09-12): the body graph over the
+// live parse-handle TokenBase AST. func_id/id is a body handle OR a type-id
+// (graph_children routes on the GRAPH_BODY_ID_BASE partition); depth < 0 =
+// unbounded (capped server-side).
+void *madc_graph_body(void *result, int64_t handle, int64_t func_id, int64_t depth);
+void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t depth);
+// Code-graph MCP L2 (design 2026-09-12): derived-edge verbs (functions + globals).
+void *madc_graph_callees(void *result, int64_t handle, int64_t func_id);
+void *madc_graph_callers(void *result, int64_t handle, int64_t func_id);
+void *madc_graph_references(void *result, int64_t handle, int64_t def_id);
+void *madc_graph_search(void *result, int64_t handle, void *kind, void *name_sub);
+void *madc_graph_impact(void *result, int64_t handle, int64_t id);
+// Code-graph MCP L3 (design 2026-09-12): extents + position lookup + the
+// validated refresh (result = the candidate's diagnostics rows; true = swapped).
+void *madc_graph_span(void *result, int64_t handle, int64_t id);
+void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
+bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
+// Nexus L4c: the same validator without the swap (the propose tier's verdict).
+bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
+// (The git substrate's bridges lived here until the V6 seam; it is the madcgit
+// MODULE now — include/madc/madcgit.h is its C interface.)
+// L4b (design §3.3): revision handles by generation TAG (engine-allocated).
+int64_t madc_parse_open_tagged(void *source, void *filename);
+int64_t madc_parse_generation(int64_t handle);
+int64_t madc_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =

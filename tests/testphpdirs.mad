@@ -1,0 +1,31 @@
+// PHP parity (Nexus L4d task 0): array_keys over a map and a list; mkdir /
+// rmdir round trip; the failures answer false, never throw.
+int main()
+{
+    var m;
+    m["beta"] = 2;
+    m["alpha"] = 1;
+    array keys;
+    php::array_keys(keys, m);
+    println("keys-map: n={} k0={} k1={}", php::count(keys), keys[0], keys[1]);
+    var list = {};
+    list.push("x");
+    list.push("y");
+    array idx;
+    php::array_keys(idx, list);
+    println("keys-list: n={} i0={} i1={}", php::count(idx), idx[0], idx[1]);
+    var none;
+    array nk;
+    php::array_keys(nk, none);
+    println("keys-null: n={}", php::count(nk));
+    println("mkdir: {}", php::mkdir("madc_php_dirs_tmp") ? 1 : 0);
+    println("exists: {}", php::file_exists("madc_php_dirs_tmp") ? 1 : 0);
+    println("mkdir-again: {}", php::mkdir("madc_php_dirs_tmp") ? 1 : 0);
+    php::file_put_contents("madc_php_dirs_tmp/a.txt", "a");
+    println("rmdir-nonempty: {}", php::rmdir("madc_php_dirs_tmp") ? 1 : 0);
+    php::unlink("madc_php_dirs_tmp/a.txt");
+    println("rmdir: {}", php::rmdir("madc_php_dirs_tmp") ? 1 : 0);
+    println("gone: {}", php::file_exists("madc_php_dirs_tmp") ? 0 : 1);
+    println("rmdir-missing: {}", php::rmdir("madc_php_dirs_tmp") ? 0 : 1);
+    return 0;
+}

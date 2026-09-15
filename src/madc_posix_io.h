@@ -26,6 +26,14 @@ ssize_t read_fd(int fd, void *buffer, std::size_t size);
 // this for CONSISTENT path spellings, never for link identity.
 std::string resolve_real_path(const char *path);
 
+// THE path canonicalizer for COMPARISON (the standing owner named in
+// AGENTS.md rule #4): resolve_real_path when it resolves, the input spelling
+// unchanged when it does not (a cross/hosted table may name a sysroot absent
+// from this machine). The lexer's include resolution and the git substrate's
+// working-tree-relative paths (madc_git.cpp) read the SAME rule. Defined in
+// lexer.cpp.
+std::string canonical_path_for_compare(const std::string &path);
+
 // Host-filesystem path splitting — THE owner of "where does the directory
 // part end". On Windows both '/' and '\' separate (a path may mix them:
 // the include chain concatenates '/' onto user-spelled '\' prefixes); on

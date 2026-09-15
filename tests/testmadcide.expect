@@ -52,11 +52,12 @@ proj-del-implicit: No project file yet (ins adds a file, creating it). manifest=
 proj-add-prompt: File to add to project (^C aborts):
 proj-materialize: Project file created: madc_ide_test.prj.json parses=1 tus=2 row1=p  madc_ide_second.mad
 proj-dup: Already in the project: madc_ide_second.mad
+proj-dup-abs: already=1
 proj-open2: path=madc_ide_second.mad closed=1
 proj-addcur: Added madc_ide_ast5.txt to the project. in-manifest=1
 proj-del: Removed madc_ide_ast5.txt from the project. gone=1
 proj-esc: closed=1
-proj-startup: Project madc_ide_test.prj.json: 2 TU(s). tus=2
+proj-startup: Project madc_ide_test.prj.json: 2 TU(s). Events not restored: this session already logged events. tus=2
 proj-bad: madc_ide_test.prj.json is not valid JSON. implicit=1
 build-pane: label=Build rows=4 row0=Echo  [echo hello-{base}]
 build-start: live=1

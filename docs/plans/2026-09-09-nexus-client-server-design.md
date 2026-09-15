@@ -586,6 +586,26 @@ git adapter (the nexus axes slice).
   slice of the effort, after the MCP seat pays for itself; the arc is
   DESIGN-FOR it (§2.8), never building it.
 
+**§2.7 as landed (the LSP face, V6c-2, 2026-09-14).** "Every LSP editor
+speaks madc as a bonus" is now literal: `madcide <file> --lsp` is a language
+server. Three facts the design assumed are settled by how it landed. (1) The
+FRAMING is transport, not seat: LSP delimits a message by BYTE COUNT (a
+conforming peer may pretty-print, so a line reader splits one message into
+several), so `channel::frame_headers()` turns any byte channel into a
+Content-Length message channel — the V6b-1 WebSocket-framer shape, named for
+the framing because DAP and BSP share it. (2) stdio is a CHANNEL (`stdio://`,
+read fd 0 / write fd 1, pollable, close() leaving the descriptors alone), so
+the same seat loop serves the spawned-process deployment today and a socket
+whenever LSP-over-`--serve` is wanted. (3) Capability negotiation stopped
+being theoretical: the position ENCODING is read from the client's
+`general.positionEncodings` and answered in the server's capabilities
+(utf-8 when offered, the protocol's utf-16 default otherwise), and the
+UTF-16 ↔ byte column arithmetic became one owner shared with the web hit
+test. The face itself holds no analysis — diagnostics, outline, spans,
+enclosing and the graph verbs answer it, under the same L4e layer check, and
+every edit rides the ONE text-mutation owner so an LSP change reaches an open
+TUI window and the project stream.
+
 ### 2.8 Groundwork invariants — held so the mesh and external clients are reachable
 
 The platform-node mesh (§2.7) and the external clients (a VS Code extension,
@@ -651,7 +671,7 @@ checklist for the arc.
 | **V3 Clients + windows** ✅ (V3a ✅ anchor registry · V3b ✅ event_any + multi-client loop + viewwindow · V3c ✅ presence: V3c-1 shift+draw machinery, V3c-2 palette+web render) | client records; `ui::event_any`; `viewwindow` opens a second window on the session; presence carets + `@presence` colours; the anchor registry replaces `shift_hspans` (V3c-1: the doc carries a roster of viewing es — `es_view_doc` — dealt a round-robin colour slot, `shift_anchors` shifts EVERY client's caret in one pass not just the editing es, `compose_edit_node` draws the others as carets in their slot; V3c-2: `web_model` emits `op["presence"]`, `page.js` draws a `.pcaret .pslot-<slot>` bar, the `@presence` palette rides the root hints) — gates `tests/testmadcide_window2`, `tests/gui/madcide_presence`, `test_web_model`, `check-one-anchor-owner.sh` | `tests/testmadcide_window2` (two clients, one edit seen in both; per-client carets; viewwindow park vs refuse — fake-host/direct-drive, no display); `testuieventany`; `check-one-anchor-owner.sh`. The real two-window webview pump is the flagged GTK-smoke + seam-lane follow-up |
 | **V4 Event log** ✅ 2026-09-10 (arc branch; dialect-side, engine untouched) | Every text mutation appends one splice RECORD at the ONE text-mutation owner (`ed_text_insert`); a per-document `changelog` piece-table buffer holds JSONL (append O(1); the buffer text IS the persisted + wire form); `seq` = the LSN (a rewrite-stable COUNTER, NOT a WAL — no fsync, tail-loss tolerated); `clog_replay` (torn tail dropped, a trimmed seq clamps up to the oldest checkpoint), `clog_checkpoint`, `clog_compact` (last N whole after a fresh checkpoint; never past a needed one); the `event:N` edit-history View (`make_history_view`); `.prj.events` persistence (`clog_persist`/`clog_restore` hooked into `proj_write`/`proj_open`/`proj_startup`). Per-change propagation rides V3b's recompose. Follow-ups: ^S-flush; one project events file across docs for a multi-file manifest | `tests/testmadcide_changelog` (headless): replay round-trip + historical, the event:N View, checkpoint, compaction, the retention clamp, a persist→restore round-trip; the editor/IDE family byte-identical; `check-madcide-single-owners` extended |
 | **V5 Correlation** ✅ 2026-09-10 (arc branch, targeted gates; the LAST local slice — the V1–V5 seam battery is next, after the owner tests the running editor) | the emitter's coordinate map → View `map`; `viewsync` source ↔ MC11. The emitter (`CEmit`) counts the bytes it writes and records one `{disp, source-line}` row per statement/declaration; the buffer-owning layer converts the line → a stored byte and feeds `doc_map::add` (which drops any non-monotone/hoisted row — "maps to nothing"), returning the `{disp, stored, len}` array beside the text through a new `madc::emit(out, out_map, …)` overload. `enter_lens`/`make_code_view` store it on the View's `map` (the vmap that was empty); `viewsync on\|off` draws an unfocused source↔code pair's caret PROJECTED from the focused caret through the map at compose time (`viewsync_leaf_caret` — read-side, no duplicated caret state; `ui::lens_to_display`/`lens_to_stored` become live). Byte-identical emitted text (the map is a pure side channel). Statement/line granularity; column/expression precision is the named later refinement | `tests/testemitmap` (rows > 0, monotone, lens round-trip, empty→park); `tests/testmadcide_correlation` (a code View's map rows > 0, the projection round-trips both ways, the fallback holds); `testmadcide` MC11 lens `maprows-pos=1`; the editor/IDE family byte-identical; engine-purity + emit-layout + dialect gates green |
-| **V6 Transports + headless** | `listen://` + the WebSocket framer in madcdis; `ws` remote window; `api` line protocol; `--serve`; tiers born low; the MCP seat | a loopback ws test under the runner's caps; an api smoke test; a tier-refusal test |
+| **V6 Transports + headless** ✅ COMPLETE 2026-09-14 (arc branch; every sub-slice shipped — the RELEASE seam is the owner's call) | `listen://` + the WebSocket framer in madcdis; `ws` remote window; `api` line protocol; `--serve`; tiers born low; the MCP seat — and, as the seat's own arc, the code-graph ladder L1–L4e (`2026-09-13-nexus-L4-design.md`) and the **LSP face** (V6c-2, `2026-09-14-v6c2-lsp-adapter-plan.md`: `stdio://` + `channel::frame_headers()` + `madcide_lsp.inc`) and the **VS Code extension** (V6c-3a, `2026-09-14-v6c3a-vscode-extension-plan.md`: `tools/vscode-madcide/` — the arc's "VS Code as a first-class api client" criterion, met) wearing **madcide's real controls** (V6c-3b, `2026-09-14-v6c3b-executecommand-webview-plan.md`: `workspace/executeCommand` onto the registry, `$/madc/*` notifications, and `--lsp --serve` = ONE process, ONE session, two faces) and the **attach relay** (V6c-3c, `2026-09-14-v6c3c-attach-relay-plan.md`: `--lsp/--mcp --attach <addr>` + a declared dialect on the socket seat, so an editor, an agent and a browser drive one ALREADY-RUNNING session) | a loopback ws test under the runner's caps; an api smoke test; a tier-refusal test; `testmadcide_lsp` + `testmadcide_lsp_stdio` + `testmadcide_lsp_serve` + `testmadcide_attach` |
 | **V7 Pairs 2–3** | external-asm provider (gcc/clang Views); MIR provider; git-revision Views (madcdat adapter) | fixtures per provider; the parity method as a test |
 
 The local half (V1–V5) is one feature ("any View in any container; a

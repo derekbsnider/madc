@@ -345,6 +345,51 @@ bool internal_program_parse_diagnostics(int64_t handle, value &out);
 bool internal_program_parse_enclosing(int64_t handle, int64_t line,
 				      int64_t column, value &out);
 bool internal_program_parse_spans(int64_t handle, value &out);
+// Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
+// as node-addressed accessors over a parse handle's child Program — see
+// madc_program.cpp beside the parse-handle block.
+bool internal_program_graph_symbols(int64_t handle, value &out);
+bool internal_program_graph_node(int64_t handle, int64_t node_id, value &out);
+bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
+				    value &out);
+bool internal_program_graph_definition(int64_t handle,
+				       const std::string &name, value &out);
+bool internal_program_graph_members(int64_t handle, int64_t type_id,
+				    value &out);
+bool internal_program_graph_bases(int64_t handle, int64_t type_id,
+				  value &out);
+bool internal_program_graph_enclosing(int64_t handle, int64_t line,
+				      int64_t column, value &out);
+// Code-graph MCP L1b (design 2026-09-12): the BODY graph over the live
+// parse-handle TokenBase AST — see madc_program.cpp beside the L1 block.
+bool internal_program_graph_body(int64_t handle, int64_t func_id,
+				 int64_t depth, value &out);
+bool internal_program_graph_children(int64_t handle, int64_t id,
+				     int64_t depth, value &out);
+// Code-graph MCP L2 (design 2026-09-12): derived CALLS/REFERENCES edges
+// (functions + globals) over the live forest — see madc_program.cpp.
+bool internal_program_graph_callees(int64_t handle, int64_t func_id, value &out);
+bool internal_program_graph_callers(int64_t handle, int64_t func_id, value &out);
+bool internal_program_graph_references(int64_t handle, int64_t def_id, value &out);
+bool internal_program_graph_search(int64_t handle, const std::string &kind,
+				   const std::string &name_sub, value &out);
+bool internal_program_graph_impact(int64_t handle, int64_t id, value &out);
+// Code-graph MCP L3 (design 2026-09-12): node extents, position lookup and the
+// VALIDATED refresh the edit verbs commit through — see madc_program.cpp.
+bool internal_program_graph_span(int64_t handle, int64_t id, value &out);
+bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
+			       value &out);
+bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
+					    const std::string &source_text,
+					    value &out_diags, bool commit);
+// The git substrate (Nexus L4a) is the madcgit MODULE since the V6 seam
+// (src/modules/madcgit/madcgit.cpp; owner ruling 2026-09-15: libgit2 is a
+// dependency of the IDE, never part of madc) — no Program face, no bridge here.
+// L4b (design §3.3): revision handles by generation TAG — see madc_program.cpp.
+int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
+					   const std::string &display_name);
+int64_t internal_program_parse_generation(int64_t handle);
+int64_t internal_program_graph_route(int64_t handle, int64_t id);
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler): emit a native artifact from the handle's
 // EXISTING parsed tree / run that tree in a fork() child. No re-parse.
@@ -1102,6 +1147,164 @@ void *madc_parse_spans(void *result, int64_t handle)
     madc::value &out = *(madc::value *)result;
     madc::internal_program_parse_spans(handle, out);
     return result;
+}
+
+// Code-graph MCP L1 bridges (design 2026-09-12): result = madc::value*,
+// handle = a parse handle. Thin thunks over internal_program_graph_*.
+void *madc_graph_symbols(void *result, int64_t handle)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_symbols(handle, out);
+    return result;
+}
+void *madc_graph_node(void *result, int64_t handle, int64_t node_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_node(handle, node_id, out);
+    return result;
+}
+void *madc_graph_type_of(void *result, int64_t handle, int64_t node_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_type_of(handle, node_id, out);
+    return result;
+}
+void *madc_graph_definition(void *result, int64_t handle, void *name)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_definition(handle,
+					    *(const std::string *)name, out);
+    return result;
+}
+void *madc_graph_members(void *result, int64_t handle, int64_t type_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_members(handle, type_id, out);
+    return result;
+}
+void *madc_graph_bases(void *result, int64_t handle, int64_t type_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_bases(handle, type_id, out);
+    return result;
+}
+void *madc_graph_enclosing(void *result, int64_t handle, int64_t line,
+			   int64_t column)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_enclosing(handle, line, column, out);
+    return result;
+}
+// Code-graph MCP L1b bridges (design 2026-09-12): the two body-graph verbs,
+// same thin-thunk shape as the L1 bridges above.
+void *madc_graph_body(void *result, int64_t handle, int64_t func_id, int64_t depth)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_body(handle, func_id, depth, out);
+    return result;
+}
+void *madc_graph_children(void *result, int64_t handle, int64_t id, int64_t depth)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_children(handle, id, depth, out);
+    return result;
+}
+// Code-graph MCP L2 bridges (design 2026-09-12): same thin-thunk shape as L1/L1b.
+void *madc_graph_callees(void *result, int64_t handle, int64_t func_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_callees(handle, func_id, out);
+    return result;
+}
+void *madc_graph_callers(void *result, int64_t handle, int64_t func_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_callers(handle, func_id, out);
+    return result;
+}
+void *madc_graph_references(void *result, int64_t handle, int64_t def_id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_references(handle, def_id, out);
+    return result;
+}
+void *madc_graph_search(void *result, int64_t handle, void *kind, void *name_sub)
+{
+    madc::value &out = *(madc::value *)result;
+    std::string k = kind ? *(std::string *)kind : std::string();
+    std::string n = name_sub ? *(std::string *)name_sub : std::string();
+    madc::internal_program_graph_search(handle, k, n, out);
+    return result;
+}
+void *madc_graph_impact(void *result, int64_t handle, int64_t id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_impact(handle, id, out);
+    return result;
+}
+
+// Code-graph MCP L3 bridges (design 2026-09-12): same thin-thunk shape.
+void *madc_graph_span(void *result, int64_t handle, int64_t id)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_span(handle, id, out);
+    return result;
+}
+void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column)
+{
+    madc::value &out = *(madc::value *)result;
+    madc::internal_program_graph_at(handle, line, column, out);
+    return result;
+}
+
+// (The git substrate's bridges lived here until the V6 seam; the madcgit
+// MODULE now carries its own C API — src/modules/madcgit/madcgit.cpp.)
+
+// L4b: revision handles by generation TAG. parse_open_tagged needs the active
+// Program exactly as madc_parse_open does; generation/route read the registry.
+int64_t madc_parse_open_tagged(void *source, void *filename)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+    const std::string &src = *(const std::string *)source;
+    const std::string &disp = *(const std::string *)filename;
+    return madc::internal_program_parse_open_tagged(*active, src,
+						    disp.empty() ? "<source>" : disp);
+}
+int64_t madc_parse_generation(int64_t handle)
+{
+    return madc::internal_program_parse_generation(handle);
+}
+int64_t madc_graph_route(int64_t handle, int64_t id)
+{
+    return madc::internal_program_graph_route(handle, id);
+}
+// The validated refresh: result = diagnostics rows (the candidate's), true =
+// the candidate was swapped in. Same active-program discipline as
+// madc_parse_refresh.
+bool madc_parse_refresh_checked(void *result, int64_t handle, void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    madc::value &out = *(madc::value *)result;
+    return madc::internal_program_parse_refresh_checked(
+	*active, handle, *(const std::string *)source, out, true);
+}
+// The same validator WITHOUT the swap (Nexus L4c, design §3.4): the
+// candidate's verdict + diagnostics, the live tree untouched.
+bool madc_parse_would_accept(void *result, int64_t handle, void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+    madc::value &out = *(madc::value *)result;
+    return madc::internal_program_parse_refresh_checked(
+	*active, handle, *(const std::string *)source, out, false);
 }
 
 // The live-tree build/run bridges (OWNER RULING 2026-08-27): kind/outpath
@@ -45769,6 +45972,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	tf->statements = tc->statements;
 	tf->deferred = tc->deferred;
 	tf->end_line = tc->end_line;
+	tf->end_column = tc->end_column;
 	if ( FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type) )
 	    if ( &cur->return_value_type() == &ddAUTO )
 	    {
@@ -64148,6 +64352,7 @@ TokenBase *Program::parseCompound()
 	if ( tb->id() == TokenID::tkClBrc )
 	{
 	    code->end_line = tb->line;
+	    code->end_column = tb->column;
 	    popCompound();
 	    DBG(std::cout << "parseCompound() ends" << std::endl);
 	    return code;
@@ -66559,6 +66764,7 @@ paramdecl:
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
     tf->end_line = tc->end_line;
+    tf->end_column = tc->end_column;
     if ( &func->return_value_type() == &ddAUTO )
     {
 	DataDef *deduced = NULL;
@@ -69972,7 +70178,71 @@ TokenBase *Program::parse_yield_statement(TokenBase *tb)
     return y;
 }
 
+// The ONE extent stamp (code-graph MCP L3, design §6.6/§9). Every construct
+// parseStatement returns records its source extent as it finishes: head_tok =
+// the first token this statement was handed (the stream head — Program::parse
+// and parseCompound hand the real token), end = the static parse position, i.e.
+// the END of the last token nextToken() consumed (a simple statement's ';', a
+// compound's '}' — peek/pushToken never move it). A definition statement that
+// returns no node but registered exactly ONE free function (parseDeclaration ->
+// parseFunction, whose body parses eagerly inside this statement) stamps that
+// function's head; parseCompound's '}' + parseFunction's end copy already gave
+// it its end. A statement that registered several functions (a class body)
+// stamps nothing — no extent beats a wrong one; an inner statement's stamp (a
+// namespace member parsed by the enclosing loop) is never overwritten. (Every
+// function carries a Method object — parseFunction's `new Method(*var)` — so
+// `tf->method` is NOT a "this is a class method" test; a single out-of-line
+// definition's head is exactly the statement's head either way.)
+// This wrapper ANNOTATES; it never consumes, pushes back or reshapes anything:
+// the grammar below is exactly the parser the suite has validated. In
+// particular an initialized declaration (`T x = e;`) leaves its ';' to the
+// caller (parseDeclaration's contract — TokenFOR::parse reads the for-init
+// terminator itself; parseCompound / Program::parse see it as a bare ';'
+// statement). The declaration STATEMENT still ends at that ';' in the
+// grammar, so its extent is stamped from the peeked terminator's own END
+// stamp — read, not consumed.
 TokenBase *Program::parseStatement(TokenBase *tb)
+{
+    size_t funcs_before = pending_funcs.size();
+    TokenBase *r = parseStatementBody(tb);
+    if ( r )
+    {
+	if ( !r->head_tok )
+	    r->head_tok = tb;
+	r->end_line = TokenBase::_parse_line;
+	r->end_column = TokenBase::_parse_column;
+	if ( r->as_decl_tok() )
+	{
+	    // Same line only: a ';' further down is a separate statement.
+	    TokenBase *pk = peekToken();
+	    if ( pk && pk->id() == TokenID::tkSemi && !pk->is_synthetic_position()
+	      && pk->line == r->end_line )
+	    {
+		r->end_line = pk->line;
+		r->end_column = pk->column;
+	    }
+	}
+    }
+    else if ( pending_funcs.size() > funcs_before )
+    {
+	// A statement that returned NO node but registered function(s): the one
+	// it DEFINED is the outermost — pushed last (inner lambdas / nested
+	// functions register first) — and it finished exactly where this
+	// statement finished (parseCompound's '}' stamp == the static parse
+	// position). A class body's last method ends at its own '}', not at the
+	// class statement's '};', so it fails the match; a lambda inside a
+	// statement that RETURNS a node never reaches this branch.
+	TokenFunc *tf = pending_funcs.back()
+	    ? pending_funcs.back()->as_func_tok() : (TokenFunc *)0;
+	if ( tf && !tf->head_tok
+	  && tf->end_line == TokenBase::_parse_line
+	  && tf->end_column == TokenBase::_parse_column )
+	    tf->head_tok = tb;
+    }
+    return r;
+}
+
+TokenBase *Program::parseStatementBody(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
     // Skip C23 [[...]] attributes before declarations/definitions.

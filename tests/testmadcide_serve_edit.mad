@@ -1,0 +1,218 @@
+// Code-graph MCP L3 over the SEAT: graph.span / graph.at / graph.replace /
+// graph.insert / graph.delete through mcp_handle (the deployed --mcp path). A
+// mutation is validated first, applied through the ONE text-mutation owner,
+// logged as a nodeop record ahead of its splices, undoable in one step, and
+// answers with the NEW node; a stale id and a rejected edit are isError; the
+// tier policy is data (graph_min_tier).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+
+// One tools/call through the seat (self_id -1 = the operator); `snap` = the
+// parsed structured content, `iserr` = the envelope's isError.
+bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var resp;
+    mcp_handle(S, doc, -1, req, resp);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    return js::parse(snap, txt.c_str());
+}
+
+void buffer_line(var &out, long w, long doc, long line)
+{
+    var t;
+    ui::text(t, w, doc);
+    var lines;
+    php::explode(lines, "\n", t.c_str());
+    out = lines[line - 1];
+}
+
+int main()
+{
+    const char *path = "madc_ide_graph_edit.mad";
+    php::file_put_contents(path,
+	"long add(long a, long b) {\n"
+	"    return a + b;\n"
+	"}\n"
+	"long run(long n) {\n"
+	"    long total = 0;\n"
+	"    total = add(total, n);\n"
+	"    return total;\n"
+	"}\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "madcide: cannot read {}", path);
+	php::unlink(path);
+	return 1;
+    }
+    S.terminal(false);
+    long w = S.world();
+    long es = S.es;
+
+    // tools/list advertises the five L3 tools (and no `code` leaks to the wire).
+    var lreq = { "jsonrpc": "2.0", "id": 1, "method": "tools/list" };
+    var lresp;
+    mcp_handle(S, doc, -1, lreq, lresp);
+    var ljs = js::stringify(lresp);
+    var ltxt = ljs;
+    println("{}", ltxt);
+    println("code leaks: {}", ltxt.index("\"code\"") >= 0 ? 1 : 0);
+
+    // The return statement of add: graph.at(2, 4).
+    var atargs = { "line": 2, "column": 4 };
+    var ret;
+    bool err;
+    call_tool(ret, err, S, doc, 2, "graph.at", atargs);
+    long rid = ret["id"].as_integer();
+    println("at found statement: {}", rid != 0 ? 1 : 0);
+
+    // replace: validated, applied, logged (nodeop + erase + insert = 3 records).
+    long head0 = clog_head(w, doc);
+    var repargs = { "id": rid, "src": "return a + b + 1;" };
+    var rep;
+    call_tool(rep, err, S, doc, 3, "graph.replace", repargs);
+    println("replace ok: {}", (!err && rep["ok"].as_boolean()) ? 1 : 0);
+    var l2;
+    buffer_line(l2, w, doc, 2);
+    println("replace applied: {}", l2 == "    return a + b + 1;" ? 1 : 0);
+    println("log records: {}", clog_head(w, doc) - head0);
+    var evs;
+    events_since(evs, w, doc, head0);
+    var ev0 = evs[0];
+    var ev1 = evs[1];
+    println("nodeop logged: {}", ev0["kind"] == "nodeop" ? 1 : 0);
+    println("nodeop before splice: {}", ev1["kind"] == "splice" ? 1 : 0);
+    var rnode = rep["node"];
+    println("replace answers node: {}", rnode["id"].as_integer() != 0 ? 1 : 0);
+
+    // The OLD id is stale — and stale is an isError answer.
+    var spargs = { "id": rid };
+    var stale;
+    call_tool(stale, err, S, doc, 4, "graph.span", spargs);
+    println("stale is error: {}", (err && !stale["stale"].is_null()) ? 1 : 0);
+
+    // insert after the (new) return statement: a new line, same indentation.
+    long rid2 = rnode["id"].as_integer();
+    var insargs = { "id": rid2, "where": "after", "src": "long extra = 0;" };
+    var ins;
+    call_tool(ins, err, S, doc, 5, "graph.insert", insargs);
+    var l3;
+    buffer_line(l3, w, doc, 3);
+    println("insert after applied: {}", (!err && l3 == "    long extra = 0;") ? 1 : 0);
+
+    // delete it again: the whole line goes.
+    var inode = ins["node"];
+    long iid = inode["id"].as_integer();
+    var delargs = { "id": iid };
+    var del;
+    call_tool(del, err, S, doc, 6, "graph.delete", delargs);
+    var l3b;
+    buffer_line(l3b, w, doc, 3);
+    println("delete applied: {}", (!err && l3b == "}") ? 1 : 0);
+
+    // A rejected edit: isError, the buffer untouched, the handle still fresh.
+    var at2args = { "line": 2, "column": 4 };
+    var ret2;
+    call_tool(ret2, err, S, doc, 7, "graph.at", at2args);
+    long rid3 = ret2["id"].as_integer();
+    var badargs = { "id": rid3, "src": "return a + ;" };
+    var bad;
+    call_tool(bad, err, S, doc, 8, "graph.replace", badargs);
+    var l2b;
+    buffer_line(l2b, w, doc, 2);
+    println("reject is error: {}", (err && !bad["ok"].as_boolean()) ? 1 : 0);
+    println("reject leaves buffer: {}", l2b == "    return a + b + 1;" ? 1 : 0);
+    println("reject has diagnostics: {}", php::count(bad["diagnostics"]) >= 1 ? 1 : 0);
+
+    // One undo step per node-op: the delete comes back whole.
+    undo_edit(w, es, doc);
+    var l3c;
+    buffer_line(l3c, w, doc, 3);
+    println("undo restores: {}", l3c == "    long extra = 0;" ? 1 : 0);
+
+    // The buffer moved WITHOUT a re-parse (the undo): an edit through ids that
+    // are still "fresh" is refused and the tree is re-synced — never a splice at
+    // coordinates that belong to other bytes. After the re-sync a fresh id works.
+    var ret3;
+    call_tool(ret3, err, S, doc, 9, "graph.at", at2args);
+    long rid4 = ret3["id"].as_integer();
+    var mvargs = { "id": rid4, "src": "return a + b + 2;" };
+    var mv;
+    call_tool(mv, err, S, doc, 10, "graph.replace", mvargs);
+    var l2c;
+    buffer_line(l2c, w, doc, 2);
+    println("moved buffer refused: {}", (err && l2c == "    return a + b + 1;") ? 1 : 0);
+    var ret4;
+    call_tool(ret4, err, S, doc, 11, "graph.at", at2args);
+    long rid5 = ret4["id"].as_integer();
+    var mv2args = { "id": rid5, "src": "return a + b + 2;" };
+    var mv2;
+    call_tool(mv2, err, S, doc, 12, "graph.replace", mv2args);
+    var l2d;
+    buffer_line(l2d, w, doc, 2);
+    println("edit after resync ok: {}", (!err && l2d == "    return a + b + 2;") ? 1 : 0);
+
+    // A target that SHARES its line is placed inline at its own boundary, not
+    // at the line's edge beside the neighbour.
+    var at5args = { "line": 6, "column": 4 };
+    var tot;
+    call_tool(tot, err, S, doc, 13, "graph.at", at5args);
+    long tid = tot["id"].as_integer();
+    var twoargs = { "id": tid, "src": "long total = 0; long k = 1;" };
+    var two;
+    call_tool(two, err, S, doc, 14, "graph.replace", twoargs);
+    var tnode = two["node"];
+    long tid2 = tnode["id"].as_integer();
+    var inlargs = { "id": tid2, "where": "after", "src": "total = total + 1;" };
+    var inl;
+    call_tool(inl, err, S, doc, 15, "graph.insert", inlargs);
+    var l6;
+    buffer_line(l6, w, doc, 6);
+    println("inline insert placed: {}", (!err && l6 == "    long total = 0; total = total + 1; long k = 1;") ? 1 : 0);
+
+    // Refusals are isError content, never a silent drop.
+    var noargs = {};
+    var uk;
+    call_tool(uk, err, S, doc, 16, "graph.bogus", noargs);
+    println("unknown verb is error: {}", err ? 1 : 0);
+    var nowhere = { "id": tid2, "src": "long z = 0;" };
+    var nw;
+    call_tool(nw, err, S, doc, 17, "graph.insert", nowhere);
+    println("missing where refused: {}", err ? 1 : 0);
+    var empty = { "id": tid2, "src": "" };
+    var em;
+    call_tool(em, err, S, doc, 18, "graph.replace", empty);
+    println("empty src refused: {}", err ? 1 : 0);
+    var zero = { "id": 0 };
+    var zr;
+    call_tool(zr, err, S, doc, 19, "graph.span", zero);
+    println("id zero refused: {}", err ? 1 : 0);
+
+    // The tier GATE's wiring (an observer connection refused with the registry
+    // prose) needs a LIVE connection: madc::conn_set_cookie on an id that is not
+    // a connection is a no-op (cookie stays -1 = the operator), so that assertion
+    // belongs to a connection harness (testmadcide_serve_tiers' shape) — deferred.
+    // The policy table the gate reads is asserted below.
+
+    // The tier policy is data (Nexus L4c: a mutation needs the PROPOSER tier —
+    // at exactly that tier it is stored as a proposal; landing one needs an editor).
+    println("replace needs proposer: {}", graph_min_tier(gvREPLACE) == tierPROPOSER ? 1 : 0);
+    println("accept needs editor: {}", graph_min_tier(gvACCEPT) == tierEDITOR ? 1 : 0);
+    println("span is observer: {}", graph_min_tier(gvSPAN) == tierOBSERVER ? 1 : 0);
+    println("unknown where refused: {}", graph_where_of("sideways") == gwNONE ? 1 : 0);
+
+    php::unlink(path);
+    return 0;
+}

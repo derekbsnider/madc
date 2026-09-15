@@ -16,6 +16,10 @@
 extern "C" {
     void __php_explode(array *, const char *, const char *);
     int64_t __php_count(array *);
+    void __php_array_keys(array *, value *);
+    int64_t __php_mkdir(const char *, int64_t);
+    int64_t __php_rmdir(const char *);
+    int64_t __php_time();
     int64_t __php_array_push(array *, const char *);
     int64_t __php_array_push_int(array *, int64_t);
     int64_t __php_array_push_real(array *, double);
@@ -37,6 +41,8 @@ extern "C" {
     int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_file_exists(value *);
     int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_unlink(value *);
+    int64_t __php_unlink_cstr(const char *);
     int64_t __php_file_get_contents(value *, const char *);
     int64_t __php_file_get_contents_vpath(value *, value *);
     int64_t __php_file_put_contents_cstr(const char *, const char *);
@@ -78,6 +84,8 @@ extern "C" {
     const char *__php_wordwrap_value(value *, int64_t, const char *);
     const char *__php_dirname_cstr(const char *, int64_t);
     const char *__php_dirname_value(value *, int64_t);
+    const char *__php_basename_cstr(const char *, const char *);
+    const char *__php_basename_value(value *, const char *);
     const char *__php_implode_cstr(const char *, array *);
     value *__php_array_pop_value(value *, array *);
     value *__php_array_shift_value(value *, array *);
@@ -87,6 +95,13 @@ extern "C" {
 namespace php {
     void explode(array &out, const char *delim, const char *text) { __php_explode(&out, delim, text); }
     int64_t count(array &values) { return __php_count(&values); }
+    // array_keys — PHP parity: a map's keys (an object-kind carrier, its own
+    // order) or a list's indices 0..n-1; the ONE way to enumerate an object's
+    // keys in the dialect (range-for over an object reads size 0).
+    void array_keys(array &out, value &values) { __php_array_keys(&out, &values); }
+    // PHP parity (time): the current Unix timestamp in seconds. The dialect's
+    // wall clock (Nexus L4b: the change log's `ts`).
+    int64_t time() { return __php_time(); }
     // array_push is ONE overloaded name, PHP parity: it accepts any value
     // type and RETURNS the array's new element count. ONE carrier overload
     // serves both `value` and `array` arguments — the two spellings are the
@@ -125,6 +140,20 @@ namespace php {
     // no stat-cache emulation, madc answers the live filesystem).
     bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
     bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+
+    // unlink — delete a FILE (PHP parity: fails on a directory). true on
+    // success. A real host-side builtin, so it is win64-portable: the libc
+    // symbol is `_unlink` on win64 UCRT, and the host spells it per platform.
+    bool unlink(value &filename) { return __php_unlink(&filename) != 0; }
+    bool unlink(const char *filename) { return __php_unlink_cstr(filename) != 0; }
+
+    // mkdir / rmdir — PHP parity: true on success, false on failure (an
+    // existing directory, a non-empty or missing one) — never a throw. The
+    // default mode is PHP's 0777 (the process umask applies). Host-side
+    // builtins spelled per platform (_mkdir / _rmdir on win64 UCRT).
+    bool mkdir(const char *dir) { return __php_mkdir(dir, 0777) != 0; }
+    bool mkdir(const char *dir, int64_t mode) { return __php_mkdir(dir, mode) != 0; }
+    bool rmdir(const char *dir) { return __php_rmdir(dir) != 0; }
 
     // file_get_contents — the whole file as a string-kind value, binary-
     // faithful (PHP parity). PHP's string|false union takes the pre-L3
@@ -187,6 +216,15 @@ namespace php {
     const char *dirname(value &path, int64_t levels) { return __php_dirname_value(&path, levels); }
     const char *dirname(const char *path) { return __php_dirname_cstr(path, 1); }
     const char *dirname(const char *path, int64_t levels) { return __php_dirname_cstr(path, levels); }
+    // PHP parity (php_basename): the LAST path component after trailing
+    // separators trim ("" for an empty or all-separator path); a non-empty
+    // suffix that ends the component (and is shorter than it) is cut —
+    // basename("/a/b.mad", ".mad") is "b". Same separator rule as dirname.
+    // Ring-lifetime return (the c_str contract).
+    const char *basename(value &path) { return __php_basename_value(&path, ""); }
+    const char *basename(value &path, const char *suffix) { return __php_basename_value(&path, suffix); }
+    const char *basename(const char *path) { return __php_basename_cstr(path, ""); }
+    const char *basename(const char *path, const char *suffix) { return __php_basename_cstr(path, suffix); }
     // PHP parity signature: implode(separator, array) -> the joined text.
     const char *implode(const char *glue, array &values) { return __php_implode_cstr(glue, &values); }
     // Value-out element returns (the python::format out-param shape,

@@ -1,0 +1,1 @@
+Structurally JIT-only: test.run spawns the canonical runner with MADC_BIN = the RUNNING madc (madc::compiler_path()), the same shape as testmcpclient. In a native artifact the running program is the test itself, not a compiler, so the runner would compile its members with a copy of the test.

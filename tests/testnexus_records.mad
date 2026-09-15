@@ -1,0 +1,199 @@
+// Nexus L4d through the SEAT: intent records and links in the ONE stream —
+// create / link / records (live by default) / update / close(rejected) /
+// unlink, nexus.context and nexus.explain over a symbol, a proposal informed
+// by the decisions that constrain its target, the refusals, and a persist ->
+// restore round trip into a fresh session. In-process (self_id -1 = the
+// operator); the file is an untracked scratch, so the git rows are zero.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+// The connection seat routes a client's LSP traffic to lsp_handle (V6c-3c),
+// so the dispatcher comes first — madcide.mad's own order.
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+
+bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var resp;
+    mcp_handle(S, doc, -1, req, resp);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    if ( js::parse(snap, txt.c_str()) )
+	return true;
+    snap = { "error": txt };
+    return false;
+}
+
+long count_prov(var &rows, const char *word)
+{
+    var w = word;
+    long n = 0;
+    for ( var r : rows )
+	if ( r["provenance"] == w )
+	    n = n + 1;
+    return n;
+}
+
+int main()
+{
+    const char *path = "madc_ide_nexus.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\nlong run(long n) { return add(n, 1); }\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "cannot open {}", path);
+	return 1;
+    }
+    S.terminal(false);
+    var snap;
+    bool err;
+    var none;
+
+    var f1 = { "title": "add stays pure", "reason": "no I/O in arithmetic" };
+    var c1 = { "rkind": "decision", "fields": f1 };
+    call_tool(snap, err, S, doc, 1, "nexus.create", c1);
+    println("create-decision: ok={} id={}", snap["ok"].as_boolean() ? 1 : 0, snap["id"]);
+    var f2 = { "title": "speed up add" };
+    var c2 = { "rkind": "task", "fields": f2 };
+    call_tool(snap, err, S, doc, 2, "nexus.create", c2);
+    println("create-task: id={}", snap["id"]);
+    var f3 = { "title": "v1.1" };
+    var c3 = { "rkind": "milestone", "fields": f3 };
+    call_tool(snap, err, S, doc, 3, "nexus.create", c3);
+    println("create-milestone: id={}", snap["id"]);
+    var f4 = { "title": "add must not overflow" };
+    var c4 = { "rkind": "requirement", "fields": f4 };
+    call_tool(snap, err, S, doc, 4, "nexus.create", c4);
+    println("create-requirement: id={}", snap["id"]);
+
+    var rdec = { "ref": "record", "id": 1 };
+    var rtask = { "ref": "record", "id": 2 };
+    var rmile = { "ref": "record", "id": 3 };
+    var rreq = { "ref": "record", "id": 4 };
+    var radd = { "ref": "symbol", "file": path, "kind": "Function", "name": "add" };
+    var l1 = { "from": rdec, "rel": "affects", "to": radd };
+    call_tool(snap, err, S, doc, 5, "nexus.link", l1);
+    println("link-affects: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    var l2 = { "from": rtask, "rel": "implements", "to": radd };
+    call_tool(snap, err, S, doc, 6, "nexus.link", l2);
+    println("link-implements: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    var l3 = { "from": rtask, "rel": "planned_for", "to": rmile };
+    call_tool(snap, err, S, doc, 7, "nexus.link", l3);
+    println("link-planned: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    var l4 = { "from": rreq, "rel": "documents", "to": radd };
+    call_tool(snap, err, S, doc, 8, "nexus.link", l4);
+    println("link-documents: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+
+    call_tool(snap, err, S, doc, 9, "nexus.records", none);
+    println("records-all: {}", php::count(snap["rows"]));
+    var onlytask = { "rkind": "task" };
+    call_tool(snap, err, S, doc, 10, "nexus.records", onlytask);
+    println("records-task: {}", php::count(snap["rows"]));
+    var uf = { "owner": "me" };
+    var up = { "id": 2, "fields": uf, "state": "active" };
+    call_tool(snap, err, S, doc, 11, "nexus.update", up);
+    println("update: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    var id2 = { "id": 2 };
+    call_tool(snap, err, S, doc, 12, "nexus.record", id2);
+    var flds = snap["fields"];
+    println("record-2: state={} owner={} title={} updated-gt-created={}", snap["state"], flds["owner"], flds["title"],
+	    snap["updated_seq"].as_integer() > snap["created_seq"].as_integer() ? 1 : 0);
+
+    var ctxargs = { "ref": radd };
+    call_tool(snap, err, S, doc, 13, "nexus.context", ctxargs);
+    var rows = snap["rows"];
+    long prop0 = 0;
+    for ( var r : rows )
+	if ( !r["proposal"].is_null() )
+	    prop0 = prop0 + 1;
+    println("context-add: record={} compiler={} git={} event={} proposal={}",
+	    count_prov(rows, "record") - prop0, count_prov(rows, "compiler"), count_prov(rows, "git"),
+	    count_prov(rows, "event"), prop0);
+
+    // a proposal on add carries the decision that constrains it
+    call_tool(snap, err, S, doc, 14, "graph.symbols", none);
+    var n0 = snap["nodes"][0];
+    var rep = { "id": n0["id"], "src": "long add(long a, long b) { return a - b; }", "propose": true };
+    call_tool(snap, err, S, doc, 15, "graph.replace", rep);
+    var cons = snap["constraints"];
+    var cons0 = cons[0];
+    println("propose: ok={} constraints={} title={}", snap["ok"].as_boolean() ? 1 : 0, php::count(cons), cons0["title"]);
+    call_tool(snap, err, S, doc, 16, "nexus.context", ctxargs);
+    long prop1 = 0;
+    for ( var r : snap["rows"] )
+	if ( !r["proposal"].is_null() )
+	    prop1 = prop1 + 1;
+    println("context-add-2: proposal={}", prop1);
+
+    call_tool(snap, err, S, doc, 17, "nexus.explain", ctxargs);
+    var what = snap["what"];
+    var wnode = what["node"];
+    var dep = snap["depends"];
+    println("explain: name={} callers={} why={} plan={} constraints={} type-null={}", wnode["name"], dep["callers"],
+	    php::count(snap["why"]), php::count(snap["plan"]), php::count(snap["constraints"]),
+	    what["type"].is_null() ? 1 : 0);
+    var fullargs = { "ref": radd, "detail": "full" };
+    call_tool(snap, err, S, doc, 18, "nexus.explain", fullargs);
+    var what2 = snap["what"];
+    println("explain-full: type-set={}", what2["type"].is_null() ? 0 : 1);
+
+    var cl = { "id": 4, "state": "rejected" };
+    call_tool(snap, err, S, doc, 19, "nexus.close", cl);
+    println("close-rejected: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    call_tool(snap, err, S, doc, 20, "nexus.records", none);
+    println("records-live: {}", php::count(snap["rows"]));
+    var rej = { "state": "rejected" };
+    call_tool(snap, err, S, doc, 21, "nexus.records", rej);
+    println("records-rejected: {}", php::count(snap["rows"]));
+    call_tool(snap, err, S, doc, 22, "nexus.unlink", l2);
+    println("unlink: ok={}", snap["ok"].as_boolean() ? 1 : 0);
+    call_tool(snap, err, S, doc, 23, "nexus.explain", ctxargs);
+    println("explain-plan-after-unlink: {}", php::count(snap["plan"]));
+
+    var bad1 = { "from": rtask, "rel": "depends_on", "to": radd };
+    call_tool(snap, err, S, doc, 24, "nexus.link", bad1);
+    println("refuse-rel: err={} why={}", err ? 1 : 0, snap["error"]);
+    var thing = { "ref": "thing" };
+    var bad2 = { "from": thing, "rel": "affects", "to": radd };
+    call_tool(snap, err, S, doc, 25, "nexus.link", bad2);
+    println("refuse-ref: err={}", err ? 1 : 0);
+    var bad3 = { "rkind": "bug" };
+    call_tool(snap, err, S, doc, 26, "nexus.records", bad3);
+    println("refuse-kind: err={} why={}", err ? 1 : 0, snap["error"]);
+    println("tiers: create={} sync={} discover={} run={}", tier_name(nexus_min_tier(nvCREATE)), tier_name(nexus_min_tier(nvSYNC)),
+	    tier_name(test_min_tier(tvDISCOVER)), tier_name(test_min_tier(tvRUN)));
+
+    // persist -> restore into a fresh session: the records survive the stream
+    long w = S.world();
+    ui::set(w, S.es, "projfile", "madc_ide_nexus.prj.json");
+    clog_persist(w, S.es, doc);
+    IdeSession S2;
+    long doc2 = S2.open(path, false);
+    S2.terminal(false);
+    long w2 = S2.world();
+    ui::set(w2, S2.es, "projfile", "madc_ide_nexus.prj.json");
+    clog_restore(w2, S2.es, doc2);
+    var snap2;
+    bool err2;
+    call_tool(snap2, err2, S2, doc2, 27, "nexus.records", none);
+    var id1 = { "id": 1 };
+    var rec1;
+    call_tool(rec1, err2, S2, doc2, 28, "nexus.record", id1);
+    var flds1 = rec1["fields"];
+    println("persist-restore: records={} title={}", php::count(snap2["rows"]), flds1["title"]);
+    php::unlink("madc_ide_nexus.prj.events");
+    S2.close();
+    S.close();
+    php::unlink(path);
+    return 0;
+}

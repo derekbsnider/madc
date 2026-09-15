@@ -9,6 +9,10 @@
 #include <map>
 #include <unistd.h>
 #include <utility>
+#ifdef _WIN32
+#include <io.h>				// _setmode: the standard streams are
+					// TEXT-mode by default on the Win CRT
+#endif
 
 namespace madc {
 namespace detail {
@@ -195,6 +199,136 @@ public:
 	}
 };
 
+// `stdio://` — the process's OWN standard streams as one byte channel
+// (V6c-2): read from fd 0, write to fd 1. A process spawned as a language
+// server (or any stdio protocol peer) speaks through the same madc::channel
+// surface a socket uses, so ONE seat loop — and the framers that wrap a
+// channel — serve stdio today and a socket tomorrow.
+//
+// Two fds, not one: the file channel's single fd is a file's two directions
+// at once, and standard input and output are distinct descriptors.
+//
+// close() does NOT close fd 0/1. The process's standard descriptors are not
+// this channel's to reap: libc's stdout still owns fd 1 (a later println
+// would write to a closed descriptor, or worse to whatever reopened it), and
+// a channel's lifetime is shorter than the process's. close_write() DOES
+// close fd 1 — that is the caller asking the peer to see EOF, which is the
+// whole point of a half-close.
+class StdioDataChannel : public DataChannel, public PollableDataChannel
+{
+public:
+	StdioDataChannel(ChannelCapabilities capabilities)
+		: capabilities_(capabilities), rfd_(0), wfd_(1)
+	{}
+
+	~StdioDataChannel() override { close(); }
+
+	const char *name() const override { return "stdio"; }
+	ChannelCapabilities capabilities() const override { return capabilities_; }
+
+	bool read(void *buffer, std::size_t capacity, std::size_t &bytes_read,
+		  error *err = nullptr) override
+	{
+		bytes_read = 0;
+		if ( !capabilities_.read || rfd_ < 0 )
+		{
+			set_channel_error(err, "stdio read failed",
+					  "channel is not readable");
+			return false;
+		}
+		ssize_t result = detail::read_fd(rfd_, buffer, capacity);
+		if ( result < 0 )
+		{
+			set_channel_errno(err, "stdio read failed", "<stdin>");
+			return false;
+		}
+		bytes_read = static_cast<std::size_t>(result);
+		return true;
+	}
+
+	bool write(const void *buffer, std::size_t size, std::size_t &bytes_written,
+		   error *err = nullptr) override
+	{
+		bytes_written = 0;
+		if ( !capabilities_.write || wfd_ < 0 )
+		{
+			set_channel_error(err, "stdio write failed",
+					  "channel is not writable");
+			return false;
+		}
+		ssize_t result = detail::write_fd_without_sigpipe(wfd_, buffer, size);
+		if ( result < 0 )
+		{
+			set_channel_errno(err, "stdio write failed", "<stdout>");
+			return false;
+		}
+		bytes_written = static_cast<std::size_t>(result);
+		return true;
+	}
+
+	// The scheduler's io-wait seat parks a serve task on standard input
+	// exactly as it parks on a socket (MT-4b) — a stdio server under live
+	// tasks never blocks the OS thread out from under them.
+	intptr_t read_poll_handle() const override { return rfd_; }
+
+	void close_read() override { rfd_ = -1; }
+
+	void close_write() override
+	{
+		if ( wfd_ >= 0 )
+			::close(wfd_);
+		wfd_ = -1;
+	}
+
+	void close() override
+	{
+		rfd_ = -1;		// the descriptors stay open: see the note above
+		wfd_ = -1;
+	}
+
+private:
+	ChannelCapabilities capabilities_;
+	int rfd_;
+	int wfd_;
+};
+
+class StdioChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+	std::unique_ptr<DataChannel> open(const DataSource &source,
+					  ChannelOpenMode mode,
+					  error *err = nullptr) const override
+	{
+		(void)source;			// `stdio://` names no path
+		ChannelCapabilities capabilities;
+		switch ( mode )
+		{
+		case ChannelOpenMode::read:
+			capabilities.read = true;
+			break;
+		case ChannelOpenMode::write:
+		case ChannelOpenMode::append:	// nothing to append PAST: a stream
+			capabilities.write = true;
+			break;
+		case ChannelOpenMode::read_write:
+			capabilities.read = true;
+			capabilities.write = true;
+			break;
+		}
+		(void)err;
+#ifdef _WIN32
+		// The Win CRT opens the standard streams in TEXT mode, which
+		// translates CRLF both ways — silent corruption for a byte
+		// channel, and fatal for a length-framed protocol whose header
+		// counts the bytes the peer wrote.
+		::_setmode(0, _O_BINARY);
+		::_setmode(1, _O_BINARY);
+#endif
+		return std::unique_ptr<DataChannel>(
+			new StdioDataChannel(capabilities));
+	}
+};
+
 } // namespace
 
 namespace detail {
@@ -276,6 +410,13 @@ PollableDataChannel *pollable_surface(DataChannel *channel)
 	if ( !pollable || pollable->read_poll_handle() < 0 )
 		return nullptr;
 	return pollable;
+}
+
+AcceptorDataChannel *acceptor_surface(DataChannel *channel)
+{
+	if ( !channel )
+		return nullptr;
+	return dynamic_cast<AcceptorDataChannel *>(channel);
 }
 
 bool write_all(DataChannel &channel, const void *buffer, std::size_t size,
@@ -475,6 +616,9 @@ DataChannelRegistry::DataChannelRegistry()
 {
 	register_factory("file", std::unique_ptr<Factory>(new FileChannelFactory()));
 	register_factory("pipe", std::unique_ptr<Factory>(new FileChannelFactory()));
+	// The process's own standard streams as a channel (V6c-2): the stdio
+	// deployment of a protocol server is a channel like any other.
+	register_factory("stdio", std::unique_ptr<Factory>(new StdioChannelFactory()));
 	detail::register_socket_channel_factories(*this);
 	detail::register_exec_channel_factory(*this);
 }
