@@ -547,8 +547,13 @@ Reactor::Reactor() : _(nullptr)
 		"io::Reactor: no async I/O backend on this platform yet");
 }
 
+// The stub owns the (never allocated) impl like the real backend does — and
+// that read is what keeps clang's -Wunused-private-field quiet on darwin,
+// where this arm is the whole TU (the V6 seam's macOS lane failed on it:
+// -Werror, and a pimpl only initialized is "unused" to clang).
 Reactor::~Reactor()
 {
+	delete _;
 }
 
 uint64_t Reactor::submit_accept(int, void *)
