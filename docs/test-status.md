@@ -1,6 +1,39 @@
 # Test Status
 
-> **Current (2026-09-09, s170 — slice V0 of the client-server arc: every
+> **Current (2026-09-15, s196 — the V6 SEAM of the client-server arc: V6a
+> the `api` transport + headless `--serve` + duplex + tiers, V6b the `ws`
+> window, V6c-1 the MCP seat and the code-graph MCP + Nexus ladder L1–L4e,
+> V6c-2 the LSP face, V6c-3a the VS Code extension, V6c-3b executeCommand +
+> `$/madc/*` + one process two faces, V6c-3c the attach relay, V6c-4 session
+> discovery; plus the seam's own work — the duplication audit's fixes (one
+> bind owner, canonical file identity, tests on the production connection
+> task, MCP enums, the ONE change-stream reader, the JSON-RPC envelope, a
+> six-family adoption sweep) and the owner's ruling that libgit2 is a
+> dependency, not a distribution (the `madcgit` module; the subtree removed;
+> `libmadc.so` exports 0 `git_*`)):** FULL develop-set battery on the final
+> content `4d02c5dae` (`tmp/logs/rb-20260915-081758.log`): fulltest rc=0 —
+> every gate (now including `check-madcide-one-accept-loop`,
+> `check-madcide-id-width`, the reworked `check-one-git-owner` and
+> `check-c-abi-surface` with 0 `git_*` exports) and the warning ratchet — with
+> JIT **1379 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1312/0**, OBJ **1312/0**, packed **1379/0/0/9**, headerless
+> **1345/0/0/43**. GUI stage under Xvfb: **19/19 JIT, 19/19 EXE, 19/19 OBJ**.
+> c-testsuite **220/220 gnu11**. release-win + `verify_pe_release` OK (234
+> units); wine64 **1301/0/0TO/87skip** — 18 new win64 skip fixtures: 15 for
+> the V6 transports' socket park (no Windows arm until the reactor's IOCP
+> backend; the stdio faces `--lsp` and `--mcp` run under wine and pass) and 3
+> for the madcgit module (no libgit2 for the mingw target on the container).
+> macOS cross release both arches (836 units each), `verify_macho_release` OK
+> both, `macho_exe_dylib_gate` OK, package-macos rc=0. The seam took four
+> battery runs: run 1 found GCC 13's `-O2` stringop-overflow false positive
+> (release + mingw), the wine lane found `getpid` undeclared on win64 (now
+> `madc::sys.pid`), 64-bit graph ids stored in a 32-bit `long`, and
+> GetFullPathName's trailing separator, and the macOS lane found clang's
+> `-Wunused-private-field` on the reactor's darwin stub — none visible to an
+> `-O0` g++ Linux lane, which is why the seam runs every lane. Release tier
+> unchanged since v0.99.2.
+>
+> **Previous (2026-09-09, s170 — slice V0 of the client-server arc: every
 > emitted code view is INDENTED and COLOURED. The emitter
 > (`src/cir_emit_c.cpp`) owns the layout — block-depth tabs, case labels
 > one level out, a control head's single-statement body on its own line,
