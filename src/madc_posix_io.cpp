@@ -144,7 +144,15 @@ std::string resolve_real_path(const char *path)
 	DWORD n = GetFullPathNameA(path, sizeof(buf), buf, NULL);
 	if ( n == 0 || n >= sizeof(buf) )
 		return std::string();
-	return std::string(buf, n);
+	std::string out(buf, n);
+	// A COMPARISON spelling has no trailing separator — realpath never
+	// returns one, GetFullPathName keeps the caller's (`./tests/` ->
+	// `Z:\...\tests\`), so two spellings of one directory compared unequal
+	// on win64 (testcanonicalpath dir-agrees, the V6 seam's wine lane).
+	// The drive root (`Z:\`) keeps its one separator.
+	while ( out.size() > 3 && (out[out.size() - 1] == '\\' || out[out.size() - 1] == '/') )
+		out.erase(out.size() - 1);
+	return out;
 #else
 	char *rp = ::realpath(path, NULL);
 	if ( !rp )
