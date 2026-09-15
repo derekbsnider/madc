@@ -10,7 +10,7 @@
 // under the SAME tier roster (grant_tier / clienttier). The engine's serve_web
 // already classifies any of these lines as an api client (a `{` first byte).
 // Depends on madcide_api.inc, madcide_mcp.inc AND madcide_lsp.inc — included
-// after all three; the tests that drive serve_client_task include them too.
+// after all three; the tests that drive serve_conn_task include them too.
 //
 // Transport: the accepted connection is an ordinary madc::channel byte stream
 // (the listen:// acceptor, V6a step 1/2a). Every accepted client is served
@@ -95,33 +95,22 @@ void serve_line_client(IdeSession &S, long doc, madc::channel &client, long self
 }
 
 // Run the seat over an ALREADY-ADOPTED channel: share its write side for the
-// hub fan-out (D2), grant its tier (V6a tiers: first connection owns the
-// session, the rest observe until clienttier promotes them), serve, unshare.
-// One owner of the seat setup — both the plain serve task and the unified
-// serve (madcide_serve.inc, where serve_web detects a JSON client) drive a
-// connection through here.
+// hub fan-out (D2), grant its tier, serve, unshare. One owner of the seat
+// setup — serve_conn_task (madcide_serve.inc), where serve_web has just
+// classified the connection as an api client, is the one caller.
+//
+// The tier (V6a tiers): the FIRST api client TO SPEAK owns the session, the
+// rest observe until clienttier promotes them. "To speak", not "to connect":
+// one --serve port carries api, ws and the page, and serve_web can only tell
+// them apart by a connection's first byte, so a connection is classified,
+// shared and tiered when its first message arrives — a silent connection is
+// not yet an api client and receives no push. (Until the V6 seam the tests
+// drove a V6a-era spawner that tiered at accept, so they pinned an order
+// production had stopped honouring; they now speak in the order they mean.)
 void serve_api_on(IdeSession &S, long doc, madc::channel &client)
 {
     long id = client.share();
     madc::conn_set_cookie(id, grant_tier(id));
     serve_line_client(S, doc, client, id);
     client.unshare(id);
-}
-
-// One spawnable client task (V6a duplex): adopt the handed-off connection
-// and run the seat loop on it until the client hangs up. `S` rides as a
-// POINTER — `go` carries only long/double/pointer slots, not the non-copyable
-// channel or a session reference — and the session outlives every task
-// (run_serve's `scope` joins them before it returns, so `&S` never dangles).
-// Cooperative: only one task runs at a time and yields only inside readline,
-// so a client's command runs to completion against the shared session between
-// yields (the single-thread task contract — no lock, the thread-safety law's
-// stated cooperative contract).
-void serve_client_task(IdeSession *S, long doc, long conn)
-{
-    madc::channel client;
-    if ( !client.adopt(conn) )
-	return;			// a spent handle — never on this path
-    serve_api_on(*S, doc, client);
-    client.close();
 }

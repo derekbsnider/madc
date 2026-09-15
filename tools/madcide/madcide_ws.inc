@@ -62,23 +62,8 @@ void serve_ws_client(IdeSession &S, long doc, madc::channel &client)
     }
     ui::close(t);
 }
-
-// One spawnable ws client task (V6b-2): adopt the handed-off connection,
-// perform the SERVER-role WebSocket upgrade (the HTTP read parks this task,
-// never the OS thread), and run the window seat until the client hangs up.
-// `S` rides as a POINTER — `go` carries only long/double/pointer slots — and
-// the session outlives every task (the serve loop joins them before it
-// returns).
-void serve_ws_task(IdeSession *S, long doc, long conn)
-{
-    madc::channel client;
-    if ( !client.adopt(conn) )
-	return;				// a spent handle — never on this path
-    if ( !client.upgrade_websocket() )
-    {
-	client.close();			// not a WebSocket client (reason logged)
-	return;
-    }
-    serve_ws_client(*S, doc, client);
-    client.close();
-}
+// The upgrade that precedes serve_ws_client is serve_web's (madc::channel,
+// engine): serve_conn_task (madcide_serve.inc) classifies an accepted
+// connection and, for an HTTP upgrade, hands the framed channel here. There
+// is no second spawner — the V6b-2 one that upgraded on its own was deleted
+// at the V6 seam once nothing but tests called it.

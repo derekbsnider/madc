@@ -95,7 +95,7 @@ int main()
 	long got = listener.accept(client);
 	println("accepted: {}", got > 0 ? 1 : 0);
 	long conn = client.detach();
-	go serve_client_task(&S, doc, conn);
+	go serve_conn_task(&S, doc, conn);
 
 	// The editor initializes THROUGH the relay. The capabilities must be
 	// the session's, which means the hello routed this connection to the

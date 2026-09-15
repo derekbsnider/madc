@@ -36,6 +36,14 @@
 #    the editor needs a pty.) Marker: every tests/*.mad with an exec:// spawn of
 #    madcide.mad carrying --serve has a sibling .env naming
 #    MADCIDE_SESSION_DIR=tmp/…
+#
+# 4. TESTS SPAWN THE PRODUCTION CONNECTION TASK. Until the V6 seam two
+#    spawners from earlier slices (serve_client_task, serve_ws_task) lived on
+#    with no production caller, kept alive by six tests — and they tiered a
+#    connection at ACCEPT, where production (serve_web) tiers it at its FIRST
+#    BYTE, so the tests pinned an owner-by-connection-order that production
+#    had stopped honouring. Marker: every `go serve_*task(` in tests/*.mad
+#    names serve_conn_task or serve_accept_task.
 set -u
 
 DIR="$(dirname "$0")/../tools/madcide"
@@ -77,6 +85,23 @@ if [ "$binds" -ne 1 ] || [ "$adverts" -ne 1 ]; then
 	     "reported it; a face that listens without advertising is invisible" \
 	     "to discovery, and a client that cannot find it opens a SECOND" \
 	     "session on the same file. Call serve_listen." >&2
+	exit 1
+fi
+
+# Spawns in a test directory that name anything but the production tasks.
+test_spawn_others()
+{
+	grep -h -oE 'go serve_[a-z_]*task\(' "$1"/*.mad 2>/dev/null \
+		| grep -v -E 'serve_conn_task\(|serve_accept_task\(' | wc -l
+}
+
+n=$(test_spawn_others "$TESTS")
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-one-accept-loop: FAIL — $n test spawn site(s) name a" \
+	     "connection task other than serve_conn_task / serve_accept_task." \
+	     "Tests exercise the production entry point (the seat that" \
+	     "classifies, shares and tiers a connection on its first byte):" >&2
+	grep -n -E 'go serve_[a-z_]*task\(' "$TESTS"/*.mad | grep -v -E 'serve_conn_task\(|serve_accept_task\(' >&2
 	exit 1
 fi
 
@@ -128,8 +153,17 @@ if [ -n "$(unhermetic "$tmp")" ]; then
 	     "--serve test WITH a tmp/ MADCIDE_SESSION_DIR fixture was reported." >&2
 	exit 1
 fi
+# A synthetic test spawning a non-production task must be reported; one
+# spawning the production task must not.
+printf '\tgo serve_client_task(&S, doc, conn);\n\tgo serve_conn_task(&S, doc, conn);\n' > "$tmp/synthetic.mad"
+if [ "$(test_spawn_others "$tmp")" -ne 1 ]; then
+	rm -rf "$tmp"
+	echo "check-madcide-one-accept-loop: FAIL — negative control did not" \
+	     "detect a synthetic non-production spawn (the marker went blind)." >&2
+	exit 1
+fi
 rm -rf "$tmp"
 
 echo "check-madcide-one-accept-loop: OK (one accept loop; one bind site," \
-     "advertised; --serve tests hermetic)"
+     "advertised; --serve tests hermetic; tests spawn the production task)"
 exit 0

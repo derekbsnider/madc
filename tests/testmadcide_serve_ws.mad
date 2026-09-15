@@ -13,7 +13,12 @@
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_discover.inc"
 #include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
 #include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
 
 // A DOM-ops message is the webview-shaped "madcApply([...])" the engine evals.
 long is_domops(var &s)
@@ -44,7 +49,7 @@ int main()
     listener.wait_readable();
     listener.accept(t1);
     long conn = t1.detach();
-    go serve_ws_task(&S, doc, conn);
+    go serve_conn_task(&S, doc, conn);	// serve_web performs the upgrade
 
     // The handshake parks reading the 101, which lets the server task upgrade
     // and produce its first render — the interleave the scheduler provides.

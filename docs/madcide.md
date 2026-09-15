@@ -163,9 +163,12 @@ a pid: pids get reused).
 > through an ssh tunnel (`ssh -N -L 7777:127.0.0.1:7777 host`) — never by
 > binding a public address.
 
-The first client to connect is granted **owner** and every later one
+The first api client to **speak** is granted **owner** and every later one
 **observer**, so joining a session does not hand out edit rights; an owner
-promotes one with `clienttier <id> editor`.
+promotes one with `clienttier <id> editor`. "To speak", not "to connect": one
+port carries api, ws and the page, and a connection is told apart by its first
+byte, so it joins the roster — and can receive pushed events — when its first
+message arrives.
 
 ## The window's workbench
 
