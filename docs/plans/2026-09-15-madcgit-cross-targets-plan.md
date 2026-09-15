@@ -60,6 +60,35 @@ header-only shortcut. So the WebView2 script is the precedent only for the
 The owner may veto (a vetted prebuilt source would be simpler if one exists).
 State the ruling in the plan before writing the fetch/build script.
 
+### RULING (2026-09-15, resolved while starting the slice)
+
+**Source-build minimal + static-link, structured the ZSTD way — a stage script, NOT
+a Makefile-inline build.** The owner's framing (libgit2 = build requirement,
+static-linked into `libmadcgit`) settles source-vs-prebuilt. The one open impl
+detail — WHERE the per-target build lives — resolves to the zstd precedent, not
+the webview one:
+
+- libgit2 is a large CMake project (~hundreds of TUs), unlike webview's two `.cc`
+  files that compile inline in `webview.mk`. A heavy external build must run ONCE
+  and stage, never rerun on every `make release-windows`.
+- `scripts/stage_darwin_zstd.sh` + the `provision_container.sh` hook is the exact
+  in-tree shape for a cross-built static dep: clone a pinned tag, verify it on the
+  tree about to build, read `CC`/`AR` from the hosted MODE's own `src/Makefile`
+  (`make -s MODE=… print-CC/print-AR`), build, stage an idempotent per-target `.a`
+  into `/workspace/<dep>`. `madcgit.mk` then merely REFERENCES the staged lib +
+  include dir (the `DARWIN_ZSTD_LIB`/`DARWIN_ZSTD_INC` pattern).
+- So Task 1's `fetch_libgit2.sh` becomes `scripts/stage_libgit2.sh <target>`
+  (fetch subsumed into the stage, exactly as `stage_darwin_zstd.sh` clones+builds
+  in one). `LIBGIT2_DIR` (default `/workspace/libgit2`) mirrors `DARWIN_ZSTD_DIR`.
+- Cross toolchains (verified on the container 2026-09-15):
+  win = `x86_64-w64-mingw32-gcc-posix …`, AR `x86_64-w64-mingw32-ar`;
+  macos = `clang-18 -target <arch>-apple-macos12 --sysroot /workspace/sdk/MacOSX.sdk`,
+  AR `llvm-ar-18`. CMake gets these via `-DCMAKE_C_COMPILER` + `-DCMAKE_C_FLAGS`
+  + `-DCMAKE_AR`/`-DCMAKE_SYSTEM_NAME`. Since the build is static-only
+  (`-DBUILD_SHARED_LIBS=OFF`), CMake never LINKS a darwin dylib — it only
+  compiles `.o` and archives — which removes most of the Darwin-cross-from-Linux
+  risk (no install_name/framework link step for libgit2 itself).
+
 ## How libgit2 reaches the bundle (the packaging model — differs by target)
 
 The Linux and the bundled Windows/macOS targets are NOT the same:

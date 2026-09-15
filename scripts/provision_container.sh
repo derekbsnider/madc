@@ -206,6 +206,24 @@ report() {
 			missing=1
 		fi
 	done
+	# The madcgit cross targets (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
+	# the MINIMAL static libgit2 the hosted-<target> module links INTO
+	# libmadcgit.{dll,dylib} (libgit2 is a build requirement, never shipped as
+	# its own file). ONE recipe, scripts/stage_libgit2.sh; the macOS twins need
+	# the SDK (like the darwin zstd twins above).
+	local t lg2
+	for t in x86-64-windows arm64-macos x86-64-macos; do
+		lg2="${LIBGIT2_DIR:-/workspace/libgit2}/libgit2-$t.a"
+		if [ -f "$lg2" ]; then
+			printf '  ok      libgit2 stage (%s)\n' "$lg2"
+		else
+			case $t in
+			*-macos) printf '  MISSING libgit2 stage (%s) — scripts/stage_libgit2.sh %s (needs the SDK)\n' "$lg2" "$t" ;;
+			*)       printf '  MISSING libgit2 stage (%s) — scripts/stage_libgit2.sh %s\n' "$lg2" "$t" ;;
+			esac
+			missing=1
+		fi
+	done
 	return $missing
 }
 
@@ -267,6 +285,20 @@ if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
 	for a in arm64 x86-64; do
 		echo "provision_container: staging darwin zstd ($a)"
 		bash "$(dirname "$0")/stage_darwin_zstd.sh" "$a" || exit 1
+	done
+fi
+
+# madcgit cross libgit2 (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
+# the minimal static libgit2 statically linked into libmadcgit for the
+# Windows/macOS bundles. The windows target uses the always-present mingw
+# toolchain; the macOS twins need the owner-supplied SDK (as the darwin zstd
+# twins above) — its absence stays a report MISSING, not a provisioning fail.
+echo "provision_container: staging libgit2 (madcgit cross, x86-64-windows)"
+bash "$(dirname "$0")/stage_libgit2.sh" x86-64-windows || exit 1
+if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
+	for a in arm64-macos x86-64-macos; do
+		echo "provision_container: staging libgit2 (madcgit cross, $a)"
+		bash "$(dirname "$0")/stage_libgit2.sh" "$a" || exit 1
 	done
 fi
 
