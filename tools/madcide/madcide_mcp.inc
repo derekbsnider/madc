@@ -1022,9 +1022,7 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     if ( gv == gvNONE )
     {
 	var why = format("unknown graph verb '{}'", nm);
-	var item = { "type": "text", "text": why };
-	content[] = item;
-	out = { "content": content, "isError": true };
+	tool_refuse(out, why);
 	return;
     }
     // Permission gate (V6a tiers): the SAME refusal shape api_run gives a
@@ -1034,9 +1032,7 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     if ( my_tier < need )
     {
 	var why = format("'{}' requires {} (you are {})", nm, tier_name(need), tier_name(my_tier));
-	var item = { "type": "text", "text": why };
-	content[] = item;
-	out = { "content": content, "isError": true };
+	tool_refuse(out, why);
 	return;
     }
     // The LAYER gate (Nexus L4e, design §3.9): the verb's layers as data
@@ -1060,9 +1056,8 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     long hh = route_handle(w, es, adoc, h, args, is_rev);
     if ( is_rev && need >= tierPROPOSER )
     {
-	var item = { "type": "text", "text": "revision handles are read-only" };
-	content[] = item;
-	out = { "content": content, "isError": true };
+	var why = "revision handles are read-only";
+	tool_refuse(out, why);
 	return;
     }
     var snap;

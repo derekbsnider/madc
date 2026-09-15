@@ -74,6 +74,38 @@ if [ "$(count_raw_path_compares "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
+# An MCP tool REFUSAL has ONE owner: tool_refuse (madcide_mcp.inc — the
+# {content:[{type:text,text}], isError:true} envelope every tool family
+# shares). The V6 seam audit found graph_call restating the envelope three
+# times beside six adopters; a field added to the owner (a code, a hint)
+# would have missed those three. Marker: the `"isError": true` literal
+# appears exactly once in madcide_mcp.inc — inside the owner.
+MCP="$(dirname "$0")/../tools/madcide/madcide_mcp.inc"
+count_refusal_shapes()
+{
+	grep -c '"isError": true' "$1"
+}
+
+n=$(count_refusal_shapes "$MCP")
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n MCP refusal envelope" \
+	     "site(s) in tools/madcide/madcide_mcp.inc (expected 1:" \
+	     "tool_refuse). Call the owner, never restate the shape." >&2
+	exit 1
+fi
+
+# Negative control for the refusal marker.
+tmp=$(mktemp)
+cat "$MCP" > "$tmp"
+echo '    out = { "content": content, "isError": true };	// synthetic' >> "$tmp"
+if [ "$(count_refusal_shapes "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic refusal envelope (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # The return-key pause has ONE owner: terminal_return_pause (DupFamily
 # terminal_return_pause, consolidated with the fork-Run slice; it lives
 # in the TUI client since the gateway seam — the pause is terminal I/O).
