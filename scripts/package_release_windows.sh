@@ -52,7 +52,7 @@ GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 mkdir -p dist
 
 for f in "$BIN" bin/libstdc++-6.dll bin/libwinpthread-1.dll bin/libmadc-0.dll \
-         bin/madcwebview.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+         bin/madcwebview.dll bin/madcgit.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -93,6 +93,11 @@ install -m 755 bin/libmadc-0.dll "$STAGE/$ROOT/bin/libmadc-0.dll"
 # loader searches the exe's directory on Windows — beside madc.exe, like
 # the runtime DLLs. It needs the Evergreen WebView2 runtime on the machine.
 install -m 755 bin/madcwebview.dll "$STAGE/$ROOT/bin/madcwebview.dll"
+# The madcgit module (a program that says `git::…`, e.g. madcide's nexus):
+# the loader searches the exe's directory on Windows — beside madc.exe. The
+# minimal read-only libgit2 is STATIC-linked inside it; nothing named libgit2
+# ships.
+install -m 755 bin/madcgit.dll "$STAGE/$ROOT/bin/madcgit.dll"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
@@ -117,6 +122,9 @@ fi
 install -m 644 /workspace/zstd/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
 # The webview library binds webview/webview (MIT): its notice ships with it.
 install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
+# madcgit.dll statically links libgit2 (GPLv2 WITH the linking exception, which
+# permits linking into a differently-licensed application): its notice ships.
+install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
 
 cat > "$STAGE/$ROOT/README-windows.txt" <<EOF
 madc ${VER} for Windows (x86_64)
