@@ -85,6 +85,33 @@ void serve_accept_stop(long w, long es, var &endpoint)
     poke.close();
 }
 
+// Bind the serve face and PUBLISH it — the one owner of "this session
+// listens" (the V6 seam consolidation: three faces had restated this bind, and
+// the copies had already diverged — two reported a failed bind, the editor's
+// swallowed it). Binds `listen://addr`, learns the endpoint the OS actually
+// gave (`:0` asks for an ephemeral port), advertises it (the state directory +
+// the `advertep` slot every in-protocol announcement reads), and returns the
+// DETACHED listener handle for serve_accept_task. Returns 0 when the bind
+// failed, with `why` the reason: the caller decides whether that is fatal (an
+// explicit --serve) or advisory (the editor's default listen) — but never
+// silent, because an unadvertised session is invisible to discovery, and
+// invisible is indistinguishable from absent.
+long serve_listen(IdeSession &S, long doc, const char *addr, var &endpoint, var &why)
+{
+    endpoint = "";
+    why = "";
+    var uri = format("listen://{}", addr);
+    madc::channel listener(uri.c_str());
+    if ( !listener.ok() )
+    {
+	why = format("cannot serve on {}: {}", addr, listener.last_error());
+	return 0;
+    }
+    endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
+    session_advertise(S, doc, endpoint);
+    return listener.detach();
+}
+
 // The headless server: open the session with no window, bind a listener, and
 // serve every accepted connection concurrently (design §2.7: cooperative
 // tasks, no thread). `addr` is the listen authority (host:port; :0 asks the OS
@@ -101,27 +128,26 @@ long run_serve(const char *path, bool ro, const char *addr)
 	return 1;			// -1 already reported on stderr
     S.terminal(false);			// headless: no interactive terminal
 
-    var uri = format("listen://{}", addr);
-    madc::channel listener(uri.c_str());
-    if ( !listener.ok() )
+    // Bind + publish through the one owner (V6c-4: a client discovers this
+    // session instead of being told its address). An explicit --serve that
+    // cannot bind is fatal.
+    var endpoint;
+    var why;
+    long listen_handle = serve_listen(S, doc, addr, endpoint, why);
+    if ( listen_handle == 0 )
     {
-	println(stderr, "madcide: cannot serve on {}: {}",
-		addr, listener.last_error());
+	println(stderr, "madcide: {}", why);
 	S.close();
 	return 1;
     }
-    var endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
     println(stderr, "madcide: serving {} on {} (api + ws + http)", path, endpoint);
-    // Publish how to reach this session (V6c-4), so a client discovers it
-    // instead of being told its address.
-    session_advertise(S, doc, endpoint);
 
     // THE accept loop — the same function the LSP process and the editor spawn
     // as a task (V6c-4). A headless server has nothing else to do, so it runs
     // it in its own flow rather than beside itself; the loop's own `scope`
     // joins every connection task before it returns, so no serve task touches
     // the session after this.
-    serve_accept_task(&S, doc, listener.detach(), S.world(), S.es);
+    serve_accept_task(&S, doc, listen_handle, S.world(), S.es);
     session_withdraw(S);
     S.close();
     return 0;
@@ -173,15 +199,13 @@ long run_tui(const char *path, bool ro, ui::level lvl, const char *addr)
     var endpoint = "";
     if ( addr != NULL )
     {
-	var uri = format("listen://{}", addr);
-	madc::channel listener(uri.c_str());
-	if ( listener.ok() )
-	{
-	    endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
-	    session_advertise(S, doc, endpoint);
-	    listen_handle = listener.detach();
-	}
-	// A port that will not bind is NOT fatal: the editor opens, unadvertised.
+	var why;
+	listen_handle = serve_listen(S, doc, addr, endpoint, why);
+	// A port that will not bind is NOT fatal: the editor opens,
+	// unadvertised — and SAYS so on the status line. The silent form of
+	// this bind was the one that had diverged from its siblings (V6 seam).
+	if ( listen_handle == 0 )
+	    ui::set(w, es, "msg", format("Not advertised — {}", why));
     }
 
     scope
@@ -408,23 +432,20 @@ long run_lsp(const char *path, bool ro, const char *serve)
     var endpoint = "";
     if ( serve != NULL )
     {
-	var uri = format("listen://{}", serve);
-	madc::channel listener(uri.c_str());
-	if ( !listener.ok() )
+	// serve_listen publishes the endpoint on the session bag (`advertep`)
+	// as well as to the state directory — the ONE slot $/madc/serve
+	// announces from. An explicit --serve that cannot bind is fatal.
+	var why;
+	listen_handle = serve_listen(S, doc, serve, endpoint, why);
+	if ( listen_handle == 0 )
 	{
-	    println(stderr, "madcide --lsp: cannot serve on {}: {}",
-		    serve, listener.last_error());
+	    println(stderr, "madcide --lsp: {}", why);
 	    io.close();
 	    S.close();
 	    return 1;
 	}
-	endpoint = listener.local_endpoint();	// ring lifetime: owned NOW
 	println(stderr, "madcide: serving {} on {} (api + ws + http) beside --lsp",
 		path, endpoint);
-	// Publishes the endpoint on the session bag (`advertep`) as well as to the
-	// state directory — the ONE slot $/madc/serve announces from.
-	session_advertise(S, doc, endpoint);	// discoverable (V6c-4)
-	listen_handle = listener.detach();
     }
 
     scope
