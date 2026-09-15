@@ -772,8 +772,17 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
 	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
 	return result;
     }
+    // git paths are forward-slash on every platform (libgit2's own convention);
+    // the OS canonicalizer (resolve_real_path) yields NATIVE separators, so on
+    // Windows the working-tree-relative result would read "tests\file" — the
+    // git:: face normalizes to forward slashes at its output boundary, the same
+    // platform-path discipline the session-discovery layer applies to its slug.
+    std::string rel = p.substr(wd.size() + 1);
+    for ( size_t i = 0; i < rel.size(); ++i )
+	if ( rel[i] == '\\' )
+	    rel[i] = '/';
     std::map<std::string, value> f;
-    f["path"] = value(p.substr(wd.size() + 1));
+    f["path"] = value(rel);
     out = value::make_object(f);
     return result;
 }

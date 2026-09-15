@@ -60,6 +60,35 @@ header-only shortcut. So the WebView2 script is the precedent only for the
 The owner may veto (a vetted prebuilt source would be simpler if one exists).
 State the ruling in the plan before writing the fetch/build script.
 
+### RULING (2026-09-15, resolved while starting the slice)
+
+**Source-build minimal + static-link, structured the ZSTD way — a stage script, NOT
+a Makefile-inline build.** The owner's framing (libgit2 = build requirement,
+static-linked into `libmadcgit`) settles source-vs-prebuilt. The one open impl
+detail — WHERE the per-target build lives — resolves to the zstd precedent, not
+the webview one:
+
+- libgit2 is a large CMake project (~hundreds of TUs), unlike webview's two `.cc`
+  files that compile inline in `webview.mk`. A heavy external build must run ONCE
+  and stage, never rerun on every `make release-windows`.
+- `scripts/stage_darwin_zstd.sh` + the `provision_container.sh` hook is the exact
+  in-tree shape for a cross-built static dep: clone a pinned tag, verify it on the
+  tree about to build, read `CC`/`AR` from the hosted MODE's own `src/Makefile`
+  (`make -s MODE=… print-CC/print-AR`), build, stage an idempotent per-target `.a`
+  into `/workspace/<dep>`. `madcgit.mk` then merely REFERENCES the staged lib +
+  include dir (the `DARWIN_ZSTD_LIB`/`DARWIN_ZSTD_INC` pattern).
+- So Task 1's `fetch_libgit2.sh` becomes `scripts/stage_libgit2.sh <target>`
+  (fetch subsumed into the stage, exactly as `stage_darwin_zstd.sh` clones+builds
+  in one). `LIBGIT2_DIR` (default `/workspace/libgit2`) mirrors `DARWIN_ZSTD_DIR`.
+- Cross toolchains (verified on the container 2026-09-15):
+  win = `x86_64-w64-mingw32-gcc-posix …`, AR `x86_64-w64-mingw32-ar`;
+  macos = `clang-18 -target <arch>-apple-macos12 --sysroot /workspace/sdk/MacOSX.sdk`,
+  AR `llvm-ar-18`. CMake gets these via `-DCMAKE_C_COMPILER` + `-DCMAKE_C_FLAGS`
+  + `-DCMAKE_AR`/`-DCMAKE_SYSTEM_NAME`. Since the build is static-only
+  (`-DBUILD_SHARED_LIBS=OFF`), CMake never LINKS a darwin dylib — it only
+  compiles `.o` and archives — which removes most of the Darwin-cross-from-Linux
+  risk (no install_name/framework link step for libgit2 itself).
+
 ## How libgit2 reaches the bundle (the packaging model — differs by target)
 
 The Linux and the bundled Windows/macOS targets are NOT the same:
@@ -163,3 +192,42 @@ NOT master (that is #3 + the owner's `/promote` decision).
 
 - Any write/remote libgit2 API (the module is read-only by gate).
 - #3 (the release tier + gcc-torture + `/promote`).
+
+## As landed (2026-09-15, feature/madcgit-cross-claude)
+
+All four tasks done; the seam (battery + lanes + merge) is the owner-gated next step.
+
+- **T1 `scripts/stage_libgit2.sh` (6456cca3d).** Cross-builds the minimal
+  read-only static libgit2 (pinned v1.7.2) per target, the zstd stage-script way
+  (NOT inline in the Makefile — a heavy CMake project builds once and stages).
+  `provision_container.sh` stages + reports all three. Two cross traps, both
+  fixed and recorded in the ruling above: darwin's CMake compiler/feature-check
+  LINK needs `-fuse-ld=lld` (host GNU ld cannot link Mach-O); libgit2's bundled
+  K&R zlib will not compile against the macOS SDK, so windows bundles zlib
+  (self-contained) while macOS uses the SDK's system zlib (`-lz` resolved at the
+  module's own link). Verified: win pe-x86-64, arm64/x86-64 mach-o.
+- **T2 `madcgit.mk` cross arms (886e723d9).** win = `bin/madcgit.dll` (madc::
+  through libmadc's import lib, `-lsecur32` for libgit2's win32 SSPI auth);
+  macos = `lib/madcgit/<arch>-macos/libmadcgit.dylib` (`-undefined
+  dynamic_lookup`, `-lz`). Convenience targets madcgit-windows / madcgit-macos.
+- **T3 release recipes + packaging (03560d268).** release-windows/-macos build
+  the module; packagers ship `madcgit.dll` / `libmadcgit.dylib` + libgit2's
+  COPYING notice. Linux keeps its system-dep model.
+- **T4 relpath fix + skip lifts (41fbda32a).** Lifting the 3 skips surfaced ONE
+  win64 defect — `git::relpath` returned native-separator paths (`tests\file`),
+  and `git_handle_of` caches that grelpath which `graph.commits` (git::log) and
+  `graph.revision` (git::show) filter by; libgit2 tracks forward-slash paths, so
+  it matched nothing → empty commits + a null-tag `as_integer()` crash. The
+  module's relpath output now normalizes to forward slashes (git's own
+  convention; a no-op on Linux). ALL THREE tests then pass.
+
+**Targeted validation (container):** testgit / testgraphpast / testnexus_records
+= 3/3 under wine (was 1/3 before the relpath fix) AND 3/3 native Linux (no
+regression). Module builds for all three cross arms; both static gates
+(check-one-git-owner, check-c-abi-surface) GREEN.
+
+**The seam (owner-gated — remaining):** pre-build release-windows + release-macos
++ run the packagers (validates the T3 packaging edits end-to-end), then the ONE
+battery + the four develop-gated lanes (linux-battery, c-testsuite, wine64,
+macos cross-build) → record + `lane_ledger check --promote` → merge to develop.
+genuine-win is RELEASE-tier (#3), not a develop gate.

@@ -118,6 +118,15 @@ package_arch() {
         echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
         exit 1
     fi
+    # The madcgit module (a program that says `git::…`, e.g. madcide's nexus) —
+    # release-<arch>-macos builds it beside the webview library (madcgit-<arch>-macos);
+    # the minimal read-only libgit2 is STATIC-linked inside it. The loader finds
+    # it as lib/ next to bin/ (madc_self_lib_dir).
+    local madcgit="lib/madcgit/${bin_arch}-macos/libmadcgit.dylib"
+    if [ ! -f "$madcgit" ]; then
+        echo "package_release_macos: $madcgit missing — run 'make -C src release-macos' first (it builds madcgit-${bin_arch}-macos)" >&2
+        exit 1
+    fi
 
     rm -rf "$stage"
     mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
@@ -129,6 +138,7 @@ package_arch() {
     # madc library installed this archive is what `cc emitted.c` links.
     install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
+    install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
@@ -152,6 +162,11 @@ package_arch() {
     # The webview library binds webview/webview (MIT): its notice ships with it.
     install -m 644 third_party/webview/LICENSE \
         "$stage/$root/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
+    # libmadcgit.dylib statically links libgit2 (GPLv2 WITH the linking
+    # exception, which permits linking into a differently-licensed application):
+    # its notice ships.
+    install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" \
+        "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
     cat > "$stage/$root/README-macos.txt" <<EOF
 madc ${VER} for macOS (${pkg_arch})
 ====================================
