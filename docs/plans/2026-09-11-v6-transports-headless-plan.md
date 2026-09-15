@@ -209,6 +209,48 @@ The substrate ws/MCP/LSP all ride. Engine + dialect.
    LSP editor and an api client on one session, the api client seeing the
    editor's edit.
 
+6. **Session discovery** — SHIPPED 2026-09-15 (plan
+   `2026-09-15-v6c4-session-discovery-plan.md`): every listening session
+   publishes a JSON record under `$XDG_STATE_HOME/madcide/sessions/`, and
+   `--attach` with no address finds the one that holds the file. The attach
+   story (5) worked only if a human typed the port into three places; this is
+   what removes the typing.
+
+   **As landed.** An ADVERTISEMENT, not a lock — madcide refuses no file (there
+   is no swapfile mechanism), so it never excludes, and two sessions in one root
+   both appear. Staleness is a CONNECT TEST, never a pid test: a record whose
+   endpoint refuses connection is removed by the next scan, so the directory
+   self-heals after a crash. The enabling change is that the EDITOR listens by
+   default (loopback, ephemeral; `--no-serve` opts out) — nothing is
+   discoverable otherwise, and the TUI's `read_keys` already parks on {stdin, io
+   waiters, timers} through taskio whenever a task is live, so the accept task
+   runs while the editor waits for a keystroke. ⚠️ NO AUTH, NO TLS: the existing
+   `--serve` caveat, now on by default.
+
+   Three rulings, taken rather than left open: a STATE DIR rather than the
+   project root (what neovim — the owner's own analogy — does with its state; a
+   `.madcide.lock` would land in every project's git status); the editor
+   listens; and a second TUI does NOT silently become a remote client, because
+   that needs a TUI-over-api thin client which does not exist and is its own
+   slice — it says what is running and how to join it, in one status line.
+
+   **The two banked blockers were not real.** `getenv` is a registered builtin
+   with the real C shape and `getpid` resolves through the dlsym fallback —
+   probed in the JIT pass AND the `-o` exe pass. The slice is pure dialect code:
+   no `src/`, no `include/`, no rule trailers.
+
+   Two consolidations rather than two more copies: `serve_accept_task` is THE
+   accept loop (run_serve's own copy had already diverged — no shutdown poke, no
+   advertisement refresh), and `advertep` is THE slot holding the endpoint this
+   session listens on, so `$/madc/serve` now tells an editor attached to an
+   ORDINARY editor session about its window face too.
+   Gates: `testmadcide_discover` (hermetic `MADCIDE_SESSION_DIR`) advertises a
+   live session and spawns `--lsp --attach` with no address, which discovers it
+   and drives it; negative controls on the component-boundary prefix match, the
+   bound endpoint, and the reaping of a dead record. Plus
+   `check-madcide-one-accept-loop.sh` in fulltest: one spawn site, and one
+   `session_advertise()` per `listen://` bind.
+
 **V6 is COMPLETE.** The remaining step is the arc's RELEASE seam — the owner's
 call: `/dupaudit` scoped to `madcdis` + `tools/madcide`, the ONE battery
 (`make -C src fulltest` + `--exe` + `--obj` + the packed / headerless / lane

@@ -1,5 +1,9 @@
 # V6c-4 — Session discovery: the advertisement a client finds a session by
 
+> **SHIPPED 2026-09-15** — `e2e7c8281` (the feature), `dc30cf5c5` (the gates),
+> `a63bacb10` (the extension + docs). Every task below landed as planned; what
+> the execution added is recorded in **As landed** at the foot of this file.
+
 **Owner request, 2026-09-14:** *"madcide should create a dot-lockfile similar
 to neovim … a json file that contains all the details so that a client session
 can connect to the server session … rather than saying 'this file is already
@@ -169,3 +173,42 @@ a hermetic `MADCIDE_SESSION_DIR`:
 
 `tests/testmadcide_attach.mad` gains the discovery path: `--attach` with no
 address finds the running session.
+
+---
+
+## As landed
+
+Everything above shipped. Four things the execution added or corrected.
+
+**Two consolidations rather than two more copies.** `run_serve` had its own
+accept loop beside `serve_accept_task`, and it had already diverged — no
+shutdown poke, no advertisement refresh. It now calls the same function the LSP
+process and the editor spawn as a task, so there is ONE accept loop; the gate
+`check-madcide-one-accept-loop.sh` keeps it that way. Likewise the endpoint a
+session listens on lived in two slots: `lspserve` (set only by `--lsp --serve`)
+and, new here, `advertep` (set by every face that binds). `$/madc/serve` now
+reads `advertep`, so an editor ATTACHED to an ordinary editor session is told
+about its window face too — which it was not before.
+
+**The ring-lifetime trap, paid for again.** A `var`'s `c_str()` is a
+RING-lifetime rendering, not a pointer into the carrier. `session_record` calls
+out several times (canonical_path, the document scan, format) before it places
+its endpoint, and passed as a `const char *` that pointer had been recycled: the
+first run advertised `"endpoint":"tmp/discdoc.mad"` — the file path. Carriers
+cross a function boundary as `var &`.
+
+**Two things the gate's own writing cost.** A DISCOVERING client spends a
+connection on the liveness probe BEFORE it opens the real one, so a seat that
+accepts exactly once answers the probe and then deadlocks waiting for a relay it
+has already refused to hear — the gate drives the production accept loop
+instead, which is what it should have done anyway. And a relay must be DRAINED
+to EOF before closing, or the child is cut off mid-exit and the parent waits
+forever (`testmadcide_attach` established that discipline; this test had to
+learn it).
+
+**Verified beyond the gate.** A plain `madcide file.mad` under a pty, sitting at
+its buffer waiting for a keystroke, was discovered from its advertisement by a
+separate process and answered a real api command — which is ruling R2's whole
+premise. A second `madcide file.mad` on the same file reported the first in its
+status line and exited 0 (the accept task woken and joined), withdrawing its own
+advertisement; and `--lsp --attach` with no address joined the TUI session.
