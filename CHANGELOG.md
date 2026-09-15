@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### The reactor's Windows backend — the V6 transports work under Windows (2026-09-15)
+
+- **The V6 transports now park cooperative tasks on sockets under Windows**, so
+  every `listen://` seat, the ws window framer, the attach relay and session
+  discovery work there. The fifteen `.win64_skip` fixtures that named the gap
+  (`testsocketpark`, `testwsframe`, the ten `testmadcide_serve*`, `_attach`,
+  `_discover`, `_lsp_serve`) are lifted; the wine lane goes from 1301/0/87skip
+  to 1316/0/72skip. The owner's gate for a master release — the new
+  functionality working under Windows and macOS — is met on the Windows side.
+- **What was actually broken** was below the reactor. On Windows the task
+  park's readiness probe treated every waitable as a CRT fd (a console or an
+  `_open_osfhandle`'d pipe); a socket is a kernel `SOCKET` in a different
+  space, so the probe answered "readable" unconditionally and a parked reader
+  woke to nothing. Underneath that, a poll handle carried no namespace, and no
+  OS query disambiguates a bare integer. The fix is a `poll_handle_kind`
+  (descriptor | socket) that rides with every handle from the channel that
+  owns it, a `WSAPoll` socket arm in the probe, and — the second half of the
+  symptom — putting an accepted socket back in blocking mode (Winsock and the
+  BSDs hand `accept()`'s child the listener's non-blocking mode; Linux does
+  not), which also closes a latent macOS trap for solo-program socket reads.
+- **The reactor's Windows backend** is the async-I/O reactor design's item-4
+  "select floor": a `WSAPoll` readiness adapter with the epoll backend's exact
+  I/O-thread shape, a loopback UDP socket as the submit wake and a manual-reset
+  Event as the doorbell, so the scheduler's console wait joins it in one
+  `WaitForMultipleObjects`. The submit/drain/wait face is now written once for
+  every real backend, so the epoll behaviour is unchanged (`test_io_reactor`
+  57/57). IOCP proper waits for a consumer of the completion ops.
+- Two win64 gaps surfaced while lifting the skips, each fixed: the session
+  advertisement filename choked on a Windows canonical path (`Z:\…`, a
+  drive-letter colon and backslashes), and a transport test truncated a 64-bit
+  graph id into a 32-bit LLP64 `long`.
+
 ### The V6 seam: the duplication audit's fixes, and libgit2 out of the distribution (2026-09-15)
 
 - **`/dupaudit` scoped to `madcdis` + `tools/madcide`** before the merge, as
