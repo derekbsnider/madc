@@ -26,17 +26,10 @@ void proposal_fold(var &seqs, var &props, long w, long adoc)
     long le = clog_find(w);
     if ( le <= 0 )
 	return;
-    var blob;
-    ui::text(blob, w, le);
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
-    for ( var ln : lines )
+    var recs;
+    clog_records(recs, w, le);		// the ONE reader, parsed once per revision
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	    break;			// a torn tail line: stop trusting the rest
 	if ( rec["doc"].as_integer() != adoc || clog_kind_of(rec) != ckOTHER )
 	    continue;
 	long nk = nexus_kind_of(rec);

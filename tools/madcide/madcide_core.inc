@@ -3605,17 +3605,13 @@ void clog_restore(long w, long es, long doc)
     }
     long le = changelog_of(w, doc);
     ui::text_load(w, le, blob.c_str());
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
+    // The head is the last record's seq — through the ONE reader (a torn
+    // line is not a record).
+    var recs;
+    clog_records_of(recs, blob);
     long hi = 0;
-    for ( var ln : lines )
-    {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( js::parse(rec, ln) )
-	    hi = rec["seq"].as_integer();
-    }
+    for ( var rec : recs )
+	hi = rec["seq"].as_integer();
     ui::set(w, le, "seq", hi);
     clog_adopt(w, doc);
 }

@@ -371,6 +371,40 @@ if [ "$(count_keyed_reads "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
+# The change STREAM has ONE reader: clog_records_of / clog_records
+# (editor_events.inc). The V6 seam audit found ten folds exploding and parsing
+# the JSONL blob by hand and disagreeing on a torn line — four stopped
+# (losing every record after it), five skipped it, one copied its bytes into
+# a rewritten log — so the editor's replay and the nexus's view of ONE stream
+# could differ on the same bytes. Marker: the blob explode appears once across
+# the texteditor + madcide layers — inside the reader.
+count_stream_reads()
+{
+	cat "$@" | grep -c 'php::explode(lines, "\\n", blob.c_str())'
+}
+
+n=$(count_stream_reads "$TEXTED"/*.inc "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n hand reads of the change" \
+	     "stream across tools/texteditor + tools/madcide (expected 1:" \
+	     "clog_records_of). Every fold consumes clog_records; a torn line" \
+	     "is the reader's to skip, never a fold's to stop at." >&2
+	grep -n 'php::explode(lines, "\\n", blob.c_str())' "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the stream-reader marker.
+tmp=$(mktemp)
+cat "$TEXTED"/*.inc "$TOOLS"/*.inc > "$tmp"
+printf '    php::explode(lines, "\\n", blob.c_str());\t// synthetic\n' >> "$tmp"
+if [ "$(count_stream_reads "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic stream read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # Text mutation has ONE owner pair: ed_text_insert / ed_text_erase
 # (editor_events.inc) — they shift the es bag's byte-anchored highlight
 # spans with the edit; a raw ui::text_insert/text_erase elsewhere leaves

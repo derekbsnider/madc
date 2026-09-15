@@ -482,19 +482,8 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
     long le = clog_find(w);
     if ( le > 0 )
     {
-	var blob;
-	ui::text(blob, w, le);
-	var lines;
-	php::explode(lines, "\n", blob.c_str());
-	var recs = {};
-	for ( var ln : lines )
-	{
-	    if ( strlen(ln.c_str()) == 0 )
-		continue;
-	    var rec;
-	    if ( js::parse(rec, ln) )
-		recs.push(rec);
-	}
+	var recs;
+	clog_records(recs, w, le);	// the ONE reader, parsed once per revision
 	var evrows = {};
 	bool walking = true;
 	for ( long i = php::count(recs) - 1; i >= 0; i = i - 1 )

@@ -283,6 +283,65 @@ bool doc_modified(long w, long doc)
     return !m.is_null() && m.as_boolean();
 }
 
+// ---- the ONE reader of the change stream -----------------------------------
+// The stream is JSONL: one record per line, appended by clog_append and
+// rewritten whole by clog_compact / clog_adopt. Its RECORDS come from here and
+// nowhere else. A line that does not parse is a TORN WRITE (a crash mid-append,
+// or the fragment the next append ran into): skipped, never trusted, never
+// re-emitted; the records after it stand on their own seq. Until the V6 seam
+// ten folds read the stream by hand and disagreed — four stopped at a torn
+// line (losing every record after it), five skipped it, one copied its bytes
+// into a rewritten log — so the editor's replay and the nexus's view of ONE
+// stream could differ on the same bytes.
+void clog_records_of(var &out, var &blob)
+{
+    out = {};
+    var lines;
+    php::explode(lines, "\n", blob.c_str());
+    for ( var ln : lines )
+    {
+	if ( strlen(ln.c_str()) == 0 )
+	    continue;
+	var rec;
+	if ( !js::parse(rec, ln) )
+	    continue;			// torn: skipped, never trusted
+	out.push(rec);
+    }
+}
+
+// The live stream's records, parsed ONCE per revision of the text and cached
+// on the log entity: every fold derives its state from these, so a long
+// history costs one parse per change, not one per query (graph.proposals and
+// test.list re-parsed the whole stream on every call). The key is the head
+// seq AND the text size — a rewrite (compact, adopt) changes the bytes without
+// moving the head, and marks the cache dirty besides. The bag hands out
+// copies, so a fold may annotate the records it gets without touching the
+// cache.
+void clog_records(var &out, long w, long le)
+{
+    long head = es_int(w, le, "seq", 0);
+    long size = ui::text_size(w, le);
+    if ( es_int(w, le, "crec_seq", -1) == head
+      && es_int(w, le, "crec_size", -1) == size )
+    {
+	ui::get(out, w, le, "crec");
+	if ( !out.is_null() )
+	    return;
+    }
+    var blob;
+    ui::text(blob, w, le);
+    clog_records_of(out, blob);
+    ui::set(w, le, "crec", out);
+    ui::set(w, le, "crec_seq", head);
+    ui::set(w, le, "crec_size", size);
+}
+
+// A rewrite of the stream's text (compact, adopt) says so.
+void clog_records_dirty(long w, long le)
+{
+    ui::set(w, le, "crec_seq", -1);
+}
+
 // The session's change-log entity WITHOUT creating it (0 = none yet): the
 // ONE stream every document's records ride (Nexus L4c, design §3.1).
 long clog_find(long w)
@@ -367,19 +426,12 @@ void clog_replay(var &out, long w, long doc, long upto)
     }
     long scr = replaybuf_of(w, doc);
     ui::text_load(w, scr, "");
-    var blob;
-    ui::text(blob, w, le);
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
+    var recs;
+    clog_records(recs, w, le);
     bool seen = false;		// a record of this doc within range
     bool any = false;		// any record of this doc applied
-    for ( var ln : lines )
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	    continue;		// a torn / partial tail line: stop trusting it
 	if ( rec["doc"].as_integer() != doc )
 	    continue;		// another document's record (the ONE stream)
 	long seq = rec["seq"].as_integer();
@@ -435,25 +487,18 @@ long clog_head(long w, long doc)
 // replication feed a client reads incrementally (V6a duplex D2, the
 // {"event":…} push). Unlike clog_replay (which reconstructs BUFFER TEXT at a
 // revision), this returns the events THEMSELVES, for a peer to apply/observe.
-// `doc` 0 = every document's events. A torn/partial tail line stops the scan
-// (never a half-parsed event).
+// `doc` 0 = every document's events. A torn line is the reader's to skip
+// (clog_records): never a half-parsed event, and never a lost one after it.
 void events_since(var &out, long w, long doc, long since)
 {
     out = {};
     long le = clog_find(w);
     if ( le <= 0 )
 	return;
-    var blob;
-    ui::text(blob, w, le);
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
-    for ( var ln : lines )
+    var recs;
+    clog_records(recs, w, le);
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	    break;		// a torn tail line: stop trusting the rest
 	if ( doc != 0 && rec["doc"].as_integer() != doc )
 	    continue;		// doc 0 = every document's events
 	if ( rec["seq"].as_integer() > since )
@@ -476,21 +521,16 @@ void clog_compact(long w, long doc, long limit, long keep)
     long cut = es_int(w, le, "seq", 0) - keep;
     if ( cut <= 0 )
 	return;
-    var blob;
-    ui::text(blob, w, le);
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
+    var recs;
+    clog_records(recs, w, le);
     // The documents with a record at or below the cut, in first-seen order,
     // and the path each last carried (the doc entity may be gone by now).
     var docs = {};
     var seen;			// doc-key -> 1 (a null var becomes the map on its first keyed write)
     var paths;			// doc-key -> path
-    for ( var ln : lines )
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) || rec["seq"].as_integer() > cut )
+	if ( rec["seq"].as_integer() > cut )
 	    continue;
 	var key = format("{}", rec["doc"]);
 	var hit;
@@ -518,17 +558,19 @@ void clog_compact(long w, long doc, long limit, long keep)
 	var js = js::stringify(cp);
 	rebuilt = format("{}{}\n", rebuilt, js);
     }
-    for ( var ln : lines )
+    // The surviving records, re-emitted from the parsed form (a record was
+    // written by js::stringify, so this is its own bytes; a torn line is not
+    // a record and is gone).
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	    continue;
 	if ( rec["seq"].as_integer() > cut )
-	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
+	{
+	    var js = js::stringify(rec);
+	    rebuilt = format("{}{}\n", rebuilt, js);
+	}
     }
     ui::text_load(w, le, rebuilt.c_str());
+    clog_records_dirty(w, le);
 }
 
 // A restored record's `doc` is an entity id of the SESSION THAT WROTE IT; the
@@ -545,35 +587,29 @@ void clog_adopt(long w, long doc)
     ui::get(p, w, doc, "path");
     if ( p.is_null() )
 	return;
-    var blob;
-    ui::text(blob, w, le);
-    var lines;
-    php::explode(lines, "\n", blob.c_str());
+    var recs;
+    clog_records(recs, w, le);
     var rebuilt = "";
     bool changed = false;
-    for ( var ln : lines )
+    for ( var rec : recs )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( !js::parse(rec, ln) )
-	{
-	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
-	    continue;
-	}
 	var rp = rec["path"];
 	if ( !rp.is_null() && rp == p && rec["doc"].as_integer() != doc )
 	{
 	    rec["doc"] = doc;
 	    changed = true;
-	    var js = js::stringify(rec);
-	    rebuilt = format("{}{}\n", rebuilt, js);
 	}
-	else
-	    rebuilt = format("{}{}\n", rebuilt, ln.c_str());
+	// Re-emitted from the parsed form: a record's own bytes; a torn line
+	// is not a record and does not survive a rewrite (until the V6 seam
+	// this pass copied its bytes forward).
+	var js = js::stringify(rec);
+	rebuilt = format("{}{}\n", rebuilt, js);
     }
     if ( changed )
+    {
 	ui::text_load(w, le, rebuilt.c_str());
+	clog_records_dirty(w, le);
+    }
 }
 
 void ed_text_insert(long w, long es, long doc, long off, const char *s)

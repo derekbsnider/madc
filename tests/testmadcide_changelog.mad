@@ -127,16 +127,11 @@ int main()
     println("L4c events-since: all={} docB={}", php::count(evAll), php::count(evB));
     clog_compact(w, doc, 1, 1);                    // cut = 9: both docs have records at or below it
     long cps = 0;
-    var blob2;
-    ui::text(blob2, w, le);
-    var lines2;
-    php::explode(lines2, "\n", blob2.c_str());
-    for ( var ln : lines2 )
+    var recs2;
+    clog_records(recs2, w, le);
+    for ( var rec : recs2 )
     {
-	if ( strlen(ln.c_str()) == 0 )
-	    continue;
-	var rec;
-	if ( js::parse(rec, ln) && clog_kind_of(rec) == ckCHECKPOINT )
+	if ( clog_kind_of(rec) == ckCHECKPOINT )
 	    cps = cps + 1;
     }
     println("L4c per-doc-checkpoints: {}", cps);
@@ -167,6 +162,32 @@ int main()
     clog_replay(rrB, w2, docB2, -1);
     okfail("L4c persist-restore-B", rrB == curB, rrB, curB);
     php::unlink("madc_ide_clog.prj.events");
+
+    // V6 seam: a TORN line (a crash mid-append) in the MIDDLE of the stream is
+    // skipped by the ONE reader (clog_records); the records after it stand on
+    // their own seq — the replication feed reaches the head and replay still
+    // reconstructs the text. Before the seam events_since and the nexus folds
+    // STOPPED at a torn line and lost every record after it, while replay
+    // skipped it: two answers from one stream.
+    long leT = clog_find(w);
+    ui::text_insert(w, leT, ui::text_size(w, leT), "{\"seq\":0,\"kind\":\"spl\n");
+    ed_text_insert(w, es, doc, 0, "Q");
+    var evT;
+    events_since(evT, w, 0, 0);
+    long nT = php::count(evT);
+    long lastT = nT > 0 ? evT[nT - 1]["seq"].as_integer() : -1;
+    var rT;
+    clog_replay(rT, w, doc, -1);
+    var curT;
+    ui::text(curT, w, doc);
+    println("V6 torn-middle: feed-reaches-head={} replay={}",
+	    lastT == clog_head(w, doc) ? 1 : 0, rT == curT ? "ok" : "FAIL");
+    // The reader on a bare blob: the torn line is not a record; the ones
+    // around it are.
+    var tb = "{\"seq\":1,\"kind\":\"x\"}\n{\"seq\":2,\"ki\n{\"seq\":3,\"kind\":\"y\"}\n";
+    var tr;
+    clog_records_of(tr, tb);
+    println("V6 torn-parse: records={} last={}", php::count(tr), tr[1]["seq"]);
 
     php::unlink(pathB);
     php::unlink(path);

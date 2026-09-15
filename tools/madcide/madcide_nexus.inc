@@ -41,17 +41,10 @@ void nexus_fold_compute(var &out, long w)
     long le = clog_find(w);
     if ( le > 0 )
     {
-	var blob;
-	ui::text(blob, w, le);
-	var lines;
-	php::explode(lines, "\n", blob.c_str());
-	for ( var ln : lines )
+	var recs0;
+	clog_records(recs0, w, le);	// the ONE reader: a torn line is skipped, never a stop
+	for ( var rec : recs0 )
 	{
-	    if ( strlen(ln.c_str()) == 0 )
-		continue;
-	    var rec;
-	    if ( !js::parse(rec, ln) )
-		break;			// a torn tail line: stop trusting the rest
 	    if ( clog_kind_of(rec) != ckOTHER )
 		continue;
 	    long nk = nexus_kind_of(rec);

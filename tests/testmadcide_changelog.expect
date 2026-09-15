@@ -14,3 +14,5 @@ L4c per-doc-checkpoints: 2
 L4c replay-A-after-compact: ok
 L4c replay-B-after-compact: ok
 L4c persist-restore-B: ok
+V6 torn-middle: feed-reaches-head=1 replay=ok
+V6 torn-parse: records=2 last=3
