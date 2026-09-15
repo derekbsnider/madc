@@ -52,20 +52,33 @@ loopback-only and never exposed: madcide has no authentication or TLS.** Set
 
 ### Joining a session someone else started
 
-Set `madcide.attach` to a running session's address and the extension spawns
-`--lsp --attach <addr>` instead of a private server. The same session can then
-carry this editor, an agent's MCP client and a browser window at once — the
-three of them editing the same buffers.
+Set `madcide.attach` and the extension spawns `--lsp --attach` instead of a
+private server. The same session then carries this editor, an agent's MCP
+client and a browser window at once — the three of them editing the same
+buffers.
+
+**`"madcide.attach": "auto"`** is the setting you want. Every madcide session
+advertises itself — a small JSON file under `$XDG_STATE_HOME/madcide/sessions/`
+holding its endpoint, root and documents — and `--attach` with no address finds
+the one that holds this file. Nobody types a port anywhere:
 
 ```bash
-# the session (on the machine where madc is built)
-bin/madc tools/madcide/madcide.mad src/thing.mad --serve 127.0.0.1:7777
+# somebody, somewhere, is editing
+bin/madc tools/madcide/madcide.mad src/thing.mad
 
-# an agent host, in its MCP config
-bin/madc tools/madcide/madcide.mad src/thing.mad --mcp --attach 127.0.0.1:7777
+# what is running?
+bin/madc tools/madcide/madcide.mad --sessions
+
+# an agent host, in its MCP config — no address either
+bin/madc tools/madcide/madcide.mad src/thing.mad --mcp --attach
 ```
 
-then `"madcide.attach": "127.0.0.1:7777"` in VS Code. **madcide has no
+An ordinary editor session listens on a loopback ephemeral port by default;
+`--no-serve` opts out, and a session that cannot bind or cannot write the
+advertisement simply runs undiscoverable rather than failing.
+
+To name an address explicitly instead, set `madcide.attach` to `host:port` and
+start the session with `--serve 127.0.0.1:7777`. **madcide has no
 authentication and no TLS.** Bind loopback and reach a session on another
 machine through an ssh tunnel (`ssh -N -L 7777:127.0.0.1:7777 host`) — never by
 binding a public address.
@@ -112,7 +125,7 @@ Then either:
 | `madcide.madcidePath` | `tools/madcide/madcide.mad` | The madcide script madc runs. |
 | `madcide.serverFile` | *(empty)* | The document madcide opens with. Empty = the active `.mad` editor, else the first `.mad` in the workspace. Other files join the session on demand. |
 | `madcide.window` | `true` | Give the server its second face (`--serve 127.0.0.1:0`) so **Open Window** works against the same session. Ignored when `madcide.attach` is set — that session already has one. |
-| `madcide.attach` | *(empty)* | Join an already-running session at `host:port` instead of opening a private one. Loopback / ssh tunnel only. |
+| `madcide.attach` | *(empty)* | `auto` joins whatever session already holds the file (discovered from its advertisement — no address typed); `host:port` names one explicitly; empty opens a private session. Loopback / ssh tunnel only. |
 | `madcide.extraArgs` | `[]` | Extra arguments for madcide. |
 | `madcide.trace.server` | `off` | Log the LSP traffic in the **madcide** output channel. |
 

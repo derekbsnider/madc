@@ -71,7 +71,7 @@
         "madcide.attach": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Join a madcide session that is **already running** at `host:port` (started with `--serve`) instead of opening a private one, so this editor, an agent's MCP client and a browser all drive the same buffers. Loopback only — madcide has no authentication, so reach a remote session through an ssh tunnel, never by exposing the port."
+          "markdownDescription": "Join a madcide session that is **already running** instead of opening a private one, so this editor, an agent's MCP client and a browser all drive the same buffers. Set `auto` to join whatever session already holds the file — madcide finds it from the advertisement every session publishes, and no address is typed anywhere. Set `host:port` to name one explicitly. Empty opens a private session. Loopback only — madcide has no authentication, so reach a remote session through an ssh tunnel, never by exposing the port."
         },
         "madcide.window": {
           "type": "boolean",

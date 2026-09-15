@@ -129,6 +129,44 @@ keyboard back to the editor (a click in an editor window does too) — and
 a gui program opens its own window while its output streams into the
 **Output** tab. Every stream ends with the program's exit status.
 
+## Sharing a session
+
+One madcide session can carry more than one client: the editor you are typing
+in, an LSP editor (VS Code through the extension in `tools/vscode-madcide`), an
+agent's MCP client, and a browser window — all on the same buffers, the same
+carets, the same undo history. Two processes on one file would be two sessions:
+two carets, two undo histories, last save wins.
+
+Every session **advertises itself** so nobody has to be told an address. A
+running madcide writes a small JSON file — its endpoint, root, documents, pid
+and what it serves — under `$XDG_STATE_HOME/madcide/sessions/` (or
+`~/.local/state/madcide/sessions/`; `MADCIDE_SESSION_DIR` overrides). It is an
+advertisement, not a lock: madcide never refuses a file that is already open,
+and two sessions in one project both appear.
+
+```sh
+madcide --sessions                            # what is running, and how to join it
+madcide file.mad --lsp --attach               # join whoever holds file.mad
+madcide file.mad --mcp --attach               # the same, for an agent host
+madcide file.mad --lsp --attach 127.0.0.1:7777  # or name one explicitly
+```
+
+An ordinary `madcide file.mad` listens on a **loopback ephemeral port** so it
+can be joined; `--no-serve` opts out. `--serve <host:port>` runs headless on a
+port you choose. A session that cannot bind, or cannot write the advertisement,
+runs anyway — undiscoverable rather than broken. A crashed session's file is
+removed by the next session that looks (the liveness test is a connection, not
+a pid: pids get reused).
+
+> **madcide has no authentication and no TLS.** A port is reachable by any
+> local user. Bind loopback only, and reach a session on another machine
+> through an ssh tunnel (`ssh -N -L 7777:127.0.0.1:7777 host`) — never by
+> binding a public address.
+
+The first client to connect is granted **owner** and every later one
+**observer**, so joining a session does not hand out edit rights; an owner
+promotes one with `clienttier <id> editor`.
+
 ## The window's workbench
 
 The window arranges the editor with the pieces an IDE user expects:

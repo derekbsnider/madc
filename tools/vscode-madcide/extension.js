@@ -214,9 +214,16 @@ async function startClient(context) {
 	// and the server must NOT be given a window face, because the session it
 	// attaches to already has one. Otherwise madcide opens a private session,
 	// and the window face is what `madcide: Open Window` needs.
+	// "auto" attaches to whatever session already holds this file, discovered
+	// from madcide's advertisement — nobody types an address. The scan is NOT
+	// reimplemented here: madcide owns the matching rule, and `--attach` with
+	// no address is how it is asked.
 	const attach = (cfg.get('attach') || '').trim();
 	let args = ['--no-config', madcide, file, '--lsp'];
-	if (attach) {
+	if (attach === 'auto') {
+		args = args.concat(['--attach']);
+		out.appendLine('mode: attaching to whatever session already holds ' + file);
+	} else if (attach) {
 		args = args.concat(['--attach', attach]);
 		out.appendLine('mode: attaching to the session at ' + attach);
 	} else if (cfg.get('window')) {
