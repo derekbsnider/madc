@@ -100,15 +100,25 @@ case "$target" in
         # checks fail. -fuse-ld=lld is the DARWIN_LD_FLAGS the hosted MODE sets;
         # read it from the one definition rather than hardcode it here.
         LDF=$(make -C src -s MODE="$MODE" LIBGIT2_DIR="$DIR" print-DARWIN_LD_FLAGS)
-        SYS_EXTRA=( -DCMAKE_OSX_SYSROOT=/workspace/sdk/MacOSX.sdk
+        # The macOS SDK sysroot comes from the hosted MODE, never a hardcode:
+        # on the container MACOS_SDK falls back to /workspace/sdk/MacOSX.sdk,
+        # but a NATIVE darwin host (the darwin-probe.yml GitHub runner, which
+        # also stages this archive before `make release-macos`) has its Xcode
+        # SDK elsewhere. print-MACOS_SDK yields whichever this host uses
+        # (`xcrun --show-sdk-path` on darwin, the /workspace fallback on the
+        # container), so the same recipe serves the cross build and the native
+        # build. zlib's headers/tbd live under that same SDK on both.
+        SDK=$(make -C src -s MODE="$MODE" LIBGIT2_DIR="$DIR" print-MACOS_SDK)
+        [ -n "$SDK" ] || { echo "libgit2 ($target): could not read MACOS_SDK of MODE=$MODE from src/Makefile" >&2; exit 1; }
+        SYS_EXTRA=( -DCMAKE_OSX_SYSROOT="$SDK"
                     -DCMAKE_OSX_ARCHITECTURES="$(printf %s "$arch" | sed 's/x86-64/x86_64/')"
                     -DCMAKE_OSX_DEPLOYMENT_TARGET=12
                     -DCMAKE_EXE_LINKER_FLAGS="$LDF"
                     -DCMAKE_SHARED_LINKER_FLAGS="$LDF"
                     -DCMAKE_MODULE_LINKER_FLAGS="$LDF"
                     -DUSE_BUNDLED_ZLIB=OFF
-                    -DZLIB_INCLUDE_DIR=/workspace/sdk/MacOSX.sdk/usr/include
-                    -DZLIB_LIBRARY=/workspace/sdk/MacOSX.sdk/usr/lib/libz.tbd )
+                    -DZLIB_INCLUDE_DIR="$SDK/usr/include"
+                    -DZLIB_LIBRARY="$SDK/usr/lib/libz.tbd" )
         ;;
 esac
 
