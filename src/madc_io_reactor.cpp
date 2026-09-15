@@ -1,25 +1,39 @@
 // SPDX-License-Identifier: MPL-2.0
-// madc_io_reactor — the completion-oriented async I/O engine's Linux/epoll
-// backend (design: docs/plans/2026-09-11-async-io-reactor.md). epoll is a
-// READINESS interface, so this file is the readiness->syscall->completion
-// adapter: the I/O thread waits for a fd to be ready, then performs the
-// accept/recv/send ITSELF and posts a completion carrying the result. That
-// is the same shape kqueue and select will share; io_uring and IOCP will be
-// native-completion backends behind the identical Reactor contract.
+// madc_io_reactor — the completion-oriented async I/O engine's backends
+// (design: docs/plans/2026-09-11-async-io-reactor.md). epoll (Linux) and
+// WSAPoll (Windows) are READINESS interfaces, so each arm is a
+// readiness->syscall->completion adapter: the I/O thread waits for a fd to be
+// ready, then performs the accept/recv/send ITSELF and posts a completion
+// carrying the result. That is the same shape kqueue will share; io_uring and
+// IOCP will be native-completion backends behind the identical Reactor
+// contract.
 //
-// Slice 1 (this file): the abstraction + the epoll backend + the dedicated
-// I/O thread + the producer/consumer queues + the doorbell. The taskio
-// migration, io_uring, kqueue and IOCP are the follow-on slices.
+// ONE face, N I/O-thread sides (no-parallel-implementations.md): everything a
+// real backend shares — the op record, the two queues, submit_*, drain, wait,
+// wait_doorbell — is written ONCE below the platform split; a platform arm
+// supplies only its impl (the wait syscall, the wake spelling, the doorbell
+// object) behind the small internal contract the shared face calls:
+// enqueue / drain_into / clear_doorbell / block_doorbell.
+//
+// Slice 1 (2026-09-11): the abstraction + the epoll backend + the dedicated
+// I/O thread + the queues + the doorbell. Slice 4 (2026-09-15, the reactor's
+// Windows backend plan): the WSAPoll arm — the design's "select floor" — so
+// the taskio park on Windows blocks on the doorbell beside its console
+// handles instead of never reaching the reactor. io_uring, kqueue and IOCP
+// remain the follow-on arms.
 
 #include "madc_io_reactor.h"
 
 #include <stdexcept>
 #include <string>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
+#define MADC_IO_REACTOR_BACKEND 1
+#endif
+
+#if defined(MADC_IO_REACTOR_BACKEND)
 
 #include <atomic>
-#include <cerrno>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -27,18 +41,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <poll.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 namespace madc {
 namespace io {
 namespace {
 
 // One queued operation, owned first by the submission queue, then by the
-// I/O thread's per-fd op list.
+// I/O thread's per-fd op list. Shared by every backend.
 struct pending
 {
 	uint64_t id;
@@ -51,22 +59,62 @@ struct pending
 	void *user;
 };
 
-// accept + read wait for readability; write for writability; a poll op waits
-// on the direction(s) its events mask names.
+// The readiness->completion rule an op waits on, as the abstract pair the
+// platform flag alphabets both render: accept + read + a readable poll op
+// want readability; write + a writable poll op want writability.
+bool op_wants_readable(const pending &p)
+{
+	if ( p.kind == op_kind::poll )
+		return (p.events & readable) != 0 || (p.events & writable) == 0;
+	return p.kind != op_kind::write;
+}
+
+bool op_wants_writable(const pending &p)
+{
+	if ( p.kind == op_kind::poll )
+		return (p.events & writable) != 0;
+	return p.kind == op_kind::write;
+}
+
+// The ready poll_flag set a poll completion reports: a hangup/error is BOTH
+// (the caller's own syscall surfaces it — poll(2)'s POLLHUP/POLLERR rule).
+int poll_result_flags(bool fd_readable, bool fd_writable)
+{
+	int flags = 0;
+	if ( fd_readable )
+		flags |= readable;
+	if ( fd_writable )
+		flags |= writable;
+	return flags;
+}
+
+} // namespace
+} // namespace io
+} // namespace madc
+
+#endif // MADC_IO_REACTOR_BACKEND
+
+#if defined(__linux__)
+
+#include <cerrno>
+#include <poll.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+namespace madc {
+namespace io {
+namespace {
+
 uint32_t epoll_events_for(const pending &p)
 {
-	if ( p.kind == op_kind::write )
-		return (uint32_t)EPOLLOUT;
-	if ( p.kind == op_kind::poll )
-	{
-		uint32_t mask = 0;
-		if ( p.events & readable )
-			mask |= (uint32_t)EPOLLIN;
-		if ( p.events & writable )
-			mask |= (uint32_t)EPOLLOUT;
-		return mask ? mask : (uint32_t)EPOLLIN;
-	}
-	return (uint32_t)EPOLLIN;	// accept, read
+	uint32_t mask = 0;
+	if ( op_wants_readable(p) )
+		mask |= (uint32_t)EPOLLIN;
+	if ( op_wants_writable(p) )
+		mask |= (uint32_t)EPOLLOUT;
+	return mask;
 }
 
 } // namespace
@@ -113,6 +161,20 @@ struct Reactor::impl
 		(void)r;	// EFD_NONBLOCK: EAGAIN when already zero
 	}
 
+	// Block up to timeout_ms for the doorbell: 1 = rang, 0 = timeout,
+	// -1 = interrupted / error (the shared wait face's contract).
+	int block_doorbell(int timeout_ms)
+	{
+		pollfd pfd;
+		pfd.fd = doorbell_evt;
+		pfd.events = POLLIN;
+		pfd.revents = 0;
+		int pr = ::poll(&pfd, 1, timeout_ms);
+		if ( pr > 0 )
+			return 1;
+		return pr == 0 ? 0 : -1;
+	}
+
 	uint64_t enqueue(const pending &p)
 	{
 		{
@@ -130,6 +192,18 @@ struct Reactor::impl
 			completions.push_back(c);
 		}
 		ring_doorbell();
+	}
+
+	std::size_t drain_into(completion *out, std::size_t max)
+	{
+		std::lock_guard<std::mutex> g(comp_mtx);
+		std::size_t n = 0;
+		while ( n < max && !completions.empty() )
+		{
+			out[n++] = completions.front();
+			completions.pop_front();
+		}
+		return n;
 	}
 
 	// --- I/O-thread side (everything below runs ONLY on the I/O thread) ---
@@ -201,14 +275,10 @@ struct Reactor::impl
 		int result;
 		if ( p.kind == op_kind::poll )
 		{
-			// Readiness only — no syscall; report the ready set (a
-			// hangup/error is readable so the caller's read surfaces it).
-			int flags = 0;
-			if ( revents & (EPOLLIN | EPOLLHUP | EPOLLERR) )
-				flags |= readable;
-			if ( revents & (EPOLLOUT | EPOLLHUP | EPOLLERR) )
-				flags |= writable;
-			result = flags;
+			// Readiness only — no syscall; report the ready set.
+			result = poll_result_flags(
+				(revents & (EPOLLIN | EPOLLHUP | EPOLLERR)) != 0,
+				(revents & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0);
 		}
 		else if ( p.kind == op_kind::accept )
 		{
@@ -282,14 +352,8 @@ struct Reactor::impl
 		for ( std::deque<pending>::iterator pi = q.begin(); pi != q.end();
 		      ++pi )
 		{
-			bool ready;
-			if ( pi->kind == op_kind::write )
-				ready = fd_writable;
-			else if ( pi->kind == op_kind::poll )
-				ready = ((pi->events & readable) && fd_readable)
-				     || ((pi->events & writable) && fd_writable);
-			else	// accept, read
-				ready = fd_readable;
+			bool ready = (op_wants_readable(*pi) && fd_readable)
+				  || (op_wants_writable(*pi) && fd_writable);
 			if ( !ready )
 				continue;
 			pending p = *pi;
@@ -338,11 +402,6 @@ struct Reactor::impl
 	}
 };
 
-bool Reactor::available()
-{
-	return true;
-}
-
 Reactor::Reactor() : _(new impl())
 {
 	_->epfd = ::epoll_create1(EPOLL_CLOEXEC);
@@ -381,6 +440,427 @@ Reactor::~Reactor()
 	if ( _->doorbell_evt >= 0 )
 		::close(_->doorbell_evt);
 	delete _;
+}
+
+intptr_t Reactor::doorbell() const
+{
+	return _->doorbell_evt;
+}
+
+} // namespace io
+} // namespace madc
+
+#elif defined(_WIN32)
+
+// The Windows backend — the design's "select floor" (item 4): a WSAPoll
+// READINESS adapter with the epoll arm's exact I/O-thread shape. IOCP, the
+// native-completion backend, slots in behind this same contract once the
+// completion ops have a consumer (the channel-layer migration); the reactor's
+// one consumer today is submit_poll + the doorbell (the taskio park), which
+// IOCP has no native spelling for (no readiness op; a listener's "connection
+// pending" needs AcceptEx's pre-created socket). Platform spellings: the
+// submit wake is a loopback UDP socket the I/O thread polls beside the
+// watched sockets (WSAPoll takes only sockets; there is no eventfd); the
+// doorbell is a manual-reset Event whose HANDLE doorbell() returns, so the
+// scheduler's console wait joins it in ONE WaitForMultipleObjects. The fd
+// space this backend accepts is SOCKETs — the int fd IS the SOCKET
+// (create_socket's "kernel handles fit in 32 bits" model); the taskio seat
+// arms only socket-kind waiters here (reactor_watches).
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <winsock2.h>	// before windows.h (the winsock1 collision)
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <limits.h>
+
+namespace madc {
+namespace io {
+namespace {
+
+// The WSAPoll flag alphabet for the shared readiness rule (epoll_events_for's
+// twin — one rule, two alphabets; keep them side by side).
+SHORT wsapoll_events_for(const pending &p)
+{
+	SHORT mask = 0;
+	if ( op_wants_readable(p) )
+		mask |= POLLRDNORM;
+	if ( op_wants_writable(p) )
+		mask |= POLLWRNORM;
+	return mask;
+}
+
+// A hangup, an error, or an invalid (closed-under-us) socket is BOTH
+// readable and writable: the caller's op surfaces it. POLLNVAL must count,
+// or WSAPoll returns at once every pass and the I/O thread spins.
+bool wsapoll_readable(SHORT revents)
+{
+	return (revents & (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL)) != 0;
+}
+
+bool wsapoll_writable(SHORT revents)
+{
+	return (revents & (POLLWRNORM | POLLHUP | POLLERR | POLLNVAL)) != 0;
+}
+
+// One process-wide WSAStartup (the socket channel's socket_stack_ready
+// twin; the reactor can be the first winsock caller of a process that
+// adopted a socket handle). Never a WSACleanup — the OS reclaims at exit.
+bool winsock_ready()
+{
+	static const bool ready = []() {
+		WSADATA data;
+		return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+	}();
+	return ready;
+}
+
+// The winsock error of the last call as the completion's -errno spelling.
+int negative_wsa_error()
+{
+	int code = WSAGetLastError();
+	return code > 0 ? -code : -1;
+}
+
+// A loopback UDP socket connected to itself: the I/O thread's wake object
+// (the eventfd spelling for a poll set that takes only sockets). Non-blocking
+// so the drain loop ends on WSAEWOULDBLOCK and a full buffer drops a wake
+// that is already pending anyway (eventfd's coalescing, by another name).
+SOCKET make_wake_socket()
+{
+	SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if ( s == INVALID_SOCKET )
+		return INVALID_SOCKET;
+	sockaddr_in address;
+	std::memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = 0;
+	int len = sizeof(address);
+	if ( ::bind(s, reinterpret_cast<sockaddr *>(&address), len) != 0
+	  || ::getsockname(s, reinterpret_cast<sockaddr *>(&address), &len) != 0
+	  || ::connect(s, reinterpret_cast<sockaddr *>(&address), len) != 0 )
+	{
+		::closesocket(s);
+		return INVALID_SOCKET;
+	}
+	u_long nonblocking = 1;
+	::ioctlsocket(s, FIONBIO, &nonblocking);
+	SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+	return s;
+}
+
+} // namespace
+
+struct Reactor::impl
+{
+	SOCKET wake_sock = INVALID_SOCKET;	// producer -> I/O thread wake
+	HANDLE doorbell_evt = NULL;		// I/O thread -> consumer wake
+	std::atomic<bool> stop;
+	std::atomic<uint64_t> next_id;
+
+	std::mutex sub_mtx;
+	std::deque<pending> submissions;	// producer -> I/O thread
+
+	std::mutex comp_mtx;
+	std::deque<completion> completions;	// I/O thread -> consumer
+
+	// I/O-thread-owned: fd -> its queued ops (FIFO). Never touched off-thread.
+	// The WSAPoll set is rebuilt from it before every wait (there is no
+	// persistent registration to keep in step, unlike epoll's interest).
+	std::unordered_map<int, std::deque<pending> > fd_ops;
+
+	std::thread th;
+
+	impl() : stop(false), next_id(1) {}
+
+	void wake_iothread()
+	{
+		char one = 1;
+		::send(wake_sock, &one, 1, 0);
+	}
+
+	void ring_doorbell()
+	{
+		SetEvent(doorbell_evt);
+	}
+
+	void clear_doorbell()
+	{
+		ResetEvent(doorbell_evt);
+	}
+
+	// Block up to timeout_ms for the doorbell: 1 = rang, 0 = timeout,
+	// -1 = error (Windows has no EINTR axis).
+	int block_doorbell(int timeout_ms)
+	{
+		DWORD r = WaitForSingleObject(doorbell_evt,
+					      timeout_ms < 0 ? INFINITE
+							     : (DWORD)timeout_ms);
+		if ( r == WAIT_OBJECT_0 )
+			return 1;
+		return r == WAIT_TIMEOUT ? 0 : -1;
+	}
+
+	uint64_t enqueue(const pending &p)
+	{
+		{
+			std::lock_guard<std::mutex> g(sub_mtx);
+			submissions.push_back(p);
+		}
+		wake_iothread();
+		return p.id;
+	}
+
+	void post(const completion &c)
+	{
+		{
+			std::lock_guard<std::mutex> g(comp_mtx);
+			completions.push_back(c);
+		}
+		ring_doorbell();
+	}
+
+	std::size_t drain_into(completion *out, std::size_t max)
+	{
+		std::lock_guard<std::mutex> g(comp_mtx);
+		std::size_t n = 0;
+		while ( n < max && !completions.empty() )
+		{
+			out[n++] = completions.front();
+			completions.pop_front();
+		}
+		return n;
+	}
+
+	// --- I/O-thread side (everything below runs ONLY on the I/O thread) ---
+
+	// Remove a still-pending op by id (a cancel). A no-op if it already
+	// fired. The next wait's set simply omits an fd whose queue emptied.
+	void cancel_op(uint64_t target_id)
+	{
+		for ( std::unordered_map<int, std::deque<pending> >::iterator it =
+			      fd_ops.begin(); it != fd_ops.end(); ++it )
+		{
+			std::deque<pending> &q = it->second;
+			for ( std::deque<pending>::iterator pi = q.begin();
+			      pi != q.end(); ++pi )
+			{
+				if ( pi->id != target_id )
+					continue;
+				q.erase(pi);
+				if ( q.empty() )
+					fd_ops.erase(it);
+				return;
+			}
+		}
+	}
+
+	void complete_op(pending &p, SHORT revents)
+	{
+		completion c;
+		c.id = p.id;
+		c.kind = p.kind;
+		c.user = p.user;
+		int result;
+		if ( p.kind == op_kind::poll )
+		{
+			result = poll_result_flags(wsapoll_readable(revents),
+						   wsapoll_writable(revents));
+		}
+		else if ( p.kind == op_kind::accept )
+		{
+			SOCKET a = ::accept((SOCKET)p.fd, nullptr, nullptr);
+			if ( a == INVALID_SOCKET )
+				result = negative_wsa_error();
+			else
+			{
+				// Born inheritable (the socket channel's note);
+				// clear it, as create_socket / accept() do.
+				SetHandleInformation((HANDLE)a, HANDLE_FLAG_INHERIT, 0);
+				result = (int)a;
+			}
+		}
+		else if ( p.kind == op_kind::read )
+		{
+			int chunk = p.len > (std::size_t)INT_MAX ? INT_MAX
+							       : (int)p.len;
+			int n = ::recv((SOCKET)p.fd, (char *)p.buf, chunk, 0);
+			result = (n >= 0) ? n : negative_wsa_error();
+		}
+		else	// write (no SIGPIPE to suppress on Windows)
+		{
+			int chunk = p.len > (std::size_t)INT_MAX ? INT_MAX
+							       : (int)p.len;
+			int n = ::send((SOCKET)p.fd, (const char *)p.buf, chunk, 0);
+			result = (n >= 0) ? n : negative_wsa_error();
+		}
+		c.result = result;
+		post(c);
+	}
+
+	void drain_submissions()
+	{
+		std::deque<pending> batch;
+		{
+			std::lock_guard<std::mutex> g(sub_mtx);
+			batch.swap(submissions);
+		}
+		for ( std::deque<pending>::iterator pi = batch.begin();
+		      pi != batch.end(); ++pi )
+		{
+			if ( pi->kind == op_kind::cancel )
+			{
+				cancel_op(pi->target);	// no completion posted
+				continue;
+			}
+			if ( pi->kind == op_kind::close )
+			{
+				fd_ops.erase(pi->fd);	// drop any pending interest
+				int rc = ::closesocket((SOCKET)pi->fd);
+				completion c;
+				c.id = pi->id;
+				c.kind = op_kind::close;
+				c.result = (rc == 0) ? 0 : negative_wsa_error();
+				c.user = pi->user;
+				post(c);
+				continue;
+			}
+			fd_ops[pi->fd].push_back(*pi);
+		}
+	}
+
+	void service_fd(int fd, SHORT revents)
+	{
+		std::unordered_map<int, std::deque<pending> >::iterator it =
+			fd_ops.find(fd);
+		if ( it == fd_ops.end() )
+			return;
+		std::deque<pending> &q = it->second;
+
+		bool fd_readable = wsapoll_readable(revents);
+		bool fd_writable = wsapoll_writable(revents);
+
+		// One op per readiness signal; WSAPoll is level-triggered too, so
+		// the next pass re-reports whatever remains — no queued op starves.
+		for ( std::deque<pending>::iterator pi = q.begin(); pi != q.end();
+		      ++pi )
+		{
+			bool ready = (op_wants_readable(*pi) && fd_readable)
+				  || (op_wants_writable(*pi) && fd_writable);
+			if ( !ready )
+				continue;
+			pending p = *pi;
+			q.erase(pi);
+			complete_op(p, revents);
+			break;
+		}
+		if ( q.empty() )
+			fd_ops.erase(fd);
+	}
+
+	void run()
+	{
+		std::vector<WSAPOLLFD> fds;
+		std::vector<int> owners;	// fds[i + 1] -> its fd_ops key
+		for ( ;; )
+		{
+			if ( stop.load() )
+				return;
+			fds.clear();
+			owners.clear();
+			WSAPOLLFD wake;
+			wake.fd = wake_sock;
+			wake.events = POLLRDNORM;
+			wake.revents = 0;
+			fds.push_back(wake);
+			for ( std::unordered_map<int, std::deque<pending> >::iterator
+				      it = fd_ops.begin(); it != fd_ops.end(); ++it )
+			{
+				WSAPOLLFD e;
+				e.fd = (SOCKET)it->first;
+				e.events = 0;
+				for ( std::deque<pending>::iterator p =
+					      it->second.begin();
+				      p != it->second.end(); ++p )
+					e.events |= wsapoll_events_for(*p);
+				e.revents = 0;
+				fds.push_back(e);
+				owners.push_back(it->first);
+			}
+			int n = ::WSAPoll(fds.data(), (ULONG)fds.size(), -1);
+			if ( n == SOCKET_ERROR )
+				return;		// the set itself is bad: stop
+			if ( fds[0].revents != 0 )
+			{
+				char sink[64];
+				while ( ::recv(wake_sock, sink, sizeof(sink), 0) > 0 )
+				{
+				}
+				if ( stop.load() )
+					return;
+				drain_submissions();
+			}
+			for ( std::size_t i = 1; i < fds.size(); ++i )
+				if ( fds[i].revents != 0 )
+					service_fd(owners[i - 1], fds[i].revents);
+		}
+	}
+};
+
+Reactor::Reactor() : _(new impl())
+{
+	if ( winsock_ready() )
+		_->wake_sock = make_wake_socket();
+	_->doorbell_evt = CreateEventW(NULL, TRUE, FALSE, NULL);	// manual reset
+	if ( _->wake_sock == INVALID_SOCKET || _->doorbell_evt == NULL )
+	{
+		if ( _->wake_sock != INVALID_SOCKET )
+			::closesocket(_->wake_sock);
+		if ( _->doorbell_evt != NULL )
+			CloseHandle(_->doorbell_evt);
+		delete _;
+		throw std::runtime_error(
+			"io::Reactor: WSAPoll/event initialization failed");
+	}
+	_->th = std::thread([this]() { _->run(); });
+}
+
+Reactor::~Reactor()
+{
+	_->stop.store(true);
+	_->wake_iothread();		// interrupt WSAPoll; run() returns
+	if ( _->th.joinable() )
+		_->th.join();
+	if ( _->wake_sock != INVALID_SOCKET )
+		::closesocket(_->wake_sock);
+	if ( _->doorbell_evt != NULL )
+		CloseHandle(_->doorbell_evt);
+	delete _;
+}
+
+intptr_t Reactor::doorbell() const
+{
+	return (intptr_t)_->doorbell_evt;
+}
+
+} // namespace io
+} // namespace madc
+
+#endif // platform arms
+
+#if defined(MADC_IO_REACTOR_BACKEND)
+
+// The face every real backend shares — written once, over impl's small
+// internal contract (enqueue / drain_into / clear_doorbell / block_doorbell).
+
+namespace madc {
+namespace io {
+
+bool Reactor::available()
+{
+	return true;
 }
 
 uint64_t Reactor::submit_accept(int listen_fd, void *user)
@@ -470,19 +950,7 @@ void Reactor::submit_cancel(uint64_t target_id)
 
 std::size_t Reactor::drain(completion *out, std::size_t max)
 {
-	std::lock_guard<std::mutex> g(_->comp_mtx);
-	std::size_t n = 0;
-	while ( n < max && !_->completions.empty() )
-	{
-		out[n++] = _->completions.front();
-		_->completions.pop_front();
-	}
-	return n;
-}
-
-intptr_t Reactor::doorbell() const
-{
-	return _->doorbell_evt;
+	return _->drain_into(out, max);
 }
 
 std::size_t Reactor::wait(completion *out, std::size_t max, int timeout_ms)
@@ -495,12 +963,7 @@ std::size_t Reactor::wait(completion *out, std::size_t max, int timeout_ms)
 		_->clear_doorbell();
 		return n;
 	}
-	pollfd pfd;
-	pfd.fd = _->doorbell_evt;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-	int pr = ::poll(&pfd, 1, timeout_ms);
-	if ( pr <= 0 )
+	if ( _->block_doorbell(timeout_ms) <= 0 )
 		return 0;		// timeout or interrupted
 	_->clear_doorbell();
 	return drain(out, max);
@@ -508,25 +971,18 @@ std::size_t Reactor::wait(completion *out, std::size_t max, int timeout_ms)
 
 int Reactor::wait_doorbell(int timeout_ms)
 {
-	pollfd pfd;
-	pfd.fd = _->doorbell_evt;
-	pfd.events = POLLIN;
-	pfd.revents = 0;
-	int pr = ::poll(&pfd, 1, timeout_ms);
-	if ( pr > 0 )
-	{
+	int r = _->block_doorbell(timeout_ms);
+	if ( r > 0 )
 		_->clear_doorbell();
-		return 1;
-	}
-	return pr == 0 ? 0 : -1;	// 0 = timeout; -1 = EINTR / error
+	return r;	// 1 = rang (drain now); 0 = timeout; -1 = EINTR / error
 }
 
 } // namespace io
 } // namespace madc
 
-#else // !defined(__linux__)
+#else // no backend on this platform
 
-// No backend on this platform yet (kqueue/IOCP are follow-on slices). The
+// No backend on this platform yet (kqueue is the follow-on slice). The
 // interface still compiles and links so cross-platform TUs that reference it
 // build; construction refuses loudly and available() says so.
 namespace madc {
@@ -547,7 +1003,7 @@ Reactor::Reactor() : _(nullptr)
 		"io::Reactor: no async I/O backend on this platform yet");
 }
 
-// The stub owns the (never allocated) impl like the real backend does — and
+// The stub owns the (never allocated) impl like the real backends do — and
 // that read is what keeps clang's -Wunused-private-field quiet on darwin,
 // where this arm is the whole TU (the V6 seam's macOS lane failed on it:
 // -Werror, and a pimpl only initialized is "unused" to clang).
@@ -608,4 +1064,4 @@ int Reactor::wait_doorbell(int)
 } // namespace io
 } // namespace madc
 
-#endif // defined(__linux__)
+#endif // MADC_IO_REACTOR_BACKEND

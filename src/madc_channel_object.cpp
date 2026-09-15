@@ -125,7 +125,8 @@ void park_until_readable(ChannelState *s)
 	PollableDataChannel *pollable = pollable_surface(s->channel.get());
 	if ( !pollable )
 		return;
-	taskio::wait_readable(pollable->read_poll_handle());
+	taskio::wait_readable(pollable->read_poll_handle(),
+			      pollable->read_poll_kind());
 }
 
 // Pull one chunk into pending; false only on a read error (EOF sets s->eof).
@@ -802,7 +803,8 @@ int64_t channel::poll_state()
 	PollableDataChannel *pollable = pollable_surface(s->channel.get());
 	if ( !pollable )
 		return 1;	// memory/file reads never block
-	return taskio::poll_readable(pollable->read_poll_handle()) ? 1 : 0;
+	return taskio::poll_readable(pollable->read_poll_handle(),
+				     pollable->read_poll_kind()) ? 1 : 0;
 }
 
 int64_t channel::read_wait_handle()
@@ -815,6 +817,16 @@ int64_t channel::read_wait_handle()
 		? static_cast<int64_t>(pollable->read_poll_handle()) : -1;
 }
 
+poll_handle_kind channel::read_wait_kind()
+{
+	ChannelState *s = state(impl_);
+	if ( !s->channel )
+		return poll_handle_kind::descriptor;
+	PollableDataChannel *pollable = pollable_surface(s->channel.get());
+	return pollable ? pollable->read_poll_kind()
+			: poll_handle_kind::descriptor;
+}
+
 bool channel::wait_readable()
 {
 	for ( ;; )
@@ -823,7 +835,8 @@ bool channel::wait_readable()
 		if ( st != 0 )
 			return st == 1;
 		taskio::wait_readable(
-			static_cast<intptr_t>(read_wait_handle()));
+			static_cast<intptr_t>(read_wait_handle()),
+			read_wait_kind());
 	}
 }
 

@@ -1228,6 +1228,16 @@ public:
 		return pollable ? pollable->read_poll_handle() : (intptr_t)-1;
 	}
 
+	poll_handle_kind read_poll_kind() const override
+	{
+		if ( !process_ || closed_ )
+			return poll_handle_kind::descriptor;
+		PollableDataChannel *pollable =
+			pollable_surface(&process_->stdout_channel());
+		return pollable ? pollable->read_poll_kind()
+				: poll_handle_kind::descriptor;
+	}
+
 	// Stop-this-build (IDE-10b): SIGTERM the child so the following
 	// close() reaps promptly instead of waiting for it to run out.
 	// MT-3b closed the residue: close() on a cancelled channel

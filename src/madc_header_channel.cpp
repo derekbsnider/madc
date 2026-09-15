@@ -69,6 +69,12 @@ intptr_t HeaderFramedDataChannel::read_poll_handle() const
 	return p ? p->read_poll_handle() : -1;
 }
 
+poll_handle_kind HeaderFramedDataChannel::read_poll_kind() const
+{
+	PollableDataChannel *p = pollable_surface(inner_.get());
+	return p ? p->read_poll_kind() : poll_handle_kind::descriptor;
+}
+
 bool HeaderFramedDataChannel::read_raw(void *buffer, std::size_t capacity,
 				       std::size_t &bytes_read, error *err)
 {

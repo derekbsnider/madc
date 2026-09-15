@@ -105,8 +105,10 @@ public:
 	int exit_status() const override;
 	bool is_terminal() const override;
 
-	// PollableDataChannel — a serve task parks on the inner endpoint.
+	// PollableDataChannel — a serve task parks on the inner endpoint (and
+	// its handle lives in the inner endpoint's space).
 	intptr_t read_poll_handle() const override;
+	poll_handle_kind read_poll_kind() const override;
 
 	// Raw inner I/O for the channel object's message pump.
 	bool read_raw(void *buffer, std::size_t capacity, std::size_t &bytes_read,

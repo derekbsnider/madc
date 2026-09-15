@@ -110,18 +110,37 @@ public:
 // mixin themselves.
 SeekableDataChannel *seekable_surface(DataChannel *channel);
 
+// The NAMESPACE a poll handle's value lives in. On POSIX every waitable is a
+// descriptor (a socket is one too); on Windows a CRT fd (a console, an
+// _open_osfhandle-converted process pipe) and a SOCKET (a kernel handle) are
+// two spaces whose small integer values can collide, and no OS query
+// disambiguates a bare integer — so the kind travels with the value, from
+// the channel that owns the handle (enum-over-strings.md: a discriminator is
+// an enum, stated once at the source).
+enum class poll_handle_kind : unsigned char
+{
+	descriptor,	// a CRT / POSIX fd
+	socket		// a socket (a SOCKET on Windows; a descriptor elsewhere)
+};
+
 // Optional extension for channels an event loop can WAIT on: the READ
-// side's poll handle — a CRT fd on every platform (Windows process pipes
-// are _open_osfhandle-converted, so an fd is uniform). -1 = not currently
-// waitable (closed, or the read side is gone). The handle is only valid
-// while the channel stays open; holders must not close it. (MT-4b: the
-// cooperative scheduler's io-wait seat parks tasks on this handle.)
+// side's poll handle plus its kind. -1 = not currently waitable (closed, or
+// the read side is gone). The handle is only valid while the channel stays
+// open; holders must not close it. (MT-4b: the cooperative scheduler's
+// io-wait seat parks tasks on this handle.)
 class PollableDataChannel
 {
 public:
 	virtual ~PollableDataChannel() {}
 
 	virtual intptr_t read_poll_handle() const = 0;
+	// The space read_poll_handle() lives in; a descriptor unless the
+	// channel says otherwise (the socket channels, and the framers that
+	// forward an inner socket's handle, answer `socket`).
+	virtual poll_handle_kind read_poll_kind() const
+	{
+		return poll_handle_kind::descriptor;
+	}
 };
 
 // The one truthful-waitability probe (seekable_surface's twin): interface

@@ -122,12 +122,16 @@ public:
 	// (memory, file) always report 1 — their reads never block.
 	// wait_readable() parks the calling task until progress is possible
 	// (true) or the channel is dead (false). read_wait_handle() is the
-	// raw poll handle for event-loop plumbing (a CRT fd; -1 = not
-	// waitable) — int64_t on purpose: the embedded-header twin must
-	// mangle identically on every platform (intptr_t does not).
+	// raw poll handle for event-loop plumbing (-1 = not waitable) —
+	// int64_t on purpose: the embedded-header twin must mangle
+	// identically on every platform (intptr_t does not). read_wait_kind()
+	// is its engine-side twin: the space that handle lives in (a socket
+	// is not a CRT fd on Windows) — C++ only, never mirrored into
+	// <ns_madc>: a dialect program never names a handle's namespace.
 	int64_t poll_state();
 	bool wait_readable();
 	int64_t read_wait_handle();
+	poll_handle_kind read_wait_kind();
 
 	// Abandon the transfer NOW (IDE-10b stop): tear down the endpoint
 	// without waiting for graceful completion — an exec:// child is

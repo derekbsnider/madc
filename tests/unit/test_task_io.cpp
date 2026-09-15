@@ -27,7 +27,7 @@ struct Rd { int fd; char tag; };
 void reader(void *arg)
 {
     Rd *r = (Rd *)arg;
-    madc::taskio::wait_readable(r->fd);
+    madc::taskio::wait_readable(r->fd, madc::poll_handle_kind::descriptor);
     char b[8];
     ssize_t n = ::read(r->fd, b, sizeof b);
     g_order += r->tag;
@@ -47,14 +47,14 @@ void parker(void *arg)
 TEST_CASE("io wait: a parked reader wakes when the fd turns readable") {
     int fds[2];
     REQUIRE(::pipe(fds) == 0);
-    CHECK(!madc::taskio::poll_readable(fds[0]));
+    CHECK(!madc::taskio::poll_readable(fds[0], madc::poll_handle_kind::descriptor));
     Rd r{fds[0], 'a'};
     g_order.clear();
     __madc_go(reader, &r);
     __madc_yield();			// reader probes, registers, parks
     CHECK(g_order == "");		// parked, not done
     CHECK(::write(fds[1], "x", 1) == 1);
-    CHECK(madc::taskio::poll_readable(fds[0]));
+    CHECK(madc::taskio::poll_readable(fds[0], madc::poll_handle_kind::descriptor));
     __madc_task_join_all();		// the io wait fires the fd
     CHECK(g_order == "a+");
     ::close(fds[0]);
@@ -69,7 +69,7 @@ TEST_CASE("io wait: EOF is readable progress (the read surfaces it)") {
     __madc_go(reader, &r);
     __madc_yield();			// parked on the empty pipe
     ::close(fds[1]);			// EOF arrives while parked
-    CHECK(madc::taskio::poll_readable(fds[0]));
+    CHECK(madc::taskio::poll_readable(fds[0], madc::poll_handle_kind::descriptor));
     __madc_task_join_all();
     CHECK(g_order == "e0");		// woke; read returned 0
     ::close(fds[0]);
@@ -169,7 +169,7 @@ TEST_CASE("host wait: a bounded park with no fd and no activity wakes on "
     REQUIRE(::pipe(fds) == 0);
     CHECK(madc::taskio::host_wait_readable(fds[0], 30)
 	  == madc::taskio::host_wake::deadline);
-    CHECK(!madc::taskio::poll_readable(fds[0]));
+    CHECK(!madc::taskio::poll_readable(fds[0], madc::poll_handle_kind::descriptor));
     ::close(fds[0]);
     ::close(fds[1]);
 }
@@ -186,7 +186,7 @@ TEST_CASE("host wait: activity with no fd = the synthetic wake (unfired, "
     CHECK(madc::taskio::host_wait_readable(fds[0])
           == madc::taskio::host_wake::synthetic);
     CHECK(g_order == "t");
-    CHECK(!madc::taskio::poll_readable(fds[0]));
+    CHECK(!madc::taskio::poll_readable(fds[0], madc::poll_handle_kind::descriptor));
     __madc_task_join_all();
     ::close(fds[0]);
     ::close(fds[1]);

@@ -103,6 +103,17 @@ and is proven FIRST, then the fast paths:
 4. **The IOCP backend (Windows), select/WSAPoll fallback.** Native
    completion. Gate on genuine-win; the `select` floor covers old Windows
    and keeps the wine lane simple.
+   **The floor LANDED 2026-09-15** ([plan](2026-09-15-reactor-windows-backend-plan.md)):
+   the WSAPoll readiness adapter, the epoll arm's exact I/O-thread shape,
+   with a loopback UDP socket as the submit wake and a manual-reset Event as
+   the doorbell so the scheduler's console wait joins it in one
+   `WaitForMultipleObjects`. The submit/drain/wait face is written ONCE for
+   every real backend (the TU's shared section). IOCP proper waits for a
+   consumer of the COMPLETION ops (the channel-layer migration below): the
+   reactor's one consumer today is `submit_poll` + the doorbell, which IOCP
+   has no native spelling for. The root the slice actually fixed was below
+   the reactor: the taskio park's Windows probe had no SOCKET arm, and a
+   poll handle carried no namespace (`poll_handle_kind` now rides with it).
 
 Each backend is one translation unit selected at build time by platform
 (`#ifdef`), with io_uring vs epoll chosen at RUNTIME on Linux.
