@@ -14,6 +14,9 @@ set -u
 
 FILE="$(dirname "$0")/../tools/madcide/madcide_core.inc"
 CLIENT="$(dirname "$0")/../tools/madcide/madcide_client.inc"
+MCP="$(dirname "$0")/../tools/madcide/madcide_mcp.inc"
+TOOLS="$(dirname "$0")/../tools/madcide"
+TEXTED="$(dirname "$0")/../tools/texteditor"
 
 count_rows()
 {
@@ -106,11 +109,61 @@ if [ "$(count_hand_basenames "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
+# The JSON-RPC 2.0 ENVELOPE has ONE spelling per shape: jsonrpc_reply /
+# jsonrpc_error / jsonrpc_notify / jsonrpc_request (madcide_api.inc). The V6
+# seam audit found the MCP seat, the LSP face and the MCP client each
+# building the envelope by hand — seven sites, byte-identical, unguarded.
+# Marker: the `"jsonrpc": "2.0"` literal appears exactly four times across
+# tools/madcide (the four owners). madcide's self-identification likewise:
+# `"name": "madcide"` once (madcide_self_info).
+count_envelopes()
+{
+	cat "$@" | grep -c '"jsonrpc": "2.0"'
+}
+count_self_infos()
+{
+	cat "$@" | grep -c '"name": "madcide"'
+}
+
+n=$(count_envelopes "$TOOLS"/*.inc)
+if [ "$n" -ne 4 ]; then
+	echo "check-madcide-single-owners: FAIL — $n JSON-RPC envelope spellings" \
+	     "across tools/madcide (expected 4: jsonrpc_reply / _error / _notify" \
+	     "/ _request in madcide_api.inc). Call the owner, never restate the" \
+	     "envelope." >&2
+	grep -n '"jsonrpc": "2.0"' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+n=$(count_self_infos "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n self-identification literal(s)" \
+	     "across tools/madcide (expected 1: madcide_self_info)." >&2
+	exit 1
+fi
+
+# Negative controls for the envelope markers.
+tmp=$(mktemp)
+cat "$TOOLS"/*.inc > "$tmp"
+echo '    out = { "jsonrpc": "2.0", "id": id, "result": result };	// synthetic' >> "$tmp"
+if [ "$(count_envelopes "$tmp")" -ne 5 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic envelope (the marker went blind)." >&2
+	exit 1
+fi
+echo '    var info = { "name": "madcide", "version": "1.0.0" };	// synthetic' >> "$tmp"
+if [ "$(count_self_infos "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic self-identification (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # A session's browser URL has ONE spelling: session_url (madcide_discover.inc)
 # — the record's `url` and the $/madc/serve announcement both call it (the V6
 # seam audit found the format restated in each). Marker: the http:// format
 # appears once across tools/madcide.
-TOOLS="$(dirname "$0")/../tools/madcide"
 count_url_spellings()
 {
 	cat "$@" | grep -c 'format("http://{}/"'
@@ -141,7 +194,6 @@ rm -f "$tmp"
 # times beside six adopters; a field added to the owner (a code, a hint)
 # would have missed those three. Marker: the `"isError": true` literal
 # appears exactly once in madcide_mcp.inc — inside the owner.
-MCP="$(dirname "$0")/../tools/madcide/madcide_mcp.inc"
 count_refusal_shapes()
 {
 	grep -c '"isError": true' "$1"
@@ -265,7 +317,6 @@ rm -f "$tmp"
 # unset slot as a boolean throws; the V6 seam audit found ten reads, nine
 # guarded by hand and one not. Marker: the slot is READ once across the
 # texteditor + madcide layers — inside the owner.
-TEXTED="$(dirname "$0")/../tools/texteditor"
 count_modified_reads()
 {
 	cat "$@" | grep -c 'ui::get([a-z]*, w, [^,]*, "modified")'
@@ -295,7 +346,6 @@ rm -f "$tmp"
 # (editor_events.inc). madcide_past.inc carried a byte-identical twin,
 # arg_of, until the V6 seam (32 call sites rode the second name). Marker:
 # the guarded-read body appears once across the texteditor + madcide layers.
-TEXTED="$(dirname "$0")/../tools/texteditor"
 count_keyed_reads()
 {
 	cat "$@" | grep -c 'out = [a-z]*\[key\];'

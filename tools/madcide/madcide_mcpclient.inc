@@ -192,7 +192,8 @@ bool mcp_client_call(var &out, madc::channel &c, long &next_id, const char *meth
 {
     long id = next_id;
     next_id = next_id + 1;
-    var req = { "jsonrpc": "2.0", "id": id, "method": method, "params": params };
+    var req;
+    jsonrpc_request(req, id, method, params);
     var js = js::stringify(req);
     var line = format("{}\n", js);
     if ( !c.write(line.c_str()) )
@@ -250,7 +251,8 @@ bool mcp_client_call(var &out, madc::channel &c, long &next_id, const char *meth
 void mcp_client_notify(madc::channel &c, const char *method)
 {
     var params = {};
-    var req = { "jsonrpc": "2.0", "method": method, "params": params };
+    var req;
+    jsonrpc_notify(req, method, params);
     var js = js::stringify(req);
     var line = format("{}\n", js);
     c.write(line.c_str());
@@ -308,8 +310,10 @@ void nexus_sync(var &out, long w, long es, long adoc, long self_id, const char *
     }
     long next_id = 1;
     var caps = {};
-    var info = { "name": "madcide", "version": "1.0.0" };
-    var iparams = { "protocolVersion": "2024-11-05", "capabilities": caps, "clientInfo": info };
+    var info;
+    madcide_self_info(info);
+    var proto = mcp_protocol_version();
+    var iparams = { "protocolVersion": proto, "capabilities": caps, "clientInfo": info };
     var ires;
     if ( !mcp_client_call(ires, c, next_id, "initialize", iparams, 5000) )
     {

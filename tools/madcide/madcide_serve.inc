@@ -276,7 +276,7 @@ void lsp_stdio_loop(IdeSession &S, long doc, madc::channel &io, long w, long es)
 	if ( !js::parse(req, line.c_str()) )
 	{
 	    var nullid;
-	    lsp_error(resp, nullid, -32700, "Parse error");
+	    jsonrpc_error(resp, nullid, -32700, "Parse error");
 	    var js = js::stringify(resp);
 	    io.write(js.c_str());
 	    continue;
@@ -377,7 +377,7 @@ long run_attach(const char *addr, bool framed)
 		    var idv = req["id"];
 		    var nothing;
 		    var resp;
-		    lsp_reply(resp, idv, nothing);
+		    jsonrpc_reply(resp, idv, nothing);
 		    var js = js::stringify(resp);
 		    io.write(js.c_str());
 		    down = true;

@@ -21,6 +21,54 @@
 // (broadcast_events) and the permission tiers (grant_tier / eff_tier /
 // clienttier) live here beside the command core.
 
+// ---- JSON-RPC 2.0 envelopes — ONE spelling for every face --------------------
+// The MCP seat, the LSP face and madcide-as-an-MCP-client all speak JSON-RPC
+// 2.0; the ENVELOPE — the id echoed on a reply, the {code, message} error
+// object, a notification's missing id, a request's id + method + params — is
+// one rule, whichever protocol rides on top. Until the V6 seam each face built
+// its own copy (lsp_reply / mcp_reply, lsp_error / mcp_error, lsp_notify and
+// two inline requests), byte-identical and unguarded. They live here, in the
+// layer every face includes, so the gate can count the spelling once per shape.
+void jsonrpc_reply(var &out, var &id, var &result)
+{
+    out = { "jsonrpc": "2.0", "id": id, "result": result };
+}
+
+// `id` null for a parse error before an id is known; `code` the JSON-RPC
+// error code (-32601 method-not-found, -32602 invalid params, ...).
+void jsonrpc_error(var &out, var &id, long code, const char *message)
+{
+    var err = { "code": code, "message": message };
+    out = { "jsonrpc": "2.0", "id": id, "error": err };
+}
+
+// A NOTIFICATION carries no id: the receiver must not answer it.
+void jsonrpc_notify(var &out, const char *method, var &params)
+{
+    out = { "jsonrpc": "2.0", "method": method, "params": params };
+}
+
+// A REQUEST (madcide as a client): its id is the client's own counter.
+void jsonrpc_request(var &out, long id, const char *method, var &params)
+{
+    out = { "jsonrpc": "2.0", "id": id, "method": method, "params": params };
+}
+
+// madcide's self-identification on every wire (LSP serverInfo, MCP
+// serverInfo / clientInfo) — one name, and the version is madc's own, the
+// same the session advertisement carries (three faces had said "1.0.0").
+void madcide_self_info(var &out)
+{
+    var version = madc::sys.version;
+    out = { "name": "madcide", "version": version };
+}
+
+// The MCP protocol revision this seat speaks, as server and as client.
+const char *mcp_protocol_version()
+{
+    return "2024-11-05";
+}
+
 // Read the request's optional text ARGUMENT as a C string ("" when absent).
 const char *api_arg(var &req)
 {

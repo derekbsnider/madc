@@ -45,24 +45,10 @@
 // madcide_serve.inc, because that is where madcide's serving processes live.
 
 // ---- JSON-RPC envelopes ------------------------------------------------
-
-void lsp_reply(var &out, var &id, var &result)
-{
-    out = { "jsonrpc": "2.0", "id": id, "result": result };
-}
-
-void lsp_error(var &out, var &id, long code, const char *message)
-{
-    var err = { "code": code, "message": message };
-    out = { "jsonrpc": "2.0", "id": id, "error": err };
-}
-
-// A server -> client NOTIFICATION (publishDiagnostics today). It carries no
-// id: the client must not answer it.
-void lsp_notify(var &out, const char *method, var &params)
-{
-    out = { "jsonrpc": "2.0", "method": method, "params": params };
-}
+// jsonrpc_reply / jsonrpc_error / jsonrpc_notify (madcide_api.inc) — the ONE
+// spelling the MCP seat shares; this face carried its own copies until the V6
+// seam. A server -> client NOTIFICATION (publishDiagnostics, $/madc/*) carries
+// no id: the client must not answer it.
 
 // ---- file:// URIs ------------------------------------------------------
 // A URI is text at an input boundary: decoded once here, canonicalised, and
@@ -408,7 +394,7 @@ void lsp_publish(var &notes, IdeSession &S, long adoc, long enc)
     lsp_doc_uri(uri, w, adoc);
     var params = { "uri": uri, "diagnostics": items };
     var note;
-    lsp_notify(note, "textDocument/publishDiagnostics", params);
+    jsonrpc_notify(note, "textDocument/publishDiagnostics", params);
     notes[] = note;
 }
 
@@ -733,7 +719,7 @@ void lsp_serve_note(var &notes, long w, long es)
     session_url(url, ep);		// the one spelling the record uses too
     var params = { "endpoint": ep, "url": url };
     var note;
-    lsp_notify(note, madc_note_name(mnSERVE), params);
+    jsonrpc_notify(note, madc_note_name(mnSERVE), params);
     notes[] = note;
 }
 
@@ -769,7 +755,7 @@ void lsp_session_notes(var &notes, IdeSession &S, long adoc, long enc,
     for ( var e : evs )
     {
 	var note;
-	lsp_notify(note, madc_note_name(mnEVENT), e);
+	jsonrpc_notify(note, madc_note_name(mnEVENT), e);
 	notes[] = note;
     }
     var msg;
@@ -778,7 +764,7 @@ void lsp_session_notes(var &notes, IdeSession &S, long adoc, long enc,
     {
 	var params = { "message": msg };
 	var note;
-	lsp_notify(note, madc_note_name(mnMESSAGE), params);
+	jsonrpc_notify(note, madc_note_name(mnMESSAGE), params);
 	notes[] = note;
     }
     lsp_publish(notes, S, adoc, enc);
@@ -798,7 +784,7 @@ void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
     {
 	var nocmd = { "ok": false,
 		      "error": "workspace/executeCommand needs a command" };
-	lsp_reply(out, idv, nocmd);
+	jsonrpc_reply(out, idv, nocmd);
 	return;
     }
     const char *wire = cmd.c_str();
@@ -809,7 +795,7 @@ void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
 	var why = format("'{}' is not a madcide command (they are spelled '{}<name>')",
 			 cmd, pfx);
 	var bad = { "ok": false, "error": why };
-	lsp_reply(out, idv, bad);
+	jsonrpc_reply(out, idv, bad);
 	return;
     }
     var name = wire + plen;
@@ -829,7 +815,7 @@ void lsp_execute_command(var &out, var &notes, IdeSession &S, long doc,
     lsp_msg_of(msg_before, w, es);
     var body;
     api_run(body, S, doc, self_id, name.c_str(), arg);
-    lsp_reply(out, idv, body);
+    jsonrpc_reply(out, idv, body);
     lsp_session_notes(notes, S, S.active(doc), enc, head_before, msg_before);
 }
 
@@ -963,9 +949,10 @@ void lsp_initialize(var &out, IdeSession &S, long self_id, var &idv, var &params
     lsp_set_encoding(S.world(), S.es, self_id, enc);
     var caps;
     lsp_capabilities(caps, enc);
-    var info = { "name": "madcide", "version": "1.0.0" };
+    var info;
+    madcide_self_info(info);
     var result = { "capabilities": caps, "serverInfo": info };
-    lsp_reply(out, idv, result);
+    jsonrpc_reply(out, idv, result);
 }
 
 // shutdown: the client asks the server to stop serving; `exit` follows. The
@@ -975,7 +962,7 @@ void lsp_shutdown(var &out, IdeSession &S, var &idv)
 {
     ui::set(S.world(), S.es, "lspdown", 1);
     var nothing;					// JSON null, per the spec
-    lsp_reply(out, idv, nothing);
+    jsonrpc_reply(out, idv, nothing);
 }
 
 // ---- the dispatcher -----------------------------------------------------
@@ -1005,7 +992,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	    return false;				// never answer a notification
 	}
 	var why = format("Method not found: {}", method);
-	lsp_error(out, idv, -32601, why.c_str());
+	jsonrpc_error(out, idv, -32601, why.c_str());
 	return true;
     }
     if ( lsp_is_notification(m) && wants_reply )
@@ -1013,7 +1000,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	// A client that put an id on a notification gets told, rather than
 	// waiting forever for a reply the protocol says never comes.
 	var why = format("{} is a notification and takes no id", method);
-	lsp_error(out, idv, -32600, why.c_str());
+	jsonrpc_error(out, idv, -32600, why.c_str());
 	return true;
     }
     var params = req["params"];
@@ -1078,7 +1065,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
     if ( adoc == 0 )
     {
 	var why = format("{}: no readable file:// document in the request", method);
-	lsp_error(out, idv, -32602, why.c_str());
+	jsonrpc_error(out, idv, -32602, why.c_str());
 	return true;
     }
     // The L4e layer gate, by the same owner the graph / nexus / test families
@@ -1092,7 +1079,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
 	var joined = php::implode(", ", words);
 	var why = format("{}: this document has no parseable layer (it has: {})",
 			 method, joined);
-	lsp_error(out, idv, -32803, why.c_str());	// RequestFailed
+	jsonrpc_error(out, idv, -32803, why.c_str());	// RequestFailed
 	return true;
     }
     long h = ensure_phandle(w, es, adoc);
@@ -1105,6 +1092,6 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
     case lmREFERENCES:     lsp_references(result, S, adoc, h, enc, params); break;
     case lmSEMANTICTOKENS: lsp_semantic_tokens(result, S, adoc, h, enc); break;
     }
-    lsp_reply(out, idv, result);
+    jsonrpc_reply(out, idv, result);
     return true;
 }

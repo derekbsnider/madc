@@ -66,20 +66,9 @@ void node_offers(var &out, long w, long es);
 // family gates on, this node's offers and the `target` slot (§3.11).
 #include "madcide_layers.inc"
 
-// A JSON-RPC 2.0 success envelope: this request's id echoed, its result.
-// Fills `out` (the dialect carrier-return convention, pre-L3 value-return).
-void mcp_reply(var &out, var &id, var &result)
-{
-    out = { "jsonrpc": "2.0", "id": id, "result": result };
-}
-
-// A JSON-RPC 2.0 error envelope (id null for a parse error before an id is
-// known). `code` is the JSON-RPC error code (-32601 method-not-found, etc.).
-void mcp_error(var &out, var &id, long code, const char *message)
-{
-    var err = { "code": code, "message": message };
-    out = { "jsonrpc": "2.0", "id": id, "error": err };
-}
+// The JSON-RPC 2.0 envelopes this seat sends are jsonrpc_reply / jsonrpc_error
+// (madcide_api.inc) — the ONE spelling the LSP face shares; this seat carried
+// its own copies until the V6 seam.
 
 // Code-graph MCP L1 (design 2026-09-12): the seven L1 graph verbs, PLUS the
 // two L1b body-graph verbs (graph.body/graph.children), with their argument
@@ -1648,7 +1637,7 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
     var params = req["params"];
     if ( method.is_null() )
     {
-	mcp_error(out, idv, -32600, "Invalid Request: no method");
+	jsonrpc_error(out, idv, -32600, "Invalid Request: no method");
 	return true;
     }
     // The method converts ONCE at the wire boundary (mcp_method_of,
@@ -1661,7 +1650,7 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
     {
 	case mmINITIALIZE:
 	{
-	    var proto = "2024-11-05";	// echo the client's version if given
+	    var proto = mcp_protocol_version();	// echo the client's version if given
 	    if ( !params.is_null() )
 	    {
 		var pv = params["protocolVersion"];
@@ -1670,16 +1659,17 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	    }
 	    var toolscap = { "listChanged": false };
 	    var caps = { "tools": toolscap };
-	    var info = { "name": "madcide", "version": "1.0.0" };
+	    var info;
+	    madcide_self_info(info);
 	    var result = { "protocolVersion": proto,
 		"capabilities": caps, "serverInfo": info };
-	    mcp_reply(out, idv, result);
+	    jsonrpc_reply(out, idv, result);
 	    return true;
 	}
 	case mmPING:
 	{
 	    var empty = {};
-	    mcp_reply(out, idv, empty);
+	    jsonrpc_reply(out, idv, empty);
 	    return true;
 	}
 	case mmTOOLSLIST:
@@ -1687,20 +1677,20 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	    var tools;
 	    mcp_tools(tools);
 	    var result = { "tools": tools };
-	    mcp_reply(out, idv, result);
+	    jsonrpc_reply(out, idv, result);
 	    return true;
 	}
 	case mmTOOLSCALL:
 	{
 	    if ( params.is_null() )
 	    {
-		mcp_error(out, idv, -32602, "tools/call needs params");
+		jsonrpc_error(out, idv, -32602, "tools/call needs params");
 		return true;
 	    }
 	    var nm = params["name"];
 	    if ( nm.is_null() )
 	    {
-		mcp_error(out, idv, -32602, "tools/call needs a tool name");
+		jsonrpc_error(out, idv, -32602, "tools/call needs a tool name");
 		return true;
 	    }
 	    // The tool FAMILY converts once from the name's dotted prefix
@@ -1725,12 +1715,12 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 		    mcp_call(result, S, doc, self_id, nm, params);
 		    break;
 	    }
-	    mcp_reply(out, idv, result);
+	    jsonrpc_reply(out, idv, result);
 	    return true;
 	}
     }
     var msg = format("Method not found: {}", method);
-    mcp_error(out, idv, -32601, msg.c_str());
+    jsonrpc_error(out, idv, -32601, msg.c_str());
     return true;
 }
 
@@ -1759,7 +1749,7 @@ long run_mcp(const char *path, bool ro)
 	{
 	    var nullid;
 	    var resp;
-	    mcp_error(resp, nullid, -32700, "Parse error");
+	    jsonrpc_error(resp, nullid, -32700, "Parse error");
 	    var js = js::stringify(resp);
 	    println("{}", js);
 	    fflush(stdout);		// a piped reply must leave libc's buffer now — the client waits on it

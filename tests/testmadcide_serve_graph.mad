@@ -59,7 +59,7 @@ int main()
 	{
 	    var nullid;
 	    var resp;
-	    mcp_error(resp, nullid, -32700, "Parse error");
+	    jsonrpc_error(resp, nullid, -32700, "Parse error");
 	    var js = js::stringify(resp);
 	    println("{}", js);
 	    continue;
