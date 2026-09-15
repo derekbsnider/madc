@@ -1446,3 +1446,66 @@ long lsp_sync_number(long s)
     }
     return 0;				// TextDocumentSyncKind.None
 }
+
+// ---- the MCP seat's vocabulary (V6c-1; enum'd at the V6 seam) --------------
+// MCP is JSON-RPC 2.0 whose METHOD is a string on the wire, exactly as the LSP
+// face's is: text converts ONCE (mcp_method_of) and the seat switches on the
+// code — the owner law. Until the V6 seam mcp_handle dispatched on a ladder of
+// strcmp()s while its own tool families (graph_verb_of, nexus_verb_of,
+// test_verb_of) and the LSP face converted once; check-madcide-enums rule 6
+// now refuses a strcmp against a method word.
+
+enum mcp_method : unsigned char {
+    mmNONE = 0,
+    mmINITIALIZE, mmPING, mmTOOLSLIST, mmTOOLSCALL,
+    mmLAST				// the converter's bound — add ABOVE this
+};
+const char *mcp_method_name(long m)
+{
+    switch ( m )
+    {
+	case mmINITIALIZE: return "initialize";
+	case mmPING: return "ping";
+	case mmTOOLSLIST: return "tools/list";
+	case mmTOOLSCALL: return "tools/call";
+    }
+    return "";
+}
+// The bound is the SENTINEL (mmLAST), never the last name — the lsp_method_of
+// lesson: a method added below the previous last enumerator was silently
+// unconvertible.
+long mcp_method_of(var &word)
+{
+    if ( word.is_null() )
+	return mmNONE;
+    for ( long k = mmINITIALIZE; k < mmLAST; k = k + 1 )
+	if ( word == mcp_method_name(k) )
+	    return k;
+    return mmNONE;
+}
+
+// A tool's FAMILY, by the dotted prefix of its name: graph.* (the code graph),
+// nexus.* (intent records), test.* (evidence) — and everything else is a
+// madcide registry command (mcp_call -> api_run). The prefix is text at the
+// wire boundary, converted once here; tools/call switches on the code.
+enum tool_family : unsigned char { tfREGISTRY = 0, tfGRAPH, tfNEXUS, tfTEST, tfLAST };
+const char *tool_family_prefix(long f)
+{
+    switch ( f )
+    {
+	case tfGRAPH: return "graph.";
+	case tfNEXUS: return "nexus.";
+	case tfTEST: return "test.";
+    }
+    return "";
+}
+long tool_family_of(const char *name)
+{
+    for ( long k = tfGRAPH; k < tfLAST; k = k + 1 )
+    {
+	const char *p = tool_family_prefix(k);
+	if ( strncmp(name, p, strlen(p)) == 0 )
+	    return k;
+    }
+    return tfREGISTRY;
+}

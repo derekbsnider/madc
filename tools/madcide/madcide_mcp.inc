@@ -1651,83 +1651,83 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	mcp_error(out, idv, -32600, "Invalid Request: no method");
 	return true;
     }
-    const char *m = method.c_str();
-    if ( strcmp(m, "initialize") == 0 )
+    // The method converts ONCE at the wire boundary (mcp_method_of,
+    // madcide_enums.inc) and the seat switches on the code — the owner law,
+    // as the LSP face and this file's own tool families already did; the
+    // strcmp ladder that stood here until the V6 seam is what
+    // check-madcide-enums rule 6 refuses.
+    long mm = mcp_method_of(method);
+    switch ( mm )
     {
-	var proto = "2024-11-05";	// echo the client's version if given
-	if ( !params.is_null() )
+	case mmINITIALIZE:
 	{
-	    var pv = params["protocolVersion"];
-	    if ( !pv.is_null() )
-		proto = pv;
-	}
-	var toolscap = { "listChanged": false };
-	var caps = { "tools": toolscap };
-	var info = { "name": "madcide", "version": "1.0.0" };
-	var result = { "protocolVersion": proto,
-	    "capabilities": caps, "serverInfo": info };
-	mcp_reply(out, idv, result);
-	return true;
-    }
-    if ( strcmp(m, "ping") == 0 )
-    {
-	var empty = {};
-	mcp_reply(out, idv, empty);
-	return true;
-    }
-    if ( strcmp(m, "tools/list") == 0 )
-    {
-	var tools;
-	mcp_tools(tools);
-	var result = { "tools": tools };
-	mcp_reply(out, idv, result);
-	return true;
-    }
-    if ( strcmp(m, "tools/call") == 0 )
-    {
-	if ( params.is_null() )
-	{
-	    mcp_error(out, idv, -32602, "tools/call needs params");
-	    return true;
-	}
-	var nm = params["name"];
-	if ( nm.is_null() )
-	{
-	    mcp_error(out, idv, -32602, "tools/call needs a tool name");
-	    return true;
-	}
-	// Code-graph MCP L1: a graph.* verb is a distinct tool family, dispatched
-	// by name BEFORE the editor-registry path (api_run/mcp_call), so it never
-	// falls through as an unknown registry command. strncmp over the
-	// dialect's c_str() — the plan's guessed php::substr does not exist in
-	// this namespace (grep include/madc/ns_php* 2026-09-12: no `substr`
-	// public); a prefix test dispatched once, not a per-verb ladder here.
-	if ( strncmp(nm.c_str(), "graph.", 6) == 0 )
-	{
-	    var result;
-	    graph_call(result, S, doc, self_id, nm, params);
+	    var proto = "2024-11-05";	// echo the client's version if given
+	    if ( !params.is_null() )
+	    {
+		var pv = params["protocolVersion"];
+		if ( !pv.is_null() )
+		    proto = pv;
+	    }
+	    var toolscap = { "listChanged": false };
+	    var caps = { "tools": toolscap };
+	    var info = { "name": "madcide", "version": "1.0.0" };
+	    var result = { "protocolVersion": proto,
+		"capabilities": caps, "serverInfo": info };
 	    mcp_reply(out, idv, result);
 	    return true;
 	}
-	// Nexus L4d: the nexus.* (intent) and test.* (evidence) families.
-	if ( strncmp(nm.c_str(), "nexus.", 6) == 0 )
+	case mmPING:
 	{
-	    var result;
-	    nexus_call(result, S, doc, self_id, nm, params);
+	    var empty = {};
+	    mcp_reply(out, idv, empty);
+	    return true;
+	}
+	case mmTOOLSLIST:
+	{
+	    var tools;
+	    mcp_tools(tools);
+	    var result = { "tools": tools };
 	    mcp_reply(out, idv, result);
 	    return true;
 	}
-	if ( strncmp(nm.c_str(), "test.", 5) == 0 )
+	case mmTOOLSCALL:
 	{
+	    if ( params.is_null() )
+	    {
+		mcp_error(out, idv, -32602, "tools/call needs params");
+		return true;
+	    }
+	    var nm = params["name"];
+	    if ( nm.is_null() )
+	    {
+		mcp_error(out, idv, -32602, "tools/call needs a tool name");
+		return true;
+	    }
+	    // The tool FAMILY converts once from the name's dotted prefix
+	    // (tool_family_of): graph.* (code-graph MCP L1), nexus.* and
+	    // test.* (Nexus L4d) are distinct families dispatched BEFORE the
+	    // editor-registry path (mcp_call -> api_run), so a family verb
+	    // never falls through as an unknown registry command.
 	    var result;
-	    test_call(result, S, doc, self_id, nm, params);
+	    long fam = tool_family_of(nm.c_str());
+	    switch ( fam )
+	    {
+		case tfGRAPH:
+		    graph_call(result, S, doc, self_id, nm, params);
+		    break;
+		case tfNEXUS:
+		    nexus_call(result, S, doc, self_id, nm, params);
+		    break;
+		case tfTEST:
+		    test_call(result, S, doc, self_id, nm, params);
+		    break;
+		default:
+		    mcp_call(result, S, doc, self_id, nm, params);
+		    break;
+	    }
 	    mcp_reply(out, idv, result);
 	    return true;
 	}
-	var result;
-	mcp_call(result, S, doc, self_id, nm, params);
-	mcp_reply(out, idv, result);
-	return true;
     }
     var msg = format("Method not found: {}", method);
     mcp_error(out, idv, -32601, msg.c_str());

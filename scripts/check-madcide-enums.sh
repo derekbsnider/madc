@@ -44,10 +44,10 @@ SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_mcp.inc "$ROOT"/tools/madcide/madc
 # The name words: every `return "word";` inside the five name converters.
 name_words()
 {
-	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status|record_kind|record_state|record_op|link_op|ref_kind|rel|provenance|test_family|nexus_op|mcp_transport|explain_detail|layer|test_result|node_serve|pos_encoding|lsp_token|lsp_method)_name\(long/ { on = 1 }
+	awk '/^const char \*(pane|tab|prompt|vimode|req|view|gen|slot|container|pmode|tier|proposal_status|record_kind|record_state|record_op|link_op|ref_kind|rel|provenance|test_family|nexus_op|mcp_transport|explain_detail|layer|test_result|node_serve|pos_encoding|lsp_token|lsp_method|mcp_method)_name\(long/ { on = 1 }
 	     on { print }
 	     on && /^}/ { on = 0 }' "$1" |
-	grep -o 'return "[a-z]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u
+	grep -o 'return "[a-z/]*";' | sed 's/return "//; s/";$//' | grep -v '^$' | sort -u
 }
 
 check()
@@ -96,6 +96,17 @@ check()
 		echo "$bad" >&2
 		rc=1
 	fi
+	# 6. (V6 seam) no strcmp/strncmp ladder against a discriminator's name
+	#    word — the MCP seat's top-level dispatch did this while its own tool
+	#    families and the LSP face converted once; a wire method converts
+	#    through its *_of() and the seat switches on the code.
+	bad=$(grep -n -E "strn?cmp\([^,]+, \"($alt)\"" "$core" "$client" "$once" $SEAT_FILES)
+	if [ -n "$bad" ]; then
+		echo "check-madcide-enums: FAIL ($label) — a strcmp against a" \
+		     "discriminator's name word (convert once through its *_of(), switch on the code):" >&2
+		echo "$bad" >&2
+		rc=1
+	fi
 	return $rc
 }
 
@@ -138,6 +149,13 @@ if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	rm -f "$tmpcore"
 	echo "check-madcide-enums: FAIL — negative control: a layout node's text" \
 	     "discriminator went undetected (rule 5 went blind)." >&2
+	exit 1
+fi
+awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\tif ( strcmp(m, \"initialize\") == 0 ) return true;" }' "$CORE" > "$tmpcore"
+if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
+	rm -f "$tmpcore"
+	echo "check-madcide-enums: FAIL — negative control: a strcmp ladder" \
+	     "against a method word went undetected (rule 6 went blind)." >&2
 	exit 1
 fi
 rm -f "$tmpcore"
