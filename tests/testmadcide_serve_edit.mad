@@ -75,7 +75,7 @@ int main()
     var ret;
     bool err;
     call_tool(ret, err, S, doc, 2, "graph.at", atargs);
-    long rid = ret["id"].as_integer();
+    int64_t rid = ret["id"].as_integer();
     println("at found statement: {}", rid != 0 ? 1 : 0);
 
     // replace: validated, applied, logged (nodeop + erase + insert = 3 records).
@@ -104,7 +104,7 @@ int main()
     println("stale is error: {}", (err && !stale["stale"].is_null()) ? 1 : 0);
 
     // insert after the (new) return statement: a new line, same indentation.
-    long rid2 = rnode["id"].as_integer();
+    int64_t rid2 = rnode["id"].as_integer();
     var insargs = { "id": rid2, "where": "after", "src": "long extra = 0;" };
     var ins;
     call_tool(ins, err, S, doc, 5, "graph.insert", insargs);
@@ -114,7 +114,7 @@ int main()
 
     // delete it again: the whole line goes.
     var inode = ins["node"];
-    long iid = inode["id"].as_integer();
+    int64_t iid = inode["id"].as_integer();
     var delargs = { "id": iid };
     var del;
     call_tool(del, err, S, doc, 6, "graph.delete", delargs);
@@ -126,7 +126,7 @@ int main()
     var at2args = { "line": 2, "column": 4 };
     var ret2;
     call_tool(ret2, err, S, doc, 7, "graph.at", at2args);
-    long rid3 = ret2["id"].as_integer();
+    int64_t rid3 = ret2["id"].as_integer();
     var badargs = { "id": rid3, "src": "return a + ;" };
     var bad;
     call_tool(bad, err, S, doc, 8, "graph.replace", badargs);
@@ -147,7 +147,7 @@ int main()
     // coordinates that belong to other bytes. After the re-sync a fresh id works.
     var ret3;
     call_tool(ret3, err, S, doc, 9, "graph.at", at2args);
-    long rid4 = ret3["id"].as_integer();
+    int64_t rid4 = ret3["id"].as_integer();
     var mvargs = { "id": rid4, "src": "return a + b + 2;" };
     var mv;
     call_tool(mv, err, S, doc, 10, "graph.replace", mvargs);
@@ -156,7 +156,7 @@ int main()
     println("moved buffer refused: {}", (err && l2c == "    return a + b + 1;") ? 1 : 0);
     var ret4;
     call_tool(ret4, err, S, doc, 11, "graph.at", at2args);
-    long rid5 = ret4["id"].as_integer();
+    int64_t rid5 = ret4["id"].as_integer();
     var mv2args = { "id": rid5, "src": "return a + b + 2;" };
     var mv2;
     call_tool(mv2, err, S, doc, 12, "graph.replace", mv2args);
@@ -169,12 +169,12 @@ int main()
     var at5args = { "line": 6, "column": 4 };
     var tot;
     call_tool(tot, err, S, doc, 13, "graph.at", at5args);
-    long tid = tot["id"].as_integer();
+    int64_t tid = tot["id"].as_integer();
     var twoargs = { "id": tid, "src": "long total = 0; long k = 1;" };
     var two;
     call_tool(two, err, S, doc, 14, "graph.replace", twoargs);
     var tnode = two["node"];
-    long tid2 = tnode["id"].as_integer();
+    int64_t tid2 = tnode["id"].as_integer();
     var inlargs = { "id": tid2, "where": "after", "src": "total = total + 1;" };
     var inl;
     call_tool(inl, err, S, doc, 15, "graph.insert", inlargs);
