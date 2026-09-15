@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### The madcgit module on the Windows and macOS cross targets (2026-09-15)
+
+- **The madcgit module (`git::*`, madc's read-only view of a local repository)
+  now ships in the Windows and macOS bundles.** libgit2 is a *build-time
+  requirement*, not part of the distribution: because those bundles have no
+  package manager to supply libgit2 at runtime, a minimal read-only libgit2 is
+  statically linked *into* our `libmadcgit` (nothing named libgit2 ships as its
+  own file, and `git::available()` is true on a fresh machine with nothing
+  installed). Linux keeps its system-dependency model. The three `.win64_skip`
+  fixtures the module's absence forced — `testgit`, `testgraphpast`,
+  `testnexus_records` — are lifted; the wine lane goes 1316/0/72skip →
+  1319/0/69skip. With #1 (the reactor's Windows backend) this completes the
+  Windows-and-macOS side of the owner's master-release gate.
+- **How it is built.** `scripts/stage_libgit2.sh` cross-builds a minimal
+  read-only static libgit2 (pinned v1.7.2; no https/ssh/http-parser/ntlm/iconv,
+  builtin regex) once per target and stages it — the same shape as the darwin
+  zstd stage, driven by `provision_container.sh`. `src/madcgit.mk` gains
+  per-mode cross arms mirroring `webview.mk`: on Windows `bin/madcgit.dll`
+  resolves madc's own symbols through libmadc's import library (a PE DLL cannot
+  carry undefined symbols the ELF way) and links `-lsecur32` for libgit2's
+  win32 SSPI; on macOS `lib/madcgit/<arch>-macos/libmadcgit.dylib` uses
+  `-undefined dynamic_lookup` and the system zlib. The release recipes and
+  packagers ship the module and libgit2's `COPYING` (GPLv2 with the linking
+  exception, which permits static linking).
+- **One win64 defect surfaced and fixed.** `git::relpath` returned
+  native-separator paths on Windows (`tests\file`); that value is cached as a
+  document's git-relative path and used to filter `git::log` and `git::show`,
+  which libgit2 (whose tracked paths are forward-slash) matched against
+  nothing — yielding empty commit rows and a crash on a null revision tag. The
+  module now normalizes its relpath output to forward slashes (git's own
+  convention; a no-op on Linux).
+
 ### The reactor's Windows backend — the V6 transports work under Windows (2026-09-15)
 
 - **The V6 transports now park cooperative tasks on sockets under Windows**, so
