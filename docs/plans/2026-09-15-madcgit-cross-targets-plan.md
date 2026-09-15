@@ -8,6 +8,17 @@ the Windows and macOS release packages carry `libmadcgit`, so the three
 cross lane on the build container has no libgit2 for the win64 target, so the
 module is not built there and the nexus degrades to 'no repository'"*).
 
+**⚠️ Owner framing (2026-09-15, the point of this whole slice — do not lose it):**
+`libgit2` is **NOT in our distribution**. It is a **build-time requirement**.
+Two different artifacts share the word "git": `libgit2` (third-party, a
+dependency) and `libmadcgit` (OUR module, `src/modules/madcgit/madcgit.cpp`,
+which links libgit2 — this is what ships as part of madcide). Because we ship
+**pre-compiled binaries** (the Windows/macOS bundles), the build process must
+obtain libgit2 (build or install) for each target ABI so it can produce
+`libmadcgit`. The end user installs nothing; whatever libgit2 code the module
+needs must already be inside the shipped binary. See "How libgit2 reaches the
+bundle" below — it changes the packaging from the Linux weak-dep model.
+
 **Status:** planned, not started. Branch it off develop as
 `feature/madcgit-cross-claude`.
 
@@ -49,30 +60,68 @@ header-only shortcut. So the WebView2 script is the precedent only for the
 The owner may veto (a vetted prebuilt source would be simpler if one exists).
 State the ruling in the plan before writing the fetch/build script.
 
+## How libgit2 reaches the bundle (the packaging model — differs by target)
+
+The Linux and the bundled Windows/macOS targets are NOT the same:
+
+- **Linux** keeps today's **system-dependency** model (`package_release.sh`):
+  ship `libmadcgit.so` as a weak dep and let the OS provide `libgit2.so`
+  (`libgit2-dev` / distro package). The rpm/deb can declare libgit2 a
+  dependency; the tarball assumes it present. Nothing changes here.
+- **Windows / macOS pre-compiled bundles** have NO package manager to supply
+  libgit2 at runtime, so a `libmadcgit.dll` linked against a *system*
+  `libgit2-2.dll` would fail to load and `git::available()` would be false —
+  the module never loads, which is the very thing #2 exists to fix.
+  **Ruling (recommended): STATICALLY link the minimal libgit2 into
+  `libmadcgit` for these targets.** Then:
+  - libgit2 is purely a build-time requirement (matches the owner framing:
+    it is not in our distribution);
+  - nothing named `libgit2` ships as its own file — its object code lives
+    inside our `libmadcgit.{dll,dylib}`, which is self-contained;
+  - `git::available()` is true on a fresh Windows/macOS machine with nothing
+    installed. libgit2's licence (GPLv2 **with the linking exception**)
+    permits static linking into a differently-licensed application; keep its
+    `COPYING`/notice in the package's third-party licences.
+  - Alternative the owner may prefer: bundle `libgit2-2.dll` / `libgit2.dylib`
+    beside our binaries (dynamic). More files to ship and version; the static
+    route is cleaner for a read-only minimal build. Decide with the
+    source-vs-prebuilt ruling above — they compose (static link ⇒ build the
+    minimal `libgit2.a` from source; do not chase a prebuilt shared lib).
+
 ## Tasks (each its own commit; `src/`/`include/` commits carry the 4 trailers — the Makefile and scripts do NOT)
 
 1. **`scripts/fetch_libgit2.sh <target-dir>`** — pinned source tarball + sha
    (the `fetch_webview2_sdk.sh` shape: verify `.sha256`, curl, `sha256sum -c`,
    extract). One script; the per-target BUILD is the Makefile's job.
-2. **`src/madcgit.mk` — cross arms.** Today line 30 excludes cross/hosted
-   modes outright (`ifeq (,$(filter cross-% hosted-%,$(MODE)))`). Add
-   per-mode arms mirroring `webview.mk`: `ifeq ($(MODE),hosted-x86-64-windows)`
-   builds `bin/libmadcgit.dll` (the module image is a `.dll` there —
-   `madc_module_library_spelling` already names it), `ifeq` the two
-   `hosted-*-macos` build `lib/…/libmadcgit.dylib`. Each arm: cross-build (or
-   fetch-prebuilt) libgit2 into `../obj/madcgit/<mode>/libgit2`, set
-   `MADCGIT_CFLAGS`/`MADCGIT_LIBS` to that staged tree (NOT `pkg-config`,
-   which answers for the host), and link the module with the cross `$(CXX)`.
-   Keep the module UNDEFINED-at-link against libmadc's symbols exactly as the
-   Linux arm does (bound at dlopen from the importing image).
+2. **`src/madcgit.mk` — cross arms, libgit2 STATIC-linked.** Today line 30
+   excludes cross/hosted modes outright
+   (`ifeq (,$(filter cross-% hosted-%,$(MODE)))`). Add per-mode arms mirroring
+   `webview.mk`: `ifeq ($(MODE),hosted-x86-64-windows)` builds
+   `bin/libmadcgit.dll` (the module image is a `.dll` there —
+   `madc_module_library_spelling` already names it), and the two
+   `hosted-*-macos` build `lib/…/libmadcgit.dylib`. Each arm: cross-build the
+   **minimal static** `libgit2.a` into `../obj/madcgit/<mode>/libgit2`
+   (CMake flags in the decision above; the fetched source from task 1),
+   set `MADCGIT_CFLAGS` to its include dir and `MADCGIT_LIBS` to
+   `…/libgit2.a -lz` (the STATIC archive, NOT `pkg-config`, which answers for
+   the host), and link the module with the cross `$(CXX)` so libgit2's object
+   code is IN `libmadcgit.{dll,dylib}` — nothing named libgit2 ships. Keep the
+   module UNDEFINED-at-link against libmadc's OWN symbols exactly as the Linux
+   arm does (bound at dlopen from the importing image); only libgit2 is
+   resolved statically at the module's own link.
 3. **The release recipes.** `release-windows` / `release-macos` (src/Makefile)
    build the module beside the webview library (`webview-windows` /
    `webview-macos` is the sibling to copy); `package_release_windows.sh` and
-   `package_release_macos.sh` ship `libmadcgit.dll` / `libmadcgit.dylib`
-   beside `madc.exe` / the app (weak dep, as `package_release.sh` does on
-   Linux — lines 107-168, 245, 296). Packaging order **Linux → Windows →
-   macOS** ([[feedback_packaging_order_linux_first]]: a restore-rebuild
-   deletes the macOS forest.bin).
+   `package_release_macos.sh` ship the SELF-CONTAINED `libmadcgit.dll` /
+   `libmadcgit.dylib` beside `madc.exe` / the app (weak dep, as
+   `package_release.sh` does on Linux — lines 107-168, 245, 296 — EXCEPT the
+   cross bundles need no separate libgit2, since it is static-linked). Carry
+   libgit2's `COPYING`/notice into each package's third-party licences.
+   Packaging order **Linux → Windows → macOS**
+   ([[feedback_packaging_order_linux_first]]: a restore-rebuild deletes the
+   macOS forest.bin). NOTE: Linux keeps its system-dependency model (ship
+   `libmadcgit.so`, expect system `libgit2.so`) — the static-link is the
+   Windows/macOS-bundle answer, per "How libgit2 reaches the bundle" above.
 4. **Lift the three `.win64_skip`** (`testgit`, `testgraphpast`,
    `testnexus_records`) once the module builds for win64; the module also
    reaches the macOS package (no macOS domain skip existed — verify).
