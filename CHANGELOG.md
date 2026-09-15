@@ -2,6 +2,180 @@
 
 ## [Unreleased]
 
+### The V6 seam: the duplication audit's fixes, and libgit2 out of the distribution (2026-09-15)
+
+- **`/dupaudit` scoped to `madcdis` + `tools/madcide`** before the merge, as
+  the branching rule asks: 25 families recorded in the knowledge graph, 13 of
+  them consolidated here with a gate each. The ones that had DIVERGED (live
+  bugs): the serve face's bind was restated three times and the editor's copy
+  swallowed a failed bind (`serve_listen`, one owner; the editor now says so
+  on its status line); "is this the same file" was canonical at one site and
+  text at four (`same_file`; a TU added under one spelling while open under
+  another was double-added — reducer `proj-dup-abs`); six tests drove two
+  leftover connection spawners that tiered at ACCEPT while production
+  (`serve_web`) tiers at the FIRST BYTE, so the docs now say what is true —
+  *the first api client to speak owns the session* — and the tests speak in
+  the order they mean; the MCP seat's top-level dispatch was a `strcmp`
+  ladder (now `mcp_method` / `tool_family` enums; enums gate rule 6); and
+  ten folds read the JSONL change stream by hand and disagreed on a torn
+  line (four stopped and lost every record after it, one copied its bytes
+  forward) — `clog_records_of` / `clog_records` is the ONE reader, parsed
+  once per revision and cached, a torn line skipped and never re-emitted
+  (reducer `V6 torn-middle`). The redundant ones: the JSON-RPC 2.0 envelope
+  built by hand in three faces (`jsonrpc_reply` / `_error` / `_notify` /
+  `_request`; and madcide told clients it was "1.0.0" while its
+  advertisement said `madc::sys.version` — `madcide_self_info`), the last
+  path component (`php::basename`, landed in this arc, adopted), the dirty
+  flag read ten ways (`doc_modified`), the manifest-open test inlined nine
+  times (`proj_has_manifest`), the session URL (`session_url`), the
+  `-c` client restating the command core (`api_run`, ONE core), a
+  byte-identical twin of `keyed_get`, and the MCP refusal envelope
+  (`tool_refuse`). Every consolidation left a marker in
+  `check-madcide-single-owners.sh`, `check-madcide-one-accept-loop.sh` or
+  `check-madcide-enums.sh`, each with a negative control. Found on the way: a
+  `--serve` test published its session advertisement into the developer's
+  real state directory (a hermetic `.env` and a gate).
+- **libgit2 is a dependency, not a distribution** (owner ruling, on the
+  seam's static pre-run finding `check-c-abi-surface` RED: the vendored
+  archive linked into every image exported its whole C API — 876 `git_*`
+  symbols — from `libmadc.so`). The git substrate is the **`madcgit`
+  module** now, shaped exactly like the GUI module: a lazy row, an embedded
+  C interface (`madcgit.h`), the `git::` namespace in `<ns_git>`
+  (`open / head / revparse / log / show / blame / dirty / blame_text /
+  relpath`, `git::available`), `lib/libmadcgit.so` built by `src/madcgit.mk`
+  against the SYSTEM libgit2 where `pkg-config` finds it, and bound at load.
+  The engine keeps nothing git-specific (0 `git_*` exports); the subtree and
+  its recipe are gone (133 MB); the nexus degrades to "no repository"
+  without the module; `check-one-git-owner.sh` gained the READ-ONLY rule
+  that the vendored network-off configuration used to state. `libgit2-dev`
+  joins the container provisioning and `release.yml`; the Linux package
+  ships the module as a weak dependency. The cross-built Windows / macOS
+  images do not carry it yet (a fetched prebuilt is the named follow-up;
+  `testgit` / `testgraphpast` / `testnexus_records` are `win64_skip`).
+
+### madcide: transports + headless — the api seat, tiers, the ws window, the MCP seat, the LSP face, VS Code, attach, discovery (V6) (2026-09-11 → 2026-09-15)
+
+- **V6a — the `api` transport, `--serve`, duplex, tiers.** `madcide --serve
+  <host:port> <file>` opens a session with zero windows and serves clients
+  over `listen://` (a new accept channel in `madc::channel`, whose
+  `local_endpoint()` reports the port `:0` was given): one JSON line per
+  message — `{"cmd","args","seq"}` in, `{"seq","ok","errors","text"}` or
+  `{"seq","ok":false,"error"}` out — the command NAME resolved once at the
+  seat against the registry's one table. Every connection is served
+  CONCURRENTLY on its own cooperative task parked on the reactor-backed
+  channel (the async I/O reactor: a completion-oriented engine on a
+  dedicated I/O thread with an epoll backend; taskio's io-wait rides it), the
+  hub PUSHES change events to the other connected clients at append
+  (`{"event":…}`), and **permission tiers** gate the hub: the first api
+  client to speak is OWNER, every later one OBSERVER, promoted by
+  `clienttier <id> <tier>`; a verb above the caller's tier refuses with
+  prose. `api_run` is the ONE command core every transport drives.
+- **V6b — the `ws` WINDOW.** An RFC6455 WebSocket framer over a byte channel
+  (`channel.upgrade_websocket()` / `connect_websocket()` yield a message
+  channel); a ws client is a real window — the same `page.js`, DOM-op JSON
+  down the socket and the page's event JSON back into `post_event`; one
+  `--serve` port carries api + ws + the page (`serve_web` classifies each
+  accepted connection by its first byte), so a browser is a client of a
+  headless session.
+- **V6c-1 — the MCP seat** (`--mcp`): a JSON-RPC 2.0 / stdio Model Context
+  Protocol server over the same command core, returning structured state
+  ({ok, errors, cursor, diagnostics, outline}) rather than a rendered tree;
+  live-validated as an MCP server of an agent host. It grew the code-graph
+  ladder (next entry).
+- **V6c-2 — the LSP face** (`--lsp`): the Language Server Protocol over stdio
+  — `stdio://` became an ordinary channel, and the Content-Length framing an
+  engine facet (`channel.frame_headers()`, `madcdis/header_channel.h`, the
+  framing DAP and BSP share). No analysis of its own: semantic tokens ←
+  `parse_spans`, diagnostics ← the one compiler entry, `documentSymbol` ←
+  the outline, hover ← `parse_enclosing`, `definition` / `references` ← the
+  graph verbs; every edit rides the one text-mutation owner, so an LSP edit
+  appears in an open window and lands in the project stream. The position
+  ENCODING is negotiated at `initialize` and the UTF-16 ↔ byte column
+  arithmetic has one owner (`madcdis/text_utf16.h`), shared with the web hit
+  test; `madc::canonical_path` is the standing canonicalizer given a dialect
+  face. The face's vocabulary is enums (`lsp_method`, `pos_encoding`,
+  `lsp_symbol_kind`, `lsp_token_type`, `lsp_sync`).
+- **V6c-3a — the VS Code extension** (`tools/vscode-madcide/`): VS Code
+  drives madc through madcide's own compiler — the `madc` language with NO
+  TextMate grammar (the tokens are the parse's), the arc's stated acceptance
+  criterion. A real client on Microsoft's own protocol machinery
+  (`test/protocol_probe.js`) found three conformance defects the gates had
+  not; `lsp_name_span` is the one owner of "where a name anchors"
+  (`references` had highlighted a call's first argument).
+- **V6c-3b — madcide's real controls in VS Code.** `workspace/executeCommand`
+  onto the command registry (110 commands advertised = exactly what dispatch
+  accepts), `$/madc/event` (each change-log record verbatim, the one event
+  shape every transport carries), `$/madc/message`, `$/madc/serve`; and
+  **one process, two faces**: `--lsp --serve` combine, the accept loop a
+  cooperative task beside the stdio reader, so the window and the editor are
+  ONE session. Found on the way: an enum converter bounded by its last
+  enumerator (now a `*LAST` sentinel).
+- **V6c-3c — the attach relay.** `madcide <file> --lsp --attach <addr>` (and
+  `--mcp`) makes an editor or an agent a client of a session that is ALREADY
+  running instead of the owner of a private one: a connection DECLARES its
+  JSON-RPC dialect (`{"madc":"lsp"}`), lifecycle belongs to the connection
+  (the relay answers `shutdown` / `exit` itself), the relay opens no session.
+  The prerequisite bug: the negotiated position encoding lived on the session
+  and a second editor's `initialize` overwrote the first's — it is per
+  connection now, resolved once per message.
+- **V6c-4 — session discovery.** Every listening session publishes a JSON
+  record (endpoint, root, documents, pid, started, version, host, url, what it
+  serves) under `$XDG_STATE_HOME/madcide/sessions/`; `madcide --sessions`
+  lists them; `--attach` with NO address finds the session that holds the
+  file; the editor LISTENS BY DEFAULT (loopback, ephemeral; `--no-serve` opts
+  out) so it is discoverable. An ADVERTISEMENT, not a lock: madcide refuses no
+  file; staleness is a connect test, never a pid test, so the directory
+  self-heals. ⚠️ no auth, no TLS — bind loopback, tunnel over ssh.
+  Gates across the slices: `testmadcide_serve*`, `_ws`, `_web`, `_mcp`,
+  `_graph`, `_lsp`, `_lsp_stdio`, `_lsp_serve`, `_attach`, `_discover`,
+  `check-madcide-one-accept-loop.sh`; the instruments
+  `test/protocol_probe.js` / `attach_probe.js` (no network, no VS Code).
+
+### The code-graph MCP + the Nexus (L1–L4e): the live IR as a node-addressed graph an agent queries and edits by verbs (2026-09-12 → 2026-09-14)
+
+- **L1–L3 — graph verbs over the LIVE parse** (design
+  `2026-09-12-ast-graph-mcp-for-agents.md`): `graph.symbols / definition /
+  node / type_of / members / bases / enclosing / children / body` read the
+  decl/type graph and the body AST as nodes with entity-handle ids (never
+  byte offsets); `graph.callers / callees / references / search / impact`
+  derive CALLS and REFERENCES edges (functions and globals, cross-TU by
+  symbol); `graph.insert / replace / delete / span / at` edit NODES — parsed
+  fragments as node specs, generation-stamped ids, a validated refresh
+  (`madc::parse_would_accept`: the ONE candidate validator, commit or verdict)
+  — every edit a logged, grammar-validated verb with reverse-render, never a
+  text patch. Every edge is compiler ground truth.
+- **L4a — the git substrate**, now the `madcgit` module (see the seam entry).
+- **L4b — the PAST verbs**: `graph.status / source / history / commits /
+  revision / diff`; revision handles by generation TAG
+  (`madc::parse_open_tagged` — refresh refuses, close forgets), routed in
+  `graph_call`; `GitRepo::blame_buffer` blames the LIVE text; `git_relpath`
+  through the ONE path canonicalizer; `php::time()`.
+- **L4c — the propose tier**: a fourth level in the one tier ladder;
+  `graph_edit_apply` is ONE transaction over an ops list in APPLY | PROPOSE
+  mode; proposal + decision records; `graph.proposals / proposal / accept /
+  reject / withdraw` (a moved target refuses at accept); ONE project-scoped
+  event stream per session (every record carries doc + path; per-document
+  replay, `events_since`, compaction checkpoints; `clog_adopt` re-attaches a
+  restored log by path); the JSON-line seat carries the api AND the JSON-RPC
+  envelope.
+- **L4d — intent records + the MCP client**: `nexus.*` records and links in
+  the ONE stream (`nexus_fold`), refs by durable key, `nexus.explain` as one
+  compound verb, proposals gain constraints; madc as an MCP CLIENT over
+  `exec://` with manifests as data (`nexus.sources / nexus.sync`,
+  `test.discover`); `php::array_keys` (the dialect's one way to enumerate an
+  object's keys), `php::mkdir`, `php::rmdir`, `php::basename`.
+- **L4e — asset LAYERS + the verification axis**: one capability bitset per
+  asset (`asset_layers_of`: versioned / managed / lexable / parseable /
+  executable / testable) with per-family layer gates and refusals by name,
+  this node's offers and the `target` slot; the `test.*` runner seat (`list /
+  candidates / run / results`) over the canonical runner's `--report=json`
+  (one JSON object per verdict; the runner stays the ONE harness, the nexus
+  its client); testrun / buildrun events tagged by node; proposal checks from
+  linked tests. Gates: `testgraphaccessors`, `testgraphbody`, `testgraphedges`,
+  `testgraphedit`, `testgraphtagged`, `testgraphpast`, `testnexus_records`,
+  `testnexus_layers`, `testmcpclient`, `testmadcide_serve_propose`,
+  `testgit`; `check-one-git-owner.sh`.
+
 ### madcide: correlation maps — the emitter's coordinate map, viewsync source↔MC11 (V5) (2026-09-10)
 
 - **V5 of the client-server arc** (design doc §2.6), the LAST local slice.
