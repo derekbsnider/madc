@@ -124,6 +124,19 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 				   std::string &why)
 {
 	DataDef *dd = arg ? arg->datadef() : NULL;
+	// A call's parse-bound datadef can name a DIFFERENT overload than the
+	// CIR-RESOLVED callee that translate_expr actually lowers to: a polyglot
+	// public's lean `const char*` form (the one the lowering picks, and every
+	// other consumer of the result reads) vs its `std::string&` interop
+	// declaration (the one the type binding recorded). The two disagreed under
+	// libc++ — format read `std::string&`, classified it fkStdString, and took
+	// the ADDRESS of a call that in fact returns `const char*`
+	// (`&__ns_js_stringify__o2(...)` — "lvalue required as unary & operand").
+	// Classify what the call ACTUALLY returns: the resolved callee's return
+	// type, the same resolution translate_expr lowers the value through.
+	if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg) )
+		if ( FuncDef *cfd = call_target_funcdef(tcf) )
+			dd = &cfd->return_value_type();
 	if ( !dd )
 	{
 		why = "argument has no resolved type";
