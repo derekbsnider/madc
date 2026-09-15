@@ -59,7 +59,7 @@ int main()
 
     call_tool(snap, err, S, doc, 4, "graph.symbols", revargs);
     var rn = snap["nodes"][0];
-    long rid = rn["id"].as_integer();
+    int64_t rid = rn["id"].as_integer();
     println("rev-symbols: name={}", rn["name"]);
 
     var idargs = { "id": rid };
@@ -76,7 +76,7 @@ int main()
 
     call_tool(snap, err, S, doc, 8, "graph.symbols", none);
     var ln = snap["nodes"][0];
-    long lid = ln["id"].as_integer();
+    int64_t lid = ln["id"].as_integer();
     var srcargs = { "id": lid };
     call_tool(snap, err, S, doc, 9, "graph.source", srcargs);
     var text = snap["text"];

@@ -22,7 +22,7 @@ int main()
     // graph.node(id) round-trips a symbol id back to its node; graph.type_of
     // on a function id yields its return-type node.
     var first = nodes[0];
-    long fid = first["id"].as_integer();
+    int64_t fid = first["id"].as_integer();
     var nd;
     madc::graph_node(nd, h, fid);
     println("node: {} {}", nd["kind"], nd["name"]);
@@ -56,7 +56,7 @@ int main()
 
     // graph.members / graph.bases on the Point struct id. Point now carries
     // a pointer member `p` (long *) so its type node's kind is Pointer.
-    long pid = ds["nodes"][0]["id"].as_integer();
+    int64_t pid = ds["nodes"][0]["id"].as_integer();
     var mem;
     madc::graph_members(mem, h, pid);
     println("members: {}", php::count(mem["nodes"]));
@@ -72,7 +72,7 @@ int main()
     for ( var m : mem["nodes"] )
 	if ( m["name"] == "p" )
 	{
-	    long ptr_id = m["type"]["id"].as_integer();
+	    int64_t ptr_id = m["type"]["id"].as_integer();
 	    var pointee;
 	    madc::graph_type_of(pointee, h, ptr_id);
 	    println("p type_of: {}", pointee["kind"]);

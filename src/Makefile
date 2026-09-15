@@ -1129,6 +1129,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-madcide-command-registry.sh
 	@cd .. && bash scripts/check-madcide-enums.sh
 	@cd .. && bash scripts/check-madcide-one-accept-loop.sh
+	@cd .. && bash scripts/check-madcide-id-width.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh

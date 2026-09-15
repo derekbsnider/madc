@@ -22,7 +22,7 @@ int main()
     // the SAME id space graph.body/graph.children's func_id argument uses).
     var sy;
     madc::graph_symbols(sy, h);
-    long func_id = 0;
+    int64_t func_id = 0;
     for ( var n : sy["nodes"] )
 	if ( n["name"] == "run" )
 	    func_id = n["id"].as_integer();
@@ -67,7 +67,7 @@ int main()
     // graph.children(id, 1) from a body-node id (the first edge's `to`) —
     // the body-id routing branch (id >= GRAPH_BODY_ID_BASE).
     var e0 = bedges[0];
-    long child_id = e0["to"].as_integer();
+    int64_t child_id = e0["to"].as_integer();
     var kids;
     madc::graph_children(kids, h, child_id, 1);
     println("children nodes: {}", php::count(kids["nodes"]) > 0 ? 1 : 0);
@@ -100,7 +100,7 @@ int main()
     // (Expr -> Literal), verified against Program::parseDeclaration
     // (src/parser.cpp:69341-69369): `T x = expr;` wraps the initializer in
     // an assignment `x = expr`, it is not the bare expr directly.
-    long decl_id = -1;
+    int64_t decl_id = -1;
     for ( var n : bnodes )
 	if ( n["kind"] == "Statement" && n["name"] == "total" )
 	    decl_id = n["id"].as_integer();
@@ -108,14 +108,14 @@ int main()
     for ( var e1 : bedges )
 	if ( e1["from"].as_integer() == decl_id )
 	{
-	    long mid = e1["to"].as_integer();
+	    int64_t mid = e1["to"].as_integer();
 	    for ( var n2 : bnodes )
 		if ( n2["id"].as_integer() == mid && n2["kind"] == "Literal" )
 		    decl_reaches_literal = true;
 	    for ( var e2 : bedges )
 		if ( e2["from"].as_integer() == mid )
 		{
-		    long leaf = e2["to"].as_integer();
+		    int64_t leaf = e2["to"].as_integer();
 		    for ( var n3 : bnodes )
 			if ( n3["id"].as_integer() == leaf && n3["kind"] == "Literal" )
 			    decl_reaches_literal = true;

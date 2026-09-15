@@ -241,7 +241,7 @@ long link_write(long w, long es, long adoc, long self_id, long op, var &from, lo
 }
 
 // ---- the verbs -------------------------------------------------------------
-void nexus_record(var &out, long w, long id)
+void nexus_record(var &out, long w, int64_t id)
 {
     var f;
     nexus_fold(f, w);
@@ -431,7 +431,7 @@ void nexus_explain(var &out, long w, long es, long adoc, long h, var &ref, long 
 	out = { "error": why };
 	return;
     }
-    long id = node["id"].as_integer();
+    int64_t id = node["id"].as_integer();
     var cpv = provenance_name(pvCOMPILER);
     var sp;
     madc::graph_span(sp, h, id);

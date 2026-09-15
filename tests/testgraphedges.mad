@@ -28,7 +28,7 @@ int main()
     // Function ids from graph.symbols.
     var sy;
     madc::graph_symbols(sy, h);
-    long id_helper = 0, id_twice = 0, id_run = 0;
+    int64_t id_helper = 0, id_twice = 0, id_run = 0;
     for ( var n : sy["nodes"] )
     {
 	if ( n["name"] == "helper" ) id_helper = n["id"].as_integer();
@@ -40,7 +40,7 @@ int main()
     // The global id from graph.search(kind=Global).
     var gs;
     madc::graph_search(gs, h, "Global", "g_total");
-    long id_global = 0;
+    int64_t id_global = 0;
     var gkind;
     for ( var n : gs["nodes"] )
 	if ( n["name"] == "g_total" ) { id_global = n["id"].as_integer(); gkind = n["kind"]; }
@@ -145,7 +145,7 @@ int main()
     // still be found. Before the fix this returned 0 sites.
     var ga;
     madc::graph_search(ga, h, "Global", "g_addr_only");
-    long id_addr = 0;
+    int64_t id_addr = 0;
     for ( var n : ga["nodes"] )
 	if ( n["name"] == "g_addr_only" ) id_addr = n["id"].as_integer();
     var ra;
@@ -155,7 +155,7 @@ int main()
     // I1 (review): a global used ONLY via dereference (*g_ptr, a TokenDeref).
     var gp;
     madc::graph_search(gp, h, "Global", "g_ptr");
-    long id_ptr = 0;
+    int64_t id_ptr = 0;
     for ( var n : gp["nodes"] )
 	if ( n["name"] == "g_ptr" ) id_ptr = n["id"].as_integer();
     var rp;
@@ -172,7 +172,7 @@ int main()
     // global; references(global g_total) must NOT include any site in `shadow`
     // (its uses bind to a DIFFERENT Variable*). Checked via the REFERENCES
     // edge's `in` (enclosing function id).
-    long id_shadow = 0, id_fib = 0;
+    int64_t id_shadow = 0, id_fib = 0;
     for ( var n : sy["nodes"] )
     {
 	if ( n["name"] == "shadow" ) id_shadow = n["id"].as_integer();

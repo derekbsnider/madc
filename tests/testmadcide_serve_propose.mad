@@ -121,7 +121,7 @@ int main()
     bool herr;
     rpc(hs, herr, a3, 0, "graph.status", none);
     var add = snap["nodes"][0];
-    long addid = add["id"].as_integer();
+    int64_t addid = add["id"].as_integer();
     println("observer-read: err={} name={}", err ? 1 : 0, add["name"]);
     var rep1 = { "id": addid, "src": "long add(long a, long b) {\n    return a - b;\n}" };
     rpc(snap, err, a2, 2, "graph.replace", rep1);
@@ -163,7 +163,7 @@ int main()
     println("promote-editor: ok={} tier={}", reply["ok"].as_boolean() ? 1 : 0, reply["tier"]);
     rpc(snap, err, a2, 11, "graph.accept", seq1);
     var landed = snap["node"];
-    long newid = landed["id"].as_integer();
+    int64_t newid = landed["id"].as_integer();
     println("accept: ok={} landed_seq={} seq={} node={}", snap["ok"].as_boolean() ? 1 : 0,
 	    snap["landed_seq"], snap["seq"], landed["name"]);
     var nidargs = { "id": newid };

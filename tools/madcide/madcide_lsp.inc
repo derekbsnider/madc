@@ -493,7 +493,7 @@ void lsp_definition(var &out, IdeSession &S, long adoc, long h, long enc, var &p
 // so the reported range is that name found before the arguments
 // (lsp_name_span) — reading the column as the identifier's start highlights
 // the first argument instead.
-void lsp_node_by_id(var &out, var &nodes, long id)
+void lsp_node_by_id(var &out, var &nodes, int64_t id)
 {
     long n = nodes.is_null() ? 0 : php::count(nodes);
     for ( long i = 0; i < n; i = i + 1 )
@@ -530,7 +530,7 @@ void lsp_references(var &out, IdeSession &S, long adoc, long h, long enc, var &p
 	return;
     }
     var d0 = dnodes[0];
-    long did = d0["id"].as_integer();
+    int64_t did = d0["id"].as_integer();
     var snap;
     madc::graph_references(snap, h, did);
     var nodes = snap["nodes"];

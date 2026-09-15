@@ -659,7 +659,7 @@ bool edit_preconditions(var &why, long w, long es, long adoc, var &t)
 // false with op = {error} on a miss.
 bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args)
 {
-    long id = args["id"].as_integer();
+    int64_t id = args["id"].as_integer();
     var srcv;
     keyed_get(srcv, args, "src");
     var src = "";
@@ -804,7 +804,7 @@ void edit_candidate(var &cand, var &order, long w, long adoc, var &t, var &ops)
 	    if ( taken[i].as_integer() != 0 )
 		continue;
 	    var s = ops[i]["splice"];
-	    long at = s["at"].as_integer();
+	    int64_t at = s["at"].as_integer();
 	    if ( best < 0 || at > bestat )
 	    {
 		best = i;
@@ -837,7 +837,7 @@ void edit_preview(var &out, long w, long adoc, var &t, var &cand, var &ops)
     for ( var op : ops )
     {
 	var s = op["splice"];
-	long at = s["at"].as_integer();
+	int64_t at = s["at"].as_integer();
 	long del = s["del"].as_integer();
 	if ( lo < 0 || at < lo )
 	    lo = at;
@@ -952,7 +952,7 @@ void graph_edit_apply(var &out, IdeSession &S, long doc, long self_id, var &ops,
 	if ( nodeop_seq == 0 )
 	    nodeop_seq = ns;
 	var s = op["splice"];
-	long at = s["at"].as_integer();
+	int64_t at = s["at"].as_integer();
 	long del = s["del"].as_integer();
 	var ins = s["ins"];
 	if ( del > 0 )
@@ -1278,7 +1278,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     {
 	var idv;
 	keyed_get(idv, args, "id");
-	long id = 0;
+	int64_t id = 0;
 	if ( !idv.is_null() )
 	    id = idv.as_integer();
 	nexus_record(snap, w, id);
@@ -1341,7 +1341,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 		break;
 	    }
 	}
-	long id = record_create(w, es, adoc, self_id, rk, fields, "", "", st);
+	int64_t id = record_create(w, es, adoc, self_id, rk, fields, "", "", st);
 	snap = { "ok": true, "id": id };
 	break;
     }
@@ -1350,7 +1350,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     {
 	var idv;
 	keyed_get(idv, args, "id");
-	long id = 0;
+	int64_t id = 0;
 	if ( !idv.is_null() )
 	    id = idv.as_integer();
 	var have;

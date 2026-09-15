@@ -235,7 +235,7 @@ long handle_text_ent(long w, long adoc, long live, long h)
 // ---- the verbs --------------------------------------------------------------
 
 // graph.source: a node's text = the span's bytes in ITS handle's text entity.
-void graph_source(var &out, long w, long adoc, long live, long h, long id)
+void graph_source(var &out, long w, long adoc, long live, long h, int64_t id)
 {
     var sp;
     madc::graph_span(sp, h, id);
@@ -440,7 +440,7 @@ void graph_diff(var &out, long w, long es, long adoc, long live, const char *a0,
 // intersecting splices walked newest->oldest with the inverse anchor shift
 // up to the most recent overlapping one — after it, coordinates are not
 // derivable, so `complete` says false). Live ids only.
-void graph_history(var &out, long w, long es, long adoc, long live, long id)
+void graph_history(var &out, long w, long es, long adoc, long live, int64_t id)
 {
     var sp;
     madc::graph_span(sp, live, id);
@@ -498,7 +498,7 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 	    long ck = clog_kind_of(rec);
 	    if ( ck == ckSPLICE && walking )
 	    {
-		long at = rec["at"].as_integer();
+		int64_t at = rec["at"].as_integer();
 		long del = rec["del"].as_integer();
 		long ins = strlen(rec["ins"].c_str());
 		if ( at + ins <= a )

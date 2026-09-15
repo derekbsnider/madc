@@ -28,8 +28,8 @@ int main()
 
     var sy;
     madc::graph_symbols(sy, h);
-    long id_helper = 0;
-    long id_run = 0;
+    int64_t id_helper = 0;
+    int64_t id_run = 0;
     for ( var n : sy["nodes"] )
     {
 	if ( n["name"] == "helper" ) id_helper = n["id"].as_integer();
@@ -44,7 +44,7 @@ int main()
 
     var gs;
     madc::graph_search(gs, h, "Global", "g_total");
-    long id_global = 0;
+    int64_t id_global = 0;
     for ( var n : gs["nodes"] )
 	if ( n["name"] == "g_total" ) id_global = n["id"].as_integer();
     var sg;
@@ -54,10 +54,10 @@ int main()
     // Statement-level nodes of run, found by their minting line via graph_body.
     var body;
     madc::graph_body(body, h, id_run, -1);
-    long id_decl = 0;
-    long id_for = 0;
-    long id_ret = 0;
-    long id_leaf = 0;
+    int64_t id_decl = 0;
+    int64_t id_for = 0;
+    int64_t id_ret = 0;
+    int64_t id_leaf = 0;
     for ( var n : body["nodes"] )
     {
 	long ln = n["line"].as_integer();
@@ -124,7 +124,7 @@ int main()
     println("old id stale: {}", (!stale["stale"].is_null() && stale["stale"].as_boolean()) ? 1 : 0);
     var sy2;
     madc::graph_symbols(sy2, h);
-    long id_helper2 = 0;
+    int64_t id_helper2 = 0;
     for ( var n : sy2["nodes"] )
 	if ( n["name"] == "helper" ) id_helper2 = n["id"].as_integer();
     println("ids re-minted: {}", (id_helper2 != 0 && id_helper2 != id_helper) ? 1 : 0);
@@ -148,7 +148,7 @@ int main()
     long h2 = madc::parse_open(lsrc.c_str(), "graphlam.mad");
     var sy3;
     madc::graph_symbols(sy3, h2);
-    long id_lam = 0;
+    int64_t id_lam = 0;
     for ( var n : sy3["nodes"] )
 	if ( n["name"] == "lam" ) id_lam = n["id"].as_integer();
     var slam;

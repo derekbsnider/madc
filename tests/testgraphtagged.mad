@@ -18,8 +18,8 @@ int main()
     madc::graph_symbols(sr, rev);
     var nl = sl["nodes"][0];
     var nr = sr["nodes"][0];
-    long idl = nl["id"].as_integer();
-    long idr = nr["id"].as_integer();
+    int64_t idl = nl["id"].as_integer();
+    int64_t idr = nr["id"].as_integer();
     println("same-name: {}", nl["name"] == nr["name"] ? 1 : 0);
     println("ids-differ: {}", idl != idr ? 1 : 0);
     println("route-live: {}", madc::graph_route(live, idl) == live ? 1 : 0);

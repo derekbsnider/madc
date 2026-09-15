@@ -68,7 +68,7 @@ long id_of(var &list, const char *name)
 }
 
 // The row for test id `id` in a test.run answer (left null when absent).
-void row_of(var &out, var &run, long id)
+void row_of(var &out, var &run, int64_t id)
 {
     for ( var r : run["rows"] )
 	if ( r["test"].as_integer() == id )
@@ -154,9 +154,9 @@ int main()
     var tlw = snap["layers"];
     println("status-testable: {}", has_word(tlw, "testable") ? 1 : 0);
     call_tool(snap, err, S, doc, 12, "test.list", none);
-    long ok_id = id_of(snap, "ok");
-    long bad_id = id_of(snap, "bad");
-    long slow_id = id_of(snap, "slow");
+    int64_t ok_id = id_of(snap, "ok");
+    int64_t bad_id = id_of(snap, "bad");
+    int64_t slow_id = id_of(snap, "slow");
     var l0 = snap["rows"][0];
     println("list: rows={} ids-set={} last-null={}", php::count(snap["rows"]), (ok_id > 0 && bad_id > 0 && slow_id > 0) ? 1 : 0,
 	    l0["last"].is_null() ? 1 : 0);
@@ -224,12 +224,12 @@ int main()
     var extf = { "name": "ext-ok", "family": "external", "asset": "", "command": "{madc} --no-config madc_ide_ltests/ok.mad" };
     var extc = { "rkind": "test", "fields": extf };
     call_tool(snap, err, S, doc, 20, "nexus.create", extc);
-    long ext_id = snap["id"].as_integer();
+    int64_t ext_id = snap["id"].as_integer();
     php::file_put_contents("madc_ide_ltests/exit3.mad", "int main() { return 3; }\n");
     var extf3 = { "name": "ext-3", "family": "external", "asset": "", "command": "{madc} --no-config madc_ide_ltests/exit3.mad" };
     var extc3 = { "rkind": "test", "fields": extf3 };
     call_tool(snap, err, S, doc, 21, "nexus.create", extc3);
-    long ext3_id = snap["id"].as_integer();
+    int64_t ext3_id = snap["id"].as_integer();
     var exts = {};
     exts.push(ext_id);
     exts.push(ext3_id);
@@ -246,7 +246,7 @@ int main()
     var uf = { "name": "u", "family": "unit", "asset": "", "command": "" };
     var uc = { "rkind": "test", "fields": uf };
     call_tool(snap, err, S, doc, 23, "nexus.create", uc);
-    long u_id = snap["id"].as_integer();
+    int64_t u_id = snap["id"].as_integer();
     var us = {};
     us.push(ok_id);
     us.push(u_id);
@@ -285,7 +285,7 @@ int main()
     var dargs = { "name": "add" };
     call_tool(snap, err, S, doc, 31, "graph.definition", dargs);
     var dn = snap["nodes"][0];
-    long add_id = dn["id"].as_integer();
+    int64_t add_id = dn["id"].as_integer();
     var pargs = { "id": add_id, "src": "long add(long a, long b) { return a + b + 0; }", "propose": true, "checks": true };
     call_tool(snap, err, S, doc, 32, "graph.replace", pargs);
     long pseq = snap["proposal"].as_integer();
@@ -309,7 +309,7 @@ int main()
     var dargs2 = { "name": "run" };
     call_tool(snap, err, S, doc, 37, "graph.definition", dargs2);
     var dn2 = snap["nodes"][0];
-    long run_id = dn2["id"].as_integer();
+    int64_t run_id = dn2["id"].as_integer();
     var pargs2 = { "id": run_id, "src": "long run(long n) { return add(n, 2); }", "propose": true, "checks": true };
     call_tool(snap, err, S, doc, 38, "graph.replace", pargs2);
     long pseq2 = snap["proposal"].as_integer();
@@ -327,7 +327,7 @@ int main()
     call_tool(snap, err, S, doc, 40, "nexus.unlink", unlink1);
     call_tool(snap, err, S, doc, 41, "graph.definition", dargs);
     var dn3 = snap["nodes"][0];
-    long add_id2 = dn3["id"].as_integer();
+    int64_t add_id2 = dn3["id"].as_integer();
     var pargs3 = { "id": add_id2, "src": "long add(long a, long b) { return a + b + 1; }", "propose": true, "checks": true };
     call_tool(snap, err, S, doc, 42, "graph.replace", pargs3);
     var chk3 = snap["checks"];
