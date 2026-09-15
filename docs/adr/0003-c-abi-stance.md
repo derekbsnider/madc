@@ -55,6 +55,15 @@ v0.97.0:
 | `dd[A-Z]*/tk[A-Z]*` | ~84 | parser singletons — accidental exports, non-contract, visibility-trim candidates |
 | misc allowlisted | 8 | `get_argv`, va-interp builtins, … — each with a stated disposition in the allowlist |
 
+A **third-party library is never part of this surface**: it is either
+in-tree because madc patches it (MIR, classified above) or an ordinary
+dependency bound by an optional MODULE library (`libmadcwebview`,
+`libmadcgit`) that libmadc neither links nor exports. The V6 seam
+(2026-09-15) is the precedent: the vendored libgit2 leaked its 876
+`git_*` symbols out of `libmadc.so` — an embeddable library exporting a
+third-party API interposes on any host that links its own copy — and
+the fix was the module, not an allowlist class.
+
 ## Visibility policy
 
 Default visibility is **retained** for now: the JIT resolves the

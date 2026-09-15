@@ -382,23 +382,9 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
 					    const std::string &source_text,
 					    value &out_diags, bool commit);
-// The git substrate (Nexus L4a, design 2026-09-13 §4.2): read-only repository
-// facts through madc::GitRepo — see madc_git.cpp (no Program involved).
-int64_t internal_program_git_open(const std::string &path);
-bool internal_program_git_close(int64_t handle);
-bool internal_program_git_head(int64_t handle, value &out);
-bool internal_program_git_revparse(int64_t handle, const std::string &spec, value &out);
-bool internal_program_git_log(int64_t handle, const std::string &path, int64_t limit,
-			      value &out);
-bool internal_program_git_show(int64_t handle, const std::string &rev,
-			       const std::string &path, value &out);
-bool internal_program_git_blame(int64_t handle, const std::string &path, int64_t line,
-				int64_t count, value &out);
-bool internal_program_git_dirty(int64_t handle, const std::string &path, value &out);
-bool internal_program_git_blame_text(int64_t handle, const std::string &path,
-				     const std::string &text, int64_t line, int64_t count,
-				     value &out);
-bool internal_program_git_relpath(int64_t handle, const std::string &path, value &out);
+// The git substrate (Nexus L4a) is the madcgit MODULE since the V6 seam
+// (src/modules/madcgit/madcgit.cpp; owner ruling 2026-09-15: libgit2 is a
+// dependency of the IDE, never part of madc) — no Program face, no bridge here.
 // L4b (design §3.3): revision handles by generation TAG — see madc_program.cpp.
 int64_t internal_program_parse_open_tagged(::Program &self, const std::string &source_text,
 					   const std::string &display_name);
@@ -1271,69 +1257,8 @@ void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column)
     return result;
 }
 
-// The git substrate bridges (Nexus L4a): the same thin-thunk shape; text
-// arguments = std::string*, result = madc::value*. A git handle needs no
-// active Program (the repository is read, nothing is compiled).
-int64_t madc_git_open(void *path)
-{
-    return madc::internal_program_git_open(*(const std::string *)path);
-}
-bool madc_git_close(int64_t handle)
-{
-    return madc::internal_program_git_close(handle);
-}
-void *madc_git_head(void *result, int64_t handle)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_head(handle, out);
-    return result;
-}
-void *madc_git_revparse(void *result, int64_t handle, void *spec)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_revparse(handle, *(const std::string *)spec, out);
-    return result;
-}
-void *madc_git_log(void *result, int64_t handle, void *path, int64_t limit)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_log(handle, *(const std::string *)path, limit, out);
-    return result;
-}
-void *madc_git_show(void *result, int64_t handle, void *rev, void *path)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_show(handle, *(const std::string *)rev,
-				    *(const std::string *)path, out);
-    return result;
-}
-void *madc_git_blame(void *result, int64_t handle, void *path, int64_t line, int64_t count)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_blame(handle, *(const std::string *)path, line, count, out);
-    return result;
-}
-void *madc_git_dirty(void *result, int64_t handle, void *path)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_dirty(handle, *(const std::string *)path, out);
-    return result;
-}
-
-void *madc_git_blame_text(void *result, int64_t handle, void *path, void *text,
-			  int64_t line, int64_t count)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_blame_text(handle, *(const std::string *)path,
-					  *(const std::string *)text, line, count, out);
-    return result;
-}
-void *madc_git_relpath(void *result, int64_t handle, void *path)
-{
-    madc::value &out = *(madc::value *)result;
-    madc::internal_program_git_relpath(handle, *(const std::string *)path, out);
-    return result;
-}
+// (The git substrate's bridges lived here until the V6 seam; the madcgit
+// MODULE now carries its own C API — src/modules/madcgit/madcgit.cpp.)
 
 // L4b: revision handles by generation TAG. parse_open_tagged needs the active
 // Program exactly as madc_parse_open does; generation/route read the registry.

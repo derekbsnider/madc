@@ -1,76 +1,76 @@
-// Nexus L4a: the git substrate's dialect face (madc::git_*) over the repository
+// Nexus L4a: the git substrate's dialect face (git::*, the madcgit MODULE) over the repository
 // the test runs in — every lane runs the suite from a checkout root, so the
 // repository is always there; the assertions are SHAPE (never a sha or a count
 // that history would move). Nothing here runs a guest program; stderr stays
 // empty (.expect_quiet).
 int main()
 {
-    long h = madc::git_open(".");
+    long h = git::open(".");
     println("opened: {}", h > 0 ? 1 : 0);
 
     var hd;
-    madc::git_head(hd, h);
+    git::head(hd, h);
     println("head-sha-len: {}", strlen(hd["sha"].c_str()));
     println("head-has-branch-or-detached: {}",
 	    strlen(hd["branch"].c_str()) > 0 || hd["detached"].as_boolean() ? 1 : 0);
 
     var rp;
-    madc::git_revparse(rp, h, "HEAD");
+    git::revparse(rp, h, "HEAD");
     var same = rp["sha"];
     println("revparse-head-matches: {}", same == hd["sha"] ? 1 : 0);
 
     var lg;
-    madc::git_log(lg, h, "VERSION", 5);
+    git::log(lg, h, "VERSION", 5);
     println("log-rows-positive: {}", php::count(lg["rows"]) > 0 ? 1 : 0);
     var first = lg["rows"][0];
     println("log-row-shape: {}", strlen(first["sha"].c_str()) == 40
 	    && strlen(first["summary"].c_str()) > 0 && first["when"].as_integer() > 0 ? 1 : 0);
 
     var sh;
-    madc::git_show(sh, h, "HEAD", "VERSION");
+    git::show(sh, h, "HEAD", "VERSION");
     var disk;
     php::file_get_contents(disk, "VERSION");
     var shown = sh["text"];
     println("show-matches-file: {}", shown == disk ? 1 : 0);
 
     var bl;
-    madc::git_blame(bl, h, "VERSION", 1, 1);
+    git::blame(bl, h, "VERSION", 1, 1);
     println("blame-rows-positive: {}", php::count(bl["rows"]) > 0 ? 1 : 0);
     var b0 = bl["rows"][0];
     println("blame-row-shape: {}", b0["line"].as_integer() == 1
 	    && strlen(b0["sha"].c_str()) == 40 ? 1 : 0);
 
     var dt;
-    madc::git_dirty(dt, h, "VERSION");
+    git::dirty(dt, h, "VERSION");
     println("dirty-is-bool: {}", dt["dirty"].is_boolean() ? 1 : 0);
 
     // L4b: the live-text blame and the canonical relative path
     var edited = format("{}an uncommitted line\n", disk);
     var bt;
-    madc::git_blame_text(bt, h, "VERSION", edited.c_str(), 1, 0);
+    git::blame_text(bt, h, "VERSION", edited.c_str(), 1, 0);
     var last = bt["rows"][php::count(bt["rows"]) - 1];
     println("blame-text-rows-positive: {}", php::count(bt["rows"]) > 0 ? 1 : 0);
     println("blame-text-uncommitted-sha-empty: {}", strlen(last["sha"].c_str()) == 0 ? 1 : 0);
     var rp2;
-    madc::git_relpath(rp2, h, "tests/../tests/testgit.mad");
+    git::relpath(rp2, h, "tests/../tests/testgit.mad");
     var relp = rp2["path"];
     println("relpath: {}", relp == "tests/testgit.mad" ? 1 : 0);
     var rp3;
-    madc::git_relpath(rp3, h, "/");
+    git::relpath(rp3, h, "/");
     println("relpath-outside-error: {}", strlen(rp3["error"].c_str()) > 0 ? 1 : 0);
 
     var bad;
-    madc::git_show(bad, h, "HEAD", "no/such/file.txt");
+    git::show(bad, h, "HEAD", "no/such/file.txt");
     println("missing-path-error: {}", strlen(bad["error"].c_str()) > 0 ? 1 : 0);
     var bad2;
-    madc::git_revparse(bad2, h, "no-such-ref-anywhere");
+    git::revparse(bad2, h, "no-such-ref-anywhere");
     println("bad-ref-error: {}", strlen(bad2["error"].c_str()) > 0 ? 1 : 0);
 
-    println("closed: {}", madc::git_close(h) ? 1 : 0);
-    println("stale-after-close: {}", madc::git_close(h) ? 0 : 1);
+    println("closed: {}", git::close(h) ? 1 : 0);
+    println("stale-after-close: {}", git::close(h) ? 0 : 1);
     var gone;
-    madc::git_head(gone, h);
+    git::head(gone, h);
     println("stale-handle-error: {}", strlen(gone["error"].c_str()) > 0 ? 1 : 0);
-    println("nonrepo: {}", madc::git_open("/") == 0 ? 1 : 0);
+    println("nonrepo: {}", git::open("/") == 0 ? 1 : 0);
     return 0;
 }

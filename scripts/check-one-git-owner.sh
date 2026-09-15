@@ -3,18 +3,26 @@
 # §4.2).
 #
 # The rule: every libgit2 call (git_* from <git2.h>) lives in
-# src/madcdis_git_repo.cpp, the READ-ONLY madc::GitRepo; nothing else in
-# src/, include/ or tools/ includes <git2.h>, calls a git_* API, or spawns a
-# git binary (exec://git …). Consumers use GitRepo (C++) or madc::git_* (the
-# dialect) — so "network off" and "read-only" are properties of ONE file.
-# tests/ are exempt: unit fixtures build repositories through libgit2's own
-# write API (the oracle, not a second owner).
+# src/modules/madcgit/madcgit.cpp — the madcgit MODULE, the READ-ONLY
+# madc::GitRepo and its C API (libgit2 is the SYSTEM library, a dependency of
+# the IDE's nexus and never part of madc: owner ruling 2026-09-15). Nothing
+# else in src/, include/ or tools/ includes <git2.h>, calls a git_* API, or
+# spawns a git binary (exec://git …). Consumers use GitRepo (C++) or git::*
+# (the dialect, <ns_git>) — so "read-only" is a property of ONE file, and the
+# second rule below keeps it read-only: the owner calls no remote / clone /
+# fetch / push / write API (with the vendored network-off configuration gone,
+# this is where "the nexus only READS local history" lives). tests/ are
+# exempt: unit fixtures build repositories through libgit2's own write API
+# (the oracle, not a second owner).
 set -u
 cd "$(dirname "$0")/.."
 
+OWNER=src/modules/madcgit/madcgit.cpp
 fail=0
 api='\bgit_(repository|revwalk|commit|blame|tree|blob|reference|status|revparse|object|remote|clone|index|signature|libgit2)_[a-z_]+[[:space:]]*\('
 inc='#include[[:space:]]*[<"]git2(/|\.h|>)'
+# The write / network surface the READ-ONLY owner must never touch.
+writeapi='\bgit_(remote|clone|fetch|push|transport|credential|checkout|merge|rebase|reset|stash|submodule|worktree|index_(add|remove|write)|commit_create|reference_(create|set|rename|delete)|tag_create|branch_(create|delete|move)|repository_init|signature_now|blob_create|tree_builder|treebuilder)[a-z_]*[[:space:]]*\('
 # madc's own git_* names share the prefix by design: the row shapers
 # (value git_<record>_value(...)) declared in the owner's header, and the
 # dialect publics (madc::git_open / git_blame_text / …) declared in
@@ -28,11 +36,19 @@ shapers=$( { grep -oE 'value[[:space:]]+(git_[a-z_]+_value)[[:space:]]*\(' inclu
 
 hits=$(grep -rnE "$inc|$api" src include tools \
 	--include='*.cpp' --include='*.h' --include='*.inc' --include='*.mad' 2>/dev/null \
-	| grep -v '^src/madcdis_git_repo\.cpp:' \
+	| grep -v "^$OWNER:" \
 	| grep -vE "\b($shapers)[[:space:]]*\(")
 if [ -n "$hits" ]; then
-	echo "one-git-owner gate: libgit2 used outside src/madcdis_git_repo.cpp:"
+	echo "one-git-owner gate: libgit2 used outside $OWNER:"
 	echo "$hits" | sed 's/^/  /'
+	fail=1
+fi
+
+# The owner is READ-ONLY: no write / network API call in it.
+writes=$(grep -nE "$writeapi" "$OWNER" 2>/dev/null)
+if [ -n "$writes" ]; then
+	echo "one-git-owner gate: $OWNER calls a WRITE or NETWORK libgit2 API (the nexus only READS local history):"
+	echo "$writes" | sed 's/^/  /'
 	fail=1
 fi
 
@@ -51,10 +67,18 @@ fi
 # Negative control: a synthetic violation of each marker must be caught, or
 # the gate is dead and the verdict means nothing.
 ctrl=$(mktemp)
-printf '#include <git2.h>\nvoid f(void){ git_repository_open(0, "x"); system("git log"); }\nmadc::channel c("exec://git log");\n' > "$ctrl"
+printf '#include <git2.h>\nvoid f(void){ git_repository_open(0, "x"); system("git log"); git_remote_fetch(r, 0, 0, 0); }\nmadc::channel c("exec://git log");\n' > "$ctrl"
 if ! grep -qE "$inc" "$ctrl" || ! grep -qE "$api" "$ctrl" || ! grep -qE 'exec://git\b' "$ctrl" \
-   || ! grep -qE '(system|popen)[[:space:]]*\([^)]*"git[[:space:]]' "$ctrl"; then
+   || ! grep -qE '(system|popen)[[:space:]]*\([^)]*"git[[:space:]]' "$ctrl" \
+   || ! grep -qE "$writeapi" "$ctrl"; then
 	echo "one-git-owner gate: NEGATIVE CONTROL FAILED"
+	rm -f "$ctrl"
+	exit 1
+fi
+# ...and the owner's own READ calls must not trip the write rule (a positive
+# control, or the rule is a tautology waiting to fire on the first refactor).
+if printf 'git_repository_open(0, "x"); git_blame_buffer(0, 0, 0, 0); git_revparse_single(0, 0, 0);\n' | grep -qE "$writeapi"; then
+	echo "one-git-owner gate: POSITIVE CONTROL FAILED — a read API trips the write rule"
 	rm -f "$ctrl"
 	exit 1
 fi
@@ -63,5 +87,5 @@ rm -f "$ctrl"
 if [ "$fail" -ne 0 ]; then
 	exit 1
 fi
-echo "one-git-owner gate: GREEN — src/madcdis_git_repo.cpp is the only libgit2 caller; no git binary is spawned."
+echo "one-git-owner gate: GREEN — $OWNER is the only libgit2 caller and calls no write/network API; no git binary is spawned."
 exit 0

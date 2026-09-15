@@ -1,13 +1,23 @@
-// madcdis_git_repo.cpp — madc::GitRepo, the ONE libgit2 caller in madc
-// (include/madcdis/git_repo.h states the contract; gate
-// scripts/check-one-git-owner.sh), plus the git source adapter over it and the
-// shared value shapers. Read-only: nothing here writes a repository.
+// modules/madcgit/madcgit.cpp — THE madcgit MODULE: madc::GitRepo, the ONE
+// libgit2 caller in madc (include/madcdis/git_repo.h states the contract; gate
+// scripts/check-one-git-owner.sh), the git source adapter over it, the shared
+// value shapers, and the module's C API (include/madc/madcgit.h — what
+// `import madcgit;` binds). Read-only: nothing here writes a repository.
+//
+// libgit2 is the SYSTEM library (pkg-config libgit2), a dependency of the
+// IDE's nexus and never part of madc (owner ruling 2026-09-15, superseding the
+// L4a vendoring): this file is compiled into lib/libmadcgit.so by
+// src/madcgit.mk, never into libmadc — the engine's export surface carries no
+// git_* symbol (scripts/check-c-abi-surface.sh). The module binds libmadc's
+// own symbols (value, error, the error composer, the path canonicalizer) at
+// load, from the image that imported it.
 
 #include "madcdis/git_repo.h"
-
+#include "handle_table.h"		// THE slot+1 registry rule (the parse handles')
 #include "madc_datachannel_internal.h"	// detail::set_channel_error — the ONE
 					// runtime-error composer (gate:
 					// check-one-error-composer.sh)
+#include "madc_posix_io.h"		// canonical_path_for_compare — THE path canonicalizer
 
 #include <git2.h>
 
@@ -539,4 +549,252 @@ bool git_source_adapter::extract(const DataSource &source, const std::string &ty
     return false;
 }
 
+// ------------------------------------------------------ the module's C API
+// (formerly src/madc_git.cpp + the C bridges in parser.cpp / ns_common.h and
+// the madc::git_* wrappers in ns_madc.cpp — one layer now, at the module
+// boundary). A handle_table of open GitRepo objects and the value-shaped
+// answers the dialect face (<ns_git>: git::open / head / …) returns. Every
+// answer is an object, or {error: <prose>} (the graph_* refusal shape the
+// madcide seat turns into isError); open answers 0 for a path with no
+// repository above it. THREAD CONTRACT: a handle is used only from the thread
+// that opened it (the parse-handle rule; handle_table.h states the table's).
+
+namespace {
+
+struct git_repo_state
+{
+    GitRepo repo;
+};
+
+handle_table<git_repo_state> &git_handles()
+{
+    static handle_table<git_repo_state> handles;
+    return handles;
+}
+
+value error_value(const std::string &why)
+{
+    std::map<std::string, value> f;
+    f["error"] = value(why);
+    return value::make_object(f);
+}
+
+// The state behind a handle, or the refusal every verb answers for a closed /
+// unknown one (never a wrong repository).
+git_repo_state *state_or_refuse(int64_t handle, value &out)
+{
+    git_repo_state *st = git_handles().get(handle);
+    if ( !st )
+	out = error_value("git: no such repository handle");
+    return st;
+}
+
+value rows_value(const std::vector<value> &rows)
+{
+    std::map<std::string, value> f;
+    f["rows"] = value::make_array(rows);
+    return value::make_object(f);
+}
+
+std::string text_of(const char *s)
+{
+    return s ? s : "";
+}
+
+} // namespace
+
 } // namespace madc
+
+using madc::value;
+
+extern "C" {
+
+int64_t madcgit_open(const char *path)
+{
+    madc::git_repo_state *st = new madc::git_repo_state();
+    if ( !st->repo.open(madc::text_of(path)) )
+    {
+	delete st;
+	return 0;
+    }
+    return madc::git_handles().open(st);
+}
+
+bool madcgit_close(int64_t handle)
+{
+    return madc::git_handles().close(handle);
+}
+
+void *madcgit_head(void *result, int64_t handle)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    madc::GitRef r;
+    madc::error err;
+    if ( !st->repo.head(r, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["sha"] = value(r.sha);
+    f["branch"] = value(r.branch);
+    f["detached"] = value(r.detached);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_revparse(void *result, int64_t handle, const char *spec)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::string sha;
+    madc::error err;
+    if ( !st->repo.revparse(madc::text_of(spec), sha, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["sha"] = value(sha);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_log(void *result, int64_t handle, const char *path, int64_t limit)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::vector<madc::GitCommit> commits;
+    madc::error err;
+    if ( !st->repo.log(commits, madc::text_of(path),
+		       limit > 0 ? (size_t)limit : (size_t)100, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < commits.size(); ++i )
+	rows.push_back(madc::git_commit_value(commits[i]));
+    out = madc::rows_value(rows);
+    return result;
+}
+
+void *madcgit_show(void *result, int64_t handle, const char *rev, const char *path)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::string text;
+    madc::error err;
+    if ( !st->repo.show(madc::text_of(rev), madc::text_of(path), text, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["text"] = value(text);
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_blame(void *result, int64_t handle, const char *path, int64_t line,
+		    int64_t count)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::vector<madc::GitBlameRow> hunks;
+    madc::error err;
+    if ( !st->repo.blame(hunks, madc::text_of(path), line > 0 ? (size_t)line : 1,
+			 count > 0 ? (size_t)count : 0, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < hunks.size(); ++i )
+	rows.push_back(madc::git_blame_value(hunks[i]));
+    out = madc::rows_value(rows);
+    return result;
+}
+
+// L4b: blame the LIVE buffer text (not the file on disk) against the committed
+// history; uncommitted hunks come back with sha "" (the event log covers them).
+void *madcgit_blame_text(void *result, int64_t handle, const char *path,
+			 const char *text, int64_t line, int64_t count)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::vector<madc::GitBlameRow> hunks;
+    madc::error err;
+    if ( !st->repo.blame_buffer(hunks, madc::text_of(path), madc::text_of(text),
+				line > 0 ? (size_t)line : 1,
+				count > 0 ? (size_t)count : 0, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::vector<value> rows;
+    for ( size_t i = 0; i < hunks.size(); ++i )
+	rows.push_back(madc::git_blame_value(hunks[i]));
+    out = madc::rows_value(rows);
+    return result;
+}
+
+// L4b: a path relative to the repository's working tree, both sides
+// canonicalised by the ONE path canonicalizer madc has (the lexer's include
+// resolution uses the same one) — never a string prefix test on raw spellings.
+void *madcgit_relpath(void *result, int64_t handle, const char *path)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    std::string wd = madc::detail::canonical_path_for_compare(st->repo.workdir());
+    while ( wd.size() > 1 && (wd[wd.size() - 1] == '/' || wd[wd.size() - 1] == '\\') )
+	wd.erase(wd.size() - 1);
+    std::string given = madc::text_of(path);
+    std::string p = madc::detail::canonical_path_for_compare(given);
+    if ( wd.empty() || p.size() <= wd.size() + 1 || p.compare(0, wd.size(), wd) != 0
+	 || (p[wd.size()] != '/' && p[wd.size()] != '\\') )
+    {
+	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["path"] = value(p.substr(wd.size() + 1));
+    out = value::make_object(f);
+    return result;
+}
+
+void *madcgit_dirty(void *result, int64_t handle, const char *path)
+{
+    value &out = *(value *)result;
+    madc::git_repo_state *st = madc::state_or_refuse(handle, out);
+    if ( !st )
+	return result;
+    bool d = false;
+    madc::error err;
+    if ( !st->repo.dirty(madc::text_of(path), d, &err) )
+    {
+	out = madc::error_value(err.message);
+	return result;
+    }
+    std::map<std::string, value> f;
+    f["dirty"] = value(d);
+    out = value::make_object(f);
+    return result;
+}
+
+} // extern "C"

@@ -1,7 +1,7 @@
 // madcide_past.inc — the PAST axis of the code-graph MCP (Nexus L4b; design
 // docs/plans/2026-09-13-nexus-L4-design.md §4.3; plan
 // 2026-09-13-nexus-L4b-past-verbs-plan.md). Reads over the L4a git substrate
-// (madc::git_*) and the graph reads; owns the per-document revision cache
+// (git::*) and the graph reads; owns the per-document revision cache
 // (sha -> a READ-ONLY tagged parse handle + the text entity that handle was
 // parsed from), the id/rev routing graph_call uses, and the six verb bodies.
 // Included by madcide_mcp.inc.
@@ -30,12 +30,16 @@ long git_handle_of(long w, long es, long adoc)
     var p;
     ui::get(p, w, adoc, "path");
     var dir = php::dirname(p);		// ring: own the text first
-    gh = madc::git_open(dir.c_str());
+    // The madcgit module is LAZY (libgit2 is the system's, a dependency of
+    // this nexus — never part of madc): without it there is no repository to
+    // ask, the same degradation as a path outside any repository (handle 0,
+    // the versioned layer absent).
+    gh = git::available() ? git::open(dir.c_str()) : 0;
     ui::set(w, adoc, "ghandle", gh);
     if ( gh > 0 )
     {
 	var rp;
-	madc::git_relpath(rp, gh, p.c_str());
+	git::relpath(rp, gh, p.c_str());
 	var rel = rp["path"];
 	if ( rel.is_null() )
 	    rel = "";
@@ -86,7 +90,7 @@ void rev_handle_of(var &out, long w, long es, long adoc, const char *spec0)
 	return;
     }
     var rp;
-    madc::git_revparse(rp, gh, spec.c_str());
+    git::revparse(rp, gh, spec.c_str());
     var sha = rp["sha"];
     if ( sha.is_null() )
     {
@@ -114,7 +118,7 @@ void rev_handle_of(var &out, long w, long es, long adoc, const char *spec0)
     var rel;
     git_relpath_of(rel, w, adoc);
     var blob;
-    madc::git_show(blob, gh, sha.c_str(), rel.c_str());
+    git::show(blob, gh, sha.c_str(), rel.c_str());
     var text = blob["text"];
     if ( text.is_null() )
     {
@@ -292,11 +296,11 @@ void graph_status(var &out, long w, long es, long adoc, long live)
     if ( gh > 0 )
     {
 	var hd;
-	madc::git_head(hd, gh);
+	git::head(hd, gh);
 	var rel;
 	git_relpath_of(rel, w, adoc);
 	var dt;
-	madc::git_dirty(dt, gh, rel.c_str());
+	git::dirty(dt, gh, rel.c_str());
 	var dirty = dt["dirty"];
 	git = { "head": hd["sha"], "branch": hd["branch"], "detached": hd["detached"],
 		"dirty": dirty, "path": rel };
@@ -319,7 +323,7 @@ void graph_commits(var &out, long w, long es, long adoc, long limit)
     }
     var rel;
     git_relpath_of(rel, w, adoc);
-    madc::git_log(out, gh, rel.c_str(), limit > 0 ? limit : 20);
+    git::log(out, gh, rel.c_str(), limit > 0 ? limit : 20);
 }
 
 // graph.revision: open (or reuse) the revision handle; answer its identity.
@@ -460,7 +464,7 @@ void graph_history(var &out, long w, long es, long adoc, long live, long id)
 	var t;
 	ui::text(t, w, adoc);
 	var bl;
-	madc::git_blame_text(bl, gh, rel.c_str(), t.c_str(), l0, l1 - l0 + 1);
+	git::blame_text(bl, gh, rel.c_str(), t.c_str(), l0, l1 - l0 + 1);
 	var seen;				// sha -> 1 once listed (dynamic keys)
 	var hunks = bl["rows"];
 	if ( !hunks.is_null() )

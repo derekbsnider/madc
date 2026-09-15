@@ -649,6 +649,17 @@ for everything and never a CRDT for everything:
 
 ### 4.1 `third_party/libgit2` — vendored the MIR way (L4a)
 
+> **SUPERSEDED 2026-09-15 (owner ruling at the V6 seam):** *"I don't think
+> libgit2 should be part of the madc distribution... we're not modifying it...
+> it should just be a dependency for madcide."* The subtree and its recipe are
+> gone; libgit2 is the SYSTEM library, bound by the optional **`madcgit`
+> module** (`src/madcgit.mk` → `lib/libmadcgit.so`; the row in
+> `src/madc_modules.cpp`; the dialect face is the `git::` namespace in
+> `<ns_git>`), never linked into libmadc or any madc image — the C-ABI gate
+> had found its 876 `git_*` symbols exported from `libmadc.so`. The engine
+> keeps nothing git-specific; §4.2's `GitRepo` and adapter live in the module.
+> Plan: `2026-09-15-madcgit-module-plan.md`. The text below is the L4a record.
+
 - **Subtree** of upstream `libgit2/libgit2` at a release tag (1.9.x), no
   source edits (ZERO divergence — unlike MIR, we carry no fixes; a needed fix
   goes upstream first). History preserved like MIR (`docs/plans/mir-into-madc-

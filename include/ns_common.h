@@ -257,19 +257,8 @@ void *madc_graph_at(void *result, int64_t handle, int64_t line, int64_t column);
 bool  madc_parse_refresh_checked(void *result, int64_t handle, void *source);
 // Nexus L4c: the same validator without the swap (the propose tier's verdict).
 bool  madc_parse_would_accept(void *result, int64_t handle, void *source);
-// The git substrate (Nexus L4a, design 2026-09-13 §4.2): read-only repository
-// facts through madc::GitRepo. path/spec/rev = std::string*, result =
-// madc::value*; git_open answers 0 for a path with no repository above it.
-int64_t madc_git_open(void *path);
-bool  madc_git_close(int64_t handle);
-void *madc_git_head(void *result, int64_t handle);
-void *madc_git_revparse(void *result, int64_t handle, void *spec);
-void *madc_git_log(void *result, int64_t handle, void *path, int64_t limit);
-void *madc_git_show(void *result, int64_t handle, void *rev, void *path);
-void *madc_git_blame(void *result, int64_t handle, void *path, int64_t line, int64_t count);
-void *madc_git_dirty(void *result, int64_t handle, void *path);
-void *madc_git_blame_text(void *result, int64_t handle, void *path, void *text, int64_t line, int64_t count);
-void *madc_git_relpath(void *result, int64_t handle, void *path);
+// (The git substrate's bridges lived here until the V6 seam; it is the madcgit
+// MODULE now — include/madc/madcgit.h is its C interface.)
 // L4b (design §3.3): revision handles by generation TAG (engine-allocated).
 int64_t madc_parse_open_tagged(void *source, void *filename);
 int64_t madc_parse_generation(int64_t handle);

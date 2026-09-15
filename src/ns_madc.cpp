@@ -304,31 +304,8 @@ bool parse_would_accept(value &out_diags, int64_t handle, const char *source)
 	{ std::string s = source ? source : "";
 	  return madc_parse_would_accept(&out_diags, handle, &s); }
 
-// The git substrate (Nexus L4a, design 2026-09-13 §4.2): a READ-ONLY view of a
-// local repository through madc::GitRepo, answered as values ({error: prose}
-// on refusal — the graph_* shape).
-int64_t git_open(const char *path)
-	{ std::string p = path ? path : ""; return madc_git_open(&p); }
-bool git_close(int64_t handle)
-	{ return madc_git_close(handle); }
-value &git_head(value &out, int64_t handle)
-	{ madc_git_head(&out, handle); return out; }
-value &git_revparse(value &out, int64_t handle, const char *spec)
-	{ std::string s = spec ? spec : ""; madc_git_revparse(&out, handle, &s); return out; }
-value &git_log(value &out, int64_t handle, const char *path, int64_t limit)
-	{ std::string p = path ? path : ""; madc_git_log(&out, handle, &p, limit); return out; }
-value &git_show(value &out, int64_t handle, const char *rev, const char *path)
-	{ std::string r = rev ? rev : "", p = path ? path : "";
-	  madc_git_show(&out, handle, &r, &p); return out; }
-value &git_blame(value &out, int64_t handle, const char *path, int64_t line, int64_t count)
-	{ std::string p = path ? path : ""; madc_git_blame(&out, handle, &p, line, count); return out; }
-value &git_dirty(value &out, int64_t handle, const char *path)
-	{ std::string p = path ? path : ""; madc_git_dirty(&out, handle, &p); return out; }
-value &git_blame_text(value &out, int64_t handle, const char *path, const char *text, int64_t line, int64_t count)
-	{ std::string p = path ? path : "", t = text ? text : "";
-	  madc_git_blame_text(&out, handle, &p, &t, line, count); return out; }
-value &git_relpath(value &out, int64_t handle, const char *path)
-	{ std::string p = path ? path : ""; madc_git_relpath(&out, handle, &p); return out; }
+// (The git substrate's dialect face lived here as madc::git_* until the V6
+// seam; it is the git:: namespace of the madcgit MODULE now — <ns_git>.)
 
 // The comparison spelling of a path (V6c-2): the standing canonicalizer
 // (detail::canonical_path_for_compare — realpath when it resolves, the input

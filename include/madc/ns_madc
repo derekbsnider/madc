@@ -240,37 +240,9 @@ namespace madc {
     bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
     bool parse_would_accept(value &out_diags, int64_t handle, const char *source);
 
-    // The git substrate (Nexus L4a; design 2026-09-13 §4.2): a READ-ONLY view of
-    // a local repository through madc::GitRepo (libgit2 vendored with every
-    // network transport off). git_open discovers the repository upward from
-    // `path` (0 = no repository there); git_close frees it. Every other public
-    // answers an object, or {error: <libgit2 message>} (the graph_* refusal
-    // shape). Thread contract: a handle is used only from the thread that
-    // opened it (the runtime-eval confinement).
-    //   git_head(out, h)                 -> {sha, branch, detached}
-    //   git_revparse(out, h, spec)       -> {sha}
-    //   git_log(out, h, path, limit)     -> {rows: [{sha, author, email, when, summary}]}
-    //                                       newest first; "" = no path filter;
-    //                                       limit <= 0 = 100
-    //   git_show(out, h, rev, path)      -> {text}   (the blob's bytes at rev)
-    //   git_blame(out, h, path, line, count) -> {rows: [{line, count, sha, author, when, summary}]}
-    //                                       1-based line; count 0 = to the end
-    //   git_dirty(out, h, path)          -> {dirty: bool}
-    //   git_blame_text(out, h, path, text, line, count) -> blame the LIVE text
-    //                                       `text` against path's committed history;
-    //                                       an uncommitted hunk has sha "" (L4b)
-    //   git_relpath(out, h, path)        -> {path} relative to the working tree,
-    //                                       both sides canonicalised; {error} outside (L4b)
-    int64_t git_open(const char *path);
-    bool    git_close(int64_t handle);
-    value  &git_head(value &out, int64_t handle);
-    value  &git_revparse(value &out, int64_t handle, const char *spec);
-    value  &git_log(value &out, int64_t handle, const char *path, int64_t limit);
-    value  &git_show(value &out, int64_t handle, const char *rev, const char *path);
-    value  &git_blame(value &out, int64_t handle, const char *path, int64_t line, int64_t count);
-    value  &git_dirty(value &out, int64_t handle, const char *path);
-    value  &git_blame_text(value &out, int64_t handle, const char *path, const char *text, int64_t line, int64_t count);
-    value  &git_relpath(value &out, int64_t handle, const char *path);
+    // The git substrate (Nexus L4a) is the git:: namespace of the madcgit
+    // MODULE since the V6 seam — <ns_git> (`import madcgit;`): libgit2 is a
+    // dependency of the IDE's nexus, never part of madc (owner, 2026-09-15).
 
     // The COMPARISON spelling of a path (V6c-2): symlinks, `.` and `..`
     // resolved (POSIX realpath) when the path exists, the input spelling

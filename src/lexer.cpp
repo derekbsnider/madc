@@ -1286,6 +1286,9 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"ui", "ns_ui"},
 	{"ui_web", "ns_ui_web"},
 	{"ui_ws", "ns_ui_ws"},
+	// The git:: namespace (Nexus L4a → the V6 seam): the madcgit MODULE's
+	// dialect face — <ns_git> imports the module and wraps its C API.
+	{"git", "ns_git"},
 	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
 	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
 	// wants the target that serves it — <ns_ui_web>, whose initializer
@@ -1388,6 +1391,7 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_ui",
 	"ns_ui_web",
 	"ns_ui_ws",
+	"ns_git",
 	NULL
     };
 

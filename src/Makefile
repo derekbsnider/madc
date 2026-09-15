@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_git_repo.o madc_git.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -162,22 +162,16 @@ HAVE_MADCDAT ?= 1
 # removes them.
 MIRDIR	= $(abspath ../third_party/mir)
 MIRBUILD = $(abspath ../obj/mir)
-# libgit2 lives IN this repository too (third_party/libgit2, an unmodified
-# upstream subtree; madc's build recipe + committed feature headers are in
-# third_party/libgit2-madc — design docs/plans/2026-09-13-nexus-L4-design.md
-# §4.1). Products land under ../obj/libgit2/<variant>; `git2clean` removes
-# them (outside `clean`, the MIR model). libgit2 has no target knobs, so ONE
-# host archive serves every host-running mode (develop / debug / release /
-# the emit-only cross-* modes); the hosted cross builds make their own below.
-GIT2DIR   = $(abspath ../third_party/libgit2)
-GIT2CFG   = $(abspath ../third_party/libgit2-madc)
-GIT2BUILD = $(abspath ../obj/libgit2)
-GIT2LIB   = $(GIT2BUILD)/host/libgit2.a
-GIT2PLATFORM = linux
+# libgit2 is NOT in this repository and NOT in libmadc (owner ruling
+# 2026-09-15, superseding the L4a vendoring): madc carries no fixes to it, so
+# it is an ordinary dependency of the IDE's nexus — the SYSTEM library, bound
+# by the optional madcgit MODULE (src/madcgit.mk, lib/libmadcgit.so), never
+# linked into a madc image. The engine's export surface carries no git_*
+# symbol (scripts/check-c-abi-surface.sh).
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
-DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir -I$(GIT2DIR)/include $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
+DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 # MADC_VERSION_STR rides in DEFINES, which make does not track as a
 # dependency: bumping ../VERSION left the version-consuming objects stale, so
@@ -360,8 +354,6 @@ $(error hosted darwin MODE: served libc++ headers not found at $(LLVM_LIBCXX_INC
 endif
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
-GIT2LIB = $(GIT2BUILD)/$(MODE)/libgit2.a
-GIT2PLATFORM = darwin
 # The configure-probed host packages (madcdat backends) do not exist in the
 # SDK: hosted modes build as if --enable-madcdat=no. zstd — the forest/pch
 # container codec the release pack ships — comes from a per-target static
@@ -431,8 +423,6 @@ CXX = $(CXX_BASE) $(WIN_CXX_ISYS)
 AR  = $(WIN_MINGW)-ar
 MODE_OPTFLAGS = -O2
 MIRLIB	= $(MIRBUILD)/$(MODE)/libmir.a
-GIT2LIB = $(GIT2BUILD)/$(MODE)/libgit2.a
-GIT2PLATFORM = win32
 # The configure-probed host packages do not exist for the cross target:
 # hosted modes build as if --enable-madcdat=no (the darwin posture). zstd
 # (the forest/pch container codec) comes from the per-target static stage
@@ -743,10 +733,13 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
+# The madcgit module's unit test links the module and the system libgit2:
+# madcgit.mk builds it (and adds it to TESTBINS) where pkg-config finds libgit2.
+MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp
 ifeq ($(HAVE_MADCDAT),1)
-ACTIVE_TESTSRCS = $(TESTSRCS)
+ACTIVE_TESTSRCS = $(filter-out $(MODULE_TESTSRCS), $(TESTSRCS))
 else
-ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS), $(TESTSRCS))
+ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS) $(MODULE_TESTSRCS), $(TESTSRCS))
 endif
 ALL_TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
@@ -768,9 +761,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT)
 endif
 
 
@@ -783,6 +776,7 @@ all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
 include webview.mk
+include madcgit.mk
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
@@ -863,22 +857,6 @@ $(MIRBUILD)/host/libmir.a: FORCE
 
 mirclean:
 	rm -rf $(MIRBUILD)
-
-# libgit2 archives: madc's own recipe over the unmodified subtree (no CMake;
-# third_party/libgit2-madc/Makefile.madc). The host archive is built with the
-# host compiler; the hosted variants with that mode's CC/AR (the darwin/mingw
-# toolchains), each into its own dir. FORCE delegates up-to-dateness to the
-# recipe's own dependencies, as the MIR rules do.
-$(GIT2BUILD)/host/libgit2.a: FORCE
-	mkdir -p $(GIT2BUILD)/host
-	$(MAKE) -f $(GIT2CFG)/Makefile.madc SRC=$(GIT2DIR) BUILD_DIR=$(GIT2BUILD)/host PLATFORM=linux CC='$(CC)' AR='$(AR)'
-
-$(GIT2BUILD)/hosted-arm64-macos/libgit2.a $(GIT2BUILD)/hosted-x86-64-macos/libgit2.a $(GIT2BUILD)/hosted-x86-64-windows/libgit2.a: FORCE
-	mkdir -p $(GIT2BUILD)/$(MODE)
-	$(MAKE) -f $(GIT2CFG)/Makefile.madc SRC=$(GIT2DIR) BUILD_DIR=$(GIT2BUILD)/$(MODE) PLATFORM=$(GIT2PLATFORM) CC='$(CC)' AR='$(AR)'
-
-git2clean:
-	rm -rf $(GIT2BUILD)
 
 # MIR variant lib for the cross target: the MIR makefile with the target
 # define via its CPPFLAGS hook (-I. is REQUIRED — a CLI CPPFLAGS clobbers
@@ -1118,7 +1096,6 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-aggregate-layout.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
-	@cd .. && bash scripts/check-libgit2-features.sh
 	@cd .. && bash scripts/check-one-git-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-handle-table.sh
@@ -1222,8 +1199,8 @@ gcctest-smoke: ../bin/madc
 WHOLE_ARCHIVE_BEGIN ?= -Wl,--whole-archive
 WHOLE_ARCHIVE_END   ?= -Wl,--no-whole-archive
 
-$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB) $(GIT2LIB)
-	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(GIT2LIB) $(LIBS)
+$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
 $(BINDIR)/test_process: $(PROCESS_FIXTURE)
 
@@ -1261,10 +1238,10 @@ CLI_LIB_DEP = $(LIBMADC_SHARED)
 CLI_LINK = -L$(LIBDIR) -lmadc $(CLI_RPATH)
 else
 CLI_LIB_DEP = $(LIBMADC_STATIC)
-CLI_LINK = $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(GIT2LIB)
+CLI_LINK = $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB)
 endif
 
-$(BIN): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(GIT2LIB) $(FOREST_EMBED_DEP) $(LINK_SHAPE_STAMP)
+$(BIN): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(FOREST_EMBED_DEP) $(LINK_SHAPE_STAMP)
 	$(CXX) -o $@ $(OBJDIR)/madc.o $(CLI_LINK) $(CXXFLAGS) $(DEFINES) $(LIBS) $(FOREST_EMBED_LDFLAGS)
 ifdef FOREST_SIDECAR
 	cp $(DARWIN_FOREST_BIN) $@.forest
@@ -1286,8 +1263,8 @@ $(THIN_CLI): $(OBJDIR)/madc.o $(LIBMADC_SHARED)
 # OPTIONAL form stays link-proven in a default (shared) tree without
 # reconfiguring it — mono_cli_gate.sh runs it. In a --disable-shared tree
 # bin/madc already IS this shape.
-$(MONO_CLI): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(GIT2LIB)
-	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(GIT2LIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+$(MONO_CLI): $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 # lib/libmadc.{a,so} keep ONE path across modes, so make's timestamps alone
 # would silently leave the OTHER mode's libs in place after a mode switch
@@ -1314,9 +1291,9 @@ $(LIBMADC_RT): $(addprefix $(OBJDIR)/,$(RT_OFILES)) $(LIBMODE_STAMP) $(RT_LEDGER
 	rm -f $@
 	$(AR) $(ARFLAGS) $@ $(addprefix $(OBJDIR)/,$(RT_OFILES))
 
-$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(GIT2LIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS) $(MIRLIB) $(LIBMODE_STAMP) $(RT_LEDGER_INPUTS)
 	mkdir -p $(dir $@)
-	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(GIT2LIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $(LIBMADC_OBJECTS) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 # A consumer linked with -lmadc gets DT_NEEDED = the SONAME (libmadc.so.0), so
 # the build tree needs that name too or a thin CLI / host binary cannot load
 # from its lib dir (the install tree ships the real file under the soname and
@@ -1445,9 +1422,9 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 # .def re-adds exactly the map's names, generated from the one map owner
 # so the lists can never drift. --export-all-symbols stays on the line:
 # with a .def present ld would otherwise export ONLY the .def names.
-../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) $(GIT2LIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
+../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
 	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
-	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(GIT2LIB) $(CXXFLAGS) $(LIBS)
+	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
@@ -1461,7 +1438,7 @@ ifeq ($(DARWIN_SELF_FREEZE),1)
 # Native self-freeze, phase 1: the hosted binary without its forest section —
 # the $(BIN) link minus $(FOREST_EMBED_LDFLAGS). Lives in the mode's obj tree;
 # nothing ships it. Relinks when the objects do, which re-freezes the groves.
-$(DARWIN_FREEZER): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(GIT2LIB) $(LINK_SHAPE_STAMP)
+$(DARWIN_FREEZER): $(OBJDIR)/madc.o $(CLI_LIB_DEP) $(MIRLIB) $(LINK_SHAPE_STAMP)
 	$(CXX) -o $@ $(OBJDIR)/madc.o $(CLI_LINK) $(CXXFLAGS) $(DEFINES) $(LIBS)
 else ifneq ($(DARWIN_HOST),1)
 $(CROSS_MADC_BIN): FORCE
