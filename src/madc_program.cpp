@@ -7211,7 +7211,14 @@ static void graph_collect_statements(const TokenBase *root,
 		out.push_back(c->statements[i]);
 	std::vector<const TokenBase *> kids;
 	graph_body_children(n, kids);
-	q.insert(q.end(), kids.begin(), kids.end());
+	// One push per child, not a range insert: GCC 13 at -O2 misjudges
+	// vector::insert(end, first, last)'s inlined memmove here
+	// (-Wstringop-overflow "writing between 9 and 2^63 bytes into a region
+	// of size 0", a known false positive on _M_range_insert) and -Werror
+	// fails the release and mingw builds on it; the -O0 dev build never
+	// sees it, which is how it reached the V6 seam.
+	for ( size_t k = 0; k < kids.size(); ++k )
+	    q.push_back(kids[k]);
     }
 }
 
