@@ -27,6 +27,12 @@
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
+#if defined(_WIN32)
+#include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
+				// here: its `interface` macro collides with the module map)
+#else
+#include <unistd.h>		// getpid — sys.pid's POSIX spelling
+#endif
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
 
 // ---- madc::sys — the system object (task #91) ----------------------------
@@ -53,10 +59,23 @@ static const char *sys_detect_hostname()
     return name.c_str();
 }
 
+// The process id as a portable fact (V6 seam): the dialect's bare getpid()
+// resolved through the dlsym fallback on POSIX only — the UCRT exports
+// _getpid, so on the win64 madc every program naming getpid failed to
+// compile (the madcide family under wine). sys.pid says it on every platform.
+static int64_t sys_detect_pid()
+{
+#if defined(_WIN32)
+    return (int64_t)_getpid();
+#else
+    return (int64_t)getpid();
+#endif
+}
+
 // The facts initialize once at load (dynamic init of this TU); argv/path
 // are filled by sys_populate_args from the injected __madc_sys_init call.
 SysInfo sys = { value(), value(), sys_detect_platform(), MADC_VERSION_STR,
-		sys_detect_hostname() };
+		sys_detect_hostname(), sys_detect_pid() };
 
 void sys_populate_args(int argc, char **argv)
 {

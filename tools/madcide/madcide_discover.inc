@@ -23,11 +23,13 @@
 // the session opens anyway, unadvertised. An editor that refuses to start
 // because it could not advertise is a worse editor.
 //
-// The dialect surface this needs is ALL already there (probed at live HEAD in
-// the JIT pass and the -o exe pass, plan §recon): getenv is a registered
-// builtin with the real C shape, getpid resolves through the dlsym fallback,
-// madc::canonical_path answers ".", perl::glob scans a directory and php::time
-// is the wall clock. No engine change.
+// The dialect surface this needs is there (probed at live HEAD in the JIT pass
+// and the -o exe pass, plan §recon): getenv is a registered builtin with the
+// real C shape, madc::canonical_path answers ".", perl::glob scans a directory
+// and php::time is the wall clock. The process id is madc::sys.pid — the V6
+// seam's wine lane found the bare getpid() the slice first used resolves
+// through the dlsym fallback on POSIX only (the UCRT spells it _getpid), so
+// every program naming it failed to COMPILE on the win64 madc.
 
 // The advertisement directory (R1's resolution order). "" = nowhere to
 // publish (no HOME): the caller degrades to an unadvertised session.
@@ -99,7 +101,7 @@ void session_slug(var &out, var &root)
 
 // THE advertisement's path: one file per running session. The pid keeps two
 // sessions in one root distinct — it advertises, it never excludes.
-void session_file(var &out, var &dir, var &root, long pid)
+void session_file(var &out, var &dir, var &root, int64_t pid)
 {
     var slug;
     session_slug(slug, root);
@@ -169,7 +171,7 @@ void session_record(var &out, IdeSession &S, long doc, var &endpoint)
     var url;
     session_url(url, endpoint);
     var serves = { "api", "ws", "http", "lsp", "mcp" };
-    long pid = getpid();
+    int64_t pid = madc::sys.pid;	// portable (the UCRT has no getpid)
     long started = php::time();
     var version = madc::sys.version;
     var host = madc::sys.hostname;
@@ -203,7 +205,7 @@ void session_advertise(IdeSession &S, long doc, var &endpoint)
 	return;
     var root;
     madc::canonical_path(root, ".");
-    long pid = getpid();
+    int64_t pid = madc::sys.pid;	// portable (the UCRT has no getpid)
     var path;
     session_file(path, dir, root, pid);
     var rec;

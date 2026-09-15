@@ -500,6 +500,10 @@ namespace madc {
 	const char *const platform;
 	const char *const version;
 	const char *const hostname;
+	// The process id, portable (V6 seam): a bare getpid() resolves through
+	// the dlsym fallback on POSIX only — the UCRT spells it _getpid — so
+	// a dialect program that needs its own pid reads this fact instead.
+	const int64_t pid;
     };
     extern SysInfo sys;
 
