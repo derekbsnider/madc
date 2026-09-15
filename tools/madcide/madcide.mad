@@ -48,9 +48,9 @@
 // editor itself, which listens by default.
 #include "madcide_discover.inc"
 #include "madcide_client.inc"
+#include "madcide_api.inc"
 #include "madcide_once.inc"
 #include "madcide_line.inc"
-#include "madcide_api.inc"
 #include "madcide_mcp.inc"
 // The LSP face sits BEFORE the connection seat, which routes LSP traffic to
 // lsp_handle (V6c-3c), and forward-declares the one thing it needs from the

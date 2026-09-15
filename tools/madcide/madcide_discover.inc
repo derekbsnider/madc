@@ -152,13 +152,22 @@ void session_documents(var &out, IdeSession &S, long doc)
 // (canonical_path, the document scan, format) before it places the value — long
 // enough for the ring to cycle and the record to advertise some other string as
 // the address. Cost the first run of this slice: `"endpoint":"tmp/discdoc.mad"`.
+// The URL a browser opens for a session's endpoint — ONE spelling (the record's
+// `url`, the $/madc/serve announcement; the VS Code extension mirrors it by
+// hand and says so). A path suffix, a token or a scheme change lands here.
+void session_url(var &out, var &endpoint)
+{
+    out = format("http://{}/", endpoint);
+}
+
 void session_record(var &out, IdeSession &S, long doc, var &endpoint)
 {
     var root;
     madc::canonical_path(root, ".");
     var docs;
     session_documents(docs, S, doc);
-    var url = format("http://{}/", endpoint);
+    var url;
+    session_url(url, endpoint);
     var serves = { "api", "ws", "http", "lsp", "mcp" };
     long pid = getpid();
     long started = php::time();

@@ -271,6 +271,18 @@ void keyed_get(var &out, var &map, const char *key)
 	out = map[key];
 }
 
+// Is the document DIRTY? The `modified` slot is unset until a document's
+// first write (setup_document seeds false; an edit sets true), and reading
+// an unset slot as a boolean THROWS — so every read is guarded here, once:
+// unset reads as clean. The V6 seam audit found ten reads across the
+// texteditor and IDE layers, nine guarded by hand and one not.
+bool doc_modified(long w, long doc)
+{
+    var m;
+    ui::get(m, w, doc, "modified");
+    return !m.is_null() && m.as_boolean();
+}
+
 // The session's change-log entity WITHOUT creating it (0 = none yet): the
 // ONE stream every document's records ride (Nexus L4c, design §3.1).
 long clog_find(long w)
@@ -698,11 +710,9 @@ long clamped_caret(long w, long es, long doc)
 void edit_meta(var &m, long w, long es, long doc, long caret)
 {
     var p = { "caret": caret };
-    var mod;
-    ui::get(mod, w, doc, "modified");
     // Through a bool VARIABLE: a bare `a && b` is int-typed (C), and the
     // keyed slot would store integer kind — restore_meta reads boolean.
-    bool dirty = !mod.is_null() && mod.as_boolean();
+    bool dirty = doc_modified(w, doc);
     p["modified"] = dirty;
     m = p;
 }
@@ -889,11 +899,9 @@ void compose_heading(var &head, long w, long es, long doc,
 		     const char *label)
 {
     var h = { "role": "heading", "label": label };
-    var m;
-    ui::get(m, w, doc, "modified");
     if ( !es_flag(w, es, "editable") )
 	h["content"] = "[read-only]";
-    else if ( !m.is_null() && m.as_boolean() )
+    else if ( doc_modified(w, doc) )
 	h["content"] = "[modified]";
     head = h;
 }

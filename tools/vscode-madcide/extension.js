@@ -166,6 +166,9 @@ async function openWindow() {
 	let url = serveUrl;
 	if (!url) {
 		const attach = (vscode.workspace.getConfiguration('madcide').get('attach') || '').trim();
+		// The one spelling is madcide's session_url (madcide_discover.inc);
+		// this fallback mirrors it for a hand-configured attach address and
+		// must change with it.
 		if (attach) url = 'http://' + attach + '/';
 	}
 	if (!url) {

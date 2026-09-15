@@ -182,13 +182,8 @@ void rev_entry_of_handle(var &out, long w, long adoc, long h)
     }
 }
 
-// One optional argument: null unless `args` is an object that carries `key`
-// (an empty container has no keyed members — a subscript on it throws).
-void arg_of(var &out, var &args, const char *key)
-{
-    if ( args.is_object() )
-	out = args[key];
-}
+// An optional argument is read through keyed_get (editor_events.inc) — the
+// promoted twin of the arg_of this file carried until the V6 seam.
 
 // The handle a verb should run against: an id routes itself (graph_route —
 // 0 = unknown/stale -> the live handle, whose verb refuses with the reason);
@@ -198,9 +193,9 @@ long route_handle(long w, long es, long adoc, long live, var &args, bool &is_rev
 {
     is_rev = false;
     var idv;
-    arg_of(idv, args, "id");
+    keyed_get(idv, args, "id");
     if ( idv.is_null() )
-	arg_of(idv, args, "func");
+	keyed_get(idv, args, "func");
     if ( !idv.is_null() )
     {
 	long h = madc::graph_route(live, idv.as_integer());
@@ -210,7 +205,7 @@ long route_handle(long w, long es, long adoc, long live, var &args, bool &is_rev
 	return h;
     }
     var rv;
-    arg_of(rv, args, "rev");
+    keyed_get(rv, args, "rev");
     if ( rv.is_null() || strlen(rv.c_str()) == 0 )
 	return live;
     var e;

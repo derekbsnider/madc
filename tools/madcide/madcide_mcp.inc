@@ -672,7 +672,7 @@ bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args
 {
     long id = args["id"].as_integer();
     var srcv;
-    arg_of(srcv, args, "src");
+    keyed_get(srcv, args, "src");
     var src = "";
     if ( !srcv.is_null() )
 	src = srcv;
@@ -681,7 +681,7 @@ bool edit_op_plan(var &op, long w, long adoc, long h, var &t, long gv, var &args
     if ( gv == gvINSERT )
     {
 	var wv;
-	arg_of(wv, args, "where");
+	keyed_get(wv, args, "where");
 	if ( !wv.is_null() )
 	{
 	    where = graph_where_of(wv.c_str());
@@ -1107,12 +1107,12 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	// candidate's validation (graph_edit_apply); the mode decides.
 	long mode = emAPPLY;
 	var pv;
-	arg_of(pv, args, "propose");
+	keyed_get(pv, args, "propose");
 	bool asked = !pv.is_null() && pv.as_boolean();
 	if ( my_tier == tierPROPOSER || asked )
 	    mode = emPROPOSE;
 	var cv;
-	arg_of(cv, args, "checks");
+	keyed_get(cv, args, "checks");
 	bool want_checks = !cv.is_null() && cv.as_boolean();
 	var t;
 	var why;
@@ -1146,7 +1146,7 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case gvPROPOSALS:
     {
 	var sv;
-	arg_of(sv, args, "status");
+	keyed_get(sv, args, "status");
 	long want = psNONE;
 	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
 	{
@@ -1166,7 +1166,7 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case gvREJECT:
     {
 	var rv;
-	arg_of(rv, args, "reason");
+	keyed_get(rv, args, "reason");
 	var reason = "";
 	if ( !rv.is_null() )
 	    reason = rv;
@@ -1183,14 +1183,14 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case gvCOMMITS:
     {
 	var lv;
-	arg_of(lv, args, "limit");
+	keyed_get(lv, args, "limit");
 	graph_commits(snap, w, es, adoc, lv.is_null() ? 20 : lv.as_integer());
 	break;
     }
     case gvREVISION:
     {
 	var rv;
-	arg_of(rv, args, "rev");
+	keyed_get(rv, args, "rev");
 	var spec = "HEAD";
 	if ( !rv.is_null() )
 	    spec = rv;
@@ -1200,9 +1200,9 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case gvDIFF:
     {
 	var av;
-	arg_of(av, args, "a");
+	keyed_get(av, args, "a");
 	var bv;
-	arg_of(bv, args, "b");
+	keyed_get(bv, args, "b");
 	var a = "";
 	var b = "";
 	if ( !av.is_null() )
@@ -1234,7 +1234,7 @@ void graph_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 bool ref_arg(var &ref, var &out, var &args, const char *key)
 {
     var wire;
-    arg_of(wire, args, key);
+    keyed_get(wire, args, key);
     if ( ref_of(ref, wire) != refNONE )
 	return true;
     var why = format("{} needs a ref object: ref = record | symbol | commit | proposal | external, plus its fields", key);
@@ -1288,7 +1288,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvRECORD:
     {
 	var idv;
-	arg_of(idv, args, "id");
+	keyed_get(idv, args, "id");
 	long id = 0;
 	if ( !idv.is_null() )
 	    id = idv.as_integer();
@@ -1298,7 +1298,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvRECORDS:
     {
 	var kv;
-	arg_of(kv, args, "rkind");
+	keyed_get(kv, args, "rkind");
 	long rk = rkNONE;
 	if ( !kv.is_null() && strlen(kv.c_str()) > 0 )
 	{
@@ -1311,7 +1311,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	    }
 	}
 	var sv;
-	arg_of(sv, args, "state");
+	keyed_get(sv, args, "state");
 	long st = rsNONE;
 	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
 	{
@@ -1329,7 +1329,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvCREATE:
     {
 	var kv;
-	arg_of(kv, args, "rkind");
+	keyed_get(kv, args, "rkind");
 	long rk = record_kind_of(kv);
 	if ( rk == rkNONE )
 	{
@@ -1338,9 +1338,9 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	    break;
 	}
 	var fields;
-	arg_of(fields, args, "fields");
+	keyed_get(fields, args, "fields");
 	var sv;
-	arg_of(sv, args, "state");
+	keyed_get(sv, args, "state");
 	long st = rsNONE;
 	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
 	{
@@ -1360,7 +1360,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvCLOSE:
     {
 	var idv;
-	arg_of(idv, args, "id");
+	keyed_get(idv, args, "id");
 	long id = 0;
 	if ( !idv.is_null() )
 	    id = idv.as_integer();
@@ -1372,9 +1372,9 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	    break;
 	}
 	var fields;
-	arg_of(fields, args, "fields");
+	keyed_get(fields, args, "fields");
 	var sv;
-	arg_of(sv, args, "state");
+	keyed_get(sv, args, "state");
 	long st = rsNONE;
 	if ( !sv.is_null() && strlen(sv.c_str()) > 0 )
 	{
@@ -1407,7 +1407,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	if ( !ref_arg(to, out, args, "to") )
 	    return;
 	var rv;
-	arg_of(rv, args, "rel");
+	keyed_get(rv, args, "rel");
 	long rel = rel_of(rv);
 	if ( rel == relNONE )
 	{
@@ -1433,7 +1433,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvSOURCES:
     {
 	var dv;
-	arg_of(dv, args, "dir");
+	keyed_get(dv, args, "dir");
 	if ( !dv.is_null() && strlen(dv.c_str()) > 0 )
 	{
 	    if ( my_tier < tierOWNER )
@@ -1475,7 +1475,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
     case nvSYNC:
     {
 	var sv;
-	arg_of(sv, args, "source");
+	keyed_get(sv, args, "source");
 	if ( sv.is_null() || strlen(sv.c_str()) == 0 )
 	{
 	    snap = { "error": "nexus.sync needs a source name (nexus.sources lists them)" };
@@ -1490,7 +1490,7 @@ void nexus_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &p
 	if ( !ref_arg(ref, out, args, "ref") )
 	    return;
 	var dv;
-	arg_of(dv, args, "detail");
+	keyed_get(dv, args, "detail");
 	long detail = explain_detail_of(dv);
 	if ( detail < 0 )
 	{
@@ -1548,7 +1548,7 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
     case tvDISCOVER:
     {
 	var dv;
-	arg_of(dv, args, "dir");
+	keyed_get(dv, args, "dir");
 	var dir = "";
 	if ( !dv.is_null() )
 	    dir = dv;
@@ -1558,7 +1558,7 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
     case tvLIST:
     {
 	var fv;
-	arg_of(fv, args, "family");
+	keyed_get(fv, args, "family");
 	long fam = tfNONE;
 	if ( !fv.is_null() && strlen(fv.c_str()) > 0 )
 	{
@@ -1584,14 +1584,14 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
     case tvRUN:
     {
 	var idsv;
-	arg_of(idsv, args, "ids");
+	keyed_get(idsv, args, "ids");
 	if ( idsv.is_null() || php::count(idsv) == 0 )
 	{
 	    snap = { "error": "test.run needs ids: [record id, ...] (test.list names them)" };
 	    break;
 	}
 	var tgt;
-	arg_of(tgt, args, "target");
+	keyed_get(tgt, args, "target");
 	long node = 0;
 	var why;
 	if ( !target_node_of(node, why, tgt, w, es) )
@@ -1600,7 +1600,7 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
 	    break;
 	}
 	var pv;
-	arg_of(pv, args, "proposal");
+	keyed_get(pv, args, "proposal");
 	long prop = 0;
 	if ( !pv.is_null() )
 	    prop = pv.as_integer();
@@ -1610,11 +1610,11 @@ void test_call(var &out, IdeSession &S, long doc, long self_id, var &nm, var &pa
     case tvRESULTS:
     {
 	var tv2;
-	arg_of(tv2, args, "test");
+	keyed_get(tv2, args, "test");
 	var sv;
-	arg_of(sv, args, "since");
+	keyed_get(sv, args, "since");
 	var nv2;
-	arg_of(nv2, args, "node");
+	keyed_get(nv2, args, "node");
 	long test = 0;
 	long since = 0;
 	long node = -1;

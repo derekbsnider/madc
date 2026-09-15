@@ -181,6 +181,17 @@ bool same_file(const char *a, const char *b)
     return ca == cb;
 }
 
+// A manifest is OPEN (loaded or materialized): the kind row shows, the
+// build rows go project-wide. (project_active is the WINDOW being up — a
+// different fact.) The ONE owner of the test — the V6 seam audit found it
+// inlined nine times beside this function, once four lines after calling it.
+bool proj_has_manifest(long w, long es)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    return !pf.is_null() && strlen(pf.c_str()) > 0;
+}
+
 // The persisted layout sits BESIDE the manifest (V2c, design §5): the
 // manifest path minus its extension, plus `.layout` — `foo.prj.json` ->
 // `foo.prj.layout`, `myproj.json` -> `myproj.layout`. One derivation for
@@ -1486,18 +1497,14 @@ void ensure_build_cmds(long w, long es);	// the Build menu composes the ^B rows
 // only; an unknown key never holds.
 void menu_context(var &ctx, long w, long es, long doc, long nav)
 {
-    var mod;
-    ui::get(mod, w, doc, "modified");
-    var pf;
-    ui::get(pf, w, es, "projfile");
     var bufs;
     ui::get(bufs, w, es, "buffers");
     bool editable = es_flag(w, es, "editable");
-    bool dirty = !mod.is_null() && mod.as_boolean();
+    bool dirty = doc_modified(w, doc);
     bool selection = es_int(w, es, "mark", -1) >= 0;
     bool split = window_count(w, es) >= 2;
     bool buffers = !bufs.is_null() && php::count(bufs) > 1;
-    bool project = !pf.is_null() && strlen(pf.c_str()) > 0;
+    bool project = proj_has_manifest(w, es);
     bool building = es_int(w, es, "buildlive", 0) != 0;
     bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
@@ -1858,9 +1865,7 @@ void toggle_profile(long w, long es)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var p = php::array_get_cstr(g, i);
-	const char *pc = p.c_str();
-	const char *sl = strrchr(pc, '/');
-	var nm = sl != 0 ? sl + 1 : pc;
+	var nm = php::basename(p);	// the last path component: PHP parity's owner
 	var base;
 	path_sans_ext(base, nm);
 	names.push(base);
@@ -2117,9 +2122,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	}
 	if ( e == 'm' )
 	{
-	    var m;
-	    ui::get(m, w, doc, "modified");
-	    if ( !m.is_null() && m.as_boolean() )
+	    if ( doc_modified(w, doc) )
 		seat = "(Modified) ";
 	}
 	if ( e == 'R' )
@@ -2579,10 +2582,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	for ( long i = 0; i < nb; i = i + 1 )
 	{
 	    var bp = format("{}", bufs[i]["path"]);
-	    var bn = bp;
-	    const char *sl = strrchr(bp.c_str(), '/');
-	    if ( sl != 0 )
-		bn = sl + 1;
+	    var bn = php::basename(bp);
 	    if ( bp == in.c_str() || bn == in.c_str() )
 	    {
 		if ( i != es_int(w, es, "bufidx", 0) )
@@ -3539,15 +3539,9 @@ long proj_kind(long w, long es)
     return projkind_of(k);
 }
 
-// A manifest is OPEN (loaded or materialized): the kind row shows, the
-// build rows go project-wide. (project_active is the WINDOW being up — a
-// different fact.)
-bool proj_has_manifest(long w, long es)
-{
-    var pf;
-    ui::get(pf, w, es, "projfile");
-    return !pf.is_null() && strlen(pf.c_str()) > 0;
-}
+// "A manifest is OPEN" is proj_has_manifest, defined with the path helpers at
+// the head of this file (its first caller, menu_context, precedes the project
+// layer).
 
 // The change-log file beside the manifest (client-server arc V4; design doc
 // S2.4): <base>.prj.events, a sibling of the layout cache. Only once a
@@ -3671,7 +3665,7 @@ bool proj_write(long w, long es, long doc)
     ui::get(proj, w, es, "proj");
     var pf;
     ui::get(pf, w, es, "projfile");
-    bool fresh = pf.is_null() || strlen(pf.c_str()) == 0;
+    bool fresh = !proj_has_manifest(w, es);
     if ( fresh )
     {
 	var lp;
@@ -3704,8 +3698,6 @@ void layout_persist(long w, long es)
 	return;
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
-	return;
     var lf;
     proj_layout_path(lf, pf);
     var lo;
@@ -3757,9 +3749,7 @@ void proj_add(long w, long es, long doc, const char *path0)
     }
     ui::set(w, es, "proj", proj);
     proj_touch(w, es);
-    var pf0;
-    ui::get(pf0, w, es, "projfile");
-    bool had = !pf0.is_null() && strlen(pf0.c_str()) > 0;
+    bool had = proj_has_manifest(w, es);
     if ( proj_write(w, es, doc) && had )
 	ui::set(w, es, "msg", format("Added {} to the project.", p));
 }
@@ -3900,10 +3890,10 @@ void proj_startup(long w, long es, long doc)
 // empty path (a cancelled dialog) does nothing.
 void proj_open(long w, long es, long doc, const char *path0)
 {
-    var pf = path0;		// ring discipline: own the text first
-    if ( strlen(pf.c_str()) == 0 )
-	return;
-    if ( !proj_load(w, es, pf) )
+    var mpath = path0;		// ring discipline: own the text first
+    if ( strlen(mpath.c_str()) == 0 )
+	return;			// a cancelled dialog: no path given
+    if ( !proj_load(w, es, mpath) )
 	return;
     clog_restore(w, es, doc);
     proj_show(w, es, doc);
@@ -3944,9 +3934,7 @@ void project_rows(long w, long es, long doc)
 	    var bp = b["path"];
 	    if ( !bp.is_null() && same_file(bp.c_str(), p.c_str()) )
 	    {
-		var m;
-		ui::get(m, w, b["doc"].as_integer(), "modified");
-		if ( !m.is_null() && m.as_boolean() )
+		if ( doc_modified(w, b["doc"].as_integer()) )
 		    mk = "*";
 	    }
 	}
@@ -3965,10 +3953,8 @@ void project_rows(long w, long es, long doc)
 	var lp = php::strtolower(p.c_str());
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
-	var m;
-	ui::get(m, w, b["doc"].as_integer(), "modified");
 	var mk = " ";
-	if ( !m.is_null() && m.as_boolean() )
+	if ( doc_modified(w, b["doc"].as_integer()) )
 	    mk = "*";
 	rows[] = { "path": p, "tag": "open",
 		   "content": format("o{} {}", mk, p) };
@@ -4871,9 +4857,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go native_build_task(w, es);
-    var md;
-    ui::get(md, w, doc, "modified");
-    if ( md.as_boolean() )
+    if ( doc_modified(w, doc) )
 	ui::set(w, es, "msg",
 		format("Building {} -> {} (live buffer: unsaved edits compile).", p, o));
     else
@@ -5104,7 +5088,7 @@ void proj_run_check(long w, long es, long doc)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer check IS the check.
 	run_check(w, es, doc);
@@ -5161,7 +5145,7 @@ void start_project_build(long w, long es, long doc, var &kind, var &out)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer build IS the build.
 	var ot = "{base}";
@@ -5192,7 +5176,7 @@ void run_project(long w, long es, long doc)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer Run IS the run.
 	run_buffer(w, es, doc);
@@ -5271,8 +5255,7 @@ void ensure_build_cmds(long w, long es)
     ui::get(proj, w, es, "proj");
     var pf;
     ui::get(pf, w, es, "projfile");
-    bool projected = !proj.is_null() && !pf.is_null()
-		  && strlen(pf.c_str()) > 0;
+    bool projected = !proj.is_null() && proj_has_manifest(w, es);
     var rows = {};
     if ( projected )
     {
@@ -5464,9 +5447,7 @@ bool save_quit(long w, long es, long doc)
 {
     if ( !do_verb(w, es, "w") )
 	return false;
-    var m;
-    ui::get(m, w, doc, "modified");
-    if ( m.is_null() || !m.as_boolean() )
+    if ( !doc_modified(w, doc) )
 	return do_verb(w, es, "q");
     return true;	// the save failed; its message stands
 }
@@ -6496,9 +6477,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    {
 		// JOE ^K Q: a dirty buffer asks JOE's question on the bottom
 		// line; the lineed q verb's refusal spelling stays lined's.
-		var qm;
-		ui::get(qm, w, doc, "modified");
-		if ( !qm.is_null() && qm.as_boolean() )
+		if ( doc_modified(w, doc) )
 		{
 		    start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
 				  "q!");
@@ -7153,14 +7132,9 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 	    {
 		var b = bufs[i];
 		var bp = format("{}", b["path"]);
-		var bn = bp;
-		const char *sl = strrchr(bp.c_str(), '/');
-		if ( sl != 0 )
-		    bn = sl + 1;
-		var m;
-		ui::get(m, w, b["doc"].as_integer(), "modified");
+		var bn = php::basename(bp);
 		var title = bn;
-		if ( !m.is_null() && m.as_boolean() )
+		if ( doc_modified(w, b["doc"].as_integer()) )
 		    title = format("{}*", bn);
 		var tb = { "title": title, "action": "bufsel", "code": cmdBUFSEL };
 		tb["arg"] = format("{}", i);
@@ -7618,7 +7592,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var pf;
 	    ui::get(pf, w, es, "projfile");
 	    var pfd = "(no project file)";
-	    if ( !pf.is_null() && strlen(pf.c_str()) > 0 )
+	    if ( proj_has_manifest(w, es) )
 		pfd = pf;
 	    var prows;
 	    ui::get(prows, w, es, "projrows");

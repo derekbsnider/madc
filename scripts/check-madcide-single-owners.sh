@@ -74,6 +74,67 @@ if [ "$(count_raw_path_compares "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
+# The LAST PATH COMPONENT has ONE owner: php::basename (PHP parity, landed
+# in this very arc) — the V6 seam audit found the core still hand-rolling
+# it three times with strrchr('/') (each copy answering "" for a path with a
+# trailing separator, where the owner answers the last real component).
+# Marker: no strrchr over '/' in the core; the one strrchr left is
+# path_sans_ext's '.', a different rule.
+count_hand_basenames()
+{
+	grep -c "strrchr(.*'/')" "$1"
+}
+
+n=$(count_hand_basenames "$FILE")
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n hand-rolled basename" \
+	     "(strrchr '/') site(s) in tools/madcide/madcide_core.inc (expected" \
+	     "0: the last path component is php::basename)." >&2
+	grep -n "strrchr(.*'/')" "$FILE" >&2
+	exit 1
+fi
+
+# Negative control for the basename marker.
+tmp=$(mktemp)
+cat "$FILE" > "$tmp"
+echo "    const char *sl = strrchr(bp.c_str(), '/');	// synthetic" >> "$tmp"
+if [ "$(count_hand_basenames "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic hand-rolled basename (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# A session's browser URL has ONE spelling: session_url (madcide_discover.inc)
+# — the record's `url` and the $/madc/serve announcement both call it (the V6
+# seam audit found the format restated in each). Marker: the http:// format
+# appears once across tools/madcide.
+TOOLS="$(dirname "$0")/../tools/madcide"
+count_url_spellings()
+{
+	cat "$@" | grep -c 'format("http://{}/"'
+}
+
+n=$(count_url_spellings "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n session URL spelling(s)" \
+	     "across tools/madcide (expected 1: session_url). Call the owner." >&2
+	exit 1
+fi
+
+# Negative control for the URL marker.
+tmp=$(mktemp)
+cat "$TOOLS"/*.inc > "$tmp"
+echo '    var u = format("http://{}/", ep);	// synthetic' >> "$tmp"
+if [ "$(count_url_spellings "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic URL spelling (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # An MCP tool REFUSAL has ONE owner: tool_refuse (madcide_mcp.inc — the
 # {content:[{type:text,text}], isError:true} envelope every tool family
 # shares). The V6 seam audit found graph_call restating the envelope three
@@ -106,6 +167,38 @@ if [ "$(count_refusal_shapes "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
+# A registry command is RUN by ONE core: api_run (madcide_api.inc — resolve
+# the name, gate the tier, S.command, count the error rows, compose, typeset,
+# fan out the new events). Every transport drives it — the api seat, the MCP
+# seat, the LSP face and, since the V6 seam, the ui::NONE `-c` client, which
+# had restated the run/compose/render sequence. Marker: `S.command(` appears
+# once across tools/madcide.
+count_command_runs()
+{
+	cat "$@" | grep -c '\bS\.command('
+}
+
+n=$(count_command_runs "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n S.command( run site(s)" \
+	     "across tools/madcide (expected 1: api_run, the one command core" \
+	     "every transport drives)." >&2
+	grep -n '\bS\.command(' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the command-core marker.
+tmp=$(mktemp)
+cat "$TOOLS"/*.inc > "$tmp"
+echo '    bool ok = S.command(adoc, code, arg, cont);	// synthetic' >> "$tmp"
+if [ "$(count_command_runs "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic command run (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # The return-key pause has ONE owner: terminal_return_pause (DupFamily
 # terminal_return_pause, consolidated with the fork-Run slice; it lives
 # in the TUI client since the gateway seam — the pause is terminal I/O).
@@ -134,6 +227,96 @@ if [ "$(count_pause "$tmp" "$CLIENT")" -ne 2 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic pause prompt (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# "A project manifest is OPEN" has ONE owner: proj_has_manifest (the
+# projfile slot non-null and non-empty). The V6 seam audit found the test
+# inlined nine times beside the owner — once four lines after CALLING it.
+# Marker: the slot's emptiness test (`strlen(pf`) appears once in the core.
+count_manifest_tests()
+{
+	grep -c 'strlen(pf' "$1"
+}
+
+n=$(count_manifest_tests "$FILE")
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n manifest-open test(s) in" \
+	     "tools/madcide/madcide_core.inc (expected 1: proj_has_manifest)." >&2
+	grep -n 'strlen(pf' "$FILE" >&2
+	exit 1
+fi
+
+# Negative control for the manifest marker.
+tmp=$(mktemp)
+cat "$FILE" > "$tmp"
+echo '    bool has = !pf.is_null() && strlen(pf.c_str()) > 0;	// synthetic' >> "$tmp"
+if [ "$(count_manifest_tests "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic manifest test (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# "Is the document DIRTY" has ONE owner: doc_modified (editor_events.inc).
+# The `modified` slot is unset until a document's first write and reading an
+# unset slot as a boolean throws; the V6 seam audit found ten reads, nine
+# guarded by hand and one not. Marker: the slot is READ once across the
+# texteditor + madcide layers — inside the owner.
+TEXTED="$(dirname "$0")/../tools/texteditor"
+count_modified_reads()
+{
+	cat "$@" | grep -c 'ui::get([a-z]*, w, [^,]*, "modified")'
+}
+
+n=$(count_modified_reads "$TEXTED"/*.inc "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n reads of the modified slot" \
+	     "across tools/texteditor + tools/madcide (expected 1: doc_modified)." >&2
+	grep -n 'ui::get([a-z]*, w, [^,]*, "modified")' "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the modified-read marker.
+tmp=$(mktemp)
+cat "$TEXTED"/*.inc "$TOOLS"/*.inc > "$tmp"
+echo '    ui::get(m, w, doc, "modified");	// synthetic' >> "$tmp"
+if [ "$(count_modified_reads "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic modified read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# An optional KEYED READ of a maybe-null map has ONE owner: keyed_get
+# (editor_events.inc). madcide_past.inc carried a byte-identical twin,
+# arg_of, until the V6 seam (32 call sites rode the second name). Marker:
+# the guarded-read body appears once across the texteditor + madcide layers.
+TEXTED="$(dirname "$0")/../tools/texteditor"
+count_keyed_reads()
+{
+	cat "$@" | grep -c 'out = [a-z]*\[key\];'
+}
+
+n=$(count_keyed_reads "$TEXTED"/*.inc "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n guarded keyed-read" \
+	     "bodies across tools/texteditor + tools/madcide (expected 1:" \
+	     "keyed_get). Call the owner, never restate it under another name." >&2
+	exit 1
+fi
+
+# Negative control for the keyed-read marker.
+tmp=$(mktemp)
+cat "$TEXTED"/*.inc "$TOOLS"/*.inc > "$tmp"
+echo '	out = args[key];	// synthetic' >> "$tmp"
+if [ "$(count_keyed_reads "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic keyed-read body (the marker went blind)." >&2
 	exit 1
 fi
 rm -f "$tmp"

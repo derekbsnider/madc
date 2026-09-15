@@ -729,7 +729,8 @@ void lsp_serve_note(var &notes, long w, long es)
     ui::get(ep, w, es, "advertep");
     if ( ep.is_null() || strlen(ep.c_str()) == 0 )
 	return;
-    var url = format("http://{}/", ep);
+    var url;
+    session_url(url, ep);		// the one spelling the record uses too
     var params = { "endpoint": ep, "url": url };
     var note;
     lsp_notify(note, madc_note_name(mnSERVE), params);
