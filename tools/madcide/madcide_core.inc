@@ -164,6 +164,23 @@ void path_sans_ext(var &out, var &p)
 	out = perl::substr(p, 0, dot - pc);
 }
 
+// Two spellings of one file are ONE FILE — the identity question every
+// "is this buffer / TU / diagnostic about that file" site asks. Canonical on
+// both sides through madc::canonical_path, the engine's standing
+// canonicalizer (never a rule invented here). V6c-2 taught edit_file this
+// (`^K E /abs/path/x.mad` opened a second buffer on the file already open as
+// `x.mad`); the V6 seam audit found its three siblings still comparing text
+// — a TU added by one spelling while its buffer was open under another was
+// double-added, listed twice and dirty-marked on the wrong row. ONE owner.
+bool same_file(const char *a, const char *b)
+{
+    var ca;
+    var cb;
+    madc::canonical_path(ca, a);
+    madc::canonical_path(cb, b);
+    return ca == cb;
+}
+
 // The persisted layout sits BESIDE the manifest (V2c, design §5): the
 // manifest path minus its extension, plus `.layout` — `foo.prj.json` ->
 // `foo.prj.layout`, `myproj.json` -> `myproj.layout`. One derivation for
@@ -3162,19 +3179,14 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	ui::get(bufs, w, es, "buffers");
     }
     long n = php::count(bufs);
-    // Two spellings of one file are one BUFFER (V6c-2): compare canonically,
-    // or `^K E /abs/path/x.mad` opens a second buffer on the file already open
-    // as `x.mad` and the two then edit past each other. madc::canonical_path
-    // is the engine's standing canonicalizer, not a rule invented here.
-    var want;
-    madc::canonical_path(want, p.c_str());
+    // Two spellings of one file are one BUFFER (V6c-2): same_file, or
+    // `^K E /abs/path/x.mad` opens a second buffer on the file already open
+    // as `x.mad` and the two then edit past each other.
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
 	var rp = r["path"];
-	var have;
-	madc::canonical_path(have, rp.is_null() ? "" : rp.c_str());
-	if ( have == want )
+	if ( same_file(rp.is_null() ? "" : rp.c_str(), p.c_str()) )
 	{
 	    if ( i == es_int(w, es, "bufidx", 0) )
 	    {
@@ -3641,8 +3653,11 @@ bool proj_member(long w, long es, long doc, const char *path)
     var rows;
     proj_tu_rows(rows, w, es, doc);
     for ( var r : rows )
-	if ( r["path"] == path )
+    {
+	var rp = r["path"];
+	if ( !rp.is_null() && same_file(rp.c_str(), path) )
 	    return true;
+    }
     return false;
 }
 
@@ -3906,23 +3921,28 @@ void project_rows(long w, long es, long doc)
     var lf = php::strtolower(filt.c_str());
     long fn = strlen(lf.c_str());
     var rows = {};
-    var seen;			// path -> 1: earlier groups dedupe later
+    var seen;			// CANONICAL path -> 1: earlier groups dedupe later
     var bufs;
     ui::get(bufs, w, es, "buffers");
-    // [project] — manifest order.
+    // [project] — manifest order. Rows keep the manifest's own spelling; the
+    // dedupe and the buffer match are by file identity (same_file), so a TU
+    // spelled one way and its buffer opened another are ONE row.
     var tus;
     proj_tu_rows(tus, w, es, doc);
     for ( var tr : tus )
     {
 	var p = format("{}", tr["path"]);
-	seen[p.c_str()] = 1;
+	var cp;
+	madc::canonical_path(cp, p.c_str());
+	seen[cp.c_str()] = 1;
 	var lp = php::strtolower(p.c_str());
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
 	var mk = " ";
 	for ( var b : bufs )
 	{
-	    if ( b["path"] == p )
+	    var bp = b["path"];
+	    if ( !bp.is_null() && same_file(bp.c_str(), p.c_str()) )
 	    {
 		var m;
 		ui::get(m, w, b["doc"].as_integer(), "modified");
@@ -3937,9 +3957,11 @@ void project_rows(long w, long es, long doc)
     for ( var b : bufs )
     {
 	var p = format("{}", b["path"]);
-	if ( !seen[p.c_str()].is_null() )
+	var cp;
+	madc::canonical_path(cp, p.c_str());
+	if ( !seen[cp.c_str()].is_null() )
 	    continue;
-	seen[p.c_str()] = 1;
+	seen[cp.c_str()] = 1;
 	var lp = php::strtolower(p.c_str());
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
@@ -4393,7 +4415,8 @@ long buffer_doc_named(long w, long es, const char *name)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == name )
+	var rp = r["path"];
+	if ( !rp.is_null() && same_file(rp.c_str(), name) )
 	    return r["doc"].as_integer();
     }
     return 0;
@@ -6931,7 +6954,7 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{} {} :{}", row["kind"],
 				   row["name"], row["line"]);
 	else if ( !row["file"].is_null()
-	       && !(row["file"] == dpath.c_str()) )
+	       && !same_file(row["file"].c_str(), dpath.c_str()) )
 	    it["content"] = format("{} {}:{} {} {}", row["file"],
 				   row["line"], row["column"],
 				   row["severity"], row["message"]);

@@ -779,6 +779,21 @@ int main()
     S.apply_ide_event(doc, e);
     ui::get(msg, w, es, "msg");
     println("proj-dup: {}", msg);
+    // The SAME file under its ABSOLUTE spelling is still a duplicate: file
+    // identity is canonical (same_file), never the text of the path. Before
+    // the V6 seam proj_member compared spellings, so this add went through
+    // and the manifest carried the one file twice.
+    var abs2;
+    madc::canonical_path(abs2, "madc_ide_second.mad");
+    ev_key(e, "ins");
+    S.apply_ide_event(doc, e);
+    ev_text(e, abs2.c_str());
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("proj-dup-abs: already={}",
+	    msg.index("Already in the project") == 0 ? 1 : 0);
     ev_choose(e, 2, "");		// enter on the second row: projopen
     S.apply_ide_event(doc, e);
     long sdoc = active_doc(w, es, doc);

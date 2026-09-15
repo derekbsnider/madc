@@ -41,6 +41,39 @@ if [ "$(count_rows "$tmp")" -ne 4 ]; then
 fi
 rm -f "$tmp"
 
+# File IDENTITY has ONE owner: same_file (DupFamily
+# madcide_path_identity_compare, consolidated at the V6 seam). "Is this
+# buffer / TU / diagnostic about THAT file" is a canonical comparison
+# (madc::canonical_path on both sides); a raw `["path"] ==` / `["file"] ==`
+# text compare is the copy that let a TU added by one spelling while its
+# buffer was open under another be double-added and dirty-marked on the
+# wrong row. Marker: no raw compare of a path/file field in the core.
+count_raw_path_compares()
+{
+	grep -cE '\["(path|file)"\] ==' "$1"
+}
+
+n=$(count_raw_path_compares "$FILE")
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n raw path/file text" \
+	     "compare(s) in tools/madcide/madcide_core.inc (expected 0: file" \
+	     "identity is same_file, canonical on both sides):" >&2
+	grep -nE '\["(path|file)"\] ==' "$FILE" >&2
+	exit 1
+fi
+
+# Negative control for the identity marker.
+tmp=$(mktemp)
+cat "$FILE" > "$tmp"
+echo '    if ( r["path"] == p ) return true;	// synthetic' >> "$tmp"
+if [ "$(count_raw_path_compares "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic raw path compare (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 # The return-key pause has ONE owner: terminal_return_pause (DupFamily
 # terminal_return_pause, consolidated with the fork-Run slice; it lives
 # in the TUI client since the gateway seam — the pause is terminal I/O).
