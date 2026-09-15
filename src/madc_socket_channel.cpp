@@ -90,17 +90,24 @@ void socket_shutdown(int fd, bool read_side)
 #endif
 }
 
-// A listener accepts without blocking so the cooperative scheduler (not a
-// thread) drives it: readable on the poll handle == a connection is pending.
-void set_socket_nonblocking(int fd)
+// The ONE blocking-mode switch. A listener accepts without blocking so the
+// cooperative scheduler (not a thread) drives it: readable on the poll
+// handle == a connection is pending. An ACCEPTED socket is put back to
+// blocking: Winsock and the BSDs (macOS) hand accept()'s child the
+// listener's mode — non-blocking included — where Linux does not, and the
+// channel's contract is a BLOCKING stream (the recv after a readable wake
+// returns at once; a solo program's plain read must not see EWOULDBLOCK).
+void set_socket_blocking_mode(int fd, bool nonblocking)
 {
 #ifdef _WIN32
-	u_long mode = 1;
+	u_long mode = nonblocking ? 1 : 0;
 	::ioctlsocket((SOCKET)fd, FIONBIO, &mode);
 #else
 	int flags = ::fcntl(fd, F_GETFL, 0);
-	if ( flags >= 0 )
-		::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	if ( flags < 0 )
+		return;
+	flags = nonblocking ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+	::fcntl(fd, F_SETFL, flags);
 #endif
 }
 
@@ -412,7 +419,12 @@ public:
 	// between a client's requests would block every other client (the D1
 	// concurrency defect); the socket stays BLOCKING, so the recv that
 	// follows a readable wake returns at once (data, or 0 for EOF).
+	// The handle is a SOCKET, not a CRT fd, on Windows — the kind says so.
 	intptr_t read_poll_handle() const override { return fd_; }
+	poll_handle_kind read_poll_kind() const override
+	{
+		return poll_handle_kind::socket;
+	}
 
 	bool read(void *buffer, std::size_t capacity, std::size_t &bytes_read,
 		  error *err = nullptr) override
@@ -675,7 +687,7 @@ public:
 		: fd_(fd), scheme_(scheme), child_scheme_(child_scheme),
 		  endpoint_(endpoint)
 	{
-		set_socket_nonblocking(fd_);
+		set_socket_blocking_mode(fd_, true);
 	}
 
 	~ListenSocketDataChannel() override { close(); }
@@ -714,6 +726,10 @@ public:
 	void close() override { close_socket_fd(fd_); }
 
 	intptr_t read_poll_handle() const override { return fd_; }
+	poll_handle_kind read_poll_kind() const override
+	{
+		return poll_handle_kind::socket;
+	}
 
 	AcceptResult accept(std::unique_ptr<DataChannel> &out,
 			    error *err = nullptr) override
@@ -764,6 +780,10 @@ public:
 		}
 		detail::set_fd_close_on_exec(accepted);
 #endif
+		// The child inherited this listener's NON-blocking mode on
+		// Windows/BSD (see set_socket_blocking_mode); the stream it
+		// becomes is blocking by contract.
+		set_socket_blocking_mode(accepted, false);
 
 		ChannelCapabilities capabilities;
 		capabilities.read = true;

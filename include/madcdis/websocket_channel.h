@@ -49,8 +49,10 @@ public:
 	int exit_status() const override;
 	bool is_terminal() const override;
 
-	// PollableDataChannel — a serve task parks on the inner socket fd.
+	// PollableDataChannel — a serve task parks on the inner socket fd (the
+	// kind is the inner channel's too: a SOCKET on Windows).
 	intptr_t read_poll_handle() const override;
+	poll_handle_kind read_poll_kind() const override;
 
 	// Raw inner I/O for the channel object's message pump.
 	bool read_raw(void *buffer, std::size_t capacity, std::size_t &bytes_read,

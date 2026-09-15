@@ -85,11 +85,17 @@ bool session_dir_ensure(var &dir)
 }
 
 // A filesystem-safe rendering of a root path, so `ls` of the directory reads
-// as the sessions it holds.
+// as the sessions it holds. Every path separator (`/` AND the Windows `\`)
+// and the Windows drive-letter colon become `_`: canonical_path yields
+// `/workspace/madc` on POSIX but `Z:\workspace\madc` on Windows, and an
+// unsanitized `\` or `:` in the filename makes file_put_contents fail (a
+// backslash reads as a directory that does not exist; a colon is illegal).
 void session_slug(var &out, var &root)
 {
     var slashed = php::str_replace("/", "_", root);
-    var spaced = php::str_replace(" ", "_", slashed);
+    var unbacked = php::str_replace("\\", "_", slashed);
+    var uncolon = php::str_replace(":", "_", unbacked);
+    var spaced = php::str_replace(" ", "_", uncolon);
     out = spaced;
     const char *p = spaced.c_str();
     if ( p[0] == '_' && strlen(p) > 1 )
@@ -301,7 +307,8 @@ void session_scan(var &out)
 
 // Does `root` COVER `file`? A path prefix at a COMPONENT BOUNDARY — "/a/b"
 // covers "/a/b/c" and "/a/b" itself, but never "/a/bc". A bare strncmp would
-// match the last, which is the bug this shape exists to refuse.
+// match the last, which is the bug this shape exists to refuse. A boundary is
+// either separator: canonical_path uses `/` on POSIX but `\` on Windows.
 bool session_covers(var &root, var &file)
 {
     const char *r = root.c_str();
@@ -309,11 +316,11 @@ bool session_covers(var &root, var &file)
     long rl = strlen(r);
     if ( rl == 0 )
 	return false;
-    if ( rl > 1 && r[rl - 1] == '/' )
+    if ( rl > 1 && (r[rl - 1] == '/' || r[rl - 1] == '\\') )
 	rl = rl - 1;			// a trailing separator is not part of it
     if ( strncmp(f, r, rl) != 0 )
 	return false;
-    return f[rl] == '/' || f[rl] == 0;
+    return f[rl] == '/' || f[rl] == '\\' || f[rl] == 0;
 }
 
 // The session that covers `file`, best first: a session that HOLDS the file

@@ -574,7 +574,8 @@ class term_target : public madc::hub::tui_target
     {
 	for (;;)
 	{
-	    if ( madc::taskio::poll_readable(0) )
+	    if ( madc::taskio::poll_readable(
+			0, madc::poll_handle_kind::descriptor) )
 		return true;
 	    if ( timeout_ms == 0 )
 		return false;

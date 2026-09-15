@@ -1,6 +1,23 @@
 # Test Status
 
-> **Current (2026-09-15, s196 — the V6 SEAM of the client-server arc: V6a
+> **Current (2026-09-15, s198 — the reactor's Windows backend: the V6
+> transports work under Windows).** `feature/reactor-windows-claude` @
+> `124088428`. The WSAPoll reactor backend (the async-I/O reactor design's
+> item-4 "select floor"), a `poll_handle_kind` that rides with every handle,
+> the probe/hook socket arm, and accepted-socket blocking. All four
+> develop-gated lanes re-run green on `124088428` (a `src/` change stales
+> every lane): linux-battery fulltest jit **1379/0/9skip** + exe/obj
+> **1312/0** + packed **1379/0/9skip** + headerless **1345/0/43skip** + gui
+> **19/19 ×3** (`tmp/logs/rb-seam-battery.log`); c-testsuite **220/220**;
+> wine64 **1316/0/72skip** — the 15 socket-park `win64_skip` LIFTED
+> (1301→1316, 87→72skip; 3 madcgit + the remaining domain fixtures stay);
+> macOS build lane both arches. `test_io_reactor` 57/57 and `test_task_io`
+> 35/35 on Linux; the pre-build was clean on release (`-O2`), the mingw PE,
+> and the darwin clang keep-going probe. Two win64 gaps fixed on the way: the
+> session advertisement filename (a Windows canonical path's `\` and `:`) and
+> a transport test's 64-bit graph id truncated into a 32-bit LLP64 `long`.
+>
+> **Previous (2026-09-15, s196 — the V6 SEAM of the client-server arc: V6a
 > the `api` transport + headless `--serve` + duplex + tiers, V6b the `ws`
 > window, V6c-1 the MCP seat and the code-graph MCP + Nexus ladder L1–L4e,
 > V6c-2 the LSP face, V6c-3a the VS Code extension, V6c-3b executeCommand +
