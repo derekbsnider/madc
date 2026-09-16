@@ -71,9 +71,10 @@ if [ "$interop" = 1 ]; then
 	# nm's defined FUNCTION symbols (T/W/t), stripped of madc's own runtime
 	# machinery and of main. Both sides pass through this one filter, so a
 	# Mach-O underscore prefix cancels out.
+	# The ONE filter both symbol readers apply (madc's machinery, main).
+	sym_filter() { grep -v '^_*__madc\|^_*main$\|^_*_Z[0-9]*__madc' | sort -u; }
 	defined_funcs() {
-		nm --defined-only "$1" | awk '$2 ~ /^[TWt]$/ {print $3}' \
-			| grep -v '^_*__madc\|^_*main$\|^_*_Z[0-9]*__madc' | sort -u
+		nm --defined-only "$1" | awk '$2 ~ /^[TWt]$/ {print $3}' | sym_filter
 	}
 	# The alien-symbol check as a function so the negative control can feed
 	# it a doctored list: every madc symbol must be in the g++ set.
@@ -97,8 +98,7 @@ if [ "$interop" = 1 ]; then
 	# template instantiation, an inline body) that madc binds T is one
 	# definition per object — two madc objects collide at link.
 	strong_funcs() {
-		nm --defined-only "$1" | awk '$2 == "T" {print $3}' \
-			| grep -v '^_*__madc\|^_*main$\|^_*_Z[0-9]*__madc' | sort -u
+		nm --defined-only "$1" | awk '$2 == "T" {print $3}' | sym_filter
 	}
 
 	# Lane A oracle + lane B oracle: the same definer, both users, all g++.
