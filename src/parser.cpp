@@ -66561,7 +66561,14 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		redecl_spellings.push_back(param_spelling);
+		// The SAME desugar the registered side reads through
+		// (FuncDef::mangle_param_spelling): a fn-pointer typedef spells
+		// structurally, a scalar alias canonically — else a prototype's
+		// `DO_FUN *` (PFvP9char_dataPcE) "conflicts" with its own
+		// definition's `DO_FUN *` spelled as the alias (SMAUG tables.c).
+		redecl_spellings.push_back(FuncDef::mangle_spelling_for(
+		    reference_param_type ? reference_param_type : param_dd,
+		    param_spelling));
 		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref).
 		// The in-scope param's type must match its vfREFERENCE flag. Otherwise
 		// the CIR deref gate
@@ -66688,6 +66695,17 @@ paramdecl:
 	    redecl_params.push_back("...");
 	std::string redecl_sig =
 	    itanium_mangle_nested_sub(std::vector<std::string>(), id, redecl_params);
+	DBG(if ( redecl_sig != redecl_prior_sig )
+	    {
+		std::cout << "parseFunction() signature clash " << id
+			  << ": prior=" << redecl_prior_sig
+			  << " fresh=" << redecl_sig << " fresh spellings:";
+		for ( size_t rs = 0; rs < redecl_params.size(); ++rs )
+		    std::cout << " [" << redecl_params[rs] << "]";
+		for ( size_t rs = 0; rs < func->parameters.size(); ++rs )
+		    std::cout << " prior" << rs << "=[" << func->mangle_param_spelling(rs) << "]";
+		std::cout << std::endl;
+	    });
 	if ( redecl_sig != redecl_prior_sig )
 	    Throw(nt) << (is_c_mode() ? "conflicting types for '"
 				      : "conflicting declaration of C function '")

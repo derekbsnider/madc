@@ -494,7 +494,16 @@ public:
     {
 	std::string sp = i < param_cpp_spellings.size() ? param_cpp_spellings[i]
 							: std::string();
-	if ( sp.empty() || i >= parameters.size() || !parameters[i] )
+	return mangle_spelling_for(i < parameters.size() ? parameters[i] : NULL, sp);
+    }
+    // THE ONE desugar of a parameter's captured C++ spelling into the spelling
+    // the Itanium mangler reads — for a registered parameter (above) AND for a
+    // redeclaration's freshly parsed parameter (parseFunction's C-linkage
+    // signature clash compares the two; both sides MUST spell alike, or a
+    // prototype and its own definition "conflict").
+    static std::string mangle_spelling_for(DataDef *dd, const std::string &sp)
+    {
+	if ( sp.empty() || !dd )
 	    return sp;
 	// A FUNCTION-POINTER param — a typedef (`program::native_function`), an
 	// abstract declarator (`int (*[4])(int)`, captured as its base type), or
@@ -503,13 +512,13 @@ public:
 	// types (PF…E, PPF…E); the captured typedef name — or the dd's generic
 	// "funcptr" / "funcptr*" — encodes as a class name nothing exports.
 	// Before the decorated-spelling early-out: `funcptr*` ends in `*` too.
-	std::string fps = fptr_structural_spelling(parameters[i]);
+	std::string fps = fptr_structural_spelling(dd);
 	if ( !fps.empty() )
 	    return fps;
 	if ( sp.find('<') != std::string::npos
 	  || sp.back() == '*' || sp.back() == '&' )
 	    return sp;
-	std::string scalar = parameters[i]->mangle_scalar_spelling();
+	std::string scalar = dd->mangle_scalar_spelling();
 	if ( scalar.empty() || scalar == sp )
 	    return sp;
 	return scalar;
