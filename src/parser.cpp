@@ -70312,19 +70312,21 @@ fnptr_decl_arm_head:
 		if ( ns_var->storage_alias_name.empty() )
 		    ns_var->storage_alias_name = source_id;
 	    }
-	    // C++ SYMBOL MANGLING phase 1: a FILE-SCOPE C++-linkage function
-	    // madc DEFINES emits its Itanium symbol. Definition and every call
-	    // flow through call_emit_symbol's emit_symbol arm, so a madc object
-	    // is ABI-identical to g++/clang and same-name overloads are distinct
-	    // symbols. A declaration-only function keeps the mangled-direct
-	    // storage_alias_name bind above (the library owns the body); a
-	    // namespace function moves in phase 3; extern "C" and main never
-	    // reach here. An explicit asm label on the definition wins over the
+	    // C++ SYMBOL MANGLING phase 1 (file scope) + phase 3 (namespaces):
+	    // a C++-linkage function madc DEFINES emits its Itanium symbol —
+	    // the SAME mint the declaration-only bind above uses, so `seam::f`
+	    // defined here and `seam::f` declared from a header name one
+	    // symbol. Definition and every call flow through call_emit_symbol's
+	    // emit_symbol arm, so a madc object is ABI-identical to g++/clang
+	    // and same-name overloads are distinct symbols. A declaration-only
+	    // function keeps the mangled-direct storage_alias_name bind above
+	    // (the library owns the body); extern "C" and main never reach
+	    // here. An explicit asm label on the definition wins over the
 	    // mangling, as it does in g++ (`void f() asm("g")` emits g).
 	    // A function-TEMPLATE instantiation product is not minted here: its
 	    // symbol is the template form (_Z4makeIiET_i), phase 3's minter —
 	    // the non-template mangling would collide across products.
-	    else if ( fd && ns_overload_tracked && !namespace_function
+	    else if ( fd && ns_overload_tracked
 		   && cpp_symbol_mangling_enabled() && !fd->c_linkage
 		   && fn_template_instantiation_depth == 0
 		   && !fd->declaration_only && fd->emit_symbol.empty() )
@@ -70333,7 +70335,12 @@ fnptr_decl_arm_head:
 		    current_namespace(), source_id, fd);
 		if ( ns_var->storage_alias_name.empty()
 		  || ns_var->storage_alias_name == sym )
+		{
 		    fd->emit_symbol = sym;
+		    // The deferred-body registry is keyed by the Variable name;
+		    // reachability asks by this symbol (deferred_lazy_body_key).
+		    body_symbol_keys[sym] = ns_var->name;
+		}
 	    }
 	    if ( fd && ns_overload_tracked )
 	    {

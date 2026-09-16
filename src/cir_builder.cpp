@@ -414,12 +414,14 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 // member carries its Itanium name on local_emit_name instead (the parser's
 // bind_declared_cpp_symbol's user arm) — the own-body field — which is why emit_symbol
 // can keep meaning "external definition" to every member lowering site;
-// body_emit_symbol reads it. Namespace functions follow in phase 3.
+// body_emit_symbol reads it. Phase 3: a NAMESPACE function madc defines is
+// the same shape (parseDeclaration's mint, namespace_name set) — its body
+// defines the emit_symbol as well.
 std::string CirBuilder::func_def_symbol(TokenFunc *tf, FuncDef *fd) const
 {
 	if (fd && !fd->emit_symbol.empty() && !fd->declaration_only
 	    && (!tf->method || !tf->method->owner_class)
-	    && fd->namespace_name.empty() && !fd->function_display_name.empty())
+	    && !fd->function_display_name.empty())
 		return fd->emit_symbol;
 	return body_emit_symbol(tf->var, fd);
 }
@@ -30419,6 +30421,12 @@ node_t CirBuilder::translate_module(Program *prog)
 							db.second.var->type);
 						referenced = referenced_funcs.count(
 							body_emit_symbol(*db.second.var, dfd)) > 0;
+						// A bodied free/namespace function's body
+						// defines its emit_symbol (func_def_symbol).
+						if (!referenced && dfd && !dfd->declaration_only
+						    && !dfd->emit_symbol.empty())
+							referenced = referenced_funcs.count(
+								dfd->emit_symbol) > 0;
 					}
 					if (referenced)
 						ready.push_back(std::make_pair(db.first, false));

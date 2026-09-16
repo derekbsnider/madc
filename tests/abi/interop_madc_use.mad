@@ -30,5 +30,7 @@ int main()
     l.post(5);
     l.post(2.5);
     printf("balance: %d\n", l.balance());
+    printf("checksum: %d %d %d\n", tally::checksum(3, 4), tally::checksum("abc"),
+	   tally::audit::stamp());
     return 0;
 }

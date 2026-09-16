@@ -30,6 +30,11 @@ namespace tally {
 	void post(double amount);
 	int balance() const;
     };
+    // Namespace FUNCTIONS (phase 3): overloads and a nested namespace, defined
+    // by the definer side under _ZN5tally8checksumEii / …EPKc / _ZN5tally5audit5stampEv.
+    int checksum(int a, int b);
+    int checksum(const char *s);
+    namespace audit { int stamp(); }
 }
 
 // Defined by the OTHER side of each lane (the user TU): the definer calls it

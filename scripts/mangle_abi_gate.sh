@@ -92,7 +92,7 @@ if [ "$interop" = 1 ]; then
 	"$out/oracle_b" > "$out/oracle_b.out" || fail "[interop] the all-g++ lane-B oracle failed to run"
 
 	# Lane A: madc defines (default --std=madc presents as C++), g++ uses.
-	"$MADC_BIN" -c -o "$out/madc_def.o" $abi/interop_madc_def.mad \
+	"$MADC_BIN" -fno-eval-shims -c -o "$out/madc_def.o" $abi/interop_madc_def.mad \
 		|| fail "[interop] madc could not compile the definer TU to an object"
 	defined_funcs "$out/madc_def.o" > "$out/madc_def.syms"
 	defined_funcs "$out/gxx_def.o"  > "$out/gxx_def.syms"
@@ -109,7 +109,7 @@ if [ "$interop" = 1 ]; then
 	echo "mangle_abi_gate: [interop] lane A OK — madc-defined class linked into a g++ program, output identical ($(grep -c . "$out/madc_def.syms") madc symbols, none alien)"
 
 	# Lane B: g++ defines, madc (--std=c++20 this time) uses.
-	"$MADC_BIN" --std=c++20 -c -o "$out/madc_use.o" $abi/interop_madc_use.mad \
+	"$MADC_BIN" --std=c++20 -fno-eval-shims -c -o "$out/madc_use.o" $abi/interop_madc_use.mad \
 		|| fail "[interop] madc could not compile the user TU to an object"
 	g++ -o "$out/lane_b" "$out/gxx_def.o" "$out/madc_use.o" \
 		|| fail "[interop] lane B did not LINK — madc's user TU imports symbols g++'s definer does not export"

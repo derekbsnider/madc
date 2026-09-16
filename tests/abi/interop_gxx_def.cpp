@@ -27,6 +27,9 @@ namespace tally {
     void Ledger::post(int amount) { total += amount; }
     void Ledger::post(double amount) { total += (int)(amount * 100); }
     int Ledger::balance() const { return total; }
+    int checksum(int a, int b) { return a * 31 + b; }
+    int checksum(const char *s) { int h = 0; while (*s) h = h * 7 + *s++; return h; }
+    namespace audit { int stamp() { return 2026; } }
 }
 
 int other_side_report(const Counter &c)
