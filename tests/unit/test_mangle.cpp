@@ -142,14 +142,15 @@ TEST_SUITE("Itanium type encoding") {
 	}
 
 	TEST_CASE("Parameter list encoding") {
-		CHECK(itanium_encode_params({}) == "v");
-		CHECK(itanium_encode_params({"int"}) == "i");
-		CHECK(itanium_encode_params({"int", "double"}) == "id");
-		CHECK(itanium_encode_params({"int", "const char*"}) == "iPKc");
+		// <bare-function-type>: v for none, else each parameter in order
+		CHECK(itanium_mangle_nested_sub({}, "f", {}) == "_Z1fv");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int"}) == "_Z1fi");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int", "double"}) == "_Z1fid");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int", "const char*"}) == "_Z1fiPKc");
 	}
 
 	TEST_CASE("Trailing ellipsis encodes as z") {
-		CHECK(itanium_encode_params({"const char*", "..."}) == "PKcz");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"const char*", "..."}) == "_Z1fPKcz");
 		// g++ oracle: std::__throw_out_of_range_fmt(char const*, ...)
 		CHECK(itanium_mangle_nested_sub({"std"}, "__throw_out_of_range_fmt",
 		                                {"const char*", "..."})
@@ -217,73 +218,79 @@ TEST_SUITE("Itanium type encoding") {
 TEST_SUITE("Itanium function mangling") {
 
 	TEST_CASE("Free functions") {
-		CHECK(itanium_mangle("foo", {}) == "_Z3foov");
-		CHECK(itanium_mangle("foo", {"int"}) == "_Z3fooi");
-		CHECK(itanium_mangle("foo", {"int", "double"}) == "_Z3fooid");
-		CHECK(itanium_mangle("foo", {"const char*"}) == "_Z3fooPKc");
-		CHECK(itanium_mangle("add", {"int", "int"}) == "_Z3addii");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {}) == "_Z3foov");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"int"}) == "_Z3fooi");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"int", "double"}) == "_Z3fooid");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"const char*"}) == "_Z3fooPKc");
+		CHECK(itanium_mangle_nested_sub({}, "add", {"int", "int"}) == "_Z3addii");
 	}
 
 	TEST_CASE("Method mangling") {
-		CHECK(itanium_mangle_method("Foo", "bar", {"int"}) == "_ZN3Foo3barEi");
-		CHECK(itanium_mangle_method("Foo", "bar", {"int", "double"}) == "_ZN3Foo3barEid");
-		CHECK(itanium_mangle_method("Foo", "bar", {"const char*"}) == "_ZN3Foo3barEPKc");
-		CHECK(itanium_mangle_method("MyClass", "method", {"int", "double", "const char*"})
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"int"}, false) == "_ZN3Foo3barEi");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"int", "double"}, false) == "_ZN3Foo3barEid");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"const char*"}, false) == "_ZN3Foo3barEPKc");
+		CHECK(itanium_mangle_member_sub("MyClass", "method", {"int", "double", "const char*"}, false)
 		      == "_ZN7MyClass6methodEidPKc");
-		CHECK(itanium_mangle_method("Foo", "bar", {}) == "_ZN3Foo3barEv");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {}, false) == "_ZN3Foo3barEv");
 	}
 
 	TEST_CASE("Constructor mangling") {
-		CHECK(itanium_mangle_ctor("Foo", {}) == "_ZN3FooC1Ev");
-		CHECK(itanium_mangle_ctor("Foo", {"int"}) == "_ZN3FooC1Ei");
-		CHECK(itanium_mangle_ctor("Foo", {"const char*"}) == "_ZN3FooC1EPKc");
+		CHECK(itanium_mangle_ctor_sub("Foo", {}) == "_ZN3FooC1Ev");
+		CHECK(itanium_mangle_ctor_sub("Foo", {"int"}) == "_ZN3FooC1Ei");
+		CHECK(itanium_mangle_ctor_sub("Foo", {"const char*"}) == "_ZN3FooC1EPKc");
 	}
 
 	TEST_CASE("Destructor mangling") {
-		CHECK(itanium_mangle_dtor("Foo") == "_ZN3FooD1Ev");
-		CHECK(itanium_mangle_dtor("MyClass") == "_ZN7MyClassD1Ev");
+		CHECK(itanium_mangle_dtor_sub("Foo") == "_ZN3FooD1Ev");
+		CHECK(itanium_mangle_dtor_sub("MyClass") == "_ZN7MyClassD1Ev");
 	}
 
 	TEST_CASE("Nested name mangling") {
-		CHECK(itanium_mangle_nested({"ns", "Foo"}, "bar", {"int"})
+		CHECK(itanium_mangle_nested_sub({"ns", "Foo"}, "bar", {"int"})
 		      == "_ZN2ns3Foo3barEi");
-		CHECK(itanium_mangle_nested({"std", "string"}, "assign", {"const char*"})
-		      == "_ZN3std6string6assignEPKc");
+		// `std` is the St abbreviation, never a length-prefixed `3std` — the
+		// retired naive encoder pinned _ZN3std6string6assignEPKc, a symbol no
+		// compiler emits (c++filt: std::string::assign(char const*)).
+		CHECK(itanium_mangle_nested_sub({"std", "string"}, "assign", {"const char*"})
+		      == "_ZNSt6string6assignEPKc");
 	}
 }
 
 TEST_SUITE("Itanium operator mangling") {
 
 	TEST_CASE("Comparison operators") {
-		CHECK(itanium_mangle_operator("Counter", "==", {"int"}) == "_ZN7CountereqEi");
-		CHECK(itanium_mangle_operator("Counter", "!=", {"int"}) == "_ZN7CounterneEi");
-		CHECK(itanium_mangle_operator("Counter", "<", {"int"}) == "_ZN7CounterltEi");
-		CHECK(itanium_mangle_operator("Counter", ">", {"int"}) == "_ZN7CountergtEi");
-		CHECK(itanium_mangle_operator("Counter", "<=", {"int"}) == "_ZN7CounterleEi");
-		CHECK(itanium_mangle_operator("Counter", ">=", {"int"}) == "_ZN7CountergeEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "==", {"int"}, false) == "_ZN7CountereqEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "!=", {"int"}, false) == "_ZN7CounterneEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "<", {"int"}, false) == "_ZN7CounterltEi");
+		CHECK(itanium_mangle_operator_sub("Counter", ">", {"int"}, false) == "_ZN7CountergtEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "<=", {"int"}, false) == "_ZN7CounterleEi");
+		CHECK(itanium_mangle_operator_sub("Counter", ">=", {"int"}, false) == "_ZN7CountergeEi");
 	}
 
 	TEST_CASE("Arithmetic operators") {
-		CHECK(itanium_mangle_operator("Vec", "+", {"Vec"}) == "_ZN3VecplE3Vec");
-		CHECK(itanium_mangle_operator("Vec", "-", {"Vec"}) == "_ZN3VecmiE3Vec");
-		CHECK(itanium_mangle_operator("Vec", "*", {"int"}) == "_ZN3VecmlEi");
+		// The class prefix is substitution S_, so a Vec parameter back-refs it
+		// (the retired naive encoder pinned _ZN3VecplE3Vec — no compiler does).
+		CHECK(itanium_mangle_operator_sub("Vec", "+", {"Vec"}, false) == "_ZN3VecplES_");
+		CHECK(itanium_mangle_operator_sub("Vec", "-", {"Vec"}, false) == "_ZN3VecmiES_");
+		CHECK(itanium_mangle_operator_sub("Vec", "*", {"int"}, false) == "_ZN3VecmlEi");
 	}
 
 	TEST_CASE("Unary operators") {
-		CHECK(itanium_mangle_operator("Iter", "++", {}) == "_ZN4IterppEv");
-		CHECK(itanium_mangle_operator("Iter", "--", {}) == "_ZN4ItermmEv");
+		CHECK(itanium_mangle_operator_sub("Iter", "++", {}, false) == "_ZN4IterppEv");
+		CHECK(itanium_mangle_operator_sub("Iter", "--", {}, false) == "_ZN4ItermmEv");
 	}
 
 	TEST_CASE("Dialect strict-equality operators (Itanium vendor-extended)") {
-		// operator=== => v2 (binary vendor op) + source-name "eq3"
-		CHECK(itanium_mangle_operator("Money", "===", {"const Money&"})
-		      == "_ZN5Moneyv23eq3ERK5Money");
-		CHECK(itanium_mangle_operator("Money", "!==", {"const Money&"})
-		      == "_ZN5Moneyv23ne3ERK5Money");
+		// operator=== => v2 (binary vendor op) + source-name "eq3"; the
+		// const Money& parameter back-refs the class prefix (RKS_).
+		CHECK(itanium_mangle_operator_sub("Money", "===", {"const Money&"}, false)
+		      == "_ZN5Moneyv23eq3ERKS_");
+		CHECK(itanium_mangle_operator_sub("Money", "!==", {"const Money&"}, false)
+		      == "_ZN5Moneyv23ne3ERKS_");
 	}
 
 	TEST_CASE("Unknown operator returns empty") {
-		CHECK(itanium_mangle_operator("Foo", "???", {"int"}) == "");
+		CHECK(itanium_mangle_operator_sub("Foo", "???", {"int"}, false) == "");
 	}
 }
 

@@ -4,43 +4,13 @@
 #include <string>
 #include <vector>
 
-// Encode a single C++ type as an Itanium ABI type string.
-// Examples: "int" → "i", "const char*" → "PKc", "Foo" → "3Foo"
-std::string itanium_encode_type(const std::string &cpp_type);
-
-// Encode a parameter list. Empty list returns "v" (void).
-std::string itanium_encode_params(const std::vector<std::string> &param_types);
-
-// Mangle a free function.
-// Example: ("foo", {"int", "double"}) → "_Z3fooid"
-std::string itanium_mangle(const std::string &func_name,
-                            const std::vector<std::string> &param_types);
-
-// Mangle a class method.
-// Example: ("Foo", "bar", {"int"}) → "_ZN3Foo3barEi"
-std::string itanium_mangle_method(const std::string &class_name,
-                                   const std::string &method_name,
-                                   const std::vector<std::string> &param_types);
-
-// Mangle a constructor (C1 = complete object ctor).
-// Example: ("Foo", {"int"}) → "_ZN3FooC1Ei"
-std::string itanium_mangle_ctor(const std::string &class_name,
-                                 const std::vector<std::string> &param_types);
-
-// Mangle a destructor (D1 = complete object dtor).
-// Example: ("Foo") → "_ZN3FooD1Ev"
-std::string itanium_mangle_dtor(const std::string &class_name);
-
-// Mangle with namespace qualifiers.
-// Example: ({"ns", "Foo"}, "bar", {"int"}) → "_ZN2ns3Foo3barEi"
-std::string itanium_mangle_nested(const std::vector<std::string> &qualifiers,
-                                   const std::string &name,
-                                   const std::vector<std::string> &param_types);
-
-// Mangle an operator: ("Counter", "==", {"int"}) → "_ZN7CountereqEi"
-std::string itanium_mangle_operator(const std::string &class_name,
-                                     const std::string &op,
-                                     const std::vector<std::string> &param_types);
+// Every mangler here is the ONE substitution-aware Itanium encoder (the `_sub`
+// entry points below) — byte-identical to g++/clang on tests/abi/mangle_corpus.cpp.
+// A user symbol and a std:: symbol of the same signature must encode the same
+// way, so there is no simpler second encoder: the naive family that once lived
+// here spelled `13madc::channel` for a namespaced class and `3Vec` where the ABI
+// wants the back-reference S_, and was retired (phase 0 of the C++ symbol-
+// mangling feature).
 
 // RTTI symbols for an un-namespaced user class. source_name = <len><name>.
 //   itanium_typeinfo_sym("C")         → "_ZTI1C"   (typeinfo for C)
@@ -76,9 +46,12 @@ std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling);
 // don't have to hand-write the default template arguments.
 // ---------------------------------------------------------------------------
 
-// Encode a single (possibly template-id) C++ type as an Itanium <type>,
-// with substitution compression computed in isolation (a fresh candidate
-// table). Mainly useful for testing the type encoder directly.
+// Encode a single (possibly template-id) C++ type as an Itanium <type>, with
+// substitution compression computed in isolation (a fresh candidate table).
+// THE type encoder's direct entry point: the RTTI _cpp symbols and the
+// marshalling-boundary predicate read it, and the unit tests pin the builtin
+// table (including the LP64/LLP64 width-carrying rows) through it. Memoized on
+// the spelling, keyed by the std ABI generation AND the target data model.
 std::string itanium_encode_type_sub(const std::string &cpp_type);
 
 // Mangle a member function on a (possibly template-id) class.
