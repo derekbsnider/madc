@@ -49178,7 +49178,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			if ( peer_fd->local_emit_name.empty() )
 			    peer_fd->local_emit_name = peer_name;
 			else
-			    pgm.body_symbol_keys[peer_fd->local_emit_name] = peer_name;
+			    pgm.body_symbol_keys[peer_fd->local_emit_name] = peer_name; // allowed-exception: translation record — re-keys the EXISTING body symbol, builds none
 			peer->rename(peer_name);
 			pgm.funcdef_map[peer_name] = peer_fd;
 			pgm.funcdef_map.erase(peer_old);
