@@ -2859,10 +2859,14 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     // the mangler encode a class `7funcptr` where the ABI wants `PF…E`, so
     // a declaration-only member taking a fn-ptr typedef param
     // (engine::register_cpp_callback's native_function) never bound its real
-    // library symbol. structural_spelling() is THE owner.
-    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
-	if ( fp->target )
-	    return fp->structural_spelling();
+    // library symbol. structural_spelling() is THE owner — through any pointer
+    // layers too: an array of function pointers decays to a POINTER to one
+    // (`int (*[4])(int)` → `int (**)(int)`, PPFiiE), whose DataDefPTR is named
+    // "funcptr*"; fptr_structural_spelling peels to the base and re-adds the
+    // stars, so the prototype and its typedef-spelled definition mint one symbol.
+    std::string fp_spelling = fptr_structural_spelling(dd);
+    if ( !fp_spelling.empty() )
+	return fp_spelling;
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
@@ -2975,6 +2979,7 @@ static bool fold_same_signature_overload(Program &pgm,
     if ( !fresh_var || !fresh_fd || fresh_fd->internal_linkage )
 	return false;
     std::string fresh_sig = namespace_cpp_function_symbol(ns_name, source_id, fresh_fd);
+    static const char *ovl_probe = ::getenv("MADC_OVL_PROBE");
     for ( size_t i = 0; i < ovset.size(); ++i )
     {
 	Variable *pv = ovset[i].var;
@@ -2984,7 +2989,12 @@ static bool fold_same_signature_overload(Program &pgm,
 	if ( !pfd || pfd->internal_linkage
 	  || pfd->parameters.size() != fresh_fd->parameters.size() )
 	    continue;
-	if ( namespace_cpp_function_symbol(ns_name, source_id, pfd) != fresh_sig )
+	std::string prior_sig = namespace_cpp_function_symbol(ns_name, source_id, pfd);
+	if ( ovl_probe )
+	    fprintf(stderr, "[ovl] fold %s: fresh=%s prior(%s)=%s -> %s\n",
+		    source_id.c_str(), fresh_sig.c_str(), pv->name.c_str(),
+		    prior_sig.c_str(), prior_sig == fresh_sig ? "SAME" : "differ");
+	if ( prior_sig != fresh_sig )
 	    continue;
 	// One function. The symbol it lives under: bare for C linkage, else the
 	// prior's bound symbol, else the Itanium name both encode.
@@ -2993,7 +3003,29 @@ static bool fold_same_signature_overload(Program &pgm,
 			: !pfd->emit_symbol.empty() ? pfd->emit_symbol
 			: fresh_sig;
 	if ( !pfd->declaration_only && !fresh_fd->declaration_only )
-	    pgm.Throw(at) << "redefinition of '" << source_id << "'" << flush;
+	{
+	    // Two BODIES with one ABI signature. A redefinition (g++ rejects it;
+	    // madc's standing policy lets the later definition stand — the
+	    // same-spelling reconcile) or, far more often, a TWIN: two C++ types
+	    // madc's type model does not distinguish — `long` and `long long`
+	    // are one ddINT64 on glibc targets, `_Float128` is long double — so
+	    // libc++'s abs(long)/abs(long long) both encode _Z3absl and glibc's
+	    // four iscanonical overloads collapse to three. The ranker already
+	    // tolerates twins (same_parameter_types); the emitter must not
+	    // define one symbol twice. The newcomer keeps its INTERNAL name (no
+	    // emit_symbol) and leaves the set — exactly the pre-mangling shape:
+	    // calls bind the first, both bodies still emit. A distinct
+	    // `long long` DataDef on every LP64 target (as C++ requires) is the
+	    // type-model change that would let both mint their own symbol.
+	    fresh_fd->emit_symbol.clear();
+	    for ( size_t j = 0; j < ovset.size(); ++j )
+		if ( ovset[j].var == fresh_var )
+		{
+		    ovset.erase(ovset.begin() + j);
+		    break;
+		}
+	    return true;
+	}
 	if ( pfd->c_linkage )
 	{
 	    // Inherited C linkage: the bare name, never the Itanium symbol the
@@ -3019,6 +3051,29 @@ static bool fold_same_signature_overload(Program &pgm,
 	return true;
     }
     return false;
+}
+
+// C++ SYMBOL MANGLING phase 1 — the C library's own names. A hand-written
+// PROTOTYPE of a libc function with no header in scope (`extern int printf(const
+// char *, ...);` — the c-testsuite convention) declares the C library's function:
+// madc knows the name (libc_signatures, the knowledge the undeclared-call
+// fallback binds by) and the declared return agrees with the table's class, so
+// it carries C linkage and the bare import — as it does after <stdio.h> in g++
+// ([dcl.link]/5). Declaration-only ONLY: a DEFINITION with a libc name is the
+// user's own C++ function (the darwin `send(channel&, var&)` beside POSIX send).
+// The return check is defence in depth against a prototype that merely shares
+// a libc name; a mismatched PARAMETER list on a matching return is the user's
+// C prototype error, as it would be in gcc.
+static typespec_t dynamic_symbol_fallback_return_type(const std::string &name);
+static bool libc_prototype_return_matches(const std::string &name, FuncDef *fd)
+{
+    if ( !fd || madc_libc_return_class(name) == LibcRet::Unknown )
+	return false;
+    typespec_t want = dynamic_symbol_fallback_return_type(name);
+    DataDef &have = fd->return_value_type();
+    if ( want.dd )	// ptr_of(): the C function returns a pointer
+	return have.is_pointer() && want.ref == RefType::rtPointer;
+    return !have.is_pointer() && have.rawtype() == want.dt;
 }
 
 static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
@@ -19990,9 +20045,14 @@ std::string Program::peek_param_list_spelling()
     std::string spelling;
     while ( depth > 0 )
     {
-	TokenBase *t = nextToken();
+	// A LOOKAHEAD must not throw at end of input: nextToken() does, and on
+	// a truncated declaration that replaced the parameter-type diagnostic
+	// the real parse would raise (testparserecoverh) with "Unexpected end
+	// of data" — every file-scope function is peeked now.
+	TokenBase *t = peekToken();
 	if ( !t )
 	    break;
+	nextToken();
 	if ( t->id() == TokenID::tkOpBrk )
 	    depth++;
 	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
@@ -65181,6 +65241,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( func->builtin_registration )
 	{
 	    func = new FuncDef(returnDecl(dd, return_ref));
+	    // Every machine registration is a bare C symbol (libc_signatures,
+	    // a host-embedded callback): the explicit prototype REDECLARES the C
+	    // library's function and inherits its linkage ([dcl.link]/5) — so
+	    // `extern int printf(const char *, ...);` in a C++-presenting mode
+	    // keeps the bare import, exactly as it does after <stdio.h> in g++.
+	    // An unknown name gets no such inheritance and mangles as C++.
+	    func->c_linkage = true;
 	    funcdef_map[id] = func;
 	    func_already_declared = false;
 	}
@@ -65234,6 +65301,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
+	    // The refresh changes the RETURN type only; the declaration's
+	    // linkage, body status and captured parameter spellings carry over
+	    // (an extern "C" prototype refreshed by its definition stays a
+	    // C-linkage function, as in g++; its symbol needs the spellings
+	    // captured with the parameters it keeps).
+	    fresh->declaration_only = func->declaration_only;
+	    fresh->c_linkage = func->c_linkage;
+	    fresh->param_cpp_spellings = func->param_cpp_spellings;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -66387,7 +66462,14 @@ paramdecl:
 	}
 	if ( owner_class )
 	    method->owner_class = owner_class;
-	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	// A prototype marks the function declaration-only UNLESS a body was
+	// already seen: `float fx(float) {…}` then a block-scope `float fx()`
+	// must not flip the defined function back — its body then emitted under
+	// the bare name while every call used _Z2fxf (testmixedfuncvardecl).
+	// The flag is monotonic: a body wins. A first declaration is never
+	// already declared, so it takes the prototype state.
+	if ( !func_already_declared || func->declaration_only )
+	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
 	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
@@ -66458,7 +66540,9 @@ paramdecl:
 	var->data = (void *)method;
 	if ( owner_class )
 	    method->owner_class = owner_class;
-	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	// Monotonic, as at the forward-declaration site above: a body wins.
+	if ( !func_already_declared || func->declaration_only )
+	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
 	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
@@ -69787,9 +69871,13 @@ fnptr_decl_arm_head:
 	    // linkage (see cpp_free_fn_mangling_enabled). File scope only — a
 	    // block-scope declaration or GNU nested definition inside a body
 	    // (compounds non-empty) keeps the legacy path; main is the entry
-	    // point and never mangles; extern "C" fails the linkage test above.
+	    // point and never mangles; extern "C" fails the linkage test above;
+	    // a prototype of a MACHINE-REGISTERED name (libc_signatures, a host
+	    // callback — every one a bare C symbol) redeclares the C library's
+	    // function and inherits its linkage in parseFunction.
 	    || (cpp_free_fn_mangling_enabled() && compounds.empty()
-	     && source_id != "main")) )
+	     && source_id != "main"
+	     && !prior_declaration_is_registration(source_id))) )
     {
 	// C++ free-function overloading at GLOBAL scope: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
@@ -69940,11 +70028,26 @@ fnptr_decl_arm_head:
 	if ( ns_var )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(ns_var->type);
+	    // A hand-written PROTOTYPE of a C library function (no header) is
+	    // that C function — see libc_prototype_return_matches.
+	    if ( fd && ns_overload_tracked && !namespace_function
+	      && fd->declaration_only && !fd->c_linkage
+	      && fn_template_instantiation_depth == 0
+	      && libc_prototype_return_matches(source_id, fd) )
+	    {
+		fd->c_linkage = true;
+		// The C function's symbol is its bare name — also when this
+		// prototype is a same-name successor whose Variable carries an
+		// internal `__oN` key (a sloppy `extern int strcmp(char*, char*)`
+		// after <cstring>'s real one): the alias is the emitted symbol.
+		if ( ns_var->storage_alias_name.empty() )
+		    ns_var->storage_alias_name = source_id;
+	    }
 	    // Declaration-only C++ functions bind their external Itanium symbol:
 	    // namespace functions AND tracked global-scope operators (the <new>
 	    // allocation operators libstdc++ exports as _Znwm/_ZdlPvm/...).
 	    if ( (namespace_function || ns_overload_tracked)
-	      && fd && fd->declaration_only
+	      && fd && fd->declaration_only && !fd->c_linkage
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
@@ -69979,8 +70082,12 @@ fnptr_decl_arm_head:
 	    // namespace function moves in phase 3; extern "C" and main never
 	    // reach here. An explicit asm label on the definition wins over the
 	    // mangling, as it does in g++ (`void f() asm("g")` emits g).
+	    // A function-TEMPLATE instantiation product is not minted here: its
+	    // symbol is the template form (_Z4makeIiET_i), phase 3's minter —
+	    // the non-template mangling would collide across products.
 	    else if ( fd && ns_overload_tracked && !namespace_function
 		   && cpp_free_fn_mangling_enabled() && !fd->c_linkage
+		   && fn_template_instantiation_depth == 0
 		   && !fd->declaration_only && fd->emit_symbol.empty() )
 	    {
 		std::string sym = namespace_cpp_function_symbol(
@@ -70013,7 +70120,8 @@ fnptr_decl_arm_head:
 		// whose Itanium signature equals a member's IS that function —
 		// fold it (a definition after a differently-spelled prototype, a
 		// redeclaration inheriting C linkage) or reject a redefinition.
-		if ( !namespace_function && cpp_free_fn_mangling_enabled() )
+		if ( !namespace_function && cpp_free_fn_mangling_enabled()
+		  && fn_template_instantiation_depth == 0 )
 		    fold_same_signature_overload(*this, ovset, ns_var, fd,
 						 current_namespace(), source_id,
 						 curToken());
