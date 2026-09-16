@@ -265,6 +265,22 @@ namespace ns {
 	template <class T> T nident(T v) { return v; }   // namespaced
 	template int nident<int>(int);
 }
+// A dependent nested-name parameter: the `typename` disambiguator never reaches
+// the symbol (RN2rrIT_E4typeE); a reference template argument is IRiE, a
+// pointer one IPiE (two products must never fold onto one symbol); a
+// non-template parameter beside T stays `i` (T_ vs i).
+template <class T> struct rr { typedef T type; };
+template <class T> struct rr<T &> { typedef T type; };
+template <class T> T &&fwd(typename rr<T>::type &v) { return static_cast<T &&>(v); }
+template <class T> T &&fwd(typename rr<T>::type &&v) { return static_cast<T &&>(v); }
+template int &fwd<int &>(rr<int &>::type &);
+template int &&fwd<int>(rr<int>::type &&);
+template <class T> T scale(T v, int k) { return v * k; }
+template int scale<int>(int, int);
+namespace ns {
+	template <class T> T &&nfwd(typename rr<T>::type &v) { return static_cast<T &&>(v); }
+	template int *&&nfwd<int *>(rr<int *>::type &);
+}
 
 // ---- virtual class → vtable / typeinfo / D0-D1-D2 ------------------------
 struct V {

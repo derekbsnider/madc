@@ -30,6 +30,7 @@ namespace tally {
     int checksum(int a, int b) { return a * 31 + b; }
     int checksum(const char *s) { int h = 0; while (*s) h = h * 7 + *s++; return h; }
     namespace audit { int stamp() { return 2026; } }
+    int scale_check(int v) { return scale(v, 3) + (int)scale(0.5, v * 4); }
 }
 
 int other_side_report(const Counter &c)

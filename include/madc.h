@@ -3498,6 +3498,13 @@ public:
     // share a parameter spelling but are distinct functions
     // ([temp.over.link]). Saved/restored around nested instantiations.
     std::string pending_fn_instantiation_identity;
+    // C++ SYMBOL MANGLING phase 3b: the Itanium template-specialization symbol
+    // of the product being instantiated (empty = not minted: library pattern,
+    // packs / non-type params, member template) and the template's name the
+    // product declaration must match — set by instantiate_fn_template_binding,
+    // consumed by parseDeclaration's symbol arm (the one mint owner).
+    std::string pending_fn_instantiation_symbol;
+    std::string pending_fn_instantiation_symbol_name;
     std::vector<std::string> last_skipped_template_typeparams;
     // Pack-ness of last_skipped_template_typeparams (parallel vector), so a
     // skipped member template's variadic typeparam (`typename... _Args`) is

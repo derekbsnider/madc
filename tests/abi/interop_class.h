@@ -35,6 +35,11 @@ namespace tally {
     int checksum(int a, int b);
     int checksum(const char *s);
     namespace audit { int stamp(); }
+    // A header function template (phase 3b): both definers instantiate
+    // scale<int> / scale<double>, so each object defines the same weak
+    // _ZN5tally5scaleIiEET_S1_i — an internal product name would be alien.
+    template <class T> T scale(T v, int k) { return v * k; }
+    int scale_check(int v);
 }
 
 // Defined by the OTHER side of each lane (the user TU): the definer calls it

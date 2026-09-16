@@ -1044,6 +1044,17 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		// namespaced: the ns prefix is S_, the template name S0_, T_ S1_
 		ORACLE_CHECK(itanium_mangle_function_template_sub({"ns"}, "nident", {"int"}, "$T0", {"$T0"}),
 		             "_ZN2ns6nidentIiEET_S1_");
+		// a dependent nested-name parameter: the `typename` disambiguator is
+		// not encoded; a reference argument is R, an rvalue reference O; a
+		// non-template parameter beside T stays i (never S0_)
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "fwd", {"int&"}, "$T0&&", {"typename rr<$T0>::type&"}),
+		             "_Z3fwdIRiEOT_RN2rrIS1_E4typeE");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "fwd", {"int"}, "$T0&&", {"typename rr<$T0>::type&&"}),
+		             "_Z3fwdIiEOT_ON2rrIS0_E4typeE");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "scale", {"int"}, "$T0", {"$T0", "int"}),
+		             "_Z5scaleIiET_S0_i");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({"ns"}, "nfwd", {"int*"}, "$T0&&", {"typename rr<$T0>::type&"}),
+		             "_ZN2ns4nfwdIPiEEOT_RN2rrIS2_E4typeE");
 		// a member template with no parameters ends in v too
 		ORACLE_CHECK(itanium_mangle_member_template_sub("Box<int>", "conv", {"long"}, "$T0", {}, true),
 		             "_ZNK3BoxIiE4convIlEET_v");

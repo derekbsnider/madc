@@ -56882,6 +56882,80 @@ static bool deduced_bindings_conflict(DataDef *bound, DataDef *dd)
     return cb->name != cd->name;
 }
 
+// C++ SYMBOL MANGLING phase 3b: the Itanium symbol a USER function template's
+// product defines (_Z4makeIiET_S0_, _ZN2ns6nidentIiEET_S1_ — g++/clang's, so
+// the product links into a g++ program and two TUs' products fold as one weak
+// symbol). The pattern's declarator spells return/params in its OWN type
+// parameters (skipped_template_function_signature_spellings over the retained
+// decl tokens, $Tn placeholders via itanium_substitute_tparams); the binding
+// supplies the concrete arguments (cpp_spelling_for_mangle). Empty = not
+// minted, the product keeps its internal name: a pattern from a system header
+// (library products stay internal until phase 5's migration decision), a
+// member template (phase 3c), a pack or non-type parameter (the encoder takes
+// type arguments), an unspellable binding.
+static std::string fn_template_product_itanium_symbol(Program &pgm,
+	const Program::FnTemplateDef &ft, const std::string &key,
+	std::map<std::string, DataDef *> &binding,
+	const std::vector<DataDef *> &pack_elems)
+{
+    if ( !pgm.cpp_symbol_mangling_enabled() || ft.owner_class || ft.decl.empty()
+      || ft.typeparams.empty() || !pack_elems.empty() )
+	return std::string();
+    const char *decl_file = NULL;
+    for ( size_t i = 0; i < ft.decl.size() && !decl_file; ++i )
+	if ( ft.decl[i] )
+	    decl_file = ft.decl[i]->file;
+    if ( decl_file && pgm.is_system_header_path(decl_file) )
+	return std::string();
+    std::vector<std::string> targs;
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	if ( (i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i])
+	  || (i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i]) )
+	    return std::string();
+	std::map<std::string, DataDef *>::iterator b = binding.find(ft.typeparams[i]);
+	if ( b == binding.end() || !b->second )
+	    return std::string();
+	// A reference binding (take(a) deduces U = int&) is a DataDefPTR whose
+	// NAME is the pointer spelling; as_ref spells the base + "&" (IRiE, not
+	// IPiE — the two would fold two products onto one symbol).
+	std::string sp = cpp_spelling_for_mangle(b->second, b->second->is_reference());
+	if ( sp.empty() )
+	    return std::string();
+	targs.push_back(sp);
+    }
+    size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
+    size_t lparen = skipped_template_function_param_lparen(ft.decl, name_idx);
+    std::string ret;
+    std::vector<std::string> params;
+    if ( name_idx >= ft.decl.size() || lparen >= ft.decl.size() || !ft.decl[lparen]
+      || ft.decl[lparen]->id() != TokenID::tkOpBrk
+      || !skipped_template_function_signature_spellings(ft.decl, name_idx, lparen,
+							 ret, params) )
+	return std::string();
+    ret = itanium_substitute_tparams(ret, ft.typeparams);
+    for ( size_t i = 0; i < params.size(); ++i )
+	params[i] = itanium_substitute_tparams(params[i], ft.typeparams);
+    size_t sep = key.rfind("::");
+    std::string name = sep == std::string::npos ? key : key.substr(sep + 2);
+    if ( name.empty() )
+	return std::string();
+    std::string sym = itanium_mangle_function_template_sub(
+	namespace_qualifiers(ft.ns), name, targs, ret, params);
+    // A spelling the encoder cannot encode faithfully must not become a
+    // symbol at all (a keyword or space inside a <name> once folded two
+    // products onto one item): only a well-formed Itanium symbol is minted.
+    if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
+	return std::string();
+    for ( size_t i = 2; i < sym.size(); ++i )
+    {
+	char c = sym[i];
+	if ( !isalnum((unsigned char)c) && c != '_' && c != '.' && c != '$' )
+	    return std::string();
+    }
+    return sym;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -59493,6 +59567,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::cerr.rdbuf(&g_madc_null_streambuf);
     std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
     pgm.pending_fn_instantiation_identity = inst_key;
+    std::string saved_inst_symbol = pgm.pending_fn_instantiation_symbol;
+    std::string saved_inst_symbol_name = pgm.pending_fn_instantiation_symbol_name;
+    pgm.pending_fn_instantiation_symbol =
+	fn_template_product_itanium_symbol(pgm, ft, key, binding, pack_elems);
+    {
+	size_t sep = key.rfind("::");
+	pgm.pending_fn_instantiation_symbol_name =
+	    sep == std::string::npos ? key : key.substr(sep + 2);
+    }
     ++pgm.fn_template_instantiation_depth;
     try
     {
@@ -59530,6 +59613,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
     }
     --pgm.fn_template_instantiation_depth;
     pgm.pending_fn_instantiation_identity = saved_inst_identity;
+    pgm.pending_fn_instantiation_symbol = saved_inst_symbol;
+    pgm.pending_fn_instantiation_symbol_name = saved_inst_symbol_name;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     if ( !ok )
@@ -70341,6 +70426,22 @@ fnptr_decl_arm_head:
 		    // reachability asks by this symbol (deferred_lazy_body_key).
 		    body_symbol_keys[sym] = ns_var->name;
 		}
+	    }
+	    // Phase 3b: a USER function template's product takes the Itanium
+	    // template-specialization symbol its instantiation driver minted
+	    // (fn_template_product_itanium_symbol) — the declaration must be the
+	    // template's own (a product body declares nothing else at this depth,
+	    // the name check keeps it so). Empty = the product keeps its internal
+	    // name (library pattern, packs, non-type parameters, member template).
+	    else if ( fd && ns_overload_tracked && cpp_symbol_mangling_enabled()
+		   && !fd->c_linkage && fn_template_instantiation_depth > 0
+		   && !fd->declaration_only && fd->emit_symbol.empty()
+		   && !pending_fn_instantiation_symbol.empty()
+		   && source_id == pending_fn_instantiation_symbol_name
+		   && ns_var->storage_alias_name.empty() )
+	    {
+		fd->emit_symbol = pending_fn_instantiation_symbol;
+		body_symbol_keys[fd->emit_symbol] = ns_var->name;
 	    }
 	    if ( fd && ns_overload_tracked )
 	    {

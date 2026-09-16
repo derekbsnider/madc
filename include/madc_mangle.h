@@ -134,6 +134,14 @@ std::string itanium_mangle_function_template_sub(
         const std::string &ret,
         const std::vector<std::string> &params);
 
+// Replace each template-parameter NAME (whole identifier) in a type spelling
+// with the mangler's $Tn placeholder ("basic_istream<_CharT,_Traits>&" +
+// [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&"): the ONE speller of
+// the template-relative ret/params the template minters above take — the
+// CIR builder's library operator binding and the parser's user-template mint.
+std::string itanium_substitute_tparams(const std::string &spell,
+        const std::vector<std::string> &tparams);
+
 // Mangle a non-template function at any scope — global (no qualifiers:
 // _Z<name><params>), std (the St abbreviation), or a qualifier chain (N..E) —
 // using the substitution-aware type encoder for parameter spellings. `name` may

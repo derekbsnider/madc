@@ -17372,8 +17372,6 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	return call;
 }
 
-static std::string substitute_tparams(const std::string &spell,
-		const std::vector<std::string> &tparams);
 static std::string requalify_head(const std::string &spell, const std::string &qhead);
 
 // Pattern A for free namespace OPERATORS (W2 step D — emit-symbol
@@ -17511,7 +17509,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 		std::string p1sub = ov.param_spellings[1];
 		for (const auto &b : binding)
 			p1sub = subst_bound_ident(p1sub, b.first, b.second);
-		std::string rhs_param = substitute_tparams(ov.param_spellings[1],
+		std::string rhs_param = itanium_substitute_tparams(ov.param_spellings[1],
 							  ov.template_params);
 		if (norm_type_w2(p1sub) != rhs_norm)
 		{
@@ -17526,7 +17524,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 							rhs_off, rhs_qhead, &c1))
 				continue;
 			rhs_deduced = true;
-			rhs_param = substitute_tparams(
+			rhs_param = itanium_substitute_tparams(
 				requalify_head(rspell, rhs_qhead), ov.template_params);
 		}
 		std::vector<std::string> targs;
@@ -17600,7 +17598,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 			if (best && ov.template_params.size() >= best->template_params.size())
 				continue;
 			auto qp = [&](const std::string &sp, const std::string &qh) {
-				return substitute_tparams(requalify_head(sp, qh),
+				return itanium_substitute_tparams(requalify_head(sp, qh),
 							  ov.template_params);
 			};
 			best = &ov;
@@ -17664,7 +17662,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 			if (best && ov.template_params.size() >= best->template_params.size())
 				continue;
 			auto qp = [&](const std::string &sp, const std::string &qh) {
-				return substitute_tparams(requalify_head(sp, qh),
+				return itanium_substitute_tparams(requalify_head(sp, qh),
 							  ov.template_params);
 			};
 			best = &ov;
@@ -17714,7 +17712,7 @@ FuncDef *CirBuilder::std_free_operator_instantiation(TokenOperator *top,
 			(void)deduce_param_against_class(rspell, c0 ? c0 : lcls,
 					ov.template_params, b2, retoff, qhr, &cr);
 			auto qp = [&](const std::string &sp, const std::string &qh) {
-				return substitute_tparams(requalify_head(sp, qh),
+				return itanium_substitute_tparams(requalify_head(sp, qh),
 							  ov.template_params);
 			};
 			best = &ov;
@@ -18267,31 +18265,6 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 	return class_operator_external_call(top, lcls, inst, origin);
 }
 
-// Replace each template-param NAME (whole identifier) in a type spelling with the
-// mangler's $Tn marker (parse_type maps $Tn -> Itanium T_/T0_/...). E.g.
-// "basic_istream<_CharT,_Traits>&" + [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&".
-static std::string substitute_tparams(const std::string &spell,
-		const std::vector<std::string> &tparams)
-{
-	std::string out;
-	size_t i = 0, n = spell.size();
-	while (i < n) {
-		char c = spell[i];
-		if (isalpha((unsigned char)c) || c == '_') {
-			size_t j = i + 1;
-			while (j < n && (isalnum((unsigned char)spell[j]) || spell[j] == '_'))
-				++j;
-			std::string word = spell.substr(i, j - i);
-			int tpi = -1;
-			for (size_t k = 0; k < tparams.size(); ++k)
-				if (tparams[k] == word) { tpi = (int)k; break; }
-			if (tpi >= 0) out += "$T" + std::to_string(tpi);
-			else out += word;
-			i = j;
-		} else { out += c; ++i; }
-	}
-	return out;
-}
 
 // Replace the leading template-id head of `spell` with the fully-qualified
 // `qhead` (from the matched class), so the mangler emits the right namespace
@@ -18486,7 +18459,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 			if (best_qmap.count(core))
 				q = best_qmap[core];
 		}
-		return substitute_tparams(requalify_head(spell, q), best->template_params);
+		return itanium_substitute_tparams(requalify_head(spell, q), best->template_params);
 	};
 	best_ret = qualify_and_param(best->return_spelling);
 	best_param_spell.clear();

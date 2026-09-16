@@ -14,6 +14,7 @@
 // family spelled `13madc::channel` for a namespaced class and `3Vec` for a
 // class that should have been the back-reference S_ — symbols nothing exports.
 
+#include <cctype>
 #include "madc_mangle.h"
 #include "spelling_delim.h"
 #include <cstring>
@@ -340,6 +341,13 @@ TypeNode parse_type(const std::string &raw)
 		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
 			t.decos.push_back("K");
 			s = s.substr(6);
+			continue;
+		}
+		// `typename rr<T>::type` — the keyword disambiguates a dependent
+		// name in source; the ABI encodes the nested-name alone
+		// (g++: RN2rrIT_E4typeE). Peel it as a no-op decoration.
+		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
+			s = s.substr(9);
 			continue;
 		}
 		// trailing " const" form
@@ -1361,3 +1369,30 @@ std::string std_stringstream_type()
 	       + std_prefix_untagged() + "char_traits<char>,"
 	       + std_prefix_untagged() + "allocator<char>>";
 }
+
+// Replace each template-param NAME (whole identifier) in a type spelling with the
+// mangler's $Tn marker (parse_type maps $Tn -> Itanium T_/T0_/...). E.g.
+// "basic_istream<_CharT,_Traits>&" + [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&".
+std::string itanium_substitute_tparams(const std::string &spell,
+		const std::vector<std::string> &tparams)
+{
+	std::string out;
+	size_t i = 0, n = spell.size();
+	while (i < n) {
+		char c = spell[i];
+		if (isalpha((unsigned char)c) || c == '_') {
+			size_t j = i + 1;
+			while (j < n && (isalnum((unsigned char)spell[j]) || spell[j] == '_'))
+				++j;
+			std::string word = spell.substr(i, j - i);
+			int tpi = -1;
+			for (size_t k = 0; k < tparams.size(); ++k)
+				if (tparams[k] == word) { tpi = (int)k; break; }
+			if (tpi >= 0) out += "$T" + std::to_string(tpi);
+			else out += word;
+			i = j;
+		} else { out += c; ++i; }
+	}
+	return out;
+}
+

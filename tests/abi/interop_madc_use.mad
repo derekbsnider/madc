@@ -32,5 +32,6 @@ int main()
     printf("balance: %d\n", l.balance());
     printf("checksum: %d %d %d\n", tally::checksum(3, 4), tally::checksum("abc"),
 	   tally::audit::stamp());
+    printf("scale_check: %d\n", tally::scale_check(4));
     return 0;
 }
