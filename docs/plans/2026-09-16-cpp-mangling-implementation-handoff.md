@@ -132,10 +132,52 @@ The classes (read the commit messages for the layer argument):
   `testmadcide`'s shows-lowering probe (`long long _Z3addll`); `testfinstrumentfunctions` runs
   as C (`--std=c11`: it defines the `__cyg_profile_*` hooks bare — g++ would not link that either).
 
-NEXT (in order): (1) the second full JIT run (`tmp/p1-jit-suite2.log`) must be 0 failures; (2)
-`make -C src test` (unit tests); (3) cross-darwin acceptance: `make -C src cross-x86-64-macos`
-then `bin/madc-x86-64-macos -c -o out.o tests/testmadcide_{discover,attach,lsp_serve,lsp_stdio}.mad`
-compile clean and `testimportiface` shows `_sqrt` (U) not `__Z4sqrtd`; (4) bank, then phase 2
+SECOND FULL JIT RUN: **1385/0/0TO/9skip — GREEN.** Static gates green (rule-trailers 902/0,
+call-emit-symbol, var-emit-name ratchet 17≤19, one-delim-tracker, c-abi-surface, clone-origin).
+**DARWIN ACCEPTANCE GREEN** (cross madc, no Mac): `testmadcide_{discover,attach,lsp_serve,lsp_stdio}`
+compile clean (rc=0) — blocker #2 CLOSED; `testimportiface` imports `U _sqrt` (was `__Z4sqrtd`) —
+blocker #3 CLOSED. UNIT TESTS: four snippets in the unit harnesses declared HOST/NATIVE C symbols bare and looked
+them up by bare name — under g++-ABI parity those are C++-linkage functions, so the snippets now
+say `extern "C"` (the C-export contract a C++ program spells; not a compiler change):
+`test_cir` "external bool returns" (host helpers resolved by dlsym), `test_native_shared` (`madd`/
+`mmul` dlsym'd from the `-shared` ET_DYN), `test_object_load` (`madd`/`mmul` via
+`MIR_object_loaded_sym`; the R6 externals + `combine`); `test_object_load`'s inline `sumv`
+binding check moves to `_Z4sumvii` (STB_WEAK is exactly the vague-linkage contract);
+`test_cir_freeze` B3's interning probe moves to `_Z6helperi`. `tests/abi/vec_ffcall.c` (cc as C,
+madc as C++) wraps its libvecnative prototypes in `#ifdef __cplusplus extern "C"` guards —
+vector_abi_gate green again. Other fulltest gates run green: sret/unprototyped/emitc_sret/
+emitcxx_roundtrip, tsubst_flagon, the six static gates. `Adder__add` (a class method, internal
+scheme) is still asserted by name in test_object_load — phase 2 moves it to `_ZN5Adder3addEii`.
+
+**`make -C src test`: every binary GREEN (unittest rc=0). PHASE 1 IS COMPLETE AND VALIDATED.**
+
+NEXT: **PHASE 2** — user members / operators / ctors / dtors onto the `_sub` Itanium encoders,
+`__oN` retired for them. Entry map (verified this session):
+- Mint sites: the class parser's `unique_overload_symbol` callers — `parser.cpp:46891`, `48362`,
+  `48427` (`operator_conv` — use `itanium_mangle_conversion_sub`), `48875`; ctors `61717`, `63653`;
+  member-template instances `61344` (`__mti` — template form, later). Library members already bind
+  through `bind_declared_cpp_symbol` (`45342`: `itanium_mangle_{ctor,dtor,member,operator}_sub`);
+  user members must mint through the SAME calls (declaration_only false, body present).
+- The readers that treat `!emit_symbol.empty()` as "external — no madc body" must read
+  `declaration_only` (a helper `fd->externally_bound()` = `declaration_only &&
+  !emit_symbol.empty()`): method dispatch `cir_builder.cpp:12242` (`emit_symbol_method_call` is the
+  external-ABI path), ctor lowering `11827–11860`, copy-ctor `13337–13411`, dtor `13066/13077/
+  13584–13615`, assign-op `8520`; the carrier rows `6002/6052/6092` are runtime machinery — keep.
+- `func_def_symbol` widens from free functions to members (drop the `!owner_class` /
+  `namespace_name.empty()` restriction once the readers are fixed) — the vtable-slot contract
+  (library bodies keep the internal name) must survive: a LIBRARY class's materialized body is
+  `is_system_header_path(tf->file)` / its class externally owned.
+- RTTI trio `cir_builder.cpp:10333–10644` → the `_cpp` forms with `canonical_cpp_spelling()`
+  (bare-`name` fallback for a global class).
+- C2/D2: madc emits C1/D1 (+D0 for virtual); a g++-compiled derived class calls the base's C2 —
+  emit C2 as an alias of C1 (no virtual bases) or define both. The oracle corpus has the rows.
+- Fixtures that will move: `test_object_load` asserts `Adder__add` by name → `_ZN5Adder3addEii`.
+- Acceptance: `testmadcide_*` still green on the cross madc; the phase-5 end-to-end corpus lane
+  becomes runnable once members mint (add it to `mangle_abi_gate.sh` then).
+Then phase 3 (namespace functions off `__ns__oN`; user function templates via
+`itanium_mangle_function_template_sub`), phase 4 (freeze global-key sets, `madc_cir.cpp:4740`;
+restore rebuilds global aliases, `parser.cpp:24961`), phase 5 (end-to-end lane, migration sweep,
+seam battery). Darwin #1 (madcgit dylib `58f250811`) still needs one real darwin-probe round.
 (members/operators/ctors/dtors — the `emit_symbol`-means-external readers in cir_builder's
 ctor/dtor/method lowering are the work; RTTI onto the `_cpp` forms; ranking's
 `activate_forest_function_family` side effect for tracked calls is worth a look).
