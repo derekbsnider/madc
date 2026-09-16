@@ -321,6 +321,57 @@ g++'s symbol sets; template/member family green; interop A+B OK. Full JIT suite 
 KG: DupFamily template_param_placeholder_speller (3 byte-identical copies) =
 consolidated; Gap qualified_namespace_function_definition (3a) still open.
 
+## PHASE 4 — LANDED: the pack restore keeps the Itanium symbols
+
+MEASUREMENT FIRST: the packed release binary (`make -C src release`, system-header
+forest pack) compiles the phase tests to the SAME symbol sets as the dev binary
+(testnamespacemangle 7, testfntemplatemangle 12, testmembertemplatemangle 7,
+testmemberoverload 35), but the packed suite failed 9 libstdc++-heavy tests
+(testiomanip, testmanip, testmanipview, testmathheader, teststdstringconv,
+teststod, teststringabiinterop, testvaluestream, testvbasemanip) with an
+undefined import of a header INLINE NAMESPACE function's Itanium symbol
+(_ZSt5fixedRSt8ios_base, _ZSt5isinfd, _ZNSt7__cxx114stod…). ROOT: phase 3a's
+arm mints emit_symbol AND records body_symbol_keys[sym] = registration name
+(the translation pack_callee_homed / deferred_lazy_body_key use, because the
+deferred-body registry is keyed by the registration name while callers import
+the symbol). The freeze carries emit_symbol (madc_cir.cpp r.emit_symbol_id) and
+register_forest_func restores it, and the forest fixpoint DID materialize the
+frozen body — but keyed its forward proto, its conditional-emission mark and
+the MIR-cache gate on the REGISTRATION name (kv.first) while the def node's
+own declared id and every reference carry the symbol it defines; the
+cond-emission harvest saw the key unreferenced and DROPPED the def (the packed
+C11 held only the extern + the call). FIX: the fixpoint keys proto/mark/gate
+on the def's own declared id (cir_declared_id, the existing accessor); the
+proto record carries the registration key for the root exemption; the
+"referenced?" test accepts a FREE/NAMESPACE body referenced under its
+emit_symbol (never a library METHOD's — that is the external symbol its calls
+bind to). The forest registrar + flush_forest_pending_globals record the
+symbol→key translation (body_symbol_keys) like the parse-time registrar;
+Program::body_registration_key(sym) is the one accessor the pack's name-keyed
+lookups read. Two translation-only attempts did NOT move the nine — the
+evidence that settled it was the packed binary's -v facts + emitted C11.
+PACKED lane (bin/madc-release, build 21 = a2f9e5109): **1389 passed / 0 failed / 0 timed out / 9 skipped** — identical to the dev JIT lane; the 9 std-header tests + testusingfnoverload all pass; the packed C11 defines `_ZSt5fixedRSt8ios_base`; doctest unit binaries rc=0; the phase tests' symbol sets are identical packed vs dev (7/12/7/35 symbols).
+ALSO CLOSED: testusingfnoverload's PACKED-only failure ("Unknown namespace or
+class 'char_traits_char'" at iosfwd:114) was a downstream symptom of the same
+dropped bodies, not a type-name restore defect — KG Gap
+pack_restore_default_template_arg_instance_name resolved by this fix.
+
+## PHASE 5 — NEXT (not started): migration sweep + the ONE seam battery
+
+- Decide (OWNER-flavored): do LIBRARY class/template materializations (the
+  ~900 `_basic_string_char_…` internal weak bodies a madcide object carries)
+  move onto Itanium names? Today they are an internal-name island by design
+  (bind_external_class_symbols re-binds their call symbols); g++ emits them as
+  weak Itanium symbols. Moving them = ABI-identical objects for header inline
+  bodies too; cost = every library materialization site.
+- Remove the FEATURE_CPP_MANGLE guard (cpp_symbol_mangling_enabled → presents_as_cpp).
+- End-to-end corpus lane; migration sweep of any remaining `__oN` / `Class__` /
+  `__ns_` emission (the registration keys stay).
+- Then the SEAM: pre-build EVERY toolchain (static gates, `sync build release
+  win`, `make -k hosted-arm64-macos`) BEFORE the battery
+  (feedback_seam_prebuild_all_toolchains); ONE fulltest + exe + obj + packed +
+  headerless + c-testsuite + wine + macOS cross; lane records; develop merge.
+
 ## SETTLED STATE (evidence — do NOT re-derive)
 
 - **Scope = (c)** (owner ruling, Rule #1): EVERY user-defined C++ symbol mangles Itanium in
