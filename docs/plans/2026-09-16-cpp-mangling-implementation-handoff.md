@@ -253,6 +253,61 @@ templates via `itanium_mangle_function_template_sub` (the `fn_template_instantia
 exclusions in phase 1/2 are the entry points), member templates (`is_member_template` exclusion in
 `bind_user_member_symbol`).
 
+## PHASE 3a — LANDED (2026-09-16, 106508b08): namespace functions
+
+Functions madc DEFINES inside a namespace emit their Itanium symbols (`seam::f(int)` → `_ZN4seam1fEi`,
+overloads distinct, nested namespaces `_ZN4seam5inner1gEv`); the internal `__ns_<ns>_<name>[__oN]`
+survives only as the registration key. TWO owners, both pre-existing: parseDeclaration's post-parse
+mint (the phase-1 arm at parser.cpp ~70290 minus its `!namespace_function` exclusion —
+`namespace_cpp_function_symbol`, the same mint the declaration-only namespace bind uses) and
+`CirBuilder::func_def_symbol` (minus its `namespace_name.empty()` clause). Same seam as phase 2 (body
+symbol ≠ registration key): the mint records `body_symbol_keys[sym]` and the deferred-body readiness
+check accepts a bodied function's `emit_symbol`, so a header's lazily materialized inline namespace body
+(libstdc++ `std::__exception_ptr::swap`) is reached by the symbol its callers import. extern "C" inside a
+namespace keeps the bare symbol (the c-linkage arm precedes the mint); template products stay excluded.
+Tests/gates: `tests/testnamespacemangle` (g++==clang++ .expect); the interop corpus gained
+`tally::checksum(int,int)/checksum(const char*)/tally::audit::stamp()` on both definers and users;
+`mangle_abi_gate.sh --interop` compiles both madc objects with the EXISTING `-fno-eval-shims` (a .o keeps
+its `__madc_shim_*` host-call adapters by documented design — madc_cir.cpp shim policy — and a g++ link
+without libmadc cannot satisfy their madc_value_* imports; the flag exists for exactly that .o).
+VALIDATION (build 13 = 106508b08): probe + test objects define exactly g++'s symbol sets; namespace/
+using/overload family 35/35; interop A+B OK; full JIT suite **1387 passed / 0 failed / 0 timed out / 9 skipped** (1386 + testnamespacemangle); doctest unit binaries rc=0.
+KG gap recorded: `qualified_namespace_function_definition` — `int seam::h(int x) { … }` outside its
+namespace is refused ("Unknown C++ declarator scope"); g++/clang accept. Own parser session.
+
+## PHASE 3b — ENTRY MAP (function templates; NOT started)
+
+ORACLE (tmp/p3_ft.mad): g++ `_Z4makeIiET_S0_ _Z4makeIdET_S0_ _Z7cast_toIliET_T0_ _ZN2ns6nidentIiEET_S1_`
+(all W); madc today: weak `make__o2 make__o3 cast_to__o2 __ns_ns_nident__i…<hash>`.
+ENCODER (exists, unused by the compiler): `itanium_mangle_function_template_sub(qualifiers, name, targs,
+ret, params)` in madc_mangle — ret/params spelled with `$T0,$T1…` placeholders (unit test
+tests/unit/test_mangle.cpp:1037–1046 shows every shape); `itanium_mangle_member_template_sub` for
+member templates. PLACEHOLDER SPELLER (exists): `substitute_tparams(spell, tparams)` in cir_builder.cpp —
+DEFINED TWICE (17375 and 18273; a pre-existing DupFamily — consolidate to ONE owner reachable from the
+parser when adopting it; never write a third).
+MINT SITE: the same parseDeclaration arm (parser.cpp ~70290) — its `fn_template_instantiation_depth == 0`
+exclusion is the entry: a product parses under `pending_fn_instantiation_identity` (= inst_key,
+parser.cpp ~58577: `key<arg,arg,…>` built from `ft.typeparams` × `binding` via
+`template_binding_identity_spelling`); the instantiation driver (parser.cpp ~59480, re-runs
+parseStatement/parseFunction over the replayed tokens) must hand the arm the CONCRETE targ spellings in
+`ft.typeparams` order (a pending vector beside pending_fn_instantiation_identity — carry, don't re-derive
+from the key string) and the PATTERN's return/param spellings (the template FuncDef's captured
+spellings; product FuncDef → `tsubst_source` where set) run through substitute_tparams. Qualifiers =
+`current_namespace()` split on `::`. USER-only: skip patterns from system headers (`decl_file` +
+is_system_header_path, or the class-side `from_system_header` for member templates) — libstdc++
+products keep their internal names until phase 5's migration decision (the std:: flavor-agnostic
+minter `std_free_function_instantiation` in cir_builder ~4930 already binds LIBRARY products it can).
+BODY SIDE: func_def_symbol already returns emit_symbol for any bodied non-member function with a
+display name — no change expected; products are `linkonce` (W) as g++ emits them. MEMBER templates:
+`is_member_template` exclusion in bind_user_member_symbol (parser.cpp ~45460) + the member-template
+instantiation at ~61640 (`local_emit_name = inst_name`) → `itanium_mangle_member_template_sub(cls, name,
+targs, ret, params, is_const)` on local_emit_name (own-body field, phase-2 convention).
+TESTS: g++==clang++ .expect reducer (deduced + explicit + namespace + member template, an overload set
+mixing template and non-template `f`), interop corpus gains a template used across the TU boundary
+(the g++ user instantiates madc's pattern? NO — patterns are header text; the interop shape is a madc
+TU calling a template the header defines and g++ also instantiates: both emit W, the linker folds —
+assert with nm that both objects define the same W symbol).
+
 ## SETTLED STATE (evidence — do NOT re-derive)
 
 - **Scope = (c)** (owner ruling, Rule #1): EVERY user-defined C++ symbol mangles Itanium in
