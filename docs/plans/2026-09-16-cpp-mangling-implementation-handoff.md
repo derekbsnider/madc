@@ -434,8 +434,15 @@ the latter also widened the PACK fixpoint's reference test to `local_emit_name` 
 against phase-4 and HEAD binaries, dropped. `5d1a7ca6f` (forest_bind_gate [silbody]: a BLOCK-SCOPE
 C++ prototype is tracked and bound like a file-scope one — g++ declares it in the enclosing namespace;
 the definition mint keeps file scope so a GNU nested definition stays legacy). At `5d1a7ca6f`:
-forest_bind_gate 29/29, smaug_gate, interop, unit, targeted all green. Launcher: `tmp/seam_stage2.sh`
-(gates, then `tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
+forest_bind_gate 29/29, smaug_gate, interop, unit, targeted all green; the forest emitpack / sidecar /
+crosstu / library gates pass once `bin/madc-thin` + `bin/madc-mono` are rebuilt (the launcher must build
+them first — fixed locally). **OPEN (next session's first item): `libcxx_gate` is RED** — the emitted
+C11 of `testiomanip` under libc++ is rejected by clang-18 with `conflicting types for
+_ZNSt3__15fixedERNS_8ios_baseE` (std::__1::fixed, a header inline namespace function emitted under
+its Itanium symbol since phases 3a/4): two declarations of the symbol in the emitted C disagree on
+type. Reproduce: `bash scripts/libcxx_gate.sh` on the container; diff against the libstdc++ emit
+(`_ZSt5fixedRSt8ios_base`, green). The battery has NOT run. Launcher: `tmp/seam_stage2.sh` (gates, then
+`tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
 
 ## THE SEAM — NEXT: the ONE battery for the whole (c)
 
