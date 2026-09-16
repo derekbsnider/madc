@@ -113,6 +113,17 @@ targets which never reach this path). Both the definition and every call site ro
 through `call_emit_symbol`, so setting the FuncDef's symbol once is self-consistent across
 TUs (both sides mangle identically).
 
+**As built (phase 1) — linkage is DECLARATION-based, never "has a body".** A body test is
+unsound across a `--project`: TU A's prototype would call bare `foo` while TU B's body emits
+`_Z3fooi`. Linkage follows the declaration as C++ defines it: a declaration-only C++-linkage
+prototype binds `_Z…` (`storage_alias_name`), a definition emits it (`emit_symbol`,
+`CirBuilder::func_def_symbol`). Real C headers reach the parser under `extern "C"` (they test
+`__cplusplus`, which madc defines in every C++-presenting mode); the darwin umbrella is re-wrapped
+(`gen_darwin_prelude.sh`). One dialect accommodation, principled: a hand-written PROTOTYPE of a
+name madc's libc table knows (`libc_signatures`) whose return matches the table's class declares
+the C library's function and keeps C linkage — madc's built-in libc knowledge stands in for the
+header (`[dcl.link]/5` redeclaration). A DEFINITION with a libc name is the user's C++ function.
+
 **One encoder (Rule #7 / `no-parallel-implementations`).** The symbol is minted through the
 SAME Itanium encoder the `std::` mangled-direct matcher uses (`madc_mangle.cpp` core +
 `itanium_mangle_nested_sub`), never a second path — so a user `foo(int)` and `std::` functions
@@ -169,6 +180,18 @@ This is the defect (§5). Replace the blind reconciliation with:
 
 "Same signature" = same arity and same parameter DataDefs after decay (reuse the argument-type
 comparison the overload ranker already uses; do not hand-roll a new comparison — Rule #7).
+
+**As built (phase 1, 2026-09-16) — the identity is the Itanium signature itself.** The overload
+tracking's pre-parse identity (`peek_param_list_spelling`) is TEXTUAL: parameter names and default
+arguments ride in it and a typedef spells unlike its base, so `void f(int a);` … `void f(int b) {}`
+forks into two FuncDefs. It stays as the fast path; the truth is settled after the parameters are
+parsed by `fold_same_signature_overload` (parser.cpp): two set members whose Itanium symbols
+(`namespace_cpp_function_symbol` — the one encoder) are equal ARE one function. The newcomer folds
+into the prior — body-brings-definition repoints the prior's Variable and `funcdef_map` and the
+body emits under the shared symbol; both bodied → "redefinition of 'f'"; an `extern "C"` prior →
+the newcomer inherits C linkage and the bare name ([dcl.link]/5, the `.h`/`.cpp` idiom). The
+C-linkage clash error (§4.5) uses the same encoding as its identity, so typedefs desugar and
+top-level cv drops exactly as the ABI says. One identity, one encoder (Rule #7).
 
 ### 4.5 C-mode signature-clash diagnostic
 

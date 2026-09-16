@@ -82,6 +82,68 @@ KEY FACTS FOR PHASE 1 (verified):
 - `check-rule-trailers.sh` matches only `^(src|include)/.*\.(c|cc|cpp|h|hpp)$` — Makefile, scripts
   and tests need no trailers.
 
+## PHASE 1 — CORE LANDED (2026-09-16, `9ba213130` + darwin #3 `0a07c75bc`; full JIT suite pending)
+
+What landed (see the commit message for the full map): `Program::cpp_free_fn_mangling_enabled()`
+(+ `FEATURE_CPP_MANGLE`, default ON, `-DFEATURE_CPP_MANGLE_OFF` = legacy); the global tracking gate
+admits every FILE-SCOPE C++-linkage function (`compounds.empty()`, main excluded); file-scope
+`extern "C"` records `c_linkage`; a tracked bodied function mints `emit_symbol` via
+`namespace_cpp_function_symbol` (asm label wins; `internal_linkage` → `_ZL…`);
+`fold_same_signature_overload` = the identity TRUTH (post-parse Itanium signature: fold names/
+defaults/typedef variants, inherit C linkage, reject redefinitions); `parseFunction` errors on a
+C-linkage signature clash ("conflicting types for 'f'" / "conflicting declaration of C function
+'f'"); `CirBuilder::func_def_symbol` = the ONE body-symbol rule (definition, lock-step prototype,
+profiler self-address, reachability mark — were four `var_emit_name` spellings); shim NAME = source
+key; `user_func_names` carries source + emitted names. Oracle-exact vs g++ AND clang++ (output and
+`nm` symbol sets) — see the commit's Oracle trailer. Targeted 11/11.
+
+Tests: `testfreeoverload`, `testfreeoverload_cmode` (C error), `testexterncoverload` (the `send`
+shape), `testexterncnooverload` (extern "C" can't overload), `testexterncredecl` (linkage
+inheritance). Pre-existing `testfreeop` now emits `_Zlt1Ai`/`_Zeq1AS_`/`_Zeq1APKi`.
+
+FIRST FULL JIT RUN: 1261/123/1TO. Every failure root-caused and fixed in three commits
+(`f5bb59f7f` mangle, `e37676cac` cir, `7c622550d` parser + fixtures); the 124 → 124/124 green.
+The classes (read the commit messages for the layer argument):
+- **Hand-written libc prototypes** (50): `extern int printf(const char *, ...);` with no header
+  (c-testsuite convention). RULE: a DECLARATION-ONLY file-scope prototype whose name is a
+  `libc_signatures` entry and whose return matches the table's class carries C linkage (bare) —
+  `libc_prototype_return_matches`, the same `dynamic_symbol_fallback_return_type` the undeclared-
+  call path uses. Never for a DEFINITION (`send`/`write` ARE table names — the darwin shape must
+  stay C++). A `builtin_registration` replaced by a prototype passes C linkage on.
+- **Twins** (35 "redefinition"): `abs(long)`/`abs(long long)` = one `ddINT64` on glibc; glibc
+  `iscanonical(_Float128)` = long double → one Itanium signature, two bodies. The fold keeps the
+  newcomer on its INTERNAL name, out of the set (pre-mangling shape). KG Gap
+  `long_long_distinct_datadef_lp64` = the type-model fix that would let both mint (darwin's
+  `dd_platform_longlong` split generalized).
+- **Function-template products** (`_Z4makei` collisions): excluded from the phase-1 mint/fold
+  (`fn_template_instantiation_depth == 0`) — phase 3 mints the template form.
+- **Latent bugs exposed** (own commits): `call_emit_symbol(v, fd)` for a call THROUGH a fn-ptr
+  VARIABLE preferred the pointee's `emit_symbol` → a direct call to the wrong function
+  (testforeach2, silent); `peek_param_list_spelling` threw at EOF (`nextToken`) — a lookahead
+  must `peekToken`; `declaration_only` flipped back by a later block-scope prototype
+  (testmixedfuncvardecl) — now monotonic, and the return-type refresh carries
+  `declaration_only`/`c_linkage`/`param_cpp_spellings`; fn-ptr parameter spelling didn't peel
+  pointer/array layers (`fptr_structural_spelling`, datadef.h — one owner for
+  `mangle_param_spelling` and `cpp_spelling_for_mangle`).
+- **Shim key**: `program::call` (madc_program.cpp:640) computes `"__madc_shim_" +
+  call_emit_symbol(func, name)` — the CIR side must mirror it (my "source name" change was wrong
+  and reverted).
+- **Fixtures moved with the lowering**: `testemitindent.expect` (`int _Z4pickiiPi(...)`),
+  `testmadcide`'s shows-lowering probe (`long long _Z3addll`); `testfinstrumentfunctions` runs
+  as C (`--std=c11`: it defines the `__cyg_profile_*` hooks bare — g++ would not link that either).
+
+NEXT (in order): (1) the second full JIT run (`tmp/p1-jit-suite2.log`) must be 0 failures; (2)
+`make -C src test` (unit tests); (3) cross-darwin acceptance: `make -C src cross-x86-64-macos`
+then `bin/madc-x86-64-macos -c -o out.o tests/testmadcide_{discover,attach,lsp_serve,lsp_stdio}.mad`
+compile clean and `testimportiface` shows `_sqrt` (U) not `__Z4sqrtd`; (4) bank, then phase 2
+(members/operators/ctors/dtors — the `emit_symbol`-means-external readers in cir_builder's
+ctor/dtor/method lowering are the work; RTTI onto the `_cpp` forms; ranking's
+`activate_forest_function_family` side effect for tracked calls is worth a look).
+KNOWN EDGES (cataloged, not blocking): a block-scope PROTOTYPE in C++ mode stays on the legacy
+bare path (a body-follows peek would fix it); a C++ prior redeclared `extern "C"` is not yet
+diagnosed as a linkage conflict; array parameters' captured spelling lacks the decay `*`
+(phase 5's end-to-end corpus lane will catch `f_arr`).
+
 ## SETTLED STATE (evidence — do NOT re-derive)
 
 - **Scope = (c)** (owner ruling, Rule #1): EVERY user-defined C++ symbol mangles Itanium in
