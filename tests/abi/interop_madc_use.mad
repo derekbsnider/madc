@@ -33,5 +33,15 @@ int main()
     printf("checksum: %d %d %d\n", tally::checksum(3, 4), tally::checksum("abc"),
 	   tally::audit::stamp());
     printf("scale_check: %d\n", tally::scale_check(4));
+    Counter u(2);
+    *u = 9;
+    printf("deref: %d mul: %d\n", *u, u * 3);
+    ++u;
+    printf("preinc: %d\n", u.get());
+    int old = u++;
+    printf("postinc: %d %d\n", old, u.get());
+    int arr[4] = { 1, 2, 3, 4 };
+    printf("add4: %d\n", u.add4(arr));
+    printf("cell: %d\n", cell_check(21));
     return 0;
 }

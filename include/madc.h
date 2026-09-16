@@ -5048,20 +5048,11 @@ public:
     // (bind_declared_cpp_symbol's user arm), as do the class's vtable/RTTI and its
     // synthesized special members — the internal Class__member__oN spelling
     // survives only as the parser's registration KEY, never as a symbol.
-    // FEATURE_CPP_MANGLE is the bring-up guard (feature-guards rule): default
-    // ON; -DFEATURE_CPP_MANGLE_OFF compiles the legacy bare-symbol path back in
-    // for bisecting. ONE predicate — every mode/guard test reads this.
-#ifndef FEATURE_CPP_MANGLE_OFF
-#define FEATURE_CPP_MANGLE 1
-#endif
-    bool cpp_symbol_mangling_enabled() const
-    {
-#ifdef FEATURE_CPP_MANGLE
-	return presents_as_cpp();
-#else
-	return false;
-#endif
-    }
+    // Phases 3-4: namespace functions, function-template and member-template
+    // products and the forest-restored (pack) lane carry the same rule. The
+    // bring-up guard (FEATURE_CPP_MANGLE, feature-guards rule) is retired:
+    // the rule IS the mode. ONE predicate — every mode test of it reads this.
+    bool cpp_symbol_mangling_enabled() const { return presents_as_cpp(); }
     // The name is already declared by a MACHINE registration (libc_signatures,
     // a host-embedded callback — every one a bare C symbol): a source prototype
     // of it is a redeclaration of the C library's function, not a C++ overload

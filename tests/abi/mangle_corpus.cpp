@@ -70,6 +70,9 @@ void f_va(const char *, ...) {}
 void f_fp(int (*)(int)) {}
 void f_fpv(void (*)()) {}
 void f_arr(int[10]) {}             // decays to int*
+void f_arr2(int[2][3]) {}          // decays to int (*)[3]      → PA3_i
+void f_arr3(int[2][3][4]) {}       // decays to int (*)[3][4]   → PA3_A4_i
+void f_arrp(int *[3]) {}           // array of pointers → int ** → PPi
 
 // ---- user class params (+ substitution back-refs) -----------------------
 struct Foo;

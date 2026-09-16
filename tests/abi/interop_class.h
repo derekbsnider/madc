@@ -20,7 +20,31 @@ struct Counter {
     Counter &operator+=(int d);
     bool operator==(const Counter &o) const;
     virtual int weight();
+    // Phase 5 sweep shapes. The UNARY form declared BEFORE its binary /
+    // postfix peer (the parser's peer-retag path): _ZN7CounterdeEv beside
+    // _ZNK7CountermlEi, _ZN7CounterppEv beside _ZN7CounterppEi. An ARRAY
+    // parameter decays to a pointer in the symbol: _ZN7Counter4add4EPi.
+    int &operator*();
+    int operator*(int k) const;
+    Counter &operator++();
+    int operator++(int);
+    int add4(int vals[4]);
 };
+
+// A class template with OUT-OF-CLASS member definitions (phase 5 sweep):
+// Cell<int>'s members are instantiation products — vague linkage, W in every
+// object that uses them (a strong _ZN4CellIiEC1Ev in two objects would
+// collide at link). Both definers instantiate it through cell_check.
+template <class T> struct Cell {
+    T v;
+    Cell();
+    void put(T x);
+    T get() const;
+};
+template <class T> Cell<T>::Cell() : v() {}
+template <class T> void Cell<T>::put(T x) { v = x; }
+template <class T> T Cell<T>::get() const { return v; }
+int cell_check(int v);
 
 namespace tally {
     struct Ledger {

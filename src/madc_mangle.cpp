@@ -264,6 +264,11 @@ struct TypeNode {
 	std::vector<TypeNode> fp_ret;      // [0] = return type (if is_funcptr)
 	std::vector<TypeNode> fp_params;   // parameter types (if is_funcptr)
 	std::vector<NameComponent> name;   // qualified name chain (if !is_builtin)
+	bool invalid = false;              // a name component is not an identifier:
+	                                   // a spelling the parser handed over in a
+	                                   // form this grammar does not read — the
+	                                   // symbol is REFUSED (empty), never a
+	                                   // length-prefixed copy of the raw text
 };
 
 // ---- parsing ---------------------------------------------------------------
@@ -378,6 +383,34 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
+	// Array type "<elem>[N]..." and pointer-to-array "<elem> (*)[N]..." — the
+	// decayed type of a multi-dimensional array parameter (`int a[2][3]` is
+	// `int (*)[3]`, g++: PA3_i; `int a[2][3][4]` → PA3_A4_i) or a template
+	// argument (Box<int[2][3]> → A2_A3_i). Dims read left to right, outer
+	// to inner; each is an A<dim>_ decoration on the element type, the `(*)`
+	// a P outside them. Every decorated layer is a substitution candidate
+	// (the deco loop in encode_type registers A3_i like any other).
+	if (!s.empty() && s.back() == ']') {
+		std::vector<std::string> dims;
+		std::string rest = s;
+		size_t ob;
+		while (!rest.empty() && rest.back() == ']'
+		       && (ob = rest.rfind('[')) != std::string::npos) {
+			dims.insert(dims.begin(),
+				    mstrip(rest.substr(ob + 1, rest.size() - ob - 2)));
+			rest = mstrip(rest.substr(0, ob));
+		}
+		if (rest.size() >= 3 && rest.compare(rest.size() - 3, 3, "(*)") == 0) {
+			t.decos.push_back("P");
+			rest = mstrip(rest.substr(0, rest.size() - 3));
+		}
+		for (const auto &d : dims)
+			t.decos.push_back("A" + d + "_");
+		TypeNode inner = parse_type(rest);
+		inner.decos.insert(inner.decos.begin(), t.decos.begin(), t.decos.end());
+		return inner;
+	}
+
 	// A non-type argument rides the builtin channel: encode_core emits
 	// `builtin` verbatim and, unlike a class type, registers NO substitution
 	// candidate — which is exactly right, since an expression literal is not
@@ -396,8 +429,18 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
-	for (const auto &comp : split_scope(s))
+	for (const auto &comp : split_scope(s)) {
 		t.name.push_back(parse_component(comp));
+		// A source-name is an identifier. Anything else here ("int (*)[3]"
+		// before the array production existed, a closure type's display
+		// name) is a spelling this grammar does not read: refuse the whole
+		// symbol rather than encode `14int (*)[3]` into an object.
+		for (char c : t.name.back().ident)
+			if (!isalnum((unsigned char)c) && c != '_')
+				t.invalid = true;
+		if (t.name.back().ident.empty())
+			t.invalid = true;
+	}
 	return t;
 }
 
@@ -452,6 +495,8 @@ public:
 	// Encode a <type>, registering substitution candidates as it goes.
 	std::string encode_type(const TypeNode &t)
 	{
+		if (t.invalid)
+			refused_ = true;
 		// Build innermost core first, then wrap decorations outward. Each
 		// decorated layer is itself a substitution candidate (checked first).
 		std::string canon = canon_type_core(t);
@@ -493,7 +538,12 @@ public:
 	}
 
 	// Reset candidate table (each top-level symbol starts fresh).
-	void reset() { keys_.clear(); }
+	void reset() { keys_.clear(); refused_ = false; }
+	// The ONE exit of every entry point: a symbol that encoded a type this
+	// grammar refused is no symbol (empty) — the callers' bail path, the same
+	// answer every other unencodable shape gets.
+	std::string settled(const std::string &sym) const
+	{ return refused_ ? std::string() : sym; }
 
 	// "_ZN[K]<class-prefix>" — the opening of every member symbol. Starts a
 	// fresh candidate table and encodes the class as the enclosing prefix of
@@ -723,7 +773,8 @@ public:
 	}
 
 private:
-	std::vector<std::string> keys_;   // canonical keys, in candidate order
+	std::vector<std::string> keys_;
+	bool refused_ = false;	// a TypeNode::invalid reached encode_type   // canonical keys, in candidate order
 
 	// ---- substitution table -------------------------------------------------
 
@@ -1046,7 +1097,7 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 		return hit->second;
 	ItaniumMangler m;
 	m.reset();
-	std::string encoded = m.encode_type(parse_type(cpp_type));
+	std::string encoded = m.settled(m.encode_type(parse_type(cpp_type)));
 	memo[cpp_type] = encoded;
 	return encoded;
 }
@@ -1057,8 +1108,8 @@ std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        bool const_method)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, member, "",
-	                       param_types, const_method);
+	return m.settled(m.mangle_member(qualified_class, member, "",
+	                       param_types, const_method));
 }
 
 std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
@@ -1069,9 +1120,9 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        bool const_method)
 {
 	ItaniumMangler m;
-	return m.mangle_member_template(qualified_class, member,
+	return m.settled(m.mangle_member_template(qualified_class, member,
 	                                template_arg_types, return_type,
-	                                param_types, const_method);
+	                                param_types, const_method));
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
@@ -1079,16 +1130,16 @@ std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
                                       const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", flavor,
-	                       param_types, false);
+	return m.settled(m.mangle_member(qualified_class, "", flavor,
+	                       param_types, false));
 }
 
 std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
                                     const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", flavor,
-	                       {}, false);
+	return m.settled(m.mangle_member(qualified_class, "", flavor,
+	                       {}, false));
 }
 
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
@@ -1100,8 +1151,8 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
 	std::string code = op_special(op, param_types.empty());
 	if (code.empty()) return "";
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", code,
-	                       param_types, const_method);
+	return m.settled(m.mangle_member(qualified_class, "", code,
+	                       param_types, const_method));
 }
 
 std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
@@ -1109,7 +1160,7 @@ std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
                                            bool const_method)
 {
 	ItaniumMangler m;
-	return m.mangle_conversion(qualified_class, target_type, const_method);
+	return m.settled(m.mangle_conversion(qualified_class, target_type, const_method));
 }
 
 std::string itanium_mangle_std_free_template(const std::string &name,
@@ -1120,7 +1171,7 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 	std::string code = op_special(name, params.size() == 1);
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
-	return m.mangle_std_free_template(opOrName, targs, ret, params);
+	return m.settled(m.mangle_std_free_template(opOrName, targs, ret, params));
 }
 
 std::string itanium_mangle_function_template_sub(
@@ -1137,7 +1188,7 @@ std::string itanium_mangle_function_template_sub(
 		opcode = op_special(name.substr(8), params.size() == 1);
 	std::string opOrName = opcode.empty() ? source_name(name) : opcode;
 	ItaniumMangler m;
-	return m.mangle_function_template(qualifiers, opOrName, targs, ret, params);
+	return m.settled(m.mangle_function_template(qualifiers, opOrName, targs, ret, params));
 }
 
 std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
@@ -1146,15 +1197,15 @@ std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers
                                       bool internal_linkage)
 {
 	ItaniumMangler m;
-	return m.mangle_nested_function(qualifiers, name, param_types,
-	                                internal_linkage);
+	return m.settled(m.mangle_nested_function(qualifiers, name, param_types,
+	                                internal_linkage));
 }
 
 std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
                                       const std::string &name)
 {
 	ItaniumMangler m;
-	return m.mangle_nested_variable(qualifiers, name);
+	return m.settled(m.mangle_nested_variable(qualifiers, name));
 }
 
 // ---- stdlib flavor / std ABI inline namespace --------------------------------
@@ -1237,7 +1288,7 @@ std::string itanium_mangle_std_var(const std::string &name)
 	// this used to build the prefix itself, which is how the FUNCTION
 	// manglers came to disagree with it.
 	ItaniumMangler m;
-	return m.mangle_std_var(name);
+	return m.settled(m.mangle_std_var(name));
 }
 
 // ---- canonical std:: type spellings -----------------------------------------

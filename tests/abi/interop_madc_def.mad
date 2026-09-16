@@ -43,3 +43,22 @@ int other_side_report(const Counter &c)
 {
     return report(c) + 1;
 }
+
+// Phase 5 sweep shapes (see interop_class.h): unary-before-binary operator
+// pairs, a decaying array parameter, a class template instantiated here.
+int &Counter::operator*() { return n; }
+int Counter::operator*(int k) const { return n * k; }
+Counter &Counter::operator++() { ++n; return *this; }
+int Counter::operator++(int) { return n++; }
+int Counter::add4(int vals[4])
+{
+    for ( int i = 0; i < 4; ++i )
+	n += vals[i];
+    return n;
+}
+int cell_check(int v)
+{
+    Cell<int> c;
+    c.put(v);
+    return c.get() * 2;
+}

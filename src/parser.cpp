@@ -28064,7 +28064,18 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     // lets dump_registered_names apply the identical rule after the parse, when
     // the depth counter is long back to zero.
     if ( _inst_depth > 0 )
+    {
 	var->flags |= vfINSTPRODUCT;
+	// A FUNCTION minted while instantiating is in the C++ vague-linkage
+	// set: any TU using the template mints an identical copy, so the CIR
+	// builder emits it linkonce (FuncDef::is_linkonce) — g++ binds every
+	// member of Box<int> W; a strong _ZN3BoxIiEC1Ev in two objects would
+	// collide at link. Stamped HERE, where every product registers: a
+	// class template's members are minted from the pattern without ever
+	// passing parseFunction (whose own grant covers bodies it parses).
+	if ( FuncDef *pfd = var->type ? var->type->as_funcdef_dd() : NULL )
+	    pfd->vague_linkage = true;
+    }
     if ( !current_namespace().empty() && parsing_extern_decl
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
@@ -49156,7 +49167,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			// skips this overload's parameter registration).
 			std::string peer_name = std::string(tag->spelling()) + "__" + mname + "_un";
 			std::string peer_old = std::string(tag->spelling()) + "__" + mname;
-			peer_fd->local_emit_name = peer_name;
+			// The peer's body symbol is already bound (its Itanium
+			// name — bind_declared_cpp_symbol's user arm): the `_un`
+			// spelling is only its registration KEY moving, so the
+			// symbol -> key translation record follows the move and
+			// the symbol stays (g++: `int &operator*()` declared
+			// before `Foo operator*(int)` is _ZN3FoodeEv either way).
+			// A peer with no bound symbol (a library class — the
+			// internal-name island) takes the `_un` name as before.
+			if ( peer_fd->local_emit_name.empty() )
+			    peer_fd->local_emit_name = peer_name;
+			else
+			    pgm.body_symbol_keys[peer_fd->local_emit_name] = peer_name;
 			peer->rename(peer_name);
 			pgm.funcdef_map[peer_name] = peer_fd;
 			pgm.funcdef_map.erase(peer_old);
@@ -65790,7 +65812,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // A function parsed inside a template instantiation is an instantiation
     // product (e.g. a namespace free-template instance) — the C++ vague-
     // linkage set: any TU using the template mints an identical copy. Record
-    // that so the CIR builder emits it linkonce [ELF-completion S4].
+    // that so the CIR builder emits it linkonce [ELF-completion S4]. (A
+    // product minted WITHOUT a parse — a class template's member, copied from
+    // the pattern — is stamped where it registers, addVariable's
+    // vfINSTPRODUCT arm.)
     if ( fn_template_instantiation_depth > 0 )
 	func->vague_linkage = true;
     // A bodied C++ free function DEFINED in a system header is inline-or-
@@ -66473,6 +66498,9 @@ finish_param_declarator:
 					       ? param_array_dim_exprs[i] : NULL);
 	    param_dd = getPointerType(array_elem);
 	    rtype = RefType::rtPointer;
+	    // The decayed pointer is one more `*` on the parameter's C++
+	    // spelling (`int a[10]` IS `int *a` — Itanium Pi, never i).
+	    ++param_ptr_depth;
 	}
 
 	// Default argument: `T name = expr`. Parse the default expression — it stops
@@ -66513,6 +66541,17 @@ paramdecl:
 		: pb->definition.canonical_cpp_spelling();
 	    for ( int sd = 0; sd < param_ptr_depth; ++sd )
 		param_spelling += "*";
+	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
+	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
+	    // declarator, so the encoder encodes it or refuses it — a bare
+	    // `int*` would mint the WRONG symbol (Pi) and misbind at link.
+	    if ( param_array_dims.size() > 1 )
+	    {
+		param_spelling.resize(param_spelling.size() - 1);	// the decay `*`
+		param_spelling += " (*)";
+		for ( size_t ad = 1; ad < param_array_dims.size(); ++ad )
+		    param_spelling += "[" + std::to_string(param_array_dims[ad]) + "]";
+	    }
 	    if ( rtype == RefType::rtReference )
 		param_spelling += param_rvalue_ref ? "&&" : "&";
 	    // If this is a definition following a forward declaration, the

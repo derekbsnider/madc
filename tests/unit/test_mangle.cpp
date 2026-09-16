@@ -853,6 +853,18 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(free_fn("f_fpv", {"void (*)()"}),         "_Z5f_fpvPFvvE");
 		// `int[10]` arrives decayed — the parser spells the parameter `int*`
 		ORACLE_CHECK(free_fn("f_arr", {"int*"}),               "_Z5f_arrPi");
+		// A multi-dimensional array parameter decays to a POINTER TO ARRAY:
+		// the parser spells `int (*)[3]`, the encoder's array production
+		// reads it (PA3_i); an array of pointers decays to `int**`.
+		ORACLE_CHECK(free_fn("f_arr2", {"int (*)[3]"}),        "_Z6f_arr2PA3_i");
+		ORACLE_CHECK(free_fn("f_arr3", {"int (*)[3][4]"}),     "_Z6f_arr3PA3_A4_i");
+		ORACLE_CHECK(free_fn("f_arrp", {"int**"}),             "_Z6f_arrpPPi");
+		// A spelling this grammar does not read is REFUSED — the empty
+		// symbol every caller treats as "no symbol" — never encoded as a
+		// length-prefixed copy of the raw text (`14int (*)[3` reached an
+		// object once).
+		CHECK(free_fn("f_bad", {"int (*"}) == "");
+		CHECK(free_fn("f_bad", {"{lambda(int)#1}"}) == "");
 	}
 
 	TEST_CASE("free functions: user class parameters and substitution back-refs") {

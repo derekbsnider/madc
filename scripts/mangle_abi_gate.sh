@@ -21,13 +21,20 @@
 #              class members, g++ compiles a TU that constructs / calls /
 #              overrides / deletes them, g++ links the two, the program's
 #              output must equal the all-g++ build's. Lane B: the reverse
-#              (g++ defines, madc uses). Plus the ALIEN-SYMBOL check: every
-#              function madc's object defines must be one g++'s object of
-#              the same definitions defines too — the gate that keeps the
-#              internal Class__method / __oN spellings out of a C++ object
-#              for good. Carries its own negative control.
-#   (phase 5 adds the end-to-end lane: madc --std=c++20 -c corpus → nm, set-equal
-#    to the oracle — the madc↔g++ ABI parity acceptance of the design's §8.)
+#              (g++ defines, madc uses). Plus the SYMBOL-SET checks over the
+#              two definer objects of ONE program (phase 5, the design's §8
+#              acceptance): ALIEN — every function madc defines, g++ defines
+#              too (the gate that keeps the internal Class__method / __oN
+#              spellings out of a C++ object for good); MISSING — every
+#              function g++ defines, madc defines too (set equality);
+#              STRONG — nothing madc binds T that g++ binds W (vague linkage:
+#              a template / inline member two madc objects both instantiate
+#              would otherwise collide at link). Each check carries its own
+#              negative control.
+#   (The full mangle_corpus.cpp as an end-to-end `madc -c` lane waits on four
+#    parser shapes madc does not yet accept — explicit instantiation
+#    directives, out-of-class conversion-operator definitions, `ns::Cls::Cls`
+#    definitions, `::operator new` — KG Gap corpus_end_to_end_lane.)
 #
 # Host requirements: both canon compilers (the container and the Mac runner
 # have them); LP64 (the corpus's std::size_t row is `m` — the wine lane runs
@@ -76,6 +83,23 @@ if [ "$interop" = 1 ]; then
 		[ -z "$alien" ] || { echo "$alien"; return 1; }
 		return 0
 	}
+	# Set EQUALITY is the acceptance: every symbol g++ defines for these
+	# definitions, madc's object defines too — a member madc dropped or
+	# left declaration-only shows here.
+	missing_check() {  # $1 = madc symbol list, $2 = g++ symbol list
+		local missing
+		missing=$(comm -13 "$1" "$2")
+		[ -z "$missing" ] || { echo "$missing"; return 1; }
+		return 0
+	}
+	# nm's STRONG (T) function symbols, same filter. madc may bind weaker
+	# than g++ (a C2 forwarder), never stronger: a member g++ binds W (a
+	# template instantiation, an inline body) that madc binds T is one
+	# definition per object — two madc objects collide at link.
+	strong_funcs() {
+		nm --defined-only "$1" | awk '$2 == "T" {print $3}' \
+			| grep -v '^_*__madc\|^_*main$\|^_*_Z[0-9]*__madc' | sort -u
+	}
 
 	# Lane A oracle + lane B oracle: the same definer, both users, all g++.
 	g++ -std=c++20 -c -o "$out/gxx_def.o" $abi/interop_gxx_def.cpp \
@@ -101,12 +125,24 @@ if [ "$interop" = 1 ]; then
 		sed 's/^/    /' "$out/alien.txt"
 		fail "[interop] ALIEN SYMBOLS — every member of a user class must emit its Itanium name"
 	fi
+	if ! missing_check "$out/madc_def.syms" "$out/gxx_def.syms" > "$out/missing.txt"; then
+		echo "mangle_abi_gate: [interop] g++ defines function symbols madc's object of the same definitions does not:"
+		sed 's/^/    /' "$out/missing.txt"
+		fail "[interop] MISSING SYMBOLS — the two definer objects must define the same set"
+	fi
+	strong_funcs "$out/madc_def.o" > "$out/madc_def.strong"
+	strong_funcs "$out/gxx_def.o"  > "$out/gxx_def.strong"
+	if ! alien_check "$out/madc_def.strong" "$out/gxx_def.strong" > "$out/strong.txt"; then
+		echo "mangle_abi_gate: [interop] madc binds STRONG what g++ binds weak (vague linkage lost — two madc objects would collide):"
+		sed 's/^/    /' "$out/strong.txt"
+		fail "[interop] STRONG BINDING — every instantiation / inline member must be linkonce"
+	fi
 	g++ -o "$out/lane_a" "$out/madc_def.o" "$out/gxx_use.o" \
 		|| fail "[interop] lane A did not LINK — g++'s user TU references symbols madc's definer object does not define (see the undefined references above)"
 	"$out/lane_a" > "$out/lane_a.out" || fail "[interop] lane A ran but failed (rc=$?)"
 	cmp -s "$out/lane_a.out" "$out/oracle_a.out" \
 		|| { diff "$out/oracle_a.out" "$out/lane_a.out" | head -20; fail "[interop] lane A output differs from the all-g++ build (< oracle, > madc-defined)"; }
-	echo "mangle_abi_gate: [interop] lane A OK — madc-defined class linked into a g++ program, output identical ($(grep -c . "$out/madc_def.syms") madc symbols, none alien)"
+	echo "mangle_abi_gate: [interop] lane A OK — madc-defined class linked into a g++ program, output identical ($(grep -c . "$out/madc_def.syms") symbols, set-equal with g++, none bound stronger)"
 
 	# Lane B: g++ defines, madc (--std=c++20 this time) uses.
 	"$MADC_BIN" --std=c++20 -fno-eval-shims -c -o "$out/madc_use.o" $abi/interop_madc_use.mad \
@@ -123,7 +159,15 @@ if [ "$interop" = 1 ]; then
 	if alien_check "$out/doctored.syms" "$out/gxx_def.syms" > /dev/null; then
 		fail "[interop] NEGATIVE CONTROL FAILED — an injected Counter__add passed the alien-symbol check"
 	fi
-	echo "mangle_abi_gate: [interop] negative control OK — an internal spelling is caught"
+	grep -v '^_ZN7Counter3addEi$' "$out/madc_def.syms" > "$out/doctored_missing.syms"
+	if missing_check "$out/doctored_missing.syms" "$out/gxx_def.syms" > /dev/null; then
+		fail "[interop] NEGATIVE CONTROL FAILED — a dropped _ZN7Counter3addEi passed the missing-symbol check"
+	fi
+	{ cat "$out/madc_def.strong"; echo "_ZN5tally5scaleIiEET_S1_i"; } | sort -u > "$out/doctored.strong"
+	if alien_check "$out/doctored.strong" "$out/gxx_def.strong" > /dev/null; then
+		fail "[interop] NEGATIVE CONTROL FAILED — an injected strong template product passed the strong-binding check"
+	fi
+	echo "mangle_abi_gate: [interop] negative controls OK — an internal spelling, a dropped member and a strong template product are each caught"
 	echo "mangle_abi_gate: [interop] OK"
 	[ "$selftest" = 1 ] || exit 0
 fi
