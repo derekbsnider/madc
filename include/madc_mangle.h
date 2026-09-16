@@ -144,6 +144,23 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params);
 
+// Mangle a function template specialization at a PARSE-FAITHFUL scope — the
+// minter for USER function templates (the std:: one above is the flavor-
+// agnostic spelling). `qualifiers` as itanium_mangle_nested_sub: none = global,
+// {"std"} = the unversioned St, else a nested-name chain. `name` is the
+// parse-faithful function name ("ident", or "operator<<"); `targs` the deduced
+// concrete template arguments; `ret` / `params` written in the template's own
+// parameters as "$T0","$T1",… (=> T_,T0_,…). Function templates encode the
+// return type; no parameters is `v`.
+//   ({}, "ident", {"int"}, "$T0", {"$T0"})   → "_Z5identIiET_S0_"
+//   ({"ns"}, "nident", {"int"}, "$T0", {"$T0"}) → "_ZN2ns6nidentIiEET_S1_"
+std::string itanium_mangle_function_template_sub(
+        const std::vector<std::string> &qualifiers,
+        const std::string &name,
+        const std::vector<std::string> &targs,
+        const std::string &ret,
+        const std::vector<std::string> &params);
+
 // Mangle a non-template function at any scope — global (no qualifiers:
 // _Z<name><params>), std (the St abbreviation), or a qualifier chain (N..E) —
 // using the substitution-aware type encoder for parameter spellings. `name` may

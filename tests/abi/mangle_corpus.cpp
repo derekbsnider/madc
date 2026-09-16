@@ -242,12 +242,15 @@ template <class T> struct Box {
 	Box();
 	void put(T);
 	T get() const;
+	template <class U> U conv() const;   // member template, NO parameters → v
 };
 template <class T> Box<T>::Box() : v() {}
 template <class T> void Box<T>::put(T t) { v = t; }
 template <class T> T Box<T>::get() const { return v; }
+template <class T> template <class U> U Box<T>::conv() const { return U(); }
 template struct Box<int>;
 template struct Box<Foo>;
+template long Box<int>::conv<long>() const;
 void t_box(Box<int> &) {}
 void t_boxfoo(Box<Foo> &) {}
 void t_nsbox(Box<ns::Bar> &) {}
@@ -256,6 +259,12 @@ void t_nsbox(Box<ns::Bar> &) {}
 template <class T> T ident(T v) { return v; }
 template int ident<int>(int);
 template Foo ident<Foo>(Foo);
+template <class T> T make() { return T(); }   // NO parameters → v
+template int make<int>();
+namespace ns {
+	template <class T> T nident(T v) { return v; }   // namespaced
+	template int nident<int>(int);
+}
 
 // ---- virtual class → vtable / typeinfo / D0-D1-D2 ------------------------
 struct V {

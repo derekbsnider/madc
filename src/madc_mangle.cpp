@@ -655,39 +655,73 @@ public:
 		out += "E";
 		out += "E";
 		out += encode_type(parse_type(ret));
-		for (const auto &p : params)
-			out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
 	}
 
-	// Mangle a non-member std:: function template:
-	//   _ZSt <opOrName> I<targs>E <ret> <params...>   (one substitution table)
-	// Function templates encode the return type. opOrName is already the
-	// operator code (e.g. "ls") or a length-prefixed source name (e.g. "7getline").
-	std::string mangle_std_free_template(const std::string &opOrName,
-	        const std::vector<std::string> &targs,
-	        const std::string &ret,
-	        const std::vector<std::string> &params)
+	// A function-template symbol on a scope the caller has ALREADY encoded —
+	// its candidates registered first, because under libc++ the std::__1
+	// prefix is candidate #0, which is what shifts every later slot by one
+	// (the same operator+ reads S6_/S9_ under libc++, S5_/S8_ under libstdc++):
+	//   [_Z|_ZN] <scope> <opOrName> I<targs>E [E] <ret> <params>
+	// The function-template NAME is the next substitution candidate (Itanium:
+	// a function template's <template-prefix> is substitutable — the spec's
+	// `first<Duo>` registers `first` as S_); rarely back-referenced, but it
+	// shifts every later slot by one. Function templates encode the RETURN
+	// type, in terms of the template parameters ($T0 → T_), and an empty
+	// parameter list is `v` like any function's (_Z4makeIiET_v).
+	std::string function_template_tail(const std::string &scope, bool nested,
+	                                    const std::string &opOrName,
+	                                    const std::vector<std::string> &targs,
+	                                    const std::string &ret,
+	                                    const std::vector<std::string> &params)
 	{
-		reset();
-		// The SCOPE is encoded FIRST because under libc++ it is a nested-name
-		// whose std::__1 prefix is substitution candidate #0 — which is what
-		// shifts every later slot by one (the same operator+ reads S6_/S9_
-		// under libc++ and S5_/S8_ under libstdc++).
-		bool nested = false;
-		std::string scope = std_entity_scope(nested);
-		// The function-template NAME is the next substitution candidate (per the
-		// Itanium ABI: "<template-prefix>" of a function template is substitutable;
-		// e.g. the spec's `first<Duo>` example registers `first` as S_). It is
-		// rarely back-referenced but it shifts every later slot by one.
 		add_sub("@fn:" + opOrName);
 		std::string out = (nested ? "_ZN" : "_Z") + scope + opOrName + "I";
 		for (const auto &a : targs) out += encode_type(parse_type(a));
 		out += "E";			// close the template-args
 		if (nested) out += "E";		// close the <nested-name>
 		out += encode_type(parse_type(ret));
-		for (const auto &p : params) out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
+	}
+
+	// A non-member std:: function template in the FLAVOR-AGNOSTIC spelling
+	// (its callers never tracked the inline namespace): the scope is wherever
+	// std_entity_scope says the active stdlib puts std entities. opOrName is
+	// already the operator code ("ls") or a length-prefixed source name
+	// ("7getline").
+	std::string mangle_std_free_template(const std::string &opOrName,
+	        const std::vector<std::string> &targs,
+	        const std::string &ret,
+	        const std::vector<std::string> &params)
+	{
+		reset();
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		return function_template_tail(scope, nested, opOrName, targs, ret, params);
+	}
+
+	// A function template at a PARSE-FAITHFUL scope — the scope rule of
+	// mangle_nested_function: no qualifiers is global (_Z5identIiET_S0_), a
+	// plain {"std"} the unversioned St, anything else a nested-name chain
+	// (_ZN2ns6nidentIiEET_S1_). The minter for USER function templates.
+	std::string mangle_function_template(const std::vector<std::string> &qualifiers,
+	        const std::string &opOrName,
+	        const std::vector<std::string> &targs,
+	        const std::string &ret,
+	        const std::vector<std::string> &params)
+	{
+		reset();
+		if (qualifiers.empty())
+			return function_template_tail("", false, opOrName, targs, ret, params);
+		if (qualifiers.size() == 1 && qualifiers[0] == "std")
+			return function_template_tail("St", false, opOrName, targs, ret, params);
+		std::vector<NameComponent> chain;
+		for (const auto &q : qualifiers)
+			chain.push_back(parse_component(q));
+		std::string scope = encode_name(chain, /*standalone=*/false);
+		return function_template_tail(scope, true, opOrName, targs, ret, params);
 	}
 
 	// A namespace-scope std:: VARIABLE (cout, cin, …). Same scope rule as the
@@ -1167,6 +1201,23 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
 	return m.mangle_std_free_template(opOrName, targs, ret, params);
+}
+
+std::string itanium_mangle_function_template_sub(
+        const std::vector<std::string> &qualifiers,
+        const std::string &name,
+        const std::vector<std::string> &targs,
+        const std::string &ret,
+        const std::vector<std::string> &params)
+{
+	// The parse-faithful NAME — "ident", or an operator-function-id
+	// ("operator<<", unary iff one parameter) — as itanium_mangle_nested_sub.
+	std::string opcode;
+	if (name.compare(0, 8, "operator") == 0)
+		opcode = op_special(name.substr(8), params.size() == 1);
+	std::string opOrName = opcode.empty() ? source_name(name) : opcode;
+	ItaniumMangler m;
+	return m.mangle_function_template(qualifiers, opOrName, targs, ret, params);
 }
 
 std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,

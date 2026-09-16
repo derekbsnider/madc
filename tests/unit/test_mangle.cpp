@@ -1024,6 +1024,24 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(member("Box<Foo>", "get", {}, true),      "_ZNK3BoxI3FooE3getEv");
 	}
 
+	TEST_CASE("function templates: I<targs>E, the return type, $T params, v for none") {
+		// The template NAME is substitution candidate S_ and the return T_ the
+		// next, so the T parameter back-refs it (S0_; S1_ once Foo took a slot).
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "ident", {"int"}, "$T0", {"$T0"}),
+		             "_Z5identIiET_S0_");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "ident", {"Foo"}, "$T0", {"$T0"}),
+		             "_Z5identI3FooET_S1_");
+		// no parameters → v, like any function
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "make", {"int"}, "$T0", {}),
+		             "_Z4makeIiET_v");
+		// namespaced: the ns prefix is S_, the template name S0_, T_ S1_
+		ORACLE_CHECK(itanium_mangle_function_template_sub({"ns"}, "nident", {"int"}, "$T0", {"$T0"}),
+		             "_ZN2ns6nidentIiEET_S1_");
+		// a member template with no parameters ends in v too
+		ORACLE_CHECK(itanium_mangle_member_template_sub("Box<int>", "conv", {"long"}, "$T0", {}, true),
+		             "_ZNK3BoxIiE4convIlEET_v");
+	}
+
 	TEST_CASE("RTTI: typeinfo, typeinfo-name, vtable — plain and namespaced") {
 		ORACLE_CHECK(itanium_typeinfo_sym("V"),           "_ZTI1V");
 		ORACLE_CHECK(itanium_typeinfo_name_sym("V"),      "_ZTS1V");
