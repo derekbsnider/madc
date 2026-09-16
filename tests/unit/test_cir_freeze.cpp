@@ -529,8 +529,11 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 		REQUIRE(thawed->typedef_name() != nullptr);
 		CHECK(std::string(thawed->typedef_name()) == "FROZEN_ALIAS_T");
 
-		// An identifier payload somewhere in the tree reads "helper"
-		// (bytes came from the CONTAINER's pool, via c2mir_uniq_str).
+		// An identifier payload somewhere in the tree reads the helper
+		// function's symbol (bytes came from the CONTAINER's pool, via
+		// c2mir_uniq_str). In a C++-presenting program `int helper(int)`
+		// carries its Itanium name, _Z6helperi — the identifier the
+		// definition and the call both spell (C++ symbol mangling, scope (c)).
 		bool saw_helper = false;
 		std::vector<node_t> work;
 		std::set<node_t> seen;
@@ -541,8 +544,8 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 			if (!seen.insert(n).second)
 				continue;
 			if (n->code == N_ID && n->u.s.s
-			    && strncmp(n->u.s.s, "helper", 6) == 0
-			    && n->u.s.len == 7)	// "helper" + NUL, as stored
+			    && strncmp(n->u.s.s, "_Z6helperi", 10) == 0
+			    && n->u.s.len == 11)	// "_Z6helperi" + NUL, as stored
 				saw_helper = true;
 			for (node_t op = c2mir_node_first_op(n); op;
 			     op = c2mir_node_next_op(op))

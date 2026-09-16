@@ -141,9 +141,11 @@ TEST_SUITE("madc_cir_run_object") {
 
     TEST_CASE(".o loads in-process and its functions execute") {
 	std::string obj_path = emit_object(
+	    // Fetched by bare name (MIR_object_loaded_sym): the C-export
+	    // contract, extern "C" in a C++-presenting program (else _Z4maddii).
 	    "int mul_base = 6;\n"
-	    "int madd(int a, int b) { return a + b; }\n"
-	    "int mmul(int a) { return a * mul_base; }\n"
+	    "extern \"C\" int madd(int a, int b) { return a + b; }\n"
+	    "extern \"C\" int mmul(int a) { return a * mul_base; }\n"
 	    "int main() { return 0; }\n");
 
 	std::ifstream f(obj_path.c_str(), std::ios::binary);
@@ -376,8 +378,8 @@ TEST_SUITE("madc_cir_run_object") {
 	       "int main(int argc, char **argv)\n"
 	       "{ return sumv(4, 3) + use_a() + once + (counter - 1) * 100; }\n").c_str());
 
-	CHECK(sym_bind(a_path, "sumv") == STB_WEAK);
-	CHECK(sym_bind(b_path, "sumv") == STB_WEAK);
+	CHECK(sym_bind(a_path, "_Z4sumvii") == STB_WEAK);
+	CHECK(sym_bind(b_path, "_Z4sumvii") == STB_WEAK);
 	CHECK(sym_bind(a_path, "tunable") == STB_WEAK);
 	CHECK(sym_bind(b_path, "tunable") == STB_WEAK);
 	CHECK(sym_bind(a_path, "once") == STB_WEAK);
@@ -397,7 +399,7 @@ TEST_SUITE("madc_cir_run_object") {
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
 				      user_libs, NULL) == 0);
-	CHECK(sym_bind(r_path, "sumv") == STB_WEAK);
+	CHECK(sym_bind(r_path, "_Z4sumvii") == STB_WEAK);
 	CHECK(sym_bind(r_path, "tunable") == STB_WEAK);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
@@ -522,10 +524,13 @@ TEST_SUITE("madc_cir_run_object") {
 	// Both prototypes are unresolvable at emit (static impls above are
 	// not dlsym-visible), so the sentinel resolver hands them one shared
 	// VALUE; the object must still carry one relocated slot per import.
+	// The two externals are C symbols the resolver matches by NAME, and
+	// combine is fetched by name: extern "C" keeps the imports and the
+	// export bare in a C++-presenting program (else _Z13r6_test_ext_av …).
 	std::string obj_path = emit_object(
-	    "int r6_test_ext_a();\n"
-	    "int r6_test_ext_b();\n"
-	    "int combine() { return r6_test_ext_a() * 1000 + r6_test_ext_b(); }\n"
+	    "extern \"C\" int r6_test_ext_a();\n"
+	    "extern \"C\" int r6_test_ext_b();\n"
+	    "extern \"C\" int combine() { return r6_test_ext_a() * 1000 + r6_test_ext_b(); }\n"
 	    "int main() { return 0; }\n");
 
 	std::ifstream f(obj_path.c_str(), std::ios::binary);
