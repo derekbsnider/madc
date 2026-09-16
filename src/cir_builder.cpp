@@ -13706,13 +13706,11 @@ std::string CirBuilder::class_synth_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
 	if (itanium_class_symbols(cdd)) {
-		// The plain synthesized dtor is the base-subobject (D2) body of a
-		// class with virtual bases — class_synth_complete_dtor_symbol
-		// wraps it into the D1 — and the one D1 body of a vbase-less class.
-		std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
-		cdd->collect_vbases(vbs, seen);
+		// The plain synthesized dtor is madc's own dtor body of the
+		// class; its flavor (D2 with virtual bases, else the one D1)
+		// has one owner — the same one the user-written dtor binds by.
 		return itanium_mangle_dtor_sub(cdd->cpp_linkage_spelling(),
-					       vbs.empty() ? "D1" : "D2");
+					       m_prog->madc_dtor_body_flavor(cdd));
 	}
 	return cdd->name + "___dtor";
 }

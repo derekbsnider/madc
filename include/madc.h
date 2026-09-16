@@ -6750,6 +6750,13 @@ public:
     // misaligned with the parameters). `flavor` picks a ctor/dtor variant
     // ("C2" / "D2" for the base-object aliases the lowering emits); NULL =
     // the complete-object default.
+    // The Itanium flavor of the destructor body madc ITSELF emits for a class
+    // it defines: the base-object D2 when the class has virtual bases (the
+    // synthesized complete D1 wraps it with the vbase destruction), else the
+    // one D1 body (D1 == D2 without vbases). The one owner of that rule: the
+    // user-written dtor's binding (bind_declared_cpp_symbol's user arm) and
+    // the synthesized dtor (CirBuilder::class_synth_dtor_symbol) both read it.
+    const char *madc_dtor_body_flavor(DataDefCLASS *ddc) const;
     std::string member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
 				      CppSymKind kind, const std::string &mname,
 				      bool is_operator,

@@ -45396,6 +45396,14 @@ bool Program::class_body_enum_definition_follows()
     return false;
 }
 
+const char *Program::madc_dtor_body_flavor(DataDefCLASS *ddc) const
+{
+    std::vector<DataDefCLASS *> vbs;
+    std::set<DataDefCLASS *> seen;
+    ddc->collect_vbases(vbs, seen);
+    return vbs.empty() ? "D1" : "D2";
+}
+
 std::string Program::member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
 					   CppSymKind kind, const std::string &mname,
 					   bool is_operator,
@@ -45463,7 +45471,10 @@ static void bind_user_member_symbol(Program &pgm, DataDefCLASS *ddc,
 	return;
     }
     std::string sym = pgm.member_itanium_symbol(ddc, mvar, kind, mname,
-						is_operator, conversion_type);
+						is_operator, conversion_type,
+						kind == CppSymKind::Dtor
+						    ? pgm.madc_dtor_body_flavor(ddc)
+						    : NULL);
     if ( sym.empty() )
     {
 	if ( probe_this )
@@ -45471,19 +45482,6 @@ static void bind_user_member_symbol(Program &pgm, DataDefCLASS *ddc,
 		    ddc->name.c_str(), mname.c_str(),
 		    fd->param_cpp_spellings.size(), fd->parameters.size());
 	return;
-    }
-    // Itanium's D1 is the complete-object destructor. madc's user-written dtor
-    // body of a class WITH virtual bases plays the base-subobject role — the
-    // synthesized complete dtor (class_synth_complete_dtor_symbol) wraps it
-    // with the vbase destruction — so that body is the D2. A vbase-less
-    // class's D1 and D2 are one body.
-    if ( kind == CppSymKind::Dtor )
-    {
-	std::vector<DataDefCLASS *> vbs;
-	std::set<DataDefCLASS *> seen;
-	ddc->collect_vbases(vbs, seen);
-	if ( !vbs.empty() )
-	    sym = itanium_mangle_dtor_sub(ddc->cpp_linkage_spelling(), "D2");
     }
     // TWINS: two members whose Itanium signatures coincide because madc models
     // their parameter types as one DataDef (`long` / `long long` on an LP64
