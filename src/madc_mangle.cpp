@@ -1115,11 +1115,19 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 	// generation stamp is therefore part of the key, the convention g_std_abi_gen
 	// is declared for ("bumped on change; caches key on it") and the one
 	// marshals_value_text's carrier cache already follows.
+	//
+	// Nor of the std ABI alone: builtin_code spells size_t / int64_t / ptrdiff_t
+	// through `long` on LP64 and `long long` on LLP64, so the same spelling
+	// encodes differently once madc_target_data_model flips (the cross builds
+	// set it at startup; the unit tests flip it mid-run). Both inputs the
+	// encoding reads key the memo.
 	static unsigned memo_gen = ~0u;
+	static TargetDataModel memo_model = madc_target_data_model;
 	static std::map<std::string, std::string> memo;
-	if (memo_gen != g_std_abi_gen) {
+	if (memo_gen != g_std_abi_gen || memo_model != madc_target_data_model) {
 		memo.clear();
 		memo_gen = g_std_abi_gen;
+		memo_model = madc_target_data_model;
 	}
 	std::map<std::string, std::string>::const_iterator hit = memo.find(cpp_type);
 	if (hit != memo.end())

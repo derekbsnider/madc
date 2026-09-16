@@ -9,34 +9,34 @@
 TEST_SUITE("Itanium type encoding") {
 
 	TEST_CASE("Builtin types") {
-		CHECK(itanium_encode_type("void") == "v");
-		CHECK(itanium_encode_type("bool") == "b");
-		CHECK(itanium_encode_type("char") == "c");
-		CHECK(itanium_encode_type("short") == "s");
-		CHECK(itanium_encode_type("int") == "i");
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("long long") == "x");
-		CHECK(itanium_encode_type("float") == "f");
-		CHECK(itanium_encode_type("double") == "d");
-		CHECK(itanium_encode_type("long double") == "e");
-		CHECK(itanium_encode_type("unsigned int") == "j");
-		CHECK(itanium_encode_type("unsigned long") == "m");
-		CHECK(itanium_encode_type("unsigned long long") == "y");
-		CHECK(itanium_encode_type("signed char") == "a");
-		CHECK(itanium_encode_type("unsigned char") == "h");
-		CHECK(itanium_encode_type("wchar_t") == "w");
+		CHECK(itanium_encode_type_sub("void") == "v");
+		CHECK(itanium_encode_type_sub("bool") == "b");
+		CHECK(itanium_encode_type_sub("char") == "c");
+		CHECK(itanium_encode_type_sub("short") == "s");
+		CHECK(itanium_encode_type_sub("int") == "i");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("long long") == "x");
+		CHECK(itanium_encode_type_sub("float") == "f");
+		CHECK(itanium_encode_type_sub("double") == "d");
+		CHECK(itanium_encode_type_sub("long double") == "e");
+		CHECK(itanium_encode_type_sub("unsigned int") == "j");
+		CHECK(itanium_encode_type_sub("unsigned long") == "m");
+		CHECK(itanium_encode_type_sub("unsigned long long") == "y");
+		CHECK(itanium_encode_type_sub("signed char") == "a");
+		CHECK(itanium_encode_type_sub("unsigned char") == "h");
+		CHECK(itanium_encode_type_sub("wchar_t") == "w");
 	}
 
 	TEST_CASE("Fixed-width type aliases") {
-		CHECK(itanium_encode_type("int8_t") == "a");
-		CHECK(itanium_encode_type("uint8_t") == "h");
-		CHECK(itanium_encode_type("int16_t") == "s");
-		CHECK(itanium_encode_type("uint16_t") == "t");
-		CHECK(itanium_encode_type("int32_t") == "i");
-		CHECK(itanium_encode_type("uint32_t") == "j");
-		CHECK(itanium_encode_type("int64_t") == "l");
-		CHECK(itanium_encode_type("uint64_t") == "m");
-		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(itanium_encode_type_sub("int8_t") == "a");
+		CHECK(itanium_encode_type_sub("uint8_t") == "h");
+		CHECK(itanium_encode_type_sub("int16_t") == "s");
+		CHECK(itanium_encode_type_sub("uint16_t") == "t");
+		CHECK(itanium_encode_type_sub("int32_t") == "i");
+		CHECK(itanium_encode_type_sub("uint32_t") == "j");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("uint64_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
 	}
 
 	// Task #46: the width-carrying rows follow the target data model.
@@ -50,18 +50,18 @@ TEST_SUITE("Itanium type encoding") {
 			~ModelGuard() { madc_target_data_model = saved; }
 		} guard;
 		madc_target_data_model = TargetDataModel::LLP64;
-		CHECK(itanium_encode_type("size_t") == "y");
-		CHECK(itanium_encode_type("std::size_t") == "y");
-		CHECK(itanium_encode_type("int64_t") == "x");
-		CHECK(itanium_encode_type("uint64_t") == "y");
-		CHECK(itanium_encode_type("ssize_t") == "x");
-		CHECK(itanium_encode_type("ptrdiff_t") == "x");
+		CHECK(itanium_encode_type_sub("size_t") == "y");
+		CHECK(itanium_encode_type_sub("std::size_t") == "y");
+		CHECK(itanium_encode_type_sub("int64_t") == "x");
+		CHECK(itanium_encode_type_sub("uint64_t") == "y");
+		CHECK(itanium_encode_type_sub("ssize_t") == "x");
+		CHECK(itanium_encode_type_sub("ptrdiff_t") == "x");
 		// Plain long/long long letters are TYPE identity, not width —
 		// they never move with the model.
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("unsigned long") == "m");
-		CHECK(itanium_encode_type("long long") == "x");
-		CHECK(itanium_encode_type("unsigned long long") == "y");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("unsigned long") == "m");
+		CHECK(itanium_encode_type_sub("long long") == "x");
+		CHECK(itanium_encode_type_sub("unsigned long long") == "y");
 		// The 64-bit desugar follows the model too. The desugar fires
 		// only for PLAIN DataDef instances (the typeid guard) — the
 		// parser-minted scalar-typedef alias shape — never for the
@@ -72,7 +72,7 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(sz_alias.mangle_scalar_spelling() == "unsigned long long");
 		// Negative control: LP64 restores the Linux letters.
 		madc_target_data_model = TargetDataModel::LP64;
-		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
 		CHECK(off_alias.mangle_scalar_spelling() == "long");
 	}
 
@@ -92,12 +92,12 @@ TEST_SUITE("Itanium type encoding") {
 		// pinned dds by name, and on darwin ddUINT64 carries size_t
 		// (_Znwm — flipping these produced the _Znwy battery
 		// regression). The x/y identity rides the distinct dds below.
-		CHECK(itanium_encode_type("int64_t") == "l");
-		CHECK(itanium_encode_type("uint64_t") == "m");
-		CHECK(itanium_encode_type("size_t") == "m");
-		CHECK(itanium_encode_type("ptrdiff_t") == "l");
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("long long") == "x");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("uint64_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
+		CHECK(itanium_encode_type_sub("ptrdiff_t") == "l");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("long long") == "x");
 		// Distinct dd identity, subclass-exempt from the LP64 desugar.
 		CHECK(dd_platform_longlong() != (DataDef *)&ddINT64);
 		CHECK(dd_platform_longlong()->name == "long long");
@@ -108,37 +108,37 @@ TEST_SUITE("Itanium type encoding") {
 		madc_target_int64_alias = TargetInt64Alias::Long;
 		CHECK(dd_platform_longlong() == (DataDef *)&ddINT64);
 		CHECK(dd_platform_ulonglong() == (DataDef *)&ddUINT64);
-		CHECK(itanium_encode_type("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
 	}
 
 	TEST_CASE("Pointer types") {
-		CHECK(itanium_encode_type("int*") == "Pi");
-		CHECK(itanium_encode_type("char*") == "Pc");
-		CHECK(itanium_encode_type("void*") == "Pv");
-		CHECK(itanium_encode_type("double*") == "Pd");
+		CHECK(itanium_encode_type_sub("int*") == "Pi");
+		CHECK(itanium_encode_type_sub("char*") == "Pc");
+		CHECK(itanium_encode_type_sub("void*") == "Pv");
+		CHECK(itanium_encode_type_sub("double*") == "Pd");
 	}
 
 	TEST_CASE("Const pointer types") {
-		CHECK(itanium_encode_type("const char*") == "PKc");
-		CHECK(itanium_encode_type("const int*") == "PKi");
+		CHECK(itanium_encode_type_sub("const char*") == "PKc");
+		CHECK(itanium_encode_type_sub("const int*") == "PKi");
 	}
 
 	TEST_CASE("Reference types") {
-		CHECK(itanium_encode_type("int&") == "Ri");
-		CHECK(itanium_encode_type("const int&") == "RKi");
-		CHECK(itanium_encode_type("const char*&") == "RPKc");
+		CHECK(itanium_encode_type_sub("int&") == "Ri");
+		CHECK(itanium_encode_type_sub("const int&") == "RKi");
+		CHECK(itanium_encode_type_sub("const char*&") == "RPKc");
 	}
 
 	TEST_CASE("User-defined types") {
-		CHECK(itanium_encode_type("Foo") == "3Foo");
-		CHECK(itanium_encode_type("MyClass") == "7MyClass");
-		CHECK(itanium_encode_type("X") == "1X");
+		CHECK(itanium_encode_type_sub("Foo") == "3Foo");
+		CHECK(itanium_encode_type_sub("MyClass") == "7MyClass");
+		CHECK(itanium_encode_type_sub("X") == "1X");
 	}
 
 	TEST_CASE("Pointer to user type") {
-		CHECK(itanium_encode_type("Foo*") == "P3Foo");
-		CHECK(itanium_encode_type("const Foo*") == "PK3Foo");
-		CHECK(itanium_encode_type("Foo&") == "R3Foo");
+		CHECK(itanium_encode_type_sub("Foo*") == "P3Foo");
+		CHECK(itanium_encode_type_sub("const Foo*") == "PK3Foo");
+		CHECK(itanium_encode_type_sub("Foo&") == "R3Foo");
 	}
 
 	TEST_CASE("Parameter list encoding") {
