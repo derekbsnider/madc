@@ -49,11 +49,16 @@ std::string itanium_mangle_operator(const std::string &class_name,
 std::string itanium_typeinfo_sym(const std::string &class_name);
 std::string itanium_typeinfo_name_sym(const std::string &class_name);
 std::string itanium_typeinfo_name_string(const std::string &class_name);
-// Real libstdc++ vtable/typeinfo symbols from a canonical C++ spelling (St-aware),
-// e.g. "std::bad_alloc" -> _ZTVSt9bad_alloc / _ZTISt9bad_alloc. Used to defer an
-// externally-defined class's vtable/typeinfo to the library.
+// Real vtable/typeinfo symbols from a canonical C++ spelling (St-aware, N..E for
+// a namespaced or nested class), e.g. "std::bad_alloc" -> _ZTVSt9bad_alloc /
+// _ZTISt9bad_alloc, "ns::VB" -> _ZTVN2ns2VBE / _ZTIN2ns2VBE / _ZTSN2ns2VBE with
+// the typeinfo-name content "N2ns2VBE". Used to defer an externally-defined
+// class's RTTI to its library, and the form every user class's RTTI must take
+// to be ABI-identical to g++/clang (the bare-name forms above spell _ZTI2VB).
 std::string itanium_vtable_sym_cpp(const std::string &cpp_spelling);
 std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling);
+std::string itanium_typeinfo_name_sym_cpp(const std::string &cpp_spelling);
+std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling);
 
 // ---------------------------------------------------------------------------
 // Substitution-aware (template-id capable) mangling.
@@ -94,9 +99,15 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        const std::vector<std::string> &param_types,
                                        bool const_method);
 
-// Mangle a constructor (C1) on a (possibly template-id) class.
+// Mangle a constructor on a (possibly template-id) class. `flavor` picks the
+// Itanium variant: "C1" (complete object, the default — what a caller invokes),
+// "C2" (base object — what a DERIVED class's ctor invokes for the base
+// subobject), "C5" (the COMDAT group both share when the ctor has vague
+// linkage, e.g. a class-template instantiation — a group signature, not a
+// call target).
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
-                                      const std::vector<std::string> &param_types);
+                                      const std::vector<std::string> &param_types,
+                                      const char *flavor = "C1");
 
 // Mangle a destructor on a (possibly template-id) class. `flavor` picks
 // the Itanium variant: "D1" (complete, the default), "D2" (base-object —
@@ -133,11 +144,16 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params);
 
-// Mangle a non-template namespace-scope function using the substitution-aware
-// type encoder for parameter spellings.
+// Mangle a non-template function at any scope — global (no qualifiers:
+// _Z<name><params>), std (the St abbreviation), or a qualifier chain (N..E) —
+// using the substitution-aware type encoder for parameter spellings. `name` may
+// be an operator-function-id ("operator<<" → the operator code, unary iff one
+// parameter). `internal_linkage` (a `static` function) prefixes the source name
+// with L: _ZL4s_fni, _ZN2nsL1fEv — the FuncDef::internal_linkage fact.
 std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
                                       const std::string &name,
-                                      const std::vector<std::string> &param_types);
+                                      const std::vector<std::string> &param_types,
+                                      bool internal_linkage = false);
 
 // Mangle a namespace-scope variable, e.g. std::cin -> "_ZSt3cin".
 std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,

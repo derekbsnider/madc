@@ -294,6 +294,20 @@ std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling)
 	return "_ZTI" + itanium_encode_type_sub(cpp_spelling);
 }
 
+// The typeinfo NAME symbol and its content — the mangled <type> itself — for
+// a class named by its canonical C++ spelling: "ns::VB" → _ZTSN2ns2VBE holding
+// "N2ns2VBE" (g++/clang). The bare-name forms above spell _ZTS2VB, which names
+// nothing once the class lives in a namespace.
+std::string itanium_typeinfo_name_sym_cpp(const std::string &cpp_spelling)
+{
+	return "_ZTS" + itanium_encode_type_sub(cpp_spelling);
+}
+
+std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling)
+{
+	return itanium_encode_type_sub(cpp_spelling);
+}
+
 std::string itanium_typeinfo_name_sym(const std::string &class_name)
 {
 	return "_ZTS" + source_name(class_name);
@@ -691,7 +705,8 @@ public:
 
 	std::string mangle_nested_function(const std::vector<std::string> &qualifiers,
 	                                   const std::string &name,
-	                                   const std::vector<std::string> &params)
+	                                   const std::vector<std::string> &params,
+	                                   bool internal_linkage)
 	{
 		reset();
 		// An operator name encodes as its Itanium operator-name code in
@@ -703,10 +718,16 @@ public:
 		std::string opcode;
 		if (name.compare(0, 8, "operator") == 0)
 			opcode = operator_code(name.substr(8), params.size() == 1);
+		// The <unqualified-name>. An entity with INTERNAL linkage (`static`
+		// at namespace scope) carries the `L` prefix on its source name —
+		// g++/clang: `static void s_fn(int)` is _ZL4s_fni, never _Z4s_fni,
+		// and inside a namespace _ZN2nsL1fEv. Operator codes take no prefix.
+		std::string uname = !opcode.empty() ? opcode
+		                  : internal_linkage ? "L" + source_name(name)
+		                  : source_name(name);
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
 		if (qualifiers.empty()) {
-			std::string out = "_Z" + (opcode.empty() ? source_name(name)
-			                                         : opcode);
+			std::string out = "_Z" + uname;
 			out += params_enc(params);
 			return out;
 		}
@@ -727,8 +748,7 @@ public:
 		// W2 spellings (mangle_std_var / mangle_std_free_template),
 		// whose callers never tracked the inline namespace.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			std::string out = "_ZSt"
-			                + (opcode.empty() ? source_name(name) : opcode);
+			std::string out = "_ZSt" + uname;
 			out += params_enc(params);
 			return out;
 		}
@@ -737,7 +757,7 @@ public:
 			chain.push_back(parse_component(q));
 		std::string out = "_ZN";
 		out += encode_name(chain, /*standalone=*/false);
-		out += opcode.empty() ? source_name(name) : opcode;
+		out += uname;
 		out += "E";
 		out += params_enc(params);
 		return out;
@@ -1101,10 +1121,11 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
-                                      const std::vector<std::string> &param_types)
+                                      const std::vector<std::string> &param_types,
+                                      const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", "C1",
+	return m.mangle_member(qualified_class, "", flavor,
 	                       param_types, false);
 }
 
@@ -1150,10 +1171,12 @@ std::string itanium_mangle_std_free_template(const std::string &name,
 
 std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
                                       const std::string &name,
-                                      const std::vector<std::string> &param_types)
+                                      const std::vector<std::string> &param_types,
+                                      bool internal_linkage)
 {
 	ItaniumMangler m;
-	return m.mangle_nested_function(qualifiers, name, param_types);
+	return m.mangle_nested_function(qualifiers, name, param_types,
+	                                internal_linkage);
 }
 
 std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,

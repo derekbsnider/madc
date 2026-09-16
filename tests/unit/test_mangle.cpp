@@ -935,6 +935,21 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}),        "_ZN3BoxI3FooEC1Ev");
 	}
 
+	TEST_CASE("constructors: C2 (base object) and C5 (vague-linkage COMDAT group)") {
+		// Every ctor also has a C2; a g++-compiled DERIVED class calls the
+		// base's C2 — without it a madc base class cannot be inherited from
+		// across the ABI boundary. C5 appears only for vague linkage (the
+		// template instantiations), as the group both variants live in.
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {}, "C2"),             "_ZN3FooC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"int"}, "C2"),        "_ZN3FooC2Ei");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"const Foo&"}, "C2"), "_ZN3FooC2ERKS_");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("ns::Bar", {}, "C2"),         "_ZN2ns3BarC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<int>", {}, "C2"),        "_ZN3BoxIiEC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<int>", {}, "C5"),        "_ZN3BoxIiEC5Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}, "C2"),        "_ZN3BoxI3FooEC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}, "C5"),        "_ZN3BoxI3FooEC5Ev");
+	}
+
 	TEST_CASE("destructors: D1 complete, D2 base, D0 deleting (virtual)") {
 		ORACLE_CHECK(itanium_mangle_dtor_sub("Foo"),           "_ZN3FooD1Ev");
 		ORACLE_CHECK(itanium_mangle_dtor_sub("Foo", "D2"),     "_ZN3FooD2Ev");
@@ -1017,6 +1032,10 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		// variants produce it; the bare-name variants above cannot
 		ORACLE_CHECK(itanium_typeinfo_sym_cpp("ns::VB"),  "_ZTIN2ns2VBE");
 		ORACLE_CHECK(itanium_vtable_sym_cpp("ns::VB"),    "_ZTVN2ns2VBE");
+		ORACLE_CHECK(itanium_typeinfo_name_sym_cpp("ns::VB"), "_ZTSN2ns2VBE");
+		// the _ZTS symbol's CONTENT is the mangled type name itself
+		CHECK(itanium_typeinfo_name_string_cpp("ns::VB") == "N2ns2VBE");
+		CHECK(itanium_typeinfo_name_string_cpp("V") == "1V");
 	}
 
 	TEST_CASE("linkage: extern \"C\" and main are bare; a static function still mangles") {
@@ -1026,6 +1045,8 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(std::string("c_fn2"), "c_fn2");
 		ORACLE_CHECK(std::string("main"),  "main");
 		ORACLE_CHECK(free_fn("s_user", {}), "_Z6s_userv");
+		// internal linkage: the L prefix on the source name, not a bare name
+		ORACLE_CHECK(itanium_mangle_nested_sub({}, "s_fn", {"int"}, true), "_ZL4s_fni");
 	}
 
 	// Runs last (doctest orders by file/line): the set-equality half.
