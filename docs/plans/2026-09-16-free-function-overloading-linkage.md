@@ -5,9 +5,10 @@
 > The free-function slice (the darwin blocker) is phase 1 of that; it is NOT the whole feature.
 > Retitled from "Free-Function…" accordingly.
 
-**Status:** DRAFT for owner review (2026-09-16). Design only — implementation is a
-separate focused session (owner sequencing: draft here, implement fresh).
-**Owner:** Claude (design) → fresh session (implementation).
+**Status:** APPROVED (owner 2026-09-16). IMPLEMENTATION IN PROGRESS on
+`feature/cpp-symbol-mangling-claude` — phase 0 (oracle harness + encoder completeness) DONE
+2026-09-16; phase 1 next. Progress: `docs/plans/2026-09-16-cpp-mangling-implementation-handoff.md`.
+**Owner:** Claude (design + implementation).
 **Motivating bug:** darwin-suite blocker #2 (see
 `docs/plans/2026-09-16-darwin-suite-blockers-handoff.md`).
 **Rules in force:** #1 (gcc/clang is canon), #2 (deepest layer), #7 (no hard-coding
@@ -258,6 +259,11 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
    nested classes, templates — `nm` the symbols) and make `itanium_*_sub` reproduce every one
    byte-identical. Close the encoder gaps (namespaced `N…E`, builtin codes, substitutions)
    here, before any emit-symbol is switched. This de-risks every later phase.
+   **DONE 2026-09-16** — 154-shape corpus, g++ == clang++ identical, set equality GREEN. The `_sub`
+   core was right on every substitution/nested-name shape; the gaps were operator arity and codes,
+   conversion functions, ctor C2/C5, internal linkage, a namespaced `_ZTS`, user function templates
+   and the zero-parameter `v` — all closed. The naive encoder family (the one with the `13madc::channel`
+   gap) had no production caller and is retired: ONE encoder.
 1. **Free functions** (unblocks the darwin gate) behind a `FEATURE_*` guard: Itanium emit
    symbol for a c++/madc, non-`extern "C"`, non-`main` free function; generalize where
    `c_linkage` is set; widen the global overload gate (§4.2) so plain user functions register;

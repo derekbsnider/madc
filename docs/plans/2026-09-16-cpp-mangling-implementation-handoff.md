@@ -12,7 +12,7 @@ Implement the design doc, **scope (c)**, following its §9 phases. Turn it into 
 implementation plan first (superpowers `writing-plans` → `subagent-driven-development` or
 `executing-plans`), or follow §9 directly if you prefer — the phases are already ordered:
 
-0. **Oracle harness FIRST** — a `g++ -c`→`nm` byte-equality corpus (free/member/operator/
+0. **Oracle harness FIRST — DONE (§PHASE 0 below).** A `g++ -c`→`nm` byte-equality corpus (free/member/operator/
    ctor/dtor; builtins, pointer/ref/const, namespaces, nested classes, templates). Make the
    existing Itanium `_sub` encoders reproduce every symbol byte-identical; close encoder gaps
    here BEFORE switching any emit symbol. **This de-risks every later phase — do not skip it.**
@@ -30,6 +30,57 @@ The darwin failing tests are `testmadcide_discover`, `_attach`, `_lsp_serve`, `_
 (the `send`/`write` collision) + `testimportiface` (that one is blocker #3, separate — §"darwin
 side-fixes" below). Acceptance for phase 1: those 4 madcide tests compile clean under the cross
 madc; full (c): the madc↔g++ ABI harness green.
+
+## PHASE 0 — DONE (2026-09-16, branch `feature/cpp-symbol-mangling-claude`, d1895beaf..82afaa3fe)
+
+The oracle harness exists and is GREEN — SET EQUALITY over 154 user-shape symbols:
+- `tests/abi/mangle_corpus.cpp` (stdlib-agnostic, so one oracle serves the Linux AND Mac lanes) →
+  `scripts/gen_mangle_oracle.sh` compiles it with g++ 13.3 AND clang++ 18.1, requires identical
+  defined-symbol sets (154/154), emits `tests/unit/mangle_oracle.inc` `{mangled, demangled}`.
+  ⚠️ Regenerate ON THE CONTAINER and scp the `.inc` back at once — the next sync overwrites it.
+- `tests/unit/test_mangle.cpp` `ORACLE_CHECK(got, want)`: `want` must BE an oracle row, the encoder
+  must reproduce it, the row is consumed; the final case requires every row consumed. `bin/test_mangle`
+  82/82 cases, 524/524 assertions.
+- `scripts/mangle_abi_gate.sh --selftest` (fulltest): drift lane (regenerate → row-diff against the
+  checked-in `.inc`) + negative control (a corpus copy with one extra shape → 154→155 detected).
+  **Phase 5 adds the end-to-end lane here**: `madc --std=c++20 -c tests/abi/mangle_corpus.cpp` → nm,
+  set-equal to the oracle (normalize the C2/D2/C5 aliases madc need not emit).
+
+Encoder gaps the oracle found — all FIXED (own commits, trailers): unary operators mangle by ARITY
+(`ps/ng/de/ad` vs `pl/mi/ml/an`; arity threaded from the callers); 12 missing operator codes
+(`-> ->* %= &= |= ^= <<= >>= && || , <=>`); conversion functions `cv<type>`
+(`itanium_mangle_conversion_sub` — an explicit API, never a heuristic); ctor flavors C1/C2/C5
+(`itanium_mangle_ctor_sub(cls, params, flavor)`, mirrors the dtor's D0/D1/D2); internal linkage
+`_ZL4s_fni` (`itanium_mangle_nested_sub(..., internal_linkage)`; `FuncDef::internal_linkage` is the
+fact); `_ZTS` of a namespaced class (`itanium_typeinfo_name_sym_cpp` / `_string_cpp`); USER function
+templates at any scope (`itanium_mangle_function_template_sub`: `_Z5identIiET_S0_`,
+`_ZN2ns6nidentIiEET_S1_`) + zero-parameter templates end in `v` (both template minters had it wrong);
+`itanium_encode_type_sub`'s memo keyed on the target data model too (it served a stale `m` for
+`size_t` under LLP64). The naive encoder family (`itanium_encode_type`/`_params`/`itanium_mangle`/
+`_method`/`_ctor`/`_dtor`/`_operator`/`_nested`) is RETIRED — zero production callers, wrong for
+namespaced types and substitutions; there is ONE encoder now.
+
+KEPT for phase 2: the bare-name RTTI trio (`itanium_typeinfo_sym`/`_name_sym`/`_name_string`, live at
+`cir_builder.cpp:10333-10644`) spells `_ZTI2VB` for `ns::VB` where g++ emits `_ZTIN2ns2VBE` — switch
+those calls to the `_cpp` forms with `canonical_cpp_spelling()` (bare-`name` fallback for a global
+class; the `_cpp` form is byte-identical there).
+
+KEY FACTS FOR PHASE 1 (verified):
+- **The free-function minter already exists**: `itanium_mangle_nested_sub({}, name, params)` — the
+  global branch is `_Z<name><params>` through the full `_sub` type encoder;
+  `send(madc::channel&, madc::value&)` → `_Z4sendRN4madc7channelERNS_5valueE`, oracle-proven. No new
+  encoder work; phase 1 is parser ROUTING.
+- The spelling pipeline exists: `param_cpp_spellings` built from source tokens
+  (`parser.cpp:65913-65930`), `FuncDef::mangle_param_spelling(i)` (`madc.h:493`, desugars scalar +
+  fn-ptr typedefs), `spell_varargs_tail` (`madc.h:482`), `namespace_cpp_function_symbol`
+  (`parser.cpp:2904` → `itanium_mangle_nested_sub`), `cpp_spelling_for_mangle` (`2845`, DataDef
+  fallback). A global-scope user class has NO canonical spelling (`parser.cpp:47732` gates on a
+  non-empty namespace) → callers fall back to the bare `name` — correct, no leading `::`.
+- **TRAP**: `param_cpp_spellings` are pushed ONLY on the `!func_already_declared` branch (`65909`);
+  the reconciliation branch (`65895`) pushes none. The §4.4 fresh FuncDef for a different-signature
+  definition must capture its own spellings, or the bind guard (`45322`, spelling-misalign) bails.
+- `check-rule-trailers.sh` matches only `^(src|include)/.*\.(c|cc|cpp|h|hpp)$` — Makefile, scripts
+  and tests need no trailers.
 
 ## SETTLED STATE (evidence — do NOT re-derive)
 
