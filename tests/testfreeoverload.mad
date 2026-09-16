@@ -1,0 +1,30 @@
+// C++ SYMBOL MANGLING phase 1: free-function overloading by parameter type at
+// file scope. Each overload is a distinct Itanium symbol (_Z4showi, _Z4showPKc,
+// _Z4showd, _Z4showR2Pt) selected by argument type — exactly what g++/clang
+// emit. Before the feature every free function emitted its bare source name,
+// so the second `show` was "MIR fatal error: Repeated item declaration show".
+// `twice` pins the identity rule: a prototype whose parameter is NAMED
+// differently from the definition is ONE function (the identity is the ABI
+// signature, not the spelling) — its callers and its body meet on _Z5twicei.
+// Oracle: g++ -std=c++20 and clang++ -std=c++20 on the C++ twin
+// (tmp/freeoverload_oracle.cpp, std::printf in place of println) print the
+// same five lines and `nm` shows exactly these five _Z symbols.
+struct Pt { int x; int y; };
+void show(int v)         { println("int {}", v); }
+void show(const char *s) { println("cstr {}", s); }
+void show(double d)      { println("double {}", d); }
+void show(Pt &p)         { println("Pt {},{}", p.x, p.y); }
+long twice(int value);
+long twice(int n) { return 2L * n; }
+int main()
+{
+    show(7);
+    show("seven");
+    show(7.5);
+    Pt p;
+    p.x = 1;
+    p.y = 2;
+    show(p);
+    println("{}", twice(21));
+    return 0;
+}

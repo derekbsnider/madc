@@ -342,10 +342,17 @@ void CirBuilder::note_global_reference(const Variable &v)
 }
 
 // THE single source of truth for the C symbol a call references. Precedence:
-//   1. emit_symbol     — bound to an EXTERNAL ABI symbol; madc emits no body.
+//   1. emit_symbol     — the function's ABI symbol: an EXTERNAL binding madc
+//                        emits no body for (a library member, a declaration-
+//                        only C++ function), OR — C++ symbol mangling, scope
+//                        (c) — the Itanium name of a body madc DOES emit (a
+//                        file-scope C++-linkage user function today; members
+//                        and namespace functions follow). "No madc body" is
+//                        FuncDef::declaration_only, never this field's
+//                        presence.
 //   2. local_emit_name — a madc-emitted body's non-default symbol (a hoisted
 //                        nested fn / lambda, or an arity-disambiguated
-//                        method/operator).
+//                        method/operator); also its Variable's lookup key.
 //   3. var_emit_name   — the variable's own emit name (default scheme; also
 //                        resolves data/asm-label aliases).
 // emit_symbol and local_emit_name are mutually exclusive by construction. The
@@ -378,6 +385,32 @@ std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 {
 	return call_emit_symbol(v, fd);
+}
+
+// THE symbol a madc-emitted BODY defines — the one rule the definition, its
+// lock-step prototype, the profiler's self-address and the reachability mark
+// all read (they used to spell it four times over).
+//
+// var_emit_name (the source name, or an asm label) by default — NOT
+// func_emit_name: emit_symbol must not rename a materialized LIBRARY body. A
+// header method whose body madc materializes keeps its internal name (vtable
+// slots bind the LOCAL body while value calls prefer the library symbol);
+// renaming the definition orphaned the vtable slot (the forest_selfexe_gate
+// SIGABRT).
+//
+// C++ SYMBOL MANGLING, scope (c): a FILE-SCOPE C++-linkage FREE function madc
+// defines carries its own Itanium name on emit_symbol (parseDeclaration's
+// mint) — that name IS what this body defines; every call already imports
+// it, so any other spelling leaves an undefined _Z… import. Members follow in
+// phase 2, namespace functions in phase 3 — until then their bodies keep the
+// internal name above.
+std::string CirBuilder::func_def_symbol(TokenFunc *tf, FuncDef *fd) const
+{
+	if (fd && !fd->emit_symbol.empty() && !fd->declaration_only
+	    && (!tf->method || !tf->method->owner_class)
+	    && fd->namespace_name.empty() && !fd->function_display_name.empty())
+		return fd->emit_symbol;
+	return var_emit_name(tf->var);
 }
 
 // The loaded-libraries symbol probe — the same dlsym the MIR import resolver
@@ -19961,13 +19994,9 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
-	// var_emit_name (NOT func_emit_name): an asm-labeled function's
-	// definition goes under its label — but emit_symbol must NOT rename
-	// a madc-emitted BODY: a header method whose body madc materializes
-	// keeps its internal name (vtable slots bind the LOCAL body while
-	// value calls prefer the library symbol; renaming the definition
-	// orphaned the vtable slot — the forest_selfexe_gate SIGABRT).
-	node_t func_id = id(var_emit_name(tf->var).c_str(), tf);
+	// The prototype names what the definition defines (func_def_symbol —
+	// the one rule; see it for why that is not func_emit_name).
+	node_t func_id = id(func_def_symbol(tf, fd).c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_fnptr) {
@@ -27648,13 +27677,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
-	// var_emit_name (NOT func_emit_name): an asm-labeled function's
-	// definition goes under its label — but emit_symbol must NOT rename
-	// a madc-emitted BODY: a header method whose body madc materializes
-	// keeps its internal name (vtable slots bind the LOCAL body while
-	// value calls prefer the library symbol; renaming the definition
-	// orphaned the vtable slot — the forest_selfexe_gate SIGABRT).
-	node_t func_id = id(var_emit_name(tf->var).c_str(), tf);
+	// The body's symbol — func_def_symbol, the one rule (see it for why that
+	// is var_emit_name for a library body and emit_symbol for a mangled
+	// user free function).
+	node_t func_id = id(func_def_symbol(tf, fd).c_str(), tf);
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_fnptr) {
@@ -28032,15 +28058,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(iattrs, node2(N_ATTR, id("cleanup", tf), iattr_args, tf));
 		append(isd, iattrs);
 		append(isd, ignore());   // asm
-		// var_emit_name: <self> must name the emitted definition (see
-		// the declarator above) or the profiler tags the wrong symbol.
+		// func_def_symbol: <self> must name the emitted definition (the
+		// declarator above) or the profiler tags the wrong symbol.
 		append(isd, node2(N_CAST, void_ptr_type(),
-				  id(var_emit_name(tf->var).c_str(), tf), tf));
+				  id(func_def_symbol(tf, fd).c_str(), tf), tf));
 		CIR_NODE(isd)->synth_from_origin = true;
 		// __cyg_profile_func_enter((void *)<self>, (void *)0);
 		node_t eargs = list();
 		append(eargs, node2(N_CAST, void_ptr_type(),
-				    id(var_emit_name(tf->var).c_str(), tf), tf));
+				    id(func_def_symbol(tf, fd).c_str(), tf), tf));
 		append(eargs, node2(N_CAST, void_ptr_type(), integer(0, tf), tf));
 		node_t ecall = node2(N_CALL,
 				     id("__cyg_profile_func_enter", tf), eargs, tf);
@@ -28534,7 +28560,11 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	// handle signature-blind. Same KEY-vs-CODE split as the eval scope
 	// capture (key = source name, value read = emitted name).
 	std::string target_sym = call_emit_symbol(*fvar, fd);
-	std::string shim_name = "__madc_shim_" + call_emit_symbol(fd, fvar->name);
+	// The shim's NAME is the host API's KEY — the SOURCE name perform_call
+	// looks up — never the emitted symbol (a mangled C++ function would
+	// otherwise hide behind __madc_shim__Z3fooi). The target it CALLS is
+	// the emitted symbol above.
+	std::string shim_name = "__madc_shim_" + fvar->name;   // allowed-exception: host lookup key, not symbol build
 	referenced_funcs.insert(target_sym);
 
 	// Value-helper externs (compiler machinery; resolved from the host).
@@ -29888,8 +29918,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	// reachability, and the pack check gate consult the emitted-symbol set after
 	// the initial body list has been collected.
 	user_func_names.clear();
-	for (TokenFunc *tf : funcs)
+	for (TokenFunc *tf : funcs) {
+		// Both keys: the source name (name-keyed probes) and the emitted
+		// symbol (the pack gate probes by symbol — a C++-mangled user
+		// function's _Z… name is no longer its source name).
 		user_func_names.insert(tf->var.name);
+		user_func_names.insert(func_emit_name(tf->var,
+			dynamic_cast<FuncDef *>(tf->var.type)));
+	}
 	m_user_func_names = &user_func_names;
 	m_materialized_lib_syms.clear();   // per-module, like m_user_func_names
 	// Pack drain / check-gate members (see cir_builder.h): per-module state.
@@ -30583,9 +30619,12 @@ node_t CirBuilder::translate_module(Program *prog)
 						// internal name; marking by kv.first
 						// silently pruned the body the
 						// demoted base-construction call
-						// imports.
+						// imports. func_def_symbol IS the
+						// declared name.
 						cond_mark_sym(fd,
-							var_emit_name(tf->var));
+							func_def_symbol(tf,
+								dynamic_cast<FuncDef *>(
+									tf->var.type)));
 					}
 				}
 				grew = true;

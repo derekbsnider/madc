@@ -1,0 +1,14 @@
+// C++ SYMBOL MANGLING phase 1, [dcl.link]/5: a redeclaration WITHOUT a
+// linkage-spec of a function first declared extern "C" is THAT function — it
+// inherits C linkage and emits the bare name (g++ -std=c++20: `cfunc`, never
+// _Z5cfunci). This is how every C API is implemented from C++: the header says
+// extern "C", the definition does not repeat it. The post-parse signature fold
+// recognizes the definition as the prototype's body (same Itanium parameter
+// encoding), so the prototype's callers and the body meet on one bare symbol.
+extern "C" int cfunc(int x);
+int cfunc(int v) { return v + 1; }
+int main()
+{
+    println("{}", cfunc(41));
+    return 0;
+}

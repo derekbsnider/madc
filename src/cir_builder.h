@@ -1319,6 +1319,11 @@ public:
 	// body/instance lane serve ([temp.inst]).
 	bool extern_symbol_can_link(const std::string &sym);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
+	// The symbol a madc-emitted BODY defines (the definition, its lock-step
+	// prototype, the profiler self-address and the reachability mark all read
+	// this one rule): var_emit_name for a materialized library body,
+	// emit_symbol for a mangled file-scope user function. See the definition.
+	std::string func_def_symbol(class TokenFunc *tf, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
 	// madc-emitted body's non-default symbol (local_emit_name — hoisted nested

@@ -1,0 +1,10 @@
+/* C++ SYMBOL MANGLING phase 1, design §4.5: C has no overloading. A
+ * redeclaration with a different parameter signature is a hard error —
+ * gcc -std=c11: "conflicting types for 'show'" — never the old silent
+ * reconcile-by-position that mistyped the definition's parameters. The
+ * signature identity is the Itanium parameter encoding (typedefs desugar,
+ * top-level cv drops), the same identity the C++ modes mangle with. */
+#include <stdio.h>
+void show(int v) { printf("%d\n", v); }
+void show(double d) { printf("%f\n", d); }
+int main(void) { show(1); return 0; }

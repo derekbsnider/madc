@@ -2935,8 +2935,90 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	    params.push_back(spelling);
 	}
     }
+    // A `static` function carries the internal-linkage L prefix (_ZL4s_fni).
     return itanium_mangle_nested_sub(namespace_qualifiers(ns_name),
-				     member_name, params);
+				     member_name, params,
+				     fd ? fd->internal_linkage : false);
+}
+
+// C++ SYMBOL MANGLING phase 1 — the overload set's identity TRUTH.
+//
+// The pre-parse identity (peek_param_list_spelling) is TEXTUAL: parameter
+// names and default arguments ride in it, a typedef spells unlike its base.
+// So a redeclaration can fork into a second FuncDef of the SAME signature
+// (`void f(int a);` … `void f(int b) {}`), and two same-signature members would
+// mint one Itanium symbol twice and tie every call as ambiguous. Once the
+// parameters are parsed the ABI settles it: two members whose Itanium symbols
+// (name + parameter encoding — the one type identity the ABI defines) are
+// equal ARE one function, and the newcomer folds into the prior:
+//   - both define a body: g++/clang "redefinition of 'f'" — an error;
+//   - the newcomer brings the body the prior only declared: the prior's
+//     Variable (the identity every earlier call bound) takes the newcomer's
+//     FuncDef, funcdef_map follows, and the body emits under the shared
+//     symbol (the newcomer Variable's storage_alias_name — the asm-label
+//     contract var_emit_name honours);
+//   - otherwise the newcomer is a redundant declaration.
+// In every folded case the newcomer leaves the set (one member per function)
+// and resolves to the shared symbol. C language linkage is inherited the same
+// way ([dcl.link]/5: a redeclaration without a linkage-spec of an extern "C"
+// function IS that function): the shared symbol is the bare name and the
+// newcomer records c_linkage. Internal-linkage (`static`) pairs are left
+// alone: TU-local twins are legal across units and a same-unit duplicate is
+// the backend's redefinition error. Returns true when the newcomer folded.
+static bool fold_same_signature_overload(Program &pgm,
+					 std::vector<Program::NamespaceFnOverload> &ovset,
+					 Variable *fresh_var, FuncDef *fresh_fd,
+					 const std::string &ns_name,
+					 const std::string &source_id,
+					 TokenBase *at)
+{
+    if ( !fresh_var || !fresh_fd || fresh_fd->internal_linkage )
+	return false;
+    std::string fresh_sig = namespace_cpp_function_symbol(ns_name, source_id, fresh_fd);
+    for ( size_t i = 0; i < ovset.size(); ++i )
+    {
+	Variable *pv = ovset[i].var;
+	if ( !pv || pv == fresh_var || !pv->type )
+	    continue;
+	FuncDef *pfd = pv->type->as_funcdef_dd();
+	if ( !pfd || pfd->internal_linkage
+	  || pfd->parameters.size() != fresh_fd->parameters.size() )
+	    continue;
+	if ( namespace_cpp_function_symbol(ns_name, source_id, pfd) != fresh_sig )
+	    continue;
+	// One function. The symbol it lives under: bare for C linkage, else the
+	// prior's bound symbol, else the Itanium name both encode.
+	std::string sym = pfd->c_linkage ? source_id
+			: !pv->storage_alias_name.empty() ? pv->storage_alias_name
+			: !pfd->emit_symbol.empty() ? pfd->emit_symbol
+			: fresh_sig;
+	if ( !pfd->declaration_only && !fresh_fd->declaration_only )
+	    pgm.Throw(at) << "redefinition of '" << source_id << "'" << flush;
+	if ( pfd->c_linkage )
+	{
+	    // Inherited C linkage: the bare name, never the Itanium symbol the
+	    // mint above gave a would-be C++ function.
+	    fresh_fd->c_linkage = true;
+	    fresh_fd->emit_symbol.clear();
+	}
+	else
+	    fresh_fd->emit_symbol = sym;
+	fresh_var->storage_alias_name = sym;
+	if ( pfd->declaration_only && !fresh_fd->declaration_only )
+	{
+	    // The newcomer brings the body: the prior identity carries it.
+	    pv->type = fresh_fd;
+	    pgm.funcdef_map[pv->name] = fresh_fd;
+	}
+	for ( size_t j = 0; j < ovset.size(); ++j )
+	    if ( ovset[j].var == fresh_var )
+	    {
+		ovset.erase(ovset.begin() + j);
+		break;
+	    }
+	return true;
+    }
+    return false;
 }
 
 static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
@@ -65162,6 +65244,25 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
+    // C++ SYMBOL MANGLING phase 1 (design §4.4/§4.5): a redeclaration of a
+    // C-LINKAGE function must carry the SAME parameter signature — C
+    // ("conflicting types for 'f'") and an extern "C" function in C++
+    // ("conflicting declaration of C function 'f'") never overload, and the old
+    // reconcile-by-position silently mistyped the definition's parameters (the
+    // darwin `send` shape). Signature identity is the Itanium encoding of the
+    // parameter list — the ONE type identity the ABI defines (typedefs desugar,
+    // top-level cv drops, `...` is z) — never a hand-rolled type walk. Captured
+    // BEFORE the parameter loop, which mutates `func` (is_varargs). A
+    // C++-linkage function never reaches this reconcile with a different
+    // signature: parseDeclaration's overload tracking hands it its own FuncDef
+    // (and fold_same_signature_overload settles the identity post-parse).
+    // Members and machine registrations keep their own reconciliation.
+    std::string redecl_prior_sig;
+    if ( func_already_declared && !owner_class
+      && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
+	redecl_prior_sig = namespace_cpp_function_symbol(std::string(), id, func);
+    std::vector<std::string> redecl_spellings;
+    bool redecl_varargs = false;
     if ( !return_typedef_alias.empty() )
 	func->return_typedef_name = return_typedef_alias;
     // The SOURCE name of a tracked free-function overload (parseDeclaration
@@ -65371,6 +65472,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( !d2 || d2->id() != TokenID::tkDot || !d3 || d3->id() != TokenID::tkDot )
 		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
 	    func->is_varargs = true;
+	    redecl_varargs = true;
 	    // A prior prototype already owns the hidden varargs slot.
 	    if ( !func_already_declared )
 	    {
@@ -65889,6 +65991,23 @@ paramdecl:
 	    // paths preserve every inner pointer layer (`T*&` -> REF(PTR(T))).
 	    DataDef *reference_param_type = (rtype == RefType::rtReference)
 		? static_cast<DataDef *>(getReferenceType(param_dd)) : NULL;
+	    // Canonical C++ spelling of this parameter, captured from the SOURCE
+	    // TOKENS (leading const + base type + `*`s + trailing `&`) — computed
+	    // ONCE for both arms below. The first declaration records it,
+	    // index-aligned with func->parameters (the DataDef alone loses
+	    // top-level pointee-const, so a DataDef-derived spelling would mangle
+	    // `const char*` as Pc not PKc); a redeclaration compares it against
+	    // the prior signature (redecl_prior_sig). Fed to the Itanium mangler.
+	    std::string param_spelling;
+	    if ( param_leading_const )
+		param_spelling = "const ";
+	    param_spelling += pb->definition.canonical_cpp_spelling().empty()
+		? pb->definition.name
+		: pb->definition.canonical_cpp_spelling();
+	    for ( int sd = 0; sd < param_ptr_depth; ++sd )
+		param_spelling += "*";
+	    if ( rtype == RefType::rtReference )
+		param_spelling += param_rvalue_ref ? "&&" : "&";
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
 	    DataDef *scope_param_type = NULL;
@@ -65896,6 +66015,7 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+		redecl_spellings.push_back(param_spelling);
 		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref).
 		// The in-scope param's type must match its vfREFERENCE flag. Otherwise
 		// the CIR deref gate
@@ -65910,23 +66030,6 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		// Canonical C++ spelling of this parameter, captured from the
-		// SOURCE TOKENS (leading const + base type + `*`s + trailing `&`),
-		// index-aligned with func->parameters. The DataDef alone loses
-		// top-level pointee-const, so a DataDef-derived spelling would
-		// mangle `const char*` as Pc not PKc; building from tokens keeps
-		// it correct. Fed to the Itanium mangler for header-declared external
-		// C++ methods.
-		std::string param_spelling;
-		if ( param_leading_const )
-		    param_spelling = "const ";
-		param_spelling += pb->definition.canonical_cpp_spelling().empty()
-		    ? pb->definition.name
-		    : pb->definition.canonical_cpp_spelling();
-		for ( int sd = 0; sd < param_ptr_depth; ++sd )
-		    param_spelling += "*";
-		if ( rtype == RefType::rtReference )
-		    param_spelling += param_rvalue_ref ? "&&" : "&";
 		func->param_cpp_spellings.push_back(param_spelling);
 		func->param_typedef_names.push_back(param_alias);
 		func->param_template_param_spelled_directly.push_back(
@@ -66027,6 +66130,22 @@ paramdecl:
 		func->param_typedef_names.push_back("");
 	    }
 	}
+    }
+
+    // The C-linkage signature clash (see redecl_prior_sig above). Old-style K&R
+    // redefinitions are outside it: their parameter types arrive through the
+    // declaration list, on the C-only recovery path.
+    if ( !redecl_prior_sig.empty() && !old_style_params )
+    {
+	std::vector<std::string> redecl_params = redecl_spellings;
+	if ( redecl_varargs )
+	    redecl_params.push_back("...");
+	std::string redecl_sig =
+	    itanium_mangle_nested_sub(std::vector<std::string>(), id, redecl_params);
+	if ( redecl_sig != redecl_prior_sig )
+	    Throw(nt) << (is_c_mode() ? "conflicting types for '"
+				      : "conflicting declaration of C function '")
+		      << id << "'" << flush;
     }
 
     Method *method;
@@ -69663,11 +69782,16 @@ fnptr_decl_arm_head:
 	    || fn_template_instantiation_depth > 0
 	    || (is_system_header_path(TokenBase::_parse_file)
 	     && (findVariable(source_id)
-	      || namespace_fn_overload_sets.count("::" + source_id)))) )
+	      || namespace_fn_overload_sets.count("::" + source_id)))
+	    // C++ SYMBOL MANGLING phase 1: EVERY file-scope function of C++
+	    // linkage (see cpp_free_fn_mangling_enabled). File scope only — a
+	    // block-scope declaration or GNU nested definition inside a body
+	    // (compounds non-empty) keeps the legacy path; main is the entry
+	    // point and never mangles; extern "C" fails the linkage test above.
+	    || (cpp_free_fn_mangling_enabled() && compounds.empty()
+	     && source_id != "main")) )
     {
-	// C++ free-function overloading at GLOBAL scope, for OPERATORS,
-	// fn-template INSTANTIATION PRODUCTS, and SYSTEM-HEADER functions
-	// whose name is already taken: the same per-overload
+	// C++ free-function overloading at GLOBAL scope: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
 	// empty-namespace key ("::name" / "::operatorX") — global scope IS the
 	// empty namespace. Operator-expression dispatch
@@ -69676,17 +69800,21 @@ fnptr_decl_arm_head:
 	// re-entry (a SFINAE overload pair instantiates TWO same-name globals
 	// — width(int) / width(double) — which need distinct symbols and a set
 	// to rank, and whose display name lets a repeat call re-enter
-	// deduction). A PLAIN global function stays on the legacy path — its
-	// declaration-only form must import by SOURCE NAME for the dlsym
-	// fallback (libc declarations — tracking it would mangle the import) —
-	// UNLESS it is a system-header declaration re-using an existing name:
-	// that is C++ overloading (libc++'s five global inline `abs` overloads
-	// after glibc's extern-C `int abs(int)`), and the legacy shared-id
-	// reuse spliced them into ONE FuncDef — the last body emitted as a
-	// plain-named linkonce `abs` clobbering the libc import, so
-	// `abs(-7)` ran the long-double body and read back 0. The FIRST
-	// declaration of a name still keeps the source name (import intact);
-	// only same-name successors mint per-overload symbols.
+	// deduction). In a C++-presenting mode EVERY file-scope C++-linkage
+	// function is tracked: a madc-defined one emits its Itanium symbol
+	// (the mint below), a declaration-only one binds the real external
+	// symbol (storage_alias_name), and same-name declarations rank by
+	// argument type. The legacy reasons a PLAIN global stayed untracked no
+	// longer hold — a libc declaration reaches the parser under extern "C"
+	// (real headers say so through __cplusplus; the darwin umbrella is
+	// re-wrapped by gen_darwin_prelude.sh) and so keeps its bare import.
+	// Before this rule, tracking a plain global only for a system-header
+	// re-declaration of a taken name (libc++'s five global inline `abs`
+	// overloads after glibc's extern-C `int abs(int)`) was the fix for the
+	// legacy shared-id reuse splicing them into ONE FuncDef — the last body
+	// emitted as a plain-named linkonce `abs` clobbering the libc import, so
+	// `abs(-7)` ran the long-double body and read back 0. That clause stays
+	// for the non-C++ modes' benefit of the doubt.
 	ns_overload_tracked = true;
 	ns_overload_spelling = peek_param_list_spelling();
 	// Same binding-identity fold as the namespace branch above.
@@ -69768,6 +69896,19 @@ fnptr_decl_arm_head:
 		  gotinline && !gotstatic, gotstatic);
     pending_function_display_name.clear();
 
+    // [dcl.link]: a FILE-SCOPE function declared under extern "C" has C
+    // language linkage — its symbol is the bare name (the emit chain's default)
+    // and it can never join a C++ overload set (the tracking gate above
+    // requires C++ linkage). Record the fact on the FuncDef, where the
+    // Itanium mint, the same-signature fold and the forest (DF_FUNC_C_LINKAGE)
+    // read it; the namespace arm below does the same for
+    // `namespace ns { extern "C" ... }`.
+    if ( !qualified_owner_class && !namespace_function && !is_c_mode()
+      && current_linkage == LinkageSpec::C )
+	if ( Variable *cv = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL )
+	    if ( FuncDef *cfd = dynamic_cast<FuncDef *>(cv->type) )
+		cfd->c_linkage = true;
+
     if ( qualified_owner_class && !qualified_member_name.empty() )
     {
 	Variable *mvar = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
@@ -69829,6 +69970,25 @@ fnptr_decl_arm_head:
 		if ( ns_var->storage_alias_name.empty() )
 		    ns_var->storage_alias_name = source_id;
 	    }
+	    // C++ SYMBOL MANGLING phase 1: a FILE-SCOPE C++-linkage function
+	    // madc DEFINES emits its Itanium symbol. Definition and every call
+	    // flow through call_emit_symbol's emit_symbol arm, so a madc object
+	    // is ABI-identical to g++/clang and same-name overloads are distinct
+	    // symbols. A declaration-only function keeps the mangled-direct
+	    // storage_alias_name bind above (the library owns the body); a
+	    // namespace function moves in phase 3; extern "C" and main never
+	    // reach here. An explicit asm label on the definition wins over the
+	    // mangling, as it does in g++ (`void f() asm("g")` emits g).
+	    else if ( fd && ns_overload_tracked && !namespace_function
+		   && cpp_free_fn_mangling_enabled() && !fd->c_linkage
+		   && !fd->declaration_only && fd->emit_symbol.empty() )
+	    {
+		std::string sym = namespace_cpp_function_symbol(
+		    current_namespace(), source_id, fd);
+		if ( ns_var->storage_alias_name.empty()
+		  || ns_var->storage_alias_name == sym )
+		    fd->emit_symbol = sym;
+	    }
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking
@@ -69849,6 +70009,14 @@ fnptr_decl_arm_head:
 		    e.var = ns_var;
 		    ovset.push_back(e);
 		}
+		// The identity truth (fold_same_signature_overload): a newcomer
+		// whose Itanium signature equals a member's IS that function —
+		// fold it (a definition after a differently-spelled prototype, a
+		// redeclaration inheriting C linkage) or reject a redefinition.
+		if ( !namespace_function && cpp_free_fn_mangling_enabled() )
+		    fold_same_signature_overload(*this, ovset, ns_var, fd,
+						 current_namespace(), source_id,
+						 curToken());
 		// Once a name has 2+ overloads, every member's call symbol is
 		// its OWN binding, so a call resolved through the shared
 		// namespace-map entry still emits the ranked winner's symbol.

@@ -5019,6 +5019,27 @@ public:
     // explicit C standards present as plain gcc.
     bool presents_as_cpp() const { return language_std == STD_MADC || is_cpp_mode(); }
     bool auto_includes_enabled() const { return language_std == STD_MADC; }
+    // C++ SYMBOL MANGLING, phase 1 (free functions) — design:
+    // docs/plans/2026-09-16-free-function-overloading-linkage.md, scope (c).
+    // In every C++-presenting mode a FILE-SCOPE function of C++ linkage is a
+    // member of its global overload set and, when madc defines it, emits its
+    // Itanium symbol — so overloads are distinct symbols selected by argument
+    // type and a madc .o is ABI-identical to g++/clang. extern "C" and main
+    // stay bare; C modes never overload (a signature clash is an error).
+    // FEATURE_CPP_MANGLE is the bring-up guard (feature-guards rule): default
+    // ON; -DFEATURE_CPP_MANGLE_OFF compiles the legacy bare-symbol path back in
+    // for bisecting. ONE predicate — every mode/guard test reads this.
+#ifndef FEATURE_CPP_MANGLE_OFF
+#define FEATURE_CPP_MANGLE 1
+#endif
+    bool cpp_free_fn_mangling_enabled() const
+    {
+#ifdef FEATURE_CPP_MANGLE
+	return presents_as_cpp();
+#else
+	return false;
+#endif
+    }
     // Uniform function call syntax is a madc-DIALECT feature: `x.f(y)` falls
     // back to the ordinary call `f(x, y)` when the receiver type has no member
     // named `f`. Member lookup runs first and wins outright, so the fallback
