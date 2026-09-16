@@ -16,6 +16,7 @@
 # Usage (on the CONTAINER — it has both compilers; the QNAP never builds):
 #   bash scripts/gen_mangle_oracle.sh            # writes tests/unit/mangle_oracle.inc
 #   bash scripts/gen_mangle_oracle.sh OUTFILE    # writes elsewhere (the drift gate)
+#   MANGLE_CORPUS=path ...                       # another corpus (the gate's negative control)
 #
 # ⚠️ Regeneration happens on the CONTAINER but the SOURCE OF TRUTH is the repo
 # tree: scp the fresh .inc back to the local tree IMMEDIATELY — the next rsync
@@ -30,7 +31,7 @@ cd "$(dirname "$0")/.."
 
 GXX="${GXX:-g++}"
 CLANGXX="${CLANGXX:-clang++}"
-corpus=tests/abi/mangle_corpus.cpp
+corpus="${MANGLE_CORPUS:-tests/abi/mangle_corpus.cpp}"
 out="${1:-tests/unit/mangle_oracle.inc}"
 dir="$PWD/tmp/mangle_oracle"
 

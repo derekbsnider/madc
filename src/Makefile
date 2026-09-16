@@ -1177,7 +1177,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
 	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/vector_abi_gate.sh
-	@cd .. && bash scripts/mangle_abi_gate.sh
+	@cd .. && bash scripts/mangle_abi_gate.sh --selftest
 	@cd .. && bash scripts/emitc_sret_gate.sh
 	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh
 	@cd .. && bash scripts/emit_layout_gate.sh

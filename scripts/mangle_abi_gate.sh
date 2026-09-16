@@ -11,7 +11,11 @@
 # header records compiler versions, which legitimately differ per host).
 #
 # Lanes:
-#   drift — regenerate → row-diff against the checked-in .inc            (phase 0)
+#   drift    — regenerate → row-diff against the checked-in .inc         (phase 0)
+#   selftest — `--selftest` (what fulltest runs): drift, PLUS the negative
+#              control — a copy of the corpus with one extra shape must come
+#              back as a row diff. A gate that cannot be shown to fail is not
+#              a gate; this proves the comparison bites on every run.
 #   (phase 5 adds the end-to-end lane: madc --std=c++20 -c corpus → nm, set-equal
 #    to the oracle — the madc↔g++ ABI parity acceptance of the design's §8.)
 #
@@ -22,9 +26,12 @@
 # Run from the repo root (fulltest does).
 set -u
 cd "$(dirname "$0")/.."
-ulimit -t 120 2>/dev/null
+ulimit -t 180 2>/dev/null
 
 fail() { echo "mangle_abi_gate: $1"; exit 1; }
+
+selftest=0
+case "${1:-}" in --selftest) selftest=1;; "") ;; *) fail "unknown argument: $1 (only --selftest)";; esac
 
 inc=tests/unit/mangle_oracle.inc
 [ -f "$inc" ] || fail "no $inc — run scripts/gen_mangle_oracle.sh on the container and scp it back"
@@ -42,4 +49,23 @@ fi
 n=$(rows "$inc" | grep -c .)
 [ "$n" -ge 100 ] || fail "only $n oracle rows — the corpus no longer exercises the shapes (non-vacuity floor 100)"
 echo "mangle_abi_gate: [drift] OK — $n oracle rows; g++ and clang++ agree with the checked-in oracle"
+
+if [ "$selftest" = 1 ]; then
+	# NEGATIVE CONTROL: the same pipeline over a corpus with ONE more shape
+	# must produce exactly one more row than the checked-in oracle, and the
+	# row-diff must see it. If it cannot, the drift lane above proved nothing.
+	probe="$PWD/tmp/mangle_oracle_selftest.cpp"
+	drifted="$PWD/tmp/mangle_oracle_selftest.inc"
+	rm -f "$probe" "$drifted"
+	cp tests/abi/mangle_corpus.cpp "$probe"
+	echo 'void mangle_gate_selftest_drift(int, const char *) {}' >> "$probe"
+	MANGLE_CORPUS="$probe" bash scripts/gen_mangle_oracle.sh "$drifted" >/dev/null \
+		|| fail "[selftest] the probe corpus did not regenerate — the negative control could not run"
+	nd=$(rows "$drifted" | grep -c .)
+	[ "$nd" -eq $((n + 1)) ] || fail "[selftest] NEGATIVE CONTROL FAILED — the probe corpus has one extra shape but yielded $nd rows against $n"
+	if cmp -s <(rows "$inc") <(rows "$drifted"); then
+		fail "[selftest] NEGATIVE CONTROL FAILED — an extra corpus shape produced no row diff; the gate cannot see drift"
+	fi
+	echo "mangle_abi_gate: [selftest] OK — one extra corpus shape is detected as drift ($n → $nd rows)"
+fi
 echo "mangle_abi_gate: OK"
