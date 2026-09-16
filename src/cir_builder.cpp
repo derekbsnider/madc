@@ -17141,34 +17141,6 @@ static bool deduce_param_against_class(const std::string &pspell,
 	return false;
 }
 
-static std::string template_placeholder_spelling(
-	const std::string &in, const std::vector<std::string> &params)
-{
-	std::string out;
-	for (size_t i = 0; i < in.size(); ) {
-		unsigned char c = (unsigned char)in[i];
-		if (isalpha(c) || in[i] == '_') {
-			size_t j = i + 1;
-			while (j < in.size()) {
-				unsigned char d = (unsigned char)in[j];
-				if (!isalnum(d) && in[j] != '_') break;
-				++j;
-			}
-			std::string ident = in.substr(i, j - i);
-			int pidx = -1;
-			for (size_t k = 0; k < params.size(); ++k)
-				if (params[k] == ident) { pidx = (int)k; break; }
-			if (pidx >= 0)
-				out += "$T" + std::to_string(pidx);
-			else
-				out += ident;
-			i = j;
-			continue;
-		}
-		out += in[i++];
-	}
-	return out;
-}
 
 static bool bind_member_template_param(const std::string &pattern,
 	const std::string &actual, const std::vector<std::string> &params,
@@ -17197,7 +17169,7 @@ static bool bind_member_template_param(const std::string &pattern,
 			return norm_type_w2(it->second) == norm_type_w2(base);
 		}
 	}
-	if (template_placeholder_spelling(p, params) != p)
+	if (itanium_substitute_tparams(p, params) != p)
 		return true;
 	return norm_type_w2(p) == norm_type_w2(a);
 }
@@ -17317,10 +17289,10 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	std::vector<std::string> params;
 	for (const std::string &p : callee->template_param_spellings)
 		params.push_back(desugar_member_type_spelling(owner,
-			template_placeholder_spelling(
+			itanium_substitute_tparams(
 				p, callee->template_param_names)));
 	std::string ret = desugar_member_type_spelling(owner,
-		template_placeholder_spelling(
+		itanium_substitute_tparams(
 			callee->template_return_spelling,
 			callee->template_param_names));
 	const std::string &mname = callee->method_display_name.empty()
@@ -18387,7 +18359,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 					qmap[phead] = qhead;   // fully-qualified head for mangling
 					FFDBG(fprintf(stderr, "[FFCALL] %s param[%zu] phead=%s -> qhead='%s' off=%zu\n",
 						name.c_str(), i, phead.c_str(), qhead.c_str(), offs[i]));
-				} else if (template_placeholder_spelling(pspell, ov.template_params)
+				} else if (itanium_substitute_tparams(pspell, ov.template_params)
 					   == pspell) {
 					// CONCRETE class param (use_facet's `const locale&`):
 					// no template-id to deduce against — match the param

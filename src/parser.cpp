@@ -5099,6 +5099,70 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
 // `referent-identity&`, recursively (`int*&` -> "int32_t*&"), the rendering
 // rule template_type_arg_spelling already applies to a use-site reference
 // argument for the same reason.
+// C++ SYMBOL MANGLING phase 3c: the Itanium member-template specialization
+// symbol a USER class's member-function-template product defines
+// (_ZN3Box4convIiEET_S1_ — g++/clang's), so its body and every call agree and
+// a madc object links into a g++ program. Composed EXACTLY as the library
+// member-template CALL path does (CirBuilder::member_template_method_call):
+// the same encoder itanium_mangle_member_template_sub, the same $Tn placeholder
+// speller (itanium_substitute_tparams), over the pattern's OWN spellings
+// (template_param_spellings / template_return_spelling captured by
+// stamp_member_template_pattern) and the deduced concrete arguments. Empty =
+// keep the internal name: a library class (the CALL path already binds it), a
+// pack / non-type parameter (the encoder takes type arguments), a missing
+// spelling, an unencodable result.
+static std::string user_member_template_product_symbol(Program &pgm,
+	DataDefCLASS *owner, FuncDef *pattern,
+	const std::vector<DataDef *> &concrete_type_args)
+{
+    if ( !owner || !pattern || !pgm.cpp_symbol_mangling_enabled()
+      || !pgm.class_owns_its_cpp_symbols(owner)
+      || pattern->template_param_names.empty()
+      || pattern->template_return_spelling.empty()
+      || concrete_type_args.size() != pattern->template_param_names.size() )
+	return std::string();
+    std::vector<std::string> targs;
+    for ( size_t i = 0; i < concrete_type_args.size(); ++i )
+    {
+	if ( (i < pattern->template_param_is_pack.size()
+	      && pattern->template_param_is_pack[i])
+	  || (i < pattern->template_param_is_type.size()
+	      && !pattern->template_param_is_type[i]) )
+	    return std::string();
+	DataDef *a = concrete_type_args[i];
+	if ( !a )
+	    return std::string();
+	std::string sp = cpp_spelling_for_mangle(a, a->is_reference());
+	if ( sp.empty() )
+	    return std::string();
+	targs.push_back(sp);
+    }
+    std::vector<std::string> params;
+    // template_param_spellings holds the EXPLICIT declared parameters (no hidden
+    // __this) — skipped_template_function_signature_spellings captured them, the
+    // same set the library CALL path (member_template_method_call) spells.
+    for ( size_t i = 0; i < pattern->template_param_spellings.size(); ++i )
+	params.push_back(itanium_substitute_tparams(
+	    pattern->template_param_spellings[i], pattern->template_param_names));
+    std::string ret = itanium_substitute_tparams(
+	pattern->template_return_spelling, pattern->template_param_names);
+    std::string name = pattern->method_display_name;
+    if ( name.empty() )
+	return std::string();
+    std::string sym = itanium_mangle_member_template_sub(
+	owner->cpp_linkage_spelling(), name, targs, ret, params,
+	pattern->is_const_method);
+    if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
+	return std::string();
+    for ( size_t i = 2; i < sym.size(); ++i )
+    {
+	char c = sym[i];
+	if ( !isalnum((unsigned char)c) && c != '_' && c != '.' && c != '$' )
+	    return std::string();
+    }
+    return sym;
+}
+
 static std::string template_binding_identity_spelling(DataDef *dd)
 {
     if ( !dd )
@@ -61736,6 +61800,30 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
     if ( fd->local_emit_name.empty() )
 	fd->local_emit_name = inst_name;
+    // C++ SYMBOL MANGLING phase 3c: the freshly-parsed product of a USER class's
+    // member template emits the Itanium member-template symbol on its OWN-body
+    // field (local_emit_name — the phase-2 member convention), so its body and
+    // every call (via tc->mti_instance) agree and link with g++. Empty = keep
+    // the internal name (library owner, pack / non-type params, unspellable).
+    if ( DataDefCLASS *mtowner =
+	     dynamic_cast<DataDefCLASS *>(fd->member_template_owner) )
+    {
+	std::string mtsym = user_member_template_product_symbol(
+	    *this, mtowner, fd, concrete_type_args);
+	if ( !mtsym.empty() )
+	{
+	    Variable *pv = tkProgram ? tkProgram->findVariable(strpool, inst_name)
+				     : NULL;
+	    if ( !pv )
+		pv = findVariable(inst_name);
+	    FuncDef *pfd = pv ? dynamic_cast<FuncDef *>(pv->type) : NULL;
+	    if ( pfd )
+	    {
+		pfd->local_emit_name = mtsym; // allowed-exception: registration recipe field
+		body_symbol_keys[mtsym] = pv->name;
+	    }
+	}
+    }
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti alias var=" << tc->var.name
