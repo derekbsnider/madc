@@ -147,9 +147,19 @@ mv "$UMB_TMP.grd" "$UMB_TMP.flt"
 # embedded umbrella rides into .rodata verbatim (gen_embedded_headers.sh
 # string tables survive llvm-strip), so the binary itself names its
 # prelude's provenance. A C comment — madc's lexer drops it at serve time.
+# The umbrella was flattened as C (-x c above), so Apple's __BEGIN_DECLS /
+# __END_DECLS — `extern "C" {` under __cplusplus — expanded EMPTY and the C
+# library surface arrived with no language linkage. Under madc's C++-presenting
+# modes a function of C++ linkage mangles (C++ symbol mangling, design §4.3),
+# so every libc prototype here would have imported as _Z4sqrtd instead of the
+# `sqrt` the dylibs export (testimportiface). Restore what the real headers
+# say: the whole C surface has C language linkage in a C++ TU. A C TU sees no
+# linkage-spec at all, exactly as before.
 {
     printf '/* MADC-DARWIN-PRELUDE-PROVENANCE: %s */\n' "$PROVENANCE"
+    printf '#ifdef __cplusplus\nextern "C" {\n#endif\n'
     cat "$UMB_TMP.flt"
+    printf '#ifdef __cplusplus\n}\n#endif\n'
 } > "$UMB_TMP"
 rm -f "$UMB_TMP.flt"
 
