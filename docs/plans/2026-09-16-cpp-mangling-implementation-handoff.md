@@ -421,6 +421,19 @@ OK; array reducers f1..f4 == g++; doctest unit binaries rc=0; 17 targeted
 tests (phase, operator, out-of-line template ctor, project) 17/17 JIT, 16/16
 exe, 16/16 obj; 0 build warnings.
 
+## THE SEAM — IN PROGRESS (2026-09-16): pre-build green; gate regressions fixed; battery pending
+
+Pre-build (static gates, `make release`, `hosted-x86-64-windows`, `hosted-arm64-macos`): builds green,
+0 warnings. The static gates found three defects no JIT suite covers, each fixed in its own commit:
+`dd7a063bf` (smaug_gate: the C-linkage clash compared a desugared prior spelling against a raw fresh
+one — ONE owner `FuncDef::mangle_spelling_for`), `7d0ed4e1d` (forest_bind_gate [method]: a
+grove-restored USER member is bound through `bind_declared_cpp_symbol` at restore; the bound-method
+walk seeds by own-body symbol and translates callees via `body_registration_key`). A first draft of
+the latter also widened the PACK fixpoint's reference test to `local_emit_name` and regressed
+[vecnewspec] (member-template placeholders alias their last product on `local_emit_name`) — bisected
+against phase-4 and HEAD binaries, dropped. Launcher: `tmp/seam_stage2.sh` (gates, then
+`tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
+
 ## THE SEAM — NEXT: the ONE battery for the whole (c)
 
 Pre-build EVERY toolchain FIRST (feedback_seam_prebuild_all_toolchains):
