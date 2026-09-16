@@ -105,6 +105,15 @@ $(MADCGIT_BUILD_DIR)/command: FORCE
 $(MADCGIT_LIBRARY): $(MADCGIT_SRC) $(MADCGIT_HDRS) $(MADCGIT_LINK_PREREQ) $(MADCGIT_BUILD_DIR)/command | madcgit-deps
 	mkdir -p $(dir $@)
 	$(CXX) $(MADCGIT_LINK_FLAGS) -o $@ $(CXXFLAGS) $(DEFINES) -I. $(MADCGIT_CFLAGS) $(MADCGIT_SRC) $(MADCGIT_LIBS)
+ifdef HOSTED_DARWIN_TARGET
+	# Linux-parity: the module loader (madc_module_open) looks for the image
+	# FLAT beside the binary — $(LIBDIR)/libmadcgit.dylib — the same place the
+	# Linux build puts libmadcgit.so. The darwin build nests it per-arch (for
+	# the two-arch cross build), so also place a flat copy of THIS arch, so the
+	# un-packaged release binary (the darwin suite; a from-source mac dev) finds
+	# it exactly as on Linux. Packaging installs it flat the same way.
+	cp -f $@ $(LIBDIR)/libmadcgit.dylib
+endif
 
 $(BINDIR)/test_gitrepo: $(TESTDIR)/test_gitrepo.cpp $(MADCGIT_SRC) $(MADCGIT_HDRS) $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB) | madcgit-deps
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) -I. $(MADCGIT_CFLAGS) $< $(MADCGIT_SRC) $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(MADCGIT_LIBS) $(LIBS)
