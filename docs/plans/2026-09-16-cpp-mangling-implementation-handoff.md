@@ -85,7 +85,7 @@ KEY FACTS FOR PHASE 1 (verified):
 ## PHASE 1 — CORE LANDED (2026-09-16, `9ba213130` + darwin #3 `0a07c75bc`; full JIT suite pending)
 
 What landed (see the commit message for the full map): `Program::cpp_free_fn_mangling_enabled()`
-(+ `FEATURE_CPP_MANGLE`, default ON, `-DFEATURE_CPP_MANGLE_OFF` = legacy); the global tracking gate
+(the `FEATURE_CPP_MANGLE` bring-up guard — RETIRED in phase 5, the predicate IS `presents_as_cpp()`); the global tracking gate
 admits every FILE-SCOPE C++-linkage function (`compounds.empty()`, main excluded); file-scope
 `extern "C"` records `c_linkage`; a tracked bodied function mints `emit_symbol` via
 `namespace_cpp_function_symbol` (asm label wins; `internal_linkage` → `_ZL…`);
@@ -356,21 +356,79 @@ class 'char_traits_char'" at iosfwd:114) was a downstream symptom of the same
 dropped bodies, not a type-name restore defect — KG Gap
 pack_restore_default_template_arg_instance_name resolved by this fix.
 
-## PHASE 5 — NEXT (not started): migration sweep + the ONE seam battery
+## PHASE 5 — LANDED (code): the migration sweep — commit `9100020ac`
 
-- Decide (OWNER-flavored): do LIBRARY class/template materializations (the
-  ~900 `_basic_string_char_…` internal weak bodies a madcide object carries)
-  move onto Itanium names? Today they are an internal-name island by design
-  (bind_external_class_symbols re-binds their call symbols); g++ emits them as
-  weak Itanium symbols. Moving them = ABI-identical objects for header inline
-  bodies too; cost = every library materialization site.
-- Remove the FEATURE_CPP_MANGLE guard (cpp_symbol_mangling_enabled → presents_as_cpp).
-- End-to-end corpus lane; migration sweep of any remaining `__oN` / `Class__` /
-  `__ns_` emission (the registration keys stay).
-- Then the SEAM: pre-build EVERY toolchain (static gates, `sync build release
-  win`, `make -k hosted-arm64-macos`) BEFORE the battery
-  (feedback_seam_prebuild_all_toolchains); ONE fulltest + exe + obj + packed +
-  headerless + c-testsuite + wine + macOS cross; lane records; develop merge.
+THE SWEEP (the artifact, not the recipe): `tests/abi/mangle_corpus.cpp` minus
+the 17 lines madc's parser refuses (below) compiled with `madc --std=c++20 -c`
+and `g++ -c`, defined function symbols set-compared (tmp/p5 on the container).
+118 of 124 byte-identical on the first run; the residues were real and are
+closed:
+
+- **Unary-first operator peers** (`Foo__operator*_un` / `&_un` / `++_un`
+  emitted): the class member registrar's peer-retag branch (parser.cpp
+  ~49157) wrote the internal `_un` KEY over the unary peer's already-bound
+  Itanium `local_emit_name`. Now the symbol stays, `body_symbol_keys` follows
+  the moved key; an unbound peer (library class) keeps the old behaviour.
+- **Array parameter decay** (`_Z5f_arri`): parseFunction decayed the DataDef
+  (getPointerType, ~66474) but the spelling never learned of it → `++param_ptr_depth`
+  at the decay; a multi-dim parameter spells its decayed declarator
+  `int (*)[3]`; the encoder gained the Itanium ARRAY production (`A<dim>_`,
+  a substitution candidate like every decorated type): PA3_i / PA3_A4_i / PPi
+  (3 new oracle rows → 161, g++ == clang++; ORACLE_CHECKs added).
+- **Encoder refusal**: a spelling whose name component is not an identifier
+  sets `TypeNode::invalid`; every entry point `settled()`s to the EMPTY
+  symbol (the callers' existing bail path) — `int (*)[3]` once reached an
+  object as `14int (*)[3]`. Unit checks: `int (*` and `{lambda(int)#1}` → "".
+- **Instantiation products bind WEAK**: `_ZN3BoxIiEC1Ev` was T (g++: W) —
+  a class template's members are minted from the pattern at instantiation
+  WITHOUT parseFunction, so its vague-linkage grant never saw them. Stamped
+  where every product registers: `addVariable`'s `vfINSTPRODUCT` arm sets
+  `FuncDef::vague_linkage` (ONE owner for "product ⇒ vague"; parseFunction's
+  own grant stays for the bodies it parses). Two madc objects using Box<int>
+  no longer collide at link.
+- **FEATURE_CPP_MANGLE retired**: `cpp_symbol_mangling_enabled()` is
+  `presents_as_cpp()`.
+
+GATE (`scripts/mangle_abi_gate.sh --interop`, fulltest): beside ALIEN
+(madc ⊆ g++) the two definer objects of ONE program are checked for MISSING
+(g++ ⊆ madc — set EQUALITY, the design §8 acceptance) and STRONG (nothing
+madc binds T that g++ binds W); each with a negative control. The interop
+corpus grew the sweep shapes (unary-first `operator*`/`operator++` pairs,
+`add4(int[4])`, a `Cell<T>` class template with out-of-class members used by
+both TUs). Lane A: 36 symbols set-equal, none bound stronger; output identical.
+
+DECIDED (default, owner may flip): library class/template materializations
+(the internal-name island, `bind_external_class_symbols` re-binds their calls)
+STAY on internal names for (c) — they are madc-internal bodies never named by
+a g++ TU; moving them costs every library materialization site for no link
+that fails today.
+
+LEFT, RECORDED (own sessions, not (c) blockers):
+- KG Gap `corpus_end_to_end_lane`: the full corpus as a `--corpus` lane waits
+  on 4 PARSER shapes (17 errors): explicit instantiation directives
+  (`template struct Box<int>;`, 11×), out-of-class conversion-operator
+  definitions (`Foo::operator bool() const {}`), `ns::Bar::Bar()` definitions
+  (the `qualified_namespace_function_definition` family), `::operator new(n)`.
+- KG Gap `long_long_distinct_datadef_lp64`: the ONLY symbol divergence left in
+  the reduced corpus — `_Z7f_llongl`/`_Z8f_ullongm` vs g++ `x`/`y`
+  (`dd_platform_longlong()==&ddINT64` on glibc LP64; the darwin split is the
+  model to generalize; type-system session with the full battery).
+- madc emits a class template's ctor/dtor bodies eagerly on mention (g++ only
+  on ODR-use) — extra WEAK definitions of correct symbols, harmless at link.
+
+VALIDATION (container build 2026-09-16 21:15): gate `--selftest --interop`
+OK; array reducers f1..f4 == g++; doctest unit binaries rc=0; 17 targeted
+tests (phase, operator, out-of-line template ctor, project) 17/17 JIT, 16/16
+exe, 16/16 obj; 0 build warnings.
+
+## THE SEAM — NEXT: the ONE battery for the whole (c)
+
+Pre-build EVERY toolchain FIRST (feedback_seam_prebuild_all_toolchains):
+static gates, `remote_build.sh sync build release win`, `make -k
+hosted-arm64-macos`; THEN one fulltest + exe + obj + packed + headerless +
+c-testsuite + wine + macOS cross; `scripts/lane_ledger.sh record` per lane;
+`/dupaudit` scoped to the feature; develop merge (owner-visible). Master
+promotion = OWNER after full (c) + darwin #1 probe round.
 
 ## SETTLED STATE (evidence — do NOT re-derive)
 
