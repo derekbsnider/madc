@@ -211,12 +211,17 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
   together — but AOT/`--exe`/`--obj`, the forest pack, headerless, and every cross-TU project
   (SMAUG) exercise the symbols and MUST be in the merge-wave battery. madc-to-madc linking is
   preserved (both sides mangle identically); the NEW capability is madc-to-g++/clang linking.
-- **Highest risk: Itanium `_sub` encoder completeness across ARBITRARY user types.** The
-  encoders (`itanium_mangle_member_sub`, `nested_sub`, …) are proven on the specific `std::`
-  shapes library binding needs; user code brings template instantiations, nested classes, user
-  namespaces, cv/ref-qualified members, anonymous types. Each shape must mangle byte-identical
-  to g++ — verify with an oracle harness (`g++ -c` → `nm`), and treat any mismatch as the Rule
-  #1 defect it is. This is where the work and the risk concentrate, not in the wiring.
+- **Encoder coverage — lower risk than it first looks.** The `_sub` encoders
+  (`itanium_mangle_member_sub`, `nested_sub`, …) already mangle the HARDEST symbols in
+  existence — `std::__cxx11::basic_string<char, char_traits<char>, allocator<char>>`, nested
+  template instantiations, ABI tags, substitution compression — because `std::` binding fails
+  to *link* otherwise (and it doesn't). Arbitrary USER types (a `class Foo`, `send(channel&,
+  var&)`) are strictly simpler and are largely already covered. So phase 0 is a VERIFICATION
+  harness (`g++ -c` → `nm`, assert byte-equal over a user-shape corpus + the known `_sub`
+  cases), not building the mangler — expect small gap-fills (a construct no `std::` binding
+  happened to exercise) rather than a rewrite. Any mismatch is still a Rule #1 defect to fix.
+  Known documented gap, OUT of scope: integer non-type template args from spelling alone
+  (`madc_mangle.cpp:40-58`) — user overloads in the motivating cases carry class/builtin params.
 - **The reconciliation change is a heavily-battered path.** Guard behind a `FEATURE_*` macro
   during bring-up (`feature-guards`); keep the same-signature forward-decl→def path byte-for-byte.
 - **C-mode error** may surface latent duplicate declarations in existing C tests — triage each
