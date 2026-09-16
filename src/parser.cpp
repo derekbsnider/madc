@@ -70392,15 +70392,22 @@ fnptr_decl_arm_head:
 	    || (is_system_header_path(TokenBase::_parse_file)
 	     && (findVariable(source_id)
 	      || namespace_fn_overload_sets.count("::" + source_id)))
-	    // C++ SYMBOL MANGLING phase 1: EVERY file-scope function of C++
-	    // linkage (see cpp_symbol_mangling_enabled). File scope only — a
-	    // block-scope declaration or GNU nested definition inside a body
-	    // (compounds non-empty) keeps the legacy path; main is the entry
-	    // point and never mangles; extern "C" fails the linkage test above;
-	    // a prototype of a MACHINE-REGISTERED name (libc_signatures, a host
-	    // callback — every one a bare C symbol) redeclares the C library's
-	    // function and inherits its linkage in parseFunction.
-	    || (cpp_symbol_mangling_enabled() && compounds.empty()
+	    // C++ SYMBOL MANGLING phase 1: EVERY function of C++ linkage (see
+	    // cpp_symbol_mangling_enabled) — at file scope AND declared at
+	    // block scope: a block-scope function declaration declares the
+	    // function in the enclosing namespace ([basic.scope.block],
+	    // [dcl.meaning]), so g++ names it _Z14fbgsb_delegatePKcPPc and a
+	    // header's `static inline` body calling its block-scope prototype
+	    // must import that symbol, not the bare name (forest_bind_gate
+	    // [silbody]: the frozen body imported `fbgsb_delegate`, the
+	    // consumer defined the Itanium one). A GNU nested DEFINITION inside
+	    // a body keeps the legacy name (the mint below requires file scope);
+	    // main is the entry point and never mangles; extern "C" fails the
+	    // linkage test above; a prototype of a MACHINE-REGISTERED name
+	    // (libc_signatures, a host callback — every one a bare C symbol)
+	    // redeclares the C library's function and inherits its linkage in
+	    // parseFunction.
+	    || (cpp_symbol_mangling_enabled()
 	     && source_id != "main"
 	     && !prior_declaration_is_registration(source_id))) )
     {
@@ -70615,6 +70622,7 @@ fnptr_decl_arm_head:
 	    else if ( fd && ns_overload_tracked
 		   && cpp_symbol_mangling_enabled() && !fd->c_linkage
 		   && fn_template_instantiation_depth == 0
+		   && compounds.empty()	// a GNU nested definition keeps its legacy name
 		   && !fd->declaration_only && fd->emit_symbol.empty() )
 	    {
 		std::string sym = namespace_cpp_function_symbol(
