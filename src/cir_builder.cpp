@@ -31785,9 +31785,17 @@ node_t CirBuilder::translate_module(Program *prog)
 		// import). Emitting only the transitively-reachable set matches live's ODR.
 		std::set<std::string> emit_set;
 		std::vector<std::string> stack;
+		// A bound USER member is referenced under its Itanium own-body
+		// symbol (local_emit_name — the restore's bind_declared_cpp_symbol,
+		// what every caller imports), while this set is keyed by the
+		// registration name: the same symbol -> key translation the pack
+		// fixpoint uses (body_registration_key), applied at the seed and
+		// at every callee edge below.
 		for (std::map<std::string, FuncDef *>::iterator it = bound_methods.begin();
 		     it != bound_methods.end(); ++it)
-			if (referenced_funcs.count(it->first))
+			if (referenced_funcs.count(it->first)
+			    || (it->second && !it->second->local_emit_name.empty()
+				&& referenced_funcs.count(it->second->local_emit_name))) // allowed-exception: reachability seed — reads an existing symbol, builds none
 				stack.push_back(it->first);
 		while (!stack.empty()) {
 			std::string sym = stack.back();
@@ -31804,9 +31812,11 @@ node_t CirBuilder::translate_module(Program *prog)
 			// Sibling bound dtors referenced only via cleanup attrs.
 			cir_collect_cleanup_attr_fns(body->as_node(), callees);
 			for (std::set<std::string>::iterator ci = callees.begin();
-			     ci != callees.end(); ++ci)
-				if (bound_methods.count(*ci) && !emit_set.count(*ci))
-					stack.push_back(*ci);
+			     ci != callees.end(); ++ci) {
+				const std::string &ck = prog->body_registration_key(*ci);
+				if (bound_methods.count(ck) && !emit_set.count(ck))
+					stack.push_back(ck);
+			}
 		}
 		// Emit proto + def in declaration order (per class, method order) so the
 		// module matches a live compile's source order byte-for-byte.

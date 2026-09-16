@@ -24689,6 +24689,32 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pf.fd   = mfd;
 		pf.mvar = mv;
 		forest_pending_funcs.push_back(pf);
+		// C++ SYMBOL MANGLING: a restored USER class member takes its
+		// Itanium own-body symbol from the ONE owner the live registrar
+		// uses (bind_declared_cpp_symbol's user arm -> local_emit_name +
+		// the symbol->registration-key record). The producer froze the
+		// body under that symbol (the grove holds _ZN7Counter3addEi); a
+		// consumer's calls must name it, never the registration key
+		// (forest_bind_gate [method]: Counter__add was an undefined
+		// import). The kind as the live registrar's switch derives it.
+		// A library class (from_system_header — the pack) is untouched:
+		// the internal-name island, re-bound by bind_external_class_symbols.
+		if ( class_owns_its_cpp_symbols(cdd) )
+		{
+		    const std::string &disp = mfd->method_display_name;
+		    CppSymKind kind = std::find(cdd->ctors.begin(), cdd->ctors.end(), mv)
+					!= cdd->ctors.end()
+			? CppSymKind::Ctor
+			: (!disp.empty() && disp[0] == '~') ? CppSymKind::Dtor
+			: mv->name.compare(0, cdd->name.size() + 15,
+					   cdd->name + "__operator_conv") == 0
+			? CppSymKind::Conversion : CppSymKind::Method;
+		    bool is_op = kind == CppSymKind::Method
+			      && disp.compare(0, 8, "operator") == 0;
+		    std::string conv = kind == CppSymKind::Conversion && disp.size() > 9
+				     ? disp.substr(9) : std::string();
+		    bind_declared_cpp_symbol(cdd, mv, kind, disp, is_op, conv);
+		}
 	    }
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
