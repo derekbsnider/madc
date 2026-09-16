@@ -1,4 +1,9 @@
-# Free-Function Linkage & Overloading per `--std=` — Design
+# C++ Symbol Mangling & Overloading per `--std=` — Design
+
+> Scope decision resolved to **(c)** (owner, 2026-09-16): in c++/madc mode ALL user-defined
+> C++ symbols mangle Itanium so a madc-compiled `.o`/`.so` is ABI-identical to g++/clang.
+> The free-function slice (the darwin blocker) is phase 1 of that; it is NOT the whole feature.
+> Retitled from "Free-Function…" accordingly.
 
 **Status:** DRAFT for owner review (2026-09-16). Design only — implementation is a
 separate focused session (owner sequencing: draft here, implement fresh).
@@ -41,20 +46,30 @@ Owner, 2026-09-16 (memory `feedback_std_determines_semantics`,
 
 - **`--std=c##`** → C semantics. No overloading. A redefinition with a genuinely different
   signature is a **hard parse-time error** (matches gcc/clang: *"conflicting types for 'f'"*).
-- **`--std=c++##` / `--std=madc`** → C++ semantics. Free functions **mangle** (Itanium),
-  so overloads coexist as distinct linker symbols and are selected at the call site by
-  argument type. Default mode is `STD_MADC`.
+- **`--std=c++##` / `--std=madc`** → C++ semantics. **Every user-defined C++ symbol mangles
+  Itanium** — free functions, class members, operators, ctors, dtors, namespace functions —
+  so overloads coexist as distinct linker symbols selected at the call site by argument type,
+  AND a madc-compiled `.o`/`.so` is **ABI-identical to g++/clang**. Default mode is `STD_MADC`.
 - **`extern "C"` opts out** of mangling (bare symbol) and therefore cannot overload — the
   only exception, exactly as in C++. `main` is bare too (entry point, never mangled).
-- **Rule #1 governs: STRICT mangling, no heuristic.** A "mangle-only-on-collision" scheme
-  was proposed and REJECTED — it diverges from what gcc/clang actually do. Every
-  non-`extern "C"`, non-`main` free function mangles in C++/madc mode, unique or not.
-  Blast radius is an implementation/migration concern, not a semantics knob.
+- **Rule #1 governs: STRICT mangling, no heuristic, no partial scope.** Two schemes were
+  proposed and REJECTED: "mangle-only-on-collision" (diverges from gcc/clang), and "(b) free
+  functions only, leave user members on the internal `__oN` scheme" — the latter emits
+  `Foo__bar` where g++ emits `_ZN3Foo3barEv`, so a `--std=c++` object would not link against
+  real C++: "C++ mode" that isn't ABI-compatible is itself the Rule #1 violation. Every
+  non-`extern "C"`, non-`main` user C++ function mangles, unique or not. Blast radius is an
+  implementation/migration concern, not a semantics knob.
+- **The internal `Class__method__oN` / `__ns__oN` scheme is RETIRED in c++/madc mode.** Itanium
+  encodes param types into the symbol, so it subsumes the overload disambiguation `__oN`
+  provided; the SAME `_sub` encoders that bind libstdc++ today emit user symbols too — one
+  mangling path (Rule #7). `__oN`/internal names may survive only for genuinely madc-internal,
+  non-user-facing symbols (compiler-emitted runtime machinery), never for a symbol a g++
+  program could name.
 
-This is consistent with `cpp-first-api`: `extern "C"` is *already* defined as the C-host
-boundary, and namespace publics *already* "resolve mangled-direct." Strict free-function
-mangling applies that existing line uniformly instead of the current
-everything-is-secretly-`extern "C"` behavior.
+This is consistent with `cpp-first-api`: `extern "C"` is *already* the C-host boundary, and
+namespace publics *already* "resolve mangled-direct." (c) applies that Itanium line uniformly
+to EVERY user C++ symbol, replacing the current split (Itanium for library binding, internal
+`__oN` for user-bodied) that made "C++ mode" quietly non-ABI-compatible.
 
 ## 3. Current state (verified — `file:line`)
 
@@ -110,17 +125,14 @@ NTTP can't be encoded from spelling alone) — **out of scope** here, as free-fu
 in the motivating cases carry class/builtin params, not NTTPs; note it so the implementer
 doesn't trip on it.
 
-**Open decision (flag for owner — §10.1).** *Library* (declaration-only) members and free
-functions are ALREADY real Itanium (`itanium_mangle_*_sub`, §3) — that path is untouched.
-The question is only the *user-bodied* functions: user members/namespace functions today get
-a unique INTERNAL symbol (`Class__method__oN` / `__ns__oN`) and already overload correctly;
-user global free functions get nothing → bare. Two scopes:
-- **(b) recommended:** give user free functions Itanium via the same `_sub` encoders library
-  binding uses; leave user members on their working internal scheme. Fixes the blocker, touches
-  no working path.
-- **(c):** unify all user-bodied functions (free + members + namespace) onto strict Itanium —
-  full symbol-level canon, larger, re-mangles the working member path for no functional gain
-  today (matters only if madc later emits C++ for gcc/clang to consume).
+**Scope = (c) (resolved).** *Library* (declaration-only) members and free functions are ALREADY
+real Itanium (`itanium_mangle_*_sub`, §3). This design brings EVERY *user-bodied* C++ function
+onto the SAME Itanium encoders: user members/operators/ctors/dtors move off `Class__method__oN`,
+user namespace functions off `__ns__oN`, user global free functions off bare — all → Itanium in
+c++/madc mode. Both the definition and every call site route through `call_emit_symbol`
+(§3)/the member emit path, so switching the emit symbol at the assignment site keeps def and
+calls consistent. Rejected alternative (b) (free functions only) left user members emitting
+`Foo__bar` — non-ABI-compatible with g++, a Rule #1 violation (§2).
 
 ### 4.2 Overload registration at global scope
 
@@ -193,16 +205,25 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
 
 ## 7. Blast radius & risks
 
-- **Every user free-function symbol changes in C++/madc mode** (strict ruling). Mitigated by
-  centralized emit (§3) — both def and calls move together — but AOT/`--exe`/`--obj`, the
-  forest pack, and any cross-TU project (SMAUG) must be in the merge-wave battery.
-- **The reconciliation change is the highest-risk edit** (heavily-battered path). Guard behind
-  a `FEATURE_*` macro during bring-up (`feature-guards`); keep the same-signature path
-  byte-for-byte.
-- **C-mode error** could surface latent duplicate declarations in existing C tests — triage
-  each against gcc (some may be real bugs the silent reconcile hid).
-- **`main` and other special names** — enumerate against gcc/clang (only `main` is special for
-  linkage; static/inline still mangle).
+- **EVERY user C++ symbol changes in c++/madc mode** (free + member + operator + ctor + dtor +
+  namespace) — the `__oN` scheme is retired (§2). This is the (c) scope's real cost. Mitigated
+  by centralized emit (§3, `call_emit_symbol` + the member emit path) — def and calls move
+  together — but AOT/`--exe`/`--obj`, the forest pack, headerless, and every cross-TU project
+  (SMAUG) exercise the symbols and MUST be in the merge-wave battery. madc-to-madc linking is
+  preserved (both sides mangle identically); the NEW capability is madc-to-g++/clang linking.
+- **Highest risk: Itanium `_sub` encoder completeness across ARBITRARY user types.** The
+  encoders (`itanium_mangle_member_sub`, `nested_sub`, …) are proven on the specific `std::`
+  shapes library binding needs; user code brings template instantiations, nested classes, user
+  namespaces, cv/ref-qualified members, anonymous types. Each shape must mangle byte-identical
+  to g++ — verify with an oracle harness (`g++ -c` → `nm`), and treat any mismatch as the Rule
+  #1 defect it is. This is where the work and the risk concentrate, not in the wiring.
+- **The reconciliation change is a heavily-battered path.** Guard behind a `FEATURE_*` macro
+  during bring-up (`feature-guards`); keep the same-signature forward-decl→def path byte-for-byte.
+- **C-mode error** may surface latent duplicate declarations in existing C tests — triage each
+  against gcc (some may be real bugs the silent reconcile hid).
+- **`main` + special names** — enumerate vs gcc/clang (only `main` is bare; static/inline still
+  mangle). madc-internal compiler-emitted machinery (`__madc_*` runtime helpers) is `extern "C"`
+  / internal by construction and stays as-is.
 
 ## 8. Test / validation plan
 
@@ -214,39 +235,49 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
   - `extern "C"` cannot overload (two `extern "C"` different sigs → error, both modes);
   - `main` stays bare; a call across TUs binds the mangled symbol;
   - C-mode conflicting-types diagnostic wording vs gcc.
+- **ABI interop (the (c) acceptance, Rule #1):** a symbol-equality harness — for a corpus of
+  free/member/operator/ctor/dtor signatures, assert madc's emitted symbol == `g++ -c` / `nm`
+  byte-for-byte; and a link test — a madc-compiled `.o` links against a g++-compiled TU that
+  calls its functions, and vice versa. Wire it into `fulltest`.
 - Acceptance: darwin-suite JIT back to 0 failures (the 4 madcide tests) via the cross-darwin
-  repro, then a real darwin-probe round-trip.
+  repro after phase 1, then a real darwin-probe round-trip; full (c) validated by the ABI
+  harness above.
 - Merge-wave battery: full `fulltest` + `--exe` + `--obj` + packed + headerless, c-testsuite,
   wine64, macos build, libcxx, genuine-win, darwin-suite. gcc-torture re-verify (C-mode error
   must not regress class-(a)).
 
 ## 9. Implementation phases (for the fresh session's plan)
 
-1. **Wire the mangler + `c_linkage` generalization** behind a feature guard: set the Itanium
-   emit symbol for a C++/madc, non-`extern "C"`, non-`main` free function via the SAME encoder
-   the `std::` matcher uses (§4.1); FIRST close the encoder gaps (namespaced `N…E`; verify
-   builtin codes) against a g++/clang oracle table (`g++ -c` a set of signatures, `nm` the
-   symbols, assert byte-equal). Generalize where `c_linkage` is set. Gate every decision on
-   `presents_as_cpp()`/`is_c_mode()`. Targeted tests: single free function mangles to the exact
-   g++ symbol; `extern "C"`/`main` stay bare.
-2. **Widen the global overload gate** (§4.2) so plain user functions register; confirm
-   call-site ranking + ambiguity/no-match diagnostics fire at global scope. Targeted tests:
-   two-overload resolution.
-3. **Reconciliation mode/signature awareness** (§4.4) + **C-mode diagnostic** (§4.5). Targeted
-   tests: forward-decl→def still reconciles; different-signature → overload (C++/madc) / error
-   (C).
-4. **Forest serialization** parity for the generalized linkage flag.
-5. **Migration sweep + merge-wave battery** (§7, §8); darwin round-trip; remove the feature
-   guard.
+0. **Oracle harness FIRST.** Build a g++/clang mangling oracle (`g++ -c` a corpus of
+   signatures — free/member/operator/ctor/dtor, builtins, pointers/refs/const, namespaces,
+   nested classes, templates — `nm` the symbols) and make `itanium_*_sub` reproduce every one
+   byte-identical. Close the encoder gaps (namespaced `N…E`, builtin codes, substitutions)
+   here, before any emit-symbol is switched. This de-risks every later phase.
+1. **Free functions** (unblocks the darwin gate) behind a `FEATURE_*` guard: Itanium emit
+   symbol for a c++/madc, non-`extern "C"`, non-`main` free function; generalize where
+   `c_linkage` is set; widen the global overload gate (§4.2) so plain user functions register;
+   reconciliation mode/signature awareness (§4.4) + C-mode diagnostic (§4.5). Targeted tests:
+   overloading by type, the `extern "C"` `send` shape, `extern "C"` can't overload, forward-decl
+   → def still reconciles, C-mode conflict errors.
+2. **Members / operators / ctors / dtors:** switch user-bodied member emit from
+   `Class__method__oN` (`unique_overload_symbol`) to the Itanium `_sub` encoders; **retire
+   `__oN` in c++/madc mode** (§2). Highest-volume change — every member call site moves.
+   Targeted tests: member overloading, a madc `.o` linking against a g++ TU and vice versa.
+3. **Namespace functions:** user-bodied namespace overloads off `__ns__oN` onto Itanium.
+4. **Forest serialization** parity for the generalized linkage flag + the new symbols.
+5. **Migration sweep + merge-wave battery** (§7, §8); darwin round-trip; add a madc↔g++
+   link-interop gate to `fulltest`; remove the feature guard.
 
 ## 10. Open decisions for owner
 
-1. **User-bodied scope (§4.1):** library members/free functions are already Itanium — no
-   change there. For USER-bodied functions: **(b)** Itanium for free functions only, leave user
-   members on their working internal `__oN` scheme (recommended — fixes the blocker, no working
-   path disturbed); or **(c)** unify all user-bodied functions onto strict Itanium (full canon,
-   larger, re-mangles a working path)?
-2. **Strictness confirmation:** the ruling is strict (every non-`extern "C"` free function
-   mangles, unique or not). Confirmed — flagged only because it drives the whole blast radius.
-   A unique free function that some external tool expects by bare name must be declared
-   `extern "C"` (the correct fix).
+1. **Scope — RESOLVED to (c)** (owner 2026-09-16): every user-defined C++ symbol mangles Itanium
+   in c++/madc mode so a madc object is ABI-identical to g++/clang; `__oN` retired. Not reopened.
+2. **Sequencing / gate boundary (the one still-open question):** phase 1 (free functions) alone
+   closes the darwin-suite blocker, but phases 2–3 (members/operators/namespace) are what make
+   c++/madc mode actually g++-ABI-compatible. **Does the master-promotion gate require the full
+   (c) feature, or may the darwin gate close after phase 1 with phases 2–3 as fast-follow?**
+   The darwin tests don't exercise madc↔g++ linking, so phase 1 makes them pass; but leaving
+   phases 2–3 undone means "C++ mode" is still not ABI-compatible. Recommend: land the whole (c)
+   feature as one merge wave (it's one coherent "retire `__oN`, one Itanium path" change) rather
+   than shipping a half-migrated symbol scheme — but the darwin *lane* can be validated green
+   after phase 1 to confirm the fix direction early.
