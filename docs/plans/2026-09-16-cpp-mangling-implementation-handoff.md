@@ -431,8 +431,11 @@ grove-restored USER member is bound through `bind_declared_cpp_symbol` at restor
 walk seeds by own-body symbol and translates callees via `body_registration_key`). A first draft of
 the latter also widened the PACK fixpoint's reference test to `local_emit_name` and regressed
 [vecnewspec] (member-template placeholders alias their last product on `local_emit_name`) — bisected
-against phase-4 and HEAD binaries, dropped. Launcher: `tmp/seam_stage2.sh` (gates, then
-`tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
+against phase-4 and HEAD binaries, dropped. `5d1a7ca6f` (forest_bind_gate [silbody]: a BLOCK-SCOPE
+C++ prototype is tracked and bound like a file-scope one — g++ declares it in the enclosing namespace;
+the definition mint keeps file scope so a GNU nested definition stays legacy). At `5d1a7ca6f`:
+forest_bind_gate 29/29, smaug_gate, interop, unit, targeted all green. Launcher: `tmp/seam_stage2.sh`
+(gates, then `tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
 
 ## THE SEAM — NEXT: the ONE battery for the whole (c)
 
