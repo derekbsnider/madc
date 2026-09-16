@@ -64,7 +64,8 @@ everything-is-secretly-`extern "C"` behavior.
 | Itanium encoder (the core) | `src/madc_mangle.cpp:17` (`source_name`), `123` (`itanium_encode_type`: P/R/K + `builtin_code`), `154` (`itanium_encode_params`) | **Load-bearing in production**: the *matching* half binds every `std::` free function (`std::getline`/`stoi`/free operators…) against libstdc++/libc++'s real mangled exports — without it those are undefined-symbol link errors. Comments cite real Rule-#1 symbol-match fixes. **Helps — proven.** |
 | Fresh-symbol MINTER | `src/madc_mangle.cpp:163` (`itanium_mangle`), unit test `tests/unit/test_mangle.cpp:219`; input `FuncDef::param_cpp_spellings` (`madc.h:178`, filled `parser.cpp:65915`) | The *minting* half is the dormant part: complete for simple/builtin params, but its naive fallback `source_name("madc::channel")`→`13madc::channel` is **not** strict Itanium for a namespaced type (should be `N4madc7channelE`). Must route through the nested-name-aware path (`itanium_mangle_nested_sub`, `parser.cpp:2904`) the `std::` matcher already uses — one encoder, not a fork. **Helps with a gap to close.** |
 | Mangled-direct (bind existing lib symbols) | `parser.cpp:2904-2937`, `namespace_cpp_function_symbol` (only when `declaration_only`) | Matches *external* libstdc++ symbols via the nested-name-aware encoder. The minter (above) must produce byte-identical encodings so a user function and a `std::` function of the same signature mangle the same way. |
-| Internal overload disambiguator | `unique_overload_symbol` (`parser.cpp:45554`) → `base__oN` | Non-Itanium. Used today for member/operator/namespace bodied overloads. See §4 open decision. |
+| Library (declaration-only) member/ctor/operator symbols | `parser.cpp:45342-45351` → `itanium_mangle_member_sub`/`_ctor_sub`/`_dtor_sub`/`_operator_sub`; comment `parser.cpp:54725` | **Already real Itanium** — this is how `std::string::c_str()` binds libstdc++'s `_ZNKSt7__cxx11…` symbol. Library binding was never on the internal scheme. |
+| Internal overload disambiguator (USER-BODIED only) | `unique_overload_symbol` (`parser.cpp:45554`) → `base__oN` | Non-Itanium. Used for USER-bodied member/operator/namespace overloads (self-consistent; no external symbol to match, so they already overload correctly). NOT used for library members (above) or user global free functions (which get nothing → bare). See §4.1 open decision. |
 | `extern "C"` linkage | `LinkageSpec`/`current_linkage` (`madc.h:4856`), `TokenEXTERN::parse` (`parser.cpp:51933`), `FuncDef::c_linkage` (`madc.h:609`) | `c_linkage` set in **exactly one place** (`parser.cpp:69826`, namespace branch only). **Fights: must generalize to global scope.** |
 | Global overload set | `namespace_fn_overload_sets` keyed `"::name"` (`parser.cpp:69660-69753`) | Machinery exists at global scope; plain user functions excluded by the gate at `69660-69666`. **Helps: widen the gate.** |
 | Call-site overload ranking | `resolved_call_funcdef` (`parser.cpp:56085`, parse-time) + `call_target_variable` (`cir_builder.cpp:4802-4996`, CIR-time, authoritative) → `find_namespace_function_overload`; throws "no matching overload"/"ambiguous" | Ranks by argument type, decays arrays/functions. **Helps.** |
@@ -109,12 +110,17 @@ NTTP can't be encoded from spelling alone) — **out of scope** here, as free-fu
 in the motivating cases carry class/builtin params, not NTTPs; note it so the implementer
 doesn't trip on it.
 
-**Open decision (flag for owner):** class-member and namespace bodied overloads currently
-use the internal `__oN` scheme, not Itanium. This design mangles **free functions** (global
-scope, incl. global operators) with Itanium and leaves members on `__oN`. Recommend keeping
-members as-is for this feature (their calls are internally consistent and they are not the
-ruling's target); unifying members onto Itanium is a clean follow-up, not a blocker. If you
-want members unified now, it enlarges scope.
+**Open decision (flag for owner — §10.1).** *Library* (declaration-only) members and free
+functions are ALREADY real Itanium (`itanium_mangle_*_sub`, §3) — that path is untouched.
+The question is only the *user-bodied* functions: user members/namespace functions today get
+a unique INTERNAL symbol (`Class__method__oN` / `__ns__oN`) and already overload correctly;
+user global free functions get nothing → bare. Two scopes:
+- **(b) recommended:** give user free functions Itanium via the same `_sub` encoders library
+  binding uses; leave user members on their working internal scheme. Fixes the blocker, touches
+  no working path.
+- **(c):** unify all user-bodied functions (free + members + namespace) onto strict Itanium —
+  full symbol-level canon, larger, re-mangles the working member path for no functional gain
+  today (matters only if madc later emits C++ for gcc/clang to consume).
 
 ### 4.2 Overload registration at global scope
 
@@ -235,8 +241,11 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
 
 ## 10. Open decisions for owner
 
-1. **Member/namespace unification (§4.1):** mangle free functions Itanium now, leave class
-   members on `__oN` (recommended), or unify members onto Itanium in the same feature (larger)?
+1. **User-bodied scope (§4.1):** library members/free functions are already Itanium — no
+   change there. For USER-bodied functions: **(b)** Itanium for free functions only, leave user
+   members on their working internal `__oN` scheme (recommended — fixes the blocker, no working
+   path disturbed); or **(c)** unify all user-bodied functions onto strict Itanium (full canon,
+   larger, re-mangles a working path)?
 2. **Strictness confirmation:** the ruling is strict (every non-`extern "C"` free function
    mangles, unique or not). Confirmed — flagged only because it drives the whole blast radius.
    A unique free function that some external tool expects by bare name must be declared
