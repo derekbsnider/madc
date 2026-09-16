@@ -986,6 +986,11 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(member_op("Foo", "&&",  {"const Foo&"}, true), "_ZNK3FooaaERKS_");
 	}
 
+	TEST_CASE("member operators: conversion functions are cv <type>") {
+		ORACLE_CHECK(itanium_mangle_conversion_sub("Foo", "bool", true), "_ZNK3FoocvbEv");
+		ORACLE_CHECK(itanium_mangle_conversion_sub("Foo", "int",  true), "_ZNK3FoocviEv");
+	}
+
 	TEST_CASE("free operators encode the operator code at global scope") {
 		ORACLE_CHECK(free_fn("operator==", {"const ns::Bar&", "const ns::Bar&"}),
 		             "_ZeqRKN2ns3BarES2_");

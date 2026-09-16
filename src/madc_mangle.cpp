@@ -186,8 +186,19 @@ std::string itanium_mangle_dtor(const std::string &class_name)
 	return "_ZN" + source_name(class_name) + "D1Ev";
 }
 
-static std::string operator_code(const std::string &op)
+// The ONE Itanium <operator-name> table. Four spellings name BOTH a unary and
+// a binary operator with distinct codes — the ARITY decides: a member with no
+// explicit parameter, or a free operator with one, is unary. (g++/clang:
+// Foo::operator-() const is _ZNK3FoongEv, Foo::operator-(const Foo&) const is
+// _ZNK3FoomiERKS_.) A spelling-only lookup minted the binary code for both.
+static std::string operator_code(const std::string &op, bool unary)
 {
+	if (unary) {
+		if (op == "+") return "ps";
+		if (op == "-") return "ng";
+		if (op == "*") return "de";
+		if (op == "&") return "ad";
+	}
 	// madc dialect operators — Itanium vendor-extended operator-name
 	// encoding `v <arity> <source-name>` (no standard code exists).
 	if (op == "===") return "v23eq3";
@@ -198,6 +209,7 @@ static std::string operator_code(const std::string &op)
 	if (op == ">")  return "gt";
 	if (op == "<=") return "le";
 	if (op == ">=") return "ge";
+	if (op == "<=>") return "ss";
 	if (op == "+")  return "pl";
 	if (op == "-")  return "mi";
 	if (op == "*")  return "ml";
@@ -208,6 +220,12 @@ static std::string operator_code(const std::string &op)
 	if (op == "-=") return "mI";
 	if (op == "*=") return "mL";
 	if (op == "/=") return "dV";
+	if (op == "%=") return "rM";
+	if (op == "&=") return "aN";
+	if (op == "|=") return "oR";
+	if (op == "^=") return "eO";
+	if (op == "<<=") return "lS";
+	if (op == ">>=") return "rS";
 	if (op == "<<") return "ls";
 	if (op == ">>") return "rs";
 	if (op == "[]") return "ix";
@@ -219,6 +237,11 @@ static std::string operator_code(const std::string &op)
 	if (op == "&")  return "an";
 	if (op == "|")  return "or";
 	if (op == "^")  return "eo";
+	if (op == "&&") return "aa";
+	if (op == "||") return "oo";
+	if (op == ",")  return "cm";
+	if (op == "->") return "pt";
+	if (op == "->*") return "pm";
 	if (op == "new")      return "nw";
 	if (op == "new[]")    return "na";
 	if (op == "delete")   return "dl";
@@ -230,7 +253,7 @@ std::string itanium_mangle_operator(const std::string &class_name,
                                      const std::string &op,
                                      const std::vector<std::string> &param_types)
 {
-	std::string code = operator_code(op);
+	std::string code = operator_code(op, param_types.empty());
 	if (code.empty()) return "";
 	return "_ZN" + source_name(class_name) + code
 	       + "E" + itanium_encode_params(param_types);
@@ -546,6 +569,33 @@ public:
 	// Reset candidate table (each top-level symbol starts fresh).
 	void reset() { keys_.clear(); }
 
+	// "_ZN[K]<class-prefix>" — the opening of every member symbol. Starts a
+	// fresh candidate table and encodes the class as the enclosing prefix of
+	// the N..E (the outer N..E is supplied by the caller, so the name itself
+	// is NOT wrapped), registering its candidates so what follows — the
+	// parameters, a conversion target — may back-reference it (RS_).
+	std::string member_prefix(const std::string &qualified_class, bool const_method)
+	{
+		reset();
+		TypeNode cls = parse_type(qualified_class);
+		std::string out = "_ZN";
+		if (const_method) out += "K";
+		out += encode_name(cls.name, /*standalone=*/false);
+		return out;
+	}
+
+	// <bare-function-type>: `v` for no parameters, else each parameter type
+	// in order (top-level cv dropped by parse_param_type). The one spelling
+	// of that rule — every function-shaped symbol ends in it.
+	std::string params_enc(const std::vector<std::string> &params)
+	{
+		if (params.empty()) return "v";
+		std::string out;
+		for (const auto &p : params)
+			out += encode_type(parse_param_type(p));
+		return out;
+	}
+
 	// Mangle a member / ctor / dtor / operator symbol on a (template-id) class.
 	std::string mangle_member(const std::string &qualified_class,
 	                          const std::string &unqualified,
@@ -553,25 +603,25 @@ public:
 	                          const std::vector<std::string> &params,
 	                          bool const_method)
 	{
-		reset();
-		TypeNode cls = parse_type(qualified_class);
-
-		// The class name is encoded as the enclosing prefix of an N..E symbol;
-		// the outer N..E is supplied here, so the name itself is NOT wrapped.
-		std::string clsenc = encode_name(cls.name, /*standalone=*/false);
-
-		std::string out = "_ZN";
-		if (const_method) out += "K";
-		out += clsenc;
+		std::string out = member_prefix(qualified_class, const_method);
 		out += special.empty() ? source_name(unqualified) : special;
 		out += "E";
+		out += params_enc(params);
+		return out;
+	}
 
-		if (params.empty()) {
-			out += "v";
-		} else {
-			for (const auto &p : params)
-				out += encode_type(parse_param_type(p));
-		}
+	// A conversion function `operator <type>() [const]`: <operator-name> is
+	// `cv <type>` and there are no explicit parameters (`v`). The target type
+	// is encoded AFTER the class prefix so it may back-reference it
+	// (Foo::operator const Foo&() is ...cvRKS_Ev). g++/clang:
+	// Foo::operator bool() const → _ZNK3FoocvbEv.
+	std::string mangle_conversion(const std::string &qualified_class,
+	                              const std::string &target_type,
+	                              bool const_method)
+	{
+		std::string out = member_prefix(qualified_class, const_method);
+		out += "cv" + encode_type(parse_type(target_type));
+		out += "Ev";
 		return out;
 	}
 
@@ -582,14 +632,8 @@ public:
 	                          const std::vector<std::string> &params,
 	                          bool const_method)
 	{
-		reset();
-		TypeNode cls = parse_type(qualified_class);
-		std::string clsenc = encode_name(cls.name, /*standalone=*/false);
+		std::string out = member_prefix(qualified_class, const_method);
 		add_sub("@member-template:" + qualified_class + "::" + unqualified);
-
-		std::string out = "_ZN";
-		if (const_method) out += "K";
-		out += clsenc;
 		out += source_name(unqualified);
 		out += "I";
 		for (const auto &a : targs)
@@ -655,18 +699,15 @@ public:
 		// is _ZStls…, N::operator+ is _ZN1NplE…. Only the global branch
 		// had this; the std and qualified branches fell to source_name,
 		// producing invalid symbols like _ZSt10operator<<.
+		// A free operator is unary iff it takes exactly one parameter.
 		std::string opcode;
 		if (name.compare(0, 8, "operator") == 0)
-			opcode = operator_code(name.substr(8));
+			opcode = operator_code(name.substr(8), params.size() == 1);
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
 		if (qualifiers.empty()) {
 			std::string out = "_Z" + (opcode.empty() ? source_name(name)
 			                                         : opcode);
-			if (params.empty())
-				out += "v";
-			else
-				for (const auto &p : params)
-					out += encode_type(parse_param_type(p));
+			out += params_enc(params);
 			return out;
 		}
 		// A function whose DECLARED scope is exactly `std`. The qualifier
@@ -688,11 +729,7 @@ public:
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
 			std::string out = "_ZSt"
 			                + (opcode.empty() ? source_name(name) : opcode);
-			if (params.empty())
-				out += "v";
-			else
-				for (const auto &p : params)
-					out += encode_type(parse_param_type(p));
+			out += params_enc(params);
 			return out;
 		}
 		std::vector<NameComponent> chain;
@@ -702,11 +739,7 @@ public:
 		out += encode_name(chain, /*standalone=*/false);
 		out += opcode.empty() ? source_name(name) : opcode;
 		out += "E";
-		if (params.empty())
-			out += "v";
-		else
-			for (const auto &p : params)
-				out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
 	}
 
@@ -998,9 +1031,9 @@ public:
 	}
 };
 
-std::string op_special(const std::string &op)
+std::string op_special(const std::string &op, bool unary)
 {
-	return operator_code(op);
+	return operator_code(op, unary);
 }
 
 } // anonymous namespace
@@ -1088,11 +1121,20 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::vector<std::string> &param_types,
                                          bool const_method)
 {
-	std::string code = op_special(op);
+	// A member operator is unary iff it takes no explicit parameter.
+	std::string code = op_special(op, param_types.empty());
 	if (code.empty()) return "";
 	ItaniumMangler m;
 	return m.mangle_member(qualified_class, "", code,
 	                       param_types, const_method);
+}
+
+std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
+                                           const std::string &target_type,
+                                           bool const_method)
+{
+	ItaniumMangler m;
+	return m.mangle_conversion(qualified_class, target_type, const_method);
 }
 
 std::string itanium_mangle_std_free_template(const std::string &name,
@@ -1100,7 +1142,7 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params)
 {
-	std::string code = op_special(name);
+	std::string code = op_special(name, params.size() == 1);
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
 	return m.mangle_std_free_template(opOrName, targs, ret, params);

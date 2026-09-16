@@ -106,12 +106,21 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
                                     const char *flavor = "D1");
 
 // Mangle an operator (operator=, operator[], operator+=, …) on a
-// (possibly template-id) class.
+// (possibly template-id) class. The arity of `param_types` decides the code
+// where a spelling is both unary and binary: operator-() is `ng`,
+// operator-(const T&) is `mi` (likewise + ps/pl, * de/ml, & ad/an).
 //   itanium_mangle_operator_sub(class_type, "+=", {"const char*"}, false)
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::string &op,
                                          const std::vector<std::string> &param_types,
                                          bool const_method);
+
+// Mangle a conversion function `operator <type>() [const]` on a (possibly
+// template-id) class — `cv <type>`, never a symbolic operator code.
+//   itanium_mangle_conversion_sub("Foo", "bool", true) → "_ZNK3FoocvbEv"
+std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
+                                           const std::string &target_type,
+                                           bool const_method);
 
 // Mangle a non-member std:: function template (operator or named), e.g.
 //   std::operator<< <char_traits<char>>(basic_ostream<char,_Traits>&, const char*)
