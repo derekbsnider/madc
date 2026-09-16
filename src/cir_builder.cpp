@@ -372,6 +372,15 @@ std::string CirBuilder::call_emit_symbol(FuncDef *fd, const std::string &default
 
 std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 {
+	// A call THROUGH a function-pointer VARIABLE emits the pointer, never
+	// the pointee's symbol: `fd` is the DataDefFPTR's target — TYPE
+	// information for the call — and its emit_symbol would turn the indirect
+	// call into a direct one to whatever function the pointer type was first
+	// deduced from (for_each's `__f(*it)` calling print_name for a lambda
+	// argument once user functions carried Itanium symbols; a pointer to a
+	// library-bound function had the same latent bug).
+	if (v.type && v.type->is_function() && v.type->is_numeric())
+		return var_emit_name(v);
 	std::string sym = call_emit_symbol(fd, var_emit_name(v));
 	// task #69: the flavor-marshalling swap lives HERE — the one owner every
 	// call lane's symbol flows through (hooking only call_target_emit_name
@@ -28560,11 +28569,12 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	// handle signature-blind. Same KEY-vs-CODE split as the eval scope
 	// capture (key = source name, value read = emitted name).
 	std::string target_sym = call_emit_symbol(*fvar, fd);
-	// The shim's NAME is the host API's KEY — the SOURCE name perform_call
-	// looks up — never the emitted symbol (a mangled C++ function would
-	// otherwise hide behind __madc_shim__Z3fooi). The target it CALLS is
-	// the emitted symbol above.
-	std::string shim_name = "__madc_shim_" + fvar->name;   // allowed-exception: host lookup key, not symbol build
+	// The shim's NAME is the KEY both sides compute from the FuncDef —
+	// madc_program.cpp (program::call) builds the identical
+	// "__madc_shim_" + call_emit_symbol(func, name) — so a renamed body
+	// (__madc_eval's local_emit_name, a mangled user function's emit_symbol)
+	// meets the host under one spelling. Never the bare source name here.
+	std::string shim_name = "__madc_shim_" + call_emit_symbol(fd, fvar->name);
 	referenced_funcs.insert(target_sym);
 
 	// Value-helper externs (compiler machinery; resolved from the host).
