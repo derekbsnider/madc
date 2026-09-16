@@ -25185,6 +25185,23 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	fv = addVariable(NULL, *pf.fd, pf.name);
 	Method *fm = new Method(*fv);
 	fv->data = (void *)fm;
+	// C++ SYMBOL MANGLING phase 4: a restored bodied function carrying its
+	// Itanium emit_symbol (a header's inline namespace function — std::fixed,
+	// std::isinf, std::__cxx11::stod — minted by parseDeclaration's arm at
+	// freeze time) is referenced by CALLERS under that symbol, while every
+	// forest-body structure (funcdef_map, the pack's forest_lazy map and
+	// emittable memo) is keyed by this registration name. The parse-time
+	// registrar records the translation beside its registration
+	// (body_symbol_keys); this registrar is the other and records it too.
+	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
+	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
+	DBG(std::cout << "register_forest_func: " << pf.name
+		      << " emit=" << pf.fd->emit_symbol
+		      << " alias=" << fv->storage_alias_name
+		      << " forest_body=" << pf.fd->has_forest_body
+		      << " decl_only=" << pf.fd->declaration_only
+		      << " disp=" << pf.fd->function_display_name
+		      << " ns=" << pf.fd->namespace_name << std::endl);
 	// v26 piece (a): the fn's NAMED parameter Variables (live parity
 	// with parseFunction's param loop) — the scope a deferred free-fn
 	// body's re-parse resolves its parameters against
@@ -26086,6 +26103,19 @@ void Program::flush_forest_pending_globals()
 	    if ( !ok || (b.body_tokens.empty() && b.definition_tokens.empty()) )
 		continue;
 	    deferred_lazy_bodies[db.key] = b;
+	    // C++ SYMBOL MANGLING phase 4: a pack-restored bodied function that
+	    // carries its Itanium emit_symbol (a header's inline namespace
+	    // function — std::fixed, std::isinf, std::__cxx11::stod — minted
+	    // by parseDeclaration's arm at freeze time, restored above) is
+	    // reached by CALLERS under that symbol while this registry is
+	    // keyed by the registration name. The parse-time arm records the
+	    // same translation beside ITS registration (body_symbol_keys);
+	    // the restore path is the other registrar and must too — without
+	    // it pack_callee_homed / deferred_lazy_body_key miss and the
+	    // packed lane imports an undefined _ZSt5fixedRSt8ios_base.
+	    if ( FuncDef *rfd = dynamic_cast<FuncDef *>(v->type) )
+		if ( !rfd->emit_symbol.empty() && !rfd->declaration_only )
+		    body_symbol_keys[rfd->emit_symbol] = db.key;
 	    DBG(std::cout << "flush_forest_pending_globals: deferred body "
 		<< db.key << " (" << b.definition_tokens.size() << "+"
 		<< b.body_tokens.size() << " tokens"

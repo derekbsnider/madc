@@ -27327,9 +27327,11 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			else if (m_prog->has_deferred_lazy_body(s)) { ok = true; why = 2; }
 			else if (external_symbol_available(s)) { ok = true; why = 3; }
 			else if (synth_dtor_syms.count(s)) { ok = true; why = 4; }
-			else if (forest_body_syms.count(s)) { ok = true; why = 6; }
+			else if (forest_body_syms.count(m_prog->body_registration_key(s)))
+				{ ok = true; why = 6; }
 			else {
-				auto fi = m_prog->forest_deferred_funcs.find(s);
+				auto fi = m_prog->forest_deferred_funcs.find(
+					m_prog->body_registration_key(s));
 				if (fi != m_prog->forest_deferred_funcs.end()
 				    && fi->second.fd && fi->second.fd->has_forest_body)
 					{ ok = true; why = 7; }
@@ -29424,7 +29426,11 @@ bool CirBuilder::pack_callee_homed(const std::string &sym)
 		return true;
 	if (is_c2mir_builtin_call_name(sym))
 		return true;
-	funcdef_map_t::iterator fi = m_prog->funcdef_map.find(sym);
+	// funcdef_map is keyed by the REGISTRATION name; a caller imports the
+	// body's SYMBOL (a header inline namespace function's Itanium name) —
+	// translate through the registrars' record (body_registration_key).
+	funcdef_map_t::iterator fi =
+		m_prog->funcdef_map.find(m_prog->body_registration_key(sym));
 	if (fi != m_prog->funcdef_map.end() && fi->second
 	    && fi->second->has_forest_body)
 		return true;
@@ -30216,7 +30222,10 @@ node_t CirBuilder::translate_module(Program *prog)
 	// implicit-ints it (basic_string _M_construct__mti's _ZNK..._M_dataEv:
 	// "subscripted value is neither array nor pointer").
 	bool pass075_done = false;
-	struct ForestLazyProto { size_t anchor; std::string sym; node_t proto; };
+	// sym = the symbol the body DEFINES (its declared id — a header inline
+	// namespace function's Itanium name, a library method's internal name);
+	// key = its registration name (the forest_lazy / forest_lazy_root key).
+	struct ForestLazyProto { size_t anchor; std::string sym; std::string key; node_t proto; };
 	std::vector<ForestLazyProto> forest_lazy_protos;
 	// Forward prototype copied from a loaded forest def's own return-spec (op0)
 	// and declarator (op1) — real param names, no re-derivation. NOT cosmetic:
@@ -30546,9 +30555,26 @@ node_t CirBuilder::translate_module(Program *prog)
 			// N_CALLs are pre-built, invisible to referenced_funcs).
 			for (auto &kv : forest_lazy) {
 				if (forest_lazy_emitted.count(kv.first)) continue;
-				if (!referenced_funcs.count(kv.first)) continue;
-				forest_lazy_emitted.insert(kv.first);
 				FuncDef *ffd = kv.second;
+				// Referenced under the registration name OR under the
+				// body's own symbol (a bodied fn's emit_symbol — what
+				// every caller imports, func_def_symbol's answer).
+				bool ref_by_symbol = ffd && !ffd->emit_symbol.empty()
+				    && !ffd->declaration_only
+				    && !ffd->function_display_name.empty()
+				    && ffd->method_display_name.empty()	// free/namespace fn, never a member
+				    && referenced_funcs.count(ffd->emit_symbol);
+				DBG(if (ffd && !ffd->emit_symbol.empty())
+					std::cout << "forest_lazy: " << kv.first
+						  << " emit=" << ffd->emit_symbol
+						  << " ref_key=" << referenced_funcs.count(kv.first)
+						  << " ref_sym=" << ref_by_symbol
+						  << " decl_only=" << ffd->declaration_only
+						  << " disp=" << ffd->function_display_name
+						  << std::endl);
+				if (!referenced_funcs.count(kv.first) && !ref_by_symbol)
+					continue;
+				forest_lazy_emitted.insert(kv.first);
 				cir_node *body = prog->bind_forest->node_for(
 					ffd->forest_body_unit, ffd->forest_body_idx);	// memoized
 				if (!body) continue;
@@ -30615,14 +30641,15 @@ node_t CirBuilder::translate_module(Program *prog)
 					// existing m_output_externs flush places + dedupes
 					// it exactly like a live-lowered extern. Fallback:
 					// the compiler-runtime table (same live shapes).
-					if (!forest_lazy.count(*ci)
+					const std::string &ck = prog->body_registration_key(*ci);
+					if (!forest_lazy.count(ck)
 					    && !lib_funcs.count(*ci)
 					    && !prog->has_deferred_lazy_body(*ci)
 					    && (pass075_done
 						? !typed_proto_syms.count(*ci)
-						: !forest_funcdef_syms.count(*ci)
-						  && !prog->funcdef_map.count(*ci)
-						  && !prog->forest_deferred_funcs.count(*ci))
+						: !forest_funcdef_syms.count(ck)
+						  && !prog->funcdef_map.count(ck)
+						  && !prog->forest_deferred_funcs.count(ck))
 					    && !m_output_externs.count(*ci)) {
 						uint32_t xu = 0, xi = 0;
 						if (prog->bind_forest->extern_loc_for(*ci, xu, xi)) {
@@ -30638,10 +30665,21 @@ node_t CirBuilder::translate_module(Program *prog)
 					referenced_funcs.insert(*ci);
 				}
 				node_t proto = forest_fwd_proto(bn);
+				// The symbol this body DEFINES is its own declared id
+				// (the frozen lowered name): a header inline namespace
+				// function's Itanium name since phase 3a, a library
+				// method's internal name. Every reference — the
+				// caller's import, the cond-emission harvest, the
+				// typed-proto set — carries THAT spelling; the
+				// registration key (kv.first) only names the map slot.
+				const char *did = cir_declared_id(bn);
+				std::string def_sym = (did && *did) ? std::string(did)
+								   : kv.first;
 				if (proto) {
 					ForestLazyProto fp;
 					fp.anchor = materialized_funcs.size();
-					fp.sym    = kv.first;
+					fp.sym    = def_sym;
+					fp.key    = kv.first;
 					fp.proto  = proto;
 					forest_lazy_protos.push_back(fp);
 				}
@@ -30653,9 +30691,9 @@ node_t CirBuilder::translate_module(Program *prog)
 				// def too would redefine the func at load.) A
 				// proto-less shape keeps its def; the session
 				// then un-exports the cache's copy.
-				if (proto && prog->mir_cache_exports.count(kv.first)) {
+				if (proto && prog->mir_cache_exports.count(def_sym)) {
 					DBG(std::cout << "mir cache import: "
-					    << kv.first << std::endl);
+					    << def_sym << std::endl);
 				} else {
 					func_def_nodes.push_back(bn);
 					// Rung 3: a loaded system-header body
@@ -30663,9 +30701,10 @@ node_t CirBuilder::translate_module(Program *prog)
 					// here come from from_system_header
 					// classes; funcdef bodies from a
 					// non-system unit were exempted at
-					// collect time).
+					// collect time) — referenced under the
+					// symbol it defines.
 					if (!forest_lazy_root.count(kv.first))
-						cond_mark_sym(bn, kv.first);
+						cond_mark_sym(bn, def_sym);
 				}
 				grew = true;
 			}
@@ -31495,8 +31534,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		       && forest_lazy_protos[flp].anchor <= anchor; ++flp) {
 			append(late_list, forest_lazy_protos[flp].proto);
 			typed_proto_syms.insert(forest_lazy_protos[flp].sym);
-			// Rung 3: rides its body's conditionality (same symbol).
-			if (!forest_lazy_root.count(forest_lazy_protos[flp].sym))
+			// Rung 3: rides its body's conditionality (same symbol);
+			// the root exemption is keyed by the registration name.
+			if (!forest_lazy_root.count(forest_lazy_protos[flp].key))
 				cond_mark_sym(forest_lazy_protos[flp].proto,
 					      forest_lazy_protos[flp].sym);
 		}

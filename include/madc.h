@@ -6800,6 +6800,15 @@ public:
     std::string deferred_lazy_body_key(const std::string &sym) const;
     bool has_deferred_lazy_body(const std::string &sym) const
 	{ return !deferred_lazy_body_key(sym).empty(); }
+    // The registration key a body SYMBOL was recorded under (body_symbol_keys,
+    // filled by every body registrar), else the symbol itself — for the
+    // name-keyed body structures (funcdef_map, the pack's forest maps) when
+    // asked about a referenced symbol.
+    const std::string &body_registration_key(const std::string &sym) const
+    {
+	std::map<std::string, std::string>::const_iterator ki = body_symbol_keys.find(sym);
+	return ki != body_symbol_keys.end() ? ki->second : sym;
+    }
     DataDefCLASS *promote_struct_base_to_class(const std::string &name,
 					       DataDef *dd);
     // GNU/C23 attribute consumers: skip/collect __attribute__((…)) (optionally
