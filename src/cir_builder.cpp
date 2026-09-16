@@ -410,16 +410,25 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 // C++ SYMBOL MANGLING, scope (c): a FILE-SCOPE C++-linkage FREE function madc
 // defines carries its own Itanium name on emit_symbol (parseDeclaration's
 // mint) — that name IS what this body defines; every call already imports
-// it, so any other spelling leaves an undefined _Z… import. Members follow in
-// phase 2, namespace functions in phase 3 — until then their bodies keep the
-// internal name above.
+// it, so any other spelling leaves an undefined _Z… import. A USER class's
+// member carries its Itanium name on local_emit_name instead (the parser's
+// bind_declared_cpp_symbol's user arm) — the own-body field — which is why emit_symbol
+// can keep meaning "external definition" to every member lowering site;
+// body_emit_symbol reads it. Namespace functions follow in phase 3.
 std::string CirBuilder::func_def_symbol(TokenFunc *tf, FuncDef *fd) const
 {
 	if (fd && !fd->emit_symbol.empty() && !fd->declaration_only
 	    && (!tf->method || !tf->method->owner_class)
 	    && fd->namespace_name.empty() && !fd->function_display_name.empty())
 		return fd->emit_symbol;
-	return var_emit_name(tf->var);
+	return body_emit_symbol(tf->var, fd);
+}
+
+std::string CirBuilder::body_emit_symbol(const Variable &v, FuncDef *fd) const
+{
+	if (fd && !fd->local_emit_name.empty())
+		return fd->local_emit_name;
+	return var_emit_name(v);
 }
 
 // The loaded-libraries symbol probe — the same dlsym the MIR import resolver
@@ -468,7 +477,7 @@ bool CirBuilder::extern_symbol_can_link(const std::string &sym)
 	return external_symbol_available(sym)
 	    || (m_user_func_names && m_user_func_names->count(sym) > 0)
 	    || m_materialized_lib_syms.count(sym)
-	    || (m_prog && m_prog->deferred_lazy_bodies.count(sym));
+	    || (m_prog && m_prog->has_deferred_lazy_body(sym));
 }
 
 node_t CirBuilder::integer(int64_t val, TokenBase *origin)
@@ -10363,16 +10372,49 @@ static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the th
 // class the encoded form equals source_name, so these reduce to the prior names.
 std::string CirBuilder::class_vtable_symbol(DataDefCLASS *cdd)
 {
-	if (cdd && cdd->is_externally_defined())
-		return itanium_vtable_sym_cpp(cdd->canonical_cpp_spelling());
+	if (cdd && (cdd->is_externally_defined() || itanium_class_symbols(cdd)))
+		return itanium_vtable_sym_cpp(cdd->cpp_linkage_spelling());
 	return (cdd ? cdd->name : std::string()) + "__vtable";
 }
 
+// A vtable initializer takes function ADDRESSES as global-init constants,
+// which c2mir requires DECLARED first. A body madc defines gets its lock-step
+// prototype in Pass 1 and the dtor slots have their own early protos (Pass
+// 1.47); a virtual member madc does NOT define in this TU — a declared-only
+// method whose body is another TU's, madc's or g++'s (the interop lane's
+// g++-defined Counter::weight) — had no declaration at all until the
+// vtable's own reference registered it in Pass 1.5, after the sweep that
+// emits referenced externs (Pass 0.75) had run: "undeclared identifier
+// _ZN7Counter6weightEv". Recording the slot symbols here, before that sweep,
+// declares them in order. Externally-defined classes emit no vtable.
+void CirBuilder::note_vtable_slot_references(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->has_any_vptr() || cdd->is_externally_defined())
+		return;
+	for (const DataDefCLASS::VtableGroup &G : cdd->vtable_groups)
+		for (const std::string &slot : G.slots) {
+			if (slot == "~" || slot == "~$deleting")
+				continue;
+			Variable *mv = cdd->findMethod(slot);
+			FuncDef *mfd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+			if (!mv || !mfd || mfd->pure_virtual)
+				continue;
+			referenced_funcs.insert(body_emit_symbol(*mv, mfd));
+		}
+}
+
+// The typeinfo symbol was always Itanium (_ZTI<len><name>); the linkage
+// spelling makes a NAMESPACED or NESTED class's the real N…E form instead of
+// an encoding of its flattened internal name.
 std::string CirBuilder::class_typeinfo_symbol(DataDefCLASS *cdd)
 {
-	if (cdd && cdd->is_externally_defined())
-		return itanium_typeinfo_sym_cpp(cdd->canonical_cpp_spelling());
-	return itanium_typeinfo_sym(cdd ? cdd->name : std::string());
+	return itanium_typeinfo_sym_cpp(cdd ? cdd->cpp_linkage_spelling()
+					    : std::string());
+}
+
+bool CirBuilder::itanium_class_symbols(DataDefCLASS *cdd) const
+{
+	return m_prog && m_prog->class_owns_its_cpp_symbols(cdd);
 }
 
 // `extern void *SYM[];` (deduped). NULL if already emitted this module.
@@ -10404,9 +10446,10 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 	if (cdd->is_externally_defined())
 		return NULL;
 
-	std::string ti = itanium_typeinfo_sym(cdd->name);          // _ZTI<cls>
-	std::string ts = itanium_typeinfo_name_sym(cdd->name);     // _ZTS<cls>
-	std::string nm = itanium_typeinfo_name_string(cdd->name);  // "<len><name>"
+	const std::string &lsp = cdd->cpp_linkage_spelling();
+	std::string ti = class_typeinfo_symbol(cdd);               // _ZTI<cls>
+	std::string ts = itanium_typeinfo_name_sym_cpp(lsp);       // _ZTS<cls>
+	std::string nm = itanium_typeinfo_name_string_cpp(lsp);    // "<len><name>"
 
 	auto vptr_t = [&]() {                            // void* type node
 		return node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
@@ -10484,7 +10527,7 @@ node_t CirBuilder::class_typeinfo_def(DataDefCLASS *cdd, bool force)
 	append(inits, node2(N_INIT, list(), void_ptr_to(id(ts.c_str()))));
 
 	auto base_ti_ref = [&](DataDefCLASS *b) -> node_t {
-		std::string bti = itanium_typeinfo_sym(b->name);
+		std::string bti = class_typeinfo_symbol(b);
 		// A VPTR-LESS base is never reached by the Pass-1.5 sweep — define
 		// its typeinfo here (recursively, before the referencing _ZTI),
 		// else _ZTI<base> stays an undefined import (pre-existing hole for
@@ -10683,7 +10726,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		append(inits, node2(N_INIT, list(), otop));
 		// RTTI slot: &_ZTI<cls> — the most-derived class's type_info (the SAME
 		// object for every group; offset_to_top tells the runtime how far back). (S5b)
-		std::string ti_sym = itanium_typeinfo_sym(cdd->name);
+		std::string ti_sym = class_typeinfo_symbol(cdd);
 		referenced_funcs.insert(ti_sym);
 		node_t vtype2 = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
 				      node2(N_DECL, ignore(), node1(N_LIST, pointer())));
@@ -10694,7 +10737,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			if (sname == "~" || sname == "~$deleting") {
 				std::string dsym = (sname == "~")
 					? class_complete_dtor_symbol(cdd)
-					: (cdd->name + "___dtor_deleting");
+					: class_deleting_dtor_symbol(cdd);
 				if (G.this_offset != 0)
 					dsym = make_dtor_thunk(dsym, G.this_offset,
 						(sname == "~") ? "D1" : "D0");
@@ -10732,7 +10775,12 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			}
 			DataDefCLASS *mowner = (mfd && !mfd->parameters.empty())
 				? class_behind(mfd->parameters[0]) : NULL;
-			std::string symname = mv->name;
+			// The slot binds the LOCAL body (body_emit_symbol) — a user
+			// member's Itanium name, a library class's materialized
+			// header body under its internal name — never the library's
+			// exported symbol (emit_symbol), which value calls prefer.
+			std::string bsym = body_emit_symbol(*mv, mfd);
+			std::string symname = bsym;
 			// The slot is entered with `this` = this GROUP's subobject
 			// (Itanium vcall convention); the final overrider expects its
 			// OWNER's subobject. thunk when they differ — including a
@@ -10743,9 +10791,9 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 			long tdelta = (moff != (size_t)-1)
 				? (long)moff - (long)G.this_offset : 0;
 			if (tdelta != 0 && mowner && mfd)
-				symname = make_thunk(mfd, mv->name, mowner, tdelta, sname);
+				symname = make_thunk(mfd, bsym, mowner, tdelta, sname);
 			else
-				referenced_funcs.insert(mv->name);
+				referenced_funcs.insert(bsym);
 			node_t vptr_type = node2(N_TYPE,
 				node1(N_LIST, simple(N_VOID)),
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
@@ -10757,7 +10805,7 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 	// void *ClassName__vtable[] = { ... };
 	// linkonce [S4]: every TU that sees the class emits the same vtable
 	// (madc has no key-function model); STB_WEAK dedupes them at a link.
-	std::string vname = cdd->name + "__vtable";
+	std::string vname = class_vtable_symbol(cdd);
 	node_t spec = list();
 	append(spec, node2(N_ATTR, id("linkonce"), list()));
 	append(spec, simple(N_VOID));
@@ -12011,6 +12059,23 @@ void CirBuilder::append_ctor_vbase_static_args(node_t args, DataDefCLASS *callee
 	}
 }
 
+// The vtable SLOT a method call dispatches through is keyed by the method's
+// DISPLAY name (the parser registers virtual slots under it: "id",
+// "operator=="). Read it from the FuncDef — never reconstructed from the
+// emitted call symbol, whose spelling is the Itanium ABI's (_ZN1B2idEv) once
+// a user class's members carry their own names, not Class__name (that strip
+// turned every virtual call into a direct call to the static type's body).
+// The prefix strip survives only as the fallback for a FuncDef with no
+// recorded display name — a legacy internal-name symbol.
+static std::string method_slot_name(FuncDef *callee, const std::string &sym,
+				    DataDefCLASS *recv_class)
+{
+	if (callee && !callee->method_display_name.empty())
+		return callee->method_display_name;
+	return (recv_class && sym.size() > recv_class->name.size() + 2)
+		? sym.substr(recv_class->name.size() + 2) : sym;
+}
+
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 {
 	DataDefCLASS *recv_class = NULL;
@@ -12088,8 +12153,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	    && (tm->parent_expr->type() == TokenType::ttCallFunc
 		|| tm->parent_expr->type() == TokenType::ttCallMethod)
 	    && callee) {
-		std::string mname_chk = (sym.size() > recv_class->name.size() + 2)
-					? sym.substr(recv_class->name.size() + 2) : sym;
+		std::string mname_chk = method_slot_name(callee, sym, recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(mname_chk, vg, vs)) {
 			snprintf(vrecv_tmp, sizeof(vrecv_tmp), "__madc_vrecv_%d",
@@ -12125,8 +12189,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	int vslot = -1;
 	if (callee && callee->emit_symbol.empty()
 	    && !(callee->is_member_template && callee->declaration_only)) {
-		std::string vmn = (sym.size() > recv_class->name.size() + 2)
-					? sym.substr(recv_class->name.size() + 2) : sym;
+		std::string vmn = method_slot_name(callee, sym, recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(vmn, vg, vs)) {
 			vgrp = vg;
@@ -13639,6 +13702,45 @@ bool CirBuilder::class_gets_synth_dtor(DataDefCLASS *cdd)
 	     || !class_external_dtor_available(cdd));
 }
 
+std::string CirBuilder::class_synth_dtor_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	if (itanium_class_symbols(cdd)) {
+		// The plain synthesized dtor is the base-subobject (D2) body of a
+		// class with virtual bases — class_synth_complete_dtor_symbol
+		// wraps it into the D1 — and the one D1 body of a vbase-less class.
+		std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+		cdd->collect_vbases(vbs, seen);
+		return itanium_mangle_dtor_sub(cdd->cpp_linkage_spelling(),
+					       vbs.empty() ? "D1" : "D2");
+	}
+	return cdd->name + "___dtor";
+}
+
+std::string CirBuilder::class_synth_complete_dtor_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	if (itanium_class_symbols(cdd))
+		return itanium_mangle_dtor_sub(cdd->cpp_linkage_spelling(), "D1");
+	return cdd->name + "___dtor_complete";
+}
+
+std::string CirBuilder::class_deleting_dtor_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	if (itanium_class_symbols(cdd))
+		return itanium_mangle_dtor_sub(cdd->cpp_linkage_spelling(), "D0");
+	return cdd->name + "___dtor_deleting";
+}
+
+std::string CirBuilder::class_madc_dtor_body_symbol(DataDefCLASS *cdd)
+{
+	if (!cdd) return std::string();
+	if (Variable *dv = class_own_dtor(cdd))
+		return body_emit_symbol(*dv, dynamic_cast<FuncDef *>(dv->type));
+	return class_synth_dtor_symbol(cdd);
+}
+
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 {
 	if (!cdd) return std::string();
@@ -13656,7 +13758,7 @@ std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 		if (dt)
 			return call_emit_symbol(dt, cdd->name + "___dtor");
 	}
-	return cdd->name + "___dtor";
+	return class_synth_dtor_symbol(cdd);
 }
 
 // The BASE-SUBOBJECT (Itanium D2) destruction symbol. An externally-bound
@@ -13693,7 +13795,7 @@ std::string CirBuilder::class_base_dtor_symbol(DataDefCLASS *cdd)
 		// explicit instantiation): fall through to the madc D2 body —
 		// calling the D1 here would double-destroy the vbases.
 	}
-	return cdd->name + "___dtor";
+	return class_madc_dtor_body_symbol(cdd);
 }
 
 // The COMPLETE-object dtor symbol: a class with virtual bases gets a synthesized
@@ -13713,7 +13815,7 @@ std::string CirBuilder::class_complete_dtor_symbol(DataDefCLASS *cdd)
 	std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
 	cdd->collect_vbases(vbs, seen);
 	if (vbs.empty()) return class_dtor_symbol(cdd);
-	return cdd->name + "___dtor_complete";
+	return class_synth_complete_dtor_symbol(cdd);
 }
 
 // Append a dtor call for each transitive, deduped virtual base of `cdd`, in REVERSE
@@ -13767,7 +13869,7 @@ node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 	append(param, ignore());
 	node_t param_list = list();
 	append(param_list, param);
-	node_t decl = node2(N_DECL, id((cdd->name + "___dtor_complete").c_str()),
+	node_t decl = node2(N_DECL, id(class_synth_complete_dtor_symbol(cdd).c_str()),
 			    node1(N_LIST, node1(N_FUNC, param_list)));
 	std::vector<node_t> stmts;
 	// base-object dtor (members + non-virtual bases)
@@ -13897,10 +13999,52 @@ node_t CirBuilder::synth_instr_exit_thunk()
 
 // void Cls___dtor_deleting(struct Cls *__this) { <complete-dtor>(__this); free(__this); }
 // Itanium D0 (deleting) destructor: complete-object destruction, then operator
+node_t CirBuilder::base_object_alias_def(const std::string &alias,
+					 const std::string &target,
+					 DataDefCLASS *cdd, FuncDef *fd)
+{
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	// linkonce [S4]: like the vtable it serves, re-emitted by every TU that
+	// defines the class; per-TU copies dedupe at a link.
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
+	node_t plist = list();
+	node_t args = list();
+	if (fd) {
+		for (size_t i = 0; i < fd->parameters.size(); i++) {
+			std::string pn = (i == 0) ? "__this" : ("p" + std::to_string(i));
+			append(plist, param_decl(fd->parameters[i], pn.c_str(),
+						 std::string()));
+			append(args, id(pn.c_str()));
+		}
+	} else {
+		node_t param = simple(N_SPEC_DECL);
+		append(param, node1(N_LIST, class_tag_ref(cdd)));
+		append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
+		append(param, ignore());
+		append(param, ignore());
+		append(param, ignore());
+		append(plist, param);
+		append(args, id("__this"));
+	}
+	node_t decl = node2(N_DECL, id(alias.c_str()),
+			    node1(N_LIST, node1(N_FUNC, plist)));
+	referenced_funcs.insert(target);
+	node_t call = node2(N_CALL, id(target.c_str()), args);
+	node_t body = node2(N_BLOCK, list(),
+			    node1(N_LIST, node2(N_EXPR, list(), call)));
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
+}
+
 // delete (free, for user classes). Referenced from the D0 vtable slot.
 node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 {
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	// linkonce [S4]: like the synthesized D1 (synth_dtor_def), the deleting
+	// dtor re-emits in every TU that sees the class — two madc TUs of one
+	// --project defining the same polymorphic class collided on a duplicate
+	// STRONG D0 (invisible while the name was the internal Cls___dtor_deleting
+	// and no lane linked two such objects; g++ emits it weak).
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
@@ -13910,7 +14054,7 @@ node_t CirBuilder::synth_deleting_dtor_def(DataDefCLASS *cdd)
 	append(param, ignore());
 	node_t param_list = list();
 	append(param_list, param);
-	node_t decl = node2(N_DECL, id((cdd->name + "___dtor_deleting").c_str()),
+	node_t decl = node2(N_DECL, id(class_deleting_dtor_symbol(cdd).c_str()),
 			    node1(N_LIST, node1(N_FUNC, param_list)));
 	std::vector<node_t> stmts;
 	std::string csym = class_complete_dtor_symbol(cdd);
@@ -15712,7 +15856,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		sym = cdd->name + "__" + cdd->name;
 		for (Variable *cv : cdd->ctors)
 			if (cv && cv->type == ctor) {
-				sym = var_emit_name(*cv);
+				sym = body_emit_symbol(*cv, ctor);
 				break;
 			}
 	}
@@ -18375,7 +18519,7 @@ FuncDef *CirBuilder::std_free_function_instantiation(TokenCallFunc *tcf, FuncDef
 	if (!external_symbol_available(sym)
 	    && !(m_user_func_names && m_user_func_names->count(sym) > 0)
 	    && !m_materialized_lib_syms.count(sym)
-	    && !(m_prog && (m_prog->deferred_lazy_bodies.count(sym)
+	    && !(m_prog && (m_prog->has_deferred_lazy_body(sym)
 			    || m_prog->findVariable(sym) != NULL)))
 		return NULL;
 
@@ -19649,7 +19793,12 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 		return call;
 	}
 
-	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
+	// The method's own call symbol through the ONE resolver — a user class's
+	// operator[] body is _ZN...ixEi (local_emit_name), not the composed
+	// ClassName__operator[] (which reached the C emitter as the sanitized
+	// `__operator_lb_rb`, an undeclared function: c2mir implicit-int'd it
+	// and "invalid type argument of unary *" followed at every subscript).
+	std::string sym = class_method_call_symbol(cls, callee, opname);
 	node_t args = list();
 	append(args, recv_addr);
 	append(args, index_arg());
@@ -23654,7 +23803,7 @@ void CirBuilder::emit_try_body_cleanup_push(const char *varname,
 	// must be declared extern here so `(void*)dtor_sym` is a well-typed function
 	// address (not "undeclared"). The array wrapper is always madc-emitted.
 	bool dtor_is_external = !array_elems
-		&& (dtor_sym != cdd->name + "___dtor");
+		&& (dtor_sym != class_madc_dtor_body_symbol(cdd));
 	if (dtor_is_external)
 		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
 	referenced_funcs.insert(dtor_sym);
@@ -29310,7 +29459,7 @@ bool CirBuilder::pack_callee_homed(const std::string &sym)
 	if (si != pack_stash_idx.end() && !pack_is_dropped[si->second])
 		return true;
 	std::map<std::string, Program::DeferredFunctionBody>::iterator
-		di = m_prog->deferred_lazy_bodies.find(sym);
+		di = m_prog->deferred_lazy_bodies.find(m_prog->deferred_lazy_body_key(sym));
 	if (di != m_prog->deferred_lazy_bodies.end()) {
 		// Instantiation-born free fn: its DEFBODY does not freeze (no
 		// template-param context to derive from) — mirror the
@@ -30262,7 +30411,18 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (prog->pack_recording
 					    && drain_failed_syms.count(db.first))
 						continue;
-					if (referenced_funcs.count(db.first))
+					// Referenced under its registry KEY (the Variable's
+					// name), or under the symbol its body defines — a
+					// user member's Itanium name (body_emit_symbol),
+					// which is what every call imported.
+					bool referenced = referenced_funcs.count(db.first) > 0;
+					if (!referenced && db.second.var) {
+						FuncDef *dfd = dynamic_cast<FuncDef *>(
+							db.second.var->type);
+						referenced = referenced_funcs.count(
+							body_emit_symbol(*db.second.var, dfd)) > 0;
+					}
+					if (referenced)
 						ready.push_back(std::make_pair(db.first, false));
 					else if (prog->pack_recording)
 						ready.push_back(std::make_pair(db.first, true));
@@ -30279,8 +30439,16 @@ node_t CirBuilder::translate_module(Program *prog)
 					// pack-time gap, never kill the freeze. A normal
 					// compile keeps live semantics (failures propagate).
 					if (rd.second || prog->pack_recording) {
+						// The registry is keyed by REGISTRATION name;
+						// `sym` may be the member's emit symbol (a user
+						// member's Itanium name) — translate once and
+						// save/restore under the key drain_saved's later
+						// tf->var.name lookup expects.
+						std::string dkey = prog->deferred_lazy_body_key(sym);
 						std::map<std::string, Program::DeferredFunctionBody>::iterator
-							dbi = prog->deferred_lazy_bodies.find(sym);
+							dbi = dkey.empty()
+								? prog->deferred_lazy_bodies.end()
+								: prog->deferred_lazy_bodies.find(dkey);
 						if (dbi == prog->deferred_lazy_bodies.end())
 							continue;	// consumed by an earlier body this round
 						Program::DeferredFunctionBody saved = dbi->second;
@@ -30290,11 +30458,11 @@ node_t CirBuilder::translate_module(Program *prog)
 							tf = NULL;
 						}
 						if (!tf) {
-							prog->deferred_lazy_bodies[sym] = saved;
+							prog->deferred_lazy_bodies[dkey] = saved;
 							drain_failed_syms.insert(sym);
 							continue;
 						}
-						drain_saved[sym] = saved;
+						drain_saved[dkey] = saved;
 					} else
 						tf = prog->parse_deferred_lazy_body(sym);
 					if (!tf) continue;
@@ -30498,7 +30666,7 @@ node_t CirBuilder::translate_module(Program *prog)
 					// the compiler-runtime table (same live shapes).
 					if (!forest_lazy.count(*ci)
 					    && !lib_funcs.count(*ci)
-					    && !prog->deferred_lazy_bodies.count(*ci)
+					    && !prog->has_deferred_lazy_body(*ci)
 					    && (pass075_done
 						? !typed_proto_syms.count(*ci)
 						: !forest_funcdef_syms.count(*ci)
@@ -30559,7 +30727,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				// the reference lands mid-round after this loop passed
 				// the caller (map-order dependent).
 				if (kv.second && kv.second->statements.empty()
-				    && prog->deferred_lazy_bodies.count(kv.first))
+				    && prog->has_deferred_lazy_body(kv.first))
 					continue;
 				TokenFunc *tf = kv.second;
 				// Pack-time: EVERY evaluated body emits (that is the
@@ -30667,6 +30835,12 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_go_thunk_defs.clear();
 
 	// (typed_proto_syms is declared above materialize_and_lower — see there.)
+
+	// Pass 0.748: the symbols every madc-emitted vtable initializer will
+	// name join referenced_funcs ahead of the sweep below (see
+	// note_vtable_slot_references).
+	for (auto &kv : prog->struct_map)
+		note_vtable_slot_references(as_user_class(kv.second));
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in). ONE sweep body, run
@@ -31007,7 +31181,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (emitted_dtor_protos.count(cdd)) continue;
 		emitted_dtor_protos.insert(cdd);
 		std::string csym = class_complete_dtor_symbol(cdd);
-		if (csym != cdd->name + "___dtor" || !class_has_own_user_dtor(cdd)) {
+		if (csym != class_madc_dtor_body_symbol(cdd)
+		    || !class_has_own_user_dtor(cdd)) {
 			node_t cp = synth_dtor_proto(csym, cdd);
 			if (cp) {
 				append(top_list, cp);
@@ -31015,11 +31190,12 @@ node_t CirBuilder::translate_module(Program *prog)
 					cond_mark_sym(cp, csym);
 			}
 		}
-		node_t dp = synth_dtor_proto(cdd->name + "___dtor_deleting", cdd);
+		std::string d0sym = class_deleting_dtor_symbol(cdd);
+		node_t dp = synth_dtor_proto(d0sym, cdd);
 		if (dp) {
 			append(top_list, dp);
 			if (cdd->from_system_header)
-				cond_mark_sym(dp, cdd->name + "___dtor_deleting");
+				cond_mark_sym(dp, d0sym);
 		}
 	}
 
@@ -31205,7 +31381,63 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (dd0) {
 			append(top_list, dd0);
 			if (cdd->from_system_header)
-				cond_mark_sym(dd0, cdd->name + "___dtor_deleting");
+				cond_mark_sym(dd0, class_deleting_dtor_symbol(cdd));
+		}
+	}
+
+	// Pass 1.85: Itanium BASE-OBJECT aliases (C2 / D2) for every class madc
+	// defines in a C++-presenting mode. A g++/clang TU deriving from a
+	// madc-defined class constructs the base subobject through _ZN4BaseC2Ei
+	// and destroys it through _ZN4BaseD2Ev — symbols g++ emits as aliases of
+	// C1 / D1 whenever the class has no virtual bases (the two flavors are
+	// then one body). MIR has no symbol aliases, so each is a linkonce
+	// forwarding body over the same parameters (base_object_alias_def). A
+	// class WITH virtual bases keeps madc's own construction convention (the
+	// hidden __madc_vb params; its plain synthesized dtor already IS the D2)
+	// — no Itanium base-object ctor exists for it (KG gap). Only a body
+	// madc emits in THIS TU under its C1 / D1 name gets a twin: a declared-
+	// only member's definition (and so its aliases) lives in another TU.
+	if (prog->cpp_symbol_mangling_enabled()) {
+		std::set<std::string> emitted_base_aliases;
+		for (auto &kv : prog->struct_map) {
+			DataDefCLASS *cdd = as_user_class(kv.second);
+			if (!prog->class_owns_its_cpp_symbols(cdd)
+			    || cdd->is_externally_defined())
+				continue;
+			std::vector<DataDefCLASS *> vbs; std::set<DataDefCLASS *> seen;
+			cdd->collect_vbases(vbs, seen);
+			if (!vbs.empty()) continue;
+			for (Variable *cv : cdd->ctors) {
+				FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+				if (!fd || fd->declaration_only || !fd->emit_symbol.empty()
+				    || fd->is_member_template || fd->defaulted_or_deleted
+				    || fd->is_varargs)
+					continue;
+				std::string c1 = prog->member_itanium_symbol(
+					cdd, cv, CppSymKind::Ctor, std::string(), false);
+				if (c1.empty() || body_emit_symbol(*cv, fd) != c1)
+					continue;
+				std::string c2 = prog->member_itanium_symbol(
+					cdd, cv, CppSymKind::Ctor, std::string(), false,
+					std::string(), "C2");
+				if (c2.empty() || !emitted_base_aliases.insert(c2).second)
+					continue;
+				append(top_list, base_object_alias_def(c2, c1, cdd, fd));
+			}
+			std::string d1;
+			if (Variable *dv = class_own_dtor(cdd)) {
+				FuncDef *dt = dynamic_cast<FuncDef *>(dv->type);
+				if (dt && !dt->declaration_only && dt->emit_symbol.empty())
+					d1 = body_emit_symbol(*dv, dt);
+			} else if (class_gets_synth_dtor(cdd))
+				d1 = class_synth_dtor_symbol(cdd);
+			const std::string &lsp = cdd->cpp_linkage_spelling();
+			if (d1.empty() || d1 != itanium_mangle_dtor_sub(lsp, "D1"))
+				continue;
+			std::string d2 = itanium_mangle_dtor_sub(lsp, "D2");
+			if (!emitted_base_aliases.insert(d2).second)
+				continue;
+			append(top_list, base_object_alias_def(d2, d1, cdd, NULL));
 		}
 	}
 

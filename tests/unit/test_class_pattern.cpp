@@ -221,9 +221,13 @@ TEST_CASE("B2 basic ClassPattern substitution matches the sole parser lane")
 		pattern_i64->findMethod("choose")->type);
 	REQUIRE(pattern_read != NULL);
 	REQUIRE(pattern_choose != NULL);
-	CHECK(pattern_read->emit_symbol ==
+	// A USER class's member carries its Itanium name as the symbol of madc's
+	// OWN body — FuncDef::local_emit_name (bind_declared_cpp_symbol's user
+	// arm; C++ symbol mangling, phase 2). emit_symbol is the LIBRARY arm's
+	// field: an external definition madc emits no body for.
+	CHECK(pattern_read->local_emit_name ==
 	      "_ZNK12PatternBasicIlE4readEPl");
-	CHECK(pattern_choose->emit_symbol ==
+	CHECK(pattern_choose->local_emit_name ==
 	      "_ZN12PatternBasicIlE6chooseEl");
 
 	Variable *pattern_before = pattern->findVariable("forward_before");

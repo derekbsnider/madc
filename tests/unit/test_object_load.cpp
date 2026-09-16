@@ -310,7 +310,9 @@ TEST_SUITE("madc_cir_run_object") {
 	// Both TUs define the same class with an in-class method body — the
 	// C++ implicit-inline shape every TU emits. Pre-S4 this collided as
 	// a duplicate strong 'Adder__add'; now both copies bind STB_WEAK and
-	// the merge keeps the first.
+	// the merge keeps the first. The member emits under its Itanium name
+	// (C++ symbol mangling, phase 2) — the same _ZN5Adder3addEii g++
+	// emits for this class, so the two objects merge with a g++ TU too.
 	static const char *adder =
 	    "class Adder {\n"
 	    "public:\n"
@@ -326,8 +328,8 @@ TEST_SUITE("madc_cir_run_object") {
 	       "{ Adder y; return y.add(4, 3) + use_a(); }\n").c_str());
 
 	// Structural: the method is a WEAK defined symbol in each .o.
-	CHECK(sym_bind(a_path, "Adder__add") == STB_WEAK);
-	CHECK(sym_bind(b_path, "Adder__add") == STB_WEAK);
+	CHECK(sym_bind(a_path, "_ZN5Adder3addEii") == STB_WEAK);
+	CHECK(sym_bind(b_path, "_ZN5Adder3addEii") == STB_WEAK);
 
 	std::vector<std::string> paths;
 	paths.push_back(a_path);
@@ -346,7 +348,7 @@ TEST_SUITE("madc_cir_run_object") {
 	std::vector<std::string> user_libs;
 	REQUIRE(madc_cir_link_objects(paths, mnkRelocatable, r_path.c_str(),
 				      user_libs, NULL) == 0);
-	CHECK(sym_bind(r_path, "Adder__add") == STB_WEAK);
+	CHECK(sym_bind(r_path, "_ZN5Adder3addEii") == STB_WEAK);
 	char *rargv[] = { (char *)r_path.c_str(), NULL };
 	CHECK(madc_cir_run_object(r_path.c_str(), 1, rargv) == 42);
 

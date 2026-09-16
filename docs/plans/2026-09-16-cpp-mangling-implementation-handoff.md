@@ -151,7 +151,8 @@ scheme) is still asserted by name in test_object_load — phase 2 moves it to `_
 
 **`make -C src test`: every binary GREEN (unittest rc=0). PHASE 1 IS COMPLETE AND VALIDATED.**
 
-NEXT: **PHASE 2** — user members / operators / ctors / dtors onto the `_sub` Itanium encoders,
+PHASE 2 ENTRY MAP (as planned — see "PHASE 2 — LANDED" below for what was actually built):
+user members / operators / ctors / dtors onto the `_sub` Itanium encoders,
 `__oN` retired for them. Entry map (verified this session):
 - Mint sites: the class parser's `unique_overload_symbol` callers — `parser.cpp:46891`, `48362`,
   `48427` (`operator_conv` — use `itanium_mangle_conversion_sub`), `48875`; ctors `61717`, `63653`;
@@ -185,6 +186,72 @@ KNOWN EDGES (cataloged, not blocking): a block-scope PROTOTYPE in C++ mode stays
 bare path (a body-follows peek would fix it); a C++ prior redeclared `extern "C"` is not yet
 diagnosed as a linkage conflict; array parameters' captured spelling lacks the decay `*`
 (phase 5's end-to-end corpus lane will catch `f_arr`).
+
+## PHASE 2 — LANDED (2026-09-16, branch `feature/cpp-symbol-mangling-claude`)
+
+**What a user class emits now** (probe `tmp/p2_cls.mad`, `nm` set-equal with g++ except storage
+class B/D and harmless weak extras): `_ZN3Foo3setEPKc/Ei`, `_ZNK3Foo3getEv`, `_ZN3Foo5twiceEi`
+(static), `_ZN3FooC1Ei`+`_ZN3FooC2Ei`, `_ZN3FooD1Ev`+`D2`+`D0`, `_ZN3FoopLEi`, `_ZNK3FooeqERKS_`,
+`_ZNK3FoongEv`, `_ZNK3FoocvbEv` (conversion), `_ZN3Foo5countE` (static data member),
+`_ZN2ns3Bar1fEd`, `_ZN5Outer5Inner1gEv`, `_ZTV/_ZTI/_ZTS` ×3.
+
+**Mechanism — ONE owner (the owner's Rule-4 concern, taken):** `bind_declared_cpp_symbol` (the
+pre-existing libstdc++ binder, `parser.cpp`) has two arms on `class_owns_its_cpp_symbols(ddc)`
+(madc.h): USER arm → `local_emit_name` (own body); LIBRARY arm → the historical declaration-only
+`emit_symbol` bind, unchanged. Recipe extracted as `member_itanium_symbol(ddc, mvar, kind, mname,
+is_operator, conversion_type, flavor)`; kinds Ctor/Dtor/Method/Conversion (`CppSymKind`). The
+registration funnel `register_class_method_signature` calls it for every kind (Conversion newly;
+the library arm declines conversions — pre-phase-2 behaviour). Dtor of a vbase class = D2 (madc's
+user dtor body is the base-subobject role; `class_synth_complete_dtor_symbol` = D1). Twin guard
+(same Itanium signature on another member) keeps the internal name.
+`parseFunction`'s two FuncDef rebuilds (the C `f()` unprototyped rebuild and the return-type
+refresh) now carry `local_emit_name`/`emit_symbol`/`method_display_name`/`is_const_method`/
+`is_member_template` — the zero-param static `S::f()` lost its name there. The definition site
+migrates a user member's `emit_symbol` (asm label) to `local_emit_name` instead of dropping it.
+
+**Lowering:** `body_emit_symbol(v, fd)` (cir_builder) = `local_emit_name ?: var_emit_name`, never
+`emit_symbol`; used by `func_def_symbol` (member arm), the vtable slots + thunks, the vbase-forward
+demotion, `class_madc_dtor_body_symbol`. `class_vtable_symbol`/`class_typeinfo_symbol` → `_cpp`
+forms over `cpp_linkage_spelling()`; `class_synth_dtor_symbol` (D1, or D2 for a vbase class),
+`class_synth_complete_dtor_symbol` (D1), `class_deleting_dtor_symbol` (D0) replace the
+`Cls___dtor*` literals (`itanium_class_symbols(cdd)` = `class_owns_its_cpp_symbols`; C modes keep
+the old spellings). Pass 1.85 `base_object_alias_def` emits `C2`/`D2` linkonce forwarders for
+vbase-less user classes. `method_slot_name` (display name, not a `Class__` strip) restored virtual
+dispatch. Pass 0.748 `note_vtable_slot_references` pre-declares declared-only virtuals.
+`synth_deleting_dtor_def` is linkonce now (was a strong duplicate across TUs).
+`check-call-emit-symbol.sh` names `body_emit_symbol` as the second legitimate value-read home.
+**The one invariant scope (c) breaks — "a madc body's symbol == its registration name" — and
+every site that assumed it:** the deferred-body registry (`deferred_lazy_bodies`, keyed by the
+Variable's name; the reachability fixpoint asks by emit symbol → `Program::deferred_lazy_body_key`
+translates through `body_symbol_keys`, filled where the user arm assigns `local_emit_name`; every
+symbol-keyed reader incl. the pack-time drain uses it), the vtable slots (`body_emit_symbol`), the
+freeze body index (`forest_body_loc`), the subscript call (`class_subscript_addr_on` composed
+`Class__operator[]` — now `class_method_call_symbol`), `parseFunction`'s two FuncDef rebuilds (the
+identity carry), the virtual-call slot name (`method_slot_name`). A class-PATTERN capture does not
+mint (`class_pattern_capture_in_progress`): the pattern's members are recipes over `T`; each
+instance mints at its own registration.
+
+**Tests/gates:** `tests/testmemberoverload{,.expect}` (g++==clang oracle); `tests/abi/interop_*`
++ `scripts/mangle_abi_gate.sh --interop` (lane A madc-defines/g++-uses incl. a g++ derived class
+through madc's C2/D2/D0/`_ZTV`; lane B g++-defines/madc-uses under `--std=c++20`; alien-symbol
+subset check with negative control) wired into fulltest; `test_object_load` asserts
+`_ZN5Adder3addEii`; `test_class_pattern` asserts the user template member's name on
+`local_emit_name`. KG gaps recorded: `virtual_overload_slots_name_keyed` (SILENT — arity-overloaded
+virtuals share one name-keyed slot; own session), `copy_init_from_class_prvalue`,
+`member_call_on_class_prvalue`, `explicit_cast_via_user_conversion`,
+`qualified_outofline_member_def_in_namespace`. Phase-4 note: the forest RESTORE side
+(`cir_freeze.cpp` ~3234) still reconstructs a member's `local_emit_name` from its registration key
+(internal) — a restored USER class would emit internal names; the pack holds only library classes
+so production is unaffected; LOADED==PARSED parity for user members = phase 4.
+
+VALIDATION: see claude_status.json UPDATE 38 (filled after the JIT suite + unit tests).
+
+NEXT: **PHASE 3** — namespace functions off `__ns__oN` onto Itanium (`namespace_cpp_function_symbol`
+already mints; route the bodied namespace function's own name like phase 1 did for the global
+scope — `func_def_symbol`'s free-function arm drops `namespace_name.empty()`), user function
+templates via `itanium_mangle_function_template_sub` (the `fn_template_instantiation_depth`
+exclusions in phase 1/2 are the entry points), member templates (`is_member_template` exclusion in
+`bind_user_member_symbol`).
 
 ## SETTLED STATE (evidence — do NOT re-derive)
 

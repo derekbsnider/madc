@@ -297,6 +297,42 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
    `Class__method__oN` (`unique_overload_symbol`) to the Itanium `_sub` encoders; **retire
    `__oN` in c++/madc mode** (§2). Highest-volume change — every member call site moves.
    Targeted tests: member overloading, a madc `.o` linking against a g++ TU and vice versa.
+   **AS BUILT 2026-09-16.** ONE owner, the pre-existing libstdc++ binder `bind_declared_cpp_symbol`,
+   now with two arms keyed on `Program::class_owns_its_cpp_symbols(ddc)` (a class madc defines in a
+   C++-presenting mode: not `from_system_header`, not `extern template`): the USER arm puts the
+   member's Itanium name — the same recipe, extracted as `member_itanium_symbol` (linkage spelling
+   + `mangle_param_spelling` from the first user slot + varargs tail + the kind's `_sub` encoder,
+   conversions via `itanium_mangle_conversion_sub` with the captured conversion-type-id) — on
+   **`FuncDef::local_emit_name`**, the own-body field; the LIBRARY arm is the historical
+   declaration-only → `emit_symbol` bind, byte-for-byte. `emit_symbol` therefore still means
+   "bound to an EXTERNAL definition" to every one of the ~40 lowering readers (none changed); the
+   internal `Class__member__oN` spelling survives only as the registration KEY (forest rank
+   identity) and never reaches an object. The lowering gained ONE own-body resolver,
+   `CirBuilder::body_emit_symbol` (`local_emit_name ?: var_emit_name`, never `emit_symbol`), read by
+   `func_def_symbol`, the vtable slots and thunks (they had spelled `mv->name` raw). A class's
+   vtable / RTTI (`_ZTV/_ZTI/_ZTS` via the `_cpp` forms over `DataDef::cpp_linkage_spelling()` =
+   canonical spelling, else the bare name a global class has), its synthesized dtors (D1 / D2 for
+   a vbase class / D0, `class_synth_*_dtor_symbol`, `class_deleting_dtor_symbol`) and its static
+   data members (`class_static_member_itanium_symbol`, the pre-existing library path widened to
+   the same predicate) are Itanium too; `C2`/`D2` base-object twins are `linkonce` forwarding
+   bodies (`base_object_alias_def`, Pass 1.85 — MIR has no aliases), so a g++ TU can derive from a
+   madc class. Also fixed on the way: the deleting dtor was STRONG (multi-TU duplicate); the
+   virtual-call lowering reconstructed the slot name by stripping `Class__` off the call symbol
+   (`method_slot_name` reads the display name); `parseFunction`'s two FuncDef rebuilds dropped the
+   declaration's symbol identity; a nested class in a data-only struct spelled itself `Inner`
+   (`enclosing_aggregate_spelling` hand-off); the freeze body-locator keyed on the registration
+   name (`forest_body_loc`); vtable slot symbols of declared-only virtuals had no declaration before
+   the initializer (`note_vtable_slot_references`, Pass 0.748); the deferred-body registry is keyed
+   by registration name while the reachability fixpoint asks by emit symbol
+   (`deferred_lazy_body_key` over the `body_symbol_keys` index the user arm fills); the subscript
+   call composed `Class__operator[]` by hand (now `class_method_call_symbol`); a class-pattern
+   capture no longer mints (instances mint at registration). The common root of all of these: the
+   pre-(c) invariant "a madc body's symbol == its registration name", which libstdc++ binding never
+   needed to break (the library provides the bodies). Gate: `mangle_abi_gate.sh --interop`
+   (madc-defines/g++-uses and the reverse, oracle = the all-g++ build, plus an alien-symbol check
+   with a negative control) in fulltest. Known edges, recorded as KG gaps: vbase classes keep madc's
+   hidden `__madc_vb` ctor convention (no g++ ctor interop); twins keep the internal name;
+   arity-overloaded VIRTUALS share a name-keyed slot (pre-existing, silent — own session).
 3. **Namespace functions:** user-bodied namespace overloads off `__ns__oN` onto Itanium.
 4. **Forest serialization** parity for the generalized linkage flag + the new symbols.
 5. **Migration sweep + merge-wave battery** (§7, §8); darwin round-trip; add a madc↔g++

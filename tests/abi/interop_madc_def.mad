@@ -1,0 +1,41 @@
+// madc side of the interop lane: DEFINES every member interop_class.h
+// declares (out-of-line, as a real C++ TU would), plus a virtual override
+// hierarchy of its own. Compiled with `madc -c`; linked by g++ against
+// interop_gxx_use.cpp.
+#include <cstdio>
+#include "interop_class.h"
+
+static int live_counters = 0;
+
+Counter::Counter() : n(0) { ++live_counters; }
+Counter::Counter(int start) : n(start) { ++live_counters; }
+Counter::~Counter() { --live_counters; }
+int Counter::add(int d) { n += d; return n; }
+int Counter::add(const char *digits)
+{
+    for ( const char *p = digits; *p; ++p )
+	n += *p - '0';
+    return n;
+}
+int Counter::get() const { return n; }
+int Counter::instances() { return live_counters; }
+Counter &Counter::operator+=(int d) { n += d; return *this; }
+bool Counter::operator==(const Counter &o) const { return n == o.n; }
+int Counter::weight() { return n * 2; }
+
+// Defined inside the namespace block (madc's qualified-member-definition
+// grammar takes `Cls::Cls`, not yet `ns::Cls::Cls` — KG gap; both definers
+// spell it the same way so the corpus stays one program).
+namespace tally {
+    Ledger::Ledger() : total(0) {}
+    void Ledger::post(int amount) { total += amount; }
+    void Ledger::post(double amount) { total += (int)(amount * 100); }
+    int Ledger::balance() const { return total; }
+}
+
+// A madc-side caller of the user TU's report(): the symbol flows back. Named
+// alike on both definers so ONE g++ build of the pair is each lane's oracle.
+int other_side_report(const Counter &c)
+{
+    return report(c) + 1;
+}

@@ -1,0 +1,10 @@
+int: 1042
+cstr: 1065
+double: 1025
+const get: 25
+twice: 42 2.5
+plus: 128 eq=0 neg=-128
+truthy
+dist: 25 25
+inner: 8 90
+area: 25 75

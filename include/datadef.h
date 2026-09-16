@@ -330,6 +330,15 @@ public:
     // top-up sees it fresh).
     bool	 canonical_swept;
     const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    // The class spelling the Itanium encoders receive: the canonical C++
+    // spelling when the parser recorded one (a namespaced, nested or
+    // template-instance class), else the bare name — which IS the spelling of
+    // a global-namespace class (no canonical spelling is recorded for one;
+    // "Foo" encodes to 3Foo either way). ONE accessor, so the user-member
+    // mint, the vtable/RTTI symbols and the synthesized special members can
+    // never disagree about which class they name.
+    const std::string &cpp_linkage_spelling() const
+    { return canonical_cpp_spelling_.empty() ? name : canonical_cpp_spelling_; }
     // Derived-key cache. Only StructRegistry's sweep fills it; every reader
     // must treat !has_despaced_canonical() as "derive it yourself", never as
     // "this dd has no key".
