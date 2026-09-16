@@ -30648,7 +30648,8 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( sym )
 	    avar = addFunction(aname,
 		dynamic_symbol_fallback_signature(aname),
-		(fVOIDFUNC)sym);
+		(fVOIDFUNC)sym, /*isMethod*/false,
+		/*builtin_registration*/true);
     }
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
@@ -36403,7 +36404,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
 			dynamic_symbol_fallback_signature(dyn_name),
-			(fVOIDFUNC)sym);
+			(fVOIDFUNC)sym, /*isMethod*/false,
+			/*builtin_registration*/true);
 	    }
 	}
 	if ( ctx_var && peekToken() && peekToken()->id() == TokenID::tkOpBrk
@@ -38774,7 +38776,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    var = addFunction(fname,
 				dynamic_symbol_fallback_signature(fname),
-				(fVOIDFUNC)sym);
+				(fVOIDFUNC)sym, /*isMethod*/false,
+				/*builtin_registration*/true);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
 			else if ( !var && fname.compare(0, 10, "__builtin_") == 0 )
@@ -38799,7 +38802,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    {
 				var = addFunction(fname,
 				    dynamic_symbol_fallback_signature(twin),
-				    (fVOIDFUNC)tsym);
+				    (fVOIDFUNC)tsym, /*isMethod*/false,
+				    /*builtin_registration*/true);
 				if ( var )
 				    if ( FuncDef *bfd = dynamic_cast<FuncDef *>(var->type) )
 					bfd->emit_symbol = twin;
@@ -41780,7 +41784,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( sym )
 				var = addFunction(gname,
 				    dynamic_symbol_fallback_signature(gname),
-				    (fVOIDFUNC)sym);
+				    (fVOIDFUNC)sym, /*isMethod*/false,
+				    /*builtin_registration*/true);
 			}
 			if ( !var )
 			    Throw(name_tb) << "use of undeclared identifier '" << gname << '\'' << flush;
@@ -65454,8 +65459,15 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// C `f()` is an old-style declaration with unspecified parameters,
 	// not a real zero-parameter prototype. When the later definition
 	// provides the actual parameter list, rebuild the FuncDef from
-	// scratch so the body binds those names normally.
-	else if ( !func->is_void_params && func->parameters.empty() )
+	// scratch so the body binds those names normally. Only an
+	// unprototyped DECLARATION is reconciled this way: a DEFINITION has
+	// already bound its (zero) parameters, and a later prototype of it
+	// (the block-scope `int g();` after `int g() { … }` of testdirectinit)
+	// must not replace the bodied FuncDef — the rebuilt one took the
+	// prototype state, so the body emitted bare while every call imported
+	// _Z1gv. A body wins, as at the prototype site below.
+	else if ( func->declaration_only
+	       && !func->is_void_params && func->parameters.empty() )
 	{
 	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;
