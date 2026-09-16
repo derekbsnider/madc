@@ -234,9 +234,13 @@ TEST_CASE("CIR: function with parameters") {
 }
 
 TEST_CASE("CIR: external bool returns") {
+    // The host provides these as C symbols (extern "C" above, resolved by
+    // dlsym): a C++-presenting snippet must declare them extern "C" — a plain
+    // prototype is a C++-linkage function (_Z19cir_test_bool_falsev), as it
+    // would be in g++, and the bare host export does not satisfy it.
     CHECK(cir_run(
-	"bool cir_test_bool_true();\n"
-	"bool cir_test_bool_false();\n"
+	"extern \"C\" bool cir_test_bool_true();\n"
+	"extern \"C\" bool cir_test_bool_false();\n"
 	"int main() { return cir_test_bool_true() && !cir_test_bool_false(); }"
     ) == 1);
 }
