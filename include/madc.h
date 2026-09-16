@@ -496,16 +496,19 @@ public:
 							: std::string();
 	if ( sp.empty() || i >= parameters.size() || !parameters[i] )
 	    return sp;
+	// A FUNCTION-POINTER param — a typedef (`program::native_function`), an
+	// abstract declarator (`int (*[4])(int)`, captured as its base type), or
+	// a pointer to one — desugars to its STRUCTURAL spelling through every
+	// pointer layer (fptr_structural_spelling): Itanium encodes canonical
+	// types (PF…E, PPF…E); the captured typedef name — or the dd's generic
+	// "funcptr" / "funcptr*" — encodes as a class name nothing exports.
+	// Before the decorated-spelling early-out: `funcptr*` ends in `*` too.
+	std::string fps = fptr_structural_spelling(parameters[i]);
+	if ( !fps.empty() )
+	    return fps;
 	if ( sp.find('<') != std::string::npos
 	  || sp.back() == '*' || sp.back() == '&' )
 	    return sp;
-	// A FUNCTION-POINTER typedef param (`program::native_function`)
-	// desugars to its STRUCTURAL spelling (`void (*)()`): Itanium encodes
-	// canonical types (PF…E); the captured typedef name — or the dd's
-	// generic "funcptr" — encodes as a class name nothing exports.
-	if ( DataDefFPTR *fpp = parameters[i]->as_fptr_dd() )
-	    if ( fpp->target )
-		return fpp->structural_spelling();
 	std::string scalar = parameters[i]->mangle_scalar_spelling();
 	if ( scalar.empty() || scalar == sp )
 	    return sp;
@@ -5039,6 +5042,17 @@ public:
 #else
 	return false;
 #endif
+    }
+    // The name is already declared by a MACHINE registration (libc_signatures,
+    // a host-embedded callback — every one a bare C symbol): a source prototype
+    // of it is a redeclaration of the C library's function, not a C++ overload
+    // set member. parseFunction replaces the registration wholesale and keeps
+    // its C linkage.
+    bool prior_declaration_is_registration(const std::string &name)
+    {
+	Variable *v = findVariable(name);
+	FuncDef *fd = v && v->type ? v->type->as_funcdef_dd() : NULL;
+	return fd && fd->builtin_registration;
     }
     // Uniform function call syntax is a madc-DIALECT feature: `x.f(y)` falls
     // back to the ordinary call `f(x, y)` when the receiver type has no member
