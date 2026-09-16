@@ -275,38 +275,51 @@ using/overload family 35/35; interop A+B OK; full JIT suite **1387 passed / 0 fa
 KG gap recorded: `qualified_namespace_function_definition` — `int seam::h(int x) { … }` outside its
 namespace is refused ("Unknown C++ declarator scope"); g++/clang accept. Own parser session.
 
-## PHASE 3b — ENTRY MAP (function templates; NOT started)
+## PHASE 3b — LANDED (ef99d9daf): user function templates
 
-ORACLE (tmp/p3_ft.mad): g++ `_Z4makeIiET_S0_ _Z4makeIdET_S0_ _Z7cast_toIliET_T0_ _ZN2ns6nidentIiEET_S1_`
-(all W); madc today: weak `make__o2 make__o3 cast_to__o2 __ns_ns_nident__i…<hash>`.
-ENCODER (exists, unused by the compiler): `itanium_mangle_function_template_sub(qualifiers, name, targs,
-ret, params)` in madc_mangle — ret/params spelled with `$T0,$T1…` placeholders (unit test
-tests/unit/test_mangle.cpp:1037–1046 shows every shape); `itanium_mangle_member_template_sub` for
-member templates. PLACEHOLDER SPELLER (exists): `substitute_tparams(spell, tparams)` in cir_builder.cpp —
-DEFINED TWICE (17375 and 18273; a pre-existing DupFamily — consolidate to ONE owner reachable from the
-parser when adopting it; never write a third).
-MINT SITE: the same parseDeclaration arm (parser.cpp ~70290) — its `fn_template_instantiation_depth == 0`
-exclusion is the entry: a product parses under `pending_fn_instantiation_identity` (= inst_key,
-parser.cpp ~58577: `key<arg,arg,…>` built from `ft.typeparams` × `binding` via
-`template_binding_identity_spelling`); the instantiation driver (parser.cpp ~59480, re-runs
-parseStatement/parseFunction over the replayed tokens) must hand the arm the CONCRETE targ spellings in
-`ft.typeparams` order (a pending vector beside pending_fn_instantiation_identity — carry, don't re-derive
-from the key string) and the PATTERN's return/param spellings (the template FuncDef's captured
-spellings; product FuncDef → `tsubst_source` where set) run through substitute_tparams. Qualifiers =
-`current_namespace()` split on `::`. USER-only: skip patterns from system headers (`decl_file` +
-is_system_header_path, or the class-side `from_system_header` for member templates) — libstdc++
-products keep their internal names until phase 5's migration decision (the std:: flavor-agnostic
-minter `std_free_function_instantiation` in cir_builder ~4930 already binds LIBRARY products it can).
-BODY SIDE: func_def_symbol already returns emit_symbol for any bodied non-member function with a
-display name — no change expected; products are `linkonce` (W) as g++ emits them. MEMBER templates:
-`is_member_template` exclusion in bind_user_member_symbol (parser.cpp ~45460) + the member-template
-instantiation at ~61640 (`local_emit_name = inst_name`) → `itanium_mangle_member_template_sub(cls, name,
-targs, ret, params, is_const)` on local_emit_name (own-body field, phase-2 convention).
-TESTS: g++==clang++ .expect reducer (deduced + explicit + namespace + member template, an overload set
-mixing template and non-template `f`), interop corpus gains a template used across the TU boundary
-(the g++ user instantiates madc's pattern? NO — patterns are header text; the interop shape is a madc
-TU calling a template the header defines and g++ also instantiates: both emit W, the linker folds —
-assert with nm that both objects define the same W symbol).
+A product of a USER free/namespace function template emits the Itanium
+template-specialization symbol (_Z4makeIiET_S0_, _ZN2ns6nidentIiEET_S1_,
+_Z5scaleIiET_S0_i — a non-template parameter stays `i`), weak. The
+instantiation driver (instantiate_fn_template_binding — it alone holds the
+retained pattern AND the binding) mints the symbol via the phase-0 encoder
+itanium_mangle_function_template_sub into Program::pending_fn_instantiation_symbol;
+parseDeclaration's symbol arm (the one mint owner) takes it for the product,
+records body_symbol_keys, and func_def_symbol defines it. The $Tn placeholder
+speller substitute_tparams MOVED from cir_builder.cpp into the mangle library
+as itanium_substitute_tparams (six library-operator call sites renamed).
+Not minted (internal name kept): a pattern from a system header, member
+templates, packs, non-type parameters. Encoder-side fixes surfaced by
+testfntplrefidentity: the type parser peels a `typename` disambiguator; a
+REFERENCE template argument spells R (cpp_spelling_for_mangle's as_ref), so
+forward<int&> and forward<int*> no longer fold to one item; the composer mints
+only a well-formed _Z symbol. Oracle corpus + test_mangle gained the shapes
+(g++==clang++, 158 rows). Tests: tests/testfntemplatemangle; interop corpus
+gained tally::scale<int>/<double> across the TU boundary.
+
+## PHASE 3c — LANDED (a84d82d22): user member function templates
+
+A product of a USER class's member function template emits the Itanium
+member-template specialization symbol (_ZN3Box4convIiEET_S1_, const member
+_ZNK3Box3tagIcEEiv). Rule #4: the encoder itanium_mangle_member_template_sub
+and a full library CALL path (CirBuilder::member_template_method_call — guarded
+is_externally_defined, so it bails "not-external" for a user class) already
+existed; user_member_template_product_symbol composes the SAME symbol at
+instantiate_member_fn_template_for_call (the pattern's captured
+template_param_spellings / template_return_spelling, itanium_substitute_tparams,
+the deduced args via cpp_spelling_for_mangle) and sets it on the PRODUCT's
+local_emit_name (the phase-2 own-body field), guarded to
+class_owns_its_cpp_symbols and a well-formed symbol. THIRD placeholder-speller
+copy (cir_builder's template_placeholder_spelling) consolidated onto
+itanium_substitute_tparams (KG DupFamily template_param_placeholder_speller).
+Not minted: library owner, pack / non-type parameter. Member templates on a
+class TEMPLATE (owner spelling with args) and the cross-TU interop shape are a
+later slice. Tests: tests/testmembertemplatemangle (member + const member
+template on a user class).
+
+VALIDATION (3b+3c, build 17 = a84d82d22): probe/test objects define exactly
+g++'s symbol sets; template/member family green; interop A+B OK. Full JIT suite **1389 passed / 0 failed / 0 timed out / 9 skipped** (1387 + testfntemplatemangle + testmembertemplatemangle); doctest unit binaries rc=0; `mangle_abi_gate.sh --selftest --interop` OK (158 oracle rows, g++ == clang++); cross-darwin (`make -C src cross-x86-64-macos` rc=0, 0 warnings): the 21 testmadcide_* + the three phase-3 tests compile to Mach-O and define exactly the Itanium sets with darwin's leading underscore (`__ZN4seam1fEi`, `__Z4makeIiET_S0_`, `__ZN3Box4convIiEET_S1_`, extern "C" `_seam_c_export` bare).
+KG: DupFamily template_param_placeholder_speller (3 byte-identical copies) =
+consolidated; Gap qualified_namespace_function_definition (3a) still open.
 
 ## SETTLED STATE (evidence — do NOT re-derive)
 
