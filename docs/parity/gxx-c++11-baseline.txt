@@ -14,6 +14,12 @@
 # FIRST MEASUREMENT 2026-09-17 on c019e7ea4 (container, --std=c++11):
 #   1169 passed, 777 compile-failed, 2 runtime-failed, 2 timed out, 2718 skipped
 #   => 1169 of 1950 in-scope (60%).
+# SHRUNK 2026-09-17 on 47e07b916 (781 -> 771): constexpr object declarations are
+#   const (08a38f847), a deferred global initialization is not a const write
+#   (e59691291), and a constexpr CALL folds in a constant expression (47e07b916).
+#   1179 passed, 767 compile-failed, 2 runtime-failed, 2 timed out => 1179/1950 (60.5%).
+#   Moved: constexpr-59937-1, constexpr-84463, constexpr-attribute2, constexpr-ctor7,
+#   constexpr-noexcept, constexpr-redeclaration4, nullptr01, nullptr02, nullptr05, sfinae69.
 # Paths are relative to the testsuite root (--root, /workspace/gcc_testsuite
 # on the container; the repo's gcc_testsuite symlink resolves on the host).
 g++.dg/cpp0x/Wpessimizing-move4.C
@@ -64,7 +70,6 @@ g++.dg/cpp0x/constexpr-52282-1.C
 g++.dg/cpp0x/constexpr-52892-2.C
 g++.dg/cpp0x/constexpr-55708.C
 g++.dg/cpp0x/constexpr-57764.C
-g++.dg/cpp0x/constexpr-59937-1.C
 g++.dg/cpp0x/constexpr-59938.C
 g++.dg/cpp0x/constexpr-60199.C
 g++.dg/cpp0x/constexpr-61323.C
@@ -78,7 +83,6 @@ g++.dg/cpp0x/constexpr-71537.C
 g++.dg/cpp0x/constexpr-71828.C
 g++.dg/cpp0x/constexpr-77771.C
 g++.dg/cpp0x/constexpr-83144.C
-g++.dg/cpp0x/constexpr-84463.C
 g++.dg/cpp0x/constexpr-87506.C
 g++.dg/cpp0x/constexpr-92015.C
 g++.dg/cpp0x/constexpr-98295.C
@@ -104,7 +108,6 @@ g++.dg/cpp0x/constexpr-array25.C
 g++.dg/cpp0x/constexpr-array29.C
 g++.dg/cpp0x/constexpr-array7.C
 g++.dg/cpp0x/constexpr-attribute.C
-g++.dg/cpp0x/constexpr-attribute2.C
 g++.dg/cpp0x/constexpr-attribute4.C
 g++.dg/cpp0x/constexpr-base.C
 g++.dg/cpp0x/constexpr-base7.C
@@ -119,7 +122,6 @@ g++.dg/cpp0x/constexpr-complex2.C
 g++.dg/cpp0x/constexpr-condition2.C
 g++.dg/cpp0x/constexpr-ctor14.C
 g++.dg/cpp0x/constexpr-ctor18.C
-g++.dg/cpp0x/constexpr-ctor7.C
 g++.dg/cpp0x/constexpr-ctor8.C
 g++.dg/cpp0x/constexpr-decltype3.C
 g++.dg/cpp0x/constexpr-decltype5.C
@@ -146,7 +148,6 @@ g++.dg/cpp0x/constexpr-invisiref1.C
 g++.dg/cpp0x/constexpr-is_literal.C
 g++.dg/cpp0x/constexpr-memchr.C
 g++.dg/cpp0x/constexpr-missing.C
-g++.dg/cpp0x/constexpr-noexcept.C
 g++.dg/cpp0x/constexpr-noexcept2.C
 g++.dg/cpp0x/constexpr-noexcept4.C
 g++.dg/cpp0x/constexpr-nonlit.C
@@ -164,7 +165,6 @@ g++.dg/cpp0x/constexpr-ptrmem6.C
 g++.dg/cpp0x/constexpr-ptrsub.C
 g++.dg/cpp0x/constexpr-recursion2.C
 g++.dg/cpp0x/constexpr-redeclaration3.C
-g++.dg/cpp0x/constexpr-redeclaration4.C
 g++.dg/cpp0x/constexpr-ref1.C
 g++.dg/cpp0x/constexpr-ref11.C
 g++.dg/cpp0x/constexpr-ref14.C
@@ -456,9 +456,6 @@ g++.dg/cpp0x/nsdmi12.C
 g++.dg/cpp0x/nsdmi13.C
 g++.dg/cpp0x/nsdmi14.C
 g++.dg/cpp0x/nsdmi2.C
-g++.dg/cpp0x/nullptr01.C
-g++.dg/cpp0x/nullptr02.C
-g++.dg/cpp0x/nullptr05.C
 g++.dg/cpp0x/nullptr12.C
 g++.dg/cpp0x/nullptr24.C
 g++.dg/cpp0x/nullptr25.C
@@ -585,7 +582,6 @@ g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
 g++.dg/cpp0x/sfinae63.C
 g++.dg/cpp0x/sfinae66.C
-g++.dg/cpp0x/sfinae69.C
 g++.dg/cpp0x/sfinae7.C
 g++.dg/cpp0x/sfinae8.C
 g++.dg/cpp0x/sfinae9.C
