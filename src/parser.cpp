@@ -14881,6 +14881,16 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(op_tb) << "Expecting '(' after " << op_name << flush;
     nextToken();
+    // [expr.sizeof]/1: the `sizeof ( type-id )` production is chosen ONLY when
+    // the type-id is the WHOLE parenthesized operand — otherwise the operand is
+    // the parenthesized EXPRESSION. Both readings open with the same tokens
+    // (`sizeof(A{})`, `sizeof(f(0))`, `sizeof(g<void>(0))`), and a reading that
+    // commits on the first token cannot take the second one back: the closing
+    // `)` check below was a diagnostic, so `sizeof(f(0))` measured the FUNCTION
+    // `f` and then died on `(`. Snapshot the operand here so that check can
+    // instead REJECT the type-id reading and re-read the operand as an
+    // expression (TokenStream::savepos/restore is the parser's backtrack owner).
+    TokenStream::Pos operand_pos = tokens.savepos();
     TokenBase *type_tb = nextToken();
     DataDef *dd = NULL;
     size_t value = 0;
@@ -14893,38 +14903,42 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     // definition may have registered.
     if ( dd )
 	dd = complete_class_type_on_demand(dd);
-    // Fallback: sizeof(expression) — parse as expression, use its type
+    // sizeof(expression) — ONE implementation, reached two ways: the first
+    // token resolved to no type at all (below), or the type-id reading was
+    // rejected by the closing-paren check and rewound (further below). It
+    // consumes the operand's closing `)` via parseExpression's
+    // stop_on_closing_paren.
     bool expr_fallback_consumed_paren = false;
-    if ( !have_value && !dd )
+    auto measure_expression_operand = [&](TokenBase *first) -> void
     {
-	// sizeof("literal") — C string literals are char arrays. Check type_tb
-	// before parseExpression transforms it.
-	if ( type_tb && type_tb->type() == TokenType::ttString )
+	// sizeof("literal") — C string literals are char arrays. Check the
+	// first token before parseExpression transforms it.
+	if ( first && first->type() == TokenType::ttString )
 	{
-	    value = literal_token_sizeof(static_cast<TokenStr *>(type_tb));
+	    value = literal_token_sizeof(static_cast<TokenStr *>(first));
 	    have_value = true;
 	    dd = NULL;
+	    return;
 	}
-	else
+	TokenBase *expr = parseExpression(first, true, false, true, 1);
+	if ( expr && expr->datadef() )
 	{
-	    TokenBase *expr = parseExpression(type_tb, true, false, true, 1);
-	    if ( expr && expr->datadef() )
-	    {
-		dd = expr->datadef();
-		// For fixed arrays accessed as expressions, use element size
-		if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-		    if ( tv->var.is_fixed_array() )
-			value = query_fixed_array_sizeof_value(tv, want_alignof, false);
-		if ( !value )
-		    value = query_datadef_measure(dd, want_alignof);
-		have_value = true;
-		dd = NULL; // have_value is set, skip the pointer/array loop below
-		expr_fallback_consumed_paren = true;
-	    }
-	    if ( !have_value )
-		Throw(type_tb) << "Unknown type in " << op_name << flush;
+	    dd = expr->datadef();
+	    // For fixed arrays accessed as expressions, use element size
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+		if ( tv->var.is_fixed_array() )
+		    value = query_fixed_array_sizeof_value(tv, want_alignof, false);
+	    if ( !value )
+		value = query_datadef_measure(dd, want_alignof);
+	    have_value = true;
+	    dd = NULL; // have_value is set, skip the pointer/array loop below
+	    expr_fallback_consumed_paren = true;
 	}
-    }
+	if ( !have_value )
+	    Throw(first) << "Unknown type in " << op_name << flush;
+    };
+    if ( !have_value && !dd )
+	measure_expression_operand(type_tb);
 
     while ( !have_value && peekToken() )
     {
@@ -15016,8 +15030,20 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     if ( !expr_fallback_consumed_paren )
     {
 	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-	    Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
-	nextToken();
+	{
+	    // The type-id did not span the whole operand, so it was never the
+	    // operand: rewind and read the parenthesized expression instead
+	    // ([expr.sizeof]/1). Nothing was diagnosed on the way here — the
+	    // type-id reading SUCCEEDED, it just isn't the one the grammar
+	    // selects — so the rewind needs no diagnostic snapshot.
+	    tokens.restore(operand_pos);
+	    dd = NULL;
+	    value = 0;
+	    have_value = false;
+	    measure_expression_operand(nextToken());
+	}
+	else
+	    nextToken();
     }
 
     if ( !have_value && dd )
