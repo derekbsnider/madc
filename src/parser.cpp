@@ -6533,12 +6533,35 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 	    Throw(tb) << tname << "<> expects " << td.typeparams.size()
 			  << " argument(s), got " << args.size() << flush;
 	}
+	// A default argument may NAME an earlier parameter — libstdc++'s
+	// `template<..., typename _Traits,
+	//           bool _Constant_iterators = _Traits::__constant_iterators::value>
+	//    struct _Insert;`
+	// Copying the default's tokens verbatim left the PARAMETER NAME in the
+	// instantiation KEY, so _Insert registered as
+	// `_Insert<...,_Traits::__constant_iterators::value>` — a class no
+	// correct lookup can form. `unordered_map<K,V>::iterator` is a member
+	// typedef of _Insert, so every `it->second` resolved through that bogus
+	// class ("Unidentified member 'second'"). The real-instantiation lane
+	// already substitutes before spelling a default
+	// (clone_template_tokens_with_type_subst, the `pat-fill` arm); this lane
+	// never adopted it. Bind by NAME from the arguments already collected —
+	// the opaque lane has raw token runs, not resolved types, which is
+	// exactly what that owner's token_subst map takes.
+	std::map<std::string, TokenDataType *> opq_no_type_subst;
+	std::map<std::string, std::vector<TokenBase *> > opq_bound;
+	for ( size_t bi = 0; bi < ai && bi < td.typeparams.size()
+			  && bi < raw_arg_tokens.size(); ++bi )
+	    opq_bound[td.typeparams[bi]] = raw_arg_tokens[bi];
+	std::vector<TokenBase *> default_tokens =
+	    clone_template_tokens_with_type_subst(td.typeparam_defaults[ai],
+						  opq_no_type_subst, &opq_bound);
 	std::string spelling;
 	std::vector<TokenBase *> arg_tokens;
-	for ( TokenBase *dt : td.typeparam_defaults[ai] )
+	for ( TokenBase *dt : default_tokens )
 	{
 	    spelling += template_token_fragment(dt);
-	    arg_tokens.push_back(dt ? dt->clone_origin() : NULL);
+	    arg_tokens.push_back(dt);
 	}
 	args.push_back(spelling);
 	raw_arg_tokens.push_back(arg_tokens);
@@ -11524,12 +11547,27 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    if ( ai >= td.typeparam_defaults.size()
 	      || td.typeparam_defaults[ai].empty() )
 		break;
+	    // Same rule as the class lanes: a default argument may NAME an
+	    // earlier parameter, so the bound arguments substitute BEFORE the
+	    // default is spelled. Copying verbatim leaves a parameter name in
+	    // the key (see instantiate_opaque_template_use). Fixed here too so
+	    // the rule has one behaviour at every site that materializes a
+	    // default, not two.
+	    std::map<std::string, TokenDataType *> al_no_type_subst;
+	    std::map<std::string, std::vector<TokenBase *> > al_bound;
+	    for ( size_t bi = 0; bi < ai && bi < td.typeparams.size()
+			      && bi < arg_tokens.size(); ++bi )
+		al_bound[td.typeparams[bi]] = arg_tokens[bi];
+	    std::vector<TokenBase *> default_tokens =
+		clone_template_tokens_with_type_subst(td.typeparam_defaults[ai],
+						      al_no_type_subst,
+						      &al_bound);
 	    std::string spelling;
 	    std::vector<TokenBase *> toks;
-	    for ( TokenBase *dt : td.typeparam_defaults[ai] )
+	    for ( TokenBase *dt : default_tokens )
 	    {
 		spelling += template_token_fragment(dt);
-		toks.push_back(dt->clone_origin());
+		toks.push_back(dt);
 	    }
 	    args.push_back(spelling);
 	    arg_tokens.push_back(toks);

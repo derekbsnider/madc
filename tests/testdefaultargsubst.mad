@@ -1,0 +1,30 @@
+// A class template's DEFAULT template argument may NAME an earlier parameter:
+//   template<..., typename Tr, bool C = Tr::flag::value> struct ins;
+// Every lane that materializes that default must substitute the BOUND argument
+// first. A lane that copies the default's tokens verbatim leaves the parameter
+// NAME in the instantiation key, and the class registers under a key no correct
+// lookup can form — libstdc++ spells exactly this as
+//   template<..., typename _Traits,
+//            bool _Constant_iterators = _Traits::__constant_iterators::value>
+//     struct _Insert;
+// and std::unordered_map<K,V>::iterator is a member typedef of _Insert, so
+// `it->second` reported "Unidentified member 'second'".
+#include <stdio.h>
+
+template<bool B> struct ic { static const bool value = B; };
+struct traits { typedef ic<true> flag; };
+struct plain  { typedef ic<false> flag; };
+
+template<typename T, typename Tr, bool C = Tr::flag::value>
+struct ins { int n() { return C ? 7 : 3; } };
+
+template<typename T, typename Tr> struct holder : ins<T, Tr> { };
+
+int main()
+{
+	holder<int, traits> a;
+	holder<int, plain> b;
+	ins<int, traits> c;
+	printf("%d %d %d\n", a.n(), b.n(), c.n());
+	return 0;
+}
