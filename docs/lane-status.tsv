@@ -6,4 +6,4 @@ wine64	yes	f88c360b7c62	2026-09-17	1329/0/0TO/69skip (persistent wine; hosted PE
 linux-battery	yes	e176f41f3cc6	2026-09-17	fulltest jit 1389/0/0TO/9skip (doctest 5/5, every gate GREEN) + exe 1320/0 + obj 1320/0 + release (forest_pack_gate OK, 68/68 baseline) + packed 1389/0/9skip + headerless 1355/0/43skip — C++ SYMBOL MANGLING seam, ledger-freshness re-run on f88c360b7 code (first battery identical at 2b46737c6), tmp/seam2/ on the container
 c-testsuite	yes	e176f41f3cc6	2026-09-17	220/220 gnu11 (0 outside baseline, 0 baseline now-passing) — C++ symbol mangling seam re-run on f88c360b7, tmp/seam2/ctestsuite.log
 macos	yes	e176f41f3cc6	2026-09-17	BUILD lane: container cross release-macos rc=0 + package_release_macos rc=0 — C++ symbol mangling seam re-run on f88c360b7, tmp/seam2/macos.log
-gxx-c++11	no	f93bf04c96b7	2026-09-17	1321/1950 (67.7%), 629 baselined, 0 outside
+gxx-c++11	no	fc36df3987bb	2026-09-17	1331/1950 (68.3%), 619 baselined, 0 outside
