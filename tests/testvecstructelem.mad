@@ -1,0 +1,25 @@
+// A std::vector of a FILE-SCOPE C-style struct, indexed and member-accessed in
+// main (self-host arc 2026-09-17, found reducing the class-subscript gap): the
+// parse was right, but the emitted C re-defined `struct Entry { ... }` inside
+// the instantiated library bodies — libstdc++'s block-scope
+// `typedef typename iterator_traits<_It>::value_type _ValueType;` became
+// `typedef struct Entry { ... } _ValueType1;` — and c2mir refused the TU
+// ("tag Entry redeclaration"). A block-scope alias of a struct that already
+// has a file-scope definition must REFERENCE the tag. Oracle: g++ and clang++.
+#include <stdio.h>
+#include <vector>
+
+struct Entry { unsigned hash; unsigned next; };
+
+int main()
+{
+    std::vector<Entry> v;
+    Entry a; a.hash = 7; a.next = 3;
+    Entry b; b.hash = 11; b.next = 5;
+    v.push_back(a);
+    v.push_back(b);
+    v.push_back(a);
+    printf("size=%d first=%u/%u last=%u/%u\n", (int)v.size(),
+	   v[0].hash, v[0].next, v[2].hash, v[2].next);
+    return 0;
+}

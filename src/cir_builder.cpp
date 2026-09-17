@@ -25448,6 +25448,23 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		while (DataDefPTR *tp = (ttd_base ? ttd_base->as_pointer_dd() : NULL))
 			ttd_base = tp->base_type;
 		bool class_alias = as_user_class(ttd_base) != NULL;
+		// The same rule for a plain struct whose body ALREADY went out at
+		// file scope (claim_emitted_struct recorded it as that name's
+		// owner): a block-scope alias references the tag. Re-emitting the
+		// body inside an instantiated library routine — libstdc++'s
+		// `typedef typename iterator_traits<_It>::value_type _ValueType;`
+		// became `typedef struct Entry { ... } _ValueType1;` in every
+		// vector<Entry> algorithm body — was a c2mir "tag Entry
+		// redeclaration". Only a struct DEFINED in the block keeps its body.
+		if (!class_alias) {
+			DataDefSTRUCT *ttd_sdd = dynamic_cast<DataDefSTRUCT *>(ttd_base);
+			if (ttd_sdd && !ttd_sdd->is_anonymous) {
+				std::map<std::string, DataDefSTRUCT *>::const_iterator own =
+					m_emitted_struct_owner.find(ttd_sdd->name);
+				class_alias = own != m_emitted_struct_owner.end()
+					   && own->second == ttd_sdd;
+			}
+		}
 		node_t n = typedef_decl(ttd->alias, ttd->target_type,
 					no_emitted_structs, class_alias);
 		if (n) { CIR_NODE(n)->origin_id = madc_slot_id_for(ttd); set_pos(CIR_NODE(n), ttd); }
