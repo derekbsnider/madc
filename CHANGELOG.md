@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
+
+- **Under `--std=c++##` and `--std=madc`, madc now names every C++ symbol it
+  defines exactly as g++/clang do** — free functions, namespace functions, class
+  members, operators, constructors and destructors (C1/C2, D1/D2), function-
+  template and member-template products (`_Z4pickiiPi`, `_ZN3Foo3barEv`,
+  `_ZN3BoxIiEC1Ev`, `_Z4makeIiET_i`) — so a madc `.o`/`.so` is ABI-identical to
+  a g++/clang one and free functions overload by parameter type. `extern "C"`
+  and `main` stay bare; C mode (`--std=c##`) stays bare and reports a signature
+  clash as an error (owner law 2026-09-16: `--std=` determines semantics). The
+  internal `__oN` / `Class__member` / `__ns_` spellings survive only as
+  registration keys, never as emitted symbols. This is the root cause of the
+  darwin `send`/`channel` symptom: a user `send` is now a distinct Itanium
+  overload that never touches POSIX `send`.
+- **Machinery.** The Itanium encoders (`src/madc_mangle.cpp`) gain the array
+  production (`A<dim>_`) and a refusal guard (an unmanglable spelling yields ""
+  rather than an invalid symbol); parameter spellings desugar through ONE owner
+  (`FuncDef::mangle_spelling_for`); the symbol a body defines has one owner
+  (`CirBuilder::func_def_symbol`) and the translation record `body_symbol_keys`
+  maps emitted symbols back to registration keys for every name-keyed
+  structure; the frozen forest keeps the Itanium symbols across freeze and
+  restore; `FuncDef::body_defines_emit_symbol` is the one predicate deciding
+  whether a reference to a symbol demands madc's body or imports a library's
+  export.
+- **Gates.** `scripts/mangle_abi_gate.sh` (a 161-row oracle table from
+  g++/clang plus an interop lane linking madc objects against g++ objects both
+  ways, with set-equality and binding-strength checks),
+  `scripts/check-call-emit-symbol.sh` (every call symbol derives via
+  `call_emit_symbol`), `tests/abi/`, `tests/unit/test_mangle.cpp`,
+  `tests/testnamespacemangle.mad`. The seam battery ran green on every lane:
+  fulltest 1389/0/9skip, exe 1320/0, obj 1320/0, release, packed, headerless
+  1355/0/43skip, c-testsuite 220/220, wine 1329/0/69skip, macOS build + package.
+- **Seam findings fixed on the way** (each its own commit): the C-mode
+  signature-clash check compared a desugared spelling against a raw alias
+  (SMAUG's `skill_name(DO_FUN *)`); a grove-restored user member had no Itanium
+  bind; a block-scope C++ prototype declares the enclosing-namespace function
+  (g++) while a GNU nested definition does not; the emitted-C11 extern flush
+  deduped by registration name; libc++'s exported `basic_filebuf<char>`
+  constructor was derived from the header instead of imported. Under win64,
+  mingw's inline `printf` is an `extern "C++"` override and correctly names
+  `_Z6printfPKcz` (test twin `testemitindent.win64_expect`).
+- **Recorded for their own sessions:** `&ns::fn<targs>(args)` in
+  `parseAddressOfExpression` (pre-existing; KG Gap
+  `addressof_qualified_template_id_call`), the corpus end-to-end lane's four
+  parser shapes, `long long` vs `long` as distinct DataDefs on LP64,
+  function-type typedef pointer depth.
+
 ### The madcgit module on the Windows and macOS cross targets (2026-09-15)
 
 - **The madcgit module (`git::*`, madc's read-only view of a local repository)
