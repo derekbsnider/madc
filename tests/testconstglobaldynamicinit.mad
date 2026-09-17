@@ -1,0 +1,25 @@
+#include <cstdio>
+
+// A file-scope `const` whose initializer is NOT a constant expression is valid
+// in every C/C++ dialect. madc cannot carry a non-constant initializer in the
+// SPEC_DECL (c2mir rejects it), so the CIR builder drops it there and re-queues
+// it as a source-level assignment inside __madc_global_init — the g++
+// dynamic-initialization model.
+//
+// The P2.4 const-write check then saw that queued statement as a WRITE to a
+// const variable and rejected it: "assignment of read-only variable". It is
+// the variable's INITIALIZATION, not a write.
+//
+// The same declaration inside a function always worked, which is what pinned
+// it to file scope.
+
+static int compute() { return 6; }
+
+const int g_const = compute();
+
+int main()
+{
+    const int local_const = compute();
+    printf("const dynamic init: %d %d\n", g_const, local_const);
+    return 0;
+}

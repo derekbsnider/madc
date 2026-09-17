@@ -22441,7 +22441,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// "assignment of read-only variable 'x'".
 			if (is_assign_op(tb->id())) {
 				if (TokenVar *ltv = (top->left ? top->left->as_var_tok() : NULL)) {
-					if (ltv->var.is_constant()) {
+					// ...EXCEPT the assignment that IS this global's
+					// initialization. A file-scope variable with a
+					// non-constant initializer cannot carry it in the
+					// SPEC_DECL (c2mir rejects it), so the initializer is
+					// dropped there and re-queued as a source-level
+					// assignment into __madc_global_init (the g++ dynamic-init
+					// model, above). That statement is INITIALIZATION, not a
+					// write, and `const int c = runtime();` at file scope is
+					// valid in every dialect -- it was rejected here, while
+					// the same declaration inside a function was accepted.
+					// m_dynamic_global_inits is the exact set the deferral
+					// records, so the exemption cannot over-reach to a real
+					// later write to the same variable.
+					if (ltv->var.is_constant()
+					    && !m_dynamic_global_inits.count(&ltv->var)) {
 						std::string msg = "assignment of read-only variable '"
 							+ ltv->var.name + "'";
 						return error_node(msg.c_str(), tb);
