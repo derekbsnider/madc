@@ -106,7 +106,31 @@ it is a ledger lane (`scripts/lane_ledger.sh record selfhost "<tally>"`) whose
    `src/*.cpp` TU and every own header PASS; the baseline empty). ONE battery
    + lane records + develop merge there, never per fix.
 
-## 5. Not in scope
+## 5. Harness lessons (first three runs, 2026-09-17)
+
+Each of these read as a plausible result until checked; each is now a gate
+inside the lane.
+
+- **A sub-make prints "Entering directory" lines.** Under `make -C src
+  selfhost` the inner `make -s print-OBJECTS` polluted the object list; the
+  dry-run derived no compile lines and the lane refused (exit 2 — by
+  design). Both inner makes run `--no-print-directory`; make's stderr is
+  kept for the refusal message.
+- **madc treats every argument after the source as the program's argv.**
+  `--emit=c11` appended after the source was not a flag: every unit that
+  parsed was RUN ("madc_cir_execute: main() not found", rc=1, zero error
+  lines on 40+ units). Flags, then `--emit=c11`, then the source.
+- **A diagnostics loop fills the disk.** `<regex>` (ns_perl.cpp) looped in
+  error recovery: 2,072,861 error lines, 831 MB, and a container load spike
+  when the tally sorted them. Each unit's stderr passes through a byte cap
+  (`MADC_SELFHOST_ERR_CAP`, 32M); the loop itself is KG Gap
+  `regex_header_recovery_loop`.
+- **The subshell's status was `wait`'s, not madc's.** Run 2 read 172/172
+  green. The subshell now exits with madc's rc, and a unit with diagnostics
+  and exit 0 is rc 99 / `INCO`, never a PASS. An evidence run can be blind:
+  a tally that is too good after a change is a harness signal first.
+
+## 6. Not in scope
 
 Running the emitted C (self-compilation to a working binary), linking,
 `--project` over the whole build, and the Nexus services themselves. The arc
