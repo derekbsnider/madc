@@ -48133,7 +48133,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    if ( !pgm.class_scope_stack.empty() )
 		nested_owner_class = pgm.class_scope_stack.back();
 	}
-	if ( !qualified_class_name && !pgm.class_scope_stack.empty() )
+	// Delegated by a DATA-ONLY aggregate's member loop (enclosing_
+	// aggregate_spelling set — `struct txn { struct Saved {...}; }` inside
+	// class Reg): the aggregate is the owner ([class.nest]), not the class
+	// on the scope stack above it. Adopting that outer class respelled the
+	// tag `Reg__Saved` and qualified it `Reg::Saved`, and the delegating arm
+	// then looked the class up by its bare tag and reported "Nested class
+	// 'Saved' not registered by class parser" (madc.h's
+	// StructRegistry::transaction_state::SavedValue, 17 self-host units).
+	// The bare-tag registration below plus the enclosing-aggregate spelling
+	// arm is exactly the depth-1 contract the delegating arm relies on.
+	if ( !qualified_class_name && !pgm.class_scope_stack.empty()
+	  && pgm.enclosing_aggregate_spelling.empty() )
 	{
 	    nested_owner_class = pgm.class_scope_stack.back();
 	    pgm.set_token_spelling(tag, nested_owner_class->name + "__" + class_source_name);

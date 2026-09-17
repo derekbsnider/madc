@@ -1,0 +1,60 @@
+// A constructor-bearing struct nested in a DATA-ONLY aggregate that is itself
+// nested in a class (self-host arc 2026-09-17: include/madc.h
+// StructRegistry::transaction_state::SavedValue — "Nested class 'SavedValue'
+// not registered by class parser", first error of 17 units). The class parser,
+// delegated by the aggregate's member loop, adopted the OUTER class as the
+// owner and registered `Reg__Saved`; the delegating arm then missed the bare
+// tag. Shapes: the depth-2 nested class used by a vector member, the same
+// nested name inside a class template first, and a depth-1 twin. Oracle: g++
+// and clang++ -std=c++11.
+#include <stdio.h>
+#include <vector>
+#include <string>
+
+struct DD { int n; };
+
+template<class K, class V>
+class rmap {
+    struct Saved { K key; bool existed; V value; Saved() : existed(false), value() {} Saved(const K &k, bool e, V v) : key(k), existed(e), value(v) {} };
+    std::vector<Saved> saved;
+    Saved last;
+public:
+    void add(const K &k, V v) { last = Saved(k, true, v); }
+    int n() const { return (int)saved.size() + (last.existed ? last.value : 0); }
+};
+
+class Reg {
+public:
+    struct txn {
+	struct Saved {
+	    std::string key;
+	    bool existed;
+	    DD *value;
+	    Saved() : existed(false), value(0) {}
+	    Saved(const std::string &k, bool e, DD *v) : key(k), existed(e), value(v) {}
+	};
+	std::vector<Saved> saved;
+	Saved last;
+	int total;
+    };
+    void begin(txn &t, DD *d) { t.total = 0; t.last = txn::Saved("a", true, d); t.total += t.last.value->n; }
+    int count(const txn &t) const { return (int)t.saved.size() + (t.last.existed ? 1 : 0); }
+    const char *first_key(const txn &t) const { return t.last.key.c_str(); }
+};
+
+struct plain {
+    struct Saved { int v; Saved(int x) : v(x * 2) {} };
+    std::vector<Saved> saved;
+    int twice(int x) const { return Saved(x).v + (int)saved.size(); }
+};
+
+int main()
+{
+    DD d; d.n = 7;
+    Reg r; Reg::txn t; r.begin(t, &d);
+    rmap<int, int> m; m.add(3, 4); m.add(5, 6);
+    plain p;
+    printf("%d %s %d %d %d %d\n", r.count(t), r.first_key(t), t.total, m.n(),
+	   (int)p.saved.size(), p.twice(21));
+    return 0;
+}
