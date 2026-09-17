@@ -4917,6 +4917,7 @@ public:
     bool parsing_for_init = false;
     bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_thread_local_decl = false;	// current declaration carries `thread_local` / `_Thread_local` (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vfTHREADLOCAL on the variable
+    int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
 
@@ -6960,6 +6961,7 @@ public:
     TokenStructLit *parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 					      TokenBase *origin);
     TokenBase *parse_namespace_block(bool inline_namespace);
+    void parse_namespace_body_members();	// the `{ members }` loop shared by named and unnamed namespaces
     TokenBase *parse_parenthesized_expression(const char *context,
 					      bool stop_on_closing_paren);
     TokenBase *reference_bind_address_expr(TokenBase *expr,

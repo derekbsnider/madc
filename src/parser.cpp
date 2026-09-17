@@ -34108,6 +34108,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     bool saved_extern_decl = parsing_extern_decl;
     bool saved_static_decl = parsing_static_decl;
     bool saved_thread_local_decl = parsing_thread_local_decl;
+    int saved_unnamed_ns_depth = unnamed_namespace_depth;
     bool saved_const_decl = parsing_const_decl;
     bool saved_typedef_decl = parsing_typedef_decl;
     bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
@@ -34169,6 +34170,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_extern_decl = false;
     parsing_static_decl = false;
     parsing_thread_local_decl = false;
+    unnamed_namespace_depth = 0;
     parsing_const_decl = false;
     parsing_typedef_decl = false;
     dependent_pattern_ctor_inits = false;
@@ -34265,6 +34267,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_extern_decl = saved_extern_decl;
     parsing_static_decl = saved_static_decl;
     parsing_thread_local_decl = saved_thread_local_decl;
+    unnamed_namespace_depth = saved_unnamed_ns_depth;
     parsing_const_decl = saved_const_decl;
     parsing_typedef_decl = saved_typedef_decl;
     dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
@@ -42397,11 +42400,64 @@ void Program::mirror_inline_namespace_into_parent(const std::string &parent_ns,
     }
 }
 
+// The member loop of a namespace body, shared by named and unnamed
+// namespaces: each member is a top-level declaration (B4a pack bracketing);
+// statements that yield a node (a global initializer) join the program.
+void Program::parse_namespace_body_members()
+{
+    for ( ;; )
+    {
+	pack_open_toplevel_decl();	// B4a: namespace members are top-level decls
+	TokenBase *tn = nextToken();
+	if ( !tn || tn->id() == TokenID::tkClBrc )
+	{
+	    pack_close_toplevel_decl();
+	    if ( !tn )
+		Throw(tn) << "Missing '}' after namespace body" << flush;
+	    break;
+	}
+	if ( tn->id() == TokenID::tkSemi )
+	{
+	    pack_close_toplevel_decl();
+	    continue;
+	}
+	TokenBase *stmt = parseStatement(tn);
+	pack_close_toplevel_decl();
+	if ( stmt && tkProgram )
+	    tkProgram->statements.push_back((TokenStmt *)stmt);
+    }
+}
+
 TokenBase *Program::parse_namespace_block(bool inline_namespace)
 {
     DBG(std::cout << "TokenNAMESPACE::parse() top" << std::endl);
 
     TokenBase *tn = nextToken();
+    // Unnamed namespace ([namespace.unnamed]): `namespace { members }` behaves
+    // as `namespace UNIQUE { members } using namespace UNIQUE;` with every
+    // member given internal linkage. madc models exactly that: the members
+    // register in the ENCLOSING namespace (the using-directive's effect —
+    // and every unnamed block in a TU is the same unique namespace, so a
+    // redefinition across two blocks is an error here as in g++), and
+    // parseDeclaration turns unnamed_namespace_depth into `static` for the
+    // file-scope functions and variables defined inside (never a class
+    // member definition, never an extern declaration).
+    if ( tn && tn->id() == TokenID::tkOpBrc )
+    {
+	++unnamed_namespace_depth;
+	try
+	{
+	    parse_namespace_body_members();
+	}
+	catch ( ... )
+	{
+	    --unnamed_namespace_depth;
+	    throw;
+	}
+	--unnamed_namespace_depth;
+	DBG(std::cout << "TokenNAMESPACE::parse() end of unnamed namespace" << std::endl);
+	return NULL;
+    }
     if ( !tn || !is_contextual_identifier_token(tn) )
 	Throw(tn) << "Expecting namespace name after 'namespace'" << flush;
     std::vector<std::string> ns_parts;
@@ -42519,25 +42575,7 @@ TokenBase *Program::parse_namespace_block(bool inline_namespace)
 		}
     }
 
-    for ( ;; )
-    {
-	pack_open_toplevel_decl();	// B4a: namespace members are top-level decls
-	tn = nextToken();
-	if ( !tn || tn->id() == TokenID::tkClBrc )
-	{
-	    pack_close_toplevel_decl();
-	    break;
-	}
-	if ( tn->id() == TokenID::tkSemi )
-	{
-	    pack_close_toplevel_decl();
-	    continue;
-	}
-	TokenBase *stmt = parseStatement(tn);
-	pack_close_toplevel_decl();
-	if ( stmt && tkProgram )
-	    tkProgram->statements.push_back((TokenStmt *)stmt);
-    }
+    parse_namespace_body_members();
 
     if ( inline_namespace )
 	mirror_inline_namespace_into_parent(enclosing_namespace,
@@ -68469,6 +68507,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     bool have_decl_id = false;
     Variable *provisional_decl_var = NULL;
     bool gotstatic = is_static || parsing_static_decl;
+    // A file-scope function or variable DEFINED inside an unnamed namespace
+    // has internal linkage ([namespace.unnamed]/1 via [basic.link]/4): fold it
+    // into `static`. An extern declaration keeps its linkage; parseFunction
+    // ignores the flag for class members (owner_class) and the static-member
+    // storage of a class defined there is TU-local exactly as g++ emits it.
+    if ( unnamed_namespace_depth > 0 && compounds.empty() && !parsing_extern_decl )
+	gotstatic = true;
     bool gotconst = parsing_const_decl;
     bool gotinline = parsing_inline_decl;
     bool gotthreadlocal = parsing_thread_local_decl;

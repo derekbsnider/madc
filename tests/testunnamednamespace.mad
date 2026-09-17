@@ -1,0 +1,34 @@
+// Unnamed namespaces ([namespace.unnamed]) — `namespace { ... }` (self-host
+// arc 2026-09-17: 49 blocks in 30 of madc's own TUs, e.g. libc_signatures.cpp:21
+// `namespace {`, which madc rejected with "Expecting namespace name after
+// 'namespace'"). Every unnamed block in a TU is the same unique namespace whose
+// members are visible in the enclosing scope and have internal linkage:
+// functions, variables, a class with a static member, a nested named
+// namespace, and a second block that sees the first's members. Oracle: g++ and
+// clang++ -std=c++11.
+#include <stdio.h>
+
+namespace {
+    int counter = 10;
+    int bump(int by) { counter += by; return counter; }
+    struct Tally {
+	static int seen;
+	int add(int v) { seen += v; return seen; }
+    };
+    int Tally::seen = 100;
+    namespace inner { int twice(int v) { return 2 * v; } }
+}
+
+namespace {
+    int again() { return bump(1) + inner::twice(counter); }
+}
+
+int main()
+{
+    Tally t;
+    int b = bump(5);		// sequenced: argument evaluation order is unspecified
+    int a = again();
+    int s = t.add(7);
+    printf("bump=%d again=%d seen=%d counter=%d\n", b, a, s, counter);
+    return 0;
+}

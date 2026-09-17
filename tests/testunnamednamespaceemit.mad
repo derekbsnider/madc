@@ -1,0 +1,16 @@
+// The --emit=c11 twin of testunnamednamespace: members of an unnamed
+// namespace have INTERNAL linkage — the emitted C spells them `static`
+// (functions and variables alike), and a class's static data member defined
+// there is TU-local too. An extern declaration inside keeps its linkage.
+namespace {
+    int counter = 10;
+    extern int elsewhere;
+    int bump(int by) { counter += by + elsewhere; return counter; }
+    struct Tally { static int seen; };
+    int Tally::seen = 100;
+}
+
+int main()
+{
+    return bump(1) + Tally::seen;
+}
