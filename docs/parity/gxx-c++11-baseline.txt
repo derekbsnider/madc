@@ -20,6 +20,11 @@
 #   1179 passed, 767 compile-failed, 2 runtime-failed, 2 timed out => 1179/1950 (60.5%).
 #   Moved: constexpr-59937-1, constexpr-84463, constexpr-attribute2, constexpr-ctor7,
 #   constexpr-noexcept, constexpr-redeclaration4, nullptr01, nullptr02, nullptr05, sfinae69.
+# SHRUNK 2026-09-17 on f2f27b9f9 (771 -> 769): BOTH non-terminating recursions fixed —
+#   cpp0x/pr54318.C (501629b36, return-type resolution bounded by KEY) and
+#   template/friend7.C (f2f27b9f9, [temp.inst]/1 — a reference needs no complete type).
+#   1181 passed, 767 compile-failed, ZERO runtime-failed (was 2 — both were crashes),
+#   2 timed out => 1181/1950 (60.6%).
 # Paths are relative to the testsuite root (--root, /workspace/gcc_testsuite
 # on the container; the repo's gcc_testsuite symlink resolves on the host).
 g++.dg/cpp0x/Wpessimizing-move4.C
@@ -722,7 +727,6 @@ g++.dg/template/friend19.C
 g++.dg/template/friend3.C
 g++.dg/template/friend5.C
 g++.dg/template/friend6.C
-g++.dg/template/friend7.C
 g++.dg/template/friend76.C
 g++.dg/template/friend80.C
 g++.dg/template/friend83.C
