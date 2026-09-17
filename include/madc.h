@@ -1101,6 +1101,53 @@ public:
     virtual TokenAddrOf *as_addr_of_tok() override { return this; }
 };
 
+// C++ pointer-to-member CONSTANT `&C::m` ([expr.unary.op]/3). A member
+// FUNCTION yields the Itanium {ptr, adj} pair (DataDefMemberFnPtr): ptr = the
+// member's address for a non-virtual member, 1 + the vtable byte offset of
+// its slot for a virtual one (odd = virtual), adj = the this-adjustment to
+// the member's class subobject. A DATA member yields its byte offset
+// (DataDefMemberPtr, a ptrdiff_t). The CIR lowers the function form to a
+// compound literal of `struct __madc_memfnptr` and the data form to the
+// offset constant.
+class TokenMemberPtrConst: public TokenBase
+{
+public:
+    DataDefCLASS *owner;	// the C in &C::m
+    Variable *method;		// the member function's Variable (function form), else NULL
+    std::string member_name;	// the member's source name
+    ssize_t data_offset;	// data form: the member's byte offset
+    DataDef *mp_type;		// DataDefMemberFnPtr / DataDefMemberPtr
+    TokenMemberPtrConst(DataDefCLASS *c, Variable *m, const std::string &nm,
+			ssize_t off, DataDef *t)
+	: owner(c), method(m), member_name(nm), data_offset(off), mp_type(t) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return mp_type ? mp_type : &ddVOID; }
+    virtual TokenMemberPtrConst *as_member_ptr_const_tok() override { return this; }
+};
+
+// `obj.*mp` / `p->*mp` ([expr.mptr.oper]) and the call through a member-FUNCTION
+// pointer `(obj.*mp)(args)` / `(p->*mp)(args)`. For a DATA member pointer the
+// bound member is the lvalue `*(T *)((char *)&obj + mp)`; for a function
+// member pointer it is only ever the callee of the call that follows, so the
+// arguments ride here (is_call) and the CIR emits the Itanium dispatch:
+// `(mp.ptr & 1) ? *(vslot at recv->__vptr + mp.ptr - 1) : mp.ptr`, called with
+// `this = (char *)recv + mp.adj`.
+class TokenMemberPtrAccess: public TokenBase
+{
+public:
+    TokenBase *object;		// the object (`.*`) or the pointer to it (`->*`)
+    bool via_arrow;
+    TokenBase *mptr;		// the member-pointer value
+    DataDef *result_type;	// data form: the member's type; call form: the callee's return value type
+    bool is_call;
+    std::vector<TokenBase *> args;	// call form: the arguments
+    TokenMemberPtrAccess(TokenBase *o, bool arrow, TokenBase *m, DataDef *t)
+	: object(o), via_arrow(arrow), mptr(m), result_type(t), is_call(false) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return result_type ? result_type : &ddVOID; }
+    virtual TokenMemberPtrAccess *as_member_ptr_access_tok() override { return this; }
+};
+
 // &(expr) address-of operator for member/subscript/deref lvalues
 class TokenAddrExpr: public TokenBase
 {
@@ -6289,6 +6336,7 @@ public:
     // member, parameter, variable and typedef arms (defined beside
     // parse_fnptr_member_tail, whose `name ) ( params )` tail it reuses).
     bool member_pointer_declarator_ahead(TokenBase *first) const;
+    DataDef *parse_member_pointer_owner(TokenBase *owner_first, std::string &owner_name);
     DataDefMemberFnPtr *parse_member_fnptr_declarator(DataDef &returns,
 						      std::string &mname,
 						      TokenBase *owner_first);

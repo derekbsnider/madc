@@ -21329,6 +21329,164 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		}
 	}
 
+	// C++ pointer-to-member CONSTANT `&C::m` (TokenMemberPtrConst).
+	if (TokenMemberPtrConst *mpc = (tb ? tb->as_member_ptr_const_tok() : NULL)) {
+		if (!mpc->method)
+			// Data member: the byte offset (Itanium: a ptrdiff_t).
+			return integer((int64_t)mpc->data_offset, tb);
+		// Member function: the Itanium {ptr, adj} pair as a compound literal of
+		// struct __madc_memfnptr. ptr = 1 + the vtable byte offset of the slot
+		// for a VIRTUAL member (odd marks it; resolved through the receiver's
+		// __vptr at the call — madc's own vtable model, void*[] per group),
+		// else the member's own address. adj = the declaring class's
+		// subobject offset within the owner named in the constant.
+		FuncDef *mfd = dynamic_cast<FuncDef *>(mpc->method->type);
+		node_t ptr_val;
+		size_t grp = 0;
+		int slot = -1;
+		if (mpc->owner && mpc->owner->is_virtual_method(mpc->member_name)
+		    && mpc->owner->find_vslot(mpc->member_name, grp, slot)) {
+			ptr_val = node2(N_CAST, void_ptr_type(),
+					integer((int64_t)(1 + slot * 8), tb), tb);
+		} else {
+			std::string sym = body_emit_symbol(*mpc->method, mfd);
+			referenced_funcs.insert(sym);
+			ptr_val = node2(N_CAST, void_ptr_type(), id(sym.c_str(), tb), tb);
+		}
+		int64_t adj = 0;
+		if (mpc->owner) {
+			Method *mm = (Method *)mpc->method->data;
+			DataDefCLASS *decl_cls = mm ? mm->owner_class : NULL;
+			if (decl_cls && decl_cls != mpc->owner)
+				adj = (int64_t)mpc->owner->base_offset_of(decl_cls);
+		}
+		node_t spec = list();
+		append(spec, memfnptr_struct_ref());
+		node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+		node_t inits = list();
+		append(inits, node2(N_INIT, list(), ptr_val));
+		append(inits, node2(N_INIT, list(), integer(adj, tb)));
+		return node2(N_COMPOUND_LITERAL, type_node, inits, tb);
+	}
+
+	// `obj.*mp` / `p->*mp` and the call through a member-function pointer
+	// (TokenMemberPtrAccess). Every read of the member-pointer operand and of
+	// the receiver is its own translation (c2mir's single parent link).
+	if (TokenMemberPtrAccess *mpa = (tb ? tb->as_member_ptr_access_tok() : NULL)) {
+		// the receiver's address as char*: `.*` takes &obj, `->*` the pointer value
+		auto recv_bytes = [&]() -> node_t {
+			node_t a = mpa->via_arrow
+				? translate_expr(mpa->object)
+				: node1(N_ADDR, translate_expr(mpa->object), tb);
+			return node2(N_CAST, char_ptr_type(), a, tb);
+		};
+		auto i64_type = [&]() -> node_t {
+			node_t sl = list();
+			append_i64(sl);
+			return node2(N_TYPE, sl, node2(N_DECL, ignore(), list()));
+		};
+		if (!mpa->is_call) {
+			// data member: *(T *)((char *)&obj + mp)
+			node_t addr = node2(N_ADD, recv_bytes(), translate_expr(mpa->mptr), tb);
+			node_t pdecl = list();
+			append(pdecl, pointer());
+			node_t ptype = node2(N_TYPE, type_list(mpa->result_type),
+					     node2(N_DECL, ignore(), pdecl));
+			return node1(N_DEREF, node2(N_CAST, ptype, addr, tb), tb);
+		}
+		DataDefMemberFnPtr *mfp = dynamic_cast<DataDefMemberFnPtr *>(
+			mpa->mptr ? TokenSubscript::referent_type(mpa->mptr->datadef()) : NULL);
+		FuncDef *fd = mfp ? mfp->target : NULL;
+		if (!fd)
+			return error_node("call through a member-function pointer of unknown signature", tb);
+		DataDefCLASS *ocls = dynamic_cast<DataDefCLASS *>(mfp->owner_class);
+		// this = (struct C *)((char *)recv + mp.adj)
+		auto this_ptr = [&]() -> node_t {
+			node_t adj = node2(N_FIELD, translate_expr(mpa->mptr), id("adj", tb), tb);
+			node_t bytes = node2(N_ADD, recv_bytes(), adj, tb);
+			node_t pdecl = list();
+			append(pdecl, pointer());
+			node_t ttype = ocls
+				? node2(N_TYPE, type_list(ocls), node2(N_DECL, ignore(), pdecl))
+				: void_ptr_type();
+			return node2(N_CAST, ttype, bytes, tb);
+		};
+		auto mp_ptr = [&]() -> node_t {
+			return node2(N_FIELD, translate_expr(mpa->mptr), id("ptr", tb), tb);
+		};
+		// virtual: *(void **)((char *)this->__vptr + (mp.ptr - 1))
+		node_t vptr = node2(N_DEREF_FIELD, this_ptr(), id("__vptr", tb), tb);
+		node_t slot_bytes = node2(N_ADD, node2(N_CAST, char_ptr_type(), vptr, tb),
+					  node2(N_SUB, node2(N_CAST, i64_type(), mp_ptr(), tb),
+						integer(1, tb), tb), tb);
+		node_t vpp_dl = list();
+		append(vpp_dl, pointer());
+		append(vpp_dl, pointer());
+		node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), vpp_dl));
+		node_t vfn = node1(N_DEREF, node2(N_CAST, vpp_type, slot_bytes, tb), tb);
+		node_t is_virtual = node2(N_AND, node2(N_CAST, i64_type(), mp_ptr(), tb),
+					  integer(1, tb), tb);
+		node_t callee = node3(N_COND, is_virtual, vfn, mp_ptr(), tb);
+		// cast to the member's signature: RET (*)(struct C *__this, params...).
+		// A method's FuncDef::parameters holds the SOURCE parameters only —
+		// the receiver is the emitted prototype's hidden leading parameter —
+		// so the pointer-to-function type is assembled here: the receiver
+		// N_TYPE first, then each parameter exactly as fnptr_func_node
+		// renders it (param_decl), then the return type's own pointer levels
+		// after the FUNC suffix (the fnptr_decl_pieces order).
+		node_t plist = list();
+		{
+			node_t rdecl = list();
+			append(rdecl, pointer());
+			node_t rtype = ocls
+				? node2(N_TYPE, type_list(ocls), node2(N_DECL, ignore(), rdecl))
+				: void_ptr_type();
+			append(plist, rtype);
+		}
+		{
+			size_t nparam = fd->parameters.size();
+			if (fd->is_varargs && nparam > 0) nparam--;
+			for (size_t i = 0; i < nparam; i++) {
+				std::string ptypedef;
+				if (i < fd->param_typedef_names.size())
+					ptypedef = fd->param_typedef_names[i];
+				append(plist, param_decl(fd->parameters[i], "", ptypedef));
+			}
+			if (fd->is_varargs)
+				append(plist, simple(N_DOTS));
+		}
+		DataDef *ret_dd = &fd->returns;
+		size_t ret_stars = 0;
+		while (ret_dd && ret_dd->is_pointer() && !ret_dd->is_reference()) {
+			DataDefPTR *rp = ret_dd->as_pointer_dd();
+			if (!rp || !rp->base_type) break;
+			ret_dd = rp->base_type;
+			++ret_stars;
+		}
+		node_t fsl = fd->returns_reference() ? list() : type_list(ret_dd);
+		if (fd->returns_reference()) {
+			// a reference return travels as a pointer to the referent
+			DataDef *ref_dd = TokenSubscript::referent_type(&fd->returns);
+			node_t rl = type_list(ref_dd);
+			fsl = rl;
+			++ret_stars;
+		}
+		node_t fdl = list();
+		append(fdl, pointer());
+		append(fdl, node1(N_FUNC, plist));
+		for (size_t rs = 0; rs < ret_stars; ++rs)
+			append(fdl, pointer());
+		node_t ftype = node2(N_TYPE, fsl, node2(N_DECL, ignore(), fdl));
+		node_t args = list();
+		append(args, this_ptr());
+		for (size_t i = 0; i < mpa->args.size(); ++i)
+			append(args, translate_expr(mpa->args[i]));
+		node_t call = node2(N_CALL, node2(N_CAST, ftype, callee, tb), args, tb);
+		CIR_NODE(call)->synth_from_origin = true;
+		return fd->returns_reference() ? node1(N_DEREF, call, tb) : call;
+	}
+
 	// Address-of variable
 	{
 		TokenAddrOf *ta = (tb ? tb->as_addr_of_tok() : NULL);

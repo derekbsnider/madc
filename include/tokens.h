@@ -406,6 +406,8 @@ public:
     virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
     virtual TokenSubscript     *as_subscript_tok()  { return NULL; }
     virtual TokenSubscriptExpr *as_subscript_expr_tok() { return NULL; }
+    virtual class TokenMemberPtrConst *as_member_ptr_const_tok() { return NULL; }
+    virtual class TokenMemberPtrAccess *as_member_ptr_access_tok() { return NULL; }
     virtual TokenTypedefDecl   *as_typedef_decl_tok()   { return NULL; }
     virtual TokenStructLit     *as_struct_lit_tok() { return NULL; }
     virtual TokenPackExpansion *as_pack_expansion_tok() { return NULL; }

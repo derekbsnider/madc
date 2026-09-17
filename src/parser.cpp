@@ -13391,6 +13391,10 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 	TokenVar *rv = dynamic_cast<TokenVar *>(recv);
 	if ( rv && rv->var.type && rv->var.type->is_function() )
 		return true;
+	// `(obj.*mp)(args)`: the bound member-function pointer is the callee.
+	if ( TokenMemberPtrAccess *mpa = recv->as_member_ptr_access_tok() )
+		if ( mpa->is_call )
+			return true;
 	// A receiver whose EXPRESSION type is function-shaped is callable
 	// regardless of token shape: `((int(*)(void))p)()` leaves a TokenCast
 	// to DataDefFPTR on the stack (c-testsuite 00210 — the `()` was
@@ -14741,10 +14745,57 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    dd = getPointerType(dd);
 	    continue;
 	}
+	// Abstract pointer-to-DATA-member `sizeof(int Widget::*)` — 8 (a
+	// ptrdiff_t); the owner chain ends in `*` right after a `::`.
+	if ( is_contextual_identifier_token(peekToken())
+	  && tokens.size() > 1 && tokens[1] && tokens[1]->id() == TokenID::tkNS )
+	{
+	    TokenBase *mp_first = nextToken();
+	    if ( member_pointer_declarator_ahead(mp_first) )
+	    {
+		std::string mp_owner_name;
+		DataDef *mp_owner = parse_member_pointer_owner(mp_first, mp_owner_name);
+		dd = new DataDefMemberPtr(mp_owner, mp_owner_name, *dd);
+		continue;
+	    }
+	    pushToken(mp_first);
+	    break;
+	}
 	if ( peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    TokenBase *open = nextToken();
 	    TokenBase *star = nextToken();
+	    // Abstract pointer-to-MEMBER-FUNCTION `sizeof(void (Widget::*)())` —
+	    // 16 (the Itanium {ptr, adj} pair); the parameter list is skipped
+	    // balanced like the fn-ptr form below — only the measure matters.
+	    if ( star && member_pointer_declarator_ahead(star) )
+	    {
+		std::string mp_owner_name;
+		DataDef *mp_owner = parse_member_pointer_owner(star, mp_owner_name);
+		TokenBase *mclose = nextToken();
+		if ( !mclose || mclose->id() != TokenID::tkClBrk )
+		    Throw(mclose ? mclose : open) << "Expecting ')' in " << op_name << " pointer-to-member type" << flush;
+		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    nextToken();
+		    int mdepth = 1;
+		    while ( mdepth > 0 )
+		    {
+			TokenBase *pt = nextToken();
+			if ( !pt )
+			    Throw(open) << "Unexpected end of input in " << op_name << " pointer-to-member parameter list" << flush;
+			if ( pt->id() == TokenID::tkOpBrk )
+			    ++mdepth;
+			else if ( pt->id() == TokenID::tkClBrk )
+			    --mdepth;
+		    }
+		}
+		while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+				     || peekToken()->id() == TokenID::tkVOLATILE) )
+		    nextToken();
+		dd = new DataDefMemberFnPtr(mp_owner, mp_owner_name, NULL, false);
+		continue;
+	    }
 	    if ( !star || star->id() != TokenID::tkMul )
 		Throw(star ? star : open) << "Unsupported parenthesized declarator in " << op_name << flush;
 	    dd = getPointerType(dd);
@@ -30874,6 +30925,37 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    skip_template_id_suffix();
 		return new TokenVar(*method_var);
 	    }
+	    // A NON-static member function: `&C::m` is a pointer to member
+	    // ([expr.unary.op]/3) — the Itanium {ptr, adj} pair
+	    // (DataDefMemberFnPtr); the CIR mints the constant (a virtual
+	    // member encodes its vtable slot). madc_program.cpp:2890
+	    // `(this->*fn)(...)` with `fn` bound from `&impl::f`.
+	    if ( method_var && method_var->type && method_var->type->is_function() )
+	    {
+		if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+		    skip_template_id_suffix();
+		FuncDef *mfd = dynamic_cast<FuncDef *>(method_var->type);
+		DataDefMemberFnPtr *mpt = new DataDefMemberFnPtr(
+		    aclass, aname, mfd, mfd && mfd->is_const_method);
+		return new TokenMemberPtrConst(aclass, method_var, member_name, 0, mpt);
+	    }
+	    // A NON-static DATA member: `&C::field` is a pointer to data member —
+	    // its byte offset (DataDefMemberPtr, a ptrdiff_t), read back through
+	    // `obj.*pm` / `p->*pm`. Checked before the static-data path, whose
+	    // diagnostics stay as they were for a name that is neither.
+	    {
+		std::string mname_key = member_name;
+		ssize_t moff = aclass->m_offset(mname_key);
+		if ( moff != -1 && !resolve_class_static_member_type(aclass, member_name) )
+		{
+		    DataDef *mtype = aclass->m_type(mname_key);
+		    if ( mtype )
+		    {
+			DataDefMemberPtr *dpt = new DataDefMemberPtr(aclass, aname, *mtype);
+			return new TokenMemberPtrConst(aclass, NULL, member_name, moff, dpt);
+		    }
+		}
+	    }
 	    // Deliberately NOT resolve_class_static_member_value(): that prefers a
 	    // folded in-class constant, and a constant has no address. An address is
 	    // the address of the STORAGE its out-of-class definition created.
@@ -39552,6 +39634,49 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		   || opStack.top()->type() == TokenType::ttCallMethod)
 		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
 		    popOperator(opStack, exStack);
+		// `obj.*mp` / `p->*mp` ([expr.mptr.oper]): the `.` or `->` is
+		// followed by `*` — no other C or C++ construct spells that, so
+		// the pair is the pointer-to-member operator. The right operand
+		// is a pm-expression (an identifier or a member chain: `op`,
+		// `d.op`, `this->fn`), read through the postfix-chain owner. A
+		// member-FUNCTION pointer's binding is only ever called: the
+		// `( args )` that follows lands on the node (is_call); a DATA
+		// member pointer's binding is the member lvalue.
+		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
+		  && !exStack.empty()
+		  && peekToken() && peekToken()->id() == TokenID::tkMul )
+		{
+		    bool is_arrow = (tb->id() == TokenID::tkDeRef);
+		    nextToken(); // consume '*'
+		    TokenBase *mp_head = nextToken();
+		    if ( !mp_head )
+			Throw(tb) << "Expecting a pointer-to-member after '"
+				  << (is_arrow ? "->*" : ".*") << "'" << flush;
+		    TokenBase *mp = parsePostfixChain(mp_head);
+		    if ( !mp )
+			Throw(mp_head) << "Expecting a pointer-to-member after '"
+				       << (is_arrow ? "->*" : ".*") << "'" << flush;
+		    DataDef *mpdd = referent_if_reference(mp->datadef());
+		    TokenBase *obj = exStack.top();
+		    exStack.pop();
+		    TokenMemberPtrAccess *acc = NULL;
+		    if ( DataDefMemberFnPtr *mf = dynamic_cast<DataDefMemberFnPtr *>(mpdd) )
+		    {
+			acc = new TokenMemberPtrAccess(obj, is_arrow, mp,
+				mf->target ? &mf->target->return_value_type() : &ddVOID);
+			acc->is_call = true;
+		    }
+		    else if ( DataDefMemberPtr *dm = dynamic_cast<DataDefMemberPtr *>(mpdd) )
+			acc = new TokenMemberPtrAccess(obj, is_arrow, mp, dm->member_type);
+		    else
+			Throw(mp_head) << "right operand of '" << (is_arrow ? "->*" : ".*")
+				       << "' is not a pointer to member" << flush;
+		    acc->file = tb->file;
+		    acc->line = tb->line;
+		    acc->column = tb->column;
+		    exStack.push(acc);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		if ( (tb->id() == TokenID::tkDot || tb->id() == TokenID::tkDeRef)
 		  && !exStack.empty()
 		  && peekToken() && peekToken()->id() == TokenID::tkBnot )
@@ -39984,6 +40109,30 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
+		    // `(obj.*mp)(args)` / `(p->*mp)(args)`: the `(` after the
+		    // parenthesized binding of a member-FUNCTION pointer opens
+		    // its argument list (the parseCallMethod loop shape: `,`
+		    // separates, `)` closes, each argument a conditional
+		    // expression). The bound node stays as the call.
+		    if ( !exStack.empty() && isPostfixPosition() )
+			if ( TokenMemberPtrAccess *mpa = exStack.top()->as_member_ptr_access_tok() )
+			    if ( mpa->is_call && mpa->args.empty() )
+			    {
+				int brackets = 1;
+				while ( brackets )
+				{
+				    TokenBase *at = peekToken();
+				    if ( !at )
+					Throw(tb) << "Unexpected end of input in pointer-to-member call" << flush;
+				    at = nextToken();
+				    if ( at->id() == TokenID::tkClBrk ) { --brackets; continue; }
+				    if ( at->id() == TokenID::tkComma ) continue;
+				    mpa->args.push_back(parseExpression(at, true));
+				}
+				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+				    done = true;
+				return done ? ExprStep::Done : ExprStep::Break;
+			    }
 		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
 		    {
 			nextToken(); // consume '{'
@@ -45190,6 +45339,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			pgm.Throw(inner ? inner : tn) << "Unsupported parenthesized member declarator in struct definition" << flush;
 		    }
+		    // Pointer-to-DATA-member member `int C::*pm;` (the class arm's twin).
+		    if ( tn && pgm.member_pointer_declarator_ahead(tn) )
+		    {
+			std::string mp_owner_name;
+			DataDef *mp_owner = pgm.parse_member_pointer_owner(tn, mp_owner_name);
+			member_dd = new DataDefMemberPtr(mp_owner, mp_owner_name, *member_dd);
+			tn = pgm.nextToken();
+		    }
 		    if ( !is_contextual_identifier_token(tn) )
 			pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 		    std::string mname = contextual_identifier_name(tn);
@@ -49440,6 +49597,16 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    || (is_contextual_identifier_token(tn)
 		     && contextual_identifier_name(tn) == "inline")) )
 	    tn = pgm.nextToken();
+	// Pointer-to-DATA-member member `int Widget::*field;` — the owner chain
+	// then `*` before the member name; the member's type becomes the
+	// ptrdiff_t-shaped DataDefMemberPtr and the name reads as usual.
+	if ( tn && pgm.member_pointer_declarator_ahead(tn) )
+	{
+	    std::string mp_owner_name;
+	    DataDef *mp_owner = pgm.parse_member_pointer_owner(tn, mp_owner_name);
+	    cmember_dd = new DataDefMemberPtr(mp_owner, mp_owner_name, *cmember_dd);
+	    tn = pgm.nextToken();
+	}
 	std::string mname;
 	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
@@ -51984,11 +52151,17 @@ bool Program::member_pointer_declarator_ahead(TokenBase *first) const
 // may not be in struct_map by simple name, and the type lowers to the same
 // 16-byte pair regardless). Used by the struct member, class member, parameter,
 // variable and typedef declarator arms.
-DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
-							  std::string &mname,
-							  TokenBase *owner_first)
+// The OWNER of a pointer-to-member declarator — `C :: [D ::]* *` with the
+// first name already consumed (`owner_first`, member_pointer_declarator_ahead
+// said yes). Consumes through the `*`, spells the owner chain into
+// `owner_name` and resolves it best-effort (a class nested in a template may
+// not be in struct_map by simple name; the type lowers the same either way).
+// ONE owner for the function form (parse_member_fnptr_declarator) and the
+// data form `T C::*name` in every declarator position.
+DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
+					    std::string &owner_name)
 {
-    std::string owner_name = contextual_identifier_name(owner_first);
+    owner_name = contextual_identifier_name(owner_first);
     TokenBase *ns_tok = nextToken();	// the first '::'
     while ( peekToken() && is_contextual_identifier_token(peekToken()) )
     {
@@ -52002,24 +52175,31 @@ DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
     if ( !star || (star->id() != TokenID::tkStar && star->id() != TokenID::tkMul) )
 	Throw(star ? star : owner_first)
 	    << "Expecting '*' after '" << owner_name << "::' in pointer-to-member declarator" << flush;
-    DataDef *owner = NULL;
+    std::vector<std::string> parts;
+    size_t from = 0;
+    for ( size_t k = owner_name.find("::"); ; k = owner_name.find("::", from) )
     {
-	std::vector<std::string> parts;
-	size_t from = 0;
-	for ( size_t k = owner_name.find("::"); ; k = owner_name.find("::", from) )
-	{
-	    parts.push_back(owner_name.substr(from, k == std::string::npos ? std::string::npos : k - from));
-	    if ( k == std::string::npos ) break;
-	    from = k + 2;
-	}
-	owner = resolve_qualified_class_owner(parts);
-	if ( !owner )
-	{
-	    datadef_map_citer omi = struct_map.find(owner_name);
-	    if ( omi != struct_map.end() )
-		owner = omi->second;
-	}
+	parts.push_back(owner_name.substr(from, k == std::string::npos ? std::string::npos : k - from));
+	if ( k == std::string::npos ) break;
+	from = k + 2;
     }
+    DataDef *owner = resolve_qualified_class_owner(parts);
+    if ( !owner )
+    {
+	datadef_map_citer omi = struct_map.find(owner_name);
+	if ( omi != struct_map.end() )
+	    owner = omi->second;
+    }
+    return owner;
+}
+
+DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
+							  std::string &mname,
+							  TokenBase *owner_first)
+{
+    std::string owner_name;
+    DataDef *owner = parse_member_pointer_owner(owner_first, owner_name);
+    TokenBase *star = curToken();
     DataDefFPTR *fp = parse_fnptr_member_tail(returns, mname, star);
     bool const_method = false;
     while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
@@ -69062,6 +69242,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
+    // Pointer-to-DATA-member variable `int Widget::*pm = &Widget::scale;`: the
+    // owner chain ends in `*` right after a `::` — a qualified NAME
+    // (`int Widget::counter = 0;`, an out-of-class static member) never does,
+    // which is the whole discriminator (member_pointer_declarator_ahead).
+    if ( peekToken() && is_contextual_identifier_token(peekToken())
+      && tokens.size() > 1 && tokens[1] && tokens[1]->id() == TokenID::tkNS )
+    {
+	TokenBase *mp_first = nextToken();
+	if ( member_pointer_declarator_ahead(mp_first) )
+	{
+	    std::string mp_owner_name;
+	    DataDef *mp_owner = parse_member_pointer_owner(mp_first, mp_owner_name);
+	    decl_type = new DataDefMemberPtr(mp_owner, mp_owner_name, *decl_type);
+	    saw_pointer_decl = true;
+	}
+	else
+	    pushToken(mp_first);
+    }
     int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star,
 						gotconst);
     if ( n_decl_stars > 0 )

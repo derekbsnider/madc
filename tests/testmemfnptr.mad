@@ -1,0 +1,59 @@
+// Pointers to members — the member-FUNCTION pointer type `R (C::*)(Args)` and
+// the member-DATA pointer `T C::*`, as madc's own source and libstdc++ spell
+// them (self-host arc 2026-09-17: std_function.h:80 `void
+// (_Undefined_class::*_M_member_pointer)();` inside std::function's
+// _Nocopy_types union — sizeof 16 gates the small-object buffer;
+// madc_program.cpp:2857 `bool (impl::*fn)(const std::string &, ...)` as a
+// PARAMETER called through `(this->*fn)(...)`). Shapes: a union member, a
+// struct member, a parameter, a local, a typedef; calls through `.*` and
+// `->*` on a non-virtual and a virtual member; a data-member pointer read.
+// Oracle: g++ and clang++ -std=c++11 (Itanium: member-function pointer =
+// {ptr, this-adjust} 16 bytes; data-member pointer = ptrdiff_t 8 bytes).
+#include <stdio.h>
+
+struct Widget {
+    int base;
+    int scale;
+    int twice(int v) const { return 2 * v + base; }
+    int thrice(int v) const { return 3 * v + base; }
+    virtual int vscale(int v) const { return scale * v; }
+    virtual ~Widget() {}
+};
+struct BigWidget : Widget {
+    int vscale(int v) const override { return 10 * scale * v; }
+};
+
+union Nocopy {
+    void *object;
+    void (*function_pointer)();
+    void (Widget::*member_pointer)();
+};
+
+typedef int (Widget::*binop_t)(int) const;
+
+struct Dispatcher {
+    binop_t op;
+    int Widget::*field;
+    int apply(const Widget &w, int v) const { return (w.*op)(v); }
+    int read(const Widget *w) const { return w->*field; }
+};
+
+int call_through(const Widget *w, int (Widget::*fn)(int) const, int v)
+{
+    return (w->*fn)(v);
+}
+
+int main()
+{
+    Widget w; w.base = 1; w.scale = 4;
+    BigWidget b; b.base = 2; b.scale = 5;
+    Dispatcher d; d.op = &Widget::twice; d.field = &Widget::scale;
+    int (Widget::*local_fn)(int) const = &Widget::thrice;
+    printf("sizeof(member_pointer)=%d sizeof(union)=%d sizeof(data_ptr)=%d\n",
+	   (int)sizeof(void (Widget::*)()), (int)sizeof(Nocopy), (int)sizeof(int Widget::*));
+    printf("apply=%d read=%d local=%d through=%d virtual=%d bigvirtual=%d\n",
+	   d.apply(w, 5), d.read(&b), (w.*local_fn)(3),
+	   call_through(&w, &Widget::twice, 7),
+	   call_through(&w, &Widget::vscale, 3), call_through(&b, &Widget::vscale, 3));
+    return 0;
+}
