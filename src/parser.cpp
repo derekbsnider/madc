@@ -72963,7 +72963,16 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 //     `Dtor<T, A>(alloc, true)(ptr);` (libc++ __node_handle's
 //     __generic_container_node_destructor call) can only be expressions.
 //     A lone `T(a);` stays a DECLARATION of `a`, exactly as the standard
-//     resolves the ambiguity.
+//     resolves the ambiguity, or
+// (c) C++ only: the group is EMPTY — `same_type<int, int>();`, `x1 ();`. A
+//     declarator without a declarator-id declares nothing, so the parenthesized
+//     form cannot be a declaration at all, or
+// (d) C++ only: the group opens with a LITERAL — `B(0);`, `F<A>(1);`. No
+//     declarator begins with one, or
+// (e) C++ only: the head is a BRACE — `FOO{};`, `F<A>{1};`, `A{}.f();`. No
+//     declarator begins with one either, so a braced type-headed statement is
+//     always a temporary. (C's compound literal is `(T){...}`, whose statement
+//     never opens with the type token, so C never reaches this arm.)
 // The head type token is already consumed by the caller; an optional
 // balanced `<...>` template-id suffix may precede the paren group (C++).
 bool Program::datatype_statement_starts_functional_expr()
@@ -72972,8 +72981,11 @@ bool Program::datatype_statement_starts_functional_expr()
     if ( !head )
 	return false;
     bool angle_first = !is_c_mode() && head->id() == TokenID::tkLT;
-    if ( head->id() != TokenID::tkOpBrk && !angle_first )
+    bool brace_first = !is_c_mode() && head->id() == TokenID::tkOpBrc;
+    if ( head->id() != TokenID::tkOpBrk && !angle_first && !brace_first )
 	return false;
+    if ( brace_first )
+	return true;				// (e) `T{...}` — a temporary
     DelimDepth d;
     bool in_group = false;	// inside the `(...)` group
     size_t i = 0;
@@ -72981,9 +72993,24 @@ bool Program::datatype_statement_starts_functional_expr()
     {
 	TokenBase *t = tokens[i];
 	if ( t && !in_group && !d.angle && t->id() == TokenID::tkOpBrk )
+	{
 	    in_group = true;	// the group opens (directly, or after `<...>`)
+	    // (c)/(d): what the group OPENS with can already settle it — a
+	    // parenthesized declarator holds a declarator-id, and neither an
+	    // empty group nor a literal can supply one.
+	    TokenBase *first_in = (i + 1 < tokens.size()) ? tokens[i + 1] : NULL;
+	    if ( !is_c_mode() && first_in
+	      && (first_in->id() == TokenID::tkClBrk
+	       || first_in->type() == TokenType::ttInteger
+	       || first_in->type() == TokenType::ttReal
+	       || first_in->type() == TokenType::ttChar
+	       || first_in->type() == TokenType::ttString) )
+		return true;
+	}
 	else if ( t && !in_group && i > 0 && d.top() )
-	    return false;	// the token after `<...>` is not `(`
+	    // The token after `<...>`: `{` opens a temporary (e); anything
+	    // other than `(` is not this production at all.
+	    return !is_c_mode() && t->id() == TokenID::tkOpBrc;
 	if ( t && in_group && !is_c_mode() && t->id() == TokenID::tkComma
 	  && d.paren == 1 && !d.square && !d.brace && !d.angle )
 	    return true;
@@ -73631,10 +73658,12 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 				// __node_handle's destructor call; [dcl.ambig.res]).
 				// Same consult the ttDataType statement arm makes;
 				// the template-id is already consumed, so the
-				// classifier's plain-paren path applies.
-				if ( peekToken()
-				  && peekToken()->id() == TokenID::tkOpBrk
-				  && !compounds.empty()
+				// classifier's plain-paren path applies. The
+				// classifier owns the HEAD test too (`(`, or a
+				// brace for `F<int>{5};`) — a `peekToken() == '('`
+				// guard here is a second copy of that rule, and it
+				// hid every braced temporary from it.
+				if ( !compounds.empty()
 				  && datatype_statement_starts_functional_expr() )
 				{
 				    resetPrevToken();
@@ -73647,8 +73676,8 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    // instantiate the concrete class and declare a variable of it.
 		    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 		    {
-			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-			  && !compounds.empty()
+			// The classifier owns the head test — see above.
+			if ( !compounds.empty()
 			  && datatype_statement_starts_functional_expr() )
 			{
 			    resetPrevToken();
