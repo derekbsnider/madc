@@ -15050,7 +15050,30 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
 		size_t req = fd->required_param_count();
 		size_t req_user = req > 0 ? req - 1 : 0;   // exclude hidden __this
-		if (ctor_args.size() < req_user || ctor_args.size() > pn) {
+		// A C-VARIADIC ctor (`struct ignore { ignore(...) {} };`) carries a
+		// synthetic trailing vararg slot in `parameters`, which is not a real
+		// parameter: it is callable with ANY arity from the fixed count up,
+		// and every argument past the fixed ones takes the ellipsis
+		// conversion ([over.ics.ellipsis]) rather than being scored. The
+		// arity gate had no variadic arm, so `ignore(...)` matched NOTHING
+		// — `ignore b(3, 4);` reported "no matching constructor". Same rule
+		// method_body_matches_args applies to a variadic METHOD; the loop
+		// below scores only the fixed prefix for the same reason.
+		//
+		// declaration_only EXCLUDED, and that exclusion is load-bearing: a
+		// member-template ctor PLACEHOLDER is fabricated as exactly
+		// `is_varargs + declaration_only` with a dummy ddINT64 marker param
+		// (Program::add_member_template_method_placeholder). Letting those
+		// match at any arity made the stand-in viable for every call, so
+		// std::map's key construction took the placeholder instead of the
+		// real instantiation and both inserts wrote ONE node (tests/testmap:
+		// size 1, Alice 25 — a silent wrong answer, not a diagnostic). The
+		// placeholders keep arity-gating out, which is what routes them to
+		// select_or_instantiate_ctor's instantiate-and-reselect arm.
+		bool varargs = fd->is_varargs && !fd->declaration_only && pn > 0;
+		size_t fixed = varargs ? pn - 1 : pn;
+		if (varargs ? ctor_args.size() < fixed
+			    : (ctor_args.size() < req_user || ctor_args.size() > pn)) {
 			// The arity filter used to drop a candidate BEFORE the
 			// trace below, so a dump of "the candidates" silently
 			// omitted every ctor of the wrong arity — which is the
@@ -15073,7 +15096,11 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 		}
 		int total = 0;
 		bool ok = true;
-		for (size_t i = 0; i < ctor_args.size(); i++) {
+		// Only the FIXED parameters are scored — an argument matched by the
+		// ellipsis has no conversion to rank. A variadic candidate therefore
+		// scores on its prefix alone and loses every tie to an exact-arity
+		// overload, which is the ranking [over.ics.ellipsis] asks for.
+		for (size_t i = 0; i < ctor_args.size() && i < fixed; i++) {
 			size_t pi = i + 1;   // skip __this
 			DataDef *pt = (pi < fd->parameters.size())
 				    ? fd->parameters[pi] : NULL;
