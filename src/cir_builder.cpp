@@ -5812,6 +5812,37 @@ static DataDefCLASS *expr_pointee_class(TokenBase *tb)
 // conversion explicit and silences c2mir's "incompatible types in assignment to
 // a pointer". Returns `value` unchanged when no upcast applies. Downcasts and
 // multiple inheritance are out of scope (see P2.6).
+// THE base-subobject pointer adjustment: given a `derived`-object address,
+// yield a `Base *` pointing at its `base` subobject. Single inheritance /
+// primary base = offset 0 (a plain cast); a secondary base sits at a non-zero
+// static offset, so emit (Base*)((char*)value + offset). A VIRTUAL base's
+// position depends on the most-derived type — the pointer's static pointee
+// class may be a less-derived view, so read the offset from the vtable's
+// vbase-offset slot (task #36).
+//
+// ONE owner: the pointer upcast, the reference-return upcast and the inherited
+// constructor's receiver ([class.inhctor.init]) all need exactly this, and the
+// first two carried verbatim copies of it.
+node_t CirBuilder::base_subobject_addr(node_t value, DataDefCLASS *derived,
+				       DataDefCLASS *base, TokenBase *origin)
+{
+	node_t adj = value;
+	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
+	if (dyn) {
+		adj = dyn;
+	} else {
+		size_t off = derived->base_offset_of(base);
+		if (off != 0 && off != (size_t)-1) {
+			node_t charp = node2(N_CAST,
+				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				value, origin);
+			adj = node2(N_ADD, charp, integer((int64_t)off), origin);
+		}
+	}
+	return node2(N_CAST, class_ptr_type(base), adj, origin);
+}
+
 node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
 				    TokenBase *origin, DataDef *rhs_dd)
 {
@@ -5821,27 +5852,7 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 		derived = expr_pointee_class(rhs);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	// Adjust the pointer to the base subobject. Single inheritance / primary base
-	// = offset 0 (a plain cast, byte-identical to before); a secondary base sits
-	// at a non-zero static offset, so emit (Base*)((char*)value + offset). A
-	// VIRTUAL base's position depends on the most-derived type — the pointer's
-	// static pointee class may be a less-derived view, so read the offset from
-	// the vtable's vbase-offset slot (task #36).
-	node_t adj = value;
-	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
-	if (dyn) {
-		adj = dyn;
-	} else {
-	size_t off = derived->base_offset_of(base);
-	if (off != 0 && off != (size_t)-1) {
-		node_t charp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			value, origin);
-		adj = node2(N_ADD, charp, integer((int64_t)off), origin);
-	}
-	}
-	return node2(N_CAST, class_ptr_type(base), adj, origin);
+	return base_subobject_addr(value, derived, base, origin);
 }
 
 // Derived->base reference return conversion. A C++ `Base& f() { return d; }`
@@ -5861,23 +5872,7 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 		derived = pointee_user_class(rdd);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	// A virtual base's offset is read from the vtable slot — the returned
-	// lvalue's static class may be a less-derived view (task #36).
-	node_t adj = value;
-	node_t dyn = vbase_dynamic_adjust(value, derived, base, origin);
-	if (dyn) {
-		adj = dyn;
-	} else {
-	size_t off = derived->base_offset_of(base);
-	if (off != 0 && off != (size_t)-1) {
-		node_t charp = node2(N_CAST,
-			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-			value, origin);
-		adj = node2(N_ADD, charp, integer((int64_t)off), origin);
-	}
-	}
-	return node2(N_CAST, class_ptr_type(base), adj, origin);
+	return base_subobject_addr(value, derived, base, origin);
 }
 
 // `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,

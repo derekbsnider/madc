@@ -673,6 +673,12 @@ class CirBuilder {
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// THE base-subobject pointer adjustment (static offset, or the vtable's
+	// vbase-offset slot for a virtual base): a `derived`-object address in,
+	// a `Base *` out. Both upcasts below and the inherited-constructor
+	// receiver share it — never re-spell the offset/cast block.
+	node_t base_subobject_addr(node_t value, DataDefCLASS *derived,
+				   DataDefCLASS *base, class TokenBase *origin);
 	// Derived->base pointer/reference conversion. Returns `value` unchanged when
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
