@@ -421,7 +421,7 @@ OK; array reducers f1..f4 == g++; doctest unit binaries rc=0; 17 targeted
 tests (phase, operator, out-of-line template ctor, project) 17/17 JIT, 16/16
 exe, 16/16 obj; 0 build warnings.
 
-## THE SEAM — IN PROGRESS (2026-09-16): pre-build green; gate regressions fixed; battery pending
+## THE SEAM — IN PROGRESS (2026-09-16/17): pre-build green; gate regressions fixed; gates GREEN at 58a2393e2; battery LAUNCHED
 
 Pre-build (static gates, `make release`, `hosted-x86-64-windows`, `hosted-arm64-macos`): builds green,
 0 warnings. The static gates found three defects no JIT suite covers, each fixed in its own commit:
@@ -436,13 +436,7 @@ C++ prototype is tracked and bound like a file-scope one — g++ declares it in 
 the definition mint keeps file scope so a GNU nested definition stays legacy). At `5d1a7ca6f`:
 forest_bind_gate 29/29, smaug_gate, interop, unit, targeted all green; the forest emitpack / sidecar /
 crosstu / library gates pass once `bin/madc-thin` + `bin/madc-mono` are rebuilt (the launcher must build
-them first — fixed locally). **OPEN (next session's first item): `libcxx_gate` is RED** — the emitted
-C11 of `testiomanip` under libc++ is rejected by clang-18 with `conflicting types for
-_ZNSt3__15fixedERNS_8ios_baseE` (std::__1::fixed, a header inline namespace function emitted under
-its Itanium symbol since phases 3a/4): two declarations of the symbol in the emitted C disagree on
-type. Reproduce: `bash scripts/libcxx_gate.sh` on the container; diff against the libstdc++ emit
-(`_ZSt5fixedRSt8ios_base`, green). The battery has NOT run. Launcher: `tmp/seam_stage2.sh` (gates, then
-`tmp/seam_battery.sh`); results under `tmp/seam/` on the container.
+them first — fixed locally). **`libcxx_gate` (RED at the 2026-09-16 pause) was TWO defects, both fixed 2026-09-17:** `f73ba1f55` — the extern-flush dedupe set `typed_proto_syms` was folded by REGISTRATION name at two sites while `func_proto` declares a bodied C++ function's prototype under `func_def_symbol` (its Itanium symbol), so the call site's opaque `extern void *_ZSt5fixedRSt8ios_base(void *)` survived beside the typed proto (clang-18: conflicting types; the libstdc++ emit had the identical pair, c2mir lenient). Both fold-ins key by `func_def_symbol`; gcc and clang `-fsyntax-only` now accept the libstdc++ emits of testiomanip/testmanipview/testofstreamwrite. `58a2393e2` — the deferred-body READINESS check's phase-4 arm ("a bodied function's body defines its emit_symbol") lacked `func_def_symbol`'s MEMBER exclusion: libc++'s `basic_filebuf<char>::basic_filebuf()` (C1Ev EXPORTED by libc++.so; out-of-line body deferred with `declaration_only` cleared) was DERIVED from `<fstream>` on the derived `basic_ofstream` ctor's import of C1Ev — and that derive parsed `<fstream>:337` `&std::use_facet<codecvt<…> >(this->getloc())`, a PRE-EXISTING parser gap (reproduces on the madc-astra 7b16830a and madc-base binaries; the reducer fails under libstdc++ too): KG Gap `addressof_qualified_template_id_call` (reducer + layer chain recorded) — its OWN focused session (no impromptu core-parser changes). ONE owner extracted: `FuncDef::body_defines_emit_symbol(const Method *)`, read by `func_def_symbol`, the readiness check and the forest-restore translation registrar (`flush_forest_pending_globals` carried the same divergence for the pack lane). `MADC_MTI_PROBE` gained a `ready key=… via=…` line naming the spelling that made a body ready. Evidence at `58a2393e2`: libcxx_gate OK (every leg), the three libc++ tests rc=0 with every .expect line, forest_bind_gate 29/29, check-rule-trailers GREEN. LESSON: the library's EXPORT LIST (`nm -D --defined-only libc++.so.1`) is the derive-vs-import oracle — `basic_ofstream<char>`'s ctors are NOT exported (`_LIBCPP_HIDE_FROM_ABI`; deriving them is right), `basic_filebuf<char>`'s ctor IS; the bind probe's `ext_def=1` does not mean exported. **THE BATTERY IS LAUNCHED** (2026-09-17, container pid 583020): `tmp/seam_stage2.sh` over the synced `58a2393e2` tree — prereq build (madc, madc-thin, madc-mono), EVERY fulltest gate, then `tmp/seam_battery.sh` if green; results `tmp/seam/*.rc`, `tmp/seam/battery.progress`, `tmp/seam/battery.done`, `tmp/seam/stage2.nohup`. Next: read them; `scripts/lane_ledger.sh record <lane> <tally>` per green lane; a red lane = its own fix commit + relaunch.
 
 ## THE SEAM — NEXT: the ONE battery for the whole (c)
 
