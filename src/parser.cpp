@@ -3652,6 +3652,54 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
 	captured = true;
     }
     bool imported = false;
+    // [namespace.udecl]/3 + [class.inhctor]: when the using-declaration names
+    // the base's own name it names its CONSTRUCTORS — `using A::A;`. They live
+    // in base->ctors, not base->methods, so the method loop below finds nothing
+    // and the whole declaration was silently skipped: the derived class ended
+    // up with NO constructors at all, `has_user_ctor` false, and `B b(42);`
+    // was then read as a FUNCTION DECLARATION ("Failed to find type when
+    // parsing function parameters" — the declaration gate at the ctor-call
+    // branch in parseDeclaration keys on has_user_ctor).
+    // Asking the class-scope type resolver whether `member` names THIS base is
+    // what makes the injected-class-name ([class.pre]/2) and a monomorphized
+    // class's short alias both work — its identity `name` can be a full
+    // mangled spelling that never equals the source token.
+    if ( dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, member))
+	 == base )
+    {
+	for ( size_t i = 0; i < base->ctors.size(); ++i )
+	{
+	    Variable *bc = base->ctors[i];
+	    if ( !bc )
+		continue;
+	    FuncDef *fd = dynamic_cast<FuncDef *>(bc->type);
+	    if ( !fd )
+		continue;
+	    // [class.inhctor]/3: the base's DEFAULT, COPY and MOVE constructors
+	    // are NOT inherited — the derived class declares its own, and
+	    // importing the copy ctor would let `B b2(b1);` select a ctor that
+	    // copies only the base subobject (a silent slice).
+	    size_t user_params = fd->parameters.empty()
+			       ? 0 : fd->parameters.size() - 1;
+	    if ( user_params == 0 )
+		continue;
+	    if ( user_params == 1 && fd->is_ref_param(1) )
+	    {
+		DataDefPTR *pp = dynamic_cast<DataDefPTR *>(fd->parameters[1]);
+		if ( pp && pp->base_type == base )
+		    continue;
+	    }
+	    bool present = false;
+	    for ( size_t j = 0; j < ddc->ctors.size(); ++j )
+		if ( ddc->ctors[j] == bc ) { present = true; break; }
+	    if ( present )
+		continue;
+	    ddc->ctors.push_back(bc);
+	    imported = true;
+	}
+	if ( imported )
+	    ddc->has_user_ctor = true;
+    }
     for ( size_t i = 0; i < base->methods.size(); ++i )
     {
 	Variable *bm = base->methods[i];

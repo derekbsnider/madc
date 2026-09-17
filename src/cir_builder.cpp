@@ -15832,6 +15832,61 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 	}
 }
 
+// Finish an object whose constructor did not: stamp its vptr(s) and default-
+// construct its class-type MEMBERS ([class.default.ctor]) through the bound
+// receiver `recv`. Two callers need exactly this — the implicit default ctor of
+// a ctorless class, and an INHERITED constructor, which initializes only the
+// base subobject and leaves the rest "as if by a defaulted default constructor"
+// ([class.inhctor.init]/1).
+//
+// A polymorphic member subobject gets its vptr stamped here too, recursively
+// through ctorless layers (task #35: `Mid m;` where Mid{Leaf lf} left lf's
+// vptr garbage).
+void CirBuilder::append_vptr_and_member_inits(node_t blk, const char *recv,
+					      DataDefCLASS *cdd,
+					      TokenBase *origin, bool members)
+{
+	if (!blk || !recv || !cdd) return;
+	if (cdd->has_any_vptr()) {
+		std::string vname = class_vtable_symbol(cdd);
+		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+			const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
+			std::string fld = (G.this_offset == 0)
+				? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
+			node_t lhs = node2(N_DEREF_FIELD, id(recv, origin),
+				id(fld.c_str(), origin));
+			node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t tab = id(vname.c_str(), origin);
+			node_t ap = (G.addr_point == 0) ? tab
+				: node2(N_ADD, tab, integer((int64_t)G.addr_point, origin), origin);
+			node_t vtab = node2(N_CAST, vptr_type, ap, origin);
+			append(blk, node2(N_EXPR, list(),
+				node2(N_ASSIGN, lhs, vtab, origin), origin));
+		}
+	}
+	if (members)
+		append_member_default_constructs(blk, recv, cdd, origin);
+}
+
+// The class that DECLARED a selected constructor. Normally `cdd` itself — but
+// `using Base::Base;` ([class.inhctor]) puts the BASE's ctor Variables into the
+// derived class's own ctor list, so a selected ctor can belong to a base.
+DataDefCLASS *CirBuilder::ctor_declaring_class(DataDefCLASS *cdd, FuncDef *ctor)
+{
+	if (!cdd || !ctor) return NULL;
+	for (Variable *cv : cdd->ctors) {
+		// `cv->type` IS a FuncDef for every real ctor variable, which is
+		// what makes reading `cv->data` as a Method safe here (the
+		// static-storage-callable trap guarded at the method-call site).
+		if (!cv || dynamic_cast<FuncDef *>(cv->type) != ctor)
+			continue;
+		Method *md = (Method *)cv->data;
+		return (md && md->owner_class) ? md->owner_class : cdd;
+	}
+	return cdd;
+}
+
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin, bool vbase_forward)
@@ -15881,30 +15936,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		// [class.base.init] order via the user-ctor prologue model.
 		if (bases)
 			append_base_default_constructs(blk, tmp, cdd, 0, origin);
-		if (cdd->has_any_vptr()) {
-			std::string vname = class_vtable_symbol(cdd);
-			for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
-				const DataDefCLASS::VtableGroup &G = cdd->vtable_groups[g];
-				std::string fld = (G.this_offset == 0)
-					? "__vptr" : ("__vptr_" + std::to_string(G.this_offset));
-				node_t lhs = node2(N_DEREF_FIELD, id(tmp, origin),
-					id(fld.c_str(), origin));
-				node_t vptr_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-				node_t tab = id(vname.c_str(), origin);
-				node_t ap = (G.addr_point == 0) ? tab
-					: node2(N_ADD, tab, integer((int64_t)G.addr_point, origin), origin);
-				node_t vtab = node2(N_CAST, vptr_type, ap, origin);
-				append(blk, node2(N_EXPR, list(),
-					node2(N_ASSIGN, lhs, vtab, origin), origin));
-			}
-		}
-		// The implicit default ctor also constructs class-type MEMBERS
-		// ([class.default.ctor]) — a polymorphic member subobject gets
-		// its vptr stamped here, recursively through ctorless layers
-		// (task #35: `Mid m;` where Mid{Leaf lf} left lf's vptr garbage).
-		if (members)
-			append_member_default_constructs(blk, tmp, cdd, origin);
+		append_vptr_and_member_inits(blk, tmp, cdd, origin, members);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
@@ -15974,6 +16006,39 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 			// make the implicit upcast explicit so c2mir does not warn
 			// (mirrors the general call path's argument coercion).
 			explicit_nodes.push_back(upcast_class_ptr(translate_expr(arg), pt, arg, arg));
+	}
+	// INHERITED constructor ([class.inhctor.init]/1): `using Base::Base;` put
+	// the base's ctors in this class's overload set, so the selected ctor can
+	// belong to a base. It initializes the BASE SUBOBJECT — run it on that
+	// address, not on the derived `this` (passing the derived pointer to
+	// `A__A(A *, int)` was an incompatible-pointer warning from c2mir, and a
+	// silent wrong address for any base that is not at offset 0) — and then
+	// finish the derived object as a defaulted default constructor would.
+	DataDefCLASS *decl_cls = ctor_declaring_class(cdd, ctor);
+	if (decl_cls && decl_cls != cdd && cdd->is_or_derives_from(decl_cls)) {
+		// Bind the receiver ONCE: a c2mir node holds a single parent
+		// link, so this_addr cannot be reused across the base call and
+		// the completion stores — each use mints a fresh id(tmp).
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "__mdc%d", m_strtmp_counter++);
+		node_t blk = list();
+		node_t decl = simple(N_SPEC_DECL);
+		append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+		append(decl, node2(N_DECL, id(tmp, origin), node1(N_LIST, pointer())));
+		append(decl, ignore());
+		append(decl, ignore());
+		append(decl, this_addr);
+		append(blk, decl);
+		node_t base_addr = base_subobject_addr(id(tmp, origin), cdd,
+						       decl_cls, origin);
+		node_t call = ctor_call_assemble(base_addr, decl_cls, ctor,
+						 explicit_nodes, origin,
+						 vbase_forward);
+		if (!call) return NULL;
+		append(blk, node2(N_EXPR, list(), call, origin));
+		append_vptr_and_member_inits(blk, tmp, cdd, origin,
+					     class_needs_member_construction(cdd));
+		return node2(N_BLOCK, list(), blk, origin);
 	}
 	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin,
 				  vbase_forward);
@@ -16640,6 +16705,17 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	}
 	if (!ctor)
 		return no_ctor_match_error(cdd, ctor_args, origin);
+
+	// INHERITED constructor ([class.inhctor]): the selected ctor belongs to a
+	// BASE, so it must run on the base subobject with the derived object
+	// finished afterwards. That arm lives in class_ctor_call_addr — delegate
+	// to it through the variable's address rather than growing a second copy
+	// here (this function and class_ctor_call_addr are already twin
+	// selection+assembly paths; the inherited case gets ONE of them).
+	if (DataDefCLASS *dc = ctor_declaring_class(cdd, ctor))
+		if (dc != cdd && cdd->is_or_derives_from(dc))
+			return class_ctor_call_addr(object_var_addr(*v, origin),
+						    cdd, ctor_args, origin);
 
 	std::string sym = ctor_call_symbol(cdd, ctor);
 

@@ -2084,6 +2084,15 @@ public:
 	// member statements (some member has a callable default ctor or is a
 	// ctorless class that itself needs construction).
 	bool class_needs_member_construction(DataDefCLASS *cdd);
+	// Stamp vptr(s) + default-construct class-type members through a bound
+	// receiver: what an implicit default ctor does, and what an INHERITED
+	// ctor must do after the base subobject is constructed.
+	void append_vptr_and_member_inits(node_t blk, const char *recv,
+					  DataDefCLASS *cdd,
+					  class TokenBase *origin, bool members);
+	// The class that DECLARED a selected ctor — not always `cdd`, because
+	// `using Base::Base;` imports the base's ctors into the derived's set.
+	DataDefCLASS *ctor_declaring_class(DataDefCLASS *cdd, FuncDef *ctor);
 	// Owner-subobject adjust through a VIRTUAL base, read from the
 	// vtable's vbase-offset slot at runtime (Itanium): a receiver whose
 	// STATIC class is not the object's most-derived type cannot use the
