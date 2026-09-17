@@ -2901,14 +2901,16 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 // THE owner of a DataDefFPTR's structural C++ spelling (declared in
 // datadef.h): `Ret (*)(P1,P2)` from the target FuncDef — the form the
 // Itanium mangler's function-pointer arm parses into PF…E.
-std::string DataDefFPTR::structural_spelling() const
+std::string DataDefFPTR::structural_spelling(bool as_pointer) const
 {
     if ( !target )
 	return name;
     DataDef &rd = target->return_value_type();
-    std::string s = rd.canonical_cpp_spelling().empty()
-		  ? rd.name : rd.canonical_cpp_spelling();
-    s += " (*)(";
+    std::string s = rd.mangle_scalar_spelling();
+    if ( s.empty() )
+	s = rd.canonical_cpp_spelling().empty()
+	    ? rd.name : rd.canonical_cpp_spelling();
+    s += as_pointer ? " (*)(" : " (";
     for ( size_t i = 0; i < target->parameters.size(); ++i )
     {
 	if ( i )
@@ -5043,6 +5045,10 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 {
     if ( !adt )
 	return cv_spelling;
+    // Function types retain their signature AND their function/pointer
+    // distinction in template identity; the generic name is just "funcptr".
+    if ( DataDefFPTR *fp = adt->definition.as_fptr_dd() )
+	return cv_spelling + fp->structural_spelling(fp->ptr_syntax);
     // wchar_t / char16_t / char32_t need no spelling carve-out any more: they
     // are distinct dds whose NAME is the C++ spelling (dd_platform_wchar /
     // dd_char16 / dd_char32), so the identity rule below spells them.
@@ -28582,23 +28588,28 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
     // The ABSTRACT function-pointer declarator as a template argument:
     // `unique_ptr<char_type, void (*)(void*)>` — libc++ <locale>'s buffer
     // deleters, used pervasively (first at locale:286). Same parseFnPtrParams
-    // owner as typedef Form 2 and the using-alias arm; gated on the exact
-    // `( * )` prefix so a non-type argument expression never loses its '('.
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
-      && tokens.size() >= 3 && tokens[1] && tokens[2]
-      && tokens[1]->id() == TokenID::tkMul
-      && tokens[2]->id() == TokenID::tkClBrk )
+    // owner as typedef Form 2 and the using-alias arm. This owner is called
+    // after resolving a TYPE argument: without `(*)`, the '(' starts a bare
+    // function type's parameter list (`function<int()>`).
+    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
     {
 	nextToken();	// consume '('
-	nextToken();	// consume '*'
-	nextToken();	// consume ')'
-	TokenBase *open = nextToken();
-	if ( !open || open->id() != TokenID::tkOpBrk )
-	    Throw(open ? open : origin)
-		<< "Expecting '(' for function pointer parameter list" << flush;
+	bool pointer_form = peekToken() && peekToken()->id() == TokenID::tkMul;
+	if ( pointer_form )
+	{
+	    nextToken(); // consume '*'
+	    TokenBase *close = nextToken();
+	    if ( !close || close->id() != TokenID::tkClBrk )
+		Throw(close ? close : origin)
+		    << "Expecting ')' in function pointer template argument" << flush;
+	    TokenBase *open = nextToken();
+	    if ( !open || open->id() != TokenID::tkOpBrk )
+		Throw(open ? open : origin)
+		    << "Expecting '(' for function pointer parameter list" << flush;
+	}
 	FuncDef *func = parseFnPtrParams(adt->definition);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
-	fptr->ptr_syntax = true;	// explicit `(*)` — pointer argument
+	fptr->ptr_syntax = pointer_form;
 	TokenDataType *next = new TokenDataType(fptr->name.c_str(), *fptr);
 	if ( origin )
 	{
@@ -36348,6 +36359,80 @@ std::string Program::canonical_template_arg_spelling(const std::string &spelling
     }
     if ( core.empty() )
 	return std::string();
+    // A FUNCTION TYPE spelling — `R (P...)`, or its pointer form `R (*)(P...)`.
+    // The two sides of the one-key rule spell it from different places: an
+    // explicit specialization keeps the SOURCE text (`int()`), while a use site
+    // spells the resolved DataDefFPTR structurally (`int32_t ()`). Without
+    // canonicalizing the return and parameter types here those form DIFFERENT
+    // keys, `template<> struct tag<int()>` goes invisible to `tag<int()>`, and
+    // the PRIMARY instantiates silently in its place — a wrong answer with no
+    // diagnostic. SpellingDelimDepth is the one char-level delimiter rule
+    // (include/spelling_delim.h); never hand-roll a depth counter here.
+    {
+	size_t op = std::string::npos;
+	SpellingDelimDepth fd;
+	for ( size_t i = 0; i < core.size(); ++i )
+	{
+	    if ( core[i] == '(' && fd.top() )
+	    {
+		op = i;
+		break;
+	    }
+	    fd.update(core[i]);
+	}
+	std::string rest = op == std::string::npos
+			 ? std::string() : spelling_trim(core.substr(op));
+	std::string ret = op == std::string::npos
+			? std::string() : spelling_trim(core.substr(0, op));
+	bool ptr_form = rest.compare(0, 3, "(*)") == 0;
+	if ( ptr_form )
+	    rest = spelling_trim(rest.substr(3));
+	if ( !ret.empty() && rest.size() >= 2 && rest[0] == '('
+	  && rest[rest.size() - 1] == ')' )
+	{
+	    std::string cret = canonical_template_arg_spelling(ret);
+	    std::vector<std::string> parts;
+	    bool ok = !cret.empty();
+	    std::string params = spelling_trim(rest.substr(1, rest.size() - 2));
+	    if ( ok && !params.empty() )
+	    {
+		SpellingDelimDepth pd;
+		std::string cur;
+		for ( size_t i = 0; i < params.size(); ++i )
+		{
+		    if ( params[i] == ',' && pd.top() )
+		    {
+			parts.push_back(cur);
+			cur.clear();
+			continue;
+		    }
+		    pd.update(params[i]);
+		    cur += params[i];
+		}
+		parts.push_back(cur);
+		for ( size_t i = 0; ok && i < parts.size(); ++i )
+		{
+		    std::string cp = canonical_template_arg_spelling(parts[i]);
+		    if ( cp.empty() )
+			ok = false;
+		    else
+			parts[i] = cp;
+		}
+	    }
+	    if ( ok )
+	    {
+		std::string out = cret + (ptr_form ? " (*)(" : " (");
+		for ( size_t i = 0; i < parts.size(); ++i )
+		{
+		    if ( i )
+			out += ",";
+		    out += parts[i];
+		}
+		out += ")";
+		return cv + out + sfx;
+	    }
+	}
+    }
     if ( core.find('<') == std::string::npos )
     {
 	if ( DataDef *dd = resolve_builtin_type_spelling(core) )
@@ -36516,7 +36601,10 @@ std::string Program::canonical_arg_key_fragment(
     // instantiates silently in its place (tests/testspectemplid.mad).
     // Canonicalize recursively; an unresolvable spelling keeps the raw
     // fragment exactly as before.
-    if ( !core.empty() && core.find('<') != std::string::npos )
+    // A '(' core is the FUNCTION-TYPE shape (`int()`, `int (*)(int)`); it takes
+    // the same canonicalizer as a template-id core, for the same one-key reason.
+    if ( !core.empty() && (core.find('<') != std::string::npos
+			|| core.find('(') != std::string::npos) )
     {
 	std::string cs = canonical_template_arg_spelling(spelling);
 	if ( !cs.empty() && cs != spelling )

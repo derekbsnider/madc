@@ -2193,7 +2193,7 @@ public:
     // every DataDefFPTR is NAMED "funcptr", so any spelling-consumer that
     // falls back to the name (the Itanium mangle in particular, which must
     // encode PF…E) needs this instead. Defined in parser.cpp.
-    std::string structural_spelling() const;
+    std::string structural_spelling(bool as_pointer = true) const;
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual bool is_function() const override { return true; }
     virtual bool is_numeric()  const override { return true; }
