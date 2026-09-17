@@ -17473,7 +17473,29 @@ bool Program::fold_constant_qualified_member_walk(TokenBase *first,
 	// members are out of the slice-3 fold's scope); widen on the way out.
 	int64_t member_val = 0;
 	if ( !resolve_class_static_member_const_value(scope, seg_name, member_val) )
-	    return false;
+	{
+	    // The scope may be an OPAQUE variadic shell: a variadic template
+	    // instantiated while allow_variadic_real_inst was off keeps its body
+	    // unparsed, so it carries NONE of the base its `value` is inherited
+	    // from. libstdc++'s `__and_<_Bn...> : decltype(__and_fn<_Bn...>(0))`
+	    // is minted that way 4869 times in one <unordered_map> TU, and the
+	    // one that reached this read had zero bases — so
+	    // `__cache_default<_Key,_Hash>::value` never folded, its unfolded
+	    // SPELLING became the traits key, and the two spellings of that one
+	    // value keyed two _Hashtable_alloc classes (hashtable.h:451
+	    // `__hashtable_alloc::_M_deallocate_buckets` had no object).
+	    // The member-TYPE chain already replays such a shell through
+	    // complete_shell_class_type (the dependent_shell_origin replay,
+	    // parser.cpp ~12541); the CONSTANT member read is the same question
+	    // and simply never adopted that owner. A non-shell scope, or one with
+	    // no recorded origin, returns immediately — the miss path is the only
+	    // place that pays.
+	    DataDefCLASS *real = complete_shell_class_type(scope);
+	    if ( !real
+	      || !resolve_class_static_member_const_value(real, seg_name,
+							 member_val) )
+		return false;
+	}
 	out = member_val;
 	return true;
     }
@@ -35928,7 +35950,9 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // speculative parse only; restore + clear its state after.
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
-    std::cerr.rdbuf(&g_madc_null_streambuf);
+    static const char *afp_loud = ::getenv("MADC_ARGFRAG_LOUD");
+    if ( !afp_loud )
+	std::cerr.rdbuf(&g_madc_null_streambuf);
     bool ok = false;
     try
     {

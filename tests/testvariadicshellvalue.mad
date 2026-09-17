@@ -1,0 +1,36 @@
+// A variadic trait whose base is a COMPUTED type (`decltype` of an overload
+// call) is first instantiated in a plain template-argument position, where madc
+// mints it as an OPAQUE SHELL — body unparsed, so none of the base its `value`
+// is inherited from. A later `::value` read must still fold: the shell's origin
+// is replayed to the real instantiation before the constant member is read.
+//
+// libstdc++ spells exactly this as
+//   template<typename... _Bn> struct __and_ : decltype(__and_fn<_Bn...>(0)) {};
+// and EVERY std::unordered_map instantiation reads it through
+// `__cache_default<_Key,_Hash>::value`. Without the replay that value never
+// folded, its unfolded SPELLING became the traits key, and two spellings of
+// that one value keyed two _Hashtable_alloc classes — so _Hashtable no longer
+// derived from the one its own alias named (hashtable.h:451,
+// "cannot call non-static member '_M_deallocate_buckets' without an object").
+#include <stdio.h>
+
+template<bool B> struct ic { static const bool value = B; };
+
+namespace det {
+	template<typename... Bn> auto and_fn(int) -> ic<true>;
+	template<typename... Bn> auto and_fn(...) -> ic<false>;
+}
+
+template<typename... Bn> struct andv : decltype(det::and_fn<Bn...>(0)) { };
+
+template<typename T> struct wrap { int n; };
+template<bool B> struct box { int f() { return B ? 7 : 3; } };
+
+int main()
+{
+	wrap<andv<ic<true>, ic<true> > > w;	// mints andv<> as an opaque shell
+	(void)w;
+	box<andv<ic<true>, ic<true> >::value> b;	// ::value read off that shell
+	printf("%d\n", b.f());
+	return 0;
+}
