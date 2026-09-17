@@ -258,6 +258,12 @@ public:
     // its body as an ownerless DK_DEFBODY token run instead. Captured ONLY
     // when forest_arena_enabled and owner_class == NULL.
     std::vector<class TokenBase *> forest_body_tokens;
+    // `constexpr` is a FUNCTION property, separate from an object's
+    // vfCONSTANT bit. A C++11 single-return body retains its return expression
+    // here as origin-preserving tokens; calls feed clones back through the ONE
+    // constant evaluator. Empty means declaration-only or an unsupported body.
+    bool is_constexpr = false;
+    std::vector<class TokenBase *> constexpr_return_tokens;
     // A ctor's MEM-INITIALIZER-LIST tokens, captured beside the body span
     // when the body came through parse_deferred_function_body (in-class
     // inline bodies parse at class close — they never reach parseFunction's
@@ -5007,6 +5013,13 @@ public:
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
+    bool parsing_constexpr_decl = false;	// current declaration carried `constexpr` — stamp its FuncDef independently of object const-ness
+    // Per-Program constexpr invocation stack. Each frame binds one callee's
+    // parameter names to folded argument values while its retained return
+    // expression runs through parse_constant_integer_expression. No shared
+    // mutable state: distinct Program instances evaluate independently.
+    std::vector<std::map<std::string, madc_wide_int> > constexpr_call_bindings;
+    bool constexpr_recursion_limit_hit = false;
     // Current declaration is a for-init clause (TokenFOR::parse sets it around
     // parseDeclaration). The class ctor-call arm consumes the trailing ';' in
     // STATEMENT contexts — long-standing behavior with an unmeasured reliance
@@ -6066,7 +6079,8 @@ public:
 		       std::string return_typedef_alias = std::string(),
 		       bool static_class_method = false,
 		       bool inline_specified = false,
-		       bool static_specified = false);
+		       bool static_specified = false,
+		       bool constexpr_specified = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     // Consume `{ ... }` from the stream, appending its scalars to `args` and
@@ -6115,6 +6129,15 @@ public:
     // — gcc's wide_int model); int64 consumers truncate at the assignment
     // boundary, which is gcc's own #if/intmax_t semantics.
     madc_wide_int parse_constant_primary();
+    // C++11 constexpr calls stay inside the same evaluator: recognize a
+    // function call primary, fold its arguments, bind the selected function's
+    // parameter names in constexpr_call_bindings, then evaluate its retained
+    // `return expr;` token run. Recursion is bounded and reports a hard error.
+    madc_wide_int evaluate_constexpr_function_call(TokenBase *name_tb,
+						    const std::string &name);
+    bool constexpr_binding_value(const std::string &name,
+				 madc_wide_int &out) const;
+    bool is_constexpr_function_name(const std::string &name);
     // [expr.cast] in constant context: the token count of a parenthesized run
     // (the `(` already consumed) that IS a type-id up to its `)`, with the cast
     // target and `unsigned`-ness; 0 when the run is a parenthesized EXPRESSION
@@ -6136,6 +6159,10 @@ public:
     // `&&` RHS (a bor-operand, ends at the next `&&`); false for a `||` RHS (a
     // land-operand, spans `&&`). Keeps the cursor positioned for the caller.
     void skip_const_logical_operand(bool stop_at_and);
+    // Conditional-operator short-circuit token skip. With through_colon=true,
+    // consume the unselected second operand AND its matching `:`; otherwise
+    // consume the unselected third operand up to its enclosing boundary.
+    void skip_const_conditional_operand(bool through_colon);
     madc_wide_int parse_constant_ternary();
     madc_wide_int parse_constant_integer_expression();
     // Materialize a folded constant as a TokenInt: values in int64 range keep

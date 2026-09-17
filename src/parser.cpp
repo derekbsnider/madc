@@ -16349,6 +16349,15 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
 	}
 	return false;
     }
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(tb) )
+    {
+	int64_t value = 0;
+	if ( !tc->cast_type || !tc->cast_type->is_integer()
+	  || !try_eval_known_integer(tc->expr, value) )
+	    return false;
+	out = (int64_t)apply_integer_cast_value(tc->cast_type, value);
+	return true;
+    }
     if ( TokenNeg *tn = dynamic_cast<TokenNeg *>(tb) )
     {
 	int64_t rhs = 0;
@@ -17546,6 +17555,214 @@ bool Program::fold_constant_qualified_member_walk(TokenBase *first,
     return false;
 }
 
+// 512 is what BOTH canon compilers use: gcc and clang default
+// -fconstexpr-depth=512, and C++11 [implimits] recommends 512 recursive
+// constexpr invocations as the minimum an implementation should support.
+// At 128 madc REJECTED valid C++11 that g++ and clang++ both accept
+// (measured: sum_to(130) and sum_to(400) error here, OK there).
+static const size_t MADC_CONSTEXPR_CALL_DEPTH_LIMIT = 512;
+
+static void report_constexpr_recursion_limit(Program &pgm, TokenBase *where)
+{
+    pgm.constexpr_recursion_limit_hit = false;
+    pgm.Throw(where) << "constexpr evaluation recursion limit ("
+		     << MADC_CONSTEXPR_CALL_DEPTH_LIMIT << ") exceeded" << flush;
+}
+
+bool Program::constexpr_binding_value(const std::string &name,
+				      madc_wide_int &out) const
+{
+    if ( constexpr_call_bindings.empty() )
+	return false;
+    const std::map<std::string, madc_wide_int> &frame =
+	constexpr_call_bindings.back();
+    std::map<std::string, madc_wide_int>::const_iterator it =
+	frame.find(name);
+    if ( it == frame.end() )
+	return false;
+    out = it->second;
+    return true;
+}
+
+bool Program::is_constexpr_function_name(const std::string &name)
+{
+    Variable *var = NULL;
+    if ( !current_namespace().empty() )
+	var = find_namespace_member(current_namespace(), name);
+    if ( !var )
+	var = findVariable(name);
+    FuncDef *fd = var && var->type
+	? dynamic_cast<FuncDef *>(var->type) : NULL;
+    if ( fd && fd->is_constexpr )
+	return true;
+
+    // A same-name overload set may have a non-constexpr seed and a constexpr
+    // viable member. This predicate only decides whether a call is eligible
+    // for constant evaluation; evaluate_constexpr_function_call performs the
+    // real argument-type selection.
+    const std::string keys[2] = {
+	current_namespace() + "::" + name, "::" + name
+    };
+    for ( size_t ki = 0; ki < 2; ++ki )
+    {
+	std::map<std::string, std::vector<NamespaceFnOverload> >::iterator oi =
+	    namespace_fn_overload_sets.find(keys[ki]);
+	if ( oi == namespace_fn_overload_sets.end() )
+	    continue;
+	for ( const NamespaceFnOverload &e : oi->second )
+	{
+	    FuncDef *ofd = e.var && e.var->type
+		? dynamic_cast<FuncDef *>(e.var->type) : NULL;
+	    if ( ofd && ofd->is_constexpr )
+		return true;
+	}
+    }
+    return false;
+}
+
+madc_wide_int Program::evaluate_constexpr_function_call(
+	TokenBase *name_tb, const std::string &name)
+{
+    TokenBase *open = nextToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	Throw(open ? open : name_tb)
+	    << "Expecting '(' after constexpr function '" << name << '\'' << flush;
+
+    std::vector<madc_wide_int> args;
+    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	nextToken();
+    else
+    {
+	for (;;)
+	{
+	    if ( !peekToken() )
+		Throw(name_tb) << "Unexpected end of constexpr call to '"
+			       << name << '\'' << flush;
+	    args.push_back(parse_constant_integer_expression());
+	    TokenBase *sep = nextToken();
+	    if ( sep && sep->id() == TokenID::tkComma )
+		continue;
+	    if ( sep && sep->id() == TokenID::tkClBrk )
+		break;
+	    Throw(sep ? sep : name_tb)
+		<< "Expecting ',' or ')' in constexpr call to '"
+		<< name << '\'' << flush;
+	}
+    }
+
+    Variable *callee = NULL;
+    if ( !current_namespace().empty() )
+	callee = find_namespace_member(current_namespace(), name, name_tb);
+    if ( !callee )
+	callee = findVariable(name);
+
+    // Reuse the ordinary overload owner. Constant arguments in this slice are
+    // integral expressions, so their pre-conversion type is int; the selected
+    // parameter type performs the normal cast before it is bound below.
+    std::vector<const DataDef *> argtypes(args.size(), &ddINT32);
+    std::vector<bool> zero_args;
+    for ( size_t i = 0; i < args.size(); ++i )
+	zero_args.push_back(args[i] == 0);
+    FuncDef *seed = callee && callee->type
+	? dynamic_cast<FuncDef *>(callee->type) : NULL;
+    std::string overload_ns = seed ? seed->namespace_name : current_namespace();
+    std::string overload_name = seed && !seed->function_display_name.empty()
+	? seed->function_display_name : name;
+    if ( Variable *ranked = find_namespace_function_overload(
+	    overload_ns, overload_name, argtypes, &zero_args) )
+	callee = ranked;
+
+    FuncDef *func = callee && callee->type
+	? dynamic_cast<FuncDef *>(callee->type) : NULL;
+    if ( !func )
+	Throw(name_tb) << "Unknown function '" << name
+		       << "' in constant expression" << flush;
+    if ( !func->is_constexpr )
+	Throw(name_tb) << "Call to non-constexpr function '" << name
+		       << "' in constant expression" << flush;
+    if ( func->is_varargs || args.size() != func->parameters.size() )
+	Throw(name_tb) << "constexpr function '" << name << "' expects "
+		       << func->parameters.size() << " argument(s), got "
+		       << args.size() << flush;
+    if ( func->constexpr_return_tokens.empty() )
+	Throw(name_tb) << "constexpr function '" << name
+		       << "' does not have a single evaluable return expression"
+		       << flush;
+    if ( !func->return_value_type().is_integer() )
+	Throw(name_tb) << "constexpr function '" << name
+		       << "' does not return an integral value" << flush;
+
+    Method *method = callee->data ? static_cast<Method *>(callee->data) : NULL;
+    if ( !method || method->owner_class
+      || method->parameters.size() != args.size() )
+	Throw(name_tb) << "constexpr evaluation of '" << name
+		       << "' requires a defined non-member function" << flush;
+
+    if ( constexpr_call_bindings.size() >= MADC_CONSTEXPR_CALL_DEPTH_LIMIT )
+    {
+	constexpr_recursion_limit_hit = true;
+	Throw(name_tb) << "constexpr evaluation recursion limit ("
+		       << MADC_CONSTEXPR_CALL_DEPTH_LIMIT
+		       << ") exceeded in call to '" << name << '\'' << flush;
+    }
+
+    std::map<std::string, madc_wide_int> frame;
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	if ( !func->parameters[i] || !func->parameters[i]->is_integer()
+	  || func->is_ref_param(i) )
+	    Throw(name_tb) << "constexpr evaluation of '" << name
+			   << "' requires integral by-value parameters" << flush;
+	Variable *param = method->parameters[i];
+	if ( !param || param->name.empty() )
+	    Throw(name_tb) << "constexpr function '" << name
+			   << "' has an unnamed parameter" << flush;
+	frame[param->name] = apply_integer_cast_value(func->parameters[i],
+						      args[i]);
+    }
+
+    std::vector<TokenBase *> return_tokens;
+    for ( TokenBase *t : func->constexpr_return_tokens )
+	if ( t )
+	    return_tokens.push_back(t->clone_origin());
+    TokenStream::State saved_tokens = tokens.swap_in(std::move(return_tokens));
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    const char *saved_file = TokenBase::_parse_file;
+    int saved_line = TokenBase::_parse_line;
+    int saved_column = TokenBase::_parse_column;
+    constexpr_call_bindings.push_back(frame);
+
+    madc_wide_int value = 0;
+    try
+    {
+	value = parse_constant_integer_expression();
+	if ( !peekToken() || peekToken()->id() != TokenID::tkSemi )
+	    Throw(name_tb) << "constexpr function '" << name
+			   << "' did not consume its complete return expression"
+			   << flush;
+    }
+    catch ( ... )
+    {
+	constexpr_call_bindings.pop_back();
+	tokens.swap_back(std::move(saved_tokens));
+	_cur_token = saved_cur;
+	_prv_token = saved_prv;
+	TokenBase::_parse_file = saved_file;
+	TokenBase::_parse_line = saved_line;
+	TokenBase::_parse_column = saved_column;
+	throw;
+    }
+    constexpr_call_bindings.pop_back();
+    tokens.swap_back(std::move(saved_tokens));
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
+    TokenBase::_parse_file = saved_file;
+    TokenBase::_parse_line = saved_line;
+    TokenBase::_parse_column = saved_column;
+    return apply_integer_cast_value(&func->return_value_type(), value);
+}
+
 madc_wide_int Program::parse_constant_primary()
 {
     TokenBase *tb = nextToken();
@@ -17559,6 +17776,9 @@ madc_wide_int Program::parse_constant_primary()
       && is_contextual_identifier_token(peekToken()) )
 	tb = nextToken();
 
+    if ( tb && is_contextual_identifier_token(tb)
+      && constexpr_binding_value(contextual_identifier_name(tb), out) )
+	return out;
     if ( resolve_integer_constant(tb, out) )
 	return out;
     // Qualified class-scoped integral constant: `Class::member`,
@@ -17590,6 +17810,9 @@ madc_wide_int Program::parse_constant_primary()
 	    TokenBase *r = evaluate_type_trait(tb, name);
 	    return static_cast<TokenInt *>(r)->ival();
 	}
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
+	  && is_constexpr_function_name(name) )
+	    return evaluate_constexpr_function_call(tb, name);
 	// Unqualified sibling static-const member inside the class body,
 	// e.g. `static const category all = (ctype | numeric);`. Resolves
 	// to the value captured by capture_constant_initializer_value.
@@ -18175,18 +18398,63 @@ madc_wide_int Program::parse_constant_lor()
     return lhs;
 }
 
+void Program::skip_const_conditional_operand(bool through_colon)
+{
+    DelimDepth d(this);
+    size_t nested_conditionals = 0;
+    while ( TokenBase *t = peekToken() )
+    {
+	TokenID id = (TokenID)t->id();
+	if ( d.top() )
+	{
+	    if ( id == TokenID::tkQmark )
+		++nested_conditionals;
+	    else if ( id == TokenID::tkColon )
+	    {
+		if ( nested_conditionals )
+		    --nested_conditionals;
+		else if ( through_colon )
+		{
+		    nextToken();
+		    return;
+		}
+		else
+		    return;
+	    }
+	    else if ( !through_colon && !nested_conditionals
+		   && (id == TokenID::tkSemi || id == TokenID::tkComma
+		    || id == TokenID::tkClBrk || id == TokenID::tkClSqr
+		    || id == TokenID::tkClBrc) )
+		return;
+	    else if ( through_colon && !nested_conditionals
+		   && (id == TokenID::tkSemi || id == TokenID::tkComma
+		    || id == TokenID::tkClBrk || id == TokenID::tkClSqr
+		    || id == TokenID::tkClBrc) )
+		Throw(t) << "Expecting ':' in ternary constant expression" << flush;
+	}
+	delimStepStream(nextToken(), d);
+    }
+    if ( through_colon )
+	Throw(curToken()) << "Expecting ':' in ternary constant expression" << flush;
+}
+
 madc_wide_int Program::parse_constant_ternary()
 {
     madc_wide_int cond = parse_constant_lor();
     if ( peekToken() && peekToken()->id() == TokenID::tkQmark )
     {
 	nextToken(); // consume '?'
-	madc_wide_int true_val = parse_constant_integer_expression();
+	if ( !cond )
+	{
+	    skip_const_conditional_operand(true);
+	    return parse_constant_ternary();
+	}
+	madc_wide_int value = parse_constant_integer_expression();
 	TokenBase *colon = nextToken();
 	if ( !colon || colon->id() != TokenID::tkColon )
 	    Throw(colon) << "Expecting ':' in ternary constant expression" << flush;
-	madc_wide_int false_val = parse_constant_ternary();
-	return cond ? true_val : false_val;
+	skip_const_conditional_operand(false);
+	return value;
     }
     return cond;
 }
@@ -18274,6 +18542,7 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
+    constexpr_recursion_limit_hit = false;
     bool ok = false;
     try
     {
@@ -18288,6 +18557,8 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
 	}
     }
     catch ( ... ) { ok = false; }
+    bool recursion_limit_hit = constexpr_recursion_limit_hit;
+    constexpr_recursion_limit_hit = false;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     tokens = saved_tokens;
@@ -18301,6 +18572,9 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
 	      it != cond_toks.rend(); ++it )
 	    pushToken(*it);
     }
+    if ( recursion_limit_hit )
+	report_constexpr_recursion_limit(*this,
+		cond_toks.empty() ? NULL : cond_toks.front());
     return ok;
 }
 
@@ -18401,7 +18675,8 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 			      || is_alignof_identifier(name)
 			      || is_type_trait_builtin(name)
 			      || is_bool_literal_identifier(name, bool_value)
-			      || is_nullptr_identifier(name);
+			      || is_nullptr_identifier(name)
+			      || pgm.is_constexpr_function_name(name);
 	// A TYPE name heading `(...)` is a functional CAST, not a runtime
 	// call — `type(-1) < type(0)` through the class's own member typedef
 	// is libc++ __libcpp_numeric_limits' entire is_signed/digits chain.
@@ -18467,6 +18742,8 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
+    TokenBase *fold_anchor = peekToken();
+    constexpr_recursion_limit_hit = false;
     bool ok = false;
     int64_t v = 0;
     try
@@ -18487,6 +18764,8 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 	    ok = true;
     }
     catch ( ... ) { ok = false; }
+    bool recursion_limit_hit = constexpr_recursion_limit_hit;
+    constexpr_recursion_limit_hit = false;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     if ( ok )
@@ -18497,6 +18776,8 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
     tokens = saved_tokens;
     diagnostics.resize(saved_diag_count);
     last_error = saved_error;
+    if ( recursion_limit_hit )
+	report_constexpr_recursion_limit(*this, fold_anchor);
     return false;
 }
 
@@ -18505,6 +18786,7 @@ bool Program::bracket_dim_constant_expression_parses()
     auto saved_tokens = tokens.savepos();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
+    constexpr_recursion_limit_hit = false;
     try
     {
 	int64_t n = parse_constant_integer_expression();
@@ -18516,9 +18798,13 @@ bool Program::bracket_dim_constant_expression_parses()
     }
     catch ( ... )
     {
+	bool recursion_limit_hit = constexpr_recursion_limit_hit;
+	constexpr_recursion_limit_hit = false;
 	tokens = saved_tokens;
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
+	if ( recursion_limit_hit )
+	    report_constexpr_recursion_limit(*this, peekToken());
 	return false;
     }
 }
@@ -34472,6 +34758,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     bool saved_thread_local_decl = parsing_thread_local_decl;
     int saved_unnamed_ns_depth = unnamed_namespace_depth;
     bool saved_const_decl = parsing_const_decl;
+    bool saved_constexpr_decl = parsing_constexpr_decl;
     bool saved_typedef_decl = parsing_typedef_decl;
     bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
     std::vector<DeferredFunctionBody> *saved_deferred_sink =
@@ -34534,6 +34821,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = false;
     unnamed_namespace_depth = 0;
     parsing_const_decl = false;
+    parsing_constexpr_decl = false;
     parsing_typedef_decl = false;
     dependent_pattern_ctor_inits = false;
     deferred_function_body_sink = NULL;
@@ -34631,6 +34919,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = saved_thread_local_decl;
     unnamed_namespace_depth = saved_unnamed_ns_depth;
     parsing_const_decl = saved_const_decl;
+    parsing_constexpr_decl = saved_constexpr_decl;
     parsing_typedef_decl = saved_typedef_decl;
     dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
     deferred_function_body_sink = saved_deferred_sink;
@@ -36002,6 +36291,7 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     static const char *afp_loud = ::getenv("MADC_ARGFRAG_LOUD");
     if ( !afp_loud )
 	std::cerr.rdbuf(&g_madc_null_streambuf);
+    constexpr_recursion_limit_hit = false;
     bool ok = false;
     try
     {
@@ -36013,6 +36303,8 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
 	}
     }
     catch ( ... ) { ok = false; }
+    bool recursion_limit_hit = constexpr_recursion_limit_hit;
+    constexpr_recursion_limit_hit = false;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     tokens = saved_tokens;
@@ -36021,6 +36313,8 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
     }
+    if ( recursion_limit_hit )
+	report_constexpr_recursion_limit(*this, argtoks.front());
     return ok;
 }
 
@@ -36199,15 +36493,20 @@ int64_t Program::evaluate_requires_expression_constant()
 	std::streambuf *sc = std::cerr.rdbuf();
 	std::ios::iostate ss = std::cerr.rdstate();
 	std::cerr.rdbuf(&g_madc_null_streambuf);
+	constexpr_recursion_limit_hit = false;
 	int64_t v = 0;
 	bool ok = false;
 	try { v = parse_constant_integer_expression(); ok = true; }
 	catch ( ... ) { ok = false; }
+	bool recursion_limit_hit = constexpr_recursion_limit_hit;
+	constexpr_recursion_limit_hit = false;
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
 	tokens.swap_back(std::move(saved));
 	if ( !ok )
 	{ diagnostics.resize(sd); last_error = se; }
+	if ( recursion_limit_hit )
+	    report_constexpr_recursion_limit(*this, toks.front());
 	return ok ? v : 0;
     };
     // True iff the type-token sequence names a resolvable type.
@@ -36912,13 +37211,18 @@ Program::TemplateDef *Program::match_partial_specialization(
 		std::streambuf *sc = std::cerr.rdbuf();
 		std::ios::iostate sst = std::cerr.rdstate();
 		std::cerr.rdbuf(&g_madc_null_streambuf);
+		constexpr_recursion_limit_hit = false;
 		try { satisfied = parse_constant_integer_expression() != 0; }
 		catch ( ... ) { satisfied = false; }
+		bool recursion_limit_hit = constexpr_recursion_limit_hit;
+		constexpr_recursion_limit_hit = false;
 		std::cerr.rdbuf(sc);
 		std::cerr.clear(sst);
 		tokens.swap_back(std::move(saved));
 		if ( !satisfied )
 		{ diagnostics.resize(sd); last_error = se; }
+		if ( recursion_limit_hit )
+		    report_constexpr_recursion_limit(*this, ctoks.front());
 	    }
 	    if ( !satisfied )
 	    {
@@ -66164,7 +66468,10 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 	// (`gotconst && !saw_pointer_decl`), so that case is left exactly as it
 	// is today rather than half-changed.
 	if ( str == "constexpr" )
+	{
 	    pgm.parsing_const_decl = true;
+	    pgm.parsing_constexpr_decl = true;
+	}
 	TokenBase *tn = pgm.nextToken();
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
@@ -66661,6 +66968,8 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->param_defaults = src->param_defaults;
     f->param_default_tokens = src->param_default_tokens;
     f->forest_body_tokens = src->forest_body_tokens;
+    f->is_constexpr = src->is_constexpr;
+    f->constexpr_return_tokens = src->constexpr_return_tokens;
     f->forest_ctor_init_tokens = src->forest_ctor_init_tokens;
     f->forest_body_in_instantiation = src->forest_body_in_instantiation;
     f->template_return_param_name = src->template_return_param_name;
@@ -66853,13 +67162,60 @@ bool Program::function_declarator_has_body()
     return body;
 }
 
+// Retain exactly the C++11 constexpr-function body shape
+//
+//     { return constant-expression; }
+//
+// as `constant-expression ;` tokens. The parsed statement tree proves this is
+// one return statement; DelimDepth finds its top-level terminator without
+// mistaking delimiters inside calls/template-ids for the body's semicolon.
+// Anything broader stays a normal runtime function and is refused loudly if a
+// constant context tries to call it (C++14's wider constexpr-body grammar is a
+// separate language-standard slice).
+static void retain_constexpr_return_expression(
+	Program &pgm, FuncDef *func, TokenCpnd *body,
+	const std::vector<TokenBase *> &raw_body)
+{
+    if ( !func )
+	return;
+    func->constexpr_return_tokens.clear();
+    if ( !func->is_constexpr || !body || body->statements.size() != 1
+      || !body->statements[0] || !body->statements[0]->as_return_tok()
+      || raw_body.size() < 4 || !raw_body[0]
+      || raw_body[0]->id() != TokenID::tkRETURN || !raw_body.back()
+      || raw_body.back()->id() != TokenID::tkClBrc )
+	return;
+
+    DelimDepth d(&pgm);
+    size_t semi = raw_body.size();
+    for ( size_t i = 1; i + 1 < raw_body.size(); )
+    {
+	TokenBase *t = raw_body[i];
+	if ( t && d.top() && t->id() == TokenID::tkSemi )
+	{
+	    semi = i;
+	    break;
+	}
+	size_t n = delim_scan_step(raw_body, i, d);
+	i += n ? n : 1;
+    }
+    // No empty return, no second statement: `;` must be immediately before
+    // the body's closing `}`.
+    if ( semi <= 1 || semi + 2 != raw_body.size() )
+	return;
+    for ( size_t i = 1; i <= semi; ++i )
+	func->constexpr_return_tokens.push_back(
+	    raw_body[i] ? raw_body[i]->clone_origin() : NULL);
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret, bool return_ref,
 			    std::string return_typedef_alias,
 			    bool static_class_method,
 			    bool inline_specified,
-			    bool static_specified)
+			    bool static_specified,
+			    bool constexpr_specified)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -67000,6 +67356,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->return_types = func->return_types;
 	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
+	    fresh->is_constexpr = func->is_constexpr;
+	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
 		func->param_template_param_spelled_directly;
@@ -67040,6 +67398,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->return_types = func->return_types;
 	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
+	    fresh->is_constexpr = func->is_constexpr;
+	    fresh->constexpr_return_tokens = func->constexpr_return_tokens;
 	    fresh->param_typedef_names = func->param_typedef_names;
 	    fresh->param_template_param_spelled_directly =
 		func->param_template_param_spelled_directly;
@@ -67075,6 +67435,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
+    // `constexpr` belongs to the function declaration itself. Preserve it
+    // across a prototype/definition pair; object const-ness uses the separate
+    // parsing_const_decl -> vfCONSTANT channel.
+    if ( constexpr_specified )
+	func->is_constexpr = true;
     // C++ SYMBOL MANGLING phase 1 (design §4.4/§4.5): a redeclaration of a
     // C-LINKAGE function must carry the SAME parameter signature — C
     // ("conflicting types for 'f'") and an extern "C" function in C++
@@ -68792,6 +69157,29 @@ paramdecl:
 		    (_prv_token && _prv_token->file) ? _prv_token->file : "(null)",
 		    source.fname(), tf->file ? tf->file : "(null)");
     }
+    // Save the raw C++11 constexpr body non-destructively. The normal parser
+    // still builds the TokenFunc tree; this retained token view only lets the
+    // constant evaluator re-run the return expression with call arguments
+    // bound. `collect_compound_body_tokens` is the existing balanced-body
+    // owner. Restoring both cursor and location leaves parseCompound exactly
+    // where it started: immediately after the opening `{`.
+    std::vector<TokenBase *> constexpr_raw_body;
+    if ( func->is_constexpr )
+    {
+	TokenStream::Pos saved_body_pos = tokens.savepos();
+	TokenBase *saved_body_cur = _cur_token;
+	TokenBase *saved_body_prv = _prv_token;
+	const char *saved_body_file = TokenBase::_parse_file;
+	int saved_body_line = TokenBase::_parse_line;
+	int saved_body_column = TokenBase::_parse_column;
+	constexpr_raw_body = collect_compound_body_tokens(nt);
+	tokens = saved_body_pos;
+	_cur_token = saved_body_cur;
+	_prv_token = saved_body_prv;
+	TokenBase::_parse_file = saved_body_file;
+	TokenBase::_parse_line = saved_body_line;
+	TokenBase::_parse_column = saved_body_column;
+    }
     // Phase-5 slice 4b (parse-once): a member-template INSTANTIATION whose
     // source carries a Tree-1 dependent_pattern takes its body from tsubst at
     // lowering, so parsing the substituted body tokens here is discarded work
@@ -68829,6 +69217,8 @@ paramdecl:
 			&& func->forest_body_tokens.empty()
 			&& param_default_capture_begin(body_cap);
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
+    retain_constexpr_return_expression(*this, func, tc,
+				       constexpr_raw_body);
     if ( body_capturing )
     {
 	param_default_capture_end(body_cap, func->forest_body_tokens);
@@ -69764,6 +70154,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( unnamed_namespace_depth > 0 && compounds.empty() && !parsing_extern_decl )
 	gotstatic = true;
     bool gotconst = parsing_const_decl;
+    bool gotconstexpr = parsing_constexpr_decl;
     bool gotinline = parsing_inline_decl;
     bool gotthreadlocal = parsing_thread_local_decl;
     // The flags cover exactly this declaration. Clear so nested declarations
@@ -69772,6 +70163,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // storage duration.
     parsing_static_decl = false;
     parsing_const_decl = false;
+    parsing_constexpr_decl = false;
     parsing_inline_decl = false;
     parsing_thread_local_decl = false;
 
@@ -69807,6 +70199,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	bool spec = is_ignored_cpp_specifier_token(pk);
 	bool is_inline_word = false;
+	bool is_constexpr_word = false;
 	if ( !spec && presents_as_cpp()
 	  && pk->type() == TokenType::ttIdentifier )
 	{
@@ -69814,13 +70207,19 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    spec = s == "inline" || s == "constexpr" || s == "consteval"
 		|| s == "constinit";
 	    is_inline_word = s == "inline";
+	    is_constexpr_word = s == "constexpr";
 	}
 	else if ( spec )
+	{
 	    is_inline_word = ((TokenIdent *)pk)->spelling_is("inline");
+	    is_constexpr_word = ((TokenIdent *)pk)->spelling_is("constexpr");
+	}
 	if ( spec )
 	{
 	    if ( is_inline_word )
 		gotinline = true;
+	    if ( is_constexpr_word )
+		gotconstexpr = true;
 	    nextToken();
 	    continue;
 	}
@@ -71929,7 +72328,7 @@ fnptr_decl_arm_head:
 	pending_function_display_name = source_id;
     parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
 		  decl_typedef_alias, qualified_static_member,
-		  gotinline && !gotstatic, gotstatic);
+		  gotinline && !gotstatic, gotstatic, gotconstexpr);
     pending_function_display_name.clear();
 
     // [dcl.link]: a FILE-SCOPE function declared under extern "C" has C

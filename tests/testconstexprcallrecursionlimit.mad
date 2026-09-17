@@ -1,0 +1,9 @@
+constexpr int recurse_forever(int n) { return recurse_forever(n + 1); }
+
+template<int N> struct DepthTag { };
+DepthTag<recurse_forever(0)> depth;
+
+int main()
+{
+	return 0;
+}

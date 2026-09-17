@@ -1,0 +1,16 @@
+#include <cstdio>
+
+constexpr int sum_to(int n) { return n ? n + sum_to(n - 1) : 0; }
+
+enum { E_RECURSIVE = sum_to(4) };
+static_assert(sum_to(3) == 6, "recursive constexpr call");
+
+template<int N> struct RecursiveTag { };
+int want6(RecursiveTag<6>) { return 6; }
+
+int main()
+{
+	RecursiveTag<sum_to(3)> t;
+	printf("constexpr recursion: %d %d\n", (int)E_RECURSIVE, want6(t));
+	return 0;
+}

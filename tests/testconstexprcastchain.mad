@@ -1,0 +1,15 @@
+#include <cstdio>
+
+namespace constexpr_cast_chain {
+static constexpr int first = static_cast<int>(7);
+static constexpr int second = first - 1;
+}
+
+static_assert(constexpr_cast_chain::second == 6,
+	      "cast-initialized constexpr object chain");
+
+int main()
+{
+	printf("constexpr cast chain: %d\n", constexpr_cast_chain::second);
+	return 0;
+}
