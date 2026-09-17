@@ -132,17 +132,42 @@ public:
     }
     std::vector<DataDef *> parameters;
     size_t explicit_alignment;
-    // [&] capture support
+    // Lambda / GNU nested-function capture policy.  The parser records the
+    // capture-default and any explicitly named captures; the CIR builder adds
+    // default-captured entries on first use and records the actually-used
+    // Variables in captured_vars.  CaptureMode is data all the way through the
+    // signature, call, and body lowering -- never inferred from a name.
+    enum class CaptureMode : uint8_t {
+	None,
+	ByValue,
+	ByReference
+    };
     bool has_captures;
-    struct CaptureEntry { std::string name; DataDef *type; };
+    CaptureMode capture_default;
+    bool lambda_mutable;
+    struct CaptureEntry {
+	std::string name;
+	DataDef *type;
+	CaptureMode mode;
+	Variable *source;
+	std::string storage_name;
+	bool storage_materialized;
+	CaptureEntry(const std::string &n = std::string(), DataDef *t = NULL,
+		     CaptureMode m = CaptureMode::None, Variable *s = NULL)
+	    : name(n), type(t), mode(m), source(s), storage_name(),
+	      storage_materialized(false) {}
+    };
     std::vector<Variable *> potential_captures; // outer-scope vars at lambda creation time
-    std::vector<CaptureEntry> captures;         // populated during lambda body compilation
-    // GNU nested-function / [&]-lambda capture-by-reference lowering: the
-    // enclosing variables the body actually USES, in first-reference order.
-    // Filled by the CIR builder while translating the body (pointer identity
-    // against potential_captures). Each becomes a hidden `T *name` parameter and
-    // every call site forwards `&var`. Empty for a non-capturing function.
+    std::vector<CaptureEntry> captures;         // explicit policy + used default captures
+    // The enclosing variables the body actually USES, in first-reference
+    // order. Filled by the CIR builder while translating the body (pointer
+    // identity against potential_captures). Each becomes a hidden parameter:
+    // `T *name` by reference or `T name` by value. Empty for a non-capturing
+    // function.
     std::vector<Variable *> captured_vars;
+    CaptureEntry *capture_entry(Variable *v);
+    const CaptureEntry *capture_entry(const Variable *v) const;
+    CaptureMode capture_mode_for(const Variable *v) const;
     // The C symbol a madc-EMITTED function's body is DEFINED-as and CALLED-as,
     // when it differs from the default scheme. Two disjoint sources feed it
     // (a FuncDef is never both a hoisted free fn and a class method):
@@ -477,7 +502,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -6091,7 +6116,8 @@ public:
 		       bool static_class_method = false,
 		       bool inline_specified = false,
 		       bool static_specified = false,
-		       bool constexpr_specified = false);
+		       bool constexpr_specified = false,
+		       bool lambda_declarator = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     // Consume `{ ... }` from the stream, appending its scalars to `args` and

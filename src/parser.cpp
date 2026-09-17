@@ -22513,6 +22513,34 @@ DataDef *FuncDef::findParameter(const std::string &s)
     return NULL;
 }
 
+FuncDef::CaptureEntry *FuncDef::capture_entry(Variable *v)
+{
+    if ( !v )
+	return NULL;
+    for ( std::vector<CaptureEntry>::iterator it = captures.begin();
+	  it != captures.end(); ++it )
+	if ( it->source == v || (!it->source && it->name == v->name) )
+	    return &*it;
+    return NULL;
+}
+
+const FuncDef::CaptureEntry *FuncDef::capture_entry(const Variable *v) const
+{
+    if ( !v )
+	return NULL;
+    for ( std::vector<CaptureEntry>::const_iterator it = captures.begin();
+	  it != captures.end(); ++it )
+	if ( it->source == v || (!it->source && it->name == v->name) )
+	    return &*it;
+    return NULL;
+}
+
+FuncDef::CaptureMode FuncDef::capture_mode_for(const Variable *v) const
+{
+    const CaptureEntry *entry = capture_entry(v);
+    return entry ? entry->mode : capture_default;
+}
+
 Variable *TokenCpnd::getParameter(unsigned int i)
 {
     DBG(cout << "TokenCpnd::getParameter(" << i << ") method: " << (method ? method->returns.name : "NULL") << endl);
@@ -30533,11 +30561,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     if ( !var && name == "this" )
     {
 	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-	if ( code && code->method && code->method->owner_class )
-	{
-	    std::string thisid = "__this";
-	    var = code->method->findParameter(thisid);
-	}
+	if ( code )
+	    var = code->findVariableLocal(strpool, "__this");
     }
     TokenBase *result = NULL;
     if ( var )
@@ -39642,12 +39667,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// EXISTING pointer-member-access path, and `this` as a value (e.g.
 		// `return this;`) be the pointer itself. Outside a method it stays
 		// unresolved -> the usual "undeclared identifier" error.
-		if ( !var && ident_tb->spelling_is("this")
-		     && code && code->method && code->method->owner_class )
-		{
-		    std::string thisid = "__this";
-		    var = code->method->findParameter(thisid);
-		}
+	if ( !var && ident_tb->spelling_is("this")
+	     && code )
+	    var = code->findVariableLocal(strpool, "__this");
 		// class method: resolve unqualified member name through __this
 		if ( !var
 		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
@@ -42318,12 +42340,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				{
 				    std::string dname = contextual_identifier_name(deref_tb);
 				    Variable *dvar = findVariable(dname);
-				    if ( !dvar && dname == "this"
-				      && code && code->method && code->method->owner_class )
-				    {
-					std::string thisid = "__this";
-					dvar = code->method->findParameter(thisid);
-				    }
+				    if ( !dvar && dname == "this" && code )
+					dvar = code->findVariableLocal(strpool,
+							       "__this");
 				    if ( !dvar && code && code->method
 				      && code->method->owner_class )
 				    {
@@ -67304,6 +67323,8 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->parameters = src->parameters;
     f->explicit_alignment = src->explicit_alignment;
     f->has_captures = src->has_captures;
+    f->capture_default = src->capture_default;
+    f->lambda_mutable = src->lambda_mutable;
     f->potential_captures = src->potential_captures;
     f->captures = src->captures;
     f->captured_vars = src->captured_vars;
@@ -67565,7 +67586,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    bool static_class_method,
 			    bool inline_specified,
 			    bool static_specified,
-			    bool constexpr_specified)
+			    bool constexpr_specified,
+			    bool lambda_declarator)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -68905,6 +68927,11 @@ paramdecl:
 	if ( q->type() == TokenType::ttIdentifier
 	  || q->id() == TokenID::tkCPPKEYWORD ) {
 	    const std::string qs = contextual_identifier_name(q);
+	    if ( qs == "mutable" && lambda_declarator ) {
+		func->lambda_mutable = true;
+		nt = nextToken();
+		continue;
+	    }
 	    if ( qs == "noexcept" ) {
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
@@ -69746,7 +69773,109 @@ TokenBase *Program::parseLambda()
     // a trailing `-> T` / `-> decltype(param.member)&&` after them.
     TokenBase *tn = nextToken();
     DataDef *rettype = &ddAUTO;	// deduced from the body, or the trailing return
-    bool is_capturing = false;
+    FuncDef::CaptureMode capture_default = FuncDef::CaptureMode::None;
+    std::vector<FuncDef::CaptureEntry> parsed_captures;
+    std::vector<TokenBase *> capture_tokens;
+
+    // Consume the introducer's ONE balanced capture-list.  Every capture form
+    // uses this owner; the grammar pass below only interprets the top-level
+    // tokens it collected.
+    auto consume_capture_list = [&](TokenBase *first) -> TokenBase *
+    {
+	DelimDepth capture_depth(this);
+	capture_depth.square = 1;	// parseLambda's caller consumed the opening '['
+	TokenBase *cur = first;
+	while ( cur )
+	{
+	    bool closes_list = cur->id() == TokenID::tkClSqr
+		&& capture_depth.square == 1 && capture_depth.paren == 0
+		&& capture_depth.brace == 0 && capture_depth.angle == 0;
+	    if ( !closes_list )
+		capture_tokens.push_back(cur);
+	    delimStepStream(cur, capture_depth);
+	    if ( capture_depth.top() )
+		return cur;
+	    cur = nextToken();
+	}
+	Throw << "Unexpected end of input in lambda capture list" << flush;
+	return cur;
+    };
+
+    auto parse_capture_list = [&]()
+    {
+	size_t i = 0;
+	if ( i < capture_tokens.size()
+	  && capture_tokens[i]->id() == TokenID::tkAssign )
+	{
+	    capture_default = FuncDef::CaptureMode::ByValue;
+	    ++i;
+	    if ( i < capture_tokens.size() )
+	    {
+		if ( capture_tokens[i]->id() != TokenID::tkComma )
+		    Throw(capture_tokens[i])
+			<< "Expecting ',' after lambda capture-default" << flush;
+		++i;
+	    }
+	}
+	else if ( i < capture_tokens.size()
+	       && capture_tokens[i]->id() == TokenID::tkBand
+	       && (i + 1 == capture_tokens.size()
+		|| capture_tokens[i + 1]->id() == TokenID::tkComma) )
+	{
+	    capture_default = FuncDef::CaptureMode::ByReference;
+	    ++i;
+	    if ( i < capture_tokens.size() )
+		++i;	// the comma after '&'
+	}
+
+	while ( i < capture_tokens.size() )
+	{
+	    bool by_reference = false;
+	    TokenBase *loc = capture_tokens[i];
+	    if ( loc->id() == TokenID::tkBand )
+	    {
+		by_reference = true;
+		if ( ++i == capture_tokens.size() )
+		    Throw(loc) << "Expecting a name after '&' in lambda capture"
+			       << flush;
+		loc = capture_tokens[i];
+	    }
+	    if ( !is_contextual_identifier_token(loc) )
+		Throw(loc) << "Expecting a name in lambda capture list" << flush;
+
+	    std::string capture_name = contextual_identifier_name(loc);
+	    if ( capture_name == "this" )
+	    {
+		if ( by_reference )
+		    Throw(loc) << "'this' cannot be captured by reference" << flush;
+		capture_name = "__this";
+	    }
+	    Variable *source = findVariable(capture_name);
+	    if ( !source )
+		Throw(loc) << "lambda capture '" << contextual_identifier_name(loc)
+			   << "' does not name an enclosing variable" << flush;
+	    for ( std::vector<FuncDef::CaptureEntry>::const_iterator ci =
+		      parsed_captures.begin(); ci != parsed_captures.end(); ++ci )
+		if ( ci->source == source )
+		    Throw(loc) << "duplicate lambda capture '"
+			       << contextual_identifier_name(loc) << "'" << flush;
+	    parsed_captures.push_back(FuncDef::CaptureEntry(
+		capture_name, source->type,
+		by_reference ? FuncDef::CaptureMode::ByReference
+			     : FuncDef::CaptureMode::ByValue,
+		source));
+	    ++i;
+	    if ( i == capture_tokens.size() )
+		break;
+	    if ( capture_tokens[i]->id() != TokenID::tkComma )
+		Throw(capture_tokens[i])
+		    << "init-captures are not supported in this C++11 capture slice"
+		    << flush;
+	    if ( ++i == capture_tokens.size() )
+		Throw(capture_tokens[i - 1])
+		    << "Expecting a name after ',' in lambda capture list" << flush;
+	}
+    };
 
     // Keep an explicit-declarator lambda on its established capture path. This
     // slice only normalizes the C++ form whose declarator is absent; changing
@@ -69772,31 +69901,37 @@ TokenBase *Program::parseLambda()
     if ( cxx_omits_declarator )
     {
 	// A strict-C++ lambda introducer owns a capture-list, not madc's
-	// historical `[return-type]` extension. Consume this optional-declarator
-	// form as one balanced grammar unit; the existing capture lowering records
-	// which of the enclosing variables the body actually references.
-	DelimDepth capture_depth(this);
-	capture_depth.square = 1;	// parseLambda's caller consumed the opening '['
-	while ( tn )
-	{
-	    if ( tn->id() != TokenID::tkClSqr )
-		is_capturing = true;
-	    delimStepStream(tn, capture_depth);
-	    if ( capture_depth.top() )
-		break;
-	    tn = nextToken();
-	}
+	// historical `[return-type]` extension. The expression dispatcher has an
+	// established false-positive path for a second new-array extent
+	// (`new P[2][2]`): preserve its balanced consume, but do not interpret a
+	// non-capture starter such as the integer `2` as a lambda capture.
+	tn = consume_capture_list(tn);
+	if ( capture_tokens.empty()
+	  || capture_tokens[0]->id() == TokenID::tkAssign
+	  || capture_tokens[0]->id() == TokenID::tkBand
+	  || is_contextual_identifier_token(capture_tokens[0]) )
+	    parse_capture_list();
     }
     else if ( tn->id() == TokenID::tkBand )
     {
-	is_capturing = true;
-	tn = nextToken(); // consume &, expect ]
+	// Keep the established `[&]` arm first; it now feeds the same general
+	// capture-list grammar so `[&n]` and `[&, n]` do not need another scanner.
+	tn = consume_capture_list(tn);
+	parse_capture_list();
     }
     else if ( TokenDataType *ret_type = resolve_declared_type_token(tn, true, true) )
     {
 	rettype = &ret_type->definition;
 	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
 	tn = nextToken();
+    }
+    else if ( tn->id() != TokenID::tkClSqr )
+    {
+	// `[n]` is a capture when n is a value; the type-resolution arm above
+	// deliberately remains ahead of this to preserve madc's `[T]` return-type
+	// extension when T names a type.
+	tn = consume_capture_list(tn);
+	parse_capture_list();
     }
 
     if ( tn->id() != TokenID::tkClSqr )
@@ -69835,7 +69970,8 @@ TokenBase *Program::parseLambda()
     // list" (tests/testlambdaparamref).
     std::string saved_func_name = cur_func_name;	// parseFunction sets it for __func__
     std::string id = lambda_name;
-    parseFunction(*rettype, id, NULL);
+    parseFunction(*rettype, id, NULL, NULL, false, std::string(), false,
+		  false, false, false, true);
     cur_func_name = saved_func_name;
 
     funcdef_map_iter fmi = funcdef_map.find(id);
@@ -69858,16 +69994,43 @@ TokenBase *Program::parseLambda()
 	func = fresh;
     }
 
-    // The capture list is the closure's contract: `[]` captures nothing
-    // (the nested-function configuration parseFunction applied is withdrawn),
-    // `[&]` keeps capture-by-reference of whatever the body uses. At file scope
-    // parseFunction parsed a plain function, so `[&]` collects here (nothing
-    // encloses it to capture — the list stays empty).
+    // The capture list is the closure's contract. parseFunction provisionally
+    // configured every nested definition like a GNU nested function; replace
+    // that policy with the lambda's parsed default/named data, then narrow a
+    // named-only list to exactly those potential captures.
+    bool is_capturing = capture_default != FuncDef::CaptureMode::None
+	|| !parsed_captures.empty();
     func->has_captures = is_capturing;
     if ( !is_capturing )
+	{
 	func->potential_captures.clear();
+	func->captures.clear();
+	func->capture_default = FuncDef::CaptureMode::None;
+	}
     else if ( func->potential_captures.empty() )
 	configure_nested_function_captures(func);
+    if ( is_capturing )
+    {
+	func->capture_default = capture_default;
+	func->captures = parsed_captures;
+	for ( std::vector<FuncDef::CaptureEntry>::const_iterator ci =
+		  func->captures.begin(); ci != func->captures.end(); ++ci )
+	    if ( std::find(func->potential_captures.begin(),
+			  func->potential_captures.end(), ci->source)
+		 == func->potential_captures.end() )
+		Throw(tn) << "lambda capture '" << ci->name
+			  << "' does not name an automatic enclosing variable" << flush;
+	if ( capture_default == FuncDef::CaptureMode::None )
+	{
+	    std::vector<Variable *> named;
+	    for ( std::vector<Variable *>::const_iterator pi =
+		      func->potential_captures.begin();
+		  pi != func->potential_captures.end(); ++pi )
+		if ( func->capture_entry(*pi) )
+		    named.push_back(*pi);
+	    func->potential_captures.swap(named);
+	}
+    }
     DBG(cout << "parseLambda() END — returning TokenVar for " << id
 	     << " (captures " << func->potential_captures.size() << ")" << endl);
 
@@ -69952,6 +70115,7 @@ void Program::configure_nested_function_captures(FuncDef *func)
 	return;
 
     func->has_captures = true;
+    func->capture_default = FuncDef::CaptureMode::ByReference;
     func->potential_captures.clear();
 
     TokenCpnd *outer = compounds.empty() ? NULL : compounds.top();

@@ -1,0 +1,8 @@
+// g++ and clang++ both reject the write: a copy capture is const unless the
+// lambda-declarator contains `mutable`.
+int main()
+{
+	int n = 4;
+	auto f = [n]() { n++; return n; };
+	return f();
+}

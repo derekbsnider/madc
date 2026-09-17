@@ -6329,6 +6329,37 @@ static DataDef *capture_param_type(const Variable *cv)
 	return new DataDefPTR(*cv->type);
 }
 
+// The hidden parameter type for a by-value capture is the captured value's
+// type itself (a reference capture copies the referent value).  This is the
+// value twin of capture_param_type; every signature lane selects between these
+// two through capture_hidden_param_type.
+static DataDef *capture_value_param_type(const Variable *cv)
+{
+	if (!cv || !cv->type)
+		return NULL;
+	if (cv->type->is_reference())
+		if (DataDef *referent = ref_param_referent(cv->type))
+			return referent;
+	return cv->type;
+}
+
+static DataDef *capture_hidden_param_type(FuncDef *fd, const Variable *cv)
+{
+	if (!fd || !cv)
+		return NULL;
+	return fd->capture_mode_for(cv) == FuncDef::CaptureMode::ByValue
+		? capture_value_param_type(cv) : capture_param_type(cv);
+}
+
+static std::string capture_value_storage_name(FuncDef *fd, const Variable *cv)
+{
+	std::string owner = fd && !fd->local_emit_name.empty()
+		? fd->local_emit_name : std::string("lambda");
+	std::string name = cv ? cv->name : std::string("capture");
+	return "__madc_capture_" + sanitize_c_identifier(owner) + "_"
+		+ sanitize_c_identifier(name);
+}
+
 // Coerce an object argument with a c_str() method to const char*.
 // Does this object expression have a real `c_str()` to lower through — i.e.
 // would object_cstr_arg produce a char* rather than falling back to the raw
@@ -7354,29 +7385,48 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			// make the implicit upcast explicit so c2mir does not warn.
 			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
-	// GNU nested-function / [&]-lambda capture forwarding: a call to a capturing
-	// callee passes the address of each captured enclosing variable as a hidden
-	// trailing argument, matching the `T *name` capture parameters func_def
-	// appended. The captured Variable is in scope at this call site (the call
-	// lives in the defining function). If THIS function also captured that same
-	// variable (nested-in-nested), forward its capture pointer param directly
-	// (it already holds &var); otherwise take its address here. A captured
-	// REFERENCE variable is itself stored as a pointer to its referent, so we
-	// forward that stored pointer VALUE (the referent's address) — matching the
-	// `referent *` capture parameter from capture_param_type — rather than &var,
-	// which would be a pointer-to-the-reference-slot of the wrong type.
+	// Capture forwarding: by-value callees receive the snapshot local created at
+	// the lambda expression; by-reference callees receive the live variable's
+	// address.  For nested-in-nested reference forwarding, a current by-reference
+	// capture already IS that address, while a current by-value capture needs the
+	// address of its local hidden parameter.
 	if (callee && !callee->captured_vars.empty()) {
 		for (Variable *cv : callee->captured_vars) {
 			if (!cv) continue;
+			FuncDef::CaptureMode callee_mode = callee->capture_mode_for(cv);
+			if (callee_mode == FuncDef::CaptureMode::ByValue) {
+				FuncDef::CaptureEntry *entry = callee->capture_entry(cv);
+				DataDef *value_type = capture_value_param_type(cv);
+				if (entry && entry->storage_materialized) {
+					node_t snapshot = id(entry->storage_name.c_str(), tcf);
+					append(args, class_param_via_invisible_ref(value_type)
+					       ? node1(N_ADDR, snapshot, tcf) : snapshot);
+				} else if (class_param_via_invisible_ref(value_type)) {
+					append(args, error_node(
+						"immediate by-value class capture is not supported",
+						tcf));
+				} else {
+					TokenVar *value = new TokenVar(*cv);
+					value->file = tcf->file;
+					value->line = tcf->line;
+					value->column = tcf->column;
+					append(args, translate_expr(value));
+				}
+				continue;
+			}
 			if (m_cur_captured_fd && m_cur_capture_set.count(cv)) {
-				note_capture(cv);
-				append(args, id(cv->name.c_str(), tcf));
+				FuncDef::CaptureMode current_mode = note_capture(cv);
+				node_t current = id(cv->name.c_str(), tcf);
+				if (current_mode == FuncDef::CaptureMode::ByReference
+				    || class_param_via_invisible_ref(
+					capture_value_param_type(cv)))
+					append(args, current);
+				else
+					append(args, node1(N_ADDR, current, tcf));
 			} else if ((cv->type && cv->type->is_reference())
 				   || param_is_invisible_ref(*cv)) {
-				// A by-value class parameter passed by invisible
-				// reference is pointer-stored like a reference: forward
-				// the stored object address (capture_param_type made
-				// the capture param `T *`).
+				// A reference or invisible-reference class parameter is
+				// pointer-stored already: forward its stored object address.
 				append(args, id(cv->name.c_str(), tcf));
 			} else {
 				append(args, node1(N_ADDR, id(cv->name.c_str(), tcf), tcf));
@@ -7681,8 +7731,8 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	if (has_capture_params)
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = capture_param_type(cv);
-			append(param_list, param_decl(capt_ptr, "", std::string()));
+			DataDef *capt_type = capture_hidden_param_type(fd, cv);
+			append(param_list, param_decl(capt_type, "", std::string()));
 		}
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
@@ -11544,16 +11594,19 @@ node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
 {
 	std::string emitted = var_emit_name(v);
 	node_t base = id(emitted.c_str(), origin);
-	// GNU nested-function / [&]-lambda capture of a class object: the hidden
-	// capture parameter is a `Class *name` that ALREADY holds the enclosing
-	// object's address (capture-by-reference). Inside the body the variable is
-	// pointer-stored, exactly like the value-read deref path (see the TokenVar
-	// chokepoint in translate_expr). Record the capture so func_def synthesizes
-	// the parameter, and return the pointer itself — NOT &name (which would be
-	// `Class **`). Without this, a captured object used by address (`cout << msg`,
-	// `msg.method()`) emitted `&msg` referencing an undeclared outer name.
-	if (note_capture(const_cast<Variable *>(&v)))
+	// A by-reference capture parameter already holds the enclosing object's
+	// address. A by-value capture is a local value parameter: take its address,
+	// except for ABI-invisible-reference classes (whose parameter also stores an
+	// address) and pointer values such as a captured `this`.
+	FuncDef::CaptureMode capture_mode =
+		note_capture(const_cast<Variable *>(&v));
+	if (capture_mode == FuncDef::CaptureMode::ByReference)
 		return base;
+	if (capture_mode == FuncDef::CaptureMode::ByValue) {
+		if (class_param_via_invisible_ref(capture_value_param_type(&v)))
+			return base;
+		return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
+	}
 	// A by-value carrier PARAMETER is emitted `void *name` (carriers
 	// pass by pointer): the name IS the object address, and `&name`
 	// would address the pointer slot (a range-for over such a
@@ -20340,9 +20393,9 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	if (fd->has_captures)
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = capture_param_type(cv);
-			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
-						      std::string()));
+			DataDef *capt_type = capture_hidden_param_type(fd, cv);
+			append(param_list, param_decl(capt_type, cv->name.c_str(),
+					      std::string()));
 		}
 	// Hidden __madc_vb params for a madc-emitted vbase-carrying ctor —
 	// the prototype must mirror func_def's signature (lock-step).
@@ -21419,6 +21472,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// (stderr/stdout/stdin) that were registered lazily and never
 			// reached top_decls. Locals/params already have in-scope decls.
 			note_global_reference(tv->var);
+			FuncDef::CaptureMode variable_capture_mode =
+				note_capture(&tv->var);
 			// A numeric reference parameter (`int &x`) is lowered to a
 			// pointer parameter (`int *x`) by the parser, with vfREFERENCE
 			// set for auto-deref. Every value use of the reference reads
@@ -21426,15 +21481,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// separate object-pointer path handled elsewhere.)
 			if ((tv->var.is_reference()) && tv->var.type
 			    && tv->var.type->is_pointer()) {
-				// A [&]-captured reference: the hidden capture parameter is a
-				// `referent *` already holding the same address the reference
-				// stores (capture_param_type), so `(*name)` reads the referent
-				// unchanged. Record the capture (so the parameter is synthesized
-				// and the call site forwards the reference's pointer value); this
-				// must run BEFORE the early return, or the reference path would
-				// bypass note_capture and the captured reference would be left
-				// undeclared in the body.
-				note_capture(&tv->var);
+				// A by-reference capture keeps the reference's stored pointer;
+				// a by-value capture copied the referent into a value parameter.
+				if (variable_capture_mode == FuncDef::CaptureMode::ByValue)
+					return id(tv->var.name.c_str(), tb);
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: reference PARAMETER deref
 			}
 			// A by-value CLASS parameter passed by INVISIBLE REFERENCE
@@ -21445,7 +21495,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// as there: a [&]-captured such parameter is a `T *` capture
 			// param holding the same address.
 			if (param_is_invisible_ref(tv->var)) {
-				note_capture(&tv->var);
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: invisible-reference PARAMETER deref
 			}
 			// Two-tree tsubst: while building a dependent-pattern body
@@ -21468,11 +21517,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return node1(N_DEREF,
 							id(tv->var.name.c_str(), tb), tb);	// allowed-exception: tsubst pattern-mode ref param
 			}
-			// GNU nested-function / [&]-lambda capture: an enclosing local/param
-			// the body reads is captured by reference, lowered to a hidden
-			// pointer parameter `T *name`. The value read is `(*name)`.
-			if (note_capture(&tv->var))
+			if (variable_capture_mode == FuncDef::CaptureMode::ByReference)
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
+			if (variable_capture_mode == FuncDef::CaptureMode::ByValue) {
+				if (class_param_via_invisible_ref(
+					capture_value_param_type(&tv->var)))
+					return node1(N_DEREF,
+						id(tv->var.name.c_str(), tb), tb);
+				return id(tv->var.name.c_str(), tb);
+			}
 			return id(var_emit_name(tv->var).c_str(), tb);
 		}
 	}
@@ -21698,9 +21751,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenAddrOf *ta = (tb ? tb->as_addr_of_tok() : NULL);
 		if (ta) {
-			// `&capturedvar` inside a nested fn IS the capture pointer param.
-			if (note_capture(&ta->var))
+			FuncDef::CaptureMode mode = note_capture(&ta->var);
+			// `&capturedvar` for a by-reference capture IS the capture
+			// pointer. A by-value capture addresses its local value cell.
+			if (mode == FuncDef::CaptureMode::ByReference)
 				return id(ta->var.name.c_str(), tb);	// allowed-exception: captured LOCAL (note_capture)
+			if (mode == FuncDef::CaptureMode::ByValue) {
+				node_t value = id(ta->var.name.c_str(), tb);
+				return class_param_via_invisible_ref(
+					capture_value_param_type(&ta->var))
+				       ? value : node1(N_ADDR, value, tb);
+			}
 			// `&ref` where ref is a T& parameter (lowered to a T* with
 			// vfREFERENCE): the variable's stored VALUE is already the
 			// referent's address, so &ref is just that value — NOT
@@ -21786,9 +21847,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// below: a pointer GLOBAL can carry storage_alias_name
 			// (asm label / system-header static) — raw td->var.name
 			// was the one dispatch arm that never got that fix.
-			if (note_capture(&td->var))
+			FuncDef::CaptureMode mode = note_capture(&td->var);
+			if (mode == FuncDef::CaptureMode::ByReference)
 				return node1(N_DEREF,
 					node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb), tb);
+			if (mode == FuncDef::CaptureMode::ByValue)
+				return node1(N_DEREF, id(td->var.name.c_str(), tb), tb);
 			// Host-installed const char* scope binding: this arm embeds
 			// the Variable and bypasses the TokenVar fold — bake the
 			// operand the same way (`*arg` -> *"text").
@@ -21843,11 +21907,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// embeds the Variable and bypasses the TokenVar fold —
 				// bake the base the same way (`arg[0]` -> "text"[0]).
 				base = baked_base;
-			} else if (note_capture(&tsub->object)) {
-				// Captured container: subscript through the deref of the
-				// capture pointer param (`(*name)[i]`).
-				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 			} else {
+				FuncDef::CaptureMode mode = note_capture(&tsub->object);
+				if (mode == FuncDef::CaptureMode::ByReference)
+					// Reference capture: subscript through the pointer cell.
+					base = node1(N_DEREF,
+						id(tsub->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
+				else if (mode == FuncDef::CaptureMode::ByValue)
+					base = id(tsub->object.name.c_str(), tb);
+				else {
 				// Flat VLA pointer (runtime-sized param or malloc'd
 				// local): route through the linearizer. A single-index
 				// access on a multi-dim chain is C's row POINTER
@@ -21856,11 +21924,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// one element instead.
 				Variable *vroot = NULL;
 				std::vector<TokenBase *> idxs;
-				if (subscript_root_indices(tsub, vroot, idxs))
+				if (subscript_root_indices(tsub, vroot, idxs)) {
 					if (node_t flat = vla_flat_subscript(vroot,
 									     idxs, tb))
 						return flat;
+				}
 				base = id(var_emit_name(tsub->object).c_str(), tb);
+				}
 			}
 			// Carrier SLOT access (`bag["k"]`, `arr[i]` — parser-typed
 			// ddARRAY for both index kinds; `value &` receivers
@@ -21992,18 +22062,28 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (tm) {
 			node_t obj;
 			bool captured_obj = false;
+			bool captured_value_indirect = false;
 			if (tm->parent_expr)
 				obj = translate_expr(tm->parent_expr);
-			else if (note_capture(&tm->object)) {
-				// Captured struct object: `(*name).field` (the `.`/`->`
-				// selection below is unchanged — `(*name)` is the struct lvalue).
-				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
-				captured_obj = true;
-			} else
+			else {
+				FuncDef::CaptureMode mode = note_capture(&tm->object);
+				if (mode == FuncDef::CaptureMode::ByReference) {
+					// Reference-captured struct: `(*name).field`.
+					obj = node1(N_DEREF,
+						id(tm->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
+					captured_obj = true;
+				} else if (mode == FuncDef::CaptureMode::ByValue) {
+					obj = id(tm->object.name.c_str(), tb);
+					captured_value_indirect =
+						class_param_via_invisible_ref(
+						    capture_value_param_type(&tm->object));
+				} else {
 				// var_emit_name resolves a namespace extern's Itanium
 				// storage alias (madc::sys -> _ZN4madc3sysE), matching
 				// the subscript path and the extern decl's own id.
-				obj = id(var_emit_name(tm->object).c_str(), tb);
+					obj = id(var_emit_name(tm->object).c_str(), tb);
+				}
+			}
 			node_t member = id(tm->var.name.c_str(), tb);	// allowed-exception: member SELECTOR, not storage
 			// `.` requires a struct lvalue; `->` requires a pointer. The
 			// object's declared type drives this: a pointer-typed object uses
@@ -22030,6 +22110,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// A pointer object uses `->`; a bare array object decays to a
 				// pointer and also uses `->`.
 				ptr_like = tm->object.type->is_pointer() || obj_is_array
+					|| captured_value_indirect
 					// A by-value CLASS parameter passed by invisible
 					// reference is pointer-stored in the callee
 					// (`struct T *d`): `d.m` -> `d->m`. Only when the
@@ -22053,6 +22134,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					? tm->parent_expr->datadef() : tm->object.type;
 				bool deref_ok = obj_is_array
 					|| (tm->object.type && tm->object.type->is_pointer())
+					|| captured_value_indirect
 					|| (!tm->parent_expr && !captured_obj
 					    && param_is_invisible_ref(tm->object))
 					|| (odd && odd->is_pointer());
@@ -22405,7 +22487,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// class operator++ on a const object is rejected too. Scoped to the
 			// direct const-var case (see the binary const check).
 			if (TokenVar *itv = (operand_tb ? operand_tb->as_var_tok() : NULL)) {
-				if (itv->var.is_constant()) {
+				if (itv->var.is_constant()
+				    || capture_is_read_only(&itv->var)) {
 					std::string msg = std::string(
 						tb->id() == TokenID::tkInc ? "increment"
 									   : "decrement")
@@ -22552,7 +22635,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					// m_dynamic_global_inits is the exact set the deferral
 					// records, so the exemption cannot over-reach to a real
 					// later write to the same variable.
-					if (ltv->var.is_constant()
+					if ((ltv->var.is_constant()
+					     || capture_is_read_only(&ltv->var))
 					    && !m_dynamic_global_inits.count(&ltv->var)) {
 						std::string msg = "assignment of read-only variable '"
 							+ ltv->var.name + "'";
@@ -25855,6 +25939,7 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 			!(td->var.flags & vfLOCAL) && !(td->var.flags & vfSTATIC);
 		if (is_file_scope_global)
 			return NULL;
+		materialize_value_captures(td);
 		return var_decl(&td->var, td);
 	  } }
 
@@ -26500,21 +26585,103 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	return node2(N_BLOCK, empty_list, items, tc);
 }
 
-// GNU nested-function / [&]-lambda capture detection. While translating a
-// capturing function's body, every variable reference funnels through
-// translate_expr; this records an enclosing variable the body uses (one of the
-// FuncDef's potential_captures, by pointer identity) as a real capture, in
-// first-reference order. Returns true when `v` is a captured variable of the
-// current nested function (so the caller emits a deref of the same-named
-// pointer parameter instead of a bare identifier).
-bool CirBuilder::note_capture(Variable *v)
+// Nested-function / lambda capture detection. While translating a capturing
+// function's body, every variable reference funnels through translate_expr;
+// this records an enclosing variable the body uses (one of the FuncDef's
+// potential_captures, by pointer identity) as a real capture, in first-reference
+// order, and returns the parser-recorded mode that controls its lowering.
+FuncDef::CaptureMode CirBuilder::note_capture(Variable *v)
 {
-	if (!m_cur_captured_fd || !v) return false;
-	if (!m_cur_capture_set.count(v)) return false;
+	if (!m_cur_captured_fd || !v)
+		return FuncDef::CaptureMode::None;
+	if (!m_cur_capture_set.count(v))
+		return FuncDef::CaptureMode::None;
+	FuncDef::CaptureMode mode = m_cur_captured_fd->capture_mode_for(v);
+	if (mode == FuncDef::CaptureMode::None)
+		return mode;
+	FuncDef::CaptureEntry *entry = m_cur_captured_fd->capture_entry(v);
+	if (!entry) {
+		m_cur_captured_fd->captures.push_back(FuncDef::CaptureEntry(
+			v->name, v->type, mode, v));
+		entry = &m_cur_captured_fd->captures.back();
+	}
+	if (mode == FuncDef::CaptureMode::ByValue
+	    && entry->storage_name.empty())
+		entry->storage_name = capture_value_storage_name(m_cur_captured_fd, v);
 	std::vector<Variable *> &cv = m_cur_captured_fd->captured_vars;
 	if (std::find(cv.begin(), cv.end(), v) == cv.end())
 		cv.push_back(v);
-	return true;
+	return mode;
+}
+
+bool CirBuilder::capture_is_read_only(Variable *v)
+{
+	return note_capture(v) == FuncDef::CaptureMode::ByValue
+		&& m_cur_captured_fd && !m_cur_captured_fd->lambda_mutable;
+}
+
+// A lambda's by-value cells are initialized at the lambda-expression, not at
+// each invocation.  madc represents the closure as a function pointer plus
+// hidden arguments, so materialize one uniquely-named local per used value
+// capture immediately before the function-pointer declaration.  Later calls
+// forward this snapshot local; reference captures continue to forward live
+// storage.  The class declaration owner supplies copy construction when T is
+// an object, while scalar/pointer captures use the ordinary initializer path.
+void CirBuilder::materialize_value_captures(TokenDecl *decl)
+{
+	if (!decl || !decl->initialize)
+		return;
+	TokenAssign *init = decl->initialize->as_assign_tok();
+	TokenVar *rhs = init && init->right ? init->right->as_var_tok() : NULL;
+	FuncDef *fd = rhs && rhs->var.type
+		? rhs->var.type->as_funcdef_dd() : NULL;
+	if (!fd || !fd->has_captures || fd->captured_vars.empty())
+		return;
+
+	for (Variable *cv : fd->captured_vars) {
+		if (!cv || fd->capture_mode_for(cv) != FuncDef::CaptureMode::ByValue)
+			continue;
+		FuncDef::CaptureEntry *entry = fd->capture_entry(cv);
+		if (!entry || entry->storage_materialized)
+			continue;
+		if (entry->storage_name.empty())
+			entry->storage_name = capture_value_storage_name(fd, cv);
+		DataDef *value_type = capture_value_param_type(cv);
+		if (!value_type || is_array_object(value_type)
+		    || cv->is_fixed_array()) {
+			m_pending_stmts.push_back(error_node(
+				"by-value capture of an array is not supported",
+				decl));
+			continue;
+		}
+
+		Variable *storage = new Variable(entry->storage_name, *value_type,
+			1, NULL, false);
+		storage->flags |= vfLOCAL;
+		TokenDecl *copy = new TokenDecl(*storage);
+		copy->file = decl->file;
+		copy->line = decl->line;
+		copy->column = decl->column;
+		TokenAssign *assign = new TokenAssign();
+		assign->file = decl->file;
+		assign->line = decl->line;
+		assign->column = decl->column;
+		assign->left = new TokenVar(*storage);
+		assign->right = new TokenVar(*cv);
+		copy->initialize = assign;
+
+		if (DataDefCLASS *cdd = as_class_instance(value_type)) {
+			node_t capture_items = list();
+			class_decl_stmts(copy, cdd, capture_items);
+			while (node_t item = c2mir_node_first_op(capture_items)) {
+				c2mir_op_remove(capture_items, item);
+				m_pending_stmts.push_back(item);
+			}
+		} else {
+			m_pending_stmts.push_back(var_decl(storage, copy));
+		}
+		entry->storage_materialized = true;
+	}
 }
 
 // -----------------------------------------------------------------------
@@ -28340,9 +28507,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	if (fd->has_captures) {
 		for (Variable *cv : fd->captured_vars) {
 			if (!cv) continue;
-			DataDef *capt_ptr = capture_param_type(cv);
-			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
-						      std::string()));
+			DataDef *capt_type = capture_hidden_param_type(fd, cv);
+			append(param_list, param_decl(capt_type, cv->name.c_str(),
+					      std::string()));
 		}
 		// Deferred `(void)` for a zero-user-param fn that turned out to
 		// capture nothing: emit it now so the signature is `(void)`.
