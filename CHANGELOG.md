@@ -32,8 +32,10 @@
   (`tmode::on`), and `::ns::nested::enum::e` in expressions.
 - Pointer-to-member-function types `R (C::*name)(Args) [const]` in struct,
   union and class members, parameters, variables and typedefs — the Itanium
-  16-byte `{ptr, adj}` pair, one C struct (`__madc_memfnptr`). Values (`&C::m`,
-  `.*`, `->*`) follow.
+  16-byte `{ptr, adj}` pair, one C struct (`__madc_memfnptr`); the values too:
+  `&C::m` (a virtual member encodes its vtable slot), `obj.*mp`, `p->*mp`, the
+  call through a bound member-function pointer, and pointer-to-data-member
+  declarators everywhere.
 - A namespace-scope function is reachable by its source name inside its own
   body (recursion in `namespace q { int fib(int n) { ... fib(n - 1) ... } }`).
 - A leading `::` in a constant expression (`case ::ui::NONE:`).
