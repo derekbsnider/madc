@@ -8,7 +8,7 @@
   into `bin/madc` (flags derived from `make -n`, never restated) plus a wrapper TU
   per own header runs through `--emit=c11`; a ratchet over
   `docs/parity/selfhost-baseline.txt` (RED outside the baseline, loud when a
-  baseline unit passes). 49 of 172 units pass at this entry.
+  baseline unit passes). 69 of 172 units pass at this entry.
 - `thread_local` (C++11) / `_Thread_local` (C11) storage-class specifier: parsed,
   carried as `vfTHREADLOCAL`, lowered to c2mir's `_Thread_local`; the JIT's MIR
   floor has no TLS (documented deviation), emit-C/AOT are faithful. c2mir's
@@ -40,6 +40,31 @@
   body (recursion in `namespace q { int fib(int n) { ... fib(n - 1) ... } }`).
 - A leading `::` in a constant expression (`case ::ui::NONE:`).
 - A using-declaration imports an alias template (`using g::itraits;`).
+- A METHOD call passes a `Derived *` argument to a `Base *` parameter with the
+  derived-to-base adjustment (a secondary base read the wrong subobject).
+- A cast/postfix operand head (`(unsigned)f<T>()`) resolves through the entry
+  resolver — the enclosing namespace chain — with class scope still first.
+- The conditional operator prunes a dead arm only on a LITERAL condition; a
+  member read through a `const T &` parameter is not a compile-time constant
+  (`h.total ? 1 : 0` returned 0).
+- A constructor-bearing struct nested in a data-only aggregate inside a class
+  is owned by the aggregate (`Reg::txn::Saved`, not `Reg__Saved`).
+- A function template's type pack deduced from a template-id parameter expands
+  in its RETURN type (`std::get<I>(tuple<_Elements...>&)`): the explicit-args
+  return resolver no longer substitutes an unsupplied pack as empty, the pack
+  pattern locator treats `<` as an opener, and the nested unifier honours an
+  explicitly bound non-type parameter over the argument's base chain
+  (`__get_helper<1>` deduces from `_Tuple_impl<1,...>`). `std::get`,
+  `tuple_element`, `tuple_size` work.
+- A struct member declarator with a const between pointer stars
+  (`const char *const *paths;`).
+- The class-name is declared at its class-head, before the base clause (the CRTP
+  shape `class timed_mutex : ..., public __timed_mutex_impl<timed_mutex>`); a
+  member body of a class nested in — or instantiated while defining — an
+  enclosing class parses when the outermost definition completes
+  ([class.mem]/6 complete-class context).
+- The lane counts location-less `cir error:` lines as errors (24 units had read
+  as "0 errors").
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)

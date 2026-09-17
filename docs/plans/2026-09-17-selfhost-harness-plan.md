@@ -129,6 +129,19 @@ inside the lane.
   green. The subshell now exits with madc's rc, and a unit with diagnostics
   and exit 0 is rc 99 / `INCO`, never a PASS. An evidence run can be blind:
   a tally that is too good after a change is a harness signal first.
+- **A `cir error:` line has no location.** The per-unit error count and the
+  shape tally anchored on `: error: `; a tsubst bail prints `cir error: ...`
+  bare, so 24 failing units read "0 errors" with an empty first-error column
+  and the second-largest family was invisible to the ranking. Both greps
+  accept either form (490c08935).
+- **`remote_build.sh ... | tail` reports tail's exit status.** Three builds in
+  a row "succeeded" with `build madc rc=2` in the stage summary while the
+  container kept the previous binary — the reducers "still failed" against
+  a stale build. Read the stage summary lines, never the pipeline's rc.
+- **A lane ratchet freed by one fix may read green for the wrong reason.**
+  The 12 channel units freed by the pack-expansion commit had the tuple
+  shape as their FIRST error only; a reducer per fix (with its g++/clang++
+  oracle) is what proves the fix, the lane only ranks what is left.
 
 ## 6. Not in scope
 
