@@ -7,7 +7,8 @@
 # unit green delete its line in the same commit.
 #
 # Seeded 2026-09-17 from the lane's third run on the container, at c9c42c084
-# (thread_local landed): 47 of 172 units pass; the 125 below fail.
+# (thread_local landed): 47 of 172 units passed. Shrunk as fixes land —
+# run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp.
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -83,14 +84,12 @@ include/ns_common.h
 include/token_arena.h
 include/tokens.h
 lexer.cpp
-libc_signatures.cpp
 madc.cpp
 madc_c_api.cpp
 madc_capabilities.cpp
 madc_channel_object.cpp
 madc_channel_stream.cpp
 madc_cir.cpp
-madc_config.cpp
 madc_config_file.cpp
 madc_datachannel.cpp
 madc_error.cpp
