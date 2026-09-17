@@ -45104,13 +45104,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( tn && tn->id() == TokenID::tkOpBrk )
 		    {
 			TokenBase *inner = pgm.nextToken();
-			if ( inner && inner->id() == TokenID::tkStar )
+			if ( inner && (inner->id() == TokenID::tkStar
+				    || pgm.member_pointer_declarator_ahead(inner)) )
 			{
 			    // Typed function-pointer member, e.g. `void (*callback)(void *)`
-			    // or `char *(*resolver)(int)`.
+			    // or `char *(*resolver)(int)` — or a pointer-to-MEMBER-function
+			    // member `void (_Undefined_class::*_M_member_pointer)();`
+			    // (libstdc++ std_function.h:80, the union std::function sizes
+			    // its buffer from): the 16-byte {ptr, adj} pair.
 			    std::string mname;
-			    member_dd = pgm.parse_fnptr_member_tail(*member_dd,
-								    mname, inner);
+			    if ( inner->id() == TokenID::tkStar )
+				member_dd = pgm.parse_fnptr_member_tail(*member_dd,
+									mname, inner);
+			    else
+				member_dd = pgm.parse_member_fnptr_declarator(*member_dd,
+									     mname, inner);
 
 			    dds->addMember(mname, *member_dd, 1);
 			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
@@ -49332,14 +49340,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    TokenBase *open = pgm.nextToken();
 	    TokenBase *inner = pgm.nextToken();
-	    if ( inner && inner->id() == TokenID::tkStar )
+	    if ( inner && (inner->id() == TokenID::tkStar
+			|| pgm.member_pointer_declarator_ahead(inner)) )
 	    {
 		// Same tail as the struct lanes — the ONE owner
 		// (parse_fnptr_member_tail) also consumes the pointer's own
-		// cv-qualifiers (`(*const __clone)`, function.h:500).
+		// cv-qualifiers (`(*const __clone)`, function.h:500); the
+		// pointer-to-member-function form (`R (C::*m)(A) const`) goes
+		// through its owner (parse_member_fnptr_declarator) to the same tail.
 		std::string mname;
-		cmember_dd = pgm.parse_fnptr_member_tail(*cmember_dd, mname,
-							 inner);
+		if ( inner->id() == TokenID::tkStar )
+		    cmember_dd = pgm.parse_fnptr_member_tail(*cmember_dd, mname,
+							     inner);
+		else
+		    cmember_dd = pgm.parse_member_fnptr_declarator(*cmember_dd,
+								  mname, inner);
 
 		ddc->addMember(mname, *cmember_dd, 1);
 		if ( access_flags && !ddc->member_access.empty() )
@@ -51660,6 +51675,21 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	pgm.nextToken(); // consume '('
 	TokenBase *star = pgm.nextToken();
+	// Pointer-to-member-function typedef `typedef int (Widget::*binop_t)(int)
+	// const;` — the one declarator owner the member/parameter/variable arms
+	// use; the alias denotes the 16-byte {ptr, adj} pair.
+	if ( star && pgm.member_pointer_declarator_ahead(star) )
+	{
+	    std::string mp_alias;
+	    DataDef *mp_dd = pgm.parse_member_fnptr_declarator(*base_dd, mp_alias, star);
+	    TokenDataType *mp_tdt = new TokenDataType(mp_alias.c_str(), *mp_dd);
+	    if ( pgm.class_scope_stack.empty() )
+		pgm.register_scoped_typedef(mp_alias, mp_tdt);
+	    DBG(std::cout << "TokenTYPEDEF::parse() member-fn-ptr: " << mp_alias << std::endl);
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		pgm.nextToken();
+	    return record_typedef(mp_alias, mp_dd, mp_tdt);
+	}
 	bool paren_fn_form = false;
 	if ( star && star->id() != TokenID::tkMul
 	  && star->type() == TokenType::ttIdentifier )
@@ -51868,6 +51898,88 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
     for ( size_t i = dims.size(); i-- > 0; )
 	arr = new DataDefCArray(*arr, arr->name, dims[i], dim_exprs[i]);
     return getPointerType(arr);
+}
+
+// Does the stream at `first` (the token just after a declarator's `(`) spell
+// a pointer-to-member declarator head `C :: [D ::]* *`? Pure lookahead: tokens[0]
+// must be the first `::`, and the chain must end in `*` right after a `::`.
+bool Program::member_pointer_declarator_ahead(TokenBase *first) const
+{
+    if ( !first || !is_contextual_identifier_token(first) )
+	return false;
+    size_t i = 0;
+    for ( ;; )
+    {
+	if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkNS )
+	    return false;
+	if ( i + 1 >= tokens.size() || !tokens[i + 1] )
+	    return false;
+	if ( tokens[i + 1]->id() == TokenID::tkStar || tokens[i + 1]->id() == TokenID::tkMul )
+	    return true;
+	if ( !is_contextual_identifier_token(tokens[i + 1]) )
+	    return false;
+	i += 2;
+    }
+}
+
+// Pointer-to-MEMBER-FUNCTION declarator: `RET ( C::*name ) ( params ) [const]
+// [noexcept]` after the caller consumed `RET (` and holds the first name token
+// of the owner chain in `owner_first` (member_pointer_declarator_ahead said
+// yes). Consumes the owner chain and the `*`, then the SAME `name ) ( params )`
+// tail every fn-ptr declarator shares (parse_fnptr_member_tail — the one
+// owner), then the trailing cv/noexcept of the member signature. Returns the
+// DataDefMemberFnPtr (owner resolved best-effort; a class nested in a template
+// may not be in struct_map by simple name, and the type lowers to the same
+// 16-byte pair regardless). Used by the struct member, class member, parameter,
+// variable and typedef declarator arms.
+DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
+							  std::string &mname,
+							  TokenBase *owner_first)
+{
+    std::string owner_name = contextual_identifier_name(owner_first);
+    TokenBase *ns_tok = nextToken();	// the first '::'
+    while ( peekToken() && is_contextual_identifier_token(peekToken()) )
+    {
+	owner_name += "::" + contextual_identifier_name(nextToken());
+	ns_tok = nextToken();		// the next '::'
+	if ( !ns_tok || ns_tok->id() != TokenID::tkNS )
+	    Throw(ns_tok ? ns_tok : owner_first)
+		<< "Expecting '::' in pointer-to-member declarator" << flush;
+    }
+    TokenBase *star = nextToken();
+    if ( !star || (star->id() != TokenID::tkStar && star->id() != TokenID::tkMul) )
+	Throw(star ? star : owner_first)
+	    << "Expecting '*' after '" << owner_name << "::' in pointer-to-member declarator" << flush;
+    DataDef *owner = NULL;
+    {
+	std::vector<std::string> parts;
+	size_t from = 0;
+	for ( size_t k = owner_name.find("::"); ; k = owner_name.find("::", from) )
+	{
+	    parts.push_back(owner_name.substr(from, k == std::string::npos ? std::string::npos : k - from));
+	    if ( k == std::string::npos ) break;
+	    from = k + 2;
+	}
+	owner = resolve_qualified_class_owner(parts);
+	if ( !owner )
+	{
+	    datadef_map_citer omi = struct_map.find(owner_name);
+	    if ( omi != struct_map.end() )
+		owner = omi->second;
+	}
+    }
+    DataDefFPTR *fp = parse_fnptr_member_tail(returns, mname, star);
+    bool const_method = false;
+    while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+			 || peekToken()->id() == TokenID::tkVOLATILE
+			 || (peekToken()->id() == TokenID::tkCPPKEYWORD
+			     && contextual_identifier_name(peekToken()) == "noexcept")) )
+    {
+	if ( peekToken()->id() == TokenID::tkCONST )
+	    const_method = true;
+	nextToken();
+    }
+    return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);
 }
 
 // Function-pointer MEMBER declarator tail: `name ) ( params )` after the
@@ -66584,6 +66696,18 @@ grabnt:
 	if ( nt->id() == TokenID::tkOpBrk )
 	{
 	    TokenBase *inner = nextToken();
+	    if ( inner && member_pointer_declarator_ahead(inner) )
+	    {
+		// Pointer-to-member-function PARAMETER `bool (impl::*fn)(const
+		// std::string &, ...)` (madc_program.cpp:2857) — the same owner
+		// the member/variable/typedef declarators use.
+		std::string mp_name;
+		param_dd = parse_member_fnptr_declarator(*param_dd, mp_name, inner);
+		pid = mp_name;
+		rtype = RefType::rtValue;
+		nt = nextToken();
+		goto finish_param_declarator;
+	    }
 	    if ( inner && inner->id() == TokenID::tkStar )
 	    {
 		nt = nextToken();
@@ -66957,8 +67081,14 @@ paramdecl:
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
-		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL )
+		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL
+		       || param_dd->is_member_pointer() )
 		{
+		    // A function-pointer or pointer-to-MEMBER parameter (`bool
+		    // (impl::*fn)(...)`, `int C::*pm`) IS its declarator type —
+		    // the base type is only the member's/return type. The
+		    // by-value fallback below would record `int` for a 16-byte
+		    // member-function pointer (sizeof(fn) read 4).
 		    func->parameters.push_back(param_dd);
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
@@ -68907,7 +69037,19 @@ fnptr_decl_arm_head:
     {
 	TokenBase *open = nextToken(); // consume '('
 	TokenBase *inner = nextToken();
-	if ( inner && is_contextual_identifier_token(inner) )
+	if ( inner && member_pointer_declarator_ahead(inner) )
+	{
+	    // Pointer-to-member-function VARIABLE `int (Widget::*fn)(int) const
+	    // = &Widget::thrice;` — the declarator owner shared with the member,
+	    // parameter and typedef arms; the initializer/terminator tail below
+	    // treats the 16-byte pair as any other scalar-like declared type.
+	    std::string mp_name;
+	    decl_type = parse_member_fnptr_declarator(*decl_type, mp_name, inner);
+	    id = mp_name;
+	    have_decl_id = true;
+	    nt = peekToken();
+	}
+	else if ( inner && is_contextual_identifier_token(inner) )
 	{
 	    // Plain parenthesized declarator: `int *(p[25]);`
 	    id = contextual_identifier_name(inner);

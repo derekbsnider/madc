@@ -1444,6 +1444,8 @@ public:
 	// Tag reference + struct_map registration for the late-struct sweep
 	// (Pass 1.97) — the #68 use_builtin_va_list pattern.
 	node_t int_complex_struct_ref(DataDefCOMPLEX *cdd);
+	DataDefSTRUCT *memfnptr_struct_dd();	// the one C struct behind every DataDefMemberFnPtr (created + registered once)
+	node_t memfnptr_struct_ref();	// the one C struct behind every DataDefMemberFnPtr
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);

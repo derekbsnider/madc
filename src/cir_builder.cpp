@@ -4687,6 +4687,16 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		return;
 	}
 
+	// C++ pointer-to-member-function: the Itanium {ptr, adj} pair, ONE C
+	// struct for every signature (the signature lives on the madc type,
+	// DataDefMemberFnPtr; the C layout is the same 16 bytes). Tag reference
+	// here; memfnptr_struct_ref registers the definition for the late
+	// struct sweep exactly as the lowered-complex struct is.
+	if (dd->is_member_function_pointer()) {
+		append(lst, memfnptr_struct_ref());
+		return;
+	}
+
 	// C99 _Complex: emit base-type spec(s) followed by N_COMPLEX.
 	// c2mir natively supports _Complex (spec list e.g. [N_DOUBLE, N_COMPLEX]).
 	// DataDefCOMPLEX IS-A DataDefSTRUCT, so callers must route it here rather
@@ -10363,6 +10373,35 @@ node_t CirBuilder::int_complex_struct_ref(DataDefCOMPLEX *cdd)
 	return node2(N_STRUCT, id(cdd->name.c_str()), ignore());
 }
 
+// Tag reference for the C++ pointer-to-member-function pair — and the single
+// registration point that puts `struct __madc_memfnptr { void *ptr; long adj; }`
+// into struct_map so the late-struct sweep emits it once (the
+// int_complex_struct_ref model). Itanium ABI layout: ptr = the member's
+// address, or 1 + the vtable byte offset for a virtual member (odd = virtual);
+// adj = the this-adjustment to the member's class subobject. Every
+// DataDefMemberFnPtr, whatever its signature, spells this one C type.
+DataDefSTRUCT *CirBuilder::memfnptr_struct_dd()
+{
+	static const char *tag = "__madc_memfnptr";
+	if (!m_prog) return NULL;
+	datadef_map_citer have = m_prog->struct_map.find(tag);
+	if (have != m_prog->struct_map.end())
+		return dynamic_cast<DataDefSTRUCT *>(have->second);
+	DataDefSTRUCT *sdd = new DataDefSTRUCT(tag, 0);
+	sdd->addMember("ptr", ddVOIDptr, 1);
+	sdd->addMember("adj", ddINT64, 1);
+	sdd->is_complete = true;
+	sdd->finalize();
+	m_prog->struct_map.set(tag, sdd);
+	return sdd;
+}
+
+node_t CirBuilder::memfnptr_struct_ref()
+{
+	DataDefSTRUCT *sdd = memfnptr_struct_dd();
+	return node2(N_STRUCT, id(sdd ? sdd->name.c_str() : "__madc_memfnptr"), ignore());
+}
+
 static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
 
 // Emit the Itanium type_info object(s) for a polymorphic user class (S5b):
@@ -11121,6 +11160,17 @@ void CirBuilder::emit_class_member_deps(
 			continue;
 		std::vector<carray_dim_t> dims;
 		DataDef *base = peel_carray_dims(dd, dims);
+		// A pointer-to-member-function member is BY VALUE a
+		// `struct __madc_memfnptr` (append_type_specs spells it so):
+		// c2mir needs that definition before the owner, exactly like a
+		// by-value plain struct member below (std::function's
+		// _Nocopy_types union is the case).
+		if (base && base->is_member_function_pointer()) {
+			if (DataDefSTRUCT *mp = memfnptr_struct_dd())
+				emit_struct_with_deps(mp, top_list, emitted_structs,
+						      emitted_classes, emitting_classes);
+			continue;
+		}
 		DataDefCLASS *dep = as_user_class(base);
 		if (dep && dep != owner_class) {
 			emit_class_struct_with_deps(dep, top_list, emitted_structs,

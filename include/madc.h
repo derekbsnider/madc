@@ -6284,6 +6284,14 @@ public:
     // an anonymous union).
     DataDefFPTR *parse_fnptr_member_tail(DataDef &returns, std::string &mname,
 					 TokenBase *open_tok);
+    // Pointer-to-member-function declarators — ONE owner for the
+    // `( C::*name ) ( params ) [const]` shape in the struct member, class
+    // member, parameter, variable and typedef arms (defined beside
+    // parse_fnptr_member_tail, whose `name ) ( params )` tail it reuses).
+    bool member_pointer_declarator_ahead(TokenBase *first) const;
+    DataDefMemberFnPtr *parse_member_fnptr_declarator(DataDef &returns,
+						      std::string &mname,
+						      TokenBase *owner_first);
     TokenBase *parseExpression(TokenBase *, bool conditional=false,
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,

@@ -618,6 +618,9 @@ public:
     {
 	return false;
     }
+    // True only for DataDefMemberFnPtr: a C++ pointer-to-member-function
+    // (`R (C::*)(Args)`, the 16-byte {ptr, adj} pair).
+    virtual bool is_member_function_pointer() const { return false; }
     // True only for DataDefMemberPtr: a C++ pointer-to-member (`T C::*`).
     // Lowered as a scalar (a ptrdiff_t offset for a data member), but distinct
     // from an ordinary pointer so the `.*`/`->*` operators (Stage 2) and
@@ -1855,6 +1858,32 @@ public:
     virtual bool is_numeric() const override { return true; }
     virtual bool is_integer() const override { return true; }
     virtual bool is_member_pointer() const override { return true; }
+};
+
+// C++ pointer-to-MEMBER-FUNCTION `R (C::*)(Args)`. Itanium ABI: a 16-byte
+// `{ptr, adj}` pair — `ptr` the function's address for a non-virtual member,
+// or 1 + the vtable byte offset of the slot for a virtual one (odd = virtual),
+// `adj` the this-adjustment to the member's class subobject. madc lowers it to
+// exactly that struct (`struct __madc_memfnptr`), dispatching a virtual
+// member through the receiver's __vptr in its own vtable model; sizeof and
+// alignof are the ABI's (16, 8) — libstdc++'s std::function sizes its local
+// buffer from a union holding one (`_Nocopy_types`). `owner_class` is `C`
+// (NULL while unresolved at parse), `target` the member's signature.
+class DataDefMemberFnPtr : public DataDef
+{
+public:
+    DataDef *owner_class;
+    std::string owner_name;
+    FuncDef *target;
+    bool is_const_method;
+    DataDefMemberFnPtr(DataDef *owner, const std::string &owner_nm, FuncDef *fd,
+		       bool const_method)
+	: DataDef("memfnptr " + owner_nm, 16, DataType::dtRESERVED),
+	  owner_class(owner), owner_name(owner_nm), target(fd),
+	  is_const_method(const_method) {}
+    virtual bool is_member_pointer() const override { return true; }
+    virtual bool is_member_function_pointer() const override { return true; }
+    virtual size_t alignment() const override { return 8; }
 };
 
 class DataDefCArray : public DataDef
