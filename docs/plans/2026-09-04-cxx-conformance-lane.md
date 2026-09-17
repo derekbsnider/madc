@@ -18,6 +18,38 @@ So: a MEASURED lane and a ROADMAP goal — never a push or release gate.
 Every C++ claim madc makes rests on tests madc's own authors wrote. Nothing
 third-party asks the C++11 question independently.
 
+## AMENDMENT 2026-09-17 — compile-clean FIRST, not `dg-do run` first
+
+This plan scoped the lane to `dg-do run` (~2330) and deferred compile-only tests
+to "a later phase". That ordering is backwards for the job the owner gave the
+lane on 2026-09-17: *"start bringing in the relevant 2.12 tests from
+/workspace/gcc rather than pounding away like we have been."*
+
+madc's failures are **parse** failures. Of the 110 `g++.dg/cpp0x/alias-decl*.C`
+tests, **zero** are `dg-do run` and 98 are `dg-do compile` — the run filter
+imports NONE of the coverage for the live frontier.
+
+In-scope set, measured 2026-09-17:
+
+| Set | Files |
+|---|---|
+| g++.dg `dg-do compile` | 11871 |
+| ...carrying no dg-error / dg-bogus / dg-warning / dg-message (must compile CLEAN) | 6999 |
+| ...in `cpp0x/` | 1565 |
+| ...in `template/` | 385 |
+| **first-slice scope (cpp0x + template)** | **1950** |
+
+The oracle is cheaper too: these must compile clean, so `g++ -fsyntax-only` is
+the whole check — no execution, no linking, no `dg-output`. It is also the shape
+`scripts/selfhost_lane.sh` already drives (`--emit=c11`).
+
+Diagnostic tests (`dg-error`) stay a later phase, and for the stated reason:
+madc must produce the *error*, not merely fail.
+
+**Delivered 2026-09-17:** `run_gcc_testsuite.py --suite gxx` (f19d81f1c,
+c019e7ea4), `scripts/gxx_lane.sh` + baseline + ledger row (ba9af11d5).
+First measurement: **1169/1950 (60%)**, 781 baselined, 2 segfaults.
+
 ## The suite: gcc's g++ testsuite (already on disk at /workspace/gcc)
 
 `gcc/testsuite/g++.dg` and `g++.old-deja` are DejaGnu suites; each runnable
