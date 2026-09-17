@@ -59,7 +59,11 @@ record() {
 	# file, visibly, not by omission).
 	promote=$(awk -F'\t' -v l="$lane" '$1==l{print $2}' "$LEDGER")
 	[ -z "$promote" ] && promote=yes
-	grep -v -P "^$lane\t" "$LEDGER" > "$LEDGER.tmp" || true
+	# Drop any existing row for this lane by EXACT FIELD compare. A regex
+	# match here silently fails on a lane name carrying a metacharacter
+	# (gxx-c++11: PCRE reads "c++" as a quantifier), leaving the old row
+	# behind and appending a DUPLICATE the readers then disagree over.
+	awk -F'\t' -v l="$lane" '$1 != l' "$LEDGER" > "$LEDGER.tmp" || true
 	printf '%s\t%s\t%s\t%s\t%s\n' \
 		"$lane" "$promote" "$sha" "$date" "$tally" >> "$LEDGER.tmp"
 	mv "$LEDGER.tmp" "$LEDGER"
