@@ -479,7 +479,6 @@ g++.dg/cpp0x/pr32252.C
 g++.dg/cpp0x/pr47476.C
 g++.dg/cpp0x/pr52742.C
 g++.dg/cpp0x/pr52744.C
-g++.dg/cpp0x/pr54318.C
 g++.dg/cpp0x/pr56868.C
 g++.dg/cpp0x/pr58781.C
 g++.dg/cpp0x/pr59816.C

@@ -9259,9 +9259,11 @@ struct ClassInstInFlightGuard {
     Program &pgm;
     std::string key;
     bool inserted;
-    ClassInstInFlightGuard(Program &p, const std::string &k)
+    ClassInstInFlightGuard(Program &p, const std::string &k,
+			   uint32_t template_id)
 	: pgm(p), key(k), inserted(p.class_inst_in_progress.insert(k).second)
     {
+	pgm.class_inst_template_ids.push_back(template_id);
 	// The body's own declarative region starts at this compound depth: a
 	// template-id argument defers only there, never inside a method body
 	// parsed eagerly within it (Program::template_arg_deferral_context).
@@ -9270,6 +9272,7 @@ struct ClassInstInFlightGuard {
     ~ClassInstInFlightGuard()
     {
 	pgm.class_inst_compound_bases.pop_back();
+	pgm.class_inst_template_ids.pop_back();
 	if ( inserted )
 	    pgm.class_inst_in_progress.erase(key);
     }
@@ -9748,6 +9751,31 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	++pi;
     }
 
+    // [temp.inst]/1: after the template arguments have been parsed once, the
+    // live stream is positioned immediately after `>`. A following pointer or
+    // reference declarator (after optional cv-qualifiers) does not require the
+    // class specialization complete. When it names the SAME template whose
+    // body is in flight, keep the use on the parsed-argument incomplete-shell
+    // path below: it owns the canonical specialization key and a later demand
+    // can replay it. In particular, `A<T*> &` inside A<T> declares A<T*>
+    // without recursively instantiating its body. Unrelated indirect types
+    // retain their established eager path until every dereference/member-read
+    // demand site completes concrete shells (libstdc++ map relies on that).
+    size_t suffix_index = 0;
+    while ( suffix_index < tokens.size()
+	 && is_cv_qualifier_token(tokens[suffix_index]) )
+	++suffix_index;
+    TokenBase *type_suffix = suffix_index < tokens.size()
+	? tokens[suffix_index] : NULL;
+    bool same_template_in_flight =
+	std::find(class_inst_template_ids.begin(),
+		  class_inst_template_ids.end(), tname_id)
+	    != class_inst_template_ids.end();
+    bool indirect_type_use = same_template_in_flight && type_suffix
+	&& (type_suffix->id() == TokenID::tkMul
+	 || type_suffix->id() == TokenID::tkBand
+	 || type_suffix->id() == TokenID::tkLand);
+
     for ( size_t i = 0; i < arg_spellings.size(); ++i )
 	mangled += "_" + canonical_arg_key_fragment(arg_tokens_by_slot[i],
 						    arg_spellings[i]);
@@ -10063,7 +10091,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		     && pack_subst.empty() && token_pack_subst.empty()
 		     && all_type_args;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || placeholder_arg || recursive_opaque || deferred_arg )
+      || placeholder_arg || recursive_opaque || deferred_arg
+      || indirect_type_use )
     {
 	++_class_inst_opaque;
 	{
@@ -10262,7 +10291,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    }
 	    TokenDataType *served;
 	    {
-		ClassInstInFlightGuard in_flight(*this, registered_mangled);
+		ClassInstInFlightGuard in_flight(*this, registered_mangled,
+					       tname_id);
 		TemplateArgReplayScope body_ctx(*this);	// a body is a fresh type-id context
 		NamespaceScope namespace_scope(*this, td.defining_namespace);
 		served = instantiate_basic_class_pattern(*this, binding);
@@ -11319,7 +11349,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // serve: mark it so a self-referential re-entry (base clause naming this
     // very specialization as a template argument) is served the incomplete
     // shell by the cache-hit branch instead of re-instantiating forever.
-    ClassInstInFlightGuard reparse_in_flight(*this, registered_mangled);
+    ClassInstInFlightGuard reparse_in_flight(*this, registered_mangled,
+					     tname_id);
     TemplateArgReplayScope body_ctx(*this);	// a body is a fresh type-id context
 
     ClassParseCensusScope class_parse_scope(*this, class_profile_identity,

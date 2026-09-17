@@ -1,0 +1,18 @@
+#include <cstdio>
+
+// [temp.inst]/1: naming a class-template specialization through a reference
+// does not require that specialization to be complete. Instantiating A<char>
+// must therefore declare, but not instantiate, A<char *> for m's parameter.
+template <typename T> class A {
+	T value;
+public:
+	A() {}
+	void m(A<T *> const &);
+};
+
+int main()
+{
+	A<char> value;
+	printf("non-complete reference: ok\n");
+	return 0;
+}

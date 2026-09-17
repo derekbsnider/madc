@@ -3870,6 +3870,11 @@ public:
     // instead of recursing. The re-parse lane going unguarded was a stack
     // overflow on `#include <string>` under -stdlib=libc++.
     std::set<std::string> class_inst_in_progress;
+    // Registry identities parallel to the keyed guards above. The exact key
+    // bounds one specialization; this stack identifies an indirect use of
+    // another specialization of the template whose body is being parsed.
+    // Per-Program parse state; no shared mutation.
+    std::vector<uint32_t> class_inst_template_ids;
     // The same bound for FUNCTION-template RETURN resolution. A return type
     // spelled `decltype(f(...))` resolves by re-entering the expression
     // parser, which can reach f again; keyed on name AND argument types so
