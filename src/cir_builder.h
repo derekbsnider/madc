@@ -1319,6 +1319,17 @@ public:
 	// body/instance lane serve ([temp.inst]).
 	bool extern_symbol_can_link(const std::string &sym);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
+	// The symbol a madc-emitted BODY defines (the definition, its lock-step
+	// prototype, the profiler self-address and the reachability mark all read
+	// this one rule): var_emit_name for a materialized library body,
+	// emit_symbol for a mangled file-scope user function. See the definition.
+	std::string func_def_symbol(class TokenFunc *tf, class FuncDef *fd) const;
+	// The symbol madc's OWN body for `v` defines: local_emit_name when the
+	// parser assigned one (a hoisted nested function, an arity-disambiguated
+	// method or operator, a user member's Itanium name), else var_emit_name.
+	// Never emit_symbol — that is an EXTERNAL definition's symbol. The body
+	// definition, the vtable slots and the thunks read THIS one rule.
+	std::string body_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
 	// madc-emitted body's non-default symbol (local_emit_name — hoisted nested
@@ -1660,6 +1671,17 @@ public:
 	// machinery madc does not synthesize — see is_externally_defined()).
 	std::string class_vtable_symbol(DataDefCLASS *cdd);
 	std::string class_typeinfo_symbol(DataDefCLASS *cdd);
+	// The function symbols cdd's madc-emitted vtable initializer will name
+	// (the final overrider of every function slot, under its BODY symbol)
+	// join referenced_funcs — run ahead of the referenced-only extern sweep
+	// (Pass 0.75), so a virtual member madc does not define in this TU is
+	// declared before the initializer that takes its address.
+	void note_vtable_slot_references(DataDefCLASS *cdd);
+	// A C++-presenting mode names a madc-defined class's vtable, RTTI and
+	// synthesized special members by their Itanium symbols (what a g++/clang
+	// TU references); the internal Cls__vtable / Cls___dtor spellings remain
+	// only where no C++ ABI is presented.
+	bool itanium_class_symbols(DataDefCLASS *cdd) const;
 	// `extern void *SYM[];` (deduped via m_rtti_data_externs), or NULL if already
 	// emitted. For referencing an externally-defined class's real _ZTVSt.../_ZTISt...
 	node_t data_extern_decl(const std::string &sym);
@@ -2094,6 +2116,15 @@ public:
 	// would destroy a vbase-carrying base's virtual bases twice.
 	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	// The SYNTHESIZED dtor bodies' symbols (no user FuncDef behind them):
+	// the plain one (D2 of a vbase-carrying class, the one D1 otherwise),
+	// the vbase-complete wrapper (D1), the deleting one (D0).
+	std::string class_synth_dtor_symbol(DataDefCLASS *cdd);
+	std::string class_synth_complete_dtor_symbol(DataDefCLASS *cdd);
+	std::string class_deleting_dtor_symbol(DataDefCLASS *cdd);
+	// The madc-EMITTED dtor body: the user-written one's own body symbol
+	// (never an external bind) when the class has it, else the synthesized.
+	std::string class_madc_dtor_body_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a
 	// dtor-carrying class destroys its N elements in REVERSE through this
@@ -2115,6 +2146,14 @@ public:
 	node_t synth_instr_exit_thunk();
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
+	// `void ALIAS(params) { TARGET(params); }`, linkonce — the Itanium
+	// base-object ctor/dtor (C2 / D2) of a vbase-less class, which g++ emits
+	// as an alias of the complete-object body; MIR has no symbol aliases.
+	// `fd` supplies a ctor's parameter list (__this + its own); NULL is the
+	// dtor shape, `struct Cls *__this` alone.
+	node_t base_object_alias_def(const std::string &alias,
+				     const std::string &target,
+				     DataDefCLASS *cdd, class FuncDef *fd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
 	// (object members and/or a base dtor) but has no user-written one.

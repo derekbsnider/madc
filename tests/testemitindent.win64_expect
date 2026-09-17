@@ -33,4 +33,4 @@ struct pt {
 	int x;
 };
 	struct pt q = { 5, 2 };
-	printf("%d\n", _Z4pickiiPi(q.x, q.y, v));
+	_Z6printfPKcz("%d\n", _Z4pickiiPi(q.x, q.y, v));

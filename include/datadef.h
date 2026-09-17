@@ -330,6 +330,15 @@ public:
     // top-up sees it fresh).
     bool	 canonical_swept;
     const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    // The class spelling the Itanium encoders receive: the canonical C++
+    // spelling when the parser recorded one (a namespaced, nested or
+    // template-instance class), else the bare name — which IS the spelling of
+    // a global-namespace class (no canonical spelling is recorded for one;
+    // "Foo" encodes to 3Foo either way). ONE accessor, so the user-member
+    // mint, the vtable/RTTI symbols and the synthesized special members can
+    // never disagree about which class they name.
+    const std::string &cpp_linkage_spelling() const
+    { return canonical_cpp_spelling_.empty() ? name : canonical_cpp_spelling_; }
     // Derived-key cache. Only StructRegistry's sweep fills it; every reader
     // must treat !has_despaced_canonical() as "derive it yourself", never as
     // "this dd has no key".
@@ -2156,5 +2165,41 @@ public:
     virtual bool is_integer()  const override { return true; }
     virtual DataDefFPTR *as_fptr_dd() override { return this; }
 };
+
+// The STRUCTURAL C++ spelling of a function-pointer type through any pointer
+// layers: `int (*)(int)` for the fn-ptr itself, `int (*)(int)*` for a pointer
+// to one (an array of fn-ptrs decayed — Itanium PPFiiE), empty when `dd` is
+// not a function pointer at its base. THE one owner of that peel: the
+// mangler's parameter spelling (FuncDef::mangle_param_spelling) and the
+// DataDef fallback (cpp_spelling_for_mangle) both read it, so a prototype
+// spelled `int (*[4])(int)` and a definition spelled through
+// `typedef int (*fptr4[4])(int)` mint ONE Itanium symbol. Every DataDefFPTR is
+// named "funcptr" and its pointer "funcptr*", so a name-based spelling of
+// either encodes a class that nothing exports.
+inline std::string fptr_structural_spelling(DataDef *dd)
+{
+    int stars = 0;
+    for ( DataDef *base = dd; base; ++stars )
+    {
+	if ( DataDefFPTR *fp = base->as_fptr_dd() )
+	    return fp->target ? fp->structural_spelling() + std::string(stars, '*')
+			      : std::string();
+	// A parameter's OUTERMOST array decays to a pointer to its element
+	// (C11 6.7.6.3p7): `int (*[4])(int)` is a pointer to a fn-ptr, PPFiiE.
+	// An inner array does not decay (pointer-to-array): not this spelling.
+	if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(base) )
+	{
+	    if ( base != dd || !ca->element_type )
+		return std::string();
+	    base = ca->element_type;
+	    continue;
+	}
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base);
+	if ( !ptr || !ptr->base_type )
+	    return std::string();
+	base = ptr->base_type;
+    }
+    return std::string();
+}
 
 #endif // __DATADEF_H

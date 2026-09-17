@@ -5,9 +5,10 @@
 > The free-function slice (the darwin blocker) is phase 1 of that; it is NOT the whole feature.
 > Retitled from "Free-Function…" accordingly.
 
-**Status:** DRAFT for owner review (2026-09-16). Design only — implementation is a
-separate focused session (owner sequencing: draft here, implement fresh).
-**Owner:** Claude (design) → fresh session (implementation).
+**Status:** APPROVED (owner 2026-09-16). IMPLEMENTATION IN PROGRESS on
+`feature/cpp-symbol-mangling-claude` — phase 0 (oracle harness + encoder completeness) DONE
+2026-09-16; phase 1 next. Progress: `docs/plans/2026-09-16-cpp-mangling-implementation-handoff.md`.
+**Owner:** Claude (design + implementation).
 **Motivating bug:** darwin-suite blocker #2 (see
 `docs/plans/2026-09-16-darwin-suite-blockers-handoff.md`).
 **Rules in force:** #1 (gcc/clang is canon), #2 (deepest layer), #7 (no hard-coding
@@ -112,6 +113,17 @@ targets which never reach this path). Both the definition and every call site ro
 through `call_emit_symbol`, so setting the FuncDef's symbol once is self-consistent across
 TUs (both sides mangle identically).
 
+**As built (phase 1) — linkage is DECLARATION-based, never "has a body".** A body test is
+unsound across a `--project`: TU A's prototype would call bare `foo` while TU B's body emits
+`_Z3fooi`. Linkage follows the declaration as C++ defines it: a declaration-only C++-linkage
+prototype binds `_Z…` (`storage_alias_name`), a definition emits it (`emit_symbol`,
+`CirBuilder::func_def_symbol`). Real C headers reach the parser under `extern "C"` (they test
+`__cplusplus`, which madc defines in every C++-presenting mode); the darwin umbrella is re-wrapped
+(`gen_darwin_prelude.sh`). One dialect accommodation, principled: a hand-written PROTOTYPE of a
+name madc's libc table knows (`libc_signatures`) whose return matches the table's class declares
+the C library's function and keeps C linkage — madc's built-in libc knowledge stands in for the
+header (`[dcl.link]/5` redeclaration). A DEFINITION with a libc name is the user's C++ function.
+
 **One encoder (Rule #7 / `no-parallel-implementations`).** The symbol is minted through the
 SAME Itanium encoder the `std::` mangled-direct matcher uses (`madc_mangle.cpp` core +
 `itanium_mangle_nested_sub`), never a second path — so a user `foo(int)` and `std::` functions
@@ -168,6 +180,18 @@ This is the defect (§5). Replace the blind reconciliation with:
 
 "Same signature" = same arity and same parameter DataDefs after decay (reuse the argument-type
 comparison the overload ranker already uses; do not hand-roll a new comparison — Rule #7).
+
+**As built (phase 1, 2026-09-16) — the identity is the Itanium signature itself.** The overload
+tracking's pre-parse identity (`peek_param_list_spelling`) is TEXTUAL: parameter names and default
+arguments ride in it and a typedef spells unlike its base, so `void f(int a);` … `void f(int b) {}`
+forks into two FuncDefs. It stays as the fast path; the truth is settled after the parameters are
+parsed by `fold_same_signature_overload` (parser.cpp): two set members whose Itanium symbols
+(`namespace_cpp_function_symbol` — the one encoder) are equal ARE one function. The newcomer folds
+into the prior — body-brings-definition repoints the prior's Variable and `funcdef_map` and the
+body emits under the shared symbol; both bodied → "redefinition of 'f'"; an `extern "C"` prior →
+the newcomer inherits C linkage and the bare name ([dcl.link]/5, the `.h`/`.cpp` idiom). The
+C-linkage clash error (§4.5) uses the same encoding as its identity, so typedefs desugar and
+top-level cv drops exactly as the ABI says. One identity, one encoder (Rule #7).
 
 ### 4.5 C-mode signature-clash diagnostic
 
@@ -258,6 +282,11 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
    nested classes, templates — `nm` the symbols) and make `itanium_*_sub` reproduce every one
    byte-identical. Close the encoder gaps (namespaced `N…E`, builtin codes, substitutions)
    here, before any emit-symbol is switched. This de-risks every later phase.
+   **DONE 2026-09-16** — 154-shape corpus, g++ == clang++ identical, set equality GREEN. The `_sub`
+   core was right on every substitution/nested-name shape; the gaps were operator arity and codes,
+   conversion functions, ctor C2/C5, internal linkage, a namespaced `_ZTS`, user function templates
+   and the zero-parameter `v` — all closed. The naive encoder family (the one with the `13madc::channel`
+   gap) had no production caller and is retired: ONE encoder.
 1. **Free functions** (unblocks the darwin gate) behind a `FEATURE_*` guard: Itanium emit
    symbol for a c++/madc, non-`extern "C"`, non-`main` free function; generalize where
    `c_linkage` is set; widen the global overload gate (§4.2) so plain user functions register;
@@ -268,6 +297,42 @@ accepts both constructs (rc=0). Reproduce locally without a Mac via
    `Class__method__oN` (`unique_overload_symbol`) to the Itanium `_sub` encoders; **retire
    `__oN` in c++/madc mode** (§2). Highest-volume change — every member call site moves.
    Targeted tests: member overloading, a madc `.o` linking against a g++ TU and vice versa.
+   **AS BUILT 2026-09-16.** ONE owner, the pre-existing libstdc++ binder `bind_declared_cpp_symbol`,
+   now with two arms keyed on `Program::class_owns_its_cpp_symbols(ddc)` (a class madc defines in a
+   C++-presenting mode: not `from_system_header`, not `extern template`): the USER arm puts the
+   member's Itanium name — the same recipe, extracted as `member_itanium_symbol` (linkage spelling
+   + `mangle_param_spelling` from the first user slot + varargs tail + the kind's `_sub` encoder,
+   conversions via `itanium_mangle_conversion_sub` with the captured conversion-type-id) — on
+   **`FuncDef::local_emit_name`**, the own-body field; the LIBRARY arm is the historical
+   declaration-only → `emit_symbol` bind, byte-for-byte. `emit_symbol` therefore still means
+   "bound to an EXTERNAL definition" to every one of the ~40 lowering readers (none changed); the
+   internal `Class__member__oN` spelling survives only as the registration KEY (forest rank
+   identity) and never reaches an object. The lowering gained ONE own-body resolver,
+   `CirBuilder::body_emit_symbol` (`local_emit_name ?: var_emit_name`, never `emit_symbol`), read by
+   `func_def_symbol`, the vtable slots and thunks (they had spelled `mv->name` raw). A class's
+   vtable / RTTI (`_ZTV/_ZTI/_ZTS` via the `_cpp` forms over `DataDef::cpp_linkage_spelling()` =
+   canonical spelling, else the bare name a global class has), its synthesized dtors (D1 / D2 for
+   a vbase class / D0, `class_synth_*_dtor_symbol`, `class_deleting_dtor_symbol`) and its static
+   data members (`class_static_member_itanium_symbol`, the pre-existing library path widened to
+   the same predicate) are Itanium too; `C2`/`D2` base-object twins are `linkonce` forwarding
+   bodies (`base_object_alias_def`, Pass 1.85 — MIR has no aliases), so a g++ TU can derive from a
+   madc class. Also fixed on the way: the deleting dtor was STRONG (multi-TU duplicate); the
+   virtual-call lowering reconstructed the slot name by stripping `Class__` off the call symbol
+   (`method_slot_name` reads the display name); `parseFunction`'s two FuncDef rebuilds dropped the
+   declaration's symbol identity; a nested class in a data-only struct spelled itself `Inner`
+   (`enclosing_aggregate_spelling` hand-off); the freeze body-locator keyed on the registration
+   name (`forest_body_loc`); vtable slot symbols of declared-only virtuals had no declaration before
+   the initializer (`note_vtable_slot_references`, Pass 0.748); the deferred-body registry is keyed
+   by registration name while the reachability fixpoint asks by emit symbol
+   (`deferred_lazy_body_key` over the `body_symbol_keys` index the user arm fills); the subscript
+   call composed `Class__operator[]` by hand (now `class_method_call_symbol`); a class-pattern
+   capture no longer mints (instances mint at registration). The common root of all of these: the
+   pre-(c) invariant "a madc body's symbol == its registration name", which libstdc++ binding never
+   needed to break (the library provides the bodies). Gate: `mangle_abi_gate.sh --interop`
+   (madc-defines/g++-uses and the reverse, oracle = the all-g++ build, plus an alien-symbol check
+   with a negative control) in fulltest. Known edges, recorded as KG gaps: vbase classes keep madc's
+   hidden `__madc_vb` ctor convention (no g++ ctor interop); twins keep the internal name;
+   arity-overloaded VIRTUALS share a name-keyed slot (pre-existing, silent — own session).
 3. **Namespace functions:** user-bodied namespace overloads off `__ns__oN` onto Itanium.
 4. **Forest serialization** parity for the generalized linkage flag + the new symbols.
 5. **Migration sweep + merge-wave battery** (§7, §8); darwin round-trip; add a madc↔g++

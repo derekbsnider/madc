@@ -2859,10 +2859,14 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     // the mangler encode a class `7funcptr` where the ABI wants `PF…E`, so
     // a declaration-only member taking a fn-ptr typedef param
     // (engine::register_cpp_callback's native_function) never bound its real
-    // library symbol. structural_spelling() is THE owner.
-    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
-	if ( fp->target )
-	    return fp->structural_spelling();
+    // library symbol. structural_spelling() is THE owner — through any pointer
+    // layers too: an array of function pointers decays to a POINTER to one
+    // (`int (*[4])(int)` → `int (**)(int)`, PPFiiE), whose DataDefPTR is named
+    // "funcptr*"; fptr_structural_spelling peels to the base and re-adds the
+    // stars, so the prototype and its typedef-spelled definition mint one symbol.
+    std::string fp_spelling = fptr_structural_spelling(dd);
+    if ( !fp_spelling.empty() )
+	return fp_spelling;
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
@@ -2935,8 +2939,141 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	    params.push_back(spelling);
 	}
     }
+    // A `static` function carries the internal-linkage L prefix (_ZL4s_fni).
     return itanium_mangle_nested_sub(namespace_qualifiers(ns_name),
-				     member_name, params);
+				     member_name, params,
+				     fd ? fd->internal_linkage : false);
+}
+
+// C++ SYMBOL MANGLING phase 1 — the overload set's identity TRUTH.
+//
+// The pre-parse identity (peek_param_list_spelling) is TEXTUAL: parameter
+// names and default arguments ride in it, a typedef spells unlike its base.
+// So a redeclaration can fork into a second FuncDef of the SAME signature
+// (`void f(int a);` … `void f(int b) {}`), and two same-signature members would
+// mint one Itanium symbol twice and tie every call as ambiguous. Once the
+// parameters are parsed the ABI settles it: two members whose Itanium symbols
+// (name + parameter encoding — the one type identity the ABI defines) are
+// equal ARE one function, and the newcomer folds into the prior:
+//   - both define a body: g++/clang "redefinition of 'f'" — an error;
+//   - the newcomer brings the body the prior only declared: the prior's
+//     Variable (the identity every earlier call bound) takes the newcomer's
+//     FuncDef, funcdef_map follows, and the body emits under the shared
+//     symbol (the newcomer Variable's storage_alias_name — the asm-label
+//     contract var_emit_name honours);
+//   - otherwise the newcomer is a redundant declaration.
+// In every folded case the newcomer leaves the set (one member per function)
+// and resolves to the shared symbol. C language linkage is inherited the same
+// way ([dcl.link]/5: a redeclaration without a linkage-spec of an extern "C"
+// function IS that function): the shared symbol is the bare name and the
+// newcomer records c_linkage. Internal-linkage (`static`) pairs are left
+// alone: TU-local twins are legal across units and a same-unit duplicate is
+// the backend's redefinition error. Returns true when the newcomer folded.
+static bool fold_same_signature_overload(Program &pgm,
+					 std::vector<Program::NamespaceFnOverload> &ovset,
+					 Variable *fresh_var, FuncDef *fresh_fd,
+					 const std::string &ns_name,
+					 const std::string &source_id,
+					 TokenBase *at)
+{
+    if ( !fresh_var || !fresh_fd || fresh_fd->internal_linkage )
+	return false;
+    std::string fresh_sig = namespace_cpp_function_symbol(ns_name, source_id, fresh_fd);
+    static const char *ovl_probe = ::getenv("MADC_OVL_PROBE");
+    for ( size_t i = 0; i < ovset.size(); ++i )
+    {
+	Variable *pv = ovset[i].var;
+	if ( !pv || pv == fresh_var || !pv->type )
+	    continue;
+	FuncDef *pfd = pv->type->as_funcdef_dd();
+	if ( !pfd || pfd->internal_linkage
+	  || pfd->parameters.size() != fresh_fd->parameters.size() )
+	    continue;
+	std::string prior_sig = namespace_cpp_function_symbol(ns_name, source_id, pfd);
+	if ( ovl_probe )
+	    fprintf(stderr, "[ovl] fold %s: fresh=%s prior(%s)=%s -> %s\n",
+		    source_id.c_str(), fresh_sig.c_str(), pv->name.c_str(),
+		    prior_sig.c_str(), prior_sig == fresh_sig ? "SAME" : "differ");
+	if ( prior_sig != fresh_sig )
+	    continue;
+	// One function. The symbol it lives under: bare for C linkage, else the
+	// prior's bound symbol, else the Itanium name both encode.
+	std::string sym = pfd->c_linkage ? source_id
+			: !pv->storage_alias_name.empty() ? pv->storage_alias_name
+			: !pfd->emit_symbol.empty() ? pfd->emit_symbol
+			: fresh_sig;
+	if ( !pfd->declaration_only && !fresh_fd->declaration_only )
+	{
+	    // Two BODIES with one ABI signature. A redefinition (g++ rejects it;
+	    // madc's standing policy lets the later definition stand — the
+	    // same-spelling reconcile) or, far more often, a TWIN: two C++ types
+	    // madc's type model does not distinguish — `long` and `long long`
+	    // are one ddINT64 on glibc targets, `_Float128` is long double — so
+	    // libc++'s abs(long)/abs(long long) both encode _Z3absl and glibc's
+	    // four iscanonical overloads collapse to three. The ranker already
+	    // tolerates twins (same_parameter_types); the emitter must not
+	    // define one symbol twice. The newcomer keeps its INTERNAL name (no
+	    // emit_symbol) and leaves the set — exactly the pre-mangling shape:
+	    // calls bind the first, both bodies still emit. A distinct
+	    // `long long` DataDef on every LP64 target (as C++ requires) is the
+	    // type-model change that would let both mint their own symbol.
+	    fresh_fd->emit_symbol.clear();
+	    for ( size_t j = 0; j < ovset.size(); ++j )
+		if ( ovset[j].var == fresh_var )
+		{
+		    ovset.erase(ovset.begin() + j);
+		    break;
+		}
+	    return true;
+	}
+	if ( pfd->c_linkage )
+	{
+	    // Inherited C linkage: the bare name, never the Itanium symbol the
+	    // mint above gave a would-be C++ function.
+	    fresh_fd->c_linkage = true;
+	    fresh_fd->emit_symbol.clear();
+	}
+	else
+	    fresh_fd->emit_symbol = sym;
+	fresh_var->storage_alias_name = sym;
+	if ( pfd->declaration_only && !fresh_fd->declaration_only )
+	{
+	    // The newcomer brings the body: the prior identity carries it.
+	    pv->type = fresh_fd;
+	    pgm.funcdef_map[pv->name] = fresh_fd;
+	}
+	for ( size_t j = 0; j < ovset.size(); ++j )
+	    if ( ovset[j].var == fresh_var )
+	    {
+		ovset.erase(ovset.begin() + j);
+		break;
+	    }
+	return true;
+    }
+    return false;
+}
+
+// C++ SYMBOL MANGLING phase 1 — the C library's own names. A hand-written
+// PROTOTYPE of a libc function with no header in scope (`extern int printf(const
+// char *, ...);` — the c-testsuite convention) declares the C library's function:
+// madc knows the name (libc_signatures, the knowledge the undeclared-call
+// fallback binds by) and the declared return agrees with the table's class, so
+// it carries C linkage and the bare import — as it does after <stdio.h> in g++
+// ([dcl.link]/5). Declaration-only ONLY: a DEFINITION with a libc name is the
+// user's own C++ function (the darwin `send(channel&, var&)` beside POSIX send).
+// The return check is defence in depth against a prototype that merely shares
+// a libc name; a mismatched PARAMETER list on a matching return is the user's
+// C prototype error, as it would be in gcc.
+static typespec_t dynamic_symbol_fallback_return_type(const std::string &name);
+static bool libc_prototype_return_matches(const std::string &name, FuncDef *fd)
+{
+    if ( !fd || madc_libc_return_class(name) == LibcRet::Unknown )
+	return false;
+    typespec_t want = dynamic_symbol_fallback_return_type(name);
+    DataDef &have = fd->return_value_type();
+    if ( want.dd )	// ptr_of(): the C function returns a pointer
+	return have.is_pointer() && want.ref == RefType::rtPointer;
+    return !have.is_pointer() && have.rawtype() == want.dt;
 }
 
 static std::string namespace_cpp_variable_symbol(const std::string &ns_name,
@@ -3658,15 +3795,29 @@ static std::string class_static_member_storage_name(DataDefCLASS *scope,
 // This is the integration point every OTHER entity category already had and
 // static data members did not — ctors/dtors/methods/operators bind via
 // bind_declared_cpp_symbol, namespace functions via namespace_cpp_function_symbol,
-// namespace variables via namespace_cpp_variable_symbol. Returns "" when the
-// class is madc's own, which keeps the invented name for the case where it is
-// harmless (madc emits the definition too).
-static std::string class_static_member_itanium_symbol(DataDefCLASS *scope,
+// namespace variables via namespace_cpp_variable_symbol.
+//
+// C++ symbol mangling, phase 2: a USER class's static data member is a symbol
+// too — g++ defines `int Foo::count` as _ZN3Foo5countE, and a g++ TU that
+// reads Foo::count imports exactly that — so in a C++-presenting mode madc's
+// own storage carries the ABI name as well (the invented Class__member
+// spelling stays the registration KEY). Returns "" only where no C++ ABI is
+// presented, which keeps the invented name for the case where it is harmless
+// (madc emits both the storage and every reference).
+static std::string class_static_member_itanium_symbol(const Program &pgm,
+						      DataDefCLASS *scope,
 						      const std::string &member)
 {
-    if ( !scope || !scope->from_system_header )
+    if ( !scope )
 	return std::string();
-    const std::string &cls = scope->canonical_cpp_spelling();
+    if ( !scope->from_system_header && !pgm.class_owns_its_cpp_symbols(scope) )
+	return std::string();
+    // A library class needs the spelling the library mangled with (its
+    // canonical one — an internal tag would name nothing the library
+    // exports); a user class's linkage spelling falls back to its bare name,
+    // which IS a global class's spelling.
+    const std::string &cls = scope->from_system_header
+	? scope->canonical_cpp_spelling() : scope->cpp_linkage_spelling();
     if ( cls.empty() )
 	return std::string();
     // split_scope_spelling() owns `::`-splitting that must not cut inside a
@@ -4948,6 +5099,70 @@ static DataDef *canonical_template_binding_dd(DataDef *dd)
 // `referent-identity&`, recursively (`int*&` -> "int32_t*&"), the rendering
 // rule template_type_arg_spelling already applies to a use-site reference
 // argument for the same reason.
+// C++ SYMBOL MANGLING phase 3c: the Itanium member-template specialization
+// symbol a USER class's member-function-template product defines
+// (_ZN3Box4convIiEET_S1_ — g++/clang's), so its body and every call agree and
+// a madc object links into a g++ program. Composed EXACTLY as the library
+// member-template CALL path does (CirBuilder::member_template_method_call):
+// the same encoder itanium_mangle_member_template_sub, the same $Tn placeholder
+// speller (itanium_substitute_tparams), over the pattern's OWN spellings
+// (template_param_spellings / template_return_spelling captured by
+// stamp_member_template_pattern) and the deduced concrete arguments. Empty =
+// keep the internal name: a library class (the CALL path already binds it), a
+// pack / non-type parameter (the encoder takes type arguments), a missing
+// spelling, an unencodable result.
+static std::string user_member_template_product_symbol(Program &pgm,
+	DataDefCLASS *owner, FuncDef *pattern,
+	const std::vector<DataDef *> &concrete_type_args)
+{
+    if ( !owner || !pattern || !pgm.cpp_symbol_mangling_enabled()
+      || !pgm.class_owns_its_cpp_symbols(owner)
+      || pattern->template_param_names.empty()
+      || pattern->template_return_spelling.empty()
+      || concrete_type_args.size() != pattern->template_param_names.size() )
+	return std::string();
+    std::vector<std::string> targs;
+    for ( size_t i = 0; i < concrete_type_args.size(); ++i )
+    {
+	if ( (i < pattern->template_param_is_pack.size()
+	      && pattern->template_param_is_pack[i])
+	  || (i < pattern->template_param_is_type.size()
+	      && !pattern->template_param_is_type[i]) )
+	    return std::string();
+	DataDef *a = concrete_type_args[i];
+	if ( !a )
+	    return std::string();
+	std::string sp = cpp_spelling_for_mangle(a, a->is_reference());
+	if ( sp.empty() )
+	    return std::string();
+	targs.push_back(sp);
+    }
+    std::vector<std::string> params;
+    // template_param_spellings holds the EXPLICIT declared parameters (no hidden
+    // __this) — skipped_template_function_signature_spellings captured them, the
+    // same set the library CALL path (member_template_method_call) spells.
+    for ( size_t i = 0; i < pattern->template_param_spellings.size(); ++i )
+	params.push_back(itanium_substitute_tparams(
+	    pattern->template_param_spellings[i], pattern->template_param_names));
+    std::string ret = itanium_substitute_tparams(
+	pattern->template_return_spelling, pattern->template_param_names);
+    std::string name = pattern->method_display_name;
+    if ( name.empty() )
+	return std::string();
+    std::string sym = itanium_mangle_member_template_sub(
+	owner->cpp_linkage_spelling(), name, targs, ret, params,
+	pattern->is_const_method);
+    if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
+	return std::string();
+    for ( size_t i = 2; i < sym.size(); ++i )
+    {
+	char c = sym[i];
+	if ( !isalnum((unsigned char)c) && c != '_' && c != '.' && c != '$' )
+	    return std::string();
+    }
+    return sym;
+}
+
 static std::string template_binding_identity_spelling(DataDef *dd)
 {
     if ( !dd )
@@ -19908,9 +20123,14 @@ std::string Program::peek_param_list_spelling()
     std::string spelling;
     while ( depth > 0 )
     {
-	TokenBase *t = nextToken();
+	// A LOOKAHEAD must not throw at end of input: nextToken() does, and on
+	// a truncated declaration that replaced the parameter-type diagnostic
+	// the real parse would raise (testparserecoverh) with "Unexpected end
+	// of data" — every file-scope function is peeked now.
+	TokenBase *t = peekToken();
 	if ( !t )
 	    break;
+	nextToken();
 	if ( t->id() == TokenID::tkOpBrk )
 	    depth++;
 	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
@@ -19935,6 +20155,30 @@ std::string Program::peek_param_list_spelling()
 	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->spelling()) )
 		tok_sp = al->name;
 	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
+    }
+    tokens.restore(peek_saved);
+    return spelling;
+}
+
+// The conversion-type-id after `operator` — every token up to the '(' that
+// opens the (empty) parameter list — spelled the way a parameter's captured
+// spelling is (overload_token_spelling, space-joined), then the cursor
+// REWOUND so the real type parse (resolve_declared_type_token, the declarator
+// stars, the reference) sees the stream untouched. Itanium's `cv<type>`
+// encodes this type (bind_declared_cpp_symbol's user arm).
+std::string Program::peek_conversion_type_spelling()
+{
+    TokenStream::Pos peek_saved = tokens.savepos();
+    std::string spelling;
+    for ( ;; )
+    {
+	TokenBase *t = peekToken();
+	if ( !t || t->id() == TokenID::tkOpBrk )
+	    break;
+	nextToken();
+	if ( !spelling.empty() )
+	    spelling += ' ';
+	spelling += overload_token_spelling(t);
     }
     tokens.restore(peek_saved);
     return spelling;
@@ -24445,6 +24689,32 @@ void Program::forest_restore_decls(CirFrozenForest &forest)
 		pf.fd   = mfd;
 		pf.mvar = mv;
 		forest_pending_funcs.push_back(pf);
+		// C++ SYMBOL MANGLING: a restored USER class member takes its
+		// Itanium own-body symbol from the ONE owner the live registrar
+		// uses (bind_declared_cpp_symbol's user arm -> local_emit_name +
+		// the symbol->registration-key record). The producer froze the
+		// body under that symbol (the grove holds _ZN7Counter3addEi); a
+		// consumer's calls must name it, never the registration key
+		// (forest_bind_gate [method]: Counter__add was an undefined
+		// import). The kind as the live registrar's switch derives it.
+		// A library class (from_system_header — the pack) is untouched:
+		// the internal-name island, re-bound by bind_external_class_symbols.
+		if ( class_owns_its_cpp_symbols(cdd) )
+		{
+		    const std::string &disp = mfd->method_display_name;
+		    CppSymKind kind = std::find(cdd->ctors.begin(), cdd->ctors.end(), mv)
+					!= cdd->ctors.end()
+			? CppSymKind::Ctor
+			: (!disp.empty() && disp[0] == '~') ? CppSymKind::Dtor
+			: mv->name.compare(0, cdd->name.size() + 15,
+					   cdd->name + "__operator_conv") == 0
+			? CppSymKind::Conversion : CppSymKind::Method;
+		    bool is_op = kind == CppSymKind::Method
+			      && disp.compare(0, 8, "operator") == 0;
+		    std::string conv = kind == CppSymKind::Conversion && disp.size() > 9
+				     ? disp.substr(9) : std::string();
+		    bind_declared_cpp_symbol(cdd, mv, kind, disp, is_op, conv);
+		}
 	    }
 	    DBG(std::cout << "forest_restore_decls: class " << name << " ("
 		<< cdd->members.size() << " members, " << cdd->bases.size()
@@ -24941,6 +25211,23 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	fv = addVariable(NULL, *pf.fd, pf.name);
 	Method *fm = new Method(*fv);
 	fv->data = (void *)fm;
+	// C++ SYMBOL MANGLING phase 4: a restored bodied function carrying its
+	// Itanium emit_symbol (a header's inline namespace function — std::fixed,
+	// std::isinf, std::__cxx11::stod — minted by parseDeclaration's arm at
+	// freeze time) is referenced by CALLERS under that symbol, while every
+	// forest-body structure (funcdef_map, the pack's forest_lazy map and
+	// emittable memo) is keyed by this registration name. The parse-time
+	// registrar records the translation beside its registration
+	// (body_symbol_keys); this registrar is the other and records it too.
+	if ( pf.fd->has_forest_body && !pf.fd->emit_symbol.empty() )
+	    body_symbol_keys[pf.fd->emit_symbol] = pf.name;
+	DBG(std::cout << "register_forest_func: " << pf.name
+		      << " emit=" << pf.fd->emit_symbol
+		      << " alias=" << fv->storage_alias_name
+		      << " forest_body=" << pf.fd->has_forest_body
+		      << " decl_only=" << pf.fd->declaration_only
+		      << " disp=" << pf.fd->function_display_name
+		      << " ns=" << pf.fd->namespace_name << std::endl);
 	// v26 piece (a): the fn's NAMED parameter Variables (live parity
 	// with parseFunction's param loop) — the scope a deferred free-fn
 	// body's re-parse resolves its parameters against
@@ -25842,6 +26129,24 @@ void Program::flush_forest_pending_globals()
 	    if ( !ok || (b.body_tokens.empty() && b.definition_tokens.empty()) )
 		continue;
 	    deferred_lazy_bodies[db.key] = b;
+	    // C++ SYMBOL MANGLING phase 4: a pack-restored bodied function that
+	    // carries its Itanium emit_symbol (a header's inline namespace
+	    // function — std::fixed, std::isinf, std::__cxx11::stod — minted
+	    // by parseDeclaration's arm at freeze time, restored above) is
+	    // reached by CALLERS under that symbol while this registry is
+	    // keyed by the registration name. The parse-time arm records the
+	    // same translation beside ITS registration (body_symbol_keys);
+	    // the restore path is the other registrar and must too — without
+	    // it pack_callee_homed / deferred_lazy_body_key miss and the
+	    // packed lane imports an undefined _ZSt5fixedRSt8ios_base.
+	    // Only a body that DEFINES its emit_symbol is translated (FuncDef::
+	    // body_defines_emit_symbol — the parse-time registrar's rule): a
+	    // restored library MEMBER's out-of-line body keeps the exported
+	    // symbol its declaration bound, and translating it would make a
+	    // caller's library import derive the header body.
+	    if ( FuncDef *rfd = dynamic_cast<FuncDef *>(v->type) )
+		if ( rfd->body_defines_emit_symbol(b.method) )
+		    body_symbol_keys[rfd->emit_symbol] = db.key;
 	    DBG(std::cout << "flush_forest_pending_globals: deferred body "
 		<< db.key << " (" << b.definition_tokens.size() << "+"
 		<< b.body_tokens.size() << " tokens"
@@ -27790,7 +28095,18 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     // lets dump_registered_names apply the identical rule after the parse, when
     // the depth counter is long back to zero.
     if ( _inst_depth > 0 )
+    {
 	var->flags |= vfINSTPRODUCT;
+	// A FUNCTION minted while instantiating is in the C++ vague-linkage
+	// set: any TU using the template mints an identical copy, so the CIR
+	// builder emits it linkonce (FuncDef::is_linkonce) — g++ binds every
+	// member of Box<int> W; a strong _ZN3BoxIiEC1Ev in two objects would
+	// collide at link. Stamped HERE, where every product registers: a
+	// class template's members are minted from the pattern without ever
+	// passing parseFunction (whose own grant covers bodies it parses).
+	if ( FuncDef *pfd = var->type ? var->type->as_funcdef_dd() : NULL )
+	    pfd->vague_linkage = true;
+    }
     if ( !current_namespace().empty() && parsing_extern_decl
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
@@ -30468,7 +30784,8 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( sym )
 	    avar = addFunction(aname,
 		dynamic_symbol_fallback_signature(aname),
-		(fVOIDFUNC)sym);
+		(fVOIDFUNC)sym, /*isMethod*/false,
+		/*builtin_registration*/true);
     }
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
@@ -36223,7 +36540,8 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
 		if ( sym )
 		    ctx_var = addFunction(dyn_name,
 			dynamic_symbol_fallback_signature(dyn_name),
-			(fVOIDFUNC)sym);
+			(fVOIDFUNC)sym, /*isMethod*/false,
+			/*builtin_registration*/true);
 	    }
 	}
 	if ( ctx_var && peekToken() && peekToken()->id() == TokenID::tkOpBrk
@@ -38594,7 +38912,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			{
 			    var = addFunction(fname,
 				dynamic_symbol_fallback_signature(fname),
-				(fVOIDFUNC)sym);
+				(fVOIDFUNC)sym, /*isMethod*/false,
+				/*builtin_registration*/true);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
 			else if ( !var && fname.compare(0, 10, "__builtin_") == 0 )
@@ -38619,7 +38938,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    {
 				var = addFunction(fname,
 				    dynamic_symbol_fallback_signature(twin),
-				    (fVOIDFUNC)tsym);
+				    (fVOIDFUNC)tsym, /*isMethod*/false,
+				    /*builtin_registration*/true);
 				if ( var )
 				    if ( FuncDef *bfd = dynamic_cast<FuncDef *>(var->type) )
 					bfd->emit_symbol = twin;
@@ -41600,7 +41920,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( sym )
 				var = addFunction(gname,
 				    dynamic_symbol_fallback_signature(gname),
-				    (fVOIDFUNC)sym);
+				    (fVOIDFUNC)sym, /*isMethod*/false,
+				    /*builtin_registration*/true);
 			}
 			if ( !var )
 			    Throw(name_tb) << "use of undeclared identifier '" << gname << '\'' << flush;
@@ -44377,9 +44698,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    bool saved_struct_class = pgm.parsing_cpp_struct_class;
 		    bool saved_union_class = pgm.parsing_cpp_union_class;
 		    bool saved_def_only = pgm.class_definition_only;
+		    // The nested class spells itself `Outer::Inner` ([class.nest]) —
+		    // this data-only enclosing aggregate pushes no class scope for
+		    // TokenCLASS::parse to read, so hand it the spelling directly.
+		    std::string saved_enclosing = pgm.enclosing_aggregate_spelling;
 		    pgm.parsing_cpp_struct_class = true;
 		    pgm.parsing_cpp_union_class = nested_union_kw;
 		    pgm.class_definition_only = true;
+		    pgm.enclosing_aggregate_spelling = dds->cpp_linkage_spelling();
 		    TokenCLASS class_parser;
 		    try { class_parser.parse(pgm); }
 		    catch(...)
@@ -44387,11 +44713,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			pgm.parsing_cpp_struct_class = saved_struct_class;
 			pgm.parsing_cpp_union_class = saved_union_class;
 			pgm.class_definition_only = saved_def_only;
+			pgm.enclosing_aggregate_spelling = saved_enclosing;
 			throw;
 		    }
 		    pgm.parsing_cpp_struct_class = saved_struct_class;
 		    pgm.parsing_cpp_union_class = saved_union_class;
 		    pgm.class_definition_only = saved_def_only;
+		    pgm.enclosing_aggregate_spelling = saved_enclosing;
 		    datadef_map_citer ndmi = pgm.struct_map.find(sname);
 		    if ( ndmi == pgm.struct_map.end() )
 			pgm.Throw(stag) << "Nested class '" << sname
@@ -45209,14 +45537,137 @@ bool Program::class_body_enum_definition_follows()
     return false;
 }
 
-// parse a class definition
-// Bind a bodyless C++ method / ctor / dtor / operator to its real Itanium symbol
-// (set FuncDef::emit_symbol — madc emits no body, the linker resolves it).
-// No-op unless the class has canonical C++ spelling and the parsed declaration is
-// a plain prototype. The symbol is generated from the parsed declaration.
+const char *Program::madc_dtor_body_flavor(DataDefCLASS *ddc) const
+{
+    std::vector<DataDefCLASS *> vbs;
+    std::set<DataDefCLASS *> seen;
+    ddc->collect_vbases(vbs, seen);
+    return vbs.empty() ? "D1" : "D2";
+}
+
+std::string Program::member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
+					   CppSymKind kind, const std::string &mname,
+					   bool is_operator,
+					   const std::string &conversion_type,
+					   const char *flavor)
+{
+    FuncDef *fd = mvar ? dynamic_cast<FuncDef *>(mvar->type) : NULL;
+    if ( !ddc || !fd )
+	return std::string();
+    // A signature whose spelling array is absent or misaligned (a restore or
+    // serve gap) must not mangle: the fabricated name drops parameters and can
+    // collide with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
+    if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+	return std::string();
+    // Parameter spellings, captured at parse time, excluding slot 0 only when
+    // it is the hidden __this. A static method has no hidden slot, so all of its
+    // parameters participate in the ABI name.
+    std::vector<std::string> psp;
+    size_t first_user_param = (mvar->flags & vfSTATIC) ? 0 : 1;
+    for ( size_t i = first_user_param;
+	  i < fd->param_cpp_spellings.size(); ++i )
+	psp.push_back(fd->mangle_param_spelling(i));
+    fd->spell_varargs_tail(psp);
+    const std::string &cls = ddc->cpp_linkage_spelling();
+    switch ( kind )
+    {
+    case CppSymKind::Ctor: return itanium_mangle_ctor_sub(cls, psp, flavor ? flavor : "C1");
+    case CppSymKind::Dtor: return itanium_mangle_dtor_sub(cls, flavor ? flavor : "D1");
+    case CppSymKind::Conversion:
+	return conversion_type.empty() ? std::string()
+	     : itanium_mangle_conversion_sub(cls, conversion_type,
+					     fd->is_const_method);
+    case CppSymKind::Method:
+	if ( is_operator )
+	{
+	    std::string op = (mname.compare(0, 8, "operator") == 0)
+			   ? mname.substr(8) : mname;
+	    return itanium_mangle_operator_sub(cls, op, psp, fd->is_const_method);
+	}
+	return itanium_mangle_member_sub(cls, mname, psp, fd->is_const_method);
+    }
+    return std::string();
+}
+
+// The user-class arm of bind_declared_cpp_symbol (its ONLY caller): the
+// member's Itanium name becomes the symbol of madc's own body.
+static void bind_user_member_symbol(Program &pgm, DataDefCLASS *ddc,
+				    Variable *mvar, FuncDef *fd, CppSymKind kind,
+				    const std::string &mname, bool is_operator,
+				    const std::string &conversion_type,
+				    bool probe_this)
+{
+    // Bound external already (an asm label — `void f() asm("g")` — is the
+    // symbol contract), a member template (its products mint through the
+    // function-template minter — phase 3), or `= default` / `= delete` (no
+    // body of its own): nothing to name.
+    if ( !fd->emit_symbol.empty() || fd->is_member_template
+      || fd->defaulted_or_deleted )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: %s\n", ddc->name.c_str(),
+		    mname.c_str(), !fd->emit_symbol.empty() ? "already-bound"
+		    : fd->is_member_template ? "member-template"
+		    : "defaulted-or-deleted");
+	return;
+    }
+    std::string sym = pgm.member_itanium_symbol(ddc, mvar, kind, mname,
+						is_operator, conversion_type,
+						kind == CppSymKind::Dtor
+						    ? pgm.madc_dtor_body_flavor(ddc)
+						    : NULL);
+    if ( sym.empty() )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: spelling-misalign %zu/%zu\n",
+		    ddc->name.c_str(), mname.c_str(),
+		    fd->param_cpp_spellings.size(), fd->parameters.size());
+	return;
+    }
+    // TWINS: two members whose Itanium signatures coincide because madc models
+    // their parameter types as one DataDef (`long` / `long long` on an LP64
+    // target — KG gap long_long_distinct_datadef_lp64) would define one symbol
+    // twice; the newcomer keeps its internal name, as a free-function twin
+    // does (fold_same_signature_overload).
+    for ( size_t i = 0; i < ddc->methods.size(); ++i )
+    {
+	Variable *ov = ddc->methods[i];
+	FuncDef *ofd = (ov && ov != mvar)
+		     ? dynamic_cast<FuncDef *>(ov->type) : NULL;
+	if ( ofd && ofd->local_emit_name == sym ) // allowed-exception: twin guard — compares an existing symbol, builds none
+	{
+	    if ( probe_this )
+		fprintf(stderr, "[bind] MISS %s::%s: twin of %s\n",
+			ddc->name.c_str(), mname.c_str(), ov->name.c_str());
+	    return;
+	}
+    }
+    fd->local_emit_name = sym;
+    // The symbol -> registration-name index the deferred-body readers use
+    // (Program::deferred_lazy_body_key): an out-of-line or header-deferred
+    // body of this member is registered under the Variable's name, while
+    // the reachability fixpoint asks for it by the emit symbol.
+    pgm.body_symbol_keys[sym] = mvar->name;
+    DBG(std::cout << "bind_declared_cpp_symbol(): " << ddc->cpp_linkage_spelling()
+	<< "::" << mname << " -> " << sym << " (own body)" << std::endl);
+    if ( probe_this )
+	fprintf(stderr, "[bind] %s::%s -> %s (own body, kind=%d declonly=%d)\n",
+		ddc->name.c_str(), mname.c_str(), sym.c_str(), (int)kind,
+		(int)fd->declaration_only);
+}
+
+// THE owner of a class member's C++ symbol — two arms (see madc.h):
+//  - a class madc defines: the Itanium name goes on local_emit_name, the
+//    symbol of madc's own body (bind_user_member_symbol above);
+//  - a library class: a bodyless C++ method / ctor / dtor / operator binds to
+//    its real exported Itanium symbol (FuncDef::emit_symbol — madc emits no
+//    body, the linker resolves it). No-op unless the class has a canonical
+//    C++ spelling and the parsed declaration is a plain prototype.
+// The symbol is generated from the parsed declaration (member_itanium_symbol).
 void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 				     CppSymKind kind, const std::string &mname,
-				     bool is_operator)
+				     bool is_operator,
+				     const std::string &conversion_type)
 {
     if ( !ddc || !mvar )
 	return;
@@ -45227,12 +45678,39 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
     bool probe_this = bind_probe && *bind_probe
 	&& ddc->name.find(bind_probe) != std::string::npos;
     FuncDef *fd = dynamic_cast<FuncDef *>(mvar->type);
-    if ( !fd || !fd->declaration_only || ddc->canonical_cpp_spelling().empty() )
+    if ( !fd )
+    {
+	if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: no-fd\n", ddc->name.c_str(),
+		    mname.c_str());
+	return;
+    }
+    // The user-class arm: madc's own body, named by the ABI. Not during a
+    // class-PATTERN capture: the pattern's members are recipes over template
+    // parameters (`PatternVectorClosure<T>` would mint `I1TE`, T as a class);
+    // every INSTANCE registers its members through this funnel and mints its
+    // own concrete names there.
+    if ( class_owns_its_cpp_symbols(ddc) )
+    {
+	if ( !class_pattern_capture_in_progress )
+	    bind_user_member_symbol(*this, ddc, mvar, fd, kind, mname,
+				    is_operator, conversion_type, probe_this);
+	else if ( probe_this )
+	    fprintf(stderr, "[bind] MISS %s::%s: pattern-capture\n",
+		    ddc->name.c_str(), mname.c_str());
+	return;
+    }
+    // The library arm. A conversion function is never bound for a library
+    // class: it is header-inline in every known runtime, unexported, so its
+    // body stays madc-materialized (the pre-phase-2 behaviour, unchanged).
+    if ( kind == CppSymKind::Conversion )
+	return;
+    if ( !fd->declaration_only || ddc->canonical_cpp_spelling().empty() )
     {
 	if ( probe_this )
 	    fprintf(stderr, "[bind] MISS %s::%s: %s\n", ddc->name.c_str(),
 		    mname.c_str(),
-		    !fd ? "no-fd" : !fd->declaration_only
+		    !fd->declaration_only
 			? "not-declaration-only" : "no-canonical-spelling");
 	return;
     }
@@ -45316,10 +45794,12 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 		}
 	}
     }
-    // A signature whose spelling array is absent or misaligned (a restore or
-    // serve gap) must not mangle: the fabricated name drops parameters and can
-    // collide with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
-    if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
+    // The one recipe (member_itanium_symbol) — empty means the signature's
+    // spelling array is absent or misaligned (a restore or serve gap) and
+    // must not mangle: the fabricated name drops parameters and can collide
+    // with a genuinely exported symbol (a 3-arg ctor mangling C1Ev).
+    std::string sym = member_itanium_symbol(ddc, mvar, kind, mname, is_operator);
+    if ( sym.empty() )
     {
 	if ( probe_this )
 	    fprintf(stderr, "[bind] MISS %s::%s: spelling-misalign %zu/%zu\n",
@@ -45327,30 +45807,8 @@ void Program::bind_declared_cpp_symbol(DataDefCLASS *ddc, Variable *mvar,
 		    fd->param_cpp_spellings.size(), fd->parameters.size());
 	return;
     }
-    // Parameter spellings, captured at parse time, excluding slot 0 only when
-    // it is the hidden __this. A static method has no hidden slot, so all of its
-    // parameters participate in the ABI name.
-    std::vector<std::string> psp;
-    size_t first_user_param = (mvar->flags & vfSTATIC) ? 0 : 1;
-    for ( size_t i = first_user_param;
-	  i < fd->param_cpp_spellings.size(); ++i )
-	psp.push_back(fd->mangle_param_spelling(i));
-    fd->spell_varargs_tail(psp);
+    fd->emit_symbol = sym;
     const std::string &cls = ddc->canonical_cpp_spelling();
-    switch ( kind )
-    {
-    case CppSymKind::Ctor: fd->emit_symbol = itanium_mangle_ctor_sub(cls, psp); break;
-    case CppSymKind::Dtor: fd->emit_symbol = itanium_mangle_dtor_sub(cls);      break;
-    case CppSymKind::Method:
-	if ( is_operator )
-	{
-	    std::string op = (mname.compare(0, 8, "operator") == 0) ? mname.substr(8) : mname;
-	    fd->emit_symbol = itanium_mangle_operator_sub(cls, op, psp, fd->is_const_method);
-	}
-	else
-	    fd->emit_symbol = itanium_mangle_member_sub(cls, mname, psp, fd->is_const_method);
-	break;
-    }
     DBG(std::cout << "bind_declared_cpp_symbol(): " << cls << "::" << mname
 	<< " -> " << fd->emit_symbol << std::endl);
     // Env-gated probe (MADC_BIND_PROBE=<substr>): every Itanium bind whose
@@ -46043,10 +46501,21 @@ void Program::parse_deferred_function_bodies(std::vector<Program::DeferredFuncti
 // re-entrant request for the same symbol (a self-recursive body) is a no-op
 // rather than a double-parse, and return the freshly-parsed TokenFunc so the
 // caller (the cir_builder reachability fixpoint) can lower it immediately.
+std::string Program::deferred_lazy_body_key(const std::string &sym) const
+{
+    if ( deferred_lazy_bodies.find(sym) != deferred_lazy_bodies.end() )
+	return sym;
+    std::map<std::string, std::string>::const_iterator ki = body_symbol_keys.find(sym);
+    if ( ki != body_symbol_keys.end()
+      && deferred_lazy_bodies.find(ki->second) != deferred_lazy_bodies.end() )
+	return ki->second;
+    return std::string();
+}
+
 TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 {
     std::map<std::string, DeferredFunctionBody>::iterator it =
-	deferred_lazy_bodies.find(emit_symbol);
+	deferred_lazy_bodies.find(deferred_lazy_body_key(emit_symbol));
     // Env-gated probe (MADC_MTI_PROBE=<substr>): every derive request for a
     // matching deferred body, with the consuming parse context.
     {
@@ -46985,6 +47454,10 @@ void Program::register_class_method_signature(DataDefCLASS *ddc, Variable *mvar,
 	break;
     case ClassMethodKind::Conversion:
 	ddc->method_map[spec.display_name] = mvar;
+	if ( spec.bind_cpp_symbol )
+	    bind_declared_cpp_symbol(ddc, mvar, CppSymKind::Conversion,
+				     spec.display_name, false,
+				     spec.conversion_type);
 	break;
     case ClassMethodKind::Method:
 	if ( fd )
@@ -47729,6 +48202,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     }
     else if ( pgm.instantiating_spelling_applies_here() )
 	ddc->set_canonical_spelling(pgm.instantiating_canonical_spelling);
+    // Nested in a data-only aggregate (the struct-body parser's delegation —
+    // it pushes no class scope, so nested_owner_class above is NULL): the
+    // enclosing aggregate's spelling qualifies this class ([class.nest]).
+    else if ( !pgm.enclosing_aggregate_spelling.empty() )
+	ddc->set_canonical_spelling(pgm.enclosing_aggregate_spelling + "::" + class_source_name);
     else if ( ddc->canonical_cpp_spelling().empty() && !pgm.current_namespace().empty() )
 	ddc->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
     // Record whether this class is being DEFINED from a system/toolchain header
@@ -48255,6 +48733,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( tn->id() == TokenID::tkOPEROVER )
 	{
 	    pgm.nextToken(); // consume operator
+	    // The conversion-type-id as spelled — Itanium's `cv<type>` encodes
+	    // it (bind_declared_cpp_symbol); captured before the real type parse
+	    // consumes the tokens, cursor rewound.
+	    std::string conversion_type = pgm.peek_conversion_type_spelling();
 	    // The conversion-type-id may lead with cv-qualifiers:
 	    // `operator const _Path&()` (libc++ directory_entry.h:92).
 	    TokenBase *conv_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
@@ -48293,6 +48775,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    Program::ClassMethodRegistration spec;
 		    spec.kind = Program::ClassMethodKind::Conversion;
 		    spec.display_name = mname;
+		    spec.conversion_type = conversion_type;
 		    spec.access_flags = access_flags;
 		    pgm.register_class_method_signature(ddc, mvar, spec);
 		}
@@ -48715,7 +49198,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			// skips this overload's parameter registration).
 			std::string peer_name = std::string(tag->spelling()) + "__" + mname + "_un";
 			std::string peer_old = std::string(tag->spelling()) + "__" + mname;
-			peer_fd->local_emit_name = peer_name;
+			// The peer's body symbol is already bound (its Itanium
+			// name — bind_declared_cpp_symbol's user arm): the `_un`
+			// spelling is only its registration KEY moving, so the
+			// symbol -> key translation record follows the move and
+			// the symbol stays (g++: `int &operator*()` declared
+			// before `Foo operator*(int)` is _ZN3FoodeEv either way).
+			// A peer with no bound symbol (a library class — the
+			// internal-name island) takes the `_un` name as before.
+			if ( peer_fd->local_emit_name.empty() )
+			    peer_fd->local_emit_name = peer_name;
+			else
+			    pgm.body_symbol_keys[peer_fd->local_emit_name] = peer_name; // allowed-exception: translation record — re-keys the EXISTING body symbol, builds none
 			peer->rename(peer_name);
 			pgm.funcdef_map[peer_name] = peer_fd;
 			pgm.funcdef_map.erase(peer_old);
@@ -48964,7 +49458,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			    // consults storage_alias_name, so nothing downstream
 			    // needs to know.
 			    sv->storage_alias_name =
-				class_static_member_itanium_symbol(ddc, mname);
+				class_static_member_itanium_symbol(pgm, ddc, mname);
 			    if ( member_is_array )
 			    {
 				sv->flags |= vfFIXEDARRAY;
@@ -56535,6 +57029,80 @@ static bool deduced_bindings_conflict(DataDef *bound, DataDef *dd)
     return cb->name != cd->name;
 }
 
+// C++ SYMBOL MANGLING phase 3b: the Itanium symbol a USER function template's
+// product defines (_Z4makeIiET_S0_, _ZN2ns6nidentIiEET_S1_ — g++/clang's, so
+// the product links into a g++ program and two TUs' products fold as one weak
+// symbol). The pattern's declarator spells return/params in its OWN type
+// parameters (skipped_template_function_signature_spellings over the retained
+// decl tokens, $Tn placeholders via itanium_substitute_tparams); the binding
+// supplies the concrete arguments (cpp_spelling_for_mangle). Empty = not
+// minted, the product keeps its internal name: a pattern from a system header
+// (library products stay internal until phase 5's migration decision), a
+// member template (phase 3c), a pack or non-type parameter (the encoder takes
+// type arguments), an unspellable binding.
+static std::string fn_template_product_itanium_symbol(Program &pgm,
+	const Program::FnTemplateDef &ft, const std::string &key,
+	std::map<std::string, DataDef *> &binding,
+	const std::vector<DataDef *> &pack_elems)
+{
+    if ( !pgm.cpp_symbol_mangling_enabled() || ft.owner_class || ft.decl.empty()
+      || ft.typeparams.empty() || !pack_elems.empty() )
+	return std::string();
+    const char *decl_file = NULL;
+    for ( size_t i = 0; i < ft.decl.size() && !decl_file; ++i )
+	if ( ft.decl[i] )
+	    decl_file = ft.decl[i]->file;
+    if ( decl_file && pgm.is_system_header_path(decl_file) )
+	return std::string();
+    std::vector<std::string> targs;
+    for ( size_t i = 0; i < ft.typeparams.size(); ++i )
+    {
+	if ( (i < ft.typeparam_is_pack.size() && ft.typeparam_is_pack[i])
+	  || (i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i]) )
+	    return std::string();
+	std::map<std::string, DataDef *>::iterator b = binding.find(ft.typeparams[i]);
+	if ( b == binding.end() || !b->second )
+	    return std::string();
+	// A reference binding (take(a) deduces U = int&) is a DataDefPTR whose
+	// NAME is the pointer spelling; as_ref spells the base + "&" (IRiE, not
+	// IPiE — the two would fold two products onto one symbol).
+	std::string sp = cpp_spelling_for_mangle(b->second, b->second->is_reference());
+	if ( sp.empty() )
+	    return std::string();
+	targs.push_back(sp);
+    }
+    size_t name_idx = skipped_template_function_declarator_name_index(ft.decl, NULL);
+    size_t lparen = skipped_template_function_param_lparen(ft.decl, name_idx);
+    std::string ret;
+    std::vector<std::string> params;
+    if ( name_idx >= ft.decl.size() || lparen >= ft.decl.size() || !ft.decl[lparen]
+      || ft.decl[lparen]->id() != TokenID::tkOpBrk
+      || !skipped_template_function_signature_spellings(ft.decl, name_idx, lparen,
+							 ret, params) )
+	return std::string();
+    ret = itanium_substitute_tparams(ret, ft.typeparams);
+    for ( size_t i = 0; i < params.size(); ++i )
+	params[i] = itanium_substitute_tparams(params[i], ft.typeparams);
+    size_t sep = key.rfind("::");
+    std::string name = sep == std::string::npos ? key : key.substr(sep + 2);
+    if ( name.empty() )
+	return std::string();
+    std::string sym = itanium_mangle_function_template_sub(
+	namespace_qualifiers(ft.ns), name, targs, ret, params);
+    // A spelling the encoder cannot encode faithfully must not become a
+    // symbol at all (a keyword or space inside a <name> once folded two
+    // products onto one item): only a well-formed Itanium symbol is minted.
+    if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
+	return std::string();
+    for ( size_t i = 2; i < sym.size(); ++i )
+    {
+	char c = sym[i];
+	if ( !isalnum((unsigned char)c) && c != '_' && c != '.' && c != '$' )
+	    return std::string();
+    }
+    return sym;
+}
+
 static bool instantiate_fn_template_binding(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key,
 	std::map<std::string, DataDef *> &binding,
@@ -59146,6 +59714,15 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::cerr.rdbuf(&g_madc_null_streambuf);
     std::string saved_inst_identity = pgm.pending_fn_instantiation_identity;
     pgm.pending_fn_instantiation_identity = inst_key;
+    std::string saved_inst_symbol = pgm.pending_fn_instantiation_symbol;
+    std::string saved_inst_symbol_name = pgm.pending_fn_instantiation_symbol_name;
+    pgm.pending_fn_instantiation_symbol =
+	fn_template_product_itanium_symbol(pgm, ft, key, binding, pack_elems);
+    {
+	size_t sep = key.rfind("::");
+	pgm.pending_fn_instantiation_symbol_name =
+	    sep == std::string::npos ? key : key.substr(sep + 2);
+    }
     ++pgm.fn_template_instantiation_depth;
     try
     {
@@ -59183,6 +59760,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
     }
     --pgm.fn_template_instantiation_depth;
     pgm.pending_fn_instantiation_identity = saved_inst_identity;
+    pgm.pending_fn_instantiation_symbol = saved_inst_symbol;
+    pgm.pending_fn_instantiation_symbol_name = saved_inst_symbol_name;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     if ( !ok )
@@ -61304,6 +61883,30 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     }
     if ( fd->local_emit_name.empty() )
 	fd->local_emit_name = inst_name;
+    // C++ SYMBOL MANGLING phase 3c: the freshly-parsed product of a USER class's
+    // member template emits the Itanium member-template symbol on its OWN-body
+    // field (local_emit_name — the phase-2 member convention), so its body and
+    // every call (via tc->mti_instance) agree and link with g++. Empty = keep
+    // the internal name (library owner, pack / non-type params, unspellable).
+    if ( DataDefCLASS *mtowner =
+	     dynamic_cast<DataDefCLASS *>(fd->member_template_owner) )
+    {
+	std::string mtsym = user_member_template_product_symbol(
+	    *this, mtowner, fd, concrete_type_args);
+	if ( !mtsym.empty() )
+	{
+	    Variable *pv = tkProgram ? tkProgram->findVariable(strpool, inst_name)
+				     : NULL;
+	    if ( !pv )
+		pv = findVariable(inst_name);
+	    FuncDef *pfd = pv ? dynamic_cast<FuncDef *>(pv->type) : NULL;
+	    if ( pfd )
+	    {
+		pfd->local_emit_name = mtsym; // allowed-exception: registration recipe field
+		body_symbol_keys[mtsym] = pv->name;
+	    }
+	}
+    }
 #if MADC_DEBUG_FNTPL
     if ( dbg_mti )
 	std::cerr << "FNTPL mti alias var=" << tc->var.name
@@ -65099,14 +65702,28 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( func->builtin_registration )
 	{
 	    func = new FuncDef(returnDecl(dd, return_ref));
+	    // Every machine registration is a bare C symbol (libc_signatures,
+	    // a host-embedded callback): the explicit prototype REDECLARES the C
+	    // library's function and inherits its linkage ([dcl.link]/5) — so
+	    // `extern int printf(const char *, ...);` in a C++-presenting mode
+	    // keeps the bare import, exactly as it does after <stdio.h> in g++.
+	    // An unknown name gets no such inheritance and mangles as C++.
+	    func->c_linkage = true;
 	    funcdef_map[id] = func;
 	    func_already_declared = false;
 	}
 	// C `f()` is an old-style declaration with unspecified parameters,
 	// not a real zero-parameter prototype. When the later definition
 	// provides the actual parameter list, rebuild the FuncDef from
-	// scratch so the body binds those names normally.
-	else if ( !func->is_void_params && func->parameters.empty() )
+	// scratch so the body binds those names normally. Only an
+	// unprototyped DECLARATION is reconciled this way: a DEFINITION has
+	// already bound its (zero) parameters, and a later prototype of it
+	// (the block-scope `int g();` after `int g() { … }` of testdirectinit)
+	// must not replace the bodied FuncDef — the rebuilt one took the
+	// prototype state, so the body emitted bare while every call imported
+	// _Z1gv. A body wins, as at the prototype site below.
+	else if ( func->declaration_only
+	       && !func->is_void_params && func->parameters.empty() )
 	{
 	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
 	    fresh->return_types = func->return_types;
@@ -65123,6 +65740,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
+	    // The declaration's SYMBOL identity survives the rebuild: the name
+	    // its class registration bound (bind_declared_cpp_symbol —
+	    // local_emit_name for madc's own body, emit_symbol for a library
+	    // definition), its member identity and const-ness. Dropping them
+	    // emitted a refreshed static member's body under its internal
+	    // registration key while every call imported the Itanium name.
+	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
+	    fresh->emit_symbol = func->emit_symbol;
+	    fresh->method_display_name = func->method_display_name;
+	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -65152,6 +65780,20 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
+	    // The refresh changes the RETURN type only; the declaration's
+	    // linkage, body status and captured parameter spellings carry over
+	    // (an extern "C" prototype refreshed by its definition stays a
+	    // C-linkage function, as in g++; its symbol needs the spellings
+	    // captured with the parameters it keeps).
+	    fresh->declaration_only = func->declaration_only;
+	    fresh->c_linkage = func->c_linkage;
+	    fresh->param_cpp_spellings = func->param_cpp_spellings;
+	    // ...and the declaration's symbol identity (see the refresh above).
+	    fresh->local_emit_name = func->local_emit_name; // allowed-exception: field copy (refresh), not symbol build
+	    fresh->emit_symbol = func->emit_symbol;
+	    fresh->method_display_name = func->method_display_name;
+	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -65162,6 +65804,25 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
+    // C++ SYMBOL MANGLING phase 1 (design §4.4/§4.5): a redeclaration of a
+    // C-LINKAGE function must carry the SAME parameter signature — C
+    // ("conflicting types for 'f'") and an extern "C" function in C++
+    // ("conflicting declaration of C function 'f'") never overload, and the old
+    // reconcile-by-position silently mistyped the definition's parameters (the
+    // darwin `send` shape). Signature identity is the Itanium encoding of the
+    // parameter list — the ONE type identity the ABI defines (typedefs desugar,
+    // top-level cv drops, `...` is z) — never a hand-rolled type walk. Captured
+    // BEFORE the parameter loop, which mutates `func` (is_varargs). A
+    // C++-linkage function never reaches this reconcile with a different
+    // signature: parseDeclaration's overload tracking hands it its own FuncDef
+    // (and fold_same_signature_overload settles the identity post-parse).
+    // Members and machine registrations keep their own reconciliation.
+    std::string redecl_prior_sig;
+    if ( func_already_declared && !owner_class
+      && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
+	redecl_prior_sig = namespace_cpp_function_symbol(std::string(), id, func);
+    std::vector<std::string> redecl_spellings;
+    bool redecl_varargs = false;
     if ( !return_typedef_alias.empty() )
 	func->return_typedef_name = return_typedef_alias;
     // The SOURCE name of a tracked free-function overload (parseDeclaration
@@ -65182,7 +65843,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // A function parsed inside a template instantiation is an instantiation
     // product (e.g. a namespace free-template instance) — the C++ vague-
     // linkage set: any TU using the template mints an identical copy. Record
-    // that so the CIR builder emits it linkonce [ELF-completion S4].
+    // that so the CIR builder emits it linkonce [ELF-completion S4]. (A
+    // product minted WITHOUT a parse — a class template's member, copied from
+    // the pattern — is stamped where it registers, addVariable's
+    // vfINSTPRODUCT arm.)
     if ( fn_template_instantiation_depth > 0 )
 	func->vague_linkage = true;
     // A bodied C++ free function DEFINED in a system header is inline-or-
@@ -65371,6 +66035,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( !d2 || d2->id() != TokenID::tkDot || !d3 || d3->id() != TokenID::tkDot )
 		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
 	    func->is_varargs = true;
+	    redecl_varargs = true;
 	    // A prior prototype already owns the hidden varargs slot.
 	    if ( !func_already_declared )
 	    {
@@ -65864,6 +66529,9 @@ finish_param_declarator:
 					       ? param_array_dim_exprs[i] : NULL);
 	    param_dd = getPointerType(array_elem);
 	    rtype = RefType::rtPointer;
+	    // The decayed pointer is one more `*` on the parameter's C++
+	    // spelling (`int a[10]` IS `int *a` — Itanium Pi, never i).
+	    ++param_ptr_depth;
 	}
 
 	// Default argument: `T name = expr`. Parse the default expression — it stops
@@ -65889,6 +66557,34 @@ paramdecl:
 	    // paths preserve every inner pointer layer (`T*&` -> REF(PTR(T))).
 	    DataDef *reference_param_type = (rtype == RefType::rtReference)
 		? static_cast<DataDef *>(getReferenceType(param_dd)) : NULL;
+	    // Canonical C++ spelling of this parameter, captured from the SOURCE
+	    // TOKENS (leading const + base type + `*`s + trailing `&`) — computed
+	    // ONCE for both arms below. The first declaration records it,
+	    // index-aligned with func->parameters (the DataDef alone loses
+	    // top-level pointee-const, so a DataDef-derived spelling would mangle
+	    // `const char*` as Pc not PKc); a redeclaration compares it against
+	    // the prior signature (redecl_prior_sig). Fed to the Itanium mangler.
+	    std::string param_spelling;
+	    if ( param_leading_const )
+		param_spelling = "const ";
+	    param_spelling += pb->definition.canonical_cpp_spelling().empty()
+		? pb->definition.name
+		: pb->definition.canonical_cpp_spelling();
+	    for ( int sd = 0; sd < param_ptr_depth; ++sd )
+		param_spelling += "*";
+	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
+	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
+	    // declarator, so the encoder encodes it or refuses it — a bare
+	    // `int*` would mint the WRONG symbol (Pi) and misbind at link.
+	    if ( param_array_dims.size() > 1 )
+	    {
+		param_spelling.resize(param_spelling.size() - 1);	// the decay `*`
+		param_spelling += " (*)";
+		for ( size_t ad = 1; ad < param_array_dims.size(); ++ad )
+		    param_spelling += "[" + std::to_string(param_array_dims[ad]) + "]";
+	    }
+	    if ( rtype == RefType::rtReference )
+		param_spelling += param_rvalue_ref ? "&&" : "&";
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
 	    DataDef *scope_param_type = NULL;
@@ -65896,6 +66592,14 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+		// The SAME desugar the registered side reads through
+		// (FuncDef::mangle_param_spelling): a fn-pointer typedef spells
+		// structurally, a scalar alias canonically — else a prototype's
+		// `DO_FUN *` (PFvP9char_dataPcE) "conflicts" with its own
+		// definition's `DO_FUN *` spelled as the alias (SMAUG tables.c).
+		redecl_spellings.push_back(FuncDef::mangle_spelling_for(
+		    reference_param_type ? reference_param_type : param_dd,
+		    param_spelling));
 		// A reference parameter lowers to a pointer (vfREFERENCE auto-deref).
 		// The in-scope param's type must match its vfREFERENCE flag. Otherwise
 		// the CIR deref gate
@@ -65910,23 +66614,6 @@ paramdecl:
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
-		// Canonical C++ spelling of this parameter, captured from the
-		// SOURCE TOKENS (leading const + base type + `*`s + trailing `&`),
-		// index-aligned with func->parameters. The DataDef alone loses
-		// top-level pointee-const, so a DataDef-derived spelling would
-		// mangle `const char*` as Pc not PKc; building from tokens keeps
-		// it correct. Fed to the Itanium mangler for header-declared external
-		// C++ methods.
-		std::string param_spelling;
-		if ( param_leading_const )
-		    param_spelling = "const ";
-		param_spelling += pb->definition.canonical_cpp_spelling().empty()
-		    ? pb->definition.name
-		    : pb->definition.canonical_cpp_spelling();
-		for ( int sd = 0; sd < param_ptr_depth; ++sd )
-		    param_spelling += "*";
-		if ( rtype == RefType::rtReference )
-		    param_spelling += param_rvalue_ref ? "&&" : "&";
 		func->param_cpp_spellings.push_back(param_spelling);
 		func->param_typedef_names.push_back(param_alias);
 		func->param_template_param_spelled_directly.push_back(
@@ -66027,6 +66714,33 @@ paramdecl:
 		func->param_typedef_names.push_back("");
 	    }
 	}
+    }
+
+    // The C-linkage signature clash (see redecl_prior_sig above). Old-style K&R
+    // redefinitions are outside it: their parameter types arrive through the
+    // declaration list, on the C-only recovery path.
+    if ( !redecl_prior_sig.empty() && !old_style_params )
+    {
+	std::vector<std::string> redecl_params = redecl_spellings;
+	if ( redecl_varargs )
+	    redecl_params.push_back("...");
+	std::string redecl_sig =
+	    itanium_mangle_nested_sub(std::vector<std::string>(), id, redecl_params);
+	DBG(if ( redecl_sig != redecl_prior_sig )
+	    {
+		std::cout << "parseFunction() signature clash " << id
+			  << ": prior=" << redecl_prior_sig
+			  << " fresh=" << redecl_sig << " fresh spellings:";
+		for ( size_t rs = 0; rs < redecl_params.size(); ++rs )
+		    std::cout << " [" << redecl_params[rs] << "]";
+		for ( size_t rs = 0; rs < func->parameters.size(); ++rs )
+		    std::cout << " prior" << rs << "=[" << func->mangle_param_spelling(rs) << "]";
+		std::cout << std::endl;
+	    });
+	if ( redecl_sig != redecl_prior_sig )
+	    Throw(nt) << (is_c_mode() ? "conflicting types for '"
+				      : "conflicting declaration of C function '")
+		      << id << "'" << flush;
     }
 
     Method *method;
@@ -66268,7 +66982,14 @@ paramdecl:
 	}
 	if ( owner_class )
 	    method->owner_class = owner_class;
-	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	// A prototype marks the function declaration-only UNLESS a body was
+	// already seen: `float fx(float) {…}` then a block-scope `float fx()`
+	// must not flip the defined function back — its body then emitted under
+	// the bare name while every call used _Z2fxf (testmixedfuncvardecl).
+	// The flag is monotonic: a body wins. A first declaration is never
+	// already declared, so it takes the prototype state.
+	if ( !func_already_declared || func->declaration_only )
+	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
 	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
@@ -66339,7 +67060,9 @@ paramdecl:
 	var->data = (void *)method;
 	if ( owner_class )
 	    method->owner_class = owner_class;
-	func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
+	// Monotonic, as at the forward-declaration site above: a body wins.
+	if ( !func_already_declared || func->declaration_only )
+	    func->declaration_only = true;	// prototype, no body (see FuncDef::declaration_only)
 	func->decl_file = nt ? nt->file : NULL;
 	stamp_lazy_module_prototype(func, id, owner_class, nt);
 	pop_param_scope();
@@ -66488,6 +67211,16 @@ paramdecl:
     pop_param_scope();
 
     func->declaration_only = false;
+    // A class madc defines: whatever external binding its declared member
+    // carried (an asm label; bind_declared_cpp_symbol's user arm already
+    // names the own body directly) now names THIS body — emit_symbol means
+    // "external definition" to the lowering, so the name moves to the own-
+    // body field rather than being dropped. A library class's materialized
+    // header body keeps its internal name (bind_external_class_symbols
+    // re-binds the CALL symbol at CIR time).
+    if ( !func->emit_symbol.empty() && func->local_emit_name.empty()
+      && owner_class && class_owns_its_cpp_symbols(owner_class) )
+	func->local_emit_name = func->emit_symbol;
     func->emit_symbol.clear();
 
     // Definitions must own a fresh Method instance. Some prior declaration
@@ -69663,11 +70396,36 @@ fnptr_decl_arm_head:
 	    || fn_template_instantiation_depth > 0
 	    || (is_system_header_path(TokenBase::_parse_file)
 	     && (findVariable(source_id)
-	      || namespace_fn_overload_sets.count("::" + source_id)))) )
+	      || namespace_fn_overload_sets.count("::" + source_id)))
+	    // C++ SYMBOL MANGLING phase 1: EVERY function of C++ linkage (see
+	    // cpp_symbol_mangling_enabled) — at file scope AND declared at
+	    // block scope: a block-scope function declaration declares the
+	    // function in the enclosing namespace ([basic.scope.block],
+	    // [dcl.meaning]), so g++ names it _Z14fbgsb_delegatePKcPPc and a
+	    // header's `static inline` body calling its block-scope prototype
+	    // must import that symbol, not the bare name (forest_bind_gate
+	    // [silbody]: the frozen body imported `fbgsb_delegate`, the
+	    // consumer defined the Itanium one). A GNU nested DEFINITION inside
+	    // a body is a hoisted LOCAL entity, not a declaration of the
+	    // enclosing-namespace function — it never joins the set: tracking
+	    // it renamed a second same-named nested definition
+	    // (unique_overload_symbol) before parseFunction hoisted it, so its
+	    // own `nested()` call reported "undeclared identifier"
+	    // (testnestedasmbarrier: three functions each defining `nested`).
+	    // The discriminator is parseFunction's own — function_declarator_
+	    // has_body, the pure lookahead that decides is_nested_function; the
+	    // stream sits just after the declarator's '(' here as it does
+	    // there. main is the entry point and never mangles; extern "C"
+	    // fails the linkage test above; a prototype of a MACHINE-REGISTERED
+	    // name (libc_signatures, a host callback — every one a bare C
+	    // symbol) redeclares the C library's function and inherits its
+	    // linkage in parseFunction.
+	    || (cpp_symbol_mangling_enabled()
+	     && source_id != "main"
+	     && !prior_declaration_is_registration(source_id)
+	     && (compounds.empty() || !function_declarator_has_body()))) )
     {
-	// C++ free-function overloading at GLOBAL scope, for OPERATORS,
-	// fn-template INSTANTIATION PRODUCTS, and SYSTEM-HEADER functions
-	// whose name is already taken: the same per-overload
+	// C++ free-function overloading at GLOBAL scope: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
 	// empty-namespace key ("::name" / "::operatorX") — global scope IS the
 	// empty namespace. Operator-expression dispatch
@@ -69676,17 +70434,21 @@ fnptr_decl_arm_head:
 	// re-entry (a SFINAE overload pair instantiates TWO same-name globals
 	// — width(int) / width(double) — which need distinct symbols and a set
 	// to rank, and whose display name lets a repeat call re-enter
-	// deduction). A PLAIN global function stays on the legacy path — its
-	// declaration-only form must import by SOURCE NAME for the dlsym
-	// fallback (libc declarations — tracking it would mangle the import) —
-	// UNLESS it is a system-header declaration re-using an existing name:
-	// that is C++ overloading (libc++'s five global inline `abs` overloads
-	// after glibc's extern-C `int abs(int)`), and the legacy shared-id
-	// reuse spliced them into ONE FuncDef — the last body emitted as a
-	// plain-named linkonce `abs` clobbering the libc import, so
-	// `abs(-7)` ran the long-double body and read back 0. The FIRST
-	// declaration of a name still keeps the source name (import intact);
-	// only same-name successors mint per-overload symbols.
+	// deduction). In a C++-presenting mode EVERY file-scope C++-linkage
+	// function is tracked: a madc-defined one emits its Itanium symbol
+	// (the mint below), a declaration-only one binds the real external
+	// symbol (storage_alias_name), and same-name declarations rank by
+	// argument type. The legacy reasons a PLAIN global stayed untracked no
+	// longer hold — a libc declaration reaches the parser under extern "C"
+	// (real headers say so through __cplusplus; the darwin umbrella is
+	// re-wrapped by gen_darwin_prelude.sh) and so keeps its bare import.
+	// Before this rule, tracking a plain global only for a system-header
+	// re-declaration of a taken name (libc++'s five global inline `abs`
+	// overloads after glibc's extern-C `int abs(int)`) was the fix for the
+	// legacy shared-id reuse splicing them into ONE FuncDef — the last body
+	// emitted as a plain-named linkonce `abs` clobbering the libc import, so
+	// `abs(-7)` ran the long-double body and read back 0. That clause stays
+	// for the non-C++ modes' benefit of the doubt.
 	ns_overload_tracked = true;
 	ns_overload_spelling = peek_param_list_spelling();
 	// Same binding-identity fold as the namespace branch above.
@@ -69768,6 +70530,19 @@ fnptr_decl_arm_head:
 		  gotinline && !gotstatic, gotstatic);
     pending_function_display_name.clear();
 
+    // [dcl.link]: a FILE-SCOPE function declared under extern "C" has C
+    // language linkage — its symbol is the bare name (the emit chain's default)
+    // and it can never join a C++ overload set (the tracking gate above
+    // requires C++ linkage). Record the fact on the FuncDef, where the
+    // Itanium mint, the same-signature fold and the forest (DF_FUNC_C_LINKAGE)
+    // read it; the namespace arm below does the same for
+    // `namespace ns { extern "C" ... }`.
+    if ( !qualified_owner_class && !namespace_function && !is_c_mode()
+      && current_linkage == LinkageSpec::C )
+	if ( Variable *cv = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL )
+	    if ( FuncDef *cfd = dynamic_cast<FuncDef *>(cv->type) )
+		cfd->c_linkage = true;
+
     if ( qualified_owner_class && !qualified_member_name.empty() )
     {
 	Variable *mvar = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
@@ -69799,11 +70574,26 @@ fnptr_decl_arm_head:
 	if ( ns_var )
 	{
 	    FuncDef *fd = dynamic_cast<FuncDef *>(ns_var->type);
+	    // A hand-written PROTOTYPE of a C library function (no header) is
+	    // that C function — see libc_prototype_return_matches.
+	    if ( fd && ns_overload_tracked && !namespace_function
+	      && fd->declaration_only && !fd->c_linkage
+	      && fn_template_instantiation_depth == 0
+	      && libc_prototype_return_matches(source_id, fd) )
+	    {
+		fd->c_linkage = true;
+		// The C function's symbol is its bare name — also when this
+		// prototype is a same-name successor whose Variable carries an
+		// internal `__oN` key (a sloppy `extern int strcmp(char*, char*)`
+		// after <cstring>'s real one): the alias is the emitted symbol.
+		if ( ns_var->storage_alias_name.empty() )
+		    ns_var->storage_alias_name = source_id;
+	    }
 	    // Declaration-only C++ functions bind their external Itanium symbol:
 	    // namespace functions AND tracked global-scope operators (the <new>
 	    // allocation operators libstdc++ exports as _Znwm/_ZdlPvm/...).
 	    if ( (namespace_function || ns_overload_tracked)
-	      && fd && fd->declaration_only
+	      && fd && fd->declaration_only && !fd->c_linkage
 	      && current_linkage == LinkageSpec::Cpp )
 		ns_var->storage_alias_name =
 		    namespace_cpp_function_symbol(current_namespace(), source_id, fd);
@@ -69829,6 +70619,53 @@ fnptr_decl_arm_head:
 		if ( ns_var->storage_alias_name.empty() )
 		    ns_var->storage_alias_name = source_id;
 	    }
+	    // C++ SYMBOL MANGLING phase 1 (file scope) + phase 3 (namespaces):
+	    // a C++-linkage function madc DEFINES emits its Itanium symbol —
+	    // the SAME mint the declaration-only bind above uses, so `seam::f`
+	    // defined here and `seam::f` declared from a header name one
+	    // symbol. Definition and every call flow through call_emit_symbol's
+	    // emit_symbol arm, so a madc object is ABI-identical to g++/clang
+	    // and same-name overloads are distinct symbols. A declaration-only
+	    // function keeps the mangled-direct storage_alias_name bind above
+	    // (the library owns the body); extern "C" and main never reach
+	    // here. An explicit asm label on the definition wins over the
+	    // mangling, as it does in g++ (`void f() asm("g")` emits g).
+	    // A function-TEMPLATE instantiation product is not minted here: its
+	    // symbol is the template form (_Z4makeIiET_i), phase 3's minter —
+	    // the non-template mangling would collide across products.
+	    else if ( fd && ns_overload_tracked
+		   && cpp_symbol_mangling_enabled() && !fd->c_linkage
+		   && fn_template_instantiation_depth == 0
+		   && compounds.empty()	// a GNU nested definition keeps its legacy name
+		   && !fd->declaration_only && fd->emit_symbol.empty() )
+	    {
+		std::string sym = namespace_cpp_function_symbol(
+		    current_namespace(), source_id, fd);
+		if ( ns_var->storage_alias_name.empty()
+		  || ns_var->storage_alias_name == sym )
+		{
+		    fd->emit_symbol = sym;
+		    // The deferred-body registry is keyed by the Variable name;
+		    // reachability asks by this symbol (deferred_lazy_body_key).
+		    body_symbol_keys[sym] = ns_var->name;
+		}
+	    }
+	    // Phase 3b: a USER function template's product takes the Itanium
+	    // template-specialization symbol its instantiation driver minted
+	    // (fn_template_product_itanium_symbol) — the declaration must be the
+	    // template's own (a product body declares nothing else at this depth,
+	    // the name check keeps it so). Empty = the product keeps its internal
+	    // name (library pattern, packs, non-type parameters, member template).
+	    else if ( fd && ns_overload_tracked && cpp_symbol_mangling_enabled()
+		   && !fd->c_linkage && fn_template_instantiation_depth > 0
+		   && !fd->declaration_only && fd->emit_symbol.empty()
+		   && !pending_fn_instantiation_symbol.empty()
+		   && source_id == pending_fn_instantiation_symbol_name
+		   && ns_var->storage_alias_name.empty() )
+	    {
+		fd->emit_symbol = pending_fn_instantiation_symbol;
+		body_symbol_keys[fd->emit_symbol] = ns_var->name;
+	    }
 	    if ( fd && ns_overload_tracked )
 	    {
 		// Source identity for call-site overload ranking
@@ -69849,6 +70686,15 @@ fnptr_decl_arm_head:
 		    e.var = ns_var;
 		    ovset.push_back(e);
 		}
+		// The identity truth (fold_same_signature_overload): a newcomer
+		// whose Itanium signature equals a member's IS that function —
+		// fold it (a definition after a differently-spelled prototype, a
+		// redeclaration inheriting C linkage) or reject a redefinition.
+		if ( !namespace_function && cpp_symbol_mangling_enabled()
+		  && fn_template_instantiation_depth == 0 )
+		    fold_same_signature_overload(*this, ovset, ns_var, fd,
+						 current_namespace(), source_id,
+						 curToken());
 		// Once a name has 2+ overloads, every member's call symbol is
 		// its OWN binding, so a call resolved through the shared
 		// namespace-map entry still emits the ranked winner's symbol.

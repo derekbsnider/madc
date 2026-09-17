@@ -4,38 +4,39 @@
 #include "madc_mangle.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
+#include <set>
 
 TEST_SUITE("Itanium type encoding") {
 
 	TEST_CASE("Builtin types") {
-		CHECK(itanium_encode_type("void") == "v");
-		CHECK(itanium_encode_type("bool") == "b");
-		CHECK(itanium_encode_type("char") == "c");
-		CHECK(itanium_encode_type("short") == "s");
-		CHECK(itanium_encode_type("int") == "i");
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("long long") == "x");
-		CHECK(itanium_encode_type("float") == "f");
-		CHECK(itanium_encode_type("double") == "d");
-		CHECK(itanium_encode_type("long double") == "e");
-		CHECK(itanium_encode_type("unsigned int") == "j");
-		CHECK(itanium_encode_type("unsigned long") == "m");
-		CHECK(itanium_encode_type("unsigned long long") == "y");
-		CHECK(itanium_encode_type("signed char") == "a");
-		CHECK(itanium_encode_type("unsigned char") == "h");
-		CHECK(itanium_encode_type("wchar_t") == "w");
+		CHECK(itanium_encode_type_sub("void") == "v");
+		CHECK(itanium_encode_type_sub("bool") == "b");
+		CHECK(itanium_encode_type_sub("char") == "c");
+		CHECK(itanium_encode_type_sub("short") == "s");
+		CHECK(itanium_encode_type_sub("int") == "i");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("long long") == "x");
+		CHECK(itanium_encode_type_sub("float") == "f");
+		CHECK(itanium_encode_type_sub("double") == "d");
+		CHECK(itanium_encode_type_sub("long double") == "e");
+		CHECK(itanium_encode_type_sub("unsigned int") == "j");
+		CHECK(itanium_encode_type_sub("unsigned long") == "m");
+		CHECK(itanium_encode_type_sub("unsigned long long") == "y");
+		CHECK(itanium_encode_type_sub("signed char") == "a");
+		CHECK(itanium_encode_type_sub("unsigned char") == "h");
+		CHECK(itanium_encode_type_sub("wchar_t") == "w");
 	}
 
 	TEST_CASE("Fixed-width type aliases") {
-		CHECK(itanium_encode_type("int8_t") == "a");
-		CHECK(itanium_encode_type("uint8_t") == "h");
-		CHECK(itanium_encode_type("int16_t") == "s");
-		CHECK(itanium_encode_type("uint16_t") == "t");
-		CHECK(itanium_encode_type("int32_t") == "i");
-		CHECK(itanium_encode_type("uint32_t") == "j");
-		CHECK(itanium_encode_type("int64_t") == "l");
-		CHECK(itanium_encode_type("uint64_t") == "m");
-		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(itanium_encode_type_sub("int8_t") == "a");
+		CHECK(itanium_encode_type_sub("uint8_t") == "h");
+		CHECK(itanium_encode_type_sub("int16_t") == "s");
+		CHECK(itanium_encode_type_sub("uint16_t") == "t");
+		CHECK(itanium_encode_type_sub("int32_t") == "i");
+		CHECK(itanium_encode_type_sub("uint32_t") == "j");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("uint64_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
 	}
 
 	// Task #46: the width-carrying rows follow the target data model.
@@ -49,18 +50,18 @@ TEST_SUITE("Itanium type encoding") {
 			~ModelGuard() { madc_target_data_model = saved; }
 		} guard;
 		madc_target_data_model = TargetDataModel::LLP64;
-		CHECK(itanium_encode_type("size_t") == "y");
-		CHECK(itanium_encode_type("std::size_t") == "y");
-		CHECK(itanium_encode_type("int64_t") == "x");
-		CHECK(itanium_encode_type("uint64_t") == "y");
-		CHECK(itanium_encode_type("ssize_t") == "x");
-		CHECK(itanium_encode_type("ptrdiff_t") == "x");
+		CHECK(itanium_encode_type_sub("size_t") == "y");
+		CHECK(itanium_encode_type_sub("std::size_t") == "y");
+		CHECK(itanium_encode_type_sub("int64_t") == "x");
+		CHECK(itanium_encode_type_sub("uint64_t") == "y");
+		CHECK(itanium_encode_type_sub("ssize_t") == "x");
+		CHECK(itanium_encode_type_sub("ptrdiff_t") == "x");
 		// Plain long/long long letters are TYPE identity, not width —
 		// they never move with the model.
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("unsigned long") == "m");
-		CHECK(itanium_encode_type("long long") == "x");
-		CHECK(itanium_encode_type("unsigned long long") == "y");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("unsigned long") == "m");
+		CHECK(itanium_encode_type_sub("long long") == "x");
+		CHECK(itanium_encode_type_sub("unsigned long long") == "y");
 		// The 64-bit desugar follows the model too. The desugar fires
 		// only for PLAIN DataDef instances (the typeid guard) — the
 		// parser-minted scalar-typedef alias shape — never for the
@@ -71,7 +72,7 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(sz_alias.mangle_scalar_spelling() == "unsigned long long");
 		// Negative control: LP64 restores the Linux letters.
 		madc_target_data_model = TargetDataModel::LP64;
-		CHECK(itanium_encode_type("size_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
 		CHECK(off_alias.mangle_scalar_spelling() == "long");
 	}
 
@@ -91,12 +92,12 @@ TEST_SUITE("Itanium type encoding") {
 		// pinned dds by name, and on darwin ddUINT64 carries size_t
 		// (_Znwm — flipping these produced the _Znwy battery
 		// regression). The x/y identity rides the distinct dds below.
-		CHECK(itanium_encode_type("int64_t") == "l");
-		CHECK(itanium_encode_type("uint64_t") == "m");
-		CHECK(itanium_encode_type("size_t") == "m");
-		CHECK(itanium_encode_type("ptrdiff_t") == "l");
-		CHECK(itanium_encode_type("long") == "l");
-		CHECK(itanium_encode_type("long long") == "x");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("uint64_t") == "m");
+		CHECK(itanium_encode_type_sub("size_t") == "m");
+		CHECK(itanium_encode_type_sub("ptrdiff_t") == "l");
+		CHECK(itanium_encode_type_sub("long") == "l");
+		CHECK(itanium_encode_type_sub("long long") == "x");
 		// Distinct dd identity, subclass-exempt from the LP64 desugar.
 		CHECK(dd_platform_longlong() != (DataDef *)&ddINT64);
 		CHECK(dd_platform_longlong()->name == "long long");
@@ -107,48 +108,49 @@ TEST_SUITE("Itanium type encoding") {
 		madc_target_int64_alias = TargetInt64Alias::Long;
 		CHECK(dd_platform_longlong() == (DataDef *)&ddINT64);
 		CHECK(dd_platform_ulonglong() == (DataDef *)&ddUINT64);
-		CHECK(itanium_encode_type("int64_t") == "l");
+		CHECK(itanium_encode_type_sub("int64_t") == "l");
 	}
 
 	TEST_CASE("Pointer types") {
-		CHECK(itanium_encode_type("int*") == "Pi");
-		CHECK(itanium_encode_type("char*") == "Pc");
-		CHECK(itanium_encode_type("void*") == "Pv");
-		CHECK(itanium_encode_type("double*") == "Pd");
+		CHECK(itanium_encode_type_sub("int*") == "Pi");
+		CHECK(itanium_encode_type_sub("char*") == "Pc");
+		CHECK(itanium_encode_type_sub("void*") == "Pv");
+		CHECK(itanium_encode_type_sub("double*") == "Pd");
 	}
 
 	TEST_CASE("Const pointer types") {
-		CHECK(itanium_encode_type("const char*") == "PKc");
-		CHECK(itanium_encode_type("const int*") == "PKi");
+		CHECK(itanium_encode_type_sub("const char*") == "PKc");
+		CHECK(itanium_encode_type_sub("const int*") == "PKi");
 	}
 
 	TEST_CASE("Reference types") {
-		CHECK(itanium_encode_type("int&") == "Ri");
-		CHECK(itanium_encode_type("const int&") == "RKi");
-		CHECK(itanium_encode_type("const char*&") == "RPKc");
+		CHECK(itanium_encode_type_sub("int&") == "Ri");
+		CHECK(itanium_encode_type_sub("const int&") == "RKi");
+		CHECK(itanium_encode_type_sub("const char*&") == "RPKc");
 	}
 
 	TEST_CASE("User-defined types") {
-		CHECK(itanium_encode_type("Foo") == "3Foo");
-		CHECK(itanium_encode_type("MyClass") == "7MyClass");
-		CHECK(itanium_encode_type("X") == "1X");
+		CHECK(itanium_encode_type_sub("Foo") == "3Foo");
+		CHECK(itanium_encode_type_sub("MyClass") == "7MyClass");
+		CHECK(itanium_encode_type_sub("X") == "1X");
 	}
 
 	TEST_CASE("Pointer to user type") {
-		CHECK(itanium_encode_type("Foo*") == "P3Foo");
-		CHECK(itanium_encode_type("const Foo*") == "PK3Foo");
-		CHECK(itanium_encode_type("Foo&") == "R3Foo");
+		CHECK(itanium_encode_type_sub("Foo*") == "P3Foo");
+		CHECK(itanium_encode_type_sub("const Foo*") == "PK3Foo");
+		CHECK(itanium_encode_type_sub("Foo&") == "R3Foo");
 	}
 
 	TEST_CASE("Parameter list encoding") {
-		CHECK(itanium_encode_params({}) == "v");
-		CHECK(itanium_encode_params({"int"}) == "i");
-		CHECK(itanium_encode_params({"int", "double"}) == "id");
-		CHECK(itanium_encode_params({"int", "const char*"}) == "iPKc");
+		// <bare-function-type>: v for none, else each parameter in order
+		CHECK(itanium_mangle_nested_sub({}, "f", {}) == "_Z1fv");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int"}) == "_Z1fi");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int", "double"}) == "_Z1fid");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"int", "const char*"}) == "_Z1fiPKc");
 	}
 
 	TEST_CASE("Trailing ellipsis encodes as z") {
-		CHECK(itanium_encode_params({"const char*", "..."}) == "PKcz");
+		CHECK(itanium_mangle_nested_sub({}, "f", {"const char*", "..."}) == "_Z1fPKcz");
 		// g++ oracle: std::__throw_out_of_range_fmt(char const*, ...)
 		CHECK(itanium_mangle_nested_sub({"std"}, "__throw_out_of_range_fmt",
 		                                {"const char*", "..."})
@@ -216,73 +218,79 @@ TEST_SUITE("Itanium type encoding") {
 TEST_SUITE("Itanium function mangling") {
 
 	TEST_CASE("Free functions") {
-		CHECK(itanium_mangle("foo", {}) == "_Z3foov");
-		CHECK(itanium_mangle("foo", {"int"}) == "_Z3fooi");
-		CHECK(itanium_mangle("foo", {"int", "double"}) == "_Z3fooid");
-		CHECK(itanium_mangle("foo", {"const char*"}) == "_Z3fooPKc");
-		CHECK(itanium_mangle("add", {"int", "int"}) == "_Z3addii");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {}) == "_Z3foov");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"int"}) == "_Z3fooi");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"int", "double"}) == "_Z3fooid");
+		CHECK(itanium_mangle_nested_sub({}, "foo", {"const char*"}) == "_Z3fooPKc");
+		CHECK(itanium_mangle_nested_sub({}, "add", {"int", "int"}) == "_Z3addii");
 	}
 
 	TEST_CASE("Method mangling") {
-		CHECK(itanium_mangle_method("Foo", "bar", {"int"}) == "_ZN3Foo3barEi");
-		CHECK(itanium_mangle_method("Foo", "bar", {"int", "double"}) == "_ZN3Foo3barEid");
-		CHECK(itanium_mangle_method("Foo", "bar", {"const char*"}) == "_ZN3Foo3barEPKc");
-		CHECK(itanium_mangle_method("MyClass", "method", {"int", "double", "const char*"})
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"int"}, false) == "_ZN3Foo3barEi");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"int", "double"}, false) == "_ZN3Foo3barEid");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {"const char*"}, false) == "_ZN3Foo3barEPKc");
+		CHECK(itanium_mangle_member_sub("MyClass", "method", {"int", "double", "const char*"}, false)
 		      == "_ZN7MyClass6methodEidPKc");
-		CHECK(itanium_mangle_method("Foo", "bar", {}) == "_ZN3Foo3barEv");
+		CHECK(itanium_mangle_member_sub("Foo", "bar", {}, false) == "_ZN3Foo3barEv");
 	}
 
 	TEST_CASE("Constructor mangling") {
-		CHECK(itanium_mangle_ctor("Foo", {}) == "_ZN3FooC1Ev");
-		CHECK(itanium_mangle_ctor("Foo", {"int"}) == "_ZN3FooC1Ei");
-		CHECK(itanium_mangle_ctor("Foo", {"const char*"}) == "_ZN3FooC1EPKc");
+		CHECK(itanium_mangle_ctor_sub("Foo", {}) == "_ZN3FooC1Ev");
+		CHECK(itanium_mangle_ctor_sub("Foo", {"int"}) == "_ZN3FooC1Ei");
+		CHECK(itanium_mangle_ctor_sub("Foo", {"const char*"}) == "_ZN3FooC1EPKc");
 	}
 
 	TEST_CASE("Destructor mangling") {
-		CHECK(itanium_mangle_dtor("Foo") == "_ZN3FooD1Ev");
-		CHECK(itanium_mangle_dtor("MyClass") == "_ZN7MyClassD1Ev");
+		CHECK(itanium_mangle_dtor_sub("Foo") == "_ZN3FooD1Ev");
+		CHECK(itanium_mangle_dtor_sub("MyClass") == "_ZN7MyClassD1Ev");
 	}
 
 	TEST_CASE("Nested name mangling") {
-		CHECK(itanium_mangle_nested({"ns", "Foo"}, "bar", {"int"})
+		CHECK(itanium_mangle_nested_sub({"ns", "Foo"}, "bar", {"int"})
 		      == "_ZN2ns3Foo3barEi");
-		CHECK(itanium_mangle_nested({"std", "string"}, "assign", {"const char*"})
-		      == "_ZN3std6string6assignEPKc");
+		// `std` is the St abbreviation, never a length-prefixed `3std` — the
+		// retired naive encoder pinned _ZN3std6string6assignEPKc, a symbol no
+		// compiler emits (c++filt: std::string::assign(char const*)).
+		CHECK(itanium_mangle_nested_sub({"std", "string"}, "assign", {"const char*"})
+		      == "_ZNSt6string6assignEPKc");
 	}
 }
 
 TEST_SUITE("Itanium operator mangling") {
 
 	TEST_CASE("Comparison operators") {
-		CHECK(itanium_mangle_operator("Counter", "==", {"int"}) == "_ZN7CountereqEi");
-		CHECK(itanium_mangle_operator("Counter", "!=", {"int"}) == "_ZN7CounterneEi");
-		CHECK(itanium_mangle_operator("Counter", "<", {"int"}) == "_ZN7CounterltEi");
-		CHECK(itanium_mangle_operator("Counter", ">", {"int"}) == "_ZN7CountergtEi");
-		CHECK(itanium_mangle_operator("Counter", "<=", {"int"}) == "_ZN7CounterleEi");
-		CHECK(itanium_mangle_operator("Counter", ">=", {"int"}) == "_ZN7CountergeEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "==", {"int"}, false) == "_ZN7CountereqEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "!=", {"int"}, false) == "_ZN7CounterneEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "<", {"int"}, false) == "_ZN7CounterltEi");
+		CHECK(itanium_mangle_operator_sub("Counter", ">", {"int"}, false) == "_ZN7CountergtEi");
+		CHECK(itanium_mangle_operator_sub("Counter", "<=", {"int"}, false) == "_ZN7CounterleEi");
+		CHECK(itanium_mangle_operator_sub("Counter", ">=", {"int"}, false) == "_ZN7CountergeEi");
 	}
 
 	TEST_CASE("Arithmetic operators") {
-		CHECK(itanium_mangle_operator("Vec", "+", {"Vec"}) == "_ZN3VecplE3Vec");
-		CHECK(itanium_mangle_operator("Vec", "-", {"Vec"}) == "_ZN3VecmiE3Vec");
-		CHECK(itanium_mangle_operator("Vec", "*", {"int"}) == "_ZN3VecmlEi");
+		// The class prefix is substitution S_, so a Vec parameter back-refs it
+		// (the retired naive encoder pinned _ZN3VecplE3Vec — no compiler does).
+		CHECK(itanium_mangle_operator_sub("Vec", "+", {"Vec"}, false) == "_ZN3VecplES_");
+		CHECK(itanium_mangle_operator_sub("Vec", "-", {"Vec"}, false) == "_ZN3VecmiES_");
+		CHECK(itanium_mangle_operator_sub("Vec", "*", {"int"}, false) == "_ZN3VecmlEi");
 	}
 
 	TEST_CASE("Unary operators") {
-		CHECK(itanium_mangle_operator("Iter", "++", {}) == "_ZN4IterppEv");
-		CHECK(itanium_mangle_operator("Iter", "--", {}) == "_ZN4ItermmEv");
+		CHECK(itanium_mangle_operator_sub("Iter", "++", {}, false) == "_ZN4IterppEv");
+		CHECK(itanium_mangle_operator_sub("Iter", "--", {}, false) == "_ZN4ItermmEv");
 	}
 
 	TEST_CASE("Dialect strict-equality operators (Itanium vendor-extended)") {
-		// operator=== => v2 (binary vendor op) + source-name "eq3"
-		CHECK(itanium_mangle_operator("Money", "===", {"const Money&"})
-		      == "_ZN5Moneyv23eq3ERK5Money");
-		CHECK(itanium_mangle_operator("Money", "!==", {"const Money&"})
-		      == "_ZN5Moneyv23ne3ERK5Money");
+		// operator=== => v2 (binary vendor op) + source-name "eq3"; the
+		// const Money& parameter back-refs the class prefix (RKS_).
+		CHECK(itanium_mangle_operator_sub("Money", "===", {"const Money&"}, false)
+		      == "_ZN5Moneyv23eq3ERKS_");
+		CHECK(itanium_mangle_operator_sub("Money", "!==", {"const Money&"}, false)
+		      == "_ZN5Moneyv23ne3ERKS_");
 	}
 
 	TEST_CASE("Unknown operator returns empty") {
-		CHECK(itanium_mangle_operator("Foo", "???", {"int"}) == "");
+		CHECK(itanium_mangle_operator_sub("Foo", "???", {"int"}, false) == "");
 	}
 }
 
@@ -718,5 +726,391 @@ TEST_SUITE("Stdlib flavor: LLVM ABI namespace from parsed config") {
 		madc_mangle_set_stdlib_gnu(true);
 		CHECK(itanium_encode_type_sub(std_string_type())
 		      == "NSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+	}
+}
+
+// ===========================================================================
+// USER-SHAPE ORACLE — phase 0 of the C++ symbol-mangling feature
+// (docs/plans/2026-09-16-free-function-overloading-linkage.md §9.0).
+//
+// THE ORACLE IS THE FIXTURE. tests/unit/mangle_oracle.inc is GENERATED from
+// tests/abi/mangle_corpus.cpp by scripts/gen_mangle_oracle.sh: every row is a
+// symbol BOTH g++ and clang++ emitted for that corpus (scripts/mangle_abi_gate.sh
+// re-agrees it on every fulltest). Nothing below is hand-transcribed truth:
+// ORACLE_CHECK(got, want) first REQUIRES `want` to BE an oracle row (a typo'd
+// literal fails "not an oracle row"), then asserts the encoder reproduced it,
+// and marks the row consumed. The final case requires EVERY row consumed. So
+// a green suite proves SET EQUALITY over the corpus — every symbol madc mints
+// is real, and every real symbol was minted — which is what "ABI-identical
+// to g++/clang" (Rule #1) means for these shapes.
+//
+// Parameter spellings are the ones the parser hands the encoders
+// (FuncDef::param_cpp_spellings / mangle_param_spelling: "const Foo&",
+// "int (*)(int)", a typedef desugared, an array decayed) — the encoder is what
+// is under test here; the parser's spellings are validated end to end when
+// madc emits these symbols itself (phase 5 lane of mangle_abi_gate.sh).
+// ===========================================================================
+
+namespace {
+
+struct OracleRow { const char *mangled; const char *demangled; };
+static const OracleRow ORACLE[] = {
+#include "mangle_oracle.inc"
+};
+static const size_t ORACLE_N = sizeof(ORACLE) / sizeof(ORACLE[0]);
+static std::set<std::string> oracle_consumed;
+
+static const OracleRow *oracle_find(const std::string &sym)
+{
+	for (size_t i = 0; i < ORACLE_N; ++i)
+		if (sym == ORACLE[i].mangled)
+			return &ORACLE[i];
+	return nullptr;
+}
+
+// Thin spellings of the public encoder entry points, so a check reads as
+// the declaration it mirrors. Free functions are the global-scope branch of
+// the nested-function minter (no qualifiers).
+typedef std::vector<std::string> Params;
+static std::string free_fn(const std::string &name, const Params &p)
+{
+	return itanium_mangle_nested_sub({}, name, p);
+}
+static std::string ns_fn(const std::vector<std::string> &quals,
+                         const std::string &name, const Params &p)
+{
+	return itanium_mangle_nested_sub(quals, name, p);
+}
+static std::string member(const std::string &cls, const std::string &name,
+                          const Params &p, bool konst = false)
+{
+	return itanium_mangle_member_sub(cls, name, p, konst);
+}
+static std::string member_op(const std::string &cls, const std::string &op,
+                             const Params &p, bool konst = false)
+{
+	return itanium_mangle_operator_sub(cls, op, p, konst);
+}
+
+} // namespace
+
+// `want` must exist in the oracle (else the literal is a typo, or the corpus
+// lacks the shape — regenerate), the encoder must reproduce it, and the row is
+// consumed whether or not the check passed (it is the row the check TARGETS).
+#define ORACLE_CHECK(got, want) do { \
+	const std::string _got = (got), _want = (want); \
+	const OracleRow *_row = oracle_find(_want); \
+	REQUIRE_MESSAGE(_row != nullptr, "test literal " << _want \
+	    << " is NOT an oracle row — typo, or tests/abi/mangle_corpus.cpp lacks the shape (regenerate)"); \
+	CHECK_MESSAGE(_got == _want, "encoder minted " << (_got.empty() ? std::string("<empty>") : _got) \
+	    << " for `" << std::string(_row->demangled) << "` — oracle says " << _want); \
+	oracle_consumed.insert(_want); \
+} while (0)
+
+TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.cpp)") {
+
+	TEST_CASE("free functions: builtin parameter types") {
+		ORACLE_CHECK(free_fn("f_void",    {}),                      "_Z6f_voidv");
+		ORACLE_CHECK(free_fn("f_int",     {"int"}),                 "_Z5f_inti");
+		ORACLE_CHECK(free_fn("f_two",     {"int", "double"}),       "_Z5f_twoid");
+		ORACLE_CHECK(free_fn("f_bool",    {"bool"}),                "_Z6f_boolb");
+		ORACLE_CHECK(free_fn("f_char",    {"char"}),                "_Z6f_charc");
+		ORACLE_CHECK(free_fn("f_schar",   {"signed char"}),         "_Z7f_schara");
+		ORACLE_CHECK(free_fn("f_uchar",   {"unsigned char"}),       "_Z7f_ucharh");
+		ORACLE_CHECK(free_fn("f_short",   {"short"}),               "_Z7f_shorts");
+		ORACLE_CHECK(free_fn("f_ushort",  {"unsigned short"}),      "_Z8f_ushortt");
+		ORACLE_CHECK(free_fn("f_uint",    {"unsigned int"}),        "_Z6f_uintj");
+		ORACLE_CHECK(free_fn("f_long",    {"long"}),                "_Z6f_longl");
+		ORACLE_CHECK(free_fn("f_ulong",   {"unsigned long"}),       "_Z7f_ulongm");
+		ORACLE_CHECK(free_fn("f_llong",   {"long long"}),           "_Z7f_llongx");
+		ORACLE_CHECK(free_fn("f_ullong",  {"unsigned long long"}),  "_Z8f_ullongy");
+		ORACLE_CHECK(free_fn("f_float",   {"float"}),               "_Z7f_floatf");
+		ORACLE_CHECK(free_fn("f_ldouble", {"long double"}),         "_Z9f_ldoublee");
+		ORACLE_CHECK(free_fn("f_wchar",   {"wchar_t"}),             "_Z7f_wcharw");
+		ORACLE_CHECK(free_fn("f_char16",  {"char16_t"}),            "_Z8f_char16Ds");
+		ORACLE_CHECK(free_fn("f_char32",  {"char32_t"}),            "_Z8f_char32Di");
+		ORACLE_CHECK(free_fn("f_size",    {"std::size_t"}),         "_Z6f_sizem");
+	}
+
+	TEST_CASE("free functions: pointers, references, cv") {
+		ORACLE_CHECK(free_fn("f_cstr",  {"const char*"}),  "_Z6f_cstrPKc");
+		ORACLE_CHECK(free_fn("f_str",   {"char*"}),        "_Z5f_strPc");
+		ORACLE_CHECK(free_fn("f_ptr",   {"int*"}),         "_Z5f_ptrPi");
+		ORACLE_CHECK(free_fn("f_pptr",  {"int**"}),        "_Z6f_pptrPPi");
+		ORACLE_CHECK(free_fn("f_vptr",  {"void*"}),        "_Z6f_vptrPv");
+		ORACLE_CHECK(free_fn("f_cvptr", {"const void*"}),  "_Z7f_cvptrPKv");
+		ORACLE_CHECK(free_fn("f_ref",   {"int&"}),         "_Z5f_refRi");
+		ORACLE_CHECK(free_fn("f_cref",  {"const int&"}),   "_Z6f_crefRKi");
+		ORACLE_CHECK(free_fn("f_rref",  {"int&&"}),        "_Z6f_rrefOi");
+		// top-level const is not part of a parameter's type
+		ORACLE_CHECK(free_fn("f_kint",  {"const int"}),    "_Z6f_kinti");
+		ORACLE_CHECK(free_fn("f_cpref", {"const char*&"}), "_Z7f_cprefRPKc");
+	}
+
+	TEST_CASE("free functions: varargs, function pointers, array decay") {
+		ORACLE_CHECK(free_fn("f_va",  {"const char*", "..."}), "_Z4f_vaPKcz");
+		ORACLE_CHECK(free_fn("f_fp",  {"int (*)(int)"}),       "_Z4f_fpPFiiE");
+		ORACLE_CHECK(free_fn("f_fpv", {"void (*)()"}),         "_Z5f_fpvPFvvE");
+		// `int[10]` arrives decayed — the parser spells the parameter `int*`
+		ORACLE_CHECK(free_fn("f_arr", {"int*"}),               "_Z5f_arrPi");
+		// A multi-dimensional array parameter decays to a POINTER TO ARRAY:
+		// the parser spells `int (*)[3]`, the encoder's array production
+		// reads it (PA3_i); an array of pointers decays to `int**`.
+		ORACLE_CHECK(free_fn("f_arr2", {"int (*)[3]"}),        "_Z6f_arr2PA3_i");
+		ORACLE_CHECK(free_fn("f_arr3", {"int (*)[3][4]"}),     "_Z6f_arr3PA3_A4_i");
+		ORACLE_CHECK(free_fn("f_arrp", {"int**"}),             "_Z6f_arrpPPi");
+		// A spelling this grammar does not read is REFUSED — the empty
+		// symbol every caller treats as "no symbol" — never encoded as a
+		// length-prefixed copy of the raw text (`14int (*)[3` reached an
+		// object once).
+		CHECK(free_fn("f_bad", {"int (*"}) == "");
+		CHECK(free_fn("f_bad", {"{lambda(int)#1}"}) == "");
+	}
+
+	TEST_CASE("free functions: user class parameters and substitution back-refs") {
+		ORACLE_CHECK(free_fn("g_val",  {"Foo"}),              "_Z5g_val3Foo");
+		ORACLE_CHECK(free_fn("g_ref",  {"Foo&"}),             "_Z5g_refR3Foo");
+		ORACLE_CHECK(free_fn("g_cref", {"const Foo&"}),       "_Z6g_crefRK3Foo");
+		ORACLE_CHECK(free_fn("g_ptr",  {"Foo*"}),             "_Z5g_ptrP3Foo");
+		ORACLE_CHECK(free_fn("g_cptr", {"const Foo*"}),       "_Z6g_cptrPK3Foo");
+		// the second Foo& is a back-ref to the decorated type (S0_), the
+		// Foo* in g_mix back-refs the bare class (S_) under a fresh P
+		ORACLE_CHECK(free_fn("g_two",  {"Foo&", "Foo&"}),       "_Z5g_twoR3FooS0_");
+		ORACLE_CHECK(free_fn("g_mix",  {"const Foo&", "Foo*"}), "_Z5g_mixRK3FooPS_");
+		// the return type is not encoded for a non-template function
+		ORACLE_CHECK(free_fn("make_foo", {}),                 "_Z8make_foov");
+	}
+
+	TEST_CASE("free functions: namespaced and nested class parameters") {
+		ORACLE_CHECK(free_fn("h_ref",  {"ns::Bar&"}),            "_Z5h_refRN2ns3BarE");
+		ORACLE_CHECK(free_fn("h_two",  {"ns::Bar&", "ns::Bar&"}), "_Z5h_twoRN2ns3BarES1_");
+		ORACLE_CHECK(free_fn("h_val",  {"ns::Bar"}),             "_Z5h_valN2ns3BarE");
+		ORACLE_CHECK(free_fn("h_deep", {"a::b::C&"}),            "_Z6h_deepRN1a1b1CE");
+		ORACLE_CHECK(free_fn("i_nest", {"Outer::Inner&"}),       "_Z6i_nestRN5Outer5InnerE");
+		ORACLE_CHECK(free_fn("i_kind", {"Outer::Kind"}),         "_Z6i_kindN5Outer4KindE");
+	}
+
+	TEST_CASE("free functions: enum parameters") {
+		ORACLE_CHECK(free_fn("e_enum",   {"Color"}),    "_Z6e_enum5Color");
+		ORACLE_CHECK(free_fn("e_scoped", {"Scoped"}),   "_Z8e_scoped6Scoped");
+		ORACLE_CHECK(free_fn("e_ns",     {"ns::Mode"}), "_Z4e_nsN2ns4ModeE");
+	}
+
+	TEST_CASE("free functions: a typedef parameter arrives desugared") {
+		// mangle_param_spelling desugars `ulong_t` → `unsigned long`, and
+		// `FooAlias&` → `Foo&`: Itanium encodes canonical types, never aliases
+		ORACLE_CHECK(free_fn("td_ulong", {"unsigned long"}), "_Z8td_ulongm");
+		ORACLE_CHECK(free_fn("td_cls",   {"Foo&"}),          "_Z6td_clsR3Foo");
+	}
+
+	TEST_CASE("free functions: an overload set is four distinct symbols") {
+		ORACLE_CHECK(free_fn("ov", {"int"}),         "_Z2ovi");
+		ORACLE_CHECK(free_fn("ov", {"const char*"}), "_Z2ovPKc");
+		ORACLE_CHECK(free_fn("ov", {"double"}),      "_Z2ovd");
+		ORACLE_CHECK(free_fn("ov", {"Foo&"}),        "_Z2ovR3Foo");
+	}
+
+	TEST_CASE("the darwin blocker #2 shape: send(madc::channel&, madc::value&)") {
+		// Distinct from POSIX's extern "C" `send` by construction — this is
+		// the symbol that lets the user's send coexist with the umbrella's.
+		ORACLE_CHECK(free_fn("send", {"madc::channel&", "madc::value&"}),
+		             "_Z4sendRN4madc7channelERNS_5valueE");
+	}
+
+	TEST_CASE("namespace-scope functions") {
+		ORACLE_CHECK(ns_fn({"ns"},     "nf_int",  {"int"}),      "_ZN2ns6nf_intEi");
+		// a parameter in the SAME namespace back-refs the namespace prefix
+		ORACLE_CHECK(ns_fn({"ns"},     "nf_bar",  {"ns::Bar&"}), "_ZN2ns6nf_barERNS_3BarE");
+		ORACLE_CHECK(ns_fn({"ns"},     "nf_foo",  {"Foo&"}),     "_ZN2ns6nf_fooER3Foo");
+		ORACLE_CHECK(ns_fn({"a", "b"}, "nf_deep", {}),           "_ZN1a1b7nf_deepEv");
+	}
+
+	TEST_CASE("member functions: plain, const, static, self-referencing") {
+		ORACLE_CHECK(member("Foo", "m_void",   {}),                         "_ZN3Foo6m_voidEv");
+		ORACLE_CHECK(member("Foo", "m_int",    {"int"}),                    "_ZN3Foo5m_intEi");
+		ORACLE_CHECK(member("Foo", "m_cstr",   {"const char*"}),            "_ZN3Foo6m_cstrEPKc");
+		ORACLE_CHECK(member("Foo", "m_const",  {"int"}, true),              "_ZNK3Foo7m_constEi");
+		// the class prefix is S_, so Foo& inside Foo's own member is RS_
+		ORACLE_CHECK(member("Foo", "m_self",   {"Foo&"}),                   "_ZN3Foo6m_selfERS_");
+		ORACLE_CHECK(member("Foo", "m_two",    {"const Foo&", "const Foo&"}), "_ZN3Foo5m_twoERKS_S1_");
+		ORACLE_CHECK(member("Foo", "m_bar",    {"ns::Bar&"}),               "_ZN3Foo5m_barERN2ns3BarE");
+		// static: no hidden this, mangles like any member
+		ORACLE_CHECK(member("Foo", "m_static", {"int"}),                    "_ZN3Foo8m_staticEi");
+		ORACLE_CHECK(member("ns::Bar", "bm",     {"int"}),                  "_ZN2ns3Bar2bmEi");
+		ORACLE_CHECK(member("ns::Bar", "bm_foo", {"Foo&"}),                 "_ZN2ns3Bar6bm_fooER3Foo");
+		ORACLE_CHECK(member("Outer::Inner", "im", {}),                      "_ZN5Outer5Inner2imEv");
+		// a nested enum parameter back-refs the enclosing class
+		ORACLE_CHECK(member("Outer", "om", {"Outer::Kind"}),                "_ZN5Outer2omENS_4KindE");
+		ORACLE_CHECK(member("V", "vf", {}),                                 "_ZN1V2vfEv");
+		ORACLE_CHECK(member("ns::VB", "vbf", {}),                           "_ZN2ns2VB3vbfEv");
+	}
+
+	TEST_CASE("constructors: C1 (complete object)") {
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {}),             "_ZN3FooC1Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"int"}),        "_ZN3FooC1Ei");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"const Foo&"}), "_ZN3FooC1ERKS_");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("ns::Bar", {}),         "_ZN2ns3BarC1Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<int>", {}),        "_ZN3BoxIiEC1Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}),        "_ZN3BoxI3FooEC1Ev");
+	}
+
+	TEST_CASE("constructors: C2 (base object) and C5 (vague-linkage COMDAT group)") {
+		// Every ctor also has a C2; a g++-compiled DERIVED class calls the
+		// base's C2 — without it a madc base class cannot be inherited from
+		// across the ABI boundary. C5 appears only for vague linkage (the
+		// template instantiations), as the group both variants live in.
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {}, "C2"),             "_ZN3FooC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"int"}, "C2"),        "_ZN3FooC2Ei");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Foo", {"const Foo&"}, "C2"), "_ZN3FooC2ERKS_");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("ns::Bar", {}, "C2"),         "_ZN2ns3BarC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<int>", {}, "C2"),        "_ZN3BoxIiEC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<int>", {}, "C5"),        "_ZN3BoxIiEC5Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}, "C2"),        "_ZN3BoxI3FooEC2Ev");
+		ORACLE_CHECK(itanium_mangle_ctor_sub("Box<Foo>", {}, "C5"),        "_ZN3BoxI3FooEC5Ev");
+	}
+
+	TEST_CASE("destructors: D1 complete, D2 base, D0 deleting (virtual)") {
+		ORACLE_CHECK(itanium_mangle_dtor_sub("Foo"),           "_ZN3FooD1Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("Foo", "D2"),     "_ZN3FooD2Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("ns::Bar"),       "_ZN2ns3BarD1Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("ns::Bar", "D2"), "_ZN2ns3BarD2Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("V", "D0"),       "_ZN1VD0Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("V"),             "_ZN1VD1Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("V", "D2"),       "_ZN1VD2Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("ns::VB", "D0"),  "_ZN2ns2VBD0Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("ns::VB"),        "_ZN2ns2VBD1Ev");
+		ORACLE_CHECK(itanium_mangle_dtor_sub("ns::VB", "D2"),  "_ZN2ns2VBD2Ev");
+	}
+
+	TEST_CASE("member operators: binary, assignment, call, subscript, ++, <<, new/delete") {
+		ORACLE_CHECK(member_op("Foo", "=",  {"const Foo&"}),       "_ZN3FooaSERKS_");
+		ORACLE_CHECK(member_op("Foo", "==", {"const Foo&"}, true), "_ZNK3FooeqERKS_");
+		ORACLE_CHECK(member_op("Foo", "!=", {"const Foo&"}, true), "_ZNK3FooneERKS_");
+		ORACLE_CHECK(member_op("Foo", "<",  {"const Foo&"}, true), "_ZNK3FooltERKS_");
+		ORACLE_CHECK(member_op("Foo", "+",  {"const Foo&"}, true), "_ZNK3FooplERKS_");
+		ORACLE_CHECK(member_op("Foo", "-",  {"const Foo&"}, true), "_ZNK3FoomiERKS_");
+		ORACLE_CHECK(member_op("Foo", "*",  {"int"}, true),        "_ZNK3FoomlEi");
+		ORACLE_CHECK(member_op("Foo", "&",  {"const Foo&"}, true), "_ZNK3FooanERKS_");
+		ORACLE_CHECK(member_op("Foo", "+=", {"const Foo&"}),       "_ZN3FoopLERKS_");
+		ORACLE_CHECK(member_op("Foo", "!",  {}, true),             "_ZNK3FoontEv");
+		ORACLE_CHECK(member_op("Foo", "[]", {"int"}),              "_ZN3FooixEi");
+		ORACLE_CHECK(member_op("Foo", "()", {"int"}),              "_ZN3FooclEi");
+		// pre/post increment share the code; the dummy int distinguishes them
+		ORACLE_CHECK(member_op("Foo", "++", {}),                   "_ZN3FooppEv");
+		ORACLE_CHECK(member_op("Foo", "++", {"int"}),              "_ZN3FooppEi");
+		ORACLE_CHECK(member_op("Foo", "<<", {"int"}),              "_ZN3FoolsEi");
+		ORACLE_CHECK(member_op("Foo", "new",    {"std::size_t"}),  "_ZN3FoonwEm");
+		ORACLE_CHECK(member_op("Foo", "delete", {"void*"}),        "_ZN3FoodlEPv");
+	}
+
+	TEST_CASE("member operators: UNARY forms have their own codes (arity decides)") {
+		// operator+() ps, operator-() ng, operator*() de, operator&() ad — the
+		// binary spellings above are pl/mi/ml/an. A member operator is unary
+		// iff it takes no explicit parameter.
+		ORACLE_CHECK(member_op("Foo", "+", {}, true), "_ZNK3FoopsEv");
+		ORACLE_CHECK(member_op("Foo", "-", {}, true), "_ZNK3FoongEv");
+		ORACLE_CHECK(member_op("Foo", "*", {}),       "_ZN3FoodeEv");
+		ORACLE_CHECK(member_op("Foo", "&", {}),       "_ZN3FooadEv");
+	}
+
+	TEST_CASE("member operators: ->, compound %= <<=, logical &&") {
+		ORACLE_CHECK(member_op("Foo", "->",  {}),                   "_ZN3FooptEv");
+		ORACLE_CHECK(member_op("Foo", "%=",  {"int"}),              "_ZN3FoorMEi");
+		ORACLE_CHECK(member_op("Foo", "<<=", {"int"}),              "_ZN3FoolSEi");
+		ORACLE_CHECK(member_op("Foo", "&&",  {"const Foo&"}, true), "_ZNK3FooaaERKS_");
+	}
+
+	TEST_CASE("member operators: conversion functions are cv <type>") {
+		ORACLE_CHECK(itanium_mangle_conversion_sub("Foo", "bool", true), "_ZNK3FoocvbEv");
+		ORACLE_CHECK(itanium_mangle_conversion_sub("Foo", "int",  true), "_ZNK3FoocviEv");
+	}
+
+	TEST_CASE("free operators encode the operator code at global scope") {
+		ORACLE_CHECK(free_fn("operator==", {"const ns::Bar&", "const ns::Bar&"}),
+		             "_ZeqRKN2ns3BarES2_");
+		ORACLE_CHECK(free_fn("operator+",  {"const Foo&", "int"}), "_ZplRK3Fooi");
+		ORACLE_CHECK(free_fn("operator<<", {"Foo&", "int"}),       "_ZlsR3Fooi");
+	}
+
+	TEST_CASE("class template instantiations: as parameters and as member owners") {
+		ORACLE_CHECK(free_fn("t_box",    {"Box<int>&"}),     "_Z5t_boxR3BoxIiE");
+		ORACLE_CHECK(free_fn("t_boxfoo", {"Box<Foo>&"}),     "_Z8t_boxfooR3BoxI3FooE");
+		ORACLE_CHECK(free_fn("t_nsbox",  {"Box<ns::Bar>&"}), "_Z7t_nsboxR3BoxIN2ns3BarEE");
+		ORACLE_CHECK(member("Box<int>", "put", {"int"}),       "_ZN3BoxIiE3putEi");
+		ORACLE_CHECK(member("Box<int>", "get", {}, true),      "_ZNK3BoxIiE3getEv");
+		// the template ARGUMENT Foo is a candidate (S0_), so put(Foo) back-refs it
+		ORACLE_CHECK(member("Box<Foo>", "put", {"Foo"}),       "_ZN3BoxI3FooE3putES0_");
+		ORACLE_CHECK(member("Box<Foo>", "get", {}, true),      "_ZNK3BoxI3FooE3getEv");
+	}
+
+	TEST_CASE("function templates: I<targs>E, the return type, $T params, v for none") {
+		// The template NAME is substitution candidate S_ and the return T_ the
+		// next, so the T parameter back-refs it (S0_; S1_ once Foo took a slot).
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "ident", {"int"}, "$T0", {"$T0"}),
+		             "_Z5identIiET_S0_");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "ident", {"Foo"}, "$T0", {"$T0"}),
+		             "_Z5identI3FooET_S1_");
+		// no parameters → v, like any function
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "make", {"int"}, "$T0", {}),
+		             "_Z4makeIiET_v");
+		// namespaced: the ns prefix is S_, the template name S0_, T_ S1_
+		ORACLE_CHECK(itanium_mangle_function_template_sub({"ns"}, "nident", {"int"}, "$T0", {"$T0"}),
+		             "_ZN2ns6nidentIiEET_S1_");
+		// a dependent nested-name parameter: the `typename` disambiguator is
+		// not encoded; a reference argument is R, an rvalue reference O; a
+		// non-template parameter beside T stays i (never S0_)
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "fwd", {"int&"}, "$T0&&", {"typename rr<$T0>::type&"}),
+		             "_Z3fwdIRiEOT_RN2rrIS1_E4typeE");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "fwd", {"int"}, "$T0&&", {"typename rr<$T0>::type&&"}),
+		             "_Z3fwdIiEOT_ON2rrIS0_E4typeE");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({}, "scale", {"int"}, "$T0", {"$T0", "int"}),
+		             "_Z5scaleIiET_S0_i");
+		ORACLE_CHECK(itanium_mangle_function_template_sub({"ns"}, "nfwd", {"int*"}, "$T0&&", {"typename rr<$T0>::type&"}),
+		             "_ZN2ns4nfwdIPiEEOT_RN2rrIS2_E4typeE");
+		// a member template with no parameters ends in v too
+		ORACLE_CHECK(itanium_mangle_member_template_sub("Box<int>", "conv", {"long"}, "$T0", {}, true),
+		             "_ZNK3BoxIiE4convIlEET_v");
+	}
+
+	TEST_CASE("RTTI: typeinfo, typeinfo-name, vtable — plain and namespaced") {
+		ORACLE_CHECK(itanium_typeinfo_sym("V"),           "_ZTI1V");
+		ORACLE_CHECK(itanium_typeinfo_name_sym("V"),      "_ZTS1V");
+		ORACLE_CHECK(itanium_vtable_sym_cpp("V"),         "_ZTV1V");
+		// a namespaced class needs the N..E name: the _cpp (spelling-aware)
+		// variants produce it; the bare-name variants above cannot
+		ORACLE_CHECK(itanium_typeinfo_sym_cpp("ns::VB"),  "_ZTIN2ns2VBE");
+		ORACLE_CHECK(itanium_vtable_sym_cpp("ns::VB"),    "_ZTVN2ns2VBE");
+		ORACLE_CHECK(itanium_typeinfo_name_sym_cpp("ns::VB"), "_ZTSN2ns2VBE");
+		// the _ZTS symbol's CONTENT is the mangled type name itself
+		CHECK(itanium_typeinfo_name_string_cpp("ns::VB") == "N2ns2VBE");
+		CHECK(itanium_typeinfo_name_string_cpp("V") == "1V");
+	}
+
+	TEST_CASE("linkage: extern \"C\" and main are bare; a static function still mangles") {
+		// Bare symbols never reach the Itanium encoders — the rows document
+		// the contract the emitter honours (design §4.1/§4.3).
+		ORACLE_CHECK(std::string("c_fn"),  "c_fn");
+		ORACLE_CHECK(std::string("c_fn2"), "c_fn2");
+		ORACLE_CHECK(std::string("main"),  "main");
+		ORACLE_CHECK(free_fn("s_user", {}), "_Z6s_userv");
+		// internal linkage: the L prefix on the source name, not a bare name
+		ORACLE_CHECK(itanium_mangle_nested_sub({}, "s_fn", {"int"}, true), "_ZL4s_fni");
+	}
+
+	// Runs last (doctest orders by file/line): the set-equality half.
+	TEST_CASE("every oracle row was reproduced by an encoder check (set equality)") {
+		std::string missing;
+		size_t nmiss = 0;
+		for (size_t i = 0; i < ORACLE_N; ++i)
+			if (!oracle_consumed.count(ORACLE[i].mangled)) {
+				missing += "\n    ";
+				missing += ORACLE[i].mangled;
+				missing += "   ";
+				missing += ORACLE[i].demangled;
+				++nmiss;
+			}
+		CHECK_MESSAGE(nmiss == 0, nmiss << " oracle row(s) no encoder check reproduces"
+		    " — shapes madc cannot mint yet:" << missing);
+		CHECK(ORACLE_N >= 100);   // non-vacuity: the corpus still exercises the shapes
 	}
 }

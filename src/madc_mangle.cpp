@@ -3,9 +3,18 @@
 // Produces mangled symbol names following the Itanium ABI spec:
 // https://itanium-cxx-abi.github.io/cxx-abi/abi.html#mangling
 //
-// Covers: builtin types, pointers, references, const, classes,
-// nested names, constructors (C1), destructors (D1).
+// ONE substitution-aware encoder (ItaniumMangler — the `_sub` entry points):
+// builtins, pointers/references/cv, classes and template-ids with the standard
+// abbreviations and S_/S0_ back-references, nested names, members (const),
+// ctors (C1/C2/C5), dtors (D0/D1/D2), operators (arity-aware), conversion
+// functions, function templates at any scope, internal linkage, RTTI symbols.
+// Byte-identical to g++ AND clang++ on tests/abi/mangle_corpus.cpp (the oracle
+// in tests/unit/mangle_oracle.inc) and on the libstdc++/libc++ symbols madc
+// binds. There is deliberately no second, simpler encoder: the retired naive
+// family spelled `13madc::channel` for a namespaced class and `3Vec` for a
+// class that should have been the back-reference S_ — symbols nothing exports.
 
+#include <cctype>
 #include "madc_mangle.h"
 #include "spelling_delim.h"
 #include <cstring>
@@ -17,22 +26,6 @@
 static std::string source_name(const std::string &name)
 {
 	return std::to_string(name.size()) + name;
-}
-
-// Strip leading/trailing whitespace
-static std::string strip(const std::string &s)
-{
-	size_t start = s.find_first_not_of(" \t");
-	if (start == std::string::npos) return "";
-	size_t end = s.find_last_not_of(" \t");
-	return s.substr(start, end - start + 1);
-}
-
-// Check if a string ends with a suffix
-static bool ends_with(const std::string &s, const std::string &suffix)
-{
-	if (suffix.size() > s.size()) return false;
-	return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 // Try to match a builtin type name, return its Itanium code or empty string
@@ -120,74 +113,19 @@ static std::string builtin_code(const std::string &t)
 	return "";
 }
 
-std::string itanium_encode_type(const std::string &raw_type)
+// The ONE Itanium <operator-name> table. Four spellings name BOTH a unary and
+// a binary operator with distinct codes — the ARITY decides: a member with no
+// explicit parameter, or a free operator with one, is unary. (g++/clang:
+// Foo::operator-() const is _ZNK3FoongEv, Foo::operator-(const Foo&) const is
+// _ZNK3FoomiERKS_.) A spelling-only lookup minted the binary code for both.
+static std::string operator_code(const std::string &op, bool unary)
 {
-	std::string t = strip(raw_type);
-	if (t.empty()) return "v";
-
-	// Pointer: strip trailing * and recurse
-	if (ends_with(t, "*")) {
-		std::string inner = strip(t.substr(0, t.size() - 1));
-		return "P" + itanium_encode_type(inner);
+	if (unary) {
+		if (op == "+") return "ps";
+		if (op == "-") return "ng";
+		if (op == "*") return "de";
+		if (op == "&") return "ad";
 	}
-
-	// Reference: strip trailing & and recurse
-	if (ends_with(t, "&")) {
-		std::string inner = strip(t.substr(0, t.size() - 1));
-		return "R" + itanium_encode_type(inner);
-	}
-
-	// Const: strip leading "const " and wrap with K
-	if (t.substr(0, 6) == "const ") {
-		std::string inner = strip(t.substr(6));
-		return "K" + itanium_encode_type(inner);
-	}
-
-	// Builtin type
-	std::string code = builtin_code(t);
-	if (!code.empty()) return code;
-
-	// User-defined type: length-prefixed name
-	return source_name(t);
-}
-
-std::string itanium_encode_params(const std::vector<std::string> &param_types)
-{
-	if (param_types.empty()) return "v";
-	std::string result;
-	for (const auto &pt : param_types)
-		result += itanium_encode_type(pt);
-	return result;
-}
-
-std::string itanium_mangle(const std::string &func_name,
-                            const std::vector<std::string> &param_types)
-{
-	return "_Z" + source_name(func_name) + itanium_encode_params(param_types);
-}
-
-std::string itanium_mangle_method(const std::string &class_name,
-                                   const std::string &method_name,
-                                   const std::vector<std::string> &param_types)
-{
-	return "_ZN" + source_name(class_name) + source_name(method_name)
-	       + "E" + itanium_encode_params(param_types);
-}
-
-std::string itanium_mangle_ctor(const std::string &class_name,
-                                 const std::vector<std::string> &param_types)
-{
-	return "_ZN" + source_name(class_name) + "C1"
-	       + "E" + itanium_encode_params(param_types);
-}
-
-std::string itanium_mangle_dtor(const std::string &class_name)
-{
-	return "_ZN" + source_name(class_name) + "D1Ev";
-}
-
-static std::string operator_code(const std::string &op)
-{
 	// madc dialect operators — Itanium vendor-extended operator-name
 	// encoding `v <arity> <source-name>` (no standard code exists).
 	if (op == "===") return "v23eq3";
@@ -198,6 +136,7 @@ static std::string operator_code(const std::string &op)
 	if (op == ">")  return "gt";
 	if (op == "<=") return "le";
 	if (op == ">=") return "ge";
+	if (op == "<=>") return "ss";
 	if (op == "+")  return "pl";
 	if (op == "-")  return "mi";
 	if (op == "*")  return "ml";
@@ -208,6 +147,12 @@ static std::string operator_code(const std::string &op)
 	if (op == "-=") return "mI";
 	if (op == "*=") return "mL";
 	if (op == "/=") return "dV";
+	if (op == "%=") return "rM";
+	if (op == "&=") return "aN";
+	if (op == "|=") return "oR";
+	if (op == "^=") return "eO";
+	if (op == "<<=") return "lS";
+	if (op == ">>=") return "rS";
 	if (op == "<<") return "ls";
 	if (op == ">>") return "rs";
 	if (op == "[]") return "ix";
@@ -219,33 +164,16 @@ static std::string operator_code(const std::string &op)
 	if (op == "&")  return "an";
 	if (op == "|")  return "or";
 	if (op == "^")  return "eo";
+	if (op == "&&") return "aa";
+	if (op == "||") return "oo";
+	if (op == ",")  return "cm";
+	if (op == "->") return "pt";
+	if (op == "->*") return "pm";
 	if (op == "new")      return "nw";
 	if (op == "new[]")    return "na";
 	if (op == "delete")   return "dl";
 	if (op == "delete[]") return "da";
 	return "";
-}
-
-std::string itanium_mangle_operator(const std::string &class_name,
-                                     const std::string &op,
-                                     const std::vector<std::string> &param_types)
-{
-	std::string code = operator_code(op);
-	if (code.empty()) return "";
-	return "_ZN" + source_name(class_name) + code
-	       + "E" + itanium_encode_params(param_types);
-}
-
-std::string itanium_mangle_nested(const std::vector<std::string> &qualifiers,
-                                   const std::string &name,
-                                   const std::vector<std::string> &param_types)
-{
-	std::string result = "_ZN";
-	for (const auto &q : qualifiers)
-		result += source_name(q);
-	result += source_name(name);
-	result += "E" + itanium_encode_params(param_types);
-	return result;
 }
 
 // RTTI symbols for an un-namespaced user class (S5b.1).
@@ -269,6 +197,20 @@ std::string itanium_vtable_sym_cpp(const std::string &cpp_spelling)
 std::string itanium_typeinfo_sym_cpp(const std::string &cpp_spelling)
 {
 	return "_ZTI" + itanium_encode_type_sub(cpp_spelling);
+}
+
+// The typeinfo NAME symbol and its content — the mangled <type> itself — for
+// a class named by its canonical C++ spelling: "ns::VB" → _ZTSN2ns2VBE holding
+// "N2ns2VBE" (g++/clang). The bare-name forms above spell _ZTS2VB, which names
+// nothing once the class lives in a namespace.
+std::string itanium_typeinfo_name_sym_cpp(const std::string &cpp_spelling)
+{
+	return "_ZTS" + itanium_encode_type_sub(cpp_spelling);
+}
+
+std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling)
+{
+	return itanium_encode_type_sub(cpp_spelling);
 }
 
 std::string itanium_typeinfo_name_sym(const std::string &class_name)
@@ -322,6 +264,11 @@ struct TypeNode {
 	std::vector<TypeNode> fp_ret;      // [0] = return type (if is_funcptr)
 	std::vector<TypeNode> fp_params;   // parameter types (if is_funcptr)
 	std::vector<NameComponent> name;   // qualified name chain (if !is_builtin)
+	bool invalid = false;              // a name component is not an identifier:
+	                                   // a spelling the parser handed over in a
+	                                   // form this grammar does not read — the
+	                                   // symbol is REFUSED (empty), never a
+	                                   // length-prefixed copy of the raw text
 };
 
 // ---- parsing ---------------------------------------------------------------
@@ -401,6 +348,13 @@ TypeNode parse_type(const std::string &raw)
 			s = s.substr(6);
 			continue;
 		}
+		// `typename rr<T>::type` — the keyword disambiguates a dependent
+		// name in source; the ABI encodes the nested-name alone
+		// (g++: RN2rrIT_E4typeE). Peel it as a no-op decoration.
+		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
+			s = s.substr(9);
+			continue;
+		}
 		// trailing " const" form
 		if (s.size() >= 6 && s.compare(s.size() - 6, 6, " const") == 0) {
 			t.decos.push_back("K");
@@ -429,6 +383,34 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
+	// Array type "<elem>[N]..." and pointer-to-array "<elem> (*)[N]..." — the
+	// decayed type of a multi-dimensional array parameter (`int a[2][3]` is
+	// `int (*)[3]`, g++: PA3_i; `int a[2][3][4]` → PA3_A4_i) or a template
+	// argument (Box<int[2][3]> → A2_A3_i). Dims read left to right, outer
+	// to inner; each is an A<dim>_ decoration on the element type, the `(*)`
+	// a P outside them. Every decorated layer is a substitution candidate
+	// (the deco loop in encode_type registers A3_i like any other).
+	if (!s.empty() && s.back() == ']') {
+		std::vector<std::string> dims;
+		std::string rest = s;
+		size_t ob;
+		while (!rest.empty() && rest.back() == ']'
+		       && (ob = rest.rfind('[')) != std::string::npos) {
+			dims.insert(dims.begin(),
+				    mstrip(rest.substr(ob + 1, rest.size() - ob - 2)));
+			rest = mstrip(rest.substr(0, ob));
+		}
+		if (rest.size() >= 3 && rest.compare(rest.size() - 3, 3, "(*)") == 0) {
+			t.decos.push_back("P");
+			rest = mstrip(rest.substr(0, rest.size() - 3));
+		}
+		for (const auto &d : dims)
+			t.decos.push_back("A" + d + "_");
+		TypeNode inner = parse_type(rest);
+		inner.decos.insert(inner.decos.begin(), t.decos.begin(), t.decos.end());
+		return inner;
+	}
+
 	// A non-type argument rides the builtin channel: encode_core emits
 	// `builtin` verbatim and, unlike a class type, registers NO substitution
 	// candidate — which is exactly right, since an expression literal is not
@@ -447,8 +429,18 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
-	for (const auto &comp : split_scope(s))
+	for (const auto &comp : split_scope(s)) {
 		t.name.push_back(parse_component(comp));
+		// A source-name is an identifier. Anything else here ("int (*)[3]"
+		// before the array production existed, a closure type's display
+		// name) is a spelling this grammar does not read: refuse the whole
+		// symbol rather than encode `14int (*)[3]` into an object.
+		for (char c : t.name.back().ident)
+			if (!isalnum((unsigned char)c) && c != '_')
+				t.invalid = true;
+		if (t.name.back().ident.empty())
+			t.invalid = true;
+	}
 	return t;
 }
 
@@ -503,6 +495,8 @@ public:
 	// Encode a <type>, registering substitution candidates as it goes.
 	std::string encode_type(const TypeNode &t)
 	{
+		if (t.invalid)
+			refused_ = true;
 		// Build innermost core first, then wrap decorations outward. Each
 		// decorated layer is itself a substitution candidate (checked first).
 		std::string canon = canon_type_core(t);
@@ -544,7 +538,39 @@ public:
 	}
 
 	// Reset candidate table (each top-level symbol starts fresh).
-	void reset() { keys_.clear(); }
+	void reset() { keys_.clear(); refused_ = false; }
+	// The ONE exit of every entry point: a symbol that encoded a type this
+	// grammar refused is no symbol (empty) — the callers' bail path, the same
+	// answer every other unencodable shape gets.
+	std::string settled(const std::string &sym) const
+	{ return refused_ ? std::string() : sym; }
+
+	// "_ZN[K]<class-prefix>" — the opening of every member symbol. Starts a
+	// fresh candidate table and encodes the class as the enclosing prefix of
+	// the N..E (the outer N..E is supplied by the caller, so the name itself
+	// is NOT wrapped), registering its candidates so what follows — the
+	// parameters, a conversion target — may back-reference it (RS_).
+	std::string member_prefix(const std::string &qualified_class, bool const_method)
+	{
+		reset();
+		TypeNode cls = parse_type(qualified_class);
+		std::string out = "_ZN";
+		if (const_method) out += "K";
+		out += encode_name(cls.name, /*standalone=*/false);
+		return out;
+	}
+
+	// <bare-function-type>: `v` for no parameters, else each parameter type
+	// in order (top-level cv dropped by parse_param_type). The one spelling
+	// of that rule — every function-shaped symbol ends in it.
+	std::string params_enc(const std::vector<std::string> &params)
+	{
+		if (params.empty()) return "v";
+		std::string out;
+		for (const auto &p : params)
+			out += encode_type(parse_param_type(p));
+		return out;
+	}
 
 	// Mangle a member / ctor / dtor / operator symbol on a (template-id) class.
 	std::string mangle_member(const std::string &qualified_class,
@@ -553,25 +579,25 @@ public:
 	                          const std::vector<std::string> &params,
 	                          bool const_method)
 	{
-		reset();
-		TypeNode cls = parse_type(qualified_class);
-
-		// The class name is encoded as the enclosing prefix of an N..E symbol;
-		// the outer N..E is supplied here, so the name itself is NOT wrapped.
-		std::string clsenc = encode_name(cls.name, /*standalone=*/false);
-
-		std::string out = "_ZN";
-		if (const_method) out += "K";
-		out += clsenc;
+		std::string out = member_prefix(qualified_class, const_method);
 		out += special.empty() ? source_name(unqualified) : special;
 		out += "E";
+		out += params_enc(params);
+		return out;
+	}
 
-		if (params.empty()) {
-			out += "v";
-		} else {
-			for (const auto &p : params)
-				out += encode_type(parse_param_type(p));
-		}
+	// A conversion function `operator <type>() [const]`: <operator-name> is
+	// `cv <type>` and there are no explicit parameters (`v`). The target type
+	// is encoded AFTER the class prefix so it may back-reference it
+	// (Foo::operator const Foo&() is ...cvRKS_Ev). g++/clang:
+	// Foo::operator bool() const → _ZNK3FoocvbEv.
+	std::string mangle_conversion(const std::string &qualified_class,
+	                              const std::string &target_type,
+	                              bool const_method)
+	{
+		std::string out = member_prefix(qualified_class, const_method);
+		out += "cv" + encode_type(parse_type(target_type));
+		out += "Ev";
 		return out;
 	}
 
@@ -582,14 +608,8 @@ public:
 	                          const std::vector<std::string> &params,
 	                          bool const_method)
 	{
-		reset();
-		TypeNode cls = parse_type(qualified_class);
-		std::string clsenc = encode_name(cls.name, /*standalone=*/false);
+		std::string out = member_prefix(qualified_class, const_method);
 		add_sub("@member-template:" + qualified_class + "::" + unqualified);
-
-		std::string out = "_ZN";
-		if (const_method) out += "K";
-		out += clsenc;
 		out += source_name(unqualified);
 		out += "I";
 		for (const auto &a : targs)
@@ -597,39 +617,73 @@ public:
 		out += "E";
 		out += "E";
 		out += encode_type(parse_type(ret));
-		for (const auto &p : params)
-			out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
 	}
 
-	// Mangle a non-member std:: function template:
-	//   _ZSt <opOrName> I<targs>E <ret> <params...>   (one substitution table)
-	// Function templates encode the return type. opOrName is already the
-	// operator code (e.g. "ls") or a length-prefixed source name (e.g. "7getline").
-	std::string mangle_std_free_template(const std::string &opOrName,
-	        const std::vector<std::string> &targs,
-	        const std::string &ret,
-	        const std::vector<std::string> &params)
+	// A function-template symbol on a scope the caller has ALREADY encoded —
+	// its candidates registered first, because under libc++ the std::__1
+	// prefix is candidate #0, which is what shifts every later slot by one
+	// (the same operator+ reads S6_/S9_ under libc++, S5_/S8_ under libstdc++):
+	//   [_Z|_ZN] <scope> <opOrName> I<targs>E [E] <ret> <params>
+	// The function-template NAME is the next substitution candidate (Itanium:
+	// a function template's <template-prefix> is substitutable — the spec's
+	// `first<Duo>` registers `first` as S_); rarely back-referenced, but it
+	// shifts every later slot by one. Function templates encode the RETURN
+	// type, in terms of the template parameters ($T0 → T_), and an empty
+	// parameter list is `v` like any function's (_Z4makeIiET_v).
+	std::string function_template_tail(const std::string &scope, bool nested,
+	                                    const std::string &opOrName,
+	                                    const std::vector<std::string> &targs,
+	                                    const std::string &ret,
+	                                    const std::vector<std::string> &params)
 	{
-		reset();
-		// The SCOPE is encoded FIRST because under libc++ it is a nested-name
-		// whose std::__1 prefix is substitution candidate #0 — which is what
-		// shifts every later slot by one (the same operator+ reads S6_/S9_
-		// under libc++ and S5_/S8_ under libstdc++).
-		bool nested = false;
-		std::string scope = std_entity_scope(nested);
-		// The function-template NAME is the next substitution candidate (per the
-		// Itanium ABI: "<template-prefix>" of a function template is substitutable;
-		// e.g. the spec's `first<Duo>` example registers `first` as S_). It is
-		// rarely back-referenced but it shifts every later slot by one.
 		add_sub("@fn:" + opOrName);
 		std::string out = (nested ? "_ZN" : "_Z") + scope + opOrName + "I";
 		for (const auto &a : targs) out += encode_type(parse_type(a));
 		out += "E";			// close the template-args
 		if (nested) out += "E";		// close the <nested-name>
 		out += encode_type(parse_type(ret));
-		for (const auto &p : params) out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
+	}
+
+	// A non-member std:: function template in the FLAVOR-AGNOSTIC spelling
+	// (its callers never tracked the inline namespace): the scope is wherever
+	// std_entity_scope says the active stdlib puts std entities. opOrName is
+	// already the operator code ("ls") or a length-prefixed source name
+	// ("7getline").
+	std::string mangle_std_free_template(const std::string &opOrName,
+	        const std::vector<std::string> &targs,
+	        const std::string &ret,
+	        const std::vector<std::string> &params)
+	{
+		reset();
+		bool nested = false;
+		std::string scope = std_entity_scope(nested);
+		return function_template_tail(scope, nested, opOrName, targs, ret, params);
+	}
+
+	// A function template at a PARSE-FAITHFUL scope — the scope rule of
+	// mangle_nested_function: no qualifiers is global (_Z5identIiET_S0_), a
+	// plain {"std"} the unversioned St, anything else a nested-name chain
+	// (_ZN2ns6nidentIiEET_S1_). The minter for USER function templates.
+	std::string mangle_function_template(const std::vector<std::string> &qualifiers,
+	        const std::string &opOrName,
+	        const std::vector<std::string> &targs,
+	        const std::string &ret,
+	        const std::vector<std::string> &params)
+	{
+		reset();
+		if (qualifiers.empty())
+			return function_template_tail("", false, opOrName, targs, ret, params);
+		if (qualifiers.size() == 1 && qualifiers[0] == "std")
+			return function_template_tail("St", false, opOrName, targs, ret, params);
+		std::vector<NameComponent> chain;
+		for (const auto &q : qualifiers)
+			chain.push_back(parse_component(q));
+		std::string scope = encode_name(chain, /*standalone=*/false);
+		return function_template_tail(scope, true, opOrName, targs, ret, params);
 	}
 
 	// A namespace-scope std:: VARIABLE (cout, cin, …). Same scope rule as the
@@ -647,7 +701,8 @@ public:
 
 	std::string mangle_nested_function(const std::vector<std::string> &qualifiers,
 	                                   const std::string &name,
-	                                   const std::vector<std::string> &params)
+	                                   const std::vector<std::string> &params,
+	                                   bool internal_linkage)
 	{
 		reset();
 		// An operator name encodes as its Itanium operator-name code in
@@ -655,18 +710,21 @@ public:
 		// is _ZStls…, N::operator+ is _ZN1NplE…. Only the global branch
 		// had this; the std and qualified branches fell to source_name,
 		// producing invalid symbols like _ZSt10operator<<.
+		// A free operator is unary iff it takes exactly one parameter.
 		std::string opcode;
 		if (name.compare(0, 8, "operator") == 0)
-			opcode = operator_code(name.substr(8));
+			opcode = operator_code(name.substr(8), params.size() == 1);
+		// The <unqualified-name>. An entity with INTERNAL linkage (`static`
+		// at namespace scope) carries the `L` prefix on its source name —
+		// g++/clang: `static void s_fn(int)` is _ZL4s_fni, never _Z4s_fni,
+		// and inside a namespace _ZN2nsL1fEv. Operator codes take no prefix.
+		std::string uname = !opcode.empty() ? opcode
+		                  : internal_linkage ? "L" + source_name(name)
+		                  : source_name(name);
 		// GLOBAL-scope function: _Z<name><params> with no N..E nesting.
 		if (qualifiers.empty()) {
-			std::string out = "_Z" + (opcode.empty() ? source_name(name)
-			                                         : opcode);
-			if (params.empty())
-				out += "v";
-			else
-				for (const auto &p : params)
-					out += encode_type(parse_param_type(p));
+			std::string out = "_Z" + uname;
+			out += params_enc(params);
 			return out;
 		}
 		// A function whose DECLARED scope is exactly `std`. The qualifier
@@ -686,13 +744,8 @@ public:
 		// W2 spellings (mangle_std_var / mangle_std_free_template),
 		// whose callers never tracked the inline namespace.
 		if (qualifiers.size() == 1 && qualifiers[0] == "std") {
-			std::string out = "_ZSt"
-			                + (opcode.empty() ? source_name(name) : opcode);
-			if (params.empty())
-				out += "v";
-			else
-				for (const auto &p : params)
-					out += encode_type(parse_param_type(p));
+			std::string out = "_ZSt" + uname;
+			out += params_enc(params);
 			return out;
 		}
 		std::vector<NameComponent> chain;
@@ -700,13 +753,9 @@ public:
 			chain.push_back(parse_component(q));
 		std::string out = "_ZN";
 		out += encode_name(chain, /*standalone=*/false);
-		out += opcode.empty() ? source_name(name) : opcode;
+		out += uname;
 		out += "E";
-		if (params.empty())
-			out += "v";
-		else
-			for (const auto &p : params)
-				out += encode_type(parse_param_type(p));
+		out += params_enc(params);
 		return out;
 	}
 
@@ -724,7 +773,8 @@ public:
 	}
 
 private:
-	std::vector<std::string> keys_;   // canonical keys, in candidate order
+	std::vector<std::string> keys_;
+	bool refused_ = false;	// a TypeNode::invalid reached encode_type   // canonical keys, in candidate order
 
 	// ---- substitution table -------------------------------------------------
 
@@ -998,9 +1048,9 @@ public:
 	}
 };
 
-std::string op_special(const std::string &op)
+std::string op_special(const std::string &op, bool unary)
 {
-	return operator_code(op);
+	return operator_code(op, unary);
 }
 
 } // anonymous namespace
@@ -1028,18 +1078,26 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 	// generation stamp is therefore part of the key, the convention g_std_abi_gen
 	// is declared for ("bumped on change; caches key on it") and the one
 	// marshals_value_text's carrier cache already follows.
+	//
+	// Nor of the std ABI alone: builtin_code spells size_t / int64_t / ptrdiff_t
+	// through `long` on LP64 and `long long` on LLP64, so the same spelling
+	// encodes differently once madc_target_data_model flips (the cross builds
+	// set it at startup; the unit tests flip it mid-run). Both inputs the
+	// encoding reads key the memo.
 	static unsigned memo_gen = ~0u;
+	static TargetDataModel memo_model = madc_target_data_model;
 	static std::map<std::string, std::string> memo;
-	if (memo_gen != g_std_abi_gen) {
+	if (memo_gen != g_std_abi_gen || memo_model != madc_target_data_model) {
 		memo.clear();
 		memo_gen = g_std_abi_gen;
+		memo_model = madc_target_data_model;
 	}
 	std::map<std::string, std::string>::const_iterator hit = memo.find(cpp_type);
 	if (hit != memo.end())
 		return hit->second;
 	ItaniumMangler m;
 	m.reset();
-	std::string encoded = m.encode_type(parse_type(cpp_type));
+	std::string encoded = m.settled(m.encode_type(parse_type(cpp_type)));
 	memo[cpp_type] = encoded;
 	return encoded;
 }
@@ -1050,8 +1108,8 @@ std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        bool const_method)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, member, "",
-	                       param_types, const_method);
+	return m.settled(m.mangle_member(qualified_class, member, "",
+	                       param_types, const_method));
 }
 
 std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
@@ -1062,25 +1120,26 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        bool const_method)
 {
 	ItaniumMangler m;
-	return m.mangle_member_template(qualified_class, member,
+	return m.settled(m.mangle_member_template(qualified_class, member,
 	                                template_arg_types, return_type,
-	                                param_types, const_method);
+	                                param_types, const_method));
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
-                                      const std::vector<std::string> &param_types)
+                                      const std::vector<std::string> &param_types,
+                                      const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", "C1",
-	                       param_types, false);
+	return m.settled(m.mangle_member(qualified_class, "", flavor,
+	                       param_types, false));
 }
 
 std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
                                     const char *flavor)
 {
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", flavor,
-	                       {}, false);
+	return m.settled(m.mangle_member(qualified_class, "", flavor,
+	                       {}, false));
 }
 
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
@@ -1088,11 +1147,20 @@ std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::vector<std::string> &param_types,
                                          bool const_method)
 {
-	std::string code = op_special(op);
+	// A member operator is unary iff it takes no explicit parameter.
+	std::string code = op_special(op, param_types.empty());
 	if (code.empty()) return "";
 	ItaniumMangler m;
-	return m.mangle_member(qualified_class, "", code,
-	                       param_types, const_method);
+	return m.settled(m.mangle_member(qualified_class, "", code,
+	                       param_types, const_method));
+}
+
+std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
+                                           const std::string &target_type,
+                                           bool const_method)
+{
+	ItaniumMangler m;
+	return m.settled(m.mangle_conversion(qualified_class, target_type, const_method));
 }
 
 std::string itanium_mangle_std_free_template(const std::string &name,
@@ -1100,25 +1168,44 @@ std::string itanium_mangle_std_free_template(const std::string &name,
         const std::string &ret,
         const std::vector<std::string> &params)
 {
-	std::string code = op_special(name);
+	std::string code = op_special(name, params.size() == 1);
 	std::string opOrName = code.empty() ? source_name(name) : code;
 	ItaniumMangler m;
-	return m.mangle_std_free_template(opOrName, targs, ret, params);
+	return m.settled(m.mangle_std_free_template(opOrName, targs, ret, params));
+}
+
+std::string itanium_mangle_function_template_sub(
+        const std::vector<std::string> &qualifiers,
+        const std::string &name,
+        const std::vector<std::string> &targs,
+        const std::string &ret,
+        const std::vector<std::string> &params)
+{
+	// The parse-faithful NAME — "ident", or an operator-function-id
+	// ("operator<<", unary iff one parameter) — as itanium_mangle_nested_sub.
+	std::string opcode;
+	if (name.compare(0, 8, "operator") == 0)
+		opcode = op_special(name.substr(8), params.size() == 1);
+	std::string opOrName = opcode.empty() ? source_name(name) : opcode;
+	ItaniumMangler m;
+	return m.settled(m.mangle_function_template(qualifiers, opOrName, targs, ret, params));
 }
 
 std::string itanium_mangle_nested_sub(const std::vector<std::string> &qualifiers,
                                       const std::string &name,
-                                      const std::vector<std::string> &param_types)
+                                      const std::vector<std::string> &param_types,
+                                      bool internal_linkage)
 {
 	ItaniumMangler m;
-	return m.mangle_nested_function(qualifiers, name, param_types);
+	return m.settled(m.mangle_nested_function(qualifiers, name, param_types,
+	                                internal_linkage));
 }
 
 std::string itanium_mangle_nested_var(const std::vector<std::string> &qualifiers,
                                       const std::string &name)
 {
 	ItaniumMangler m;
-	return m.mangle_nested_variable(qualifiers, name);
+	return m.settled(m.mangle_nested_variable(qualifiers, name));
 }
 
 // ---- stdlib flavor / std ABI inline namespace --------------------------------
@@ -1201,7 +1288,7 @@ std::string itanium_mangle_std_var(const std::string &name)
 	// this used to build the prefix itself, which is how the FUNCTION
 	// manglers came to disagree with it.
 	ItaniumMangler m;
-	return m.mangle_std_var(name);
+	return m.settled(m.mangle_std_var(name));
 }
 
 // ---- canonical std:: type spellings -----------------------------------------
@@ -1333,3 +1420,30 @@ std::string std_stringstream_type()
 	       + std_prefix_untagged() + "char_traits<char>,"
 	       + std_prefix_untagged() + "allocator<char>>";
 }
+
+// Replace each template-param NAME (whole identifier) in a type spelling with the
+// mangler's $Tn marker (parse_type maps $Tn -> Itanium T_/T0_/...). E.g.
+// "basic_istream<_CharT,_Traits>&" + [_CharT,_Traits,_Alloc] -> "basic_istream<$T0,$T1>&".
+std::string itanium_substitute_tparams(const std::string &spell,
+		const std::vector<std::string> &tparams)
+{
+	std::string out;
+	size_t i = 0, n = spell.size();
+	while (i < n) {
+		char c = spell[i];
+		if (isalpha((unsigned char)c) || c == '_') {
+			size_t j = i + 1;
+			while (j < n && (isalnum((unsigned char)spell[j]) || spell[j] == '_'))
+				++j;
+			std::string word = spell.substr(i, j - i);
+			int tpi = -1;
+			for (size_t k = 0; k < tparams.size(); ++k)
+				if (tparams[k] == word) { tpi = (int)k; break; }
+			if (tpi >= 0) out += "$T" + std::to_string(tpi);
+			else out += word;
+			i = j;
+		} else { out += c; ++i; }
+	}
+	return out;
+}
+

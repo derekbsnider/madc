@@ -1483,7 +1483,10 @@ int main()
 	nvsp = php::count(vsp);
     println("view1-node: view={} maprows-pos={} shows-lowering={} spans={} indented={}",
 	    vh["view"], php::count(vmap) > 0 ? 1 : 0,
-	    strstr(vtext.c_str(), "long long add") != 0 ? 1 : 0,
+	    // the LOWERED signature: a C++-presenting program's function
+	    // carries its Itanium name in the lowering (long add(long, long)
+	    // → long long _Z3addll(...)), as g++ -S would show it
+	    strstr(vtext.c_str(), "long long _Z3addll") != 0 ? 1 : 0,
 	    nvsp > 0 ? 1 : 0,
 	    strstr(vtext.c_str(), "\n\t") != 0 ? 1 : 0);
     // Typing and stored-space history refuse with the view's own reason.

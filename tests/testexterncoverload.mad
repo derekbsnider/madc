@@ -1,0 +1,22 @@
+// C++ SYMBOL MANGLING phase 1 — the darwin-suite blocker #2 shape, Linux-
+// portable: the POSIX umbrella declares extern "C" `send`; the program defines
+// a C++ `send` over its own types. [dcl.link]/6: at most ONE function of a
+// name has C linkage — C++-linkage overloads beside it are legal (clang
+// -isysroot MacOSX.sdk -std=c++20: rc=0). The user's send is
+// _Z4sendR4connR7payload, a distinct symbol ranked by argument type; POSIX's
+// stays the bare `send`. Before the feature the definition was reconciled INTO
+// the C prototype by position — `c` typed int — and `c.write(...)` in the
+// madcide tests fell through UFCS onto POSIX write ("expected 3 got 2").
+extern "C" long send(int fd, const void *buf, unsigned long n, int flags);
+struct conn { int fd; };
+struct payload { const char *text; };
+void send(conn &c, payload &msg) { println("send fd={} text={}", c.fd, msg.text); }
+int main()
+{
+    conn c;
+    c.fd = 3;
+    payload m;
+    m.text = "hi";
+    send(c, m);
+    return 0;
+}

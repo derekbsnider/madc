@@ -1,0 +1,35 @@
+#!/../bin/madc
+// C++ SYMBOL MANGLING phase 3: functions madc DEFINES inside a namespace emit
+// their Itanium symbols (_ZN4seam1fEi / _ZN4seam1fEd / _ZN4seam5inner1gEv ...)
+// instead of the internal __ns_seam_f / __ns_seam_f__o2 spelling, so a madc
+// object links into a g++ program. Overloads inside a namespace, a nested
+// namespace, a prototype followed by its definition, a call through a
+// using-directive, and extern "C" inside a namespace (stays the bare C symbol).
+// Expected output = g++ (clang++ identical).
+#include <stdio.h>
+
+namespace seam {
+	int f(int x) { return x + 1; }
+	int f(double d) { return (int)(d * 2); }
+	int twice(int x);
+	namespace inner {
+		long g() { return 7; }
+		int f(int x) { return x * 100; }
+	}
+	extern "C" int seam_c_export(int x) { return x - 1; }
+}
+
+namespace seam {
+	int twice(int x) { return 2 * x; }
+}
+
+using namespace seam;
+
+int main()
+{
+	printf("f: %d %d\n", seam::f(1), seam::f(2.5));
+	printf("inner: %ld %d\n", seam::inner::g(), seam::inner::f(3));
+	printf("twice: %d\n", twice(21));
+	printf("cexport: %d\n", seam_c_export(10));
+	return 0;
+}

@@ -1,0 +1,84 @@
+// C++ symbol mangling, phase 2: a USER class's members emit under their
+// Itanium names, so same-name members overload by parameter type, by
+// const-ness and by static-ness — each its own symbol, exactly as g++/clang
+// emit them (_ZN3Box3setEi vs _ZN3Box3setEPKc vs _ZN3Box3setEd). Oracle: g++
+// and clang++ compile this file unchanged; .expect is their output.
+#include <cstdio>
+
+struct Box {
+    int v;
+    Box() : v(0) {}
+    Box(int x) : v(x) {}
+    void set(int x) { v = x; }
+    void set(const char *s) { v = s ? (int)s[0] : 0; }
+    void set(double d) { v = (int)(d * 10.0); }
+    int get() const { return v; }
+    int get() { return v + 1000; }
+    static int twice(int x) { return x * 2; }
+    static double twice(double x) { return x * 2.0; }
+    Box &operator+=(int d) { v += d; return *this; }
+    Box &operator+=(const Box &o) { v += o.v; return *this; }
+    bool operator==(const Box &o) const { return v == o.v; }
+    int operator-() const { return -v; }
+    explicit operator bool() const { return v != 0; }
+};
+
+namespace shapes {
+    struct Pt {
+	int x, y;
+	Pt(int a, int b) : x(a), y(b) {}
+	int dist(int ox, int oy) { int dx = x - ox, dy = y - oy; return dx * dx + dy * dy; }
+	int dist(const Pt &o) { return dist(o.x, o.y); }
+    };
+}
+
+struct Outer {
+    struct Inner {
+	int g(int a) { return a + 7; }
+	int g(const char *s) { return (int)s[0]; }
+    };
+};
+
+// Virtual dispatch through the Itanium-named bodies (_ZN2Sq4areaEv in
+// _ZTV2Sq). Two DISTINCT virtual names: arity-overloaded virtuals (area() /
+// area(int)) share one name-keyed vtable slot today — a separate, recorded
+// vtable-model gap, not a symbol one.
+struct Shape {
+    virtual ~Shape() {}
+    virtual int area() { return 0; }
+    virtual int scaled(int scale) { return scale; }
+};
+struct Sq : Shape {
+    int s;
+    Sq(int side) : s(side) {}
+    int area() { return s * s; }
+    int scaled(int scale) { return s * s * scale; }
+};
+
+int main()
+{
+    Box b;
+    b.set(42);
+    printf("int: %d\n", b.get());
+    b.set("A");
+    printf("cstr: %d\n", b.get());
+    b.set(2.5);
+    printf("double: %d\n", b.get());
+    const Box &cb = b;
+    printf("const get: %d\n", cb.get());
+    printf("twice: %d %g\n", Box::twice(21), Box::twice(1.25));
+    b += 3;
+    Box c(100);
+    b += c;
+    printf("plus: %d eq=%d neg=%d\n", b.get() - 1000, (int)(b == c), -b);
+    if (b)
+	printf("truthy\n");
+    shapes::Pt p(3, 4), q(0, 0);
+    printf("dist: %d %d\n", p.dist(0, 0), p.dist(q));
+    Outer::Inner in;
+    printf("inner: %d %d\n", in.g(1), in.g("Z"));
+    Sq sq(5);
+    Shape *sh = &sq;
+    printf("area: %d %d\n", sh->area(), sh->scaled(3));
+    return 0;
+}

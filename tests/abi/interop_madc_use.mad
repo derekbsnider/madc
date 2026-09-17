@@ -1,0 +1,47 @@
+// Reverse lane, madc side: USES the class g++ defined (interop_gxx_def.cpp).
+// The header's members are declaration-only here, so every call emits the
+// Itanium import the g++ object exports; report() is defined here for the
+// g++ side's caller.
+#include <cstdio>
+#include "interop_class.h"
+
+int other_side_report(const Counter &c);
+
+int report(const Counter &c)
+{
+    return c.get() * 10;
+}
+
+int main()
+{
+    Counter a;
+    Counter b(5);
+    printf("add: %d %d\n", a.add(3), b.add("123"));
+    printf("get: %d %d\n", a.get(), b.get());
+    a += 4;
+    printf("plus: %d eq=%d\n", a.get(), (int)(a == b));
+    printf("instances: %d\n", Counter::instances());
+    Counter *h = new Counter(7);
+    printf("weight: %d %d\n", b.weight(), h->weight());
+    printf("report: %d\n", other_side_report(b));
+    delete h;
+    printf("instances after delete: %d\n", Counter::instances());
+    tally::Ledger l;
+    l.post(5);
+    l.post(2.5);
+    printf("balance: %d\n", l.balance());
+    printf("checksum: %d %d %d\n", tally::checksum(3, 4), tally::checksum("abc"),
+	   tally::audit::stamp());
+    printf("scale_check: %d\n", tally::scale_check(4));
+    Counter u(2);
+    *u = 9;
+    printf("deref: %d mul: %d\n", *u, u * 3);
+    ++u;
+    printf("preinc: %d\n", u.get());
+    int old = u++;
+    printf("postinc: %d %d\n", old, u.get());
+    int arr[4] = { 1, 2, 3, 4 };
+    printf("add4: %d\n", u.add4(arr));
+    printf("cell: %d\n", cell_check(21));
+    return 0;
+}
