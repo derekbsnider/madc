@@ -31,6 +31,9 @@
 #   MADC_SELFHOST_MODE      the Makefile MODE whose objects define the TU set (develop)
 #   MADC_SELFHOST_BASELINE  baseline file (default docs/parity/selfhost-baseline.txt)
 #   MADC_SELFHOST_CAP       per-unit wall-clock AND cpu cap, seconds (default 600)
+#   MADC_SELFHOST_ERR_CAP   per-unit stderr cap in bytes (default 32M): a unit
+#                           whose diagnostics loop (2M errors from one <regex>
+#                           include, 2026-09-17) is cut off here, not on disk
 #   MADC_SELFHOST_JOBS      units run concurrently (default 4)
 #   MADC_SELFHOST_ONLY      space-separated unit keys to run (default: every unit)
 #   MADC_SELFHOST_OUT       output directory (default tmp/selfhost)
@@ -43,6 +46,7 @@ case "$BIN" in /*) BIN_ABS="$BIN";; *) BIN_ABS="$ROOT/$BIN";; esac
 MODE="${MADC_SELFHOST_MODE:-develop}"
 BASE="${MADC_SELFHOST_BASELINE:-docs/parity/selfhost-baseline.txt}"
 CAP="${MADC_SELFHOST_CAP:-600}"
+ERR_CAP="${MADC_SELFHOST_ERR_CAP:-33554432}"
 JOBS="${MADC_SELFHOST_JOBS:-4}"
 ONLY="${MADC_SELFHOST_ONLY:-}"
 OUT="${MADC_SELFHOST_OUT:-tmp/selfhost}"
@@ -106,16 +110,20 @@ derive_args() {
 }
 
 # --- the TU set: every object the Makefile links into bin/madc ---------------
-objects=$(make -s -C src MODE="$MODE" print-OBJECTS 2>/dev/null)
+# --no-print-directory: under `make -C src selfhost` this is a sub-make, and a
+# sub-make prints "Entering directory" lines that would join the object list.
+objects=$(make -s --no-print-directory -C src MODE="$MODE" print-OBJECTS 2> "$OUT/make_stderr.txt")
 if [ -z "$objects" ]; then
 	echo "selfhost_lane: make print-OBJECTS produced nothing (MODE=$MODE)" >&2
 	exit 2
 fi
 # shellcheck disable=SC2086
-make -n -B -C src MODE="$MODE" $objects 2>/dev/null | grep -- ' -c -o ' > "$OUT/compile_lines.txt"
+make -n -B --no-print-directory -C src MODE="$MODE" $objects 2>> "$OUT/make_stderr.txt" \
+	| grep -- ' -c -o ' > "$OUT/compile_lines.txt"
 nlines=$(wc -l < "$OUT/compile_lines.txt")
 if [ "$nlines" -eq 0 ]; then
 	echo "selfhost_lane: derived NO compile lines from make -n (harness broken)" >&2
+	tail -5 "$OUT/make_stderr.txt" >&2
 	exit 2
 fi
 
@@ -174,10 +182,19 @@ run_unit() {
 	san=$(sanitize "$key")
 	local -a args
 	mapfile -t args < "$OUT/args/$san.args"
+	# flags first, then --emit=c11, then the source LAST: madc treats every
+	# argument after the source file as the program's argv, so an --emit
+	# placed after it is not a flag and the unit would be RUN, not rendered
+	# ("madc_cir_execute: main() not found" — the first lane run, 2026-09-17).
+	local n=${#args[@]}
+	local src="${args[$((n - 1))]}"
+	local -a flags=("${args[@]:0:$((n - 1))}")
 	local start end rc
 	start=$(date +%s)
-	( cd src; ulimit -t "$CAP"; timeout "$CAP" "$BIN_ABS" "${args[@]}" --emit=c11 \
-		> /dev/null 2> "$OUT/raw/$san.err" )
+	# stderr through a byte cap: a diagnostics loop must not fill the disk
+	# (head closing the pipe ends the runaway early; its rc stays non-zero).
+	( cd src; ulimit -t "$CAP"; timeout "$CAP" "$BIN_ABS" "${flags[@]}" --emit=c11 "$src" \
+		> /dev/null 2> >(head -c "$ERR_CAP" > "$OUT/raw/$san.err"); wait )
 	rc=$?
 	end=$(date +%s)
 	sed 's/\x1b\[[0-9;]*m//g' "$OUT/raw/$san.err" > "$OUT/$san.err"
@@ -188,7 +205,7 @@ run_unit() {
 		> "$OUT/rows/$san.row"
 }
 export -f run_unit sanitize
-export OUT CAP BIN_ABS
+export OUT CAP ERR_CAP BIN_ABS
 
 lane_start=$(date +%s)
 printf '%s\n' "${keys[@]}" | xargs -P "$JOBS" -I{} bash -c 'run_unit "$1"' _ {}
