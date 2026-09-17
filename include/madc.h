@@ -4917,6 +4917,17 @@ public:
     bool parsing_for_init = false;
     bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_thread_local_decl = false;	// current declaration carries `thread_local` / `_Thread_local` (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vfTHREADLOCAL on the variable
+    // The ANONYMOUS enum definition just parsed: TokenENUM::parse fills it at
+    // the body (an unnamed enum has no DataDefENUM of its own — its
+    // enumerators register as plain ints), and the typedef-enum arm consumes
+    // it ONCE (read + clear) so `typedef enum : T { ... } alias;` gives the
+    // alias the fixed base's layout and the enumerator list ([dcl.enum]p8).
+    // The typedef_prefix_align model: one producer, one consumer, cleared on read.
+    struct AnonEnumDefinition {
+	bool live = false;
+	DataDef *fixed_base = NULL;	// NULL = unfixed (int layout)
+	std::vector<std::pair<std::string, int64_t> > enumerators;
+    } last_anon_enum;
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it

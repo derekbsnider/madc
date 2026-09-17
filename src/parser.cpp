@@ -51287,16 +51287,25 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	if ( tn && tn->type() == TokenType::ttIdentifier )
 	    pgm.nextToken();
 
-	// optional body: typedef enum { ... } Alias;
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
+	// optional body: typedef enum { ... } Alias; — or, C++11, an enum-base
+	// before it: typedef enum [Tag] : T { ... } Alias; TokenENUM::parse
+	// owns the `: T` (resolved + recorded as the underlying type) exactly
+	// as for a plain `enum Tag : T {`; this arm only has to hand it the
+	// stream at the ':' (datadef.h:248 `typedef enum : uint32_t {`).
+	bool body_parsed = false;
+	pgm.last_anon_enum = Program::AnonEnumDefinition();	// never adopt a stale one
+	if ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkOpBrc
+			      || pgm.peekToken()->id() == TokenID::tkTerC) )
 	{
 	    TokenENUM tenum;
 	    tenum.parse(pgm);
+	    body_parsed = true;
 	    // TokenENUM::parse re-feeds the enum's type token when the body
 	    // is followed by a declarator; THIS arm reads the ALIAS name
 	    // itself (the branches below even accept an alias spelled like
 	    // an existing type) — drop the re-fed type so the alias read
-	    // sees the real name, not "int".
+	    // sees the real name, not "int". The enum's layout and
+	    // enumerators arrive through last_anon_enum below.
 	    if ( pgm.peekToken()
 	      && pgm.peekToken()->type() == TokenType::ttDataType )
 		pgm.nextToken();
@@ -51314,9 +51323,22 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
-	DataDef *enum_alias_dd = new DataDefENUM(alias);
+	DataDefENUM *enum_alias_dd = new DataDefENUM(alias);
 	if ( !pgm.current_namespace().empty() )
 	    enum_alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
+	// [dcl.enum]p8: the alias IS the enumeration — a FIXED base
+	// (`typedef enum : uint32_t {...} varflag_t;`) gives it that base's
+	// size and raw type through the one layout owner (set_underlying),
+	// and the enumerator list rides along so a value of the alias type
+	// renders by name. Without this the alias stayed a 4-byte int enum
+	// (sizeof(varflag_t) 4, oracle 4 — but 1 for `: unsigned char`).
+	if ( body_parsed && pgm.last_anon_enum.live )
+	{
+	    if ( pgm.last_anon_enum.fixed_base )
+		enum_alias_dd->set_underlying(pgm.last_anon_enum.fixed_base);
+	    enum_alias_dd->enumerators = pgm.last_anon_enum.enumerators;
+	    pgm.last_anon_enum = Program::AnonEnumDefinition();	// consumed
+	}
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	if ( pgm.class_scope_stack.empty() )
 	    pgm.register_scoped_typedef(alias, tdt);
@@ -52219,6 +52241,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	~ScopedEnumNsGuard() { p.active_scoped_enum_ns = saved; }
     } scoped_enum_ns_guard(pgm, scope_ns);
 
+    // An ANONYMOUS definition has no DataDefENUM: publish its fixed base and
+    // enumerators on the Program's one-shot channel for a typedef alias to
+    // adopt (`typedef enum : uint32_t { ... } varflag_t;` — datadef.h:248).
+    if ( !enum_dd )
+    {
+	pgm.last_anon_enum = Program::AnonEnumDefinition();
+	pgm.last_anon_enum.live = true;
+	pgm.last_anon_enum.fixed_base = fixed_base;
+    }
     int64_t val = 0;
     int64_t enum_min_val = 0, enum_max_val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -52319,6 +52350,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// cannot fall out of step with the constants that were registered.
 	if ( DataDefENUM *tag_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
 	    tag_edd->enumerators.push_back(std::make_pair(name, val));
+	else
+	    pgm.last_anon_enum.enumerators.push_back(std::make_pair(name, val));
 	if ( val < enum_min_val )
 	    enum_min_val = val;
 	if ( val > enum_max_val )
