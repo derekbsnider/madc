@@ -66139,12 +66139,32 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
 	return pgm.parseStatement(tn);
     }
-    // constexpr / consteval / constinit: ignored specifiers (no madc codegen,
-    // like const). Consume the specifier and continue parsing the
-    // declaration it qualifies. A parsing_static_decl / parsing_const_decl flag
-    // set by a preceding storage keyword stays in effect across this delegation.
+    // constexpr / consteval / constinit: no madc codegen of their own. Consume
+    // the specifier and continue parsing the declaration it qualifies. A
+    // parsing_static_decl / parsing_const_decl flag set by a preceding storage
+    // keyword stays in effect across this delegation.
     if ( is_ignored_cpp_specifier_token(this) )
     {
+	// ...but `constexpr` is NOT ignorable on an object: [dcl.constexpr]/9
+	// says a constexpr specifier used in an object declaration declares the
+	// object CONST. Dropping it wholesale left `constexpr int x = 5;` a
+	// plain mutable int, so it never earned vfCONSTANT and EVERY constant
+	// context refused it — static_assert, enum initializers, non-type
+	// template arguments (where the unfolded argument silently keyed a
+	// different instantiation instead of erroring).
+	// `const` reaches the same declaration through parsing_const_decl
+	// (TokenCONST::parse, the one channel parseDeclaration reads into
+	// gotconst); route constexpr through THAT rather than teaching the
+	// constant evaluator a second rule about a second spelling.
+	// Only constexpr: consteval is function-only, and constinit does not
+	// imply const. gotconst becomes const-ness only on a variable/typedef
+	// declarator, so a `constexpr` FUNCTION is unaffected.
+	// NOTE narrower than the standard on pointers: `constexpr int *p` is
+	// `int *const p`, but gotconst is suppressed for a pointer declarator
+	// (`gotconst && !saw_pointer_decl`), so that case is left exactly as it
+	// is today rather than half-changed.
+	if ( str == "constexpr" )
+	    pgm.parsing_const_decl = true;
 	TokenBase *tn = pgm.nextToken();
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;

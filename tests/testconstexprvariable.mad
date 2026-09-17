@@ -1,0 +1,28 @@
+#include <cstdio>
+
+// [dcl.constexpr]/9 — a `constexpr` specifier in an OBJECT declaration
+// declares the object const. madc dropped `constexpr` as an ignored specifier
+// (beside `inline`), so the variable stayed a plain mutable int and no
+// constant context would take it.
+
+constexpr int cx = 5;
+constexpr int cy = cx + 2;
+
+// An enum initializer genuinely REQUIRES a folded constant. An array bound
+// does not — madc accepts `int a[cx]` as a VLA whether or not cx folded, so
+// it is not a valid probe for this.
+enum { E_VAR = cx, E_SUM = cx + cy };
+
+// Tag<cx> must BE Tag<5>: an argument that never folds keys a DIFFERENT
+// instantiation, and the call below then mismatches silently rather than
+// failing loudly. g++ rejects the mismatched form; so must madc.
+template<int N> struct Tag { };
+int want5(Tag<5>) { return 5; }
+
+int main()
+{
+    Tag<cx> t;
+    static_assert(cx == 5, "constexpr variable in static_assert");
+    printf("constexpr var: %d %d %d\n", (int)E_VAR, (int)E_SUM, want5(t));
+    return 0;
+}
