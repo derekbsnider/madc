@@ -70406,15 +70406,24 @@ fnptr_decl_arm_head:
 	    // must import that symbol, not the bare name (forest_bind_gate
 	    // [silbody]: the frozen body imported `fbgsb_delegate`, the
 	    // consumer defined the Itanium one). A GNU nested DEFINITION inside
-	    // a body keeps the legacy name (the mint below requires file scope);
-	    // main is the entry point and never mangles; extern "C" fails the
-	    // linkage test above; a prototype of a MACHINE-REGISTERED name
-	    // (libc_signatures, a host callback — every one a bare C symbol)
-	    // redeclares the C library's function and inherits its linkage in
-	    // parseFunction.
+	    // a body is a hoisted LOCAL entity, not a declaration of the
+	    // enclosing-namespace function — it never joins the set: tracking
+	    // it renamed a second same-named nested definition
+	    // (unique_overload_symbol) before parseFunction hoisted it, so its
+	    // own `nested()` call reported "undeclared identifier"
+	    // (testnestedasmbarrier: three functions each defining `nested`).
+	    // The discriminator is parseFunction's own — function_declarator_
+	    // has_body, the pure lookahead that decides is_nested_function; the
+	    // stream sits just after the declarator's '(' here as it does
+	    // there. main is the entry point and never mangles; extern "C"
+	    // fails the linkage test above; a prototype of a MACHINE-REGISTERED
+	    // name (libc_signatures, a host callback — every one a bare C
+	    // symbol) redeclares the C library's function and inherits its
+	    // linkage in parseFunction.
 	    || (cpp_symbol_mangling_enabled()
 	     && source_id != "main"
-	     && !prior_declaration_is_registration(source_id))) )
+	     && !prior_declaration_is_registration(source_id)
+	     && (compounds.empty() || !function_declarator_has_body()))) )
     {
 	// C++ free-function overloading at GLOBAL scope: the same per-overload
 	// Variable/FuncDef model as namespace functions, registered under the
