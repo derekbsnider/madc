@@ -21296,8 +21296,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// a dead arm may be legal only as skipped code — a
 			// statement expression whose last statement is a
 			// labeled while (c-testsuite 00213) fails c2mir's
-			// stmt-expr value check if emitted at all.
-			if (tq->condition && tq->condition->is_constant()) {
+			// stmt-expr value check if emitted at all. LITERAL means
+			// the literal-token predicate, not is_constant(): a member
+			// read through a `const T &` parameter (`h.total ? 1 : 0`)
+			// reports is_constant() with no data behind it, so the
+			// prune took ival() == 0 and emitted `return 0` — a silent
+			// wrong answer (self-host arc, tests/testconstrefternary).
+			if (tq->condition && is_literal_constant_token(tq->condition)) {
 				TokenBase *live = tq->condition->ival()
 					? tq->true_expr : tq->false_expr;
 				if (live)
