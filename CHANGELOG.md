@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Self-host harness — madc parses its own source, measured per unit (2026-09-17, in progress)
+
+- `scripts/selfhost_lane.sh` / `make -C src selfhost`: every TU the Makefile links
+  into `bin/madc` (flags derived from `make -n`, never restated) plus a wrapper TU
+  per own header runs through `--emit=c11`; a ratchet over
+  `docs/parity/selfhost-baseline.txt` (RED outside the baseline, loud when a
+  baseline unit passes). 49 of 172 units pass at this entry.
+- `thread_local` (C++11) / `_Thread_local` (C11) storage-class specifier: parsed,
+  carried as `vfTHREADLOCAL`, lowered to c2mir's `_Thread_local`; the JIT's MIR
+  floor has no TLS (documented deviation), emit-C/AOT are faithful. c2mir's
+  block-scope-only rule for `_Thread_local` without static/extern fixed in-tree.
+- Unnamed namespaces (`namespace { ... }`): members register in the enclosing
+  namespace with internal linkage.
+- `dynamic_cast<const T *>(p)`: cv-qualified targets.
+- `typedef enum [Tag] : T { ... } alias;`: the enum-base parses and the alias takes
+  its layout (`sizeof(alias) == sizeof(T)`) and enumerators.
+
+
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
 
 - **Under `--std=c++##` and `--std=madc`, madc now names every C++ symbol it
