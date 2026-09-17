@@ -15,7 +15,9 @@
 # run 20 (using-declaration imports an alias template): +include/madcdis/snapshot.h;
 # run 24 (a deduced type pack expands in a fn template return type — std::get<I>): the 12
 #   channel units (libmadc/madcdis channel*, datachannel, header_channel, websocket_channel,
-#   madc_channel_stream/datachannel/header_channel/socket_channel.cpp).
+#   madc_channel_stream/datachannel/header_channel/socket_channel.cpp));
+# run 26 (struct member declarator with a const between pointer stars): +include/madc_sys_includes.h
+#   +sys_include_paths.cpp.
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -40,7 +42,6 @@ include/libmadc/sink.h
 include/libmadc/source_adapter.h
 include/madc.h
 include/madc_modules.h
-include/madc_sys_includes.h
 include/madcdat/dataset.h
 include/madcdat/driver.h
 include/madcdat/mapper.h
@@ -119,6 +120,5 @@ ns_ui.cpp
 parser.cpp
 pch.cpp
 rt_format_value.cpp
-sys_include_paths.cpp
 ui_term.cpp
 va_helpers.cpp

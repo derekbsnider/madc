@@ -45312,16 +45312,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // Each declarator on the line can carry its own pointer stars:
 		    // `int *a, b;` or `struct foo *next, *prev;`.
 		    DataDef *member_dd = base_member_dd;
-		    bool mem_fnptr_base = (dynamic_cast<DataDefFPTR *>(member_dd) != NULL);
-		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-		    {
-			pgm.nextToken(); // consume '*'
-			if ( !mem_fnptr_base )
-			    member_dd = pgm.getPointerType(member_dd);
-		    }
-
-		    // skip trailing const/restrict qualifiers (e.g. `char const *p;`)
-		    pgm.skip_cv_qualifier_tokens();
+		    // Stars WITH cv-qualifiers between them (`const char *const
+		    // *paths;` — madc_sys_includes.h) through the ONE declarator
+		    // star consumer (it carries the fn-ptr-base exemption too); the
+		    // private loop here stopped at the const and read the second
+		    // `*` as the member name.
+		    pgm.consume_declarator_stars(member_dd, NULL, false);
 
 		    // expect member name
 		    tn = pgm.nextToken();
