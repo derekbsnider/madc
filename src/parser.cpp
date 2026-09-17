@@ -49032,6 +49032,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	skip_member_attributes();
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
+	// [class.mem]: an EMPTY member-declaration — the stray `;` after a
+	// member function body (`int f() { return v; };`, madc.h:2145 — 20
+	// self-host units read it as the start of a member and demanded a
+	// type). gcc/clang accept it (-pedantic: "extra ';'").
+	if ( tn->id() == TokenID::tkSemi )
+	{
+	    pgm.nextToken();
+	    continue;
+	}
 	// --- class-scope type aliases: typedef T name; / using name = T; ---
 	if ( tn->id() == TokenID::tkTYPEDEF )
 	{
