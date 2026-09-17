@@ -4749,6 +4749,47 @@ static size_t delim_scan_step(const Seq &toks, size_t i, DelimDepth &d)
     return 1;
 }
 
+// Read-only lookahead over a template-id in the LIVE token stream. The stream
+// begins at (or contains at lt_index) the opening '<'; return the token after
+// its balanced argument list without advancing the parser. DelimDepth is the
+// one owner of nested delimiter and `>>` handling, and carries this Program so
+// nested '<' tokens use template-name lookup rather than token adjacency.
+static TokenBase *peek_after_balanced_template_id_from(
+	Program &pgm, size_t lt_index, size_t *follow_index = NULL)
+{
+    const TokenStream &tokens = pgm.tokens;
+    if ( lt_index >= tokens.size() || !tokens[lt_index]
+      || tokens[lt_index]->id() != TokenID::tkLT )
+	return NULL;
+    DelimDepth d(&pgm);
+    size_t i = lt_index;
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	// A balanced template-id cannot cross a statement or block boundary.
+	// Bail early when a caller speculatively asks about a less-than expression.
+	if ( t && (t->id() == TokenID::tkSemi
+		 || t->id() == TokenID::tkOpBrc
+		 || t->id() == TokenID::tkClBrc) )
+	    return NULL;
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+	if ( i > lt_index && !d.angle )
+	{
+	    if ( follow_index )
+		*follow_index = i;
+	    return i < tokens.size() ? tokens[i] : NULL;
+	}
+    }
+    return NULL;
+}
+
+static TokenBase *peek_after_balanced_template_id(Program &pgm,
+						   size_t *follow_index = NULL)
+{
+    return peek_after_balanced_template_id_from(pgm, 0, follow_index);
+}
+
 static std::string template_token_fragment(TokenBase *tb)
 {
     if ( !tb )
@@ -37531,52 +37572,6 @@ static DataDef *referent_if_reference(DataDef *dd)
     return dd;
 }
 
-static TokenBase *peek_after_balanced_template_id_from(
-	const TokenStream &tokens, size_t lt_index)
-{
-    if ( lt_index >= tokens.size() || !tokens[lt_index]
-      || tokens[lt_index]->id() != TokenID::tkLT )
-	return NULL;
-    int depth = 0;
-    for ( size_t i = lt_index; i < tokens.size(); ++i )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t )
-	    continue;
-	// A balanced template-id (`Name<...>`) cannot span a statement or
-	// block boundary: `;`, `{`, `}` never appear inside a template
-	// argument list. Hitting one means the leading `<` was a less-than
-	// operator, not a template bracket. Bail now so a comparison like
-	// `i < n` does not scan to end-of-stream (that scan, run once per
-	// `<` across the file, is O(n^2)).
-	if ( t->id() == TokenID::tkSemi
-	  || t->id() == TokenID::tkOpBrc
-	  || t->id() == TokenID::tkClBrc )
-	    return NULL;
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT )
-	{
-	    if ( --depth == 0 )
-		return i + 1 < tokens.size() ? tokens[i + 1] : NULL;
-	}
-	else if ( t->id() == TokenID::tkBSR )
-	{
-	    if ( depth > 2 )
-		depth -= 2;
-	    else
-		return i + 1 < tokens.size() ? tokens[i + 1] : NULL;
-	}
-    }
-    return NULL;
-}
-
-static TokenBase *peek_after_balanced_template_id(
-	const TokenStream &tokens)
-{
-    return peek_after_balanced_template_id_from(tokens, 0);
-}
-
 static bool template_id_is_type_expression_context(Program &pgm,
 						   TokenID *follow_id = NULL)
 {
@@ -37586,7 +37581,7 @@ static bool template_id_is_type_expression_context(Program &pgm,
     // (`cpp_keyword_active` is true for the madc default and C++ floors only.)
     if ( !pgm.cpp_keyword_active(Program::STD_CPP98) )
 	return false;
-    TokenBase *after = peek_after_balanced_template_id(pgm.tokens);
+    TokenBase *after = peek_after_balanced_template_id(pgm);
     bool is_ctx = after
 	&& (after->id() == TokenID::tkOpBrk
 	 || after->id() == TokenID::tkOpBrc
@@ -39372,7 +39367,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// and the unqualified lane above arm for. A still-dependent
 			// arg keeps the opaque fallback inside instantiation.
 			TokenBase *after_tid =
-				peek_after_balanced_template_id(tokens);
+				peek_after_balanced_template_id(*this);
 			bool saved_vri = allow_variadic_real_inst;
 			if ( after_tid
 			  && (after_tid->id() == TokenID::tkOpBrk
@@ -40762,7 +40757,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			      || find_template_alias(tid_name) )
 			    {
 				TokenBase *after_tid =
-				    peek_after_balanced_template_id_from(tokens, 1);
+				    peek_after_balanced_template_id_from(*this, 1);
 				if ( after_tid
 				  && (after_tid->id() == TokenID::tkClBrk
 				   || after_tid->id() == TokenID::tkMul) )
@@ -40974,7 +40969,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			      && tokens[1]->id() == TokenID::tkLT )
 			    {
 				TokenBase *after_tid =
-				    peek_after_balanced_template_id_from(tokens, 1);
+				    peek_after_balanced_template_id_from(*this, 1);
 				template_ctor_grouping = after_tid
 				    && (after_tid->id() == TokenID::tkOpBrk
 				     || after_tid->id() == TokenID::tkOpBrc);
