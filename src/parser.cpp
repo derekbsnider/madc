@@ -52856,9 +52856,20 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	}
 fnptr_param_done:
 
-	// Optional parameter name (discard)
+	// Optional parameter name (discard). A following `(` is the named
+	// FUNCTION-type form `int fn(int)`: [dcl.fct]/5 adjusts it to a
+	// pointer-to-function parameter. Recurse through the same parameter-list
+	// owner as `int (*fn)(int)` and the abstract `int (int)` form above.
 	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
+	{
 	    nextToken();
+	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		nextToken(); // consume the function type's '('
+		FuncDef *nested = parseFnPtrParams(*param_dd);
+		param_dd = new DataDefFPTR(nested);
+	    }
+	}
 
 	func->parameters.push_back(param_dd);
 	func->const_params.push_back(param_leading_const);
@@ -67684,6 +67695,21 @@ grabnt:
 	    Throw(nt) << "Expecting token after identifier" << flush;
 
 	nt = nextToken();
+
+	// Named FUNCTION-type parameter: `int fn(int)` adjusts to
+	// `int (*fn)(int)` ([dcl.fct]/5). The opening '(' is already consumed;
+	// parseFnPtrParams is the one owner of the nested parameter list, just as
+	// it is for the parenthesized `int (*fn)(int)` arm above.
+	if ( nt && nt->id() == TokenID::tkOpBrk )
+	{
+	    DataDef *function_return = rtype == RefType::rtReference
+		? static_cast<DataDef *>(getReferenceType(param_dd)) : param_dd;
+	    FuncDef *param_func = parseFnPtrParams(*function_return);
+	    param_dd = new DataDefFPTR(param_func);
+	    param_alias.clear();
+	    rtype = RefType::rtValue;
+	    nt = nextToken();
+	}
 
 	// Array parameters decay only once in C: `T a[]` -> `T *`, and
 	// `T a[][3][4]` -> `T (*)[3][4]`. Preserve the trailing extents as a

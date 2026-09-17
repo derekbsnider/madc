@@ -1,0 +1,16 @@
+#include <stdio.h>
+
+int twice(int n) { return 2 * n; }
+int apply(int (*fn)(int), int n);
+int apply(int fn(int), int n) { return fn(n); }
+int unnamed(int (int), int);
+int unnamed(int fn(int), int n) { return fn(n) + 1; }
+typedef int (*outer)(int fn(int), int);
+
+int main()
+{
+	outer call = apply;
+	printf("function parameters: %d %d %d\n", apply(twice, 4),
+		unnamed(twice, 5), call(twice, 6));
+	return 0;
+}
