@@ -10,7 +10,8 @@
 # (thread_local landed): 47 of 172 units passed. Shrunk as fixes land —
 # run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp;
 # run 8 (class operator[] element typing): +include/madcdis/arena.h +include/token_arena.h;
-# run 10 (qualified class-scoped constants in constant expressions): +include/madcdis/prose.h +rt_dump_value.cpp.
+# run 10 (qualified class-scoped constants in constant expressions): +include/madcdis/prose.h +rt_dump_value.cpp;
+# run 12 (global-qualified `::ns::type`, alias-of-scoped-enum scopes): +include/madcdis/keys.h.
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -58,7 +59,6 @@ include/madcdis/header_channel.h
 include/madcdis/hub.h
 include/madcdis/interaction.h
 include/madcdis/intern_table.h
-include/madcdis/keys.h
 include/madcdis/mapper.h
 include/madcdis/process.h
 include/madcdis/projection.h

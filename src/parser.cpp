@@ -4323,6 +4323,21 @@ Program::QualifierScope Program::classify_qualifier_before_scope(
     std::string resolved = resolve_namespace_name_in_scope(name);
     if ( !resolved.empty() )
 	r.ns_name = resolved;
+    // A typedef ALIAS of a scoped enum names the enum's scope
+    // ([dcl.enum]/11 through [dcl.typedef]: `typedef ::ui::key tui_key;
+    // tui_key::none`, madcdis/keys.h:46). The enumerators live in the
+    // enum's pseudo-namespace, keyed by its linkage spelling (owner::tag,
+    // or the bare tag at global scope) — resolve the alias to that key so
+    // the namespace probes below find it. A class alias already resolves
+    // through resolve_expression_class_scope's datatype_map arm.
+    if ( !r.cls && !namespace_map.count(r.ns_name) )
+    {
+	flat_datatype_map_iter ati = datatype_map.find(name);
+	if ( ati != datatype_map.end() )
+	    if ( DataDefENUM *aedd = (*ati)->definition.as_enum_dd() )
+		if ( namespace_map.count(aedd->cpp_linkage_spelling()) )
+		    r.ns_name = aedd->cpp_linkage_spelling();
+    }
     r.has_variable_ns = namespace_map.find(r.ns_name) != namespace_map.end();
     r.has_datatype_ns =
 	namespace_datatype_map.find(r.ns_name) != namespace_datatype_map.end();
@@ -12797,7 +12812,25 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	std::string gname = contextual_identifier_name(gt);
 	flat_datatype_map_iter gi = datatype_map.find(gname);
 	if ( gi == datatype_map.end() )
+	{
+	    // `::ns::type` — the global qualifier heads a NAMESPACE, not a type
+	    // (madcdis/keys.h:40 `typedef ::ui::key tui_key;`). [namespace.qual]
+	    // from the global namespace is the ordinary qualified lookup of
+	    // `ns::type` with no enclosing-scope candidates in front of it;
+	    // madc's qualified arm resolves from the namespace root, so hand it
+	    // the chain with the leading `::` consumed. Only when `::` follows
+	    // the name and the name is a known namespace — a stray identifier
+	    // still declines exactly as before.
+	    if ( peekToken() && tokens.size() > 1 && tokens[1]
+	      && tokens[1]->id() == TokenID::tkNS
+	      && classify_qualifier_before_scope(gname, gt).is_namespace() )
+	    {
+		nextToken();	// consume the namespace name; the stream is at its '::'
+		return resolve_declared_type_token(gt, allow_lazy_types,
+						   consume_class_member_chain);
+	    }
 	    return NULL;
+	}
 	nextToken();	// consume the global name
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	    if ( TokenDataType *inst = instantiate_template_id(gname, gt) )
@@ -17443,7 +17476,11 @@ madc_wide_int Program::parse_constant_primary()
 	      && !(peekToken() && (peekToken()->id() == TokenID::tkLT
 				|| peekToken()->id() == TokenID::tkOpBrk)) )
 	    {
-		std::string qscope_key = qparts[0];
+		// The head resolves through the one qualifier classifier — a
+		// namespace alias, or a typedef alias of a scoped enum (`tmode::on`
+		// with `typedef ::ui::deep::mode tmode;`) names its target's scope.
+		QualifierScope qhead = classify_qualifier_before_scope(qparts[0], tb);
+		std::string qscope_key = qhead.is_namespace() ? qhead.ns_name : qparts[0];
 		for ( size_t i = 1; i + 1 < qparts.size(); ++i )
 		    qscope_key += "::" + qparts[i];
 		const std::string &qleaf = qparts.back();
@@ -42036,11 +42073,44 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(member_tb ? member_tb : name_tb)
 				<< "Expecting identifier after namespace '::'" << flush;
 			std::string member_name = contextual_identifier_name(member_tb);
-			var = find_namespace_member(gname, member_name, member_tb);
+			// Descend the chain exactly as the unqualified identifier
+			// arm does: a NESTED namespace (`::ui::deep::mode::on` —
+			// canonical_nested_namespace owns the hop, inline
+			// namespaces included), then a scoped ENUM registered as a
+			// type in that namespace, whose enumerators live in its
+			// pseudo-namespace keyed by the enum's linkage spelling.
+			// One level only was the arm's whole reach before.
+			std::string ns_name = gname;
+			while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+			{
+			    std::string nested = canonical_nested_namespace(ns_name, member_name);
+			    if ( nested.empty() )
+			    {
+				namespace_datatype_map_t::iterator nti =
+				    namespace_datatype_map.find(ns_name);
+				if ( nti == namespace_datatype_map.end() )
+				    break;
+				datatype_map_iter dti = nti->find(member_name);
+				if ( dti == nti->end() )
+				    break;
+				DataDefENUM *sedd = dti->second->definition.as_enum_dd();
+				if ( !sedd || !namespace_map.count(sedd->cpp_linkage_spelling()) )
+				    break;
+				nested = sedd->cpp_linkage_spelling();
+			    }
+			    nextToken(); // consume ::
+			    ns_name = nested;
+			    member_tb = nextToken();
+			    if ( !is_contextual_identifier_token(member_tb) )
+				Throw(member_tb ? member_tb : name_tb)
+				    << "Expecting identifier after '" << ns_name << "::'" << flush;
+			    member_name = contextual_identifier_name(member_tb);
+			}
+			var = find_namespace_member(ns_name, member_name, member_tb);
 			if ( !var )
 			    Throw(member_tb) << "'" << member_name
 					     << "' is not a member of namespace '"
-					     << gname << "'" << flush;
+					     << ns_name << "'" << flush;
 			tb = member_tb;
 		    }
 		    else
@@ -66340,9 +66410,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // Use the shared declared-type resolver so parameter types see the same
 	    // typedef, class-scope alias, alias-template, and namespace/template-id
 	    // surface as variables and members.
-	    if ( nt->type() == TokenType::ttIdentifier )
+	    // A leading `::` (global-qualified parameter type, `const ::ui::key
+	    // &k`) has no spelling of its own; the declared-type resolver's
+	    // global-scope arm owns it, exactly as for a declaration.
+	    if ( nt->type() == TokenType::ttIdentifier || nt->id() == TokenID::tkNS )
 	    {
-		std::string tname = ((TokenIdent *)nt)->spelling();
+		std::string tname = nt->id() == TokenID::tkNS
+				  ? std::string() : ((TokenIdent *)nt)->spelling();
 		param_base_spelling = tname;
 		if ( TokenDataType *resolved =
 			resolve_declared_type_token(nt, true, true) )
