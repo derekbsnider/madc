@@ -1940,6 +1940,7 @@ static bool const_ref_param(FuncDef *fd, size_t i);
 static bool reference_member_value_is_stored_address(TokenBase *tb);
 static bool tsubst_is_class_object_arg(DataDef *dd);
 static bool is_c2mir_builtin_call_name(const std::string &name);
+static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd);	// defined with the ctor selection below
 
 std::string CirBuilder::copied_pack_value_name(const char *name) const
 {
@@ -2904,6 +2905,14 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 	// fallback, so it always takes the manual assembly below.
 	bool manual_class_pack_lowering = relax_class_args;
 	bool unsupported_class_arg = false;
+	// [class.copy.ctor]: the ONE argument is an object of the class itself
+	// (`_Up(std::forward<_Args>(__args)...)` with _Args = _Up / _Up& —
+	// vector<T>::push_back(T)) and the class declares no user copy ctor:
+	// the IMPLICIT copy constructor, which has no FuncDef for the placement
+	// selection to find. Recorded here, lowered below as the memberwise copy
+	// the implicit-copy owner performs.
+	TokenPackExpansion *implicit_copy_pack = NULL;
+	DataDefTemplateParam *implicit_copy_pack_tp = NULL;
 	FuncDef *placement_ctor = NULL;
 	bool placement_ctor_checked = false;
 	std::vector<TokenBase *> expanded_ctor_args;
@@ -3045,6 +3054,14 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 				++concrete_arg_pos;
 				if (!tsubst_is_class_object_arg(elem))
 					continue;
+				if (ctor_args.size() == 1 && elems.size() == 1
+				    && as_class_instance(elem) == concrete_class
+				    && !class_copy_ctor_def(concrete_class)) {
+					implicit_copy_pack = pe;
+					implicit_copy_pack_tp = tp;
+					manual_class_pack_lowering = true;
+					continue;
+				}
 				FuncDef *ctor = selected_placement_ctor();
 				DataDef *pt = (ctor && pi < ctor->parameters.size())
 						? ctor->parameters[pi] : NULL;
@@ -3116,8 +3133,8 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 		return CIR_NODE(error_node(
 			"tsubst: class deferred-construction object argument pack"));
 	if (manual_class_pack_lowering) {
-		FuncDef *ctor = selected_placement_ctor();
-		if (!ctor)
+		FuncDef *ctor = implicit_copy_pack ? NULL : selected_placement_ctor();
+		if (!ctor && !implicit_copy_pack)
 			return CIR_NODE(error_node(
 				"tsubst: unresolved deferred-construction ctor"));
 
@@ -3335,6 +3352,63 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 			return copy_expr_under(arg, smap, pack_index,
 					       pack_elem, pack_name);
 		};
+
+		if (implicit_copy_pack) {
+			// The implicit copy: `*(T*)p = <element>` for a trivially
+			// copyable T, else the whole-object bit-copy plus the user
+			// copy ctors of the nested members (the implicit-copy owner,
+			// implicit_copy_construct_from_addr). The source is the ONE
+			// pack element's address: a forwarding-bound reference
+			// element's slot IS the pointer; a by-value element's object
+			// is addressed.
+			TokenBase *pat = implicit_copy_pack->pattern;
+			unsigned pidx = implicit_copy_pack_tp->param_index;
+			std::map<unsigned, DataDef *>::iterator pmi =
+				m_tsubst_active_pack_params.find(pidx);
+			if (pmi == m_tsubst_active_pack_params.end() || !pmi->second)
+				return CIR_NODE(error_node(
+					"tsubst: missing deferred-construction pack param"));
+			std::map<DataDef *, DataDef *> elem_subst = *subst;
+			elem_subst[pmi->second] =
+				(*m_tsubst_active_type_arg_packs)[pidx][0];
+			if (!tsubst_bind_lockstep_packs(pat, 0, elem_subst))
+				return CIR_NODE(error_node(
+					"tsubst: lockstep pack arity mismatch", pat));
+			std::string value_name =
+				pack_value_name_in_pattern(pat, pidx);
+			const char *pack_name =
+				value_name.empty() ? NULL : value_name.c_str();
+			DataDef *rt = ref_returning_call_type(pat);
+			node_t src_addr;
+			if (rt && pack_name)
+				src_addr = copied_pack_id_node(pack_name, (int)pidx, 0,
+					pat, subst_datadef_active(rt, elem_subst));
+			else {
+				node_t value = copy_expr_under(pat, elem_subst,
+							       (int)pidx, 0, pack_name);
+				src_addr = (rt && value && value->code == N_CALL)
+					? value : node1(N_ADDR, value, pat);
+			}
+			node_t dst = node1(N_DEREF,
+				node2(N_CAST, class_ptr_type(concrete_class),
+				      this_addr(), origin), origin);
+			node_t copy = implicit_copy_construct_from_addr(dst,
+				node2(N_CAST, class_ptr_type(concrete_class),
+				      src_addr, origin),
+				concrete_class, origin);
+			if (!copy)
+				return CIR_NODE(error_node(
+					"tsubst: class deferred-construction object argument pack"));
+			node_t items = list();
+			for (node_t p : prefix_items)
+				append(items, p);
+			append(items, copy);
+			if (!yield_this_addr)
+				return CIR_NODE(node2(N_BLOCK, list(), items, origin));
+			append(items, node2(N_EXPR, list(), this_addr(), origin));
+			return CIR_NODE(node1(N_STMTEXPR,
+				node2(N_BLOCK, list(), items, origin), origin));
+		}
 
 		std::vector<node_t> explicit_nodes;
 		concrete_arg_pos = 0;
@@ -15601,6 +15675,31 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
 		return node2(N_EXPR, list(), asgn, origin);
 	}
+	return implicit_copy_construct_from_addr(dst_lvalue,
+		object_arg_addr(ctor_args[0], cdd), cdd, origin);
+}
+
+// The implicit copy constructor at the NODE level — dst_lvalue (an object
+// lvalue of cdd) from the object at src_addr (a `struct cdd *` value): the
+// trivially-copyable struct assignment, else the whole-object bit-copy plus
+// the user copy ctors of the nested members (implicit_copy_member_
+// reconstructs). The same LOUD boundaries as the token-level entry (a user
+// copy ctor, a vptr, a non-trivially-copyable base -> NULL). ONE owner for
+// try_implicit_copy_construct and the deferred-construction relower
+// (`::new(p) _Up(std::forward<_Args>(args)...)` with _Args = _Up).
+node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
+						     node_t src_addr,
+						     DataDefCLASS *cdd,
+						     TokenBase *origin)
+{
+	if (!dst_lvalue || !src_addr || !cdd) return NULL;
+	if (class_trivially_copyable(cdd)) {
+		if (trait_is_empty(cdd))
+			return node2(N_BLOCK, list(), list(), origin);
+		node_t asgn = node2(N_ASSIGN, dst_lvalue,
+				    node1(N_DEREF, src_addr, origin), origin);
+		return node2(N_EXPR, list(), asgn, origin);
+	}
 	if (class_copy_ctor_def(cdd)) return NULL;
 	if (cdd->has_any_vptr()) return NULL;
 	for (const BaseSpec &bs : cdd->bases)
@@ -15626,7 +15725,7 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 	append(rdecl, node2(N_DECL, id(rt, origin), node1(N_LIST, pointer())));
 	append(rdecl, ignore());
 	append(rdecl, ignore());
-	append(rdecl, object_arg_addr(ctor_args[0], cdd));
+	append(rdecl, src_addr);
 	append(blk, rdecl);
 	node_t bitcopy = node2(N_ASSIGN,
 			       node1(N_DEREF, id(lt, origin), origin),

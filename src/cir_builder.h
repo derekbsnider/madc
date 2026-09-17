@@ -1829,6 +1829,11 @@ public:
 	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// The node-level implicit copy: dst_lvalue from the object at
+	// src_addr (`struct cdd *`). ONE owner for try_implicit_copy_construct
+	// and the deferred-construction relower's same-class pack element.
+	node_t implicit_copy_construct_from_addr(node_t dst_lvalue, node_t src_addr,
+			       DataDefCLASS *cdd, TokenBase *origin);
 	// Memberwise reconstruction walk for the implicit copy ctor's
 	// NON-trivial arm (task #70): after the whole-object bit-copy,
 	// re-invoke the USER copy ctor of every (possibly nested) class
