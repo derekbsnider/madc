@@ -1,0 +1,39 @@
+// A method-less struct template with a NESTED aggregate (`union type`),
+// instantiated twice with different arguments — libstdc++'s
+// aligned_storage<_Len,_Align>::type behind __aligned_buffer<_Tp>
+// (type_traits:2101 "Struct 'type' already defined", 17 self-host units). The
+// data-only aggregate parser keyed a nested tag by its BARE name, so the
+// second instantiation's `type` collided with the first's; a nested
+// aggregate is owned by the aggregate being defined ([class.nest]), as the
+// class parser already keys it. Shapes: two instantiations through a
+// derived-template member, a third through a method body, a nested struct
+// beside the union, and the members read back. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+
+template<unsigned Len, unsigned Align> struct storage {
+    union type {
+	unsigned char data[Len];
+	struct __attribute__((__aligned__((Align)))) { } align;
+    };
+    struct rec { unsigned n; type t; };
+};
+
+template<typename T> struct buffer : storage<sizeof(T), __alignof__(T)> {
+    typename storage<sizeof(T), __alignof__(T)>::type slot;
+    T *ptr() { return reinterpret_cast<T *>(&slot); }
+};
+
+template<typename V> struct node { node *next; buffer<V> st; };
+template<typename V> struct table { unsigned n() const { return (unsigned)sizeof(node<V>); } };
+
+int main()
+{
+    buffer<int> bi; buffer<double> bd;
+    *bi.ptr() = 7; *bd.ptr() = 2.5;
+    storage<3, 1>::rec r3; r3.n = 5; r3.t.data[2] = 9;
+    table<short> ts;
+    printf("%d %.1f %u %u %u %u %u\n", *bi.ptr(), *bd.ptr(), (unsigned)sizeof(bi.slot), (unsigned)sizeof(bd.slot),
+	   (unsigned)sizeof(r3), r3.n + r3.t.data[2], ts.n());
+    return 0;
+}

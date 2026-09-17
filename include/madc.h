@@ -4085,6 +4085,19 @@ public:
     registration_set<std::string> template_completion_requested; // mangled aliases awaiting completion
     std::set<std::string> template_instantiated;           // mangled names done
     std::vector<DataDefCLASS *> class_scope_stack;	// active C++ class scopes for nested type lookup
+    // Data-only aggregates whose BODY is open (TokenSTRUCT::parse and its
+    // nested-body lambda push/pop them): a tag declared inside one is that
+    // aggregate's ([class.nest]) — keyed Owner::tag, emitted Owner__tag.
+    std::vector<DataDefSTRUCT *> aggregate_scope_stack;
+    // ONE owner of a nested aggregate's identity: emitted name Owner__tag,
+    // canonical spelling Owner::tag; returns the struct_map store key Owner::tag.
+    // The struct tag visible HERE for a bare name: function scope, the open
+    // data-only aggregates innermost->outermost, the class owner, then the
+    // flat registration. ONE owner for every bare-tag lookup.
+    datadef_map_citer find_visible_struct_tag(const std::string &name);
+    std::string key_nested_aggregate(DataDefSTRUCT *nested, const std::string &tag,
+				     const std::string &owner_name,
+				     const std::string &owner_spelling);
     // An isolated definition-context type resolve (member-template defaults /
     // constraints) must outrank the ambient method owner. Both remain live
     // while a callee's SFINAE is evaluated from inside a caller method, so a

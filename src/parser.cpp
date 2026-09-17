@@ -12870,6 +12870,24 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return NULL;
 
     std::string tname = contextual_identifier_name(tb);
+    // [class]/2 (strict C++ modes): a tag declared in an OPEN data-only
+    // aggregate — or in one enclosing it — is a type name right after its
+    // declaration: the sibling `struct rec { type t; }` beside `union type`,
+    // the member `std::vector<Saved> saved;` of the aggregate that declared
+    // Saved. Only a SCOPED hit (Owner::tag): a flat tag keeps today's path,
+    // which register_cpp_aggregate_name already serves.
+    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+    {
+	datadef_map_citer vis = find_visible_struct_tag(tname);
+	if ( vis != struct_map.end() && vis->first != tname )
+	{
+	    TokenDataType *tdt = new TokenDataType(tname.c_str(), *vis->second);
+	    tdt->file = tb->file;
+	    tdt->line = tb->line;
+	    tdt->column = tb->column;
+	    return resolve_member_chain_or_type(tdt, tb, consume_class_member_chain);
+	}
+    }
     if ( tname == "typename" )
 	return resolve_typename_type_token(nextToken(),
 					   allow_lazy_types, tb);
@@ -44055,9 +44073,64 @@ std::string Program::scoped_struct_tag(const std::string &name)
     TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
     if ( scope && scope != tkProgram && !cur_func_name.empty() )
 	return cur_func_name + "::" + name;
+    // [class.nest] in the STRICT C++ modes (--std= determines semantics): a
+    // tag declared inside a data-only aggregate's open body belongs to that
+    // aggregate, whatever function or class context triggered its parse.
+    // Bare keys made every instantiation of aligned_storage<_Len,_Align>
+    // collide on its nested `union type` (type_traits:2101, 17 self-host
+    // units). C AND the madc dialect keep C's file-scope tags: C programs
+    // (`struct C { struct D {...} attr; }; struct D d;`, gcc-torture
+    // pr39339) run under the default mode.
+    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+	return aggregate_scope_stack.back()->name + "::" + name;
     if ( DataDefCLASS *owner = nested_aggregate_owner() )
 	return owner->name + "::" + name;
     return name;
+}
+
+datadef_map_citer Program::find_visible_struct_tag(const std::string &name)
+{
+    // Innermost declaration wins ([basic.lookup.unqual]): the function-scope
+    // or innermost-aggregate key scoped_struct_tag would MINT for `name`...
+    std::string scoped = scoped_struct_tag(name);
+    if ( scoped != name )
+    {
+	datadef_map_citer it = struct_map.find(scoped);
+	if ( it != struct_map.end() )
+	    return it;
+    }
+    // ...then every enclosing open aggregate outward (`struct rec { type
+    // t; }` names the sibling union its OWNER declared), then the class
+    // owner the open aggregates sit in, then the flat registration. Strict
+    // C++ modes only (the aggregate keys exist only there).
+    if ( is_cpp_mode() )
+    {
+	for ( size_t i = aggregate_scope_stack.size(); i-- > 0; )
+	{
+	    datadef_map_citer it =
+		struct_map.find(aggregate_scope_stack[i]->name + "::" + name);
+	    if ( it != struct_map.end() )
+		return it;
+	}
+	if ( !class_scope_stack.empty() && !class_pattern_capture_in_progress )
+	{
+	    datadef_map_citer it =
+		struct_map.find(class_scope_stack.back()->name + "::" + name);
+	    if ( it != struct_map.end() )
+		return it;
+	}
+    }
+    return struct_map.find(name);
+}
+
+std::string Program::key_nested_aggregate(DataDefSTRUCT *nested,
+					  const std::string &tag,
+					  const std::string &owner_name,
+					  const std::string &owner_spelling)
+{
+    nested->name = owner_name + "__" + tag;
+    nested->set_canonical_spelling(owner_spelling + "::" + tag);
+    return owner_name + "::" + tag;
 }
 
 // C++ only: an aggregate's tag IS a type name.  A nested aggregate registers
@@ -44127,7 +44200,7 @@ DataDefSTRUCT *Program::new_incomplete_aggregate(const std::string &emitted_name
 DataDef *Program::struct_tag_or_implicit_forward(const std::string &sname,
 						 bool is_union)
 {
-    datadef_map_citer sdmi = struct_map.find(sname);
+    datadef_map_citer sdmi = find_visible_struct_tag(sname);	// the ONE visible-tag rule
     if ( sdmi != struct_map.end() )
 	return sdmi->second;
     DataDefSTRUCT *fwd = new_incomplete_aggregate(sname, is_union);
@@ -44182,16 +44255,22 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
+    // A nested tag's store key + identity: its open owner's (strict C++ —
+    // the innermost aggregate whose body is being parsed), else the bare
+    // tag (C and the madc dialect: nested tags have file scope). ONE rule
+    // for both nested-tag arms.
+    auto nested_store_key = [&](DataDefSTRUCT *nested, const std::string &sname)
+	-> std::string
+    {
+	if ( !pgm.is_cpp_mode() || pgm.aggregate_scope_stack.empty() )
+	    return sname;
+	DataDefSTRUCT *owner = pgm.aggregate_scope_stack.back();
+	return pgm.key_nested_aggregate(nested, sname, owner->name,
+					owner->cpp_linkage_spelling());
+    };
     auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_citer
     {
-	std::string scoped = pgm.scoped_struct_tag(name);
-	if ( scoped != name )
-	{
-	    datadef_map_citer scoped_it = pgm.struct_map.find(scoped);
-	    if ( scoped_it != pgm.struct_map.end() )
-		return scoped_it;
-	}
-	return pgm.struct_map.find(name);
+	return pgm.find_visible_struct_tag(name);	// the ONE visible-tag rule
     };
 
     // Record source-ordered top-level declarations for the CIR backend.
@@ -44612,13 +44691,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	DataDefCLASS *owner = pgm.nested_aggregate_owner();
 	if ( owner )
-	{
-	    tag_store_key = owner->name + "::" + tag->spelling();
-	    dds->name = owner->name + "__" + tag->spelling();
-	    std::string owner_spelling = owner->canonical_cpp_spelling().empty()
-		? owner->name : owner->canonical_cpp_spelling();
-	    dds->set_canonical_spelling(owner_spelling + "::" + tag->spelling());
-	}
+	    tag_store_key = pgm.key_nested_aggregate(dds, tag->spelling(),
+		owner->name,
+		owner->canonical_cpp_spelling().empty() ? owner->name
+							: owner->canonical_cpp_spelling());
 	else
 	{
 	    std::string scoped = pgm.scoped_struct_tag(tag->spelling());
@@ -44774,6 +44850,24 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag_store_key << " for self-reference" << endl);
     }
 
+    // The aggregate's body is open: a tag declared inside it is its own
+    // (scoped_struct_tag -> Owner::tag). RAII — a Throw in the body must
+    // not leave a dead frame on the stack; released explicitly after the
+    // loop so the trailing declarator parses outside the body.
+    struct AggregateScope {
+	Program &p; DataDefSTRUCT *agg; bool live;
+	AggregateScope(Program &p_, DataDefSTRUCT *a) : p(p_), agg(a), live(true)
+	{ p.aggregate_scope_stack.push_back(a); }
+	void release()
+	{
+	    if ( live && !p.aggregate_scope_stack.empty()
+	      && p.aggregate_scope_stack.back() == agg )
+		p.aggregate_scope_stack.pop_back();
+	    live = false;
+	}
+	~AggregateScope() { release(); }
+    } aggregate_scope(pgm, dds);
+
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	while ( is_attribute_identifier_token(tn) )
@@ -44869,6 +44963,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		inner->definition_origin = aggregate_definition_origin(
 		    pgm, loc ? loc->file : NULL);
+		// This body is open for its own nested tags (see the top-level
+		// AggregateScope); the lambda's exit pops it, Throw included.
+		struct InnerScope {
+		    Program &p; DataDefSTRUCT *agg;
+		    InnerScope(Program &p_, DataDefSTRUCT *a) : p(p_), agg(a)
+		    { p.aggregate_scope_stack.push_back(a); }
+		    ~InnerScope()
+		    {
+			if ( !p.aggregate_scope_stack.empty()
+			  && p.aggregate_scope_stack.back() == agg )
+			    p.aggregate_scope_stack.pop_back();
+		    }
+		} inner_scope(pgm, inner);
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
 		    while ( is_attribute_identifier_token(tn) )
@@ -44936,8 +45043,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    nested = new DataDefSTRUCT(sname, 0);
 				    if ( inner_packed )
 					nested->pack = 1;
-				    pgm.pack_tap_struct(sname);	// B4a tap
-				    pgm.struct_map.set(sname, nested);
+				    std::string store_key = nested_store_key(nested, sname);
+				    pgm.pack_tap_struct(store_key);	// B4a tap
+				    pgm.struct_map.set(store_key, nested);
 				}
 				else
 				{
@@ -45228,8 +45336,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			inner = new DataDefSTRUCT(sname, 0);
 			inner->union_layout = nested_union_kw;
-			pgm.pack_tap_struct(sname);	// B4a tap
-			pgm.struct_map.set(sname, inner);
+			std::string store_key = nested_store_key(inner, sname);
+			pgm.pack_tap_struct(store_key);	// B4a tap
+			pgm.struct_map.set(store_key, inner);
 		    }
 		    else
 		    {
@@ -45560,6 +45669,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // DataDefSTRUCT) so it flows through the existing class machinery (member
     // ctors/dtors) exactly like a user class with such a member. A struct with NO
     // object members stays a plain DataDefSTRUCT — unchanged, zero cost.
+    aggregate_scope.release();	// the body is closed
     {
 	bool has_object_member = false;
 	for ( auto &m : dds->members )
