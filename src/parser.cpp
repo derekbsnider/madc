@@ -3693,6 +3693,33 @@ static DataDef *resolve_class_static_member_type(DataDefCLASS *cls, const std::s
     return NULL;
 }
 
+// [basic.lookup.unqual]: inside a member function, an unqualified name that
+// is a class MEMBER (data or static member, or a member FUNCTION named with
+// explicit template arguments — `bind<U>(...)`) is found in class scope,
+// BEFORE the enclosing namespaces and before any using-directive's names
+// (which live at namespace scope). A LOCAL or PARAMETER of the same name
+// still shadows the member. ONE owner for both unqualified-name entry points:
+// the expression-arm head and the postfix/cast operand head (parsePostfixChain).
+// Without it a member named like a C++17 free fn pulled in by `using namespace
+// std` (`data`/`size`/`begin`/`end`/`swap`/`empty`) resolved to `std::data`
+// instead of `this->member`, and the template-id form `bind<U>(...)` fell
+// through to the global `::bind` of <sys/socket.h> and died on the hidden-this
+// arity. g++ and clang both resolve the member.
+bool Program::class_scope_hides_unqualified_name(TokenCpnd *code,
+						  const std::string &name)
+{
+    if ( !code || !code->method || !code->method->owner_class )
+	return false;
+    std::string pname = name;	// the scope lookups take a mutable reference
+    if ( code->findVariable(strpool, pname) || code->findParameter(pname) )
+	return false;
+    DataDefCLASS *mc = code->method->owner_class;
+    return mc->m_offset(pname) >= 0
+	|| resolve_class_static_member_type(mc, pname)
+	|| (peekToken() && peekToken()->id() == TokenID::tkLT
+	    && mc->findMethod(pname));
+}
+
 static bool peek_class_member_type_chain(DataDefCLASS *owner,
 					 const TokenStream &tokens,
 					 size_t start_index,
@@ -29920,7 +29947,22 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		return parsePostfixChainFrom(value, postfix_expr_variable(value));
 	}
     }
-    Variable *var = findVariable(name);
+    // The entry resolver, not the bare global lookup: an operand head is an
+    // unqualified name like any expression head, so it walks the same chain —
+    // block locals, the ENCLOSING NAMESPACE chain (active_cpp_lookup_namespace
+    // outward), the preference order, then the global scope. This path probed
+    // only the global scope, so a cast operand naming a member of the current
+    // namespace — `(unsigned)pod_words<defrec>()` inside `namespace madc::dis`
+    // — reported "undeclared identifier" while the same call without the cast
+    // resolved (self-host arc: include/cir_arena.h:501, first error of 19 units).
+    // Class scope still hides the namespace chain (class_scope_hides_
+    // unqualified_name, the expression arm's rule): a member of the
+    // enclosing method's class stays with the class-member arms below.
+    TokenIdent head_ident(name);
+    copy_token_location(&head_ident, head);
+    Variable *var = class_scope_hides_unqualified_name(
+			compounds.empty() ? NULL : compounds.top(), name)
+		  ? NULL : resolve_preferred_identifier(&head_ident, true);
     if ( !var && name == "this" )
     {
 	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -38948,38 +38990,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		}
 		{   // scoped so `prefer_class_member` is not live at the `ns_resolved` label
-		// In a class method, an unqualified name that is a class MEMBER
-		// (data or static member) outranks a using-directive namespace
-		// symbol: a using-directive's names live at namespace scope, which
-		// [basic.lookup.unqual] searches AFTER block scope and class scope.
-		// Without this, a member named like a C++17 free fn pulled in by
-		// `using namespace std` (`data`/`size`/`begin`/`end`/`swap`/`empty`)
-		// resolved to `std::data` etc. instead of `this->member`. A LOCAL or
-		// PARAMETER of the same name still shadows the member, so defer to the
-		// member block (below, guarded on !var) only when nothing shadows it.
-		// g++ and clang both resolve the member here.
-		bool prefer_class_member = false;
-		if ( !parsed_operator_name
-		  && code && code->method && code->method->owner_class
-		  && (!prevToken() || prevToken()->id() != TokenID::tkNS) )
-		{
-		    std::string mname = member_lookup_name;
-		    DataDefCLASS *mc = code->method->owner_class;
-		    // A member FUNCTION named with explicit template arguments
-		    // (`bind<U>(...)`) is the same rule: class scope hides the
-		    // namespace-scope `::bind` that <sys/socket.h> declares (the
-		    // darwin prelude reaches it; linux with the include too). The
-		    // plain-call form `f(args)` is already served by the
-		    // arity-matched member arm above; only the template-id form
-		    // fell through to the global and its instantiation then died
-		    // on the hidden-this arity — silently, the placeholder kept.
-		    if ( !code->findVariable(strpool, mname) && !code->findParameter(mname)
-		      && (mc->m_offset(mname) >= 0
-		       || resolve_class_static_member_type(mc, mname)
-		       || (peekToken() && peekToken()->id() == TokenID::tkLT
-			   && mc->findMethod(mname))) )
-			prefer_class_member = true;
-		}
+		// Class scope hides namespace scope and using-directive names for
+		// an unqualified member name: class_scope_hides_unqualified_name
+		// (the one owner; parsePostfixChain applies the same rule).
+		bool prefer_class_member = !parsed_operator_name
+		  && (!prevToken() || prevToken()->id() != TokenID::tkNS)
+		  && class_scope_hides_unqualified_name(code, member_lookup_name);
 		var = (parsed_operator_name || prefer_class_member)
 			? NULL
 			: resolve_preferred_identifier(ident_tb, expression_head);

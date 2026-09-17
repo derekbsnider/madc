@@ -1,0 +1,29 @@
+// A function template called with an EXPLICIT template argument and no
+// function arguments, from a member body of a class in the same NESTED
+// namespace — `pod_words<defrec>()` (self-host arc 2026-09-17: madc's own
+// include/cir_arena.h:501 inside namespace madc::dis was the first error of
+// 19 units: "undeclared identifier 'pod_words'"; the same call at global
+// scope resolved). Shapes: a static member body, an instance member body, a
+// nested struct as the argument, a call from a free function of the
+// namespace, and the qualified spelling from outside. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+#include <stddef.h>
+
+namespace madc { namespace dis {
+    template<typename T> inline size_t pod_words() { return (sizeof(T) + 3) / 4; }
+    struct arena {
+	struct defrec { unsigned a, b, c; };
+	static unsigned def_stride() { return (unsigned)pod_words<defrec>(); }
+	unsigned inst() const { return (unsigned)pod_words<defrec>() + 1; }
+    };
+    inline size_t two_words() { return pod_words<long>(); }
+} }
+
+int main()
+{
+    madc::dis::arena ar;
+    printf("%u %u %u %u\n", madc::dis::arena::def_stride(), ar.inst(),
+	   (unsigned)madc::dis::two_words(), (unsigned)madc::dis::pod_words<char>());
+    return 0;
+}

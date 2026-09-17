@@ -5689,6 +5689,7 @@ public:
     std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
+    bool class_scope_hides_unqualified_name(class TokenCpnd *code, const std::string &name);
     void set_expression_context_root(const madc::value *root);
     void clear_expression_context_root();
     bool has_expression_context_root() const;
