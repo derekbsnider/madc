@@ -20,6 +20,7 @@
 using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct ch_t {
     int v;
@@ -53,9 +54,11 @@ int main()
     else
         cout << "nochain" << endl;   // nochain (helper(ch,0)=1, !=0 false)
 
-    // Make sure the genuine fn-ptr call form still works.
-    extern int strlen(char *);
-    c.v = strlen("hi");
+    // Make sure a genuine call form still works. (`strlen` comes from
+    // <string.h> — extern "C". A hand-written block-scope `extern int
+    // strlen(char *)` declares a C++-linkage overload, _Z6strlenPc, which
+    // no library defines: g++ fails to link it, and so does madc.)
+    c.v = (int)strlen("hi");
     cout << c.v << endl;             // 2
 
     return 0;
