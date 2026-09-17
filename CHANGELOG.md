@@ -30,6 +30,10 @@
 - Global-qualified names: `::ns::type` in type position (typedef, declaration,
   parameter, template argument), a typedef alias of a scoped enum as a scope
   (`tmode::on`), and `::ns::nested::enum::e` in expressions.
+- Pointer-to-member-function types `R (C::*name)(Args) [const]` in struct,
+  union and class members, parameters, variables and typedefs — the Itanium
+  16-byte `{ptr, adj}` pair, one C struct (`__madc_memfnptr`). Values (`&C::m`,
+  `.*`, `->*`) follow.
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
