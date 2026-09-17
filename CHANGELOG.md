@@ -27,6 +27,9 @@
   `case n::V::kind::s:`, `n::V::limit`.
 - `auto *p = new T(...)`: a new-expression reports its type (`T *`); a range-for
   element accepts pointer declarators (`for (auto *p : arr)`).
+- Global-qualified names: `::ns::type` in type position (typedef, declaration,
+  parameter, template argument), a typedef alias of a scoped enum as a scope
+  (`tmode::on`), and `::ns::nested::enum::e` in expressions.
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
