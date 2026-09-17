@@ -12,7 +12,10 @@
 # run 8 (class operator[] element typing): +include/madcdis/arena.h +include/token_arena.h;
 # run 10 (qualified class-scoped constants in constant expressions): +include/madcdis/prose.h +rt_dump_value.cpp;
 # run 12 (global-qualified `::ns::type`, alias-of-scoped-enum scopes): +include/madcdis/keys.h;
-# run 20 (using-declaration imports an alias template): +include/madcdis/snapshot.h.
+# run 20 (using-declaration imports an alias template): +include/madcdis/snapshot.h;
+# run 24 (a deduced type pack expands in a fn template return type — std::get<I>): the 12
+#   channel units (libmadc/madcdis channel*, datachannel, header_channel, websocket_channel,
+#   madc_channel_stream/datachannel/header_channel/socket_channel.cpp).
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -24,9 +27,6 @@ file_kinds.cpp
 include/cir_arena.h
 include/datadef.h
 include/datatokens.h
-include/libmadc/channel.h
-include/libmadc/channel_stream.h
-include/libmadc/datachannel.h
 include/libmadc/dataset.h
 include/libmadc/dis.h
 include/libmadc/driver.h
@@ -47,16 +47,12 @@ include/madcdat/mapper.h
 include/madcdat/relation.h
 include/madcdat/schema.h
 include/madcdat/source_adapter.h
-include/madcdis/channel.h
-include/madcdis/channel_stream.h
-include/madcdis/datachannel.h
 include/madcdis/dataset.h
 include/madcdis/doc_lens.h
 include/madcdis/driver.h
 include/madcdis/flow.h
 include/madcdis/format_flow.h
 include/madcdis/git_repo.h
-include/madcdis/header_channel.h
 include/madcdis/hub.h
 include/madcdis/interaction.h
 include/madcdis/intern_table.h
@@ -78,7 +74,6 @@ include/madcdis/uinode.h
 include/madcdis/value_pool.h
 include/madcdis/verbs.h
 include/madcdis/web_model.h
-include/madcdis/websocket_channel.h
 include/madcdis/world_text.h
 include/ns_common.h
 include/tokens.h
@@ -87,13 +82,10 @@ madc.cpp
 madc_c_api.cpp
 madc_capabilities.cpp
 madc_channel_object.cpp
-madc_channel_stream.cpp
 madc_cir.cpp
 madc_config_file.cpp
-madc_datachannel.cpp
 madc_error.cpp
 madc_guards.cpp
-madc_header_channel.cpp
 madc_io_reactor.cpp
 madc_mangle.cpp
 madc_mir_backend.cpp
@@ -102,7 +94,6 @@ madc_posix_io.cpp
 madc_process.cpp
 madc_program.cpp
 madc_project.cpp
-madc_socket_channel.cpp
 madc_task_chan.cpp
 madc_value.cpp
 madc_websocket_channel.cpp

@@ -20952,6 +20952,38 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 // The ONE implementation, shared by the member-template resolver
 // (resolve_member_template_call_return_type) and the namespace fn-template
 // by-key resolver (resolve_fn_template_return_by_key).
+// Where a pack-expansion PATTERN starts in tokens already emitted: after the
+// nearest top-level `,` or unmatched opener. The backward twin of the forward
+// DelimDepth scan (kept beside it, same alphabet plus `<`): `(` `[` `{` AND
+// `<` open, `)` `]` `}` `>` close, `>>` closes two. The pattern sits in a TYPE
+// position of a declaration (a parameter or return type), where every `<`
+// opens a template-argument list. Without the angle the scan ran back through
+// `tup<` in `tup<E...>` and re-emitted `tup<int32_t, tup<int64_t>` —
+// "Expecting ',' or '>' in tup<...>" on every std::get<I>(tuple<_Elements...>&)
+// instantiation (34 self-host units). Shared by the return-range substitution
+// and the binding-stage expansion; a third copy is a bug.
+static size_t pack_pattern_start(const std::vector<TokenBase *> &out)
+{
+    int depth = 0;
+    for ( size_t j = out.size(); j-- > 0; )
+    {
+	if ( !out[j] )
+	    continue;
+	TokenID jid = out[j]->id();
+	if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
+	  || jid == TokenID::tkClBrc || jid == TokenID::tkGT )
+	    ++depth;
+	else if ( jid == TokenID::tkBSR )
+	    depth += 2;
+	else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
+	       || jid == TokenID::tkOpBrc || jid == TokenID::tkLT )
+	{ if ( depth <= 0 ) return j + 1; --depth; }
+	else if ( depth == 0 && jid == TokenID::tkComma )
+	    return j + 1;
+    }
+    return 0;
+}
+
 static std::vector<TokenBase *> substitute_return_range_tokens(
 	const std::vector<TokenBase *> &rtoks,
 	const std::map<std::string, DataDef *> &binding,
@@ -20969,21 +21001,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 	  && rtoks[i+1] && rtoks[i+1]->id() == TokenID::tkDot
 	  && rtoks[i+2] && rtoks[i+2]->id() == TokenID::tkDot )
 	{
-	    int depth = 0;
-	    size_t start = sub.size();
-	    for ( size_t j = sub.size(); j-- > 0; )
-	    {
-		TokenID jid = sub[j]->id();
-		if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
-		  || jid == TokenID::tkClBrc )
-		    ++depth;
-		else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
-		       || jid == TokenID::tkOpBrc )
-		{ if ( depth == 0 ) { start = j + 1; break; } --depth; }
-		else if ( depth == 0 && jid == TokenID::tkComma )
-		{ start = j + 1; break; }
-		if ( j == 0 ) start = 0;
-	    }
+	    size_t start = pack_pattern_start(sub);	// the ONE angle-aware locator
 	    std::vector<TokenBase *> pat(sub.begin() + start, sub.end());
 	    sub.erase(sub.begin() + start, sub.end());
 	    for ( size_t e = 0; e < pack_elems.size(); ++e )
@@ -59782,23 +59800,8 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	      && !( !inj.empty() && inj.back()
 		    && inj.back()->id() == TokenID::tkOpBrk ) )
 	    {
-		// Backward-scan inj for the pattern start (after the nearest `,`
-		// or unmatched opener `(`/`[`/`{` at bracket depth 0).
-		int depth = 0;
-		size_t start = inj.size();
-		for ( size_t j = inj.size(); j-- > 0; )
-		{
-		    TokenID jid = inj[j]->id();
-		    if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
-		      || jid == TokenID::tkClBrc )
-			++depth;
-		    else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
-			   || jid == TokenID::tkOpBrc )
-		    { if ( depth == 0 ) { start = j + 1; break; } --depth; }
-		    else if ( depth == 0 && jid == TokenID::tkComma )
-		    { start = j + 1; break; }
-		    if ( j == 0 ) start = 0;
-		}
+		// Pattern start: the ONE angle-aware locator (pack_pattern_start).
+		size_t start = pack_pattern_start(inj);
 		std::vector<TokenBase *> pat(inj.begin() + start, inj.end());
 		inj.erase(inj.begin() + start, inj.end());
 		for ( size_t e = 0; e < N; ++e )
@@ -60423,15 +60426,18 @@ static bool instantiate_fn_template_binding(Program &pgm,
     catch ( ... )
     {
 	ok = false;
-#if MADC_DIAG_FNTPLTHROW
+	// Env-gated (MADC_FNTPL_PROBE, the same key filter as the EXIT probes):
 	// fprintf(stderr) + Throw.str() bypass the std::cerr mute that a nesting
 	// fold_nontype_arg_constant sets — surfacing the REAL parse error that
 	// aborted this instantiation (otherwise lost -> silent undefined import).
-	fprintf(stderr, "[FNTPLTHROW] %s body THREW: %s | last_error: %s (%s:%d)\n",
-		inst_key.c_str(), pgm.Throw.str().c_str(),
-		pgm.last_error.message.c_str(), pgm.last_error.file.c_str(),
-		pgm.last_error.line);
-#endif
+	// Was a compile-time switch (MADC_DIAG_FNTPLTHROW), which no shipped
+	// binary carried: every swallowed body throw read as "ok=0" with no
+	// reason (the te4 probe of the self-host arc).
+	if ( _ifb_on )
+	    fprintf(stderr, "IFBPROBE %s body THREW: %s | last_error: %s (%s:%d)\n",
+		    inst_key.c_str(), pgm.Throw.str().c_str(),
+		    pgm.last_error.message.c_str(), pgm.last_error.file.c_str(),
+		    pgm.last_error.line);
     }
     --pgm.fn_template_instantiation_depth;
     pgm.pending_fn_instantiation_identity = saved_inst_identity;
@@ -63536,6 +63542,31 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// (try_instantiate_namespace_fn_template), which deduces from the args
 	// and selects the viable overload (rejecting pair<> against a tuple<>).
 	{
+	    // The trailing TYPE pack is bound only when its elements are KNOWN:
+	    // surplus explicit args supplied them (`__or_fn<_Bn...>`), or no
+	    // function parameter names the pack, so nothing deduces it and it
+	    // is empty ([temp.arg.explicit]/4). A pack a PARAMETER names —
+	    // `get<__i>(tuple<_Elements...>&)`, the te<I, tup<E...>> shape —
+	    // is deduced from the call argument, which this explicit-args lane
+	    // never sees: substituting it as EMPTY erased `tuple<_Elements...>`
+	    // from `tuple_element<__i, tuple<_Elements...>>` and every
+	    // std::get<I> use died at utility.h:84 ("Expecting a type argument
+	    // to tuple_element<>", 34 self-host units).
+	    bool pack_deduced_from_params = false;
+	    if ( !pack_name.empty() && pack_elems.empty() )
+	    {
+		std::vector<std::string> spellings;
+		if ( po_param_spellings(*this, ft, spellings) )
+		    for ( size_t si = 0; si < spellings.size()
+					 && !pack_deduced_from_params; ++si )
+		    {
+			std::vector<std::string> words;
+			fn_template_split_words(spellings[si], words);
+			for ( size_t wi = 0; wi < words.size(); ++wi )
+			    if ( words[wi] == pack_name )
+				{ pack_deduced_from_params = true; break; }
+		    }
+	    }
 	    bool return_has_unbound_tp = false;
 	    for ( size_t i = rs; i < re && !return_has_unbound_tp; ++i )
 	    {
@@ -63544,7 +63575,11 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		    continue;
 		const std::string nm = contextual_identifier_name(t);
 		if ( !pack_name.empty() && nm == pack_name )
-		    continue;	// the pack IS bound (via pack_elems)
+		{
+		    if ( pack_deduced_from_params )
+			return_has_unbound_tp = true;
+		    continue;	// otherwise the pack IS bound (via pack_elems)
+		}
 		for ( size_t tj = 0; tj < ft.typeparams.size(); ++tj )
 		    if ( ft.typeparams[tj] == nm && !binding.count(nm) )
 		    { return_has_unbound_tp = true; break; }
