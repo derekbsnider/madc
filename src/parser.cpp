@@ -17384,6 +17384,14 @@ madc_wide_int Program::parse_constant_primary()
     TokenBase *tb = nextToken();
     madc_wide_int out = 0;
 
+    // A leading `::` names the chain from the global namespace (`case
+    // ::ui::NONE:`, madcdis/ui_events.h:88): madc's qualified lookups
+    // resolve from the root already, so the qualifier adds nothing but the
+    // spelling — consume it and read the chain as the identifier primary.
+    if ( tb && tb->id() == TokenID::tkNS && peekToken()
+      && is_contextual_identifier_token(peekToken()) )
+	tb = nextToken();
+
     if ( resolve_integer_constant(tb, out) )
 	return out;
     // Qualified class-scoped integral constant: `Class::member`,

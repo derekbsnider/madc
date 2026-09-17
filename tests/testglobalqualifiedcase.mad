@@ -1,0 +1,40 @@
+// A GLOBAL-qualified enumerator as a CASE LABEL and in other constant
+// expressions — `case ::ui::NONE:` (self-host arc 2026-09-17: madc's own
+// include/madcdis/ui_events.h:88 was the first error of 2 units: "Expecting
+// integer constant expression"). The constant-expression primary knew a
+// qualified chain only when it began with a name; a leading `::` is the same
+// chain from the global namespace. Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+namespace ui { enum level { NONE, LINE, TUI }; enum class mode { off, on }; }
+enum top { T0 = 4 };
+
+const char *name_of(int lv)
+{
+    switch ( lv )
+    {
+	case ::ui::NONE: return "none";
+	case ::ui::LINE: return "line";
+	case ::ui::TUI:  return "tui";
+    }
+    return "?";
+}
+
+int mode_num(::ui::mode m)
+{
+    switch ( m )
+    {
+	case ::ui::mode::off: return 10;
+	case ::ui::mode::on:  return 11;
+    }
+    return 0;
+}
+
+int arr[::T0 + ::ui::TUI];
+
+int main()
+{
+    printf("%s %s %s %d %d %d\n", name_of(0), name_of(1), name_of(2),
+	   mode_num(::ui::mode::on), mode_num(::ui::mode::off), (int)(sizeof(arr) / sizeof(arr[0])));
+    return 0;
+}
