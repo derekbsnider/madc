@@ -48044,6 +48044,45 @@ static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
 // class Name { type member; rettype method() { ... } };
 // class Name variable;
 // typedef class Name alias;
+// The class-name's point of declaration ([basic.scope.pdecl]): the incomplete
+// placeholder a forward declaration `class X;` creates, registered under the
+// bare tag (struct_map / datatype_map / the namespace registry), spelled
+// `Owner::X` or `ns::X`, aliased into a nested owner's scope. ONE owner for
+// the forward-declaration arm and the class-head-before-base-clause
+// declaration in TokenCLASS::parse; the completion arm there adopts the
+// placeholder when the definition follows.
+TokenDataType *Program::declare_class_placeholder(TokenIdent *tag,
+	const std::string &class_source_name, DataDefCLASS *nested_owner_class,
+	const HoistedDeclIdentity *local_class_identity,
+	bool register_local_source_alias)
+{
+    DataDefCLASS *fwd = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
+    if ( local_class_identity )
+	function_local_class_identities[fwd] = *local_class_identity;
+    if ( nested_owner_class )
+    {
+	std::string owner_spelling =
+	    nested_owner_class->canonical_cpp_spelling().empty()
+	    ? nested_owner_class->name
+	    : nested_owner_class->canonical_cpp_spelling();
+	fwd->set_canonical_spelling(owner_spelling + "::" + class_source_name);
+	fwd->enclosing_class = nested_owner_class;
+	set_class_type_alias(nested_owner_class, class_source_name, fwd);
+    }
+    else if ( !current_namespace().empty() )
+	fwd->set_canonical_spelling(current_namespace() + "::" + tag->spelling());
+    pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
+    pack_tap_type(tag->spelling());
+    struct_map.set(tag->spelling(), fwd);
+    TokenDataType *tdt = new TokenDataType(tag->spelling(), *fwd);
+    datatype_map[tag->spelling()] = tdt;
+    if ( register_local_source_alias )
+	register_scoped_typedef(class_source_name, tdt);
+    if ( !current_namespace().empty() )
+	namespace_datatype_map[current_namespace()][tag->spelling()] = tdt;
+    return tdt;
+}
+
 TokenBase *TokenCLASS::parse(Program &pgm)
 {
     pgm.note_class_body_parse();
@@ -48205,9 +48244,50 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // --- inheritance: class Derived : [virtual] [access] Base, ... { ... } ---
     // Multiple + virtual bases: collect a BaseSpec per base into base_specs (ddc
     // does not exist yet — assigned to ddc->bases by the shared base helper).
+    // Member bodies enqueued from here on belong to THIS definition's
+    // complete-class context ([class.mem]/6) — the member loop's, AND those a
+    // base clause's template instantiation produces (`impl<timed>` in
+    // `class timed : public impl<timed>`: its `static_cast<timed*>(this)->v`
+    // body may only parse once timed is complete, so it must land in timed's
+    // sink, not parse at impl<timed>'s own closing brace). RAII: every early
+    // return and throw below restores the enclosing sink (the dead-frame
+    // hazard the body-loop catch documents).
+    std::vector<Program::DeferredFunctionBody> deferred_method_bodies;
+    std::vector<Program::DeferredFunctionBody> *saved_deferred_sink =
+	pgm.deferred_function_body_sink;
+    struct DeferredSinkScope {
+	Program &p;
+	std::vector<Program::DeferredFunctionBody> *saved;
+	DeferredSinkScope(Program &p_,
+			  std::vector<Program::DeferredFunctionBody> *mine,
+			  std::vector<Program::DeferredFunctionBody> *saved_)
+	    : p(p_), saved(saved_) { p.deferred_function_body_sink = mine; }
+	~DeferredSinkScope() { p.deferred_function_body_sink = saved; }
+    } deferred_sink_scope(pgm, &deferred_method_bodies, saved_deferred_sink);
+
     std::vector<BaseSpec> base_specs;
     if ( tn->id() == TokenID::tkColon )
     {
+	// [class]/2, [basic.scope.pdecl]: the class-name is declared at the
+	// class-head, BEFORE the base-clause — a base-specifier may name it
+	// (`class timed_mutex : private __mutex_base, public
+	// __timed_mutex_impl<timed_mutex>`, the CRTP shape of <mutex>:236).
+	// Declare the incomplete placeholder `class X;` would; the completion
+	// arm below adopts it for this definition exactly as after a forward
+	// declaration.
+	// Not when the OWNER's scope already declares it (`struct N;` in O,
+	// then `class O::N : public O {...}`): that prior IS the class — the
+	// completion arm below adopts it through incomplete_prior_aggregate,
+	// and a fresh placeholder here would split the type in two.
+	if ( tag && pgm.struct_map.find(tag->spelling()) == pgm.struct_map.end()
+	  && !(nested_owner_class
+	       && pgm.incomplete_prior_aggregate(tag->spelling(),
+						 nested_owner_class,
+						 class_source_name)) )
+	    pgm.declare_class_placeholder(tag, class_source_name,
+		    nested_owner_class,
+		    has_local_class_identity ? &local_class_identity : NULL,
+		    register_local_source_alias);
 	pgm.nextToken(); // consume ':'
 	do {
 	    bool bvirtual = false;
@@ -48436,31 +48516,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    if ( tn->id() == TokenID::tkSemi )
 	    {
-		DataDefCLASS *fwd = new DataDefCLASS(tag->spelling(), 0, DataType::dtRESERVED);
-		if ( has_local_class_identity )
-		    pgm.function_local_class_identities[fwd] = local_class_identity;
-		if ( nested_owner_class )
-		{
-		    std::string owner_spelling =
-			nested_owner_class->canonical_cpp_spelling().empty()
-			? nested_owner_class->name
-			: nested_owner_class->canonical_cpp_spelling();
-		    fwd->set_canonical_spelling(owner_spelling + "::" + class_source_name);
-		    fwd->enclosing_class = nested_owner_class;
-		    pgm.set_class_type_alias(nested_owner_class,
-			class_source_name, fwd);
-		}
-		else if ( !pgm.current_namespace().empty() )
-		    fwd->set_canonical_spelling(pgm.current_namespace() + "::" + tag->spelling());
-		pgm.pack_tap_struct(tag->spelling());	// B4a tap (class fwd decl)
-		pgm.pack_tap_type(tag->spelling());
-		pgm.struct_map.set(tag->spelling(), fwd);
-		tdt = new TokenDataType(tag->spelling(), *fwd);
-		pgm.datatype_map[tag->spelling()] = tdt;
-		if ( register_local_source_alias )
-		    pgm.register_scoped_typedef(class_source_name, tdt);
-		if ( !pgm.current_namespace().empty() )
-		    pgm.namespace_datatype_map[pgm.current_namespace()][tag->spelling()] = tdt;
+		tdt = pgm.declare_class_placeholder(tag, class_source_name,
+			nested_owner_class,
+			has_local_class_identity ? &local_class_identity : NULL,
+			register_local_source_alias);
 		pgm.nextToken();
 		return NULL;
 	    }
@@ -48771,10 +48830,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // syntax are delegated here from TokenSTRUCT::parse with
     // parsing_cpp_struct_class set so they keep the C++ default-public rule.
     uint32_t access_flags = pgm.parsing_cpp_struct_class ? 0 : vfPRIVATE;
-    std::vector<Program::DeferredFunctionBody> deferred_method_bodies;
-    std::vector<Program::DeferredFunctionBody> *saved_deferred_sink =
-	pgm.deferred_function_body_sink;
-    pgm.deferred_function_body_sink = &deferred_method_bodies;
+    // deferred_method_bodies / the sink: opened at the class-head above.
     pgm.class_scope_stack.push_back(ddc);
     // Hidden-friend operator DEFINITIONS collected from the body, hoisted to
     // namespace scope after the class completes ([class.friend]).
@@ -50212,6 +50268,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool body_owner_fn_local = b.method && b.method->owner_class
 	    && pgm.function_local_class_identity(b.method->owner_class,
 						 _lazy_hid);
+	// [class.mem]/6: a member body of a class nested in — or instantiated
+	// while defining — an enclosing class is a complete-class context of
+	// THAT class too: it parses when the outermost definition completes.
+	// Forward it to the enclosing sink (the CRTP base `impl<timed>` reads
+	// timed's members; a nested class's ctor reads the enclosing class's
+	// later statics). Not while a class-template body is being captured
+	// (the capture records THIS class's bodies), and a function-local
+	// class keeps its eager rule.
+	if ( saved_deferred_sink && !pgm.class_pattern_body_capture
+	  && !body_owner_fn_local )
+	{
+	    saved_deferred_sink->push_back(b);
+	    continue;
+	}
 	if ( b.var && b.file && pgm.is_system_header_path(b.file)
 	  && (pgm.fn_template_instantiation_depth == 0
 	      || !body_owner_fn_local) )

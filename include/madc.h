@@ -5690,6 +5690,10 @@ public:
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     bool class_scope_hides_unqualified_name(class TokenCpnd *code, const std::string &name);
+    TokenDataType *declare_class_placeholder(class TokenIdent *tag, const std::string &class_source_name,
+					     DataDefCLASS *nested_owner_class,
+					     const struct HoistedDeclIdentity *local_class_identity,
+					     bool register_local_source_alias);
     void set_expression_context_root(const madc::value *root);
     void clear_expression_context_root();
     bool has_expression_context_root() const;
