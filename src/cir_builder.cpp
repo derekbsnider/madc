@@ -419,9 +419,7 @@ std::string CirBuilder::func_emit_name(const Variable &v, FuncDef *fd) const
 // defines the emit_symbol as well.
 std::string CirBuilder::func_def_symbol(TokenFunc *tf, FuncDef *fd) const
 {
-	if (fd && !fd->emit_symbol.empty() && !fd->declaration_only
-	    && (!tf->method || !tf->method->owner_class)
-	    && !fd->function_display_name.empty())
+	if (fd && fd->body_defines_emit_symbol(tf->method))
 		return fd->emit_symbol;
 	return body_emit_symbol(tf->var, fd);
 }
@@ -30370,17 +30368,56 @@ node_t CirBuilder::translate_module(Program *prog)
 					// user member's Itanium name (body_emit_symbol),
 					// which is what every call imported.
 					bool referenced = referenced_funcs.count(db.first) > 0;
+					const char *ref_via = referenced ? "key" : "none";
 					if (!referenced && db.second.var) {
 						FuncDef *dfd = dynamic_cast<FuncDef *>(
 							db.second.var->type);
 						referenced = referenced_funcs.count(
 							body_emit_symbol(*db.second.var, dfd)) > 0;
+						if (referenced)
+							ref_via = "body_emit_symbol";
 						// A bodied free/namespace function's body
-						// defines its emit_symbol (func_def_symbol).
-						if (!referenced && dfd && !dfd->declaration_only
-						    && !dfd->emit_symbol.empty())
+						// defines its emit_symbol — the SAME question
+						// func_def_symbol answers (one owner: FuncDef::
+						// body_defines_emit_symbol). A library class
+						// MEMBER's emit_symbol is the library's exported
+						// definition the in-class declaration bound; a
+						// caller importing it demands the LIBRARY, not
+						// this header body (deriving libc++'s
+						// basic_filebuf<char>::basic_filebuf() here
+						// parsed <fstream>:337 for an exported C1Ev).
+						if (!referenced && dfd
+						    && dfd->body_defines_emit_symbol(
+							    db.second.method)) {
 							referenced = referenced_funcs.count(
 								dfd->emit_symbol) > 0;
+							if (referenced)
+								ref_via = "emit_symbol";
+						}
+					}
+					// Env-gated probe (MADC_MTI_PROBE=<substr>): WHICH
+					// spelling made a deferred body ready — the key, its
+					// own-body symbol, or a bodied free function's
+					// emit_symbol — with the field values consulted.
+					{
+						static const char *mtp =
+							::getenv("MADC_MTI_PROBE");
+						if (mtp && *mtp && referenced
+						    && db.first.find(mtp) != std::string::npos) {
+							FuncDef *pfd = db.second.var
+								? dynamic_cast<FuncDef *>(
+									db.second.var->type)
+								: NULL;
+							fprintf(stderr, "MTIPROBE ready key=%s via=%s"
+								" body_sym=%s emit_sym=%s declonly=%d\n",
+								db.first.c_str(), ref_via,
+								db.second.var
+									? body_emit_symbol(*db.second.var,
+											   pfd).c_str()
+									: "(novar)",
+								pfd ? pfd->emit_symbol.c_str() : "(nofd)",
+								pfd ? (int)pfd->declaration_only : -1);
+						}
 					}
 					if (referenced)
 						ready.push_back(std::make_pair(db.first, false));

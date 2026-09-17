@@ -71,6 +71,7 @@ enum class GnuAttributeKind : uint8_t {
     Optimize,
     UsingIfExists
 };
+
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
 
 // Lazy MEMBER-template hydration (task #25 B2, MEMBER arm): one restored
@@ -496,6 +497,10 @@ public:
 							: std::string();
 	return mangle_spelling_for(i < parameters.size() ? parameters[i] : NULL, sp);
     }
+    // Does the body this FuncDef carries DEFINE its emit_symbol? THE question
+    // every reader asks before treating a reference to emit_symbol as a
+    // reference to this body (defined after class Method, which it reads).
+    bool body_defines_emit_symbol(const Method *m) const;
     // THE ONE desugar of a parameter's captured C++ spelling into the spelling
     // the Itanium mangler reads — for a registered parameter (above) AND for a
     // redeclaration's freshly parsed parameter (parseFunction's C-linkage
@@ -708,6 +713,23 @@ public:
     Variable *findParameter(const std::string &);
     Variable *findVariable(const std::string &);
 };
+
+// Only a bodied FREE / NAMESPACE function's body defines its emit_symbol
+// (parseDeclaration's mint — the symbol every call imports). A class MEMBER's
+// emit_symbol names an EXTERNAL definition: the library's exported symbol its
+// in-class declaration bound (bind_declared_cpp_symbol's library arm), kept by
+// the out-of-line definition that later attaches the header body — that body,
+// when madc materializes it, is named by the builder's body_emit_symbol. So a
+// reference to a member's emit_symbol is a reference to the LIBRARY, never a
+// demand for the header body (libc++'s basic_filebuf<char>::basic_filebuf():
+// C1Ev is exported; deriving the body instead parsed <fstream>:337). One owner:
+// CirBuilder::func_def_symbol (what a body defines), the deferred-body
+// readiness check and the forest-restore translation registrar read this.
+inline bool FuncDef::body_defines_emit_symbol(const Method *m) const
+{
+    return !emit_symbol.empty() && !declaration_only
+	&& (!m || !m->owner_class) && !function_display_name.empty();
+}
 
 
 // Program tokens

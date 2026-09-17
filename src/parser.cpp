@@ -26139,8 +26139,13 @@ void Program::flush_forest_pending_globals()
 	    // the restore path is the other registrar and must too — without
 	    // it pack_callee_homed / deferred_lazy_body_key miss and the
 	    // packed lane imports an undefined _ZSt5fixedRSt8ios_base.
+	    // Only a body that DEFINES its emit_symbol is translated (FuncDef::
+	    // body_defines_emit_symbol — the parse-time registrar's rule): a
+	    // restored library MEMBER's out-of-line body keeps the exported
+	    // symbol its declaration bound, and translating it would make a
+	    // caller's library import derive the header body.
 	    if ( FuncDef *rfd = dynamic_cast<FuncDef *>(v->type) )
-		if ( !rfd->emit_symbol.empty() && !rfd->declaration_only )
+		if ( rfd->body_defines_emit_symbol(b.method) )
 		    body_symbol_keys[rfd->emit_symbol] = db.key;
 	    DBG(std::cout << "flush_forest_pending_globals: deferred body "
 		<< db.key << " (" << b.definition_tokens.size() << "+"
