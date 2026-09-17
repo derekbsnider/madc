@@ -193,14 +193,19 @@ run_unit() {
 	start=$(date +%s)
 	# stderr through a byte cap: a diagnostics loop must not fill the disk
 	# (head closing the pipe ends the runaway early; its rc stays non-zero).
+	# The subshell must exit with madc's status, not `wait`'s (the second
+	# lane run read 172/172 green from exactly that mistake).
 	( cd src; ulimit -t "$CAP"; timeout "$CAP" "$BIN_ABS" "${flags[@]}" --emit=c11 "$src" \
-		> /dev/null 2> >(head -c "$ERR_CAP" > "$OUT/raw/$san.err"); wait )
+		> /dev/null 2> >(head -c "$ERR_CAP" > "$OUT/raw/$san.err"); rc=$?; wait; exit $rc )
 	rc=$?
 	end=$(date +%s)
 	sed 's/\x1b\[[0-9;]*m//g' "$OUT/raw/$san.err" > "$OUT/$san.err"
 	local nerr first
 	nerr=$(grep -c ': error: ' "$OUT/$san.err")
 	first=$(grep -m1 ': error: ' "$OUT/$san.err")
+	# Defence in depth: diagnostics with a zero exit is an inconsistency
+	# (compiler or harness) — never a PASS. Recorded as rc 99.
+	if [ "$rc" -eq 0 ] && [ "$nerr" -gt 0 ]; then rc=99; fi
 	printf '%s\t%s\t%s\t%s\t%s\n' "$key" "$rc" "$((end - start))" "$nerr" "$first" \
 		> "$OUT/rows/$san.row"
 }
@@ -266,6 +271,7 @@ printf '%-4s %-44s %4s %5s %6s  %s\n' "" "unit" "rc" "secs" "errors" "first erro
 while IFS=$'\t' read -r key rc secs nerr first; do
 	mark=PASS; [ "$rc" -ne 0 ] && mark=FAIL
 	[ "$rc" -eq 124 ] && mark=TIME
+	[ "$rc" -eq 99 ] && mark=INCO	# errors printed, exit 0
 	printf '%-4s %-44s %4s %5s %6s  %.110s\n' "$mark" "$key" "$rc" "$secs" "$nerr" "$first"
 done < "$OUT/results.tsv"
 echo
