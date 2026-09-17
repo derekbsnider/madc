@@ -69595,7 +69595,7 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
     return expr->datadef();
 }
 
-// parse a lambda expression: [](type arg, ...) { body }
+// parse a lambda expression: [](type arg, ...) { body } or [] { body }
 // Returns a TokenVar referencing the lambda's anonymous function variable.
 // The lambda is pushed onto ast as a top-level TokenFunc so it compiles
 // before the enclosing function. (Originally because asmjit could not nest
@@ -69674,7 +69674,46 @@ TokenBase *Program::parseLambda()
     DataDef *rettype = &ddAUTO;	// deduced from the body, or the trailing return
     bool is_capturing = false;
 
-    if ( tn->id() == TokenID::tkBand )
+    // Keep an explicit-declarator lambda on its established capture path. This
+    // slice only normalizes the C++ form whose declarator is absent; changing
+    // `[capture](...)` here would widen the change into capture semantics.
+    bool cxx_omits_declarator = false;
+    if ( is_cpp_mode() && tn )
+    {
+	DelimDepth capture_probe(this);
+	capture_probe.square = 1;	// parseLambda's caller consumed the opening '['
+	std::vector<TokenBase *> capture_head(1, tn);
+	delim_scan_step(capture_head, 0, capture_probe);
+	size_t after_capture = 0;
+	while ( !capture_probe.top() && after_capture < tokens.size() )
+	{
+	    size_t n = delim_scan_step(tokens, after_capture, capture_probe);
+	    after_capture += n ? n : 1;
+	}
+	cxx_omits_declarator = capture_probe.top()
+	    && after_capture < tokens.size() && tokens[after_capture]
+	    && tokens[after_capture]->id() != TokenID::tkOpBrk;
+    }
+
+    if ( cxx_omits_declarator )
+    {
+	// A strict-C++ lambda introducer owns a capture-list, not madc's
+	// historical `[return-type]` extension. Consume this optional-declarator
+	// form as one balanced grammar unit; the existing capture lowering records
+	// which of the enclosing variables the body actually references.
+	DelimDepth capture_depth(this);
+	capture_depth.square = 1;	// parseLambda's caller consumed the opening '['
+	while ( tn )
+	{
+	    if ( tn->id() != TokenID::tkClSqr )
+		is_capturing = true;
+	    delimStepStream(tn, capture_depth);
+	    if ( capture_depth.top() )
+		break;
+	    tn = nextToken();
+	}
+    }
+    else if ( tn->id() == TokenID::tkBand )
     {
 	is_capturing = true;
 	tn = nextToken(); // consume &, expect ]
@@ -69689,11 +69728,17 @@ TokenBase *Program::parseLambda()
     if ( tn->id() != TokenID::tkClSqr )
 	Throw(tn) << "Expecting ] in lambda expression" << flush;
 
-    // expect '(' — parseFunction takes over AT the '(' exactly as it does
-    // after a named declarator.
-    tn = nextToken();
-    if ( tn->id() != TokenID::tkOpBrk )
-	Throw(tn) << "Expecting ( after lambda [...]" << flush;
+    // parseFunction takes over just AFTER the declarator's opening '(' exactly
+    // as it does after a named declarator. [expr.prim.lambda] makes the whole
+    // lambda-declarator optional, so normalize its absent form to an empty
+    // parameter list and leave the suffix/body at the head of the stream.
+    tn = peekToken();
+    if ( !tn )
+	Throw << "Expecting lambda body after ]" << flush;
+    if ( tn->id() == TokenID::tkOpBrk )
+	nextToken();
+    else
+	pushToken(new TokenClBrk());
 
     std::string lambda_name = "__lambda_" + std::to_string(lambda_counter++);
     DBG(cout << "parseLambda() name: " << lambda_name << endl);

@@ -7213,7 +7213,7 @@ public:
 					 const std::string &function_name,
 					 bool have_result,
 					 const std::string &result_name = "__madc_expr_value");
-    TokenBase *parseLambda();  // parse [](params) { body } lambda expression
+    TokenBase *parseLambda();  // parse [](params) { body } / [] { body } lambda expression
     // THE lambda dispatch for expression context: parse the lambda AND
     // continue the postfix chain, so an immediately-invoked lambda
     // (`[](int x){ return x + 99; }(1)`) becomes a call and not a value

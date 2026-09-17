@@ -1,0 +1,10 @@
+#include <stdio.h>
+
+int main()
+{
+	int i = 7;
+	auto empty = []{ return 1; };
+	auto captured = [i]{ return i; };
+	printf("optional lambda declarator: %d %d\n", empty(), captured());
+	return 0;
+}
