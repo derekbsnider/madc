@@ -31063,12 +31063,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	// register more entries after this point; the late declaration pass below
 	// Pass 1.9 flushes those (emitted_extern_syms — declared above Pass
 	// 0.75, whose re-run consults it — records this batch).
-	// Fold in the Pass 1 user-function proto symbols (keyed by tf->var.name —
-	// exactly what func_proto declares below) so the extern flush also skips a
-	// void* duplicate of a symbol that Pass 1 will type.
+	// Fold in the Pass 1 user-function proto symbols — keyed by
+	// func_def_symbol, THE name func_proto declares below. tf->var.name is
+	// only the REGISTRATION key: since C++ symbol mangling a bodied C++
+	// function's proto is declared under its Itanium symbol, and a call
+	// site's opaque `void *` extern (need_output_extern) is keyed by that
+	// same symbol — folding the registration name here let the flush emit
+	// both (`extern void *_ZSt5fixedRSt8ios_base(void *)` beside the typed
+	// proto: "conflicting types" from clang on the emitted C).
 	for (TokenFunc *tf : funcs)
-		if (dynamic_cast<FuncDef *>(tf->var.type))
-			typed_proto_syms.insert(tf->var.name);
+		if (FuncDef *ffd = dynamic_cast<FuncDef *>(tf->var.type))
+			typed_proto_syms.insert(func_def_symbol(tf, ffd));
 
 	for (auto &kv : m_output_externs) {
 		if (typed_proto_syms.count(kv.first)) continue;
@@ -31557,8 +31562,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (proto) {
 			append(late_list, proto);
 			FuncDef *ptfd = dynamic_cast<FuncDef *>(tf->var.type);
+			// The name the proto just declared (func_def_symbol), not the
+			// registration key — see the Pass-0.8 fold-in.
 			if (ptfd)
-				typed_proto_syms.insert(tf->var.name);
+				typed_proto_syms.insert(func_def_symbol(tf, ptfd));
 			if (prog->pack_recording) {
 				pack_proto_nodes[tf->var.name] = proto;
 				if (ptfd)
