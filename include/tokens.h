@@ -1864,10 +1864,17 @@ public:
     TokenBase *placement;
     DataDef *alloc_type;
     TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; }
+    // The expression's TYPE ([expr.new]/1: a prvalue of type `T *`), set by
+    // parse() for both the scalar and the array form. A new-expression is the
+    // keyword token itself, so without this datadef() answered the keyword
+    // default and `auto c = new T(...)` deduced `char`.
+    DataDef *result_type;
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; result_type = NULL; }
     virtual TokenID id() const override { return TokenID::tkNEW; }
     virtual TokenBase *clone() override { return new TokenNEW(); }
     virtual TokenBase *parse(Program &) override;
+    virtual DataDef *datadef() const override
+    { return result_type ? result_type : (_datatype ? _datatype : &ddVOID); }
     virtual TokenNEW *as_new_tok() override { return this; }
 };
 class TokenDELETE: public TokenKeyword

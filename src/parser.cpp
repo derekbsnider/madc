@@ -50673,6 +50673,20 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	// lowering binds `v` to the element ADDRESS (vfREFERENCE pointer model)
 	// instead of copying the value.
 	bool range_elem_ref = false;
+	// Pointer declarator(s) on the element: `for (T *p : arr)`,
+	// `for (auto *p : pages)`. For a spelled type each `*` wraps the
+	// element type; for `auto` the stars are redundant with the deduction
+	// ([dcl.spec.auto]: P = `auto *`, A = the element type, which the
+	// deduction already yields whole). Kept for the traditional-for
+	// push-back below.
+	std::vector<TokenBase *> star_toks;
+	DataDef *elem_dd = &dt->definition;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    star_toks.push_back(pgm.nextToken());
+	    if ( elem_dd != &ddAUTO )
+		elem_dd = pgm.getPointerType(elem_dd);
+	}
 	TokenBase *amp_tok = NULL;
 	if ( pgm.peekToken()
 	  && (pgm.peekToken()->id() == TokenID::tkBand
@@ -50693,7 +50707,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		fe->file = this->file;
 		fe->line = this->line;
 		fe->column = this->column;
-		fe->elemtype = &dt->definition;
+		fe->elemtype = elem_dd;
 		fe->elemname = contextual_identifier_name(tn2);
 		fe->elem_is_ref = range_elem_ref;
 
@@ -50766,6 +50780,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	pgm.pushToken(tn2);
 	if ( amp_tok )
 	    pgm.pushToken(amp_tok);
+	for ( size_t si = star_toks.size(); si-- > 0; )
+	    pgm.pushToken(star_toks[si]);	// deque front reads `* ... & tn2` again
 	if ( const_tok )
 	    pgm.parsing_const_decl = true;
 	// C++ [stmt.for]: a for-init declaration has LOOP scope. Without a
@@ -53134,6 +53150,8 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
 	    pgm.Throw(this) << "Expected ] after new[] array size" << flush;
 	pgm.nextToken(); // consume ']'
+	// `new T[n]` is a `T *` ([expr.new]/5).
+	result_type = pgm.getPointerType(alloc_class ? (DataDef *)alloc_class : alloc_type);
 	return this;
     }
 
@@ -53170,6 +53188,9 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	pgm.instantiate_member_ctor_template_for_construction(alloc_class, ctor_args, false);
     }
 
+    // `new T(...)` is a `T *` ([expr.new]/1) — the type every consumer of this
+    // expression reads (auto deduction, assignment coercion, comparisons).
+    result_type = pgm.getPointerType(alloc_class ? (DataDef *)alloc_class : alloc_type);
     return this;
 }
 
