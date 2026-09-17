@@ -11,7 +11,8 @@
 # run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp;
 # run 8 (class operator[] element typing): +include/madcdis/arena.h +include/token_arena.h;
 # run 10 (qualified class-scoped constants in constant expressions): +include/madcdis/prose.h +rt_dump_value.cpp;
-# run 12 (global-qualified `::ns::type`, alias-of-scoped-enum scopes): +include/madcdis/keys.h.
+# run 12 (global-qualified `::ns::type`, alias-of-scoped-enum scopes): +include/madcdis/keys.h;
+# run 20 (using-declaration imports an alias template): +include/madcdis/snapshot.h.
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -66,7 +67,6 @@ include/madcdis/relation.h
 include/madcdis/render_text.h
 include/madcdis/schema.h
 include/madcdis/sink.h
-include/madcdis/snapshot.h
 include/madcdis/source_adapter.h
 include/madcdis/text_buffer.h
 include/madcdis/tui_model.h

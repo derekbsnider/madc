@@ -42875,6 +42875,33 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	pgm.pack_tap_type(name);	// B4a: decl-index tap (using-import)
 	pgm.datatype_map[name] = src;
     };
+    // A using-declaration naming an ALIAS TEMPLATE ([namespace.udecl] covers
+    // every kind of declaration): `using __gnu_cxx::__int_traits;` inside
+    // std::__detail (libstdc++ hashtable_policy.h:605), then
+    // `__int_traits<size_t>::__digits`. madc keys a template by bare name
+    // with ONE variant per defining namespace, and unqualified lookup selects
+    // by the current scope chain — so an alias defined in `source_ns` is not
+    // reachable from here until a variant exists for THIS scope. The import
+    // is a copy of the source's variant registered under the destination
+    // namespace (a block-scope `using` widens to the enclosing namespace,
+    // the scope the variable/type imports take too); register_template_alias
+    // is the one registrar (update-or-insert per namespace). A class or
+    // variable template stays on the bare-name path it has today.
+    auto import_alias_template = [&](const std::string &name,
+				     const std::string &source_ns) -> bool
+    {
+	const uint32_t nid = pgm.template_name_pool.intern(name);
+	Program::TemplateAliasDef *ad = pgm.find_template_alias(nid, source_ns, NULL);
+	if ( !ad )
+	    return false;
+	if ( ad->defining_namespace == pgm.current_namespace() && !ad->owner_class )
+	    return true;	// already visible here
+	Program::TemplateAliasDef imported = *ad;
+	imported.defining_namespace = pgm.current_namespace();
+	imported.owner_class = NULL;
+	pgm.register_template_alias(imported);
+	return true;
+    };
     auto resolve_source_namespace = [&](const std::string &name) -> std::string
     {
 	// C++ unqualified namespace lookup walks OUTWARD through ENCLOSING
@@ -43033,7 +43060,21 @@ TokenBase *TokenUSING::parse(Program &pgm)
 		       ? (dti != pgm.datatype_map.end())
 		       : (nti != pgm.namespace_datatype_map.end()
 			  && ns_dti != nti->end());
-	if ( !v && !have_type && !using_if_exists )
+	// An ALIAS TEMPLATE named by a using-declaration ([namespace.udecl]
+	// covers every kind of declaration): `using __gnu_cxx::__int_traits;`
+	// inside std::__detail (libstdc++ hashtable_policy.h:605), then
+	// `__int_traits<size_t>::__digits`. The alias registry keys a template
+	// by bare name with one variant per defining namespace; the import is
+	// a copy of the source's variant registered under the DESTINATION
+	// namespace (block-scope `using` widens to the enclosing namespace —
+	// the same scope the variable/type imports above take), so unqualified
+	// lookup here resolves it exactly as in its home. register_template_alias
+	// is the one registrar (update-or-insert per namespace).
+	// Probed regardless of have_type: an alias template can also stand in
+	// the datatype map under its bare name (a placeholder the type-import
+	// below copies), and that copy alone cannot instantiate `ptr<int>`.
+	bool have_alias_template = !v && import_alias_template(name, source_ns);
+	if ( !v && !have_type && !have_alias_template && !using_if_exists )
 	    pgm.Throw(member) << "'" << name << "' is not a declaration in '"
 			      << (source_ns.empty() ? std::string("::") : source_ns)
 			      << "'" << flush;
@@ -43246,14 +43287,17 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    have_type = dti != nti->end();
 	}
 	// A using-declaration may import a TEMPLATE member — an alias template
-	// (`using std::__detail::__range_iter_t;`, ranges_base.h:93), a class
-	// template, or a variable template — defined in ns_name. madc keys
-	// templates globally by simple name, so the name is already resolvable;
-	// accept the using (no import action needed) rather than erroring.
+	// (`using std::__detail::__range_iter_t;`, ranges_base.h:93;
+	// `using __gnu_cxx::__int_traits;`, hashtable_policy.h:605), a class
+	// template, or a variable template — defined in ns_name. An alias
+	// template is IMPORTED (a variant for this scope — see
+	// import_alias_template: bare-name keying selects by defining
+	// namespace, so "already resolvable" held only for a single variant);
+	// a class / variable template keeps its bare-name reach.
 	const uint32_t member_name_id =
 	    pgm.template_name_pool.intern(member_name);
 	bool have_template =
-	    pgm.find_template_alias(member_name_id, ns_name, NULL)
+	    import_alias_template(member_name, ns_name)
 	 || pgm.find_template(member_name_id, ns_name, NULL)
 	 || pgm.var_template_map.count(ns_name + "::" + member_name);
 	if ( !have_var && !have_type && !have_template && !using_if_exists )

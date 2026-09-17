@@ -1,0 +1,35 @@
+// A using-declaration naming an ALIAS TEMPLATE — `using g::itraits;` at
+// namespace scope and inside a function body (self-host arc 2026-09-17:
+// libstdc++ hashtable_policy.h:605 `using __gnu_cxx::__int_traits;` inside
+// __clp2, then `__int_traits<size_t>::__digits` at :613 — the first error of
+// 24 units: "use of undeclared identifier '__int_traits'"). The
+// using-declaration imported variables and types, never an alias template.
+// Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+namespace g {
+    template<typename T> using ptr = T *;
+    template<typename T> struct traits { static const int digits = (int)sizeof(T) * 8; };
+    template<typename T> using itraits = traits<T>;
+}
+
+namespace d {
+    using g::ptr;
+    using g::itraits;
+    int f(int v)
+    {
+	ptr<int> p = &v;
+	return *p + itraits<int>::digits;
+    }
+    int h()
+    {
+	using g::itraits;
+	return itraits<short>::digits;
+    }
+}
+
+int main()
+{
+    printf("%d %d\n", d::f(1), d::h());
+    return 0;
+}
