@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Reference-variable temporary binding (2026-09-17)
+
+- Rvalue references and const lvalue references can bind prvalues, with block
+  storage and class cleanup lasting through the reference scope. Reference
+  casts preserve the original object; namespace direct class temporaries
+  construct in static storage, preserving self-pointers.
+- Dual-oracle C++11 tests cover later reads, xvalue mutation, destructor timing,
+  namespace identity, and rejection of a non-const lvalue reference to a prvalue.
+- Static-local prvalue binding refuses explicitly. Member and returned-reference
+  lifetime extension are outside this slice. Thread contract: local temporaries
+  belong to each invocation; namespace shared mutation requires synchronization.
+
 ### Self-host harness — madc parses its own source, measured per unit (2026-09-17, in progress)
 
 - `scripts/selfhost_lane.sh` / `make -C src selfhost`: every TU the Makefile links

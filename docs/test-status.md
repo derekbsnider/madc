@@ -1,5 +1,12 @@
 # Test Status
 
+Reference-binding slice (2026-09-17, feature/selfhost-harness-claude):
+`testrefprvalue`, `testrefprvaluenamespace`, and `testrefprvaluereject` use
+`--std=c++11`; positive output and negative rejection checked with both g++
+and clang++. Targeted `testref* testrvalue* testmove* testconst*`: JIT 43/0,
+EXE 40/0, OBJ 40/0. Emitted C inspected for block storage and cleanup.
+Committed C++11 conformance lane pending; no full battery run for this slice.
+
 > **Current (2026-09-15, s198 — the reactor's Windows backend: the V6
 > transports work under Windows).** `feature/reactor-windows-claude` @
 > `124088428`. The WSAPoll reactor backend (the async-I/O reactor design's

@@ -70626,12 +70626,28 @@ bool Program::paren_group_is_nonclass_direct_init()
 }
 
 TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
-					      DataDef *referent_type)
+					      DataDef *referent_type,
+					      bool allow_temporary,
+					      const std::string &binding_name,
+					      bool static_local)
 {
     if ( !expr )
 	return NULL;
     DataDefPTR *ptr_type = getPointerType(referent_type
 					      ? referent_type : expr->datadef());
+    // Reference casts designate the operand's object, including xvalues.
+    // Keep the cast itself: CIR owns any base-subobject address adjustment.
+    if ( TokenCast *cast = dynamic_cast<TokenCast *>(expr) )
+	if ( cast->cast_type && cast->cast_type->is_reference() )
+	{
+	    if ( cast->to_rvalue_ref && !allow_temporary )
+		Throw(expr) << "Reference initializer must be an lvalue" << flush;
+	    DataDef *value_type = cast->cast_type->as_pointer_dd()->base_type;
+	    TokenBase *addr = reference_bind_address_expr(cast->expr,
+		value_type, allow_temporary, binding_name, static_local);
+	    cast->expr = new TokenDerefExpr(addr, value_type);
+	    return new TokenAddrExpr(cast, ptr_type);
+	}
     // A reference-returning CALL (`b.get()`, `std::get<0>(t)`) already yields the
     // referent's ADDRESS — its result type is a DataDefREF (== T*). It must be
     // routed through the lvalue / TokenAddrExpr path (the CIR builder auto-derefs a
@@ -70656,22 +70672,31 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	    return addr;
 	}
     }
+    // Distribute only a glvalue conditional. A prvalue conditional must
+    // evaluate once into ONE temporary, without evaluating its unused arm.
+    auto binds_existing_object = [](TokenBase *arm) {
+	if ( TokenCast *cast = dynamic_cast<TokenCast *>(arm) )
+	    return cast->cast_type && cast->cast_type->is_reference();
+	return fn_template_call_arg_is_lvalue(arm);
+    };
     if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+      if ( binds_existing_object(tt->true_expr)
+	&& binds_existing_object(tt->false_expr) )
     {
 	TokenTerQ *bound = new TokenTerQ();
 	copy_token_location(bound, tt);
 	bound->condition = tt->condition;
 	bound->true_expr = reference_bind_address_expr(tt->true_expr,
-						       referent_type);
+	    referent_type, allow_temporary, binding_name, static_local);
 	bound->false_expr = reference_bind_address_expr(tt->false_expr,
-							referent_type);
+	    referent_type, allow_temporary, binding_name, static_local);
 	bound->setDataType(ptr_type);
 	return bound;
     }
     // A call token DERIVES FROM TokenVar (TokenCallFunc : TokenVar); a
     // VALUE-returning call reaching this arm would take the address of its
     // callee FUNCTION (`&__ns_std_use_facet`) — a silent wrong bind. Exclude
-    // calls: a prvalue call falls to the lvalue diagnostic below (loud).
+    // calls: a prvalue call needs materialized object storage below.
     if ( !dynamic_cast<TokenCallFunc *>(expr) )
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
 	{
@@ -70686,8 +70711,59 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	copy_token_location(addr, expr);
 	return addr;
     }
-    Throw(expr) << "Reference initializer must be an lvalue" << flush;
-    return NULL;
+    if ( !allow_temporary )
+	Throw(expr) << "Reference initializer must be an lvalue" << flush;
+    if ( static_local )
+	Throw(expr) << "Static local reference temporary lifetime is not supported" << flush;
+
+    // Like ref_param_arg_addr, bind the address of a typed temporary. The
+    // declaration is carried in the address expression so CIR emits it at
+    // the binding site in the enclosing block, never in a statement-expression
+    // whose cleanup would leave the reference dangling. Ordinary declaration
+    // lowering owns construction and scope-exit destruction.
+    DataDef *value_type = referent_type ? referent_type : expr->datadef();
+    value_type = value_type->unqualified();
+    std::string name = "__madc_reftmp_" + binding_name;
+    bool global = compounds.empty() || compounds.top() == tkProgram;
+    Variable *temp = global ? addVariable(NULL, *value_type, name, 1, NULL, true)
+			    : new Variable(name, *value_type, 1, NULL, false);
+    temp->flags |= global ? vfSTATIC : vfLOCAL;
+    temp->flags |= vfADDRTAKEN;
+    TokenDecl *decl = new TokenDecl(*temp);
+    copy_token_location(decl, expr);
+    TokenAssign *init = new TokenAssign();
+    copy_token_location(init, expr);
+    init->left = new TokenVar(*temp);
+    init->right = expr;
+    decl->initialize = init;
+    if ( global )
+    {
+	// Construct a class prvalue directly in its static storage. Passing
+	// T(args) as a copy-ctor argument would create a second object inside
+	// __madc_global_init, destroy it there, and leave self-pointers dangling.
+	if ( TokenObjTemp *object = expr->as_objtemp_tok() )
+	    if ( object->obj_class == value_type )
+	    {
+		decl->initialize = NULL;
+		decl->ctor_args = object->ctor_args;
+		decl->ctor_arg_keys = object->ctor_arg_keys;
+		decl->ctor_args_braced = object->braced;
+	    }
+	TopDecl td;
+	td.kind = DeclKind::dkGlobalVar;
+	td.name = temp->name;
+	td.var = temp;
+	td.dd = temp->type;
+	td.file = expr->file;
+	td.line = expr->line;
+	td.origin = expr;
+	td.decl = decl;
+	top_decls.push_back(td);
+	return new TokenAddrOf(*temp, ptr_type);
+    }
+    TokenAddrExpr *addr = new TokenAddrExpr(decl, ptr_type);
+    copy_token_location(addr, expr);
+    return addr;
 }
 
 // parse either a variable declaration, or a function declaration
@@ -70809,6 +70885,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
     bool ret_is_ref = false;
+    bool decl_rvalue_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
     // tb->spelling() == definition.name, nor a "struct tag" type, which isn't in
     // datatype_map), record the alias so the CIR backend emits ID("alias")
@@ -70869,7 +70946,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
       && (peekToken()->id() == TokenID::tkBand
        || peekToken()->id() == TokenID::tkLand) )
     {
-	nextToken();
+	decl_rvalue_ref = nextToken()->id() == TokenID::tkLand;
 	ret_is_ref = true;
     }
     // A typedef/alias whose RESOLVED type is itself a reference (`typedef const int&
@@ -71312,7 +71389,8 @@ fnptr_decl_arm_head:
 	    // deduced type, the type is a DataDefREF, and the initializer is the
 	    // address of the lvalue `e` (first-class refs: a reference to a pointer
 	    // is modeled like any other reference, no pointer special-case).
-	    auto_init_expr = reference_bind_address_expr(init_expr, deduced);
+	    auto_init_expr = reference_bind_address_expr(init_expr, deduced,
+		decl_rvalue_ref || gotconst, id, gotstatic && code);
 	    auto_decl_type = getReferenceType(deduced);
 	}
 
@@ -72557,7 +72635,18 @@ fnptr_decl_arm_head:
 	    copy_token_location(assign, tb);
 	    assign->left = new TokenVar(*var);
 	    assign->right = reference_bind_address_expr(rhs,
-							reference_value_type);
+		reference_value_type,
+		decl_rvalue_ref || td->is_const_decl || reference_value_type->is_const(),
+		var->name, gotstatic && code && code != tkProgram);
+	    // A namespace-scope temporary must precede the reference in both
+	    // source-order emission and dynamic initialization order.
+	    if ( global_top_decl_index >= 0 )
+	    {
+		size_t index = (size_t)global_top_decl_index;
+		std::rotate(top_decls.begin() + index,
+			    top_decls.begin() + index + 1, top_decls.end());
+		global_top_decl_index = (ssize_t)top_decls.size() - 1;
+	    }
 	    td->initialize = assign;
 	}
 	else if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )

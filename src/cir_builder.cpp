@@ -21836,6 +21836,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenAddrExpr *tae = (tb ? tb->as_addr_expr_tok() : NULL);
 		if (tae) {
+			// A reference-binding materialization carries its declaration.
+			// Emit into the enclosing block's pending statements, as for
+			// ref_param_arg_addr: its storage and cleanup must outlive this
+			// full-expression. Never wrap this in N_STMTEXPR.
+			if (TokenDecl *temp = tae->expr ? tae->expr->as_decl_tok() : NULL) {
+				if (DataDefCLASS *cls = as_class_instance(temp->var.type)) {
+					node_t items = list();
+					class_decl_stmts(temp, cls, items);
+					while (node_t item = c2mir_node_first_op(items)) {
+						c2mir_op_remove(items, item);
+						m_pending_stmts.push_back(item);
+					}
+				} else {
+					node_t decl = var_decl(&temp->var, temp);
+					m_pending_stmts.push_back(decl);
+				}
+				return node1(N_ADDR,
+					id(var_emit_name(temp->var).c_str(), tb), tb);
+			}
 			// `&a[i]...` on a flat runtime-sized array: a PARTIAL
 			// access already linearizes to the address VALUE
 			// (root + lin*stride) — return it directly; N_ADDR

@@ -7155,7 +7155,10 @@ public:
     TokenBase *parse_parenthesized_expression(const char *context,
 					      bool stop_on_closing_paren);
     TokenBase *reference_bind_address_expr(TokenBase *expr,
-					   DataDef *referent_type);
+					   DataDef *referent_type,
+					   bool allow_temporary,
+					   const std::string &binding_name,
+					   bool static_local = false);
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
 				  bool nested = false,

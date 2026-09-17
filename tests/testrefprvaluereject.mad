@@ -1,0 +1,2 @@
+int f() { return 42; }
+int main() { int &r = f(); return r; }

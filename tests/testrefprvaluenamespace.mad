@@ -1,0 +1,17 @@
+#include <stdio.h>
+int destroyed = 0;
+struct A {
+ int n;
+ const A *self;
+ A() : n(73), self(this) {}
+ ~A() { ++destroyed; }
+};
+namespace N {
+ const A &a = A();
+ int f() { return 28; }
+ int &&r = f();
+}
+int main() {
+ printf("namespace: %d %d %d %d\n", N::a.n, N::a.self == &N::a, N::r, destroyed);
+ return 0;
+}
