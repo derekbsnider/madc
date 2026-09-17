@@ -18,6 +18,11 @@
 - `dynamic_cast<const T *>(p)`: cv-qualified targets.
 - `typedef enum [Tag] : T { ... } alias;`: the enum-base parses and the alias takes
   its layout (`sizeof(alias) == sizeof(T)`) and enumerators.
+- Class `operator[]` element typing for reference-typed, member and expression
+  receivers: `v[i].field` on a `std::vector<Struct>&` parameter or a class member.
+- A block-scope typedef of a struct already defined at file scope references the
+  tag (libstdc++ algorithm bodies re-defined the element struct: "tag
+  redeclaration").
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
