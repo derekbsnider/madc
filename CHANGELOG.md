@@ -23,6 +23,10 @@
 - A block-scope typedef of a struct already defined at file scope references the
   tag (libstdc++ algorithm bodies re-defined the element struct: "tag
   redeclaration").
+- Constant expressions fold class-scoped constants through a qualified path:
+  `case n::V::kind::s:`, `n::V::limit`.
+- `auto *p = new T(...)`: a new-expression reports its type (`T *`); a range-for
+  element accepts pointer declarators (`for (auto *p : arr)`).
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
