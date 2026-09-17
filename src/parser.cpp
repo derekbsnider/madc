@@ -67239,6 +67239,39 @@ paramdecl:
     if ( static_class_method )
 	var->flags |= vfSTATIC;
 
+    // [basic.scope.pdecl]: the function's NAME is declared right after its
+    // declarator, before the body. A namespace-scope function tracked as a
+    // C++ overload set registers under its internal symbol (`id`); its SOURCE
+    // name reached the namespace map and the overload set only from
+    // parseDeclaration's registrar AFTER the whole definition parsed, so an
+    // unqualified self-call inside the body — `fib(n - 1)` in `namespace q {
+    // int fib(int n) { ... } }` (madcdis/dataset.h:199) — was "use of
+    // undeclared identifier". Register the source name now, exactly as that
+    // registrar and the forest restore do; both are find-before-insert, so
+    // nothing registers twice, and the same-signature fold skips the
+    // function itself (fresh_var).
+    if ( !owner_class && !func->function_display_name.empty()
+      && !current_namespace().empty() && func->function_display_name != id )
+    {
+	variable_map_t &nsmap = namespace_variables_for_write(current_namespace());
+	if ( nsmap.find(func->function_display_name) == nsmap.end() )
+	    nsmap[func->function_display_name] = var;
+	std::vector<NamespaceFnOverload> &ovset = namespace_fn_overload_sets[
+	    current_namespace() + "::" + func->function_display_name];
+	bool known = false;
+	for ( size_t i = 0; i < ovset.size(); ++i )
+	    if ( ovset[i].var == var )
+		known = true;
+	if ( !known )
+	{
+	    NamespaceFnOverload e;
+	    e.var = var;
+	    ovset.push_back(e);
+	}
+	if ( func->namespace_name.empty() )
+	    func->namespace_name = current_namespace();
+    }
+
     // Trailing method cv/ref/exception qualifiers after the parameter list:
     // `T m() const`, `... volatile`, `... noexcept`, `... override`, `... final`.
     // Record const — it drives Itanium mangling (a const method is _ZNK…;

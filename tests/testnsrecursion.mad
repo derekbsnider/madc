@@ -1,0 +1,32 @@
+// A namespace function calling ITSELF by its unqualified name from inside its
+// own body (self-host arc 2026-09-17: madc's own include/madcdis/dataset.h:199
+// `match_like_pattern_from(...)` recursing inside `inline bool
+// match_like_pattern_from(...)` in namespace madc::hub was the first error of
+// 12 units: "use of undeclared identifier"). [basic.scope.pdecl]: the name is
+// declared immediately after its declarator, before the body — a global
+// function already recursed; a namespace-scope one (tracked as a C++ overload
+// set under its mangled symbol) became reachable by its source name only after
+// the whole definition parsed. Shapes: plain and inline recursion in a
+// namespace, a nested namespace, mutual recursion through a prior declaration,
+// and an overloaded recursive pair. Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+namespace q {
+    int fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
+    inline int tri(int n) { return n <= 0 ? 0 : n + tri(n - 1); }
+    namespace deep {
+	inline long fact(long n) { return n <= 1 ? 1 : n * fact(n - 1); }
+    }
+    int odd(int n);
+    int even(int n) { return n == 0 ? 1 : odd(n - 1); }
+    int odd(int n) { return n == 0 ? 0 : even(n - 1); }
+    int sum(int a) { return a <= 0 ? 0 : a + sum(a - 1); }
+    int sum(int a, int b) { return b <= 0 ? sum(a) : sum(a, b - 1) + b; }
+}
+
+int main()
+{
+    printf("%d %d %ld %d %d %d\n", q::fib(10), q::tri(4), q::deep::fact(5),
+	   q::even(6), q::sum(3), q::sum(3, 2));
+    return 0;
+}
