@@ -30123,6 +30123,19 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		elem_type = madc_array_subscript_type();
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
+	    else if ( !handled_fixed_array )
+	    {
+		// A class-object base with operator[] — a MEMBER container
+		// (`_entries[i]` through this), a call result, a deref: the
+		// element type is the operator's return VALUE type, from the
+		// one owner the named-variable TokenSubscript uses (a reference
+		// base answers as its referent). The CIR lowering already
+		// dispatches such a TokenSubscriptExpr through operator[]
+		// (class_subscript_addr_on) — only the parse-time type was
+		// missing, so `_entries[i].hash` looked `hash` up on the vector.
+		if ( DataDef *e = TokenSubscript::subscript_operator_element_type(base_type) )
+		    elem_type = e;
+	    }
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
 	    continue;
 	}
@@ -39747,6 +39760,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// slot model (madc_array_subscript_type).
 			if ( elem_type && elem_type->is_madc_array() )
 			    elem_type = madc_array_subscript_type();
+			// A class-object member/chain base with operator[]
+			// (`_entries[i]` through this, `s.items[i]`, `(*p)[i]`):
+			// the element is the operator's return VALUE type — the
+			// one owner the named-variable TokenSubscript asks. The
+			// carrier rule above wins for madc arrays. The CIR
+			// lowering already dispatches such a TokenSubscriptExpr
+			// through operator[] (class_subscript_addr_on).
+			else if ( DataDef *e =
+				    TokenSubscript::subscript_operator_element_type(elem_type) )
+			    elem_type = e;
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and
@@ -39799,8 +39822,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// arm above types `a[2]`. Without this arm the `[`
 			// after such an expression fell through to the lambda
 			// introducer below ("Expecting ] in lambda expression").
+			// ... or a class-object VALUE with operator[] (a parenthesized
+			// or member container: `(v[0])`, `this->_entries[i]`): the
+			// element type is the operator's return value type — the one
+			// owner (subscript_operator_element_type); the CIR lowering
+			// dispatches the TokenSubscriptExpr through operator[].
+			DataDef *class_elem =
+			    TokenSubscript::subscript_operator_element_type(dd);
 			if ( dd && (dd->is_pointer() || dd->is_simd()
-			  || comma_returns_fixed_array) )
+			  || comma_returns_fixed_array || class_elem) )
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
@@ -39810,7 +39840,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				Throw(tb) << "Expected ] in subscript expression" << flush;
 			    DataDef *elem_type = comma_returns_fixed_array
 				? comma_fixed_array->var.type : dd;
-			    if ( elem_type && elem_type->is_pointer() )
+			    if ( class_elem && !comma_returns_fixed_array )
+				elem_type = class_elem;
+			    else if ( elem_type && elem_type->is_pointer() )
 			    {
 				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;

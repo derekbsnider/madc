@@ -1248,17 +1248,24 @@ public:
     TokenSubscript(Variable &o, TokenBase *idx, Variable *tmp = nullptr)
         : object(o), index(idx), tmp_var(tmp)
     {
+        // A REFERENCE-typed receiver (`std::vector<T> &v`, `char *&p`)
+        // subscripts as its referent ([expr.sub] works on the glvalue the
+        // reference denotes): peel it once here so every arm below sees
+        // the container's own type. The subscript on a vector<Struct>&
+        // parameter otherwise fell to the int default and `v[i].field`
+        // then looked the member up on the VECTOR.
+        DataDef *bt = referent_type(o.type);
         if ( o.is_fixed_array() )
             _datatype = o.type; // C fixed array: subscript yields element of base type
-        else if ( o.type->is_pointer() )
+        else if ( bt->is_pointer() )
         {
             // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
-            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
+            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
-        else if ( o.type->type() == DataType::dtSIMD )
-            _datatype = static_cast<DataDefSIMD *>(o.type)->element_type;
-        else if ( DataDef *e = subscript_operator_element_type(o.type) )
+        else if ( bt->type() == DataType::dtSIMD )
+            _datatype = static_cast<DataDefSIMD *>(bt)->element_type;
+        else if ( DataDef *e = subscript_operator_element_type(bt) )
             // A class with `T& operator[](...)` (a real madc template container
             // like vector<T>/map<K,V>/set<T>): the element type is the operator[]
             // return VALUE type (the base T — return_value_type() yields the
@@ -1269,10 +1276,24 @@ public:
             _datatype = &ddINT64; // madc array (madc::value): default to int
     }
 
+    // The type a reference denotes (`T &` -> `T`); any other type as is.
+    // DataDefREF derives from DataDefPTR and carries the referent as base_type.
+    static DataDef *referent_type(DataDef *dd)
+    {
+        if ( dd && dd->is_reference() )
+            if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+                if ( rp->base_type )
+                    return rp->base_type;
+        return dd;
+    }
+
     // The element type produced by a class object's `operator[]`, or NULL when
-    // `dd` is not a class declaring operator[]. Static so the ctor can use it.
+    // `dd` is not a class declaring operator[]. Static so the ctor can use it;
+    // the ONE owner every subscript site asks (a reference to the class
+    // answers as the class).
     static DataDef *subscript_operator_element_type(DataDef *dd)
     {
+        dd = referent_type(dd);
         if ( !dd || !dd->is_object() )
             return NULL;
         DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);

@@ -8,7 +8,8 @@
 #
 # Seeded 2026-09-17 from the lane's third run on the container, at c9c42c084
 # (thread_local landed): 47 of 172 units passed. Shrunk as fixes land —
-# run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp.
+# run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp;
+# run 8 (class operator[] element typing): +include/madcdis/arena.h +include/token_arena.h.
 # Coverage = units not listed here.
 ../obj/develop/embedded_headers.cpp
 cir_builder.cpp
@@ -43,7 +44,6 @@ include/madcdat/mapper.h
 include/madcdat/relation.h
 include/madcdat/schema.h
 include/madcdat/source_adapter.h
-include/madcdis/arena.h
 include/madcdis/channel.h
 include/madcdis/channel_stream.h
 include/madcdis/datachannel.h
@@ -81,7 +81,6 @@ include/madcdis/web_model.h
 include/madcdis/websocket_channel.h
 include/madcdis/world_text.h
 include/ns_common.h
-include/token_arena.h
 include/tokens.h
 lexer.cpp
 madc.cpp
