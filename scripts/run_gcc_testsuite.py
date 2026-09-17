@@ -86,6 +86,16 @@ def gxx_scope_reason(path):
 	return ""
 
 
+def as_text(data):
+	"""subprocess.TimeoutExpired carries RAW BYTES even under text=True —
+	CPython does not decode on the timeout path — so normalise before use."""
+	if data is None:
+		return ""
+	if isinstance(data, bytes):
+		return data.decode("utf-8", "replace")
+	return data
+
+
 def read_text(path):
 	try:
 		return path.read_text(errors="replace")
@@ -264,9 +274,7 @@ def run_one(path, madc, timeout, std, suite="c-torture"):
 			check=False,
 		)
 	except subprocess.TimeoutExpired as exc:
-		output = exc.stdout or ""
-		if exc.stderr:
-			output += exc.stderr
+		output = as_text(exc.stdout) + as_text(exc.stderr)
 		if temp_source:
 			try:
 				os.unlink(temp_source)
@@ -417,7 +425,11 @@ def main(argv):
 			if reason:
 				result = Result(test, "SKIP", reason)
 			else:
-				result = run_one(test, madc, timeout, std, suite)
+				try:
+					result = run_one(test, madc, timeout, std, suite)
+				except Exception as exc:  # never let one test kill the lane
+					result = Result(test, "FAIL(harness)",
+						type(exc).__name__ + ": " + str(exc))
 		counts[result.status] = counts.get(result.status, 0) + 1
 		print_result(result, args.verbose)
 
