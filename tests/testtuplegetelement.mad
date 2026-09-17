@@ -1,0 +1,21 @@
+// std::get<I> on a std::tuple and std::tuple_element over a tuple (self-host
+// arc 2026-09-17: libstdc++ utility.h:84 `using __tuple_element_t = typename
+// tuple_element<__i, _Tp>::type;` — "Expecting a type argument to
+// tuple_element<>" — was the first error of 34 units once std::function's
+// union parsed; `#include <tuple>` alone is fine, the first `std::get<0>(t)`
+// trips it: the recursive partial specialization `tuple_element<__i,
+// tuple<_Head, _Tail...>> : tuple_element<__i - 1, tuple<_Tail...>>`).
+// Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+#include <tuple>
+
+int main()
+{
+    std::tuple<int, long, double> t(3, 4L, 2.5);
+    std::tuple_element<1, std::tuple<int, long, double> >::type second = std::get<1>(t);
+    std::get<0>(t) += 4;
+    printf("%d %ld %.1f %d %d\n", std::get<0>(t), second, std::get<2>(t),
+	   (int)std::tuple_size<std::tuple<int, long, double> >::value,
+	   (int)sizeof(std::tuple_element<2, std::tuple<int, long, double> >::type));
+    return 0;
+}

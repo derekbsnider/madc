@@ -35006,6 +35006,8 @@ static bool template_outer_names_match(std::string pouter,
     return false;
 }
 
+static bool datadef_is_nontype_constant(const DataDef *dd);	// defined with the return-type resolver below
+
 bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
@@ -35100,13 +35102,29 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 		// A non-integer unresolvable spelling is a genuine deduction miss.
 		std::string es = trim_spelling(cargs[i]);
 		char *endp = NULL;
+		long long cval = 0;
 		if ( !es.empty() )
-		    strtoll(es.c_str(), &endp, 0);
+		    cval = strtoll(es.c_str(), &endp, 0);
 		while ( endp && (*endp == 'u' || *endp == 'U'
 			     || *endp == 'l' || *endp == 'L') )
 		    ++endp;
 		if ( es.empty() || !endp || *endp != '\0' )
 		    return false;          // not an integer literal -> fall to primary
+		// An already-bound non-type param (the call's explicit `<1>`
+		// seeded `ded` with the decimal-named value DataDef) must AGREE
+		// with the concrete value: `_Tuple_impl<__i,_Head,_Tail...>&`
+		// with __i = 1 does not match the argument's direct base
+		// _Tuple_impl<0,int,long,double> — that is the base-walk's cue
+		// to try the next base up, _Tuple_impl<1,long,double>. Without
+		// the check every std::get<I> deduced _Head/_Tail from the
+		// I=0 base and the specialization's parameter type never matched
+		// the call (tests/testtidpackbasededuce, the tuple layer of the
+		// self-host arc).
+		std::map<std::string, DataDef *>::iterator nd = ded.find(pargs[i]);
+		if ( nd != ded.end() && nd->second
+		  && datadef_is_nontype_constant(nd->second)
+		  && strtoll(nd->second->name.c_str(), NULL, 10) != cval )
+		    return false;          // inconsistent deduction
 		score += 1;
 		continue;
 	    }

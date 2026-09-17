@@ -1,0 +1,27 @@
+// A function template whose template-id parameter deduces from a BASE of the
+// argument's class I levels up — std::get<I>(tuple&) -> __get_helper<I>(
+// _Tuple_impl<I, ...>&) over the _Tuple_impl inheritance chain (self-host arc
+// 2026-09-17, the layer behind tests/testtuplegetelement: helper<0> resolved,
+// helper<1>/<2> bound to the body-less placeholder — "lvalue required as
+// left operand of assignment"). Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+template<unsigned I, typename... T> struct TI;
+template<unsigned I, typename H, typename... T> struct TI<I, H, T...> : TI<I + 1, T...> { H head; };
+template<unsigned I, typename H> struct TI<I, H> { H head; };
+template<unsigned I, typename H, typename... T> H &helper(TI<I, H, T...> &t) { return t.head; }
+template<unsigned I, typename H, typename... T> const H &chelper(const TI<I, H, T...> &t) { return t.head; }
+template<typename... E> struct tup : TI<0, E...> {};
+
+template<unsigned I, typename... E> void put(tup<E...> &t, long v) { helper<I>(t) = v; }
+
+int main()
+{
+    tup<int, long, double> t;
+    helper<0>(t) = 3; helper<1>(t) = 4; helper<2>(t) = 2.5;
+    printf("%d %ld %.1f\n", helper<0>(t), helper<1>(t), helper<2>(t));
+    put<1>(t, 40); put<0>(t, 30);
+    const tup<int, long, double> &ct = t;
+    printf("%d %ld %.1f\n", chelper<0>(ct), chelper<1>(ct), chelper<2>(ct));
+    return 0;
+}
