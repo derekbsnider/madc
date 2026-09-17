@@ -1,0 +1,31 @@
+// dynamic_cast to a cv-QUALIFIED pointer target — `dynamic_cast<const T *>(p)`
+// (self-host arc 2026-09-17: madc's own madc_channel_stream.cpp:88 and
+// madcdis_driver.cpp:15 spell it). The named casts already skip the leading
+// cv-qualifiers through the one owner (skip_cv_qualifier_tokens); the
+// dynamic_cast arm handed `const` itself to the type resolver and threw
+// "dynamic_cast target is not a type". Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+struct Base { virtual ~Base() {} virtual int id() const { return 1; } };
+struct Derived : Base { int id() const override { return 2; } int extra() const { return 40; } };
+struct Other : Base { int id() const override { return 3; } };
+
+int probe(const Base *b)
+{
+    const Derived *d = dynamic_cast<const Derived *>(b);
+    const Other *o = dynamic_cast<const volatile Other *>(b) ? (const Other *)b : 0;
+    if ( d )
+	return d->extra() + d->id();
+    if ( o )
+	return 300 + o->id();
+    return -1;
+}
+
+int main()
+{
+    Derived dd;
+    Other oo;
+    Base bb;
+    printf("derived=%d other=%d base=%d\n", probe(&dd), probe(&oo), probe(&bb));
+    return 0;
+}

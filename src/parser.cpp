@@ -37339,7 +37339,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			Throw(tb) << "Expecting '<' after dynamic_cast" << flush;
 		    nextToken(); // consume '<'
 		    skip_expression_whitespace();
-		    TokenBase *type_tb = nextToken();
+		    // `dynamic_cast<const T *>(p)`: leading cv-qualifiers belong to
+		    // the target type, not to the resolver — the same one owner the
+		    // named casts use (skip_cv_qualifier_tokens); trailing ones
+		    // (`T *const`) ride the pointer loop below.
+		    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
 		    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
 		    if ( !tdt )
 			Throw(type_tb ? type_tb : tb) << "dynamic_cast target is not a type" << flush;
