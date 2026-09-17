@@ -201,8 +201,8 @@ run_unit() {
 	end=$(date +%s)
 	sed 's/\x1b\[[0-9;]*m//g' "$OUT/raw/$san.err" > "$OUT/$san.err"
 	local nerr first
-	nerr=$(grep -c ': error: ' "$OUT/$san.err")
-	first=$(grep -m1 ': error: ' "$OUT/$san.err")
+	nerr=$(grep -cE ': error: |^cir error: ' "$OUT/$san.err")
+	first=$(grep -m1 -E ': error: |^cir error: ' "$OUT/$san.err")
 	# Defence in depth: diagnostics with a zero exit is an inconsistency
 	# (compiler or harness) — never a PASS. Recorded as rc 99.
 	if [ "$rc" -eq 0 ] && [ "$nerr" -gt 0 ]; then rc=99; fi
@@ -248,12 +248,12 @@ done < "$OUT/results.tsv"
 # error shapes: quoted names and numbers normalized; then a coarse 4-word tally
 {
 	echo "# error-message shapes (normalized), every unit"
-	cat "$OUT"/*.err | grep ': error: ' | sed 's/.*: error: //' \
+	cat "$OUT"/*.err | grep -E ': error: |^cir error: ' | sed 's/.*error: //' \
 		| sed "s/'[^']*'/'…'/g; s/\"[^\"]*\"/\"…\"/g; s/[0-9][0-9]*/N/g" \
 		| sort | uniq -c | sort -rn
 	echo
 	echo "# coarse shapes (first four words)"
-	cat "$OUT"/*.err | grep ': error: ' | sed 's/.*: error: //' \
+	cat "$OUT"/*.err | grep -E ': error: |^cir error: ' | sed 's/.*error: //' \
 		| awk '{print $1, $2, $3, $4}' | sort | uniq -c | sort -rn
 } > "$OUT/shapes.txt"
 
