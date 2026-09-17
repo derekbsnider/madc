@@ -9457,6 +9457,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		tl = list();
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
 		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
 		fnptr_decl_list = list();
 		// An array-of-fn-ptr variable (`int (*ops[N])(args)`) keeps a bare
 		// DataDefFPTR type with the array shape carried in v->dims. The C
@@ -9470,6 +9471,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
 	} else {
 		tl = list();
+		// Thread storage duration with no storage class (`thread_local int
+		// x;` at file scope): the specifier leads the type specs, exactly
+		// as the static/extern arms below place theirs.
+		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
 		append_var_type_specs(tl, v, base_dd, anon_sdd);
 	}
 
@@ -9481,6 +9486,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (!fnptr && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
+		if (v->flags & vfTHREADLOCAL) append(new_list, simple(N_THREAD_LOCAL));
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
@@ -9492,6 +9498,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// ("incompatible types of x declarations").
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
+		if (v->flags & vfTHREADLOCAL) append(new_list, simple(N_THREAD_LOCAL));
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}

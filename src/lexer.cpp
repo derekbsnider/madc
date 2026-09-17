@@ -5901,7 +5901,7 @@ void Program::add_keywords()
 	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
 	//   C++98: this typename sizeof typeid true false
 	//          static_cast const_cast reinterpret_cast dynamic_cast
-	//   C++11: decltype alignof nullptr static_assert thread_local
+	//   C++11: decltype alignof nullptr static_assert
 	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
 	//     dialect to real headers, which use `concept`/`requires` (active
 	//     under __cpp_lib_concepts, e.g. <compare>/<concepts>) and the
@@ -5954,6 +5954,13 @@ void Program::add_keywords()
 	// and storage-delegated `static constexpr` / `const constexpr`) and the
 	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
 	{ "constexpr",        STD_CPP11 },
+	// Slice 8 (thread_local, C++11 — self-host arc 2026-09-17): a real
+	// storage-class specifier, NOT ignored: TokenCppKeyword::parse records it
+	// (parsing_thread_local_decl, consumed by parseDeclaration exactly like
+	// parsing_static_decl) and the variable carries vfTHREADLOCAL, which the
+	// CIR builder lowers to c2mir's N_THREAD_LOCAL (`_Thread_local`). The C11
+	// spelling `_Thread_local` is registered below, gated on C11.
+	{ "thread_local",     STD_CPP11 },
 	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
 	{ "consteval",        STD_CPP20 },
@@ -6000,6 +6007,14 @@ void Program::add_keywords()
 	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
 	    keyword_map[cpp_reserved[i].kw] =
 		new TokenCppKeyword(cpp_reserved[i].kw);
+    // C11 `_Thread_local` ([6.7.1]): the C spelling of the same storage-class
+    // specifier — one parse arm (TokenCppKeyword::parse, by spelling), one
+    // variable flag, one lowering. Reserved from C11 on, and in every C++ /
+    // madc mode (an implementation-reserved identifier there; clang++ honours
+    // it as an extension). Never in C89/C99, where it is a valid identifier.
+    if ( language_std == STD_MADC || language_std >= STD_C11 )
+	if ( keyword_map.find("_Thread_local") == keyword_map.end() )
+	    keyword_map["_Thread_local"] = new TokenCppKeyword("_Thread_local");
 
     // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
     // reserved keywords spelled as words; each is an exact synonym for a

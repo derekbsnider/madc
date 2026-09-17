@@ -1,0 +1,28 @@
+// The --emit=c11 twin of testthreadlocal: the C++11 `thread_local` specifier
+// lowers to c2mir's N_THREAD_LOCAL and renders as C11 `_Thread_local` in every
+// storage-class arm — plain, static, extern, the hoisted function-local static
+// and the class static data member. (The JIT's MIR floor has no TLS and
+// treats it as static storage; the emitted C is the faithful lowering.)
+thread_local int tls_counter = 0;
+extern thread_local int tls_counter;
+static thread_local int tls_hits = 5;
+extern thread_local int tls_elsewhere;
+
+struct Mute {
+    static thread_local bool active;
+};
+thread_local bool Mute::active = false;
+
+int bump()
+{
+    static thread_local int calls = 0;
+    return ++calls;
+}
+
+int main()
+{
+    tls_counter += bump();
+    tls_hits += tls_elsewhere;
+    Mute::active = true;
+    return 0;
+}

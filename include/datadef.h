@@ -282,6 +282,12 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // this is how the two stay consistent.
 			                        // (Fresh bit: 65536 is RETIRED, and reusing
 			                        // it would misread older serialized flags.)
+			  vfTHREADLOCAL=2097152, // thread storage duration: C++11
+			                        // `thread_local` / C11 `_Thread_local`.
+			                        // Rides beside vfSTATIC/vfEXTERN (a
+			                        // storage-class SPECIFIER, not a
+			                        // duration of its own in madc's model)
+			                        // and lowers to c2mir's N_THREAD_LOCAL
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:

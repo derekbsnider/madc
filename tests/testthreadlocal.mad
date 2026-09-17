@@ -1,0 +1,41 @@
+// thread_local — the C++11 thread-storage-duration specifier (self-host arc,
+// 2026-09-17: madc's own include/datadef.h spells `extern thread_local bool
+// madc_verbose;`). Every declaration shape madc's source uses: file-scope
+// definition + extern redeclaration, `static thread_local`, order-free
+// `thread_local static`, a comma list, a function-local static, and a static
+// data member declared in-class and defined out of class. Oracle: g++ and
+// clang++ -std=c++11 (single-threaded, so the values are the same whatever
+// the storage duration — the emit twin checks the lowering itself).
+#include <stdio.h>
+
+thread_local int tls_counter = 0;
+extern thread_local int tls_counter;
+static thread_local int tls_hits = 5;
+thread_local static int order_free = 7;
+thread_local int ta = 1, tb = 2;
+
+struct Mute {
+    static thread_local bool active;
+    static int flip() { active = !active; return active ? 1 : 0; }
+};
+thread_local bool Mute::active = false;
+
+int bump()
+{
+    static thread_local int calls = 0;
+    return ++calls;
+}
+
+int main()
+{
+    tls_counter += 3;
+    tls_hits += 1;
+    printf("counter=%d hits=%d order_free=%d ta=%d tb=%d\n",
+	   tls_counter, tls_hits, order_free, ta, tb);
+    int f1 = Mute::flip();	// sequenced: argument evaluation order is unspecified
+    int f2 = Mute::flip();
+    printf("flip=%d flip=%d active=%d\n", f1, f2, Mute::active ? 1 : 0);
+    bump(); bump();
+    printf("calls=%d\n", bump());
+    return 0;
+}

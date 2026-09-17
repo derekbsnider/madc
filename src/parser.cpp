@@ -1725,6 +1725,31 @@ static bool is_ignored_cpp_specifier_token(TokenBase *tb)
 	|| s == "inline";
 }
 
+// The thread-storage-duration specifier, both spellings: C++11 `thread_local`
+// (reserved in C++/madc modes) and C11 `_Thread_local` (reserved from C11) —
+// one reserved token kind, one arm. NOT an ignored specifier: it carries
+// semantics. TokenCppKeyword::parse records it (parsing_thread_local_decl),
+// parseDeclaration consumes it like parsing_static_decl and stamps
+// vfTHREADLOCAL, and the CIR builder lowers that to N_THREAD_LOCAL.
+static bool is_thread_local_specifier_token(TokenBase *tb)
+{
+    if ( !tb || tb->id() != TokenID::tkCPPKEYWORD )
+	return false;
+    const std::string &s = ((TokenKeyword *)tb)->str;
+    return s == "thread_local" || s == "_Thread_local";
+}
+
+// A reserved keyword (tkCPPKEYWORD) that LEADS a declaration — the decl-
+// specifiers with no dedicated dispatch token: the ignored family, `inline`,
+// and the thread-storage specifier. parseStatement's keyword arm routes these
+// to TokenCppKeyword::parse; every other reserved keyword reaching statement
+// position is an expression leader (sizeof, the named casts, this, ...).
+static bool cpp_keyword_leads_declaration(TokenBase *tb)
+{
+    return is_ignored_cpp_specifier_token(tb)
+	|| is_thread_local_specifier_token(tb);
+}
+
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 					 std::set<std::string> *attrs,
 					 std::string *alias_target,
@@ -34082,6 +34107,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     LinkageSpec saved_linkage = current_linkage;
     bool saved_extern_decl = parsing_extern_decl;
     bool saved_static_decl = parsing_static_decl;
+    bool saved_thread_local_decl = parsing_thread_local_decl;
     bool saved_const_decl = parsing_const_decl;
     bool saved_typedef_decl = parsing_typedef_decl;
     bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
@@ -34142,6 +34168,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     current_linkage = LinkageSpec::Cpp;
     parsing_extern_decl = false;
     parsing_static_decl = false;
+    parsing_thread_local_decl = false;
     parsing_const_decl = false;
     parsing_typedef_decl = false;
     dependent_pattern_ctor_inits = false;
@@ -34237,6 +34264,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     current_linkage = saved_linkage;
     parsing_extern_decl = saved_extern_decl;
     parsing_static_decl = saved_static_decl;
+    parsing_thread_local_decl = saved_thread_local_decl;
     parsing_const_decl = saved_const_decl;
     parsing_typedef_decl = saved_typedef_decl;
     dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
@@ -48541,6 +48569,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// --- C++ member declaration specifiers ---
 	bool is_virtual = false;
 	bool is_static_member = false;
+	bool is_thread_local_member = false;	// `static thread_local T m;`
 	bool member_is_friend = false;
 	bool is_explicit_member = false;
 	for (;;)
@@ -48597,6 +48626,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		}
 		else
 		    is_explicit_member = true;
+	    }
+	    else if ( is_thread_local_specifier_token(tn) )
+	    {
+		// Thread storage duration on a static data member: the
+		// member's storage Variable (below) carries vfTHREADLOCAL.
+		pgm.nextToken();
+		is_thread_local_member = true;
 	    }
 	    else if ( spec == "constexpr" || spec == "consteval"
 		   || spec == "constinit" || spec == "inline" )
@@ -49452,6 +49488,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 						storage, scount, NULL, true) )
 			{
 			    sv->flags |= vfEXTERN;
+			    if ( is_thread_local_member )
+				sv->flags |= vfTHREADLOCAL;
 			    // Library-owned class: bind the storage to its REAL
 			    // Itanium symbol. var_emit_name() is the single place
 			    // that maps a Variable to its emitted name and already
@@ -64888,6 +64926,25 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 	    pgm.Throw(this) << "Unexpected end of input after 'inline'" << flush;
 	return pgm.parseStatement(tn);
     }
+    // thread_local / _Thread_local: a storage-class specifier WITH semantics
+    // (thread storage duration). Record it — parseDeclaration consumes the flag
+    // exactly like parsing_static_decl and stamps vfTHREADLOCAL — and continue
+    // with the declaration it qualifies. A preceding `static` / `extern`
+    // (TokenSTATIC/EXTERN::parse route a following keyword here) stays in
+    // effect; a FOLLOWING one (`thread_local static int x`) is parsed by its
+    // own arm with this flag still set — [dcl.spec]/1 is order-free.
+    if ( is_thread_local_specifier_token(this) )
+    {
+	pgm.parsing_thread_local_decl = true;
+	TokenBase *tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
+	if ( is_attribute_identifier_token(tn) )
+	    tn = pgm.consume_gnu_attributes(tn);
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
+	return pgm.parseStatement(tn);
+    }
     // constexpr / consteval / constinit: ignored specifiers (no madc codegen,
     // like const). Consume the specifier and continue parsing the
     // declaration it qualifies. A parsing_static_decl / parsing_const_decl flag
@@ -68410,12 +68467,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     bool gotstatic = is_static || parsing_static_decl;
     bool gotconst = parsing_const_decl;
     bool gotinline = parsing_inline_decl;
+    bool gotthreadlocal = parsing_thread_local_decl;
     // The flags cover exactly this declaration. Clear so nested declarations
     // (e.g. locals inside a `static void f() { string s = ...; }` body)
-    // don't inherit static storage, const-ness, or inline-ness.
+    // don't inherit static storage, const-ness, inline-ness, or thread
+    // storage duration.
     parsing_static_decl = false;
     parsing_const_decl = false;
     parsing_inline_decl = false;
+    parsing_thread_local_decl = false;
 
     DBG(std::cout << "parseDeclaration(" << tb->spelling() << ") START" << std::endl);
 
@@ -68438,6 +68498,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( pk->id() == TokenID::tkSTATIC )
 	{
 	    gotstatic = true;
+	    nextToken();
+	    continue;
+	}
+	if ( is_thread_local_specifier_token(pk) )
+	{
+	    gotthreadlocal = true;
 	    nextToken();
 	    continue;
 	}
@@ -69240,6 +69306,8 @@ fnptr_decl_arm_head:
 		    pushToken(new TokenEXTERN());
 		if ( gotstatic )
 		    pushToken(new TokenSTATIC());
+		if ( gotthreadlocal )
+		    pushToken(new TokenCppKeyword("thread_local"));
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -69425,6 +69493,8 @@ fnptr_decl_arm_head:
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( gotstatic )
 		provisional_decl_var->flags |= vfSTATIC;
+	    if ( gotthreadlocal )
+		provisional_decl_var->flags |= vfTHREADLOCAL;
 	    if ( gotinline && !gotstatic && !code )
 		provisional_decl_var->flags |= vfLINKONCE;
 	    if ( parsing_extern_decl )
@@ -69975,6 +70045,8 @@ fnptr_decl_arm_head:
 	    is_shared_global_extern_reference(code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
+	if ( gotthreadlocal )
+	    var->flags |= vfTHREADLOCAL;
 	// A C++ `inline` variable has vague linkage: every including TU
 	// defines it, so the CIR backend emits a linkonce data binding
 	// (STB_WEAK — per-TU copies merge at a multi-.o link, and dynamic
@@ -70315,6 +70387,8 @@ fnptr_decl_arm_head:
 		    pushToken(new TokenEXTERN());
 		if ( gotstatic )
 		    pushToken(new TokenSTATIC());
+		if ( gotthreadlocal )
+		    pushToken(new TokenCppKeyword("thread_local"));
 	    }
 	}
 
@@ -71907,12 +71981,13 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 			    resolve_declared_type_token(tb, true, true, false) )
 			return parseDeclaration(dt);
 		}
-		// Ignored declaration-specifiers (constexpr/consteval/constinit)
-		// qualify a declaration: fall through to parseKeyword
-		// (TokenCppKeyword::parse), which consumes the specifier and
-		// continues the declaration. Every other reserved keyword here is
-		// an expression leader (sizeof, the named casts, ...).
-		if ( !is_ignored_cpp_specifier_token(tb) )
+		// Declaration-leading specifiers (constexpr/consteval/constinit,
+		// inline, thread_local/_Thread_local) qualify a declaration: fall
+		// through to parseKeyword (TokenCppKeyword::parse), which records
+		// or consumes the specifier and continues the declaration. Every
+		// other reserved keyword here is an expression leader (sizeof,
+		// the named casts, ...).
+		if ( !cpp_keyword_leads_declaration(tb) )
 		{
 		    resetPrevToken();
 		    return parseExprStmt(tb);
