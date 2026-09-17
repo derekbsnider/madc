@@ -59,7 +59,6 @@ g++.dg/cpp0x/auto40.C
 g++.dg/cpp0x/auto47.C
 g++.dg/cpp0x/auto53.C
 g++.dg/cpp0x/auto55.C
-g++.dg/cpp0x/bracket4.C
 g++.dg/cpp0x/collapse-bug.C
 g++.dg/cpp0x/collapse.C
 g++.dg/cpp0x/constexpr-104226.C
@@ -79,7 +78,6 @@ g++.dg/cpp0x/constexpr-70001-3.C
 g++.dg/cpp0x/constexpr-71537.C
 g++.dg/cpp0x/constexpr-71828.C
 g++.dg/cpp0x/constexpr-77771.C
-g++.dg/cpp0x/constexpr-83144.C
 g++.dg/cpp0x/constexpr-87506.C
 g++.dg/cpp0x/constexpr-92015.C
 g++.dg/cpp0x/constexpr-__func__2.C
@@ -116,7 +114,6 @@ g++.dg/cpp0x/constexpr-compare2.C
 g++.dg/cpp0x/constexpr-complex2.C
 g++.dg/cpp0x/constexpr-condition2.C
 g++.dg/cpp0x/constexpr-ctor14.C
-g++.dg/cpp0x/constexpr-ctor18.C
 g++.dg/cpp0x/constexpr-ctor8.C
 g++.dg/cpp0x/constexpr-decltype3.C
 g++.dg/cpp0x/constexpr-decltype5.C
@@ -147,7 +144,6 @@ g++.dg/cpp0x/constexpr-nsdmi3.C
 g++.dg/cpp0x/constexpr-nullptr-1.C
 g++.dg/cpp0x/constexpr-pmf3.C
 g++.dg/cpp0x/constexpr-pos1.C
-g++.dg/cpp0x/constexpr-prvalue3.C
 g++.dg/cpp0x/constexpr-ptrcomp1.C
 g++.dg/cpp0x/constexpr-ptrmem.C
 g++.dg/cpp0x/constexpr-ptrmem4.C
@@ -170,8 +166,6 @@ g++.dg/cpp0x/constexpr-stmtexpr2.C
 g++.dg/cpp0x/constexpr-strchr.C
 g++.dg/cpp0x/constexpr-strstr.C
 g++.dg/cpp0x/constexpr-switch.C
-g++.dg/cpp0x/constexpr-targ2.C
-g++.dg/cpp0x/constexpr-targ3.C
 g++.dg/cpp0x/constexpr-temp2.C
 g++.dg/cpp0x/constexpr-template8.C
 g++.dg/cpp0x/constexpr-trivial1.C
@@ -187,7 +181,6 @@ g++.dg/cpp0x/constexpr-volatile4.C
 g++.dg/cpp0x/conv-tmpl1.C
 g++.dg/cpp0x/conv-tmpl2.C
 g++.dg/cpp0x/conv-tmpl6.C
-g++.dg/cpp0x/decltype-1212.C
 g++.dg/cpp0x/decltype-71879.C
 g++.dg/cpp0x/decltype-bitfield1.C
 g++.dg/cpp0x/decltype-call6.C
@@ -212,14 +205,11 @@ g++.dg/cpp0x/decltype6.C
 g++.dg/cpp0x/decltype61.C
 g++.dg/cpp0x/decltype72.C
 g++.dg/cpp0x/decltype73.C
-g++.dg/cpp0x/decltype79.C
 g++.dg/cpp0x/decltype83.C
 g++.dg/cpp0x/decltype83a.C
 g++.dg/cpp0x/defaulted39.C
-g++.dg/cpp0x/defaulted49.C
 g++.dg/cpp0x/defaulted50.C
 g++.dg/cpp0x/defaulted6.C
-g++.dg/cpp0x/depr-copy3.C
 g++.dg/cpp0x/desig2.C
 g++.dg/cpp0x/desig3.C
 g++.dg/cpp0x/dr2061.C
@@ -276,8 +266,6 @@ g++.dg/cpp0x/initlist-array19.C
 g++.dg/cpp0x/initlist-array2.C
 g++.dg/cpp0x/initlist-array20.C
 g++.dg/cpp0x/initlist-array22.C
-g++.dg/cpp0x/initlist-array23.C
-g++.dg/cpp0x/initlist-array24.C
 g++.dg/cpp0x/initlist-array3.C
 g++.dg/cpp0x/initlist-array5.C
 g++.dg/cpp0x/initlist-array6.C
@@ -286,7 +274,6 @@ g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
 g++.dg/cpp0x/initlist-explicit-sfinae.C
 g++.dg/cpp0x/initlist-explicit2.C
-g++.dg/cpp0x/initlist-new1.C
 g++.dg/cpp0x/initlist-new3.C
 g++.dg/cpp0x/initlist-opt2.C
 g++.dg/cpp0x/initlist-opt5.C
@@ -313,7 +300,6 @@ g++.dg/cpp0x/initlist3.C
 g++.dg/cpp0x/initlist30.C
 g++.dg/cpp0x/initlist34.C
 g++.dg/cpp0x/initlist35.C
-g++.dg/cpp0x/initlist37.C
 g++.dg/cpp0x/initlist50.C
 g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist58.C
@@ -370,7 +356,6 @@ g++.dg/cpp0x/noexcept16.C
 g++.dg/cpp0x/noexcept17.C
 g++.dg/cpp0x/noexcept21.C
 g++.dg/cpp0x/noexcept23.C
-g++.dg/cpp0x/noexcept25.C
 g++.dg/cpp0x/noexcept26.C
 g++.dg/cpp0x/noexcept27.C
 g++.dg/cpp0x/noexcept49.C
@@ -439,11 +424,9 @@ g++.dg/cpp0x/pr79457.C
 g++.dg/cpp0x/pr81325.C
 g++.dg/cpp0x/pr85462.C
 g++.dg/cpp0x/pr86379.C
-g++.dg/cpp0x/pr87476-1.C
 g++.dg/cpp0x/pr87539.C
 g++.dg/cpp0x/pr87750.C
 g++.dg/cpp0x/pr88410.C
-g++.dg/cpp0x/pr92524.C
 g++.dg/cpp0x/range-for11.C
 g++.dg/cpp0x/range-for17.C
 g++.dg/cpp0x/range-for18.C
@@ -457,11 +440,8 @@ g++.dg/cpp0x/range-for39.C
 g++.dg/cpp0x/ref-bind1.C
 g++.dg/cpp0x/ref-bind5.C
 g++.dg/cpp0x/ref-bind6.C
-g++.dg/cpp0x/ref-qual15.C
 g++.dg/cpp0x/ref-qual16.C
 g++.dg/cpp0x/rv-cast.C
-g++.dg/cpp0x/rv-cast5.C
-g++.dg/cpp0x/rv-cond2.C
 g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-conv1.C
 g++.dg/cpp0x/rv-decl1.C
@@ -592,7 +572,6 @@ g++.dg/template/builtin-sfinae-check-function-arguments.C
 g++.dg/template/builtin-speculation-overloads1.C
 g++.dg/template/builtin-speculation-overloads4.C
 g++.dg/template/builtin-validate-nargs.C
-g++.dg/template/builtin2.C
 g++.dg/template/canon-type-12.C
 g++.dg/template/canon-type-15.C
 g++.dg/template/canon-type-16.C
