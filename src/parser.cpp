@@ -9156,7 +9156,8 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    binding.definition.class_name,
 	    binding.definition.defining_namespace,
 	    binding.registered_name, ddc,
-	    binding.arg_types_by_slot, binding.arg_tokens_by_slot);
+	    binding.arg_types_by_slot, binding.arg_tokens_by_slot,
+	    binding.definition.is_partial_specialization);
 	resolver.stage_cache();
 	journal.commit();
 	registration_committed = true;
@@ -11293,7 +11294,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    ? dynamic_cast<DataDefCLASS *>(sm->second) : NULL;
 	attach_outofline_member_instantiations(td.class_name,
 	    td.defining_namespace, registered_mangled, inst_ddc,
-	    arg_types_by_slot, arg_tokens_by_slot);
+	    arg_types_by_slot, arg_tokens_by_slot,
+	    td.is_partial_specialization);
 	// Out-of-line NESTED-CLASS definitions (basic_istream's sentry) parse
 	// eagerly with the owner — the owner's member bodies name the type.
 	instantiate_outofline_nested_classes(td.class_name,
@@ -55294,8 +55296,11 @@ static void extract_inner_template_typeparams(
 static bool skipped_template_outofline_member(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	std::string &class_name_out, std::string &member_name_out,
-	bool &is_member_template_out)
+	bool &is_member_template_out,
+	std::vector<std::vector<TokenBase *> > *head_args_out = NULL)
 {
+    if ( head_args_out )
+	head_args_out->clear();
     // An out-of-line member TEMPLATE (`template<class...> template<member...>
     // RET Class<...>::member(...)`, e.g. vector::_M_realloc_insert's variadic
     // form) carries a SECOND template-head as its first token (the outer head was
@@ -55354,6 +55359,29 @@ static bool skipped_template_outofline_member(
 	if ( k == 0 || !is_contextual_identifier_token(tokens[k - 1]) )
 	    return false;
 	cls = contextual_identifier_name(tokens[k - 1]);
+	// The class-head's argument runs, split on the top-level commas of
+	// `<...>` (the shared DelimDepth stepper — a nested `<`/`(` keeps its
+	// commas inside the run). Borrowed pointers; the caller clones.
+	if ( head_args_out )
+	{
+	    DelimDepth d;
+	    size_t i = k;
+	    i += delim_scan_step(tokens, i, d);	// the opening `<`
+	    std::vector<TokenBase *> run;
+	    while ( i <= j && d.angle > 0 )
+	    {
+		TokenBase *t = tokens[i];
+		if ( d.angle == 1 && t && t->id() == TokenID::tkComma )
+		{
+		    head_args_out->push_back(run);
+		    run.clear();
+		}
+		else if ( !(i == j) )
+		    run.push_back(t);
+		i += delim_scan_step(tokens, i, d);
+	    }
+	    head_args_out->push_back(run);
+	}
     }
     else if ( is_contextual_identifier_token(tokens[j]) )
 	cls = contextual_identifier_name(tokens[j]);
@@ -55677,7 +55705,8 @@ void Program::attach_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization)
 {
     std::string key = defining_namespace + "::" + class_name;
     std::vector<OutOfLineMemberInstantiation> &records =
@@ -55690,19 +55719,22 @@ void Program::attach_outofline_member_instantiations(
     {
 	OutOfLineMemberInstantiation record;
 	record.registered_mangled = registered_mangled;
+	record.from_partial_specialization = from_partial_specialization;
 	record.arg_types_by_slot = arg_types_by_slot;
 	record.arg_tokens_by_slot = arg_tokens_by_slot;
 	records.push_back(record);
     }
     register_outofline_member_instantiations(class_name, defining_namespace,
-	registered_mangled, ddc, arg_types_by_slot, arg_tokens_by_slot);
+	registered_mangled, ddc, arg_types_by_slot, arg_tokens_by_slot,
+					     from_partial_specialization);
 }
 
 void Program::register_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization)
 {
     if ( !ddc )
 	return;
@@ -55807,14 +55839,92 @@ void Program::register_outofline_member_instantiations(
 
 	std::map<std::string, TokenDataType *> tsubst;
 	std::map<std::string, std::vector<TokenBase *> > toksubst;
-	for ( size_t i = 0; i < def.typeparams.size()
-			 && i < arg_types_by_slot.size(); ++i )
+	if ( !def.head_args.empty() )
 	{
-	    if ( arg_types_by_slot[i] )
-		tsubst[def.typeparams[i]] = arg_types_by_slot[i];
-	    else if ( i < arg_tokens_by_slot.size() )
-		toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
+	    // The class-head decides WHICH instantiations this definition
+	    // defines and HOW its parameters bind: `vector<bool, _Alloc>::
+	    // _M_insert_aux` binds _Alloc to slot 1 and defines only the
+	    // instantiations whose slot 0 is bool; the primary's
+	    // `vector<_Tp, _Alloc>::_M_insert_aux` binds both slots. Bound
+	    // positionally, the partial specialization's body attached to
+	    // vector<Entry> and read `_M_finish._M_p` off a plain pointer
+	    // (vector.tcc:933, 13 self-host units).
+	    bool head_matches = true;
+	    bool def_has_concrete_slot = false;
+	    for ( size_t i = 0; i < def.head_args.size(); ++i )
+	    {
+		const std::vector<TokenBase *> &run = def.head_args[i];
+		bool is_param = run.size() == 1 && run[0]
+		    && is_contextual_identifier_token(run[0])
+		    && std::find(def.typeparams.begin(), def.typeparams.end(),
+				 contextual_identifier_name(run[0]))
+		       != def.typeparams.end();
+		if ( !is_param )
+		    def_has_concrete_slot = true;
+	    }
+	    // A definition with only parameter slots is the PRIMARY's: it
+	    // defines no instantiation a partial specialization produced (the
+	    // specialization has its own members — `slot[]` vs `bits`); one with
+	    // a concrete slot is a specialization's and never defines a
+	    // primary instantiation.
+	    if ( def_has_concrete_slot != from_partial_specialization )
+		continue;
+	    for ( size_t i = 0; i < def.head_args.size()
+			     && i < arg_types_by_slot.size(); ++i )
+	    {
+		const std::vector<TokenBase *> &run = def.head_args[i];
+		std::string tp;
+		if ( run.size() == 1 && run[0]
+		  && is_contextual_identifier_token(run[0]) )
+		{
+		    const std::string nm = contextual_identifier_name(run[0]);
+		    for ( size_t t = 0; t < def.typeparams.size(); ++t )
+			if ( def.typeparams[t] == nm ) { tp = nm; break; }
+		}
+		if ( !tp.empty() )
+		{
+		    if ( arg_types_by_slot[i] )
+			tsubst[tp] = arg_types_by_slot[i];
+		    else if ( i < arg_tokens_by_slot.size() )
+			toksubst[tp] = arg_tokens_by_slot[i];
+		    continue;
+		}
+		// A CONCRETE slot: the instantiation's argument must spell it.
+		std::string want;
+		for ( size_t t = 0; t < run.size(); ++t )
+		    if ( run[t] )
+			want += template_token_fragment(run[t]);
+		std::string have;
+		if ( arg_types_by_slot[i] )
+		{
+		    DataDef &add = arg_types_by_slot[i]->definition;
+		    have = add.canonical_cpp_spelling().empty()
+			 ? add.name : add.canonical_cpp_spelling();
+		    if ( have != want && add.name != want
+		      && arg_types_by_slot[i]->spelling() != want )
+			{ head_matches = false; break; }
+		}
+		else if ( i < arg_tokens_by_slot.size() )
+		{
+		    for ( size_t t = 0; t < arg_tokens_by_slot[i].size(); ++t )
+			if ( arg_tokens_by_slot[i][t] )
+			    have += template_token_fragment(arg_tokens_by_slot[i][t]);
+		    if ( have != want )
+			{ head_matches = false; break; }
+		}
+	    }
+	    if ( !head_matches )
+		continue;
 	}
+	else
+	    for ( size_t i = 0; i < def.typeparams.size()
+			     && i < arg_types_by_slot.size(); ++i )
+	    {
+		if ( arg_types_by_slot[i] )
+		    tsubst[def.typeparams[i]] = arg_types_by_slot[i];
+		else if ( i < arg_tokens_by_slot.size() )
+		    toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
+	    }
 
 	std::vector<TokenBase *> sub;
 	for ( size_t bi = 0; bi < def.decl.size(); ++bi )
@@ -65378,15 +65488,25 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	// leaves the real member an undefined import — e.g. vector::_M_realloc_insert).
 	std::string ool_class, ool_member;
 	bool ool_is_member_template = false;
+	std::vector<std::vector<TokenBase *> > ool_head_args;
 	if ( !pgm.deferred_function_body_sink
 	  && skipped_template_outofline_member(pgm, skipped_decl,
 					       ool_class, ool_member,
-					       ool_is_member_template) )
+					       ool_is_member_template,
+					       &ool_head_args) )
 	{
 	    Program::OutOfLineMemberDef d;
 	    d.member_name = ool_member;
 	    d.typeparams = typeparams;
 	    d.is_member_template = ool_is_member_template;
+	    for ( size_t hi = 0; hi < ool_head_args.size(); ++hi )
+	    {
+		std::vector<TokenBase *> run;
+		for ( size_t ti = 0; ti < ool_head_args[hi].size(); ++ti )
+		    run.push_back(ool_head_args[hi][ti]
+				  ? ool_head_args[hi][ti]->clone_origin() : NULL);
+		d.head_args.push_back(run);
+	    }
 	    if ( ool_is_member_template )
 		extract_inner_template_typeparams(pgm, skipped_decl,
 					  d.inner_typeparams, d.inner_is_pack,
@@ -65412,7 +65532,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 			? dynamic_cast<DataDefCLASS *>(sm->second) : NULL;
 		    pgm.register_outofline_member_instantiations(ool_class,
 			owner_ns, rec.registered_mangled, inst_ddc,
-			rec.arg_types_by_slot, rec.arg_tokens_by_slot);
+			rec.arg_types_by_slot, rec.arg_tokens_by_slot,
+			rec.from_partial_specialization);
 		}
 	    }
 	    return NULL;

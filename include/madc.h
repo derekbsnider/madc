@@ -4766,6 +4766,15 @@ public:
 	std::string member_name;
 	std::vector<std::string> typeparams;	// CLASS (outer) type-params
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
+	// The class-head's template arguments, one token run per slot (owned
+	// clones): `vector<_Tp, _Alloc>::f` -> {_Tp}, {_Alloc}; the PARTIAL
+	// specialization's `vector<bool, _Alloc>::f` -> {bool}, {_Alloc}. A
+	// slot naming one of typeparams binds that parameter to the
+	// instantiation's argument in THAT slot; a concrete slot must equal
+	// the instantiation's argument or the definition is another
+	// specialization's and does not attach. Empty = positional binding
+	// (a head with no argument list).
+	std::vector<std::vector<TokenBase *> > head_args;
 	// An out-of-line member TEMPLATE (`template<class T> template<class U>
 	// RET S<T>::f(U){body}`, two-level head — e.g. vector::_M_realloc_insert's
 	// C++11 variadic form) attaches its body to the monomorphized member as a
@@ -4783,6 +4792,10 @@ public:
 	std::string registered_mangled;
 	std::vector<TokenDataType *> arg_types_by_slot;
 	std::vector<std::vector<TokenBase *> > arg_tokens_by_slot;
+	// Produced from a PARTIAL specialization's pattern: the primary's
+	// out-of-line definitions do not define it, and only a definition
+	// whose class-head carries concrete slots can.
+	bool from_partial_specialization = false;
     };
     registration_map<std::string, std::vector<OutOfLineMemberInstantiation> >
 	out_of_line_member_instantiations;
@@ -4790,12 +4803,14 @@ public:
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization = false);
     void register_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization = false);
     // An out-of-line NESTED-CLASS definition of a class template
     // (`template<...> class Owner<T>::Nested { ... };` — basic_istream's
     // `sentry`, [class.nest] + [temp]). NOT a specialization of Owner: the
