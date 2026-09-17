@@ -34,6 +34,10 @@
   union and class members, parameters, variables and typedefs — the Itanium
   16-byte `{ptr, adj}` pair, one C struct (`__madc_memfnptr`). Values (`&C::m`,
   `.*`, `->*`) follow.
+- A namespace-scope function is reachable by its source name inside its own
+  body (recursion in `namespace q { int fib(int n) { ... fib(n - 1) ... } }`).
+- A leading `::` in a constant expression (`case ::ui::NONE:`).
+- A using-declaration imports an alias template (`using g::itraits;`).
 
 
 ### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
