@@ -3870,6 +3870,12 @@ public:
     // instead of recursing. The re-parse lane going unguarded was a stack
     // overflow on `#include <string>` under -stdlib=libc++.
     std::set<std::string> class_inst_in_progress;
+    // The same bound for FUNCTION-template RETURN resolution. A return type
+    // spelled `decltype(f(...))` resolves by re-entering the expression
+    // parser, which can reach f again; keyed on name AND argument types so
+    // that legitimate per-level recursion (each level a different T)
+    // proceeds and only a true cycle is cut.
+    std::set<std::string> fn_template_return_in_progress;
     // The compound depth each in-flight class instantiation's body started at
     // (ClassInstInFlightGuard, both lanes): the innermost entry equal to the
     // live depth means the parse is in that body's own declarative region,

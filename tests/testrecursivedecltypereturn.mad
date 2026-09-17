@@ -1,0 +1,28 @@
+#include <cstdio>
+
+// A function template whose RETURN TYPE names an overload set containing
+// itself. Resolving it re-enters the expression parser, which reaches the same
+// function again — g++.dg/cpp0x/pr54318.C (gcc PR c++/54318) is the real-world
+// shape, via `decltype(unwrap(unwrap1(t)))`.
+//
+// resolve_fn_template_return_by_key already carried a `depth` cap, but the
+// cycle escapes it: the recursion leaves through parseExpression and comes back
+// in through parseCallFunc, which starts a FRESH call with depth 0. madc ran
+// out of stack and took SIGSEGV. The bound has to be on the resolution KEY, not
+// on a depth counted along one call chain.
+//
+// Everything below is a DECLARATION — nothing is called at run time, so this
+// tests return-type resolution and nothing else.
+
+struct A { typedef int type; };
+
+int peel(int);
+template <typename T> typename T::type inner();
+
+template <typename T> auto peel(T) -> decltype(peel(inner<T>()));
+
+int main()
+{
+	printf("recursive decltype: %d\n", (int)sizeof(decltype(peel(A()))));
+	return 0;
+}

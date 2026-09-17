@@ -9234,6 +9234,29 @@ struct ClassInstInFlightGuard {
     }
 };
 
+// The function-template twin of ClassInstInFlightGuard. A return type spelled
+// `decltype(f(g(t)))` is resolved by re-entering the expression parser, so the
+// resolver can be reached again for the SAME call while the first is still on
+// the stack. The existing `depth` parameter cannot bound that: the cycle leaves
+// through parseExpression and comes back via parseCallFunc, which starts a
+// fresh call with depth 0. Bound by KEY instead — a key that differs per level
+// is legitimate recursion (g++.dg/cpp0x/pr54318.C genuinely needs two levels)
+// and must proceed; the same key re-entered is a cycle.
+struct FnTemplateReturnInFlightGuard {
+    Program &pgm;
+    std::string key;
+    bool inserted;
+    FnTemplateReturnInFlightGuard(Program &p, const std::string &k)
+	: pgm(p), key(k),
+	  inserted(p.fn_template_return_in_progress.insert(k).second)
+    { }
+    ~FnTemplateReturnInFlightGuard()
+    {
+	if ( inserted )
+	    pgm.fn_template_return_in_progress.erase(key);
+    }
+};
+
 // Env-gated diagnostics for the variadic real-instantiation routing and the
 // [temp.deduct]/8 alias-arg validation (MADC_XTEST_VRI_DEBUG=1): prints the
 // entry flags per class-template instantiation, the base-clause arming, the
@@ -64092,6 +64115,22 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	*ret_ref = false;
     bool have_arg_types = call_arg_types && !call_arg_types->empty();
     if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
+	return NULL;
+    // Cycle bound. The key carries the argument types, so each level of a
+    // legitimately recursive `decltype(f(g(t)))` return type is a DIFFERENT
+    // key and proceeds; re-entering the identical resolution is the cycle.
+    // Returning NULL is already this resolver's "cannot resolve" answer, and
+    // it is the right one here: overload resolution then falls back to the
+    // non-template candidate, which is exactly what terminates pr54318.
+    std::string flight_key = key;
+    for ( DataDef *a : explicit_args )
+	flight_key += '|' + (a ? a->name : std::string("?"));
+    flight_key += '#';
+    if ( call_arg_types )
+	for ( DataDef *a : *call_arg_types )
+	    flight_key += '|' + (a ? a->name : std::string("?"));
+    FnTemplateReturnInFlightGuard in_flight(*this, flight_key);
+    if ( !in_flight.inserted )
 	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
     // free templates of this name — declval and friends are body-less.
