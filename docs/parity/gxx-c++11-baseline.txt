@@ -41,8 +41,6 @@
 #   is conditional-noexcept instantiation for member-template ctors, not a
 #   weakening of the refusal.
 
-g++.dg/cpp0x/Wpessimizing-move4.C
-g++.dg/cpp0x/Wredundant-move3.C
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
 g++.dg/cpp0x/alias-decl-26.C
@@ -320,11 +318,9 @@ g++.dg/cpp0x/initlist96.C
 g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/inline-ns1.C
 g++.dg/cpp0x/keywords2.C
-g++.dg/cpp0x/lambda/lambda-50220.C
 g++.dg/cpp0x/lambda/lambda-61148.C
 g++.dg/cpp0x/lambda/lambda-70383.C
 g++.dg/cpp0x/lambda/lambda-80947.C
-g++.dg/cpp0x/lambda/lambda-89158.C
 g++.dg/cpp0x/lambda/lambda-constexpr3.C
 g++.dg/cpp0x/lambda/lambda-conv12.C
 g++.dg/cpp0x/lambda/lambda-conv4.C
@@ -338,19 +334,12 @@ g++.dg/cpp0x/lambda/lambda-ice26.C
 g++.dg/cpp0x/lambda/lambda-mangle.C
 g++.dg/cpp0x/lambda/lambda-mangle4.C
 g++.dg/cpp0x/lambda/lambda-mangle6.C
-g++.dg/cpp0x/lambda/lambda-names1.C
-g++.dg/cpp0x/lambda/lambda-nested3.C
 g++.dg/cpp0x/lambda/lambda-qualified.C
-g++.dg/cpp0x/lambda/lambda-switch2.C
-g++.dg/cpp0x/lambda/lambda-template2.C
-g++.dg/cpp0x/lambda/lambda-template3.C
 g++.dg/cpp0x/lambda/lambda-this11.C
 g++.dg/cpp0x/lambda/lambda-this12.C
 g++.dg/cpp0x/lambda/lambda-this13.C
 g++.dg/cpp0x/lambda/lambda-this19.C
 g++.dg/cpp0x/lambda/lambda-this3.C
-g++.dg/cpp0x/lambda/lambda-vla4.C
-g++.dg/cpp0x/lambda/lambda-warn1.C
 g++.dg/cpp0x/local-targ1.C
 g++.dg/cpp0x/narrowing1.C
 g++.dg/cpp0x/noexcept01.C
