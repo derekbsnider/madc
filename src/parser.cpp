@@ -53946,18 +53946,8 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	else if ( tn->id() == TokenID::tkTEMPLATE )
 	{
 	    handled = true;
-	    TokenBase *tmpl = pgm.nextToken(); // consume 'template'
-	    TokenBase *kw = pgm.peekToken();
-	    // `extern template class/struct X<args>;` is a C++ explicit-instantiation
-	    // declaration: libstdc++ provides X<args>'s members out-of-line. Capture +
-	    // flag the instantiation so its ctor/dtor/members bind to the real mangled
-	    // symbols (see capture_extern_template_class_instantiation). Other forms
-	    // (function explicit instantiations) fall through to the skip.
-	    if ( kw && (kw->id() == TokenID::tkCLASS
-		     || kw->id() == TokenID::tkSTRUCT) )
-		pgm.capture_extern_template_class_instantiation();
-	    else
-		pgm.skip_template_nonclass_declaration(tmpl);
+	    pgm.nextToken(); // consume 'template'
+	    pgm.capture_explicit_template_instantiation(true);
 	}
 	else if ( tn->type() == TokenType::ttKeyword )
 	{
@@ -55086,53 +55076,6 @@ bool Program::consume_template_parameter_type_suffix()
     return consumed;
 }
 
-// `extern template class X<args>;` / `extern template struct X<args>;` — a C++
-// explicit-instantiation DECLARATION. Called positioned at the class/struct
-// keyword. Resolve (instantiate) X<args> and flag the resulting class
-// is_extern_template_instantiated, so the cir_builder ctor/dtor binding pass
-// binds its members to libstdc++'s exported out-of-line mangled symbols
-// (C1/D1/methods) instead of emitting bodies — the data-driven signal that a
-// NON-polymorphic instantiation is library-provided
-// (is_externally_defined() requires a vtable and so misses it). Consumes
-// through the trailing ';'.
-void Program::capture_extern_template_class_instantiation()
-{
-    nextToken(); // consume 'class' / 'struct'
-    std::string ns_hint = current_namespace();
-    TokenBase *name_tb = nextToken();
-    auto name_of = [](TokenBase *t) -> std::string {
-	if ( !t ) return std::string();
-	if ( t->type() == TokenType::ttIdentifier ) return ((TokenIdent *)t)->spelling();
-	if ( t->type() == TokenType::ttDataType ) return ((TokenDataType *)t)->spelling();
-	return std::string();
-    };
-    std::string tname = name_of(name_tb);
-    // Namespace-qualified template-id: fold leading components into ns_hint,
-    // keep the last as the template name.
-    while ( name_tb && peekToken() && peekToken()->id() == TokenID::tkNS )
-    {
-	ns_hint = ns_hint.empty() ? tname : ns_hint + "::" + tname;
-	nextToken(); // consume '::'
-	name_tb = nextToken();
-	tname = name_of(name_tb);
-    }
-    if ( name_tb && !tname.empty()
-      && peekToken() && peekToken()->id() == TokenID::tkLT )
-    {
-	TokenDataType *inst = instantiate_template_id(tname, name_tb, ns_hint);
-	DataDefCLASS *cdd = inst
-	    ? dynamic_cast<DataDefCLASS *>(&inst->definition) : NULL;
-	if ( cdd )
-	    cdd->is_extern_template_instantiated = true;
-    }
-    // Consume the rest of the declaration through ';' (robust to whatever the
-    // template-id parse left, and to forms we don't capture).
-    while ( peekToken() && peekToken()->id() != TokenID::tkSemi )
-	nextToken();
-    if ( peekToken() )
-	nextToken(); // ';'
-}
-
 // Consume a C++20 requires-clause if one starts at the current token:
 // `requires` constraint-logical-or-expression — primaries (an id-expression
 // with optional qualifiers/template-args, a parenthesized constraint, a
@@ -55456,6 +55399,26 @@ static size_t skipped_template_function_declarator_name_index(
 		}
 	    }
 	}
+	// A function template-id declarator (`f<int>(...)`, including the
+	// qualified `A::f<0>(...)` explicit-instantiation form): its name is
+	// followed by a balanced template-argument suffix before the parameter
+	// list. The ordinary "token before top-level (`(`)" reading below cannot
+	// see through that suffix. Keep the suffix balance in the shared template
+	// delimiter owner and accept it only when `(` follows immediately, so a
+	// template-id in the return type is never mistaken for the declarator.
+	if ( d.top() && is_skipped_template_function_name(t)
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && tokens[i + 1]->id() == TokenID::tkLT )
+	{
+	    size_t close = template_id_suffix_end(tokens, i + 1);
+	    if ( close + 1 < tokens.size() && tokens[close + 1]
+	      && tokens[close + 1]->id() == TokenID::tkOpBrk )
+	    {
+		if ( name_out )
+		    *name_out = skipped_template_function_name(t);
+		return i;
+	    }
+	}
 	// function declarator: a top-level '(' preceded by a name token marks
 	// the declarator name at i-1.
 	if ( t->id() == TokenID::tkOpBrk && d.top() && i > 0 )
@@ -55501,6 +55464,9 @@ static size_t skipped_template_function_param_lparen(
 	if ( span )
 	    return name_idx + span;
     }
+	if ( name_idx + 1 < tokens.size() && tokens[name_idx + 1]
+	  && tokens[name_idx + 1]->id() == TokenID::tkLT )
+	return template_id_suffix_end(tokens, name_idx + 1) + 1;
     return name_idx + 1;
 }
 
@@ -56078,6 +56044,244 @@ static bool outofline_declarator_param_regions(
 	 == DataType::dtVOID )
 	params.clear();
     return true;
+}
+
+// Is [start,end) a complete nested-name-specifier without its trailing `::`?
+// Template-id components are consumed by the shared balanced-suffix owner;
+// callers use the answer to separate a function's return type from the
+// qualified declarator (`RET ns::Class<T>::fn<...>(...)`).
+static bool explicit_instantiation_scope_suffix(
+	const std::vector<TokenBase *> &decl, size_t start, size_t end)
+{
+    if ( start >= end || end > decl.size() )
+	return false;
+    size_t i = start;
+    if ( decl[i] && decl[i]->id() == TokenID::tkNS )
+    {
+	++i; // leading global `::`
+	if ( i == end )
+	    return true;
+    }
+    bool saw_component = false;
+    while ( i < end )
+    {
+	if ( !decl[i] || !is_contextual_identifier_token(decl[i]) )
+	    return false;
+	saw_component = true;
+	++i;
+	if ( i < end && decl[i] && decl[i]->id() == TokenID::tkLT )
+	{
+	    size_t close = template_id_suffix_end(decl, i);
+	    if ( close >= end )
+		return false;
+	    i = close + 1;
+	}
+	if ( i == end )
+	    return saw_component;
+	if ( !decl[i] || decl[i]->id() != TokenID::tkNS )
+	    return false;
+	++i;
+    }
+    return false;
+}
+
+// Resolve the `<...>` attached to an explicit-instantiation function-id with
+// the SAME argument reader ordinary calls use. The isolated token view is the
+// resolve_type_token_range discipline: token structure is preserved, the live
+// declaration stream is restored, and function-template instantiation still
+// runs exclusively through the parse-once binding machinery.
+static std::vector<DataDef *> explicit_instantiation_template_args(
+	Program &pgm, const std::vector<TokenBase *> &decl,
+	size_t begin, size_t end)
+{
+    std::vector<DataDef *> result;
+    if ( begin >= end || end > decl.size() || !decl[begin]
+      || decl[begin]->id() != TokenID::tkLT )
+	return result;
+    std::vector<TokenBase *> seq;
+    for ( size_t i = begin; i < end; ++i )
+	if ( decl[i] )
+	    seq.push_back(decl[i]);
+    seq.push_back(new TokenSemi());
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(seq));
+    pgm.setTokenContext(NULL, NULL);
+    try
+    {
+	result = pgm.capture_call_template_args();
+    }
+    catch ( ... )
+    {
+	pgm.tokens.swap_back(std::move(saved_tokens));
+	pgm.setTokenContext(saved_cur, saved_prv);
+	throw;
+    }
+    pgm.tokens.swap_back(std::move(saved_tokens));
+    pgm.setTokenContext(saved_cur, saved_prv);
+    return result;
+}
+
+// C++ [temp.explicit]: both `extern template DECL;` (a declaration that
+// suppresses local implicit instantiation) and `template DECL;` (a definition
+// that requires the named specialization here) have one syntax owner. Called
+// with the stream positioned at DECL, immediately after `template`.
+void Program::capture_explicit_template_instantiation(bool extern_declaration)
+{
+    TokenBase *first = nextToken();
+    if ( !first )
+	return;
+    std::vector<TokenBase *> decl;
+    skip_template_nonclass_declaration(first, &decl);
+    if ( decl.empty() )
+	return;
+
+    size_t decl_end = decl.size();
+    if ( decl_end && decl[decl_end - 1]
+      && decl[decl_end - 1]->id() == TokenID::tkSemi )
+	--decl_end;
+
+    // Class/struct explicit instantiation. The declared-type resolver is the
+    // one owner for qualified and nested template-ids; resolving the range is
+    // itself the force-instantiation entry into instantiate_template_use.
+    if ( first->id() == TokenID::tkCLASS
+      || first->id() == TokenID::tkSTRUCT )
+    {
+	DataDef *resolved = decl_end > 1
+	    ? resolve_type_token_range(decl, 1, decl_end) : NULL;
+	DataDefCLASS *inst = dynamic_cast<DataDefCLASS *>(resolved);
+	if ( extern_declaration && inst )
+	    inst->is_extern_template_instantiated = true;
+	return;
+    }
+
+    // An extern function form suppresses implicit instantiation; consuming its
+    // declaration is the whole front-end action. Bare function forms continue
+    // below and force the existing call-instantiation spine.
+    if ( extern_declaration )
+	return;
+
+    std::string name;
+    size_t name_idx =
+	skipped_template_function_declarator_name_index(decl, &name);
+    if ( name.empty() || name_idx >= decl_end )
+	Throw(first) << "Explicit instantiation of variable templates is not supported"
+		     << flush;
+    size_t lparen = skipped_template_function_param_lparen(decl, name_idx);
+    if ( lparen >= decl_end || !decl[lparen]
+      || decl[lparen]->id() != TokenID::tkOpBrk )
+	return;
+
+    std::vector<DataDef *> template_args;
+    if ( name_idx + 1 < lparen && decl[name_idx + 1]
+      && decl[name_idx + 1]->id() == TokenID::tkLT )
+	template_args = explicit_instantiation_template_args(
+	    *this, decl, name_idx + 1, lparen);
+
+    std::vector<std::vector<TokenBase *> > param_regions;
+    if ( !outofline_declarator_param_regions(decl, param_regions) )
+	return;
+    std::vector<TokenBase *> synthetic_args;
+    bool params_resolved = true;
+    for ( size_t i = 0; i < param_regions.size(); ++i )
+    {
+	ParsedParamSig sig;
+	if ( !parse_param_sig_from_tokens(param_regions[i], sig) || !sig.base )
+	{
+	    params_resolved = false;
+	    break;
+	}
+	DataDef *arg_type = sig.base;
+	if ( sig.is_const )
+	    arg_type = getConstType(arg_type);
+	for ( int p = 0; p < sig.pointer_depth; ++p )
+	    arg_type = getPointerType(arg_type);
+	if ( sig.is_ref )
+	    arg_type = getReferenceType(arg_type);
+	TokenDataType *arg = new TokenDataType(arg_type->name.c_str(), *arg_type);
+	arg->file = decl[name_idx]->file;
+	arg->line = decl[name_idx]->line;
+	arg->column = decl[name_idx]->column;
+	synthetic_args.push_back(arg);
+    }
+    if ( !params_resolved )
+    {
+	for ( size_t i = 0; i < synthetic_args.size(); ++i )
+	    delete synthetic_args[i];
+	return;
+    }
+
+    Variable *target = NULL;
+    DataDefCLASS *owner = NULL;
+    // A qualified function-id may be class-owned or namespace-owned. Try
+    // every syntactically complete suffix after the return type, longest
+    // first; the canonical type/namespace lookup decides which one exists.
+    if ( name_idx > 0 && decl[name_idx - 1]
+      && decl[name_idx - 1]->id() == TokenID::tkNS )
+    {
+	for ( size_t start = 0; start < name_idx - 1 && !owner; ++start )
+	{
+	    if ( !explicit_instantiation_scope_suffix(
+		    decl, start, name_idx - 1) )
+		continue;
+	    owner = dynamic_cast<DataDefCLASS *>(
+		resolve_type_token_range(decl, start, name_idx - 1));
+	}
+	if ( owner )
+	{
+	    for ( size_t i = 0; i < owner->methods.size(); ++i )
+	    {
+		Variable *candidate = owner->methods[i];
+		FuncDef *fd = candidate
+		    ? dynamic_cast<FuncDef *>(candidate->type) : NULL;
+		if ( fd )
+		    fd->ensure_member_template_thawed();
+		if ( fd && fd->is_member_template
+		  && fd->method_display_name == name )
+		{
+		    target = candidate;
+		    break;
+		}
+	    }
+	}
+	else
+	{
+	    for ( size_t start = 0; start < name_idx - 1 && !target; ++start )
+	    {
+		if ( !explicit_instantiation_scope_suffix(
+			decl, start, name_idx - 1) )
+		    continue;
+		std::string scope = despace_spelling(
+		    serialize_token_range(decl, start, name_idx - 1));
+		if ( scope.compare(0, 2, "::") == 0 )
+		    scope.erase(0, 2);
+		std::string resolved_scope = resolve_namespace_name_in_scope(scope);
+		if ( !resolved_scope.empty() )
+		    scope = resolved_scope;
+		target = find_namespace_member(scope, name);
+	    }
+	}
+    }
+    else
+	target = find_namespace_member(current_namespace(), name);
+
+    FuncDef *target_fd = target
+	? dynamic_cast<FuncDef *>(target->type) : NULL;
+    if ( target_fd )
+    {
+	TokenCallFunc request(*target);
+	request.file = decl[name_idx]->file;
+	request.line = decl[name_idx]->line;
+	request.column = decl[name_idx]->column;
+	request.explicit_template_args = template_args;
+	request.parameters = synthetic_args;
+	if ( owner )
+	    instantiate_member_fn_template_for_call(&request);
+	else
+	    instantiate_namespace_fn_template_for_call(&request);
+    }
+    for ( size_t i = 0; i < synthetic_args.size(); ++i )
+	delete synthetic_args[i];
 }
 
 // The `const` qualifier belongs to the function declarator, after its own
@@ -62165,10 +62369,10 @@ static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B)
 	&& !member_tmpl_at_least_specialized(B, A);
 }
 
-void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
+Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
-	return;
+	return NULL;
     // NOT gated on fd->declaration_only: once one instantiation registers
     // (e.g. stoi's `__stoa<..., int>`), later calls resolve to that
     // non-declaration-only FuncDef — but a DIFFERENT specialization may be
@@ -62179,11 +62383,11 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // component, not a reason to refuse instantiation — the other half of the
     // same assumption removed at the registration site.
     if ( !fd || fd->function_display_name.empty() )
-	return;
+	return NULL;
     std::string fn_key = fd->namespace_name + "::" + fd->function_display_name;
     std::vector<FnTemplateDef> *mi = thawed_fn_templates(fn_key);
     if ( mi == fn_template_map.end() )
-	return;
+	return NULL;
     // Order candidates most-specialized first ([temp.func.order]) so the
     // first-viable selection below picks the most specialized overload that
     // deduces. Incomparable candidates keep registration order.
@@ -62216,8 +62420,9 @@ void Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 		tc->returns_ref_override = ifd->returns_reference();
 		tc->setDataType(rt);
 	    }
-	    return;
+	    return inst;
 	}
+    return NULL;
 }
 
 static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i)
@@ -65756,9 +65961,15 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     pgm.last_skipped_template_typeparam_defaults.clear();
     pgm.last_skipped_template_typeparam_constraints.clear();
 
-    TokenBase *tn = pgm.nextToken();
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after template" << flush;
     if ( tn->id() != TokenID::tkLT )
-	pgm.Throw(tn) << "Expecting '<' after template" << flush;
+    {
+	pgm.capture_explicit_template_instantiation(false);
+	return NULL;
+    }
+    pgm.nextToken(); // consume '<'
 
     ParsedTemplateParameterList parameter_list;
     parse_template_parameter_list(pgm, parameter_list);

@@ -1,0 +1,47 @@
+#include <stdio.h>
+
+template<typename T>
+class Box {
+public:
+	T value;
+	T get() { return value; }
+};
+
+template class Box<int>;
+
+template<typename T>
+struct Slot {
+	T value;
+};
+
+template struct Slot<long>;
+
+template<int N>
+int add_n(int value)
+{
+	return value + N;
+}
+
+template int add_n<4>(int);
+
+struct Counter {
+	template<int N>
+	int add(int value)
+	{
+		return value + N;
+	}
+};
+
+template int Counter::add<5>(int);
+
+int main()
+{
+	Box<int> box;
+	Slot<long> slot;
+	Counter counter;
+	box.value = 7;
+	slot.value = 9;
+	printf("explicit instantiation: %d %ld %d %d\n",
+	       box.get(), slot.value, add_n<4>(6), counter.add<5>(6));
+	return 0;
+}

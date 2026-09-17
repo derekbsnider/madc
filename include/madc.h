@@ -3955,7 +3955,7 @@ public:
     // Instantiating it would import the undefined __declval. Gate body
     // instantiation on this depth == 0.
     int unevaluated_operand_depth = 0;
-    void instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
+    Variable *instantiate_namespace_fn_template_for_call(TokenCallFunc *tc);
     // A STATIC member function template of a madc-LOCAL class (a monomorphized
     // template instance such as `_Destroy_aux<true>`) is registered
     // declaration-only with its body retained on the FuncDef
@@ -6585,7 +6585,7 @@ public:
     void skip_constraint_expression();
     void skip_template_nonclass_declaration(TokenBase *first,
 					    std::vector<TokenBase *> *seen = NULL);
-    void capture_extern_template_class_instantiation();
+    void capture_explicit_template_instantiation(bool extern_declaration);
     void apply_template_call_return_inference(TokenCallFunc *tc);
     DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
 							    bool *ret_ref);
