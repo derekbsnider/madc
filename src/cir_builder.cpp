@@ -11764,7 +11764,8 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 							const_ref_param(callee, pi)));
 		} else if (pt && pt->is_pointer()) {
 			eparams.push_back(native_param_shape(pt, false));
-			append(args, translate_expr(arg));
+			// Same derived->base pointer upcast as every other call path.
+			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 		} else {
 			eparams.push_back({ {N_LONG, N_LONG}, false });
 			append(args, translate_expr(arg));
@@ -12429,7 +12430,11 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			// `std::forward<Args>(args)` of a string element).
 			append(args, ref_param_arg_addr(arg));
 		else
-			append(args, translate_expr(arg));
+			// Derived->base pointer argument (`D*` arg -> `B*` parameter):
+			// the same explicit upcast the free-function call path emits.
+			// A secondary base sits at a non-zero offset, so without it the
+			// callee read the wrong subobject (silent `1 1 20 12`).
+			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
 
 	// Virtual dispatch: a method declared (or inherited as) virtual is called
