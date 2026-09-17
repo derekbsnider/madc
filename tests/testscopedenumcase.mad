@@ -1,0 +1,38 @@
+// A class-scoped `enum class` enumerator, fully qualified through a namespace
+// and its class, as a CASE LABEL — `case n::V::kind::s:` (self-host arc
+// 2026-09-17: madc's own include/madcdis/prose.h:33 `case
+// madc::value::kind::string:` was the first error of 11 units: "Expecting
+// integer constant expression"). The expression parser already resolved the
+// same spelling in an assignment; the constant-expression parser folded only
+// namespace-qualified variable templates and concepts. Oracle: g++ and
+// clang++ -std=c++11.
+#include <stdio.h>
+
+namespace n {
+    struct V {
+	enum class kind { s, i, f };
+	kind k;
+	kind type() const { return k; }
+	static const int limit = 3;
+    };
+}
+
+int classify(const n::V &v)
+{
+    switch ( v.type() )
+    {
+	case n::V::kind::s: return 1;
+	case n::V::kind::i: return 2;
+	case n::V::kind::f: return n::V::limit;
+    }
+    return 0;
+}
+
+int main()
+{
+    n::V a; a.k = n::V::kind::i;
+    n::V b; b.k = n::V::kind::f;
+    n::V c; c.k = n::V::kind::s;
+    printf("%d %d %d\n", classify(a), classify(b), classify(c));
+    return 0;
+}

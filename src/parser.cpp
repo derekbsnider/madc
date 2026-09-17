@@ -17407,6 +17407,74 @@ madc_wide_int Program::parse_constant_primary()
 	// concept arms below fold it exactly like the unqualified spelling.
 	// Transactional: an unknown qualified name restores the stream for the
 	// throw below.
+	// Class-scoped CONSTANTS through a qualified path — a scoped enumerator
+	// (`n::V::kind::s`: the enum's pseudo-namespace is registered under
+	// "n::V::kind") or a static const data member (`n::V::limit`) — fold to
+	// their value: case labels, array bounds, static_assert conditions.
+	// The expression parser already resolves these spellings; this is the
+	// constant-context twin through the SAME owners (find_namespace_member,
+	// resolve_class_static_member_value). Transactional: a chain that is not
+	// such a constant restores the stream for the arms below (variable
+	// templates, concepts, the qualified-trait folds).
+	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	{
+	    TokenStream::Pos qsaved = tokens.savepos();
+	    TokenBase *qcur = _cur_token;
+	    TokenBase *qprv = _prv_token;
+	    std::vector<std::string> qparts;
+	    qparts.push_back(name);
+	    TokenBase *leaf_tb = tb;
+	    bool chain_ok = true;
+	    while ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	    {
+		nextToken(); // consume '::'
+		TokenBase *pt = nextToken();
+		if ( !pt || !is_contextual_identifier_token(pt) )
+		{
+		    chain_ok = false;
+		    break;
+		}
+		qparts.push_back(contextual_identifier_name(pt));
+		leaf_tb = pt;
+	    }
+	    bool folded = false;
+	    madc_wide_int qval = 0;
+	    if ( chain_ok && qparts.size() >= 2
+	      && !(peekToken() && (peekToken()->id() == TokenID::tkLT
+				|| peekToken()->id() == TokenID::tkOpBrk)) )
+	    {
+		std::string qscope_key = qparts[0];
+		for ( size_t i = 1; i + 1 < qparts.size(); ++i )
+		    qscope_key += "::" + qparts[i];
+		const std::string &qleaf = qparts.back();
+		if ( Variable *cv = find_namespace_member(qscope_key, qleaf) )
+		    folded = read_constant_integer(cv, qval);
+		if ( !folded )
+		{
+		    std::vector<std::string> qscope_parts(qparts.begin(),
+							  qparts.end() - 1);
+		    if ( DataDefCLASS *qcls = resolve_qualified_class_owner(qscope_parts) )
+			if ( TokenBase *sv = resolve_class_static_member_value(
+					*this, qcls, qleaf, leaf_tb) )
+			    if ( sv->is_constant() )
+			    {
+				qval = sv->ival();
+				folded = true;
+			    }
+		}
+	    }
+	    if ( folded )
+		return qval;
+	    tokens = qsaved;
+	    _cur_token = qcur;
+	    _prv_token = qprv;
+	    if ( _cur_token )
+	    {
+		TokenBase::_parse_file = _cur_token->file;
+		TokenBase::_parse_line = _cur_token->line;
+		TokenBase::_parse_column = _cur_token->column;
+	    }
+	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
 	    QualifierScope qscope = classify_qualifier_before_scope(name, tb);
