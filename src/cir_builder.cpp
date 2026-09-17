@@ -6343,12 +6343,40 @@ static DataDef *capture_value_param_type(const Variable *cv)
 	return cv->type;
 }
 
+// Does this capture travel to the body BY ADDRESS?
+//
+// A reference capture always does. A by-VALUE capture of a MUTABLE lambda does
+// too, and that is the whole difference `mutable` makes at the ABI level:
+// [expr.prim.lambda]/7 gives the closure its OWN copy whose mutations PERSIST
+// ACROSS CALLS, so the body must write through to the closure's snapshot slot.
+// Passing the snapshot by value instead handed each call a fresh copy of it:
+//
+//     int k = 0;
+//     auto g = [k]() mutable { k++; return k; };
+//     g(); g(); g();        // C++ 1,2,3 — madc answered 1,1,1
+//
+// which compiled clean and returned wrong numbers. A NON-mutable by-value
+// capture is const in the body, so a per-call copy is indistinguishable and
+// stays by value.
+//
+// ONE owner: the signature type, the call-site argument and the body's
+// deref-or-not all ask this, or they disagree and the lowering breaks.
+static bool capture_travels_by_address(FuncDef *fd, const Variable *cv)
+{
+	if (!fd || !cv)
+		return false;
+	FuncDef::CaptureMode m = fd->capture_mode_for(cv);
+	if (m == FuncDef::CaptureMode::ByValue)
+		return fd->lambda_mutable;
+	return true;
+}
+
 static DataDef *capture_hidden_param_type(FuncDef *fd, const Variable *cv)
 {
 	if (!fd || !cv)
 		return NULL;
-	return fd->capture_mode_for(cv) == FuncDef::CaptureMode::ByValue
-		? capture_value_param_type(cv) : capture_param_type(cv);
+	return capture_travels_by_address(fd, cv)
+		? capture_param_type(cv) : capture_value_param_type(cv);
 }
 
 static std::string capture_value_storage_name(FuncDef *fd, const Variable *cv)
@@ -7397,10 +7425,21 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			if (callee_mode == FuncDef::CaptureMode::ByValue) {
 				FuncDef::CaptureEntry *entry = callee->capture_entry(cv);
 				DataDef *value_type = capture_value_param_type(cv);
+				// A MUTABLE lambda's by-value capture travels by
+				// ADDRESS so the body's writes land in the closure's
+				// snapshot and survive to the next call
+				// ([expr.prim.lambda]/7) — see
+				// capture_travels_by_address.
+				bool by_addr = capture_travels_by_address(callee, cv);
 				if (entry && entry->storage_materialized) {
 					node_t snapshot = id(entry->storage_name.c_str(), tcf);
-					append(args, class_param_via_invisible_ref(value_type)
+					append(args, (by_addr
+						      || class_param_via_invisible_ref(value_type))
 					       ? node1(N_ADDR, snapshot, tcf) : snapshot);
+				} else if (by_addr) {
+					append(args, error_node(
+						"a mutable by-value capture needs a materialized"
+						" snapshot slot", tcf));
 				} else if (class_param_via_invisible_ref(value_type)) {
 					append(args, error_node(
 						"immediate by-value class capture is not supported",
@@ -26611,7 +26650,15 @@ FuncDef::CaptureMode CirBuilder::note_capture(Variable *v)
 	std::vector<Variable *> &cv = m_cur_captured_fd->captured_vars;
 	if (std::find(cv.begin(), cv.end(), v) == cv.end())
 		cv.push_back(v);
-	return mode;
+	// Return the EFFECTIVE lowering mode, not the source-level one. A by-value
+	// capture of a MUTABLE lambda lowers exactly like a reference capture — a
+	// hidden pointer the body writes THROUGH — and only the call site differs,
+	// pointing it at the closure's snapshot slot instead of the original
+	// variable. Every body-side site therefore needs no mutable-specific arm,
+	// and cannot forget one. (The snapshot materialization above keys on the
+	// SOURCE-level mode, which is why that is computed first.)
+	return capture_travels_by_address(m_cur_captured_fd, v)
+		? FuncDef::CaptureMode::ByReference : mode;
 }
 
 bool CirBuilder::capture_is_read_only(Variable *v)
