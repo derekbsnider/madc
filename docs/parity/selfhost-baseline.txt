@@ -1,0 +1,10 @@
+# selfhost-baseline.txt — units of madc's OWN source that bin/madc does not
+# yet parse (ROADMAP 2.11, scripts/selfhost_lane.sh). One unit key per line:
+# the source path as src/Makefile spells it from src/ (ns_js.cpp, rt/rt_task.c,
+# ../obj/develop/embedded_headers.cpp) or a header's repo-relative path
+# (include/madc.h). The lane is RED on any failure NOT listed here and shouts
+# when a listed unit passes, so this file only ever SHRINKS. Fixes that turn a
+# unit green delete its line in the same commit.
+#
+# Seeded from the first lane run on the container (2026-09-17); every unit
+# below fails at that baseline. Coverage = units not listed here.

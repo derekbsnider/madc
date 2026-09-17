@@ -1198,6 +1198,14 @@ gcctest: ../bin/madc
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
+# Self-host lane (ROADMAP 2.11): madc parses every TU this Makefile links into
+# bin/madc, with the compile flags derived from THIS Makefile by dry-run
+# (scripts/selfhost_lane.sh never restates a compiler line). Baseline-ratcheted
+# over docs/parity/selfhost-baseline.txt; a ledger lane, not a fulltest gate —
+# parser.cpp alone is a 70k-line C++ TU.
+selfhost: ../bin/madc
+	@cd .. && bash scripts/selfhost_lane.sh
+
 # Runtime helpers (__madc_* in va_helpers, the file-stream wrappers, the
 # exception runtime, namespace builtins, etc.) are resolved at runtime by
 # the CIR/MIR backend via dlsym(RTLD_DEFAULT) and consulted at parse time
