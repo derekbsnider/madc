@@ -1736,7 +1736,10 @@ static bool is_thread_local_specifier_token(TokenBase *tb)
     if ( !tb || tb->id() != TokenID::tkCPPKEYWORD )
 	return false;
     const std::string &s = ((TokenKeyword *)tb)->str;
-    return s == "thread_local" || s == "_Thread_local";
+    // One storage-class specifier, three spellings: C++11 thread_local,
+    // C11 _Thread_local, GNU __thread (gcc/clang, every mode — libstdc++'s
+    // <mutex>:823 `extern __thread void* __once_callable;`).
+    return s == "thread_local" || s == "_Thread_local" || s == "__thread";
 }
 
 // A reserved keyword (tkCPPKEYWORD) that LEADS a declaration — the decl-

@@ -6015,6 +6015,11 @@ void Program::add_keywords()
     if ( language_std == STD_MADC || language_std >= STD_C11 )
 	if ( keyword_map.find("_Thread_local") == keyword_map.end() )
 	    keyword_map["_Thread_local"] = new TokenCppKeyword("_Thread_local");
+    // GNU `__thread`: the same specifier's pre-standard spelling, an
+    // implementation-reserved identifier gcc and clang honour in EVERY C
+    // and C++ mode (libstdc++'s <mutex> uses it under _GLIBCXX_HAVE_TLS).
+    if ( keyword_map.find("__thread") == keyword_map.end() )
+	keyword_map["__thread"] = new TokenCppKeyword("__thread");
 
     // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
     // reserved keywords spelled as words; each is an exact synonym for a
