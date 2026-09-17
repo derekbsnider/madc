@@ -438,7 +438,34 @@ forest_bind_gate 29/29, smaug_gate, interop, unit, targeted all green; the fores
 crosstu / library gates pass once `bin/madc-thin` + `bin/madc-mono` are rebuilt (the launcher must build
 them first — fixed locally). **`libcxx_gate` (RED at the 2026-09-16 pause) was TWO defects, both fixed 2026-09-17:** `f73ba1f55` — the extern-flush dedupe set `typed_proto_syms` was folded by REGISTRATION name at two sites while `func_proto` declares a bodied C++ function's prototype under `func_def_symbol` (its Itanium symbol), so the call site's opaque `extern void *_ZSt5fixedRSt8ios_base(void *)` survived beside the typed proto (clang-18: conflicting types; the libstdc++ emit had the identical pair, c2mir lenient). Both fold-ins key by `func_def_symbol`; gcc and clang `-fsyntax-only` now accept the libstdc++ emits of testiomanip/testmanipview/testofstreamwrite. `58a2393e2` — the deferred-body READINESS check's phase-4 arm ("a bodied function's body defines its emit_symbol") lacked `func_def_symbol`'s MEMBER exclusion: libc++'s `basic_filebuf<char>::basic_filebuf()` (C1Ev EXPORTED by libc++.so; out-of-line body deferred with `declaration_only` cleared) was DERIVED from `<fstream>` on the derived `basic_ofstream` ctor's import of C1Ev — and that derive parsed `<fstream>:337` `&std::use_facet<codecvt<…> >(this->getloc())`, a PRE-EXISTING parser gap (reproduces on the madc-astra 7b16830a and madc-base binaries; the reducer fails under libstdc++ too): KG Gap `addressof_qualified_template_id_call` (reducer + layer chain recorded) — its OWN focused session (no impromptu core-parser changes). ONE owner extracted: `FuncDef::body_defines_emit_symbol(const Method *)`, read by `func_def_symbol`, the readiness check and the forest-restore translation registrar (`flush_forest_pending_globals` carried the same divergence for the pack lane). `MADC_MTI_PROBE` gained a `ready key=… via=…` line naming the spelling that made a body ready. Evidence at `58a2393e2`: libcxx_gate OK (every leg), the three libc++ tests rc=0 with every .expect line, forest_bind_gate 29/29, check-rule-trailers GREEN. LESSON: the library's EXPORT LIST (`nm -D --defined-only libc++.so.1`) is the derive-vs-import oracle — `basic_ofstream<char>`'s ctors are NOT exported (`_LIBCPP_HIDE_FROM_ABI`; deriving them is right), `basic_filebuf<char>`'s ctor IS; the bind probe's `ext_def=1` does not mean exported. **THE BATTERY IS LAUNCHED** (2026-09-17, container pid 583020): `tmp/seam_stage2.sh` over the synced `58a2393e2` tree — prereq build (madc, madc-thin, madc-mono), EVERY fulltest gate, then `tmp/seam_battery.sh` if green; results `tmp/seam/*.rc`, `tmp/seam/battery.progress`, `tmp/seam/battery.done`, `tmp/seam/stage2.nohup`. Next: read them; `scripts/lane_ledger.sh record <lane> <tally>` per green lane; a red lane = its own fix commit + relaunch. **First battery (2026-09-17 01:04): the fulltest JIT pass ended rc=2 with exactly two FAILs, both regressions of `5d1a7ca6f`'s block-scope widening — fixed `1ddcbdf68` (a GNU nested DEFINITION never joins the global set: the tracking arm reads `function_declarator_has_body`, parseFunction's own discriminator; testnestedasmbarrier) and `2b46737c6` (testfnptrmember_binop takes `strlen` from `<string.h>`: its hand-written `extern int strlen(char *)` is `_Z6strlenPc`, which g++ also fails to link — canon). The chain was stopped and RELAUNCHED at `2b46737c6`. Ops: stopping the battery must kill the `run_tests.sh` children too (`remote_build.sh` refuses to build while one lives); `pkill -f` over ssh matches its own command line — use bracket patterns.**
 
-## THE SEAM — NEXT: the ONE battery for the whole (c)
+## THE SEAM — BATTERY GREEN (2026-09-17): every lane at code `2b46737c6` (+ tests twin `f88c360b7`)
+
+Gates (every fulltest gate) rc=0 · fulltest jit 1389/0/0TO/9skip (doctest 5/5) · exe 1320/0 · obj 1320/0 ·
+release (forest_pack_gate 68/68 baseline, hard zeros) · packed 1389/0/9skip · headerless 1355/0/43skip ·
+c-testsuite 220/220 · winbuild rc=0 · wine 1329/0/0TO/69skip · macos release-macos rc=0 + package rc=0.
+Results `tmp/seam/` on the container (`*.rc`, `battery.progress`, per-lane logs, `wine2.log`).
+
+The first battery's fulltest found two regressions of `5d1a7ca6f` (fixed `1ddcbdf68`: a GNU nested DEFINITION never
+joins the global set — the arm reads `function_declarator_has_body`; `2b46737c6`: testfnptrmember_binop takes strlen
+from `<string.h>`, its hand-written `extern int strlen(char *)` being `_Z6strlenPc` that g++ also fails to link).
+The first wine run failed ONE test, `testemitindent` (emitted-C text): mingw-w64's `<stdio.h>` wraps its `__mingw_ovr`
+inline overrides in a nested `extern "C++"` block, so the hosted win64 madc names printf `_Z6printfPKcz` — the oracle
+`x86_64-w64-mingw32-g++ -c` defines `T _Z6printfPKcz` exactly so; fix = the domain twin
+`tests/testemitindent.win64_expect` (`f88c360b7`), wine re-run 1329/0.
+
+**Ledger:** wine64 FRESH at `f88c360b7`. linux-battery / c-testsuite / macos were recorded at `55b5faf84` and went
+STALE when the twin landed (`tests/` is in `lane_ledger.sh`'s CODE_PATHS) — re-run on `f88c360b7` content via
+`tmp/seam_battery2.sh` (fulltest exe obj release packed headerless ctestsuite macos package_macos) so the records
+are truthful. Lesson: record the push-gated lanes AFTER the seam's last fixture/test commit. Release-tier lanes
+(darwin-suite, libcxx, genuine-win) are stale since 2026-09-09 by design — they gate MASTER, run at promotion.
+
+**Owner decisions next:** the develop merge of `feature/cpp-symbol-mangling-claude` once `scripts/lane_ledger.sh
+check --promote` is not BLOCKED (never push develop without the owner's go); master after the release tier +
+the darwin #1 probe round. Own sessions: Gaps `addressof_qualified_template_id_call` (reducer recorded),
+`corpus_end_to_end_lane`, `long_long_distinct_datadef_lp64`, `function_type_typedef_pointer_depth`,
+`qualified_namespace_function_definition`.
+
+## THE SEAM — NEXT (as planned; executed above): the ONE battery for the whole (c)
 
 Pre-build EVERY toolchain FIRST (feedback_seam_prebuild_all_toolchains):
 static gates, `remote_build.sh sync build release win`, `make -k
