@@ -14,9 +14,17 @@
 #include "madcdis/intern_table.h"
 #include "madcdis/value_pool.h"
 
+// DataDef is not forward-declarable here: TokenBase::datadef() returns
+// `&ddVOID` and usual_arithmetic_result() reads DataDef's members, so this
+// header needs the DEFINITION, not a declaration. datadef.h includes nothing
+// from this header, so there is no cycle — and without this include the header
+// only compiled as a fragment of an including TU's order (g++ -fsyntax-only:
+// "'DataDef' does not name a type"), which is what madc's own self-host lane
+// reported against it.
+#include "datadef.h"
+
 // forward declaration
 class Program;
-//class DataDef;
 
 // Kind-accessor forward declarations (TokenBase::as_*() below). Classes not
 // defined in this header live in datatokens.h / madc.h.
