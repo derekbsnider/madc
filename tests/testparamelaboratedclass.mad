@@ -1,0 +1,35 @@
+// An ELABORATED type specifier in a PARAMETER naming a class declared later —
+// `void forest_arena_record_func(FuncDef *fd, class Method *mth = NULL);`
+// (include/madc.h:2897; self-host arc 2026-09-17: "Failed to find type when
+// parsing function parameters"). [basic.scope.pdecl]/7: `class Method` in a
+// parameter first-declares the class in the enclosing namespace scope, exactly
+// as the one type resolver already does for members and variables; the
+// parameter arm looked the name up flat and gave up. Shapes: class-key and
+// struct-key parameters with a default argument, a free function, the later
+// definition, and a pointer member typed the same way. Oracle: g++ and
+// clang++ -std=c++11.
+#include <stdio.h>
+
+struct Rec {
+    void record(int n, class Method *m = NULL);
+    int count;
+    struct Later *link;
+};
+
+int probe(struct Later *l, class Method *m);
+
+class Method { public: int id; };
+struct Later { int depth; };
+
+void Rec::record(int n, class Method *m) { count = n + (m ? m->id : 0); }
+int probe(struct Later *l, class Method *m) { return l->depth * 10 + m->id; }
+
+int main()
+{
+    Rec r; Method m; m.id = 5; Later l; l.depth = 3;
+    r.record(2, &m); int a = r.count;
+    r.record(1); int b = r.count;
+    r.link = &l;
+    printf("%d %d %d %d\n", a, b, probe(&l, &m), r.link->depth);
+    return 0;
+}

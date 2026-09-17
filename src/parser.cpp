@@ -44071,11 +44071,22 @@ DataDefCLASS *Program::nested_aggregate_owner() const
 // A struct tag declared inside a function body is keyed function-scoped so it
 // cannot collide with (or shadow) a file-scope tag of the same name.  A direct
 // class member is keyed by its owner for the same reason.
-std::string Program::scoped_struct_tag(const std::string &name)
+// The BLOCK-scope key of a tag declared inside a function body (C11 6.2.1:
+// the tag's meaning ends with its block) — bare at file scope. The one arm
+// scoped_struct_tag and the elaborated-type mint share.
+std::string Program::block_scoped_struct_tag(const std::string &name)
 {
     TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
     if ( scope && scope != tkProgram && !cur_func_name.empty() )
 	return cur_func_name + "::" + name;
+    return name;
+}
+
+std::string Program::scoped_struct_tag(const std::string &name)
+{
+    std::string block = block_scoped_struct_tag(name);
+    if ( block != name )
+	return block;
     // [class.nest] in the STRICT C++ modes (--std= determines semantics): a
     // tag declared inside a data-only aggregate's open body belongs to that
     // aggregate, whatever function or class context triggered its parse.
@@ -44230,12 +44241,33 @@ DataDefSTRUCT *Program::incomplete_prior_aggregate(const std::string &store_key,
 }
 
 DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
-						   bool is_union)
+						   bool is_union,
+						   bool standalone_declaration)
 {
-    DataDefCLASS *owner = nested_aggregate_owner();
-    std::string emitted_name = owner ? owner->name + "__" + name : name;
-    DataDefSTRUCT *fwd = new_incomplete_aggregate(emitted_name, is_union);
-    std::string store_key = scoped_struct_tag(name);
+    if ( standalone_declaration )
+    {
+	// `struct B;` on its own inside a class declares the NESTED B
+	// (tests/testnestedfwdclassdef): the class owner keys it.
+	DataDefCLASS *owner = nested_aggregate_owner();
+	std::string emitted_name = owner ? owner->name + "__" + name : name;
+	DataDefSTRUCT *fwd = new_incomplete_aggregate(emitted_name, is_union);
+	std::string store_key = scoped_struct_tag(name);
+	pack_tap_struct(store_key);	// B4a tap
+	struct_map.set(store_key, fwd);
+	register_cpp_aggregate_name(name, fwd);
+	return fwd;
+    }
+    // [basic.scope.pdecl]/7 (and C11 6.7.2.3/8): an elaborated-type-
+    // specifier that is NOT a standalone declaration — `struct Later *link;`
+    // as a member, `class Method *m` as a parameter — first-declares the
+    // tag in the smallest enclosing NAMESPACE or BLOCK scope, never the
+    // class it appears in. Keying it by the class (Rec__Later) made the
+    // later file-scope `struct Later { int depth; }` a second, unrelated
+    // type ("no member named 'depth'" through the member). Block scope
+    // keeps its own key; a standalone `struct B;` inside a class is the
+    // struct parser's forward-declaration arm, not this mint.
+    DataDefSTRUCT *fwd = new_incomplete_aggregate(name, is_union);
+    std::string store_key = block_scoped_struct_tag(name);
     pack_tap_struct(store_key);	// B4a tap
     struct_map.set(store_key, fwd);
     register_cpp_aggregate_name(name, fwd);
@@ -44518,7 +44550,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
-		fwd = pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
+		fwd = pgm.mint_incomplete_struct_tag(tag->spelling(), is_union,
+						     /*standalone_declaration=*/true);
 	    else
 	    {
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
@@ -44542,7 +44575,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( !tag_dd && dmi == pgm.struct_map.end() )
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
-	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union);
+	    pgm.mint_incomplete_struct_tag(tag->spelling(), is_union,
+					   /*standalone_declaration=*/true);
 	    dmi = find_visible_struct_tag(tag->spelling());
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->spelling() << endl);
 	}
@@ -66990,10 +67024,17 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    break;
 	}
 
-	// handle 'struct Tag' / 'union Tag' / 'enum Tag' as parameter type
-	if ( nt->id() == TokenID::tkSTRUCT || nt->id() == TokenID::tkUNION )
+	// handle 'struct Tag' / 'union Tag' / 'class Tag' / 'enum Tag' as a
+	// parameter type. `class Tag` is the same elaborated-type-specifier
+	// ([dcl.type.elab]) — `void record(FuncDef *fd, class Method *mth =
+	// NULL);` (madc.h:2897) first-declares Method exactly as `struct Tag`
+	// does; only struct/union were admitted, so a class-key parameter fell
+	// to "Failed to find type when parsing function parameters".
+	if ( nt->id() == TokenID::tkSTRUCT || nt->id() == TokenID::tkUNION
+	  || (nt->id() == TokenID::tkCLASS && presents_as_cpp()) )
 	{
-	    const char *kw = (nt->id() == TokenID::tkUNION) ? "union" : "struct";
+	    const char *kw = (nt->id() == TokenID::tkUNION) ? "union"
+			   : (nt->id() == TokenID::tkCLASS) ? "class" : "struct";
 	    TokenBase *tag_nt = nextToken();
 	    if ( tag_nt->type() != TokenType::ttIdentifier )
 		Throw(tag_nt) << "Expecting " << kw << " name after '" << kw << "' in parameters" << flush;

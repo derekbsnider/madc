@@ -2799,11 +2799,16 @@ public:
     // resolve_declared_type_token's elaborated-type-specifier miss
     // ([basic.scope.pdecl]/7 — `wp<struct nat>` first-declares `nat`).
     DataDefCLASS *nested_aggregate_owner() const;
+    std::string block_scoped_struct_tag(const std::string &name);	// the function-body arm alone
     std::string scoped_struct_tag(const std::string &name);
     TokenDataType *register_cpp_aggregate_name(const std::string &name,
 					       DataDefSTRUCT *sdd);
+    // standalone_declaration: `struct B;` on its own (class-scoped when inside a
+    // class); false = an elaborated-type-specifier in a TYPE position, which
+    // first-declares the tag in the enclosing namespace/block scope.
     DataDefSTRUCT *mint_incomplete_struct_tag(const std::string &name,
-					      bool is_union);
+					      bool is_union,
+					      bool standalone_declaration = false);
     // The ONE owner of an incomplete aggregate's OBJECT KIND. A first
     // declaration is completed IN PLACE by whatever definition follows (gcc
     // xref_tag: "the forward-reference will be altered into a real type";
