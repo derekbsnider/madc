@@ -1,0 +1,18 @@
+extern "C" int printf(const char *, ...);
+
+template<class T> struct Select { using type = T; };
+template<template<class...> class Container, class... Elements>
+struct Select<Container<Elements...>> { using type = char; };
+template<class T, template<class> class Factory> struct Mixed { int value; };
+template<class T> struct Single { };
+
+Select<Mixed<int, Single>>::type object;
+Select<Single<int>>::type type_pack;
+
+int main()
+{
+	object.value = 37;
+	type_pack = 9;
+	printf("nested qualifier: %d\n", object.value);
+	printf("type pack: %d\n", type_pack);
+}

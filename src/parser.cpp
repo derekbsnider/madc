@@ -37547,6 +37547,24 @@ Program::TemplateDef *Program::match_partial_specialization(
 		elems.push_back(arg_spellings[a]);
 	    pack_ded[trailing_pack_name] = elems;
 	}
+	// A TYPE pack can absorb only types. The structural unifier retains
+	// spellings for both type and value packs; validate their kinds here,
+	// where the candidate's parameter declarations are available, before
+	// selecting its body. Otherwise C<Ts...> matches a template-id with a
+	// template-name argument and can select a specialization lacking ::type.
+	for ( size_t k = 0; ok && k < spec.typeparams.size(); ++k )
+	{
+	    if ( !template_param_expects_type(spec.typeparam_is_type, k) )
+		continue;
+	    auto pack = pack_ded.find(spec.typeparams[k]);
+	    if ( pack == pack_ded.end() )
+		continue;
+	    for ( const std::string &element : pack->second )
+		if ( !resolve_arg_spelling_datadef(*this, element) )
+		{ ok = false; break; }
+	}
+	if ( !ok )
+	    continue;
 	// Every own typeparam of the spec must have been deduced — as a type
 	// (ded) or, for a template-template parameter, as a template (tmpl_ded).
 	bool all = true;
