@@ -140,7 +140,6 @@ g++.dg/cpp0x/constexpr-ice22.C
 g++.dg/cpp0x/constexpr-initlist10.C
 g++.dg/cpp0x/constexpr-initlist2.C
 g++.dg/cpp0x/constexpr-initlist3.C
-g++.dg/cpp0x/constexpr-initlist5.C
 g++.dg/cpp0x/constexpr-invisiref1.C
 g++.dg/cpp0x/constexpr-is_literal.C
 g++.dg/cpp0x/constexpr-memchr.C
@@ -273,7 +272,6 @@ g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
 g++.dg/cpp0x/initlist-explicit-sfinae.C
 g++.dg/cpp0x/initlist-explicit2.C
-g++.dg/cpp0x/initlist-new3.C
 g++.dg/cpp0x/initlist-opt2.C
 g++.dg/cpp0x/initlist-opt5.C
 g++.dg/cpp0x/initlist-opt7.C
@@ -300,7 +298,6 @@ g++.dg/cpp0x/initlist35.C
 g++.dg/cpp0x/initlist50.C
 g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist59.C
-g++.dg/cpp0x/initlist61.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
 g++.dg/cpp0x/initlist82.C
