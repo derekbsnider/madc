@@ -16480,6 +16480,8 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	return 1;
     if ( depth > 64 )
 	return -1;
+    if ( tb->as_throw_tok() )
+	return 0; // [except.spec]: every throw-expression is potentially throwing.
     if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(tb) )
     {
 	TraitTypeArg to;
