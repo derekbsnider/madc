@@ -51352,7 +51352,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 //
 // `open_brc` is the ALREADY-CONSUMED '{'. Returns the new stream head for
 // parseExpression, or NULL when the target cannot take a braced list here
-// (unknown, scalar, pointer, _Complex) — the caller errors loudly or keeps
+// (unknown, function, _Complex) — the caller errors loudly or keeps
 // its legacy route.
 // The ONE owner of "can this type be a braced-list re-spell target" —
 // asked by the overload search below per candidate WITHOUT touching the
@@ -51361,6 +51361,11 @@ bool Program::braced_list_target_capable(DataDef *dd)
 {
     if ( !dd )
 	return false;
+    if ( dd->is_pointer() )
+	return true;
+    if ( !dd->is_function() && !dd->is_simd()
+	 && (dd->is_integer() || dd->is_real()) )
+	return true;
     if ( dynamic_cast<DataDefCLASS *>(dd) != NULL )
 	return true;
     return dynamic_cast<DataDefSTRUCT *>(dd) != NULL && !dd->is_complex();
@@ -51369,17 +51374,20 @@ bool Program::braced_list_target_capable(DataDef *dd)
 TokenBase *Program::respell_braced_list_for_target(DataDef *target_dd,
 						   TokenBase *open_brc)
 {
-    if ( !braced_list_target_capable(target_dd) )
+    if ( !cpp_keyword_active(STD_CPP11)
+	 || !braced_list_target_capable(target_dd) )
 	return NULL;
     DataDefSTRUCT *agg = dynamic_cast<DataDefSTRUCT *>(target_dd);
     // An EMPTY list (value-initialization) is spelled with an explicit zero:
     // C11 has no `(T){}`, and `(T){0}` is the C idiom that zero-initializes
     // the whole object, which is what value-init means here.
     bool empty_list = peekToken() && peekToken()->id() == TokenID::tkClBrc;
-    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(target_dd) )
+    if ( !agg || dynamic_cast<DataDefCLASS *>(target_dd) )
     {
+	// Scalars and pointers use the existing functional value-/list-init
+	// reader too: T{} supplies zero, T{value} preserves the target type.
 	pushToken(open_brc);			// '{' back on the stream
-	pushToken(new TokenDataType(cls->name.c_str(), *cls));
+	pushToken(new TokenDataType(target_dd->name.c_str(), *target_dd));
 	return nextToken();			// now the synthetic type head
     }
     if ( agg && !target_dd->is_complex() )
