@@ -74914,8 +74914,9 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		return parse_static_assert_statement(tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->spelling()) )
 		return parseDeclaration(parse_typeof_datatype(tb));
-	    // `decltype(expr)` heading a STATEMENT is a declaration's type
-	    // ([dcl.type.simple]) — the decltype twin of the typeof line above;
+	    // `decltype(expr)` heading a STATEMENT supplies its type head
+	    // ([dcl.type.simple]); the ordinary type-headed statement path then
+	    // distinguishes `::value;` from `::type object;`. For example,
 	    // libc++ bsd_locale_fallbacks.h:31 is the motivating shape:
 	    //   inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(locale_t)
 	    // resolve_declared_type_token owns the decltype arm (including the
@@ -74927,7 +74928,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    {
 		if ( TokenDataType *dt =
 			resolve_declared_type_token(tb, true, true, false) )
-		    return parseDeclaration(dt);
+		    return parseStatementBody(dt);
 	    }
 	    if ( ((TokenIdent *)tb)->spelling_is("__label__") )
 	    {
@@ -75495,7 +75496,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    return parse_static_assert_statement(tb);
 		if ( kw == "asm" || kw == "__asm__" || kw == "__asm" )
 		    return skip_gnu_asm_statement(tb);
-		// `decltype(expr)` heading a statement is a declaration's type
+		// `decltype(expr)` supplies a type-headed statement
 		// ([dcl.type.simple]) — the identifier arm's route, mirrored
 		// for the reserved spelling (libc++ bsd_locale_fallbacks.h:31:
 		// `inline decltype(MB_CUR_MAX) __libcpp_mb_cur_max_l(...)`).
@@ -75506,7 +75507,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		{
 		    if ( TokenDataType *dt =
 			    resolve_declared_type_token(tb, true, true, false) )
-			return parseDeclaration(dt);
+			return parseStatementBody(dt);
 		}
 		// Declaration-leading specifiers (constexpr/consteval/constinit,
 		// inline, thread_local/_Thread_local) qualify a declaration: fall

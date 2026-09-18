@@ -8,6 +8,11 @@ template<class T> struct Single { };
 template<class T> struct Envelope {
 	template<class U> struct Entry { U value; };
 };
+struct Result {
+	using type = int;
+	static const int value = 23;
+};
+Result produce();
 
 Select<Mixed<int, Single>>::type object;
 Select<Single<int>>::type type_pack;
@@ -23,4 +28,8 @@ int main()
 	entry.value = 41;
 	letter.value = 7;
 	printf("elaborated member: %d %d\n", entry.value, letter.value);
+	decltype(produce())::value;
+	decltype(produce())::type scalar = 29;
+	decltype(produce()) result;
+	printf("decltype scope: %d %d\n", decltype(produce())::value, scalar);
 }
