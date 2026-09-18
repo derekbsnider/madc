@@ -1,0 +1,14 @@
+// A method returning a reference remains the receiver of operator[].
+extern "C" int printf(const char *, ...);
+struct Index { int row, col; Index(int r, int c): row(r), col(c) {} };
+struct Matrix {
+	Matrix &self() { return *this; }
+	int operator[](Index i) { return i.row * 10 + i.col; }
+};
+int main()
+{
+	Matrix m;
+	Index i(4, 5);
+	printf("%d\n", m.self()[i]);
+	return 0;
+}
