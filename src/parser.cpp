@@ -5049,6 +5049,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    hash.add_bool(method.defaulted_or_deleted);
 	    hash.add_bool(method.is_deleted);
 	    hash.add_u64(method.noexcept_spec);
+	    add_tokens(method.noexcept_condition_tokens);
 	    hash.add_bool(method.pure_virtual);
 	    hash.add_bool(method.is_const_method);
 	    hash.add_bool(method.is_member_template);
@@ -8699,6 +8700,9 @@ static void register_basic_class_pattern_method(
     fd->implicit_dtor_noexcept = pattern.noexcept_spec == FuncDef::NxImplicitDtor;
     fd->noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxUnknown : pattern.noexcept_spec;
+    fd->noexcept_owner = owner;
+    fd->noexcept_condition_tokens = basic_class_pattern_substitute_tokens(
+	pgm, binding, pattern.noexcept_condition_tokens);
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
@@ -8808,7 +8812,7 @@ static void register_basic_class_pattern_method(
 
     bool has_deferred_body = !pattern.body_tokens.empty()
 	|| !pattern.definition_tokens.empty();
-    if ( has_deferred_body )
+    if ( has_deferred_body || !fd->noexcept_condition_tokens.empty() )
 	for ( size_t i = 0; i < pattern.parameters.size(); ++i )
 	{
 	    const Program::ClassMethodParamPattern &param = pattern.parameters[i];
@@ -8821,6 +8825,7 @@ static void register_basic_class_pattern_method(
 	    pvar->typedef_name = fd->param_typedef_names[i];
 	    method->parameters.push_back(pvar);
 	}
+    fd->noexcept_parameters = method->parameters;
 
     Program::ClassMethodRegistration spec;
     spec.kind = pattern.kind;
@@ -16458,6 +16463,37 @@ static int noexcept_conjoin(int a, int b)
     return 1;
 }
 
+void Program::resolve_noexcept_spec(FuncDef *fd)
+{
+    if ( !fd || fd->noexcept_spec != FuncDef::NxUnknown )
+	return;
+    if ( fd->noexcept_condition_tokens.empty() || fd->resolving_noexcept )
+	return;
+    if ( fd->noexcept_owner && !fd->noexcept_owner->is_complete )
+	return; // [class.mem]: an exception specification is a complete-class context.
+    Variable fn("__noexcept_scope", *fd, 1, NULL, false);
+    Method scope(fn);
+    scope.owner_class = fd->noexcept_owner;
+    scope.parameters = fd->noexcept_parameters;
+    size_t saved_classes = class_scope_stack.size();
+    if ( fd->noexcept_owner )
+	class_scope_stack.push_back(fd->noexcept_owner);
+    pushCompound();
+    compounds.top()->method = &scope;
+    fd->resolving_noexcept = true;
+    struct SpecScopeGuard {
+	Program &pgm; FuncDef *fd; size_t classes;
+	~SpecScopeGuard() {
+	    fd->resolving_noexcept = false;
+	    pgm.popCompound();
+	    pgm.class_scope_stack.resize(classes);
+	}
+    } guard{*this, fd, saved_classes};
+    int64_t value = 0;
+    if ( fold_nontype_arg_constant(fd->noexcept_condition_tokens, value) )
+	fd->noexcept_spec = value ? FuncDef::NxTrue : FuncDef::NxNone;
+}
+
 // [except.spec]: an omitted destructor specification is the conjunction of
 // its bases' and members' destructor specifications, even for a user body.
 // Inherited members are already covered by their base's selected destructor.
@@ -16490,8 +16526,11 @@ static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
 	    { fd = mf; break; }
 	}
 	if ( fd && !fd->implicit_dtor_noexcept )
+	{
+	    pgm.resolve_noexcept_spec(fd);
 	    return fd->noexcept_spec == FuncDef::NxTrue ? 1
 		 : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	}
 	if ( !c->is_complete )
 	    return -1;
 	if ( c->base_class )
@@ -16568,6 +16607,9 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	if ( tc->src_node )
 	    r = noexcept_conjoin(r,
 				 noexcept_eval_expr(pgm, tc->src_node, depth + 1));
+	if ( TokenMember *member = tc->as_member_tok() )
+	    r = noexcept_conjoin(r,
+		noexcept_eval_expr(pgm, member->parent_expr, depth + 1));
 	// TokenMember also models plain data access; only a function-typed
 	// callee is a call.
 	if ( !tc->var.type || !tc->var.type->is_function() )
@@ -16575,6 +16617,7 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	if ( dynamic_cast<DataDefFPTR *>(tc->var.type) )
 	    return 0;
 	FuncDef *fd = pgm.resolved_call_funcdef(tc);
+	pgm.resolve_noexcept_spec(fd);
 	if ( fd && fd->noexcept_spec == FuncDef::NxUnknown )
 	{
 	    // [temp.inst]/14: an exception specification is instantiated when
@@ -34734,6 +34777,8 @@ class ClassPatternNormalizer
 	out.is_deleted = fd->is_deleted;
     out.noexcept_spec = fd->implicit_dtor_noexcept
 	? FuncDef::NxImplicitDtor : fd->noexcept_spec;
+    out.noexcept_condition_tokens =
+	class_pattern_clone_tokens(fd->noexcept_condition_tokens);
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
 	// Lazy member-template hydration: the capture below copies the
@@ -49084,9 +49129,11 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
     ddc->apply_member_layout();
     ddc->build_vtable_groups();
     ddc->is_complete = true;
-    for ( Variable *m : ddc->methods )
+    for ( size_t i = 0; i < ddc->methods.size(); ++i )
     {
+	Variable *m = ddc->methods[i];
 	FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	resolve_noexcept_spec(fd);
 	if ( fd && fd->implicit_dtor_noexcept )
 	{
 	    int nx = noexcept_destructor_spec(*this, ddc, 0);
@@ -68022,6 +68069,9 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_deleted = src->is_deleted;
     f->noexcept_spec = src->noexcept_spec;
     f->implicit_dtor_noexcept = src->implicit_dtor_noexcept;
+    f->noexcept_condition_tokens = src->noexcept_condition_tokens;
+    f->noexcept_parameters = src->noexcept_parameters;
+    f->noexcept_owner = src->noexcept_owner;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     f->vague_linkage = src->vague_linkage;
@@ -68383,6 +68433,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
+	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
+	    fresh->noexcept_parameters = func->noexcept_parameters;
+	    fresh->noexcept_owner = func->noexcept_owner;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
@@ -68426,6 +68479,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->noexcept_spec = func->noexcept_spec;
 	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
+	    fresh->noexcept_condition_tokens = func->noexcept_condition_tokens;
+	    fresh->noexcept_parameters = func->noexcept_parameters;
+	    fresh->noexcept_owner = func->noexcept_owner;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
@@ -69579,6 +69635,7 @@ paramdecl:
 	{
 	    func->implicit_dtor_noexcept = false;
 	    func->noexcept_spec = FuncDef::NxNone;
+	    func->noexcept_condition_tokens.clear();
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
@@ -69603,6 +69660,7 @@ paramdecl:
 	    }
 	    if ( qs == "noexcept" ) {
 		func->implicit_dtor_noexcept = false;
+		func->noexcept_condition_tokens.clear();
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
 		{
@@ -69632,7 +69690,14 @@ paramdecl:
 			func->noexcept_spec = cv ? FuncDef::NxTrue
 						 : FuncDef::NxNone;
 		    else
+		    {
 			func->noexcept_spec = FuncDef::NxUnknown;
+			for ( TokenBase *ct : cond )
+			    func->noexcept_condition_tokens.push_back(ct->clone_origin());
+			func->noexcept_owner = owner_class;
+			func->noexcept_parameters = temp_param_method.parameters;
+			resolve_noexcept_spec(func);
+		    }
 		    nt = nextToken();
 		}
 		else

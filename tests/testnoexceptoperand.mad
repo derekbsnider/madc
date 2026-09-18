@@ -16,11 +16,34 @@ static_assert(!noexcept(HoldsLoud()), "implicit spec includes member destruction
 static_assert(noexcept(OverridesLoud()), "explicit destructor spec wins");
 static_assert(!noexcept(ThrowsCtor()), "constructor spec still contributes");
 
+struct MemberSpecs {
+	static void later_constant() noexcept(enabled);
+	void later_call() noexcept(noexcept(calm()));
+	void later_throwing_call() noexcept(noexcept(loud()));
+	int parameter(int p) noexcept(noexcept(p));
+	static constexpr bool enabled = true;
+	void calm() noexcept;
+	void loud();
+};
+extern MemberSpecs object;
+MemberSpecs &member_source();
+int member_argument();
+
+static_assert(noexcept(object.later_constant()), "complete class constant");
+static_assert(noexcept(object.later_call()), "complete class nonthrowing method");
+static_assert(!noexcept(object.later_throwing_call()), "complete class throwing method");
+static_assert(noexcept(object.parameter(1)), "parameter remains in scope");
+static_assert(!noexcept(member_source().calm()), "receiver evaluation can throw");
+static_assert(!noexcept(object.parameter(member_argument())), "argument can throw");
+
 int main()
 {
 	printf("throw: %d\n", noexcept(throw 1));
 	printf("temporary: %d %d %d %d %d %d\n", noexcept(Calm()), noexcept(Loud()),
 		noexcept(DerivedLoud()), noexcept(HoldsLoud()), noexcept(OverridesLoud()),
 		noexcept(ThrowsCtor()));
+	printf("member: %d %d %d %d\n", noexcept(object.later_constant()),
+		noexcept(object.later_call()), noexcept(object.later_throwing_call()),
+		noexcept(object.parameter(1)));
 	return 0;
 }

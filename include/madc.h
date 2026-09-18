@@ -618,6 +618,12 @@ public:
 	NxImplicitDtor = 3 };
     uint8_t noexcept_spec;
     bool implicit_dtor_noexcept = false;
+    // Delayed exception conditions use the declaration's scope, never a body.
+    // Missing retained source (e.g. an older frozen declaration) stays unknown.
+    std::vector<TokenBase *> noexcept_condition_tokens;
+    std::vector<Variable *> noexcept_parameters;
+    DataDefCLASS *noexcept_owner = NULL;
+    bool resolving_noexcept = false;
     // True for C++ pure virtual declarations (`= 0`). They have no body but
     // still participate in method lookup and vtable layout.
     bool pure_virtual;
@@ -3093,6 +3099,7 @@ public:
 	bool defaulted_or_deleted;
 	bool is_deleted;
 	uint8_t noexcept_spec;	// FuncDef::NoexceptSpec value
+	std::vector<TokenBase *> noexcept_condition_tokens;
 	bool pure_virtual;
 	bool is_const_method;
 	bool is_member_template;
@@ -6595,6 +6602,7 @@ public:
     // constant-fold caller's isolated-stream try records that as "unfoldable"
     // rather than a silently wrong bool. See parser.cpp noexcept_eval_expr.
     size_t evaluate_noexcept_operator(TokenBase *op_tb);
+    void resolve_noexcept_spec(FuncDef *fd);
     // Type-trait builtins (__is_class/__is_base_of/…): parse `( type-list )` and
     // fold to a bool constant token. See parser.cpp for the supported (faithful)
     // set; unsupported traits are not recognized (clear error, never a wrong bool).
