@@ -55,7 +55,6 @@ g++.dg/cpp0x/alias-decl-69.C
 g++.dg/cpp0x/alias-decl-72.C
 g++.dg/cpp0x/alias-decl-enum-1.C
 g++.dg/cpp0x/alias-decl-mem1.C
-g++.dg/cpp0x/alias-decl-ttp2.C
 g++.dg/cpp0x/alias-decl-variadic3.C
 g++.dg/cpp0x/alignas1.C
 g++.dg/cpp0x/alignas2.C
@@ -103,7 +102,6 @@ g++.dg/cpp0x/constexpr-array-ptr4.C
 g++.dg/cpp0x/constexpr-array-ptr5.C
 g++.dg/cpp0x/constexpr-array-ptr6.C
 g++.dg/cpp0x/constexpr-array-ptr9.C
-g++.dg/cpp0x/constexpr-array-tparm.C
 g++.dg/cpp0x/constexpr-array10.C
 g++.dg/cpp0x/constexpr-array14.C
 g++.dg/cpp0x/constexpr-array19.C
@@ -200,13 +198,11 @@ g++.dg/cpp0x/decltype1.C
 g++.dg/cpp0x/decltype12.C
 g++.dg/cpp0x/decltype23.C
 g++.dg/cpp0x/decltype25.C
-g++.dg/cpp0x/decltype27.C
 g++.dg/cpp0x/decltype30.C
 g++.dg/cpp0x/decltype33.C
 g++.dg/cpp0x/decltype34.C
 g++.dg/cpp0x/decltype40.C
 g++.dg/cpp0x/decltype42.C
-g++.dg/cpp0x/decltype47.C
 g++.dg/cpp0x/decltype5.C
 g++.dg/cpp0x/decltype53.C
 g++.dg/cpp0x/decltype57.C
@@ -282,7 +278,6 @@ g++.dg/cpp0x/initlist-opt2.C
 g++.dg/cpp0x/initlist-opt5.C
 g++.dg/cpp0x/initlist-opt7.C
 g++.dg/cpp0x/initlist-overload1.C
-g++.dg/cpp0x/initlist-postfix-open-square.C
 g++.dg/cpp0x/initlist-ref1.C
 g++.dg/cpp0x/initlist-ref3.C
 g++.dg/cpp0x/initlist102.C
@@ -293,7 +288,6 @@ g++.dg/cpp0x/initlist118.C
 g++.dg/cpp0x/initlist119.C
 g++.dg/cpp0x/initlist120.C
 g++.dg/cpp0x/initlist124.C
-g++.dg/cpp0x/initlist125.C
 g++.dg/cpp0x/initlist129.C
 g++.dg/cpp0x/initlist132.C
 g++.dg/cpp0x/initlist133.C
@@ -305,7 +299,6 @@ g++.dg/cpp0x/initlist34.C
 g++.dg/cpp0x/initlist35.C
 g++.dg/cpp0x/initlist50.C
 g++.dg/cpp0x/initlist54.C
-g++.dg/cpp0x/initlist58.C
 g++.dg/cpp0x/initlist59.C
 g++.dg/cpp0x/initlist61.C
 g++.dg/cpp0x/initlist67.C
@@ -378,14 +371,10 @@ g++.dg/cpp0x/nsdmi13.C
 g++.dg/cpp0x/nsdmi14.C
 g++.dg/cpp0x/nsdmi2.C
 g++.dg/cpp0x/nullptr12.C
-g++.dg/cpp0x/nullptr24.C
-g++.dg/cpp0x/nullptr25.C
-g++.dg/cpp0x/nullptr27.C
 g++.dg/cpp0x/nullptr29.C
 g++.dg/cpp0x/nullptr39.C
 g++.dg/cpp0x/nullptr40.C
 g++.dg/cpp0x/nullptr41.C
-g++.dg/cpp0x/nullptr43.C
 g++.dg/cpp0x/pr102305.C
 g++.dg/cpp0x/pr105256.C
 g++.dg/cpp0x/pr107065.C
@@ -394,7 +383,6 @@ g++.dg/cpp0x/pr113031.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
 g++.dg/cpp0x/pr119580.C
-g++.dg/cpp0x/pr124173.C
 g++.dg/cpp0x/pr32252.C
 g++.dg/cpp0x/pr47476.C
 g++.dg/cpp0x/pr52742.C
@@ -468,7 +456,6 @@ g++.dg/cpp0x/sfinae42.C
 g++.dg/cpp0x/sfinae43.C
 g++.dg/cpp0x/sfinae44.C
 g++.dg/cpp0x/sfinae45.C
-g++.dg/cpp0x/sfinae46.C
 g++.dg/cpp0x/sfinae47.C
 g++.dg/cpp0x/sfinae48.C
 g++.dg/cpp0x/sfinae50.C
@@ -489,7 +476,6 @@ g++.dg/cpp0x/std-layout1.C
 g++.dg/cpp0x/stddef.C
 g++.dg/cpp0x/trailing1.C
 g++.dg/cpp0x/trailing11.C
-g++.dg/cpp0x/trailing13.C
 g++.dg/cpp0x/trailing7.C
 g++.dg/cpp0x/trivial1.C
 g++.dg/cpp0x/typedef-redecl.C
@@ -515,7 +501,6 @@ g++.dg/cpp0x/variadic-nested1.C
 g++.dg/cpp0x/variadic-nested2.C
 g++.dg/cpp0x/variadic-partial1.C
 g++.dg/cpp0x/variadic-partial3.C
-g++.dg/cpp0x/variadic-ref1.C
 g++.dg/cpp0x/variadic-ttp6.C
 g++.dg/cpp0x/variadic114.C
 g++.dg/cpp0x/variadic12.C
@@ -572,7 +557,6 @@ g++.dg/template/cond7.C
 g++.dg/template/conv1.C
 g++.dg/template/conv21.C
 g++.dg/template/crash66.C
-g++.dg/template/crash85.C
 g++.dg/template/ctor1.C
 g++.dg/template/deduce10.C
 g++.dg/template/deduce9.C
@@ -598,7 +582,6 @@ g++.dg/template/inherit.C
 g++.dg/template/instantiate11.C
 g++.dg/template/linkage4.C
 g++.dg/template/linkage4a.C
-g++.dg/template/linkage7.C
 g++.dg/template/mem_func_ptr.C
 g++.dg/template/memfriend1.C
 g++.dg/template/memfriend12.C
@@ -620,13 +603,11 @@ g++.dg/template/pr84434.C
 g++.dg/template/pr88795.C
 g++.dg/template/pr96329.C
 g++.dg/template/pr97399.C
-g++.dg/template/pr98538.C
 g++.dg/template/ptrmem1.C
 g++.dg/template/ptrmem19.C
 g++.dg/template/ptrmem33.C
 g++.dg/template/ptrmem34.C
 g++.dg/template/ptrmem5.C
-g++.dg/template/ref10.C
 g++.dg/template/sfinae-deleted-pr119343.C
 g++.dg/template/sfinae20.C
 g++.dg/template/sfinae22.C
