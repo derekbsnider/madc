@@ -1,0 +1,16 @@
+// Named and unnamed decltype-spelled parameters share ordinary value binding.
+extern "C" int printf(const char *, ...);
+
+template<decltype(nullptr) P> struct NullValue {
+	static int get() { return P == nullptr; }
+};
+template<decltype(nullptr), int N> struct AnonymousNull {
+	enum { E = N };
+};
+
+int main()
+{
+	printf("decltype nullptr: %d %d\n",
+		NullValue<nullptr>::get(), AnonymousNull<nullptr, 43>::E);
+	return 0;
+}
