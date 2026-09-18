@@ -37738,7 +37738,25 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
     {
 	DataDef *asg_target =
 	    referent_if_reference(exStack.top()->datadef());
-	if ( TokenBase *nh = respell_braced_list_for_target(asg_target, tb) )
+	// The ASSIGNEE IS AN LVALUE. This site assumes exStack.top() is the
+	// assignee, which only holds while the rhs is still empty: in
+	// `B *b = new D{}` the top is the `new D` operand — a PRVALUE — and
+	// the '{' belongs to the NEW-expression, not to the assignment.
+	// Claiming it there leaves `new D` and `D{}` on the stack as two
+	// operands with no operator between them (g++.dg/cpp0x/noexcept76.C).
+	// The lvalue test is the RIGHT question: an assignment target is an
+	// lvalue by definition, so a prvalue on top means the rhs has already
+	// started and this brace is not ours. Testing the TYPE instead (asking
+	// whether a pointer can take a braced list) gets it wrong both ways —
+	// it claims `new D{}`, and it refuses the legal scalar `x = {5}`.
+	// `is_addressable_expression` deliberately EXCLUDES a plain TokenVar
+	// (it answers the NON-variable addressable cases: member, deref,
+	// subscript); every caller pairs it with the variable test, as the
+	// [expr.cond] arm check just above it does.
+	if ( !dynamic_cast<TokenVar *>(exStack.top())
+	  && !is_addressable_expression(exStack.top()) )
+	    ;	// rhs already started — not ours; fall through
+	else if ( TokenBase *nh = respell_braced_list_for_target(asg_target, tb) )
 	{
 	    DBG(cout << "parseExpression: assignment-rhs braced list "
 		     << "re-spelled against " << asg_target->name << endl);
