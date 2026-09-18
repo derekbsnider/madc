@@ -231,3 +231,76 @@ then set `vfCONSTBAKED` so `read_constant_subobject` will read them.
   EVERY array bound, enum initializer and non-type template argument.
 - Never compare failure COUNTS; diff the LIST.
 - Rule trailers on every src/ commit; `Layer:` must say why yours is deepest.
+
+---
+
+# PART 4 — OUTCOME (executed 2026-09-18, same day)
+
+## What landed
+
+**S1 + S2 (`eeb715b4b`)** — constexpr constructors evaluate, including
+delegation. STEP 0's answer was NO: `forest_ctor_init_tokens` is populated only
+under `forest_arena_enabled` (a `--freeze` parse, src/madc.cpp:1295), so it is
+empty in every ordinary compile. But no capture slice was needed — the better
+owner already existed and IS populated on both the eager and the deferred path:
+**`FuncDef::ctor_initializers`** (`include/madc.h:493`), a
+`{name, args, braced}` per mem-initializer, filled by
+`parse_ctor_initializer_list`. Only its `is_constexpr` was always false.
+
+The deepest cause was one layer below the whole plan: **`TokenCLASS::parse`
+CONSUMED AND DROPPED an in-class `constexpr`** (the specifier arm listed it
+beside `inline` as "ignored"), so no member function of any class ever reached
+`FuncDef::is_constexpr`. That is fixed by passing it to `parseFunction`'s
+existing `constexpr_specified` parameter.
+
+Lane 1369 -> 1370; `g++.dg/cpp0x/constexpr-delegating.C` (the canonical case)
+shrinks the baseline. Reducer: `tests/testconstexprctor.mad`, dual-oracle.
+
+## S3/S4 — the measurement that changed the target
+
+S4 ran first, and it retired the plan's own premise. `MADC_CONSTEXPR_CTOR_DEBUG`
+over all 113 family tests: the materializer is REACHED by **4**; 109 never
+reach it. The family is not one family — it is five, classified by the failing
+CONSTRUCT rather than by the diagnostic:
+
+    21 object member/element read · 18 Template<...>::value · 18 pointer-valued
+    16 constexpr function call · 15 array bound/enum init · 5 decltype · ~20 singletons
+
+Detail, with the per-shape counts for the 21 object reads (NSDMI 4, bases 4,
+arrays-of-ctor-objects 4, address-valued 3, bitfield/union/nested 6), and the
+⚠️ note that base cases need the READ side widened too
+(`find_struct_member_index` searches only a class's OWN members), is in
+`scratchpad/measure-constexpr-family-is-not-one-family.md`.
+
+## The re-target this produced — and it paid 22x
+
+A first-error histogram over all 578 lane failures put **31 tests on ONE gap**:
+
+    Expecting ',' or '>' in template parameter list          31
+
+A non-type template parameter is a parameter-declaration ([temp.param]/1), so
+its type head is followed by a full DECLARATOR — `int (*p)()`, `T C::*M`,
+`Opt const& o`, `void (&FN)()`, `int (&... p)[N]`, `char*(&table)[size]` — and
+`parse_template_parameter_list` only ever read a bare NAME.
+`Program::consume_template_parameter_declarator` fixes it: **+22 lane tests in
+one slice**, 1370 -> **1392/1950 (71.4%)**, 0 outside baseline.
+
+## ⚠️ THE RULE THIS SESSION ADDS
+
+**An error message is not a family.** It is the last common frame of several
+unrelated failures. Classify by the failing CONSTRUCT, and do it BEFORE
+choosing the slice — the histogram that found the 22x lever took six minutes.
+
+## What remains toward 75% (=1463, +71 from 1392)
+
+Ranked by measured mass, each its own slice:
+
+  46  use of undeclared identifier 'X'      (not yet classified — do that FIRST)
+  23  no matching constructor for call
+  21  constexpr OBJECT reads (NSDMI / bases / arrays-of-objects / addresses)
+  18  Template<...>::value in a constant expression
+  18  pointer-valued constant expressions (needs ConstValue Address)
+  16  constexpr function calls (relaxed bodies, non-integral)
+  15  Expecting identifier after type
+  11  noexcept(...) operand evaluation
+   9  the 9 of 31 template-param tests that now fail DEEPER (ptrmem, sfinae26)
