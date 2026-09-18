@@ -67,20 +67,17 @@ different and much larger problem; do not design for it here.
 
 ### Why C++ constexpr must NOT be native JIT execution
 
-1. **Cross-compilation.** madc has `cross-aarch64-linux`, `cross-x86-64-macos`,
-   `cross-arm64-macos`, `hosted-arm64-macos`. Executing on the host computes
-   HOST sizes/alignment/endianness — wrong for the target.
-2. **Diagnostics.** The standard requires diagnosing a non-constant
+1. **Diagnostics.** The standard requires diagnosing a non-constant
    subexpression. Native execution yields a SIGSEGV, not a diagnostic.
-3. **SFINAE needs RECOVERABLE failure.** Constant evaluation runs during
+2. **SFINAE needs RECOVERABLE failure.** Constant evaluation runs during
    overload resolution and deduction; a crashed JIT cannot be recovered from.
    (11 of the lane's 24 `static assertion failed` tests are SFINAE.)
-4. **UB must be REJECTED** — signed overflow, out-of-bounds, uninitialized
+3. **UB must be REJECTED** — signed overflow, out-of-bounds, uninitialized
    reads. Native execution silently produces garbage: a SILENT WRONG ANSWER,
    the worst outcome by this project's own rules.
-5. **It runs on dependent/incomplete code** during deduction, which cannot be
+4. **It runs on dependent/incomplete code** during deduction, which cannot be
    codegen'd at all.
-6. **Neither canon compiler does it.** GCC interprets trees
+5. **Neither canon compiler does it.** GCC interprets trees
    (gcc/cp/constexpr.cc, 13272 lines). Clang interprets
    (ExprConstant.cpp, 16724 lines) and its PERFORMANCE answer is a
    stack-based, strongly-typed BYTECODE VM (clang/lib/AST/Interp/), still
@@ -91,6 +88,16 @@ different and much larger problem; do not design for it here.
    > inefficiently by the evaluator."   -- clang/docs/ConstantInterpreter.rst
 
    Even the fast path is a typed VM, because it must still diagnose.
+6. **Cross-compilation — a REAL constraint, but NOT the everyday one.**
+   ⚠️ OWNER CORRECTION 2026-09-18: madc is NOT a cross-compiler in standard
+   operation (host lexer -> parser -> CIR -> c2mir -> MIR execute); the
+   `cross-aarch64-linux` / `cross-x86-64-macos` / `cross-arm64-macos` /
+   `hosted-arm64-macos` targets are opt-in MODE= builds. I originally led this
+   list with cross-compilation, which OVERSTATED it: on the host target,
+   executing constexpr natively WOULD compute correct sizes. It bites only when
+   madc is deliberately used as a cross compiler — which it supports, so the
+   evaluator must still be target-parameterized, but it is not the argument
+   that decides this. Items 1-4 decide it, and none depends on the target.
 
 ### Where compile-time execution DOES belong
 
