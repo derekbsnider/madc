@@ -44406,21 +44406,35 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    {
 		pgm.nextToken(); // consume '('
 		TokenBase *star = pgm.nextToken();
-		if ( !star || star->id() != TokenID::tkMul )
-		    pgm.Throw(star ? star : tn)
-			<< "Expecting '*' in function pointer alias" << flush;
-		TokenBase *rbrk = pgm.nextToken();
-		if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
-		    pgm.Throw(rbrk ? rbrk : tn)
-			<< "Expecting ')' in function pointer alias" << flush;
-		TokenBase *open = pgm.nextToken();
-		if ( !open || open->id() != TokenID::tkOpBrk )
-		    pgm.Throw(open ? open : tn)
-			<< "Expecting '(' for parameter list" << flush;
-		FuncDef *func = pgm.parseFnPtrParams(*alias_dd);
-		DataDefFPTR *fptr = new DataDefFPTR(func);
-		fptr->ptr_syntax = true;   // explicit `(*)` — pointer alias
-		alias_dd = fptr;
+		// Pointer-to-member-function alias `using M = void (C::*)();`
+		// — the ABSTRACT twin of the typedef form two arms over, and
+		// the same ONE declarator owner it uses. The alias arm simply
+		// never adopted it, so every member-pointer alias died on the
+		// '*' test below.
+		if ( star && pgm.member_pointer_declarator_ahead(star) )
+		{
+		    std::string mp_name;
+		    alias_dd = pgm.parse_member_fnptr_declarator(*alias_dd,
+								 mp_name, star);
+		}
+		else
+		{
+		    if ( !star || star->id() != TokenID::tkMul )
+			pgm.Throw(star ? star : tn)
+			    << "Expecting '*' in function pointer alias" << flush;
+		    TokenBase *rbrk = pgm.nextToken();
+		    if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
+			pgm.Throw(rbrk ? rbrk : tn)
+			    << "Expecting ')' in function pointer alias" << flush;
+		    TokenBase *open = pgm.nextToken();
+		    if ( !open || open->id() != TokenID::tkOpBrk )
+			pgm.Throw(open ? open : tn)
+			    << "Expecting '(' for parameter list" << flush;
+		    FuncDef *func = pgm.parseFnPtrParams(*alias_dd);
+		    DataDefFPTR *fptr = new DataDefFPTR(func);
+		    fptr->ptr_syntax = true;   // explicit `(*)` — pointer alias
+		    alias_dd = fptr;
+		}
 	    }
 	    if ( pgm.peekToken()
 	      && (pgm.peekToken()->id() == TokenID::tkBand
@@ -53684,12 +53698,21 @@ DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
 			 || peekToken()->id() == TokenID::tkVOLATILE) )
 	nextToken();
     TokenBase *tn = nextToken();
-    if ( !is_contextual_identifier_token(tn) )
-	Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;
-    mname = contextual_identifier_name(tn);
-    tn = nextToken();
-    if ( !tn || tn->id() != TokenID::tkClBrk )
-	Throw(tn ? tn : open_tok) << "Expected ')' after function pointer member name" << flush;
+    // ABSTRACT declarator ([dcl.meaning]/1): in a type-id there is no name to
+    // declare — `using M = void (C::*)();`, `B<void (Foo::*)(Y)>`. The `)`
+    // arrives where a member name would. Same owner, one branch: a declarator
+    // that names nothing is still this declarator.
+    if ( tn && tn->id() == TokenID::tkClBrk )
+	mname.clear();
+    else
+    {
+	if ( !is_contextual_identifier_token(tn) )
+	    Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;
+	mname = contextual_identifier_name(tn);
+	tn = nextToken();
+	if ( !tn || tn->id() != TokenID::tkClBrk )
+	    Throw(tn ? tn : open_tok) << "Expected ')' after function pointer member name" << flush;
+    }
     tn = nextToken();
     if ( !tn || tn->id() != TokenID::tkOpBrk )
 	Throw(tn ? tn : open_tok) << "Expected '(' after function pointer member name" << flush;

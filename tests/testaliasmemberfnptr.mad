@@ -1,0 +1,31 @@
+// g++ and clang++ -std=c++11 print a:6 b:10 c:7
+//
+// [dcl.meaning]/1: a declarator in a TYPE-ID declares no name, so the
+// pointer-to-member declarator of an alias is the ABSTRACT twin of the
+// typedef's — `int (C::*)(int)` where `typedef int (C::*T)(int)` has a name.
+// Both are the same declarator; only the name is absent.
+extern "C" int printf(const char *, ...);
+
+struct C
+{
+    int m(int v) { return v + 1; }
+    int n(int v) { return v * 2; }
+    int o(int v) { return v + 2; }
+};
+
+using M = int (C::*)(int);
+typedef int (C::*T)(int);
+
+int callit(C &c, M p, int v) { return (c.*p)(v); }
+
+int main()
+{
+    C c;
+    M a = &C::m;
+    T b = &C::n;
+    M d = &C::o;
+    printf("a:%d\n", callit(c, a, 5));
+    printf("b:%d\n", (c.*b)(5));
+    printf("c:%d\n", callit(c, d, 5));
+    return 0;
+}
