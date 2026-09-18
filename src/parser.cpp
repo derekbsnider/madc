@@ -55491,6 +55491,145 @@ static std::string template_parameter_decl_name(TokenBase *tb)
     return contextual_identifier_name(tb);
 }
 
+// Is what follows a non-type template parameter's TYPE HEAD a declarator this
+// bare-name reader cannot spell? ([temp.param]/1 — a template-parameter IS a
+// parameter-declaration, so its head is followed by a full declarator.)
+// Deliberately narrow: every shape it claims is one the bare-name path throws
+// on today, so engaging here can only convert a refusal, never reroute a parse
+// that already works.
+bool Program::template_parameter_declarator_ahead()
+{
+    TokenBase *pk = peekToken();
+    if ( !pk )
+	return false;
+    switch ( pk->id() )
+    {
+    case TokenID::tkMul:            // `T *const p` — cv AFTER the ptr-operator
+    case TokenID::tkBand:
+    case TokenID::tkLand:
+    case TokenID::tkOpBrk:          // `T (*p)()`, `T (&)(int)`, `T ()`
+    case TokenID::tkCONST:          // `Opt const& o`
+    case TokenID::tkVOLATILE:
+	return true;
+    default:
+	break;
+    }
+    // `C::*M` (pointer-to-member) and `f(...)` (a function declarator): both
+    // start with a name, so the token AFTER it is the discriminator.
+    if ( !is_contextual_identifier_token(pk) || tokens.size() < 2 || !tokens[1] )
+	return false;
+    return tokens[1]->id() == TokenID::tkNS
+	|| tokens[1]->id() == TokenID::tkOpBrk;
+}
+
+// Consume a non-type template parameter's DECLARATOR, returning its declared
+// name (empty for an abstract declarator) and whether it carried a pack `...`.
+// The parameter's TYPE is NOT rebuilt: this list stores names + kinds, and the
+// retained constraint run already carries the declared-type spelling the
+// SFINAE consumers read.
+//
+// Handles ptr-operators with their own cv, pointer-to-member (whose `C::[D::]*`
+// lookahead has ONE owner — member_pointer_declarator_ahead, probed
+// transactionally because it reads the chain with the head consumed),
+// parenthesized declarators, and function / array suffixes. Which `(` opens a
+// NESTED declarator rather than a parameter list is the only caller-specific
+// rule here; balanced nesting inside a suffix is DelimDepth's.
+void Program::consume_template_parameter_declarator(std::string &name_out,
+						    bool &is_pack_out)
+{
+    name_out.clear();
+    is_pack_out = false;
+    for (;;)
+    {
+	while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
+			     || peekToken()->id() == TokenID::tkVOLATILE) )
+	    nextToken();
+	TokenBase *pk = peekToken();
+	if ( !pk )
+	    return;
+	if ( pk->id() == TokenID::tkMul || pk->id() == TokenID::tkBand
+	  || pk->id() == TokenID::tkLand )
+	{
+	    nextToken();
+	    continue;
+	}
+	if ( !is_contextual_identifier_token(pk) )
+	    break;
+	TokenStream::Pos saved = tokens.savepos();
+	TokenBase *saved_cur = _cur_token;
+	TokenBase *saved_prv = _prv_token;
+	const char *saved_file = TokenBase::_parse_file;
+	int saved_line = TokenBase::_parse_line;
+	int saved_column = TokenBase::_parse_column;
+	bool member_ptr = member_pointer_declarator_ahead(nextToken());
+	tokens.restore(saved);
+	setTokenContext(saved_cur, saved_prv);
+	TokenBase::_parse_file = saved_file;
+	TokenBase::_parse_line = saved_line;
+	TokenBase::_parse_column = saved_column;
+	if ( !member_ptr )
+	    break;                       // a plain name: the declarator-id
+	while ( peekToken() && peekToken()->id() != TokenID::tkMul )
+	    nextToken();                 // the `::`-separated nested-name
+	nextToken();                     // the `*`
+    }
+    if ( consume_ellipsis() )
+	is_pack_out = true;
+    TokenBase *pk = peekToken();
+    // A `(` opens a NESTED declarator when what follows it begins one; a `(`
+    // followed by anything else is this declarator's parameter list, which the
+    // suffix loop below consumes as an ordinary balanced group.
+    if ( pk && pk->id() == TokenID::tkOpBrk
+      && tokens.size() >= 2 && tokens[1]
+      && (tokens[1]->id() == TokenID::tkMul
+       || tokens[1]->id() == TokenID::tkBand
+       || tokens[1]->id() == TokenID::tkLand
+       || tokens[1]->id() == TokenID::tkOpBrk
+       || tokens[1]->id() == TokenID::tkCONST
+       || tokens[1]->id() == TokenID::tkVOLATILE
+       || (is_contextual_identifier_token(tokens[1])
+        && tokens.size() >= 3 && tokens[2]
+        && tokens[2]->id() == TokenID::tkNS)) )
+    {
+	nextToken();                     // the '('
+	bool inner_pack = false;
+	consume_template_parameter_declarator(name_out, inner_pack);
+	if ( inner_pack )
+	    is_pack_out = true;
+	TokenBase *cl = nextToken();
+	if ( !cl || cl->id() != TokenID::tkClBrk )
+	    Throw(cl ? cl : pk)
+		<< "Expecting ')' in template parameter declarator" << flush;
+    }
+    else if ( pk && is_template_parameter_decl_name(pk) )
+	name_out = template_parameter_decl_name(nextToken());
+    for (;;)
+    {
+	pk = peekToken();
+	if ( !pk )
+	    return;
+	if ( pk->id() == TokenID::tkOpBrk || pk->id() == TokenID::tkOpSqr )
+	{
+	    TokenID close = pk->id() == TokenID::tkOpBrk
+		? TokenID::tkClBrk : TokenID::tkClSqr;
+	    nextToken();
+	    DelimDepth d(this);
+	    while ( peekToken() && !(d.top() && peekToken()->id() == close) )
+		delimStepStream(nextToken(), d);
+	    if ( !peekToken() )
+		Throw(pk) << "Unterminated template parameter declarator" << flush;
+	    nextToken();                 // the close
+	    continue;
+	}
+	if ( pk->id() == TokenID::tkCONST || pk->id() == TokenID::tkVOLATILE )
+	{
+	    nextToken();                 // a function declarator's trailing cv
+	    continue;
+	}
+	return;
+    }
+}
+
 bool Program::consume_template_parameter_type_suffix()
 {
     bool consumed = false;
@@ -56130,7 +56269,23 @@ static void parse_template_parameter_list(
 	    if ( head_is_concept )
 		constraint.clear();
 	    TokenBase *parameter_name = pgm.peekToken();
-	    if ( pgm.consume_ellipsis() )
+	    // What follows a NON-TYPE parameter's type head is a declarator,
+	    // not necessarily a bare name: `int (*p)()`, `T C::*M`,
+	    // `Opt const& o`, `void (&FN)()`, `int (&... p)[N]`. The bare-name
+	    // path below stays exactly as it was — the predicate claims only
+	    // shapes that path refuses.
+	    if ( !head_is_concept && pgm.template_parameter_declarator_ahead() )
+	    {
+		std::string dname;
+		bool dpack = false;
+		pgm.consume_template_parameter_declarator(dname, dpack);
+		if ( dname.empty() )
+		    dname = "__anon_ntparam"
+			  + std::to_string(anonymous_index++);
+		add_parameter(dname, false, dpack);
+		out.has_non_type_params = true;
+	    }
+	    else if ( pgm.consume_ellipsis() )
 	    {
 		if ( pgm.peekToken()
 		  && is_contextual_identifier_token(pgm.peekToken()) )
@@ -69913,7 +70068,14 @@ paramdecl:
     // owner. Restoring both cursor and location leaves parseCompound exactly
     // where it started: immediately after the opening `{`.
     std::vector<TokenBase *> constexpr_raw_body;
-    if ( func->is_constexpr )
+    // Only a body that OPENS with `return` can be the C++11 single-return
+    // shape retain_constexpr_return_expression accepts, and that check is its
+    // first gate. Testing it here with one peek keeps the span copy off every
+    // OTHER constexpr body — which, since in-class `constexpr` now reaches
+    // FuncDef::is_constexpr, is every constexpr member function a C++ header
+    // declares.
+    if ( func->is_constexpr && peekToken()
+      && peekToken()->id() == TokenID::tkRETURN )
     {
 	TokenStream::Pos saved_body_pos = tokens.savepos();
 	TokenBase *saved_body_cur = _cur_token;

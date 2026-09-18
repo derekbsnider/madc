@@ -40,11 +40,20 @@
 #   guess. It joins the 10 tests already failing on that same refusal; the fix
 #   is conditional-noexcept instantiation for member-template ctors, not a
 #   weakening of the refusal.
+#
+# SHRUNK 2026-09-18 (582 -> 559) in two slices on this branch:
+#   constexpr CONSTRUCTORS evaluate, delegation included (eeb715b4b) — 1 test,
+#     cpp0x/constexpr-delegating.C. In-class `constexpr` had been consumed and
+#     DROPPED, so no member ever reached FuncDef::is_constexpr.
+#   a NON-TYPE template parameter's DECLARATOR parses ([temp.param]/1) — 22
+#     tests. `int (*p)()`, `T C::*M`, `Opt const& o`, `void (&FN)()`,
+#     `int (&... p)[N]`: the list parser only ever read a bare NAME.
+#   1392 passed, 556 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1392/1950 (71.4%). 🎯 owner target: a master release at 75% = 1463.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
 g++.dg/cpp0x/alias-decl-26.C
-g++.dg/cpp0x/alias-decl-30.C
 g++.dg/cpp0x/alias-decl-32.C
 g++.dg/cpp0x/alias-decl-38.C
 g++.dg/cpp0x/alias-decl-46.C
@@ -52,7 +61,6 @@ g++.dg/cpp0x/alias-decl-50.C
 g++.dg/cpp0x/alias-decl-52.C
 g++.dg/cpp0x/alias-decl-65.C
 g++.dg/cpp0x/alias-decl-69.C
-g++.dg/cpp0x/alias-decl-72.C
 g++.dg/cpp0x/alias-decl-enum-1.C
 g++.dg/cpp0x/alias-decl-mem1.C
 g++.dg/cpp0x/alias-decl-variadic3.C
@@ -80,7 +88,6 @@ g++.dg/cpp0x/constexpr-55708.C
 g++.dg/cpp0x/constexpr-57764.C
 g++.dg/cpp0x/constexpr-59938.C
 g++.dg/cpp0x/constexpr-60199.C
-g++.dg/cpp0x/constexpr-61323.C
 g++.dg/cpp0x/constexpr-61484.C
 g++.dg/cpp0x/constexpr-65080.C
 g++.dg/cpp0x/constexpr-67376.C
@@ -126,7 +133,6 @@ g++.dg/cpp0x/constexpr-ctor14.C
 g++.dg/cpp0x/constexpr-ctor8.C
 g++.dg/cpp0x/constexpr-decltype3.C
 g++.dg/cpp0x/constexpr-decltype5.C
-g++.dg/cpp0x/constexpr-delegating.C
 g++.dg/cpp0x/constexpr-delegating2.C
 g++.dg/cpp0x/constexpr-delegating3.C
 g++.dg/cpp0x/constexpr-deref.C
@@ -203,7 +209,6 @@ g++.dg/cpp0x/decltype34.C
 g++.dg/cpp0x/decltype40.C
 g++.dg/cpp0x/decltype42.C
 g++.dg/cpp0x/decltype5.C
-g++.dg/cpp0x/decltype53.C
 g++.dg/cpp0x/decltype57.C
 g++.dg/cpp0x/decltype58.C
 g++.dg/cpp0x/decltype6.C
@@ -240,7 +245,6 @@ g++.dg/cpp0x/gen-attrs-5.C
 g++.dg/cpp0x/gen-attrs-50.C
 g++.dg/cpp0x/gen-attrs-51.C
 g++.dg/cpp0x/gen-attrs-52.C
-g++.dg/cpp0x/gen-attrs-63.C
 g++.dg/cpp0x/gen-attrs-87.C
 g++.dg/cpp0x/implicit-delete1.C
 g++.dg/cpp0x/implicit13.C
@@ -346,7 +350,6 @@ g++.dg/cpp0x/noexcept50.C
 g++.dg/cpp0x/noexcept51.C
 g++.dg/cpp0x/noexcept57.C
 g++.dg/cpp0x/noexcept60.C
-g++.dg/cpp0x/noexcept68.C
 g++.dg/cpp0x/noexcept79.C
 g++.dg/cpp0x/noexcept81.C
 g++.dg/cpp0x/noexcept85.C
@@ -356,7 +359,6 @@ g++.dg/cpp0x/nondeduced1.C
 g++.dg/cpp0x/nondeduced2.C
 g++.dg/cpp0x/nondeduced3.C
 g++.dg/cpp0x/nontype3.C
-g++.dg/cpp0x/nontype4.C
 g++.dg/cpp0x/nontype5.C
 g++.dg/cpp0x/nsdmi-defer1.C
 g++.dg/cpp0x/nsdmi-defer3.C
@@ -370,8 +372,6 @@ g++.dg/cpp0x/nsdmi2.C
 g++.dg/cpp0x/nullptr12.C
 g++.dg/cpp0x/nullptr29.C
 g++.dg/cpp0x/nullptr39.C
-g++.dg/cpp0x/nullptr40.C
-g++.dg/cpp0x/nullptr41.C
 g++.dg/cpp0x/pr102305.C
 g++.dg/cpp0x/pr105256.C
 g++.dg/cpp0x/pr107065.C
@@ -380,7 +380,6 @@ g++.dg/cpp0x/pr113031.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
 g++.dg/cpp0x/pr119580.C
-g++.dg/cpp0x/pr32252.C
 g++.dg/cpp0x/pr47476.C
 g++.dg/cpp0x/pr52742.C
 g++.dg/cpp0x/pr52744.C
@@ -468,7 +467,6 @@ g++.dg/cpp0x/sfinae66.C
 g++.dg/cpp0x/sfinae7.C
 g++.dg/cpp0x/sfinae8.C
 g++.dg/cpp0x/sfinae9.C
-g++.dg/cpp0x/static_assert18.C
 g++.dg/cpp0x/std-layout1.C
 g++.dg/cpp0x/stddef.C
 g++.dg/cpp0x/trailing1.C
@@ -524,13 +522,10 @@ g++.dg/cpp0x/variadic9.C
 g++.dg/cpp0x/vt-55542.C
 g++.dg/cpp0x/vt-59988.C
 g++.dg/cpp0x/vt-82936.C
-g++.dg/template/access15.C
 g++.dg/template/access41a.C
 g++.dg/template/access42.C
-g++.dg/template/access9.C
 g++.dg/template/anonunion3.C
 g++.dg/template/arg9.C
-g++.dg/template/array3.C
 g++.dg/template/array33.C
 g++.dg/template/array34.C
 g++.dg/template/arrow3.C
@@ -569,7 +564,6 @@ g++.dg/template/evaluated1c.C
 g++.dg/template/explicit-args2.C
 g++.dg/template/explicit-instantiation7.C
 g++.dg/template/explicit3.C
-g++.dg/template/fn-ptr4.C
 g++.dg/template/friend15.C
 g++.dg/template/friend6.C
 g++.dg/template/friend76.C
@@ -587,11 +581,7 @@ g++.dg/template/memfriend9.C
 g++.dg/template/non-dependent19.C
 g++.dg/template/non-dependent19a.C
 g++.dg/template/non-dependent31.C
-g++.dg/template/non-dependent7.C
-g++.dg/template/non-dependent9.C
-g++.dg/template/nontype9.C
 g++.dg/template/param5.C
-g++.dg/template/partial-specialization.C
 g++.dg/template/partial3.C
 g++.dg/template/pr61663.C
 g++.dg/template/pr69091.C
@@ -604,7 +594,6 @@ g++.dg/template/ptrmem1.C
 g++.dg/template/ptrmem19.C
 g++.dg/template/ptrmem33.C
 g++.dg/template/ptrmem34.C
-g++.dg/template/ptrmem5.C
 g++.dg/template/sfinae-deleted-pr119343.C
 g++.dg/template/sfinae20.C
 g++.dg/template/sfinae22.C
@@ -613,8 +602,6 @@ g++.dg/template/sfinae29.C
 g++.dg/template/sfinae32.C
 g++.dg/template/sfinae32a.C
 g++.dg/template/spec7.C
-g++.dg/template/static5.C
-g++.dg/template/subst1.C
 g++.dg/template/template-keyword3.C
 g++.dg/template/ttp6.C
 g++.dg/template/typedef30.C

@@ -6621,6 +6621,13 @@ public:
     bool parsing_template_instantiated_member_body();
     bool consume_template_close(TokenBase *tok);
     bool consume_template_parameter_type_suffix();
+    // A non-type template parameter is a parameter-declaration ([temp.param]/1),
+    // so its type head is followed by a DECLARATOR. The predicate claims only
+    // shapes the bare-name reader throws on today; the consumer returns the
+    // declared name (empty when abstract) and whether it carried a pack `...`.
+    bool template_parameter_declarator_ahead();
+    void consume_template_parameter_declarator(std::string &name_out,
+					       bool &is_pack_out);
     std::vector<TokenBase *> collect_template_default_argument();
     // Template-machinery core: <…> argument scanning, template-id / alias /
     // opaque instantiation, dependent/opaque member-type materialization,

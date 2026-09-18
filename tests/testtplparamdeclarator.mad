@@ -1,0 +1,30 @@
+// g++ and clang++ -std=c++11 print a:3 b:11 c:9 d:40 h:1
+//
+// [temp.param]/1: a template-parameter is a PARAMETER-DECLARATION, so a
+// non-type parameter's type head is followed by a full declarator — a
+// pointer-to-function, a reference-to-array, an abstract declarator, a
+// reference with its cv on the right, a pointer with cv on both sides — not
+// merely a bare name.
+extern "C" int printf(const char *, ...);
+
+int g() { return 3; }
+void h(int v) { printf("h:%d\n", v); }
+int arr[2] = { 11, 22 };
+const int forty = 40;
+
+template <int (*P)()>          struct FnPtr    { static int call() { return P(); } };
+template <void (*F)(int)>      struct FnPtrA   { static void go(int v) { F(v); } };
+template <int N, int (&A)[N]>  struct ArrRef   { static int first() { return A[0]; } };
+template <int (*)()>           struct Abstract { static int tag() { return 9; } };
+template <int const &R>        struct CRef     { static int get() { return R; } };
+template <const char *const C> struct Str      { static const char *get() { return C; } };
+
+int main()
+{
+	printf("a:%d\n", FnPtr<&g>::call());
+	printf("b:%d\n", ArrRef<2, arr>::first());
+	printf("c:%d\n", Abstract<&g>::tag());
+	printf("d:%d\n", CRef<forty>::get());
+	FnPtrA<&h>::go(1);
+	return 0;
+}
