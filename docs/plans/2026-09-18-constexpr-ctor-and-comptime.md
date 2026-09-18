@@ -67,8 +67,21 @@ different and much larger problem; do not design for it here.
 
 ### Why C++ constexpr must NOT be native JIT execution
 
-1. **Diagnostics.** The standard requires diagnosing a non-constant
-   subexpression. Native execution yields a SIGSEGV, not a diagnostic.
+1. **EXECUTION CANNOT ANSWER THE QUESTION.** ⚠️ I first wrote "native execution
+   yields a SIGSEGV"; that is WRONG, and wrong in the direction that
+   UNDERSTATES this. Crashes are the RARE case (null deref, div-by-zero
+   SIGFPE, unbounded recursion). The common case is NO FAULT AT ALL:
+
+       constexpr int f() { int a[3] = {1,2,3}; return a[5]; }
+       static_assert(f() == 0, "");
+       g++ -std=c++14: error: non-constant condition for static assertion
+       executing it:   reads adjacent stack memory, returns a plausible number
+
+   Out-of-bounds reads, uninitialized reads and signed overflow all just
+   produce a value. Execution computes something either way; it has no notion
+   of "is this a constant expression?". gcc and clang answer that by evaluating
+   SYMBOLICALLY over modeled objects (CONSTRUCTOR trees / APValue) — that is
+   what makes the diagnostic possible, not the speed of the engine.
 2. **SFINAE needs RECOVERABLE failure.** Constant evaluation runs during
    overload resolution and deduction; a crashed JIT cannot be recovered from.
    (11 of the lane's 24 `static assertion failed` tests are SFINAE.)
@@ -98,6 +111,22 @@ different and much larger problem; do not design for it here.
    madc is deliberately used as a cross compiler — which it supports, so the
    evaluator must still be target-parameterized, but it is not the argument
    that decides this. Items 1-4 decide it, and none depends on the target.
+
+### ⚠️ MIR INTERPRETED MODE DOES NOT CHANGE THIS (owner raised it, 2026-09-18)
+
+MIR supports an interpreter, and it correctly removes every JIT-SPECIFIC
+objection (codegen cost, W^X, portability). But it does not change the
+conclusion, because the ENGINE was never the issue. Verified in
+third_party/mir/mir-interp.c — the interpreter does a RAW dereference:
+
+    #define LD(op, val_type, mem_type)          \
+        int64_t a = get_mem_addr (bp, ops + 1); \
+        *r = *((mem_type *) a);                 \
+
+No bounds checks, no sanitization anywhere in that file. Identical memory
+semantics to the JIT. `a[5]` on a 3-element array reads adjacent memory under
+both. **Execution engine (JIT vs interpreter) is ORTHOGONAL to semantic
+checking**; constexpr needs the checking.
 
 ### Where compile-time execution DOES belong
 
