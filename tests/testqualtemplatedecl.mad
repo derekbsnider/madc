@@ -5,6 +5,9 @@ template<template<class...> class Container, class... Elements>
 struct Select<Container<Elements...>> { using type = char; };
 template<class T, template<class> class Factory> struct Mixed { int value; };
 template<class T> struct Single { };
+template<class T> struct Envelope {
+	template<class U> struct Entry { U value; };
+};
 
 Select<Mixed<int, Single>>::type object;
 Select<Single<int>>::type type_pack;
@@ -15,4 +18,9 @@ int main()
 	type_pack = 9;
 	printf("nested qualifier: %d\n", object.value);
 	printf("type pack: %d\n", type_pack);
+	struct Envelope<int>::Entry<int> entry;
+	struct Envelope<int>::template Entry<char> letter;
+	entry.value = 41;
+	letter.value = 7;
+	printf("elaborated member: %d %d\n", entry.value, letter.value);
 }

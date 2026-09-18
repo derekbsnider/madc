@@ -45358,7 +45358,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
 	// The tag's aggregate, however the tag is spelled. A QUALIFIED tag —
-	// `struct ns::S x;` / `struct A::B local = { 6 };` at statement
+	// `struct ns::S x;` / `struct A<T>::B<U> local;` at statement
 	// position ([dcl.type.elab]: an elaborated-type-specifier with a
 	// nested-name-specifier) — read `ns` as the qualifier's HEAD, not as
 	// a tag of this scope: never mint it. The shared elaborated-
@@ -45367,7 +45367,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// and answers the aggregate; the declaration then continues exactly
 	// like the unqualified `struct tag variable;` arm below.
 	DataDef *tag_dd = NULL;
-	if ( tn->id() == TokenID::tkNS )
+	if ( tn->id() == TokenID::tkNS || tn->id() == TokenID::tkLT )
 	{
 	    TokenDataType *qtdt = pgm.resolve_declared_type_token(tag, true, true);
 	    if ( !qtdt )
