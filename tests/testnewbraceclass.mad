@@ -1,0 +1,4 @@
+#include <stdio.h>
+struct B { int k; B(int v) : k(v) {} virtual void f() = 0; virtual ~B(){ printf("B destroyed %d\n", k); } };
+struct D : public B { using B::B; D() : B(42) {} void f() override {} ~D(){ printf("D destroyed %d\n", k); } };
+int main() { B *b = new D{}; printf("%d\n", b->k); delete b; }
