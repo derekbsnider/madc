@@ -1,0 +1,15 @@
+// Enum initializers and non-type arguments require folding (array bounds do not).
+extern "C" int printf(const char *, ...);
+constexpr int arr[] = {7, 8};
+constexpr int padded[3] = {-5};
+constexpr unsigned char bytes[] = {128, 255};
+enum { E = arr[0], F = arr[1], N = padded[0], Z = padded[2], B = bytes[1] };
+template<int V> struct Tag { static int get() { return V; } };
+int main()
+{
+	constexpr short local[] = {-12, 19};
+	enum { L = local[0], R = local[1] };
+	printf("elements: %d %d %d %d %d\n", E, F, N, Z, B);
+	printf("local: %d %d template: %d\n", L, R, Tag<arr[1]>::get());
+	return 0;
+}

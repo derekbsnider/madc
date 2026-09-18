@@ -14357,6 +14357,45 @@ static bool read_constant_integer(Variable *var, madc_wide_int &out)
     }
 }
 
+// Read a subobject only after its declaration has materialized the constant
+// initializer. Allocated global storage alone is not evidence of a value.
+// The borrowed Variable delegates the final scalar read to the one owner
+// above; it neither owns nor changes the declaration's storage/flags.
+static bool read_constant_subobject(Program &pgm, TokenBase *where,
+				    Variable *var, madc_wide_int &out)
+{
+    if ( !var || !(var->flags & vfCONSTBAKED) || !var->data
+      || !var->type || !var->is_fixed_array() )
+	return false;
+    size_t offset = 0;
+    size_t depth = 0;
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    {
+	TokenBase *open = pgm.nextToken();
+	if ( depth >= var->dims.size() )
+	    pgm.Throw(open) << "Subscript of non-array in constant expression" << flush;
+	madc_wide_int index = pgm.parse_constant_integer_expression();
+	TokenBase *close = pgm.nextToken();
+	if ( !close || close->id() != TokenID::tkClSqr )
+	    pgm.Throw(close ? close : where)
+		<< "Expecting ']' in constant expression" << flush;
+	if ( index < 0 || (madc_wide_uint)index >= var->dims[depth] )
+	    pgm.Throw(open) << "Array subscript out of bounds in constant expression" << flush;
+	size_t stride = var->type->size;
+	for ( size_t di = depth + 1; di < var->dims.size(); ++di )
+	    stride *= var->dims[di];
+	offset += (size_t)index * stride;
+	++depth;
+    }
+    if ( depth != var->dims.size() )
+	return false;
+    Variable element;
+    element.type = var->type;
+    element.data = (char *)var->data + offset;
+    element.flags = vfCONSTANT;
+    return read_constant_integer(&element, out);
+}
+
 static void copy_token_location(TokenBase *dst, TokenBase *src)
 {
     if ( !dst || !src )
@@ -17986,6 +18025,10 @@ ConstValue Program::parse_constant_primary()
       && constexpr_binding_value(contextual_identifier_name(tb), out) )
 	return out;
     if ( resolve_integer_constant(tb, out) )
+	return out;
+    if ( tb && is_contextual_identifier_token(tb)
+      && read_constant_subobject(*this, tb,
+		findVariable(contextual_identifier_name(tb)), out) )
 	return out;
     // Qualified class-scoped integral constant: `Class::member`,
     // `ns::Tmpl<...>::member`, etc. Folds to the captured value; gated on the
@@ -72773,6 +72816,23 @@ fnptr_decl_arm_head:
 	td->line = tb->line;
 	td->column = tb->column;
 	td->init_list = init_list;
+
+	// constexpr array declarations need their initializer bytes at PARSE
+	// time: enum initializers and non-type arguments precede CIR emission.
+	// Reuse the static-array writer, retaining the ordinary initializer for
+	// emission. Local constexpr arrays own a separate parse-time buffer.
+	if ( gotconstexpr && var->is_fixed_array() && var->dims.size() == 1
+	  && var->type->is_integer() && saw_brace_init )
+	{
+	    if ( !var->data )
+	    {
+		var->data = calloc(var->total_elements(), var->type->size);
+		if ( var->data )
+		    var->flags |= vfALLOC;
+	    }
+	    if ( initialize_static_fixed_array_data(var, td->init_list) )
+		var->flags |= vfCONSTBAKED;
+	}
 
 	if ( gotstatic && code && !td->init_list.empty()
 	  && initialize_static_fixed_array_data(var, td->init_list) )
