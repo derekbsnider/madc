@@ -24854,6 +24854,21 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 
 	DataDef *cdd = fe->container->datadef();
 
+	// A raw fixed-size C array is an ARRAY range ([stmt.ranged]/1) whatever
+	// its element type — decide that on the CONTAINER'S OWN shape, BEFORE
+	// asking whether a class is reachable through the type. class_behind()
+	// answers "is a class reachable here" (it returns a POINTER's pointee),
+	// which is a different question from "is this container a class object":
+	// `Tok *toks[2]` reached the class arm as its element's pointee class and
+	// was rejected for lacking size()/operator[] protocols it has no business
+	// being asked for. An array of class OBJECTS (`std::vector<int> v[3]`)
+	// iterates the array too, which is likewise correct.
+	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
+		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
+		    && ctv->var.total_elements() > 0)
+			return translate_foreach_carray(fe, ctv, prelude);
+	}
+
 	// A user-defined class / template-instantiated container (e.g.
 	// std::vector<int> from the header template) iterates by index using
 	// its size() and operator[] methods.
@@ -24882,18 +24897,11 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 					   "protocol — " + ip_why).c_str(), fe);
 	}
 
-	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
-	// subscript — no madc-array runtime helper. Emit an ordinary indexed for-loop
-	// `for (long i = 0; i < N; i += 1) { T x = a[i]; <body> }`, exactly what g++
-	// lowers a range-for over an array to. (A VLA / runtime-sized array has no
-	// compile-time bound and is NOT handled here — it falls through.) Without
-	// this a plain array hit the madc-array fallback below, reading its raw bytes
-	// as a madc::value header -> garbage length -> out-of-bounds get -> SIGSEGV.
-	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
-		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
-		    && ctv->var.total_elements() > 0)
-			return translate_foreach_carray(fe, ctv, prelude);
-	}
+	// (The raw fixed-size C array arm moved ABOVE the class arm — see the
+	// [stmt.ranged]/1 note there. It emits a compile-time-counted indexed
+	// loop `for (long i = 0; i < N; i += 1) { T x = a[i]; <body> }`, exactly
+	// what g++ lowers a range-for over an array to; a VLA has no compile-time
+	// bound and still falls through to the madc-array reader below.)
 
 	// Reference loop var over a madc array (php/perl dynamic array) is not
 	// supported: its elements are tagged madc::value entries fetched by

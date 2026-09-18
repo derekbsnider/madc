@@ -1,0 +1,20 @@
+// Range-for over a C array of CLASS pointers — `Tok *toks[2]; for (Tok *p :
+// toks)` (self-host arc 2026-09-17, found while reducing `auto *`): the CIR
+// range-for recognizer read the element's pointee class as if it were the
+// CONTAINER ("range-for over class 'Tok' is not supported: it has neither the
+// positional size()/operator[] index protocol nor a usable iterator
+// protocol"). An array of `int *` already iterates. Oracle: g++ and clang++.
+#include <stdio.h>
+
+struct Tok { int v; Tok(int x) : v(x) {} };
+
+int main()
+{
+    Tok a(3), b(4);
+    Tok *toks[2] = { &a, &b };
+    int total = 0;
+    for ( Tok *p : toks ) total += p->v;
+    for ( auto *p : toks ) total += p->v * 10;
+    printf("%d\n", total);
+    return 0;
+}

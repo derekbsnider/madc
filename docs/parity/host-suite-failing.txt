@@ -15,7 +15,9 @@ tests/testinvocable.mad
 tests/testvecmembercopy_libcxx.mad
 tests/testvecpb_libcxx.mad
 #
-# NOT REPO-TRACKED — the owner's work-in-progress test, untracked in git but
-# picked up by the container rsync. It will fail in every battery until the
-# owner finishes it. Do not touch it, and do not count it as a regression:
+# NOT REPO-TRACKED — an untracked REDUCER this arc wrote on 2026-09-17 for a
+# real defect (range-for over a C array of class POINTERS: the CIR recognizer
+# reads the element's POINTEE class as the container). A handoff misattributed
+# it to the owner; the owner confirmed on 2026-09-18 they did not create it.
+# It is OURS to fix, not to route around:
 # tests/testrangeforclassptrarray.mad
