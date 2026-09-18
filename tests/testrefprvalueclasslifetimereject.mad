@@ -1,0 +1,20 @@
+// g++ and clang++ accept this and print namespace: 73 1 28 0.
+// Until lifetime extension can construct this comma result in static storage,
+// madc must refuse, rather than copy a dangling self-pointer (73 0 28 1).
+#include <stdio.h>
+int destroyed = 0;
+struct A {
+ int n;
+ const A *self;
+ A() : n(73), self(this) {}
+ ~A() { ++destroyed; }
+};
+namespace N {
+ const A &a = (0, A());
+ int f() { return 28; }
+ int &&r = f();
+}
+int main() {
+ printf("namespace: %d %d %d %d\n", N::a.n, N::a.self == &N::a, N::r, destroyed);
+ return 0;
+}

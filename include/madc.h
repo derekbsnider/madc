@@ -7158,7 +7158,7 @@ public:
 					   DataDef *referent_type,
 					   bool allow_temporary,
 					   const std::string &binding_name,
-					   bool static_local = false);
+					   bool unsupported_storage_duration = false);
     TokenBase *skip_expression_whitespace();
     TokenCASE *parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
 				  bool nested = false,

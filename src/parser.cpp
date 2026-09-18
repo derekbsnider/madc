@@ -70629,7 +70629,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 					      DataDef *referent_type,
 					      bool allow_temporary,
 					      const std::string &binding_name,
-					      bool static_local)
+					      bool unsupported_storage_duration)
 {
     if ( !expr )
 	return NULL;
@@ -70644,7 +70644,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 		Throw(expr) << "Reference initializer must be an lvalue" << flush;
 	    DataDef *value_type = cast->cast_type->as_pointer_dd()->base_type;
 	    TokenBase *addr = reference_bind_address_expr(cast->expr,
-		value_type, allow_temporary, binding_name, static_local);
+		value_type, allow_temporary, binding_name, unsupported_storage_duration);
 	    cast->expr = new TokenDerefExpr(addr, value_type);
 	    return new TokenAddrExpr(cast, ptr_type);
 	}
@@ -70674,22 +70674,35 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     }
     // Distribute only a glvalue conditional. A prvalue conditional must
     // evaluate once into ONE temporary, without evaluating its unused arm.
-    auto binds_existing_object = [](TokenBase *arm) {
+    enum class BindingCategory { Prvalue, Lvalue, Xvalue };
+    auto binding_category = [](TokenBase *arm) {
 	if ( TokenCast *cast = dynamic_cast<TokenCast *>(arm) )
-	    return cast->cast_type && cast->cast_type->is_reference();
-	return fn_template_call_arg_is_lvalue(arm);
+	{
+	    if ( !cast->cast_type || !cast->cast_type->is_reference() )
+		return BindingCategory::Prvalue;
+	    return cast->to_rvalue_ref ? BindingCategory::Xvalue : BindingCategory::Lvalue;
+	}
+	return fn_template_call_arg_is_lvalue(arm)
+	    ? BindingCategory::Lvalue : BindingCategory::Prvalue;
+    };
+    auto binding_value_type = [](TokenBase *arm) -> DataDef * {
+	DataDef *dd = arm ? arm->datadef() : NULL;
+	if ( dd && dd->is_reference() )
+	    dd = dd->as_pointer_dd()->base_type;
+	return dd ? dd->unqualified() : NULL;
     };
     if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
-      if ( binds_existing_object(tt->true_expr)
-	&& binds_existing_object(tt->false_expr) )
+      if ( binding_category(tt->true_expr) != BindingCategory::Prvalue
+	&& binding_category(tt->true_expr) == binding_category(tt->false_expr)
+	&& binding_value_type(tt->true_expr) == binding_value_type(tt->false_expr) )
     {
 	TokenTerQ *bound = new TokenTerQ();
 	copy_token_location(bound, tt);
 	bound->condition = tt->condition;
 	bound->true_expr = reference_bind_address_expr(tt->true_expr,
-	    referent_type, allow_temporary, binding_name, static_local);
+	    referent_type, allow_temporary, binding_name, unsupported_storage_duration);
 	bound->false_expr = reference_bind_address_expr(tt->false_expr,
-	    referent_type, allow_temporary, binding_name, static_local);
+	    referent_type, allow_temporary, binding_name, unsupported_storage_duration);
 	bound->setDataType(ptr_type);
 	return bound;
     }
@@ -70705,7 +70718,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	    copy_token_location(addr, expr);
 	    return addr;
 	}
-    if ( is_addressable_expression(expr) )
+    if ( !expr->as_terq_tok() && is_addressable_expression(expr) )
     {
 	TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
 	copy_token_location(addr, expr);
@@ -70713,8 +70726,8 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     }
     if ( !allow_temporary )
 	Throw(expr) << "Reference initializer must be an lvalue" << flush;
-    if ( static_local )
-	Throw(expr) << "Static local reference temporary lifetime is not supported" << flush;
+    if ( unsupported_storage_duration )
+	Throw(expr) << "Static/thread-local reference temporary lifetime is not supported" << flush;
 
     // Like ref_param_arg_addr, bind the address of a typed temporary. The
     // declaration is carried in the address expression so CIR emits it at
@@ -70725,6 +70738,20 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     value_type = value_type->unqualified();
     std::string name = "__madc_reftmp_" + binding_name;
     bool global = compounds.empty() || compounds.top() == tkProgram;
+    auto can_materialize_class = [&]() {
+	if ( !value_type->as_class_dd() )
+	    return true;
+	if ( TokenObjTemp *object = expr->as_objtemp_tok() )
+	    return object->obj_class == value_type;
+	// Local by-value calls use class_decl_stmts' existing return-buffer
+	// elision. Other class expressions can copy an initializer-local
+	// object (including its self-pointers), so refuse until construction
+	// can target the lifetime-extended storage directly.
+	return !global && expr->as_callfunc_tok()
+	    && binding_value_type(expr) == value_type;
+    };
+    if ( !can_materialize_class() )
+	Throw(expr) << "Lifetime extension for this class initializer is not supported" << flush;
     Variable *temp = global ? addVariable(NULL, *value_type, name, 1, NULL, true)
 			    : new Variable(name, *value_type, 1, NULL, false);
     temp->flags |= global ? vfSTATIC : vfLOCAL;
@@ -71390,7 +71417,8 @@ fnptr_decl_arm_head:
 	    // address of the lvalue `e` (first-class refs: a reference to a pointer
 	    // is modeled like any other reference, no pointer special-case).
 	    auto_init_expr = reference_bind_address_expr(init_expr, deduced,
-		decl_rvalue_ref || gotconst, id, gotstatic && code);
+		decl_rvalue_ref || gotconst, id,
+		gotthreadlocal || (gotstatic && code && code != tkProgram));
 	    auto_decl_type = getReferenceType(deduced);
 	}
 
@@ -72637,7 +72665,7 @@ fnptr_decl_arm_head:
 	    assign->right = reference_bind_address_expr(rhs,
 		reference_value_type,
 		decl_rvalue_ref || td->is_const_decl || reference_value_type->is_const(),
-		var->name, gotstatic && code && code != tkProgram);
+		var->name, gotthreadlocal || (gotstatic && code && code != tkProgram));
 	    // A namespace-scope temporary must precede the reference in both
 	    // source-order emission and dynamic initialization order.
 	    if ( global_top_decl_index >= 0 )
