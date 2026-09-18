@@ -55666,12 +55666,24 @@ static void parse_template_parameter_list(
 	out.is_pack.push_back(is_pack);
 	out.is_template_template.push_back(is_template_template);
     };
-    auto capture_type_suffix = [&pgm](TokenBase *head,
+    auto capture_type_suffix = [&pgm, &out](TokenBase *head,
 				      std::vector<TokenBase *> &run) -> bool
     {
 	TokenStream::Pos before = pgm.tokens.savepos();
 	size_t before_size = pgm.tokens.size();
-	bool consumed_any = pgm.consume_template_parameter_type_suffix();
+	bool consumed_any = false;
+	if ( is_decltype_identifier(contextual_identifier_name(head)) )
+	{
+	    // The declared-type resolver owns the unevaluated operand. Prior
+	    // parameters are visible in it through the existing scoped lookup;
+	    // retain the spelling below so dependent types resolve on binding.
+	    Program::TemplateParamScope prior_params(pgm, out.names, &out.is_type);
+	    if ( !pgm.resolve_declared_type_token(head, true, true) )
+		pgm.Throw(head) << "Expecting decltype type in template parameter" << flush;
+	    consumed_any = true;
+	}
+	if ( pgm.consume_template_parameter_type_suffix() )
+	    consumed_any = true;
 	size_t consumed = before_size > pgm.tokens.size()
 		? before_size - pgm.tokens.size() : 0;
 	std::vector<TokenBase *> popped = pgm.tokens.consumed_since(before);
@@ -55689,7 +55701,8 @@ static void parse_template_parameter_list(
     for (;;)
     {
 	std::vector<TokenBase *> constraint;
-	TokenBase *token = pgm.nextToken();
+	// cv-qualifiers belong to the non-type parameter's type head.
+	TokenBase *token = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	if ( pgm.consume_template_close(token) )
 	    break;
 	if ( token->id() == TokenID::tkTEMPLATE )
@@ -55767,8 +55780,7 @@ static void parse_template_parameter_list(
 		    add_parameter(template_parameter_decl_name(token), true);
 	    }
 	}
-	else if ( token->type() == TokenType::ttIdentifier
-	       || token->type() == TokenType::ttDataType )
+	else if ( is_template_parameter_type_name(token) )
 	{
 	    // A concept head declares a constrained TYPE parameter — classify
 	    // like `class Name`, with an EMPTY constraint run (runs carry a
@@ -55819,6 +55831,19 @@ static void parse_template_parameter_list(
 		add_parameter("__anon_ntparam"
 		    + std::to_string(anonymous_index++), false);
 		out.has_non_type_params = true;
+	    }
+	    if ( !head_is_concept && pgm.peekToken()
+	      && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		TokenDataType *element = pgm.resolve_declared_type_token(
+		    token, false, true);
+		if ( !element )
+		    pgm.Throw(token) << "Expecting array element type in template parameter" << flush;
+		// The list stores parameter names/kinds, while argument binding
+		// retains the value tokens. The declarator owner consumes and
+		// validates the extents here, before the list separator is read.
+		pgm.parse_ptr_array_suffix(&element->definition, token,
+		    "template parameter");
 	    }
 	}
 	else
