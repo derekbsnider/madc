@@ -56,6 +56,13 @@
 #   parenthesized-declarator arms knew `*` and not `&`.
 #   1397 passed, 551 compile-failed, 0 runtime-failed, 2 timed out
 #   => 1397/1950 (71.6%).
+# SHRUNK 2026-09-18 (554 -> 549): a reference binds to a BRACED ARRAY and the
+#   array's bound is DEDUCED from the initializer ([dcl.array]/3) — the seat's
+#   remainder kept the declared [0] extent, so the address was a `T (*)[0]`
+#   and c2mir warned. cpp0x/initlist-array2, -array3, -array5, initlist82,
+#   initlist89.
+#   1402 passed, 546 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1402/1950 (71.9%).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -270,11 +277,8 @@ g++.dg/cpp0x/initlist-array15.C
 g++.dg/cpp0x/initlist-array17.C
 g++.dg/cpp0x/initlist-array18.C
 g++.dg/cpp0x/initlist-array19.C
-g++.dg/cpp0x/initlist-array2.C
 g++.dg/cpp0x/initlist-array20.C
 g++.dg/cpp0x/initlist-array22.C
-g++.dg/cpp0x/initlist-array3.C
-g++.dg/cpp0x/initlist-array5.C
 g++.dg/cpp0x/initlist-array6.C
 g++.dg/cpp0x/initlist-const1.C
 g++.dg/cpp0x/initlist-deduce2.C
@@ -309,9 +313,7 @@ g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist59.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
-g++.dg/cpp0x/initlist82.C
 g++.dg/cpp0x/initlist84.C
-g++.dg/cpp0x/initlist89.C
 g++.dg/cpp0x/initlist96.C
 g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/inline-ns1.C
