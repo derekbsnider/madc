@@ -3066,6 +3066,27 @@ static bool fold_same_signature_overload(Program &pgm,
 	else
 	    fresh_fd->emit_symbol = sym;
 	fresh_var->storage_alias_name = sym;
+	// [dcl.fct.default]: declarations of this same function accumulate
+	// defaults. Both identities may already be held by calls, so carry
+	// the default and its saved source on both before adopting the body.
+	size_t count = fresh_fd->parameters.size();
+	pfd->param_defaults.resize(count, NULL);
+	fresh_fd->param_defaults.resize(count, NULL);
+	pfd->param_default_tokens.resize(count);
+	fresh_fd->param_default_tokens.resize(count);
+	for ( size_t p = 0; p < count; ++p )
+	{
+	    if ( !fresh_fd->param_defaults[p] )
+	    {
+		fresh_fd->param_defaults[p] = pfd->param_defaults[p];
+		fresh_fd->param_default_tokens[p] = pfd->param_default_tokens[p];
+	    }
+	    else if ( !pfd->param_defaults[p] )
+	    {
+		pfd->param_defaults[p] = fresh_fd->param_defaults[p];
+		pfd->param_default_tokens[p] = fresh_fd->param_default_tokens[p];
+	    }
+	}
 	if ( pfd->declaration_only && !fresh_fd->declaration_only )
 	{
 	    // The newcomer brings the body: the prior identity carries it.
