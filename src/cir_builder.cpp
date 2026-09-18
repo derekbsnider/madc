@@ -3690,6 +3690,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			lowered.column = tn->column;
 			lowered.placement = tn->placement;
 			lowered.ctor_args = tn->ctor_args;
+			lowered.braced = tn->braced;
 			lowered.array_size = tn->array_size;
 			lowered.alloc_class = concrete_class;
 			lowered.alloc_type = lowered.alloc_class ? NULL : concrete;
@@ -15340,6 +15341,8 @@ void CirBuilder::note_ctor_emit_name(DataDefCLASS *cdd, FuncDef *best,
 
 bool CirBuilder::ctor_args_are_braced(TokenBase *origin)
 {
+	if (TokenNEW *tn = origin ? origin->as_new_tok() : NULL)
+		return tn->braced;
 	TokenDecl *td = dynamic_cast<TokenDecl *>(origin);
 	// Both spellings are list-initialization ([dcl.init.list]/1): the DIRECT
 	// form `T v{...}` arrives as braced ctor args, the COPY form

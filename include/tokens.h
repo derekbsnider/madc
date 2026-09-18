@@ -1867,6 +1867,7 @@ class TokenNEW: public TokenKeyword
 public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
+    bool braced = false; // list-initialization selects braced constructor overloads
     // Placement new: `new (placement) Type(args)` constructs at the given
     // address instead of allocating. `placement` is the address expression
     // (NULL for ordinary `new`); `alloc_type` is the constructed type when it

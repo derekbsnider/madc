@@ -54516,7 +54516,7 @@ TokenBase *TokenTHROW::parse(Program &pgm)
     return this;
 }
 
-// new ClassName(args) — heap allocation + constructor call
+// new Type(args) / new Type{args} — heap allocation + initialization
 TokenBase *TokenNEW::parse(Program &pgm)
 {
     DBG(std::cout << "TokenNEW::parse()" << std::endl);
@@ -54598,13 +54598,63 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	pgm.nextToken(); // consume ')'
     }
 
+    else if ( tn && tn->id() == TokenID::tkOpBrc )
+    {
+	DataDef *target = alloc_class ? (DataDef *)alloc_class : alloc_type;
+	TokenBase *open = pgm.nextToken();
+	// Bound the initializer before re-spelling: a trailing operator belongs
+	// to the resulting POINTER, not to the object being initialized. The
+	// shared tracker owns extent; the target-typed reader owns the list.
+	std::vector<TokenBase *> seq;
+	DelimDepth depth(&pgm);
+	pgm.delimStepStream(open, depth);
+	while ( depth.brace )
+	{
+	    TokenBase *part = pgm.nextToken();
+	    if ( !part )
+		pgm.Throw(open) << "Expected '}' after new-initializer" << flush;
+	    seq.push_back(part);
+	    pgm.delimStepStream(part, depth, &seq);
+	}
+	seq.push_back(new TokenSemi());
+	TokenBase *saved_cur = pgm.curToken();
+	TokenBase *saved_prv = pgm.prevToken();
+	TokenStream::State saved = pgm.tokens.swap_in(std::move(seq));
+	pgm.setTokenContext(NULL, NULL);
+	try
+	{
+	    TokenBase *head = pgm.respell_braced_list_for_target(target, open);
+	    if ( !head )
+		pgm.Throw(open) << "Cannot list-initialize this new-expression type" << flush;
+	    copy_token_location(head, open);
+	    TokenBase *init = pgm.parseExpression(head, true);
+	    if ( !init )
+		pgm.Throw(open) << "Expected new-initializer" << flush;
+	    // Construct a class directly in the allocated storage, without
+	    // materializing and then copying a functional-form temporary.
+	    if ( TokenObjTemp *object = init->as_objtemp_tok() )
+		ctor_args = object->ctor_args;
+	    else
+		ctor_args.push_back(init);
+	    braced = true;
+	}
+	catch ( ... )
+	{
+	    pgm.tokens.swap_back(std::move(saved));
+	    pgm.setTokenContext(saved_cur, saved_prv);
+	    throw;
+	}
+	pgm.tokens.swap_back(std::move(saved));
+	pgm.setTokenContext(saved_cur, saved_prv);
+    }
+
     // A member-template constructor (e.g. std::pair's piecewise ctor
     // `pair(piecewise_construct_t, tuple<_Args1...>, tuple<_Args2...>)`, reached
     // via `::new(loc) _Tp(forward(args)...)` inside std::construct_at) is
     // registered declaration-only; deduce + instantiate the concrete ctor for
     // THESE argument types so select_ctor_overload can bind it instead of falling
     // back to the copy ctor. Mirrors the variable-decl / functional-cast sites.
-    if ( alloc_class )
+    if ( alloc_class && !braced ) // the functional list reader already instantiated it
     {
 #ifdef MADC_DEBUG_CTORTMPL
 	if ( getenv("MADC_DEBUG_CTORTMPL") )
