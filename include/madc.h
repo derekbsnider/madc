@@ -499,6 +499,13 @@ public:
 	// `p(other)` copies one value. Nested braces are flattened at parse
 	// time to one scalar sequence, matching the declaration path.
 	bool braced = false;
+	// The RAW argument tokens of this mem-initializer, retained only for a
+	// `constexpr` constructor — the twin of FuncDef::constexpr_return_tokens.
+	// The parsed `args` trees cannot be re-evaluated by the constant
+	// evaluator, which reads a token STREAM (its rungs peek and consume);
+	// a constexpr ctor is reduced to its member initializers by re-running
+	// those rungs over these tokens with the ctor's parameters bound.
+	std::vector<TokenBase *> constexpr_arg_tokens;
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
@@ -4784,6 +4791,24 @@ public:
     // (set by parseFunction's ':' arm when a class-body ctor defers).
     std::vector<TokenBase *> pending_deferred_ctor_inits;
     TokenBase *parse_ctor_initializer_list(FuncDef *func);
+    // Retain the raw token span of the balanced group the cursor sits inside,
+    // up to (not including) its `close_id`, leaving the stream exactly where
+    // it was. The constant evaluator reads a token STREAM, so a construct that
+    // must be re-evaluated later (a constexpr ctor's mem-initializer args, a
+    // constexpr declaration's ctor args) keeps its source tokens, not its
+    // parsed tree. Nesting is DelimDepth's; this only decides where to stop.
+    void capture_balanced_group_tokens(TokenID close_id,
+				       std::vector<TokenBase *> &out);
+    // Materialize a `constexpr` object built by a constexpr CONSTRUCTOR into
+    // `var`'s storage and grant vfCONSTBAKED, the GCC shape: a constexpr ctor
+    // reduces to its member-initializer list
+    // (build_constexpr_constructor_member_initializers, gcc/cp/constexpr.cc).
+    // False leaves the declaration exactly as it was — the object stays a
+    // runtime construction, which is the pre-existing behaviour.
+    bool materialize_constexpr_ctor_object(Variable *var,
+					   class DataDefCLASS *cdd,
+					   const std::vector<madc_wide_int> &args,
+					   TokenBase *where);
     // Lazy member-function-body instantiation ([temp.inst] conformance): for a
     // system-header class (typically a template instantiation), member-function
     // BODIES are NOT parsed at class-completion time — they are stashed here,

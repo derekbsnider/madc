@@ -47487,6 +47487,45 @@ std::vector<TokenBase *> Program::collect_compound_body_tokens(TokenBase *open)
     return body;
 }
 
+// Retain the raw token span from the cursor to the matching `close_id`,
+// NON-DESTRUCTIVELY: the caller's normal parse still consumes the same
+// tokens afterwards. The twin of parseFunction's constexpr body tap, which
+// saves cursor + parse location around collect_compound_body_tokens for the
+// same reason — the constant evaluator's rungs read a token STREAM, so a
+// construct that must be re-evaluated later keeps its SOURCE, not its tree.
+// Where the group ends is DelimDepth's answer (operator-ids are names, and a
+// `>` inside a nested paren is greater-than); the only caller-specific rule
+// layered on top is "stop at close_id when outside every delimiter".
+void Program::capture_balanced_group_tokens(TokenID close_id,
+					    std::vector<TokenBase *> &out)
+{
+    out.clear();
+    TokenStream::Pos saved_tokens = tokens.savepos();
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
+    const char *saved_file = TokenBase::_parse_file;
+    int saved_line = TokenBase::_parse_line;
+    int saved_column = TokenBase::_parse_column;
+    DelimDepth d(this);
+    while ( TokenBase *pk = peekToken() )
+    {
+	if ( d.top() && pk->id() == close_id )
+	    break;
+	TokenBase *t = nextToken();
+	out.push_back(t ? t->clone_origin() : NULL);
+	std::vector<TokenBase *> optail;
+	delimStepStream(t, d, &optail);
+	for ( size_t k = 0; k < optail.size(); ++k )
+	    if ( optail[k] )
+		out.push_back(optail[k]->clone_origin());
+    }
+    tokens.restore(saved_tokens);
+    setTokenContext(saved_cur, saved_prv);
+    TokenBase::_parse_file = saved_file;
+    TokenBase::_parse_line = saved_line;
+    TokenBase::_parse_column = saved_column;
+}
+
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
 static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt);
 
@@ -47602,6 +47641,15 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	TokenID close_id = open->id() == TokenID::tkOpBrk
 	    ? TokenID::tkClBrk : TokenID::tkClBrc;
 	init.braced = open->id() == TokenID::tkOpBrc;
+	// A C++11 constexpr ctor IS its mem-initializer list ([dcl.constexpr]/4
+	// — empty body, initializers only), so that list is what constant
+	// evaluation re-runs. Retain its source here, where the span still
+	// exists; the trees built below serve emission as they always did.
+	if ( func && func->is_constexpr )
+	{
+	    capture_balanced_group_tokens(close_id, init.constexpr_arg_tokens);
+	    init.constexpr_arg_tokens.push_back(new TokenSemi());
+	}
 	while ( peekToken() && peekToken()->id() != close_id )
 	{
 	    // A nested braced-init-list ARGUMENT — `q{ {1,2}, 3 }`. The
@@ -50064,6 +50112,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	bool is_thread_local_member = false;	// `static thread_local T m;`
 	bool member_is_friend = false;
 	bool is_explicit_member = false;
+	// `constexpr` on a member function is a property OF THAT FUNCTION
+	// ([dcl.constexpr]), the same one parseFunction records for a free
+	// function through its constexpr_specified parameter. It was consumed
+	// and DROPPED here, so no member ever reached FuncDef::is_constexpr
+	// and constant evaluation could not see a single constexpr ctor or
+	// member function the class declared.
+	bool is_constexpr_member = false;
 	for (;;)
 	{
 	    // [dcl.spec] leaves specifier order free: `inline friend bool
@@ -50130,11 +50185,15 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    else if ( spec == "constexpr" || spec == "consteval"
 		   || spec == "constinit" || spec == "inline" )
 	    {
-		// Ignored declaration-specifiers (no madc codegen) — consume
-		// and continue (`static constexpr int v = ...`). In-class
-		// `inline` adds nothing: every in-class/deferred body is
-		// already vague linkage (parse_deferred_function_body stamps
-		// it), and a `static inline` member keeps member semantics.
+		// `inline` adds nothing in-class: every in-class/deferred body
+		// is already vague linkage (parse_deferred_function_body
+		// stamps it), and a `static inline` member keeps member
+		// semantics. `constexpr` is NOT ignorable — it is what makes
+		// the member evaluable in a constant expression, so it rides
+		// to parseFunction like a free function's does. `consteval` /
+		// `constinit` are later standards with no madc semantics yet.
+		if ( spec == "constexpr" )
+		    is_constexpr_member = true;
 		pgm.nextToken();
 	    }
 	    else
@@ -50226,7 +50285,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		if ( ctor_disambiguated )
 		    mangled = pgm.unique_overload_symbol(mangled);
 		DBG(cout << "TokenCLASS::parse() parsing constructor " << mangled << endl);
-		pgm.parseFunction(ddVOID, mangled, ddc);
+		pgm.parseFunction(ddVOID, mangled, ddc, NULL, false,
+				  std::string(), false, false, false,
+				  is_constexpr_member);
 		Variable *mvar;
 		if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
 		{
@@ -50774,7 +50835,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		type_overload_disambiguated = true;
 	    }
 	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, ret_is_ref,
-			      std::string(), is_static_member);
+			      std::string(), is_static_member, false, false,
+			      is_constexpr_member);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
@@ -70652,6 +70714,266 @@ static bool initialize_static_subobject_data(Variable *var, TokenBase *init)
 	&& store_static_integer_array_value(var, 0, value);
 }
 
+// ---- constexpr CONSTRUCTOR evaluation ------------------------------------
+//
+// GCC reduces a constexpr constructor to the AGGREGATE initializer form it
+// already evaluates — build_constexpr_constructor_member_initializers,
+// gcc/cp/constexpr.cc:625 ("Build compile-time evalable representations of
+// member-initializer list for a constexpr constructor") — and that is exactly
+// the form the writers above already produce for `constexpr S s = {1,2};`.
+// So this is the SAME reduction over madc's own owners: the ctor's
+// mem-initializer list supplies one expression per member, the constant
+// evaluator folds each, and store_static_integer_array_value writes the bytes.
+// Evaluation is SYMBOLIC, never execution: executing a constexpr body computes
+// a value whether or not the expression was a constant one, so only
+// execution-free evaluation can answer the question at all.
+
+static const char *constexpr_ctor_debug()
+{
+    static const char *v = ::getenv("MADC_CONSTEXPR_CTOR_DEBUG");
+    return (v && *v) ? v : NULL;
+}
+
+// Fold one retained token run — a mem-initializer's or a declaration's
+// comma-separated argument list, terminated by the `;` the capture appended —
+// through the ONE constant evaluator, with whatever frame is already bound.
+static bool constexpr_eval_token_run(Program &pgm,
+				     const std::vector<TokenBase *> &toks,
+				     std::vector<madc_wide_int> &out)
+{
+    out.clear();
+    if ( toks.empty() )
+	return false;            // never captured: not a constexpr context
+    std::vector<TokenBase *> run;
+    for ( size_t i = 0; i < toks.size(); ++i )
+	if ( toks[i] )
+	    run.push_back(toks[i]->clone_origin());
+    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(run));
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    const char *saved_file = TokenBase::_parse_file;
+    int saved_line = TokenBase::_parse_line;
+    int saved_column = TokenBase::_parse_column;
+    bool ok = true;
+    // A SPECULATIVE fold: declining is the ordinary outcome for any argument
+    // this slice does not model (a class object, an address-of), and the
+    // declaration then constructs at runtime exactly as before. So the
+    // attempt must not RENDER — throwbuf::sync prints before the catch sees
+    // the throw, and a rendered `error:` line fails a conformance unit that
+    // madc otherwise compiles clean. Same reason, same owner, as the NSDMI
+    // scalar applier's speculative parseExpression. MADC_CONSTEXPR_CTOR_DEBUG
+    // is how the muted reason is recovered.
+    DiagnosticRenderMute mute;
+    try
+    {
+	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkSemi )
+	{
+	    out.push_back(pgm.parse_constant_integer_expression());
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+	    {
+		pgm.nextToken();
+		continue;
+	    }
+	    break;
+	}
+	// Under-consumption is a REFUSAL, not a shorter argument list: the
+	// unread remainder would silently change which ctor this evaluates.
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkSemi )
+	    ok = false;
+    }
+    catch ( ... )
+    {
+	ok = false;
+    }
+    pgm.tokens.swap_back(std::move(saved_tokens));
+    pgm.setTokenContext(saved_cur, saved_prv);
+    TokenBase::_parse_file = saved_file;
+    TokenBase::_parse_line = saved_line;
+    TokenBase::_parse_column = saved_column;
+    if ( !ok && constexpr_ctor_debug() )
+	fprintf(stderr, "[CXCTOR] argument run did not fold (%zu token(s))\n",
+		toks.size());
+    return ok;
+}
+
+// Run ONE constexpr constructor of `cdd` over `buf`. `covered[mi]` records
+// which members the run actually initialized — a member no constructor
+// reaches must NOT read back as the calloc'd 0, which would be a plausible
+// wrong answer where g++ gives "not a constant expression".
+static bool run_constexpr_ctor(Program &pgm, DataDefCLASS *cdd, char *buf,
+			       const std::vector<madc_wide_int> &args,
+			       std::vector<bool> &covered, TokenBase *where)
+{
+    const char *dbg = constexpr_ctor_debug();
+    // Overload selection is the class's own ctor list (cdd->ctors, the same
+    // owner the CIR builder's select_ctor_overload reads). Constant evaluation
+    // cannot reach that resolver across the layer boundary, so this slice
+    // accepts exactly one viable CONSTEXPR ctor of the call's arity and
+    // DECLINES on ambiguity — declining costs only the fold, never a wrong one.
+    FuncDef *fd = NULL;
+    Method *method = NULL;
+    size_t poff = 0;
+    for ( size_t ci = 0; ci < cdd->ctors.size(); ++ci )
+    {
+	Variable *cv = cdd->ctors[ci];
+	FuncDef *c = cv && cv->type ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	if ( !c )
+	    continue;
+	Method *m = cv->data ? static_cast<Method *>(cv->data) : NULL;
+	if ( dbg )
+	    fprintf(stderr, "[CXCTOR]   cand %s cx=%d declonly=%d va=%d "
+		    "fdparams=%zu mparams=%zu\n", cv->name.c_str(),
+		    (int)c->is_constexpr, (int)c->declaration_only,
+		    (int)c->is_varargs, c->parameters.size(),
+		    m ? m->parameters.size() : (size_t)-1);
+	if ( !c->is_constexpr || c->declaration_only || c->is_varargs )
+	    continue;
+	if ( !m || m->parameters.size() != c->parameters.size() )
+	    continue;
+	// The hidden receiver slot is a PARAMETER in both vectors; its name is
+	// the only thing that distinguishes it from a real one.
+	size_t off = (!m->parameters.empty() && m->parameters[0]
+		   && m->parameters[0]->name == "__this") ? 1 : 0;
+	if ( m->parameters.size() - off != args.size() )
+	    continue;
+	if ( fd )
+	{
+	    if ( dbg )
+		fprintf(stderr, "[CXCTOR] %s: ambiguous constexpr ctor for "
+			"%zu argument(s)\n", cdd->name.c_str(), args.size());
+	    return false;
+	}
+	fd = c;
+	method = m;
+	poff = off;
+    }
+    if ( !fd )
+    {
+	if ( dbg )
+	    fprintf(stderr, "[CXCTOR] %s: no constexpr ctor taking %zu "
+		    "argument(s)\n", cdd->name.c_str(), args.size());
+	return false;
+    }
+    // A delegation cycle unwinds HERE rather than throwing: this whole
+    // materialization is speculative, so the refusal belongs to whatever
+    // constant expression actually reads the object, not to its declaration.
+    if ( pgm.constexpr_call_bindings.size() >= MADC_CONSTEXPR_CALL_DEPTH_LIMIT )
+    {
+	if ( dbg )
+	    fprintf(stderr, "[CXCTOR] %s: delegation depth limit (%zu)\n",
+		    cdd->name.c_str(), MADC_CONSTEXPR_CALL_DEPTH_LIMIT);
+	return false;
+    }
+
+    std::map<std::string, ConstValue> frame;
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	DataDef *pt = fd->parameters[poff + i];
+	Variable *pv = method->parameters[poff + i];
+	if ( !pt || !pt->is_integer() || fd->is_ref_param(poff + i)
+	  || !pv || pv->name.empty() )
+	{
+	    if ( dbg )
+		fprintf(stderr, "[CXCTOR] %s: parameter %zu is not an integral "
+			"by-value parameter\n", cdd->name.c_str(), i);
+	    return false;
+	}
+	frame[pv->name] = apply_integer_cast_value(pt, args[i]);
+    }
+
+    pgm.constexpr_call_bindings.push_back(frame);
+    bool ok = true;
+    for ( size_t ii = 0; ok && ii < fd->ctor_initializers.size(); ++ii )
+    {
+	const FuncDef::CtorInitializer &init = fd->ctor_initializers[ii];
+	std::vector<madc_wide_int> vals;
+	if ( !constexpr_eval_token_run(pgm, init.constexpr_arg_tokens, vals) )
+	{
+	    ok = false;
+	    break;
+	}
+	if ( init.name == cdd->name )
+	{
+	    // DELEGATING constructor ([class.base.init]/6): the target ctor
+	    // runs FIRST over the SAME object. Its arguments were just folded
+	    // in THIS ctor's frame; it binds a frame of its own.
+	    ok = run_constexpr_ctor(pgm, cdd, buf, vals, covered, where);
+	    continue;
+	}
+	size_t mi = find_struct_member_index(cdd, init.name);
+	if ( mi >= cdd->members.size() || vals.size() != 1
+	  || cdd->member_array_flags[mi]
+	  || cdd->member_bitfields[mi].is_bitfield
+	  || (cdd->member_access[mi] & vfMUTABLE) )
+	{
+	    if ( dbg )
+		fprintf(stderr, "[CXCTOR] %s: initializer '%s' is not a plain "
+			"scalar member\n", cdd->name.c_str(),
+			init.name.c_str());
+	    ok = false;
+	    break;
+	}
+	Variable member;
+	member.type = cdd->members[mi].second;
+	member.data = buf + cdd->member_offsets[mi];
+	if ( !store_static_integer_array_value(&member, 0, (int64_t)vals[0]) )
+	{
+	    if ( dbg )
+		fprintf(stderr, "[CXCTOR] %s: member '%s' is not an integral "
+			"scalar\n", cdd->name.c_str(), init.name.c_str());
+	    ok = false;
+	    break;
+	}
+	covered[mi] = true;
+    }
+    pgm.constexpr_call_bindings.pop_back();
+    return ok;
+}
+
+bool Program::materialize_constexpr_ctor_object(Variable *var,
+			DataDefCLASS *cdd,
+			const std::vector<madc_wide_int> &args,
+			TokenBase *where)
+{
+    if ( !var || !cdd || cdd->ctors.empty() || cdd->members.empty()
+      || cdd->size == 0 )
+	return false;
+    // The same shape gate initialize_static_struct_data applies, minus the
+    // has_user_ctor refusal that sent this family here: a ctor legitimately
+    // writes PRIVATE members, which an aggregate initializer cannot.
+    if ( cdd->union_layout || cdd->has_anon_aggregate
+      || cdd->reverse_scalar_storage || cdd->has_runtime_size()
+      || cdd->has_any_vptr() || !cdd->bases.empty()
+      || !cdd->member_default_inits.empty() )
+	return false;
+    std::vector<char> buf(cdd->size, 0);
+    std::vector<bool> covered(cdd->members.size(), false);
+    if ( !run_constexpr_ctor(*this, cdd, &buf[0], args, covered, where) )
+	return false;
+    for ( size_t mi = 0; mi < covered.size(); ++mi )
+	if ( !covered[mi] )
+	{
+	    if ( constexpr_ctor_debug() )
+		fprintf(stderr, "[CXCTOR] %s: member '%s' left uninitialized "
+			"by the constructor\n", cdd->name.c_str(),
+			cdd->members[mi].first.c_str());
+	    return false;
+	}
+    // Only a COMPLETE run reaches the declaration's storage: a partial write
+    // followed by a decline would leave bytes nothing else can explain.
+    if ( !var->data )
+    {
+	var->data = calloc(1, cdd->size);
+	if ( var->data )
+	    var->flags |= vfALLOC;
+    }
+    if ( !var->data )
+	return false;
+    memcpy(var->data, &buf[0], cdd->size);
+    var->flags |= vfCONSTBAKED;
+    return true;
+}
+
 static bool is_char_array_element_type(DataDef *dd)
 {
     // A char/unsigned-char ELEMENT, not a pointer to one. rawtype() strips
@@ -72044,6 +72366,17 @@ fnptr_decl_arm_head:
 	    // ([dcl.init.list]/3-4). Recorded here because this is where the
 	    // distinction still exists.
 	    td->ctor_args_braced = ctor_close_id == TokenID::tkClBrc;
+	    // A `constexpr` object's construction is re-run by the constant
+	    // evaluator, which reads a token STREAM — so retain the argument
+	    // SOURCE here, before parse_ctor_args_list builds trees the rungs
+	    // cannot walk. Non-destructive: the normal parse below is unchanged.
+	    std::vector<TokenBase *> constexpr_ctor_arg_toks;
+	    if ( gotconstexpr )
+	    {
+		capture_balanced_group_tokens(ctor_close_id,
+					      constexpr_ctor_arg_toks);
+		constexpr_ctor_arg_toks.push_back(new TokenSemi());
+	    }
 	    // Parse constructor arguments. Under a --freeze parse, ALSO capture
 	    // the args list's raw source token run (v25 forest SAVE state — the
 	    // parsed trees cannot serialize; the flush re-runs this loop over the
@@ -72062,6 +72395,16 @@ fnptr_decl_arm_head:
 	    if ( ctor_capturing && !td->ctor_args.empty() )
 		param_default_capture_end(ctor_cap, td->ctor_arg_src);
 	    nextToken(); // consume ')' or '}'
+	    // constexpr construction by a CONSTRUCTOR — the aggregate twin of
+	    // the `= { ... }` materialization below. A decline leaves an
+	    // ordinary runtime construction, exactly as before.
+	    if ( gotconstexpr )
+	    {
+		std::vector<madc_wide_int> cargs;
+		if ( constexpr_eval_token_run(*this, constexpr_ctor_arg_toks,
+					      cargs) )
+		    materialize_constexpr_ctor_object(var, ddc, cargs, tb);
+	    }
 	    // A member-template constructor (e.g. _Rb_tree::_Auto_node's variadic
 	    // ctor) is registered declaration-only; deduce + instantiate the concrete
 	    // ctor for THESE argument types so select_ctor_overload can bind it.
@@ -73002,6 +73345,28 @@ fnptr_decl_arm_head:
 	    }
 	    if ( initialize_static_struct_data(var, td->init_list) )
 		var->flags |= vfCONSTBAKED;
+	    // `constexpr S s{};` — an EMPTY braced list never reaches the
+	    // ctor-call branch above (it cannot be told from value-init there),
+	    // so a class with a constexpr ctor materializes here instead.
+	    // Non-empty braced lists went to the ctor-call branch, which keeps
+	    // the argument SOURCE; here only literal elements are available.
+	    DataDefCLASS *bcdd = !(var->flags & vfCONSTBAKED)
+		? dynamic_cast<DataDefCLASS *>(var->type) : NULL;
+	    if ( bcdd )
+	    {
+		std::vector<madc_wide_int> cargs;
+		bool literal_args = true;
+		for ( size_t ai = 0; literal_args && ai < td->init_list.size(); ++ai )
+		{
+		    int64_t av = 0;
+		    if ( literal_integer_value(td->init_list[ai], av) )
+			cargs.push_back(av);
+		    else
+			literal_args = false;
+		}
+		if ( literal_args )
+		    materialize_constexpr_ctor_object(var, bcdd, cargs, tb);
+	    }
 	}
 
 	if ( gotstatic && code && !td->init_list.empty()
