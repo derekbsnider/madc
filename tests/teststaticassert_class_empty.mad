@@ -1,0 +1,4 @@
+// Class declarations use the same failure diagnostic as statements.
+struct Rejected {
+	static_assert(false, "");
+};

@@ -1,0 +1,2 @@
+// Empty user text must retain the assertion failure diagnostic (g++/clang++).
+static_assert(false, "");

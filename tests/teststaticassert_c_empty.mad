@@ -1,0 +1,2 @@
+// C11 shares the static assertion diagnostic with C++.
+_Static_assert(0, "");

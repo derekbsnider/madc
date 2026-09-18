@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Empty static assertion diagnostics (2026-09-18)
+
+- Failed assertions with an empty user message now report `static assertion
+  failed`, in both statement and class scope. Nonempty messages are unchanged.
+- Five regression fixtures cover C11/C++11 empty messages and preservation of
+  nonempty messages. All 19 recorded empty-diagnostic GCC cases now report a
+  meaningful error; their underlying conformance failures remain.
+
 ### Reference-variable temporary binding (2026-09-17)
 
 - Rvalue references and const lvalue references can bind prvalues, with block

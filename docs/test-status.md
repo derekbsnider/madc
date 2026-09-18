@@ -1,5 +1,15 @@
 # Test Status
 
+Empty-diagnostic slice (2026-09-18, `2d0a215d1`): targeted
+`testerror* teststaticassert* testdiag*` passed **6/6**. Five new fixtures cover
+empty C11/C++11 assertions, class assertions and nonempty user messages.
+`make -C src -j2` completed with `-Werror` and zero warnings; unit binaries
+were built but not executed. GCC/Clang diagnostic oracles agree.
+All 19 recorded empty-diagnostic files
+were checked individually after the commit: each reports `static assertion
+failed`, with no empty error or `std::exception`. These are still conformance
+failures. No full suite or lane script was run; suite baselines are unchanged.
+
 Reference-binding slice (2026-09-17, feature/selfhost-harness-claude):
 `testrefprvalue`, `testrefprvaluenamespace`, and `testrefprvaluereject` use
 `--std=c++11`; positive output and negative rejection checked with both g++
