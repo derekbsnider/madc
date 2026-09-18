@@ -2,8 +2,25 @@
 
 static_assert(!noexcept(throw 1), "throw expressions can throw");
 
+struct Calm { Calm() noexcept {} ~Calm() {} };
+struct Loud { Loud() noexcept {} ~Loud() noexcept(false) {} };
+struct DerivedLoud : Loud {};
+struct HoldsLoud { ~HoldsLoud() {} Loud member; };
+struct OverridesLoud { ~OverridesLoud() noexcept {} Loud member; };
+struct ThrowsCtor { ThrowsCtor() {} ~ThrowsCtor() noexcept {} };
+
+static_assert(noexcept(Calm()), "an omitted destructor spec is implicit");
+static_assert(!noexcept(Loud()), "temporary destruction can throw");
+static_assert(!noexcept(DerivedLoud()), "base destruction can throw");
+static_assert(!noexcept(HoldsLoud()), "implicit spec includes member destruction");
+static_assert(noexcept(OverridesLoud()), "explicit destructor spec wins");
+static_assert(!noexcept(ThrowsCtor()), "constructor spec still contributes");
+
 int main()
 {
 	printf("throw: %d\n", noexcept(throw 1));
+	printf("temporary: %d %d %d %d %d %d\n", noexcept(Calm()), noexcept(Loud()),
+		noexcept(DerivedLoud()), noexcept(HoldsLoud()), noexcept(OverridesLoud()),
+		noexcept(ThrowsCtor()));
 	return 0;
 }

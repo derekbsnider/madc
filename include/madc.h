@@ -612,8 +612,12 @@ public:
     // `throw()` (non-throwing), NxUnknown = `noexcept(expr)` whose condition did
     // not constant-fold at parse. Consumed by __is_nothrow_constructible; NOT a
     // codegen contract (madc emits no std::terminate fence).
-    enum NoexceptSpec : uint8_t { NxNone = 0, NxTrue = 1, NxUnknown = 2 };
+    // NxImplicitDtor is a ClassMethodPattern recipe only: concrete FuncDefs
+    // resolve it after class completion, before forest recording.
+    enum NoexceptSpec : uint8_t { NxNone = 0, NxTrue = 1, NxUnknown = 2,
+	NxImplicitDtor = 3 };
     uint8_t noexcept_spec;
+    bool implicit_dtor_noexcept = false;
     // True for C++ pure virtual declarations (`= 0`). They have no body but
     // still participate in method lookup and vtable layout.
     bool pure_virtual;
@@ -6142,7 +6146,8 @@ public:
 		       bool inline_specified = false,
 		       bool static_specified = false,
 		       bool constexpr_specified = false,
-		       bool lambda_declarator = false);
+		       bool lambda_declarator = false,
+		       bool destructor_declarator = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     // Consume `{ ... }` from the stream, appending its scalars to `args` and

@@ -8696,7 +8696,9 @@ static void register_basic_class_pattern_method(
     fd->declaration_only = pattern.declaration_only;
     fd->defaulted_or_deleted = pattern.defaulted_or_deleted;
     fd->is_deleted = pattern.is_deleted;
-    fd->noexcept_spec = pattern.noexcept_spec;
+    fd->implicit_dtor_noexcept = pattern.noexcept_spec == FuncDef::NxImplicitDtor;
+    fd->noexcept_spec = fd->implicit_dtor_noexcept
+	? FuncDef::NxUnknown : pattern.noexcept_spec;
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
@@ -16456,13 +16458,67 @@ static int noexcept_conjoin(int a, int b)
     return 1;
 }
 
+// [except.spec]: an omitted destructor specification is the conjunction of
+// its bases' and members' destructor specifications, even for a user body.
+// Inherited members are already covered by their base's selected destructor.
+static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
+{
+    if ( !dd || depth > 64 || datadef_has_unresolved_dependent_surface(dd) )
+	return -1;
+    if ( DataDefCArray *a = dynamic_cast<DataDefCArray *>(dd) )
+	return noexcept_destructor_spec(pgm, a->element_type, depth + 1);
+    if ( DataDefCONST *q = dynamic_cast<DataDefCONST *>(dd) )
+	return noexcept_destructor_spec(pgm, q->base_type, depth + 1);
+    DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+    if ( !s )
+	return 1;
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(s);
+    int r = 1;
+    if ( c )
+    {
+	// Defaulted destructors are omitted from method_map, but their parsed
+	// declaration still owns the exception specification in funcdef_map.
+	FuncDef *fd = NULL;
+	funcdef_map_iter fi = pgm.funcdef_map.find(c->name + "___dtor");
+	if ( fi != pgm.funcdef_map.end() )
+	    fd = fi->second;
+	for ( Variable *m : c->methods )
+	{
+	    FuncDef *mf = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	    if ( mf && !mf->method_display_name.empty()
+	      && mf->method_display_name[0] == '~' )
+	    { fd = mf; break; }
+	}
+	if ( fd && !fd->implicit_dtor_noexcept )
+	    return fd->noexcept_spec == FuncDef::NxTrue ? 1
+		 : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	if ( !c->is_complete )
+	    return -1;
+	if ( c->base_class )
+	    r = noexcept_conjoin(r,
+		noexcept_destructor_spec(pgm, c->base_class, depth + 1));
+	for ( const BaseSpec &base : c->bases )
+	    if ( base.base && base.base != c->base_class )
+		r = noexcept_conjoin(r,
+		    noexcept_destructor_spec(pgm, base.base, depth + 1));
+    }
+    for ( size_t i = 0; i < s->members.size(); ++i )
+    {
+	if ( c && i < c->member_origin.size() && c->member_origin[i] >= 0 )
+	    continue;
+	r = noexcept_conjoin(r,
+	    noexcept_destructor_spec(pgm, s->members[i].second, depth + 1));
+    }
+    return r;
+}
+
 // Walk the PARSED operand tree (the operand was parsed unevaluated, so no call
 // body was instantiated and nothing was ODR-used):
 // - TokenObjTemp (class temporary `T(args)`): constructor selection is not
 //   recorded on the parse node (it happens at construction assembly), and
 //   trait_is_constructible's class arm IS the owner of "which constructor
 //   would be selected and is it nothrow" — delegate, then conjoin the
-//   arguments' own walk.
+//   arguments' own walk and the temporary's destructor specification.
 // - TokenCallFunc / TokenCallMethod: the resolved callee's noexcept spec
 //   (resolved_call_funcdef is the one parse-side callee resolver), plus the
 //   arguments. A fn-pointer callee has no tracked exception spec: canon
@@ -16500,8 +16556,9 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	}
 	if ( r == 0 )
 	    return 0;
-	return noexcept_conjoin(r, trait_is_constructible(to, cargs, true,
-							  depth + 1));
+	r = noexcept_conjoin(r, trait_is_constructible(to, cargs, true,
+						      depth + 1));
+	return noexcept_conjoin(r, noexcept_destructor_spec(pgm, to.dd, depth + 1));
     }
     if ( TokenCallFunc *tc = dynamic_cast<TokenCallFunc *>(tb) )
     {
@@ -34675,7 +34732,8 @@ class ClassPatternNormalizer
 	out.declaration_only = fd->declaration_only;
 	out.defaulted_or_deleted = fd->defaulted_or_deleted;
 	out.is_deleted = fd->is_deleted;
-	out.noexcept_spec = fd->noexcept_spec;
+    out.noexcept_spec = fd->implicit_dtor_noexcept
+	? FuncDef::NxImplicitDtor : fd->noexcept_spec;
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
 	// Lazy member-template hydration: the capture below copies the
@@ -49026,6 +49084,16 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
     ddc->apply_member_layout();
     ddc->build_vtable_groups();
     ddc->is_complete = true;
+    for ( Variable *m : ddc->methods )
+    {
+	FuncDef *fd = m ? dynamic_cast<FuncDef *>(m->type) : NULL;
+	if ( fd && fd->implicit_dtor_noexcept )
+	{
+	    int nx = noexcept_destructor_spec(*this, ddc, 0);
+	    fd->noexcept_spec = nx == 1 ? FuncDef::NxTrue
+		: nx == 0 ? FuncDef::NxNone : FuncDef::NxUnknown;
+	}
+    }
     if ( forest_arena_enabled )
 	forest_arena_record_aggregate(ddc);
 }
@@ -50257,7 +50325,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.nextToken(); // consume '('
 	    std::string mangled = std::string(tag->spelling()) + "___dtor";
 	    DBG(cout << "TokenCLASS::parse() parsing destructor " << mangled << endl);
-	    pgm.parseFunction(ddVOID, mangled, ddc);
+	    pgm.parseFunction(ddVOID, mangled, ddc, NULL, false,
+		std::string(), false, false, false, false, false, true);
 	    Variable *mvar;
 	    bool registered_dtor = false;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
@@ -66580,7 +66649,8 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
 	parse_id = mvar ? mvar->name : owner->name + "___dtor";
     }
 
-    parseFunction(ddVOID, parse_id, owner);
+    parseFunction(ddVOID, parse_id, owner, NULL, false,
+	std::string(), false, false, false, false, false, is_dtor);
     mvar = tkProgram ? tkProgram->findVariable(strpool, parse_id) : NULL;
     if ( mvar )
     {
@@ -67951,6 +68021,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->defaulted_or_deleted = src->defaulted_or_deleted;
     f->is_deleted = src->is_deleted;
     f->noexcept_spec = src->noexcept_spec;
+    f->implicit_dtor_noexcept = src->implicit_dtor_noexcept;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
     f->vague_linkage = src->vague_linkage;
@@ -68159,7 +68230,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    bool inline_specified,
 			    bool static_specified,
 			    bool constexpr_specified,
-			    bool lambda_declarator)
+			    bool lambda_declarator,
+			    bool destructor_declarator)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -68310,6 +68382,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->noexcept_spec = func->noexcept_spec;
+	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
@@ -68352,6 +68425,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
 	    fresh->noexcept_spec = func->noexcept_spec;
+	    fresh->implicit_dtor_noexcept = func->implicit_dtor_noexcept;
 	    fresh->pure_virtual = func->pure_virtual;
 	    fresh->vague_linkage = func->vague_linkage;
 	    fresh->internal_linkage = func->internal_linkage;
@@ -69459,6 +69533,11 @@ paramdecl:
     // the parameters, which are not yet findable at this point. Collected raw
     // (balanced) until the body '{' / ';' / ','.
     std::vector<TokenBase *> trailing_ret_tokens;
+    if ( destructor_declarator && !func_already_declared )
+    {
+	func->implicit_dtor_noexcept = true;
+	func->noexcept_spec = FuncDef::NxUnknown;
+    }
     for (;;) {
 	TokenBase *q = nt;
 	if ( !q ) break;
@@ -69498,6 +69577,8 @@ paramdecl:
 	}
 	if ( q->id() == TokenID::tkTHROW )
 	{
+	    func->implicit_dtor_noexcept = false;
+	    func->noexcept_spec = FuncDef::NxNone;
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 		Throw(q) << "Expecting '(' after throw in exception specification" << flush;
@@ -69521,6 +69602,7 @@ paramdecl:
 		continue;
 	    }
 	    if ( qs == "noexcept" ) {
+		func->implicit_dtor_noexcept = false;
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpBrk )
 		{
