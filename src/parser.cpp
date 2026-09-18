@@ -14414,6 +14414,8 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
 		size_t mi = find_struct_member_index(sdd, contextual_identifier_name(member));
 		if ( mi >= sdd->members.size() )
 		    pgm.Throw(member) << "Unknown member in constant expression" << flush;
+		if ( sdd->member_access[mi] & vfMUTABLE )
+		    pgm.Throw(member) << "Mutable member is not a constant expression" << flush;
 		if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield )
 		    return false;
 		offset += sdd->member_offsets[mi];
@@ -15420,7 +15422,8 @@ static bool trait_is_standard_layout(DataDef *dd)
     bool have_acc = false;
     for ( size_t i = 0; i < s->members.size(); ++i )
     {
-	uint32_t a = i < s->member_access.size() ? s->member_access[i] : 0;
+	uint32_t a = i < s->member_access.size()
+	    ? s->member_access[i] & (vfPRIVATE | vfPROTECTED) : 0;
 	if ( !have_acc ) { acc0 = a; have_acc = true; }
 	else if ( a != acc0 ) return false;          // mixed access control
 	if ( s->members[i].second && !trait_is_standard_layout(s->members[i].second) )
@@ -45679,6 +45682,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.pushToken(tn);
 	    tn = pgm.peekToken();
 	}
+	uint32_t member_flags = 0;
 	while ( tn && (tn->id() == TokenID::tkCONST
 	            || tn->id() == TokenID::tkVOLATILE
 	            // `mutable` storage-class-specifier on a member
@@ -45690,6 +45694,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	            || (tn->id() == TokenID::tkCPPKEYWORD
 	             && contextual_identifier_name(tn) == "mutable")) )
 	{
+	    if ( tn->id() == TokenID::tkCPPKEYWORD )
+		member_flags |= vfMUTABLE;
 	    pgm.nextToken(); // consume qualifier
 	    tn = pgm.peekToken();
 	}
@@ -46281,6 +46287,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 									     mname, inner);
 
 			    dds->addMember(mname, *member_dd, 1);
+			    dds->member_access.back() |= member_flags;
 			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
 				dds->members.back().typedef_name = member_typedef_alias;
 			    DBG(cout << "TokenSTRUCT::parse() added function pointer member " << mname
@@ -46357,6 +46364,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
 			size_t bit_width = parse_bitfield_width(tn, member_dd, true);
 			dds->addBitField(mname, *member_dd, bit_width);
+			dds->member_access.back() |= member_flags;
 			DBG(cout << "TokenSTRUCT::parse() added bit-field " << member_dd->name << ' ' << mname
 			    << ':' << bit_width << " (storage offset " << dds->member_offsets.back()
 			    << ", total " << dds->size << ')' << endl);
@@ -46365,6 +46373,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
+			dds->member_access.back() |= member_flags;
 			if ( !dds->members.empty() )
 			{
 			    if ( !member_typedef_alias.empty() )
@@ -49829,6 +49838,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
 	skip_member_attributes();
+	access_flags &= ~vfMUTABLE; // storage specifiers last one member declaration
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
 	// [class.mem]: an EMPTY member-declaration — the stray `;` after a
@@ -50070,6 +50080,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    else if ( spec == "mutable" )
 	    {
 		pgm.nextToken();
+		access_flags |= vfMUTABLE;
 	    }
 	    else if ( spec == "explicit" )
 	    {
@@ -70554,7 +70565,7 @@ static bool initialize_static_struct_data(Variable *var,
     for ( size_t mi = 0; mi < sdd->members.size(); ++mi )
     {
 	if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield
-	  || sdd->member_access[mi] )
+	  || (sdd->member_access[mi] & (vfPRIVATE | vfPROTECTED)) )
 	    return false;
 	Variable member;
 	member.type = sdd->members[mi].second;
