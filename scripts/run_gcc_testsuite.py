@@ -46,6 +46,11 @@ DEFAULT_UNSUPPORTED_TARGETS = {
 # dg-warning / dg-message asserts a DIAGNOSTIC — madc must produce that error,
 # not merely fail — which is a later phase.
 # See docs/plans/2026-09-04-cxx-conformance-lane.md.
+# The DEFAULT scope is the C++11 lane (ROADMAP 2.12). --gxx-dirs re-points it
+# at another standard's directories without touching this constant:
+#   C++14 g++.dg/cpp1y   C++17 g++.dg/cpp1z   C++20 g++.dg/cpp2a
+# Pair it with the matching --std=; the dirs and the standard are independent
+# knobs because g++.dg/template is shared by every standard.
 GXX_DIRS = ("g++.dg/cpp0x", "g++.dg/template")
 DG_DO_COMPILE_RE = re.compile(r"dg-do\s+compile")
 DG_DIAGNOSTIC_RE = re.compile(r"dg-(error|bogus|warning|message)")
@@ -64,10 +69,10 @@ def repo_root():
 	return Path(__file__).resolve().parent.parent
 
 
-def default_tests(root, suite="c-torture"):
+def default_tests(root, suite="c-torture", gxx_dirs=None):
 	if suite == "gxx":
 		tests = []
-		for rel in GXX_DIRS:
+		for rel in (gxx_dirs or GXX_DIRS):
 			tests.extend(p for p in (root / rel).rglob("*.C") if p.is_file())
 		return sorted(tests)
 	execute_dir = root / "gcc.c-torture" / "execute"
@@ -349,6 +354,13 @@ def parse_args(argv):
 		"default c++11 for gxx, because the lane proves C++11 rather than "
 		"whatever madc defaults to); pass an empty string for the dialect default",
 	)
+	parser.add_argument(
+		"--gxx-dirs",
+		default=None,
+		help="comma-separated testsuite dirs for --suite gxx, replacing the "
+		"C++11 default (g++.dg/cpp0x,g++.dg/template). C++14 g++.dg/cpp1y, "
+		"C++17 g++.dg/cpp1z, C++20 g++.dg/cpp2a — pair with the matching --std=",
+	)
 	parser.add_argument("--limit", type=int, default=0, help="limit discovered tests")
 	parser.add_argument("--verbose", action="store_true", help="print passing tests and diagnostics")
 	parser.add_argument(
@@ -395,7 +407,9 @@ def main(argv):
 	if args.tests:
 		tests = [Path(t) for t in args.tests]
 	else:
-		tests = default_tests(root, suite)
+		gxx_dirs = ([d.strip() for d in args.gxx_dirs.split(",") if d.strip()]
+			    if args.gxx_dirs else None)
+		tests = default_tests(root, suite, gxx_dirs)
 		if args.limit > 0:
 			tests = tests[: args.limit]
 
