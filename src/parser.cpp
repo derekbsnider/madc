@@ -14384,28 +14384,31 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
 	size_t offset = 0;
 	size_t depth = 0;
 	DataDef *type = var->type;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	std::vector<carray_dim_t> dims = var->dims;
+	while ( pgm.peekToken() )
 	{
+	    if ( pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
 		TokenBase *open = pgm.nextToken();
-		if ( depth >= var->dims.size() )
+		if ( depth >= dims.size() )
 		    pgm.Throw(open) << "Subscript of non-array in constant expression" << flush;
 		madc_wide_int index = pgm.parse_constant_integer_expression();
 		TokenBase *close = pgm.nextToken();
 		if ( !close || close->id() != TokenID::tkClSqr )
 		    pgm.Throw(close ? close : where)
 			<< "Expecting ']' in constant expression" << flush;
-		if ( index < 0 || (madc_wide_uint)index >= var->dims[depth] )
+		if ( index < 0 || (madc_wide_uint)index >= dims[depth] )
 		    pgm.Throw(open) << "Array subscript out of bounds in constant expression" << flush;
-		size_t stride = var->type->size;
-		for ( size_t di = depth + 1; di < var->dims.size(); ++di )
-		    stride *= var->dims[di];
+		size_t stride = type->size;
+		for ( size_t di = depth + 1; di < dims.size(); ++di )
+		    stride *= dims[di];
 		offset += (size_t)index * stride;
 		++depth;
-	}
-	if ( depth != var->dims.size() )
-		return false;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
-	{
+	    }
+	    else if ( pgm.peekToken()->id() == TokenID::tkDot )
+	    {
+		if ( depth != dims.size() )
+		    return false;
 		pgm.nextToken();
 		TokenBase *member = pgm.nextToken();
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(type);
@@ -14416,11 +14419,20 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
 		    pgm.Throw(member) << "Unknown member in constant expression" << flush;
 		if ( sdd->member_access[mi] & vfMUTABLE )
 		    pgm.Throw(member) << "Mutable member is not a constant expression" << flush;
-		if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield )
+		if ( sdd->member_bitfields[mi].is_bitfield )
 		    return false;
 		offset += sdd->member_offsets[mi];
 		type = sdd->members[mi].second;
+		dims = sdd->member_dims[mi];
+		if ( sdd->member_array_flags[mi] && dims.empty() )
+		    dims.push_back(sdd->member_counts[mi]);
+		depth = 0;
+	    }
+	    else
+		break;
 	}
+	if ( depth != dims.size() )
+	    return false;
 	Variable element;
 	element.type = type;
 	element.data = (char *)var->data + offset;
@@ -70534,11 +70546,34 @@ static bool store_static_integer_array_value(Variable *var, size_t index, int64_
     }
 }
 
+static bool initialize_static_subobject_data(Variable *var, TokenBase *init);
+
 static bool initialize_static_fixed_array_data(Variable *var,
-					       const std::vector<TokenBase *> &init_list)
+					       const std::vector<TokenBase *> &init_list,
+					       bool allow_subobjects = false)
 {
     if ( !var || !var->is_fixed_array() || !var->data || !var->type )
 	return false;
+    if ( allow_subobjects
+      && (var->dims.size() > 1 || dynamic_cast<DataDefSTRUCT *>(var->type)) )
+    {
+	if ( var->dims.empty() || init_list.size() > var->dims.front() )
+	    return false;
+	Variable element;
+	element.type = var->type;
+	element.dims.assign(var->dims.begin() + 1, var->dims.end());
+	if ( !element.dims.empty() )
+	    element.flags = vfFIXEDARRAY;
+	size_t stride = element.type->size * element.total_elements();
+	for ( size_t i = 0; i < var->dims.front(); ++i )
+	{
+	    element.data = (char *)var->data + i * stride;
+	    if ( !initialize_static_subobject_data(&element,
+			i < init_list.size() ? init_list[i] : NULL) )
+		return false;
+	}
+	return true;
+    }
     size_t total = var->total_elements();
     size_t n = init_list.size() < total ? init_list.size() : total;
     for ( size_t i = 0; i < n; ++i )
@@ -70569,18 +70604,52 @@ static bool initialize_static_struct_data(Variable *var,
 	return false;
     for ( size_t mi = 0; mi < sdd->members.size(); ++mi )
     {
-	if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield
+	if ( sdd->member_bitfields[mi].is_bitfield
 	  || (sdd->member_access[mi] & (vfPRIVATE | vfPROTECTED)) )
 	    return false;
 	Variable member;
 	member.type = sdd->members[mi].second;
 	member.data = (char *)var->data + sdd->member_offsets[mi];
-	int64_t value = 0;
-	if ( !literal_integer_value(mi < init_list.size() ? init_list[mi] : NULL, value)
-	  || !store_static_integer_array_value(&member, 0, value) )
+	member.dims = sdd->member_dims[mi];
+	if ( sdd->member_array_flags[mi] )
+	{
+	    member.flags = vfFIXEDARRAY;
+	    if ( member.dims.empty() )
+		member.dims.push_back(sdd->member_counts[mi]);
+	}
+	if ( !initialize_static_subobject_data(&member,
+			mi < init_list.size() ? init_list[mi] : NULL) )
 	    return false;
     }
     return true;
+}
+
+// Dispatch one parsed initializer node by its destination shape. A missing
+// initializer value-initializes the entire subobject; unsupported types or
+// non-braced aggregate expressions decline without granting CONSTBAKED.
+static bool initialize_static_subobject_data(Variable *var, TokenBase *init)
+{
+    TokenStructLit *lit = dynamic_cast<TokenStructLit *>(init);
+    const std::vector<TokenBase *> empty;
+    const std::vector<TokenBase *> &inits = lit ? lit->inits : empty;
+    if ( var->is_fixed_array() )
+	return (!init || lit) && initialize_static_fixed_array_data(var, inits, true);
+    if ( dynamic_cast<DataDefSTRUCT *>(var->type) )
+	return (!init || lit) && initialize_static_struct_data(var, inits);
+    if ( lit )
+	return inits.size() <= 1 && initialize_static_subobject_data(var,
+			inits.empty() ? NULL : inits.front());
+    // A missing scalar initializer VALUE-INITIALIZES ([dcl.init]/8), which is
+    // what the rest of this function already promises. The storage arrived
+    // calloc'd, so the zero is already there — but the write must still be
+    // ATTEMPTED, because declining here collapses the whole materialization
+    // and a partial aggregate initializer (`W t[2][2] = {{...},{one}}`) hands
+    // NULL down for every element the initializer did not reach.
+    int64_t value = 0;
+    if ( !init )
+	return store_static_integer_array_value(var, 0, 0);
+    return literal_integer_value(init, value)
+	&& store_static_integer_array_value(var, 0, value);
 }
 
 static bool is_char_array_element_type(DataDef *dd)
@@ -72911,8 +72980,7 @@ fnptr_decl_arm_head:
 	// time: enum initializers and non-type arguments precede CIR emission.
 	// Reuse the static-array writer, retaining the ordinary initializer for
 	// emission. Local constexpr arrays own a separate parse-time buffer.
-	if ( gotconstexpr && var->is_fixed_array() && var->dims.size() == 1
-	  && var->type->is_integer() && saw_brace_init )
+	if ( gotconstexpr && var->is_fixed_array() && saw_brace_init )
 	{
 	    if ( !var->data )
 	    {
@@ -72920,7 +72988,7 @@ fnptr_decl_arm_head:
 		if ( var->data )
 		    var->flags |= vfALLOC;
 	    }
-	    if ( initialize_static_fixed_array_data(var, td->init_list) )
+	    if ( initialize_static_fixed_array_data(var, td->init_list, true) )
 		var->flags |= vfCONSTBAKED;
 	}
 
