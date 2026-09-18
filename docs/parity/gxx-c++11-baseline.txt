@@ -73,6 +73,16 @@
 #   one that CLASSIFIES.
 #   1404 passed, 544 compile-failed, 0 runtime-failed, 2 timed out
 #   => 1404/1950 (72.0%).
+# SHRUNK 2026-09-18 (547 -> 545), Astra seat `don`: the noexcept(...) OPERATOR
+#   over a throw-expression (always 0), over a temporary whose DESTRUCTION can
+#   throw, and over a member call whose noexcept CONDITION must resolve in
+#   complete-class context ([class.mem]) — the condition's source tokens are
+#   retained and folded after class completion. cpp0x/noexcept17.C,
+#   cpp0x/noexcept21.C. Only +2 for a sizeable change, but the refusal it
+#   narrows ("cannot faithfully evaluate noexcept(...) for this operand") still
+#   guards 10 more lane tests; placement-new and template-call operands remain.
+#   1406 passed, 542 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1406/1950 (72.1%).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -356,8 +366,6 @@ g++.dg/cpp0x/noexcept10.C
 g++.dg/cpp0x/noexcept11.C
 g++.dg/cpp0x/noexcept13.C
 g++.dg/cpp0x/noexcept16.C
-g++.dg/cpp0x/noexcept17.C
-g++.dg/cpp0x/noexcept21.C
 g++.dg/cpp0x/noexcept23.C
 g++.dg/cpp0x/noexcept26.C
 g++.dg/cpp0x/noexcept27.C
