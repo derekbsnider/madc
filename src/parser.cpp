@@ -3066,6 +3066,27 @@ static bool fold_same_signature_overload(Program &pgm,
 	else
 	    fresh_fd->emit_symbol = sym;
 	fresh_var->storage_alias_name = sym;
+	// [dcl.fct.default]: declarations of this same function accumulate
+	// defaults. Both identities may already be held by calls, so carry
+	// the default and its saved source on both before adopting the body.
+	size_t count = fresh_fd->parameters.size();
+	pfd->param_defaults.resize(count, NULL);
+	fresh_fd->param_defaults.resize(count, NULL);
+	pfd->param_default_tokens.resize(count);
+	fresh_fd->param_default_tokens.resize(count);
+	for ( size_t p = 0; p < count; ++p )
+	{
+	    if ( !fresh_fd->param_defaults[p] )
+	    {
+		fresh_fd->param_defaults[p] = pfd->param_defaults[p];
+		fresh_fd->param_default_tokens[p] = pfd->param_default_tokens[p];
+	    }
+	    else if ( !pfd->param_defaults[p] )
+	    {
+		pfd->param_defaults[p] = fresh_fd->param_defaults[p];
+		pfd->param_default_tokens[p] = fresh_fd->param_default_tokens[p];
+	    }
+	}
 	if ( pfd->declaration_only && !fresh_fd->declaration_only )
 	{
 	    // The newcomer brings the body: the prior identity carries it.
@@ -8522,7 +8543,7 @@ static TokenBase *basic_class_pattern_first_token(
 
 static TokenBase *parse_basic_class_pattern_default(
 	Program &pgm, const BasicClassPatternBinding &binding,
-	DataDefCLASS *owner, Method *method,
+	DataDefCLASS *owner, Method *method, DataDef *target,
 	const std::vector<TokenBase *> &raw)
 {
     std::vector<TokenBase *> seq =
@@ -8544,14 +8565,19 @@ static TokenBase *parse_basic_class_pattern_default(
     TokenBase *expr = NULL;
     try
     {
+	TokenBase *head = pgm.nextToken();
+	if ( !pgm.is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+	    if ( TokenBase *typed = pgm.respell_braced_list_for_target(
+		    referent_if_reference(target), head) )
+		head = typed;
 	if ( !binding.definition.defining_namespace.empty() )
 	{
 	    Program::NamespaceScope namespace_scope(
 		pgm, binding.definition.defining_namespace);
-	    expr = pgm.parseExpression(pgm.nextToken(), true);
+	    expr = pgm.parseExpression(head, true);
 	}
 	else
-	    expr = pgm.parseExpression(pgm.nextToken(), true);
+	    expr = pgm.parseExpression(head, true);
     }
     catch ( ... )
     {
@@ -8831,7 +8857,7 @@ static void register_basic_class_pattern_method(
     for ( size_t i = 0; i < pattern.parameters.size(); ++i )
 	if ( !pattern.parameters[i].default_tokens.empty() )
 	    fd->param_defaults[i] = parse_basic_class_pattern_default(
-		pgm, binding, owner, method,
+		pgm, binding, owner, method, fd->parameters[i],
 		pattern.parameters[i].default_tokens);
 
     if ( has_deferred_body )
@@ -27051,13 +27077,18 @@ void Program::flush_forest_pending_globals()
 		TokenBase *expr = NULL;
 		try
 		{
+		    TokenBase *head = nextToken();
+		    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+			if ( TokenBase *typed = respell_braced_list_for_target(
+				referent_if_reference(rd.fd->parameters[pidx]), head) )
+			    head = typed;
 		    if ( rd.ns && *rd.ns )
 		    {
 			NamespaceScope nsg(*this, rd.ns);
-			expr = parseExpression(nextToken(), true);
+			expr = parseExpression(head, true);
 		    }
 		    else
-			expr = parseExpression(nextToken(), true);
+			expr = parseExpression(head, true);
 		}
 		catch ( ... )
 		{
@@ -30876,7 +30907,8 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		continue;
 	    }
 	    TokenBase *idx_tb = nextToken();
-	    TokenBase *idx_expr = parseExpression(idx_tb, true);
+	    TokenBase *idx_expr = parseExpression(
+		respell_braced_subscript_index(result, idx_tb), true);
 	    TokenBase *close = nextToken();
 	    if ( !close || close->id() != TokenID::tkClSqr )
 		Throw(close ? close : open) << "expected ']' in subscript" << flush;
@@ -40546,7 +40578,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			// parse index expression (stops at ] via peek-stop below)
-			TokenBase *idx = parseExpression(nextToken());
+			TokenBase *idx = parseExpression(
+			    respell_braced_subscript_index(tv, nextToken()));
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -40665,7 +40698,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    NULL, madc_array_subscript_type()));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
-			TokenBase *idx = parseExpression(nextToken());
+			TokenBase *idx = parseExpression(
+			    respell_braced_subscript_index(base_expr, nextToken()));
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -40763,7 +40797,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
-			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *idx = parseExpression(
+				respell_braced_subscript_index(base_expr, nextToken()));
 			    TokenBase *clsqr = nextToken();
 			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 				Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -51321,7 +51356,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 //
 // `open_brc` is the ALREADY-CONSUMED '{'. Returns the new stream head for
 // parseExpression, or NULL when the target cannot take a braced list here
-// (unknown, scalar, pointer, _Complex) — the caller errors loudly or keeps
+// (unknown, function, _Complex) — the caller errors loudly or keeps
 // its legacy route.
 // The ONE owner of "can this type be a braced-list re-spell target" —
 // asked by the overload search below per candidate WITHOUT touching the
@@ -51330,6 +51365,11 @@ bool Program::braced_list_target_capable(DataDef *dd)
 {
     if ( !dd )
 	return false;
+    if ( dd->is_pointer() )
+	return true;
+    if ( !dd->is_function() && !dd->is_simd()
+	 && (dd->is_integer() || dd->is_real()) )
+	return true;
     if ( dynamic_cast<DataDefCLASS *>(dd) != NULL )
 	return true;
     return dynamic_cast<DataDefSTRUCT *>(dd) != NULL && !dd->is_complex();
@@ -51338,17 +51378,20 @@ bool Program::braced_list_target_capable(DataDef *dd)
 TokenBase *Program::respell_braced_list_for_target(DataDef *target_dd,
 						   TokenBase *open_brc)
 {
-    if ( !braced_list_target_capable(target_dd) )
+    if ( !cpp_keyword_active(STD_CPP11)
+	 || !braced_list_target_capable(target_dd) )
 	return NULL;
     DataDefSTRUCT *agg = dynamic_cast<DataDefSTRUCT *>(target_dd);
     // An EMPTY list (value-initialization) is spelled with an explicit zero:
     // C11 has no `(T){}`, and `(T){0}` is the C idiom that zero-initializes
     // the whole object, which is what value-init means here.
     bool empty_list = peekToken() && peekToken()->id() == TokenID::tkClBrc;
-    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(target_dd) )
+    if ( !agg || dynamic_cast<DataDefCLASS *>(target_dd) )
     {
+	// Scalars and pointers use the existing functional value-/list-init
+	// reader too: T{} supplies zero, T{value} preserves the target type.
 	pushToken(open_brc);			// '{' back on the stream
-	pushToken(new TokenDataType(cls->name.c_str(), *cls));
+	pushToken(new TokenDataType(target_dd->name.c_str(), *target_dd));
 	return nextToken();			// now the synthetic type head
     }
     if ( agg && !target_dd->is_complex() )
@@ -51432,6 +51475,30 @@ TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
 		   : "no matching parameter with a known type")
 	    << ')' << flush;
     return nh;
+}
+
+TokenBase *Program::respell_braced_subscript_index(TokenBase *receiver,
+						TokenBase *head)
+{
+    if ( !head || head->id() != TokenID::tkOpBrc )
+	return head;
+    // An array of class objects still uses the built-in subscript.
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(receiver) )
+	if ( tv->var.is_fixed_array() )
+	    return head;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(receiver) )
+	if ( tm->is_fixed_array_member() )
+	    return head;
+    DataDef *dd = referent_if_reference(operand_value_datadef(receiver));
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd ? dd->unqualified() : NULL);
+    Variable *method = cls ? cls->findMethod("operator[]") : NULL;
+    if ( !method )
+	return head;
+    // Only the signature is needed here; the existing subscript AST and
+    // lowering still own the receiver and invocation. This uses the same
+    // hidden-this slot and overload walk as an explicitly written call.
+    TokenCallFunc call(*method);
+    return respell_braced_list_call_argument(&call, head);
 }
 
 TokenBase *TokenRETURN::parse(Program &pgm)
@@ -68262,21 +68329,10 @@ grabnt:
 	}
 	if ( nt->id() == TokenID::tkAssign )
 	{
-	    // Unnamed parameter carrying a default value, e.g.
-	    // `const allocator<_CharT>& = allocator<_CharT>()`. The named-param
-	    // path parses the default just before paramdecl:; an anonymous param
-	    // never reaches it, so parse the default here (same stop-token rule)
-	    // then fall into paramdecl with nt at the ',' / ')'.
+	    // Unnamed defaults use the same typed initializer path as named
+	    // parameters; param_dd already holds the complete declarator.
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    {
-		DefCapState cap;
-		bool capturing = param_default_capture_begin(cap, true);
-		param_default = parseExpression(nextToken(), true);
-		if ( capturing )
-		    param_default_capture_end(cap, param_default_src);
-	    }
-	    nt = nextToken();   // the ',' or ')' that ends this parameter
-	    goto paramdecl;
+	    goto finish_param_declarator;
 	}
 	if ( nt->id() == TokenID::tkOpSqr )
 	{
@@ -68630,7 +68686,11 @@ finish_param_declarator:
 	{
 	    DefCapState cap;
 	    bool capturing = param_default_capture_begin(cap, true);
-	    param_default = parseExpression(nextToken(), true);
+	    TokenBase *head = nextToken();
+	    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+		if ( TokenBase *typed = respell_braced_list_for_target(param_dd, head) )
+		    head = typed;
+	    param_default = parseExpression(head, true);
 	    if ( capturing )
 		param_default_capture_end(cap, param_default_src);
 	    nt = nextToken();   // the ',' or ')' that ends this parameter

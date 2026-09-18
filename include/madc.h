@@ -7122,9 +7122,13 @@ public:
     // '{' into parseExpression.
     TokenBase *respell_braced_list_call_argument(class TokenCallFunc *tc,
 						 TokenBase *open_brc);
+    // An overloaded subscript's index initializes operator[]'s parameter.
+    // Preserve a non-list head or a built-in subscript for the normal reader.
+    TokenBase *respell_braced_subscript_index(TokenBase *receiver,
+					    TokenBase *head);
     // Can this type be the target of the braced-list re-spell? The ONE
     // owner of the capability question respell_braced_list_for_target's
-    // arms answer (class, or a non-_Complex plain aggregate) — the
+    // arms answer (scalar, pointer, class, or non-_Complex aggregate) — the
     // overload search above asks it per candidate WITHOUT mutating the
     // token stream.
     static bool braced_list_target_capable(DataDef *dd);
