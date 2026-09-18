@@ -1,0 +1,14 @@
+// A prior type parameter already works; require integral constant binding,
+// not a VLA bound that could hide a lost non-type argument.
+extern "C" int printf(const char *, ...);
+
+template<class T, T X> struct Prior {
+	enum { E = X };
+};
+
+int main()
+{
+	printf("prior parameter: %d %d %d\n",
+		Prior<int, 37>::E, Prior<int, -11>::E, Prior<bool, true>::E);
+	return 0;
+}
