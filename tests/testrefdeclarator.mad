@@ -22,5 +22,12 @@ int main()
 	int (&local_array)[3] = global_array;
 	local_array[1] += 7;
 	printf("array declaration: %d %d\n", values[1], int(sizeof(local_array)));
+	// [dcl.array]/3: an array of UNKNOWN bound is completed by its
+	// initializer, so this reference's type is `const int (&)[5]`.
+	// NOT sizeof(deduced): g++ holds the reference's type INCOMPLETE and
+	// rejects the query (CWG 1591), while clang++ and madc complete it to
+	// [5] and answer 20. Assert only what both canon compilers agree on.
+	const int (&deduced)[] = {10, 20, 30, 40, 50};
+	printf("deduced bound: %d %d\n", deduced[0], deduced[4]);
 	return 0;
 }

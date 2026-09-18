@@ -13862,6 +13862,28 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     TokenID close_id = open_id == TokenID::tkOpBrc ? TokenID::tkClBrc
 						   : TokenID::tkClBrk;
     const char *close_spelling = open_id == TokenID::tkOpBrc ? "}" : ")";
+    if ( open_id == TokenID::tkOpBrc )
+	if ( DataDefCArray *array = type_dd->as_carray_dd() )
+	{
+	    // Preserve the array glvalue for reference binding. The existing
+	    // compound-literal node owns its element list and C11 storage.
+	    if ( array->element_type->as_carray_dd() )
+		Throw(type_tb) << "Multidimensional array list-initialization is not supported" << flush;
+	    TokenStructLit *slit = parse_compound_struct_lit(NULL, type_tb);
+	    if ( array->count && slit->inits.size() > array->count )
+		Throw(type_tb) << "Too many initializers for array" << flush;
+	    while ( slit->inits.size() < array->count )
+	    {
+		if ( array->element_type->is_object() )
+		    Throw(type_tb) << "Implicit object array elements require construction" << flush;
+		slit->inits.push_back(new TokenInt(0));
+	    }
+	    slit->array_elem_dd = array->element_type;
+	    slit->setDataType(new DataDefCArray(*array->element_type,
+		array->name, slit->inits.size(), NULL));
+	    copy_token_location(slit, type_tb);
+	    return slit;
+	}
     if ( open_id == TokenID::tkOpBrc
       && dynamic_cast<DataDefCLASS *>(type_dd) == NULL )
     {
@@ -51586,6 +51608,8 @@ bool Program::braced_list_aggregate_target(DataDef *dd)
 {
     if ( !dd )
 	return false;
+    if ( dd->as_carray_dd() )
+	return true;
     if ( dynamic_cast<DataDefCLASS *>(dd) != NULL )
 	return true;
     return dynamic_cast<DataDefSTRUCT *>(dd) != NULL && !dd->is_complex();
@@ -51595,6 +51619,8 @@ bool Program::braced_list_target_capable(DataDef *dd)
 {
     if ( !dd )
 	return false;
+    if ( dd->as_carray_dd() )
+	return true;
     if ( dd->is_pointer() )
 	return true;
     if ( !dd->is_function() && !dd->is_simd()
@@ -71550,6 +71576,17 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 	return NULL;
     DataDefPTR *ptr_type = getPointerType(referent_type
 					      ? referent_type : expr->datadef());
+    if ( TokenStructLit *array = dynamic_cast<TokenStructLit *>(expr) )
+	if ( array->array_elem_dd )
+	{
+	    if ( !allow_temporary )
+		Throw(expr) << "Reference initializer must be an lvalue" << flush;
+	    // C11 compound literals have block/static storage, matching the
+	    // lifetime of this array reference's materialized initializer.
+	    TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);
+	    copy_token_location(addr, expr);
+	    return addr;
+	}
     // Reference casts designate the operand's object, including xvalues.
     // Keep the cast itself: CIR owns any base-subobject address adjustment.
     if ( TokenCast *cast = dynamic_cast<TokenCast *>(expr) )
@@ -72715,7 +72752,15 @@ fnptr_decl_arm_head:
     // '=' in front of the '{'. Covers scalars, aggregates/arrays, and class
     // value-init uniformly. The `(` ctor-call syntax is handled above; this is the
     // brace form. References (`T& x{...}`) keep the explicit-init requirement.
-    if ( nt->id() == TokenID::tkOpBrc && !ret_is_ref )
+    if ( nt->id() == TokenID::tkOpBrc && ret_is_ref
+      && decl_type->as_carray_dd() )
+    {
+	TokenBase *syn = new TokenAssign();
+	copy_token_location(syn, nt);
+	pushToken(syn);
+	nt = peekToken();
+    }
+    else if ( nt->id() == TokenID::tkOpBrc && !ret_is_ref )
     {
 	bool is_aggregate = !arr_dims.empty()
 	    || dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
@@ -73666,8 +73711,31 @@ fnptr_decl_arm_head:
 		Throw(nt) << "Expected initializer after '='" << flush;
 	    Variable *saved_decl_init_self = decl_init_self;
 	    decl_init_self = var;
+	    if ( rhs_head->id() == TokenID::tkOpBrc )
+		if ( TokenBase *typed =
+			respell_braced_list_for_target(reference_value_type, rhs_head) )
+		    rhs_head = typed;
 	    TokenBase *rhs = parseExpression(rhs_head, true);
 	    decl_init_self = saved_decl_init_self;
+	    // [dcl.array]/3: an array of UNKNOWN bound is COMPLETED by its
+	    // initializer, so `const int (&r)[] = {1,2,3}` has type
+	    // `const int (&)[3]` — the bound is deduced, not left at zero.
+	    // Leaving it zero made the bound address a `T (*)[0]` assigned to a
+	    // `T (*)[N]` slot, which c2mir warns about ("incompatible types in
+	    // assignment to a pointer"), and made sizeof(r) answer 0. The
+	    // Variable is shared by reference through every TokenVar, but each
+	    // one CACHED v.type at construction — so the TokenDecl built before
+	    // the initializer parsed must be re-stamped too.
+	    if ( DataDefCArray *unbounded = reference_value_type->as_carray_dd() )
+		if ( unbounded->count == 0 && !unbounded->count_expr && rhs
+		  && rhs->datadef() )
+		    if ( DataDefCArray *sized = rhs->datadef()->as_carray_dd() )
+			if ( sized->count > 0 )
+			{
+			    reference_value_type = sized;
+			    var->type = getReferenceType(sized);
+			    td->setDataType(var->type);
+			}
 	    TokenAssign *assign = new TokenAssign();
 	    copy_token_location(assign, tb);
 	    assign->left = new TokenVar(*var);

@@ -3,3 +3,4 @@ unnamed array reference: 3
 array parameter: 10
 array mutation: 3
 array declaration: 12 12
+deduced bound: 10 50
