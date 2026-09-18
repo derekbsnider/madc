@@ -7132,6 +7132,9 @@ public:
     // overload search above asks it per candidate WITHOUT mutating the
     // token stream.
     static bool braced_list_target_capable(DataDef *dd);
+    // The aggregate/class subset of the above — the only targets that may
+    // short-circuit the call-argument overload search (see parser.cpp).
+    static bool braced_list_aggregate_target(DataDef *dd);
     // The ONE ctor-args/list-elements reader: `expr` and (carrier lists
     // only) `key: value` elements up to `close_id`, comma-separated, into
     // the PARALLEL args/keys vectors (keys stays empty for an all-

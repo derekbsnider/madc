@@ -51361,6 +51361,21 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 // The ONE owner of "can this type be a braced-list re-spell target" —
 // asked by the overload search below per candidate WITHOUT touching the
 // token stream, and by the re-spell itself before its arms run.
+// The subset of braced-list targets that take a LIST as a list: a class or a
+// non-_Complex aggregate. A scalar or pointer is `braced_list_target_capable`
+// too (T{} / T{value}), but only in the DEGENERATE one-element sense, so it
+// must never short-circuit the overload search below — `var::push` registers
+// push(const char*) before push(value&), and a braced object literal belongs
+// to the carrier, not to the first scalar row that happens to be capable.
+bool Program::braced_list_aggregate_target(DataDef *dd)
+{
+    if ( !dd )
+	return false;
+    if ( dynamic_cast<DataDefCLASS *>(dd) != NULL )
+	return true;
+    return dynamic_cast<DataDefSTRUCT *>(dd) != NULL && !dd->is_complex();
+}
+
 bool Program::braced_list_target_capable(DataDef *dd)
 {
     if ( !dd )
@@ -51435,7 +51450,7 @@ TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
     // class_method_def_by_param walk) for a capable parameter; the FIRST
     // capable candidate is the re-spell target, and the later overload
     // re-rank sees the constructed object like any other argument.
-    if ( !braced_list_target_capable(target) )
+    if ( !braced_list_aggregate_target(target) )
     {
 	Method *md = dynamic_cast<FuncDef *>(tc->var.type)
 		   ? (Method *)tc->var.data : NULL;
@@ -51457,7 +51472,7 @@ TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
 		  && ofd->method_display_name != called )
 		    continue;
 		DataDef *cand = referent_if_reference(ofd->parameters[idx]);
-		if ( braced_list_target_capable(cand) )
+		if ( braced_list_aggregate_target(cand) )
 		{
 		    target = cand;
 		    break;
