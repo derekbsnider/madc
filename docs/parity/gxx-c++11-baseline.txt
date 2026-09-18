@@ -50,6 +50,12 @@
 #     `int (&... p)[N]`: the list parser only ever read a bare NAME.
 #   1392 passed, 556 compile-failed, 0 runtime-failed, 2 timed out
 #   => 1392/1950 (71.4%). 🎯 owner target: a master release at 75% = 1463.
+# SHRUNK 2026-09-18 (559 -> 554), Astra seat `coding`: REFERENCE declarators —
+#   `int (&a)[3]` as a parameter, `int (&r)[3] = x` as a declaration, and a
+#   reference-to-array receiver kept as a glvalue in a subscript. The
+#   parenthesized-declarator arms knew `*` and not `&`.
+#   1397 passed, 551 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1397/1950 (71.6%).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -180,7 +186,6 @@ g++.dg/cpp0x/constexpr-strchr.C
 g++.dg/cpp0x/constexpr-strstr.C
 g++.dg/cpp0x/constexpr-switch.C
 g++.dg/cpp0x/constexpr-temp2.C
-g++.dg/cpp0x/constexpr-template8.C
 g++.dg/cpp0x/constexpr-trivial1.C
 g++.dg/cpp0x/constexpr-tuple2.C
 g++.dg/cpp0x/constexpr-type-decl1.C
@@ -312,7 +317,6 @@ g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/inline-ns1.C
 g++.dg/cpp0x/keywords2.C
 g++.dg/cpp0x/lambda/lambda-61148.C
-g++.dg/cpp0x/lambda/lambda-70383.C
 g++.dg/cpp0x/lambda/lambda-80947.C
 g++.dg/cpp0x/lambda/lambda-constexpr3.C
 g++.dg/cpp0x/lambda/lambda-conv12.C
@@ -418,9 +422,7 @@ g++.dg/cpp0x/ref-bind6.C
 g++.dg/cpp0x/ref-qual16.C
 g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
-g++.dg/cpp0x/rv-deduce2.C
 g++.dg/cpp0x/rv-dotstar.C
-g++.dg/cpp0x/rv-func.C
 g++.dg/cpp0x/rv-return.C
 g++.dg/cpp0x/rv-this2.C
 g++.dg/cpp0x/scoped_enum10.C
@@ -583,7 +585,6 @@ g++.dg/template/non-dependent19a.C
 g++.dg/template/non-dependent31.C
 g++.dg/template/param5.C
 g++.dg/template/partial3.C
-g++.dg/template/pr61663.C
 g++.dg/template/pr69091.C
 g++.dg/template/pr71406.C
 g++.dg/template/pr84434.C
