@@ -150,7 +150,6 @@ g++.dg/cpp0x/constexpr-missing.C
 g++.dg/cpp0x/constexpr-noexcept2.C
 g++.dg/cpp0x/constexpr-noexcept4.C
 g++.dg/cpp0x/constexpr-nonlit.C
-g++.dg/cpp0x/constexpr-nsdmi2.C
 g++.dg/cpp0x/constexpr-nsdmi3.C
 g++.dg/cpp0x/constexpr-nullptr-1.C
 g++.dg/cpp0x/constexpr-pmf3.C
@@ -433,14 +432,11 @@ g++.dg/cpp0x/ref-bind1.C
 g++.dg/cpp0x/ref-bind5.C
 g++.dg/cpp0x/ref-bind6.C
 g++.dg/cpp0x/ref-qual16.C
-g++.dg/cpp0x/rv-cast.C
 g++.dg/cpp0x/rv-cond3.C
-g++.dg/cpp0x/rv-conv1.C
 g++.dg/cpp0x/rv-decl1.C
 g++.dg/cpp0x/rv-deduce2.C
 g++.dg/cpp0x/rv-dotstar.C
 g++.dg/cpp0x/rv-func.C
-g++.dg/cpp0x/rv-func2.C
 g++.dg/cpp0x/rv-return.C
 g++.dg/cpp0x/rv-this2.C
 g++.dg/cpp0x/scoped_enum10.C
@@ -510,7 +506,6 @@ g++.dg/cpp0x/udlit-raw-length.C
 g++.dg/cpp0x/udlit-raw-str.C
 g++.dg/cpp0x/udlit-string-length.C
 g++.dg/cpp0x/udlit-string-literal.C
-g++.dg/cpp0x/union8.C
 g++.dg/cpp0x/variadic-alias2.C
 g++.dg/cpp0x/variadic-alias8.C
 g++.dg/cpp0x/variadic-crash3.C
