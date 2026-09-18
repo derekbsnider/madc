@@ -3221,6 +3221,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
 {
+    base_type = TokenSubscript::referent_type(base_type);
     if ( !base_type )
 	return &ddINT64;
     if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type) )
@@ -40736,6 +40737,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
+			// A structural array glvalue (including REF(ARRAY)) needs
+			// its receiver expression retained: reading the reference
+			// supplies the dereference before the array subscript.
+			if ( sub_recv && sub_recv->as_carray_dd() )
+			{
+			    exStack.push(new TokenSubscriptExpr(tv, idx,
+				unwrap_subscript_element_type(sub_recv)));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			TokenSubscript *tsn = new TokenSubscript(tv->var, idx);
 			// madc array subscript: every carrier subscript types as
 			// the carrier — the slot model (madc_array_subscript_type).
