@@ -21725,20 +21725,35 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		auto mp_ptr = [&]() -> node_t {
 			return node2(N_FIELD, translate_expr(mpa->mptr), id("ptr", tb), tb);
 		};
-		// virtual: *(void **)((char *)this->__vptr + (mp.ptr - 1))
-		node_t vptr = node2(N_DEREF_FIELD, this_ptr(), id("__vptr", tb), tb);
-		node_t slot_bytes = node2(N_ADD, node2(N_CAST, char_ptr_type(), vptr, tb),
-					  node2(N_SUB, node2(N_CAST, i64_type(), mp_ptr(), tb),
-						integer(1, tb), tb), tb);
-		node_t vpp_dl = list();
-		append(vpp_dl, pointer());
-		append(vpp_dl, pointer());
-		node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
-					node2(N_DECL, ignore(), vpp_dl));
-		node_t vfn = node1(N_DEREF, node2(N_CAST, vpp_type, slot_bytes, tb), tb);
-		node_t is_virtual = node2(N_AND, node2(N_CAST, i64_type(), mp_ptr(), tb),
-					  integer(1, tb), tb);
-		node_t callee = node3(N_COND, is_virtual, vfn, mp_ptr(), tb);
+		// The Itanium member-pointer call tests bit 0 of mp.ptr and,
+		// when set, indexes the vtable:
+		//   *(void **)((char *)this->__vptr + (mp.ptr - 1))
+		// A class with NO vtable has no virtual members, so that bit
+		// can never be set and the virtual arm is dead. Emitting the
+		// conditional anyway still REFERENCES this->__vptr, and c2mir
+		// type-checks both arms — a dead branch is not an unchecked
+		// one — so a member-pointer call on an ordinary struct failed
+		// with "struct has no member __vptr". Emit the conditional
+		// only where a vtable actually exists.
+		node_t callee;
+		if ( ocls && ocls->has_any_vptr() )
+		{
+			node_t vptr = node2(N_DEREF_FIELD, this_ptr(), id("__vptr", tb), tb);
+			node_t slot_bytes = node2(N_ADD, node2(N_CAST, char_ptr_type(), vptr, tb),
+						  node2(N_SUB, node2(N_CAST, i64_type(), mp_ptr(), tb),
+							integer(1, tb), tb), tb);
+			node_t vpp_dl = list();
+			append(vpp_dl, pointer());
+			append(vpp_dl, pointer());
+			node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+						node2(N_DECL, ignore(), vpp_dl));
+			node_t vfn = node1(N_DEREF, node2(N_CAST, vpp_type, slot_bytes, tb), tb);
+			node_t is_virtual = node2(N_AND, node2(N_CAST, i64_type(), mp_ptr(), tb),
+						  integer(1, tb), tb);
+			callee = node3(N_COND, is_virtual, vfn, mp_ptr(), tb);
+		}
+		else
+			callee = mp_ptr();
 		// cast to the member's signature: RET (*)(struct C *__this, params...).
 		// A method's FuncDef::parameters holds the SOURCE parameters only —
 		// the receiver is the emitted prototype's hidden leading parameter —
