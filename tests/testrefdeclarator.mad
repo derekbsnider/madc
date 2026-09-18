@@ -1,5 +1,8 @@
 extern "C" int printf(const char *, ...);
 
+int values[3] = {4, 5, 6};
+int (&global_array)[3] = values;
+
 int extent(int (&a)[3]) { return sizeof(a) / sizeof(int); }
 int unnamed(const int (&)[3]) { return 3; }
 
@@ -16,5 +19,8 @@ int main()
 	printf("unnamed array reference: %d\n", unnamed(a));
 	printf("array parameter: %d\n", total(a));
 	printf("array mutation: %d\n", a[0]);
+	int (&local_array)[3] = global_array;
+	local_array[1] += 7;
+	printf("array declaration: %d %d\n", values[1], int(sizeof(local_array)));
 	return 0;
 }

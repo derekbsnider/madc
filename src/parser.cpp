@@ -71967,8 +71967,18 @@ fnptr_decl_arm_head:
 	    have_decl_id = true;
 	    nt = peekToken();
 	}
-	else if ( inner && inner->id() == TokenID::tkMul )
+	else if ( inner && (inner->id() == TokenID::tkMul
+			 || inner->id() == TokenID::tkBand
+			 || inner->id() == TokenID::tkLand) )
 	{
+	    bool nested_reference = inner->id() != TokenID::tkMul;
+	    if ( nested_reference && is_c_mode() )
+		Throw(inner) << "Reference declarators require C++" << flush;
+	    // A reference before '(' qualifies a function's RETURN type;
+	    // the ptr-operator inside the parentheses qualifies the name.
+	    bool return_reference = ret_is_ref;
+	    ret_is_ref = nested_reference;
+	    decl_rvalue_ref = inner->id() == TokenID::tkLand;
 	    // Extra `*` levels declare a POINTER TO the function pointer, one
 	    // wrap per star beyond the first — `type (**name)(params)` is
 	    // winpthreads' `extern void (**_pthread_key_dest)(void *)` (glibc
@@ -72067,6 +72077,8 @@ fnptr_decl_arm_head:
 		decl_type = parse_ptr_array_suffix(decl_type, open,
 						   "pointer-to-array declaration",
 						   true);
+		if ( nested_reference )
+		    decl_type = decl_type->as_pointer_dd()->base_type;
 		for ( int s = 0; s < fnptr_extra_stars; ++s )
 		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
@@ -72081,14 +72093,25 @@ fnptr_decl_arm_head:
 		}
 		nt = peekToken();
 	    }
+	    else if ( nested_reference
+		   && (!param_open || param_open->id() != TokenID::tkOpBrk) )
+	    {
+		// Redundant parentheses around a reference name: `T (&r) = x`.
+		have_decl_id = true;
+		nt = param_open;
+	    }
 	    else
 	    {
 		nextToken(); // consume the peeked token
 		if ( !param_open || param_open->id() != TokenID::tkOpBrk )
 		    Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
 
-		FuncDef *func = parseFnPtrParams(*decl_type);
-		decl_type = new DataDefFPTR(func);
+		DataDef *function_return = return_reference
+		    ? static_cast<DataDef *>(getReferenceType(decl_type)) : decl_type;
+		FuncDef *func = parseFnPtrParams(*function_return);
+		DataDefFPTR *function_type = new DataDefFPTR(func);
+		function_type->ptr_syntax = !nested_reference;
+		decl_type = function_type;
 		for ( int s = 0; s < fnptr_extra_stars; ++s )
 		    decl_type = getPointerType(decl_type);
 		have_decl_id = true;
