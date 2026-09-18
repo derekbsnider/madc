@@ -63,6 +63,16 @@
 #   initlist89.
 #   1402 passed, 546 compile-failed, 0 runtime-failed, 2 timed out
 #   => 1402/1950 (71.9%).
+# SHRUNK 2026-09-18 (549 -> 547), Astra seat `art`: an elaborated template-id
+#   tag (`struct A<int>::Entry<int> e;`) resolves through the declared-type
+#   resolver, and a decltype-HEADED statement routes through the ordinary
+#   type-headed classifier (`decltype(f())::value;`). cpp0x/sfinae56.C,
+#   template/dependent-name11.C. The seat's third commit was REVERTED
+#   (42b8334e3): a type-pack kind check in match_partial_specialization fixed
+#   3 and broke 5 — a predicate that RESOLVES answering a question that needs
+#   one that CLASSIFIES.
+#   1404 passed, 544 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1404/1950 (72.0%).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -462,7 +472,6 @@ g++.dg/cpp0x/sfinae50.C
 g++.dg/cpp0x/sfinae51.C
 g++.dg/cpp0x/sfinae52.C
 g++.dg/cpp0x/sfinae53.C
-g++.dg/cpp0x/sfinae56.C
 g++.dg/cpp0x/sfinae59.C
 g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
@@ -559,7 +568,6 @@ g++.dg/template/deduce9.C
 g++.dg/template/defarg3.C
 g++.dg/template/dependent-base2.C
 g++.dg/template/dependent-base3.C
-g++.dg/template/dependent-name11.C
 g++.dg/template/dependent-name14.C
 g++.dg/template/evaluated1.C
 g++.dg/template/evaluated1a.C
