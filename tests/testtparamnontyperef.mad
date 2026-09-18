@@ -1,0 +1,16 @@
+// A reference NTTP must keep reading the supplied object after mutation.
+// g++ and clang++ -std=c++11: 7.25, then 12.50.
+extern "C" int printf(const char *, ...);
+
+double source = 7.25;
+template<const double& X> struct Read {
+	static double get() { return X; }
+};
+
+int main()
+{
+	printf("reference: %.2f\n", Read<source>::get());
+	source = 12.5;
+	printf("reference after write: %.2f\n", Read<source>::get());
+	return 0;
+}

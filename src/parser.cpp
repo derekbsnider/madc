@@ -55672,7 +55672,8 @@ static void parse_template_parameter_list(
     for (;;)
     {
 	std::vector<TokenBase *> constraint;
-	TokenBase *token = pgm.nextToken();
+	// cv-qualifiers belong to the non-type parameter's type head.
+	TokenBase *token = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
 	if ( pgm.consume_template_close(token) )
 	    break;
 	if ( token->id() == TokenID::tkTEMPLATE )
