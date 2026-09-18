@@ -21518,13 +21518,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// set for auto-deref. Every value use of the reference reads
 			// through the pointer: `x` -> `(*x)`. (String references are a
 			// separate object-pointer path handled elsewhere.)
+			//
+			// The population here is NOT parameters only — a namespace-scope
+			// reference (`namespace N { const int &x = 11; }`) is lowered to
+			// the same pointer-with-vfREFERENCE shape and reads through this
+			// site. Its DEFINITION emits the Itanium symbol, so the read must
+			// ask var_emit_name for the name rather than spell var.name; a
+			// local or parameter has no storage_alias_name and gets var.name
+			// back unchanged.
 			if ((tv->var.is_reference()) && tv->var.type
 			    && tv->var.type->is_pointer()) {
 				// A by-reference capture keeps the reference's stored pointer;
 				// a by-value capture copied the referent into a value parameter.
 				if (variable_capture_mode == FuncDef::CaptureMode::ByValue)
 					return id(tv->var.name.c_str(), tb);
-				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);	// allowed-exception: reference PARAMETER deref
+				return node1(N_DEREF,
+					     id(var_emit_name(tv->var).c_str(), tb), tb);
 			}
 			// A by-value CLASS parameter passed by INVISIBLE REFERENCE
 			// (param_is_invisible_ref): the callee's `struct T *d` holds

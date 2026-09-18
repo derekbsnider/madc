@@ -1,0 +1,9 @@
+// Unnamed-namespace variables stay TU-local, including inside a named
+// namespace; the enclosing namespace must not become an external ABI name.
+namespace { int anonymous_value = 88; }
+namespace Enclosing { namespace { int nested_anonymous = 99; } }
+
+int main()
+{
+	return anonymous_value + Enclosing::nested_anonymous;
+}

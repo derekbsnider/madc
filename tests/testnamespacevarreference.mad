@@ -1,0 +1,20 @@
+// A namespace-scope REFERENCE variable reads through the same Itanium symbol
+// its definition emits. The read path (a deref of the stored pointer) is
+// shared with reference PARAMETERS, which are locals and keep their bare
+// name -- so the read must ask var_emit_name, not spell var.name.
+// Expected output verified with both g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+namespace N { const int &x = 11; }
+namespace M { const int &x = 22; }
+
+int counter = 5;
+namespace R { int &alias = counter; }
+
+int main()
+{
+	R::alias = 7;
+	printf("ns: %d %d\n", N::x, M::x);
+	printf("alias: %d %d\n", R::alias, counter);
+	return 0;
+}

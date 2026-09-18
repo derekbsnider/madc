@@ -1,0 +1,39 @@
+// Namespace-scope variable definitions use the same Itanium symbol as their
+// declarations and every qualified reference. Expected output was verified
+// with both g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+namespace N { int x = 11; }
+namespace M { int x = 22; }
+
+int v = 31;
+namespace GlobalClash { int v = 32; }
+
+namespace A { namespace B { int x = 33; } }
+
+namespace CLink { extern "C" { int c_value = 44; } }
+extern "C" int c_value;
+
+namespace Outer {
+	int x = 55;
+	namespace Inner { int x = 66; }
+}
+
+namespace Decl { extern int kept; }
+namespace Decl { int kept = 77; }
+
+namespace { int anonymous_value = 88; }
+namespace Enclosing { namespace { int nested_anonymous = 99; } }
+
+int main()
+{
+	printf("ns: %d %d\n", N::x, M::x);
+	printf("global: %d %d\n", v, GlobalClash::v);
+	printf("nested: %d\n", A::B::x);
+	printf("extern-c: %d %d\n", CLink::c_value, c_value);
+	printf("inner: %d %d\n", Outer::x, Outer::Inner::x);
+	printf("extern-decl: %d\n", Decl::kept);
+	printf("anonymous: %d %d\n", anonymous_value,
+	       Enclosing::nested_anonymous);
+	return 0;
+}

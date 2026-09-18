@@ -28872,7 +28872,24 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     if ( !dd.is_function() )	// B4a: decl-index tap (globals; fn vars tap as pdkFunction)
 	pack_tap_name(current_namespace().empty() ? id
 		      : (current_namespace() + "::" + id), pdkVariable);
-    if ( (var=tkProgram->findVariable(strpool, id)) )
+    // Two named namespaces may each own the same source identifier. Only a
+    // member already registered in THIS namespace is a redeclaration; the
+    // program-scope bare-name index cannot decide that identity.
+    var = NULL;
+    if ( !current_namespace().empty() && unnamed_namespace_depth == 0
+      && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
+    {
+	namespace_map_t::iterator nsi = namespace_map.find(current_namespace());
+	if ( nsi != namespace_map.end() )
+	{
+	    variable_map_iter vmi = nsi->second.find(id);
+	    if ( vmi != nsi->second.end() )
+		var = vmi->second;
+	}
+    }
+    else
+	var = tkProgram->findVariable(strpool, id);
+    if ( var )
     {
 	if ( var->flags & vfEXTERN )
 	{
@@ -28881,7 +28898,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	    if ( !parsing_extern_decl )
 		var->flags &= ~vfEXTERN;
 	}
-	if ( !current_namespace().empty() && parsing_extern_decl
+	if ( !current_namespace().empty() && unnamed_namespace_depth == 0
 	  && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	    var->storage_alias_name =
 		namespace_cpp_variable_symbol(current_namespace(), id);
@@ -28913,7 +28930,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	if ( FuncDef *pfd = var->type ? var->type->as_funcdef_dd() : NULL )
 	    pfd->vague_linkage = true;
     }
-    if ( !current_namespace().empty() && parsing_extern_decl
+    if ( !current_namespace().empty() && unnamed_namespace_depth == 0
       && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
 	var->storage_alias_name =
 	    namespace_cpp_variable_symbol(current_namespace(), id);
