@@ -109,7 +109,6 @@ g++.dg/cpp0x/auto19.C
 g++.dg/cpp0x/auto23.C
 g++.dg/cpp0x/auto40.C
 g++.dg/cpp0x/auto47.C
-g++.dg/cpp0x/auto53.C
 g++.dg/cpp0x/auto55.C
 g++.dg/cpp0x/collapse-bug.C
 g++.dg/cpp0x/collapse.C
@@ -188,11 +187,9 @@ g++.dg/cpp0x/constexpr-noexcept4.C
 g++.dg/cpp0x/constexpr-nonlit.C
 g++.dg/cpp0x/constexpr-nsdmi3.C
 g++.dg/cpp0x/constexpr-nullptr-1.C
-g++.dg/cpp0x/constexpr-pmf3.C
 g++.dg/cpp0x/constexpr-pos1.C
 g++.dg/cpp0x/constexpr-ptrcomp1.C
 g++.dg/cpp0x/constexpr-ptrmem.C
-g++.dg/cpp0x/constexpr-ptrmem4.C
 g++.dg/cpp0x/constexpr-ptrmem5.C
 g++.dg/cpp0x/constexpr-ptrmem6.C
 g++.dg/cpp0x/constexpr-ptrsub.C
