@@ -14507,7 +14507,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 static bool is_named_cpp_cast(const std::string &name);
 static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_class);
 
-madc_wide_int Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
+ConstValue Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 						     const std::string &cast_name)
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
@@ -17769,13 +17769,24 @@ bool Program::constexpr_binding_value(const std::string &name,
 {
     if ( constexpr_call_bindings.empty() )
 	return false;
-    const std::map<std::string, madc_wide_int> &frame =
+    const std::map<std::string, ConstValue> &frame =
 	constexpr_call_bindings.back();
-    std::map<std::string, madc_wide_int>::const_iterator it =
+    std::map<std::string, ConstValue>::const_iterator it =
 	frame.find(name);
     if ( it == frame.end() )
 	return false;
-    out = it->second;
+    // EXPLICIT integer read, not the implicit ConstValue -> madc_wide_int
+    // conversion. A binding will be able to hold an OBJECT or an ARRAY once
+    // stage 2 evaluates constexpr constructors, and an implicit narrowing
+    // here would drop the kind SILENTLY and fold the object to its integer
+    // payload. Refuse a non-integer binding instead: the caller's `out` is a
+    // madc_wide_int and genuinely cannot carry one, so this returns false and
+    // the expression stays unfolded (a loud "not a constant expression")
+    // rather than folding to a wrong value. Stage 2 widens `out` and deletes
+    // this guard.
+    if ( !it->second.is_integer() )
+	return false;
+    out = it->second.integer();
     return true;
 }
 
@@ -17815,7 +17826,7 @@ bool Program::is_constexpr_function_name(const std::string &name)
     return false;
 }
 
-madc_wide_int Program::evaluate_constexpr_function_call(
+ConstValue Program::evaluate_constexpr_function_call(
 	TokenBase *name_tb, const std::string &name)
 {
     TokenBase *open = nextToken();
@@ -17901,7 +17912,7 @@ madc_wide_int Program::evaluate_constexpr_function_call(
 		       << ") exceeded in call to '" << name << '\'' << flush;
     }
 
-    std::map<std::string, madc_wide_int> frame;
+    std::map<std::string, ConstValue> frame;
     for ( size_t i = 0; i < args.size(); ++i )
     {
 	if ( !func->parameters[i] || !func->parameters[i]->is_integer()
@@ -17958,7 +17969,7 @@ madc_wide_int Program::evaluate_constexpr_function_call(
     return apply_integer_cast_value(&func->return_value_type(), value);
 }
 
-madc_wide_int Program::parse_constant_primary()
+ConstValue Program::parse_constant_primary()
 {
     TokenBase *tb = nextToken();
     madc_wide_int out = 0;
@@ -18386,7 +18397,7 @@ size_t Program::constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigne
     return 0;
 }
 
-madc_wide_int Program::parse_constant_mul()
+ConstValue Program::parse_constant_mul()
 {
     madc_wide_int lhs = parse_constant_primary();
 
@@ -18416,7 +18427,7 @@ madc_wide_int Program::parse_constant_mul()
 }
 
 // additive: parse_constant_mul ([+-] parse_constant_mul)*
-madc_wide_int Program::parse_constant_add()
+ConstValue Program::parse_constant_add()
 {
     madc_wide_int lhs = parse_constant_mul();
 
@@ -18435,7 +18446,7 @@ madc_wide_int Program::parse_constant_add()
 }
 
 // shift: parse_constant_add ([<<>>] parse_constant_add)*
-madc_wide_int Program::parse_constant_shift()
+ConstValue Program::parse_constant_shift()
 {
     madc_wide_int lhs = parse_constant_add();
 
@@ -18454,7 +18465,7 @@ madc_wide_int Program::parse_constant_shift()
 }
 
 // bitwise-and / xor / or: same precedence order as C.
-madc_wide_int Program::parse_constant_band()
+ConstValue Program::parse_constant_band()
 {
     madc_wide_int lhs = parse_constant_eq();
     while ( peekToken() && peekToken()->id() == TokenID::tkBand )
@@ -18465,7 +18476,7 @@ madc_wide_int Program::parse_constant_band()
     return lhs;
 }
 
-madc_wide_int Program::parse_constant_bxor()
+ConstValue Program::parse_constant_bxor()
 {
     madc_wide_int lhs = parse_constant_band();
     while ( peekToken() && peekToken()->id() == TokenID::tkXor )
@@ -18476,7 +18487,7 @@ madc_wide_int Program::parse_constant_bxor()
     return lhs;
 }
 
-madc_wide_int Program::parse_constant_bor()
+ConstValue Program::parse_constant_bor()
 {
     madc_wide_int lhs = parse_constant_bxor();
     while ( peekToken() && peekToken()->id() == TokenID::tkBor )
@@ -18487,7 +18498,7 @@ madc_wide_int Program::parse_constant_bor()
     return lhs;
 }
 
-madc_wide_int Program::parse_constant_rel()
+ConstValue Program::parse_constant_rel()
 {
     madc_wide_int lhs = parse_constant_shift();
     while ( peekToken() )
@@ -18509,7 +18520,7 @@ madc_wide_int Program::parse_constant_rel()
     return lhs;
 }
 
-madc_wide_int Program::parse_constant_eq()
+ConstValue Program::parse_constant_eq()
 {
     madc_wide_int lhs = parse_constant_rel();
     while ( peekToken() )
@@ -18560,7 +18571,7 @@ void Program::skip_const_logical_operand(bool stop_at_and)
     }
 }
 
-madc_wide_int Program::parse_constant_land()
+ConstValue Program::parse_constant_land()
 {
     madc_wide_int lhs = parse_constant_bor();
     while ( peekToken() && peekToken()->id() == TokenID::tkLand )
@@ -18576,7 +18587,7 @@ madc_wide_int Program::parse_constant_land()
     return lhs;
 }
 
-madc_wide_int Program::parse_constant_lor()
+ConstValue Program::parse_constant_lor()
 {
     madc_wide_int lhs = parse_constant_land();
     while ( peekToken() && peekToken()->id() == TokenID::tkLor )
@@ -18633,7 +18644,7 @@ void Program::skip_const_conditional_operand(bool through_colon)
 	Throw(curToken()) << "Expecting ':' in ternary constant expression" << flush;
 }
 
-madc_wide_int Program::parse_constant_ternary()
+ConstValue Program::parse_constant_ternary()
 {
     madc_wide_int cond = parse_constant_lor();
     if ( peekToken() && peekToken()->id() == TokenID::tkQmark )
@@ -18654,7 +18665,7 @@ madc_wide_int Program::parse_constant_ternary()
     return cond;
 }
 
-madc_wide_int Program::parse_constant_integer_expression()
+ConstValue Program::parse_constant_integer_expression()
 {
     return parse_constant_ternary();
 }

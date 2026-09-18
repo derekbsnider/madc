@@ -5054,7 +5054,7 @@ public:
     // parameter names to folded argument values while its retained return
     // expression runs through parse_constant_integer_expression. No shared
     // mutable state: distinct Program instances evaluate independently.
-    std::vector<std::map<std::string, madc_wide_int> > constexpr_call_bindings;
+    std::vector<std::map<std::string, ConstValue> > constexpr_call_bindings;
     bool constexpr_recursion_limit_hit = false;
     // Current declaration is a for-init clause (TokenFOR::parse sets it around
     // parseDeclaration). The class ctor-call arm consumes the trailing ';' in
@@ -6165,12 +6165,12 @@ public:
     // The rungs compute in the 128-bit fold carrier (madc_wide_int, P0 slice 3
     // — gcc's wide_int model); int64 consumers truncate at the assignment
     // boundary, which is gcc's own #if/intmax_t semantics.
-    madc_wide_int parse_constant_primary();
+    ConstValue parse_constant_primary();
     // C++11 constexpr calls stay inside the same evaluator: recognize a
     // function call primary, fold its arguments, bind the selected function's
     // parameter names in constexpr_call_bindings, then evaluate its retained
     // `return expr;` token run. Recursion is bounded and reports a hard error.
-    madc_wide_int evaluate_constexpr_function_call(TokenBase *name_tb,
+    ConstValue evaluate_constexpr_function_call(TokenBase *name_tb,
 						    const std::string &name);
     bool constexpr_binding_value(const std::string &name,
 				 madc_wide_int &out) const;
@@ -6180,16 +6180,16 @@ public:
     // target and `unsigned`-ness; 0 when the run is a parenthesized EXPRESSION
     // (`(I<0>::num == 0)`). Defined beside parse_constant_primary.
     size_t constant_cast_type_id_extent(DataDef *&cast_dd, bool &is_unsigned);
-    madc_wide_int parse_constant_mul();
-    madc_wide_int parse_constant_add();
-    madc_wide_int parse_constant_shift();
-    madc_wide_int parse_constant_rel();
-    madc_wide_int parse_constant_eq();
-    madc_wide_int parse_constant_band();
-    madc_wide_int parse_constant_bxor();
-    madc_wide_int parse_constant_bor();
-    madc_wide_int parse_constant_land();
-    madc_wide_int parse_constant_lor();
+    ConstValue parse_constant_mul();
+    ConstValue parse_constant_add();
+    ConstValue parse_constant_shift();
+    ConstValue parse_constant_rel();
+    ConstValue parse_constant_eq();
+    ConstValue parse_constant_band();
+    ConstValue parse_constant_bxor();
+    ConstValue parse_constant_bor();
+    ConstValue parse_constant_land();
+    ConstValue parse_constant_lor();
     // Short-circuit token-skip: consume (without evaluating) the RHS operand of
     // a `&&`/`||` whose result the LHS already determines. C++ [expr.const]: the
     // skipped operand need not be a constant expression. stop_at_and=true for a
@@ -6200,8 +6200,8 @@ public:
     // consume the unselected second operand AND its matching `:`; otherwise
     // consume the unselected third operand up to its enclosing boundary.
     void skip_const_conditional_operand(bool through_colon);
-    madc_wide_int parse_constant_ternary();
-    madc_wide_int parse_constant_integer_expression();
+    ConstValue parse_constant_ternary();
+    ConstValue parse_constant_integer_expression();
     // Materialize a folded constant as a TokenInt: values in int64 range keep
     // the historical typing (default int; >32-bit magnitude widens to
     // ddINT64/ddUINT64); a wider value stores its low 64 bits on the token,
@@ -6576,7 +6576,7 @@ public:
     // Named C++ casts (static_cast/reinterpret_cast/const_cast/dynamic_cast):
     // parse the expression form and the constant-folded form; plus the
     // C-style cast operand helpers (deref/function-call/literal materialization).
-    madc_wide_int parse_constant_named_cpp_cast(TokenBase *cast_tb,
+    ConstValue parse_constant_named_cpp_cast(TokenBase *cast_tb,
 						const std::string &cast_name);
     bool try_parse_constant_functional_cast(TokenBase *type_tb,
 					    madc_wide_int &out);

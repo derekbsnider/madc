@@ -204,6 +204,44 @@ typedef uint64_t carray_dim_t;
 typedef __int128          madc_wide_int;
 typedef unsigned __int128 madc_wide_uint;
 
+// ---- ConstValue: the constant-evaluation carrier ------------------------
+// Every rung of the constant evaluator returns this. It exists so a constant
+// EXPRESSION can denote something that is not an integer: a constexpr OBJECT,
+// an ARRAY, or an address constant ([expr.const]). Before it, every rung
+// computed in madc_wide_int, so `constexpr S s{42}; static_assert(s.i == 42)`
+// had nowhere to put `s` and folded to nothing -- the single largest family
+// in the g++.dg C++11 lane (115 tests, "Expecting integer constant
+// expression").
+//
+// STAGE 1 IS A CARRIER WIDENING AND NOTHING ELSE. Integer is still the only
+// kind ever produced, and the integer path must stay byte-identical: these
+// rungs are on the path of EVERY non-type template argument, EVERY array
+// bound, EVERY enum initializer and the whole C torture suite. madc_wide_int
+// therefore converts BOTH WAYS implicitly, so no rung body changes -- only
+// the signatures widen. Stages 2-5 (constexpr ctor evaluation, member and
+// element access, address constants) fill the remaining kinds.
+class ConstValue
+{
+public:
+	enum class Kind : uint8_t { Integer, Object, Array, Address };
+
+	ConstValue() : _kind(Kind::Integer), _int(0) {}
+	// implicit BOTH ways on purpose -- see the stage-1 note above
+	ConstValue(madc_wide_int v) : _kind(Kind::Integer), _int(v) {}
+	operator madc_wide_int() const { return _int; }
+
+	Kind kind() const { return _kind; }
+	bool is_integer() const { return _kind == Kind::Integer; }
+	// The integer value. Named accessor for sites that want to be explicit
+	// about reading the integer kind; the implicit conversion above is what
+	// keeps the existing rung bodies unchanged.
+	madc_wide_int integer() const { return _int; }
+
+private:
+	Kind _kind;
+	madc_wide_int _int;
+};
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass,
 				// An unresolved template parameter `T` (DataDefTemplateParam).
 				// Append-only: never renumber. is_numeric/is_integer/is_real
