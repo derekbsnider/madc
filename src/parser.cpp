@@ -17348,6 +17348,11 @@ void Program::consume_deferred_static_assert_statement(TokenBase *tb)
 	nextToken();
 }
 
+static std::string static_assert_failure_message(const std::string &message)
+{
+    return message.empty() ? "static assertion failed" : message;
+}
+
 TokenBase *Program::parse_static_assert_statement(TokenBase *tb)
 {
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
@@ -17380,7 +17385,7 @@ TokenBase *Program::parse_static_assert_statement(TokenBase *tb)
 	nextToken();
 
     if ( !cond )
-	Throw(tb) << message << flush;
+	Throw(tb) << static_assert_failure_message(message) << flush;
     return NULL;
 }
 
@@ -17440,7 +17445,7 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
 	}
     }
     if ( simple_false )
-	Throw(tb) << message << flush;
+	Throw(tb) << static_assert_failure_message(message) << flush;
 }
 
 bool Program::try_parse_constant_offsetof_address(int64_t &out)

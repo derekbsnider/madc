@@ -1,0 +1,2 @@
+// Preserve a nonempty user message verbatim.
+static_assert(false, "statement assertion detail");
