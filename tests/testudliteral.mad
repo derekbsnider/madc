@@ -1,0 +1,33 @@
+// g++ and clang++ -std=c++11 print i:123 f:55 c:120 s:5 r:4210
+//
+// [lex.ext]: a literal followed IMMEDIATELY by a ud-suffix is one token, and
+// it means a call to `operator"" <suffix>`. The suffix has to be captured at
+// lex — `123_w` is a user-defined literal while `123 _w` is two tokens — and
+// the call form depends on the literal's kind: a string passes (pointer,
+// length), a character passes the character, and a numeric literal passes
+// either its value (cooked) or its source spelling (raw).
+extern "C" int printf(const char *, ...);
+
+int operator"" _w(unsigned long long v)        { return (int)v; }
+int operator"" _hz(long double d)              { return (int)d; }
+int operator"" _ch(char c)                     { return (int)c; }
+int operator"" _len(const char *s, unsigned long n) { return (int)(n + (s[0] - s[0])); }
+// A RAW literal operator takes the literal's source spelling. It is the only
+// form that can see digits no integer type could hold.
+int operator"" _raw(const char *digits)
+{
+    int n = 0;
+    for ( const char *p = digits; *p; ++p )
+	n = n * 10 + (*p - '0');
+    return n;
+}
+
+int main()
+{
+    printf("i:%d\n", 123_w);
+    printf("f:%d\n", 55.75_hz);
+    printf("c:%d\n", 'x'_ch);
+    printf("s:%d\n", "hello"_len);
+    printf("r:%d\n", 4210_raw);
+    return 0;
+}

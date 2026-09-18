@@ -2731,6 +2731,8 @@ protected:
     TokenBase *make_real(long double value);                   // TokenReal
     TokenBase *make_str(const std::string &bytes, bool wide = false); // TokenStr
     TokenBase *make_char(int code);                            // TokenChar
+    // [lex.ext] ud-suffix capture — see the definition in lexer.cpp.
+    void lex_ud_suffix(TokenBase *lit);
     TokenBase *make_datatype(const char *name, DataDef &dd);   // TokenDataType
     TokenBase *make_rem(const std::string &text);              // TokenREM
     TokenBase *make_space(int cnt);                            // TokenSpace
@@ -6157,6 +6159,9 @@ public:
 		       bool destructor_declarator = false);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
+    // [lex.ext] — desugar a literal carrying a ud-suffix into the call to its
+    // literal operator. See the definition in parser.cpp.
+    TokenBase *user_defined_literal_call(TokenBase *lit);
     // Consume `{ ... }` from the stream, appending its scalars to `args` and
     // flattening nested braces (the declaration path's model).
     void collect_braced_init_args(std::vector<TokenBase *> &args);

@@ -282,6 +282,17 @@ public:
     // template re-instantiation touched the same token object). Reported in
     // aggregate by --show-stats; otherwise just one uint per token.
     uint32_t read_count;
+    // [lex.ext] ud-suffix. A user-defined-literal is ONE token — `123_w` is
+    // not `123` followed by `_w`, and the adjacency that decides it is only
+    // knowable at LEX. The suffix interns into the same pool as spelling_id
+    // (-> Program::strpool; 0 = this literal carries no ud-suffix), so it
+    // costs one uint per token rather than a std::string.
+    // NOT in TokenRec: that record is the serialized pop-1 ROM, and widening
+    // it changes the frozen-header pack layout. A packed system header that
+    // USED a ud-suffix in an expression would therefore lose it — move this
+    // into TokenRec (with a pack version bump) if the pack ever round-trips
+    // expression bodies.
+    uint32_t ud_suffix_id = 0;
     // Leading trivia (whitespace + comments) preserved before this token, for
     // byte-faithful source reconstruction. Populated only in full-fidelity mode
     // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
@@ -332,8 +343,19 @@ public:
 	    c->file = file;
 	    c->line = line;
 	    c->column = column;
+	    // The ud-suffix is part of the literal's IDENTITY, not its
+	    // position — a cloned `123_w` is still `123_w`. Propagated here
+	    // (the sanctioned copier) because clone() is per-class.
+	    c->ud_suffix_id = ud_suffix_id;
 	}
 	return c;
+    }
+    // The [lex.ext] ud-suffix this literal carries, or NULL for the ordinary
+    // case. Resolved through the active intern pool, like spelling().
+    const char *ud_suffix() const
+    {
+	return (ud_suffix_id && _active_strpool)
+	     ? _active_strpool->c_str(ud_suffix_id) : NULL;
     }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }

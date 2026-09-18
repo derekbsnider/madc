@@ -4598,9 +4598,12 @@ static size_t operator_id_tail_span(const Seq &toks, size_t sym_idx)
     TokenBase *next = sym_idx + 1 < toks.size() ? toks[sym_idx + 1] : NULL;
     if ( !sym )
 	return 1;
+    if ( sym->type() == TokenType::ttString && sym->ud_suffix() )
+	return 1;   // `operator""_w` — the lexer attached the ud-suffix, so
+		    // the operator-id is the `""` token alone
     if ( sym->type() == TokenType::ttString && next
       && is_contextual_identifier_token(next) )
-	return 2;   // user-defined literal: operator "" suffix
+	return 2;   // `operator"" _w` — suffix spelled as its own token
     if ( (sym->id() == TokenID::tkOpBrk || sym->id() == TokenID::tkOpSqr) && next )
 	return 2;   // operator() / operator[]
     if ( sym->id() == TokenID::tkNEW || sym->id() == TokenID::tkDELETE )
@@ -30119,6 +30122,99 @@ static bool token_tree_has_pack_expansion(TokenBase *tb)
     return false;
 }
 
+// The source spelling of a numeric literal, WITHOUT its ud-suffix — the
+// argument a RAW literal operator receives ([lex.ext.int]/3). The lexer already
+// retains it for macro round-trip (TokenInt/TokenReal::source_text); the
+// decimal rendering is the fallback for the paths that do not record it.
+static std::string literal_source_spelling(TokenBase *lit)
+{
+    if ( TokenInt *ti = dynamic_cast<TokenInt *>(lit) )
+    {
+	if ( !ti->source_text.empty() )
+	    return ti->source_text;
+	return std::to_string(ti->ival());
+    }
+    if ( TokenReal *tr = dynamic_cast<TokenReal *>(lit) )
+    {
+	if ( !tr->source_text.empty() )
+	    return tr->source_text;
+	char buf[64];
+	snprintf(buf, sizeof buf, "%g", tr->dval());
+	return buf;
+    }
+    return "";
+}
+
+// [lex.ext]/2 — a user-defined-literal IS a call to its literal operator; the
+// suffix names the function, `operator""` + the suffix, which is exactly the
+// spelling parseOperatorId registers a literal-operator DECLARATION under.
+//
+// The call is built by INJECTING the argument tokens ahead of the stream and
+// running the ordinary parseCallFunc, so overload ranking, default arguments
+// and template instantiation are the same machinery every other call uses —
+// this is a desugaring, not a second call path.
+//
+// Form selection ([lex.ext.int] / [lex.ext.float] / [lex.ext.string] /
+// [lex.ext.char]): a string literal passes (pointer, length), a character
+// literal passes the character, and a numeric literal passes either its VALUE
+// (cooked) or its source spelling (raw) — decided by the parameter the
+// resolved operator actually declares.
+TokenBase *Program::user_defined_literal_call(TokenBase *lit)
+{
+    const char *sfx = lit ? lit->ud_suffix() : NULL;
+    if ( !sfx )
+	return lit;
+    std::string name = std::string("operator\"\"") + sfx;
+    Variable *op = findVariable(name);
+    if ( !op || !op->type || !op->type->is_function() )
+	Throw(lit) << "no literal operator '" << name
+		   << "' for user-defined literal suffix '" << sfx << '\''
+		   << flush;
+
+    // The argument is the literal WITHOUT its suffix — clearing it is what
+    // stops the desugaring from re-entering on its own argument.
+    TokenBase *arg = lit->clone_origin();
+    arg->ud_suffix_id = 0;
+
+    // Raw form: the operator takes a single pointer and the literal is
+    // numeric. The argument is then the literal's SOURCE SPELLING — the only
+    // form able to carry a value too large for any integer type
+    // (`12345678901234567890123456789012345678901234567890_w`).
+    bool numeric = lit->type() == TokenType::ttInteger
+		|| lit->type() == TokenType::ttReal;
+    FuncDef *fd = dynamic_cast<FuncDef *>(op->type);
+    if ( numeric && fd && fd->parameters.size() == 1
+      && fd->parameters[0] && fd->parameters[0]->is_pointer() )
+    {
+	std::string spelling = literal_source_spelling(lit);
+	arg = make_str(spelling);
+	copy_token_location(arg, lit);
+    }
+
+    // Push in REVERSE: parseCallFunc reads forward from the token after the
+    // already-consumed '(' up to the matching ')'.
+    TokenBase *close = make_token(TokenID::tkClBrk);
+    copy_token_location(close, lit);
+    pushToken(close);
+    if ( lit->type() == TokenType::ttString )
+    {
+	// [lex.ext.string]: operator"" X(const CharT *, size_t) — the length
+	// is the COOKED length, excluding the terminating null.
+	TokenBase *len = make_int((int64_t)((TokenStr *)lit)->str.size());
+	copy_token_location(len, lit);
+	TokenBase *comma = make_token(TokenID::tkComma);
+	copy_token_location(comma, lit);
+	pushToken(len);
+	pushToken(comma);
+    }
+    pushToken(arg);
+
+    TokenCallFunc *tc = new TokenCallFunc(*op);
+    copy_token_location(tc, lit);
+    parseCallFunc(tc);
+    return tc;
+}
+
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -30387,6 +30483,13 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 	TokenStr *lit = static_cast<TokenStr *>(op_tok);
 	if ( !lit->spelling_empty() )
 	    Throw(op_tok) << "Expected empty string in literal operator-id" << flush;
+	// Both spellings are legal ([over.literal]): `operator"" _w`, where the
+	// suffix is its own token, and `operator""_w`, where it is a ud-suffix
+	// the lexer already attached to the empty string literal. The attached
+	// form is the one C++11 requires the LEXER to produce, so check it
+	// first — reading a following token here would consume the '('.
+	if ( const char *attached = op_tok->ud_suffix() )
+	    return std::string("operator\"\"") + attached;
 	TokenBase *suffix = take();
 	if ( !suffix || !is_contextual_identifier_token(suffix) )
 	    Throw(op_tok) << "Expected literal suffix in operator\"\"" << flush;
@@ -43378,6 +43481,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     while ( !done && tb )
     {
 	redo_expression_token:
+	// [lex.ext]/2: a literal carrying a ud-suffix is a CALL to its literal
+	// operator, not a literal. Desugared here — the one place every literal
+	// kind becomes an operand — so integer, floating, character and string
+	// user-defined literals all take the same path. The resulting call is
+	// pushed as the OPERAND it is; it must not go back through the switch
+	// below, which classifies literal tokens and rejects a ttCallFunc.
+	if ( tb->ud_suffix() )
+	{
+	    exStack.push(user_defined_literal_call(tb));
+	}
+	else
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:

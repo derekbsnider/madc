@@ -877,6 +877,10 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	source.get();
 	{
 	    TokenBase *stok = make_str(bytes, prefix != "u8");
+	    // An encoding-prefixed string carries a ud-suffix the same way a
+	    // plain one does: `U"\x1181"_s` ([lex.ext.string] selects the
+	    // operator by the literal's CHARACTER type, not by its spelling).
+	    lex_ud_suffix(stok);
 	    // Piece extent includes the encoding prefix (L"..."/u8"...").
 	    if ( source.line() == row )
 	    {
@@ -917,6 +921,9 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		  : prefix == "u" ? dd_char16()
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
 		  : dd_platform_wchar());
+    // `U'x'_c` — an encoding-prefixed character literal takes a ud-suffix too
+    // ([lex.ext.char]).
+    lex_ud_suffix(ti);
     return ti;
 }
 
@@ -6269,6 +6276,35 @@ TokenBase *Program::make_char(int code)
     return new TokenChar(code);
 }
 
+// [lex.ext]/1 — capture the ud-suffix of a user-defined-literal onto the
+// literal token it belongs to. A user-defined-literal is ONE preprocessing
+// token: `123_w` is a literal with suffix `_w`, while `123 _w` is two tokens
+// and ill-formed. That adjacency is visible ONLY here — by the time the
+// parser sees a token stream the whitespace is gone — so the suffix is lexed,
+// never reconstructed from neighbouring tokens.
+//
+// Called at each literal's completion point, AFTER the standard suffixes
+// (u/U/l/L, f/F, the imaginary and _FloatN families) have been consumed, so
+// what remains can only be a ud-suffix. A numeric literal followed directly
+// by an identifier is ill-formed in every dialect, so eating it here costs
+// nothing when no literal operator is declared — the parser then reports the
+// missing operator instead of a stray undeclared identifier.
+void Program::lex_ud_suffix(TokenBase *lit)
+{
+    // C++ only: in C, `123_w` is ill-formed, and silently absorbing the
+    // identifier would change the diagnostic the C lanes expect.
+    if ( !lit || !cpp_keyword_active(STD_CPP11) || !source.good() )
+	return;
+    int c = source.peek();
+    if ( c != '_' && !isalpha(c) )
+	return;
+    std::string sfx;
+    while ( source.good()
+	 && (source.peek() == '_' || isalnum(source.peek())) )
+	sfx += (char)source.get();
+    lit->ud_suffix_id = strpool.intern(sfx);
+}
+
 TokenBase *Program::make_datatype(const char *name, DataDef &dd)
 {
     TokenDataType *t = new TokenDataType(name, dd);
@@ -7298,6 +7334,7 @@ TokenBase *Program::_getToken()
 	    source.get();
 	    {
 		TokenBase *stok = make_str(word);
+		lex_ud_suffix(stok);
 		// Source extent of this piece (see TokenStr::SrcPiece): from
 		// the opening quote through the closing quote, single-line
 		// only — a line-spanning literal (scanner-tolerated) keeps no
@@ -7371,7 +7408,11 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return make_char(word[0]);
+	    {
+		TokenBase *ctok = make_char(word[0]);
+		lex_ud_suffix(ctok);
+		return ctok;
+	    }
 	case '<':
 	    if (source.peek() == '=')
 	    {
@@ -7609,6 +7650,10 @@ TokenBase *Program::_getToken()
 		    DataDef *st = resolve_int_suffix_type(tval, is_hex_or_octal);
 		    if ( st )
 			ti->setDataType(st);
+		    // Every integer-literal path funnels through here, always
+		    // after its eat_int_suffix() — the one place a ud-suffix
+		    // can follow an integer literal.
+		    lex_ud_suffix(ti);
 		    return ti;
 		};
 		if ( is_binary_prefix(ch, source) )
@@ -7690,6 +7735,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			lex_ud_suffix(tr);
 			tr->source_text = lit_text;
 			return tr;
 		    }
@@ -7775,6 +7821,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			lex_ud_suffix(tr);
 			tr->source_text = lit_text;
 			return tr;
 		    }
@@ -7848,6 +7895,7 @@ TokenBase *Program::_getToken()
 		    // value was parsed at full precision and then typed as a double.
 		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			tr->setDataType(&ddLDOUBLE);
+		lex_ud_suffix(tr);
 		    tr->source_text = lit_text;
 		    return tr;
 		}
