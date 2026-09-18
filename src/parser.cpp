@@ -30907,7 +30907,8 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		continue;
 	    }
 	    TokenBase *idx_tb = nextToken();
-	    TokenBase *idx_expr = parseExpression(idx_tb, true);
+	    TokenBase *idx_expr = parseExpression(
+		respell_braced_subscript_index(result, idx_tb), true);
 	    TokenBase *close = nextToken();
 	    if ( !close || close->id() != TokenID::tkClSqr )
 		Throw(close ? close : open) << "expected ']' in subscript" << flush;
@@ -40577,7 +40578,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			// parse index expression (stops at ] via peek-stop below)
-			TokenBase *idx = parseExpression(nextToken());
+			TokenBase *idx = parseExpression(
+			    respell_braced_subscript_index(tv, nextToken()));
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -40696,7 +40698,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    NULL, madc_array_subscript_type()));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
-			TokenBase *idx = parseExpression(nextToken());
+			TokenBase *idx = parseExpression(
+			    respell_braced_subscript_index(base_expr, nextToken()));
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -40794,7 +40797,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
-			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *idx = parseExpression(
+				respell_braced_subscript_index(base_expr, nextToken()));
 			    TokenBase *clsqr = nextToken();
 			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 				Throw(tb) << "Expected ] in subscript expression" << flush;
@@ -51471,6 +51475,30 @@ TokenBase *Program::respell_braced_list_call_argument(TokenCallFunc *tc,
 		   : "no matching parameter with a known type")
 	    << ')' << flush;
     return nh;
+}
+
+TokenBase *Program::respell_braced_subscript_index(TokenBase *receiver,
+						TokenBase *head)
+{
+    if ( !head || head->id() != TokenID::tkOpBrc )
+	return head;
+    // An array of class objects still uses the built-in subscript.
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(receiver) )
+	if ( tv->var.is_fixed_array() )
+	    return head;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(receiver) )
+	if ( tm->is_fixed_array_member() )
+	    return head;
+    DataDef *dd = referent_if_reference(operand_value_datadef(receiver));
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd ? dd->unqualified() : NULL);
+    Variable *method = cls ? cls->findMethod("operator[]") : NULL;
+    if ( !method )
+	return head;
+    // Only the signature is needed here; the existing subscript AST and
+    // lowering still own the receiver and invocation. This uses the same
+    // hidden-this slot and overload walk as an explicitly written call.
+    TokenCallFunc call(*method);
+    return respell_braced_list_call_argument(&call, head);
 }
 
 TokenBase *TokenRETURN::parse(Program &pgm)
