@@ -1,0 +1,16 @@
+// An array parameter adjusts to a pointer; the supplied elements must arrive.
+extern "C" int printf(const char *, ...);
+
+int source[2] = { 17, 29 };
+template<const int I[2]> struct ReadArray {
+	static int get() { return I[0] * 100 + I[1]; }
+};
+
+int main()
+{
+	printf("array: %d\n", ReadArray<source>::get());
+	source[0] = 31;
+	source[1] = 43;
+	printf("array after write: %d\n", ReadArray<source>::get());
+	return 0;
+}

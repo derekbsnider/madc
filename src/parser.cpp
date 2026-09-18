@@ -55804,6 +55804,19 @@ static void parse_template_parameter_list(
 		    + std::to_string(anonymous_index++), false);
 		out.has_non_type_params = true;
 	    }
+	    if ( !head_is_concept && pgm.peekToken()
+	      && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		TokenDataType *element = pgm.resolve_declared_type_token(
+		    token, false, true);
+		if ( !element )
+		    pgm.Throw(token) << "Expecting array element type in template parameter" << flush;
+		// The list stores parameter names/kinds, while argument binding
+		// retains the value tokens. The declarator owner consumes and
+		// validates the extents here, before the list separator is read.
+		pgm.parse_ptr_array_suffix(&element->definition, token,
+		    "template parameter");
+	    }
 	}
 	else
 	    pgm.Throw(token) << "Expecting type-parameter name in template<>" << flush;
