@@ -320,6 +320,7 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // this is how the two stay consistent.
 			                        // (Fresh bit: 65536 is RETIRED, and reusing
 			                        // it would misread older serialized flags.)
+			  vfMUTABLE    =4194304, // mutable data member; carried in member_access
 			  vfTHREADLOCAL=2097152, // thread storage duration: C++11
 			                        // `thread_local` / C11 `_Thread_local`.
 			                        // Rides beside vfSTATIC/vfEXTERN (a
@@ -833,7 +834,7 @@ public:
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<std::vector<carray_dim_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
-    std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
+    std::vector<uint32_t> member_access;	// per-member flags: access (vfPRIVATE/vfPROTECTED), vfMUTABLE
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
     struct AnonymousAggregateInfo
     {
@@ -1311,7 +1312,8 @@ public:
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
-		return (i < member_access.size()) ? member_access[i] : 0;
+		return (i < member_access.size())
+		? member_access[i] & (vfPRIVATE | vfPROTECTED) : 0;
 	return 0;
     }
     TokenBase *m_count_expr(const std::string &member) const

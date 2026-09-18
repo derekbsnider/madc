@@ -1,0 +1,6 @@
+// g++ and clang++ -std=c++11: flat: 42 7
+extern "C" int printf(const char *, ...);
+struct S { int i; int j; };
+constexpr S s = {42, 7};
+enum { E = s.i, F = s.j };
+int main() { printf("flat: %d %d\n", E, F); return 0; }
