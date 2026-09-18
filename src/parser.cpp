@@ -14365,35 +14365,78 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
 				    Variable *var, madc_wide_int &out)
 {
     if ( !var || !(var->flags & vfCONSTBAKED) || !var->data
-      || !var->type || !var->is_fixed_array() )
+      || !var->type )
 	return false;
-    size_t offset = 0;
-    size_t depth = 0;
-    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    TokenStream::Pos saved_tokens = pgm.tokens.savepos();
+    TokenBase *saved_cur = pgm.curToken();
+    TokenBase *saved_prv = pgm.prevToken();
+    const char *saved_file = TokenBase::_parse_file;
+    int saved_line = TokenBase::_parse_line;
+    int saved_column = TokenBase::_parse_column;
+    auto restore = [&]() {
+	pgm.tokens.restore(saved_tokens);
+	pgm.setTokenContext(saved_cur, saved_prv);
+	TokenBase::_parse_file = saved_file;
+	TokenBase::_parse_line = saved_line;
+	TokenBase::_parse_column = saved_column;
+    };
+    auto walk = [&]() -> bool {
+	size_t offset = 0;
+	size_t depth = 0;
+	DataDef *type = var->type;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+		TokenBase *open = pgm.nextToken();
+		if ( depth >= var->dims.size() )
+		    pgm.Throw(open) << "Subscript of non-array in constant expression" << flush;
+		madc_wide_int index = pgm.parse_constant_integer_expression();
+		TokenBase *close = pgm.nextToken();
+		if ( !close || close->id() != TokenID::tkClSqr )
+		    pgm.Throw(close ? close : where)
+			<< "Expecting ']' in constant expression" << flush;
+		if ( index < 0 || (madc_wide_uint)index >= var->dims[depth] )
+		    pgm.Throw(open) << "Array subscript out of bounds in constant expression" << flush;
+		size_t stride = var->type->size;
+		for ( size_t di = depth + 1; di < var->dims.size(); ++di )
+		    stride *= var->dims[di];
+		offset += (size_t)index * stride;
+		++depth;
+	}
+	if ( depth != var->dims.size() )
+		return false;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
+	{
+		pgm.nextToken();
+		TokenBase *member = pgm.nextToken();
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(type);
+		if ( !sdd || !is_contextual_identifier_token(member) )
+		    return false;
+		size_t mi = find_struct_member_index(sdd, contextual_identifier_name(member));
+		if ( mi >= sdd->members.size() )
+		    pgm.Throw(member) << "Unknown member in constant expression" << flush;
+		if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield )
+		    return false;
+		offset += sdd->member_offsets[mi];
+		type = sdd->members[mi].second;
+	}
+	Variable element;
+	element.type = type;
+	element.data = (char *)var->data + offset;
+	element.flags = vfCONSTANT;
+	return read_constant_integer(&element, out);
+    };
+    try
     {
-	TokenBase *open = pgm.nextToken();
-	if ( depth >= var->dims.size() )
-	    pgm.Throw(open) << "Subscript of non-array in constant expression" << flush;
-	madc_wide_int index = pgm.parse_constant_integer_expression();
-	TokenBase *close = pgm.nextToken();
-	if ( !close || close->id() != TokenID::tkClSqr )
-	    pgm.Throw(close ? close : where)
-		<< "Expecting ']' in constant expression" << flush;
-	if ( index < 0 || (madc_wide_uint)index >= var->dims[depth] )
-	    pgm.Throw(open) << "Array subscript out of bounds in constant expression" << flush;
-	size_t stride = var->type->size;
-	for ( size_t di = depth + 1; di < var->dims.size(); ++di )
-	    stride *= var->dims[di];
-	offset += (size_t)index * stride;
-	++depth;
+	if ( walk() )
+	    return true;
     }
-    if ( depth != var->dims.size() )
-	return false;
-    Variable element;
-    element.type = var->type;
-    element.data = (char *)var->data + offset;
-    element.flags = vfCONSTANT;
-    return read_constant_integer(&element, out);
+    catch ( ... )
+    {
+	restore();
+	throw;
+    }
+    restore();
+    return false;
 }
 
 static void copy_token_location(TokenBase *dst, TokenBase *src)
@@ -70493,6 +70536,37 @@ static bool initialize_static_fixed_array_data(Variable *var,
     return true;
 }
 
+// Parse-time counterpart of the aggregate initializer emitted by CIR. Keep
+// the initializer tree for emission; only a complete write earns CONSTBAKED.
+static bool initialize_static_struct_data(Variable *var,
+					 const std::vector<TokenBase *> &init_list)
+{
+    DataDefSTRUCT *sdd = var ? dynamic_cast<DataDefSTRUCT *>(var->type) : NULL;
+    if ( !sdd || !var->data || sdd->union_layout || sdd->has_anon_aggregate
+      || sdd->reverse_scalar_storage || sdd->has_runtime_size() )
+	return false;
+    if ( DataDefCLASS *cdd = dynamic_cast<DataDefCLASS *>(sdd) )
+	if ( cdd->has_user_ctor || cdd->has_any_vptr() || !cdd->bases.empty()
+	  || !cdd->member_default_inits.empty() )
+	    return false;
+    if ( init_list.size() > sdd->members.size() )
+	return false;
+    for ( size_t mi = 0; mi < sdd->members.size(); ++mi )
+    {
+	if ( sdd->member_array_flags[mi] || sdd->member_bitfields[mi].is_bitfield
+	  || sdd->member_access[mi] )
+	    return false;
+	Variable member;
+	member.type = sdd->members[mi].second;
+	member.data = (char *)var->data + sdd->member_offsets[mi];
+	int64_t value = 0;
+	if ( !literal_integer_value(mi < init_list.size() ? init_list[mi] : NULL, value)
+	  || !store_static_integer_array_value(&member, 0, value) )
+	    return false;
+    }
+    return true;
+}
+
 static bool is_char_array_element_type(DataDef *dd)
 {
     // A char/unsigned-char ELEMENT, not a pointer to one. rawtype() strips
@@ -72831,6 +72905,18 @@ fnptr_decl_arm_head:
 		    var->flags |= vfALLOC;
 	    }
 	    if ( initialize_static_fixed_array_data(var, td->init_list) )
+		var->flags |= vfCONSTBAKED;
+	}
+
+	if ( gotconstexpr && !var->is_fixed_array() && is_struct_init && saw_brace_init )
+	{
+	    if ( !var->data )
+	    {
+		var->data = calloc(1, var->type->size);
+		if ( var->data )
+		    var->flags |= vfALLOC;
+	    }
+	    if ( initialize_static_struct_data(var, td->init_list) )
 		var->flags |= vfCONSTBAKED;
 	}
 
