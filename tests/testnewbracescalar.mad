@@ -1,0 +1,2 @@
+#include <stdio.h>
+int main() { int *ip = new int{9}; printf("%d\n", *ip); delete ip; }
