@@ -22040,8 +22040,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// move_iterator) — dispatch to the class's operator[] like the
 			// named-variable TokenSubscript path, instead of a raw N_IND that
 			// c2mir rejects ("subscripted value is neither array nor pointer").
-			if (DataDefCLASS *bcls = as_class_instance(
-				    tse->base_expr ? tse->base_expr->datadef() : NULL)) {
+			// Resolve the receiver's VALUE class: a reference-returning
+			// call's raw datadef is DataDefREF, which as_class_instance
+			// deliberately rejects. The shared operand resolver also owns
+			// late-bound call return types and preserves pointer receivers.
+			if (DataDefCLASS *bcls = operand_object_class(tse->base_expr)) {
 				std::string subop = "operator[]";
 				Variable *mv = bcls->findMethod(subop);
 				FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;

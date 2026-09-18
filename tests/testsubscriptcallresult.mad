@@ -1,0 +1,12 @@
+// A reference-returning call denotes the class receiver of operator[].
+extern "C" int printf(const char *, ...);
+struct Index { int row, col; Index(int r, int c): row(r), col(c) {} };
+struct Matrix { int operator[](Index i) { return i.row * 10 + i.col; } };
+Matrix &identity(Matrix &m) { return m; }
+int main()
+{
+	Matrix m;
+	Index i(4, 5);
+	printf("%d\n", identity(m)[i]);
+	return 0;
+}
