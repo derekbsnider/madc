@@ -8522,7 +8522,7 @@ static TokenBase *basic_class_pattern_first_token(
 
 static TokenBase *parse_basic_class_pattern_default(
 	Program &pgm, const BasicClassPatternBinding &binding,
-	DataDefCLASS *owner, Method *method,
+	DataDefCLASS *owner, Method *method, DataDef *target,
 	const std::vector<TokenBase *> &raw)
 {
     std::vector<TokenBase *> seq =
@@ -8544,14 +8544,19 @@ static TokenBase *parse_basic_class_pattern_default(
     TokenBase *expr = NULL;
     try
     {
+	TokenBase *head = pgm.nextToken();
+	if ( !pgm.is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+	    if ( TokenBase *typed = pgm.respell_braced_list_for_target(
+		    referent_if_reference(target), head) )
+		head = typed;
 	if ( !binding.definition.defining_namespace.empty() )
 	{
 	    Program::NamespaceScope namespace_scope(
 		pgm, binding.definition.defining_namespace);
-	    expr = pgm.parseExpression(pgm.nextToken(), true);
+	    expr = pgm.parseExpression(head, true);
 	}
 	else
-	    expr = pgm.parseExpression(pgm.nextToken(), true);
+	    expr = pgm.parseExpression(head, true);
     }
     catch ( ... )
     {
@@ -8831,7 +8836,7 @@ static void register_basic_class_pattern_method(
     for ( size_t i = 0; i < pattern.parameters.size(); ++i )
 	if ( !pattern.parameters[i].default_tokens.empty() )
 	    fd->param_defaults[i] = parse_basic_class_pattern_default(
-		pgm, binding, owner, method,
+		pgm, binding, owner, method, fd->parameters[i],
 		pattern.parameters[i].default_tokens);
 
     if ( has_deferred_body )
@@ -27051,13 +27056,18 @@ void Program::flush_forest_pending_globals()
 		TokenBase *expr = NULL;
 		try
 		{
+		    TokenBase *head = nextToken();
+		    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+			if ( TokenBase *typed = respell_braced_list_for_target(
+				referent_if_reference(rd.fd->parameters[pidx]), head) )
+			    head = typed;
 		    if ( rd.ns && *rd.ns )
 		    {
 			NamespaceScope nsg(*this, rd.ns);
-			expr = parseExpression(nextToken(), true);
+			expr = parseExpression(head, true);
 		    }
 		    else
-			expr = parseExpression(nextToken(), true);
+			expr = parseExpression(head, true);
 		}
 		catch ( ... )
 		{
@@ -68237,21 +68247,10 @@ grabnt:
 	}
 	if ( nt->id() == TokenID::tkAssign )
 	{
-	    // Unnamed parameter carrying a default value, e.g.
-	    // `const allocator<_CharT>& = allocator<_CharT>()`. The named-param
-	    // path parses the default just before paramdecl:; an anonymous param
-	    // never reaches it, so parse the default here (same stop-token rule)
-	    // then fall into paramdecl with nt at the ',' / ')'.
+	    // Unnamed defaults use the same typed initializer path as named
+	    // parameters; param_dd already holds the complete declarator.
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    {
-		DefCapState cap;
-		bool capturing = param_default_capture_begin(cap, true);
-		param_default = parseExpression(nextToken(), true);
-		if ( capturing )
-		    param_default_capture_end(cap, param_default_src);
-	    }
-	    nt = nextToken();   // the ',' or ')' that ends this parameter
-	    goto paramdecl;
+	    goto finish_param_declarator;
 	}
 	if ( nt->id() == TokenID::tkOpSqr )
 	{
@@ -68605,7 +68604,11 @@ finish_param_declarator:
 	{
 	    DefCapState cap;
 	    bool capturing = param_default_capture_begin(cap, true);
-	    param_default = parseExpression(nextToken(), true);
+	    TokenBase *head = nextToken();
+	    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+		if ( TokenBase *typed = respell_braced_list_for_target(param_dd, head) )
+		    head = typed;
+	    param_default = parseExpression(head, true);
 	    if ( capturing )
 		param_default_capture_end(cap, param_default_src);
 	    nt = nextToken();   // the ',' or ')' that ends this parameter

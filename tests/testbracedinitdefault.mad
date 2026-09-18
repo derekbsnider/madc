@@ -1,0 +1,14 @@
+// Default argument target types survive declaration and class-pattern binding.
+#include <stdio.h>
+#include <initializer_list>
+struct Pair { int a, b; };
+struct Printed {
+	int a, b;
+	Printed(int x, int y) : a(x), b(y) { printf("unnamed: %d %d\n", a, b); }
+};
+void unnamed(Printed = {1, 2}) {}
+void named(Pair p = {3, 4}) { printf("named: %d %d\n", p.a, p.b); }
+struct Member { static void call(Pair p = {5, 6}) { printf("member: %d %d\n", p.a, p.b); } };
+void list(std::initializer_list<int> p = {7, 8}) { printf("list: %lu %d %d\n", (unsigned long)p.size(), p.begin()[0], p.begin()[1]); }
+template<class T> struct Generic { static void call(T p = {9, 10}) { printf("template: %d %d\n", p.a, p.b); } };
+int main() { unnamed(); named(); Member::call(); list(); Generic<Pair>::call(); return 0; }
