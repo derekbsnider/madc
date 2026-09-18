@@ -68811,8 +68811,14 @@ grabnt:
 		nt = nextToken();
 		goto finish_param_declarator;
 	    }
-	    if ( inner && inner->id() == TokenID::tkStar )
+	    if ( inner && (inner->id() == TokenID::tkStar
+			|| inner->id() == TokenID::tkBand
+			|| inner->id() == TokenID::tkLand) )
 	    {
+		bool nested_reference = inner->id() != TokenID::tkStar;
+		if ( nested_reference && is_c_mode() )
+		    Throw(inner) << "Reference declarators require C++" << flush;
+		param_rvalue_ref = inner->id() == TokenID::tkLand;
 		nt = nextToken();
 		while ( nt && (is_restrict_token(nt)
 		           || nt->id() == TokenID::tkCONST
@@ -68870,9 +68876,13 @@ grabnt:
 		    pushToken(nt);
 		    param_dd = parse_ptr_array_suffix(param_dd, inner,
 						      "pointer-to-array parameter");
-		    rtype = RefType::rtPointer;
+		    // The suffix owner builds PTR(ARRAY). A reference binds the
+		    // complete array; paramdecl supplies its DataDefREF wrapper.
+		    if ( nested_reference )
+			param_dd = param_dd->as_pointer_dd()->base_type;
+		    rtype = nested_reference ? RefType::rtReference : RefType::rtPointer;
 		    nt = nextToken();
-		    goto paramdecl;
+		    goto finish_param_declarator;
 		}
 		if ( !nt || nt->id() != TokenID::tkOpBrk )
 		{
@@ -68880,10 +68890,13 @@ grabnt:
 		    // — C99 6.7.5.3's redundant-parens shape (c-testsuite
 		    // 00162). The star is a real pointer level, not a fn-ptr
 		    // head; nt already holds the parameter's ending ','/')'.
-		    rtype = RefType::rtPointer;
-		    ++param_ptr_depth;
-		    param_dd = getPointerType(param_dd);
-		    goto paramdecl;
+		    rtype = nested_reference ? RefType::rtReference : RefType::rtPointer;
+		    if ( !nested_reference )
+		    {
+			++param_ptr_depth;
+			param_dd = getPointerType(param_dd);
+		    }
+		    goto finish_param_declarator;
 		}
 
 		// Function-pointer parameter declarator, e.g.
@@ -68899,13 +68912,13 @@ grabnt:
 		    rtype = RefType::rtPointer;
 		}
 		else
-		    rtype = RefType::rtValue;
+		    rtype = nested_reference ? RefType::rtReference : RefType::rtValue;
 		// The alias names the callback's return type, not the complete
 		// function-pointer parameter represented by param_typedef_names.
 		param_alias.clear();
 
 		nt = nextToken();
-		goto paramdecl;
+		goto finish_param_declarator;
 	    }
 	    // Abstract FUNCTION-type parameter — `int f1(int (), int)`,
 	    // `int (int x)`, `int (int())` (c-testsuite 00209). C11
@@ -69157,7 +69170,17 @@ paramdecl:
 		    param_spelling += "[" + std::to_string(param_array_dims[ad]) + "]";
 	    }
 	    if ( rtype == RefType::rtReference )
-		param_spelling += param_rvalue_ref ? "&&" : "&";
+	    {
+		if ( param_dd->as_carray_dd() )
+		{
+		    param_spelling += param_rvalue_ref ? " (&&)" : " (&)";
+		    for ( DataDefCArray *a = param_dd->as_carray_dd(); a;
+			  a = a->element_type->as_carray_dd() )
+			param_spelling += "[" + std::to_string(a->count) + "]";
+		}
+		else
+		    param_spelling += param_rvalue_ref ? "&&" : "&";
+	    }
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
 	    DataDef *scope_param_type = NULL;

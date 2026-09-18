@@ -1,0 +1,12 @@
+extern "C" int printf(const char *, ...);
+
+int extent(int (&a)[3]) { return sizeof(a) / sizeof(int); }
+int unnamed(const int (&)[3]) { return 3; }
+
+int main()
+{
+	int a[3] = {2, 3, 4};
+	printf("array reference extent: %d\n", extent(a));
+	printf("unnamed array reference: %d\n", unnamed(a));
+	return 0;
+}
