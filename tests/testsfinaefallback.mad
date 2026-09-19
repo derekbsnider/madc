@@ -1,0 +1,17 @@
+// The SFINAE fallback idiom of every g++.dg sfinae test: a function template
+// returning a REFERENCE TO ARRAY, `char (&f(...))[2]`, whose declarator wraps
+// the name. It must register (it was "use of undeclared identifier"), and
+// sizeof of a call selecting it is 2; the constrained overload wins when its
+// default template argument substitutes, loses when it does not.
+#include <cstdio>
+template<class T> char (&g(...))[2];
+template<class T> char h(int);
+template<class T> char (&h(...))[2];
+struct B {};
+struct S { static int x; };
+template<class T, class = decltype(T::x)> char d(int);
+template<class> char (&d(...))[2];
+int main() {
+	printf("g<int>:%d h<int>:%d d<B>:%d d<S>:%d\n", (int)sizeof(g<int>(0)), (int)sizeof(h<int>(0)), (int)sizeof(d<B>(0)), (int)sizeof(d<S>(0)));
+	return 0;
+}

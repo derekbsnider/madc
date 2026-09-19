@@ -13500,21 +13500,19 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 	// return type: libc++'s __libcpp_is_referenceable, whose `_Tp& __test(int)`
 	// lost to its own `false_type __test(...)`, so add_pointer<int>::type
 	// came out as `int`.
-	// Same folding rule as skipped_template_function_return_type's
-	// ref_wraps/star_wraps: stars innermost, one reference outermost
-	// (references never nest).
-	size_t star_wraps = 0, ref_wraps = 0;
-	while ( rt && peekToken() )
-	{
-	    TokenID did = peekToken()->id();
-	    if ( did == TokenID::tkBand || did == TokenID::tkLand )
-	    { ++ref_wraps; nextToken(); continue; }
-	    if ( did == TokenID::tkMul )
-	    { ++star_wraps; nextToken(); continue; }
-	    if ( did == TokenID::tkCONST || did == TokenID::tkVOLATILE )
-	    { nextToken(); continue; }
-	    break;
-	}
+	// cv-qualifiers after the type name qualify the base; then the ONE
+	// declarator reader folds whatever ABSTRACT declarator follows —
+	// `*`s with cv, `&`/`&&`, `(&)[2]` (the SFINAE fallback's
+	// reference-to-array return), `(*)(int)` — through the shared
+	// adopter fold_template_arg_declarator (a type-id IS a type plus an
+	// abstract declarator). The star/ref hand loop this replaces knew
+	// only `*`/`&` and mis-read `( &` as a failure.
+	while ( rt && peekToken()
+	     && (peekToken()->id() == TokenID::tkCONST
+	      || peekToken()->id() == TokenID::tkVOLATILE) )
+	    nextToken();
+	if ( rt && peekToken() && peekToken()->id() != TokenID::tkSemi )
+	    rt = fold_template_arg_declarator(rt, rt);
 	// The range IS the type spelling: anything left before the sentinel
 	// means the resolution did not cover it — a SUBSTITUTION FAILURE, not
 	// a success (the #27 require_full_parse rule). The motivating leak:
@@ -13528,13 +13526,7 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 	if ( rt && (dependent_parse_in_progress
 		 || class_pattern_capture_in_progress
 		 || (peekToken() && peekToken()->id() == TokenID::tkSemi)) )
-	{
 	    result = &rt->definition;
-	    for ( size_t s = 0; result && s < star_wraps; ++s )
-		result = getPointerType(result);
-	    if ( result && ref_wraps )
-		result = getReferenceType(result);
-	}
     }
     catch ( ... )
     {
@@ -41949,6 +41941,38 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				done = true;
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
+			// [expr.call]/1: the postfix expression of a call shall have
+			// function type, pointer-to-function type, or class type (with
+			// operator() / a conversion function). A `(` bound to a CALL
+			// RESULT of a type that can never be called — void, or a
+			// fundamental arithmetic type — is ill-formed. It was read as
+			// a grouping and the result silently kept, so inside a SFINAE
+			// default `decltype(create<void>()())` "resolved" and the
+			// constrained overload won (g++.dg sfinae33; g++: "void value
+			// not ignored", clang++: "called object type 'void' is not a
+			// function or function pointer"). Pointers (incl. function
+			// pointers), classes and dependent placeholders keep their own
+			// arms above and below.
+			if ( !fmethod && paren_binds_to_receiver
+			  && !member_is_assign_lhs && !opstack_has_pending_op
+			  && prev_for_member->id() == TokenID::tkClBrk
+			  && !opStack.empty()
+			  && (opStack.top()->type() == TokenType::ttCallFunc
+			   || opStack.top()->type() == TokenType::ttCallMethod) )
+			{
+			    DataDef *cdd = opStack.top()->datadef();
+			    bool never_callable = cdd
+				&& !datadef_involves_placeholder(cdd)
+				&& !cdd->is_pointer() && !cdd->is_function()
+				&& (cdd == &ddVOID
+				 || (cdd->basetype() == BaseType::btSimple
+				  && cdd->is_numeric()));
+			    if ( never_callable )
+				Throw(tb) << "expression of type '" << cdd->name
+					  << "' cannot be called (not a function, a "
+					  << "pointer to function, or a class with "
+					  << "operator())" << flush;
+			}
 		    }
 		    if ( !exStack.empty()
 		      && !opstack_has_pending_op
@@ -56088,6 +56112,51 @@ static size_t skipped_template_function_declarator_name_index(
 		return i;
 	    }
 	}
+	// A PARENTHESIZED declarator-id — `char (&f(...))[2]` (the SFINAE
+	// fallback idiom of every g++.dg sfinae test), `void (*f(int))(int)`:
+	// the top-level `(` is preceded by the return TYPE, not a name, and
+	// opens a nested declarator group whose ptr-operators (`*`, `&`, `&&`,
+	// cv) precede the name, which the parameter-list `(` then follows.
+	// Without this arm the template was never registered ("use of
+	// undeclared identifier 'f'"), so the plain overload answered alone.
+	// Token-vector twin of the ONE reader's nested_declarator_opens (that
+	// predicate reads the live stream); it locates the NAME only — the type
+	// is folded by parse_declarator when the return range resolves. Tried
+	// BEFORE the plain "name before (" arm, which accepts a data-type token
+	// as the name (a constructor template's name IS a type) and so took
+	// `char` in `char (&f(...))[2]` as the declarator-id ([dcl.decl]: after
+	// a type, a `(` followed by a ptr-operator opens a declarator, never a
+	// parameter list — the one reader's paren_starts_parameter_list rule).
+	// The FIRST token after the `(` must be a ptr-operator: a cv or a type
+	// there opens a PARAMETER list (`f(const my_int(&)[N])`, g++.dg
+	// mangle2) — the reader's paren_starts_parameter_list rule.
+	if ( t->id() == TokenID::tkOpBrk && d.top()
+	  && i + 1 < tokens.size() && tokens[i + 1]
+	  && (tokens[i + 1]->id() == TokenID::tkMul
+	   || tokens[i + 1]->id() == TokenID::tkBand
+	   || tokens[i + 1]->id() == TokenID::tkLand) )
+	{
+	    size_t k = i + 1;
+	    while ( k < tokens.size() && tokens[k]
+		 && (tokens[k]->id() == TokenID::tkMul
+		  || tokens[k]->id() == TokenID::tkBand
+		  || tokens[k]->id() == TokenID::tkLand
+		  || tokens[k]->id() == TokenID::tkCONST
+		  || tokens[k]->id() == TokenID::tkVOLATILE) )
+		++k;
+	    if ( k > i + 1 && k + 1 < tokens.size() && tokens[k] && tokens[k + 1]
+	      && is_skipped_template_function_name(tokens[k])
+	      && tokens[k + 1]->id() == TokenID::tkOpBrk )
+	    {
+		std::string name = skipped_template_function_name(tokens[k]);
+		if ( !ignored_template_declarator_call_name(name) )
+		{
+		    if ( name_out )
+			*name_out = name;
+		    return k;
+		}
+	    }
+	}
 	// function declarator: a top-level '(' preceded by a name token marks
 	// the declarator name at i-1.
 	if ( t->id() == TokenID::tkOpBrk && d.top() && i > 0 )
@@ -65185,6 +65254,26 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// param list) takes precedence over the leading position.
 	size_t rs = 0, re = name_index;
 	bool is_trailing = false;
+	// A PARENTHESIZED declarator-id (`char (&f(...))[2]`): the return type
+	// is the ABSTRACT declarator around the name — the tokens before the
+	// name (`char ( &`) plus the tokens after the parameter list (`) [ 2 ]`)
+	// — folded by the ONE declarator reader in resolve_type_token_range.
+	// Detected by the ptr-operators/cv immediately before the name inside
+	// a group opened at or after the return start.
+	bool paren_declarator = false;
+	size_t after_params = ft.decl.size(), suffix_end = ft.decl.size();
+	{
+	    size_t q = name_index;
+	    while ( q > 0 && ft.decl[q - 1]
+		 && (ft.decl[q - 1]->id() == TokenID::tkMul
+		  || ft.decl[q - 1]->id() == TokenID::tkBand
+		  || ft.decl[q - 1]->id() == TokenID::tkLand
+		  || ft.decl[q - 1]->id() == TokenID::tkCONST
+		  || ft.decl[q - 1]->id() == TokenID::tkVOLATILE) )
+		--q;
+	    paren_declarator = q < name_index && q > 0 && ft.decl[q - 1]
+			    && ft.decl[q - 1]->id() == TokenID::tkOpBrk;
+	}
 	if ( lparen < ft.decl.size() && ft.decl[lparen]
 	  && ft.decl[lparen]->id() == TokenID::tkOpBrk )
 	{
@@ -65196,11 +65285,13 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		else if ( ft.decl[j]->id() == TokenID::tkClBrk && --pd == 0 )
 		    { ++j; break; }
 	    }
+	    after_params = j;
 	    while ( j < ft.decl.size() && ft.decl[j]
 		 && ft.decl[j]->id() != TokenID::tkDeRef
 		 && ft.decl[j]->id() != TokenID::tkOpBrc
 		 && ft.decl[j]->id() != TokenID::tkSemi )
 		++j;
+	    suffix_end = j;
 	    if ( j < ft.decl.size() && ft.decl[j]
 	      && ft.decl[j]->id() == TokenID::tkDeRef )
 	    {
@@ -65225,7 +65316,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// the referenced type for type identity; tr_ref then drives the DataDefREF
 	// return type via returnDecl, so the reference lives in the type).
 	bool tr_ref = false;
-	while ( re > rs && ft.decl[re - 1]
+	// (a parenthesized declarator keeps its `&`: the reader folds it)
+	while ( !paren_declarator && re > rs && ft.decl[re - 1]
 	     && (ft.decl[re - 1]->id() == TokenID::tkBand
 	      || ft.decl[re - 1]->id() == TokenID::tkLand) )
 	    { tr_ref = true; --re; }
@@ -65436,6 +65528,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// (resolve_type_token_range below carries its own SFINAE trap ->
 	// NULL on failure).
 	std::vector<TokenBase *> range(ft.decl.begin() + rs, ft.decl.begin() + re);
+	if ( paren_declarator && !is_trailing && after_params < suffix_end )
+	    range.insert(range.end(), ft.decl.begin() + after_params,
+			 ft.decl.begin() + suffix_end);
 	std::vector<TokenBase *> sub = substitute_return_range_tokens(
 	    range, binding, pack_name, pack_elems);
 	// A `-> decltype(inner_call)` return (declval's `decltype(__declval<_Tp>

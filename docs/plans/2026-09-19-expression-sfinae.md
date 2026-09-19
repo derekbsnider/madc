@@ -167,17 +167,18 @@ build fulltest` (oracle: green except the four pre-existing failures);
   throw WAS caught; the rendered+recorded diagnostic was what refused the
   unit); (b) a defaulted TYPE parameter no function parameter names has its
   default substituted in the explicit-args lane too, failure = not viable;
-  (c) PARKED as `scratchpad/apply-t1c.py` (T1b): the fallback idiom
-  `char (&f(...))[2]` is never REGISTERED (the declarator-name locator knows
-  only "name before a top-level `(`"); the draft adds the parenthesized
-  declarator-id to the locator, assembles the abstract return declarator in
-  the lane and folds it through `fold_template_arg_declarator` — but applied
-  now it put sfinae33 / sfinae-nullptr1 OUTSIDE the baseline (their
-  `-> char(&)[1]` candidate resolves for the first time and madc's lenient
-  operands — a call on a void result, nullptr_t → bool as an implicit
-  argument conversion — let its default succeed), and the locator change
-  did not reach registration (`g` still undeclared: another classifier
-  runs first — trace before T1b). Lands after T3/T6 fix those leniencies;
+  (c) LANDED as T1b (own commit): the fallback idiom `char (&f(...))[2]`
+  was never REGISTERED — the locator's "name before a top-level `(`" arm
+  accepted the data-type token `char` as the name (constructor templates
+  need type names accepted), so the parenthesized reading is now tried
+  FIRST ([dcl.decl]: `(` + ptr-operator opens a declarator, never a
+  parameter list); the lane assembles the abstract return declarator and the
+  range resolver folds it through `fold_template_arg_declarator` (hand loop
+  retired). Exposed and fixed with it: a call on a VOID / arithmetic call
+  result is ill-formed ([expr.call]/1; sfinae33). Exposed and RECORDED:
+  madc has no distinct `nullptr_t` (nullptr → bool accepted as pointer→bool
+  in an argument; sfinae-nullptr1 was passing by accident and is padded into
+  the baseline with the reason; KG Gap nullptr_t_distinct_type).
   (d) latent: `resolve_template_param_default_type` restored its stream but
   not `_cur_token`/`_prv_token` (testexplicitpack regression once (b) made
   defaults substitute on every `declval<T>()`). Interim lane after (a)+(b):
@@ -228,6 +229,9 @@ build fulltest` (oracle: green except the four pre-existing failures);
 
 ## 5. Out of scope (recorded, next plans)
 
+- A distinct `std::nullptr_t` type ([conv.bool]: nullptr → bool only by
+  direct-initialization): nullptr is a `void*` null constant today; KG Gap
+  `nullptr_t_distinct_type`, reducer `testsfinaenullptrbool` (parked).
 - ADL inside an unevaluated `decltype` operand: `undeclared_fn(T())` with T
   from namespace N does not find `N::undeclared_fn` (g++/clang++ do). Parked
   reducer `tmp/declprobe/pending-tests/testsfinaeadl.mad`; KG Gap

@@ -1,0 +1,13 @@
+// [expr.call]/1: the postfix expression of a call must have function type,
+// pointer-to-function type, or class type with operator(). Applying `()` to a
+// VOID call result (`create<void>()()`) is ill-formed — inside a SFINAE default
+// that is a substitution failure, so the `...` fallback wins (g++.dg sfinae33).
+#include <cstdio>
+template<class T> T create();
+template<class T, class = decltype(create<T>()())> char f(int);
+template<class> char (&f(...))[2];
+struct Fn { int operator()() const; };
+int main() {
+	printf("f<void>:%d f<Fn>:%d\n", (int)sizeof(f<void>(0)), (int)sizeof(f<Fn>(0)));
+	return 0;
+}

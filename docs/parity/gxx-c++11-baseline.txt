@@ -580,3 +580,4 @@ g++.dg/template/typedef30.C
 g++.dg/template/typedef38.C
 g++.dg/template/typename21.C
 g++.dg/template/unify1.C
+g++.dg/cpp0x/sfinae-nullptr1.C
