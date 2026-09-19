@@ -55681,20 +55681,16 @@ void Program::consume_template_parameter_declarator(std::string &name_out,
     if ( consume_ellipsis() )
 	is_pack_out = true;
     TokenBase *pk = peekToken();
-    // A `(` opens a NESTED declarator when what follows it begins one; a `(`
-    // followed by anything else is this declarator's parameter list, which the
-    // suffix loop below consumes as an ordinary balanced group.
+    // A `(` opens a NESTED declarator when what follows it begins one — the
+    // ONE declarator reader's rule (nested_declarator_opens: a ptr-operator,
+    // another `(`, a `C::*` chain, a plain non-type name); a `(` followed by
+    // anything else — a type, a cv-qualifier, `)` — is this declarator's
+    // parameter list, which the suffix loop below consumes as a balanced
+    // group. The ladder this replaces counted a cv-qualifier as an opener
+    // (`template <int F(const int &)>` read `(const int &)` as a nested
+    // declarator) — the same slip the reader's predicate had (eeefac259).
     if ( pk && pk->id() == TokenID::tkOpBrk
-      && tokens.size() >= 2 && tokens[1]
-      && (tokens[1]->id() == TokenID::tkMul
-       || tokens[1]->id() == TokenID::tkBand
-       || tokens[1]->id() == TokenID::tkLand
-       || tokens[1]->id() == TokenID::tkOpBrk
-       || tokens[1]->id() == TokenID::tkCONST
-       || tokens[1]->id() == TokenID::tkVOLATILE
-       || (is_contextual_identifier_token(tokens[1])
-        && tokens.size() >= 3 && tokens[2]
-        && tokens[2]->id() == TokenID::tkNS)) )
+      && nested_declarator_opens(DeclaratorMode::Named) )
     {
 	nextToken();                     // the '('
 	bool inner_pack = false;

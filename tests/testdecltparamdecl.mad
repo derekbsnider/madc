@@ -1,0 +1,28 @@
+// g++ and clang++ -std=c++11 print a:8 b:3 d:12 u:42
+//
+// A non-type template parameter is a parameter-declaration ([temp.param]/1):
+// its declarator may be a function type `int F(const int &)` (adjusted to a
+// pointer, [dcl.fct]/5), a function pointer `int (*G)(int)`, a reference
+// `const int &R`. (A pointer-to-member parameter `int C::*M` used as `c.*M`
+// is a separate use-site gap — KG Gap memptr_template_param_operand.) Which `(` opens a NESTED
+// declarator is the ONE reader's rule (nested_declarator_opens); the
+// template-parameter consumer's private ladder counted a cv-qualifier after
+// `(` as an opener and read the UNNAMED `int (const int &)` parameter's
+// `(const int &)` as a nested declarator ("Expecting ')' in template
+// parameter declarator").
+extern "C" int printf(const char *, ...);
+
+int twice(const int &v) { return v * 2; }
+int inc(int v) { return v + 1; }
+const int seven = 7;
+
+template <int F(const int &)> struct A { static int call(int v) { return F(v); } };
+template <int (const int &)> struct U { static int v() { return 42; } };	// unnamed: `(` then cv
+template <int (*G)(int)> struct B { static int call(int v) { return G(v); } };
+template <const int &R> struct E { static int get() { return R + 5; } };
+
+int main()
+{
+    printf("a:%d b:%d d:%d u:%d\n", A<twice>::call(4), B<inc>::call(2), E<seven>::get(), U<twice>::v());
+    return 0;
+}
