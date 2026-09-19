@@ -6432,6 +6432,56 @@ public:
     // is non-NULL, sets it to whether a `const` followed the last `*` (top-level
     // const pointer `T * const p`). One shared loop instead of the copy-pasted
     // `while(tkMul){...}` declarator loops.
+    // ---- THE ONE declarator reader ----------------------------------------
+    // docs/plans/2026-09-19-declarator-reader-consolidation.md. Every position
+    // that reads a declarator from the token stream reads it here; the
+    // partial owners below (consume_declarator_stars, the member-pointer chain
+    // pair, parse_array_dimensions / nest_carray_dims, parseFnPtrParams) are
+    // the pieces it composes. Gate: scripts/check-one-declarator-reader.sh.
+    enum class DeclaratorMode : uint8_t {
+	Named,		// typedef / member / K&R: a declarator-id is REQUIRED
+	Abstract,	// a type-id that spans to its delimiter (alias target,
+			//   template argument): no declarator-id; every `(` is ours
+	TypeIdOperand,	// a type-id inside a sizeof / alignof / cast operand: no
+			//   declarator-id, and a `(` that begins no parameter list
+			//   ends the type-id (the enclosing expression's paren)
+	Parameter,	// optional id; C99 6.7.6.3p7 bracket qualifiers; a
+			//   runtime dim may name an earlier parameter
+	Declaration	// variable / function declaration: a `(` right after
+			//   the declarator-id is a FUNCTION declarator — stop
+			//   there, leave it unread (function_pending)
+    };
+    struct DeclaratorResult {
+	std::string name;		// the declarator-id ("" = abstract / anonymous)
+	TokenBase *name_tok = NULL;
+	bool is_pack = false;		// `...` before the id
+	int ptr_depth = 0;		// `*`s read at the top level (before any parens)
+	int nested_stars = 0;		// `*`s read inside `( ... )` levels
+	bool const_after_star = false;	// consume_declarator_stars' top-level report
+	RefType ref = RefType::rtValue;	// rtReference when a `&` / `&&` was applied
+	bool rvalue_ref = false;
+	std::vector<carray_dim_t> array_dims;		// the top level's `[dim]...`
+	std::vector<TokenBase *> array_dim_exprs;	// (runtime dims: the expression)
+	bool saw_parens = false;	// a `( declarator )` was read
+	bool function_pending = false;	// Declaration mode stopped at `name(`
+    };
+    DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
+			      DeclaratorResult &out,
+			      const std::set<std::string> *runtime_names = NULL);
+    bool nested_declarator_opens(DeclaratorMode mode);
+    bool paren_starts_parameter_list();
+    bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
+    bool parse_member_signature_qualifiers();
+private:
+    DataDef *parse_declarator_level(DataDef *base, DeclaratorMode mode,
+				    DeclaratorResult &out,
+				    const std::set<std::string> *runtime_names,
+				    int depth, bool base_built_here);
+    DataDef *parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
+				       DeclaratorResult &out,
+				       const std::set<std::string> *runtime_names,
+				       int depth, bool id_here, bool &built_fn);
+public:
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 bool leading_const = false);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
@@ -6492,7 +6542,7 @@ public:
     // `( C::*name ) ( params ) [const]` shape in the struct member, class
     // member, parameter, variable and typedef arms (defined beside
     // parse_fnptr_member_tail, whose `name ) ( params )` tail it reuses).
-    bool member_pointer_declarator_ahead(TokenBase *first);
+    bool member_pointer_declarator_ahead(TokenBase *first, size_t from = 0);
     DataDef *parse_member_pointer_owner(TokenBase *owner_first, std::string &owner_name);
     DataDefMemberFnPtr *parse_member_fnptr_declarator(DataDef &returns,
 						      std::string &mname,

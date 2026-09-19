@@ -44364,63 +44364,16 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
 	    DataDef *alias_dd = &target->definition;
-	    // Stars + interstitial/east cv (`directory_entry const*`, libc++
-	    // recursive_directory_iterator.h:44): the shared declarator
-	    // consumer owns both. A bare `while (tkMul)` loop never saw the
-	    // east `const` and the arm threw "Expecting ';' after using alias".
-	    pgm.consume_declarator_stars(alias_dd);
-	    // Function-pointer alias: using NAME = RET (*)(params);
-	    // The ABSTRACT twin of typedef Form 2 (typedef RET (*NAME)(params);)
-	    // — same parseFnPtrParams owner, the alias name came before '='.
-	    // libc++: `using terminate_handler = void (*)();`
-	    // (__exception/operations.h:29), new_handler, and friends.
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-	    {
-		pgm.nextToken(); // consume '('
-		TokenBase *star = pgm.nextToken();
-		// Pointer-to-member-function alias `using M = void (C::*)();`
-		// — the ABSTRACT twin of the typedef form two arms over, and
-		// the same ONE declarator owner it uses. The alias arm simply
-		// never adopted it, so every member-pointer alias died on the
-		// '*' test below.
-		if ( star && pgm.member_pointer_declarator_ahead(star) )
-		{
-		    std::string mp_name;
-		    alias_dd = pgm.parse_member_fnptr_declarator(*alias_dd,
-								 mp_name, star);
-		}
-		else
-		{
-		    if ( !star || star->id() != TokenID::tkMul )
-			pgm.Throw(star ? star : tn)
-			    << "Expecting '*' in function pointer alias" << flush;
-		    TokenBase *rbrk = pgm.nextToken();
-		    if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
-			pgm.Throw(rbrk ? rbrk : tn)
-			    << "Expecting ')' in function pointer alias" << flush;
-		    TokenBase *open = pgm.nextToken();
-		    if ( !open || open->id() != TokenID::tkOpBrk )
-			pgm.Throw(open ? open : tn)
-			    << "Expecting '(' for parameter list" << flush;
-		    FuncDef *func = pgm.parseFnPtrParams(*alias_dd);
-		    DataDefFPTR *fptr = new DataDefFPTR(func);
-		    fptr->ptr_syntax = true;   // explicit `(*)` — pointer alias
-		    alias_dd = fptr;
-		}
-	    }
-	    if ( pgm.peekToken()
-	      && (pgm.peekToken()->id() == TokenID::tkBand
-	       || pgm.peekToken()->id() == TokenID::tkLand) )
-	    {
-		pgm.nextToken();
-#if MADC_DEBUG_ALIASREF
-		std::cerr << "ALIASREF using-amp alias=" << alias_name
-			  << " base=" << alias_dd->name
-			  << " file=" << (TokenBase::_parse_file ? TokenBase::_parse_file : "?")
-			  << ":" << TokenBase::_parse_line << std::endl;
-#endif
-		alias_dd = pgm.getReferenceType(alias_dd);
-	    }
+	    // The ONE declarator reader, abstract mode ([dcl.name]: a type-id
+	    // declares no name): stars + interstitial/east cv, `(*)(params)`,
+	    // `(C::*)(params) const`, `[N]`, `(&)[N]`, `(*const)[N]`, a trailing
+	    // `&`/`&&` — every shape a using-alias target may carry, read by the
+	    // same owner every other declarator position reads. This arm's own
+	    // copy knew `(*)(params)` and nothing else (initlist-array17/20/22/6,
+	    // ref-bind1 in g++.dg).
+	    Program::DeclaratorResult alias_decl;
+	    alias_dd = pgm.parse_declarator(alias_dd, Program::DeclaratorMode::Abstract,
+					    alias_decl);
 	    TokenBase *semi = pgm.nextToken();
 	    if ( !semi || semi->id() != TokenID::tkSemi )
 		pgm.Throw(semi ? semi : tn) << "Expecting ';' after using alias" << flush;
@@ -53609,6 +53562,348 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 					   std::string(), false));
 }
 
+// ============================================================================
+// THE ONE DECLARATOR READER — [dcl.decl] named, [dcl.name] abstract.
+//
+//   declarator:        ptr-operator* direct-declarator
+//   ptr-operator:      `*` cv | `&` | `&&` | nested-name-specifier `*` cv
+//   direct-declarator: declarator-id | `(` declarator `)`
+//                    | direct-declarator `[` dim `]` | direct-declarator `(` params `)` quals
+//
+// `base` is the resolved decl-specifier type and the stream sits at the first
+// declarator token. Suffixes bind tighter than ptr-operators, and a nested
+// `( declarator )` binds ITS ptr-operators to the type the OUTER suffixes
+// built — the inside-out reading — so the nested group is STASHED balanced
+// (DelimDepth carrying this Program: a `<` inside is a name question), this
+// level's suffixes are read, the stash is re-pushed and the reader recurses
+// on the type just built. That recursion is the one piece the tree lacked
+// (parseDeclaration faked it with a stash and a goto; parseFunction
+// enumerated shapes). Everything else COMPOSES the existing owners:
+// consume_declarator_stars, member_pointer_declarator_ahead /
+// parse_member_pointer_owner, parse_array_dimensions / nest_carray_dims,
+// parseFnPtrParams, parse_member_signature_qualifiers.
+// Plan: docs/plans/2026-09-19-declarator-reader-consolidation.md.
+//
+// Fold rules — the ones every arm used to hand-roll differently:
+//   `*` on a function type THIS read built  = the function pointer itself
+//        (madc models `R (*)(A)` as ONE DataDefFPTR with ptr_syntax = true,
+//        never PTR(FPTR)); a further `*` = getPointerType of it.
+//   `*` on an FPTR the CALLER passed in (a function typedef `F *p`) = counted
+//        in out.ptr_depth, NOT applied — consume_declarator_stars' contract,
+//        which the declaration arm's decl_fnptr_stars emission path reads.
+//   `C::*` on a function type this read built = the member-FUNCTION pointer
+//        (DataDefMemberFnPtr, const-ness from the signature qualifiers);
+//        on anything else = the data member pointer (DataDefMemberPtr).
+//   `&` / `&&` = applied OUTERMOST at its level (a reference is never
+//        pointed to), reported in out.ref / out.rvalue_ref.
+// Declaration mode: a `(` right after a declarator-id is a FUNCTION
+// declarator — parseFunction reads names and body itself — so the reader
+// stops there with out.function_pending set and the `(` unread; the type
+// returned is the function's RETURN type.
+DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
+				   DeclaratorResult &out,
+				   const std::set<std::string> *runtime_names)
+{
+    return parse_declarator_level(base, mode, out, runtime_names, 0, false);
+}
+
+// At a `(` (tokens[0], unconsumed): does it open a NESTED declarator rather
+// than a parameter list? `*` `&` `&&` `(` cv and a `C::[D::]*` chain open one;
+// so does a plain name that is not a type outside a type-id (the parenthesized
+// declarator-id `int *(p[25])`); a `)` or a type name begins a parameter list
+// (`int ()`, `int (int)`). ONE home for the shape
+// consume_template_parameter_declarator spelled inline.
+bool Program::nested_declarator_opens(DeclaratorMode mode)
+{
+    if ( tokens.size() < 2 || !tokens[0] || tokens[0]->id() != TokenID::tkOpBrk
+      || !tokens[1] )
+	return false;
+    TokenBase *t1 = tokens[1];
+    if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
+      || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
+      || is_cv_qualifier_token(t1) )
+	return true;
+    if ( !is_contextual_identifier_token(t1) )
+	return false;
+    if ( tokens.size() > 2 && tokens[2]
+      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT) )
+	return member_pointer_declarator_ahead(t1, 2);	// `(C::*` yes; `(std::string` no
+    return mode != DeclaratorMode::Abstract && !token_starts_type_name(t1);
+}
+
+// At a `(` (tokens[0], unconsumed): can what follows begin a parameter list?
+// `)` (empty), a type name — plain, qualified (`std::string`), global
+// (`::T`), a template-id (`vector<int>`), an elaborated key, `typename` /
+// `decltype` — a cv-qualifier, `...` (varargs). The complement of
+// nested_declarator_opens for a type-id operand, where any other `(`
+// belongs to the enclosing expression.
+bool Program::paren_starts_parameter_list()
+{
+    if ( tokens.size() < 2 || !tokens[0] || tokens[0]->id() != TokenID::tkOpBrk
+      || !tokens[1] )
+	return false;
+    TokenBase *t1 = tokens[1];
+    if ( t1->id() == TokenID::tkClBrk || t1->id() == TokenID::tkDot
+      || t1->id() == TokenID::tkNS || t1->id() == TokenID::tkCLASS
+      || is_cv_qualifier_token(t1) || token_starts_type_name(t1) )
+	return true;
+    if ( !is_contextual_identifier_token(t1) )
+	return false;
+    if ( tokens.size() > 2 && tokens[2]
+      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT) )
+	return true;
+    const std::string nm = contextual_identifier_name(t1);
+    return nm == "typename" || nm == "decltype";
+}
+
+// The trailing qualifiers of a MEMBER signature after its parameter list —
+// cv-qualifier-seq, ref-qualifier, exception-specification (`noexcept`,
+// `noexcept(expr)`, `throw(...)`) — consumed; returns whether `const` was
+// among them. Lifted from parse_member_fnptr_declarator, which now calls it
+// (one home for the type-context read; parseFunction's declaration-context
+// reader also folds noexcept conditions and stays where it is).
+bool Program::parse_member_signature_qualifiers()
+{
+    bool const_method = false;
+    for (;;)
+    {
+	TokenBase *pk = peekToken();
+	if ( !pk )
+	    return const_method;
+	if ( pk->id() == TokenID::tkCONST || pk->id() == TokenID::tkVOLATILE
+	  || pk->id() == TokenID::tkBand || pk->id() == TokenID::tkLand )
+	{
+	    if ( pk->id() == TokenID::tkCONST )
+		const_method = true;
+	    nextToken();
+	    continue;
+	}
+	bool is_noexcept = (pk->id() == TokenID::tkCPPKEYWORD
+			 || pk->type() == TokenType::ttIdentifier)
+			&& contextual_identifier_name(pk) == "noexcept";
+	if ( is_noexcept || pk->id() == TokenID::tkTHROW )
+	{
+	    nextToken();
+	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		// The skipper consumes THROUGH the matching ')' and hands back the
+		// token after it, already pulled — return it to the stream.
+		if ( TokenBase *after = consume_balanced_parenthesized_suffix(nextToken()) )
+		    pushToken(after);
+	    }
+	    continue;
+	}
+	return const_method;
+    }
+}
+
+DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
+					 DeclaratorResult &out,
+					 const std::set<std::string> *runtime_names,
+					 int depth, bool base_built_here)
+{
+    DataDef *dd = base;
+    DataDefFPTR *fresh_fn = base_built_here ? dd->as_fptr_dd() : NULL;
+    bool ref_here = false, rvalue_here = false;
+
+    // 1. ptr-operators, applied as read.
+    for (;;)
+    {
+	TokenBase *pk = peekToken();
+	if ( !pk )
+	    Throw(curToken()) << "Unexpected end of input in declarator" << flush;
+	if ( pk->id() == TokenID::tkMul || is_cv_qualifier_token(pk) )
+	{
+	    bool const_after = false;
+	    int stars = consume_declarator_stars(dd, &const_after);
+	    if ( fresh_fn )
+	    {
+		// A function type built by this read: the first `*` IS the
+		// function pointer, any further one points to it.
+		for ( int s = 0; s < stars; ++s )
+		{
+		    if ( !fresh_fn->ptr_syntax )
+			fresh_fn->ptr_syntax = true;
+		    else
+			dd = getPointerType(dd);
+		}
+		if ( stars )
+		    fresh_fn = NULL;
+	    }
+	    if ( depth == 0 )
+	    {
+		out.ptr_depth += stars;
+		out.const_after_star = const_after;
+	    }
+	    else
+		out.nested_stars += stars;
+	    continue;
+	}
+	if ( pk->id() == TokenID::tkBand || pk->id() == TokenID::tkLand )
+	{
+	    if ( is_c_mode() )
+		Throw(pk) << "Reference declarators require C++" << flush;
+	    nextToken();
+	    ref_here = true;
+	    rvalue_here = pk->id() == TokenID::tkLand;
+	    break;			// nothing may follow a reference but the declarator
+	}
+	if ( is_contextual_identifier_token(pk) && tokens.size() > 1 && tokens[1]
+	  && (tokens[1]->id() == TokenID::tkNS || tokens[1]->id() == TokenID::tkLT) )
+	{
+	    TokenBase *first = nextToken();
+	    if ( member_pointer_declarator_ahead(first) )
+	    {
+		std::string owner_name;
+		DataDef *owner = parse_member_pointer_owner(first, owner_name);
+		if ( fresh_fn )
+		{
+		    // `R (C::*)(A) const` — the signature's qualifiers were read
+		    // with the suffix; the pointer is the 16-byte {ptr, adj} pair.
+		    dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,
+						fresh_fn->target && fresh_fn->target->is_const_method);
+		    fresh_fn = NULL;
+		}
+		else
+		    dd = new DataDefMemberPtr(owner, owner_name, *dd);
+		skip_cv_qualifier_tokens();	// cv on the member pointer itself
+		continue;
+	    }
+	    pushToken(first);		// a qualified NAME, not a chain: the declarator-id
+	}
+	break;
+    }
+
+    // 2. direct-declarator.
+    bool id_here = false;
+    TokenBase *pk = peekToken();
+    if ( pk && pk->id() == TokenID::tkOpBrk && nested_declarator_opens(mode) )
+    {
+	TokenBase *open = nextToken();
+	std::vector<TokenBase *> stash;
+	DelimDepth d(this);
+	d.update(open);
+	for (;;)
+	{
+	    TokenBase *t = nextToken();
+	    if ( !t )
+		Throw(open) << "Unexpected end of input in parenthesized declarator" << flush;
+	    stash.push_back(t);
+	    delimStepStream(t, d, &stash);
+	    if ( d.top() )
+		break;
+	}
+	stash.pop_back();		// the matching ')'
+	out.saw_parens = true;
+	bool built = false;
+	dd = parse_declarator_suffixes(dd, mode, out, runtime_names, depth, false, built);
+	for ( size_t k = stash.size(); k-- > 0; )
+	    pushToken(stash[k]);
+	dd = parse_declarator_level(dd, mode, out, runtime_names, depth + 1, built);
+    }
+    else
+    {
+	if ( mode != DeclaratorMode::Abstract )
+	{
+	    if ( consume_ellipsis() )
+		out.is_pack = true;
+	    TokenBase *idt = peekToken();
+	    if ( idt && declarator_id_token(idt, mode) )
+	    {
+		out.name_tok = nextToken();
+		out.name = is_contextual_identifier_token(out.name_tok)
+			 ? contextual_identifier_name(out.name_tok)
+			 : ((TokenIdent *)out.name_tok)->spelling();
+		id_here = true;
+	    }
+	    else if ( mode == DeclaratorMode::Named )
+		Throw(idt ? idt : curToken()) << "Expecting identifier in declarator" << flush;
+	}
+	bool built = false;
+	dd = parse_declarator_suffixes(dd, mode, out, runtime_names, depth, id_here, built);
+	if ( built && !fresh_fn )
+	    fresh_fn = dd->as_fptr_dd();
+    }
+
+    // 3. the reference is outermost at its level.
+    if ( ref_here )
+    {
+	dd = getReferenceType(dd);
+	out.ref = RefType::rtReference;
+	out.rvalue_ref = rvalue_here;
+    }
+    return dd;
+}
+
+// Which tokens may be a declarator-id: a contextual identifier everywhere; in
+// Named mode also a type or keyword token being REDECLARED (`typedef struct
+// {...} max_align_t;`, `using int64_t = ...;`) — typedef_alias_spelling's rule.
+bool Program::declarator_id_token(TokenBase *tb, DeclaratorMode mode)
+{
+    if ( !tb )
+	return false;
+    if ( is_contextual_identifier_token(tb) )
+	return true;
+    return mode == DeclaratorMode::Named && typedef_alias_spelling(*this, tb) != NULL;
+}
+
+// The suffixes of a direct-declarator: `[dim]...` through the ONE dimension
+// reader and array builder, `(params)` quals through parseFnPtrParams and the
+// signature-qualifier reader. `built_fn` reports that a function type was
+// constructed HERE (so a following `*` / `C::*` may fold into it).
+DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
+					    DeclaratorResult &out,
+					    const std::set<std::string> *runtime_names,
+					    int depth, bool id_here, bool &built_fn)
+{
+    built_fn = false;
+    for (;;)
+    {
+	TokenBase *pk = peekToken();
+	if ( pk && pk->id() == TokenID::tkOpSqr )
+	{
+	    std::vector<carray_dim_t> dims;
+	    std::vector<TokenBase *> dim_exprs;
+	    parse_array_dimensions(dims, dim_exprs, pk, "array declarator",
+				   mode == DeclaratorMode::Declaration, runtime_names,
+				   mode == DeclaratorMode::Parameter);
+	    if ( depth == 0 && out.array_dims.empty() )
+	    {
+		out.array_dims = dims;
+		out.array_dim_exprs = dim_exprs;
+	    }
+	    dd = nest_carray_dims(dd, dims, dim_exprs, std::string(), false);
+	    continue;
+	}
+	if ( pk && pk->id() == TokenID::tkOpBrk )
+	{
+	    if ( mode == DeclaratorMode::Declaration && id_here )
+	    {
+		out.function_pending = true;	// `name(params)` — parseFunction's
+		return dd;
+	    }
+	    // In a type-id OPERAND (sizeof / alignof / a cast) a `(` is a
+	    // parameter list only when what follows can begin one — `)`, a
+	    // type, cv, `...`. `(T(x))` / `sizeof(T(5))` is the enclosing
+	    // EXPRESSION's paren: the type-id ended before it, so stop and let
+	    // the caller's span check see the `(`. A template argument or an
+	    // alias target (Abstract) spans to its delimiter: every `(` is ours.
+	    if ( mode == DeclaratorMode::TypeIdOperand && !paren_starts_parameter_list() )
+		return dd;
+	    nextToken();			// '('
+	    FuncDef *func = parseFnPtrParams(*dd);
+	    if ( parse_member_signature_qualifiers() )
+		func->is_const_method = true;
+	    DataDefFPTR *fp = new DataDefFPTR(func);
+	    fp->ptr_syntax = false;		// a FUNCTION type until a `*` folds it
+	    dd = fp;
+	    built_fn = true;
+	    continue;
+	}
+	return dd;
+    }
+}
+
 // Does the stream at `first` (the token just after a declarator's `(`) spell
 // a pointer-to-member declarator head `C :: [D ::]* *`? Pure lookahead: tokens[0]
 // must be the first `::`, and the chain must end in `*` right after a `::`.
@@ -53616,11 +53911,13 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 // g++.dg/template/conv1.C): the balanced-list lookahead has ONE owner
 // (peek_after_balanced_template_id_from — DelimDepth carrying this Program,
 // so a nested `<` is a name question), which is why this is not const.
-bool Program::member_pointer_declarator_ahead(TokenBase *first)
+// `from` is the index of the segment's first `::` / `<` — 0 with `first`
+// consumed; 2 when the caller still holds `(` `first` on the stream.
+bool Program::member_pointer_declarator_ahead(TokenBase *first, size_t from)
 {
     if ( !first || !is_contextual_identifier_token(first) )
 	return false;
-    size_t i = 0;
+    size_t i = from;
     for ( ;; )
     {
 	if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkLT )
@@ -53715,16 +54012,7 @@ DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
     DataDef *owner = parse_member_pointer_owner(owner_first, owner_name);
     TokenBase *star = curToken();
     DataDefFPTR *fp = parse_fnptr_member_tail(returns, mname, star);
-    bool const_method = false;
-    while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
-			 || peekToken()->id() == TokenID::tkVOLATILE
-			 || (peekToken()->id() == TokenID::tkCPPKEYWORD
-			     && contextual_identifier_name(peekToken()) == "noexcept")) )
-    {
-	if ( peekToken()->id() == TokenID::tkCONST )
-	    const_method = true;
-	nextToken();
-    }
+    bool const_method = parse_member_signature_qualifiers();
     return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);
 }
 
