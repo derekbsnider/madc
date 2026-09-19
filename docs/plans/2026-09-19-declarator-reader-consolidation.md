@@ -462,6 +462,15 @@ updated with the measured lane; HANDOFF rewritten.
   parenthesized unary-minus argument. KG Gap
   `member_fnptr_call_negative_arg_in_binary`; reducer parked
   `tmp/declprobe/pending-tests/testmemfnptrcallnegarg.*`; own session.
+- **Pointer to a function pointer at the emitter (found by T10's reducer).** An
+  array-of-function-pointers PARAMETER `int (*fa[2])(int)` (adjusted to
+  `int (**fa)(int)`) and a plain `int (**pp)(int)` emit as `long long *name`:
+  the parameter and variable emitters peel pointer levels and spell the base
+  through append_type_specs, which has no function case. The pointer-piece
+  owner must learn an FPTR base (fnptr_decl_pieces specs, POINTER × levels
+  before FUNC) — the cir_declarator_pieces param adopter. KG Gap
+  `param_pointer_to_fnptr_emission`; reducer parked
+  `tmp/declprobe/pending-tests/testfnptrptrparam.*`; next after this arc.
 - **Emitter adopters so far:** var_decl + typedef_decl (efdd54e16), member_node
   (T4's companion fix). Left: the parameter declarator (~cir_builder.cpp:8933).
 

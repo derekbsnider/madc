@@ -6464,6 +6464,8 @@ public:
 	int ptr_depth = 0;		// `*`s read at the top level (before any parens)
 	int nested_stars = 0;		// `*`s read inside `( ... )` levels
 	bool const_after_star = false;	// consume_declarator_stars' top-level report
+	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
+	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
 	RefType ref = RefType::rtValue;	// rtReference when a `&` / `&&` was applied
 	bool rvalue_ref = false;
 	std::vector<carray_dim_t> array_dims;		// the top level's `[dim]...`
@@ -6505,7 +6507,7 @@ public:
     };
     DataDef *member_declarator(DataDef *base, MemberDeclarator &md);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
-				 bool leading_const = false);
+				 bool leading_const = false, bool *out_cv_seen = nullptr);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.

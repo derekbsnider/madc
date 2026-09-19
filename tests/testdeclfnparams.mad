@@ -1,0 +1,37 @@
+// g++ and clang++ -std=c++11 print a:9 b:b c:8 d:4 e:6 f:h g:5 h:1 i:11 sz:12
+//
+// A FUNCTION's parameters are parameter-declarations ([dcl.fct]): a
+// pointer-to-array `int (*pa)[3]`, a reference-to-array `char (&cs)[3]`, a
+// named function type `int fn(int)` (adjusts to a pointer), a function
+// pointer, a 2-D array `int arr[2][3]` (adjusts to `int (*)[3]` — sizeof
+// arr[0] is 12), a cv pointer, an rvalue reference, a data-member pointer, a
+// const member-function pointer. One reader —
+// Program::parse_declarator, Parameter mode — reads each; parseFunction's
+// `grabnt:` ladder carried four dim loops and a five-way `(` ladder.
+extern "C" int printf(const char *, ...);
+
+struct C { int k; int get(int v) const { return v + k; } };
+int dbl(int v) { return v * 2; }
+int inc(int v) { return v + 1; }
+
+// (An array-of-function-pointers PARAMETER `int (*fa[2])(int)` parses as a
+// pointer to a function pointer but the parameter EMITTER renders it as a
+// data pointer — KG Gap param_pointer_to_fnptr_emission, reducer parked in
+// tmp/declprobe/pending-tests/testfnptrptrparam.*)
+int use(int (*pa)[3], char (&cs)[3], int fn(int), int (*g)(int), int arr[2][3],
+	const char *s, int &&r, int C::*pm, int (C::*pmf)(int) const)
+{
+    C c;
+    c.k = 1;
+    printf("a:%d b:%c c:%d d:%d e:%d f:%c g:%d h:%d i:%d sz:%d\n", (*pa)[2], cs[1],
+	   fn(4), g(2), arr[1][2], s[0], r, c.*pm, (c.*pmf)(10), (int)sizeof(arr[0]));
+    return 0;
+}
+
+int main()
+{
+    int trip[3] = {7, 8, 9};
+    char abc[3] = {'a', 'b', 'c'};
+    int m[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    return use(&trip, abc, dbl, dbl, m, "hi", 5, &C::k, &C::get);
+}

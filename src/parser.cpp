@@ -1625,7 +1625,7 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 // Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
 // loops so the explicit `*` count is handled the SAME way everywhere.
 int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
-				      bool leading_const)
+				      bool leading_const, bool *out_cv_seen)
 {
     int stars = 0;
     bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
@@ -1663,6 +1663,8 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 		if ( stars > 0 )
 		    const_after = true;	// const after the last '*' = top-level const ptr
 		pending_const = is_c_mode();
+		if ( out_cv_seen )
+		    *out_cv_seen = true;
 	    }
 	    nextToken();		// consume const/volatile/restrict
 	}
@@ -53055,20 +53057,28 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 				   const std::set<std::string> *runtime_names)
 {
     DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false);
-    if ( mode == DeclaratorMode::Parameter && dd )
+    if ( mode == DeclaratorMode::Parameter && dd && dd != base
+      && !dd->as_reference_dd() )
     {
-	// [dcl.fct]/5: a parameter of FUNCTION type is a pointer to function
-	// (`int fn(int)`, the abstract `int (int)`); a parameter of ARRAY type
-	// is a pointer to its element (`int a[4]` -> `int *`, `int m[][3]` ->
-	// `int (*)[3]` — the outer extent decays, the rest nest). The dims stay
-	// in out.array_dims for the callers that record them.
+	// [dcl.fct]/5 on what THIS declarator built: a parameter of FUNCTION
+	// type is a pointer to function (`int fn(int)`, the abstract `int
+	// (int)`); a parameter of ARRAY type is a pointer to its element (`int
+	// a[4]` -> `int *`, `int m[][3]` -> `int (*)[3]` — the outer extent
+	// decays, the rest nest; the dims stay in out.array_dims and
+	// adjusted_array says so). A typedef'd array or function TYPE base
+	// (`va_list ap`, `F f`) is left as the alias — C adjusts it at the
+	// declaration, the emitter spells the alias; a REFERENCE (`int (&a)[3]`)
+	// is never adjusted.
 	if ( DataDefFPTR *fn = dd->as_fptr_dd() )
 	{
 	    if ( !fn->ptr_syntax )
 		dd = fnptr_twin(fn);
 	}
 	else if ( DataDefCArray *arr = dd->as_carray_dd() )
+	{
 	    dd = getPointerType(arr->element_type);
+	    out.adjusted_array = true;
+	}
     }
     return dd;
 }
@@ -53123,7 +53133,8 @@ bool Program::nested_declarator_opens(DeclaratorMode mode)
 	return false;
     TokenBase *t1 = tokens[1];
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
-      || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk )
+      || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
+      || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
     if ( !is_contextual_identifier_token(t1) )
 	return false;
@@ -53216,8 +53227,10 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    Throw(curToken()) << "Unexpected end of input in declarator" << flush;
 	if ( pk->id() == TokenID::tkMul || is_cv_qualifier_token(pk) )
 	{
-	    bool const_after = false;
-	    int stars = consume_declarator_stars(dd, &const_after);
+	    bool const_after = false, cv_here = false;
+	    int stars = consume_declarator_stars(dd, &const_after, false, &cv_here);
+	    if ( cv_here )
+		out.cv_seen = true;
 	    if ( fresh_fn )
 	    {
 		// A function type built by this read: the first `*` IS the
@@ -68758,382 +68771,68 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	param_ptr_depth = 0;
 	param_rvalue_ref = false;
 	DataDef *param_dd = &pb->definition;
-grabnt:
-	// grab the next token
-	if ( !peekToken() )
-	    Throw(nt) << "Unexpected end of file parsing function parameters" << flush;
-
-	nt = nextToken();
-
-	if ( nt->id() == TokenID::tkBand )
 	{
-	    rtype = RefType::rtReference;
-	    param_rvalue_ref = false;
-	    DBG(std::cout << "parseFunction() setting reference token " << std::endl);
-//	    pb->definition.setRef(RefType::rtReference);
-	    goto grabnt;
-	}
-	if ( nt->id() == TokenID::tkLand )
-	{
-	    rtype = RefType::rtReference;
-	    param_rvalue_ref = true;
-	    DBG(std::cout << "parseFunction() setting rvalue reference token " << std::endl);
-	    goto grabnt;
-	}
-	if ( nt->id() == TokenID::tkStar )
-	{
-	    rtype = RefType::rtPointer;
-	    ++param_ptr_depth;
-	    param_dd = getPointerType(param_dd);
-	    DBG(std::cout << "parseFunction() pointer param: " << param_dd->name << std::endl);
-	    goto grabnt;
-	}
-	if ( is_restrict_token(nt)
-	  || nt->id() == TokenID::tkCONST
-	  || nt->id() == TokenID::tkVOLATILE )
-	{
-	    if ( nt->id() == TokenID::tkCONST )
+	    // The parameter's declarator — the ONE reader in Parameter mode over
+	    // the resolved base: stars with cv, `&`/`&&`, `(*[name])(params)`,
+	    // `(C::*name)(params) const`, `C::*name`, `(*[name])[N]`, `(&name)[N]`,
+	    // `name[N]...` (a runtime dim may name an EARLIER parameter), the
+	    // named `name(params)` and abstract `(params)` function types, an
+	    // optional name; [dcl.fct]/5 applied once in the reader's wrapper (an
+	    // array parameter is a pointer to its element, trailing extents kept;
+	    // a function type a pointer to function). The `grabnt:` ladder this
+	    // replaces — four dim loops, a five-way `(` ladder, an inline `C::*`
+	    // chain — is gone; paramdecl reads the result as it read the ladder's
+	    // variables, so the spelling (the mangling input) is unchanged.
+	    std::set<std::string> earlier_params(ids.begin(), ids.end());
+	    DeclaratorResult pr;
+	    param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pr,
+					&earlier_params);
+	    pid = pr.name.empty()
+		? "__anon_param_" + std::to_string(anon_param_index++) : pr.name;
+	    param_ptr_depth = pr.ptr_depth;
+	    param_rvalue_ref = pr.rvalue_ref;
+	    if ( pr.cv_seen )
 		param_has_const = true;
-	    goto grabnt;
-	}
-	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
-	{
-	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    goto paramdecl;
-	}
-	if ( nt->id() == TokenID::tkAssign )
-	{
-	    // Unnamed defaults use the same typed initializer path as named
-	    // parameters; param_dd already holds the complete declarator.
-	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    goto finish_param_declarator;
-	}
-	if ( nt->id() == TokenID::tkOpSqr )
-	{
-	    pid = "__anon_param_" + std::to_string(anon_param_index++);
-	    while ( nt && nt->id() == TokenID::tkOpSqr )
+	    // Own dims = the array THIS declarator built and the wrapper decayed;
+	    // the pointee dims of `(*p)[N]` / the referent's of `(&a)[N]` belong
+	    // to the built type, not to the parameter's record (as the ladder
+	    // had it — and as its spelling had it).
+	    if ( pr.adjusted_array )
 	    {
-		skip_param_array_qualifiers();	// [const 5] / [static 5] / [const *]
-		TokenBase *peek_dim = peekToken();
-		if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
-		{
-		    nextToken(); // consume ']'
-		    param_array_dims.push_back(0);
-		    param_array_dim_exprs.push_back(NULL);
-		}
+		param_array_dims = pr.array_dims;
+		param_array_dim_exprs = pr.array_dim_exprs;
+	    }
+	    if ( pr.ref == RefType::rtReference )
+	    {
+		// The declarator's own `&`/`&&`: paramdecl wraps the referent itself
+		// (getReferenceType). A reference BASE (T = U& substituted) stays the
+		// base type, as the ladder left it.
+		rtype = RefType::rtReference;
+		if ( DataDefREF *pref = param_dd->as_reference_dd() )
+		    param_dd = pref->base_type;
 		else
-		{
-		    TokenBase *dim_expr = NULL;
-		    if ( bracket_dim_needs_runtime_value(NULL) )
-		    {
-			dim_expr = parseExpression(nextToken(), true);
-			param_array_dims.push_back(0);
-		    }
-		    else
-		    {
-			int64_t n = parse_constant_integer_expression();
-			if ( n < 0 )
-			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-			param_array_dims.push_back((carray_dim_t)n);
-		    }
-		    param_array_dim_exprs.push_back(dim_expr);
-		    TokenBase *cl = nextToken();
-		    if ( !cl || cl->id() != TokenID::tkClSqr )
-			Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
-		}
-		nt = nextToken();
+		    param_rvalue_ref = false;
 	    }
-	    goto finish_param_declarator;
+	    else if ( pr.ptr_depth > 0 || pr.nested_stars > 0 || pr.adjusted_array
+		   || (param_dd != &pb->definition && param_dd->is_pointer()) )
+		rtype = RefType::rtPointer;
+	    if ( param_dd->as_fptr_dd() && param_dd != &pb->definition )
+		param_alias.clear();	// a function pointer built here: no alias
+	    nt = nextToken();		// the '=' / ',' / ')' ending the declarator
+	    // An ANONYMOUS parameter is legal (`int f(int)`), so the reader stops
+	    // silently at a token that is not a declarator's; the ARM knows what
+	    // may follow a parameter — `,` `)` `=` — and reports anything else
+	    // where the ladder did (`int f(int %)`, testparserecover), so the
+	    // error-tolerant parse still counts the error.
+	    if ( pr.name.empty() && nt && nt->id() != TokenID::tkComma
+	      && nt->id() != TokenID::tkClBrk && nt->id() != TokenID::tkAssign )
+		Throw(nt) << "Expecting identifier after type" << flush;
 	}
-	if ( nt->id() == TokenID::tkOpBrk )
-	{
-	    TokenBase *inner = nextToken();
-	    if ( inner && member_pointer_declarator_ahead(inner) )
-	    {
-		// Pointer-to-member-function PARAMETER `bool (impl::*fn)(const
-		// std::string &, ...)` (madc_program.cpp:2857) — the same owner
-		// the member/variable/typedef declarators use.
-		std::string mp_name;
-		param_dd = parse_member_fnptr_declarator(*param_dd, mp_name, inner);
-		pid = mp_name;
-		rtype = RefType::rtValue;
-		nt = nextToken();
-		goto finish_param_declarator;
-	    }
-	    if ( inner && (inner->id() == TokenID::tkStar
-			|| inner->id() == TokenID::tkBand
-			|| inner->id() == TokenID::tkLand) )
-	    {
-		bool nested_reference = inner->id() != TokenID::tkStar;
-		if ( nested_reference && is_c_mode() )
-		    Throw(inner) << "Reference declarators require C++" << flush;
-		param_rvalue_ref = inner->id() == TokenID::tkLand;
-		nt = nextToken();
-		while ( nt && (is_restrict_token(nt)
-		           || nt->id() == TokenID::tkCONST
-		           || nt->id() == TokenID::tkVOLATILE) )
-		    nt = nextToken();
-		if ( is_contextual_identifier_token(nt) )
-		{
-		    pid = contextual_identifier_name(nt);
-		    nt = nextToken();
-		}
-		else
-		    // Anonymous function-pointer parameter `type (*)(params)`:
-		    // legal in a C++ DEFINITION as well as a prototype
-		    // ([dcl.fct]/11), and c2mir needs every parameter of a
-		    // definition NAMED ("parameter type without a name in
-		    // function definition") — the same synthesized name every
-		    // other abstract parameter shape takes. nt holds ')'.
-		    pid = "__anon_param_" + std::to_string(anon_param_index++);
-		// Array-of-fn-ptrs parameter: `int (*[4])(int)` (00209's f4)
-		// / `int (*name[4])(int)` — dims before the ')'. The param
-		// keeps the CArray-of-fnptr shape (the SAME DataDef a
-		// `typedef int (*fptr4[4])(int)` spelling produces), so both
-		// spellings of one function redeclare compatibly; C's own
-		// 6.7.6.3p7 decay applies at emission.
-		std::vector<carray_dim_t> fnptr_arr_dims;
-		while ( nt && nt->id() == TokenID::tkOpSqr )
-		{
-		    skip_param_array_qualifiers();
-		    if ( peekToken() && peekToken()->id() == TokenID::tkClSqr )
-		    {
-			nextToken();
-			fnptr_arr_dims.push_back(0);
-		    }
-		    else
-		    {
-			int64_t n = parse_constant_integer_expression();
-			if ( n < 0 )
-			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-			fnptr_arr_dims.push_back((carray_dim_t)n);
-			TokenBase *cl = nextToken();
-			if ( !cl || cl->id() != TokenID::tkClSqr )
-			    Throw(cl ? cl : inner) << "Expected ']' in parameter array declarator" << flush;
-		    }
-		    nt = nextToken();
-		}
-		if ( !nt || nt->id() != TokenID::tkClBrk )
-		    Throw(nt ? nt : inner) << "Expected ')' after function pointer parameter name" << flush;
-		nt = nextToken();
-		if ( nt && nt->id() == TokenID::tkOpSqr )
-		{
-		    // Pointer-to-array parameter: `int (*a)[2]`. nt holds the
-		    // already-consumed '[' — push it back so the shared suffix
-		    // parser sees the full `[N]...`; it leaves the parameter's
-		    // ending ',' / ')' unconsumed for paramdecl below.
-		    pushToken(nt);
-		    param_dd = parse_ptr_array_suffix(param_dd, inner,
-						      "pointer-to-array parameter");
-		    // The suffix owner builds PTR(ARRAY). A reference binds the
-		    // complete array; paramdecl supplies its DataDefREF wrapper.
-		    if ( nested_reference )
-			param_dd = param_dd->as_pointer_dd()->base_type;
-		    rtype = nested_reference ? RefType::rtReference : RefType::rtPointer;
-		    nt = nextToken();
-		    goto finish_param_declarator;
-		}
-		if ( !nt || nt->id() != TokenID::tkOpBrk )
-		{
-		    // Plain parenthesized pointer declarator: `int (* const x)`
-		    // — C99 6.7.5.3's redundant-parens shape (c-testsuite
-		    // 00162). The star is a real pointer level, not a fn-ptr
-		    // head; nt already holds the parameter's ending ','/')'.
-		    rtype = nested_reference ? RefType::rtReference : RefType::rtPointer;
-		    if ( !nested_reference )
-		    {
-			++param_ptr_depth;
-			param_dd = getPointerType(param_dd);
-		    }
-		    goto finish_param_declarator;
-		}
-
-		// Function-pointer parameter declarator, e.g.
-		// `void (*markfn)(void *)`.
-		FuncDef *param_func = parseFnPtrParams(*param_dd);
-		param_dd = new DataDefFPTR(param_func);
-		if ( !fnptr_arr_dims.empty() )
-		{
-		    // array-of-fn-ptrs: the CArray chain, pushed as-is.
-		    for ( size_t di = fnptr_arr_dims.size(); di-- > 0; )
-			param_dd = new DataDefCArray(*param_dd, param_dd->name,
-						     fnptr_arr_dims[di], NULL);
-		    rtype = RefType::rtPointer;
-		}
-		else
-		    rtype = nested_reference ? RefType::rtReference : RefType::rtValue;
-		// The alias names the callback's return type, not the complete
-		// function-pointer parameter represented by param_typedef_names.
-		param_alias.clear();
-
-		nt = nextToken();
-		goto finish_param_declarator;
-	    }
-	    // Abstract FUNCTION-type parameter — `int f1(int (), int)`,
-	    // `int (int x)`, `int (int())` (c-testsuite 00209). C11
-	    // 6.7.6.3p8: a parameter of function type adjusts to
-	    // pointer-to-function; the '(' begins the function's own
-	    // parameter list, which parseFnPtrParams owns.
-	    if ( inner && (inner->id() == TokenID::tkClBrk
-			|| token_starts_type_name(inner)) )
-	    {
-		pid = "__anon_param_" + std::to_string(anon_param_index++);
-		pushToken(inner);
-		FuncDef *param_func = parseFnPtrParams(*param_dd);
-		param_dd = new DataDefFPTR(param_func);
-		param_alias.clear();
-		rtype = RefType::rtValue;
-		nt = nextToken();
-		goto paramdecl;
-	    }
-	    // Parenthesized abstract ARRAY parameter — `int ([4])`
-	    // (00209's f8): the dims sit inside the parens; the param
-	    // array decays to a pointer as usual.
-	    if ( inner && inner->id() == TokenID::tkOpSqr )
-	    {
-		pid = "__anon_param_" + std::to_string(anon_param_index++);
-		pushToken(inner);
-		nt = nextToken();
-		while ( nt && nt->id() == TokenID::tkOpSqr )
-		{
-		    skip_param_array_qualifiers();
-		    TokenBase *peek_dim = peekToken();
-		    if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
-		    {
-			nextToken(); // consume ']'
-			param_array_dims.push_back(0);
-			param_array_dim_exprs.push_back(NULL);
-		    }
-		    else
-		    {
-			int64_t n = parse_constant_integer_expression();
-			if ( n < 0 )
-			    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-			param_array_dims.push_back((carray_dim_t)n);
-			param_array_dim_exprs.push_back(NULL);
-			TokenBase *cl = nextToken();
-			if ( !cl || cl->id() != TokenID::tkClSqr )
-			    Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
-		    }
-		    nt = nextToken();
-		}
-		if ( !nt || nt->id() != TokenID::tkClBrk )
-		    Throw(nt ? nt : inner) << "Expected ')' after parenthesized array declarator" << flush;
-		nt = nextToken();
-		goto finish_param_declarator;
-	    }
-	    Throw(inner ? inner : nt) << "Unsupported parenthesized parameter declarator" << flush;
-	}
-	// Pointer-to-DATA-member declarator: `<name> :: *` after the base type
-	// (`int C::*`). A name followed by `::` `*` is unambiguously a pointer-to-
-	// member (a parameter name cannot be qualified); without this, `C` is mistaken
-	// for the param name and the stray `::` `*` derail the parse. Recognize it
-	// SYNTACTICALLY — do NOT gate on resolving the owner: a class nested in a
-	// template (the stl_pair `__zero_as_null_pointer_constant` case) is not in
-	// struct_map by simple name here. Owner is resolved best-effort (for Stage 2
-	// offset computation); when NULL the type still lowers as a ptrdiff_t scalar.
-	// Member-FUNCTION pointers use the parenthesized `(C::*name)(args)` form.
-	if ( ( nt->type() == TokenType::ttDataType
-	    || is_contextual_identifier_token(nt) )
-	  && peekToken() && peekToken()->id() == TokenID::tkNS )
-	{
-	    std::string ptm_owner_name = (nt->type() == TokenType::ttDataType)
-		? ((TokenDataType *)nt)->definition.name
-		: contextual_identifier_name(nt);
-	    DataDef *ptm_owner = NULL;
-	    if ( nt->type() == TokenType::ttDataType )
-		ptm_owner = &((TokenDataType *)nt)->definition;
-	    else
-	    {
-		datadef_map_citer omi = struct_map.find(ptm_owner_name);
-		if ( omi != struct_map.end() )
-		    ptm_owner = omi->second;
-	    }
-	    TokenBase *ptm_ns = nextToken(); // consume '::'
-	    if ( peekToken() && peekToken()->id() == TokenID::tkStar )
-	    {
-		nextToken(); // consume '*'
-		param_dd = new DataDefMemberPtr(ptm_owner, ptm_owner_name, *param_dd);
-		rtype = RefType::rtValue; // the ptr-to-member is itself an 8-byte scalar
-		// Optional cv-qualifiers on the pointer-to-member.
-		while ( peekToken()
-		     && (peekToken()->id() == TokenID::tkCONST
-		      || peekToken()->id() == TokenID::tkVOLATILE) )
-		    nextToken();
-		goto grabnt; // a name, further declarator, or ',' / ')'
-	    }
-	    pushToken(ptm_ns); // not `::*` — restore for the normal path (qualified type, etc.)
-	}
-	if ( !is_contextual_identifier_token(nt) )
-	{
-	    Throw(nt) << "Expecting identifier after type" << flush;
-	}
-
-	// grab identifier string
-	pid = contextual_identifier_name(nt);
-	if ( !peekToken() )
-	    Throw(nt) << "Expecting token after identifier" << flush;
-
-	nt = nextToken();
-
-	// Named FUNCTION-type parameter: `int fn(int)` adjusts to
-	// `int (*fn)(int)` ([dcl.fct]/5). The opening '(' is already consumed;
-	// parseFnPtrParams is the one owner of the nested parameter list, just as
-	// it is for the parenthesized `int (*fn)(int)` arm above.
-	if ( nt && nt->id() == TokenID::tkOpBrk )
-	{
-	    DataDef *function_return = rtype == RefType::rtReference
-		? static_cast<DataDef *>(getReferenceType(param_dd)) : param_dd;
-	    FuncDef *param_func = parseFnPtrParams(*function_return);
-	    param_dd = new DataDefFPTR(param_func);
-	    param_alias.clear();
-	    rtype = RefType::rtValue;
-	    nt = nextToken();
-	}
-
-	// Array parameters decay only once in C: `T a[]` -> `T *`, and
-	// `T a[][3][4]` -> `T (*)[3][4]`. Preserve the trailing extents as a
-	// nested array type under a single pointer instead of promoting one
-	// pointer level per `[]`.
-	while ( nt && nt->id() == TokenID::tkOpSqr )
-	{
-	    skip_param_array_qualifiers();	// [const 5] / [static 5] / [const *]
-	    TokenBase *peek_dim = peekToken();
-	    if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
-	    {
-		nextToken(); // consume ']'
-		param_array_dims.push_back(0);
-		param_array_dim_exprs.push_back(NULL);
-	    }
-	    else
-	    {
-		TokenBase *dim_expr = NULL;
-		std::set<std::string> param_runtime_names;
-		param_runtime_names.insert(pid);
-		for ( size_t ii = 0; ii < ids.size(); ++ii )
-		    param_runtime_names.insert(ids[ii]);
-		if ( bracket_dim_needs_runtime_value(&param_runtime_names) )
-		{
-		    dim_expr = parseExpression(nextToken(), true);
-		    param_array_dims.push_back(0);
-		}
-		else
-		{
-		    int64_t n = parse_constant_integer_expression();
-		    if ( n < 0 )
-			Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-		    param_array_dims.push_back((carray_dim_t)n);
-		}
-		param_array_dim_exprs.push_back(dim_expr);
-		TokenBase *cl = nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
-	    }
-	    nt = nextToken();
-	}
-finish_param_declarator:
 	if ( !param_array_dims.empty() )
 	{
+	    // An array parameter decayed in the reader ([dcl.fct]/5); its runtime
+	    // dims are evaluated at function entry for their side effects — the
+	    // same comma chain as before.
 	    TokenBase *param_vla_sidefx = NULL;
 	    for ( size_t i = 0; i < param_array_dim_exprs.size(); ++i )
 	    {
@@ -69152,16 +68851,7 @@ finish_param_declarator:
 	    }
 	    if ( param_vla_sidefx )
 		param_vla_side_effects[pid] = param_vla_sidefx;
-	    DataDef *array_elem = param_dd;
-	    for ( size_t i = param_array_dims.size(); i-- > 1; )
-		array_elem = new DataDefCArray(*array_elem, array_elem->name,
-					       param_array_dims[i],
-					       i < param_array_dim_exprs.size()
-					       ? param_array_dim_exprs[i] : NULL);
-	    param_dd = getPointerType(array_elem);
 	    rtype = RefType::rtPointer;
-	    // The decayed pointer is one more `*` on the parameter's C++
-	    // spelling (`int a[10]` IS `int *a` — Itanium Pi, never i).
 	    ++param_ptr_depth;
 	}
 
@@ -69183,7 +68873,6 @@ finish_param_declarator:
 	    nt = nextToken();   // the ',' or ')' that ends this parameter
 	}
 
-paramdecl:
 	// parameter declaration
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
