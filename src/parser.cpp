@@ -13749,6 +13749,13 @@ static const char *construction_refusal(DataDef *type_dd, size_t nargs,
     // ([dcl.init.list]/3, g++.dg initlist-array22 `using T = const A(&)[1]; T{};`).
     if ( type_dd->is_reference() )
 	return (nargs == 0 && !braced) ? "value-initialization of a reference type" : NULL;
+    // [expr.type.conv]: `T()` with T an ARRAY type is ill-formed (both canons;
+    // g++.dg sfinae15 `f<int[]>`). The braced form list-initializes an array
+    // aggregate — an array of UNKNOWN bound takes its bound from the list
+    // (`int[]{1,2,3}`, both canons; g++.dg initlist89/initlist-array17); the
+    // EMPTY list is the braced arm's own rule.
+    if ( type_dd->as_carray_dd() && !braced )
+	return "an array type cannot be value-initialized with ()";
     // A function TYPE (madc spells it as a DataDefFPTR with ptr_syntax off —
     // the declarator arc's fn-type twin model); a pointer to function is fine.
     if ( dynamic_cast<FuncDef *>(type_dd) )
@@ -14046,6 +14053,14 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 		Throw(type_tb) << "cannot construct a temporary array of '"
 			       << array->element_type->name << "': " << why << flush;
 	    TokenStructLit *slit = parse_compound_struct_lit(NULL, type_tb);
+	    // An array of UNKNOWN bound deduces its bound from a NON-EMPTY list
+	    // (`int[]{1,2,3}` — both canons); with an EMPTY list there is no
+	    // bound to deduce: g++ rejects (the lane's canon; clang++ deduces a
+	    // zero-length array), and in a SFINAE default that is the
+	    // substitution failure (g++.dg sfinae12 `f<int[]>`).
+	    if ( array->count == 0 && slit->inits.empty() )
+		Throw(type_tb) << "cannot list-initialize '" << type_dd->name
+			       << "': an array of unknown bound needs a non-empty list" << flush;
 	    if ( array->count && slit->inits.size() > array->count )
 		Throw(type_tb) << "Too many initializers for array" << flush;
 	    while ( slit->inits.size() < array->count )
@@ -15347,6 +15362,23 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    nextToken();
     }
 
+    // [expr.sizeof]/1, [expr.alignof]/3 (C++): the operand shall not be void
+    // or a function type (madc spells a function TYPE as a DataDefFPTR with
+    // ptr_syntax off). Decided HERE, after the type-id's abstract declarator
+    // is folded — `sizeof (void *)` is a pointer, not void (glibc's
+    // struct_FILE.h measures it) — and only in C++ mode: in C `sizeof(void)`
+    // is the GNU extension worth 1. Inside a SFINAE default (`unsigned =
+    // sizeof(T)`) the throw is the substitution failure (g++.dg sfinae38);
+    // madc measured 1 and the constrained overload won.
+    if ( !have_value && dd && is_cpp_mode() )
+    {
+	bool fn_type = dynamic_cast<FuncDef *>(dd) != NULL;
+	if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+	    fn_type = fn_type || (!fp->ptr_syntax && !dd->is_reference());
+	if ( dd == &ddVOID || fn_type )
+	    Throw(type_tb) << op_name << " cannot be applied to "
+			   << (dd == &ddVOID ? "void" : "a function type") << flush;
+    }
     if ( !have_value && dd )
 	value = query_datadef_measure(dd, want_alignof);
 
@@ -36897,6 +36929,12 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
 	    body.push_back(t->clone_origin());
     TokenSemi *sentinel = new TokenSemi();
     body.push_back(sentinel);
+    // The parser's position rides beside the stream (_prv_token feeds the
+    // unary/postfix-position predicates): save and restore both, as every
+    // other isolated-stream owner does (resolve_type_token_range; the default
+    // resolver lost `declval<F>()(args)` to a stale sentinel — SFINAE T1).
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
     saved_tokens = tokens.swap_in(std::move(body));
     // A non-constant / still-dependent arg (`N` with N unbound, a pointer non-type
     // arg) makes parse_constant_integer_expression Throw, and throwbuf::sync()
@@ -36925,6 +36963,8 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     tokens = saved_tokens;
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
     if ( !ok )
     {
 	diagnostics.resize(saved_diag_count);

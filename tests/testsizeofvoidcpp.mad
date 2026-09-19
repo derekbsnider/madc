@@ -1,0 +1,10 @@
+// [expr.sizeof]/1: in C++ sizeof shall not be applied to void (or to a
+// function type). g++: "invalid application of 'sizeof' to a void type";
+// clang++: "invalid application of 'sizeof' to an incomplete type 'void'".
+// (In C it is the GNU extension worth 1 — see the C-mode control in the
+// SFINAE T4 commit.) `sizeof (void *)` is a pointer and stays legal.
+int main()
+{
+	int p = (int)sizeof(void *);
+	return (int)sizeof(void) + p;
+}

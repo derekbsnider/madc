@@ -1,0 +1,11 @@
+// [dcl.init]: an array of UNKNOWN bound cannot be value-initialized — `T()`
+// with T = int[] is ill-formed (g++.dg sfinae15); a bounded array is fine.
+// (The braced form `int[]{}` is accepted by clang++ and rejected by g++ — not
+// asserted here.)
+#include <cstdio>
+template<class T, class = decltype(T())> char k(int);
+template<class> char (&k(...))[2];
+int main() {
+	printf("k<int[]>:%d k<int[2]>:%d k<int>:%d\n", (int)sizeof(k<int[]>(0)), (int)sizeof(k<int[2]>(0)), (int)sizeof(k<int>(0)));
+	return 0;
+}
