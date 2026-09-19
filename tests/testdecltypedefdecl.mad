@@ -1,0 +1,51 @@
+// g++ and clang++ -std=c++11 print a3:7 sz:40 c1:x rsz:2 f:9 g:9 h:5 pf:6 pp:8 q:10 t4:16 ab:3
+//
+// A typedef's declarator is a NAMED declarator ([dcl.decl]) over the resolved
+// type — every shape: a pointer-to-array `int (*PA)[10]`, a reference-to-array
+// `char (&R)[2]`, the two function-typedef postures `int F(int)` (a FUNCTION
+// type) and `int (*PF)(int)` (its pointer), the parenthesized function form
+// `int (G)(int)` (winnt.h's ENCLAVE_TARGET_FUNCTION — a function type, like F),
+// a pointer to a function-typedef base `F (*PF2)` and `F *PF3` (the pointer
+// — one star on a function type IS the function pointer), an array of
+// function pointers `int (*T4[4])(int)`, and a declarator LIST whose tail
+// carries its own shape `int (*A)(int), (*B)(char)`. One reader —
+// Program::parse_declarator, Typedef mode — reads them all; the typedef arm
+// carried a Form 1 / Form 2 ladder that refused `(*PA)[10]` and `(&R)[2]`.
+extern "C" int printf(const char *, ...);
+
+typedef int (*PA)[10];
+typedef char (&R)[2];
+typedef int F(int);
+typedef int (*PF)(int);
+typedef int (G)(int);
+typedef F (*PF2);
+typedef F *PF3;
+typedef int (*T4[4])(int);
+typedef int (*A)(int), (*B)(char);
+
+int inc(int v) { return v + 1; }
+int dbl(int v) { return v * 2; }
+int chr(char c) { return c - 'a'; }
+
+int main()
+{
+    int a[10] = {0};
+    PA p = &a;
+    (*p)[3] = 7;
+    char c[2] = {'a', 'b'};
+    R r = c;
+    r[1] = 'x';
+    F *f = inc;
+    G *g = inc;
+    PF pf = dbl;
+    PF2 pf2 = dbl;
+    PF3 pf3 = dbl;
+    T4 t4 = {inc, dbl, inc, dbl};
+    A aa = inc;
+    B bb = chr;
+    printf("a3:%d sz:%d c1:%c rsz:%d f:%d g:%d h:%d pf:%d pp:%d q:%d t4:%d ab:%d\n",
+	   a[3], (int)sizeof(*p), c[1], (int)sizeof(R), f(8), g(8), pf2(2) + pf3(1) - 1,
+	   pf(3), (int)sizeof(PF3), t4[1](5), (int)(sizeof(t4) / sizeof(t4[0]) * 4),
+	   aa(1) + bb('b'));
+    return 0;
+}

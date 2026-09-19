@@ -6439,7 +6439,9 @@ public:
     // pair, parse_array_dimensions / nest_carray_dims, parseFnPtrParams) are
     // the pieces it composes. Gate: scripts/check-one-declarator-reader.sh.
     enum class DeclaratorMode : uint8_t {
-	Named,		// typedef / member / K&R: a declarator-id is REQUIRED
+	Named,		// member / K&R: a declarator-id is REQUIRED
+	Typedef,	// Named, and the alias's own dims name their outer level and
+			//   write the v25 DK_CARRAY record (the typedef array contract)
 	Abstract,	// a type-id that spans to its delimiter (alias target,
 			//   template argument): no declarator-id; every `(` is ours
 	TypeIdOperand,	// a type-id inside a sizeof / alignof / cast operand: no
@@ -6510,7 +6512,7 @@ public:
     // declaration arm — params capture at function entry instead).
     // The ONE array-dimension reader and the ONE array-type builder every
     // declarator position composes (parse_ptr_array_suffix and
-    // parse_typedef_array_suffix are its two entries).
+    // the Typedef-mode declarator reader are its two entries).
     void parse_array_dimensions(std::vector<carray_dim_t> &dims,
 				std::vector<TokenBase *> &dim_exprs,
 				TokenBase *ctx, const char *what,
@@ -7199,9 +7201,6 @@ public:
     // real '->' then applies to). NULL when the rewrite does not apply.
     class TokenCallMethod *arrow_operator_call(TokenBase *lhs,
 					       TokenBase *loc_tb);
-    DataDef *parse_typedef_array_suffix(DataDef *base_dd,
-					const std::string &alias_name,
-					TokenBase *err_tok);
     TokenBase *consume_balanced_parenthesized_suffix(TokenBase *open);
     TokenBase *make_expression_context_literal(const madc::value &resolved,
 					       TokenBase *src);

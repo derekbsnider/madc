@@ -54,9 +54,9 @@ cd "$(dirname "$0")/.."
 SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
-BASE_FNPTRPARAMS=13   # -> 2  (definition + the owner's suffix call)
-BASE_FPTR=15          # -> 10 (owner x1 + the 9 non-declarator sites above)
-BASE_CARRAY=9         # -> 5  (owner x1 + 4 non-declarator sites)
+BASE_FNPTRPARAMS=11   # -> 2  (definition + the owner's suffix call)
+BASE_FPTR=14          # -> 11 (owner x2 + the 9 non-declarator sites above)
+BASE_CARRAY=8         # -> 5  (owner x1 + 4 non-declarator sites)
 BASE_MEMBERPTR=6      # -> 2  (owner + the &C::field constant)
 BASE_MEMBERFNPTR=3    # -> 2  (owner + the &C::method constant)
 
@@ -100,6 +100,7 @@ control "nest_carray_dims' CArray construction"       'DataDefCArray \*level = n
 control "parse_member_fnptr_declarator's construction" 'return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);'
 control "parse_declarator's member-fn-ptr fold"        'dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,'
 control "parse_declarator's function-type suffix"      'DataDefFPTR \*fp = new DataDefFPTR(func);'
+control "parse_declarator's fn-pointer twin over a function typedef" 'DataDefFPTR \*twin = new DataDefFPTR(fn_base->target);'
 control "parse_member_pointer_owner adoption (variable arm)" 'decl_type = new DataDefMemberPtr(mp_owner, mp_owner_name, \*decl_type);'
 
 if [ "${1:-}" = "--selftest" ]; then

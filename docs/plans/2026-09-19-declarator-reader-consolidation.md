@@ -446,6 +446,14 @@ updated with the measured lane; HANDOFF rewritten.
   fold makes `*` on a function type THE function pointer). Reducer parked:
   `tmp/declprobe/pending-tests/testtemplatefnptrmember.*`. The typedef'd form
   `F *p` already works through the alias-spec path.
+- **Cast/sizeof precedence (found by T6's reducer; NOT a declarator defect).**
+  `32 / (int)sizeof(a[0]) * 4` evaluates to 2 (g++/clang++: 32): a cast whose
+  operand is `sizeof`/`alignof` lets the following `*` bind to the cast term
+  before the pending `/`; `32 / (int)x * 4` is right. Pre-dates T5 (reproduced
+  on the T1+T2 binary). Layer: parseExpression's cast arm, sizeof-operand
+  branch (~41580) and its ExprStep tail — the operand path, not the type-id
+  read. KG Gap `cast_sizeof_operand_binds_following_multiplicative`; reducer
+  parked `tmp/declprobe/pending-tests/testcastsizeofprec.*`; own session.
 - **Emitter adopters so far:** var_decl + typedef_decl (efdd54e16), member_node
   (T4's companion fix). Left: the parameter declarator (~cir_builder.cpp:8933).
 
