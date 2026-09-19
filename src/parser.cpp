@@ -53281,11 +53281,15 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 }
 
 // At a `(` (tokens[0], unconsumed): does it open a NESTED declarator rather
-// than a parameter list? `*` `&` `&&` `(` cv and a `C::[D::]*` chain open one;
-// so does a plain name that is not a type outside a type-id (the parenthesized
-// declarator-id `int *(p[25])`); a `)` or a type name begins a parameter list
-// (`int ()`, `int (int)`). ONE home for the shape
-// consume_template_parameter_declarator spelled inline.
+// than a parameter list? `*` `&` `&&` `(` and a `C::[D::]*` chain open one
+// ([dcl.decl]: a ptr-operator, or another `( declarator )`); so does a plain
+// name that is not a type outside a type-id (the parenthesized declarator-id
+// `int *(p[25])`). A `)`, a type name OR A CV-QUALIFIER begins a parameter
+// list (`int ()`, `int (int)`, `int (const float &)`): a cv-qualifier can only
+// FOLLOW a `*` inside a ptr-operator, never open one — the first draft
+// counted it as an opener and read `int(const float&)` as a nested group
+// (g++.dg/cpp0x/variadic16). paren_starts_parameter_list is the complement.
+// ONE home for the shape consume_template_parameter_declarator spelled inline.
 bool Program::nested_declarator_opens(DeclaratorMode mode)
 {
     if ( tokens.size() < 2 || !tokens[0] || tokens[0]->id() != TokenID::tkOpBrk
@@ -53293,8 +53297,7 @@ bool Program::nested_declarator_opens(DeclaratorMode mode)
 	return false;
     TokenBase *t1 = tokens[1];
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
-      || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
-      || is_cv_qualifier_token(t1) )
+      || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk )
 	return true;
     if ( !is_contextual_identifier_token(t1) )
 	return false;
