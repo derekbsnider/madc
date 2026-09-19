@@ -1511,6 +1511,10 @@ public:
 	// with the c2m innermost-first suffix order
 	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
 	node_t fnptr_func_node(class FuncDef *fd);
+	// The pointer piece of a declarator — N_POINTER per level, then the
+	// pointee's array dims — shared by var_decl and typedef_decl.
+	void append_pointer_declarator(node_t decl_list, int levels,
+				       const std::vector<carray_dim_t> &ptr_array_dims);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);

@@ -416,6 +416,27 @@ updated with the measured lane; HANDOFF rewritten.
 - Literal-operator mangling (`_Z12operator_qu_qu_wm` vs Itanium `li`) — the
   mangling feature's owner, unchanged from the 2026-09-18 handoff.
 
+- **The emitter twin of this family (found by T3).** `CirBuilder::typedef_decl`
+  unwrapped ONE pointer level and never peeled the pointee's dims, so
+  `typedef int **PP` and `typedef arr10 *PA` both emitted `typedef int *`
+  (SILENT; c2mir's checker refused `**pp` / `(*pa)[2]`). `var_decl` had the
+  rule right. Fixed in its own commit through ONE owner (`peel_pointer_declarator`
+  + `CirBuilder::append_pointer_declarator`) adopted by both; reducer
+  `tests/testtypedefptrarray.mad`. The parameter (~8933) and member (~10474)
+  declarator emitters still compose their own pointer piece — KG family
+  `cir_declarator_pieces`; their adoption and the fulltest gate land at T13.
+- **T11 probe (found by the emitter fix's reducer).** A VARIABLE declared through
+  a typedef'd ARRAY OF POINTERS with an initializer — `typedef const char
+  *names[3]; names n = {"a","bb","ccc"};` — emits `names *n[3] = {...}`: the
+  variable arm flattens the typedef's dims into `v->dims` and leaves the
+  ELEMENT pointer as `v->type`, so `explicit_star_count` re-adds the alias's
+  star and the dims survive the `!is_ptr` skip gate. Three "incompatible types"
+  warnings, `n[2][0]` reads garbage (g++/clang++: `n:a ccc n2:ccc t:3`).
+  Chain: parseDeclaration var arm (flatten) -> Variable{type,dims,typedef_name}
+  -> var_decl's compensation. The fix is T11's: the owner returns the alias's
+  DataDef plus the variable's OWN pieces, and the flatten + `explicit_star_count`
+  compensation go. Reducer parked: `tmp/declprobe/pending-tests/testtypedefarrayofptrinit.*`.
+
 ## 7. Rulings
 
 7.1 **`consume_template_parameter_declarator` stays a consumer.** It answers

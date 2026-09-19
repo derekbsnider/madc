@@ -1,0 +1,29 @@
+// g++ and clang++ -std=c++11 print pa:2 40 pp:1 names:24
+//
+// A typedef's C declarator must carry EVERY pointer level and the pointee's
+// array dims: `typedef arr10 *PA` is a pointer to array (`(*pa)[2]`),
+// `typedef int **PP` two levels (`**pp`), `typedef const char *names[3]` an
+// ARRAY of pointers (sizeof 24, dims before the star). The typedef emitter
+// unwrapped ONE level and spelled the pointee's element — `typedef int *PA;`
+// and `typedef int *PP;` — so c2mir's checker refused the subscript and the
+// double dereference; the variable emitter had the rule right (ONE owner now).
+extern "C" int printf(const char *, ...);
+
+typedef int arr10[10];
+typedef arr10 *PA;
+typedef int **PP;
+typedef const char *names[3];
+
+int main()
+{
+    int arr[10] = {0, 1, 2};
+    int *ip = &arr[1];
+    PA pa = &arr;
+    PP pp = &ip;
+    // A VARIABLE of type `names` with an initializer is the variable arm's
+    // typedef-dims flatten (plan T11, tmp/declprobe/pending-tests/
+    // testtypedefarrayofptrinit): this test pins the typedef's own shape.
+    printf("pa:%d %d pp:%d names:%d\n", (*pa)[2], (int)sizeof(*pa), **pp,
+	   (int)sizeof(names));
+    return 0;
+}

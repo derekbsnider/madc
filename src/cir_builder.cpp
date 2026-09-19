@@ -7779,6 +7779,23 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	return node1(N_FUNC, param_list);
 }
 
+// The pointer piece of a declarator, in c2m order: one N_POINTER per level,
+// then the pointee's fixed dims — [POINTER..., ARR...] reads as "pointer to
+// array" (`T (*p)[N]`); the reverse, [ARR..., POINTER...], is an array of
+// pointers, which is why a declarator's OWN dims go before this piece.
+// ONE owner for var_decl and typedef_decl (the typedef twin emitted a single
+// star and no pointee dims — `typedef int **PP` / `typedef arr10 *PA` both
+// rendered `typedef int *`).
+void CirBuilder::append_pointer_declarator(node_t decl_list, int levels,
+					   const std::vector<carray_dim_t> &ptr_array_dims)
+{
+	for (int s = 0; s < levels; s++)
+		append(decl_list, pointer());
+	for (size_t d = 0; d < ptr_array_dims.size(); d++)
+		append(decl_list, node3(N_ARR, ignore(), list(),
+					 integer(ptr_array_dims[d])));
+}
+
 // Append a function-pointer's return-type specifiers into `spec_list`, and
 // fill `decl_list` with its declarator suffixes in c2m innermost-first order.
 // With emit_pointer the result is a pointer-to-function (`int (*fp)(char)` =>
@@ -7892,6 +7909,8 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 // -----------------------------------------------------------------------
 
 static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
+static int peel_pointer_declarator(DataDef *&base_dd,
+				   std::vector<carray_dim_t> &ptr_array_dims); // defined below
 // dd_peel_pointers is declared in cir_builder.h (cir_dump.cpp needs it too).
 
 // Peel DataDefCArray layers off a type, collecting fixed-array dimensions
@@ -9557,28 +9576,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
-	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
-	// struct, not the intermediate DataDefPTR which type_list would render as
-	// `int`). The star count is recovered separately via dd_ptr_depth below.
-	// dd_peel_pointers is the one owner (const-level aware).
-	dd_peel_pointers(base_dd);
-	// Pointer-to-array `T (*p)[N]`: the parser builds the type as
-	// DataDefPTR(DataDefCArray(T, N)). After peeling the pointer level(s) above,
-	// base_dd is the CArray — peel its fixed dims so the spec renders the element
-	// type T (append_type_specs has no CArray case), and emit the dims as N_ARR
-	// suffixes AFTER the pointer(s) below (declarator order [POINTER, ARR],
-	// which c2m reads as "pointer to array", vs [ARR, POINTER] = array of ptr).
+	// The pointer piece — every level (dd_peel_pointers, const-level aware)
+	// and the pointee's fixed dims — through the ONE owner typedef_decl
+	// shares. base_dd becomes the innermost base the spec list renders.
 	std::vector<carray_dim_t> ptr_array_dims;
-	if (is_ptr) {
-		bool vm_pointee = carray_chain_has_runtime(base_dd);
-		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
-		// A variably-modified pointee (`int (*rp)[m]`, runtime m) lowers
-		// FLAT: the row structure lives in the DataDef for the
-		// linearizer / stride machinery, never in the emitted declarator
-		// (c2mir has no VLA types) — emit `int *rp`, no N_ARR suffixes.
-		if (vm_pointee)
-			ptr_array_dims.clear();
-	}
+	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims);
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -9748,15 +9750,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		for (int s = 0; s < decl_stars; s++)
 			append(decl_list, pointer());
 	} else if (is_ptr) {
-		// One '*' per indirection level (int** -> 2). Previously a single
-		// pointer() was appended, collapsing int**/T*** to one star.
-		int depth = dd_ptr_depth(v->type);
-		for (int s = 0; s < depth; s++)
-			append(decl_list, pointer());
-		// Pointer-to-array: array dims follow the pointer(s) — `T (*p)[N]`.
-		for (size_t d = 0; d < ptr_array_dims.size(); d++)
-			append(decl_list, node3(N_ARR, ignore(), list(),
-						 integer(ptr_array_dims[d])));
+		append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims);
 	}
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
@@ -10056,6 +10050,29 @@ int dd_peel_pointers(DataDef *&dd)
 	if (dd)
 		dd = dd->unqualified();
 	return depth;
+}
+
+// The pointer piece of a declarator, ONE owner for var_decl and typedef_decl:
+// peel every pointer level off `base_dd` to the innermost base
+// (dd_peel_pointers — const-level aware, leaves the base unqualified), then
+// the POINTEE's fixed dims: `T (*p)[N]` is DataDefPTR(DataDefCArray(T, N)),
+// and the spec list must render the element T (append_type_specs has no
+// CArray case) with the dims emitted as N_ARR after the pointers. A
+// variably-modified pointee (`int (*rp)[m]`, runtime m) lowers FLAT — the row
+// structure lives in the DataDef for the linearizer / stride machinery, never
+// in the emitted declarator (c2mir has no VLA types) — so its dims are
+// dropped: `int *rp`. Returns the pointer depth for append_pointer_declarator.
+static int peel_pointer_declarator(DataDef *&base_dd,
+				   std::vector<carray_dim_t> &ptr_array_dims)
+{
+	int levels = dd_peel_pointers(base_dd);
+	if (levels > 0) {
+		bool vm_pointee = carray_chain_has_runtime(base_dd);
+		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
+		if (vm_pointee)
+			ptr_array_dims.clear();
+	}
+	return levels;
 }
 
 int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias)
@@ -20255,12 +20272,14 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	std::vector<carray_dim_t> arr_dims;
 	dd = peel_carray_dims(dd, arr_dims);
 
-	// Unwrap pointer for base type
+	// The pointer piece — every level and the pointee's fixed dims — through
+	// the ONE owner var_decl uses. The one-level unwrap this replaces
+	// rendered `typedef int *` for `typedef int **PP`, `typedef arr10 *PA`
+	// and `using T = int (*)[10]` alike: a star and the array lost SILENTLY,
+	// caught only when c2mir's checker refused `**pp` / `(*pa)[2]`.
 	DataDef *base_dd = dd;
-	bool is_ptr = dd->is_pointer();
-	DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(dd) : NULL;
-	if (ptr_dd && ptr_dd->base_type)
-		base_dd = ptr_dd->base_type;
+	std::vector<carray_dim_t> ptr_array_dims;
+	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims);
 
 	// Type specifier. A user/std:: CLASS instance is a DataDefCLASS (is-a
 	// DataDefSTRUCT) but reports is_struct() false (basetype btClass), so it must
@@ -20301,14 +20320,15 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 
 	node_t share = node1(N_SHARE, tl);
 
-	// Declarator: DECL(ID("alias"), LIST([POINTER]))
+	// Declarator, c2m order: the alias's OWN dims first (`[]` binds tighter
+	// than `*`: `typedef const char *names[3]` = [ARR, POINTER], an array of
+	// pointers — the old [POINTER, ARR] read as a pointer to array), then the
+	// pointer piece ([POINTER..., ARR...] for `typedef int (*PA)[10]`).
 	node_t alias_id = id(alias.c_str());
 	node_t decl_list = list();
-	if (is_ptr)
-		append(decl_list, pointer());
-	// Fixed-array dimensions, outermost first: T NAME[2][3] -> ARR(2) ARR(3).
 	for (size_t d = 0; d < arr_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(), integer(arr_dims[d])));
+	append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims);
 
 	node_t decl = node2(N_DECL, alias_id, decl_list);
 
