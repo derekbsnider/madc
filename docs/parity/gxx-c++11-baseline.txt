@@ -102,7 +102,6 @@ g++.dg/cpp0x/alignas2.C
 g++.dg/cpp0x/alignas5.C
 g++.dg/cpp0x/alignas7.C
 g++.dg/cpp0x/alignof.C
-g++.dg/cpp0x/alignof4.C
 g++.dg/cpp0x/attributes-namespace5.C
 g++.dg/cpp0x/auto15.C
 g++.dg/cpp0x/auto19.C
@@ -110,8 +109,6 @@ g++.dg/cpp0x/auto23.C
 g++.dg/cpp0x/auto40.C
 g++.dg/cpp0x/auto47.C
 g++.dg/cpp0x/auto55.C
-g++.dg/cpp0x/collapse-bug.C
-g++.dg/cpp0x/collapse.C
 g++.dg/cpp0x/constexpr-104226.C
 g++.dg/cpp0x/constexpr-105321.C
 g++.dg/cpp0x/constexpr-52282-1.C
@@ -124,7 +121,6 @@ g++.dg/cpp0x/constexpr-61484.C
 g++.dg/cpp0x/constexpr-65080.C
 g++.dg/cpp0x/constexpr-67376.C
 g++.dg/cpp0x/constexpr-69315.C
-g++.dg/cpp0x/constexpr-70001-3.C
 g++.dg/cpp0x/constexpr-71537.C
 g++.dg/cpp0x/constexpr-71828.C
 g++.dg/cpp0x/constexpr-77771.C
@@ -225,7 +221,6 @@ g++.dg/cpp0x/conv-tmpl2.C
 g++.dg/cpp0x/conv-tmpl6.C
 g++.dg/cpp0x/decltype-71879.C
 g++.dg/cpp0x/decltype-bitfield1.C
-g++.dg/cpp0x/decltype-call6.C
 g++.dg/cpp0x/decltype-mem-initializer1.C
 g++.dg/cpp0x/decltype-nonstatic1.C
 g++.dg/cpp0x/decltype1.C
@@ -274,7 +269,6 @@ g++.dg/cpp0x/gen-attrs-5.C
 g++.dg/cpp0x/gen-attrs-50.C
 g++.dg/cpp0x/gen-attrs-51.C
 g++.dg/cpp0x/gen-attrs-52.C
-g++.dg/cpp0x/gen-attrs-87.C
 g++.dg/cpp0x/implicit-delete1.C
 g++.dg/cpp0x/implicit13.C
 g++.dg/cpp0x/implicit17.C
@@ -291,12 +285,9 @@ g++.dg/cpp0x/inh-ctor7.C
 g++.dg/cpp0x/initlist-array1.C
 g++.dg/cpp0x/initlist-array13.C
 g++.dg/cpp0x/initlist-array15.C
-g++.dg/cpp0x/initlist-array17.C
 g++.dg/cpp0x/initlist-array18.C
 g++.dg/cpp0x/initlist-array19.C
 g++.dg/cpp0x/initlist-array20.C
-g++.dg/cpp0x/initlist-array22.C
-g++.dg/cpp0x/initlist-array6.C
 g++.dg/cpp0x/initlist-const1.C
 g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
@@ -343,7 +334,6 @@ g++.dg/cpp0x/lambda/lambda-conv4.C
 g++.dg/cpp0x/lambda/lambda-conv9.C
 g++.dg/cpp0x/lambda/lambda-debug.C
 g++.dg/cpp0x/lambda/lambda-decltype2.C
-g++.dg/cpp0x/lambda/lambda-defarg5.C
 g++.dg/cpp0x/lambda/lambda-ice12.C
 g++.dg/cpp0x/lambda/lambda-ice14.C
 g++.dg/cpp0x/lambda/lambda-ice26.C
@@ -433,10 +423,8 @@ g++.dg/cpp0x/range-for33.C
 g++.dg/cpp0x/range-for34.C
 g++.dg/cpp0x/range-for38.C
 g++.dg/cpp0x/range-for39.C
-g++.dg/cpp0x/ref-bind1.C
 g++.dg/cpp0x/ref-bind5.C
 g++.dg/cpp0x/ref-bind6.C
-g++.dg/cpp0x/ref-qual16.C
 g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
 g++.dg/cpp0x/rv-dotstar.C
@@ -475,7 +463,6 @@ g++.dg/cpp0x/sfinae47.C
 g++.dg/cpp0x/sfinae48.C
 g++.dg/cpp0x/sfinae50.C
 g++.dg/cpp0x/sfinae51.C
-g++.dg/cpp0x/sfinae52.C
 g++.dg/cpp0x/sfinae53.C
 g++.dg/cpp0x/sfinae59.C
 g++.dg/cpp0x/sfinae60.C
@@ -557,10 +544,6 @@ g++.dg/template/canon-type-15.C
 g++.dg/template/canon-type-16.C
 g++.dg/template/canon-type-17.C
 g++.dg/template/canon-type-18.C
-g++.dg/template/canon-type-4.C
-g++.dg/template/canon-type-5.C
-g++.dg/template/canon-type-6.C
-g++.dg/template/canon-type-7.C
 g++.dg/template/cond7.C
 g++.dg/template/conv1.C
 g++.dg/template/conv21.C
@@ -597,7 +580,6 @@ g++.dg/template/non-dependent19.C
 g++.dg/template/non-dependent19a.C
 g++.dg/template/non-dependent31.C
 g++.dg/template/param5.C
-g++.dg/template/partial3.C
 g++.dg/template/pr69091.C
 g++.dg/template/pr71406.C
 g++.dg/template/pr84434.C
