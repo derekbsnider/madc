@@ -419,8 +419,6 @@ g++.dg/cpp0x/scoped_enum10.C
 g++.dg/cpp0x/scoped_enum4.C
 g++.dg/cpp0x/sfinae12.C
 g++.dg/cpp0x/sfinae14.C
-g++.dg/cpp0x/sfinae15.C
-g++.dg/cpp0x/sfinae16.C
 g++.dg/cpp0x/sfinae2.C
 g++.dg/cpp0x/sfinae23.C
 g++.dg/cpp0x/sfinae28.C
