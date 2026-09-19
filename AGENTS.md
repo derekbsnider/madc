@@ -116,6 +116,13 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `web_model` (gated by `check-one-key-owner.sh`); a module row's
    flags (`MADC_MODULE_GUI`, `MADC_MODULE_LAZY`) are module-map DATA in
    `src/madc_modules.cpp`, never a name test.
+   A DECLARATOR — `*`/`&`/`&&`/`C::*` ptr-operators, `( declarator )`,
+   `[dims]`, `(params) quals`, the declarator-id — is read by ONE owner,
+   `Program::parse_declarator` (modes Named/Typedef/Abstract/TypeIdOperand/
+   Parameter/Declaration; struct/class members through
+   `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
+   `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
+   read a declarator by hand in an arm.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit

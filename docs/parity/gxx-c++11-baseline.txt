@@ -280,7 +280,6 @@ g++.dg/cpp0x/inh-ctor38.C
 g++.dg/cpp0x/inh-ctor39.C
 g++.dg/cpp0x/inh-ctor6.C
 g++.dg/cpp0x/inh-ctor7.C
-g++.dg/cpp0x/initlist-array1.C
 g++.dg/cpp0x/initlist-array13.C
 g++.dg/cpp0x/initlist-array15.C
 g++.dg/cpp0x/initlist-array18.C
