@@ -62607,17 +62607,46 @@ static bool instantiate_fn_template_binding(Program &pgm,
     {
 	Variable *instantiated_var = NULL;
 	// The parsed definition appended its overload entry under `key` —
-	// remember its Variable so operator USE sites can call it.
+	// remember its Variable so operator USE sites can call it. The product
+	// is the entry the registrar stamped with THIS instantiation's identity
+	// ("\x01@<inst_key>" on its overload spelling) — never the set's LAST
+	// entry: the declaration registers at its declarator
+	// ([basic.scope.pdecl], parseFunction), BEFORE the body parses, so an
+	// instantiation the body triggers under the same name (libc++'s
+	// max(a, b) -> max(a, b, __less<>())) lands after it. The positional
+	// pick stamped that nested product with the outer's template arguments
+	// and the outer (`max<size_type>`) stayed an unidentifiable placeholder
+	// (undefined MIR import __ns_std____1_max under -stdlib=libc++).
 	std::map<std::string, std::vector<Program::NamespaceFnOverload>>::iterator
 	    oi = pgm.namespace_fn_overload_sets.find(key);
+	Program::NamespaceFnOverload *ne = NULL;
 	if ( oi != pgm.namespace_fn_overload_sets.end()
-	  && oi->second.size() > pre_ovset && oi->second.back().var )
+	  && oi->second.size() > pre_ovset )
 	{
-	    Program::NamespaceFnOverload &ne = oi->second.back();
-	    FuncDef *nfd = ne.funcdef();
+	    const std::string ident_tag = std::string("\x01@") + inst_key;
+	    for ( size_t ei = oi->second.size(); ei-- > pre_ovset; )
+	    {
+		const std::string &sp = oi->second[ei].spelling();
+		if ( oi->second[ei].var && sp.size() >= ident_tag.size()
+		  && sp.compare(sp.size() - ident_tag.size(), ident_tag.size(),
+				ident_tag) == 0 )
+		{
+		    ne = &oi->second[ei];
+		    break;
+		}
+	    }
+	    // A single appended entry can only be the product (nothing else
+	    // registers under this key during the parse).
+	    if ( !ne && oi->second.size() == pre_ovset + 1
+	      && oi->second.back().var )
+		ne = &oi->second.back();
+	}
+	if ( ne )
+	{
+	    FuncDef *nfd = ne->funcdef();
 	    if ( nfd && !ft.inline_builtin_kind.empty() )
 		nfd->inline_builtin_kind = ft.inline_builtin_kind;
-	    instantiated_var = ne.var;
+	    instantiated_var = ne->var;
 	    // The product's bound template arguments as identity spellings —
 	    // on its FuncDef (the declaration owns them; frozen with it).
 	    std::vector<std::string> targs;
