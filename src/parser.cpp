@@ -53591,13 +53591,24 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 // Does the stream at `first` (the token just after a declarator's `(`) spell
 // a pointer-to-member declarator head `C :: [D ::]* *`? Pure lookahead: tokens[0]
 // must be the first `::`, and the chain must end in `*` right after a `::`.
-bool Program::member_pointer_declarator_ahead(TokenBase *first) const
+// A segment may carry a template-argument list (`First<int>::*`,
+// g++.dg/template/conv1.C): the balanced-list lookahead has ONE owner
+// (peek_after_balanced_template_id_from — DelimDepth carrying this Program,
+// so a nested `<` is a name question), which is why this is not const.
+bool Program::member_pointer_declarator_ahead(TokenBase *first)
 {
     if ( !first || !is_contextual_identifier_token(first) )
 	return false;
     size_t i = 0;
     for ( ;; )
     {
+	if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkLT )
+	{
+	    size_t follow = 0;
+	    if ( !peek_after_balanced_template_id_from(*this, i, &follow) )
+		return false;
+	    i = follow;		// the token after the segment's `<...>`
+	}
 	if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkNS )
 	    return false;
 	if ( i + 1 >= tokens.size() || !tokens[i + 1] )
@@ -53631,10 +53642,23 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
 					    std::string &owner_name)
 {
     owner_name = contextual_identifier_name(owner_first);
+    // A segment may be a template-id (`First<int>::*`): the suffix skipper is
+    // the one owner of the balanced list, and its captured tokens spell the
+    // segment, so the owner name reads `First<int>` exactly as a type does.
+    auto take_template_args = [&]() {
+	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
+	{
+	    std::vector<TokenBase *> targs;
+	    skip_template_id_suffix(&targs);
+	    owner_name += template_tokens_spelling(targs);
+	}
+    };
+    take_template_args();
     TokenBase *ns_tok = nextToken();	// the first '::'
     while ( peekToken() && is_contextual_identifier_token(peekToken()) )
     {
 	owner_name += "::" + contextual_identifier_name(nextToken());
+	take_template_args();
 	ns_tok = nextToken();		// the next '::'
 	if ( !ns_tok || ns_tok->id() != TokenID::tkNS )
 	    Throw(ns_tok ? ns_tok : owner_first)
@@ -53644,14 +53668,9 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
     if ( !star || (star->id() != TokenID::tkStar && star->id() != TokenID::tkMul) )
 	Throw(star ? star : owner_first)
 	    << "Expecting '*' after '" << owner_name << "::' in pointer-to-member declarator" << flush;
-    std::vector<std::string> parts;
-    size_t from = 0;
-    for ( size_t k = owner_name.find("::"); ; k = owner_name.find("::", from) )
-    {
-	parts.push_back(owner_name.substr(from, k == std::string::npos ? std::string::npos : k - from));
-	if ( k == std::string::npos ) break;
-	from = k + 2;
-    }
+    // Split at TOP-LEVEL `::` only — a template argument may itself be
+    // qualified (`First<std::string>::*`); split_scope_spelling owns that rule.
+    std::vector<std::string> parts = split_scope_spelling(owner_name);
     DataDef *owner = resolve_qualified_class_owner(parts);
     if ( !owner )
     {
@@ -53659,6 +53678,11 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
 	if ( omi != struct_map.end() )
 	    owner = omi->second;
     }
+    // A template-id owner may be instantiated BY this declarator (`int
+    // (First<int>::*pf)()` before any First<int> object exists): the
+    // template-argument spelling resolver instantiates on demand.
+    if ( !owner && owner_name.find('<') != std::string::npos )
+	owner = resolve_arg_spelling_datadef(*this, owner_name);
     return owner;
 }
 
@@ -72173,7 +72197,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // (`int Widget::counter = 0;`, an out-of-class static member) never does,
     // which is the whole discriminator (member_pointer_declarator_ahead).
     if ( peekToken() && is_contextual_identifier_token(peekToken())
-      && tokens.size() > 1 && tokens[1] && tokens[1]->id() == TokenID::tkNS )
+      && tokens.size() > 1 && tokens[1]
+      && (tokens[1]->id() == TokenID::tkNS
+	  || tokens[1]->id() == TokenID::tkLT) )	// `First<int>::*pm` — a template-id owner
     {
 	TokenBase *mp_first = nextToken();
 	if ( member_pointer_declarator_ahead(mp_first) )

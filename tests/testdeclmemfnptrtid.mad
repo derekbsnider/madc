@@ -1,0 +1,34 @@
+// g++ and clang++ -std=c++11 print pf:3 pd:4 pt:7
+//
+// Pointer-to-member declarators whose owner is a TEMPLATE-ID:
+// `int (First<int>::*pf)()`, `int First<int>::*pd`, `int Two<int,char>::*pt`.
+// The owner chain `C::[D::]*` may carry a template-argument list on any
+// segment; the lookahead that recognizes the declarator
+// (member_pointer_declarator_ahead) and the consumer that reads the chain
+// (parse_member_pointer_owner) are the ONE owner for both forms, so a
+// template-id owner is one branch in them — not a new reader. The owner is
+// instantiated BY the declarator: no `First<int>` object exists before `pf`.
+//
+// The addresses are taken through the typedefs FI / TI on purpose: this test
+// is about the DECLARATOR. `&First<int>::g` in an expression is the separate
+// open gap addressof_qualified_template_id_call (KG), which also blocks
+// g++.dg/template/conv1.C after the declarator half is fixed.
+extern "C" int printf(const char *, ...);
+
+template <class T> struct First { T v; int g() { return 3; } };
+template <class A, class B> struct Two { A a; B b; };
+typedef First<int> FI;
+typedef Two<int,char> TI;
+
+int main()
+{
+    int (First<int>::*pf)() = &FI::g;
+    int First<int>::*pd = &FI::v;
+    int Two<int,char>::*pt = &TI::a;
+    First<int> x;
+    Two<int,char> y;
+    x.v = 4;
+    y.a = 7;
+    printf("pf:%d pd:%d pt:%d\n", (x.*pf)(), x.*pd, y.*pt);
+    return 0;
+}

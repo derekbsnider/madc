@@ -6479,7 +6479,7 @@ public:
     // `( C::*name ) ( params ) [const]` shape in the struct member, class
     // member, parameter, variable and typedef arms (defined beside
     // parse_fnptr_member_tail, whose `name ) ( params )` tail it reuses).
-    bool member_pointer_declarator_ahead(TokenBase *first) const;
+    bool member_pointer_declarator_ahead(TokenBase *first);
     DataDef *parse_member_pointer_owner(TokenBase *owner_first, std::string &owner_name);
     DataDefMemberFnPtr *parse_member_fnptr_declarator(DataDef &returns,
 						      std::string &mname,
