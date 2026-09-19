@@ -1,0 +1,27 @@
+#include <cstdio>
+struct B {};
+struct Abs { virtual ~Abs() = 0; };
+struct ND { ND() = delete; };
+struct DelDtor { DelDtor() = default; ~DelDtor() = delete; };
+template<class T, class = decltype(T())> char k4(int);
+template<class> char (&k4(...))[2];
+template<class T, class = decltype(T{})> char k5(int);
+template<class> char (&k5(...))[2];
+template<class T> decltype(new T) h(int);
+template<class T> char h(...);
+int main() {
+	printf("k4<int>:%d k4<B>:%d k4<int&>:%d k4<void()>:%d k4<Abs>:%d k4<ND>:%d k4<DelDtor>:%d\n",
+		(int)sizeof(k4<int>(0)), (int)sizeof(k4<B>(0)), (int)sizeof(k4<int&>(0)), (int)sizeof(k4<void()>(0)),
+		(int)sizeof(k4<Abs>(0)), (int)sizeof(k4<ND>(0)), (int)sizeof(k4<DelDtor>(0)));
+	// `T{}` with T an array of UNKNOWN bound: g++ rejects, clang++ accepts
+	// (deduces a zero-length array) — two-canon rule: not asserted here.
+	// `ND[1]{}` (both canons: viable) is not asserted either: madc's braced
+	// temporary array refuses class elements that need construction — a
+	// stated refusal (KG Gap braced_temporary_array_of_class_elements).
+	printf("k5<int>:%d k5<int[2]>:%d k5<DelDtor[2]>:%d\n",
+		(int)sizeof(k5<int>(0)), (int)sizeof(k5<int[2]>(0)),
+		(int)sizeof(k5<DelDtor[2]>(0)));
+	printf("h<int>:%d h<ND>:%d h<Abs>:%d h<int&>:%d\n",
+		(int)sizeof(h<int>(0)), (int)sizeof(h<ND>(0)), (int)sizeof(h<Abs>(0)), (int)sizeof(h<int&>(0)));
+	return 0;
+}

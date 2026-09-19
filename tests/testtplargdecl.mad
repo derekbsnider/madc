@@ -1,0 +1,17 @@
+// An explicit template argument of a FUNCTION template keeps its declarator:
+// `qq<int&>` binds T = int& (not int), `qq<void()>` binds a function type,
+// `qq<int*>` a pointer — the same folding a class template-id already gets
+// (`Q<int&>`), through the ONE declarator reader. madc bound T = int for
+// `int&` ("the referenced type carries the identity") and lost `()`.
+#include <cstdio>
+#include <type_traits>
+template<class T> struct Q {};
+template<class T> Q<T> qq(int);
+int main() {
+	printf("ref:%d fn:%d ptr:%d plain:%d\n",
+		(int)std::is_same<decltype(qq<int&>(0)), Q<int&> >::value,
+		(int)std::is_same<decltype(qq<void()>(0)), Q<void()> >::value,
+		(int)std::is_same<decltype(qq<int*>(0)), Q<int*> >::value,
+		(int)std::is_same<decltype(qq<int&>(0)), Q<int> >::value);
+	return 0;
+}

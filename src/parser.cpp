@@ -13626,6 +13626,148 @@ void Program::parse_ctor_args_list(std::vector<TokenBase *> &args,
     // alone, before the ')'/'}' is popped.
 }
 
+// Parser-side [class.abstract]: a class with a pure virtual function it
+// declares or inherits without overriding. Post-order over the base chain:
+// a class's own non-pure methods override same-named pure virtuals collected
+// from its bases (every destructor spells `~`, so any dtor overrides a pure
+// one); its own pure virtuals join the set. Searched: "abstract class" in the
+// parser — none; construction of an abstract class was refused only at
+// EMISSION (CirBuilder::class_pure_virtual_of over vtable groups built there),
+// too late for SFINAE, which needs the PARSE to refuse.
+static const std::string &method_display(Variable *mv, FuncDef *fd)
+{
+    return (fd && !fd->method_display_name.empty()) ? fd->method_display_name
+						     : mv->name;
+}
+
+// The class a method Variable belongs to: its Method record's owner_class
+// (the same read method_callable_with_arg_count makes).
+static DataDefCLASS *method_owner_class(Variable *mv)
+{
+    Method *md = mv ? (Method *)mv->data : NULL;
+    return md ? md->owner_class : NULL;
+}
+
+// The class's OWN method named `nm` (its FuncDef's owner_class is `c`), or
+// NULL. `method_map` cannot answer this: class setup pre-fills a derived
+// class's map with its bases' entries, so a lookup there can hand back the
+// inherited PURE declaration ahead of the class's own override (g++.dg
+// dc1/dc3/local-type1/noexcept76 read `struct D : B { void f() override {} }`
+// as abstract through it).
+static Variable *class_own_method_named(DataDefCLASS *c, const std::string &nm)
+{
+    for ( Variable *mv : c->methods )
+    {
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( fd && method_owner_class(mv) == c && method_display(mv, fd) == nm )
+	    return mv;
+    }
+    return NULL;
+}
+
+// The FINAL OVERRIDER of virtual `nm` for class `c` ([class.virtual]/2): the
+// class's own declaration if it has one, else the final overrider in a base.
+static FuncDef *class_final_overrider(DataDefCLASS *c, const std::string &nm,
+				      int depth)
+{
+    if ( !c || depth > 32 )
+	return NULL;
+    if ( Variable *own = class_own_method_named(c, nm) )
+	return dynamic_cast<FuncDef *>(own->type);
+    if ( c->base_class )
+	if ( FuncDef *fd = class_final_overrider(c->base_class, nm, depth + 1) )
+	    return fd;
+    for ( const BaseSpec &b : c->bases )
+	if ( b.base != c->base_class )
+	    if ( FuncDef *fd = class_final_overrider(b.base, nm, depth + 1) )
+		return fd;
+    return NULL;
+}
+
+static void collect_pure_virtual_names(DataDefCLASS *c,
+				       std::set<std::string> &names, int depth)
+{
+    if ( !c || depth > 32 )
+	return;
+    if ( c->base_class )
+	collect_pure_virtual_names(c->base_class, names, depth + 1);
+    for ( const BaseSpec &b : c->bases )
+	if ( b.base != c->base_class )
+	    collect_pure_virtual_names(b.base, names, depth + 1);
+    for ( Variable *mv : c->methods )
+    {
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	// A pure DESTRUCTOR makes only its OWN class abstract: a derived
+	// class's destructor (declared or implicit) always overrides it.
+	if ( fd && fd->pure_virtual && method_owner_class(mv) == c
+	  && !mv->name.empty() && mv->name[0] != '~' )
+	    names.insert(method_display(mv, fd));
+    }
+}
+
+static bool class_is_abstract(DataDefCLASS *c)
+{
+    if ( !c )
+	return false;
+    std::set<std::string> names;
+    collect_pure_virtual_names(c, names, 0);
+    for ( const std::string &nm : names )
+    {
+	FuncDef *fd = class_final_overrider(c, nm, 0);
+	if ( fd && fd->pure_virtual )
+	    return true;
+    }
+    // The class's OWN pure destructor (`virtual ~A() = 0;`).
+    for ( Variable *mv : c->methods )
+    {
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if ( fd && fd->pure_virtual && method_owner_class(mv) == c
+	  && !mv->name.empty() && mv->name[0] == '~' )
+	    return true;
+    }
+    return false;
+}
+
+// [expr.type.conv] / [dcl.init] / [expr.new]: the reason a construction of
+// `type_dd` from `nargs` arguments is DEFINITELY ill-formed, or NULL when it
+// is well-formed or madc cannot decide — the trait folds' tri-state
+// discipline: only a certain NO refuses, so a valid construction is never
+// declined. Certain NOs: value-initializing a reference type; a function
+// type; an abstract class; zero arguments against a deleted default
+// constructor; and, for a construction that MATERIALIZES A TEMPORARY
+// (`as_temporary` — never `new`, which destroys nothing), a deleted
+// destructor. Library-bound and carrier classes are not modelled here.
+// Inside a SFINAE default the throw is the substitution failure
+// (g++.dg sfinae8/12/15/17/18/21: `class = decltype(T())`).
+static const char *construction_refusal(DataDef *type_dd, size_t nargs,
+					bool as_temporary, bool braced = false)
+{
+    if ( !type_dd )
+	return NULL;
+    // `T()` for a reference T is ill-formed ([dcl.init]/8 value-init); `T{}`
+    // list-initializes a TEMPORARY and binds the reference to it
+    // ([dcl.init.list]/3, g++.dg initlist-array22 `using T = const A(&)[1]; T{};`).
+    if ( type_dd->is_reference() )
+	return (nargs == 0 && !braced) ? "value-initialization of a reference type" : NULL;
+    // A function TYPE (madc spells it as a DataDefFPTR with ptr_syntax off —
+    // the declarator arc's fn-type twin model); a pointer to function is fine.
+    if ( dynamic_cast<FuncDef *>(type_dd) )
+	return "a function type cannot be constructed";
+    if ( DataDefFPTR *fp = type_dd->as_fptr_dd() )
+	if ( !fp->ptr_syntax && !type_dd->is_reference() )
+	    return "a function type cannot be constructed";
+    DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(type_dd);
+    if ( !c || c->is_externally_defined() || c->is_madc_array() )
+	return NULL;
+    if ( class_is_abstract(c) )
+	return "the class is abstract (a pure virtual function is not overridden)";
+    if ( nargs == 0 && c->has_deleted_default_ctor )
+	return "the default constructor is deleted";
+    if ( as_temporary && c->has_deleted_dtor )
+	return "its destructor is deleted, and a temporary must be destroyed";
+    return NULL;
+}
+
 static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 					 TokenBase *loc, TokenID close_id,
 					 const char *close_spelling)
@@ -13640,6 +13782,14 @@ static void parse_objtemp_ctor_arguments(Program &pgm, TokenObjTemp *ot,
 			     carrier_list, /*refuse_brace=*/true,
 			     close_id, close_spelling, loc);
     pgm.nextToken(); // consume ')' or '}'
+    // The ONE place both functional-construction owners reach: a temporary
+    // of a class madc can prove unconstructible is refused here.
+    if ( const char *why = construction_refusal(ot->obj_class,
+						ot->ctor_args.size(), true,
+						ot->braced) )
+	pgm.Throw(loc) << "cannot construct '"
+		       << (ot->obj_class ? ot->obj_class->name : std::string("?"))
+		       << "': " << why << flush;
 }
 
 // Functional construction `T(args)` / `T{args}` / `Template<...>(args)` in expression position:
@@ -13891,6 +14041,10 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
 	    // compound-literal node owns its element list and C11 storage.
 	    if ( array->element_type->as_carray_dd() )
 		Throw(type_tb) << "Multidimensional array list-initialization is not supported" << flush;
+	    // A temporary array's elements are destroyed like any temporary.
+	    if ( const char *why = construction_refusal(array->element_type, 1, true) )
+		Throw(type_tb) << "cannot construct a temporary array of '"
+			       << array->element_type->name << "': " << why << flush;
 	    TokenStructLit *slit = parse_compound_struct_lit(NULL, type_tb);
 	    if ( array->count && slit->inits.size() > array->count )
 		Throw(type_tb) << "Too many initializers for array" << flush;
@@ -13946,6 +14100,10 @@ TokenBase *Program::parse_functional_type_expression(TokenBase *type_tb,
     if ( peekToken() && peekToken()->id() == close_id )
     {
 	nextToken(); // value-initialization: T() / T{}
+	if ( const char *why = construction_refusal(type_dd, 0, true,
+						    open_id == TokenID::tkOpBrc) )
+	    Throw(type_tb) << "cannot value-initialize '" << type_dd->name
+			   << "': " << why << flush;
 	if ( type_dd->is_pointer() )
 	{
 	    TokenNullptr *np = new TokenNullptr();
@@ -54934,6 +55092,15 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	pgm.tokens.swap_back(std::move(saved));
 	pgm.setTokenContext(saved_cur, saved_prv);
     }
+    // [expr.new]: an abstract class, a reference or function type, or a
+    // deleted default constructor with no arguments cannot be `new`ed — a
+    // certain NO refuses at the parse (SFINAE: g++.dg sfinae h<ND>/h<Abs>).
+    {
+	DataDef *newed = alloc_class ? (DataDef *)alloc_class : alloc_type;
+	if ( const char *why = construction_refusal(newed, ctor_args.size(), false, braced) )
+	    pgm.Throw(this) << "cannot allocate '" << (newed ? newed->name : std::string("?"))
+			    << "' with new: " << why << flush;
+    }
 
     // A member-template constructor (e.g. std::pair's piecewise ctor
     // `pair(piecewise_construct_t, tuple<_Args1...>, tuple<_Args2...>)`, reached
@@ -55519,7 +55686,19 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	TokenDataType *adt = resolve_declared_type_token(at, true, true);
 	DataDef *dd = NULL;
 	if ( adt )
+	{
+	    // A TYPE argument is a type-id: type + ABSTRACT declarator (`*`s
+	    // with cv, `&`/`&&`, `(*)(params)`, a bare function type `void()`,
+	    // `[N]`) — folded by the ONE declarator reader through the shared
+	    // adopter fold_template_arg_declarator, exactly as a class
+	    // template-id's argument is. The hand loop this replaces consumed
+	    // `*` and DROPPED `&`/`&&` ("keep the base DataDef"), so `qq<int&>`
+	    // bound T = int — decltype(qq<int&>(0)) was Q<int>, a silent wrong
+	    // type — and no reference- or function-type SFINAE default over T
+	    // could ever fail (g++.dg sfinae8/12/15: `f<int&>`, `f<void()>`).
+	    adt = fold_template_arg_declarator(adt, at);
 	    dd = &adt->definition;
+	}
 	else
 	{
 	    // NON-TYPE template argument (`addN<5>`, `get<0>`, or a constant
@@ -55552,19 +55731,6 @@ std::vector<DataDef *> Program::capture_call_template_args()
 		return bail();
 	    dd = new DataDef(std::to_string(ntv), 8, DataType::dtINT64);
 	}
-	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    dd = getPointerType(dd);
-	}
-	// Reference-qualified type argument (`T&`, `T&&` — e.g. declval<Cmp&>,
-	// __is_invocable<less<int>&, ...>): consume the `&`/`&&`. The referenced
-	// type carries the identity that downstream resolution needs (reference
-	// collapse + operand_object_class both reduce `T&`/`T&&` to T's class), so
-	// keep the base DataDef rather than bailing the whole arg list.
-	while ( peekToken() && (peekToken()->id() == TokenID::tkBand
-			     || peekToken()->id() == TokenID::tkLand) )
-	    nextToken();
 	out.push_back(dd);
 	TokenBase *sep = nextToken();
 	if ( !sep )

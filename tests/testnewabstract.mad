@@ -1,0 +1,10 @@
+// [expr.new]/[class.abstract]: an abstract class cannot be allocated with new
+// (g++: "invalid new-expression of abstract class type"; clang++: "allocating
+// an object of abstract class type"). madc accepted it at the parse and failed
+// only at emission.
+struct A { virtual void f() = 0; };
+int main()
+{
+	A *p = new A;
+	return p != 0;
+}
