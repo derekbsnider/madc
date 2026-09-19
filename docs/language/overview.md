@@ -47,7 +47,7 @@ and the streams are the real library objects.
 
 | Feature | Doc |
 |---------|-----|
-| `x := expr` — short variable declaration with type inference | (Go-style; see `tests/testcolon.mad`) |
+| `x := expr` — short variable declaration with type inference | [short-declaration.md](short-declaration.md) (Go/C++ block scoping) |
 | `var` literals — `{ "k": v }` keyed/positional lists, `rows[] = expr` append, live-kind subscripts | [value-literals.md](value-literals.md) |
 | UFCS — `x.f(y)` ≡ `f(x, y)`, either spelling | [ufcs.md](ufcs.md) |
 | `defer stmt;` — run at scope exit | [modern/defer.md](modern/defer.md) |

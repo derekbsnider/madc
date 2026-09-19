@@ -51755,7 +51755,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	    if ( cval )
 	    {
 		tn = pgm.nextToken();
-		statement = pgm.parseStatement(tn);
+		statement = pgm.parse_substatement(tn);
 		// A NULL return (no exception) is a compile-time-only branch that
 		// produced no runtime node — e.g. a braceless `if constexpr (C)
 		// static_assert(...);` (libstdc++ _Rb_tree::_S_key). A genuine parse
@@ -51779,7 +51779,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 		{
 		    pgm.nextToken();                 // consume `else`
 		    tn = pgm.nextToken();
-		    statement = pgm.parseStatement(tn);
+		    statement = pgm.parse_substatement(tn);
 		    if ( !statement )                // compile-time-only else branch
 			statement = new TokenCpnd();
 		}
@@ -51861,7 +51861,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 
     tn = pgm.nextToken();
     DBG(cout << "TokenIF::parse() calling statement=parseStatement(" << (char)tn->get() << ')' << endl);
-    if ( !(statement=pgm.parseStatement(tn)) )
+    if ( !(statement=pgm.parse_substatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse if statement" << flush;
 
     // Some statement parsers (TokenBREAK, TokenCONT, plain TokenRETURN
@@ -51880,7 +51880,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	tn = pgm.nextToken(); // get the else
 	tn = pgm.nextToken(); // skip the else
 	DBG(cout << "TokenIF::parse() calling elsestmt=parseStatement(" << (char)tn->get() << ')' << endl);
-	elsestmt = pgm.parseStatement(tn);
+	elsestmt = pgm.parse_substatement(tn);
 	if ( !elsestmt )
 	    pgm.Throw(tn) << "parse error on else" << flush;
     }
@@ -52025,7 +52025,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		    fe->elemvar = pgm.addVariable(code, *fe->elemtype, fe->elemname, 1, NULL, false);
 
 		tn4 = pgm.nextToken();
-		fe->statement = pgm.parseStatement(tn4);
+		fe->statement = pgm.parse_substatement(tn4);
 		if ( !fe->statement )
 		    pgm.Throw(tn4) << "Failed to parse range-for body" << flush;
 
@@ -52173,7 +52173,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    tn = pgm.nextToken();
 	    pgm.resetPrevToken();
 	    DBG(cout << "TokenFOR::parse() statement(s): calling parseStatement(" << (char)tn->get() << ')' << endl);
-	    if ( !(statement = pgm.parseStatement(tn)) )
+	    if ( !(statement = pgm.parse_substatement(tn)) )
 		pgm.Throw(tn) << "Failed to parse statement" << flush;
 
     // Close the for-init declaration scope opened above (typed init only).
@@ -52196,7 +52196,7 @@ TokenBase *TokenWHILE::parse(Program &pgm)
 
     tn = pgm.nextToken();
     DBG(cout << "TokenWHILE::parse() calling parseStatement(" << (char)tn->get() << ')' << endl);
-    statement = pgm.parseStatement(tn);
+    statement = pgm.parse_substatement(tn);
 
     return this;
 }
@@ -52209,7 +52209,7 @@ TokenBase *TokenDO::parse(Program &pgm)
     DBG(std::cout << std::endl << "TokenDO::parse()" << std::endl);
     tn = pgm.nextToken();
     DBG(cout << "TokenDO::parse() calling parseStatement(" << (char)tn->get() << ')' << endl);
-    statement = pgm.parseStatement(tn);
+    statement = pgm.parse_substatement(tn);
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkWHILE )
@@ -67477,6 +67477,64 @@ TokenBase *Program::parse_nested_case_label(TokenBase *tb)
 }
 
 // real parsing happens here, code should not be null
+// [stmt.select]/1, [stmt.iter]/1 — the substatement of a selection or
+// iteration statement implicitly defines a block scope. A braced body is
+// already its own compound (parseStatement's `{` arm). An UNBRACED body is
+// parsed inside an implicit compound of its own, so a declaration in it
+// (`if (c) x := 1;`, `if (c) int q = 1;`) lives and dies with the arm exactly
+// as g++ scopes it — instead of landing in the enclosing block, where a
+// second arm's declaration then REPEATED it (translate_block hoisted the
+// block-top `int x;` and the nested TokenDecl was also emitted inline:
+// c2mir "repeated declaration x"). Owner ruling 2026-09-19: `:=` scopes the
+// Go/C++ way, never the enclosing-block way script mode used to lower it.
+// The compound is materialized as the statement ONLY when the arm declared
+// something; an arm that declares nothing returns the bare statement, so the
+// emitted C of every existing unbraced arm is unchanged.
+// Searched: "implicit block scope for a substatement" — every pushCompound()
+// call site; the range-for element scope and the typed for-init scope are
+// parse-time NAME scopes CIR never visits, and no site wraps a substatement.
+// Composed from pushCompound / popCompound / parseStatement.
+TokenBase *Program::parse_substatement(TokenBase *tn)
+{
+    if ( !tn )
+	return parseStatement(tn);
+    // A file-scope script statement parses with an EMPTY compound stack and
+    // the synthesized main as its scope (findVariable falls back to
+    // script_lookup_scope only when no compound is live). Chain the arm's
+    // scope — implicit OR braced — to main so the arm sees main's locals
+    // (`y := 1; if (c) { println(y); }` was "undeclared identifier 'y'":
+    // parseStatement's `{` arm pushed a parentless compound).
+    TokenCpnd *outer = compounds.empty() ? script_lookup_scope() : NULL;
+    if ( tn->id() == TokenID::tkOpBrc )
+    {
+	if ( !outer )
+	    return parseStatement(tn);	// a braced body is its own compound
+	pushCompound();
+	compounds.top()->parent = outer;
+	compounds.top()->method = outer->method;
+	return parseCompound();
+    }
+    pushCompound();
+    TokenCpnd *scope = compounds.top();
+    if ( outer )
+    {
+	scope->parent = outer;
+	scope->method = outer->method;
+    }
+    TokenBase *body = NULL;
+    try { body = parseStatement(tn); }
+    catch ( ... ) { popCompound(); throw; }
+    popCompound();
+    if ( scope->variables.empty() )
+	return body;
+    if ( body )
+	scope->statements.push_back((TokenStmt *)body);
+    scope->file = tn->file;
+    scope->line = tn->line;
+    scope->column = tn->column;
+    return scope;
+}
+
 TokenBase *Program::parseCompound()
 {
     if ( compounds.empty() ) { throw "Internal error -- compound stack empty"; }
@@ -74690,6 +74748,13 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 			if ( i < func->return_types.size() )
 			    vtype = func->return_types[i];
 			bool alloc = (!code) ? true : false;
+			// Owner ruling 2026-09-19 (Go/C++ scoping): `:=` DECLARES a new variable.
+			// A name already declared in THIS scope is a redeclaration — an error,
+			// never the silent same-block reuse addVariable gives C declarations
+			// (which handed the second `:=` the first variable and its type). `=`
+			// assigns an existing variable. Inner-block shadowing stays legal.
+			if ( code && code->findVariableThisScope(strpool, strpool.intern(ids[i]), ids[i]) )
+			    Throw(tb) << "'" << ids[i] << "' is already declared in this scope; ':=' declares a new variable, use '=' to assign it" << flush;
 			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
 			vars.push_back(v);
 		    }
@@ -74719,6 +74784,13 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		bool file_scope = compounds.empty();
 		TokenCpnd *code = script_statement_scope(tb);
 		bool alloc = (!code) ? true : false;
+		// Owner ruling 2026-09-19 (Go/C++ scoping): `:=` DECLARES a new variable.
+		// A name already declared in THIS scope is a redeclaration — an error,
+		// never the silent same-block reuse addVariable gives C declarations
+		// (which handed the second `:=` the first variable and its type). `=`
+		// assigns an existing variable. Inner-block shadowing stays legal.
+		if ( code && code->findVariableThisScope(strpool, strpool.intern(first_id), first_id) )
+		    Throw(tb) << "'" << first_id << "' is already declared in this scope; ':=' declares a new variable, use '=' to assign it" << flush;
 		Variable *var = addVariable(code, *inferred, first_id, 1, NULL, alloc);
 		TokenAssign *assign = new TokenAssign();
 		assign->file = tb->file;

@@ -1,0 +1,10 @@
+// Script mode twin of testwalrusscope: a file-scope `if` arm is a block scope
+// too; `:=` inside it does not leak into the synthesized main.
+bool cond = true;
+
+if ( cond )
+	x := 1;
+else
+	x := 2;
+
+println("x = {}", x);

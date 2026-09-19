@@ -1,0 +1,32 @@
+// `:=` scoping (owner ruling 2026-09-19, Go/C++ block scoping): a braced
+// arm's variable is visible in the arm; an unbraced arm/loop body declares a
+// body-local that dies with the body; an inner `:=` shadows an outer one.
+int main()
+{
+	bool cond = true;
+	int total = 0;
+	if ( cond ) {
+		a := 10;
+		total += a;
+	}
+	if ( cond )
+		b := 5;
+	else
+		b := 6;
+	for ( int i = 0; i < 3; ++i )
+		sq := i * i;
+	int j = 0;
+	while ( j < 2 ) {
+		w := j;
+		total += w;
+		j++;
+	}
+	outer := 1;
+	if ( cond ) {
+		outer := 2;
+		total += outer;
+	}
+	total += outer;
+	println("total = {}", total);
+	return 0;
+}

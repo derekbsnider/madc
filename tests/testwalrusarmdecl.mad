@@ -1,0 +1,10 @@
+// The same rule for a plain C++ declaration: the substatement of an unbraced
+// `if` is its own block scope ([stmt.select]/1), so `q` dies with the arm —
+// g++/clang++: "'q' was not declared in this scope".
+int main()
+{
+	bool cond = true;
+	if ( cond ) int q = 7;
+	println("q = {}", q);
+	return 0;
+}

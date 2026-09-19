@@ -1,0 +1,10 @@
+// `:=` declares a NEW variable; a second `:=` of the same name in the same
+// scope is a redeclaration (Go: "no new variables on left side of :=").
+// Owner ruling 2026-09-19. `=` assigns an existing variable.
+int main()
+{
+	x := 1;
+	x := 2;
+	println("x = {}", x);
+	return 0;
+}

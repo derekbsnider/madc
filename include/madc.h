@@ -5913,6 +5913,9 @@ public:
     // manage compound nesting
     void pushCompound();
     void popCompound();
+    // [stmt.select]/1, [stmt.iter]/1: parse the substatement of a selection or
+    // iteration statement in its own implicit block scope (see the definition).
+    TokenBase *parse_substatement(TokenBase *tn);
     static std::string hoisted_decl_symbol(const std::string &owner_symbol,
 					    const std::string &source_name,
 					    size_t ordinal,
