@@ -1,0 +1,38 @@
+// g++ and clang++ -std=c++11 print a:2 b:c c:8 d:16 e:4 f:h g:3 sz:8
+//
+// The parameters of a function-pointer type are PARAMETER declarators
+// ([dcl.fct]): a pointer-to-array `int (*)[2]`, a reference-to-array
+// `char (&)[3]`, a named function type `int fn(int)` and the abstract
+// `int (int)` (both adjust to a pointer, [dcl.fct]/5), an array `int arr[4]`
+// (adjusts to a pointer, /5), a plain pointer with cv, an rvalue reference.
+// One reader — Program::parse_declarator, Parameter mode — reads each; the
+// parameter-list owner's private copy knew stars/cv, one `&` and two `(`
+// shapes, and no `[N]` at all.
+extern "C" int printf(const char *, ...);
+
+typedef int F(int (*)[2], char (&)[3], int fn(int), int (int), int arr[4],
+	      const char *s, int &&r);
+typedef void (*G)(int a[], unsigned n);
+
+int dbl(int v) { return v * 2; }
+int inc(int v) { return v + 1; }
+int use(int (*pa)[2], char (&cs)[3], int fn(int), int (*g)(int), int arr[4],
+	const char *s, int &&r)
+{
+    printf("a:%d b:%c c:%d d:%d e:%d f:%c g:%d sz:%d\n", (*pa)[1], cs[2], fn(4),
+	   g(15), arr[3], s[0], r, (int)sizeof(arr));
+    return 0;
+}
+void fill(int a[], unsigned n) { for (unsigned i = 0; i < n; i++) a[i] = (int)i; }
+
+int main()
+{
+    int pair[2] = {1, 2};
+    char abc[3] = {'a', 'b', 'c'};
+    int four[4] = {0, 0, 0, 4};
+    F *f = use;
+    G g = fill;
+    g(four, 3);
+    f(&pair, abc, dbl, inc, four, "hi", 3);
+    return 0;
+}

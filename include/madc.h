@@ -6484,6 +6484,9 @@ private:
 				       const std::set<std::string> *runtime_names,
 				       int depth, bool id_here, bool &built_fn);
 public:
+    // The pointer-to-function twin of a FUNCTION type (a fresh DataDefFPTR over
+    // the same signature, ptr_syntax set) — `*` on a function type, [dcl.fct]/5.
+    DataDefFPTR *fnptr_twin(DataDefFPTR *fn_type);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 bool leading_const = false);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array

@@ -53277,7 +53277,34 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 				   DeclaratorResult &out,
 				   const std::set<std::string> *runtime_names)
 {
-    return parse_declarator_level(base, mode, out, runtime_names, 0, false);
+    DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false);
+    if ( mode == DeclaratorMode::Parameter && dd )
+    {
+	// [dcl.fct]/5: a parameter of FUNCTION type is a pointer to function
+	// (`int fn(int)`, the abstract `int (int)`); a parameter of ARRAY type
+	// is a pointer to its element (`int a[4]` -> `int *`, `int m[][3]` ->
+	// `int (*)[3]` — the outer extent decays, the rest nest). The dims stay
+	// in out.array_dims for the callers that record them.
+	if ( DataDefFPTR *fn = dd->as_fptr_dd() )
+	{
+	    if ( !fn->ptr_syntax )
+		dd = fnptr_twin(fn);
+	}
+	else if ( DataDefCArray *arr = dd->as_carray_dd() )
+	    dd = getPointerType(arr->element_type);
+    }
+    return dd;
+}
+
+// The pointer-to-function twin of a FUNCTION type: a fresh DataDefFPTR over
+// the same signature with ptr_syntax set — never a mutation of the function
+// type, which may be a shared typedef (`typedef int F(int); F *p;`). ONE
+// construction for "`*` on a function type" and "[dcl.fct]/5 on a parameter".
+DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
+{
+    DataDefFPTR *twin = new DataDefFPTR(fn_type->target);
+    twin->ptr_syntax = true;
+    return twin;
 }
 
 // At a `(` (tokens[0], unconsumed): does it open a NESTED declarator rather
@@ -53422,9 +53449,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 		    int s = 0;
 		    if ( !fn_base->ptr_syntax )
 		    {
-			DataDefFPTR *twin = new DataDefFPTR(fn_base->target);
-			twin->ptr_syntax = true;
-			dd = twin;
+			dd = fnptr_twin(fn_base);
 			s = 1;
 		    }
 		    for ( ; s < stars; ++s )
@@ -53911,96 +53936,29 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	}
 
 	DataDef *base_param_dd = param_dd;
-	int param_ptr_depth = 0;
-	bool param_is_ref = false;
-	bool param_rvalue_ref = false;
-
-	// Pointer decorators — `*` and type-qualifiers interleave freely in a
-	// C declarator (`char const * *`, `char * restrict`); consume both in
-	// one loop, counting pointer depth. Qualifiers beyond the leading const
-	// are discarded, matching the pre-existing trailing-const handling.
-	while ( peekToken()
-	     && (peekToken()->id() == TokenID::tkMul
-	      || peekToken()->id() == TokenID::tkCONST
-	      || peekToken()->id() == TokenID::tkVOLATILE
-	      || peekToken()->id() == TokenID::tkRESTRICT) )
-	{
-	    TokenBase *decor = nextToken();
-	    if ( decor->id() == TokenID::tkMul )
-	    {
-		param_dd = getPointerType(param_dd);
-		++param_ptr_depth;
-	    }
-	}
-
-	if ( peekToken()
-	  && (peekToken()->id() == TokenID::tkBand
-	   || peekToken()->id() == TokenID::tkLand) )
-	{
-	    TokenBase *ref_tok = nextToken();
-	    param_is_ref = true;
-	    param_rvalue_ref = ref_tok->id() == TokenID::tkLand;
-	    // First-class refs (Phase 2): reference param is a DataDefREF, not a
-	    // plain pointer, so is_reference() is the single source of truth.
-	    param_dd = getReferenceType(param_dd);
-	}
-
-	// Nested function-pointer parameter, named or anonymous:
-	// `ret (*[name])(args)` — param_dd so far is the nested callback's
-	// return type; recurse for its own parameter list.
-	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    nextToken(); // consume '('
-	    TokenBase *star = nextToken();
-	    // Abstract FUNCTION-type parameter without the `(*`: `int ()` /
-	    // `int (int)` nested inside another parameter list (00209's f5
-	    // `int f5 (int (int()), fptr1)`). Same C11 6.7.6.3p8 adjustment
-	    // as the parseFunction arm: the '(' begins the nested function's
-	    // own parameter list; recurse and wrap.
-	    if ( star && (star->id() == TokenID::tkClBrk
-		       || token_starts_type_name(star)) )
-	    {
-		pushToken(star);
-		FuncDef *nested = parseFnPtrParams(*param_dd);
-		param_dd = new DataDefFPTR(nested);
-		goto fnptr_param_done;
-	    }
-	    if ( !star || star->id() != TokenID::tkMul )
-		Throw(star ? star : nt)
-		    << "Unsupported parenthesized declarator in function pointer typedef" << flush;
-	    TokenBase *fin = nextToken();
-	    while ( fin && (is_restrict_token(fin)
-	                 || fin->id() == TokenID::tkCONST
-	                 || fin->id() == TokenID::tkVOLATILE) )
-		fin = nextToken();
-	    if ( fin && is_contextual_identifier_token(fin) )
-		fin = nextToken(); // optional name, discarded
-	    if ( !fin || fin->id() != TokenID::tkClBrk )
-		Throw(fin ? fin : star)
-		    << "Expected ')' in nested function pointer parameter" << flush;
-	    TokenBase *fopen = nextToken();
-	    if ( !fopen || fopen->id() != TokenID::tkOpBrk )
-		Throw(fopen ? fopen : star)
-		    << "Expected '(' for nested function pointer parameter list" << flush;
-	    FuncDef *nested = parseFnPtrParams(*param_dd);
-	    param_dd = new DataDefFPTR(nested);
-	}
-fnptr_param_done:
-
-	// Optional parameter name (discard). A following `(` is the named
-	// FUNCTION-type form `int fn(int)`: [dcl.fct]/5 adjusts it to a
-	// pointer-to-function parameter. Recurse through the same parameter-list
-	// owner as `int (*fn)(int)` and the abstract `int (int)` form above.
-	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
-	{
-	    nextToken();
-	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	    {
-		nextToken(); // consume the function type's '('
-		FuncDef *nested = parseFnPtrParams(*param_dd);
-		param_dd = new DataDefFPTR(nested);
-	    }
-	}
+	// The parameter's declarator — the ONE reader, Parameter mode: stars
+	// with their cv, `&`/`&&`, `(*[name])(params)`, the abstract `(params)`
+	// function type and the named `name(params)` form (both adjust to a
+	// pointer, [dcl.fct]/5), `[N]` with C99's bracket qualifiers (adjusts
+	// to a pointer to the element, /5), an optional name (a function
+	// pointer's parameters bind none). The private copy this replaces knew
+	// stars/cv, one `&`, two `(` shapes and no `[N]`; its nested-`(` arm
+	// re-read the callback's declarator by hand.
+	DeclaratorResult pd;
+	param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pd);
+	if ( pd.is_pack )
+	    // `Args...` in a function-pointer parameter list: a pack expansion
+	    // is N parameter-declarations, expanded by the tsubst spine at
+	    // instantiation — a FuncDef carries no pack. The copy this owner
+	    // replaced refused it by accident (the `...` reached its "',' or
+	    // ')'" check); parseFunction's speculative nested-declarator parse
+	    // relies on the refusal to keep the template pattern-INELIGIBLE
+	    // until then. Refuse on purpose, at the same point.
+	    Throw(pd.name_tok ? pd.name_tok : nt)
+		<< "A parameter pack expansion in a function-pointer parameter list is expanded at instantiation" << flush;
+	int param_ptr_depth = pd.ptr_depth;
+	bool param_is_ref = pd.ref == RefType::rtReference;
+	bool param_rvalue_ref = pd.rvalue_ref;
 
 	func->parameters.push_back(param_dd);
 	func->const_params.push_back(param_leading_const);
