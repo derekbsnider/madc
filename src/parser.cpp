@@ -67714,81 +67714,24 @@ void Program::parse_old_style_parameter_declaration(
 
     while ( nt )
     {
-	DataDef *decl_type = base_type;
-	if ( nt && nt->id() == TokenID::tkOpBrk )
-	{
-	    TokenBase *open = nt;
-	    TokenBase *star = nextToken();
-	    if ( star && star->id() == TokenID::tkMul )
-	    {
-		TokenBase *name_tok = skip_cv_qualifier_tokens(nextToken());
-		if ( !name_tok || !is_contextual_identifier_token(name_tok) )
-		    Throw(name_tok ? name_tok : open) << "Expecting parameter name in K&R parameter declaration" << flush;
-
-		std::string name = contextual_identifier_name(name_tok);
-		if ( !old_style_param_name_exists(param_ids, name) )
-		    Throw(name_tok) << "K&R declaration for non-parameter '" << name << "'" << flush;
-		if ( param_types.find(name) != param_types.end() )
-		    Throw(name_tok) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
-
-		TokenBase *close = nextToken();
-		if ( !close || close->id() != TokenID::tkClBrk )
-		    Throw(close ? close : open) << "Expected ')' after function pointer parameter name" << flush;
-		TokenBase *param_open = nextToken();
-		if ( !param_open || param_open->id() != TokenID::tkOpBrk )
-		    Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
-
-		FuncDef *func = parseFnPtrParams(*decl_type);
-		param_types[name] = new DataDefFPTR(func);
-
-		nt = nextToken();
-		if ( !nt )
-		    Throw << "Unexpected end of input in K&R parameter declaration" << flush;
-		if ( nt->id() == TokenID::tkSemi )
-		    return;
-		if ( nt->id() != TokenID::tkComma )
-		    Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
-		nt = nextToken();
-		continue;
-	    }
-	    if ( star )
-		pushToken(star);
-	}
-	while ( nt && (nt->id() == TokenID::tkMul || is_cv_qualifier_token(nt)) )
-	{
-	    if ( nt->id() == TokenID::tkMul )
-		decl_type = getPointerType(decl_type);
-	    nt = nextToken();
-	}
-
-	if ( !nt || !is_contextual_identifier_token(nt) )
-	    Throw(nt) << "Expecting parameter name in K&R parameter declaration" << flush;
-
-	std::string name = contextual_identifier_name(nt);
+	// The parameter's declarator — the ONE reader, Parameter mode, over
+	// the declaration's base: [dcl.fct]/5 applied once in the reader
+	// (`int a[2][3]` is `int (*)[3]`, `int fn(int)` a pointer to function).
+	// The copy this replaces read `(*name)(params)`, stars with cv, the
+	// name, and `[N]...` skipped by a hand-rolled depth counter that made
+	// EVERY dimension a pointer level (`int a[2][3]` came out `int **`).
+	pushToken(nt);
+	DeclaratorResult kd;
+	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd);
+	if ( kd.name.empty() )
+	    Throw(kd.name_tok ? kd.name_tok : nt) << "Expecting parameter name in K&R parameter declaration" << flush;
+	const std::string name = kd.name;
 	if ( !old_style_param_name_exists(param_ids, name) )
-	    Throw(nt) << "K&R declaration for non-parameter '" << name << "'" << flush;
+	    Throw(kd.name_tok) << "K&R declaration for non-parameter '" << name << "'" << flush;
 	if ( param_types.find(name) != param_types.end() )
-	    Throw(nt) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
-
-	nt = nextToken();
-	while ( nt && nt->id() == TokenID::tkOpSqr )
-	{
-	    int depth = 1;
-	    while ( depth > 0 )
-	    {
-		nt = nextToken();
-		if ( !nt )
-		    Throw << "Unexpected end of input in K&R array parameter declarator" << flush;
-		if ( nt->id() == TokenID::tkOpSqr )
-		    ++depth;
-		else if ( nt->id() == TokenID::tkClSqr )
-		    --depth;
-	    }
-	    decl_type = getPointerType(decl_type);
-	    nt = nextToken();
-	}
-
+	    Throw(kd.name_tok) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
 	param_types[name] = decl_type;
+	nt = nextToken();
 
 	if ( !nt )
 	    Throw << "Unexpected end of input in K&R parameter declaration" << flush;

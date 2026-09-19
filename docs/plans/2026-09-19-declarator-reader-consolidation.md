@@ -442,10 +442,10 @@ updated with the measured lane; HANDOFF rewritten.
   `consume_declarator_stars` (whose FPTR-base contract COUNTS the star), so
   member_node's function-pointer arm never sees an FPTR and emits
   `long long *p`; `pf.p(5)` then returns 5 (g++/clang++: `p:6 q:8 pf:10`) —
-  a SILENT wrong answer. Fix = T8 (the member arm adopts the one reader, whose
-  fold makes `*` on a function type THE function pointer). Reducer parked:
-  `tmp/declprobe/pending-tests/testtemplatefnptrmember.*`. The typedef'd form
-  `F *p` already works through the alias-spec path.
+  a SILENT wrong answer. FIXED at the deepest owner, not in the arm: getPointerType
+  folds a pointer to a FUNCTION type into its fnptr_twin, so PTR(function type)
+  is never built by any `*` anywhere (the reader's own fold shrank to one call
+  per star). Reducer landed: `tests/testtemplatefnptrmember.mad` (`p:6 q:8 pf:10`).
 - **Cast/sizeof precedence (found by T6's reducer; NOT a declarator defect).**
   `32 / (int)sizeof(a[0]) * 4` evaluates to 2 (g++/clang++: 32): a cast whose
   operand is `sizeof`/`alignof` lets the following `*` bind to the cast term
