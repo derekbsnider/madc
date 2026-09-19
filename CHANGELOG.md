@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### `:=` short declarations follow Go/C++ block scoping (2026-09-19)
+
+- The substatement of an unbraced `if`/`else`/`while`/`do`/`for` is its own
+  block scope ([stmt.select]/1, [stmt.iter]/1): a `:=` (or a plain
+  declaration) inside it dies with the arm, and using the name afterwards is
+  "use of undeclared identifier". Script mode previously leaked such a
+  variable into the synthesized main; a written `main()` failed in c2mir
+  with "repeated declaration".
+- A second `:=` of a name already declared in the same scope is an error
+  ("'x' is already declared in this scope"); use `=` to assign. Inner-block
+  shadowing stays legal. See `docs/language/short-declaration.md`.
+- A braced arm at script file scope now sees top-level `:=` locals.
+
+### Declarator reader consolidation (2026-09-19)
+
+- Every declarator (`*`/`&`/`&&`/`C::*`, `( declarator )`, `[dims]`,
+  `(params) quals`) is read by ONE owner, `Program::parse_declarator`, in
+  every arm (typedef, alias, cast/sizeof type-ids, template arguments,
+  members, K&R and C++ parameters, template parameters, variables). Gate:
+  `scripts/check-one-declarator-reader.sh`. C++11 g++.dg lane 1412 → 1441
+  of 1950 (73.9%); pointer-to-function-pointer parameters and a handful of
+  declarator shapes remain recorded as gaps.
+
 ### Empty static assertion diagnostics (2026-09-18)
 
 - Failed assertions with an empty user message now report `static assertion
