@@ -421,11 +421,7 @@ g++.dg/cpp0x/sfinae12.C
 g++.dg/cpp0x/sfinae14.C
 g++.dg/cpp0x/sfinae15.C
 g++.dg/cpp0x/sfinae16.C
-g++.dg/cpp0x/sfinae17.C
-g++.dg/cpp0x/sfinae18.C
-g++.dg/cpp0x/sfinae19.C
 g++.dg/cpp0x/sfinae2.C
-g++.dg/cpp0x/sfinae21.C
 g++.dg/cpp0x/sfinae23.C
 g++.dg/cpp0x/sfinae28.C
 g++.dg/cpp0x/sfinae29.C
@@ -450,7 +446,6 @@ g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
 g++.dg/cpp0x/sfinae63.C
 g++.dg/cpp0x/sfinae66.C
-g++.dg/cpp0x/sfinae8.C
 g++.dg/cpp0x/sfinae9.C
 g++.dg/cpp0x/std-layout1.C
 g++.dg/cpp0x/stddef.C
