@@ -45904,17 +45904,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 			pgm.Throw(tn) << "Expecting type in anonymous struct definition" << flush;
 
-		    DataDef *inner_member_dd = &inner_type->definition;
-		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+		    DataDef *inner_base_dd = &inner_type->definition;
+		    DataDef *inner_member_dd = inner_base_dd;
+		    TokenBase *inner_ahead = pgm.peekToken();
+		    if ( inner_ahead && inner_ahead->id() == TokenID::tkSemi )
 		    {
-			pgm.nextToken();
-			inner_member_dd = pgm.getPointerType(inner_member_dd);
-		    }
-
-		    // Check for unnamed bitfield: `int : 4;`
-		    tn = pgm.nextToken();
-		    if ( tn && tn->id() == TokenID::tkSemi )
-		    {
+			tn = pgm.nextToken();
 			if ( DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(inner_member_dd) )
 			{
 			    inner->addAnonymousAggregate(*anon);
@@ -45922,8 +45917,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			pgm.Throw(tn) << "Expecting member name in anonymous struct definition" << flush;
 		    }
-		    if ( tn && tn->id() == TokenID::tkColon )
+		    if ( inner_ahead && inner_ahead->id() == TokenID::tkColon )
 		    {
+			tn = pgm.nextToken();
 			size_t bit_width = parse_bitfield_width(tn, inner_member_dd, false);
 			inner->addUnnamedBitField(*inner_member_dd, bit_width);
 			tn = pgm.nextToken();
@@ -45931,70 +45927,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.Throw(tn ? tn : loc) << "Expecting ';' after unnamed bit-field" << flush;
 			if ( tn->id() == TokenID::tkComma )
 			    continue;
-			// semicolon consumed — fall through to done_members check
-		    }
-		    else if ( tn && tn->id() == TokenID::tkOpBrk
-			   && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-		    {
-			// Function-pointer member inside a nested/anonymous
-			// aggregate (glibc sigevent: `void (*_function)(__sigval_t);`
-			// in the anonymous union) — same declarator tail as the
-			// top-level struct member arm.
-			TokenBase *open_tok = pgm.nextToken();   // consume '*'
-			std::string mname;
-			inner_member_dd = pgm.parse_fnptr_member_tail(*inner_member_dd,
-								      mname, open_tok);
-			inner->addMember(mname, *inner_member_dd, 1);
-			tn = pgm.nextToken();
-			if ( !tn || (tn->id() != TokenID::tkSemi && tn->id() != TokenID::tkComma) )
-			    pgm.Throw(tn ? tn : loc) << "Expecting ';' after function pointer struct member" << flush;
-			continue;
 		    }
 		    else
 		    {
-		    if ( !is_contextual_identifier_token(tn) )
-			pgm.Throw(tn) << "Expecting member name in anonymous struct definition" << flush;
-		    std::string inner_name = contextual_identifier_name(tn);
-
-		    size_t inner_count = 1;
-		    TokenBase *inner_count_expr = NULL;
-		    bool inner_is_array_decl = false;
-		    // Per-dimension shape, mirroring the top-level struct-member path's
-		    // member_dims: needed so a trailing flexible (`T x[]`) or GNU
-		    // zero-length (`T x[0]`) array member keeps its 0 dimension
-		    // (m_is_flexible_array keys on member_dims) instead of collapsing
-		    // to a scalar.
-		    std::vector<carray_dim_t> inner_dims;
-		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-		    {
-			inner_is_array_decl = true;
-			pgm.nextToken();
-			TokenBase *cl = pgm.nextToken();
-			if ( cl && cl->id() == TokenID::tkClSqr )
-			{
-			    inner_dims.push_back(0);
-			    inner_count = 0;
-			    break;
-			}
-			pgm.pushToken(cl);
-			if ( !inner_count_expr && pgm.bracket_dim_needs_runtime_value() )
-			{
-			    inner_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-			    cl = pgm.nextToken();
-			    if ( !cl || cl->id() != TokenID::tkClSqr )
-				pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
-			    continue;
-			}
-			int64_t n = pgm.parse_constant_integer_expression();
-			if ( n < 0 )
-			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
-			cl = pgm.nextToken();
-			if ( !cl || cl->id() != TokenID::tkClSqr )
-			    pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
-			inner_dims.push_back((carray_dim_t)n);
-			if ( n == 0 ) { inner_count = 0; break; }
-			inner_count *= (size_t)n;
-		    }
+		    // The member's declarator — the ONE reader through the member
+		    // contract (TokenSTRUCT's top-level member loop has the shapes).
+		    Program::MemberDeclarator imd;
+		    inner_member_dd = pgm.member_declarator(inner_member_dd, imd);
+		    tn = imd.name_tok;
+		    std::string inner_name = imd.name;
+		    size_t inner_count = imd.count;
+		    TokenBase *inner_count_expr = imd.count_expr;
+		    bool inner_is_array_decl = imd.is_array;
+		    std::vector<carray_dim_t> inner_dims = imd.dims;
 
 		    // Check for named bitfield: `int x : 4;`
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
@@ -46016,38 +45961,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			tn = pgm.nextToken();
 			// pointer stars for this declarator
-			DataDef *comma_dd = inner_member_dd;
-			while ( tn && tn->id() == TokenID::tkMul )
-			{
-			    comma_dd = pgm.getPointerType(comma_dd);
-			    tn = pgm.nextToken();
-			}
-			if ( !is_contextual_identifier_token(tn) )
-			    pgm.Throw(tn ? tn : loc) << "Expecting member name after ',' in anonymous struct" << flush;
-			std::string cname = contextual_identifier_name(tn);
-			size_t ccount = 1;
-			TokenBase *ccount_expr = NULL;
-			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-			{
-			    pgm.nextToken();
-			    TokenBase *cl = pgm.nextToken();
-			    if ( cl && cl->id() == TokenID::tkClSqr ) { ccount = 0; break; }
-			    pgm.pushToken(cl);
-			    if ( !ccount_expr && pgm.bracket_dim_needs_runtime_value() )
-			    {
-				ccount_expr = pgm.parseExpression(pgm.nextToken(), true);
-				cl = pgm.nextToken();
-				if ( !cl || cl->id() != TokenID::tkClSqr )
-				    pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
-				continue;
-			    }
-			    int64_t n = pgm.parse_constant_integer_expression();
-			    cl = pgm.nextToken();
-			    if ( !cl || cl->id() != TokenID::tkClSqr )
-				pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
-			    if ( n <= 0 ) { ccount = 0; break; }
-			    ccount *= (size_t)n;
-			}
+			// Each tail declarator restarts from the UNDECORATED base
+			// (`int *a, b;` — b is an int; the tail used to start from a's
+			// decorated type) through the ONE reader.
+			pgm.pushToken(tn);
+			Program::MemberDeclarator cmd;
+			DataDef *comma_dd = pgm.member_declarator(inner_base_dd, cmd);
+			tn = cmd.name_tok;
+			std::string cname = cmd.name;
+			size_t ccount = cmd.count;
+			TokenBase *ccount_expr = cmd.count_expr;
 			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 			{
 			    pgm.nextToken();
@@ -46058,7 +45981,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			else
 			    inner->addMember(cname, *comma_dd, ccount,
-				ccount_expr, ccount_expr != NULL || ccount != 1);
+				ccount_expr, cmd.is_array, &cmd.dims);
 			tn = pgm.nextToken();
 		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
@@ -46239,23 +46162,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // Each declarator on the line can carry its own pointer stars:
 		    // `int *a, b;` or `struct foo *next, *prev;`.
 		    DataDef *member_dd = base_member_dd;
-		    // Stars WITH cv-qualifiers between them (`const char *const
-		    // *paths;` — madc_sys_includes.h) through the ONE declarator
-		    // star consumer (it carries the fn-ptr-base exemption too); the
-		    // private loop here stopped at the const and read the second
-		    // `*` as the member name.
-		    pgm.consume_declarator_stars(member_dd, NULL, false);
-
-		    // expect member name
-		    tn = pgm.nextToken();
-		    if ( tn && tn->id() == TokenID::tkSemi )
+		    TokenBase *ahead = pgm.peekToken();
+		    if ( ahead && ahead->id() == TokenID::tkSemi )
 		    {
+			tn = pgm.nextToken();
 			if ( DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(member_dd) )
 			{
-			    // Only a genuinely TAGLESS `struct {...};` inlines its
-			    // members ([class.union.anon] shape). A NAMED nested
-			    // definition with no declarator (`struct Q {...};`)
-			    // declares the type and nothing else.
 			    if ( anon->is_anonymous )
 				dds->addAnonymousAggregate(*anon);
 			    done_members = true;
@@ -46263,8 +46175,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 		    }
-		    if ( tn && tn->id() == TokenID::tkColon )
+		    if ( ahead && ahead->id() == TokenID::tkColon )
 		    {
+			tn = pgm.nextToken();
 			size_t bit_width = parse_bitfield_width(tn, member_dd, false);
 			dds->addUnnamedBitField(*member_dd, bit_width);
 			tn = pgm.nextToken();
@@ -46277,95 +46190,20 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			done_members = true;
 			continue;
 		    }
-		    if ( tn && tn->id() == TokenID::tkOpBrk )
-		    {
-			TokenBase *inner = pgm.nextToken();
-			if ( inner && (inner->id() == TokenID::tkStar
-				    || pgm.member_pointer_declarator_ahead(inner)) )
-			{
-			    // Typed function-pointer member, e.g. `void (*callback)(void *)`
-			    // or `char *(*resolver)(int)` — or a pointer-to-MEMBER-function
-			    // member `void (_Undefined_class::*_M_member_pointer)();`
-			    // (libstdc++ std_function.h:80, the union std::function sizes
-			    // its buffer from): the 16-byte {ptr, adj} pair.
-			    std::string mname;
-			    if ( inner->id() == TokenID::tkStar )
-				member_dd = pgm.parse_fnptr_member_tail(*member_dd,
-									mname, inner);
-			    else
-				member_dd = pgm.parse_member_fnptr_declarator(*member_dd,
-									     mname, inner);
-
-			    dds->addMember(mname, *member_dd, 1);
-			    dds->member_access.back() |= member_flags;
-			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
-				dds->members.back().typedef_name = member_typedef_alias;
-			    DBG(cout << "TokenSTRUCT::parse() added function pointer member " << mname
-				<< " (size " << member_dd->size << ", total " << dds->size << ')' << endl);
-
-			    tn = pgm.nextToken();
-			    if ( !tn )
-				pgm.Throw(inner) << "Unexpected end of input after function pointer struct member" << flush;
-			    if ( tn->id() == TokenID::tkComma )
-				continue;
-			    if ( tn->id() != TokenID::tkSemi )
-				pgm.Throw(tn) << "Expecting ';' after function pointer struct member" << flush;
-			    done_members = true;
-			    continue;
-			}
-			pgm.Throw(inner ? inner : tn) << "Unsupported parenthesized member declarator in struct definition" << flush;
-		    }
-		    // Pointer-to-DATA-member member `int C::*pm;` (the class arm's twin).
-		    if ( tn && pgm.member_pointer_declarator_ahead(tn) )
-		    {
-			std::string mp_owner_name;
-			DataDef *mp_owner = pgm.parse_member_pointer_owner(tn, mp_owner_name);
-			member_dd = new DataDefMemberPtr(mp_owner, mp_owner_name, *member_dd);
-			tn = pgm.nextToken();
-		    }
-		    if ( !is_contextual_identifier_token(tn) )
-			pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
-		    std::string mname = contextual_identifier_name(tn);
+		    // The member's declarator — the ONE reader (Named) through the
+		    // member contract: stars with cv, `(*fp)(params)`, `(C::*pm)(params)
+		    // const`, `C::*pm`, `(*pa)[N]`, `(&r)[N]`, `(*fa[N])(params)`,
+		    // `name[N][M]` (a runtime dim rides as count_expr). The copy this
+		    // replaces knew stars, two `(` shapes, the `C::*` chain and dims.
+		    Program::MemberDeclarator md;
+		    member_dd = pgm.member_declarator(member_dd, md);
+		    tn = md.name_tok;
+		    std::string mname = md.name;
 		    TokenBase *member_name_tok = tn;  // CIR origin for this member
-
-		    // Optional fixed-array dimensions: `char d_name[256];`, `int m[4][8];`.
-		    // Multiply the dimensions into a single count so the member reserves
-		    // N*sizeof(base) bytes inline. Access via `&obj.member` yields a pointer
-		    // to the start of the inline buffer.
-		    size_t member_count = 1;
-		    bool member_is_array_decl = false;
-		    TokenBase *member_count_expr = NULL;
-		    std::vector<carray_dim_t> member_dims;
-		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-		    {
-			member_is_array_decl = true;
-			pgm.nextToken(); // consume '['
-			TokenBase *cl = pgm.nextToken();
-			if ( cl && cl->id() == TokenID::tkClSqr )
-			{
-			    member_count = 0;
-			    member_dims.push_back(0);
-			    break;
-			}
-			pgm.pushToken(cl);
-			if ( !member_count_expr && pgm.bracket_dim_needs_runtime_value() )
-			{
-			    member_count_expr = pgm.parseExpression(pgm.nextToken(), true);
-			    cl = pgm.nextToken();
-			    if ( !cl || cl->id() != TokenID::tkClSqr )
-				pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
-			    continue;
-			}
-			int64_t n = pgm.parse_constant_integer_expression();
-			if ( n < 0 )
-			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
-			cl = pgm.nextToken();
-			if ( !cl || cl->id() != TokenID::tkClSqr )
-			    pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
-			member_dims.push_back((carray_dim_t)n);
-			if ( n == 0 ) { member_count = 0; break; }
-			member_count *= (size_t)n;
-		    }
+		    size_t member_count = md.count;
+		    bool member_is_array_decl = md.is_array;
+		    TokenBase *member_count_expr = md.count_expr;
+		    std::vector<carray_dim_t> member_dims = md.dims;
 
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 		    {
@@ -46829,20 +46667,10 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 	while ( !done_members )
 	{
 	    DataDef *member_dd = base_member_dd;
-	    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+	    TokenBase *ahead = peekToken();
+	    if ( ahead && ahead->id() == TokenID::tkSemi )
 	    {
-		nextToken();
-		member_dd = getPointerType(member_dd);
-	    }
-	    while ( peekToken()
-		 && (peekToken()->id() == TokenID::tkCONST
-		  || peekToken()->id() == TokenID::tkVOLATILE
-		  || peekToken()->id() == TokenID::tkRESTRICT) )
-		nextToken();
-
-	    tn = nextToken();
-	    if ( tn && tn->id() == TokenID::tkSemi )
-	    {
+		tn = nextToken();
 		if ( DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(member_dd) )
 		{
 		    agg->addAnonymousAggregate(*anon);
@@ -46851,10 +46679,9 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		}
 		Throw(tn) << "Expecting member name in anonymous class aggregate" << flush;
 	    }
-	    // Unnamed bit-field padding (`int : 3;`) in the anonymous
-	    // aggregate: width only, no member name. Same dispatch tail.
-	    if ( tn && tn->id() == TokenID::tkColon )
+	    if ( ahead && ahead->id() == TokenID::tkColon )
 	    {
+		tn = nextToken();
 		size_t pad_width = parse_bitfield_width(tn, member_dd, false, *agg);
 		agg->addBitField(std::string(), *member_dd, pad_width);
 		tn = nextToken();
@@ -46867,40 +46694,16 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		done_members = true;
 		continue;
 	    }
-	    if ( !tn || !is_contextual_identifier_token(tn) )
-		Throw(tn ? tn : loc)
-		    << "Expecting member name in anonymous class aggregate" << flush;
-	    std::string member_name = contextual_identifier_name(tn);
-	    size_t member_count = 1;
-	    bool member_is_array = false;
-	    std::vector<carray_dim_t> member_dims;
-	    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-	    {
-		member_is_array = true;
-		nextToken();
-		TokenBase *cl = nextToken();
-		if ( cl && cl->id() == TokenID::tkClSqr )
-		{
-		    member_dims.push_back(0);
-		    member_count = 0;
-		    break;
-		}
-		pushToken(cl);
-		int64_t n = parse_constant_integer_expression();
-		if ( n < 0 )
-		    Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
-		cl = nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    Throw(cl ? cl : tn)
-			<< "Expected ']' in anonymous class aggregate member" << flush;
-		member_dims.push_back((carray_dim_t)n);
-		if ( n == 0 )
-		{
-		    member_count = 0;
-		    break;
-		}
-		member_count *= (size_t)n;
-	    }
+	    // The member's declarator — the ONE reader through the member contract.
+	    MemberDeclarator md;
+	    member_dd = member_declarator(member_dd, md);
+	    tn = md.name_tok;
+	    std::string member_name = md.name;
+	    size_t member_count = md.count;
+	    bool member_is_array = md.is_array;
+	    std::vector<carray_dim_t> member_dims = md.dims;
+	    if ( md.count_expr )
+		Throw(tn) << "Anonymous class aggregate member array dimension must be constant" << flush;
 	    // C++ bit-field member (`__alignment __alignment_ : 3;` — the
 	    // libc++ parser_std_format_spec.h anonymous union): width via the
 	    // shared parse_bitfield_width + addBitField; the ','/';' dispatch
@@ -50670,40 +50473,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	if ( !ret_is_ref && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 	{
-	    TokenBase *open = pgm.nextToken();
-	    TokenBase *inner = pgm.nextToken();
-	    if ( inner && (inner->id() == TokenID::tkStar
-			|| pgm.member_pointer_declarator_ahead(inner)) )
-	    {
-		// Same tail as the struct lanes — the ONE owner
-		// (parse_fnptr_member_tail) also consumes the pointer's own
-		// cv-qualifiers (`(*const __clone)`, function.h:500); the
-		// pointer-to-member-function form (`R (C::*m)(A) const`) goes
-		// through its owner (parse_member_fnptr_declarator) to the same tail.
-		std::string mname;
-		if ( inner->id() == TokenID::tkStar )
-		    cmember_dd = pgm.parse_fnptr_member_tail(*cmember_dd, mname,
-							     inner);
-		else
-		    cmember_dd = pgm.parse_member_fnptr_declarator(*cmember_dd,
-								  mname, inner);
-
-		ddc->addMember(mname, *cmember_dd, 1);
-		if ( access_flags && !ddc->member_access.empty() )
-		    ddc->member_access.back() = access_flags;
-		DBG(cout << "TokenCLASS::parse() added function pointer member " << mname
-		    << " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
-
-		tn = pgm.nextToken();
-		if ( !tn )
-		    pgm.Throw(inner) << "Unexpected end of input after function pointer class member" << flush;
-		if ( tn->id() != TokenID::tkSemi )
-		    pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
-		pgm.note_class_decl(Program::ClassDeclKind::DataMember);
-		continue;
-	    }
-	    pgm.Throw(inner ? inner : open)
-		<< "Unsupported parenthesized member declarator in class definition" << flush;
+	    // A `(` right after the type opens a nested declarator — a data
+	    // member `(*fp)(params)`, `(C::*pm)(params) const`, `(*pa)[N]`,
+	    // `(&r)[N]`, `(*fa[N])(params)` — the ONE reader through the member
+	    // contract. (A method's `(` follows its NAME and is handled below.)
+	    Program::MemberDeclarator gmd;
+	    cmember_dd = pgm.member_declarator(cmember_dd, gmd);
+	    if ( gmd.count_expr )
+		pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
+	    ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
+			   gmd.is_array ? &gmd.dims : NULL);
+	    if ( access_flags && !ddc->member_access.empty() )
+		ddc->member_access.back() = access_flags;
+	    DBG(cout << "TokenCLASS::parse() added function pointer member " << gmd.name
+		<< " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
+	    tn = pgm.nextToken();
+	    if ( !tn )
+		pgm.Throw(gmd.name_tok) << "Unexpected end of input after function pointer class member" << flush;
+	    if ( tn->id() != TokenID::tkSemi )
+		pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
+	    pgm.note_class_decl(Program::ClassDeclKind::DataMember);
+	    continue;
 	}
 
 	// Expect a member name, an operator-id, or an unnamed bit-field's ':'.
@@ -50977,28 +50767,23 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // Optional fixed-size array dimensions: `long _buf[64];`, `int m[4][8];`.
 	    // (Constant dims only — a class data member is never a VLA.) Multiply the
 	    // dims into one inline element count (mirrors TokenSTRUCT::parse's member loop).
+	    // The member's own dims through the ONE dimension reader (the name
+	    // was read above, where a method is told from a data member).
 	    size_t member_count = 1;
 	    bool member_is_array = false;
 	    std::vector<carray_dim_t> member_dims;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 	    {
-		member_is_array = true;
-		pgm.nextToken(); // consume '['
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClSqr )
+		std::vector<TokenBase *> member_dim_exprs;
+		pgm.parse_array_dimensions(member_dims, member_dim_exprs, tn,
+					   "class member array declarator", false);
+		member_is_array = !member_dims.empty();
+		for ( size_t di = 0; di < member_dims.size(); ++di )
 		{
-		    pgm.nextToken(); // consume ']' (unsized [])
-		    member_dims.push_back(0);
-		    member_count = 0;
-		    continue;
+		    if ( member_dim_exprs[di] )
+			pgm.Throw(tn) << "Class member array dimension must be constant" << flush;
+		    member_count = (member_dims[di] == 0 || member_count == 0)
+				 ? 0 : member_count * member_dims[di];
 		}
-		int64_t adim = pgm.parse_constant_integer_expression();
-		if ( adim < 0 )
-		    pgm.Throw(tn) << "Class member array dimension must be non-negative" << flush;
-		TokenBase *acl = pgm.nextToken();
-		if ( !acl || acl->id() != TokenID::tkClSqr )
-		    pgm.Throw(acl ? acl : tn) << "Expected ']' in class member array declarator" << flush;
-		member_dims.push_back((carray_dim_t)adim);
-		member_count *= (size_t)adim;
 	    }
 	    if ( is_static_member )
 	    {
@@ -51156,44 +50941,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// TokenSTRUCT::parse's comma-separated member loop).
 		while ( tn && tn->id() == TokenID::tkComma )
 		{
-			DataDef *next_dd = &mtype->definition;
-			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-			{
-				pgm.nextToken(); // consume '*'
-				next_dd = pgm.getPointerType(next_dd);
-				while ( pgm.peekToken()
-				     && (pgm.peekToken()->id() == TokenID::tkCONST
-				      || pgm.peekToken()->id() == TokenID::tkVOLATILE
-				      || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-					pgm.nextToken();
-			}
-			TokenBase *nm = pgm.nextToken();
-			if ( !nm || !is_contextual_identifier_token(nm) )
-				pgm.Throw(nm ? nm : tn) << "Expecting member name in class definition" << flush;
-			std::string nmname = contextual_identifier_name(nm);
-			size_t ncount = 1;
-			bool nis_array = false;
-			std::vector<carray_dim_t> ndims;
-			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
-			{
-				nis_array = true;
-				pgm.nextToken(); // consume '['
-				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClSqr )
-				{
-					pgm.nextToken(); // consume ']' (unsized [])
-					ndims.push_back(0);
-					ncount = 0;
-					continue;
-				}
-				int64_t adim = pgm.parse_constant_integer_expression();
-				if ( adim < 0 )
-					pgm.Throw(nm) << "Class member array dimension must be non-negative" << flush;
-				TokenBase *acl = pgm.nextToken();
-				if ( !acl || acl->id() != TokenID::tkClSqr )
-					pgm.Throw(acl ? acl : nm) << "Expected ']' in class member array declarator" << flush;
-				ndims.push_back((carray_dim_t)adim);
-				ncount *= (size_t)adim;
-			}
+			// Each tail declarator: the ONE reader through the member
+			// contract, from the undecorated base.
+			Program::MemberDeclarator nmd;
+			DataDef *next_dd = pgm.member_declarator(&mtype->definition, nmd);
+			TokenBase *nm = nmd.name_tok;
+			std::string nmname = nmd.name;
+			size_t ncount = nmd.count;
+			bool nis_array = nmd.is_array;
+			std::vector<carray_dim_t> ndims = nmd.dims;
+			if ( nmd.count_expr )
+				pgm.Throw(nm) << "Class member array dimension must be constant" << flush;
 			ddc->addMember(nmname, *next_dd, ncount, NULL, nis_array,
 				nis_array ? &ndims : NULL);
 			pgm.note_class_decl(Program::ClassDeclKind::DataMember);
@@ -53273,6 +53031,12 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 // declarator — parseFunction reads names and body itself — so the reader
 // stops there with out.function_pending set and the `(` unread; the type
 // returned is the function's RETURN type.
+static DataDef *peel_carray_dimensions(DataDef *base_type,
+				       std::vector<carray_dim_t> &arr_dims,
+				       TokenBase *&vla_size_expr,
+				       DataDef *peel_floor = NULL,
+				       bool mark_runtime = true);	// defined below
+
 DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 				   DeclaratorResult &out,
 				   const std::set<std::string> *runtime_names)
@@ -53305,6 +53069,28 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
     DataDefFPTR *twin = new DataDefFPTR(fn_type->target);
     twin->ptr_syntax = true;
     return twin;
+}
+
+// A struct/class DATA MEMBER: the ONE reader in Named mode, then the member
+// storage contract — addMember stores the ELEMENT type with the declarator's
+// OWN dims (peeled down to the base the caller passed, so a typedef'd array
+// member keeps its alias type), count = their product (0 for an unsized
+// `[]`), the first runtime dim as count_expr. Six member arms spelled this
+// by hand (stars, two `(` shapes, the `C::*` chain, a dims loop each).
+DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md)
+{
+    DeclaratorResult dr;
+    DataDef *dd = parse_declarator(base, DeclaratorMode::Named, dr);
+    md.name = dr.name;
+    md.name_tok = dr.name_tok;
+    md.count_expr = NULL;
+    md.dims.clear();
+    DataDef *elem = peel_carray_dimensions(dd, md.dims, md.count_expr, base, false);
+    md.is_array = !md.dims.empty() || md.count_expr != NULL;
+    md.count = 1;
+    for ( size_t di = 0; di < md.dims.size(); ++di )
+	md.count = (md.dims[di] == 0 || md.count == 0) ? 0 : md.count * md.dims[di];
+    return elem;
 }
 
 // At a `(` (tokens[0], unconsumed): does it open a NESTED declarator rather
@@ -71605,18 +71391,27 @@ static size_t flattened_scalar_capacity(DataDef *dd)
 // itself is c2mir's job: the CIR emits the flex member as `[]` with its
 // initializer list, and c2mir allocates/initializes the extended object.
 
+// `peel_floor` ends the walk at a base the caller wants kept whole (a member's
+// typedef'd array type keeps its alias; only the declarator's own levels
+// peel); `mark_runtime` pushes a 1 for a runtime level (the variable path's
+// convention) or skips it (the member contract's).
 static DataDef *peel_carray_dimensions(DataDef *base_type,
 				       std::vector<carray_dim_t> &arr_dims,
-				       TokenBase *&vla_size_expr)
+				       TokenBase *&vla_size_expr,
+				       DataDef *peel_floor, bool mark_runtime)
 {
     DataDef *decl_type = base_type;
-    while ( DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(decl_type) )
+    while ( decl_type != peel_floor )
     {
+	DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(decl_type);
+	if ( !alias_array )
+	    break;
 	if ( alias_array->count_expr )
 	{
 	    if ( !vla_size_expr )
 		vla_size_expr = alias_array->count_expr;
-	    arr_dims.push_back(1);
+	    if ( mark_runtime )
+		arr_dims.push_back(1);
 	}
 	else
 	    arr_dims.push_back((carray_dim_t)alias_array->count);

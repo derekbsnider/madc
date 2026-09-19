@@ -454,6 +454,14 @@ updated with the measured lane; HANDOFF rewritten.
   branch (~41580) and its ExprStep tail — the operand path, not the type-id
   read. KG Gap `cast_sizeof_operand_binds_following_multiplicative`; reducer
   parked `tmp/declprobe/pending-tests/testcastsizeofprec.*`; own session.
+- **Member function-pointer call with a negative argument in a binary expression
+  (found by T8's reducer; NOT a declarator defect).** `s.b + s.one(-1)` parses as
+  `s.b = s.one + -1` (emit-c11 shows it; the JIT prints garbage); direct calls,
+  function-pointer variables and the call-first order are right. Pre-dates the
+  arc. Layer: the expression parser's member-call arm as a binary RHS with a
+  parenthesized unary-minus argument. KG Gap
+  `member_fnptr_call_negative_arg_in_binary`; reducer parked
+  `tmp/declprobe/pending-tests/testmemfnptrcallnegarg.*`; own session.
 - **Emitter adopters so far:** var_decl + typedef_decl (efdd54e16), member_node
   (T4's companion fix). Left: the parameter declarator (~cir_builder.cpp:8933).
 

@@ -6487,6 +6487,19 @@ public:
     // The pointer-to-function twin of a FUNCTION type (a fresh DataDefFPTR over
     // the same signature, ptr_syntax set) — `*` on a function type, [dcl.fct]/5.
     DataDefFPTR *fnptr_twin(DataDefFPTR *fn_type);
+    // A struct/class DATA MEMBER's declarator through the ONE reader, then the
+    // member storage contract: addMember takes the ELEMENT type with the
+    // declarator's OWN dims (count = their product, 0 for `[]`; the first
+    // runtime dim as count_expr). name_tok is the declarator-id token.
+    struct MemberDeclarator {
+	std::string name;
+	TokenBase *name_tok = NULL;
+	size_t count = 1;
+	TokenBase *count_expr = NULL;
+	bool is_array = false;
+	std::vector<carray_dim_t> dims;
+    };
+    DataDef *member_declarator(DataDef *base, MemberDeclarator &md);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 bool leading_const = false);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
