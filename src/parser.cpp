@@ -6829,6 +6829,13 @@ TokenDataType *Program::instantiate_shell_origin_replay(
     }
     catch ( ... ) { real = NULL; }
     allow_variadic_real_inst = saved_vri;
+    {
+	static const char *shellc_probe = ::getenv("MADC_SHELLC_PROBE");
+	if ( shellc_probe )
+	    fprintf(stderr, "[shellc] replay %s base=%zu pushed=%zu now=%zu real=%d\n",
+		    org.tname.c_str(), replay_base, replay.size(), tokens.size(),
+		    real != NULL);
+    }
     // Drain any unconsumed replay tokens so a failure never leaks stray
     // injected tokens into the caller's stream (the capture+replay lesson).
     while ( tokens.size() > replay_base )
@@ -37196,8 +37203,26 @@ int64_t Program::evaluate_requires_expression_constant()
 	    // wrong arm. The trailing ';' sentinel marks full consumption.
 	    ok = ( t != NULL && peekToken()
 		&& peekToken()->id() == TokenID::tkSemi );
+	    static const char *shellc_probe = ::getenv("MADC_SHELLC_PROBE");
+	    if ( shellc_probe )
+	    {
+		std::string sp;
+		for ( TokenBase *tt : ty )
+		    if ( tt )
+			sp += template_token_fragment(tt);
+		fprintf(stderr, "[shellc] type_resolves '%s' resolved=%d next='%s' ok=%d\n",
+			sp.c_str(), t != NULL,
+			peekToken() ? template_token_fragment(peekToken()).c_str() : "<none>",
+			(int)ok);
+	    }
 	}
-	catch ( ... ) { ok = false; }
+	catch ( ... )
+	{
+	    ok = false;
+	    static const char *shellc_probe = ::getenv("MADC_SHELLC_PROBE");
+	    if ( shellc_probe )
+		fprintf(stderr, "[shellc] type_resolves THREW\n");
+	}
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
 	tokens.swap_back(std::move(saved));
@@ -37845,6 +37870,18 @@ Program::TemplateDef *Program::match_partial_specialization(
 	// tmp/ic7.mad), breaking `__iter_traits<char*>::iterator_concept`.
 	if ( !spec.constraint.empty() )
 	{
+	    // The clause's names bind in the specialization's DECLARING scope
+	    // ([temp.constr.decl] + [basic.lookup.unqual]), not the use's:
+	    // libstdc++'s `__iter_concept_impl<_Iter>` (std::__detail) is
+	    // constrained by `requires { typename __iter_traits<_Iter>::
+	    // iterator_concept; }` — `__iter_traits` unqualified — and is
+	    // reached from __gnu_cxx::__normal_iterator. Folded in the use's
+	    // scope the alias was not found, every constrained arm failed and
+	    // the unconstrained primary (no `type`) was applied; the
+	    // random-access arm had masked it only while `is_object_v<char>`
+	    // mis-folded false. The one scope owner every pattern-body
+	    // instantiation already uses (NamespaceScope).
+	    NamespaceScope constraint_scope(*this, spec.defining_namespace);
 	    std::map<std::string, TokenDataType *> csub;
 	    for ( std::map<std::string, DataDef *>::iterator di = ded.begin();
 		  di != ded.end(); ++di )
@@ -37884,7 +37921,8 @@ Program::TemplateDef *Program::match_partial_specialization(
 	    if ( !satisfied )
 	    {
 		if ( smp_on )
-		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL constraint\n", s);
+		    fprintf(stderr, "[specmatch]   spec[%zu] FAIL constraint '%s'\n", s,
+			    template_tokens_spelling(ctoks).c_str());
 		continue;   // constraint unsatisfied -> this spec does not apply
 	    }
 	}
