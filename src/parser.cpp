@@ -15143,89 +15143,17 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     if ( !have_value && !dd )
 	measure_expression_operand(type_tb);
 
-    while ( !have_value && peekToken() )
+    // The type-id's ABSTRACT declarator (`sizeof(int *)`, `sizeof(int Widget::*)`,
+    // `sizeof(void (Widget::*)())`, `sizeof(int (*)[3])`, `sizeof(int (&)[4])`):
+    // the ONE declarator reader. It stops at the first token that is not a
+    // declarator's — the `)` of a type operand, or an expression's next token,
+    // which the span check below turns into the rewind. (Its private copy here
+    // skipped parameter lists with a hand-rolled depth counter and built a
+    // member-function pointer with no signature.)
+    if ( !have_value && dd && peekToken() && peekToken()->id() != TokenID::tkClBrk )
     {
-	if ( peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    dd = getPointerType(dd);
-	    continue;
-	}
-	// Abstract pointer-to-DATA-member `sizeof(int Widget::*)` — 8 (a
-	// ptrdiff_t); the owner chain ends in `*` right after a `::`.
-	if ( is_contextual_identifier_token(peekToken())
-	  && tokens.size() > 1 && tokens[1] && tokens[1]->id() == TokenID::tkNS )
-	{
-	    TokenBase *mp_first = nextToken();
-	    if ( member_pointer_declarator_ahead(mp_first) )
-	    {
-		std::string mp_owner_name;
-		DataDef *mp_owner = parse_member_pointer_owner(mp_first, mp_owner_name);
-		dd = new DataDefMemberPtr(mp_owner, mp_owner_name, *dd);
-		continue;
-	    }
-	    pushToken(mp_first);
-	    break;
-	}
-	if ( peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    TokenBase *open = nextToken();
-	    TokenBase *star = nextToken();
-	    // Abstract pointer-to-MEMBER-FUNCTION `sizeof(void (Widget::*)())` —
-	    // 16 (the Itanium {ptr, adj} pair); the parameter list is skipped
-	    // balanced like the fn-ptr form below — only the measure matters.
-	    if ( star && member_pointer_declarator_ahead(star) )
-	    {
-		std::string mp_owner_name;
-		DataDef *mp_owner = parse_member_pointer_owner(star, mp_owner_name);
-		TokenBase *mclose = nextToken();
-		if ( !mclose || mclose->id() != TokenID::tkClBrk )
-		    Throw(mclose ? mclose : open) << "Expecting ')' in " << op_name << " pointer-to-member type" << flush;
-		if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-		{
-		    nextToken();
-		    int mdepth = 1;
-		    while ( mdepth > 0 )
-		    {
-			TokenBase *pt = nextToken();
-			if ( !pt )
-			    Throw(open) << "Unexpected end of input in " << op_name << " pointer-to-member parameter list" << flush;
-			if ( pt->id() == TokenID::tkOpBrk )
-			    ++mdepth;
-			else if ( pt->id() == TokenID::tkClBrk )
-			    --mdepth;
-		    }
-		}
-		while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
-				     || peekToken()->id() == TokenID::tkVOLATILE) )
-		    nextToken();
-		dd = new DataDefMemberFnPtr(mp_owner, mp_owner_name, NULL, false);
-		continue;
-	    }
-	    if ( !star || star->id() != TokenID::tkMul )
-		Throw(star ? star : open) << "Unsupported parenthesized declarator in " << op_name << flush;
-	    dd = getPointerType(dd);
-	    TokenBase *close = nextToken();
-	    if ( !close || close->id() != TokenID::tkClBrk )
-		Throw(close ? close : open) << "Expecting ')' in " << op_name << " function pointer type" << flush;
-	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	    {
-		nextToken();
-		int depth = 1;
-		while ( depth > 0 )
-		{
-		    TokenBase *pt = nextToken();
-		    if ( !pt )
-			Throw(open) << "Unexpected end of input in " << op_name << " function pointer parameter list" << flush;
-		    if ( pt->id() == TokenID::tkOpBrk )
-			++depth;
-		    else if ( pt->id() == TokenID::tkClBrk )
-			--depth;
-		}
-	    }
-	    continue;
-	}
-	break;
+	DeclaratorResult sz_decl;
+	dd = parse_declarator(dd, DeclaratorMode::TypeIdOperand, sz_decl);
     }
     // The expression fallback (sizeof(expr)) already consumed the closing
     // paren via parseExpression's stop_on_closing_paren. Only consume it
@@ -41549,75 +41477,25 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    && (datatype_map.count(((TokenIdent *)peekToken())->spelling())
 				     || resolve_current_class_type_alias(((TokenIdent *)peekToken())->spelling())))) )
 			    nextToken();
-			// consume pointer stars (skip const/restrict qualifiers)
-			while ( peekToken()
-			     && (peekToken()->id() == TokenID::tkMul
-			      || peekToken()->id() == TokenID::tkCONST
-			      || peekToken()->id() == TokenID::tkVOLATILE
-			      || peekToken()->id() == TokenID::tkRESTRICT) )
-			{
-			    TokenBase *pt = nextToken();
-			    if ( pt->id() == TokenID::tkMul )
-				cast_dd = getPointerType(cast_dd);
-			    // const/restrict are skipped — no JIT effect
-			}
-			// Array declarator in cast/compound literal: (int []){...}
-			// or (int [3]){...}. Consume [N] and record the element
-			// type so the compound literal path can build a synthetic
-			// struct with N elements of that type.
+			// The cast's type-id is an ABSTRACT declarator over the resolved
+			// type — stars with their cv, `(*)(params)`, `(*)[N]`, `(&)[N]`,
+			// `C::*` — read by the ONE declarator reader. A bare array type-id
+			// `(int [3])` / `(int [])` is the compound-literal spelling: keep
+			// its element type and count for that path, and decay the plain
+			// cast to a pointer as before. A `(` that begins no parameter list
+			// (`(T(x))`) is left where it is — the owner stops before it.
 			DataDef *array_elem_dd = NULL;
 			int64_t array_explicit_count = 0;
-			if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 			{
-			    array_elem_dd = cast_dd;
-			    nextToken(); // consume '['
-			    if ( peekToken() && peekToken()->id() != TokenID::tkClSqr )
+			    DeclaratorResult cast_decl;
+			    cast_dd = parse_declarator(cast_dd, DeclaratorMode::TypeIdOperand, cast_decl);
+			    DataDefCArray *bare_array = (!cast_decl.saw_parens && !cast_decl.array_dims.empty())
+						      ? cast_dd->as_carray_dd() : NULL;
+			    if ( bare_array )
 			    {
-				// explicit count: (int [3]){...}
-				TokenBase *cnt = nextToken();
-				if ( cnt->type() == TokenType::ttInteger )
-				    array_explicit_count = ((TokenInt *)cnt)->ival();
-			    }
-			    TokenBase *csq = nextToken();
-			    if ( !csq || csq->id() != TokenID::tkClSqr )
-				Throw(csq ? csq : tb) << "Expected ']' after array size in cast" << flush;
-			    // For plain casts (not compound literals), treat as pointer
-			    cast_dd = getPointerType(cast_dd);
-			}
-			// Function-pointer cast: `(RET (*)(PARAMS)) expr`. After the
-			// return type (plus any pointer stars) we may see `(*)` and
-			// then a parameter list. Reuse parseFnPtrParams() to build the
-			// FuncDef, then wrap in DataDefFPTR. The suffix may instead be
-			// an array declarator — `(T (*)[N]) expr` is a cast to
-			// pointer-to-array (task #79), the same shape the declaration
-			// arm builds for `T (*name)[N]`.
-			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    TokenBase *open = nextToken();    // consume '('
-			    TokenBase *star = peekToken();
-			    if ( star && star->id() == TokenID::tkMul )
-			    {
-				nextToken(); // consume '*'
-				TokenBase *close1 = nextToken();
-				if ( !close1 || close1->id() != TokenID::tkClBrk )
-				    Throw(close1 ? close1 : open) << "expected ')' after '(*' in function pointer cast" << flush;
-				if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-				    cast_dd = parse_ptr_array_suffix(cast_dd, open,
-						"pointer-to-array cast");
-				else
-				{
-				    TokenBase *open2 = nextToken();
-				    if ( !open2 || open2->id() != TokenID::tkOpBrk )
-					Throw(open2 ? open2 : open) << "expected '(' to introduce parameter list in function pointer cast" << flush;
-				    FuncDef *func = parseFnPtrParams(*cast_dd);
-				    cast_dd = new DataDefFPTR(func);
-				}
-			    }
-			    else
-			    {
-				// not a function-pointer cast — push '(' back and fall
-				// through to the regular close-paren handling below.
-				pushToken(open);
+				array_elem_dd = bare_array->element_type;
+				array_explicit_count = (int64_t)bare_array->count;
+				cast_dd = getPointerType(array_elem_dd);
 			    }
 			}
 			// must have closing )

@@ -1,0 +1,26 @@
+// g++ and clang++ -std=c++11 print pa:8 ra:16 mf:16 md:8 fp:8 ca:3 cp:2
+//
+// The operand of sizeof and the type of a cast are type-ids — ABSTRACT
+// declarators over the resolved type: a pointer-to-array `int (*)[3]`, a
+// reference-to-array `int (&)[4]`, a pointer-to-member-function
+// `void (Widget::*)()`, a pointer-to-data-member `int Widget::*`, a function
+// pointer `int (*)(int)`; a cast to pointer-to-array and a cast through an
+// array element type. One reader — Program::parse_declarator, Abstract mode —
+// reads them all; the sizeof and cast arms each carried a private copy (the
+// sizeof one skipping parameter lists with a hand-rolled depth counter).
+extern "C" int printf(const char *, ...);
+
+struct Widget { int k; void f() {} };
+
+int main()
+{
+    int arr[3] = {1, 2, 3};
+    int pair[2] = {5, 2};
+    void *pv = arr;
+    printf("pa:%d ra:%d mf:%d md:%d fp:%d ca:%d cp:%d\n",
+	   (int)sizeof(int (*)[3]), (int)sizeof(int (&)[4]),
+	   (int)sizeof(void (Widget::*)()), (int)sizeof(int Widget::*),
+	   (int)sizeof(int (*)(int)),
+	   (*(int (*)[3])pv)[2], ((int (*)[2])pair)[0][1]);
+    return 0;
+}
