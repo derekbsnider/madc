@@ -4340,7 +4340,7 @@ public:
 						  DataDefCLASS *pattern_class,
 						  DataDefCLASS *owner,
 						  const std::string &enclosing_symbol);
-    registration_map<DataDef *, DataDefPTR *> ptr_type_cache; // cached pointer-to-T DataDefs
+    registration_map<DataDef *, DataDef *> ptr_type_cache; // cached pointer-to-T DataDefs (a fn type's twin included)
     // the ANONYMOUS vector types the parser mints (an inline vector_size cast
     // or declaration attribute, a vector comparison's result), one DataDefSIMD
     // per (element, bytes) — simd_type() is the owner; a NAMED vector typedef
@@ -6374,12 +6374,16 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseStatementBody(TokenBase *);	// the grammar; parseStatement stamps its extent
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
-    DataDefPTR *getPointerType(DataDef *base);
+    // The pointer to `base`, interned. A pointer to a FUNCTION type IS the
+    // function pointer (its fnptr_twin) — [dcl.ptr] over [dcl.fct]: no
+    // PTR(function type) is ever built, so every `*` applied anywhere (a
+    // declarator, a class member's return, a template substitution) agrees.
+    DataDef *getPointerType(DataDef *base);
     DataDefSIMD *simd_type(DataDef *elem, size_t bytes);
     DataDef *simd_comparison_type(DataDef *ld, DataDef *rd);
     // The type of '&x' from x's type: pointer-to-referent for a reference
     // operand ([expr.unary.op]p3), else pointer-to-type.
-    DataDefPTR *addressof_result_type(DataDef *operand_type);
+    DataDef *addressof_result_type(DataDef *operand_type);
     DataDefREF *getReferenceType(DataDef *base);
     // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
     // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for

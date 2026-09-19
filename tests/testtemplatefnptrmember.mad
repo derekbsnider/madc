@@ -1,0 +1,13 @@
+extern "C" int printf(const char *, ...);
+typedef int F(int);
+struct S { F *p; int (*q)(int); };
+template <class T> struct P { T *p; };
+int twice(int v) { return v * 2; }
+int main()
+{
+    int arr[3] = {1, 2, 3};
+    S s; s.p = twice; s.q = twice;
+    P<F> pf; pf.p = twice;
+    printf("p:%d q:%d pf:%d\n", s.p(3), s.q(4), pf.p(5));
+    return 0;
+}

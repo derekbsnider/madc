@@ -5571,7 +5571,7 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
 	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 	{
 	    pgm.nextToken();
-	    DataDefPTR *ptr = pgm.getPointerType(&resolved->definition);
+	    DataDef *ptr = pgm.getPointerType(&resolved->definition);
 	    TokenDataType *pdt = new TokenDataType(ptr->name.c_str(), *ptr);
 	    pdt->file = loc ? loc->file : resolved->file;
 	    pdt->line = loc ? loc->line : resolved->line;
@@ -9782,7 +9782,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		if ( sfx->id() == TokenID::tkMul )
 		{
 		    nextToken();
-		    DataDefPTR *ptr = getPointerType(&adt->definition);
+		    DataDef *ptr = getPointerType(&adt->definition);
 		    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
 		    padt->file = dtok->file;
 		    padt->line = dtok->line;
@@ -29122,12 +29122,25 @@ Variable *Program::resolve_global_storage_variable(Variable *var) const
 }
 
 // get or create a pointer-to-T DataDef
-DataDefPTR *Program::getPointerType(DataDef *base)
+DataDef *Program::getPointerType(DataDef *base)
 {
     // check cache first
     auto it = ptr_type_cache.find(base);
     if ( it != ptr_type_cache.end() )
 	return it->second;
+
+    // A pointer to a FUNCTION type is the function pointer: the twin over the
+    // same signature (fnptr_twin), never a DataDefPTR wrapping the function
+    // type — which no consumer (call lowering, member_node, var_decl) reads
+    // as a callable. `template <class T> struct P { T *p; }; P<int(int)>`
+    // built exactly that and pf.p(5) returned 5.
+    if ( DataDefFPTR *fn = base ? base->as_fptr_dd() : NULL )
+	if ( !fn->ptr_syntax )
+	{
+	    DataDefFPTR *twin = fnptr_twin(fn);
+	    ptr_type_cache[base] = twin;
+	    return twin;
+	}
 
     // return well-known globals for common types
     if ( base == &ddVOID )  return &ddVOIDptr;
@@ -31588,7 +31601,7 @@ static bool is_addressable_expression(TokenBase *expr)
 // every candidate taking T*). The CIR builder's TokenAddrOf arm already emits
 // the matching VALUE (the reference's stored pointer); this is its type-side
 // twin.
-DataDefPTR *Program::addressof_result_type(DataDef *operand_type)
+DataDef *Program::addressof_result_type(DataDef *operand_type)
 {
     if ( operand_type && operand_type->is_reference() )
 	if ( DataDefPTR *rp = operand_type->as_pointer_dd() )
@@ -31607,7 +31620,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	// The CIR backend emits the literal as an N_COMPOUND_LITERAL value (an
 	// addressable lvalue), so wrap it — like any other lvalue — in
 	// TokenAddrExpr to yield N_ADDR(compound), a pointer to the object.
-	DataDefPTR *aptr = addressof_result_type(compound->datadef());
+	DataDef *aptr = addressof_result_type(compound->datadef());
 	return new TokenAddrExpr(compound, aptr);
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
@@ -31632,7 +31645,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
 		    fv->var.flags |= vfADDRTAKEN;
 	    }
-	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
+	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
@@ -31640,7 +31653,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    if ( tv->var.type && tv->var.type->is_function() )
 		return tv;
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
+	    DataDef *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&('" << flush;
@@ -31657,7 +31670,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
+	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
@@ -31670,13 +31683,13 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
+	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
 	{
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
+	    DataDef *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
@@ -31687,7 +31700,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	addr_expr = parseExpression(addr_tb, true, false, false, 0);
 	if ( is_addressable_expression(addr_expr) )
 	{
-	    DataDefPTR *aptr = addressof_result_type(addr_expr->datadef());
+	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
 	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
@@ -31695,7 +31708,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    if ( tv->var.type && tv->var.type->is_function() )
 		return tv;
 	    tv->var.flags |= vfADDRTAKEN;
-	    DataDefPTR *aptr = addressof_result_type(tv->var.type);
+	    DataDef *aptr = addressof_result_type(tv->var.type);
 	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
@@ -31858,7 +31871,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( ns_var->type && ns_var->type->is_function() )
 	    return new TokenVar(*ns_var);
 	ns_var->flags |= vfADDRTAKEN;
-	DataDefPTR *aptr = addressof_result_type(ns_var->type);
+	DataDef *aptr = addressof_result_type(ns_var->type);
 	return new TokenAddrOf(*ns_var, aptr);
     }
     Variable *avar = findVariable(aname);
@@ -31876,7 +31889,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    {
 		Variable *member = new Variable(aname, *mtype, 1, NULL, false);
 		TokenMember *tm = new TokenMember(*thisvar, *member, ofs);
-		DataDefPTR *aptr = addressof_result_type(mtype);
+		DataDef *aptr = addressof_result_type(mtype);
 		return new TokenAddrExpr(tm, aptr);
 	    }
 	}
@@ -31896,7 +31909,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( avar->type && avar->type->is_function() )
 	return new TokenVar(*avar);
     avar->flags |= vfADDRTAKEN;
-    DataDefPTR *aptr = addressof_result_type(avar->type);
+    DataDef *aptr = addressof_result_type(avar->type);
     return new TokenAddrOf(*avar, aptr);
 }
 
@@ -33170,7 +33183,7 @@ struct Program::ClassRegistrationJournal::State
     std::vector<uint32_t> forest_defs;
     size_t forest_payload_size;
     size_t forest_tokbytes_size;
-    registration_map<DataDef *, DataDefPTR *>::transaction_state
+    registration_map<DataDef *, DataDef *>::transaction_state
 	ptr_type_cache_transaction;
     registration_map<DataDef *, DataDefREF *>::transaction_state
 	ref_type_cache_transaction;
@@ -53230,17 +53243,9 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 		// mutation of the shared typedef type — and any further one
 		// points to it; on a function POINTER every star is a level
 		// (`typedef PF *PPF;`).
-		if ( DataDefFPTR *fn_base = dd->as_fptr_dd() )
-		{
-		    int s = 0;
-		    if ( !fn_base->ptr_syntax )
-		    {
-			dd = fnptr_twin(fn_base);
-			s = 1;
-		    }
-		    for ( ; s < stars; ++s )
-			dd = getPointerType(dd);
-		}
+		if ( dd->as_fptr_dd() )
+		    for ( int s = 0; s < stars; ++s )
+			dd = getPointerType(dd);	// folds a function type (fnptr_twin)
 	    }
 	    if ( depth == 0 )
 	    {
@@ -71665,7 +71670,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 {
     if ( !expr )
 	return NULL;
-    DataDefPTR *ptr_type = getPointerType(referent_type
+    DataDef *ptr_type = getPointerType(referent_type
 					      ? referent_type : expr->datadef());
     if ( TokenStructLit *array = dynamic_cast<TokenStructLit *>(expr) )
 	if ( array->array_elem_dd )
