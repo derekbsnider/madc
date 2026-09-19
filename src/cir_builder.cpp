@@ -10369,6 +10369,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	// typedef's own base depth (handles `typedef T *TP; TP x;` correctly).
 	int stars = explicit_star_count(mtype, mtypedef);
 	node_t mspec;
+	std::vector<carray_dim_t> m_ptr_array_dims;	// the pointee's dims, `T (*m)[N]`
+	int m_ptr_levels = 0;
 	if (!mtypedef.empty()) {
 		mspec = type_list(mtype, mtypedef);
 	} else {
@@ -10380,7 +10382,12 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// and only one star — see the declarator below), so element stride was
 		// sizeof(int)=4 not sizeof(A*)=8 and reading element[1] crashed.
 		DataDef *mbase = mtype;
-		dd_peel_pointers(mbase);   // the one pointer-peel owner
+		// The pointer piece through the ONE owner var_decl and typedef_decl
+		// use: every level (dd_peel_pointers) and the POINTEE's fixed dims,
+		// emitted after the stars below. Peeling the levels alone rendered a
+		// pointer-to-array member (`B<int (*)[3]>::m`) as `int *m`, so
+		// `(*pa.m)[2]` had nothing to subscript.
+		m_ptr_levels = peel_pointer_declarator(mbase, m_ptr_array_dims);
 		// An anonymous nested struct/union member (`struct { ... } f;` or
 		// `union { ... } u;` inside the enclosing aggregate) has no tag to
 		// forward-reference, so type_list would emit `struct anonymous` — an
@@ -10485,12 +10492,11 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		for (int s = 0; s < stars; s++)
 			append(mdecl_list, pointer());
 	} else if (mtype && mtype->is_pointer()) {
-		// One star per pointer level: `A** data` is depth 2. Emitting a single
-		// star (the old behaviour) under-declared a pointer-to-pointer member,
-		// halving its element stride.
-		int depth = dd_ptr_depth(mtype);
-		for (int s = 0; s < (depth > 0 ? depth : 1); s++)
-			append(mdecl_list, pointer());
+		// One star per pointer level (`A** data` is depth 2 — a single star
+		// under-declared it and halved the element stride), then the pointee's
+		// dims: the shared pointer-declarator piece.
+		append_pointer_declarator(mdecl_list, m_ptr_levels > 0 ? m_ptr_levels : 1,
+					  m_ptr_array_dims);
 	}
 	node_t mdecl = m.first.empty() ? ignore() : node2(N_DECL, mid, mdecl_list);
 

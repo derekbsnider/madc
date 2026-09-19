@@ -436,6 +436,18 @@ updated with the measured lane; HANDOFF rewritten.
   -> var_decl's compensation. The fix is T11's: the owner returns the alias's
   DataDef plus the variable's OWN pieces, and the flatten + `explicit_star_count`
   compensation go. Reducer parked: `tmp/declprobe/pending-tests/testtypedefarrayofptrinit.*`.
+- **T8 probe (found by T4's reducer).** A class-template member `T *p` with T
+  a FUNCTION type (`P<int(int)>::p`) is built as PTR(function type) — the
+  member arm applies the star itself instead of through
+  `consume_declarator_stars` (whose FPTR-base contract COUNTS the star), so
+  member_node's function-pointer arm never sees an FPTR and emits
+  `long long *p`; `pf.p(5)` then returns 5 (g++/clang++: `p:6 q:8 pf:10`) —
+  a SILENT wrong answer. Fix = T8 (the member arm adopts the one reader, whose
+  fold makes `*` on a function type THE function pointer). Reducer parked:
+  `tmp/declprobe/pending-tests/testtemplatefnptrmember.*`. The typedef'd form
+  `F *p` already works through the alias-spec path.
+- **Emitter adopters so far:** var_decl + typedef_decl (efdd54e16), member_node
+  (T4's companion fix). Left: the parameter declarator (~cir_builder.cpp:8933).
 
 ## 7. Rulings
 
