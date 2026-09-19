@@ -54,8 +54,8 @@ cd "$(dirname "$0")/.."
 SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
-BASE_FNPTRPARAMS=15   # -> 2  (definition + the owner's suffix call)
-BASE_FPTR=17          # -> 10 (owner x1 + the 9 non-declarator sites above)
+BASE_FNPTRPARAMS=14   # -> 2  (definition + the owner's suffix call)
+BASE_FPTR=16          # -> 10 (owner x1 + the 9 non-declarator sites above)
 BASE_CARRAY=9         # -> 5  (owner x1 + 4 non-declarator sites)
 BASE_MEMBERPTR=7      # -> 2  (owner + the &C::field constant)
 BASE_MEMBERFNPTR=4    # -> 2  (owner + the &C::method constant)

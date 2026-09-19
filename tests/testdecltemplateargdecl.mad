@@ -1,0 +1,33 @@
+// g++ and clang++ -std=c++11 print n:5 sz:16 f:8 p:3 r:2
+//
+// A template ARGUMENT is a type-id — an abstract declarator over the resolved
+// type: a pointer-to-member-function `int (Foo::*)(int)`, a pointer-to-array
+// `int (*)[3]`, a reference-to-array `int (&)[2]` (a bare function type
+// `int(int)` parses too; its MEMBER use is the T8 probe named below). The template-argument reader
+// (fold_template_arg_declarator) reads them through the ONE declarator
+// reader; its own copy knew `*`/`&` and `(*)(params)` and refused the rest
+// ("Expecting ',' or ')' in function pointer typedef" on g++.dg's
+// template/canon-type-6, mem_func_ptr, sfinae22).
+extern "C" int printf(const char *, ...);
+
+struct Foo { int f(int v) { return v + 1; } };
+template <class T> struct B { T m; };
+template <class T> struct R { static int n(T r) { return r[1]; } };
+
+int twice(int v) { return v * 2; }
+
+int main()
+{
+    B<int (Foo::*)(int)> b;
+    b.m = &Foo::f;
+    Foo foo;
+    int arr[3] = {1, 2, 3};
+    B<int (*)[3]> pa;
+    pa.m = &arr;
+    int two[2] = {7, 2};
+    // `P<int(int)>::p` (`T *p` with T a FUNCTION type) is the member arm's
+    // star rule (plan T8; tmp/declprobe/pending-tests/testtemplatefnptrmember).
+    printf("n:%d sz:%d f:%d p:%d r:%d\n", (foo.*b.m)(4), (int)sizeof(b),
+	   twice(4), (*pa.m)[2], R<int (&)[2]>::n(two));
+    return 0;
+}

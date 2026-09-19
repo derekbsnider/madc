@@ -29347,65 +29347,27 @@ uint32_t Program::derived_type_id(DerivedKind kind, uint32_t operand_id)
 TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
 						     TokenBase *origin)
 {
-    // A template argument may carry a pointer/reference declarator suffix; fold it
-    // into the arg type so it substitutes cleanly into the template body (the same
-    // shape `typedef char *cp; cp m;` produces). `&`/`&&` collapse via
-    // getReferenceType (madc models all references with one DataDefREF, so the
-    // lvalue/rvalue spelling does not change the type). Shared by every
-    // template-argument parser instead of a per-site copy of the star fold.
-    while ( peekToken()
-	 && (peekToken()->id() == TokenID::tkMul
-	  || peekToken()->id() == TokenID::tkBand
-	  || peekToken()->id() == TokenID::tkLand) )
+    // A template argument is a type-id: an ABSTRACT declarator over the
+    // resolved type — `*`s with their cv, `&`/`&&`, `(*)(params)`, a bare
+    // function type (`function<int()>`), `(C::*)(A)` (template/canon-type-6),
+    // `[N]`, `(&)[N]`. The ONE declarator reader folds it; the arg then
+    // substitutes into the template body exactly as `typedef char *cp; cp m;`
+    // would. Shared by every template-argument parser instead of a per-site
+    // copy of the star fold — and before this call this site's copy knew
+    // only `*`/`&` and `(*)(params)`.
+    DataDef *dd = &adt->definition;
+    DeclaratorResult decl;
+    DataDef *folded = parse_declarator(dd, DeclaratorMode::Abstract, decl);
+    if ( folded == dd )
+	return adt;
+    TokenDataType *next = new TokenDataType(folded->name.c_str(), *folded);
+    if ( origin )
     {
-	TokenID sfx = nextToken()->id();
-	DataDef *wrapped = (sfx == TokenID::tkMul)
-	    ? static_cast<DataDef *>(getPointerType(&adt->definition))
-	    : static_cast<DataDef *>(getReferenceType(&adt->definition));
-	TokenDataType *next = new TokenDataType(wrapped->name.c_str(), *wrapped);
-	if ( origin )
-	{
-	    next->file = origin->file;
-	    next->line = origin->line;
-	    next->column = origin->column;
-	}
-	adt = next;
+	next->file = origin->file;
+	next->line = origin->line;
+	next->column = origin->column;
     }
-    // The ABSTRACT function-pointer declarator as a template argument:
-    // `unique_ptr<char_type, void (*)(void*)>` — libc++ <locale>'s buffer
-    // deleters, used pervasively (first at locale:286). Same parseFnPtrParams
-    // owner as typedef Form 2 and the using-alias arm. This owner is called
-    // after resolving a TYPE argument: without `(*)`, the '(' starts a bare
-    // function type's parameter list (`function<int()>`).
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-    {
-	nextToken();	// consume '('
-	bool pointer_form = peekToken() && peekToken()->id() == TokenID::tkMul;
-	if ( pointer_form )
-	{
-	    nextToken(); // consume '*'
-	    TokenBase *close = nextToken();
-	    if ( !close || close->id() != TokenID::tkClBrk )
-		Throw(close ? close : origin)
-		    << "Expecting ')' in function pointer template argument" << flush;
-	    TokenBase *open = nextToken();
-	    if ( !open || open->id() != TokenID::tkOpBrk )
-		Throw(open ? open : origin)
-		    << "Expecting '(' for function pointer parameter list" << flush;
-	}
-	FuncDef *func = parseFnPtrParams(adt->definition);
-	DataDefFPTR *fptr = new DataDefFPTR(func);
-	fptr->ptr_syntax = pointer_form;
-	TokenDataType *next = new TokenDataType(fptr->name.c_str(), *fptr);
-	if ( origin )
-	{
-	    next->file = origin->file;
-	    next->line = origin->line;
-	    next->column = origin->column;
-	}
-	adt = next;
-    }
-    return adt;
+    return next;
 }
 
 // add a function definition
