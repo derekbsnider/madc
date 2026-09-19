@@ -115,7 +115,6 @@ g++.dg/cpp0x/constexpr-52282-1.C
 g++.dg/cpp0x/constexpr-52892-2.C
 g++.dg/cpp0x/constexpr-55708.C
 g++.dg/cpp0x/constexpr-57764.C
-g++.dg/cpp0x/constexpr-59938.C
 g++.dg/cpp0x/constexpr-60199.C
 g++.dg/cpp0x/constexpr-61484.C
 g++.dg/cpp0x/constexpr-65080.C
@@ -217,7 +216,6 @@ g++.dg/cpp0x/constexpr-value2.C
 g++.dg/cpp0x/constexpr-value3.C
 g++.dg/cpp0x/constexpr-volatile4.C
 g++.dg/cpp0x/conv-tmpl1.C
-g++.dg/cpp0x/conv-tmpl2.C
 g++.dg/cpp0x/conv-tmpl6.C
 g++.dg/cpp0x/decltype-71879.C
 g++.dg/cpp0x/decltype-bitfield1.C
@@ -297,12 +295,10 @@ g++.dg/cpp0x/initlist-opt2.C
 g++.dg/cpp0x/initlist-opt5.C
 g++.dg/cpp0x/initlist-opt7.C
 g++.dg/cpp0x/initlist-overload1.C
-g++.dg/cpp0x/initlist-ref1.C
 g++.dg/cpp0x/initlist-ref3.C
 g++.dg/cpp0x/initlist102.C
 g++.dg/cpp0x/initlist104.C
 g++.dg/cpp0x/initlist110.C
-g++.dg/cpp0x/initlist114.C
 g++.dg/cpp0x/initlist118.C
 g++.dg/cpp0x/initlist119.C
 g++.dg/cpp0x/initlist120.C
@@ -318,10 +314,8 @@ g++.dg/cpp0x/initlist34.C
 g++.dg/cpp0x/initlist35.C
 g++.dg/cpp0x/initlist50.C
 g++.dg/cpp0x/initlist54.C
-g++.dg/cpp0x/initlist59.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
-g++.dg/cpp0x/initlist84.C
 g++.dg/cpp0x/initlist96.C
 g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/inline-ns1.C
@@ -338,7 +332,6 @@ g++.dg/cpp0x/lambda/lambda-ice12.C
 g++.dg/cpp0x/lambda/lambda-ice14.C
 g++.dg/cpp0x/lambda/lambda-ice26.C
 g++.dg/cpp0x/lambda/lambda-mangle.C
-g++.dg/cpp0x/lambda/lambda-mangle4.C
 g++.dg/cpp0x/lambda/lambda-mangle6.C
 g++.dg/cpp0x/lambda/lambda-qualified.C
 g++.dg/cpp0x/lambda/lambda-this11.C
@@ -360,7 +353,6 @@ g++.dg/cpp0x/noexcept49.C
 g++.dg/cpp0x/noexcept50.C
 g++.dg/cpp0x/noexcept51.C
 g++.dg/cpp0x/noexcept57.C
-g++.dg/cpp0x/noexcept60.C
 g++.dg/cpp0x/noexcept79.C
 g++.dg/cpp0x/noexcept81.C
 g++.dg/cpp0x/noexcept85.C
@@ -387,7 +379,6 @@ g++.dg/cpp0x/pr102305.C
 g++.dg/cpp0x/pr105256.C
 g++.dg/cpp0x/pr107065.C
 g++.dg/cpp0x/pr112365.C
-g++.dg/cpp0x/pr113031.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
 g++.dg/cpp0x/pr119580.C
@@ -423,7 +414,6 @@ g++.dg/cpp0x/range-for33.C
 g++.dg/cpp0x/range-for34.C
 g++.dg/cpp0x/range-for38.C
 g++.dg/cpp0x/range-for39.C
-g++.dg/cpp0x/ref-bind5.C
 g++.dg/cpp0x/ref-bind6.C
 g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
