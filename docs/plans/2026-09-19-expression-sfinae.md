@@ -162,7 +162,26 @@ build fulltest` (oracle: green except the four pre-existing failures);
   as `testsfinaedecline`, `testsfinaeabsentmember`, `testsfinaenooperator`,
   `testsfinaeconstructible`, `testsfinaecast`, `testsfinaeaccess` with dual
   oracles; each lands with its task. No tree change.
-- **T1 — D1** in `resolve_fn_template_return_by_key`. Reducer: k1/k2/k3 shapes
+- **T1 — D1** in `resolve_fn_template_return_by_key`. EXECUTED 2026-09-19 as
+  four pieces: (a) `resolve_type_token_range`'s trap mutes and rewinds (the
+  throw WAS caught; the rendered+recorded diagnostic was what refused the
+  unit); (b) a defaulted TYPE parameter no function parameter names has its
+  default substituted in the explicit-args lane too, failure = not viable;
+  (c) PARKED as `scratchpad/apply-t1c.py` (T1b): the fallback idiom
+  `char (&f(...))[2]` is never REGISTERED (the declarator-name locator knows
+  only "name before a top-level `(`"); the draft adds the parenthesized
+  declarator-id to the locator, assembles the abstract return declarator in
+  the lane and folds it through `fold_template_arg_declarator` — but applied
+  now it put sfinae33 / sfinae-nullptr1 OUTSIDE the baseline (their
+  `-> char(&)[1]` candidate resolves for the first time and madc's lenient
+  operands — a call on a void result, nullptr_t → bool as an implicit
+  argument conversion — let its default succeed), and the locator change
+  did not reach registration (`g` still undeclared: another classifier
+  runs first — trace before T1b). Lands after T3/T6 fix those leniencies;
+  (d) latent: `resolve_template_param_default_type` restored its stream but
+  not `_cur_token`/`_prv_token` (testexplicitpack regression once (b) made
+  defaults substitute on every `declval<T>()`). Interim lane after (a)+(b):
+  1441 → 1454. Reducer: k1/k2/k3 shapes
   (absent member, member call on a non-class, undeclared/ADL-failing call) →
   `1 1 1`; negative control: a lone candidate whose substitution fails still
   errors LOUDLY. Lane targets: sfinae7, sfinae42, sfinae48, decltype-nonstatic1,
@@ -208,6 +227,17 @@ build fulltest` (oracle: green except the four pre-existing failures);
   next one starts ([[feedback_measure_before_designing]]).
 
 ## 5. Out of scope (recorded, next plans)
+
+- ADL inside an unevaluated `decltype` operand: `undeclared_fn(T())` with T
+  from namespace N does not find `N::undeclared_fn` (g++/clang++ do). Parked
+  reducer `tmp/declprobe/pending-tests/testsfinaeadl.mad`; KG Gap
+  `adl_in_unevaluated_operand`.
+- `resolve_template_param_default_type` still reads its trailing `*`/`&`/`&&`
+  by hand (a default like `class = T(&)[2]` would not fold) — adopt
+  `fold_template_arg_declarator` as the range resolver now does (own slice).
+- Four isolated-stream owners each save/restore stream + position by hand
+  (13541, 14620, 17711, 18125 + the default resolver): a `/dupaudit` family
+  candidate, not this arc's.
 
 - `std::initializer_list` completions (probed 2026-09-19: parameter and ctor
   forms WORK, `vector<int>{1,2}` works; missing: `auto x = {…}` deduction (6

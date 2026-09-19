@@ -13473,8 +13473,21 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     _cur_token = NULL;
     _prv_token = NULL;
     DataDef *result = NULL;
+    // This trap IS the SFINAE trap every caller relies on ("NULL on failure"),
+    // but throwbuf::sync renders AND records a diagnostic BEFORE the catch
+    // sees the throw: a declined candidate (`decltype(T::nonexistent)` with T
+    // bound to a class without it) left an `error:` on the terminal and a
+    // record in `diagnostics`, so the whole unit was refused although the
+    // ellipsis fallback was then chosen correctly (sfinae7/42/48, the decltype
+    // family). [temp.deduct]/8: a substitution failure in the immediate
+    // context is silent. Mute the render for the attempt and rewind the
+    // record on failure — the idiom resolve_template_param_default_type and
+    // SilentReplay::rewind already use.
+    size_t saved_diag_count = diagnostics.size();
+    ErrorInfo saved_error = last_error;
     try
     {
+	DiagnosticRenderMute mute;
 	TokenDataType *rt = resolve_declared_type_token(nextToken(), true, true);
 	// A trailing DECLARATOR (`T&`, `T&&`, `T*`, `T const&`) is part of the
 	// type spelling, but resolve_declared_type_token stops at the type NAME
@@ -13526,6 +13539,11 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
     catch ( ... )
     {
 	result = NULL;
+    }
+    if ( !result )
+    {
+	diagnostics.resize(saved_diag_count);
+	last_error = saved_error;
     }
     tokens.swap_back(std::move(saved_tokens));
     _cur_token = saved_cur;
@@ -60585,6 +60603,15 @@ DataDef *Program::resolve_template_param_default_type(
     TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
+    // The parser's POSITION rides beside the stream: _prv_token feeds the
+    // unary/postfix-position predicates of the expression parser. Every other
+    // isolated-stream owner (resolve_type_token_range, ...) saves and restores
+    // both; this one restored only the stream, so once expression SFINAE made
+    // defaults substitute on every `declval<T>()`, the `(` following the call
+    // saw the default's sentinel as its previous token and stopped reading as
+    // a postfix CALL — `declval<F>()(args)` lost its type (testexplicitpack).
+    TokenBase *saved_cur = _cur_token;
+    TokenBase *saved_prv = _prv_token;
     saved_tokens = tokens.swap_in(std::move(body));
 
     bool pushed_owner = false;
@@ -60637,6 +60664,8 @@ DataDef *Program::resolve_template_param_default_type(
 	class_scope_stack.pop_back();
 
     tokens = saved_tokens;
+    _cur_token = saved_cur;
+    _prv_token = saved_prv;
     if ( !resolved )
     {
 	if ( vri_debug_enabled() )
@@ -65283,7 +65312,21 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// then declines the candidate exactly as before — full instantiation
 	// owns [temp.deduct]/8 VIABILITY; this lane only answers the type it
 	// can form.
-	if ( call_arg_types && !class_pattern_capture_in_progress
+	// Expression SFINAE (2026-09-19): the defaults lane also decides
+	// VIABILITY. `template<class T, class = decltype(T())> char f(int)`
+	// paired with `char (&f(...))[2]` carries its ENTIRE constraint in the
+	// default; with explicit args alone the default was never substituted,
+	// so `char` answered for every T and sizeof(f<int&>(0)) came out 1
+	// (sfinae8/12/15/17/18/21 — silent wrong answers). Rule: a defaulted
+	// TYPE parameter that NO function parameter names cannot be deduced
+	// from call arguments, so its default is its only source — substitute
+	// it now under a concrete binding; a default that does not resolve is
+	// a substitution failure in the immediate context ([temp.deduct]/8)
+	// and the candidate is NOT viable. A parameter some function parameter
+	// names keeps today's contract without call-argument types (it may be
+	// DEDUCED at full instantiation — the c++20 iterator_traits chain).
+	bool default_failed = false;
+	if ( !class_pattern_capture_in_progress
 	  && !ft.typeparam_defaults.empty() )
 	{
 	    bool binding_concrete = true;
@@ -65293,6 +65336,24 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		if ( !bi->second
 		  || datadef_has_unresolved_dependent_surface(bi->second) )
 		    binding_concrete = false;
+	    // Which template parameters a FUNCTION parameter names — the same
+	    // spelling walk the trailing-pack test below uses.
+	    std::vector<std::string> param_spellings;
+	    bool have_spellings = po_param_spellings(*this, ft, param_spellings);
+	    auto named_by_params = [&](const std::string &tp) -> bool
+	    {
+		if ( !have_spellings )
+		    return true;	// unknown shape: assume deducible (as before)
+		for ( const std::string &sp : param_spellings )
+		{
+		    std::vector<std::string> words;
+		    fn_template_split_words(sp, words);
+		    for ( const std::string &w : words )
+			if ( w == tp )
+			    return true;
+		}
+		return false;
+	    };
 	    Program::NamespaceScope def_scope(*this, ft.ns);
 	    for ( size_t i = 0; binding_concrete && i < nfixed
 				&& i < ft.typeparam_defaults.size(); ++i )
@@ -65302,11 +65363,17 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		    continue;
 		if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
 		    continue;		// a non-type default is a VALUE, not a type
-		if ( DataDef *rd = resolve_template_param_default_type(
-			ft.typeparam_defaults[i], binding, ft.owner_class) )
-		    binding[ft.typeparams[i]] = rd;
+		if ( !call_arg_types && named_by_params(ft.typeparams[i]) )
+		    continue;		// deducible later; not this lane's call
+		DataDef *rd = resolve_template_param_default_type(
+			ft.typeparam_defaults[i], binding, ft.owner_class, true);
+		if ( !rd )
+		    { default_failed = true; break; }
+		binding[ft.typeparams[i]] = rd;
 	    }
 	}
+	if ( default_failed )
+	    continue;
 	// A return type that references a template parameter NOT bound by the
 	// explicit arguments cannot be resolved from explicit args alone — it
 	// depends on a parameter that must be DEDUCED from the call arguments.
