@@ -10963,6 +10963,19 @@ node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd, std::vector<node_t> &thun
 		for (const std::string &slot : G.slots) {
 			std::string sname = slot;
 			if (sname == "~" || sname == "~$deleting") {
+				// A pure destructor's slots hold __cxa_pure_virtual
+				// (the method-slot rule above, same node shape).
+				if (class_dtor_is_pure(cdd)) {
+					need_output_extern("__cxa_pure_virtual", false,
+							   std::vector<ExternParam>());
+					node_t pv_type = node2(N_TYPE,
+						node1(N_LIST, simple(N_VOID)),
+						node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+					append(inits, node2(N_INIT, list(),
+						node2(N_CAST, pv_type,
+						      id("__cxa_pure_virtual"))));
+					continue;
+				}
 				std::string dsym = (sname == "~")
 					? class_complete_dtor_symbol(cdd)
 					: class_deleting_dtor_symbol(cdd);
@@ -16335,9 +16348,29 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 // whose most-derived resolution (findMethod — overrides win) is still a
 // `= 0` declaration. Returns the slot name, or "" for a concrete class.
 // Dtor slots resolve through the synthesized dtor chain, never pure here.
+// A destructor declared pure (`virtual ~A() = 0;`): the class is abstract
+// ([class.abstract]/2 — a destructor is a virtual function like any other)
+// and, in the Itanium vtable, BOTH destructor slots hold __cxa_pure_virtual
+// exactly as a pure method's slot does; a deleting-destructor thunk that
+// names the undefined D1 is never emitted (g++ emits no vtable at all for a
+// class whose key function is undefined — g++.dg sfinae8/9/12 declare
+// `struct A { virtual ~A() = 0; };` and never define it, and madc's
+// `_ZN1AD0Ev` / vtable referenced `_ZN1AD1Ev`: "undeclared identifier").
+// Searched: "pure virtual destructor" in the emitter — class_pure_virtual_of
+// answered only for METHOD slots (it skipped `~`); the dtor slots and Pass
+// 1.8 knew no pure rule. One predicate, adopted by all three.
+bool CirBuilder::class_dtor_is_pure(DataDefCLASS *cdd)
+{
+	Variable *dv = cdd ? class_own_dtor(cdd) : NULL;
+	FuncDef *dt = dv ? dynamic_cast<FuncDef *>(dv->type) : NULL;
+	return dt && dt->pure_virtual;
+}
+
 std::string CirBuilder::class_pure_virtual_of(DataDefCLASS *cdd)
 {
 	if (!cdd || !cdd->has_vtable) return std::string();
+	if (class_dtor_is_pure(cdd))
+		return std::string("~") + cdd->name;
 	for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
 		for (const std::string &slot : cdd->vtable_groups[g].slots) {
 			if (slot == "~" || slot == "~$deleting") continue;
@@ -32157,6 +32190,13 @@ node_t CirBuilder::translate_module(Program *prog)
 		DataDefCLASS *cdd = as_user_class(kv.second);
 		if (!cdd || cdd->vtable_slot("~$deleting") < 0) continue;
 		if (cdd->is_externally_defined()) continue;   // libstdc++ owns it
+		// A pure destructor with no definition: its slot is
+		// __cxa_pure_virtual and a D0 body would name the undefined D1.
+		if (class_dtor_is_pure(cdd)) {
+			Variable *dv = class_own_dtor(cdd);
+			FuncDef *dt = dv ? dynamic_cast<FuncDef *>(dv->type) : NULL;
+			if (dt && dt->declaration_only) continue;
+		}
 		if (emitted_deleting_dtors.count(cdd)) continue;
 		emitted_deleting_dtors.insert(cdd);
 		node_t dd0 = synth_deleting_dtor_def(cdd);

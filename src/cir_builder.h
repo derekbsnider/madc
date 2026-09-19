@@ -1806,6 +1806,8 @@ public:
 	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
 	// name whose most-derived resolution is still `= 0`; "" when concrete.
 	std::string class_pure_virtual_of(DataDefCLASS *cdd);
+	// The class declares a pure virtual DESTRUCTOR (`virtual ~A() = 0;`).
+	bool class_dtor_is_pure(DataDefCLASS *cdd);
 	// Dispatch a destructor through the receiver's vtable dtor slot; sname
 	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
 	// delete). recv_vptr/recv_arg = two independent receiver translations.
