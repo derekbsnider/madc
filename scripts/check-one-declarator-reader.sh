@@ -54,11 +54,11 @@ cd "$(dirname "$0")/.."
 SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
-BASE_FNPTRPARAMS=4   # -> 2  (definition + the owner's suffix call)
-BASE_FPTR=7           # -> 7 (owner + fnptr_twin + the 5 non-declarator sites above)
+BASE_FNPTRPARAMS=2   # -> 2  (definition + the owner's suffix call)
+BASE_FPTR=5           # owner + fnptr_twin + the 3 non-declarator sites above
 BASE_CARRAY=6         # -> 5  (owner x1 + 4 non-declarator sites)
-BASE_MEMBERPTR=4      # -> 2  (owner + the &C::field constant)
-BASE_MEMBERFNPTR=3    # -> 2  (owner + the &C::method constant)
+BASE_MEMBERPTR=3      # -> 2  (owner + the &C::field constant)
+BASE_MEMBERFNPTR=2    # -> 2  (owner + the &C::method constant)
 
 status=0
 check() {
@@ -95,13 +95,11 @@ control() {
 	fi
 }
 control "parseFnPtrParams' definition"               'FuncDef \*Program::parseFnPtrParams(DataDef &returns)'
-control "parse_fnptr_member_tail's FPTR construction" 'return new DataDefFPTR(func);'
 control "nest_carray_dims' CArray construction"       'DataDefCArray \*level = new DataDefCArray(\*arr, nm, dims\[i\],'
-control "parse_member_fnptr_declarator's construction" 'return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);'
 control "parse_declarator's member-fn-ptr fold"        'dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,'
 control "parse_declarator's function-type suffix"      'DataDefFPTR \*fp = new DataDefFPTR(func);'
 control "fnptr_twin's construction (the ONE fn-type -> fn-pointer twin)" 'DataDefFPTR \*twin = new DataDefFPTR(fn_type->target);'
-control "parse_member_pointer_owner adoption (variable arm)" 'decl_type = new DataDefMemberPtr(mp_owner, mp_owner_name, \*decl_type);'
+control "parse_declarator's data member pointer fold" 'dd = new DataDefMemberPtr(owner, owner_name, \*dd);'
 
 if [ "${1:-}" = "--selftest" ]; then
 	# Negative control (2): the gate must FAIL on a mutated copy, both ways.
@@ -115,7 +113,7 @@ if [ "${1:-}" = "--selftest" ]; then
 	if MADC_GATE_SRC="$work/plus.cpp" bash "$0" >/dev/null 2>&1; then
 		echo "SELFTEST FAILED — an extra 'new DataDefFPTR(' was not caught."; exit 1
 	fi
-	grep -v 'return new DataDefFPTR(func);' src/parser.cpp > "$work/minus.cpp"
+	grep -v 'DataDefFPTR \*twin = new DataDefFPTR(fn_type->target);' src/parser.cpp > "$work/minus.cpp"
 	if MADC_GATE_SRC="$work/minus.cpp" bash "$0" >/dev/null 2>&1; then
 		echo "SELFTEST FAILED — a deleted owner construction was not caught."; exit 1
 	fi

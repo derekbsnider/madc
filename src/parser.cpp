@@ -53050,13 +53050,16 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 				       std::vector<carray_dim_t> &arr_dims,
 				       TokenBase *&vla_size_expr,
 				       DataDef *peel_floor = NULL,
-				       bool mark_runtime = true);	// defined below
+				       bool mark_runtime = true,
+				       std::vector<TokenBase *> *level_exprs = NULL);	// defined below
 
 DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 				   DeclaratorResult &out,
-				   const std::set<std::string> *runtime_names)
+				   const std::set<std::string> *runtime_names,
+				   bool leading_const)
 {
-    DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false);
+    DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false,
+					 leading_const);
     if ( mode == DeclaratorMode::Parameter && dd && dd != base
       && !dd->as_reference_dd() )
     {
@@ -53213,7 +53216,8 @@ bool Program::parse_member_signature_qualifiers()
 DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 					 DeclaratorResult &out,
 					 const std::set<std::string> *runtime_names,
-					 int depth, bool base_built_here)
+					 int depth, bool base_built_here,
+					 bool leading_const)
 {
     DataDef *dd = base;
     DataDefFPTR *fresh_fn = base_built_here ? dd->as_fptr_dd() : NULL;
@@ -53228,7 +53232,8 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	if ( pk->id() == TokenID::tkMul || is_cv_qualifier_token(pk) )
 	{
 	    bool const_after = false, cv_here = false;
-	    int stars = consume_declarator_stars(dd, &const_after, false, &cv_here);
+	    int stars = consume_declarator_stars(dd, &const_after,
+						 depth == 0 && leading_const, &cv_here);
 	    if ( cv_here )
 		out.cv_seen = true;
 	    if ( fresh_fn )
@@ -53381,8 +53386,8 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 // {...} max_align_t;`, `using int64_t = ...;`) — typedef_alias_spelling's rule.
 bool Program::declarator_id_token(TokenBase *tb, DeclaratorMode mode)
 {
-    if ( !tb )
-	return false;
+    if ( !tb || tb->id() == TokenID::tkOPEROVER )
+	return false;	// an operator-function-id is the declaring arm's (parseOperatorId)
     if ( is_contextual_identifier_token(tb) )
 	return true;
     return (mode == DeclaratorMode::Named || mode == DeclaratorMode::Typedef)
@@ -53406,8 +53411,14 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	{
 	    std::vector<carray_dim_t> dims;
 	    std::vector<TokenBase *> dim_exprs;
+	    // In a DECLARATION a nested group's runtime dim (`int (*rp)[m]`, the
+	    // pointee's) is captured here, at the declaration point (the VM type's
+	    // size is fixed there); a declarator's OWN runtime dims are the
+	    // declaring arm's VLA logic, and a parameter's are captured at
+	    // function entry.
 	    parse_array_dimensions(dims, dim_exprs, pk, "array declarator",
-				   mode == DeclaratorMode::Declaration, runtime_names,
+				   mode == DeclaratorMode::Declaration && out.saw_parens,
+				   runtime_names,
 				   mode == DeclaratorMode::Parameter);
 	    if ( depth == 0 && out.array_dims.empty() )
 	    {
@@ -53552,54 +53563,7 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
     return owner;
 }
 
-DataDefMemberFnPtr *Program::parse_member_fnptr_declarator(DataDef &returns,
-							  std::string &mname,
-							  TokenBase *owner_first)
-{
-    std::string owner_name;
-    DataDef *owner = parse_member_pointer_owner(owner_first, owner_name);
-    TokenBase *star = curToken();
-    DataDefFPTR *fp = parse_fnptr_member_tail(returns, mname, star);
-    bool const_method = parse_member_signature_qualifiers();
-    return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);
-}
 
-// Function-pointer MEMBER declarator tail: `name ) ( params )` after the
-// caller consumed `RET ( *`. Returns the member's DataDefFPTR and sets mname.
-// Shared by the top-level and nested-aggregate struct member parsers.
-DataDefFPTR *Program::parse_fnptr_member_tail(DataDef &returns,
-					      std::string &mname,
-					      TokenBase *open_tok)
-{
-    // `(*const name)` / `(*volatile name)` — cv-qualifiers on the POINTER
-    // itself ([dcl.ptr]/1) sit between the '*' and the declarator name.
-    // madc does not model member-pointer constness; consume them. libc++
-    // __functional/function.h:500: `void* (*const __clone)(const void*);`
-    while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
-			 || peekToken()->id() == TokenID::tkVOLATILE) )
-	nextToken();
-    TokenBase *tn = nextToken();
-    // ABSTRACT declarator ([dcl.meaning]/1): in a type-id there is no name to
-    // declare — `using M = void (C::*)();`, `B<void (Foo::*)(Y)>`. The `)`
-    // arrives where a member name would. Same owner, one branch: a declarator
-    // that names nothing is still this declarator.
-    if ( tn && tn->id() == TokenID::tkClBrk )
-	mname.clear();
-    else
-    {
-	if ( !is_contextual_identifier_token(tn) )
-	    Throw(tn ? tn : open_tok) << "Expecting member name in function pointer struct declarator" << flush;
-	mname = contextual_identifier_name(tn);
-	tn = nextToken();
-	if ( !tn || tn->id() != TokenID::tkClBrk )
-	    Throw(tn ? tn : open_tok) << "Expected ')' after function pointer member name" << flush;
-    }
-    tn = nextToken();
-    if ( !tn || tn->id() != TokenID::tkOpBrk )
-	Throw(tn ? tn : open_tok) << "Expected '(' after function pointer member name" << flush;
-    FuncDef *func = parseFnPtrParams(returns);
-    return new DataDefFPTR(func);
-}
 
 // C99 6.7.5.3p7: type qualifiers and `static` may appear inside a
 // PARAMETER's array brackets (`int x[const 5]`, `[static 5]`); the param
@@ -71031,7 +70995,8 @@ static size_t flattened_scalar_capacity(DataDef *dd)
 static DataDef *peel_carray_dimensions(DataDef *base_type,
 				       std::vector<carray_dim_t> &arr_dims,
 				       TokenBase *&vla_size_expr,
-				       DataDef *peel_floor, bool mark_runtime)
+				       DataDef *peel_floor, bool mark_runtime,
+				       std::vector<TokenBase *> *level_exprs)
 {
     DataDef *decl_type = base_type;
     while ( decl_type != peel_floor )
@@ -71039,6 +71004,8 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 	DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(decl_type);
 	if ( !alias_array )
 	    break;
+	if ( level_exprs )
+	    level_exprs->push_back(alias_array->count_expr);
 	if ( alias_array->count_expr )
 	{
 	    if ( !vla_size_expr )
@@ -71606,299 +71573,71 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
-    // Pointer-to-DATA-member variable `int Widget::*pm = &Widget::scale;`: the
-    // owner chain ends in `*` right after a `::` — a qualified NAME
-    // (`int Widget::counter = 0;`, an out-of-class static member) never does,
-    // which is the whole discriminator (member_pointer_declarator_ahead).
-    if ( peekToken() && is_contextual_identifier_token(peekToken())
-      && tokens.size() > 1 && tokens[1]
-      && (tokens[1]->id() == TokenID::tkNS
-	  || tokens[1]->id() == TokenID::tkLT) )	// `First<int>::*pm` — a template-id owner
+    // The declarator — the ONE reader in Declaration mode over the declared
+    // type: `C::[D::]*` chains (template-id owners included), stars with cv
+    // (the declaration's leading const feeds C mode's pointee-const model),
+    // `&`/`&&`, `(*[name])(params)`, `(C::*name)(params) const`, `(*name)[N]`,
+    // `(&name)[N]`, `(*fa[N])(params)`, `name[N]...` (a runtime dim rides as
+    // its level's count_expr) and the declarator-id; a `(` right after the id
+    // is a FUNCTION declarator — the reader stops there and the function /
+    // ctor-syntax decision below is unchanged. This arm's copy — a `C::*`
+    // chain, consume_declarator_stars, a `(` ladder with its own nested-group
+    // stash and goto re-entry, a dims loop — is gone. The variable STORAGE
+    // contract is kept: decl_type is the ELEMENT type, the declarator's own
+    // dims land in arr_dims / arr_dim_exprs (a runtime level as the 1
+    // sentinel, vla_size_expr the outermost runtime count), a typedef'd array
+    // base still flattens BEHIND them (alias dims last, as the rotate left them).
+    bool decl_name_in_parens = false;
+    int decl_fnptr_stars = -1;
+    int n_decl_stars = 0;	// the declarator's top-level stars (the function-typedef variable rule below)
     {
-	TokenBase *mp_first = nextToken();
-	if ( member_pointer_declarator_ahead(mp_first) )
-	{
-	    std::string mp_owner_name;
-	    DataDef *mp_owner = parse_member_pointer_owner(mp_first, mp_owner_name);
-	    decl_type = new DataDefMemberPtr(mp_owner, mp_owner_name, *decl_type);
+	DataDef *declared_type = decl_type;
+	DeclaratorResult vd;
+	DataDef *read_type = parse_declarator(decl_type, DeclaratorMode::Declaration, vd,
+					      NULL, gotconst);
+	n_decl_stars = vd.ptr_depth;
+	if ( vd.ptr_depth > 0 || vd.nested_stars > 0 )
 	    saw_pointer_decl = true;
-	}
-	else
-	    pushToken(mp_first);
-    }
-    int n_decl_stars = consume_declarator_stars(decl_type, &saw_const_after_star,
-						gotconst);
-    if ( n_decl_stars > 0 )
-	saw_pointer_decl = true;
-    DBG(std::cout << "parseDeclaration() consumed " << n_decl_stars
-		  << " star(s); decl_type=" << decl_type->name << std::endl);
-    // Stars on a non-fn-ptr base are already folded into decl_type; only a
-    // fn-ptr base needs the count recorded (-1 = "use the emitter's legacy path").
-    int decl_fnptr_stars = is_fnptr_base ? n_decl_stars : -1;
-
-    size_t alias_dim_count = 0;
-    if ( !saw_pointer_decl )
-    {
-	if ( DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(base_type) )
+	saw_const_after_star = vd.const_after_star;
+	if ( is_fnptr_base )
+	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
+	decl_name_in_parens = vd.saw_parens;
+	have_decl_id = !vd.name.empty();
+	if ( have_decl_id )
 	{
-	    (void)alias_array;
-	    decl_type = peel_carray_dimensions(base_type, arr_dims, vla_size_expr);
-	    alias_dim_count = arr_dims.size();
+	    id = vd.name;
+	    nt = vd.name_tok;
 	}
-    }
-
-    if ( peekToken()
-      && (peekToken()->id() == TokenID::tkBand
-       || peekToken()->id() == TokenID::tkLand) )
-    {
-	decl_rvalue_ref = nextToken()->id() == TokenID::tkLand;
-	ret_is_ref = true;
-    }
-    // A typedef/alias whose RESOLVED type is itself a reference (`typedef const int&
-    // cref; cref r = k;` — and the member-typedef case `typedef T0 type;` with T0 a
-    // reference, e.g. _Nth_type/tuple_element `::type` for std::get of a reference
-    // element) has NO `&` declarator TOKEN, but the variable is still a reference: its
-    // initializer must be ADDRESS-bound (`r = &k`), not value-assigned (`r = k`), and
-    // its type is a DataDefREF. Drive the SAME ret_is_ref path by peeling the alias to
-    // its referent so getReferenceType(referent) + reference_bind_address_expr run
-    // exactly as the `&`-token case. (No `&` token AND not already handled = the gap
-    // that left map's `std::get<0>(tuple<const int&>)` value bound by address-as-value.)
-    else if ( !ret_is_ref && !saw_pointer_decl && decl_type && decl_type->is_reference() )
-    {
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(decl_type) )
-	    if ( rp->base_type )
-	    {
-		ret_is_ref = true;
-		decl_type = rp->base_type;	// referent — getReferenceType rebuilds the ref
-		decl_typedef_alias.clear();	// emit the lowered reference, not the alias name
-	    }
-    }
-
-    if ( !peekToken() )
-	Throw(tb) << "Unexpected end of data: Expecting identifier after type" << flush;
-
-    // Function-pointer variable declaration:
-    //   RET (*name)(params);
-    // Re-entered (goto below) with decl_type advanced one level when the
-    // declarator nests — a fn-ptr RETURNING a fn-ptr (c-testsuite 00124).
-fnptr_decl_arm_head:
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-    {
-	TokenBase *open = nextToken(); // consume '('
-	TokenBase *inner = nextToken();
-	if ( inner && member_pointer_declarator_ahead(inner) )
+	if ( DataDefREF *rref = read_type->as_reference_dd() )
 	{
-	    // Pointer-to-member-function VARIABLE `int (Widget::*fn)(int) const
-	    // = &Widget::thrice;` — the declarator owner shared with the member,
-	    // parameter and typedef arms; the initializer/terminator tail below
-	    // treats the 16-byte pair as any other scalar-like declared type.
-	    std::string mp_name;
-	    decl_type = parse_member_fnptr_declarator(*decl_type, mp_name, inner);
-	    id = mp_name;
-	    have_decl_id = true;
-	    nt = peekToken();
+	    ret_is_ref = true;
+	    decl_rvalue_ref = vd.rvalue_ref;
+	    if ( vd.ref != RefType::rtReference )
+		decl_typedef_alias.clear();	// a reference TYPEDEF base: emit the lowered reference
+	    read_type = rref->base_type;	// referent — getReferenceType rebuilds the ref
 	}
-	else if ( inner && is_contextual_identifier_token(inner) )
-	{
-	    // Plain parenthesized declarator: `int *(p[25]);`
-	    id = contextual_identifier_name(inner);
-	    TokenBase *rbrk = peekToken();
-	    while ( rbrk && rbrk->id() == TokenID::tkOpSqr )
-	    {
-		nextToken(); // consume '['
-		TokenBase *peek = peekToken();
-		if ( peek && peek->id() == TokenID::tkClSqr )
-		{
-		    nextToken(); // consume ']'
-		    arr_dims.push_back(0);
-		}
-		else
-		{
-		    int64_t n = parse_constant_integer_expression();
-		    if ( n < 0 )
-			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		    arr_dims.push_back((carray_dim_t)n);
-		    TokenBase *cl = nextToken();
-		    if ( !cl || cl->id() != TokenID::tkClSqr )
-			Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
-		}
-		rbrk = peekToken();
-	    }
-	    rbrk = nextToken();
-	    if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
-		Throw(rbrk ? rbrk : open) << "Expecting ')' after parenthesized declarator" << flush;
-	    have_decl_id = true;
-	    nt = peekToken();
-	}
-	else if ( inner && (inner->id() == TokenID::tkMul
-			 || inner->id() == TokenID::tkBand
-			 || inner->id() == TokenID::tkLand) )
-	{
-	    bool nested_reference = inner->id() != TokenID::tkMul;
-	    if ( nested_reference && is_c_mode() )
-		Throw(inner) << "Reference declarators require C++" << flush;
-	    // A reference before '(' qualifies a function's RETURN type;
-	    // the ptr-operator inside the parentheses qualifies the name.
-	    bool return_reference = ret_is_ref;
-	    ret_is_ref = nested_reference;
-	    decl_rvalue_ref = inner->id() == TokenID::tkLand;
-	    // Extra `*` levels declare a POINTER TO the function pointer, one
-	    // wrap per star beyond the first — `type (**name)(params)` is
-	    // winpthreads' `extern void (**_pthread_key_dest)(void *)` (glibc
-	    // never uses the shape, so it first surfaced on the win64 lane).
-	    int fnptr_extra_stars = 0;
-	    TokenBase *name_tok = nextToken();
-	    while ( name_tok && (name_tok->id() == TokenID::tkMul
-	                      || is_restrict_token(name_tok)
-	                      || name_tok->id() == TokenID::tkCONST
-	                      || name_tok->id() == TokenID::tkVOLATILE) )
-	    {
-		if ( name_tok->id() == TokenID::tkMul )
-		    ++fnptr_extra_stars;
-		name_tok = nextToken();
-	    }
-	    // Nested parenthesized declarator — a fn-ptr RETURNING a fn-ptr,
-	    // `RET (* (*name)(inner-params))(outer-params)` (c-testsuite
-	    // 00124). Stash the inner declarator's balanced groups; the
-	    // existing tail below parses `)(outer-params)` into decl_type =
-	    // the OUTER fn-ptr, then the stash is re-pushed and the arm
-	    // re-entered — one nesting level per pass, recursion via the
-	    // stream (same technique as spiral_fn_params below).
-	    std::vector<TokenBase *> nested_decl_stash;
-	    if ( name_tok && name_tok->id() == TokenID::tkOpBrk )
-	    {
-		nested_decl_stash.push_back(name_tok);
-		DelimDepth ndd(this);
-		ndd.update(name_tok);
-		while ( !ndd.top()
-		     || (peekToken() && (peekToken()->id() == TokenID::tkOpBrk
-				      || peekToken()->id() == TokenID::tkOpSqr)) )
-		{
-		    TokenBase *sp = nextToken();
-		    if ( !sp )
-			Throw(open) << "Unexpected end of input in function pointer declarator" << flush;
-		    nested_decl_stash.push_back(sp);
-		    delimStepStream(sp, ndd, &nested_decl_stash);
-		}
-	    }
-	    else if ( !name_tok || !is_contextual_identifier_token(name_tok) )
-		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
-	    if ( nested_decl_stash.empty() )
-		id = contextual_identifier_name(name_tok);
-	    // Function returning a function pointer — the classic C spiral,
-	    // `type (*name(fn-params))(ret-params);` (Apple signal.h declares
-	    // signal/sigset this way; glibc goes through a typedef). Stash the
-	    // fn-params tokens balanced; the EXISTING flow below then parses
-	    // `)(ret-params)` into decl_type = DataDefFPTR, and the stash is
-	    // re-pushed so the normal function path parses `name(fn-params)`
-	    // with that fnptr as its return type.
-	    std::vector<TokenBase *> spiral_fn_params;
-	    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	    {
-		int spiral_depth = 0;
-		do
-		{
-		    TokenBase *sp = nextToken();
-		    if ( !sp )
-			Throw(name_tok) << "Unexpected end of input in function declarator" << flush;
-		    if ( sp->id() == TokenID::tkOpBrk )
-			++spiral_depth;
-		    else if ( sp->id() == TokenID::tkClBrk )
-			--spiral_depth;
-		    spiral_fn_params.push_back(sp);
-		} while ( spiral_depth > 0 );
-	    }
-	    TokenBase *rbrk = peekToken();
-	    while ( rbrk && rbrk->id() == TokenID::tkOpSqr )
-	    {
-		nextToken(); // consume '['
-		TokenBase *peek = peekToken();
-		if ( peek && peek->id() == TokenID::tkClSqr )
-		{
-		    nextToken(); // consume ']'
-		    arr_dims.push_back(0);
-		}
-		else
-		{
-		    int64_t n = parse_constant_integer_expression();
-		    if ( n < 0 )
-			Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		    arr_dims.push_back((carray_dim_t)n);
-		    TokenBase *cl = nextToken();
-		    if ( !cl || cl->id() != TokenID::tkClSqr )
-			Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
-		}
-		rbrk = peekToken();
-	    }
-	    rbrk = nextToken();
-	    if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
-		Throw(rbrk ? rbrk : open) << "Expecting ')' after function pointer name" << flush;
-	    TokenBase *param_open = peekToken();
-	    if ( param_open && param_open->id() == TokenID::tkOpSqr )
-	    {
-		// Pointer-to-array: `type (*name)[N]`
-		decl_type = parse_ptr_array_suffix(decl_type, open,
-						   "pointer-to-array declaration",
-						   true);
-		if ( nested_reference )
-		    decl_type = decl_type->as_pointer_dd()->base_type;
-		for ( int s = 0; s < fnptr_extra_stars; ++s )
-		    decl_type = getPointerType(decl_type);
-		have_decl_id = true;
-		// spiral form `type (*name(fn-params))[N]` — see below
-		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
-		    pushToken(spiral_fn_params[sp - 1]);
-		if ( !nested_decl_stash.empty() )
-		{
-		    for ( size_t sp = nested_decl_stash.size(); sp > 0; --sp )
-			pushToken(nested_decl_stash[sp - 1]);
-		    goto fnptr_decl_arm_head;
-		}
-		nt = peekToken();
-	    }
-	    else if ( nested_reference
-		   && (!param_open || param_open->id() != TokenID::tkOpBrk) )
-	    {
-		// Redundant parentheses around a reference name: `T (&r) = x`.
-		have_decl_id = true;
-		nt = param_open;
-	    }
-	    else
-	    {
-		nextToken(); // consume the peeked token
-		if ( !param_open || param_open->id() != TokenID::tkOpBrk )
-		    Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
-
-		DataDef *function_return = return_reference
-		    ? static_cast<DataDef *>(getReferenceType(decl_type)) : decl_type;
-		FuncDef *func = parseFnPtrParams(*function_return);
-		DataDefFPTR *function_type = new DataDefFPTR(func);
-		function_type->ptr_syntax = !nested_reference;
-		decl_type = function_type;
-		for ( int s = 0; s < fnptr_extra_stars; ++s )
-		    decl_type = getPointerType(decl_type);
-		have_decl_id = true;
-		// Spiral declarator: decl_type is now the RETURN fnptr type;
-		// re-push the stashed fn-params so the stream reads
-		// `(fn-params)…` and the function path below parses `id` as a
-		// function declaration returning decl_type.
-		for ( size_t sp = spiral_fn_params.size(); sp > 0; --sp )
-		    pushToken(spiral_fn_params[sp - 1]);
-		// Nested declarator: decl_type is the OUTER fn-ptr level;
-		// re-push the inner declarator and take another pass.
-		if ( !nested_decl_stash.empty() )
-		{
-		    for ( size_t sp = nested_decl_stash.size(); sp > 0; --sp )
-			pushToken(nested_decl_stash[sp - 1]);
-		    goto fnptr_decl_arm_head;
-		}
-		nt = peekToken();
-	    }
-	}
+	if ( read_type != declared_type && read_type->as_fptr_dd() && !is_fnptr_base )
+	    decl_typedef_alias.clear();		// a function pointer built from a non-function base: no alias applies
+	if ( ret_is_ref )
+	    decl_type = read_type;	// a reference's referent stays WHOLE (`int (&r)[3]` binds an array)
 	else
 	{
-	    pushToken(inner);
-	    pushToken(open);
+	    // the declarator's OWN array levels (down to the declared type)
+	    std::vector<TokenBase *> own_exprs;
+	    TokenBase *own_first = NULL;
+	    decl_type = peel_carray_dimensions(read_type, arr_dims, own_first, declared_type,
+					       true, &own_exprs);
+	    arr_dim_exprs = own_exprs;
+	    for ( size_t di = 0; di < own_exprs.size(); ++di )
+		if ( own_exprs[di] )
+		{
+		    vla_size_expr = di == 0 ? own_exprs[0] : new TokenInt((int64_t)arr_dims[0]);
+		    break;
+		}
+	    // a typedef'd ARRAY base with no pointer declarator flattens behind them
+	    if ( !saw_pointer_decl && decl_type == declared_type
+	      && dynamic_cast<DataDefCArray *>(declared_type) )
+		decl_type = peel_carray_dimensions(declared_type, arr_dims, vla_size_expr);
 	}
     }
 
@@ -71915,7 +71654,7 @@ fnptr_decl_arm_head:
 	id = contextual_identifier_name(nt);
     if ( !have_decl_id && nt && nt->id() == TokenID::tkOPEROVER )
 	id = parseOperatorId(nt);
-    if ( !have_decl_id )
+    if ( !decl_name_in_parens )
     {
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
@@ -71967,6 +71706,19 @@ fnptr_decl_arm_head:
 		mvar = qualified_owner_class->findMethod(qualified_member_name);
 	    id = mvar ? mvar->name
 		      : qualified_owner_class->name + "__" + qualified_member_name;
+	    // The dims of a qualified static member definition (`int S::arr[3]
+	    // = {...}`): the reader stopped at the `::` the scope walk above
+	    // consumed, so its own dims follow here — the ONE dimension reader,
+	    // recorded the arm's way (constant dims; a static member is no VLA).
+	    if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		std::vector<TokenBase *> qexprs;
+		parse_array_dimensions(arr_dims, qexprs, nt, "array declaration", false);
+		for ( size_t qi = 0; qi < qexprs.size(); ++qi )
+		    if ( qexprs[qi] )
+			Throw(nt) << "A static member array dimension must be constant" << flush;
+		arr_dim_exprs.insert(arr_dim_exprs.end(), qexprs.begin(), qexprs.end());
+	    }
 	}
     }
     DBG(std::cout << "parseDeclaration() identifier: " << id << std::endl);
@@ -72151,79 +71903,6 @@ fnptr_decl_arm_head:
     // captured on the Variable as `vla_size_expr`; the variable then acts
     // as a pointer to a heap buffer allocated at scope entry and freed at
     // scope exit (see TokenCpnd::voperand / TokenCpnd::cleanup).
-    while ( nt && nt->id() == TokenID::tkOpSqr )
-    {
-	nextToken(); // consume [
-	TokenBase *peek = peekToken();
-	if ( peek && peek->id() == TokenID::tkClSqr )
-	{
-	    // [] — size to be inferred from initializer
-	    nextToken(); // consume ]
-	    arr_dims.push_back(0);
-	    arr_dim_exprs.push_back(NULL);
-	}
-	else
-	{
-	    // Scan ahead to the matching `]` to detect any non-constant
-	    // identifier — that makes the dim a runtime expression (VLA).
-	    // Constants (enum values, vfCONSTANT vars, typedef'd integer
-	    // constants) stay on the parse_constant_integer_expression path
-	    // because resolve_integer_constant handles them.
-	    bool is_vla = bracket_dim_needs_runtime_value();
-	    if ( is_vla && arr_dims.empty() && !vla_size_expr )
-	    {
-		// First-dim VLA: capture the runtime expression.
-		vla_size_expr = parseExpression(nextToken(), true);
-		TokenBase *cl = nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    Throw(cl ? cl : tb) << "Expected ] after VLA size expression" << flush;
-		arr_dims.push_back(1); // sentinel; real count is runtime
-		arr_dim_exprs.push_back(vla_size_expr);
-	    }
-	    else if ( is_vla )
-	    {
-		TokenBase *dim_expr = parseExpression(nextToken(), true);
-		TokenBase *cl = nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    Throw(cl ? cl : tb) << "Expected ] after VLA size expression" << flush;
-		if ( !vla_size_expr )
-		{
-		    if ( !arr_dims.empty() )
-			vla_size_expr = new TokenInt((int64_t)arr_dims[0]);
-		    else
-			vla_size_expr = dim_expr;
-		}
-		arr_dims.push_back(1); // runtime count carried by arr_dim_exprs
-		arr_dim_exprs.push_back(dim_expr);
-	    }
-	    else
-	    {
-		int64_t n = parse_constant_integer_expression();
-		if ( n < 0 )
-		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		// GCC: int arr[0] has sizeof 0; keep the zero dim.
-		arr_dims.push_back((carray_dim_t)n);
-		arr_dim_exprs.push_back(NULL);
-		TokenBase *cl = nextToken();
-		if ( !cl || cl->id() != TokenID::tkClSqr )
-		    Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
-	    }
-	}
-	nt = peekToken();
-	if ( !nt )
-	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
-    }
-
-    // Array-typedef base + declarator dims: `A28 row[3]` (typedef char
-    // A28[28]) is array-3-of-A28, so the DECLARATOR's dims are the OUTER
-    // dimensions. The alias dims were peeled before the declarator was
-    // parsed and sit at the front of arr_dims — rotate them behind the
-    // declarator's own dims ({28,3} -> {3,28}). This is also the order the
-    // CIR emitter's skip_tail contract expects (own dims leading, alias
-    // dims trailing) and re-aligns arr_dim_exprs (pushed only by declarator
-    // dims) with arr_dims.
-    if ( alias_dim_count > 0 && alias_dim_count < arr_dims.size() )
-	std::rotate(arr_dims.begin(), arr_dims.begin() + alias_dim_count, arr_dims.end());
 
     std::string storage_alias_name;
     if ( is_attribute_identifier_token(nt) )

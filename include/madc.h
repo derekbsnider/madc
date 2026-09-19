@@ -6475,7 +6475,8 @@ public:
     };
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
-			      const std::set<std::string> *runtime_names = NULL);
+			      const std::set<std::string> *runtime_names = NULL,
+			      bool leading_const = false);
     bool nested_declarator_opens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
@@ -6484,7 +6485,8 @@ private:
     DataDef *parse_declarator_level(DataDef *base, DeclaratorMode mode,
 				    DeclaratorResult &out,
 				    const std::set<std::string> *runtime_names,
-				    int depth, bool base_built_here);
+				    int depth, bool base_built_here,
+				    bool leading_const = false);
     DataDef *parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 				       DeclaratorResult &out,
 				       const std::set<std::string> *runtime_names,
@@ -6560,17 +6562,12 @@ public:
     // sets mname. Shared by the top-level and nested-aggregate struct member
     // parsers (e.g. glibc sigevent's `void (*_function)(__sigval_t);` inside
     // an anonymous union).
-    DataDefFPTR *parse_fnptr_member_tail(DataDef &returns, std::string &mname,
-					 TokenBase *open_tok);
     // Pointer-to-member-function declarators — ONE owner for the
     // `( C::*name ) ( params ) [const]` shape in the struct member, class
     // member, parameter, variable and typedef arms (defined beside
     // parse_fnptr_member_tail, whose `name ) ( params )` tail it reuses).
     bool member_pointer_declarator_ahead(TokenBase *first, size_t from = 0);
     DataDef *parse_member_pointer_owner(TokenBase *owner_first, std::string &owner_name);
-    DataDefMemberFnPtr *parse_member_fnptr_declarator(DataDef &returns,
-						      std::string &mname,
-						      TokenBase *owner_first);
     TokenBase *parseExpression(TokenBase *, bool conditional=false,
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,

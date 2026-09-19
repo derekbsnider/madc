@@ -471,6 +471,13 @@ updated with the measured lane; HANDOFF rewritten.
   before FUNC) — the cir_declarator_pieces param adopter. KG Gap
   `param_pointer_to_fnptr_emission`; reducer parked
   `tmp/declprobe/pending-tests/testfnptrptrparam.*`; next after this arc.
+- **Address of a function-pointer variable (found by T11's reducer; NOT a
+  declarator defect).** `PF *ppf = &pf2;` emits `PF *ppf = pf2;` — the `&` on a
+  function-pointer VARIABLE is dropped as if the operand were a function
+  designator; `(*ppf)(4)` returns 4. Pre-dates the arc. KG Gap
+  `addressof_fnptr_variable_drops_ampersand`; reducer parked
+  `tmp/declprobe/pending-tests/testfnptrvaraddr.*`; own session together with
+  `param_pointer_to_fnptr_emission` (the pointer-to-function-pointer pair).
 - **Emitter adopters so far:** var_decl + typedef_decl (efdd54e16), member_node
   (T4's companion fix). Left: the parameter declarator (~cir_builder.cpp:8933).
 
