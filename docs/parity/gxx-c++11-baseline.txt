@@ -237,8 +237,6 @@ g++.dg/cpp0x/decltype6.C
 g++.dg/cpp0x/decltype61.C
 g++.dg/cpp0x/decltype72.C
 g++.dg/cpp0x/decltype73.C
-g++.dg/cpp0x/decltype83.C
-g++.dg/cpp0x/decltype83a.C
 g++.dg/cpp0x/defaulted39.C
 g++.dg/cpp0x/defaulted50.C
 g++.dg/cpp0x/defaulted6.C
@@ -254,7 +252,6 @@ g++.dg/cpp0x/forw_enum11.C
 g++.dg/cpp0x/forw_enum14.C
 g++.dg/cpp0x/forw_enum2.C
 g++.dg/cpp0x/forw_enum3.C
-g++.dg/cpp0x/forw_enum4.C
 g++.dg/cpp0x/forw_enum5.C
 g++.dg/cpp0x/forw_enum7.C
 g++.dg/cpp0x/forw_enum9.C
@@ -297,7 +294,6 @@ g++.dg/cpp0x/initlist-overload1.C
 g++.dg/cpp0x/initlist-ref3.C
 g++.dg/cpp0x/initlist102.C
 g++.dg/cpp0x/initlist104.C
-g++.dg/cpp0x/initlist110.C
 g++.dg/cpp0x/initlist118.C
 g++.dg/cpp0x/initlist119.C
 g++.dg/cpp0x/initlist120.C
@@ -444,7 +440,6 @@ g++.dg/cpp0x/sfinae37.C
 g++.dg/cpp0x/sfinae38.C
 g++.dg/cpp0x/sfinae39.C
 g++.dg/cpp0x/sfinae4.C
-g++.dg/cpp0x/sfinae42.C
 g++.dg/cpp0x/sfinae43.C
 g++.dg/cpp0x/sfinae44.C
 g++.dg/cpp0x/sfinae45.C
@@ -458,7 +453,6 @@ g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
 g++.dg/cpp0x/sfinae63.C
 g++.dg/cpp0x/sfinae66.C
-g++.dg/cpp0x/sfinae7.C
 g++.dg/cpp0x/sfinae8.C
 g++.dg/cpp0x/sfinae9.C
 g++.dg/cpp0x/std-layout1.C
@@ -515,7 +509,6 @@ g++.dg/cpp0x/vt-55542.C
 g++.dg/cpp0x/vt-59988.C
 g++.dg/cpp0x/vt-82936.C
 g++.dg/template/access41a.C
-g++.dg/template/access42.C
 g++.dg/template/anonunion3.C
 g++.dg/template/arg9.C
 g++.dg/template/array33.C
@@ -535,7 +528,6 @@ g++.dg/template/canon-type-17.C
 g++.dg/template/canon-type-18.C
 g++.dg/template/cond7.C
 g++.dg/template/conv1.C
-g++.dg/template/conv21.C
 g++.dg/template/crash66.C
 g++.dg/template/ctor1.C
 g++.dg/template/deduce10.C
@@ -565,10 +557,7 @@ g++.dg/template/memfriend1.C
 g++.dg/template/memfriend12.C
 g++.dg/template/memfriend3.C
 g++.dg/template/memfriend9.C
-g++.dg/template/non-dependent19.C
-g++.dg/template/non-dependent19a.C
 g++.dg/template/non-dependent31.C
-g++.dg/template/param5.C
 g++.dg/template/pr69091.C
 g++.dg/template/pr71406.C
 g++.dg/template/pr84434.C
@@ -584,8 +573,6 @@ g++.dg/template/sfinae20.C
 g++.dg/template/sfinae22.C
 g++.dg/template/sfinae26.C
 g++.dg/template/sfinae29.C
-g++.dg/template/sfinae32.C
-g++.dg/template/sfinae32a.C
 g++.dg/template/spec7.C
 g++.dg/template/template-keyword3.C
 g++.dg/template/ttp6.C
