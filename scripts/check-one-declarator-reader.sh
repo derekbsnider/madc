@@ -56,7 +56,7 @@ SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
 BASE_FNPTRPARAMS=15   # -> 2  (definition + the owner's suffix call)
 BASE_FPTR=17          # -> 10 (owner x1 + the 9 non-declarator sites above)
-BASE_CARRAY=10        # -> 5  (owner x1 + 4 non-declarator sites)
+BASE_CARRAY=9         # -> 5  (owner x1 + 4 non-declarator sites)
 BASE_MEMBERPTR=6      # -> 2  (owner + the &C::field constant)
 BASE_MEMBERFNPTR=3    # -> 2  (owner + the &C::method constant)
 
@@ -96,7 +96,7 @@ control() {
 }
 control "parseFnPtrParams' definition"               'FuncDef \*Program::parseFnPtrParams(DataDef &returns)'
 control "parse_fnptr_member_tail's FPTR construction" 'return new DataDefFPTR(func);'
-control "parse_ptr_array_suffix's CArray nesting"     'arr = new DataDefCArray(\*arr, arr->name, dims\[i\], dim_exprs\[i\]);'
+control "nest_carray_dims' CArray construction"       'DataDefCArray \*level = new DataDefCArray(\*arr, nm, dims\[i\],'
 control "parse_member_fnptr_declarator's construction" 'return new DataDefMemberFnPtr(owner, owner_name, fp ? fp->target : NULL, const_method);'
 control "parse_member_pointer_owner adoption (variable arm)" 'decl_type = new DataDefMemberPtr(mp_owner, mp_owner_name, \*decl_type);'
 

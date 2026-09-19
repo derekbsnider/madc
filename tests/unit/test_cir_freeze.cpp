@@ -2830,8 +2830,11 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 			      + std::to_string((long)getpid()) + ".msnap";
 	{
 		std::ofstream inc(inc_path.c_str());
-		// myva = the va_list shape; grid = a multi-dim fold (2*3 -> one
-		// record with count 6) over a PINNED element (int).
+		// myva = the va_list shape; grid = a multi-dim array over a PINNED
+		// element (int): C11 6.7.6.2 array 2 of array 3 of int, NESTED (one
+		// DK_CARRAY record per level) — the shape g++ gives the typedef and
+		// the shape the subscript lowering peels. (Before the ONE array
+		// builder landed the typedef arm folded 2*3 into one count-6 level.)
 		inc << "typedef struct __va_tag { unsigned int gp; unsigned int fp;\n"
 		       "    void *oa; void *rsa; } myva[1];\n"
 		       "typedef int grid[2][3];\n";
@@ -2897,13 +2900,19 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 	REQUIRE(git != progB->datatype_map.end());
 	DataDefCArray *gr = dynamic_cast<DataDefCArray *>(&(*git)->definition);
 	REQUIRE(gr != nullptr);
-	CHECK(gr->count == 6);				// dims folded (2*3), as live
+	CHECK(gr->count == 2);				// outer level, nested as live
 	REQUIRE(gr->element_type != nullptr);
+	DataDefCArray *row = dynamic_cast<DataDefCArray *>(gr->element_type);
+	REQUIRE(row != nullptr);			// inner level restored as its own array
+	CHECK(row->count == 3);
+	CHECK(row->count_expr == nullptr);
+	CHECK(row->size == 12);				// 3 * sizeof(int)
+	REQUIRE(row->element_type != nullptr);
 	// The element swizzles back as a pinned 4-byte integer (a plain `int`
 	// serializes via its pinned rawtype slot — assert shape, not slot).
-	CHECK(gr->element_type->size == 4);
-	CHECK(gr->element_type->is_integer());
-	CHECK(gr->size == 24);				// 6 * sizeof(int)
+	CHECK(row->element_type->size == 4);
+	CHECK(row->element_type->is_integer());
+	CHECK(gr->size == 24);				// 2 * 12
 	CHECK(progB->user_typedef_names.count("myva") == 1);
 }
 

@@ -300,12 +300,20 @@ Reducer p6 (`n:5 sz:16`). Acceptance: `canon-type-6/7`, `mem_func_ptr`,
 resolution, not grammar — report which).
 
 **T5 — cast (L) + sizeof/alignof (M) type-ids (Abstract).** Retires the
-literal-only `[N]` in L and the `mdepth` hand-rolled counter in M. In the
-SAME task, widen `check-one-delim-tracker.sh`'s marker so a counter named
-`*depth` initialised to 0 or 1 is caught (`mdepth` ~15187 and `depth` in
-`paren_group_is_function_def` ~71640 both escaped it) — own commit, keep its
-negative control green, migrate ~71640 to `DelimDepth` in that commit
-(fix-what-you-find). Reducers: `(int (*)[3])p`, `sizeof(int (&)[4])`.
+literal-only `[N]` in L and the private star / `C::*` / `(C::*)(…)` / `(*)(…)`
+loop in M (with its two hand-rolled depth counters). The owner's Abstract
+mode stops before a `(` that begins no parameter list (`(T(x))`,
+`sizeof(T(5))` — the enclosing expression's paren), so the cast arm's
+push-back fallback and the sizeof arm's span-check rewind keep working. The
+compound-literal bookkeeping (`(int [3]){…}`: element type + count) derives
+from the owner's result when the type-id was a bare array. Reducer
+`tests/testdeclsizeofdecl.mad`.
+⚠️ The delimiter-gate marker widening this task originally carried is
+WITHDRAWN: measuring it (`int [a-z_]*depth[a-z_]* = [01]`) found ~60 hand-rolled
+counters in parser.cpp alone — the `angle_bracket_depth_tracking` family has
+regrown under names its spelling-keyed marker cannot see. That is a
+classification + migration ARC of its own (recorded on the KG family, §6),
+not a side task here.
 
 **T6 — typedef arm (C) + list tail (D) + struct-tag list (E) + struct-body
 typedef (F) (Named).** C's `(` arm and Form 1/Form 2 posture collapse into
@@ -393,8 +401,17 @@ updated with the measured lane; HANDOFF rewritten.
   leading type name. Once the owner can report "not a declarator" in
   Declaration mode this becomes a tentative-parse fallback — a separate
   ruling, +2 tests.
-- **Hand-rolled paren counters** `mdepth` ~15187, `depth` ~71640 escape the
-  delimiter gate's marker — T5 fixes both and widens the marker.
+- **The delimiter family has REGROWN under other spellings.** The gate
+  (`check-one-delim-tracker.sh`) reports 0 because its marker is keyed on
+  `angle|paren|square|brace` in the counter's NAME; `int [a-z_]*depth[a-z_]* = [01]`
+  finds ~60 locals in parser.cpp (`depth`, `adepth`, `pdepth`, `bdepth`, `mdepth`,
+  `nd`, `spiral_depth`, …) — some legitimate recursion depths, most balance
+  loops (`consume_balanced_parenthesized_suffix` ~68120,
+  `paren_group_is_function_def` ~71656, parseFunction's `noexcept(...)`
+  capture ~69834, `template_id_suffix_end` ~5936). Recorded on the KG family
+  (`regrowth_2026_09_19`). Its own arc: classify every hit, migrate the
+  balance loops to `DelimDepth`, THEN widen the marker. T5 retires the two
+  sizeof ones by adoption; nothing else here touches them.
 - **Struct/class member dims flattened** into `member_count` — T8.
 - Literal-operator mangling (`_Z12operator_qu_qu_wm` vs Itanium `li`) — the
   mangling feature's owner, unchanged from the 2026-09-18 handoff.

@@ -6458,6 +6458,19 @@ public:
     // variably-modified: `int (*rp)[m]`) becomes the CArray's count_expr;
     // capture_runtime_dims captures each at the declaration point (the
     // declaration arm — params capture at function entry instead).
+    // The ONE array-dimension reader and the ONE array-type builder every
+    // declarator position composes (parse_ptr_array_suffix and
+    // parse_typedef_array_suffix are its two entries).
+    void parse_array_dimensions(std::vector<carray_dim_t> &dims,
+				std::vector<TokenBase *> &dim_exprs,
+				TokenBase *ctx, const char *what,
+				bool capture_runtime_dims,
+				const std::set<std::string> *runtime_names = NULL,
+				bool param_qualifiers = false);
+    DataDef *nest_carray_dims(DataDef *elem_dd,
+			      const std::vector<carray_dim_t> &dims,
+			      const std::vector<TokenBase *> &dim_exprs,
+			      const std::string &outer_name, bool forest_record);
     DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 				    const char *what,
 				    bool capture_runtime_dims = false);

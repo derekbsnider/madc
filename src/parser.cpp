@@ -19325,43 +19325,15 @@ DataDef *Program::parse_typedef_array_suffix(DataDef *base_dd,
 	return base_dd;
     if ( !(peekToken() && peekToken()->id() == TokenID::tkOpSqr) )
 	return base_dd;
-
-    size_t alias_count = 1;
-    TokenBase *alias_count_expr = NULL;
-    while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-    {
-	nextToken(); // consume '['
-	TokenBase *cl = nextToken();
-	if ( cl && cl->id() == TokenID::tkClSqr )
-	{
-	    alias_count = 0;
-	    continue;
-	}
-	pushToken(cl);
-	if ( !alias_count_expr && bracket_dim_needs_runtime_value() )
-	{
-	    alias_count_expr = parseExpression(nextToken(), true);
-	    cl = nextToken();
-	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
-	    continue;
-	}
-	int64_t n = parse_constant_integer_expression();
-	if ( n < 0 )
-	    Throw(err_tok) << "Typedef array dimension must be non-negative" << flush;
-	cl = nextToken();
-	if ( !cl || cl->id() != TokenID::tkClSqr )
-	    Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
-	if ( n == 0 )
-	    alias_count = 0;
-	else
-	    alias_count *= (size_t)n;
-    }
-    DataDefCArray *arr_dd = new DataDefCArray(*base_dd, alias_name, alias_count,
-					      alias_count_expr);
-    if ( forest_arena_enabled )
-	forest_arena_record_unary(arr_dd);	// v25: DK_CARRAY write-through
-    return arr_dd;
+    // The typedef entry of the ONE array reader: the alias names the outermost
+    // level, dims NEST (a flattened `alias_count *= n` was this arm's
+    // divergence from parse_ptr_array_suffix — tests/testdecltypedef2d.mad),
+    // and a runtime dim is read where the typedef appears, not captured.
+    std::vector<carray_dim_t> dims;
+    std::vector<TokenBase *> dim_exprs;
+    parse_array_dimensions(dims, dim_exprs, err_tok, "typedef array declaration",
+			   false);
+    return nest_carray_dims(base_dd, dims, dim_exprs, alias_name, true);
 }
 
 // Despaced-canonical index invalidation counter — bumped by
@@ -53524,32 +53496,36 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     return node;
 }
 
-// Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
-// AT the first '[' (unconsumed); stops with the token after the last ']'
-// unconsumed. `T (*)[N]` / `T (*name)[N]` bind the dims to the parenthesized
-// inner declarator, yielding a true pointer-to-array
-// DataDefPTR(DataDefCArray(elem, N)) — NOT a plain `T *` (deref of which is
-// scalar, so `(*p)[i]` would not be subscriptable). Dims nest
-// outermost-first. Shared by the declaration, parameter, and cast arms;
+// The ONE array-dimension reader. The stream sits AT the first '[' (unconsumed);
+// every `[dim]` is consumed and appended to dims / dim_exprs — 0 + NULL for an
+// unsized `[]`, 0 + the expression for a runtime dim (captured at the
+// declaration point when `capture_runtime_dims`), N + NULL for a constant —
+// and the token after the last ']' is left unconsumed. `runtime_names` are
+// the identifiers a runtime dim may name (a parameter's earlier parameters);
+// `param_qualifiers` admits C99 6.7.6.3p7's `[static N]` / `[const *]` inside
+// a PARAMETER's brackets. Every declarator position reads its dims here;
 // `what` names the arm for diagnostics.
-DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
-					 const char *what,
-					 bool capture_runtime_dims)
+void Program::parse_array_dimensions(std::vector<carray_dim_t> &dims,
+				     std::vector<TokenBase *> &dim_exprs,
+				     TokenBase *ctx, const char *what,
+				     bool capture_runtime_dims,
+				     const std::set<std::string> *runtime_names,
+				     bool param_qualifiers)
 {
-    std::vector<carray_dim_t> dims;
-    std::vector<TokenBase *> dim_exprs;
     while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume '['
+	if ( param_qualifiers )
+	    skip_param_array_qualifiers();	// [const 5] / [static 5] / [const *]
 	TokenBase *dim_peek = peekToken();
 	if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
 	{
-	    nextToken(); // consume ']' for unsized leading dim
+	    nextToken(); // consume ']' for an unsized dim
 	    dims.push_back(0);
 	    dim_exprs.push_back(NULL);
 	    continue;
 	}
-	if ( bracket_dim_needs_runtime_value() )
+	if ( bracket_dim_needs_runtime_value(runtime_names) )
 	{
 	    // C11 6.7.6.2 variably-modified declarator (`int (*rp)[m]`,
 	    // runtime m): the dim becomes the CArray's count_expr — the same
@@ -53557,8 +53533,9 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 	    // subscript linearizer / sizeof / row-stride machinery all apply.
 	    // In a declaration the dim is captured at the declaration point
 	    // (the VM type's size is fixed there); a parameter's dims are
-	    // captured at function entry by parseFunction instead, and a cast
-	    // type's dim is consumed immediately.
+	    // captured at function entry by parseFunction instead, a cast
+	    // type's dim is consumed immediately, and a typedef's is
+	    // evaluated where the typedef appears.
 	    TokenBase *dim_expr = parseExpression(nextToken(), true);
 	    if ( capture_runtime_dims )
 	    {
@@ -53582,10 +53559,54 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 	if ( !cl || cl->id() != TokenID::tkClSqr )
 	    Throw(cl ? cl : ctx) << "Expected ']' in " << what << flush;
     }
+}
+
+// The ONE array-type builder: dims nest outermost-first (C11 6.7.6.2 — `T
+// a[2][3]` is ARRAY 2 of ARRAY 3 of T), one DataDefCArray per level, a runtime
+// dim riding as that level's count_expr. The OUTERMOST level takes
+// `outer_name` when given (a typedef alias names the whole array); every other
+// level takes its element's name, as a pointee array is unnamed. Never
+// multiply dims into one count: the consumer (peel_carray_dimensions) walks
+// the chain, and a flattened `typedef int M[2][3]` left `m[1][2]`
+// unsubscriptable while sizeof still read 24. `forest_record` keeps the v25
+// DK_CARRAY write-through the typedef arm has always done, per level.
+DataDef *Program::nest_carray_dims(DataDef *elem_dd,
+				   const std::vector<carray_dim_t> &dims,
+				   const std::vector<TokenBase *> &dim_exprs,
+				   const std::string &outer_name,
+				   bool forest_record)
+{
     DataDef *arr = elem_dd;
     for ( size_t i = dims.size(); i-- > 0; )
-	arr = new DataDefCArray(*arr, arr->name, dims[i], dim_exprs[i]);
-    return getPointerType(arr);
+    {
+	const std::string &nm = (i == 0 && !outer_name.empty())
+			      ? outer_name : arr->name;
+	DataDefCArray *level = new DataDefCArray(*arr, nm, dims[i],
+						i < dim_exprs.size() ? dim_exprs[i] : NULL);
+	if ( forest_record && forest_arena_enabled )
+	    forest_arena_record_unary(level);	// v25: DK_CARRAY write-through
+	arr = level;
+    }
+    return arr;
+}
+
+// Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
+// AT the first '[' (unconsumed); stops with the token after the last ']'
+// unconsumed. `T (*)[N]` / `T (*name)[N]` bind the dims to the parenthesized
+// inner declarator, yielding a true pointer-to-array
+// DataDefPTR(DataDefCArray(elem, N)) — NOT a plain `T *` (deref of which is
+// scalar, so `(*p)[i]` would not be subscriptable). Dims nest
+// outermost-first. Shared by the declaration, parameter, and cast arms;
+// `what` names the arm for diagnostics.
+DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
+					 const char *what,
+					 bool capture_runtime_dims)
+{
+    std::vector<carray_dim_t> dims;
+    std::vector<TokenBase *> dim_exprs;
+    parse_array_dimensions(dims, dim_exprs, ctx, what, capture_runtime_dims);
+    return getPointerType(nest_carray_dims(elem_dd, dims, dim_exprs,
+					   std::string(), false));
 }
 
 // Does the stream at `first` (the token just after a declarator's `(`) spell
