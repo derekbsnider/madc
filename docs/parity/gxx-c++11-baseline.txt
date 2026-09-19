@@ -417,7 +417,6 @@ g++.dg/cpp0x/rv-return.C
 g++.dg/cpp0x/rv-this2.C
 g++.dg/cpp0x/scoped_enum10.C
 g++.dg/cpp0x/scoped_enum4.C
-g++.dg/cpp0x/sfinae10.C
 g++.dg/cpp0x/sfinae12.C
 g++.dg/cpp0x/sfinae14.C
 g++.dg/cpp0x/sfinae15.C
@@ -426,9 +425,7 @@ g++.dg/cpp0x/sfinae17.C
 g++.dg/cpp0x/sfinae18.C
 g++.dg/cpp0x/sfinae19.C
 g++.dg/cpp0x/sfinae2.C
-g++.dg/cpp0x/sfinae20.C
 g++.dg/cpp0x/sfinae21.C
-g++.dg/cpp0x/sfinae22.C
 g++.dg/cpp0x/sfinae23.C
 g++.dg/cpp0x/sfinae28.C
 g++.dg/cpp0x/sfinae29.C
