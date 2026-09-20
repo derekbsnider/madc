@@ -2,6 +2,73 @@
 
 ## [Unreleased]
 
+### Standard-C regressions found by a coverage sweep, and the lane tier that should have caught them (2026-09-20)
+
+- A **`static` function prototype followed by its definition** — ordinary C,
+  present in essentially every real translation unit — was refused with
+  `conflicting types for 'f'`. The C-linkage redeclaration check minted its
+  two sides with *different* encoders: the prior side through
+  `namespace_cpp_function_symbol`, which encodes internal linkage as Itanium's
+  `L` (`_ZL1fi`), and the fresh side straight from the parameter list
+  (`_Z1fi`), so for a static function they could never be equal. Linkage is a
+  property of the declaration, not of the parameter list, and the check
+  compares parameter signatures. 22 gcc.c-torture tests failed on this alone.
+  `tests/teststaticprotodef`.
+- An **unprototyped declaration** is now outside that check. In C an empty
+  parameter list on a *declaration* specifies nothing about the parameters
+  (C17 6.7.6.3p14), so `int p();` after `int p(int,int);` is compatible —
+  gcc and clang both accept it. `(void)` is a real zero-parameter prototype
+  and stays in scope; C++ spells `p()` as the zero-parameter prototype, so an
+  `extern "C"` function in C++ keeps the strict comparison.
+- A **cast through a `const`-qualified struct pointer crashed the compiler**.
+  The `->` path took the pointee straight from `DataDefPTR::base_type`, so for
+  `struct S const *` it held the `DataDefCONST` wrapper; the guard above it
+  classifies *structurally*, so `is_struct()` saw through the wrapper and
+  answered true, and an unchecked `static_cast<DataDefSTRUCT *>` then
+  reinterpreted the wrapper as the struct and `m_offset` walked garbage —
+  SIGSEGV on `(T) p->m` (gcc.c-torture `pr89369`). The peel now runs through
+  `DataDef::unqualified()` and the cast is the checked `as_struct_dd()`, so a
+  non-struct is a diagnostic and never a crash.
+  `tests/testconstptrmembercast`.
+
+gcc.c-torture/execute moves **1587 → 1611** of 1624 in scope, with **zero
+regressions** against the v0.99.2 release binary: all 13 remaining failures
+fail on that binary too and are listed in
+`docs/parity/c-torture-baseline.txt`.
+
+**Why it sat for five weeks.** gcc c-torture had no lane script and no ledger
+row, so nothing re-ran it between 2026-08-12 and 2026-09-20 while eight other
+lanes stayed green. It is a 25-second run — it was never expensive, it was
+unowned. Suites are now tiered by time to run:
+
+- `scripts/c_torture_lane.sh` ratchets torture against a baseline (RED outside
+  it, LOUD when a baseline test passes), with both controls verified.
+- `scripts/fast_lanes.sh` runs c-testsuite (4s), c-torture (25s) and the
+  C++11 lane (84s) — under two minutes — after every commit.
+- `lane_ledger.sh` gains a `commit` tier that blocks `--commit`, `--promote`
+  *and* `--release`, so a stale fast lane cannot reach develop or master.
+
+### Measured conformance coverage is published (2026-09-20)
+
+`docs/conformance-coverage.md` is new and is the single home for the measured
+numbers; `docs/language/cpp-features.md`, the roadmap and `docs/test-status.md`
+link to it rather than each carrying figures that drift apart. C: torture
+1611/1624 (99.2%) under c17, 1485/1624 (91.4%) under c23, c-testsuite 220/220.
+C++ (the compile-clean `g++.dg` subset): C++98 308/385, C++11 1464/1950,
+C++14 206/417, C++17 128/308, C++20 346/653. The document states its two
+caveats plainly — diagnostic tests are excluded from the denominators, and the
+per-era directories are not equal-difficulty samples, so an era's movement
+over time is signal while the ranking between eras is not.
+
+`docs/language/cpp-features.md` had not been revised since 2026-08-06 and
+understated madc: it now records Itanium symbol mangling, pointers to members,
+real lambda capture lists, inheriting constructors, references binding
+prvalues, the Itanium class ABI for by-value parameters and returns,
+`thread_local` and `std::get`/`tuple_element`, and corrects two stale
+boundaries — a `requires`-clause does gate class-template partial-specialization
+selection, and `import` is module *binding* through madc's module map rather
+than standard modules.
+
 ### Release-tier lane triage — five regressions fixed, four gaps banked, every lane green (2026-09-20)
 
 - Owner directive (status UPDATE 64): before master, every release-lane RED is
