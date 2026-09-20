@@ -6382,8 +6382,12 @@ static DataDef *capture_hidden_param_type(FuncDef *fd, const Variable *cv)
 
 static std::string capture_value_storage_name(FuncDef *fd, const Variable *cv)
 {
-	std::string owner = fd && !fd->local_emit_name.empty()
-		? fd->local_emit_name : std::string("lambda");
+	// The closure body's symbol comes from its ONE owner (call_emit_symbol:
+	// emit_symbol ?: local_emit_name ?: default) — a raw local_emit_name
+	// value-read here was the drift the check-call-emit-symbol gate forbids.
+	// Behaviour-preserving: the two fields are mutually exclusive by
+	// construction, and a lambda body carries no external emit_symbol.
+	std::string owner = CirBuilder::call_emit_symbol(fd, std::string("lambda"));
 	std::string name = cv ? cv->name : std::string("capture");
 	return "__madc_capture_" + sanitize_c_identifier(owner) + "_"
 		+ sanitize_c_identifier(name);
@@ -21593,7 +21597,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// A by-reference capture keeps the reference's stored pointer;
 				// a by-value capture copied the referent into a value parameter.
 				if (variable_capture_mode == FuncDef::CaptureMode::ByValue)
-					return id(tv->var.name.c_str(), tb);
+					return id(tv->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 				return node1(N_DEREF,
 					     id(var_emit_name(tv->var).c_str(), tb), tb);
 			}
@@ -21633,8 +21637,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (class_param_via_invisible_ref(
 					capture_value_param_type(&tv->var)))
 					return node1(N_DEREF,
-						id(tv->var.name.c_str(), tb), tb);
-				return id(tv->var.name.c_str(), tb);
+						id(tv->var.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL by value (note_capture)
+				return id(tv->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 			}
 			return id(var_emit_name(tv->var).c_str(), tb);
 		}
@@ -21882,7 +21886,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (mode == FuncDef::CaptureMode::ByReference)
 				return id(ta->var.name.c_str(), tb);	// allowed-exception: captured LOCAL (note_capture)
 			if (mode == FuncDef::CaptureMode::ByValue) {
-				node_t value = id(ta->var.name.c_str(), tb);
+				node_t value = id(ta->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 				return class_param_via_invisible_ref(
 					capture_value_param_type(&ta->var))
 				       ? value : node1(N_ADDR, value, tb);
@@ -21996,7 +22000,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return node1(N_DEREF,
 					node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb), tb);
 			if (mode == FuncDef::CaptureMode::ByValue)
-				return node1(N_DEREF, id(td->var.name.c_str(), tb), tb);
+				return node1(N_DEREF, id(td->var.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 			// Host-installed const char* scope binding: this arm embeds
 			// the Variable and bypasses the TokenVar fold — bake the
 			// operand the same way (`*arg` -> *"text").
@@ -22058,7 +22062,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					base = node1(N_DEREF,
 						id(tsub->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 				else if (mode == FuncDef::CaptureMode::ByValue)
-					base = id(tsub->object.name.c_str(), tb);
+					base = id(tsub->object.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 				else {
 				// Flat VLA pointer (runtime-sized param or malloc'd
 				// local): route through the linearizer. A single-index
@@ -22220,7 +22224,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						id(tm->object.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL (note_capture)
 					captured_obj = true;
 				} else if (mode == FuncDef::CaptureMode::ByValue) {
-					obj = id(tm->object.name.c_str(), tb);
+					obj = id(tm->object.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 					captured_value_indirect =
 						class_param_via_invisible_ref(
 						    capture_value_param_type(&tm->object));
