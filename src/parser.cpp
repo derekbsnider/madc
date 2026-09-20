@@ -53550,6 +53550,17 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    Throw(curToken()) << "Unexpected end of input in declarator" << flush;
 	if ( pk->id() == TokenID::tkMul || is_cv_qualifier_token(pk) )
 	{
+	    // `T const *p` == `const T *p` (C11 6.7.3, [dcl.type.cv]): a const
+	    // in the run BEFORE the first top-level `*` qualifies the base.
+	    // Report it so the parameter spelling the redeclaration compare and
+	    // the mangler read spells `const T*` either way (mingw's
+	    // `_bittest64(__int64 const *a, __int64 b)` prototype against its
+	    // `const __int64 *Base` macro definition "conflicted").
+	    if ( depth == 0 && out.ptr_depth == 0 && is_cv_qualifier_token(pk) )
+		for ( size_t ci = 0; ci < tokens.size() && tokens[ci]
+				  && is_cv_qualifier_token(tokens[ci]); ++ci )
+		    if ( tokens[ci]->id() == TokenID::tkCONST )
+			out.base_const = true;
 	    bool const_after = false, cv_here = false;
 	    int stars = consume_declarator_stars(dd, &const_after,
 						 depth == 0 && leading_const, &cv_here);
@@ -54048,6 +54059,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	// re-read the callback's declarator by hand.
 	DeclaratorResult pd;
 	param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pd);
+	if ( pd.base_const )
+	    param_leading_const = true;	// `T const *`: the base's const, spelled `const T*`
 	if ( pd.is_pack )
 	    // `Args...` in a function-pointer parameter list: a pack expansion
 	    // is N parameter-declarations, expanded by the tsubst spine at
@@ -69302,6 +69315,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    param_rvalue_ref = pr.rvalue_ref;
 	    if ( pr.cv_seen )
 		param_has_const = true;
+	    if ( pr.base_const )
+		param_leading_const = true;	// `T const *`: the base's const, spelled `const T*`
 	    // Own dims = the array THIS declarator built and the wrapper decayed;
 	    // the pointee dims of `(*p)[N]` / the referent's of `(&a)[N]` belong
 	    // to the built type, not to the parameter's record (as the ladder

@@ -1,0 +1,17 @@
+// `T const *` and `const T *` name ONE type (C11 6.7.3p10, [dcl.type.cv]): a prototype
+// spelled one way and its definition spelled the other are the same function, never
+// "conflicting types". mingw's intrin-impl.h declares `_bittest64(__int64 const *a,
+// __int64 b)` and defines it through a macro as `(const __int64 *Base, __int64 Offset)`.
+// gcc: `1 1 0 7`.
+#include <stdio.h>
+unsigned char bt(const long *a, long b);
+unsigned char bt(const long *Base, long Offset) { return (unsigned char)((*Base >> Offset) & 1); }
+unsigned char bt64(long long const *a, long long b);
+unsigned char bt64(const long long *Base, long long Offset) { return (unsigned char)((*Base >> Offset) & 1); }
+int sum(int const *p, int n);
+int sum(const int *p, int n) { int s = 0; for (int i = 0; i < n; ++i) s += p[i]; return s; }
+int main(void) {
+    long v = 4; long long w = 8; int a[3] = {1, 2, 4};
+    printf("%d %d %d %d\n", bt(&v, 2), bt64(&w, 3), bt64(&w, 2), sum(a, 3));
+    return 0;
+}

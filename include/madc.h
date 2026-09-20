@@ -6468,6 +6468,7 @@ public:
 	int nested_stars = 0;		// `*`s read inside `( ... )` levels
 	bool const_after_star = false;	// consume_declarator_stars' top-level report
 	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
+	bool base_const = false;	// a `const` read BEFORE the first top-level `*` (`char const *p`): qualifies the base exactly like a leading const — the spelling the Itanium mangler reads (PKc) must not depend on which side of the type it was written
 	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
 	RefType ref = RefType::rtValue;	// rtReference when a `&` / `&&` was applied
 	bool rvalue_ref = false;
