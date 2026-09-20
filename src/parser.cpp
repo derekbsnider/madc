@@ -31253,7 +31253,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    DataDefPTR *pt = dynamic_cast<DataDefPTR *>(obj_type);
 		    if ( !pt || !pt->base_type )
 			Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
-		    obj_type = pt->base_type;
+		    // The pointee of `struct S const *` is `const struct S`; member
+		    // ACCESS is on the unqualified type. unqualified() is the one home
+		    // for the top-level const peel (datadef.h) and returns `this` for
+		    // an unwrapped type, so this is a no-op off the const path.
+		    obj_type = pt->base_type ? pt->base_type->unqualified() : NULL;
 		}
 		    }
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
@@ -31315,7 +31319,20 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			    continue;
 			}
 		    }
-		    DataDefSTRUCT *sdd = static_cast<DataDefSTRUCT *>(obj_type);
+		    // as_struct_dd() is the checked O(1) stand-in for
+		    // dynamic_cast<DataDefSTRUCT *> and answers NULL when this is not a
+		    // struct. The guard above classifies STRUCTURALLY (is_struct() sees
+		    // through a DataDefCONST wrapper), so an unchecked static_cast here
+		    // reinterpreted the wrapper as the struct and m_offset walked
+		    // garbage — a SIGSEGV on `(T) p->m` through a `const S *`
+		    // (gcc.c-torture pr89369). A mismatch is a diagnostic, never a crash.
+		    DataDefSTRUCT *sdd = obj_type ? obj_type->unqualified()->as_struct_dd()
+					  : NULL;
+		    if ( !sdd )
+			Throw(mtb) << "member reference type "
+			    << (obj_type ? "'" + obj_type->name + "' " : "")
+			    << "is not a structure or union (member '"
+			    << mname << "')" << flush;
 	    ssize_t ofs = sdd->m_offset(mname);
 	    if ( ofs == -1 )
 		Throw(mtb) << "no member named '" << mname << "'" << flush;
@@ -69100,9 +69117,20 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // (and fold_same_signature_overload settles the identity post-parse).
     // Members and machine registrations keep their own reconciliation.
     std::string redecl_prior_sig;
+    // The prior side mints through namespace_cpp_function_symbol, which encodes
+    // the declaration's INTERNAL LINKAGE (a `static` function carries Itanium's L:
+    // _ZL1fi). The fresh side below mints the parameter list directly, so it must
+    // be handed the SAME linkage or the two can never be equal for a static
+    // function and every `static int f(int); static int f(int x){}` pair — ordinary
+    // C — reads as a signature clash. Captured HERE, beside the prior sig, because
+    // the definition's own parse may re-settle func->internal_linkage in between.
+    bool redecl_prior_internal = false;
     if ( func_already_declared && !owner_class
       && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
+    {
 	redecl_prior_sig = namespace_cpp_function_symbol(std::string(), id, func);
+	redecl_prior_internal = func->internal_linkage;
+    }
     std::vector<std::string> redecl_spellings;
     bool redecl_varargs = false;
     if ( !return_typedef_alias.empty() )
@@ -69747,13 +69775,26 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // The C-linkage signature clash (see redecl_prior_sig above). Old-style K&R
     // redefinitions are outside it: their parameter types arrive through the
     // declaration list, on the C-only recovery path.
-    if ( !redecl_prior_sig.empty() && !old_style_params )
+    //
+    // So is an UNPROTOTYPED declaration. In C an empty parameter list on a
+    // DECLARATION specifies no information about the parameters (C17 6.7.6.3p14)
+    // — `int p();` after `int p(int,int);` is compatible, and gcc and clang both
+    // accept it — while `(void)` is a real zero-parameter prototype and stays in
+    // scope for the check. Only C spells it this way: in C++ `p()` IS the
+    // zero-parameter prototype, so an extern "C" function in C++ keeps the strict
+    // comparison. Without this, a definition followed by an unprototyped
+    // declaration of itself (gcc.c-torture 930603-1) read as a signature clash.
+    bool redecl_unprototyped =
+	is_c_mode() && redecl_spellings.empty() && !redecl_varargs
+	&& !func->is_void_params;
+    if ( !redecl_prior_sig.empty() && !old_style_params && !redecl_unprototyped )
     {
 	std::vector<std::string> redecl_params = redecl_spellings;
 	if ( redecl_varargs )
 	    redecl_params.push_back("...");
 	std::string redecl_sig =
-	    itanium_mangle_nested_sub(std::vector<std::string>(), id, redecl_params);
+	    itanium_mangle_nested_sub(std::vector<std::string>(), id, redecl_params,
+				      redecl_prior_internal);
 	DBG(if ( redecl_sig != redecl_prior_sig )
 	    {
 		std::cout << "parseFunction() signature clash " << id
