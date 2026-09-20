@@ -3213,7 +3213,12 @@ void Program::_tokenizer_init()
     define_map["__GNUC__"] = std::to_string(__GNUC__);
     define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
     define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
-    define_map["__x86_64__"] = "1";
+    // The CPU-architecture predefine (__x86_64__ / __aarch64__ / __arm64__)
+    // comes from the captured per-target table (madc_predefined_objects, seeded
+    // below), never from a host-side seed: an unconditional __x86_64__ here
+    // made the arm64 darwin target define BOTH arches, and the SDK's
+    // libkern/_OSByteOrder.h then included the i386 AND the arm inline
+    // _OSSwapInt16 definitions ("conflicting types", darwin-arm64 lane).
     // __LP64__ follows the target data model: gcc defines it on Linux and
     // darwin, mingw never does — and because mingw doesn't, the baked
     // predefine capture cannot overwrite a stale seed on win64 the way it
