@@ -1,5 +1,18 @@
-#if !defined __x86_64__
+// The UNPARENTHESIZED `defined` operator, both polarities. The probe macro is
+// defined HERE: the test used to read `#if !defined __x86_64__`, which asserts
+// the host architecture rather than the operator, and passed on darwin arm64
+// only because the lexer seeded __x86_64__ on every target (fixed 2026-09-20 —
+// the captured per-target table owns the CPU macro). A preprocessor-operator
+// test must not carry a platform assumption. Oracle: gcc and clang compile
+// this on every supported target and print "ok".
+#define MADC_DEFINED_PROBE 1
+
+#if !defined MADC_DEFINED_PROBE
 #error broken defined operator handling
+#endif
+
+#if defined MADC_DEFINED_PROBE_ABSENT
+#error broken defined operator handling (negative polarity)
 #endif
 
 #if defined(_WIN32)
@@ -8,7 +21,7 @@
 #endif
 #else
 #if !defined(__LP64__)
-#error non-Windows x86-64 baseline must use LP64
+#error the non-Windows baseline must use LP64
 #endif
 #endif
 
