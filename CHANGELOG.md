@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+### Release-tier lane triage — three regressions fixed, four gaps banked (2026-09-20)
+
+- Owner directive (status UPDATE 64): before master, every release-lane RED is
+  classified against the v0.99.2 binary first — a pre-existing failure is
+  banked as a KG Gap and formally skipped with a stated reason, a regression
+  is fixed. Three release-lane failures below were regressions and are
+  fixed; four were pre-existing and are now formally skipped.
+- The CPU-architecture predefine now comes from the captured per-target macro
+  table alone; the lexer's leftover unconditional `__x86_64__` seed made the
+  arm64 darwin target define BOTH architectures, so the SDK's
+  `libkern/_OSByteOrder.h` included both the i386 and the arm `_OSSwapInt16`
+  overloads ("conflicting types"). Latent since 2026-05-16, exposed by the
+  runner's SDK 15.5 — fixed as a target-table correction, not a new feature.
+  `tests/testonecpumacro`.
+- A using-directive import alias (`using namespace std;`'s alias Variable for
+  `std::minmax`) is no longer mistaken for a pre-existing global by the C++
+  symbol-mangling overload tracking, which had renamed the user's real
+  `minmax`/`count` to `minmax__o2` and defeated `parseFunction`'s existing
+  reclaim rule ([basic.scope.pdecl]). Regression vs v0.99.2.
+  `tests/testglobalreclaimsusingimport` (libstdc++ with `<algorithm>`); also
+  `tests/testmultiret` under libc++ and both darwin arches.
+- A `decltype` return through a deduced function object now resolves at
+  three layers: the pattern lane in `resolve_decltype_call_return` claims a
+  template-id call only when the call's closing paren ends the whole
+  operand; `resolve_fn_template_return_by_key`'s deduce-from-call-arguments
+  lane binds a trailing function parameter pack from the surplus call
+  arguments; and `instantiate_template_alias_use` forwards every pack
+  element through an alias template instead of just the first. Regression
+  vs v0.99.2, exposed by the 2026-09-19 expression-SFINAE T1 change; fixes
+  `std::is_invocable_v` / `invoke_result` for libc++'s generic `__invoke`
+  bullet. `tests/testfwdpackdecltypereturn`, `tests/testaliaspackforward`.
+  C++11 g++.dg lane 1464/1950 (+1: `auto55.C`).
+- Four release-lane failures are PRE-EXISTING (the v0.99.2 binary fails them
+  too — forward gaps, not regressions) and now carry formal skip fixtures,
+  each with its own KG Gap: `tests/testtuplegetelement.libcxx_skip` (libc++
+  `<tuple>`'s `__tuple_impl` constructor overload set leads with
+  `__tuple_indices`/`__tuple_types` tag parameters madc doesn't match yet;
+  libstdc++ passes); `tests/testvectorpushclass.libcxx_skip` (a flaky SEGV,
+  2 of 6 runs, in the JIT'd `char_traits<char>::copy` during `std::vector`
+  relocation, linux libc++ only; darwin passes); and
+  `tests/testtidpackreturn.darwin_skip` /
+  `tests/testtidpackbasededuce.darwin_skip` (darwin only: a pack element
+  deduced as `long` spells `long long` in the instantiation's parameter
+  while the return type and the caller spell `long`, so the call binds the
+  bare pattern and MIR reports an undefined `mk` import —
+  `long_long_distinct_datadef_lp64`).
+- The darwin prelude restores the C++ `__BEGIN_DECLS` / `__END_DECLS` it
+  flattened away. The umbrella is preprocessed as C, so it baked Apple's
+  EMPTY C-branch definitions plus the `_CDEFS_H_` guard that stops the real
+  `<sys/cdefs.h>` from redefining them; the 36 served headers were covered by
+  the generator's own `extern "C"` wrapper, but a header the prelude does NOT
+  serve — `<netdb.h>`, `<sys/socket.h>`, `<arpa/inet.h>` are read from the
+  SDK — declared its prototypes with C++ linkage and they mangled once free
+  functions started mangling (`getservbyname` imported as
+  `_Z13getservbynamePKcS0_` on both arches). Regression vs v0.99.2.
+  `tests/testservent` on the darwin lane; gated twice, each with a negative
+  control: `gen_darwin_prelude.sh` refuses to install a prelude missing the
+  restoration, and `verify_macho_release.sh` authority 5 reads it back out of
+  the shipped binary's `.rodata`.
+- `scripts/win_suite.sh` now stages the repo's tracked-plus-untracked-but-
+  not-ignored `tests`/`tools`/`examples` over one tar stream instead of
+  `scp -r`; `scripts/remote_build.sh`'s output-directory excludes
+  (`bin/ obj/ lib/ tmp/ dist/`) are anchored to the transfer root, so a
+  nested `node_modules/semver/bin/` no longer loses its symlink target and
+  breaks the genuine-Windows release lane.
+
 ### The develop seam pre-build: the pack freezes reach the library bodies (2026-09-20/21)
 
 - Rebuilding every toolchain before the seam battery turned the system-header
