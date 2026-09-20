@@ -6470,6 +6470,7 @@ public:
 	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
 	bool base_const = false;	// a `const` read BEFORE the first top-level `*` (`char const *p`): qualifies the base exactly like a leading const — the spelling the Itanium mangler reads (PKc) must not depend on which side of the type it was written
 	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
+	bool alias_adjusted = false;	// Parameter mode: the adjusted array was the BASE itself (a typedef'd array, `A3 a`) — the alias no longer names the parameter's type
 	RefType ref = RefType::rtValue;	// rtReference when a `&` / `&&` was applied
 	bool rvalue_ref = false;
 	std::vector<carray_dim_t> array_dims;		// the top level's `[dim]...`

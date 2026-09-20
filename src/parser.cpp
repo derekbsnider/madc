@@ -53378,7 +53378,14 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 {
     DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false,
 					 leading_const);
-    if ( mode == DeclaratorMode::Parameter && dd && dd != base
+    // [dcl.fct]/5 adjusts the parameter's TYPE — "array of T" to "pointer to
+    // T", "function" to "pointer to function" — however it was spelled: a
+    // typedef'd array or function type (`typedef int (*fptr4[4])(int);
+    // int f4(fptr4 fp, int i)` — c-testsuite 00209; `typedef int F(int);
+    // void g(F f)`) adjusts exactly like the declarator-built one. The
+    // `dd != base` guard skipped the typedef'd shapes: f4's fp stayed an
+    // array of function pointers and `(*fp[i])(i)` called an array.
+    if ( mode == DeclaratorMode::Parameter && dd
       && !dd->as_reference_dd() )
     {
 	// [dcl.fct]/5 on what THIS declarator built: a parameter of FUNCTION
@@ -53387,9 +53394,14 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 	// a[4]` -> `int *`, `int m[][3]` -> `int (*)[3]` — the outer extent
 	// decays, the rest nest; the dims stay in out.array_dims and
 	// adjusted_array says so). A typedef'd array or function TYPE base
-	// (`va_list ap`, `F f`) is left as the alias — C adjusts it at the
-	// declaration, the emitter spells the alias; a REFERENCE (`int (&a)[3]`)
-	// is never adjusted.
+	// (`fptr4 fp` — c-testsuite 00209, `F f`, `va_list ap`) adjusts the
+	// same way: [dcl.fct]/5 is about the parameter's TYPE, not its
+	// spelling, and the emitter that spelled the alias added a pointer
+	// level to it (`fptr4 *fp`, a pointer to the whole array). An
+	// adjusted ARRAY alias no longer names the parameter's type, so the
+	// reader says so (alias_adjusted) and the parameter readers drop it;
+	// a function-type alias stays (`F *f` IS the pointer). A REFERENCE
+	// (`int (&a)[3]`) is never adjusted.
 	if ( DataDefFPTR *fn = dd->as_fptr_dd() )
 	{
 	    if ( !fn->ptr_syntax )
@@ -53397,6 +53409,8 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 	}
 	else if ( DataDefCArray *arr = dd->as_carray_dd() )
 	{
+	    if ( dd == base )
+		out.alias_adjusted = true;
 	    dd = getPointerType(arr->element_type);
 	    out.adjusted_array = true;
 	}
@@ -54061,6 +54075,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pd);
 	if ( pd.base_const )
 	    param_leading_const = true;	// `T const *`: the base's const, spelled `const T*`
+	if ( pd.alias_adjusted )
+	    param_alias.clear();	// an adjusted typedef'd array: the alias names the array, the type is the element pointer
 	if ( pd.is_pack )
 	    // `Args...` in a function-pointer parameter list: a pack expansion
 	    // is N parameter-declarations, expanded by the tsubst spine at
@@ -69319,6 +69335,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // spelling is structural (mangle_spelling_for) and ignores this.
 	    param_ptr_depth = pr.ptr_depth + pr.nested_stars;
 	    param_rvalue_ref = pr.rvalue_ref;
+	    if ( pr.alias_adjusted )
+		param_alias.clear();	// `A3 a`: the type is int*, the alias names an array
 	    if ( pr.cv_seen )
 		param_has_const = true;
 	    if ( pr.base_const )

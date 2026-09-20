@@ -1,0 +1,24 @@
+// [dcl.fct]/5: a parameter of ARRAY or FUNCTION type adjusts to a pointer however it
+// was spelled — through a typedef exactly like a declarator-built one. c-testsuite
+// 00209: `typedef int (*fptr4[4])(int); int f4(fptr4 fp, int i) { return (*fp[i])(i); }`
+// (fp is `int (**)(int)`, the pointer to the array's ELEMENT); `typedef int F(int);
+// int g(F f)` (f is `int (*)(int)`); the declarator-built `int (*t[4])(int)` adjusts
+// the same way (both are a pointer to a function pointer, `int (**)(int)`).
+// gcc and clang: `10 5 10 3 20`.
+#include <stdio.h>
+typedef int (*fptr4[4])(int);
+typedef int F(int);
+typedef int A3[3];
+int dbl(int x) { return 2 * x; }
+int inc(int x) { return x + 1; }
+int f4(fptr4 fp, int i) { return (*fp[i])(i); }
+int f6(int (*t[4])(int), int i) { return (*t[i])(i) * 10; }
+int g(F f, int v) { return f(v); }
+int sum(A3 a) { return a[0] + a[1] + a[2]; }
+int sz(A3 a) { return (int)sizeof(a) == (int)sizeof(int *); }
+int main(void) {
+    fptr4 tab = { dbl, inc, dbl, inc };
+    A3 arr = { 1, 2, 7 };
+    printf("%d %d %d %d %d\n", f4(tab, 3) + f4(tab, 2) + f4(tab, 1), g(inc, 4), sum(arr), sz(arr) + 2, f6(tab, 1));
+    return 0;
+}
