@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### The develop seam pre-build: the pack freezes reach the library bodies (2026-09-20/21)
+
+- Rebuilding every toolchain before the seam battery turned the system-header
+  pack freeze red on linux, darwin and Windows at once. Diffing the pack's
+  parse errors against the seam commit's pack showed sixteen new entries, all
+  pre-existing parser defects the freeze now reaches because it parses the
+  explicitly-instantiated library bodies a normal compile binds to the shared
+  library and never parses. Each has its own fix and reducer test.
+- A declarator's `&` now applies to the type before that level's own suffixes
+  ([dcl.ref], like `*`): `O &(*__pf)(O &)` is a pointer to a function returning
+  `O&`, not a reference to a function pointer, and the declarator reports a
+  reference only when the declared entity is one. libstdc++'s manipulator
+  inserters and extractors (`__pf(*this)`) parse again (twelve pack entries).
+  With that, a function TYPE's reference return lowers to a by-address return
+  and spells `T&` for the mangler (`_Z7callrefPFR1OS0_ES0_`, g++ parity);
+  the emitter and the structural spelling had both read the referent.
+  `tests/testfnptrrefreturnparam.mad`.
+- The right operand of `->*` / `.*` may be a parenthesized pm-expression
+  (`this->*(&time_get::do_get)` in locale_facets_nonio.tcc), read through the
+  one parenthesized-expression owner. `tests/testmemptrparenoperand.mad`.
+- `T const *` spells `const T*`: a prototype and its definition that place the
+  base's const on different sides are one function. mingw's `_bittest64`
+  declaration against its macro definition had "conflicted", killing the
+  Windows pack freeze at `src/rt/rt_posix_time.c`. `tests/testprotoconstplacement.mad`.
+- `*p++` / `*p--` on a captured pointer inside a lambda now notes the capture
+  and steps the enclosing pointer through its capture parameter (or the
+  persistent by-value copy). Found by the pre-merge duplication audit: six
+  expression shapes hand-roll one capture rule and this one had ported only
+  half of its sibling's fix. `tests/testlambdacapturederefstep.mad`.
+- The seam lanes then found what only they run: three parameter-reader
+  regressions of the declarator consolidation's T10 commit (c-testsuite
+  00162 and 00209, bisected), fixed at the reader and the emitter. A
+  parameter's spelling counts the stars inside a parenthesized declarator
+  (`int (*x)` is `int *x`); a parameter of array or function type adjusts to
+  a pointer however it was spelled, a typedef'd array included, and its alias
+  is dropped once it no longer names the type ([dcl.fct]/5); a pointer to a
+  function pointer (`int (**t)(int)`, an adjusted array of function pointers)
+  renders through the function-pointer declarator owner instead of
+  `long long *`. `tests/testtypedefarrayparam.mad`. The test runner's obj and
+  exe passes now honour the per-test `.timeout` fixture like the JIT pass
+  (testgraphpast failed only in the .o pass), and three tests added on
+  2026-09-17 gained win64 expectation twins for their LLP64 `long` sizes.
+- Pack baselines: linux and win64 68 -> 70 with the stated reason (six
+  `__cerb` entries are bodies that now parse past the fixed defect into the
+  pre-existing `sentry __cerb(*this, b)` gap seventeen sibling sites already
+  show); darwin 48 -> 45 (improved by the same fixes). Gaps filed for the
+  sentry local in the freeze, a member operator taking a function designator,
+  the address of a function-template specialization, and a call through an
+  inline constant member-function pointer.
+
 ### The four pre-existing container failures settled (2026-09-20)
 
 - A constrained partial specialization's `requires`-clause is now folded in
