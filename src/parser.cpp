@@ -53523,6 +53523,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
     DataDef *dd = base;
     DataDefFPTR *fresh_fn = base_built_here ? dd->as_fptr_dd() : NULL;
     bool ref_here = false, rvalue_here = false;
+    DataDef *ref_dd = NULL;		// the reference type the `&` built, if any
 
     // 1. ptr-operators, applied as read.
     for (;;)
@@ -53591,6 +53592,16 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    if ( is_c_mode() )
 		Throw(pk) << "Reference declarators require C++" << flush;
 	    nextToken();
+	    // [dcl.ref]: in `T & D1` the declarator-id in D1 has type
+	    // "derived-declarator-type-list reference to T" — the reference
+	    // applies to T BEFORE D1's own suffixes and nested derivations,
+	    // exactly like `*` ([dcl.ptr]). `O &(*pf)(O &)` declares a pointer
+	    // to a function returning O& (libstdc++'s manipulator operator<< /
+	    // operator>> parameters, `__pf(*this)`), not a reference to a
+	    // function pointer; applying the `&` after this level's suffixes
+	    // built the latter and every call through __pf failed to parse.
+	    dd = getReferenceType(dd);
+	    ref_dd = dd;
 	    ref_here = true;
 	    rvalue_here = pk->id() == TokenID::tkLand;
 	    break;			// nothing may follow a reference but the declarator
@@ -53672,10 +53683,15 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    fresh_fn = dd->as_fptr_dd();
     }
 
-    // 3. the reference is outermost at its level.
-    if ( ref_here )
+    // 3. the declared entity IS the reference only when nothing derived
+    //    from it afterwards — no suffix, no nested-declarator derivation:
+    //    `int &x`; `int (&a)[3]` (the `&` is read at the inner level, after
+    //    the outer suffix). Consumers read out.ref as "the declared entity
+    //    is a reference" (parameter passing, declaration binding), so a
+    //    reference buried under a function or array derivation must not
+    //    report itself.
+    if ( ref_here && dd == ref_dd )
     {
-	dd = getReferenceType(dd);
 	out.ref = RefType::rtReference;
 	out.rvalue_ref = rvalue_here;
     }
