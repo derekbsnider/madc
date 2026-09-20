@@ -1,0 +1,1 @@
+the genuine-Windows stage is a staged FILE TREE, not a git checkout: the test opens the repository it runs in (git::open(".")) and the lane copies only tests/tools/examples to the box. The wine64 lane runs the same PE from the repo root and covers it.
