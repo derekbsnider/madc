@@ -18,7 +18,7 @@
 #
 # Usage:
 #   lane_ledger.sh record <lane> <tally...>   stamp HEAD+date for a GREEN run
-#   lane_ledger.sh check [--promote|--release]
+#   lane_ledger.sh check [--commit|--promote|--release]
 #                                             list staleness; --promote exits 1
 #                                             on any stale push-gated lane
 #                                             (promote=yes: the develop push
@@ -86,16 +86,31 @@ stale_reason() {
 }
 
 # gate_applies <mode> <promote-flag>: does a STALE row with this flag block
-# under this check mode? --promote (the develop push) blocks on `yes`;
-# --release (the master push / promotion) blocks on `yes` AND `release` —
-# the platform lanes whose FULL suite must be green before a master release
-# (owner law 2026-09-04) but whose cost or hardware keeps them off every
-# develop push (the libc++ flavor lane, the darwin runner suite, genuine
-# Windows). `no` never blocks; it is recorded for the record.
+# under this check mode? Lanes are tiered BY TIME TO RUN (owner 2026-09-20):
+#
+#   commit   the FAST tier — seconds to a few minutes. Runs after every
+#            commit (scripts/fast_lanes.sh) and blocks every gate below it.
+#            c-testsuite (4s), c-torture (~4min).
+#   yes      the develop push gate — the multi-hour lanes (the battery, wine,
+#            the macOS build).
+#   release  the master gate only — the platform lanes whose FULL suite must
+#            be green before a master release (owner law 2026-09-04) but whose
+#            cost or hardware keeps them off every develop push (the libc++
+#            flavor lane, the darwin runner suite, genuine Windows).
+#   no       never blocks; recorded for the record.
+#
+# WHY THE FAST TIER EXISTS: gcc c-torture had NO row at all, so nothing re-ran
+# it between 2026-08-12 and 2026-09-20 and it drifted 1614 -> 1587 while eight
+# other lanes stayed green — three standard-C regressions, one of them a
+# SIGSEGV, carried silently for five weeks. It is a FOUR MINUTE run. Cost was
+# never the reason it went unrun; the absence of a row was. A suite that is
+# cheap enough to run per-commit must be gated per-commit.
 gate_applies() {
 	case "$1" in
-		--promote) [ "$2" = "yes" ];;
-		--release) [ "$2" = "yes" ] || [ "$2" = "release" ];;
+		--commit)  [ "$2" = "commit" ];;
+		--promote) [ "$2" = "yes" ] || [ "$2" = "commit" ];;
+		--release) [ "$2" = "yes" ] || [ "$2" = "commit" ] \
+			   || [ "$2" = "release" ];;
 		*) return 1;;
 	esac
 }
