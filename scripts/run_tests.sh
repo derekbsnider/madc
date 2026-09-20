@@ -316,6 +316,9 @@ for t in "$TEST_DIR"/*.mad; do
     # compile (no PCH yet) parses the full <iostream> closure. The default build
     # is -O0 (optimization is a last-lap switch), so header-heavy compiles need
     # headroom. Generic filename convention, never a per-test branch in the runner.
+    # ONE cap for every lane of the test: the JIT run, the EXE run and the .o
+    # run below all read $tmo (the obj/exe legs hard-coded 5 s and failed
+    # testgraphpast, whose 60 s fixture the JIT leg honoured).
     tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
@@ -449,9 +452,9 @@ for t in "$TEST_DIR"/*.mad; do
         # -o BEFORE fixture flags — same positional rule as the EXE pass.
         if $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS -r -o "$obj_path" "${flags[@]}" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                obj_out=$(env "${envs[@]}" timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                obj_out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                obj_out=$(env "${envs[@]}" timeout 5 $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
+                obj_out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS "${run_flags[@]}" "$obj_path" "${args[@]}" 2>/dev/null)
             fi
             obj_rc=$?
             obj_ok=1
@@ -495,9 +498,9 @@ for t in "$TEST_DIR"/*.mad; do
             # The produced ARTIFACT runs under the same wrapper as the
             # compiler (wine on the win64 domain lane; empty = native).
             if [ -f "$input_file" ]; then
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout 5 $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$exe_path" "${args[@]}" 2>/dev/null)
             fi
             exe_rc=$?
             exe_ok=1
