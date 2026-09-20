@@ -22032,9 +22032,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenDerefStep *tds = (tb ? tb->as_deref_step_tok() : NULL);
 		if (tds) {
-			// var_emit_name for the same reason as TokenDeref above.
-			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC,
-					    id(var_emit_name(tds->var).c_str(), tb), tb);
+			// The SAME capture dispatch as the TokenDeref arm above: a
+			// lambda body's `*p++` on a captured pointer must note the
+			// capture (or the closure gets no parameter for p at all —
+			// "undeclared identifier p") and step the ENCLOSING p through
+			// its `T **` by-reference parameter (`*((*p)++)`), or the
+			// persistent by-value storage. This arm ported only the
+			// var_emit_name half of the sibling's fix.
+			FuncDef::CaptureMode mode = note_capture(&tds->var);
+			node_t target;
+			if (mode == FuncDef::CaptureMode::ByReference)
+				target = node1(N_DEREF, id(var_emit_name(tds->var).c_str(), tb), tb);
+			else if (mode == FuncDef::CaptureMode::ByValue)
+				target = id(tds->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
+			else
+				target = id(var_emit_name(tds->var).c_str(), tb);
+			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC, target, tb);
 			return node1(N_DEREF, step, tb);
 		}
 	}
