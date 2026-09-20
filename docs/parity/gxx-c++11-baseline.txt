@@ -108,7 +108,6 @@ g++.dg/cpp0x/auto19.C
 g++.dg/cpp0x/auto23.C
 g++.dg/cpp0x/auto40.C
 g++.dg/cpp0x/auto47.C
-g++.dg/cpp0x/auto55.C
 g++.dg/cpp0x/constexpr-104226.C
 g++.dg/cpp0x/constexpr-105321.C
 g++.dg/cpp0x/constexpr-52282-1.C
