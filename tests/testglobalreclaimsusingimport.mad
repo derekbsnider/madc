@@ -1,0 +1,23 @@
+// A real GLOBAL function declared AFTER `using namespace std;` reclaims the
+// name the directive imported: unqualified `minmax(4, 2)` binds the global
+// non-template ([over.match.best]: an exact-match non-template beats the
+// std::minmax template specialization), not the imported std placeholder.
+// Before the fix the C++-overload tracking seeded the import alias into the
+// global overload set and renamed the user's function away (`minmax__o2`), so
+// the call resolved to std::minmax and `cout << pair` failed ("shift operands
+// should be of an integer type"); the same shape is `lo, hi := minmax(42, 7)`
+// in tests/testmultiret, which libc++'s <iostream> reaches without <algorithm>.
+// Oracle: g++ and clang++ print 42 then 7.
+#include <iostream>
+#include <algorithm>
+using namespace std;
+
+int minmax(int a, int b) { return a * 10 + b; }
+int count(int a, int b, int c) { return a + b + c; }
+
+int main()
+{
+	cout << minmax(4, 2) << endl;
+	cout << count(3, 2, 2) << endl;
+	return 0;
+}

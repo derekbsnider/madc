@@ -4095,6 +4095,7 @@ public:
     // rejects the call (using_namespace_call_fallback).
     std::vector<std::string> active_using_namespaces;
     Variable *using_namespace_call_fallback(Variable *var, size_t argc);
+    bool is_using_directive_import_alias(Variable *v) const;
     // Parse an explicit template-argument list after a resolved function name
     // (`name<long, int>(...)`) into concrete DataDefs, consuming through the
     // closing '>'. Bails to opaque consumption (skip_template_id_suffix

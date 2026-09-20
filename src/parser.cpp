@@ -28901,6 +28901,20 @@ std::string Program::active_cpp_lookup_namespace()
 // call's argument count but an active using-directive namespace declares the
 // name, bind the namespace member instead (a body-less template placeholder
 // accepts any count; mangled-direct / overload ranking resolve it later).
+// A global-table Variable a using-directive IMPORTED (import_namespace_member's
+// alias shares the namespace member's FuncDef, whose namespace_name names the
+// member's own namespace). [namespace.udir]/2: the directive makes the member
+// visible to unqualified lookup; it does not DECLARE the name at global scope.
+// So a real global declaration of that name neither joins a C++ overload set
+// with the alias nor renames away from it -- parseFunction's reclaim rule takes
+// the Variable over, and the member stays reachable through
+// using_namespace_call_fallback and the namespace overload ranking.
+bool Program::is_using_directive_import_alias(Variable *v) const
+{
+    FuncDef *fd = v ? dynamic_cast<FuncDef *>(v->type) : NULL;
+    return fd && !fd->namespace_name.empty();
+}
+
 Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
 {
     FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
@@ -69644,8 +69658,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// placeholder that never materializes. Clear the alias linkage; the
 	// namespace member stays reachable via using_namespace_call_fallback
 	// and the namespace overload ranking.
-	FuncDef *prevfd = dynamic_cast<FuncDef *>(var->type);
-	if ( prevfd && !prevfd->namespace_name.empty()
+	if ( is_using_directive_import_alias(var)
 	  && !owner_class && current_namespace().empty() )
 	{
 	    var->storage_alias_name.clear();
@@ -74022,13 +74035,18 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// identity: the Variable keeps its SOURCE name as import/emit name
 	// (the decl-only dlsym contract), and the sentinel spelling never
 	// matches a peeked param list (the fn-template-placeholder pattern).
+	// A using-directive import alias is NOT that pre-existing global: the
+	// name is still free at global scope ([namespace.udir]/2) and
+	// parseFunction's reclaim rule takes the alias Variable over -- seeding
+	// it here bound every call to the std placeholder (`using namespace
+	// std;` before a global `int minmax(int, int)`, testmultiret on libc++).
 	if ( Variable *first_named = findVariable(source_id) )
 	{
 	    FuncDef *ffd = first_named->type
 			&& first_named->type->is_function()
 			&& !first_named->type->is_numeric()
 		? dynamic_cast<FuncDef *>(first_named->type) : NULL;
-	    if ( ffd )
+	    if ( ffd && !is_using_directive_import_alias(first_named) )
 	    {
 		bool seeded = false;
 		for ( size_t i = 0; i < ovset.size(); ++i )
@@ -74058,8 +74076,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		same = ovset[i].var;
 	if ( same )
 	    parse_id = same->name;
-	else if ( findVariable(parse_id) )
-	    parse_id = unique_overload_symbol(parse_id);
+	else if ( Variable *taken = findVariable(parse_id) )
+	    if ( !is_using_directive_import_alias(taken) )
+		parse_id = unique_overload_symbol(parse_id);
     }
 
     bool qualified_static_member = false;
