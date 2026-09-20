@@ -8899,6 +8899,35 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return wrap(pspec, pdecl_list);
 	}
 
+	// A POINTER TO a function pointer — `int (**t)(int)`, or an array of
+	// function pointers adjusted to its element pointer ([dcl.fct]/5:
+	// `int (*t[4])(int)`, c-testsuite 00209's `fptr4 fp`): peel the pointer
+	// levels, render the pointee through the ONE fn-ptr declarator owner and
+	// bind the peeled levels closest to the name ([POINTER..., POINTER,
+	// FUNC] in c2m's innermost-first order). The generic tail below peeled
+	// down to the DataDefFPTR and printed its 64-bit rawtype: `long long *t`,
+	// so `(*t[i])(i)` called an integer.
+	{
+		DataDef *base = ptype;
+		int levels = 0;
+		while (base && base->is_pointer() && !base->as_fptr_dd()) {
+			DataDefPTR *p = base->as_pointer_dd();
+			if (!p || !p->base_type) break;
+			base = p->base_type;
+			levels++;
+		}
+		DataDefFPTR *fp = (levels > 0 && base) ? base->as_fptr_dd() : NULL;
+		if (fp && fp->target) {
+			node_t pspec = list();
+			node_t pdecl_list = list();
+			for (int s = 0; s < levels; s++)
+				append(pdecl_list, pointer());
+			fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
+					  std::vector<carray_dim_t>());
+			return wrap(pspec, pdecl_list);
+		}
+	}
+
 	// Array parameter decay: `T m[N]` -> `T *m`, `T m[N][M]` -> `T (*m)[M]`.
 	// A 1-D array param arrives as a CArray; a multi-dim param arrives already
 	// decayed by the parser as DataDefPTR(CArray) (`char (*)[M]`). Handle both:
