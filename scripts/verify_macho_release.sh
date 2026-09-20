@@ -116,4 +116,20 @@ case "$PROV" in
         ;;
 esac
 
-echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact, ${PROV#MADC-DARWIN-PRELUDE-PROVENANCE: })"
+# 5. The prelude restores C language linkage for the SDK headers it does NOT
+#    serve. The umbrella is flattened as C, so it bakes Apple's empty
+#    `#define __BEGIN_DECLS` and the `_CDEFS_H_` guard that stops the real
+#    <sys/cdefs.h> from redefining it; a later <netdb.h> / <sys/socket.h> /
+#    <arpa/inet.h> read from the SDK then declared its prototypes with C++
+#    linkage, and they mangled (getservbyname -> _Z13getservbynamePKcS0_,
+#    tests/testservent on both darwin arches). gen_darwin_prelude.sh appends
+#    the C++-correct pair; read it back out of the shipped binary, where the
+#    umbrella rides in .rodata, so a prelude regenerated without it cannot
+#    ship. Matched on the binary, not the build tree — the artifact is the
+#    authority (the provenance marker's precedent).
+if ! grep -a -q 'define __BEGIN_DECLS extern "C" {' "$BIN"; then
+	echo "verify_macho_release: FAILED — $BIN's prelude does not restore the C++ __BEGIN_DECLS; every unserved SDK header would mangle" >&2
+	exit 1
+fi
+
+echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact, C linkage restored, ${PROV#MADC-DARWIN-PRELUDE-PROVENANCE: })"
