@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### The four pre-existing container failures settled (2026-09-20)
+
+- A constrained partial specialization's `requires`-clause is now folded in
+  the specialization's own declaring namespace ([temp.constr.decl]), not the
+  use's. libstdc++'s `__iter_concept_impl<_Iter>` (std::__detail) names the
+  alias template `__iter_traits` unqualified; folded from `__gnu_cxx` it was
+  never found, every constrained arm failed and the unconstrained primary
+  was applied, so `#include <string>` died at stl_iterator.h:1069 under
+  `--std=c++20` (testifconstexpr, testinvocable). The random-access arm had
+  masked this while `is_object_v<char>` mis-folded false; the shell-completing
+  constant read (f9f1bf77c) exposed it. `__iter_concept<char*>` is now
+  `contiguous_iterator_tag`, as g++ and clang++ say. Reducer
+  `tests/testconstrainedspecns.mad`.
+- A function-template instantiation now identifies its product by the
+  identity tag the registrar stamps on the product's overload spelling, not
+  by the overload set's last entry. Since a namespace function registers at
+  its declarator ([basic.scope.pdecl]), a same-name instantiation nested in
+  the body (libc++'s `max(a, b)` calling `max(a, b, __less<>())`) landed
+  last and received the outer product's template arguments, leaving
+  `std::max<size_type>` / `std::min<size_type>` in libc++'s vector as
+  undefined `__ns_std____1_max` / `__ns_std____1_min` imports
+  (testvecpb_libcxx, testvecmembercopy_libcxx). Reducer
+  `tests/testfntplproductidentity.mad`.
+- Diagnostics: `MADC_SHELLC_PROBE=1` traces shell-origin replays (stream
+  accounting) and a requires-expression type requirement's residual token;
+  the `MADC_SPECMATCH_PROBE` FAIL line spells the substituted constraint.
+- With the suite green again, fulltest's post-suite stages ran for the
+  first time since the seam battery of 2026-09-17 (make stops at the first
+  red stage) and two static gates were red in the lambda capture-mode slice
+  of that day: the by-value capture storage name derived a closure symbol
+  from a raw `local_emit_name` (now through `call_emit_symbol`), and the
+  seven by-value capture arms emitted a captured local's raw name (now
+  carrying the audited marker their by-reference siblings had). The
+  bare-pointer ratchet baseline follows the measured count down to 17.
+- A third post-suite stage was dark for the same reason: forest_bind_gate's
+  strbind case (the whole bound `<string>` TU byte-identical to a live
+  parse). Since a namespace-scope variable definition emits its Itanium
+  symbol, the producer freezes `_ZSt8in_place` for `std::in_place`, but the
+  consumer's flush applied the transported symbol only when rebuilding an
+  extern reference; a restored definition emitted the bare `in_place` and
+  its `__madc_ivg_` init guard followed. Every restored global now carries
+  the producer's symbol whichever flush arm builds it. A restored const
+  scalar also restores its baked value: since a `constexpr` object is
+  const, live folds `std::hardware_destructive_interference_size != 64`
+  and never loads the global, while the bound consumer, whose restored
+  Variable carried the const-baked flag but no storage, still loaded it.
+  The gate's assertions follow (Itanium spelling; the scalar odr-used by
+  address). Every stage after that gate was run individually on the
+  container before the final battery: all green.
+
 ### `:=` short declarations follow Go/C++ block scoping (2026-09-19)
 
 - The substatement of an unbraced `if`/`else`/`while`/`do`/`for` is its own
