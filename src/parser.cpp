@@ -2912,6 +2912,11 @@ std::string DataDefFPTR::structural_spelling(bool as_pointer) const
     if ( s.empty() )
 	s = rd.canonical_cpp_spelling().empty()
 	    ? rd.name : rd.canonical_cpp_spelling();
+    // return_value_type() is the REFERENT of a reference return: spell the
+    // reference (Itanium R<type> inside the function type — `O &(*)(O &)`
+    // is PFR1ORS_E, g++ parity), as is_ref_param does for the parameters.
+    if ( target->returns_reference() )
+	s += "&";
     s += as_pointer ? " (*)(" : " (";
     for ( size_t i = 0; i < target->parameters.size(); ++i )
     {

@@ -7830,6 +7830,14 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	// stars can be appended as the outermost declarator suffix.
 	DataDef *ret_dd = fd ? &fd->return_value_type() : NULL;
 	int ret_stars = dd_peel_pointers(ret_dd);   // the one pointer-peel owner
+	// A REFERENCE return lowers to a by-address (T*) return — the same rule
+	// func_proto / func_def apply to a function's own signature (ret_ptr =
+	// is_pointer || returns_reference). return_value_type() is the REFERENT,
+	// so the reference is one more star: `O &(*pf)(O &)` renders
+	// `struct O *(*pf)(struct O *)`, and the call site's `*pf(...)` deref of
+	// the returned lvalue address type-checks (it read a struct before).
+	if (fd && fd->returns_reference())
+		ret_stars++;
 	// Fn-ptr RETURNING a fn-ptr (c-testsuite 00124): append this level's
 	// declarator suffixes as usual, then RECURSE for the return fn-ptr —
 	// it appends its own `*` + `(params)` after ours (binding order runs
