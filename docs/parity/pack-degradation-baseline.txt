@@ -59,10 +59,32 @@
 #          closure drop (linux 1 -> 0, win64 3 -> 0): those dropped records
 #          were the long-double-bearing ones, so the container now carries
 #          MORE than it did. Gated by forest_bind_gate [ldouble].
-68 linux pack-errors
+# linux 68 -> 70 (2026-09-20, the develop seam pre-build): the six entries are
+# `use of undeclared identifier '__cerb'` at istream.tcc:436/528/598 (x2: the
+# char and wchar_t explicit instantiations) — basic_istream bodies (getline,
+# ignore, read family) that now parse PAST an earlier defect and reach the
+# PRE-EXISTING `sentry __cerb(*this, b);` gap that 17 sibling sites already
+# show in this same baseline (the local of nested-class type inside an
+# explicitly-instantiated member body fails only in the freeze; header-free
+# reducers with the dependent virtual base, the out-of-class nested class and
+# the explicit instantiation all PASS — KG Gap istream_sentry_local_in_pack).
+# The earlier defect: a declarator's `&` applied after that level's suffixes
+# made `__ostream_type& (*__pf)(__ostream_type&)` a reference to a function
+# pointer, so every manipulator inserter body died at `__pf(*this)` (12
+# entries, GONE — tests/testfnptrrefreturnparam.mad) and the `->*` reader
+# refused a parenthesized operand (2 entries, GONE — testmemptrparenoperand).
+# An exposure of a filed gap, not a new class: lower to 50 when the sentry
+# gap closes (all 20 __cerb entries go together).
+70 linux pack-errors
 45 linux dk-none
 0 linux closure-drops
-68 win64 pack-errors
+# win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
+# same six exposed __cerb entries (istream.tcc, the mingw stage's line
+# numbers); its freeze-append also compiles src/rt/rt_posix_time.c again —
+# mingw's `_bittest64(__int64 const *a, __int64 b)` prototype no longer
+# "conflicts" with its `const __int64 *Base` macro definition
+# (tests/testprotoconstplacement.mad). Lower to 50 with linux.
+70 win64 pack-errors
 46 win64 dk-none
 0 win64 closure-drops
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
@@ -153,5 +175,10 @@
 # ] in lambda expression" lines are the capture forms madc does not parse
 # yet (`[=]`, `[this]`, named captures — KG Gap lambda_capture_forms), the
 # next lambda burndown item. Reducer: tests/testlambdamemberaccess.mad.
-48 darwin pack-errors
+# darwin 48 -> 45 (2026-09-20, the develop seam pre-build): the declarator
+# `&` fix (a same-level `&` applies before the level's suffixes — libc++'s
+# manipulator operators take `basic_ostream& (*__pf)(basic_ostream&)` too)
+# and the parenthesized `->*` operand; both arches report 45 against the
+# same libc++ corpus.
+45 darwin pack-errors
 1 darwin mir-blob-skips
