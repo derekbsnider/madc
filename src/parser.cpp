@@ -54071,7 +54071,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    // until then. Refuse on purpose, at the same point.
 	    Throw(pd.name_tok ? pd.name_tok : nt)
 		<< "A parameter pack expansion in a function-pointer parameter list is expanded at instantiation" << flush;
-	int param_ptr_depth = pd.ptr_depth;
+	int param_ptr_depth = pd.ptr_depth + pd.nested_stars;	// `int (*x)` is `int *x` (see parseFunction)
 	bool param_is_ref = pd.ref == RefType::rtReference;
 	bool param_rvalue_ref = pd.rvalue_ref;
 
@@ -69311,7 +69311,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 					&earlier_params);
 	    pid = pr.name.empty()
 		? "__anon_param_" + std::to_string(anon_param_index++) : pr.name;
-	    param_ptr_depth = pr.ptr_depth;
+	    // The declared TYPE's pointer levels: the stars read before a
+	    // parenthesized declarator AND inside it — `int (*x)` is `int *x`
+	    // (c-testsuite 00162 redeclares `fooc(int x[const 5])` as
+	    // `fooc(int (* const x))`); counting only the top level spelled
+	    // `int32_t` and "conflicted" with `int32_t*`. A function pointer's
+	    // spelling is structural (mangle_spelling_for) and ignores this.
+	    param_ptr_depth = pr.ptr_depth + pr.nested_stars;
 	    param_rvalue_ref = pr.rvalue_ref;
 	    if ( pr.cv_seen )
 		param_has_const = true;
