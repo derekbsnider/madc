@@ -40873,7 +40873,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    if ( !mp_head )
 			Throw(tb) << "Expecting a pointer-to-member after '"
 				  << (is_arrow ? "->*" : ".*") << "'" << flush;
-		    TokenBase *mp = parsePostfixChain(mp_head);
+		    TokenBase *mp;
+		    if ( mp_head->id() == TokenID::tkOpBrk )
+		    {
+			// A parenthesized pm-expression — `this->*(&time_get::do_get)`
+			// (libstdc++ locale_facets_nonio.tcc), `(o.*(&T::x))`: the parens
+			// are a primary-expression around the member pointer, read by the
+			// ONE parenthesized-expression owner (it consumes the `)`).
+			pushToken(mp_head);
+			mp = parse_parenthesized_expression(is_arrow ? "'->*' operand"
+								     : "'.*' operand", true);
+		    }
+		    else
+			mp = parsePostfixChain(mp_head);
 		    if ( !mp )
 			Throw(mp_head) << "Expecting a pointer-to-member after '"
 				       << (is_arrow ? "->*" : ".*") << "'" << flush;
