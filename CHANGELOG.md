@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Release-tier lane triage — three regressions fixed, four gaps banked (2026-09-20)
+### Release-tier lane triage — five regressions fixed, four gaps banked, every lane green (2026-09-20)
 
 - Owner directive (status UPDATE 64): before master, every release-lane RED is
   classified against the v0.99.2 binary first — a pre-existing failure is
@@ -16,6 +16,14 @@
   overloads ("conflicting types"). Latent since 2026-05-16, exposed by the
   runner's SDK 15.5 — fixed as a target-table correction, not a new feature.
   `tests/testonecpumacro`.
+- `tests/testifdefdefinedoperand` probed the host architecture to get an
+  "always defined" macro for the unparenthesized `defined` operator, so
+  removing the bogus `__x86_64__` seed above turned it red on arm64 — the
+  test, not the fix, was wrong. It now defines its own probe macro and
+  checks BOTH polarities (defined and not-defined), which is what it was
+  always trying to test and is architecture-independent. Verified on both
+  darwin cross targets against the gcc and clang oracles, with a negative
+  control confirming the old form still `#error`s on the fixed arm64 cross.
 - A using-directive import alias (`using namespace std;`'s alias Variable for
   `std::minmax`) is no longer mistaken for a pre-existing global by the C++
   symbol-mangling overload tracking, which had renamed the user's real
@@ -67,6 +75,37 @@
   (`bin/ obj/ lib/ tmp/ dist/`) are anchored to the transfer root, so a
   nested `node_modules/semver/bin/` no longer loses its symlink target and
   breaks the genuine-Windows release lane.
+
+### Release-tier lanes — all green on the fixed content (2026-09-20)
+
+Every lane re-ran on one sweep of a single commit and every one is recorded in
+`docs/lane-status.tsv`. Zero failures on any pass, on any platform, and no
+regression outside the classified set above.
+
+| lane | gate | v0.99.2 | now |
+|------|------|---------|-----|
+| darwin-suite arm64 | release | 1319/0/25skip | 1518/0/29skip |
+| darwin-suite Intel | release | 1320/0/24skip | 1519/0/28skip |
+| libcxx jit / exe / obj | release | 1330/0 · 1271/0 · 1271/0 | 1531/0 · 1435/0 · 1435/0 |
+| genuine-win | release | 1278/0/66skip | 1478/0/69skip |
+| linux-battery jit / exe / obj | develop | — | 1538/0 · 1442/0 · 1442/0 |
+| linux packed / headerless | develop | — | 1538/0 · 1504/0 |
+| wine64 | develop | 1474/0/69skip | 1478/0/69skip |
+| c-testsuite gnu11 | develop | 220/220 | 220/220 |
+| macos (build lane) | develop | rc=0 | rc=0 both arches |
+| gxx-c++11 | not gated | 1366/1950 | 1464/1950 (75.1%) |
+
+- The three RELEASE-gated lanes — the linux libc++ flavor, the darwin full
+  suite on both mac runner arches, and genuine Windows — are green together
+  for the first time since v0.99.2. Genuine Windows had not run since
+  2026-09-09; darwin went from seven arm64 / six Intel failures at the start
+  of this triage to zero on both.
+- `verify_macho_release` authority 5 ("C linkage restored") now gates the
+  prelude fix in the shipped Mach-O on three independent paths: the container
+  cross build and both real mac runners.
+- The develop-set lanes move +4 uniformly, which is exactly the four tests
+  this triage added; every skip count is unchanged except where a banked gap
+  added its own fixture.
 
 ### The develop seam pre-build: the pack freezes reach the library bodies (2026-09-20/21)
 
