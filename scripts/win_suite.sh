@@ -61,7 +61,16 @@ fi
 # examples/adventure/adventure.world — the same trees the Mac suite stage
 # carries. A missing tree fails six tests as "Failed to open include file" /
 # "cannot read" on the box while wine, run from the repo root, never sees it.
-if ! scp -q -r -o BatchMode=yes tests tools examples "$WIN_SSH:$STAGE/"; then
+# The suite's inputs are the REPO's tests/tools/examples: tracked files plus
+# untracked-but-not-ignored ones (a test written this session), never a
+# package manager's install tree — tools/vscode-madcide/node_modules is
+# gitignored, and its dangling `.bin/semver` symlink killed `scp -r tools`
+# before one test ran (2026-09-20). One tar stream over the channel; the box
+# (WSL) unpacks it into the stage. pipefail in the subshell so a failing
+# lister or packer fails the stage, not just the unpacker.
+if ! ( set -o pipefail; git ls-files -z -co --exclude-standard tests tools examples \
+	| tar -c --null -T - -f - \
+	| ssh -o BatchMode=yes "$WIN_SSH" "tar -x -C '$STAGE'" ); then
 	echo "win_suite: test/tools/examples tree copy failed" >&2
 	exit 3
 fi

@@ -207,7 +207,7 @@ for stage in $stages; do
 		# transfer root; excluded = rsync neither sends nor deletes it,
 		# so the container keeps its own.
 		rsync -az --delete "${SYNC_GIT_EXCLUDES[@]}" \
-			--exclude=tmp/ --exclude=bin/ --exclude=obj/ --exclude=lib/ --exclude=dist/ \
+			--exclude=/tmp/ --exclude=/bin/ --exclude=/obj/ --exclude=/lib/ --exclude=/dist/ \
 			--exclude=MadSMAUG --exclude=autom4te.cache \
 			--exclude=src/sys_include_paths.cpp \
 			--exclude=src/predefined_macros.cpp \
@@ -224,6 +224,13 @@ for stage in $stages; do
 		# The historical stale-c2m trap (2026-08-10: an OLD NAS-built c2m
 		# shadowed the container's and answered for a c2mir not under test)
 		# is closed by construction — every libmir/c2m build product lands
+		# The five output-dir excludes are ANCHORED to the transfer root
+		# (`/bin/`, not `bin/`): an unanchored pattern matches the name at
+		# ANY depth, so tools/vscode-madcide/node_modules/semver/bin/ never
+		# arrived and its `.bin/semver` symlink dangled on the container —
+		# `scp -r tools` in win_suite.sh died on it before one Windows test
+		# ran (2026-09-20). Only the repo's own output directories are
+		# build products; a nested bin/lib/obj is content.
 		# in obj/mir/, and obj/ is excluded from the sync.
 		;;
 	build)
