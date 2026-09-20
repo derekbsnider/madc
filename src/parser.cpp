@@ -11836,9 +11836,40 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    std::map<std::string, const std::vector<TokenBase *> *> tok_subst;
 	    std::set<std::string> pack_param_names;
 	    std::set<std::string> used_params;
-	    for ( size_t i = 0; i < td.typeparams.size() && i < arg_tokens.size(); ++i )
+	    // A TRAILING pack parameter absorbs EVERY surplus argument
+	    // ([temp.variadic]): its substitution is the surplus slots joined
+	    // by commas, not the first slot alone. Binding one slot made
+	    // `PA<int, char, char>` (`using PA = P<R, A...>`) resolve to
+	    // P<int, char>, and libc++'s `__invokable<_Fn, _Args...>` =
+	    // `__invokable_r<void, _Fn, _Args...>` drop the second call
+	    // argument, so every two-argument is_invocable read false
+	    // (tests/testaliaspackforward, tests/testifconstexpr on libc++).
+	    std::vector<TokenBase *> pack_joined;
+	    std::vector<TokenBase *> pack_commas;	// owned separators, freed below
+	    const size_t nparams = td.typeparams.size();
+	    const bool trailing_pack = nparams
+				    && td.typeparam_is_pack.size() == nparams
+				    && td.typeparam_is_pack.back();
+	    for ( size_t i = 0; i < nparams && i < arg_tokens.size(); ++i )
 	    {
-		tok_subst[td.typeparams[i]] = &arg_tokens[i];
+		if ( trailing_pack && i == nparams - 1 )
+		{
+		    for ( size_t ai = i; ai < arg_tokens.size(); ++ai )
+		    {
+			if ( ai > i )
+			{
+			    TokenBase *c = new TokenComma();
+			    pack_commas.push_back(c);
+			    pack_joined.push_back(c);
+			}
+			pack_joined.insert(pack_joined.end(),
+					   arg_tokens[ai].begin(),
+					   arg_tokens[ai].end());
+		    }
+		    tok_subst[td.typeparams[i]] = &pack_joined;
+		}
+		else
+		    tok_subst[td.typeparams[i]] = &arg_tokens[i];
 		if ( i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i] )
 		    pack_param_names.insert(td.typeparams[i]);
 	    }
@@ -11898,6 +11929,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		body.push_back(bt ? bt->clone_origin() : NULL);
 	    }
 	    body.push_back(new TokenSemi());
+	    for ( TokenBase *c : pack_commas )	// the body holds clones
+		delete c;
 
 	    // Env-gated probe (MADC_ANU_PROBE=<alias-name substr>): the isolated
 	    // resolve below reports only resolved/(fail) — print the substituted
@@ -65732,11 +65765,53 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// bindings win; a spelling the deducer cannot handle is skipped (the
 	// unbound-return check below rejects the candidate if that parameter
 	// was load-bearing).
+	bool pack_deduced_from_args = false;
 	if ( have_arg_types )
 	{
 	    std::vector<std::string> spellings;
 	    if ( po_param_spellings(*this, ft, spellings) )
-		for ( size_t i = 0; i < spellings.size()
+	    {
+		// A TRAILING function parameter PACK (`_Args&&... __args`)
+		// deduces ONE element per surplus call argument
+		// ([temp.deduct.call]/1); its pattern is the spelling with the
+		// `...` removed, and zero surplus arguments bind the pack EMPTY
+		// (a bound pack, not an unbound one). Without this the pack
+		// counted below as "named by a parameter but unbound" and the
+		// candidate was declined, so libc++'s generic __invoke bullet
+		// (`decltype(declval<_Fp>()(declval<_Args>()...))`) lost to
+		// its `__any` catch-all and every is_invocable read false
+		// (tests/testifconstexpr on the libc++ lane, first bad
+		// de3e78261 — expression SFINAE made the decline silent).
+		size_t nfixed_params = spellings.size();
+		std::string pack_pattern;
+		if ( !pack_name.empty() && !spellings.empty() )
+		{
+		    // The spelling is token-serialized (`A && . . . a`): the
+		    // ellipsis is three `.` words, the pattern is everything
+		    // before the first of them, and it must name the pack.
+		    const std::string &last = spellings.back();
+		    std::vector<std::string> words;
+		    fn_template_split_words(last, words);
+		    bool names_pack = false, has_ellipsis = false;
+		    for ( size_t wi = 0; wi < words.size(); ++wi )
+		    {
+			if ( words[wi] == pack_name )
+			    names_pack = true;
+			if ( words[wi] == "." && wi + 2 < words.size()
+			  && words[wi + 1] == "." && words[wi + 2] == "." )
+			    has_ellipsis = true;
+		    }
+		    size_t dots = last.find('.');
+		    if ( names_pack && has_ellipsis && dots != std::string::npos )
+		    {
+			pack_pattern = last.substr(0, dots);
+			while ( !pack_pattern.empty()
+			     && pack_pattern.back() == ' ' )
+			    pack_pattern.pop_back();
+			nfixed_params = spellings.size() - 1;
+		    }
+		}
+		for ( size_t i = 0; i < nfixed_params
 				 && i < call_arg_types->size(); ++i )
 		{
 		    std::string tp;
@@ -65747,8 +65822,33 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		      && !binding.count(tp) )
 			binding[tp] = dd;
 		}
+		if ( !pack_pattern.empty() && pack_elems.empty() )
+		{
+		    bool all_deduced = true;
+		    std::vector<DataDef *> elems;
+		    for ( size_t i = nfixed_params;
+			  i < call_arg_types->size() && all_deduced; ++i )
+		    {
+			std::string tp;
+			DataDef *dd = NULL;
+			if ( fn_template_deduce_param(pack_pattern, ft.typeparams,
+						      (*call_arg_types)[i], tp,
+						      dd) == 1
+			  && tp == pack_name && dd )
+			    elems.push_back(dd);
+			else
+			    all_deduced = false;
+		    }
+		    if ( all_deduced )
+		    {
+			pack_elems = elems;
+			pack_deduced_from_args = true;
+		    }
+		}
+	    }
 	}
-	if ( kind_mismatch || (binding.empty() && pack_elems.empty()) )
+	if ( kind_mismatch
+	  || (binding.empty() && pack_elems.empty() && !pack_deduced_from_args) )
 	    continue;
 	// [temp.deduct]/8, defaulted params — in deduction ORDER: the explicit
 	// arguments, then deduction from the call arguments, then each still-
@@ -65861,7 +65961,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    // std::get<I> use died at utility.h:84 ("Expecting a type argument
 	    // to tuple_element<>", 34 self-host units).
 	    bool pack_deduced_from_params = false;
-	    if ( !pack_name.empty() && pack_elems.empty() )
+	    if ( !pack_name.empty() && pack_elems.empty()
+	      && !pack_deduced_from_args )	// deduced EMPTY from the call: bound
 	    {
 		std::vector<std::string> spellings;
 		if ( po_param_spellings(*this, ft, spellings) )
@@ -66043,7 +66144,7 @@ DataDef *Program::resolve_decltype_call_return(
 	return NULL;
     // Match the angle brackets; collect comma-separated type-arg segments.
     std::vector<DataDef *> inner_args;
-    size_t ad = 0, seg_s = p + 1;
+    size_t ad = 0, seg_s = p + 1, close_gt = op_e;
     for ( size_t q = p; q < op_e; ++q )
     {
 	if ( !sub[q] ) continue;
@@ -66070,11 +66171,36 @@ DataDef *Program::resolve_decltype_call_return(
 		if ( DataDef *d = resolve_type_token_range(seg, 0, seg.size()) )
 		    inner_args.push_back(d);
 	    }
+	    close_gt = q;
 	    break;
 	}
     }
-    if ( inner_args.empty() )
+    if ( inner_args.empty() || close_gt >= op_e )
 	return NULL;
+    // The template-id CALL must be the WHOLE operand. This lane answers
+    // IDENT<targs>'s declared return and never reads `( args )`, so an operand
+    // that continues past the call — `declval<F>()(args)` (libc++'s generic
+    // __invoke bullet), `declval<T>().member`, `f<T>(0) + 1` — is not its
+    // shape: answering IDENT's return there dropped the outer expression
+    // (`declval<Cmp&>()(1, 2)` read as Cmp&, so is_invocable_r and
+    // invoke_result mis-typed). Decline; the caller's general lane parses the
+    // operand as an unevaluated expression. The call's parens are walked by
+    // the ONE delimiter tracker (an operator-id inside them is a name).
+    {
+	size_t c = close_gt + 1;
+	if ( c >= op_e || !sub[c] || sub[c]->id() != TokenID::tkOpBrk )
+	    return NULL;
+	DelimDepth d(this);
+	size_t k = c;
+	while ( k < op_e )
+	{
+	    k += delim_scan_step(sub, k, d);
+	    if ( d.top() )
+		break;
+	}
+	if ( k != op_e )
+	    return NULL;
+    }
     // A spelled qualifier wins over the caller's context namespace. Resolve it
     // globally through the inline-namespace-aware canonicalizer (std ->
     // std::__1 under libc++); an unresolvable spelling keeps the raw qualifier

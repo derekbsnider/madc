@@ -1,0 +1,37 @@
+// libc++'s __invokable_r chain in miniature — a function template whose
+// TRAILING PARAMETER PACK is deduced from the surplus call arguments and
+// re-expanded inside a decltype return (`-> decltype(std::declval<F>()(
+// std::declval<A>()...))`), paired with an `Any, A&&...` catch-all. Two
+// defects hid behind each other: (1) the deduce-from-call-arguments return
+// lane never bound a trailing pack (a pack named by a parameter counted as
+// unbound), so the generic candidate was declined and the catch-all answered
+// (libc++: `__nat`, every is_invocable false — tests/testifconstexpr on the
+// libc++ lane); (2) the `decltype(IDENT<targs>(args))` pattern lane answered
+// IDENT's return for an operand that CONTINUED past the call, so
+// `declval<Cmp&>()(1, 2)` typed as Cmp& instead of bool. Shapes: the pack with
+// two elements, the pack EMPTY and the pack with ONE element (Cmp has no
+// 0-arg or 1-arg operator(): SFINAE selects the catch-all both times), and a
+// non-variadic twin.
+// Oracle: g++ and clang++ -std=c++11 print "1 1 1 1".
+#include <stdio.h>
+#include <type_traits>
+#include <utility>
+
+struct Cmp { bool operator()(const int &, const int &) const; };
+struct Any { Any(...); };
+struct Nat {};
+
+template <class F, class... A> auto inv(F &&f, A &&...a) -> decltype(std::declval<F>()(std::declval<A>()...));
+template <class... A> Nat inv(Any, A &&...a);
+template <class F, class A0> auto inv1(F &&f, A0 &&a0) -> decltype(std::declval<F>()(std::declval<A0>(), 2));
+Nat inv1(Any, ...);
+
+int main()
+{
+	printf("%d %d %d %d\n",
+	       (int)std::is_same<decltype(inv(std::declval<Cmp &>(), std::declval<const int &>(), std::declval<const int &>())), bool>::value,
+	       (int)std::is_same<decltype(inv(std::declval<Cmp &>())), Nat>::value,
+	       (int)std::is_same<decltype(inv1(std::declval<Cmp &>(), std::declval<const int &>())), bool>::value,
+	       (int)std::is_same<decltype(inv(std::declval<Cmp &>(), 1)), Nat>::value);
+	return 0;
+}
