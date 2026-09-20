@@ -773,10 +773,14 @@ cat > "$strbind_cons" <<'EOF'
 // The consumer REFERENCES hardware_destructive_interference_size and in_place so
 // the v14/v16 restoration asserts below stay meaningful under the rung-3
 // referenced-surface filter (an UNreferenced system-header global no longer
-// emits — the g++ COMDAT/ODR-use shape — on live and bind alike).
+// emits — the g++ COMDAT/ODR-use shape — on live and bind alike). The scalar
+// is odr-used by ADDRESS: a VALUE read of a constexpr scalar folds to 64 on
+// live and bind alike (not an odr-use), so the value check alone would leave
+// the global unemitted on both sides and the v14 assert would test nothing.
 int main() {
     std::string s; s = "hello";
     if (std::hardware_destructive_interference_size != 64) return 1;
+    if (!&std::hardware_destructive_interference_size) return 1;
     if (!&std::in_place) return 1;
     printf("len=%d\n", (int)s.size());
     return 0;
@@ -834,7 +838,10 @@ fi
 # nvsize, and stops pushing restored classes as dkStruct TopDecls (so their struct defs
 # emit via Pass 0.5's class_member_list — with the empty-class `char __pad0[1]` — like
 # live), so in_place restores + __madc_global_init's body is byte-identical to live.
-if ! grep -Eq "^in_place:[[:space:]]+bss" "$strbind_mir"; then
+# The global is a namespace-scope DEFINITION, so its emitted symbol is the
+# Itanium _ZSt8in_place (live and bind alike — the bind carries the producer's
+# symbol verbatim); a bare `in_place:` here means the bind dropped the alias.
+if ! grep -Eq "^_ZSt8in_place:[[:space:]]+bss" "$strbind_mir"; then
 	rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir"
 	fail "[strbind] bound <string> did NOT restore the in_place global var (v16 regressed)"
 fi

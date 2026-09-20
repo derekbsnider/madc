@@ -26935,6 +26935,17 @@ void Program::flush_forest_pending_globals()
 	const PendingForestGlobal &pg = forest_pending_globals[i];
 	if ( !pg.type || findVariable(pg.name) )
 	    continue;			// unresolved / already present
+	// v39 (completed): the PRODUCER's emitted symbol rides every restored
+	// Variable, whichever arm builds it — an extern reference, a folded
+	// constant, or a DEFINITION. Since a namespace-scope definition mangles
+	// (addVariable stamps _ZSt8in_place on `inline constexpr in_place_t
+	// in_place{}`), a definition arm that skipped the alias emitted the bare
+	// name from a bind while live emitted the Itanium one; the whole bound
+	// <string> TU stopped being byte-identical (forest_bind_gate [strbind]).
+	auto stamp_producer_symbol = [&pg](Variable *rv) {
+	    if ( rv && !pg.alias.empty() )
+		rv->storage_alias_name = pg.alias;
+	};
 	// v22: an `extern T name;` REFERENCE to a library-defined object
 	// (std::cout). Rebuild live's registration exactly (parser.cpp var-decl
 	// tail): a vfEXTERN Variable (flags verbatim), the storage alias, and
@@ -26955,8 +26966,7 @@ void Program::flush_forest_pending_globals()
 	{
 	    Variable *xv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
 	    xv->flags = pg.flags;
-	    if ( !pg.alias.empty() )
-		xv->storage_alias_name = pg.alias;
+	    stamp_producer_symbol(xv);
 	    if ( !pg.ns.empty() )
 	    {
 		if ( xv->storage_alias_name.empty() )
@@ -27004,6 +27014,7 @@ void Program::flush_forest_pending_globals()
 	    // constant too — carried verbatim so downstream passes see the
 	    // parsed state).
 	    ev->flags = pg.flags;
+	    stamp_producer_symbol(ev);
 	    DBG(std::cout << "flush_forest_pending_globals: enum const "
 		<< pg.name << " = " << pg.init_value << std::endl);
 	    continue;
@@ -27020,8 +27031,18 @@ void Program::flush_forest_pending_globals()
 	    if ( pc->has_user_ctor && pc->ctors.empty()
 		     && !(pg.gflags & CIR_GLOBALF_CLASS_VALUE_INIT) )
 		continue;
-	Variable *gv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/false);
+	// A const-BAKED scalar (`inline constexpr size_t x = 64;` — vfCONSTBAKED in
+	// the producer's flags) folds at every read on live because its value was
+	// set() into the Variable's storage; read_constant_subobject and the CIR
+	// read fold both require `data`. Restore it the way addVariable built it
+	// (the constructor's slot allocation) and bake the transported value below,
+	// so a bound consumer folds `x != 64` like live instead of loading the
+	// global at run time (forest_bind_gate [strbind] byte identity).
+	const bool baked_scalar = (pg.gflags & CIR_GLOBALF_SCALAR_INIT)
+			       && (pg.flags & vfCONSTBAKED);
+	Variable *gv = new Variable(pg.name, *pg.type, 1, NULL, /*alloc=*/baked_scalar);
 	gv->flags = pg.flags;
+	stamp_producer_symbol(gv);
 	tkProgram->variables.push_back(gv);
 	// v22: live's var-decl inside `namespace N {}` registers the SAME Variable
 	// in namespace_map[N][name] — the binding a consumer's fresh instantiation
@@ -27046,6 +27067,8 @@ void Program::flush_forest_pending_globals()
 	// __madc_global_init entry), byte-identically to a live parse.
 	if ( pg.gflags & CIR_GLOBALF_SCALAR_INIT )
 	{
+	    if ( baked_scalar && gv->data )
+		gv->set(pg.init_value);
 	    TokenDecl *td = new TokenDecl(*gv);
 	    td->initialize = new TokenInt(pg.init_value);
 	    gtd.decl = td;
