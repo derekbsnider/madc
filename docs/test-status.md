@@ -1,5 +1,43 @@
 # Test Status
 
+Standard-C regression sweep (2026-09-20, `7488a39cf`): a multi-standard
+coverage measurement run for the documentation found gcc c-torture at
+**1587/1624**, against **1614** at the 2026-08-12 baseline on identical scope.
+Classification against the v0.99.2 release binary showed **23 regressions**.
+Three defects, all in C mode, all fixed:
+
+1. A `static` prototype plus its definition read as a signature clash — the
+   C-linkage redeclaration check minted its two sides with different encoders,
+   so the prior side carried Itanium's internal-linkage `L` (`_ZL1fi`) and the
+   fresh side did not (`_Z1fi`). 22 of the 23. `tests/teststaticprotodef`.
+2. An unprototyped declaration (`int p();` after `int p(int,int);`) was
+   compared as though it were a prototype; C17 6.7.6.3p14 says an empty list
+   on a declaration specifies nothing about the parameters.
+3. A cast through a `const`-qualified struct pointer **crashed madc** — the
+   `->` path kept the `DataDefCONST` wrapper, the structural `is_struct()`
+   guard saw through it, and an unchecked `static_cast` then reinterpreted the
+   wrapper as a struct. `tests/testconstptrmembercast`.
+
+Torture now reads **1611/4/9/0TO/61skip** with **zero regressions** against
+v0.99.2 — all 13 remaining failures fail on that binary too and are listed in
+`docs/parity/c-torture-baseline.txt`. Both new tests match gcc and clang
+byte-for-byte; negative controls confirm genuine parameter-type, non-static
+and arity mismatches are still reported. Targeted neighbours (307
+struct/const/ptr/member/cast/proto tests) 302 passed, 0 failed, 5 skipped.
+
+The first attempt at (3) peeled const off the pointee globally and broke
+libc++ member lookup on both darwin arches (`__bit_reference`'s `__seg_`
+Unidentified); it is narrowed to the one site that needs a real
+`DataDefSTRUCT`. Measured coverage for every standard is published in
+`docs/conformance-coverage.md`.
+
+**Why it went unnoticed for five weeks:** gcc c-torture had no lane script and
+no ledger row, so nothing re-ran it while eight other lanes stayed green. It
+is a 25-second run. Suites are now tiered by time to run (owner directive):
+`scripts/fast_lanes.sh` runs c-testsuite, c-torture and the C++11 lane in
+under two minutes after every commit, and `lane_ledger.sh`'s new `commit` tier
+blocks develop and master on a stale fast lane.
+
 Empty-diagnostic slice (2026-09-18, `2d0a215d1`): targeted
 `testerror* teststaticassert* testdiag*` passed **6/6**. Five new fixtures cover
 empty C11/C++11 assertions, class assertions and nonempty user messages.
