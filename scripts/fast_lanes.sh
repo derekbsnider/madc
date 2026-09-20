@@ -46,7 +46,11 @@ run_lane() {
 	rc=$?
 	t1=$(date +%s)
 	local tally
-	tally=$(grep -E "^$label: " "$log" | head -2 | tr '\n' ' ')
+	# FIXED-STRING match, never -E: a lane name carries metacharacters and
+	# ERE reads "gxx-c++11" as quantifiers, silently matching nothing and
+	# recording an EMPTY tally for a green lane. lane_ledger.sh carries the
+	# same warning over its own row-drop; this is the second instance.
+	tally=$(grep -F -- "$label: " "$log" | head -2 | tr '\n' ' ')
 	[ -z "$tally" ] && tally="(no summary — see $log)"
 	printf '%-12s rc=%-2s %4ss  %s\n' "$lane" "$rc" "$((t1 - t0))" "$tally"
 	if [ "$rc" -eq 0 ]; then
