@@ -1,0 +1,1 @@
+flaky SEGV (2 of 6 runs) inside the JIT'd char_traits<char>::copy under linux libc++ only — the implicit copy/move of a class with a std::string member through vector relocation; independent of the memory guard; darwin (libc++) passes; pre-existing (v0.99.2 could not parse the test); KG Gap libcxx_vector_push_implicit_copy_segv

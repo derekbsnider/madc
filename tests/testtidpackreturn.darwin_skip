@@ -1,0 +1,1 @@
+darwin int64 canonical spelling: a pack element deduced as long spells long long in the instantiation's parameter while the return type and the caller spell long, so the call binds the bare pattern (MIR: import of undefined item mk); the linux lanes cover the feature; KG Gap long_long_distinct_datadef_lp64
