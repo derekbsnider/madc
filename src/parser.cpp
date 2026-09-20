@@ -31253,11 +31253,13 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    DataDefPTR *pt = dynamic_cast<DataDefPTR *>(obj_type);
 		    if ( !pt || !pt->base_type )
 			Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
-		    // The pointee of `struct S const *` is `const struct S`; member
-		    // ACCESS is on the unqualified type. unqualified() is the one home
-		    // for the top-level const peel (datadef.h) and returns `this` for
-		    // an unwrapped type, so this is a no-op off the const path.
-		    obj_type = pt->base_type ? pt->base_type->unqualified() : NULL;
+		    // NOT peeled here. The pointee of `const S *` is `const S`, but the
+		    // CLASS/object arm below and the member-flag propagation both read
+		    // this type as the source spells it; unwrapping it globally lost
+		    // libc++ member lookups outright (__bit_reference's __seg_ went
+		    // Unidentified on both darwin arches). The peel belongs at the one
+		    // site that needs an actual DataDefSTRUCT — see as_struct_dd() below.
+		    obj_type = pt->base_type;
 		}
 		    }
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
