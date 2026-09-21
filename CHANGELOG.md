@@ -2,6 +2,79 @@
 
 ## [Unreleased]
 
+### Overview — what this release is (2026-09-09 → 2026-09-21, 555 commits)
+
+Three arcs landed since v0.99.2, any one of which would have carried a
+release on its own. The detailed sections below are in reverse chronological
+order; this is the map.
+
+**1. The Nexus — madcide became a session server, and the IR became a graph
+agents can edit.** v0.99.2 shipped madcide as a desktop application. This
+release turns it into a *session* that many clients attach to, over several
+transports, with no display at all if you like:
+
+- **Views and containers** — the editor region is a real split tree, tool
+  panes are chrome slots, layouts persist beside the manifest, and a View can
+  re-represent the same document as source, MC11, C11 or C++ in place. The
+  owner's side-by-side (source left, MC11 right) falls out of it.
+- **A window is a client.** One cooperative loop serves N clients over
+  `ui::event_any`; a second window is a second client on the shared document,
+  with its own caret. Presence carets render in both the terminal and the web
+  face, shifted through one anchor registry.
+- **The change log is event-sourced** — an append-only JSONL journal whose
+  buffer text *is* both the persisted form and the wire form, with replay,
+  checkpointing, compaction and an `event:N` history View.
+- **Correlation maps** — the emitter records a `{byte, source-line}` row per
+  statement, so a caret in one View projects into its counterpart.
+- **Transports**: an `api` transport with permission tiers, a headless
+  `--serve`, an RFC6455 `ws` window on the same port, an **MCP seat**, an
+  **LSP face**, a **VS Code extension**, an attach relay and session
+  discovery — one process, several faces.
+- **The code-graph MCP and the Nexus ladder (L1–L4e)** — graph verbs over the
+  **live IR**, node editing through validated verbs rather than text patches,
+  PAST verbs over git history, a propose tier, intent records, asset layers
+  and a test-runner seat. This is the piece that makes madc's IR addressable
+  by an agent instead of only by a compiler.
+- Underneath it: an async I/O **reactor** with a Windows backend (WSAPoll),
+  which lifted 15 Windows skips, and **libgit2 demoted from a vendored
+  subtree to a `madcgit` module** — a dependency, not a distribution.
+
+**2. Self-hosting — madc parses its own source, measured per unit.** The
+harness exists and reports, which is what turns "can it compile itself?" from
+a question into a number that moves.
+
+**3. C++ conformance stopped being an assertion and became a measurement.**
+The C++11 conformance lane — gcc's own `g++.dg` suite, ratcheted against a
+baseline that only ever shrinks — was **built in this release window** and
+then driven hard:
+
+> **1169 (60%) on 2026-09-17 → 1464 / 1950 (75.1%)**, with zero failures
+> outside the baseline.
+
+The feature work behind that number is itself the release's largest body of
+change: **every C++ symbol madc defines now emits its real Itanium mangled
+name**, so a madc object file is ABI-compatible with g++ and clang and free
+functions overload by parameter type; **expression SFINAE**; **pointers to
+members**, types and values; **real lambda capture lists** including
+`mutable` persisting across calls; **inheriting constructors**; **references
+binding prvalues** with correct destructor timing; the **Itanium class ABI**
+for by-value parameters and returns; `thread_local`; and a consolidation of
+fourteen hand-rolled declarator readers into one owner, which fixed a long
+tail of declarator forms on the way.
+
+**4. And then the compliance work found three standard-C regressions.**
+Measuring coverage for the documentation turned up gcc c-torture at 1587 of
+1624 against 1614 six weeks earlier — a `static` prototype reading as a
+signature clash, an unprototyped declaration compared as a prototype, and a
+compiler SIGSEGV on a cast through a `const`-qualified struct pointer. All
+three are fixed; torture reads **1611/1624 with zero regressions** against the
+v0.99.2 binary. The suite had drifted for five weeks because it was a
+25-second run that nothing owned, which is why suites are now **tiered by time
+to run**: the fast tier gates every commit, the long lanes gate merges.
+
+Measured conformance for every standard madc can be measured against is
+published in [`docs/conformance-coverage.md`](docs/conformance-coverage.md).
+
 ### Standard-C regressions found by a coverage sweep, and the lane tier that should have caught them (2026-09-20)
 
 - A **`static` function prototype followed by its definition** — ordinary C,

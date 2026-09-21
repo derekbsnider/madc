@@ -144,10 +144,24 @@ Current coverage includes:
   flow, preprocessor inclusion, and early C23 features
 - C++ classes, constructors and destructors, RAII, access control, inheritance,
   virtual dispatch, RTTI, exceptions, operator overloading, and templates
-- real `std::string`, streams, containers, references, lambdas, `constexpr`,
-  `noexcept`, and standard-gated language features
+- real `std::string`, streams, containers, references, lambdas **with capture
+  lists**, `constexpr`, `noexcept`, and standard-gated language features
+- **pointers to members** — types and values, `&C::m`, `.*`, `->*`, and calls
+  through a bound member pointer
+- **Itanium ABI compatibility**: every C++ symbol madc defines emits its real
+  mangled name, so a madc object file links against g++- and clang-built code
+  and free functions overload by parameter type; by-value class parameters and
+  returns follow the Itanium calling convention
 - range-based `for`, function pointers, `auto`, `:=`, `defer`, multiple return
   values, and `rust::match`
+
+**madc does not grade its own homework.** Conformance is measured against
+gcc's own testsuite and the third-party c-testsuite, and the numbers — with
+their scope and caveats — are published in
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md): C at
+**99.2%** of the in-scope gcc c-torture execute set under `--std=c17` and
+**220/220** on c-testsuite; C++ at **80.0%** (C++98) and **75.1%** (C++11) of
+the compile-clean `g++.dg` subset, with C++14/17/20 measured alongside.
 
 See the [usage guide](docs/usage.md) for the language surface and
 [architecture guide](docs/architecture.md) for lowering, ABI, and compiler
@@ -172,6 +186,49 @@ functions from several language ecosystems in one program.
 
 Namespace precedence can be selected explicitly with `prefer` or
 `#pragma prefer`; see [namespace precedence](docs/language/prefer.md).
+
+## madcide and the Nexus — the IDE *is* the running compiler
+
+`madcide` is not an editor that shells out to a compiler. The live parse in
+memory **is** the compilation, so diagnostics, the outline and the emitted
+views are projections of real compiler data rather than a second model that
+can drift.
+
+```bash
+madcide file.mad                              # terminal (the default grid)
+madcide file.mad --gui                        # native window: platform menu bar, file dialogs
+madcide file.mad --line                       # ex / edlin line mode over stdin
+madcide file.mad -c "check"                   # no UI at all — the exit status is the verdict
+madcide file.mad --serve 127.0.0.1:7777       # a session other clients attach to
+madcide file.mad --mcp                        # the MCP seat: the IR as a graph
+madcide file.mad --lsp --serve 127.0.0.1:0    # the LSP face
+madcide file.mad --attach                     # find the session holding this file
+```
+
+One composer and one client loop serve every face, so the terminal rendering
+is byte-identical to the window's.
+
+**A session, not a process.** A second window is a second *client* of the same
+document, with its own caret and its own View; presence carets shift through
+one anchor registry as anyone types. The editor region is a real split tree,
+tool panes are chrome slots, and layouts persist beside the project manifest.
+A View can re-represent the same document as source, MC11, C11 or C++ in
+place — put source left and MC11 right and the carets track each other
+through the emitter's correlation map.
+
+**Every change is an event.** The change log is an append-only journal that
+replays to any point, checkpoints, compacts, and surfaces as an `event:N`
+history View.
+
+**The Nexus — the IR as a graph agents edit.** Beyond the human faces,
+madcide exposes the *live IR* as a node-addressed graph over MCP: an agent
+queries structure, edits through validated verbs instead of text patches,
+walks history with PAST verbs over git, and proposes changes under a
+permission tier. LSP, a VS Code extension, attach and session discovery ride
+the same session — one process, several faces.
+
+See [`docs/madcide.md`](docs/madcide.md) and the design documents under
+[`docs/plans/`](docs/plans/).
 
 ## Embedding with libmadc
 
