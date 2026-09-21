@@ -53,6 +53,7 @@ struct ctx_s {
 	int tab;
 	int other;
 	struct sub_s *sub;
+	const int *arr;
 };
 struct sub_s {
 	int deep;
@@ -60,7 +61,8 @@ struct sub_s {
 
 static struct ctx_s *ctx;
 static struct sub_s subject = { 7 };
-static struct ctx_s subject_ctx = { 1, 2, &subject };
+static const int numbers[3] = { 4, 5, 6 };
+static struct ctx_s subject_ctx = { 1, 2, &subject, numbers };
 
 /* the idiom: name == member name */
 #define tab ctx->tab
@@ -90,6 +92,23 @@ CALLV (vec_decl, (WIDE x));
 double direct_decl (double x) { return x + 1; }
 double vec_decl (double x) { return x + 2; }
 
+/* THREE levels deep, the shape every `assert (VARR_GET (char, cs->ln, 0) ==
+ * ...)` in c2mir.c has: the self-referential name expands inside the
+ * argument of a nested function-like macro, inside the argument of an
+ * assert-like macro that also stringifies it. Each level pre-expands in its
+ * own throwaway Source, so the paint has to be reported UPWARD at every
+ * level, not just recorded at the innermost one. */
+#define arr ctx->arr
+#define VCAT3(A, B, C) A##B##C
+#define VOP(T, OP) VCAT3 (v_, T, OP)
+#define VGET(T, V, I) (VOP (T, get) ((V), (I)))
+#define CHECK(expr) ((expr) ? 1 : (printf ("bad: %s\n", #expr), 0))
+
+static int v_intget (const int *a, int i) { return a[i]; }
+
+/* a macro whose argument is another call of ITSELF */
+#define TWICE(X) ((X) + (X))
+
 int main(void)
 {
 	ctx = &subject_ctx;
@@ -104,5 +123,17 @@ int main(void)
 	       GET (deep));
 	printf("decl %.0f %.0f %.0f\n", direct_decl (1.0), vec_decl (1.0),
 	       sqrt (16.0));
+	printf("deep %d %d %d\n", VGET (int, arr, 1),
+	       CHECK (VGET (int, arr, 1) == 5),
+	       CHECK (VGET (int, arr, 2) == 6));
+	/* A macro nested in its OWN argument. C11 6.10.3.1p1 expands the
+	 * argument before substitution, as if it were the rest of the file —
+	 * the macro is hidden only for the RESCAN of its replacement. madc
+	 * hid it for the argument's pre-expansion too, so the inner call
+	 * stayed literal: c2mir.c's
+	 *     NL_HEAD (NL_HEAD (r->u.ops)->u.ops)
+	 * kept an unexpanded NL_HEAD whose `->` had no pointer to read. */
+	printf("nest %d %d\n", TWICE (TWICE (2)),
+	       CHECK (TWICE (TWICE (2)) == 8));
 	return 0;
 }

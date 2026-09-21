@@ -8297,7 +8297,21 @@ TokenBase *Program::_getToken()
 			Source saved = std::move(source);
 			source = Source();
 			source.str(a);
-			source.inherit_macro_disables(saved, word);
+			// Inherit the ENCLOSING expansions' paint — the frames
+			// mid-rescan in `saved` — but NOT this macro's own
+			// name. C11 6.10.3.1p1: an argument is macro-replaced
+			// before substitution, as if it formed the rest of the
+			// file; the macro being expanded becomes hidden only
+			// for the RESCAN of its replacement (6.10.3.4p2), which
+			// pushback_macro below is what establishes. Hiding it
+			// here too silently dropped the inner expansion of a
+			// macro nested in its own argument —
+			// `NL_HEAD (NL_HEAD (r->u.ops)->u.ops)` in c2mir.c came
+			// out with the inner NL_HEAD unexpanded, and the `->`
+			// then had no pointer to read. Runaway recursion is
+			// still bounded: the frame-depth backstop above turns
+			// any missed paint into a clean diagnostic.
+			source.inherit_macro_disables(saved, "");
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )

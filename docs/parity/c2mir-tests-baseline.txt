@@ -11,6 +11,12 @@
 # hide a regression. The baseline only ever shrinks — a test that starts
 # passing is reported loudly by the lane.
 #
+# SHRUNK 2026-09-21 (298 -> 302 of 359) by the preprocessor fixes in this
+# wave: lacc/macro.c, lacc/macro-recursive.c, lacc/macro-skip-expand.c and
+# new/issue392.c. Three of those four are named for exactly what was broken —
+# the C11 6.10.3.4p2 blue paint across a macro argument's pre-expansion, and
+# the over-eager hide of a macro during its own argument's expansion.
+#
 # The `new/` failures are MIR's own regression tests and are the best
 # available reducers for the C constructs madc still cannot compile in
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
@@ -27,9 +33,6 @@ lacc/initialize-array.c
 lacc/initialize-object.c
 lacc/initialize-string.c
 lacc/linebreak.c
-lacc/macro-recursive.c
-lacc/macro-skip-expand.c
-lacc/macro.c
 lacc/pointer-immediate.c
 lacc/preprocess.c
 lacc/printstr.c
@@ -66,7 +69,6 @@ new/issue202.c
 new/issue211.c
 new/issue241.c
 new/issue253.c
-new/issue392.c
 new/issue441.c
 new/propcond-5.c
 new/propcond-6.c

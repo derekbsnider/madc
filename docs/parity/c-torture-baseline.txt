@@ -11,9 +11,14 @@
 #
 # Do not add a line here to make a red lane green. A new failure is a
 # regression: fix it, or have the owner rule it out of scope in writing.
+#
+# SHRUNK 2026-09-21: 20080506-1.c passes. It is `MAX ((unsigned int) MAX (i,
+# 0), 1)` — a macro nested in its OWN argument, which C11 6.10.3.1p1 expands
+# before substitution (the macro is hidden only for the rescan of its
+# replacement, 6.10.3.4p2). madc hid it for the argument pre-expansion too.
+# 1611 -> 1612 passed, 4 -> 3 compile-failed.
 
-# --- compile-failed (4) ---
-20080506-1.c
+# --- compile-failed (3) ---
 int-compare.c
 medce-1.c
 pr122000.c

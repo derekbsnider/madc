@@ -1970,6 +1970,14 @@ public:
 	_pushback = s + _pushback;
 	if ( !disabled_macro.empty() )
 	    _expanded_macro_names.insert(disabled_macro);
+	// A name hidden for THIS frame was expanded while building it, so it
+	// must be reported upward too: an argument three macros deep
+	// (`assert (VARR_GET (char, cs->ln, 0) == ...)` — cs expands inside
+	// VARR_GET's argument, inside assert's) otherwise loses the paint at
+	// every level but the innermost.
+	if ( arg_disabled )
+	    _expanded_macro_names.insert(arg_disabled->begin(),
+					 arg_disabled->end());
 	add_pushback_frame(s, disabled_macro, true, true, arg_disabled);
     }
     // The names expanded while serving this Source (see _expanded_macro_names).
