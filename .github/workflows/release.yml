@@ -163,7 +163,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            g++-13 clang make autoconf g++-mingw-w64-x86-64-posix \
+            g++-13 clang cmake make autoconf g++-mingw-w64-x86-64-posix \
             binutils-mingw-w64-x86-64 wine64 zip unzip wget \
             libzstd-dev zlib1g-dev libz-mingw-w64-dev \
             libc++-18-dev libc++abi-18-dev
@@ -193,6 +193,17 @@ jobs:
         run: |
           autoreconf -i
           ./configure
+      - name: stage the minimal static libgit2 (the madcgit module's build-time dep)
+        # madcgit on the cross targets (2026-09-15) made release-windows build
+        # the git:: module, which STATICALLY links a minimal read-only libgit2
+        # into libmadcgit.dll (nothing named libgit2 ships). The container
+        # stages it in provision_container.sh; the runner is provisioned here.
+        # /workspace is created and chowned by the dependencies step above, so
+        # the script's default LIBGIT2_DIR works unchanged. It reads the hosted
+        # MODE's own CC/AR from src/Makefile, so it must run AFTER configure.
+        run: |
+          bash scripts/stage_libgit2.sh x86-64-windows
+          ls -la /workspace/libgit2/libgit2-x86-64-windows.a /workspace/libgit2/src/include/git2.h
       - name: initialize wine prefix
         # A fresh runner HOME has no ~/.wine; without this, the FIRST wine
         # invocation happens inside forest_pack_windows.sh's freeze and the
@@ -247,7 +258,9 @@ jobs:
           # the codec madc LINKS is the pinned v1.5.5 stage below.
           # automake: brew's autoreconf insists on aclocal for a plain
           # autoconf project.
-          brew install llvm@18 zstd autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -3
+          # cmake: scripts/stage_libgit2.sh configures the minimal static
+          # libgit2 with it (the container gets it from provision_container.sh).
+          brew install llvm@18 zstd cmake autoconf automake coreutils gnu-sed grep bash make 2>&1 | tail -3
           for f in make coreutils gnu-sed grep; do
             echo "$(brew --prefix $f)/libexec/gnubin" >> "$GITHUB_PATH"
           done
@@ -258,6 +271,10 @@ jobs:
           echo "DARWIN_OPEN_HEADERS_HOME=$HOME/darwin-open-headers" >> "$GITHUB_ENV"
           echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
           echo "DARWIN_ZSTD_DIR=$HOME/zstd" >> "$GITHUB_ENV"
+          # madcgit's build-time dep, staged under a runner-writable dir: the
+          # container's /workspace/libgit2 default is unwritable on a mac
+          # runner. Same knob darwin-probe.yml sets.
+          echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text + copyright)
         run: |
           make --version | head -1
@@ -283,6 +300,15 @@ jobs:
                    DARWIN_ZSTD_DIR DARWIN_ZSTD_INC DARWIN_ZSTD_LIB RELEASE_MACOS_ARCHES; do
             printf '%-24s = %s\n' "$v" "$(make -C src -s MODE=hosted-${{ matrix.arch }}-macos print-$v)"
           done
+      - name: stage the minimal static libgit2 (the madcgit module's build-time dep)
+        # The darwin twin of the windows step above, identical to the one
+        # darwin-probe.yml already runs before its own release-macos.
+        # stage_libgit2.sh reads THIS host's SDK from the MODE
+        # (print-MACOS_SDK), so the recipe serves the native build with no
+        # path hardcoded to the container.
+        run: |
+          bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
+          ls -la "$LIBGIT2_DIR/libgit2-${{ matrix.arch }}-macos.a" "$LIBGIT2_DIR/src/include/git2.h"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee release-make.log
