@@ -30736,7 +30736,19 @@ node_t CirBuilder::translate_module(Program *prog)
 			bool forward = sdd && struct_def_points.count(sdd->name)
 					   && !emitted_structs.count(sdd->name)
 					   && !is_def_point;
-			if (sdd && sdd->is_complete)
+			// The member-dependency hoist is needed EXACTLY when this
+			// typedef renders the aggregate's BODY — typedef_decl emits
+			// STRUCT/UNION(tag, IGNORE) in every other case, and a
+			// tag-only reference needs no member complete. Hoisting for
+			// one puts a dependent aggregate ABOVE this very typedef,
+			// and that aggregate's members may spell the alias being
+			// declared: `typedef struct MIR_insn *MIR_insn_t;` then
+			// `DLIST_LINK(MIR_insn_t)` then `struct MIR_insn {...}`
+			// (mir.h) emitted the LINK struct first, so its
+			// `MIR_insn_t prev` was an unknown type name. The struct's
+			// own definition point (dkStruct below) hoists its deps.
+			if (sdd && sdd->is_complete && !forward
+			    && !emitted_structs.count(sdd->name))
 				emit_class_member_deps(sdd, top_list, emitted_structs,
 						       emitted_classes, emitting_classes);
 			node_t n = typedef_decl(typedef_emit_name(td.name, td.dd),
