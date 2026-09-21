@@ -12,8 +12,14 @@ madc does not own (gcc's own testsuite, and the third-party
 [c-testsuite](https://github.com/c-testsuite/c-testsuite)), so they are not
 self-graded.
 
-**Measured 2026-09-20 on `95a5dd936`** (`bin/madc`, the -O0 development
-build).
+**Measured on `7488a39cf`** — the content of `develop` at `a6e8bd55f`, whose
+release tier is green on every lane (`bin/madc`, the -O0 development build).
+
+These figures were first taken mid-session on `95a5dd936` and then RE-TAKEN
+on the shipped content after the last parser fix landed, because that fix
+touched C++ member lookup and a coverage table measured on a compiler that no
+longer exists is worse than no table. Every figure was identical across both
+runs (2026-09-21 01:11–01:16 UTC).
 
 ## C
 
@@ -116,7 +122,7 @@ runs after every commit; the long lanes gate merges and releases. See
 | tier | suites | cost |
 |------|--------|------|
 | `commit` | c-testsuite (4s), c-torture (27s) — plus gxx-c++11 (84s), measured but never gating | ~2 min total |
-| `yes` | the linux battery, wine, the macOS cross build, c-testsuite's siblings | ~1 h |
+| `yes` | the linux battery, wine, the macOS cross build, the Xvfb `gui` stage | ~1 h |
 | `release` | the libc++ flavor lane, the darwin full suite on both arches, genuine Windows | ~2 h |
 
 gcc c-torture is in the fast tier for a reason worth recording: it previously
@@ -125,3 +131,8 @@ and 2026-09-20. It drifted from 1614 passing to 1587 while eight other lanes
 stayed green, carrying three standard-C regressions — one a parser SIGSEGV —
 for five weeks. The run takes under half a minute. It was never expensive; it
 was unowned.
+
+The `gui` stage was found in the same state while writing this document — it
+existed in `remote_build.sh` but had no ledger row, so nothing required it to
+run. It now has one. When a suite exists but nothing gates it, the question
+is not whether it passes today but how long it has been since anyone knew.
