@@ -1,0 +1,108 @@
+/* C11 6.10.3.4p2 — a macro name found while rescanning its OWN replacement
+ * is not replaced. The self-referential member-accessor idiom depends on it:
+ *
+ *     #define str_tab c2m_ctx->str_tab
+ *
+ * `str_tab` must expand exactly ONCE, however deeply it is nested.
+ *
+ * madc's paint is per-FRAME text, not per-token: an expansion is pushed back
+ * with the expanded macro's name attached, and that name stays hidden while
+ * the text drains. A function-like macro's ARGUMENT, though, is pre-expanded
+ * in a throwaway Source whose frames die before the outer replacement is
+ * pushed — so the paint was lost at that boundary and the rescan expanded the
+ * name a second time:
+ *
+ *     HTAB_CREATE (tab_str_t, str_tab, ...)
+ *       ->  (HTAB_tab_str_t_create (&(c2m_ctx->c2m_ctx->str_tab), ...))
+ *
+ * 551 such double expansions in c2mir.c alone, 109 of them hard errors. The
+ * frame now carries the set of names the argument pre-expansion consumed.
+ *
+ * KNOWN-OPEN, and this file is where it is written down: a name that the
+ * argument expanded AND the macro body spells for itself cannot be told
+ * apart in a per-frame paint, so it is deliberately NOT hidden (otherwise
+ * `#define ALIGN(x) ((x) + PAGE_SIZE - 1)` invoked as `ALIGN(PAGE_SIZE)`
+ * would lose the body's own PAGE_SIZE). In that overlap the pre-fix double
+ * expansion survives:
+ *
+ *     #define both(x) x + tab        // body mentions `tab`
+ *     both(tab)                      // -> ctx->ctx->tab + ctx->tab
+ *
+ * Closing it needs per-token hide sets. gcc -std=c17 and clang -std=c17
+ * accept and agree on every form asserted below.
+ *
+ * The second half of this file is the OTHER side of that filter, and it is
+ * the reason the filter must be TRANSITIVE. glibc's math.h declares every
+ * function through __MATHCALL_VEC, whose body does NOT mention `_Mdouble_`
+ * but whose __MATHCALL does:
+ *
+ *     #define __MATHCALL_VEC(function, suffix, args) \
+ *       __SIMD_DECL (...) __MATHCALL (function, suffix, args)
+ *     #define __MATHCALL(function, suffix, args) \
+ *       __MATHDECL (_Mdouble_, function, suffix, args)
+ *
+ * The argument `(_Mdouble_ __x)` expands `_Mdouble_`, so a one-level "does
+ * the body mention it" filter paints the name and the declaration comes out
+ * as `extern _Mdouble_ acos (double __x)`. That mistake turned 109 c2mir.c
+ * errors into 150 math.h ones — every math declaration in every C program.
+ */
+#include <stdio.h>
+#include <math.h>
+
+struct ctx_s {
+	int tab;
+	int other;
+	struct sub_s *sub;
+};
+struct sub_s {
+	int deep;
+};
+
+static struct ctx_s *ctx;
+static struct sub_s subject = { 7 };
+static struct ctx_s subject_ctx = { 1, 2, &subject };
+
+/* the idiom: name == member name */
+#define tab ctx->tab
+#define other ctx->other
+#define sub ctx->sub
+/* two levels of it: `deep` goes through `sub`, which is itself self-referential */
+#define deep sub->deep
+
+/* function-like macros that take those names as ARGUMENTS */
+#define ADDR(V) (&(V))
+#define GET(V) (V)
+#define SUM(A, B) ((A) + (B))
+#define OUTER(V) GET (V)		/* nested function-like, same argument */
+
+/* the math.h shape: the name the argument expands is spelled by a macro the
+ * body REACHES, not by the body itself. It must still expand. */
+#define WIDE double
+#define DECL1(type, fn, args) extern type fn args
+#define DECL(type, fn, args) DECL1 (type, fn, args)
+#define CALL(fn, args) DECL (WIDE, fn, args)		/* mentions WIDE */
+#define SIMD_NOTE					/* nothing */
+#define CALLV(fn, args) SIMD_NOTE CALL (fn, args)	/* does NOT mention it */
+
+CALL (direct_decl, (WIDE x));
+CALLV (vec_decl, (WIDE x));
+
+double direct_decl (double x) { return x + 1; }
+double vec_decl (double x) { return x + 2; }
+
+int main(void)
+{
+	ctx = &subject_ctx;
+
+	printf("self %d %d %d %d %d %d %d\n",
+	       tab,			/* direct: already worked */
+	       *ADDR (tab),		/* through an argument: was ctx->ctx->tab */
+	       GET (other),
+	       SUM (tab, other),
+	       OUTER (tab),		/* two function-like levels */
+	       deep,			/* self-ref inside a self-ref */
+	       GET (deep));
+	printf("decl %.0f %.0f %.0f\n", direct_decl (1.0), vec_decl (1.0),
+	       sqrt (16.0));
+	return 0;
+}

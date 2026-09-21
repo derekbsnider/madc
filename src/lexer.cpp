@@ -2551,6 +2551,52 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
     return false;
 }
 
+// Would the RESCAN of this replacement want to expand `name` from somewhere
+// other than the pre-expanded argument text — does this body, or any macro
+// body it reaches, spell `name` itself? Reads the same identifier view of a
+// replacement list that macro_param_has_expanded_use reads, transitively.
+//
+// The argument-paint filter needs this and needs it TRANSITIVE. glibc's
+// math.h is the case that proves it: `__MATHCALL_VEC`'s own body never
+// mentions `_Mdouble_` (it names its parameters), but the `__MATHCALL` in
+// that body expands to `__MATHDECL (_Mdouble_, ...)` — so hiding `_Mdouble_`
+// because the argument `(_Mdouble_ __x)` expanded it leaves `extern
+// _Mdouble_ acos (double __x)` and every math declaration refuses. One
+// non-transitive level of this check turned 109 c2mir.c errors into 150
+// math.h errors.
+//
+// Unknown answers are TRUE: the paint is an optimization of correctness, and
+// declining to paint is exactly the pre-fix behaviour, never worse.
+static bool macro_expansion_mentions_identifier(Program &pgm,
+						const std::string &body,
+						const std::string &name,
+						std::set<std::string> &seen,
+						int depth)
+{
+    if ( depth <= 0 )
+	return true;
+    std::vector<MacroReplacementToken> tokens = tokenize_macro_spelling(body);
+    for ( size_t i = 0; i < tokens.size(); ++i )
+    {
+	if ( tokens[i].kind != MacroReplacementToken::rtIdentifier )
+	    continue;
+	std::string id = macro_token_text(body, tokens[i]);
+	if ( id == name )
+	    return true;
+	if ( !seen.insert(id).second )
+	    continue;	// already walked (mutually referential macros)
+	if ( const std::string *val = pgm.define_map.find(id) )
+	    if ( macro_expansion_mentions_identifier(pgm, *val, name, seen,
+						     depth - 1) )
+		return true;
+	if ( Program::MacroDef *fn = pgm.macro_map.find(id) )
+	    if ( macro_expansion_mentions_identifier(pgm, fn->body, name, seen,
+						     depth - 1) )
+		return true;
+    }
+    return false;
+}
+
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
@@ -8184,6 +8230,18 @@ TokenBase *Program::_getToken()
 		    // Keep both forms because one parameter may have both kinds of
 		    // occurrence in the same body.
 		    std::vector<std::string> raw_args = args;
+		    // C11 6.10.3.4p2 blue paint, carried across the argument
+		    // boundary. Each argument is pre-expanded in a THROWAWAY
+		    // Source below; its frames (and with them its paint) die
+		    // when that Source does, so the outer replacement's rescan
+		    // used to re-expand a self-referential macro the argument
+		    // had already expanded once: `#define str_tab
+		    // c2m_ctx->str_tab` reached `HTAB_CREATE (T, str_tab, ...)`
+		    // as `&(c2m_ctx->c2m_ctx->str_tab)` — 551 such double
+		    // expansions in c2mir.c alone, 109 of them hard errors
+		    // ("no member named 'c2m_ctx'"). Collect what each argument
+		    // consumed and hand it to the replacement's frame.
+		    std::set<std::string> arg_expanded_names;
 		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
 		    size_t fixed_param_count = macro_fixed_param_count(macro);
 		    for ( size_t i = 0; i < args.size(); ++i )
@@ -8232,13 +8290,39 @@ TokenBase *Program::_getToken()
 				    break;
 			    }
 			}
+			arg_expanded_names.insert(
+			    source.expanded_macro_names().begin(),
+			    source.expanded_macro_names().end());
 			source = std::move(saved);
 			a = expanded_arg;
 		    }
 		    std::string expanded =
 			expand_function_macro_body(macro, raw_args, args);
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
-		    source.pushback_macro(expanded, word);
+		    // Hide the argument-consumed names for this replacement's
+		    // rescan — EXCEPT any the body, or a macro the body
+		    // reaches, spells for itself: those are the body's own
+		    // uses and must still expand (`#define ALIGN(x) ((x) +
+		    // PAGE_SIZE - 1)` invoked as `ALIGN(PAGE_SIZE)`, and
+		    // glibc's __MATHCALL_VEC -> __MATHCALL -> `_Mdouble_`).
+		    // The paint is per-frame text, so a name in BOTH places
+		    // cannot be told apart; that overlap keeps the pre-fix
+		    // behaviour (documented in tests/testmacroselfref.mad) and
+		    // needs per-token hide sets to close.
+		    std::set<std::string> arg_paint;
+		    for ( const std::string &nm : arg_expanded_names )
+		    {
+			std::set<std::string> seen;
+			seen.insert(nm);	// never walk the painted name's
+						// OWN definition: a
+						// self-referential macro spells
+						// itself by construction
+			if ( !macro_expansion_mentions_identifier(*this,
+				macro.body, nm, seen, 8) )
+			    arg_paint.insert(nm);
+		    }
+		    source.pushback_macro(expanded, word,
+					  arg_paint.empty() ? NULL : &arg_paint);
 		    return getToken();
 		}
 			// #define substitution: inject the define value into the source stream

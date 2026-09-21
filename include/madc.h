@@ -1881,6 +1881,15 @@ protected:
     {
 	size_t remaining;
 	std::string disabled_macro;
+	// The names a function-like macro's ARGUMENT pre-expansion consumed.
+	// C11 6.10.3.4p2 hides a macro name found while rescanning its own
+	// replacement; madc's paint is per-FRAME text, not per-token, and an
+	// argument is pre-expanded in a throwaway Source whose frames (and
+	// therefore whose paint) die before the outer replacement is pushed.
+	// Carrying the set here is what keeps `#define str_tab c2m_ctx->str_tab`
+	// expanded ONCE when it reaches the rescan through `HTAB_CREATE(T,
+	// str_tab, ...)` — see the filter in lexer.cpp's argument loop.
+	std::set<std::string> arg_disabled;
 	bool recount = true;   // false: text was already read once; re-reading
 			       // it must not re-advance the column counter
 	bool synthesized = false; // true: text never existed in the source
@@ -1898,18 +1907,26 @@ protected:
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
     std::set<std::string> _inherited_disabled_macros;
+    // Every macro name this Source has expanded, accumulated. Read by the
+    // argument pre-expansion in lexer.cpp: the throwaway Source that expands
+    // one argument reports back which names it consumed, so the outer
+    // replacement's frame can hide them during its rescan.
+    std::set<std::string> _expanded_macro_names;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     std::string _fname;
     void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
-			    bool recount = true, bool synthesized = false)
+			    bool recount = true, bool synthesized = false,
+			    const std::set<std::string> *arg_disabled = NULL)
     {
 	if ( s.empty() )
 	    return;
 	PushbackFrame frame;
 	frame.remaining = s.size();
 	frame.disabled_macro = disabled_macro;
+	if ( arg_disabled )
+	    frame.arg_disabled = *arg_disabled;
 	frame.recount = recount;
 	frame.synthesized = synthesized;
 	_pushback_frames.push_front(frame);
@@ -1947,11 +1964,17 @@ public:
 	_pushback = s + _pushback;
 	add_pushback_frame(s, "", false);
     }
-    void pushback_macro(const std::string &s, const std::string &disabled_macro)
+    void pushback_macro(const std::string &s, const std::string &disabled_macro,
+			const std::set<std::string> *arg_disabled = NULL)
     {
 	_pushback = s + _pushback;
-	add_pushback_frame(s, disabled_macro, true, true);
+	if ( !disabled_macro.empty() )
+	    _expanded_macro_names.insert(disabled_macro);
+	add_pushback_frame(s, disabled_macro, true, true, arg_disabled);
     }
+    // The names expanded while serving this Source (see _expanded_macro_names).
+    const std::set<std::string> &expanded_macro_names() const
+    { return _expanded_macro_names; }
     // Chars served from synthesized frames since open — the lexer compares
     // across one token read to stamp tfSYNTHPOS.
     size_t synth_reads() const { return _synth_gets; }
@@ -1960,7 +1983,8 @@ public:
 	if ( _inherited_disabled_macros.count(name) )
 	    return true;
 	for ( const PushbackFrame &frame : _pushback_frames )
-	    if ( frame.disabled_macro == name )
+	    if ( frame.disabled_macro == name
+	      || frame.arg_disabled.count(name) )
 		return true;
 	return false;
     }
@@ -1968,8 +1992,12 @@ public:
     {
 	_inherited_disabled_macros = from._inherited_disabled_macros;
 	for ( const PushbackFrame &frame : from._pushback_frames )
+	{
 	    if ( !frame.disabled_macro.empty() )
 		_inherited_disabled_macros.insert(frame.disabled_macro);
+	    _inherited_disabled_macros.insert(frame.arg_disabled.begin(),
+					      frame.arg_disabled.end());
+	}
 	if ( !current.empty() )
 	    _inherited_disabled_macros.insert(current);
     }
