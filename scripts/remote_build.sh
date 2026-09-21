@@ -16,6 +16,11 @@
 #   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
+#   fastlanes the whole FAST tier (scripts/fast_lanes.sh) on the container:
+#             c-testsuite, c-torture, c2mir-tests, gui, gxx-c++11. Runs with
+#             MADC_FAST_NO_RECORD=1 — the ledger that gates a push is the
+#             NAS checkout's, so record the printed tallies HERE, never on
+#             the rsync copy where nothing would read them
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -254,11 +259,17 @@ for stage in $stages; do
 		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
 		;;
 	gui)
-		# The runner exports the memory guard's `auto`; a GUI-module test
-		# lifts it itself at run start (import madcwebview — the module
-		# row's GUI flag), so the stage needs no memory override of its own.
-		# CPU and wall caps stay.
-		run_remote "gui" "set -e; cd $REMOTE_MADC; make -C src libmadcwebview webview-header-check; ulimit -t 30; MADC_TEST_DIR=tests/gui MADC_FAIL_DETAIL=20 timeout -k 3 180 xvfb-run -a bash scripts/run_tests.sh --exe --obj"
+		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb
+		# display, the three passes and the zero-tests guard all live there,
+		# so the lane can also run per-commit out of fast_lanes.sh. It used
+		# to be inline here, which is why it had no ledger row for weeks.
+		run_remote "gui" "cd $REMOTE_MADC; bash scripts/gui_lane.sh"
+		;;
+	fastlanes)
+		# The fast tier is what a commit is gated on, so it needs to be
+		# one command from the NAS. No-record on purpose: see the usage
+		# note above — a row written on the rsync copy gates nothing.
+		run_remote "fastlanes" "cd $REMOTE_MADC; MADC_FAST_NO_RECORD=1 bash scripts/fast_lanes.sh"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
