@@ -132,6 +132,23 @@ real libstdc++.
 
 Numbers are produced by the lane; see `history.tsv` for the tracked series.
 
+### What the C++ numbers actually compare
+
+**madc uses libstdc++ — the real GNU library, not an implementation of our
+own.** Both binaries link the same `libstdc++.so`, so these benchmarks are not
+comparing container implementations. They compare what each compiler does
+*around* a shared library: how it compiles the header-defined template bodies
+it parses for itself, and what it chooses to inline.
+
+One madc-specific effect to keep in mind before reading a C++ ratio as codegen
+quality: `std::string` and friends resolve **mangled-direct** against
+libstdc++ (the g++ ABI, no wrapper shims — see the key design notes in
+`AGENTS.md`). Where g++ inlines a header template body at `-O2`, madc may
+instead emit a real call into the prebuilt shared object. That difference is a
+**linkage and inlining** effect, not a statement about generated instruction
+quality, and it will move if the inlining policy changes. The C benchmarks are
+the cleaner read on raw codegen; these are the read on C++ interop cost.
+
 ## Compile time
 
 `gcc -O0 -c` is the must-beat bar (`.claude/rules/gcc-parity.md`: gcc is the
