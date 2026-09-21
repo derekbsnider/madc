@@ -46092,21 +46092,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 	uint32_t member_flags = 0;
-	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE
-	            // `mutable` storage-class-specifier on a member
-	            // ([dcl.stc]/9) — a reserved tkCPPKEYWORD in C++ modes
-	            // (never matches a C identifier spelled "mutable"). The
-	            // class-body member loop already consumes it; this is the
-	            // struct/union twin (libc++ __functional/function.h:484:
-	            // `mutable char __small[sizeof(void*) * 2];`).
-	            || (tn->id() == TokenID::tkCPPKEYWORD
-	             && contextual_identifier_name(tn) == "mutable")) )
+	for (;;)
 	{
-	    if ( tn->id() == TokenID::tkCPPKEYWORD )
-		member_flags |= vfMUTABLE;
-	    pgm.nextToken(); // consume qualifier
+	    // cv-qualifiers through the ONE owner — which also covers
+	    // `restrict`, where this copy stopped at const/volatile.
+	    pgm.skip_cv_qualifier_tokens();
 	    tn = pgm.peekToken();
+	    // `mutable` is a storage-class-specifier, not a cv-qualifier
+	    // ([dcl.stc]/9), so it stays here rather than in the owner: a
+	    // reserved tkCPPKEYWORD in C++ modes (never matches a C
+	    // identifier spelled "mutable"). The class-body member loop
+	    // already consumes it; this is the struct/union twin (libc++
+	    // __functional/function.h:484: `mutable char __small[...]`).
+	    if ( !(tn && tn->id() == TokenID::tkCPPKEYWORD
+	        && contextual_identifier_name(tn) == "mutable") )
+		break;
+	    member_flags |= vfMUTABLE;
+	    pgm.nextToken();
 	}
 
 	// expect a data type token (or typedef'd identifier, or 'struct Tag')
@@ -46202,6 +46204,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.pushToken(tn);
 			tn = pgm.peekToken();
 		    }
+		    // Leading cv-qualifiers on the member's type, through the
+		    // ONE owner (skip_cv_qualifier_tokens). This body had NO
+		    // qualifier handling — every arm below reads a type token
+		    // directly — so `union { const char *s; int i; } u;` inside
+		    // a struct was "Expecting type in anonymous struct
+		    // definition". That is what stopped madc compiling its own
+		    // backend: c2mir.c's `struct decl` carries exactly that
+		    // member (`union { const char *asm_str; MIR_item_t item; }
+		    // u;`), and its failure cascaded into 113 "no member named
+		    // 'c2m_ctx'" errors from the members declared after it.
+		    pgm.skip_cv_qualifier_tokens();
+		    if ( !(tn = pgm.peekToken()) )
+			pgm.Throw(loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		    TokenDataType *inner_type = NULL;
 		    if ( tn->type() == TokenType::ttDataType )
 			inner_type = (TokenDataType *)pgm.nextToken();
@@ -46302,6 +46317,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 		    else
 			pgm.Throw(tn) << "Expecting type in anonymous struct definition" << flush;
+
+		    // `T const *p` — a qualifier between the type and the
+		    // declarator. Same owner, same rule as the leading run
+		    // (the class-body twin below has always had both).
+		    pgm.skip_cv_qualifier_tokens();
 
 		    DataDef *inner_base_dd = &inner_type->definition;
 		    DataDef *inner_member_dd = inner_base_dd;
@@ -47023,13 +47043,8 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		pushToken(tn);
 	    tn = peekToken();
 	}
-	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE
-	            || tn->id() == TokenID::tkRESTRICT) )
-	{
-	    nextToken();
-	    tn = peekToken();
-	}
+	skip_cv_qualifier_tokens();	// the ONE cv owner, not a fourth copy
+	tn = peekToken();
 	if ( !tn )
 	    Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
 
@@ -47056,11 +47071,7 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 	if ( !base_member_dd )
 	    Throw(type_tb) << "Expecting type in anonymous class aggregate" << flush;
 
-	while ( peekToken()
-	     && (peekToken()->id() == TokenID::tkCONST
-	      || peekToken()->id() == TokenID::tkVOLATILE
-	      || peekToken()->id() == TokenID::tkRESTRICT) )
-	    nextToken();
+	skip_cv_qualifier_tokens();	// `T const *p`, same owner
 
 	bool done_members = false;
 	while ( !done_members )
