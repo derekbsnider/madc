@@ -271,29 +271,36 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.99.2** — madcide is a desktop application on
-Linux, Windows and macOS. The IDE that IS the running compiler opens in a
-native window (`madcide file.mad --gui`) with the platform's own menu bar
-and file dialogs, editor tabs, a Problems / Output / Terminal panel,
-dialogs, a status bar as chrome, the JOE split as a window stack, the mouse,
-and the terminal's colour scheme; Build → Run runs the live parse forked
-with a console program on a real pseudo-terminal in the Terminal tab and a
-gui program in its own window, its output streaming as it happens; the
-panel and sidebar resize. ONE composer and ONE client loop serve both faces
-— the terminal is byte-identical. Underneath: `import name [as ns];` (C++20's
-`import` made whole — interface AND library, no platform spelling, JIT and
-native), `madc --capabilities=json`, the `ui::` web target the window is
-built on, and resource guards that default off. v0.99.2 itself is the
-owner's hands-on round on the polished window: output with no keystroke
-(the window's wait is the cooperative scheduler's wait), the Build menu's
-`^B` rows, a dialog's Close that closes and leaves nothing behind, and the
-resizable panes.
+The current release is **v0.100.0**, the Nexus release. madcide stops being
+a desktop application and becomes a **session**: a window is a *client*, so
+several windows share one document with their own carets and presence, the
+editor region is a real split tree whose layouts persist beside the manifest,
+and a View re-represents the same document as source, MC11, C11 or C++ in
+place — source left, MC11 right, carets tracking through the emitter's
+correlation map. Every change is an event in an append-only journal that
+replays, checkpoints and compacts. The session is reachable over an `api`
+transport with permission tiers, a headless `--serve`, a `ws` window on the
+same port, an MCP seat, an LSP face, a VS Code extension, attach and
+discovery. Beyond the human faces sits **the Nexus**: the live IR as a
+node-addressed graph an agent queries and edits through validated verbs
+rather than text patches, with history verbs over git and a propose tier.
+Underneath, the async I/O reactor gained a Windows backend and libgit2 became
+the `madcgit` module rather than a vendored subtree.
 
-Branch state: v0.99.2 is released on `develop`; the `master` promotion
-follows the release-tier lane ledger the same day (every platform lane's
-FULL suite green on this content), with public binaries built by CI for
-Linux (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel),
-each shipping the platform webview library beside the binaries.
+The same release makes C++ conformance a **measured** number. Every C++
+symbol madc defines now emits its real Itanium mangled name, so a madc object
+file links against g++- and clang-built code; expression SFINAE, pointers to
+members, real lambda captures, inheriting constructors and prvalue reference
+binding landed behind it. The `g++.dg` ratchet lane was built in this window
+and driven from **1169 (60%) to 1464 / 1950 (75.1%)**. That work then found
+three standard-C regressions — including a compiler SIGSEGV — which are fixed,
+returning gcc c-torture to 1611/1624 with zero regressions against v0.99.2.
+
+Branch state: v0.100.0 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger (every platform lane's FULL suite green
+on this content), with public binaries built by CI for Linux
+(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel), each
+shipping the platform webview library beside the binaries.
 
 Latest validated results — the full release tier, every lane green on one
 commit (`7488a39cf`, 2026-09-21). Measured conformance against third-party
@@ -326,6 +333,13 @@ suites is published separately in
 
 ### Recent Releases
 
+- [v0.100.0](docs/release-notes/v0.100.0.md) — **the Nexus release**:
+  madcide becomes a multi-client session (a window is a client, presence,
+  split-tree Views, an event-sourced change log, correlation maps) reachable
+  over api / ws / MCP / LSP / VS Code / attach; the live IR becomes a graph
+  agents edit by verbs; Itanium symbol mangling and the C++ feature work
+  behind a conformance lane driven 60% → 75.1%; three standard-C regressions
+  found and fixed, and suites tiered by time to run.
 - [v0.99.2](docs/release-notes/v0.99.2.md) — the owner's hands-on round
   on the polished local IDE, the last polish before the master GUI release:
   output streams into the Terminal with no keystroke (the window's wait is

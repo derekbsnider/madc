@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.100.0] — 2026-09-21
+
+The Nexus release: madcide becomes a multi-client session with an IR that agents address as a graph, and C++ conformance becomes a measured number driven from 60% to 75.1%.
+
 ### Overview — what this release is (2026-09-09 → 2026-09-21, 555 commits)
 
 Three arcs landed since v0.99.2, any one of which would have carried a

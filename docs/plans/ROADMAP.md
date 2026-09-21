@@ -1,7 +1,7 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-09-01 (v0.97.0 on
-`develop`, v0.95.2 promoted on `master`). **This file is forward-looking:**
+Master plan linking all workstreams. Updated 2026-09-21 (v0.100.0 on
+`develop`, v0.99.2 promoted on `master`). **This file is forward-looking:**
 release history lives in [CHANGELOG.md](../../CHANGELOG.md) and
 [docs/release-notes/](../release-notes/), and the authoritative live snapshot
 in `claude_status.json`. Completed work appears here only as a status cell in
@@ -13,7 +13,7 @@ The old parity-with-asmjit-master goal is HISTORY: the CIR backend met the
 re-defined promote gate (all class-(a) torture failures fixed, stamped in
 [failset-classification.md](../parity/failset-classification.md)) and has been
 promoted to `master` repeatedly — v0.38.0 (2026-07-23, the first CIR master)
-through **v0.92.1 (2026-08-20, current)**. `master` now tracks
+through **v0.99.2 (2026-09-09, current on `master`)**. `master` now tracks
 develop's release cadence at owner-called promote points; the standing gate is
 `.claude/rules/branching.md` (torture class-(a) burndown, currently satisfied;
 the 10 remaining failset entries are class-(b) GNU extensions = roadmap items).
