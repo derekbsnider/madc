@@ -42140,14 +42140,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // Direct invocation through a struct-member function pointer,
 		    // e.g. `cmd.fn(3, 4)` or `tab[i].fn(ch, arg)`. Detected when the
 		    // top of exStack is a TokenMember whose datadef is DataDefFPTR.
-		    // The `(` must IMMEDIATELY follow the member access — if any
-		    // tighter-than-assignment operator has been pushed onto opStack
-		    // since the member was parsed (e.g. `ch->fn && (something_else)`),
-		    // the `(` belongs to the next sub-expression, not a call through
-		    // the fn-ptr. We only count operators with precedence < 14
-		    // (anything tighter than `=`); `=` itself is the OUTER context
-		    // for declaration init like `int v = (*flfunc)(args)` and must
-		    // not block the call.
+		    // The `(` must IMMEDIATELY follow the member access — that is an
+		    // ADJACENCY question about the token before the `(`, answered for
+		    // every arm here by the one owner paren_binds_to_receiver below.
+		    // A call is POSTFIX: it binds tighter than any pending binary
+		    // operator, so a pending operator says nothing about whether this
+		    // `(` is a call — `d->ok && d->rdr (a) == 0` has `&&` pending and
+		    // the `(` is still the call's. opstack_has_pending_op below stays
+		    // for the arms whose operand is not a completed postfix form.
 		    TokenMember *member_call_base = NULL;
 		    bool opstack_has_pending_op = false;
 		    {
@@ -42187,6 +42187,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			 || prev_for_member->id() == TokenID::tkBorEq
 			 || prev_for_member->id() == TokenID::tkBSLEq
 			 || prev_for_member->id() == TokenID::tkBSREq);
+		    // The `(` must bind directly to the operand already on the stack:
+		    // prevToken is that operand's own last token — its identifier
+		    // (named obj / member name), or its closing `)` (call / paren /
+		    // operator result) or `]` (subscript result). An intervening
+		    // operator (e.g. `f() * (x)`, `ch->fn && (something_else)`) leaves
+		    // prevToken as that operator, so the `(` does NOT bind here and
+		    // the paren stays a grouping. We do NOT gate on
+		    // opstack_has_pending_op: `cout << m(7)` must still bind `(7)` to m
+		    // (the just-pushed exStack object), a tighter call.
+		    bool paren_binds_to_receiver = prev_for_member
+			&& (prev_for_member->type() == TokenType::ttIdentifier
+			 || prev_for_member->id() == TokenID::tkClBrk
+			 || prev_for_member->id() == TokenID::tkClSqr);
 		    // P2.1b gap 1 — functor call `obj(args)`: when the exStack top
 		    // is a class OBJECT (a plain object variable) whose class declares
 		    // operator(), route the `(` to a method call on its operator().
@@ -42236,18 +42249,6 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			TokenBase *recv_node = exStack.empty() ? NULL : exStack.top();
 			DataDefCLASS *fcls = recv_node ? operand_object_class(recv_node) : NULL;
 			Variable *fmethod = fcls ? fcls->findMethod(functor_name) : NULL;
-			// The `(` must bind directly to the receiver: prevToken is the
-			// receiver's own last token — its identifier (named obj / member
-			// name), or its closing `)` (call/paren/operator result) or `]`
-			// (subscript result). An intervening operator (e.g. `f() * (x)`)
-			// leaves prevToken as that operator, so the `(` does NOT bind here
-			// and the paren stays a grouping. We do NOT gate on
-			// opstack_has_pending_op: `cout << m(7)` must still bind `(7)` to m
-			// (the just-pushed exStack object), a tighter call.
-			bool paren_binds_to_receiver = prev_for_member
-			    && (prev_for_member->type() == TokenType::ttIdentifier
-			     || prev_for_member->id() == TokenID::tkClBrk
-			     || prev_for_member->id() == TokenID::tkClSqr);
 			if ( fmethod
 			  && paren_binds_to_receiver
 			  && !member_is_assign_lhs )
@@ -42365,7 +42366,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 		    }
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && !member_is_assign_lhs
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
@@ -42394,7 +42395,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    TokenBase *subscript_call_base = NULL;
 		    DataDefFPTR *subscript_call_type = NULL;
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && !member_is_assign_lhs
 		      && (dynamic_cast<TokenSubscript *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenSubscriptExpr *>(exStack.top()) != NULL)
@@ -42507,11 +42508,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // overload / instantiates the template from the call args,
 		    // exactly as the direct path would.
 		    // (`(args)` is a postfix call — precedence tighter than any
-		    // pending binary operator on opStack — so unlike the member
-		    // fptr path this does NOT gate on opstack_has_pending_op:
-		    // `size() + (std::max)(size(), __n)` must form the call even
-		    // with the `+` pending. prevToken()==`)` is the tight
-		    // discriminator that keeps it from firing spuriously.)
+		    // pending binary operator on opStack — so this does NOT gate on
+		    // opstack_has_pending_op: `size() + (std::max)(size(), __n)`
+		    // must form the call even with the `+` pending. prevToken()==`)`
+		    // is the tight discriminator that keeps it from firing
+		    // spuriously — the same adjacency test paren_binds_to_receiver
+		    // applies to the member / subscript arms.)
 		    TokenVar *fn_designator_base = NULL;
 		    TokenBase *prev_for_fn_designator = prevToken();
 		    if ( !exStack.empty()
