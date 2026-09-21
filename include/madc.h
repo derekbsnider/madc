@@ -7038,6 +7038,13 @@ public:
     // by the identifier-expression arm and the cast-operand dispatch).
     TokenBase *parse_complex_component_operand(bool want_imag, TokenBase *anchor);
     bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
+    // Record on the LAST member appended to `agg` what the member's TYPE
+    // SPELLING carried and the declarator cannot recover: the user typedef
+    // alias it was written with, and the token that locates it. EVERY
+    // member-list reader calls this — see docs/rules/design-principles.md.
+    void note_member_source_spelling(DataDefSTRUCT *agg,
+				     const std::string &type_spelling,
+				     DataDef *base_dd, TokenBase *name_tok);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);

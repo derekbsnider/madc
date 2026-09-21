@@ -3582,6 +3582,25 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
     return top_level_matches == 1 && top_level_alias == dd;
 }
 
+// The ONE owner of "what did the member's type SPELLING say". A member's
+// declarator cannot recover it: once the type resolves to a DataDef, the
+// alias it was written with is gone, and for an ANONYMOUS aggregate that
+// alias is the only name the type has. Without it the emitter re-inlines a
+// fresh anonymous body per use, so `typedef struct {...} str_t;` used as
+// `union { str_t s; }` became a DIFFERENT type from every other str_t
+// (c2mir: "incompatible types in assignment to struct/union").
+void Program::note_member_source_spelling(DataDefSTRUCT *agg,
+					  const std::string &type_spelling,
+					  DataDef *base_dd, TokenBase *name_tok)
+{
+    if ( !agg || agg->members.empty() )
+	return;
+    if ( typedef_alias_matches_datadef(type_spelling, base_dd) )
+	agg->members.back().typedef_name = type_spelling;
+    if ( name_tok )
+	agg->members.back().origin = name_tok;
+}
+
 static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &name)
 {
     if ( !cls )
@@ -46376,6 +46395,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			inner->addMember(inner_name, *inner_member_dd, inner_count,
 			    inner_count_expr, inner_is_array_decl, &inner_dims);
+			pgm.note_member_source_spelling(inner,
+				inner_type->spelling(), inner_base_dd, tn);
 		    }
 		    tn = pgm.nextToken();
 		    // Handle comma-separated members: `int f1, f2, f3;`
@@ -46402,8 +46423,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    inner->addBitField(cname, *comma_dd, bw);
 			}
 			else
+			{
 			    inner->addMember(cname, *comma_dd, ccount,
 				ccount_expr, cmd.is_array, &cmd.dims);
+			    pgm.note_member_source_spelling(inner,
+				    inner_type->spelling(), inner_base_dd, tn);
+			}
 			tn = pgm.nextToken();
 		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
@@ -46644,12 +46669,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
 			dds->member_access.back() |= member_flags;
-			if ( !dds->members.empty() )
-			{
-			    if ( !member_typedef_alias.empty() )
-				dds->members.back().typedef_name = member_typedef_alias;
-			    dds->members.back().origin = member_name_tok;
-			}
+			pgm.note_member_source_spelling(dds, member_typedef_alias,
+							base_member_dd, member_name_tok);
 			if ( member_align > 0 )
 			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
@@ -47053,6 +47074,10 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 
 	TokenBase *type_tb = nextToken();
 	DataDef *base_member_dd = NULL;
+	// The type's SPELLING, kept for note_member_source_spelling: a member
+	// written with a typedef alias emits ID("alias"), and for an anonymous
+	// aggregate that alias is the type's only name.
+	std::string member_type_spelling;
 	if ( type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION )
 	{
 	    if ( DataDefSTRUCT *nested =
@@ -47063,12 +47088,18 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		TokenDataType *mtype =
 		    resolve_declared_type_token(type_tb, true, true);
 		if ( mtype )
+		{
 		    base_member_dd = &mtype->definition;
+		    member_type_spelling = mtype->spelling();
+		}
 	    }
 	}
 	else if ( TokenDataType *mtype =
 		    resolve_declared_type_token(type_tb, true, true) )
+	{
 	    base_member_dd = &mtype->definition;
+	    member_type_spelling = mtype->spelling();
+	}
 	else if ( type_tb->id() == TokenID::tkENUM )
 	    base_member_dd = &ddINT;
 	if ( !base_member_dd )
@@ -47129,8 +47160,12 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		agg->addBitField(member_name, *member_dd, bf_width);
 	    }
 	    else
+	    {
 		agg->addMember(member_name, *member_dd, member_count, NULL,
 		    member_is_array, member_is_array ? &member_dims : NULL);
+		note_member_source_spelling(agg, member_type_spelling,
+					    base_member_dd, tn);
+	    }
 
 	    tn = nextToken();
 	    if ( !tn )
