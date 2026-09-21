@@ -2245,6 +2245,15 @@ void Program::inject_pending_auto_includes()
 // declarator and the parse fails. Skips pointer decorators; stops at
 // the first non-`*` token and classifies it as type / qualifier /
 // typedef-identifier (→ decl head) or anything else (→ not decl head).
+//
+// The question is whether a COMPLETE TYPE SPECIFIER has already been seen:
+// only then is the identifier a declarator-id. A tag keyword, a cv-qualifier
+// and a storage-class specifier all fail to complete one.
+//
+// An ELABORATED-TYPE-SPECIFIER keyword is not this shape. What follows
+// `struct` / `class` / `enum` / `union` is a TAG, and a tag is never
+// followed by a parameter list — so there is no declarator here to
+// protect, and gcc expands unconditionally in tag position.
 static bool looks_like_decl_head(const TokenStream &tokens)
 {
     for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
@@ -2254,11 +2263,22 @@ static bool looks_like_decl_head(const TokenStream &tokens)
 	TokenType tt = t->type();
 	if ( tid == TokenID::tkMul ) continue;
 	if ( tt == TokenType::ttDataType ) return true;
+	// An elaborated-type-specifier keyword puts the identifier in TAG
+	// position, which is never a declarator: `struct VARR (char)` is a
+	// macro call, not `TYPE name (params)`.
 	if ( tid == TokenID::tkSTRUCT || tid == TokenID::tkCLASS
-	  || tid == TokenID::tkENUM ) return true;
+	  || tid == TokenID::tkENUM || tid == TokenID::tkUNION ) return false;
+	// A cv-qualifier or storage-class specifier does NOT complete a type,
+	// so it cannot by itself put the identifier in declarator position —
+	// keep walking. `(const VARR (char) *p)` reaches the `(` and expands
+	// (the qualifier opened the parameter's TYPE); `char const bug(...)`
+	// reaches `char` and suppresses (the type was already complete, so
+	// `bug` is the declarator-id). Returning true here left six
+	// `const VARR (char) * varr` parameters unexpanded in mir-varr.h.
 	if ( tid == TokenID::tkCONST || tid == TokenID::tkEXTERN
 	  || tid == TokenID::tkSTATIC || tid == TokenID::tkREGISTER
-	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT ) return true;
+	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT
+	  || tid == TokenID::tkVOLATILE ) continue;
 	return false;
     }
     return false;
