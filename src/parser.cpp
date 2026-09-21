@@ -42088,6 +42088,32 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    {
 				cast_expr = parseExpression(cast_expr_tb, true);
 			    }
+			    // C11 6.5.2/6.5.4: postfix ++/-- is part of the
+			    // POSTFIX-expression, and a cast's operand is a
+			    // unary-expression — so `(int) p->n++` is
+			    // `(int)(p->n++)`, never `((int)p->n)++`. madc built the
+			    // latter, which is not an lvalue: mir-debug.c's
+			    // `return (int) obj->n_syms++;` emitted
+			    // `return ((int)obj->n_syms)++;` and c2mir refused it
+			    // ("lvalue required as left operand of assignment").
+			    // Same rule the deref operand already applies below
+			    // (`*(*x)++` is `*(((*x)++))`); one hook here covers
+			    // every operand arm above, since this is the single site
+			    // that builds the cast.
+			    if ( cast_expr && peekToken()
+			      && (peekToken()->id() == TokenID::tkInc
+			       || peekToken()->id() == TokenID::tkDec) )
+			    {
+				TokenBase *step_tb = nextToken();
+				TokenOperator *step;
+				if ( step_tb->id() == TokenID::tkInc )
+				    step = new TokenInc();
+				else
+				    step = new TokenDec();
+				step->left = cast_expr;
+				step->right = NULL;
+				cast_expr = step;
+			    }
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    // Caller wants only the cast group, not whatever
