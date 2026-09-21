@@ -9475,10 +9475,36 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 		// `(S[]){{.b=3}}`, pr98366), not just a scalar — build the spec
 		// the same way the object path below does. slit->typedef_name
 		// carries the element's typedef alias for the array case.
-		append_lit_type_spec(aspec, slit->array_elem_dd,
-				     slit->typedef_name);
+		//
+		// A POINTER element type puts its stars in the DECLARATOR, never
+		// in the specifier: append_type_specs can only spell `char`, so
+		// `(const char *[]){"a", "b", NULL}` (c2mir.c's ALLOCA /
+		// BUILTIN_VA_START macros) emitted `(char []){...}` — an array of
+		// CHAR — and every string initializer became "string is too long
+		// for array initializer". The stars ride the same pointer piece
+		// var_decl uses; c2m's declarator list is innermost-first, so they
+		// follow the N_ARR: [ARR, POINTER] spells `char *[]`.
+		DataDef *elem_spec_dd = slit->array_elem_dd;
+		std::vector<carray_dim_t> elem_ptr_dims;
+		int elem_ptr_levels = 0;
+		// A typedef alias already names its own stars (`typedef char *cp;
+		// (cp[]){...}`), so emit only what the USE adds beyond the alias —
+		// the same subtraction var_decl makes. -1 = no alias, peel here.
+		int elem_stars = explicit_star_count(slit->array_elem_dd,
+						     slit->typedef_name);
+		if (elem_stars < 0)
+			elem_ptr_levels = peel_pointer_declarator(elem_spec_dd,
+								  elem_ptr_dims);
+		append_lit_type_spec(aspec, elem_spec_dd, slit->typedef_name);
 		node_t adecl_list = list();
 		append(adecl_list, node3(N_ARR, ignore(), list(), ignore()));
+		if (elem_stars >= 0) {
+			for (int s = 0; s < elem_stars; s++)
+				append(adecl_list, pointer());
+		} else {
+			append_pointer_declarator(adecl_list, elem_ptr_levels,
+						  elem_ptr_dims);
+		}
 		node_t atype = node2(N_TYPE, aspec,
 				     node2(N_DECL, ignore(), adecl_list));
 		node_t ainits = list();
