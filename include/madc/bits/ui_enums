@@ -60,6 +60,48 @@ namespace ui {
     // The steps of a pointing-device gesture (event_kind::pointer): a
     // press places, a drag extends, a release ends.
     enum class pointer_phase : unsigned char { down, drag, up };
+
+    // A native file dialog's MODE (ui::dialog's request, the dialog event's
+    // `mode_code`): what the request asked for.
+    enum class dialog_mode : unsigned char { open, save };
+
+    // The UI LEVEL (OWNER 2026-09-09): the rendering model a target serves
+    // and a program wants, ORDERED by requirement and platform specificity.
+    // The order has a meaning — a program composes for the highest level it
+    // wants; a lower level ignores the hints it cannot show; a target below
+    // the requested level refuses with the reason (or the program chooses
+    // to degrade), never silently. Devices and chrome (keyboard, pointer,
+    // touch, menu bar, dialogs) are feature FLAGS beside the level, not
+    // levels. Unscoped by design: the order IS the point (`level_of(t) <=
+    // ui::TUI` reads "a real terminal exists"), and `case ui::WEB:` switches
+    // on a plain integer; the namespace is the prefix (ui::WEB, never a
+    // repeated `ui` inside the name). Contiguous from NONE to GFX3D (the
+    // name owner in madcdis/ui_events.h walks the range).
+    enum level : unsigned char
+    {
+	NONE = 0,	// non-interactive: may print, expects no input (a
+			// one-shot command, an api seat, the headless gates)
+	LINE,		// dumb-terminal line mode (ex / edlin): lines in, text out
+	TUI,		// the addressable grid (curses-style)
+	WEB,		// a page in the platform webview
+	GUI,		// native widget chrome
+	GFX2D,		// full-screen 2D graphics
+	GFX3D		// 3D
+    };
+
+    // A LAYOUT split's direction (client-server arc V2, design §2.2): a
+    // `split` group lays its children side by side (vertical: the divider
+    // runs vertically) or one above the other (horizontal). A composed
+    // tree carries it as the group's `split` hint; both renderers (the grid
+    // and the page) divide the group's rectangle by it. `none` = not a
+    // split.
+    enum class split : unsigned char { none = 0, vertical, horizontal };
+
+    // A chrome pane's SIDE of the window (V2): where a fixed-slot pane
+    // docks — the sidebar left or right, the panel bottom or top. A
+    // composed chrome node carries it as its `side` hint beside `size`
+    // (a percent of the window's columns or rows).
+    enum class side : unsigned char { none = 0, left, right, top, bottom };
 }
 
 #endif // __MADC_BITS_UI_ENUMS

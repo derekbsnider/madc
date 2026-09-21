@@ -1,0 +1,38 @@
+// `v[i].field` on a std::vector<Struct> receiver that is a
+// REFERENCE-typed variable or a CLASS MEMBER (self-host arc 2026-09-17: the
+// top first-error shape of madc's own source — intern_table.h:71
+// `_entries[i].hash`, datadef.h:904 `members[vi->first].first`). A plain local
+// vector already resolved the element through operator[]; a reference
+// parameter and an implicit-this member did not. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+#include <vector>
+
+struct Entry { unsigned hash; unsigned next; };
+
+struct Table {
+    std::vector<Entry> _entries;
+    unsigned mask_sum(unsigned m) const {
+	unsigned acc = 0;
+	for ( unsigned i = 0; i < _entries.size(); ++i ) acc += _entries[i].hash & m;
+	return acc;
+    }
+    unsigned first_next() { return this->_entries[0].next; }
+    unsigned first_hash();
+};
+unsigned Table::first_hash() { return _entries[0].hash; }
+
+unsigned by_ref(std::vector<Entry> &v) { return v[1].hash + v[0].next; }
+unsigned by_cref(const std::vector<Entry> &v) { return (v[1]).next; }
+
+int main()
+{
+    Table t;
+    Entry a; a.hash = 6; a.next = 3;
+    Entry b; b.hash = 9; b.next = 12;
+    t._entries.push_back(a);
+    t._entries.push_back(b);
+    printf("mask_sum=%u first_next=%u first_hash=%u by_ref=%u by_cref=%u\n",
+	   t.mask_sum(7), t.first_next(), t.first_hash(), by_ref(t._entries), by_cref(t._entries));
+    return 0;
+}

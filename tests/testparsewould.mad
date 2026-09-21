@@ -1,0 +1,37 @@
+// Nexus L4c: ONE validator, two modes. parse_would_accept answers the
+// parse_refresh_checked verdict without the swap — the tree, its generation
+// and its ids are untouched; parse_refresh_checked still swaps. A revision
+// handle accepts a would-accept (nothing to bump) and refuses the swap.
+int main()
+{
+    var src = "long g = 1;\nlong f(long x) { return x + g; }\n";
+    long h = madc::parse_open(src.c_str(), "would.mad");
+    long gen0 = madc::parse_generation(h);
+    var sy;
+    madc::graph_symbols(sy, h);
+    var n0 = sy["nodes"][0];
+    long id = n0["id"].as_integer();
+    var diags;
+    var good = "long g = 1;\nlong f(long x) { return x - g; }\n";
+    println("would-accept-good: {}", madc::parse_would_accept(diags, h, good.c_str()) ? 1 : 0);
+    println("gen-unchanged: {}", madc::parse_generation(h) == gen0 ? 1 : 0);
+    var node;
+    madc::graph_node(node, h, id);
+    println("id-still-fresh: {}", node["name"] == n0["name"] ? 1 : 0);
+    var bad = "long g = 1;\nlong f(long x) { return x - ; }\n";
+    println("would-accept-bad: {}", madc::parse_would_accept(diags, h, bad.c_str()) ? 0 : 1);
+    println("bad-has-diag: {}", php::count(diags) >= 1 ? 1 : 0);
+    println("gen-unchanged-after-bad: {}", madc::parse_generation(h) == gen0 ? 1 : 0);
+    println("checked-swaps: {}", madc::parse_refresh_checked(diags, h, good.c_str()) ? 1 : 0);
+    println("gen-advanced: {}", madc::parse_generation(h) == gen0 + 1 ? 1 : 0);
+    madc::graph_node(node, h, id);
+    println("old-id-stale: {}", !node["stale"].is_null() && node["stale"].as_boolean() ? 1 : 0);
+    long rev = madc::parse_open_tagged(src.c_str(), "would.mad");
+    long tag = madc::parse_generation(rev);
+    println("would-accept-on-revision: {}", madc::parse_would_accept(diags, rev, good.c_str()) ? 1 : 0);
+    println("revision-tag-unchanged: {}", madc::parse_generation(rev) == tag ? 1 : 0);
+    println("checked-on-revision-refused: {}", madc::parse_refresh_checked(diags, rev, good.c_str()) ? 0 : 1);
+    madc::parse_close(rev);
+    madc::parse_close(h);
+    return 0;
+}

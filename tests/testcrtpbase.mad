@@ -1,0 +1,40 @@
+// A class whose base clause names the class itself as a template argument —
+// the CRTP shape `class timed_mutex : private __mutex_base, public
+// __timed_mutex_impl<timed_mutex>` (<mutex>:236; self-host arc 2026-09-17,
+// "Expecting a type argument to __timed_mutex_impl<>", 2 units). [class]/2:
+// the class-name is declared at the class-head, before the base-clause, so
+// it is a complete-enough type name for its own bases. Shapes: the CRTP base
+// after another base (its method reads the derived class's members through
+// `this`), a CRTP base whose method takes the derived class by reference, and
+// a CRTP base taking the class as a pointer template argument. Oracle: g++
+// and clang++ -std=c++11.
+#include <stdio.h>
+
+struct base_t { int b; base_t() : b(7) {} };
+
+template<class D> struct impl {
+    int twice() { return static_cast<D *>(this)->v * 2; }
+    int base_b() { return static_cast<D *>(this)->b; }
+};
+
+class timed : private base_t, public impl<timed> {
+public:
+    int v;
+    timed() : v(5) {}
+    int bb() { return b; }
+};
+
+template<class D> struct adder { int plus(const D &o) { return static_cast<D *>(this)->w + o.w; } };
+
+struct widget : adder<widget> { int w; widget() : w(3) {} };
+
+template<class P> struct holder { P self; int is_self(P p) { return p == self; } };
+struct node : holder<node *> { int k; node() : k(9) { self = this; } };
+
+int main()
+{
+    timed t; widget w1, w2; node n;
+    w2.w = 4;
+    printf("%d %d %d %d %d %d\n", t.twice(), t.bb(), w1.plus(w2), w1.w + w2.w, n.is_self(&n), n.k);
+    return 0;
+}

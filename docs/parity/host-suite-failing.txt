@@ -1,0 +1,23 @@
+# Host suite (make -C src fulltest) KNOWN-FAILING set — the diff baseline.
+#
+# WHY THIS FILE EXISTS: a regression was shipped on 2026-09-17 because the
+# failure COUNT was unchanged (39 -> 39) while a fix and a break cancelled
+# out. Compare the LIST, never the count:
+#
+#   grep '^FAIL' <battery log> | sed 's|^FAIL: ||' | sort \
+#     | diff - docs/parity/host-suite-failing.txt
+#
+# Recorded 2026-09-18 at 6905cdf00 (container battery: 1471 passed, 5 failed,
+# 9 skipped). Every entry verified to fail on a PRE-merge binary too.
+#
+tests/testifconstexpr.mad
+tests/testinvocable.mad
+tests/testvecmembercopy_libcxx.mad
+tests/testvecpb_libcxx.mad
+#
+# NOT REPO-TRACKED — an untracked REDUCER this arc wrote on 2026-09-17 for a
+# real defect (range-for over a C array of class POINTERS: the CIR recognizer
+# reads the element's POINTEE class as the container). A handoff misattributed
+# it to the owner; the owner confirmed on 2026-09-18 they did not create it.
+# It is OURS to fix, not to route around:
+# tests/testrangeforclassptrarray.mad

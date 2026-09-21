@@ -1,0 +1,19 @@
+// Exactly ONE CPU-architecture predefine is set for the target. The lexer
+// seeded __x86_64__ unconditionally -- a leftover from before the captured
+// per-target predefined-macro table owned the CPU macro -- so the arm64 darwin
+// target defined BOTH __arm64__ and __x86_64__, and the SDK's
+// libkern/_OSByteOrder.h then included the i386 AND the arm inline
+// _OSSwapInt16 definitions ("conflicting types for '_OSSwapInt16'" on the
+// darwin-arm64 lane, tests/testgetenv_realhdr). Oracle: gcc and clang on
+// every supported target compile this and print "one cpu macro".
+#include <stdio.h>
+
+#if (defined(__x86_64__) + defined(__aarch64__)) != 1
+#error "exactly one CPU-architecture predefine must be set for the target"
+#endif
+
+int main(void)
+{
+	printf("one cpu macro\n");
+	return 0;
+}

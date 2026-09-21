@@ -1,0 +1,41 @@
+// A struct member whose declarator carries a const BETWEEN pointer stars —
+// `const char *const *paths;` (self-host arc 2026-09-17: include/
+// madc_sys_includes.h:24 "Expecting member name in struct definition", 2
+// units). The struct member loop consumed stars and only then skipped cv
+// qualifiers, so the const stopped the stars and the second `*` was read as
+// the member name; the parameter and variable declarators already share the
+// one stars-and-qualifiers consumer. Shapes: pointer-to-const-pointer members
+// in a struct and a class, a top-level const member initialized by an
+// aggregate, and a parameter of the same shape. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+
+static const char *names[] = { "libstdc++", "libc++", 0 };
+static int nums[] = { 3, 4 };
+static int *const numptrs[] = { &nums[0], &nums[1] };
+
+struct flavor {
+    const char *name;
+    const char *const *paths;
+    int *const *counts;
+    unsigned depth;
+};
+
+class holder {
+public:
+    char *const *argv;
+    const flavor *const *flavors;
+    int n;
+};
+
+int count_paths(const char *const *p) { int n = 0; while (p[n]) n++; return n; }
+
+int main(int argc, char *const *argv)
+{
+    flavor f = { "gnu", names, numptrs, 2 };
+    const flavor *fl[] = { &f };
+    holder h; h.argv = argv; h.flavors = fl; h.n = 1;
+    printf("%s %s %d %d %u %d %d\n", f.name, f.paths[1], *f.counts[1], count_paths(f.paths), f.depth,
+	   h.flavors[0]->paths == names, (int)sizeof(f.paths) == (int)sizeof(void *));
+    return argc > 99;
+}

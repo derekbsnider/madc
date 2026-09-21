@@ -1,0 +1,3 @@
+observer-edit: ok=0 error='delline' requires editor (you are observer)
+promote: ok=1 tier=editor
+editor-edit: ok=1

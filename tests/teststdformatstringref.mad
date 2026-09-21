@@ -1,0 +1,13 @@
+// A namespace public that returns std::string& (js::stringify's interop form)
+// fed straight to std::format/println. Real std::format formats a string
+// reference identically under libstdc++ and libc++ (g++ and clang++ -stdlib
+// oracle: both print the JSON). madc classified the arg off the parse-bound
+// std::string& overload — rejecting it ("no formatter for pointer type
+// basic_string*") or, once unwrapped, taking the ADDRESS of a call that in
+// fact lowers to the lean const char* form. The fix classifies a call arg off
+// its CIR-resolved callee's return type (what translate_expr lowers through),
+// so the classification and the lowering agree and the result is flavor-
+// invariant.
+var v = { "k": 42, "n": "hi" };
+std::string buf;
+println("[{}]", js::stringify(buf, v));

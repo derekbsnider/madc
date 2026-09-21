@@ -1,0 +1,170 @@
+// V6c-3b: ONE process, ONE session, TWO faces. `madcide <file> --lsp --serve
+// <addr>` speaks LSP on stdio for the editor AND api/ws/http on a loopback
+// port for a window — against the same buffers, because two processes would be
+// two sessions on one file (two carets, two undo histories, last save wins).
+//
+// This test is both clients at once: it drives the LSP face over a framed
+// exec:// channel and connects an api client to the port the server reports
+// in-protocol ($/madc/serve), then proves the api client sees what the LSP
+// client just did. It also proves the process still EXITS — the serve task
+// parks in accept and `scope` joins it, so shutdown depends on the self-connect
+// poke working.
+#include "../tools/texteditor/lined_core.inc"
+
+void send(madc::channel &c, var &msg)
+{
+	var js = js::stringify(msg);
+	c.write(js.c_str());
+}
+
+// Read one framed message off the LSP channel, collecting NOTIFICATIONS (no
+// id) into `notes` until a reply arrives.
+bool read_reply(var &out, var &notes, madc::channel &c)
+{
+	var line;
+	for ( ;; )
+	{
+		if ( !c.readline(line) )
+			return false;
+		var msg;
+		if ( !js::parse(msg, line.c_str()) )
+			return false;
+		if ( msg["id"].is_null() )
+		{
+			notes.push(msg);
+			continue;
+		}
+		out = msg;
+		return true;
+	}
+}
+
+// Drain whatever notifications are already queued, up to `want` of them.
+void drain_notes(var &notes, madc::channel &c, long want)
+{
+	var line;
+	for ( long i = 0; i < want; i = i + 1 )
+	{
+		if ( !c.readline(line) )
+			return;
+		var msg;
+		if ( !js::parse(msg, line.c_str()) )
+			return;
+		notes.push(msg);
+	}
+}
+
+// The method of the first note with this name ("" = none) — the notes arrive
+// interleaved, so a test asks for the one it means.
+void note_named(var &out, var &notes, const char *want)
+{
+	var nm = want;
+	for ( var n : notes )
+		if ( n["method"] == nm )
+		{
+			out = n;
+			return;
+		}
+}
+
+int main()
+{
+	const char *path = "madc_ide_lspserve.mad";
+	php::file_put_contents(path,
+	    "long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\treturn twice(21);\n}\n");
+	var self = madc::compiler_path();
+	var uri = format("exec://{} --no-config tools/madcide/madcide.mad {} --lsp --serve 127.0.0.1:0",
+			 self, path);
+
+	madc::channel c(uri.c_str());
+	println("open: {}", c.ok() ? 1 : 0);
+	println("framed: {}", c.frame_headers() ? 1 : 0);
+
+	var noparams;
+	var init = { "jsonrpc": "2.0", "id": 1, "method": "initialize" };
+	send(c, init);
+	var reply;
+	var notes = {};
+	read_reply(reply, notes, c);
+	var caps = reply["result"]["capabilities"];
+	var exec = caps["executeCommandProvider"];
+	var ids = exec["commands"];
+	println("exec-advertised: {}", php::count(ids) > 0 ? 1 : 0);
+
+	// initialized -> the server tells us its OTHER face, in-protocol.
+	var ready = { "jsonrpc": "2.0", "method": "initialized", "params": noparams };
+	send(c, ready);
+	drain_notes(notes, c, 1);
+	var snote;
+	note_named(snote, notes, "$/madc/serve");
+	println("serve-note: {}", snote.is_null() ? 0 : 1);
+	var endpoint = snote["params"]["endpoint"];
+	println("serve-endpoint-nonempty: {}", strlen(endpoint.c_str()) > 0 ? 1 : 0);
+
+	// The api face of the SAME process: connect and ask it what it holds.
+	var aurl = format("tcp://{}", endpoint);
+	madc::channel api(aurl.c_str());
+	println("api-open: {}", api.ok() ? 1 : 0);
+
+	// The LSP client edits: go to line 8 and delete it, through the command
+	// registry (workspace/executeCommand -> api_run -> the one command core).
+	var gargs = {};
+	gargs[] = "8";
+	var gp = { "command": "madcide.gotoline", "arguments": gargs };
+	var greq = { "jsonrpc": "2.0", "id": 2, "method": "workspace/executeCommand",
+		     "params": gp };
+	send(c, greq);
+	read_reply(reply, notes, c);
+	println("gotoline-ok: {}", reply["result"]["ok"]);
+
+	var dargs = {};
+	var dp = { "command": "madcide.delline", "arguments": dargs };
+	var dreq = { "jsonrpc": "2.0", "id": 3, "method": "workspace/executeCommand",
+		     "params": dp };
+	send(c, dreq);
+	read_reply(reply, notes, c);
+	println("delline-replied: {}", reply["id"]);
+	// A command's NOTES are written after its reply, so they are collected on
+	// the way to the NEXT reply — the framed gate's own pattern.
+
+	// The api client asks the SAME session for the buffer. One session means
+	// the line the LSP client deleted is gone here too.
+	var areq = { "cmd": "top", "args": "", "seq": 1 };
+	var ajs = js::stringify(areq);
+	var aline = format("{}\n", ajs);
+	api.write(aline.c_str());
+	var got;
+	api.readline(got);
+	var arep;
+	js::parse(arep, got.c_str());
+	println("api-ok: {}", arep["ok"]);
+	var text = arep["text"];
+	println("api-sees-edit: {}", perl::index(text.c_str(), "return twice(21);") < 0 ? 1 : 0);
+	api.close();
+
+	// shutdown + exit: the serve task is parked in accept and `scope` joins
+	// it, so a clean exit status proves the wake-up poke worked.
+	var down = { "jsonrpc": "2.0", "id": 4, "method": "shutdown" };
+	send(c, down);
+	read_reply(reply, notes, c);
+	println("shutdown-result-null: {}", reply["result"].is_null() ? 1 : 0);
+	// The edit's notifications rode in ahead of that reply: the change event
+	// (the SAME record the api seat broadcasts) and the republished diagnostics.
+	var evnote;
+	note_named(evnote, notes, "$/madc/event");
+	println("edit-event-note: {}", evnote.is_null() ? 0 : 1);
+	var dgnote;
+	note_named(dgnote, notes, "textDocument/publishDiagnostics");
+	println("edit-diagnostics-note: {}", dgnote.is_null() ? 0 : 1);
+	var bye = { "jsonrpc": "2.0", "method": "exit", "params": noparams };
+	send(c, bye);
+	c.close_write();
+	var tail;
+	while ( c.readline(tail) )
+		;				// drain any trailing notifications
+	c.close();
+	println("exit-status: {}", c.exit_status());
+
+	php::unlink(path);
+	return 0;
+}

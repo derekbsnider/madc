@@ -1,0 +1,22 @@
+// `typedef enum : T { ... } alias;` — a C++11 enum-base on an UNNAMED enum
+// inside a typedef (self-host arc 2026-09-17: madc's own include/datadef.h:248
+// `typedef enum : uint32_t { vfLOCAL = 1, ... } varflag_t;`, the first error
+// of 22 units). TokenENUM::parse already reads `: T` for a plain enum; the
+// typedef arm only delegated to it when `{` followed the tag, so `:` fell
+// through to the alias read ("Expecting alias name in typedef enum"). The
+// tagged and the plain forms ride along. Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+typedef enum : unsigned char { fA = 1, fB = 2, fC = 4 } flags_t;
+typedef enum Tag : short { tX = -3, tY = 7 } tag_t;
+enum Plain : long { pQ = 5 };
+
+int main()
+{
+    flags_t f = fC;
+    tag_t t = tX;
+    printf("flags=%d sizeof=%d tag=%d sizeof=%d plain=%ld sizeof=%d\n",
+	   (int)f, (int)sizeof(flags_t), (int)t, (int)sizeof(tag_t),
+	   (long)pQ, (int)sizeof(Plain));
+    return 0;
+}

@@ -1,0 +1,21 @@
+// A namespace function template whose body instantiates ANOTHER overload of the
+// same name (libc++'s max(a, b) calls max(a, b, __less<>())), called with an
+// explicit template argument from an instantiated member body (vector's
+// __recommend: `std::max<size_type>(2 * __cap, __new_size)`).
+#include <stdio.h>
+namespace n {
+	template<typename T> struct less { bool operator()(T a, T b) const { return a < b; } };
+	template<typename T, typename C> T mx(T a, T b, C c) { return c(a, b) ? b : a; }
+	template<typename T> T mx(T a, T b) { return n::mx(a, b, less<T>()); }
+}
+template<typename T> struct box {
+	typedef unsigned long size_type;
+	size_type cap;
+	size_type recommend(size_type want) { return n::mx<size_type>(2 * cap, want); }
+};
+int main()
+{
+	box<int> b; b.cap = 3;
+	printf("%lu %lu\n", b.recommend(4), b.recommend(9));
+	return 0;
+}

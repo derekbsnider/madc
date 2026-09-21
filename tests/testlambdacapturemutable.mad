@@ -1,0 +1,11 @@
+// g++ 13.3 == clang++ 18.1: 7 5
+#include <stdio.h>
+
+int main()
+{
+	int n = 4;
+	auto empty = []() mutable { return 7; };
+	auto f = [n]() mutable { n++; return n; };
+	printf("%d %d\n", empty(), f());
+	return 0;
+}

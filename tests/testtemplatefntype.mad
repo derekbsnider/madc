@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+template<class T> struct tag { int value; };
+template<> struct tag<int()> { int value[2]; };
+template<> struct tag<int(int)> { int value[3]; };
+
+int main()
+{
+	tag<int()> zero;
+	tag<int(int)> unary;
+	tag<int (*)(int)> pointer;
+	printf("function types: %d %d %d\n", (int)sizeof(zero),
+		(int)sizeof(unary), (int)sizeof(pointer));
+	return 0;
+}

@@ -10,6 +10,13 @@ int printf(const char *, ...);
 typedef int v4si __attribute__((vector_size(16)));
 typedef double v2df __attribute__((vector_size(16)));
 
+/* The native half is C: in a C++-presenting madc TU these prototypes must say
+   so, or each is a C++-linkage function (capply10 -> _Z8capply10PFiccccccccccE)
+   the bare libvecnative export never satisfies -- the C-header convention, as
+   gcc/clang require of every C library declared to C++. */
+#ifdef __cplusplus
+extern "C" {
+#endif
 v4si nadd(v4si a, v4si b);
 v4si nsum9(v4si a, v4si b, v4si c, v4si d, v4si e, v4si f, v4si g, v4si h, v4si i);
 v4si nmixed(int x, v4si a, long y, v4si b, int z);
@@ -40,6 +47,9 @@ float fapply10(float (*f)(float, float, float, float, float, float, float, float
 long mixapply(long (*f)(long, long, long, long, long, long, long, long,
                         char, int, char, long, short, struct S2, char, float));
 long va9apply(long (*f)(long, long, long, long, long, long, long, long, int, ...));
+#ifdef __cplusplus
+}
+#endif
 
 v4si cb_add(v4si a, v4si b) { return a * b + a; }
 v4si cb9(v4si a, v4si b, v4si c, v4si d, v4si e, v4si f, v4si g, v4si h, v4si i)

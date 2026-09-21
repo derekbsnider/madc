@@ -1,0 +1,33 @@
+extern "C" int printf(const char *, ...);
+
+int values[3] = {4, 5, 6};
+int (&global_array)[3] = values;
+
+int extent(int (&a)[3]) { return sizeof(a) / sizeof(int); }
+int unnamed(const int (&)[3]) { return 3; }
+
+int total(int (&a)[3])
+{
+	a[0] += 1;
+	return a[0] + a[1] + a[2];
+}
+
+int main()
+{
+	int a[3] = {2, 3, 4};
+	printf("array reference extent: %d\n", extent(a));
+	printf("unnamed array reference: %d\n", unnamed(a));
+	printf("array parameter: %d\n", total(a));
+	printf("array mutation: %d\n", a[0]);
+	int (&local_array)[3] = global_array;
+	local_array[1] += 7;
+	printf("array declaration: %d %d\n", values[1], int(sizeof(local_array)));
+	// [dcl.array]/3: an array of UNKNOWN bound is completed by its
+	// initializer, so this reference's type is `const int (&)[5]`.
+	// NOT sizeof(deduced): g++ holds the reference's type INCOMPLETE and
+	// rejects the query (CWG 1591), while clang++ and madc complete it to
+	// [5] and answer 20. Assert only what both canon compilers agree on.
+	const int (&deduced)[] = {10, 20, 30, 40, 50};
+	printf("deduced bound: %d %d\n", deduced[0], deduced[4]);
+	return 0;
+}

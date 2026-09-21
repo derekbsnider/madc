@@ -1,0 +1,5 @@
+// g++ and clang++ -std=c++11 reject: mutable member is not a constant expression.
+struct S { mutable int i; int j; };
+constexpr S s = {42, 7};
+enum { E = s.i };
+int main() { return 0; }

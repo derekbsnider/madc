@@ -1,0 +1,24 @@
+# madcide layout data (client-server arc V2, 2026-09-09): the shipped
+# workbench — WHERE Views live, as data the client owns. The baked default
+# (default_layout_text, madcide_core.inc) is this same text as an inline
+# profile through the same parser, so a missing or broken file falls back to
+# exactly this. Every word converts ONCE at load; a misspelling refuses the
+# file with its line.
+#
+#   @window <name>
+#   pane <slot> [<side> <size>%] <mode> views <kind>... [focus] [hidden]
+#   split <vertical|horizontal> [<size>%]      (children indented beneath)
+#
+# slot: editor | sidebar | panel — the editor region is the window's ONE
+# slotless child (a pane, or a split of panes: `split vertical` = side by
+# side, `split horizontal` = one above the other, any depth); a sidebar docks
+# left|right, a panel bottom|top, and neither ever splits. mode: tabs (one
+# View behind a strip) | stack (all Views, headers between). kind: source
+# code problems output terminal project outline help. `focus` names the pane
+# the keyboard starts in; `hidden` keeps a pane off the screen until a
+# command shows it (check surfaces the panel, outline the sidebar) — the
+# terminal shows nothing the user did not open.
+@window main
+pane editor tabs views source focus
+pane sidebar left 20% tabs views outline hidden
+pane panel bottom 25% tabs views problems output terminal hidden

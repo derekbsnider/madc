@@ -12,8 +12,30 @@ the same commands; the window adds a workbench around the editor.
 ```sh
 madcide file.mad            # in the terminal
 madcide file.mad --gui      # in a window
+madcide file.mad --line     # the ex / edlin line mode: stdin lines, text out
+madcide file.mad -c check   # no surface: one command, the projection, a verdict
 madc tools/madcide/madcide.mad file.mad   # from a source checkout
 ```
+
+`--line` is the **ex / edlin client**: the same live-parse session driven
+over stdin/stdout with no cursor addressing — it works over a pipe, in a
+dumb terminal, and as an MCP seat's transcript. Each cycle typesets the
+projection (the status line, the document, any message) to stdout and reads
+one line: a `:` line is a colon command (the vi `:` mode — `w q wq x e r`,
+`:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+shell), and any other line is text inserted at the caret. It is the same
+composer and the same commands as the terminal and the window; only the
+rendering model (level `line`) is lower.
+
+`-c "<command> [arg]"` runs ONE command of the registry (the names are the
+`.menu` / `.keys` files' — `check`, `outline`, `gotoline 3`, `find add`,
+`colon w`) against the opened file with no terminal or window at all,
+prints what the IDE would have shown — the status line, the text, the
+problems rows or the outline — and exits with the verdict: `0` clean, `1`
+the file could not be read or the problems projection carries errors
+(`-c check` on a broken file), `2` an unknown command or an argument the
+command does not take. The argument is what you would have typed at the
+prompt the command opens.
 
 The packaged `madcide` binary ships with the Linux, Windows and macOS
 releases (`bin/madcide`, `bin\madcide.exe`); the window needs the platform
@@ -37,11 +59,21 @@ The JOE defaults most worth knowing:
 | `^_` · `^^` · `^Y` · `^W` | undo · redo · delete line · delete word |
 | `^K ;` · `^B` · `^K I` · `^P` | check · Build… · outline · the Project window |
 | `^K O` `^K N` `^K P` · `^K 0` `^K 1` | split / next / previous window · close / only window |
-| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses) |
+| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
 
+A binding's last word is a command name from the IDE's one vocabulary
+(`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
+The profile resolves every word to its code when it LOADS — a misspelt word
+refuses the whole profile on the status line, naming its line (`Profile 'x'
+line 12: unknown action 'svae'.`), so a typo is a load-time error, never a
+dead key. The same rule covers the `@scope` lines (a prompt's, the project
+window's, the vi `@normal` alphabet's actions).
+
 Menus are data too (`profiles/default.menu`): the window's menu bar, and
-any command palette, read the same command registry the profiles bind.
+any command palette, read the same command registry the profiles bind; a
+menu row's command id resolves the same way and an unknown id refuses the
+menu naming its line.
 
 ## Colour schemes
 
@@ -97,6 +129,54 @@ keyboard back to the editor (a click in an editor window does too) — and
 a gui program opens its own window while its output streams into the
 **Output** tab. Every stream ends with the program's exit status.
 
+## Sharing a session
+
+One madcide session can carry more than one client: the editor you are typing
+in, an LSP editor (VS Code through the extension in `tools/vscode-madcide`), an
+agent's MCP client, and a browser window — all on the same buffers, the same
+carets, the same undo history. Two processes on one file would be two sessions:
+two carets, two undo histories, last save wins.
+
+Every session **advertises itself** so nobody has to be told an address. A
+running madcide writes a small JSON file — its endpoint, root, documents, pid
+and what it serves — under `$XDG_STATE_HOME/madcide/sessions/` (or
+`~/.local/state/madcide/sessions/`; `MADCIDE_SESSION_DIR` overrides). It is an
+advertisement, not a lock: madcide never refuses a file that is already open,
+and two sessions in one project both appear.
+
+```sh
+madcide --sessions                            # what is running, and how to join it
+madcide file.mad --lsp --attach               # join whoever holds file.mad
+madcide file.mad --mcp --attach               # the same, for an agent host
+madcide file.mad --lsp --attach 127.0.0.1:7777  # or name one explicitly
+```
+
+The MCP seat's history verbs (`graph.history`, `graph.commits`,
+`graph.revision`, `graph.diff`, blame provenance) read the repository through
+the **`madcgit` module** — madc's read-only binding of the *system* libgit2
+(`lib/libmadcgit.so`, built when `libgit2-dev` is present and loaded on first
+use). libgit2 is a dependency of the IDE's nexus, never part of madc: without
+the module those verbs answer exactly as for a file outside any repository.
+
+An ordinary `madcide file.mad` listens on a **loopback ephemeral port** so it
+can be joined; `--no-serve` opts out. `--serve <host:port>` runs headless on a
+port you choose. A session that cannot bind, or cannot write the advertisement,
+runs anyway — undiscoverable rather than broken. A crashed session's file is
+removed by the next session that looks (the liveness test is a connection, not
+a pid: pids get reused).
+
+> **madcide has no authentication and no TLS.** A port is reachable by any
+> local user. Bind loopback only, and reach a session on another machine
+> through an ssh tunnel (`ssh -N -L 7777:127.0.0.1:7777 host`) — never by
+> binding a public address.
+
+The first api client to **speak** is granted **owner** and every later one
+**observer**, so joining a session does not hand out edit rights; an owner
+promotes one with `clienttier <id> editor`. "To speak", not "to connect": one
+port carries api, ws and the page, and a connection is told apart by its first
+byte, so it joins the roster — and can receive pushed events — when its first
+message arrives.
+
 ## The window's workbench
 
 The window arranges the editor with the pieces an IDE user expects:
@@ -126,3 +206,32 @@ The window arranges the editor with the pieces an IDE user expects:
 Nothing the window shows is a second implementation: every dialog, tab
 and menu item is the same command the terminal's keys run, composed once
 and rendered by each face.
+
+## Split views and layouts
+
+The editor region is a split tree — one pane, or a `split` of panes side by
+side — and the sidebar and bottom panel are fixed-slot chrome. The colon line
+(`^N` then `:`, or a bare `:` in vi) drives it:
+
+- `:viewsplit right [mc11|c11|cpp]` splits the editor: the focused pane on the
+  left, a new pane on the right. With a representation the new pane is a
+  read-only code View of the buffer's lowering — **source on the left, its
+  MC11 on the right** (V5 will correlate their carets). `:viewsplit bottom …`
+  splits horizontally instead.
+- `:viewfocus next|prev` moves the focus between panes; `:viewopen
+  mc11|c11|cpp|source` re-represents the focused pane in place; `:viewclose`
+  closes it (the split collapses to its sibling; the first pane stays open —
+  quit closes that).
+- `:viewdock left|right|top|bottom` moves the focused chrome pane (the sidebar
+  or the panel) to a slot and side; `:viewsize sidebar|panel <percent>` sizes a
+  band — the same size the window's splitter drag sets.
+
+The layout is client data — a `.layout` profile through the same parser family
+as the keys, menu and theme. In a project it is saved beside the manifest as
+`<base>.prj.layout` (positions, sizes, hidden flags — not the panes' contents)
+and restored when the project reopens; a single-file session keeps it in memory
+(no stray artifact). Because the splitter and `:viewsize` set the size the
+session owns, the terminal and a fresh window share it.
+
+Dedicated keys and menu items for the `view*` commands are a coming addition;
+today they reach the colon line — and any client that speaks the registry.

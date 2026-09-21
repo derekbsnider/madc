@@ -1,0 +1,7 @@
+// C mode has no namespace mangling; a file-scope object keeps its bare name.
+int plain = 123;
+
+int main()
+{
+	return plain == 123 ? 0 : 1;
+}

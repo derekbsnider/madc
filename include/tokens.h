@@ -14,9 +14,17 @@
 #include "madcdis/intern_table.h"
 #include "madcdis/value_pool.h"
 
+// DataDef is not forward-declarable here: TokenBase::datadef() returns
+// `&ddVOID` and usual_arithmetic_result() reads DataDef's members, so this
+// header needs the DEFINITION, not a declaration. datadef.h includes nothing
+// from this header, so there is no cycle — and without this include the header
+// only compiled as a fragment of an including TU's order (g++ -fsyntax-only:
+// "'DataDef' does not name a type"), which is what madc's own self-host lane
+// reported against it.
+#include "datadef.h"
+
 // forward declaration
 class Program;
-//class DataDef;
 
 // Kind-accessor forward declarations (TokenBase::as_*() below). Classes not
 // defined in this header live in datatokens.h / madc.h.
@@ -42,6 +50,7 @@ class TokenExplicitDtor;
 class TokenIF;
 class TokenRETURN;
 class TokenDO;
+class TokenWHILE;
 class TokenFOR;
 class TokenFOREACH;
 class TokenVar;
@@ -251,7 +260,21 @@ public:
     TokenBase *parent;
     int line;
     int column;
-    std::streampos pos;
+    // Source EXTENT of a parsed construct (code-graph MCP L3, design §6.6/§9:
+    // the statement is the edit unit). Stamped by the PARSER, the one owner
+    // (Program::parseStatement's wrapper, parseCompound's '}', parseFunction):
+    //   head_tok   — the FIRST source token of the construct (the token
+    //                parseStatement was handed); its START is the extent start
+    //   end_line / end_column — the END of the LAST consumed token: the static
+    //                parse position when the construct finished (a simple
+    //                statement's ';', a compound's '}'). Columns are END-
+    //                anchored (the byte after the token's last char).
+    // NULL / 0 = no extent (a leaf, an expression node, a synthesized token).
+    // TokenCpnd's former end_line (the closing-brace line) lives here now.
+    // Replaced the never-read, never-written `std::streampos pos`.
+    TokenBase *head_tok;
+    int end_line;
+    int end_column;
     // Flat POD data record (Phase 2). See TokenRec above.
     TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
@@ -259,6 +282,17 @@ public:
     // template re-instantiation touched the same token object). Reported in
     // aggregate by --show-stats; otherwise just one uint per token.
     uint32_t read_count;
+    // [lex.ext] ud-suffix. A user-defined-literal is ONE token — `123_w` is
+    // not `123` followed by `_w`, and the adjacency that decides it is only
+    // knowable at LEX. The suffix interns into the same pool as spelling_id
+    // (-> Program::strpool; 0 = this literal carries no ud-suffix), so it
+    // costs one uint per token rather than a std::string.
+    // NOT in TokenRec: that record is the serialized pop-1 ROM, and widening
+    // it changes the frozen-header pack layout. A packed system header that
+    // USED a ud-suffix in an expression would therefore lose it — move this
+    // into TokenRec (with a pack version bump) if the pack ever round-trips
+    // expression bodies.
+    uint32_t ud_suffix_id = 0;
     // Leading trivia (whitespace + comments) preserved before this token, for
     // byte-faithful source reconstruction. Populated only in full-fidelity mode
     // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
@@ -278,8 +312,8 @@ public:
     // payloads live here under TokenInt::wide_handle. Same active-owner
     // discipline as _active_strpool above.
     static madc::dis::value_pool *_active_valpool;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; read_count = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; head_tok = NULL; end_line = 0; end_column = 0; read_count = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; head_tok = NULL; end_line = 0; end_column = 0; read_count = 0; }
     virtual ~TokenBase() {}
     // Every token (and every clone()) allocates from the per-process TokenArena
     // (token_arena.h). operator delete is a no-op: tokens are never individually
@@ -309,8 +343,19 @@ public:
 	    c->file = file;
 	    c->line = line;
 	    c->column = column;
+	    // The ud-suffix is part of the literal's IDENTITY, not its
+	    // position — a cloned `123_w` is still `123_w`. Propagated here
+	    // (the sanctioned copier) because clone() is per-class.
+	    c->ud_suffix_id = ud_suffix_id;
 	}
 	return c;
+    }
+    // The [lex.ext] ud-suffix this literal carries, or NULL for the ordinary
+    // case. Resolved through the active intern pool, like spelling().
+    const char *ud_suffix() const
+    {
+	return (ud_suffix_id && _active_strpool)
+	     ? _active_strpool->c_str(ud_suffix_id) : NULL;
     }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
@@ -370,6 +415,15 @@ public:
     virtual TokenIF            *as_if_tok()         { return NULL; }
     virtual TokenRETURN        *as_return_tok()     { return NULL; }
     virtual TokenDO            *as_do_tok()         { return NULL; }
+    // Code-graph MCP L1b confirm-before-build (2026-09-12): `while (x) {}`
+    // genuinely lives as a TokenWHILE in the live tree — TokenWHILE::parse()
+    // (src/parser.cpp:50090) returns `this` (not lowered to TokenFOR), and
+    // it is read back via dynamic_cast<TokenWHILE*> elsewhere
+    // (src/parser.cpp:66744, deduce_return_type_from_stmt). No downcast
+    // existed for it (unlike as_do_tok/as_for_tok/as_foreach_tok beside it),
+    // so the body-graph walker had no O(1) way to reach condition/statement.
+    // Added here, mirroring the family.
+    virtual TokenWHILE         *as_while_tok()      { return NULL; }
     virtual TokenFOR           *as_for_tok()        { return NULL; }
     virtual TokenFOREACH       *as_foreach_tok()    { return NULL; }
     virtual TokenVar           *as_var_tok()        { return NULL; }
@@ -382,6 +436,8 @@ public:
     virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
     virtual TokenSubscript     *as_subscript_tok()  { return NULL; }
     virtual TokenSubscriptExpr *as_subscript_expr_tok() { return NULL; }
+    virtual class TokenMemberPtrConst *as_member_ptr_const_tok() { return NULL; }
+    virtual class TokenMemberPtrAccess *as_member_ptr_access_tok() { return NULL; }
     virtual TokenTypedefDecl   *as_typedef_decl_tok()   { return NULL; }
     virtual TokenStructLit     *as_struct_lit_tok() { return NULL; }
     virtual TokenPackExpansion *as_pack_expansion_tok() { return NULL; }
@@ -1833,6 +1889,7 @@ class TokenNEW: public TokenKeyword
 public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
+    bool braced = false; // list-initialization selects braced constructor overloads
     // Placement new: `new (placement) Type(args)` constructs at the given
     // address instead of allocating. `placement` is the address expression
     // (NULL for ordinary `new`); `alloc_type` is the constructed type when it
@@ -1840,10 +1897,17 @@ public:
     TokenBase *placement;
     DataDef *alloc_type;
     TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; }
+    // The expression's TYPE ([expr.new]/1: a prvalue of type `T *`), set by
+    // parse() for both the scalar and the array form. A new-expression is the
+    // keyword token itself, so without this datadef() answered the keyword
+    // default and `auto c = new T(...)` deduced `char`.
+    DataDef *result_type;
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; result_type = NULL; }
     virtual TokenID id() const override { return TokenID::tkNEW; }
     virtual TokenBase *clone() override { return new TokenNEW(); }
     virtual TokenBase *parse(Program &) override;
+    virtual DataDef *datadef() const override
+    { return result_type ? result_type : (_datatype ? _datatype : &ddVOID); }
     virtual TokenNEW *as_new_tok() override { return this; }
 };
 class TokenDELETE: public TokenKeyword
@@ -2085,6 +2149,7 @@ public:
     virtual TokenBase *parse(Program &) override;
     virtual TokenID id() const override { return TokenID::tkWHILE; }
     virtual TokenBase *clone() override { return new TokenWHILE(); }
+    virtual TokenWHILE *as_while_tok() override { return this; }
 };
 
 class TokenFOR: public TokenKeyword

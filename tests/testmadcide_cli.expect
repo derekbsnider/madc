@@ -1,0 +1,40 @@
+--- -c check ---
+madc_ide_cli.mad fn add Row 1 Col 1
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+long bad() { return nosuch; }
+
+Problems
+  1. 3:26 error use of undeclared identifier 'nosuch'
+Check: 1 problem(s).
+--- end rc=1 ---
+cli-pin: identical=1 ran=1 cont=1 errors=1
+--- -c outline ---
+madc_ide_cli.mad fn add Row 1 Col 1
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+long bad() { return nosuch; }
+
+Outline
+  1. function add :1
+  2. function twice :2
+--- end rc=0 ---
+--- -c gotoline 3 ---
+madc_ide_cli.mad Row 3 Col 1
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+long bad() { return nosuch; }
+
+--- end rc=0 ---
+--- -c find add ---
+madc_ide_cli.mad Row 1 Col 6
+long add(long a, long b) { return a + b; }
+long twice(long x) { return add(x, x); }
+long bad() { return nosuch; }
+
+--- end rc=0 ---
+cli-unknown: rc=2 out-empty=1
+cli-noarg: rc=2 said=1
+cli-noterm: rc=0 said=1
+cli-quit: rc=0
+cli-noread: rc=1 out-empty=1

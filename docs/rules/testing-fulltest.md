@@ -38,6 +38,31 @@ complete" for you. The lane ledger's freshness check is the cost signal it
 minimizes — every content change after a green lane re-stales it, so the
 cheapest path is to make the content whole before the first expensive run.
 
+## Why the seam is the release boundary, not a slice (owner, 2026-09-09)
+
+The 2026-09-07 rule said "feature completion", and two days later the same
+cost arrived through a relabelling: slice V0.5 of the client-server arc (the
+enums-not-strings conversion) had its own plan file and its own gates, so it
+was framed as "a complete feature" and given the push-gate battery — while the
+arc's design doc already said the local half V1–V5 "is one feature and gets ONE
+merge-wave battery when complete". The battery then ran three times over
+(each defect it surfaced re-staled every lane), the double cost the 2026-09-07
+section predicted, on a slice that was never the seam.
+
+The owner's words: "every phase/slice/V/whatever you call them does not need a
+full test suite ... that comes at the seam ... we weren't supposed to have all
+these tests until V5 was complete ... and you ran them at V0.5."
+
+So the unit is not "a feature" as the agent happens to draw it; it is the SEAM
+the arc's plan names — its release boundary. The arc's slices bank on the
+arc's feature branch (`feature/<arc>-claude`), which the pre-push hook lets
+push freely; a defect found on the way gets its own commit and its targeted
+gate (a forest fix runs the forest gates, not the battery) and rides the seam.
+At the seam: one battery, the lane records, the develop merge and push. The
+one-sentence test before any battery launch — "this gates <arc>'s release
+boundary <Vn>, every slice banked" — exists because the relabelling is silent:
+nothing in the tooling can tell a slice from a seam, only the plan can.
+
 ## Why `make -C src fulltest` stays the merge-wave gate
 
 That target is still the single command that exercises the normal unit

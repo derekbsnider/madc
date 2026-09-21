@@ -1,0 +1,34 @@
+// A function-pointer PARAMETER whose pointee returns a REFERENCE: `O &(*__pf)(O &)`
+// ([dcl.ref]: the `&` applies to O before the declarator's own derivations — a
+// pointer to a function returning O&, never a reference to a function pointer), and
+// the call through it, `__pf(*this)`, which yields the referent. libstdc++'s
+// manipulator inserters/extractors spell exactly this. Four spellings: a plain
+// class, a typedef'd return type, a class-template member (the header shape) and an
+// out-of-class definition; plus a free function taking the same parameter. The
+// operators receive a function-pointer VARIABLE (a member operator taking a
+// function DESIGNATOR is a separate gap: KG member_operator_function_designator_argument;
+// a pointer initialized from a template specialization `f<char>` is another:
+// KG address_of_function_template_specialization_value).
+// g++ and clang++: `5 6 7 9 10`.
+#include <cstdio>
+struct O { int n; O &operator<<(O &(*__pf)(O &)) { return __pf(*this); } };
+O &bump(O &o) { ++o.n; return o; }
+struct P { typedef P __ostream_type; int n;
+  __ostream_type &operator<<(__ostream_type &(*__pf)(__ostream_type &)) { return __pf(*this); } };
+P &bump2(P &p) { p.n += 2; return p; }
+template<class C> struct Q { typedef Q<C> __ostream_type; int n;
+  __ostream_type &operator<<(__ostream_type &(*__pf)(__ostream_type &)) { return __pf(*this); } };
+Q<char> &bump3(Q<char> &q) { q.n += 3; return q; }
+struct R { int n; R &operator<<(R &(*__pf)(R &)); };
+R &R::operator<<(R &(*__pf)(R &)) { return __pf(*this); }
+R &bump4(R &r) { r.n += 4; return r; }
+int apply(O &(*pf)(O &), O &o) { pf(o); pf(o); return o.n; }
+int main() {
+    O o; o.n = 4; O &(*pb)(O &) = bump; o << pb;
+    P p; p.n = 4; P &(*pb2)(P &) = bump2; p << pb2;
+    Q<char> q; q.n = 4; Q<char> &(*pb3)(Q<char> &) = bump3; q << pb3;
+    R r; r.n = 5; R &(*pb4)(R &) = bump4; r << pb4;
+    O o2; o2.n = 8;
+    printf("%d %d %d %d %d\n", o.n, p.n, q.n, r.n, apply(bump, o2));
+    return 0;
+}

@@ -1,5 +1,5 @@
 // madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
-// Usage: madc tools/madcide/madcide.mad <file> [ro]
+// Usage: madc tools/madcide/madcide.mad <file> [ro] [--gui] [-c "<command> [arg]"]
 // Run it from the repository root (verb bodies and keybinding profiles
 // load by relative path). The buffer is the texteditor machinery; the
 // diagnostics pane and outline are projections of live compiler data;
@@ -34,34 +34,200 @@
 // The gateway seam (design doc 2026-08-31): madcide_core.inc is the
 // SESSION layer (class IdeSession — state + semantics, terminal-free);
 // madcide_client.inc is the TUI CLIENT (the only tui-handle holder:
-// render/input/refresh/suspend + the run_ide loop).
+// render/input/refresh/suspend + the run_ide loop); madcide_once.inc is
+// the ui::NONE client (the `-c` one-shot: one command, the projection to
+// stdout, the verdict as the exit status — client-server design §2.3b);
+// madcide_line.inc is the ui::LINE client (the `--line` ex / edlin mode:
+// stdin lines in, the level-0 projection to stdout — V2.5).
 #include "../texteditor/lined_core.inc"
 #include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
+// SESSION DISCOVERY (V6c-4) sits directly on the session: the ADVERTISEMENT a
+// client finds a running session by, so nobody has to be told an address. It
+// is read by every face that listens (the serving processes below) and by the
+// editor itself, which listens by default.
+#include "madcide_discover.inc"
 #include "madcide_client.inc"
+#include "madcide_api.inc"
+#include "madcide_once.inc"
+#include "madcide_line.inc"
+#include "madcide_mcp.inc"
+// The LSP face sits BEFORE the connection seat, which routes LSP traffic to
+// lsp_handle (V6c-3c), and forward-declares the one thing it needs from the
+// serve seat below it (serve_conn_task — `--lsp --serve` is ONE process
+// wearing both faces, V6c-3b).
+#include "madcide_lsp.inc"
+#include "madcide_seat.inc"
+#include "madcide_ws.inc"
+#include "madcide_serve.inc"
 
 int main(int argc, char **argv)
 {
+    // `--sessions` answers before anything else: it needs no file, because it
+    // is the question "what is already running?" (V6c-4).
+    for ( int i = 1; i < argc; i++ )
+	if ( strcmp(argv[i], "--sessions") == 0 )
+	    return run_sessions();
     if ( argc < 2 )
     {
-	printf("usage: madcide <file> [ro] [--gui]\n");
-	return 1;
+	printf("usage: madcide <file> [ro] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]] [--no-serve]\n");
+	printf("       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n");
+	printf("       madcide --sessions                                 (what is running, and how to join it)\n");
+	return 2;
     }
-    // The target is ONE flag: --gui shows the same composed tree in a
-    // window through the web target (<ns_ui_web>, a lazy module row — a
-    // machine without the library refuses at open with the reason); the
-    // terminal is the default. `ro` opens the file read-only. The client
-    // loop and the composer are identical for both targets (the workbench
-    // layout rides layout hints the terminal ignores).
+    // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
+    // names the rendering model it wants, never a target's spelling): --gui
+    // shows the same composed tree in a window through the web level
+    // (<ns_ui_web>, a lazy module row — a machine without the library
+    // refuses at open with the reason); --line is the ui::LINE ex / edlin
+    // mode (stdin lines, the level-0 projection to stdout — over a pipe or a
+    // dumb terminal); the grid (ui::TUI) is the default;
+    // -c "<command> [arg]" is the ui::NONE level — no surface, one command,
+    // the projection printed, the exit status the verdict (run_once). `ro`
+    // opens the file read-only. The client loop and the composer are
+    // identical for every level (the workbench layout rides layout hints
+    // the terminal ignores; the one-shot typesets the same tree).
     bool ro = false;
-    const char *target = "term";
+    ui::level lvl = ui::TUI;
+    const char *once = NULL;
+    const char *serve = NULL;
+    bool mcp = false;
+    bool lsp = false;
+    bool attach = false;		// --attach was asked for
+    const char *attach_addr = NULL;	// ... at this address, or NULL = discover
+    bool no_serve = false;
     for ( int i = 2; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "--gui") == 0 )
-	    target = ui_web::target();
+	    lvl = ui::WEB;
+	else if ( strcmp(argv[i], "--line") == 0 )
+	    lvl = ui::LINE;
+	else if ( strcmp(argv[i], "--mcp") == 0 )
+	    mcp = true;
+	else if ( strcmp(argv[i], "--lsp") == 0 )
+	    lsp = true;
 	else if ( strcmp(argv[i], "ro") == 0 )
 	    ro = true;
+	else if ( strcmp(argv[i], "-c") == 0 )
+	{
+	    if ( i + 1 >= argc )
+	    {
+		println(stderr, "madcide: -c needs \"<command> [arg]\"");
+		return 2;
+	    }
+	    i++;
+	    once = argv[i];
+	}
+	else if ( strcmp(argv[i], "--serve") == 0 )
+	{
+	    if ( i + 1 >= argc )
+	    {
+		println(stderr, "madcide: --serve needs <host:port>");
+		return 2;
+	    }
+	    i++;
+	    serve = argv[i];
+	}
+	else if ( strcmp(argv[i], "--no-serve") == 0 )
+	    no_serve = true;
+	else if ( strcmp(argv[i], "--attach") == 0 )
+	{
+	    // The address is OPTIONAL (V6c-4): without one, DISCOVER the
+	    // session that holds this file. A following word that starts with
+	    // '-' is the next flag, not an address.
+	    attach = true;
+	    if ( i + 1 < argc && argv[i + 1][0] != '-' )
+	    {
+		i++;
+		attach_addr = argv[i];
+	    }
+	}
     }
-    run_ide(argv[1], ro, target);
-    return 0;
+    if ( attach )
+    {
+	// The ATTACH RELAY (V6c-3c): become a client of a session that is
+	// ALREADY RUNNING instead of opening a private one, so an editor, an
+	// agent and a browser share one session's buffers. Pure transport — no
+	// session opens here, and <file> is unused (the session has its own
+	// documents; the editor adds others with didOpen).
+	if ( !lsp && !mcp )
+	{
+	    println(stderr, "madcide: --attach needs --lsp or --mcp");
+	    return 2;
+	}
+	// No address given: DISCOVER the session that holds <file> (V6c-4) —
+	// which is the whole point of the advertisement, and what the VS Code
+	// extension's `madcide.attach: "auto"` passes.
+	var found_addr = "";
+	if ( attach_addr == NULL )
+	{
+	    var rec;
+	    if ( !session_find(rec, argv[1]) )
+	    {
+		println(stderr,
+			"madcide: no running session holds {} — start one, or give --attach <host:port>",
+			argv[1]);
+		return 2;
+	    }
+	    found_addr = rec["endpoint"];
+	    var line;
+	    session_report(line, rec);
+	    println(stderr, "madcide: discovered {}", line);
+	    return run_attach(found_addr.c_str(), lsp);
+	}
+	return run_attach(attach_addr, lsp);
+    }
+    if ( once != NULL )
+    {
+	var out;
+	long rc = run_once(out, argv[1], ro, once);
+	print("{}", out);
+	return rc;
+    }
+    if ( mcp )
+    {
+	// The MCP server (V6c): headless, one client over stdio speaking
+	// JSON-RPC 2.0 — a tool call is an `api` command by name (run_mcp is an
+	// adapter over the SAME command core the --serve api seat drives). The
+	// standard MCP deployment: an editor / agent host spawns this process.
+	return run_mcp(argv[1], ro);
+    }
+    if ( lsp )
+    {
+	// The LANGUAGE SERVER (V6c-2): headless, one client over stdio
+	// speaking JSON-RPC 2.0 framed by Content-Length — the standard LSP
+	// deployment, where the editor spawns this process. The second face of
+	// the same query layer the MCP seat serves, so every editor that
+	// speaks LSP drives madcide without adopting madcide's own frontend.
+	// With `--serve` beside it (V6c-3b) this ONE process wears BOTH faces
+	// on ONE session: LSP on stdio for the editor's language intelligence,
+	// api/ws/http on a loopback port for a window (a VS Code webview, a
+	// browser) that joins the very same buffers. Two processes would be
+	// two sessions on one file — two carets, two undo histories, last save
+	// wins.
+	return run_lsp(argv[1], ro, serve);
+    }
+    if ( serve != NULL )
+    {
+	// The headless server (V6a api + V6b ws/http): no local window, one
+	// port carrying api JSON-line clients, ws WINDOW clients (a browser's
+	// page.js over the socket) and plain HTTP GETs for the page — the SAME
+	// session and registry the local windows drive (run_serve classifies
+	// each connection with serve_web).
+	return run_serve(argv[1], ro, serve);
+    }
+    if ( lvl == ui::LINE )
+    {
+	// The ex / edlin client (V2.5): stdin lines in, the level-0
+	// projection out — its own loop, as the one-shot has its own, but
+	// the SAME session and composer (run_line).
+	run_line(argv[1], ro);
+	return 0;
+    }
+    // The editor — which LISTENS by default (V6c-4 ruling R2) on a loopback
+    // ephemeral port and advertises it, so an LSP editor, an agent's MCP client
+    // or a browser joins THIS session instead of opening a second one on the
+    // same file. `--no-serve` opts out. ⚠️ NO AUTH, NO TLS: loopback only.
+    const char *listen_at = no_serve ? NULL : "127.0.0.1:0";
+    return run_tui(argv[1], ro, lvl, listen_at);
 }

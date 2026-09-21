@@ -1,0 +1,31 @@
+#include <cstdio>
+
+// [expr.sizeof]/1 — `sizeof ( type-id )` is the operand's reading ONLY when the
+// type-id spans the whole parenthesized operand; otherwise the operand is the
+// parenthesized EXPRESSION. madc committed to the type-id on the first token
+// and then demanded `)`, so every expression whose first token names a type or
+// a function died — `sizeof(f(0))` measured the FUNCTION f and then refused
+// the `(`.
+
+struct A { int i; double d; };
+template<class T> struct B { T t; long l; };
+
+int f(int) { return 0; }
+template<class T> int g(int) { return 0; }
+
+int main()
+{
+    // Expression operands that OPEN with a type-id or a function name.
+    printf("expr: %d %d %d %d\n",
+	   (int)(sizeof(A{}) == sizeof(A)),
+	   (int)(sizeof(B<int>{}) == sizeof(B<int>)),
+	   (int)(sizeof(f(0)) == sizeof(int)),
+	   (int)(sizeof(g<void>(0)) == sizeof(int)));
+    // The type-id readings the rewind must NOT disturb.
+    printf("type: %d %d %d %d\n",
+	   (int)(sizeof(A) > sizeof(int)),
+	   (int)(sizeof(B<int>) > sizeof(int)),
+	   (int)(sizeof(int *) == sizeof(void *)),
+	   (int)(alignof(A) == alignof(double)));
+    return 0;
+}

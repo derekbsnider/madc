@@ -4,10 +4,13 @@
 // scheduler itself stays fd-blind: this layer owns the waiter registry and
 // installs __madc_task_io_wait_hook (rt_task.h) on first use.
 //
-// Handles are CRT fds on every platform (ProcessPipeChannel's contract —
-// Windows process pipes are _open_osfhandle-converted). "Readable" means a
-// read() would make progress NOW: data available, EOF, or an error the read
-// will surface.
+// A handle is a value PLUS the space it lives in (madc::poll_handle_kind,
+// madcdis/datachannel.h): a descriptor — a CRT fd on every platform
+// (ProcessPipeChannel's contract — Windows process pipes are
+// _open_osfhandle-converted; a console is fd 0) — or a socket, which on
+// Windows is a kernel SOCKET in a different space whose values can collide
+// with CRT fds. "Readable" means a read() would make progress NOW: data
+// available, EOF, or an error the read will surface.
 //
 // THREAD-SAFETY CONTRACT (thread-safety.md): scheduler-thread only, like
 // every task verb — callers on the single cooperative OS thread. Process
@@ -18,17 +21,19 @@
 
 #include <stdint.h>
 
+#include "madcdis/datachannel.h"	// poll_handle_kind — the channel contract owns it
+
 namespace madc {
 namespace taskio {
 
 // Zero-timeout readability probe. Never parks.
-bool poll_readable(intptr_t handle);
+bool poll_readable(intptr_t handle, poll_handle_kind kind);
 
 // Park the current task until `handle` is readable (the scheduler's io-wait
 // seat wakes it). Returns immediately when it is readable already. Works
 // with no other task live: the park routes through task_next_or_wait, whose
 // io wait blocks in poll() for us.
-void wait_readable(intptr_t handle);
+void wait_readable(intptr_t handle, poll_handle_kind kind);
 
 // The HOST wait's wake reasons (host_wait_readable's return).
 enum class host_wake {
@@ -48,7 +53,8 @@ enum class host_wake {
 // deadline, distinct from synthetic so the caller re-parks without
 // synthesizing a wake event. -1 (the default) never expires. A fired fd
 // MAY coincide with either other reason; the caller's read path re-probes
-// anyway.
+// anyway. The host IS the terminal's standard input — a descriptor by
+// definition, so no kind parameter.
 host_wake host_wait_readable(intptr_t handle, long long timeout_ms = -1);
 
 } // namespace taskio

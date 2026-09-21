@@ -32,6 +32,11 @@ struct StorageProbe
     double ratio;
 };
 
+// These probe-construction helpers are used ONLY by the HAVE_QDBM test case
+// below; guard them so a build WITHOUT qdbm (the #else "not built" case)
+// does not trip -Werror=unused-function. (StorageProbe itself stays outside
+// the guard — MapperRegistration<StorageProbe> below always needs it.)
+#ifdef HAVE_QDBM
 namespace {
 
 void assign_short_name(StorageProbe &p, const std::string &name)
@@ -76,6 +81,7 @@ StorageProbe make_probe(int64_t id,
 }
 
 } // namespace
+#endif // HAVE_QDBM
 
 namespace madc {
 

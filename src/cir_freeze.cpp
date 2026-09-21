@@ -3774,6 +3774,21 @@ void CirFrozenForest::materialize_pass()
 			(r.flags & madc::dis::DF_TRET_FROM_POINTER) != 0;
 		fd->template_return_ref =
 			(r.flags & madc::dis::DF_TRET_REF) != 0;
+		// v46: the overload-set DECLARATION IDENTITY — the parameter
+		// spelling and an instantiation product's template-argument
+		// identity spellings — so the restored member ranks exactly as
+		// the live declaration did (the explicit-template-argument
+		// prefix match binds it; the ambiguity verdict sees it).
+		if (r.ovl_spelling_id)
+			if (const char *os = a.c_str(r.ovl_spelling_id))
+				fd->overload_spelling = os;
+		for (uint32_t t = 0; t < r.ovl_targ_count; ++t) {
+			uint32_t nid = 0;
+			if (!a.get_word(r.ovl_targ_begin, t, nid))
+				break;
+			const char *tn = a.c_str(nid);
+			fd->overload_template_args.push_back(tn ? tn : "");
+		}
 		if (has_body) {
 			fd->has_forest_body  = true;
 			fd->forest_body_unit = r.body_unit;

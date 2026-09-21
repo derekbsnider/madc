@@ -19,6 +19,13 @@
 #       `#include <string>` must bind its frozen unit BEFORE the one-shot
 #       decl restore (it used to inject at parse() start — too late under
 #       a bind — leaving `string` undeclared only when packed).
+#   D — the RANKER'S INPUTS survive the freeze (LOADED == parsed on the
+#       overload set): an explicit-template-argument call into a restored
+#       std::min set. Every candidate both runs know must record the SAME
+#       template-argument identities, and the bound run must not re-mint
+#       (a __oN twin) an instance it restored — before the declaration
+#       identity rode the DK_FUNC record, a restored member ranked blank
+#       and the consumer instantiated a third std::min<uint64_t>.
 # Every leg pins BIND ENGAGEMENT (-v shows "bound to grove unit"), so a
 # silent live fall-through cannot false-green it, and output parity
 # against a --no-forest-bind live parse.
@@ -92,8 +99,50 @@ check_leg() {
     [ "$out" = "$want" ] || fail "[$name] bound output '$out' != live '$want'"
 }
 
+# Consumer D — an explicit-template-argument call into a restored set.
+cat > "$D/use_min.mad" <<'EOF'
+#include <vector>
+int main() {
+    std::vector<int> v; v.push_back(7); v.push_back(9);
+    unsigned long a = v.size(), b = 5;
+    unsigned long m = std::min<unsigned long>(a, b);
+    __builtin_printf("%lu %d\n", m, v[1]);
+    return 0;
+}
+EOF
+
+# The ranker's inputs, live vs bound: MADC_OVL_PROBE2=<substr> prints one
+# `[ovl2] cand=<symbol> targs='..', expl='..',` line per candidate of an
+# explicit-template-argument call. Membership may legitimately differ (the
+# corpus froze more headers than the consumer includes), so the pin is per
+# candidate BOTH runs know — and there must be at least one.
+check_ranker_inputs() {
+    local name="$1" src="$2" probe="$3" live bound common=0 line cand bline
+    live=$(env -u MADC_FOREST MADC_OVL_PROBE2="$probe" timeout 120 "$D/madc" --no-forest-bind "$src" 2>&1 >/dev/null \
+           | tr -d '\0' | grep -a '^\[ovl2\]' | sort -u)
+    bound=$(env -u MADC_FOREST MADC_OVL_PROBE2="$probe" timeout 120 "$D/madc" "$src" 2>&1 >/dev/null \
+           | tr -d '\0' | grep -a '^\[ovl2\]' | sort -u)
+    [ -n "$live" ] || fail "[$name] the live run printed no ranker inputs (probe dead?)"
+    [ -n "$bound" ] || fail "[$name] the bound run printed no ranker inputs"
+    while IFS= read -r line; do
+        cand=$(sed -n 's/^\[ovl2\] cand=\([^ ]*\) .*/\1/p' <<<"$line")
+        [ -n "$cand" ] || continue
+        bline=$(grep -a -F "cand=$cand " <<<"$bound")
+        if [ -n "$bline" ]; then
+            common=$((common + 1))
+            [ "$line" = "$bline" ] \
+                || fail "[$name] ranker inputs differ for $cand: live '$line' bound '$bline'"
+        fi
+        grep -a -q -F "cand=${cand}__o" <<<"$bound" \
+            && fail "[$name] the bound run re-instantiated a restored instance: ${cand}__oN"
+    done <<<"$live"
+    [ "$common" -ge 1 ] || fail "[$name] no candidate known to both runs (probe substring '$probe' matched nothing shared)"
+}
+
 check_leg "vector"  "$D/use_vector.mad"  "7 1"
 check_leg "memory"  "$D/use_memory.mad"  "42"
 check_leg "script"  "$D/use_script.mad"  "xtu 3"
+check_leg "min"     "$D/use_min.mad"     "2 9"
+check_ranker_inputs "min" "$D/use_min.mad" "min"
 
-echo "forest_crosstu_gate: OK (corpus freeze + 3 cross-TU consumers bind with live parity)"
+echo "forest_crosstu_gate: OK (corpus freeze + 4 cross-TU consumers bind with live parity; the ranker's inputs LOADED == parsed)"

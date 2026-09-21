@@ -116,6 +116,13 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `web_model` (gated by `check-one-key-owner.sh`); a module row's
    flags (`MADC_MODULE_GUI`, `MADC_MODULE_LAZY`) are module-map DATA in
    `src/madc_modules.cpp`, never a name test.
+   A DECLARATOR — `*`/`&`/`&&`/`C::*` ptr-operators, `( declarator )`,
+   `[dims]`, `(params) quals`, the declarator-id — is read by ONE owner,
+   `Program::parse_declarator` (modes Named/Typedef/Abstract/TypeIdOperand/
+   Parameter/Declaration; struct/class members through
+   `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
+   `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
+   read a declarator by hand in an arm.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -338,7 +345,7 @@ no matter how small.
 | [value-first.md](.claude/rules/value-first.md)   |    30 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
 | [dialect-lean.md](.claude/rules/dialect-lean.md) |    38 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by `check-dialect-literals.sh` |
-| [enum-over-strings.md](.claude/rules/enum-over-strings.md) | 15 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
+| [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
 
 ### P3 — Build, test, and validation (gate "done")
@@ -349,7 +356,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 18 | Targeted tests per change; `make -C src fulltest` once per merge wave — and the merge wave is a COMPLETE feature: bank every slice + known-open fix before the multi-hour push-gate lanes |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 27 | Targeted tests per change; `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V: slices bank on the feature branch, ONE battery + lanes + develop merge at the seam |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -374,10 +381,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **35 rules, 1035 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **35 rules, 1065 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~414 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1471 lines.**
+- **Grand total loaded by Claude Code per turn: ~1501 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

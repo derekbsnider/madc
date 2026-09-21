@@ -1,0 +1,42 @@
+// [expr.prim.lambda]/7 — a `mutable` lambda's by-value capture is the CLOSURE's
+// own copy: mutations PERSIST ACROSS CALLS. madc passed the snapshot by value,
+// so every call got a fresh copy of it and `state:` read 1 1 1 where both canon
+// compilers read 1 2 3 — a silent wrong answer that compiled clean, because the
+// shipped mutable test called its lambda exactly once.
+//
+// The other three lines guard the rest of the snapshot contract: a non-mutable
+// copy is taken at CREATION (not re-read per call), a class-type capture is a
+// real copy, and a closure minted in a loop snapshots its own iteration.
+#include <stdio.h>
+struct S { int a; int b; };
+int main()
+{
+	// snapshot must be taken at CREATION and survive repeated calls
+	int n = 1;
+	auto f = [n]() { return n; };
+	int first = f();
+	n = 99;
+	int second = f();
+	printf("repeat: %d %d\n", first, second);
+
+	// a mutable by-value capture keeps its own state ACROSS calls
+	int k = 0;
+	auto g = [k]() mutable { k++; return k; };
+	int g1 = g(); int g2 = g(); int g3 = g();
+	printf("state: %d %d %d (outer k=%d)\n", g1, g2, g3, k);
+
+	// class-type capture by value: a copy, not an alias
+	S s; s.a = 1; s.b = 2;
+	auto h = [s]() { return s.a * 10 + s.b; };
+	s.a = 7; s.b = 8;
+	printf("struct: %d\n", h());
+
+	// created in a loop: each closure snapshots its own iteration value
+	int total = 0;
+	for (int i = 0; i < 3; i++) {
+		auto c = [i]() { return i; };
+		total = total * 10 + c();
+	}
+	printf("loop: %d\n", total);
+	return 0;
+}

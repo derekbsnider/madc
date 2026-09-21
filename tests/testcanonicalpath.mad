@@ -1,0 +1,48 @@
+// madc::canonical_path — the comparison spelling of a path (V6c-2). Two
+// spellings of ONE file must compare equal, or a client that addresses a
+// document by absolute URI opens a SECOND buffer for a file the session
+// already has open and every edit lands in the wrong one. The engine's
+// standing canonicalizer (canonical_path_for_compare — AGENTS.md rule #4)
+// gets a dialect face here; nothing new is invented.
+int main()
+{
+	const char *name = "madc_canon_probe.txt";
+	php::file_put_contents(name, "x\n");
+
+	var plain;
+	madc::canonical_path(plain, name);
+	var dotted;
+	madc::canonical_path(dotted, "./madc_canon_probe.txt");
+	var through;
+	madc::canonical_path(through, "tests/../madc_canon_probe.txt");
+
+	// Absolute in the TARGET's own spelling: a rooted POSIX path, or a
+	// drive-lettered Windows one (`Z:\...` under wine) — the predicate is
+	// platform-aware so the ANSWER is the same everywhere.
+	const char *pc = plain.c_str();
+	bool rooted = pc[0] == '/' || (strlen(pc) > 2 && pc[1] == ':' && (pc[2] == '\\' || pc[2] == '/'));
+	println("absolute: {}", rooted ? 1 : 0);
+	println("dot-form-agrees: {}", plain == dotted ? 1 : 0);
+	println("dotdot-form-agrees: {}", plain == through ? 1 : 0);
+	println("ends-with-name: {}", php::basename(plain));
+
+	// A path that does not exist still answers — a spelling that still names
+	// it, never an empty string (a caller compares it; an empty answer would
+	// make every missing file equal to every other). POSIX realpath keeps the
+	// input spelling; Windows' GetFullPathName absolutizes without touching
+	// the filesystem — both are that path, so the predicate is the name.
+	var missing;
+	madc::canonical_path(missing, "no/such/file/anywhere.txt");
+	var mname = php::basename(missing);
+	println("missing-kept: {}", strlen(missing.c_str()) > 0 && mname == "anywhere.txt" ? 1 : 0);
+
+	// The relative spelling of an existing DIRECTORY resolves too.
+	var dir;
+	madc::canonical_path(dir, "tests");
+	var dir2;
+	madc::canonical_path(dir2, "./tests/");
+	println("dir-agrees: {}", dir == dir2 ? 1 : 0);
+
+	php::unlink(name);
+	return 0;
+}

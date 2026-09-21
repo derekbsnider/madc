@@ -1,0 +1,35 @@
+#include <cstdio>
+
+// [over.ics.ellipsis] / [expr.call]/9 — a C-variadic constructor is callable
+// with ANY arity from its fixed count up. madc's ctor overload selector had no
+// variadic arm at all: the synthetic trailing vararg slot counted as a real
+// parameter, so `ignore(...)` matched NOTHING and every call reported
+// "no matching constructor".
+
+struct ignore { int tag; ignore(...) : tag(9) {} };
+
+// An exact-arity overload must still WIN against the ellipsis candidate.
+struct pick
+{
+    int how;
+    pick(...)   : how(0) {}
+    pick(int)   : how(1) {}
+    pick(int, int) : how(2) {}
+};
+
+int main()
+{
+    // NB: the braced form `ignore b{ ignore(1), ignore(2) };` lives in the
+    // g++.dg lane (cpp0x/variadic186.C), not here — g++ 13 ICEs on it
+    // (PR c++/111592, the very bug that test guards), so the two canon
+    // compilers cannot agree on an expectation for it.
+    ignore a(3, 4);
+    ignore c;
+    printf("variadic: %d %d\n", a.tag, c.tag);
+    pick p0;
+    pick p1(1);
+    pick p2(1, 2);
+    pick p3(1, 2, 3);
+    printf("ranking: %d %d %d %d\n", p0.how, p1.how, p2.how, p3.how);
+    return 0;
+}

@@ -1,0 +1,23 @@
+// The right operand of `->*` / `.*` may be a PARENTHESIZED pm-expression:
+// `(this->*(&time_get::do_get))` is how libstdc++ (locale_facets_nonio.tcc:1477)
+// spells a bound member-function pointer; `o.*(&T::x)` a data member through a
+// parenthesized constant; `(o.*(pm))()` a call through a parenthesized variable.
+// g++ and clang++: `21 7 42 9`.
+#include <cstdio>
+struct T {
+    int x;
+    int get() const { return 21; }
+    int y() const { return x + 2; }
+};
+int main() {
+    T o; o.x = 7;
+    int (T::*pm)() const = &T::get;
+    int a = (o.*(pm))();
+    int b = o.*(&T::x);
+    T *p = &o;
+    int c = (p->*(pm))() * 2;
+    int (T::*py)() const = &T::y;
+    int d = (p->*(py))();
+    printf("%d %d %d %d\n", a, b, c, d);
+    return 0;
+}

@@ -1,0 +1,27 @@
+#include <cstdio>
+
+// [stmt.ambig]/[dcl.ambig.res] — a type-headed statement is a DECLARATION only
+// when it can be one. madc's statement disambiguator knew two of the forms that
+// cannot be (`T(a).m`, `T(a, b)`); these three reached the declaration parser
+// and died on "Expecting identifier after type".
+
+struct A { int i; int f() const { return i + 1; } };
+template<class T> struct F { T t; int g() const { return 7; } };
+
+int n = 0;
+struct Counted { Counted(int k) { n += k; } Counted() { n += 100; } };
+
+int main()
+{
+    // (e) a BRACED head is a temporary — no declarator begins with `{`.
+    A{};
+    F<int>{5};
+    printf("brace: %d %d\n", A{41}.f(), F<int>{5}.g());
+    // (c) an EMPTY group holds no declarator-id.
+    Counted();
+    F<int>();
+    // (d) no declarator begins with a literal.
+    Counted(7);
+    printf("paren: %d\n", n);
+    return 0;
+}

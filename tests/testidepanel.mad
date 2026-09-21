@@ -1,25 +1,36 @@
-// Slice 3 Task 6: the live-build output panel. While a build streams
-// (buildlive != 0), compose_ide_tree docks the [build] buffer's output as
-// a region:panel node in the workbench (the VS Code Output shape). It is
-// additive and gated on buildlive — a drained build composes no panel, so
-// the terminal shape is unchanged (testmadcide's compose-shape assertions
-// stay green). This drives the state directly (no async pump): the panel
-// appears only while a build is live and carries its output.
+// The build OUTPUT panel (client-server arc V2: the layout's chrome). A
+// build's stream shows in the panel pane's Output tab — show_output unhides
+// the panel (it is a fixed-slot chrome pane of the layout, hidden by
+// default), the composer docks it as a region:panel group whose active tab's
+// content is the [build] buffer, and it STAYS until hidden (VS Code's Output
+// shape; the terminal composes it too — the ruling). This drives the state
+// directly (no async pump): show_output + the buildlive flag + seeded text.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
 long find_panel(var &tree)
 {
-    var kids = tree["children"];
-    long n = php::count(kids);
-    for ( long i = 0; i < n; i = i + 1 )
+    long i = 0;
+    for ( var k : tree["children"] )
     {
-	var k = kids[i];
 	if ( !k["hints"].is_null() && k["hints"]["region"] == "panel" )
 	    return i;
+	i = i + 1;
     }
     return -1;
+}
+
+// The panel group's active-tab content (its one child), "" when no panel.
+void panel_output(var &out, var &tree)
+{
+    out = "";
+    long pi = find_panel(tree);
+    if ( pi < 0 )
+	return;
+    var panel = tree["children"][pi];
+    if ( php::count(panel["children"]) > 0 )
+	out = panel["children"][0]["content"];
 }
 
 int main()
@@ -35,29 +46,36 @@ int main()
     IdeSession S;
     S.attach(w, es);
 
-    // No build live: no panel node (the terminal shape).
+    // Nothing shown: the panel pane of the layout is hidden — no panel node.
     var t0;
     S.compose_ide_tree(t0, doc);
     println("no-build: panel-index={}", find_panel(t0));
 
-    // A live build: seed the [build] buffer and the buildlive flag directly
-    // (the pump's effect), then compose — the panel docks with the output.
+    // A live build: seed the [build] buffer + the flag, then SHOW the output
+    // View (what start_build does) — the panel docks with the stream.
     long bdoc = build_doc(w, es);
     append_build_line(w, es, bdoc, "=== echo hello ===");
     append_build_line(w, es, bdoc, "hello from the build");
     ui::set(w, es, "buildlive", 1);
+    show_output(w, es);
     var t1;
     S.compose_ide_tree(t1, doc);
-    long pi = find_panel(t1);
-    println("build-live: panel-present={}", pi >= 0 ? 1 : 0);
-    var panel = t1["children"][pi];
-    var pc = panel["content"];
+    println("build-live: panel-present={} shown={}", find_panel(t1) >= 0 ? 1 : 0,
+	    view_name(slot_shown(w, es, slotPANEL)));
+    var pc;
+    panel_output(pc, t1);
     println("panel-has-output={}", pc.index("hello from the build") >= 0 ? 1 : 0);
 
-    // Drained: the panel is gone again (shape restored).
+    // The build drains but the Output panel stays (VS Code shape) until hidden.
     ui::set(w, es, "buildlive", 0);
     var t2;
     S.compose_ide_tree(t2, doc);
-    println("drained: panel-index={}", find_panel(t2));
+    println("drained: panel-present={}", find_panel(t2) >= 0 ? 1 : 0);
+
+    // Toggle the panel off: gone.
+    toggle_slot(w, es, slotPANEL);
+    var t3;
+    S.compose_ide_tree(t3, doc);
+    println("hidden: panel-index={}", find_panel(t3));
     return 0;
 }

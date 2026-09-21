@@ -1,0 +1,4 @@
+static int counter = 10;
+extern int elsewhere;
+int static _ZL4bumpi(int by)
+static int _ZN5Tally4seenE = 100;

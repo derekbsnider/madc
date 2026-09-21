@@ -552,6 +552,60 @@ TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's
     CHECK(m.pending_chord().empty());
 }
 
+TEST_CASE("codes — an option's code hint rides the choose event; a posted action name converts to its code at the boundary")
+{
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode menu(r.choice);
+    uinode o1 = option(w, "Save", "w");
+    std::map<std::string, madc::value> h1;
+    h1["code"] = madc::value((int64_t)7);
+    o1.hints = madc::value::make_object(h1);
+    menu.add(o1);
+    menu.add(option(w, "Quit", "q"));
+    root.add(menu);
+    // A group carrying a tab strip whose tab names its command AND its code.
+    std::map<std::string, madc::value> tab;
+    tab["title"] = madc::value(std::string("Problems"));
+    tab["action"] = madc::value(std::string("problems"));
+    tab["code"] = madc::value((int64_t)31);
+    madc::value tabs = madc::value::make_array();
+    tabs.array().push_back(madc::value::make_object(tab));
+    std::map<std::string, madc::value> gh;
+    gh["tabs"] = tabs;
+    uinode panel(r.group);
+    panel.hints = madc::value::make_object(gh);
+    root.add(panel);
+
+    web_model m;
+    std::string ops = m.compose(r, root);
+    CHECK(ops.find("\"code\":31") != std::string::npos);
+    // Enter on the focused choice (option 0): the choose event carries the
+    // option's code beside its action.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"enter\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::choose);
+    CHECK(ev[0].action == w.intern("w"));
+    CHECK(ev[0].action_code == 7);
+    // The page posts the tab's NAME; the model converts it at the boundary.
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"problems\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "problems");
+    CHECK(ev[0].action_code == 31);
+    // A name no control carried a code for: code 0, the name still flows.
+    ev = m.apply_input("{\"kind\":\"action\",\"action\":\"nosuch\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "nosuch");
+    CHECK(ev[0].action_code == 0);
+    // A dialog answer carries its mode's enumerator.
+    ev = m.apply_input("{\"kind\":\"dialog\",\"mode\":\"save\",\"path\":\"/tmp/x\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::dialog);
+    CHECK(ev[0].action_code == (int64_t)madc::hub::dialog_mode::save);
+}
+
 TEST_CASE("apply_input — navigation through the focus owner; viewport facts; snapshot")
 {
     world w;
@@ -667,6 +721,52 @@ TEST_CASE("compose — region / tabs / popup are additive op fields")
     CHECK((*pop).find("region") == (*pop).end());
 }
 
+TEST_CASE("compose — split / side / size are additive op fields (client-server arc V2)")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    uinode root(r.group);
+    // A vertical split group with one child carrying a size%.
+    uinode split(r.group);
+    std::map<std::string, madc::value> sh;
+    sh["split"] = madc::value(std::string("vertical"));
+    split.hints = madc::value::make_object(sh);
+    uinode child(r.group);
+    std::map<std::string, madc::value> ch;
+    ch["size"] = madc::value((int64_t)40);
+    child.hints = madc::value::make_object(ch);
+    split.add(child);				// 0.0.0
+    root.add(split);				// 0.0
+    // A chrome pane docked bottom, with a side and a size.
+    uinode pane(r.group);
+    std::map<std::string, madc::value> ph;
+    ph["region"] = madc::value(std::string("panel"));
+    ph["side"] = madc::value(std::string("bottom"));
+    ph["size"] = madc::value((int64_t)25);
+    pane.hints = madc::value::make_object(ph);
+    root.add(pane);				// 0.1
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root), nullptr, false);
+    REQUIRE(!ops.is_discarded());
+
+    const nlohmann::json *sp = node_by_key(ops, "0.0");
+    REQUIRE(sp);
+    CHECK((*sp)["split"] == "vertical");
+    CHECK((*sp).find("side") == (*sp).end());		// a split has no side
+
+    const nlohmann::json *kid = node_by_key(ops, "0.0.0");
+    REQUIRE(kid);
+    CHECK((*kid)["size"] == 40);
+    CHECK((*kid).find("split") == (*kid).end());
+
+    const nlohmann::json *pn = node_by_key(ops, "0.1");
+    REQUIRE(pn);
+    CHECK((*pn)["region"] == "panel");
+    CHECK((*pn)["side"] == "bottom");
+    CHECK((*pn)["size"] == 25);
+}
+
 TEST_CASE("compose — a node without layout hints carries no region/popup/tabs (negative control)")
 {
     world w;
@@ -682,6 +782,9 @@ TEST_CASE("compose — a node without layout hints carries no region/popup/tabs 
 	CHECK(ops[i].find("region") == ops[i].end());
 	CHECK(ops[i].find("popup") == ops[i].end());
 	CHECK(ops[i].find("tabs") == ops[i].end());
+	CHECK(ops[i].find("split") == ops[i].end());
+	CHECK(ops[i].find("side") == ops[i].end());
+	CHECK(ops[i].find("size") == ops[i].end());
     }
 }
 
@@ -1206,4 +1309,56 @@ TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the actio
     REQUIRE(ev.size() == 1u);
     CHECK(ev[0].text.empty());			// a chord-shaped command: no argument
     CHECK(m.apply_input("{\"kind\":\"action\",\"action\":\"help\",\"arg\":7}").size() == 1u);	// a non-string arg is ignored, the action stands
+}
+
+// Presence (client-server V3c): an edit node's `presence` hint — the OTHER
+// clients' carets as byte offsets — becomes an array of {line, col, slot},
+// each caret run through web_line_col exactly as the focused caret is. The
+// page resolves the slot to a colour through the root @presence palette.
+TEST_CASE("compose — presence carets: peer carets become {line,col,slot}")
+{
+	world w;
+	roles r = roles::standard(w);
+	web_model m;
+	uinode root(r.group);
+	uinode edit(r.edit);
+	edit.content = madc::value(std::string("ab\ncd"));	// a=0 b=1 \n=2 c=3 d=4
+	std::map<std::string, madc::value> h;
+	h["caret"] = madc::value((int64_t)0);
+	std::vector<madc::value> pres;
+	std::map<std::string, madc::value> p0;
+	p0["caret"] = madc::value((int64_t)1);			// line 0, col 1
+	p0["colour"] = madc::value((int64_t)3);
+	pres.push_back(madc::value::make_object(p0));
+	std::map<std::string, madc::value> p1;
+	p1["caret"] = madc::value((int64_t)4);			// line 1, col 1
+	p1["colour"] = madc::value((int64_t)5);
+	pres.push_back(madc::value::make_object(p1));
+	h["presence"] = madc::value::make_array(pres);
+	edit.hints = madc::value::make_object(h);
+	root.add(edit);
+
+	std::string text = m.compose(r, root);
+	nlohmann::json ops = nlohmann::json::parse(text, nullptr, false);
+	REQUIRE(!ops.is_discarded());
+	const nlohmann::json *e = node_by_key(ops, "0.0");
+	REQUIRE(e);
+	CHECK((*e)["class"] == "edit");
+	REQUIRE((*e).contains("presence"));
+	CHECK((*e)["presence"] == nlohmann::json::parse(
+	    "[{\"line\":0,\"col\":1,\"slot\":3},{\"line\":1,\"col\":1,\"slot\":5}]"));
+}
+
+// The negative control: an edit node with no presence hint carries no
+// `presence` field (the single-client path stays byte-identical).
+TEST_CASE("compose — no presence hint yields no presence field")
+{
+	world w;
+	roles r = roles::standard(w);
+	web_model m;
+	std::string text = m.compose(r, editor_tree(w, 3));
+	nlohmann::json ops = nlohmann::json::parse(text, nullptr, false);
+	const nlohmann::json *edit = node_by_key(ops, "0.2");
+	REQUIRE(edit);
+	CHECK_FALSE((*edit).contains("presence"));
 }

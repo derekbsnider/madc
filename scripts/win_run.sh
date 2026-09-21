@@ -53,8 +53,25 @@ if [ -n "${MADC_WIN_STAGE:-}" ]; then
 	for arg in "$@"; do
 		stage_cmd+=("$arg")
 	done
-	printf -v remote_cmd 'env -C %q WSLENV=MADC_BIN:MADC_FOREST_ENV_CHECK MADC_BIN=bin/madc.exe MADC_FOREST_ENV_CHECK=%q' \
-		"$MADC_WIN_STAGE" "${MADC_FOREST_ENV_CHECK:-0}"
+	# A test's .env fixture (run_tests.sh sets it with env(1) before this
+	# wrapper) must reach the native Windows process, or the test behaves
+	# as if the variable were unset — a WSL env var does NOT cross into a
+	# Win32 child unless it is named in WSLENV. Forward every MADCIDE_* var
+	# that is set (the discovery tests' MADCIDE_SESSION_DIR is the live one;
+	# the box has no HOME/XDG_STATE_HOME, so without it session_dir is empty
+	# and nothing advertises). WSLENV names them; each is set in the remote
+	# env with its verbatim value.
+	fwd_names=(MADC_BIN MADC_FOREST_ENV_CHECK)
+	fwd_assigns=""
+	for var in $(compgen -v MADCIDE_ 2>/dev/null); do
+		fwd_names+=("$var")
+		printf -v one ' %s=%q' "$var" "${!var}"
+		fwd_assigns+="$one"
+	done
+	wslenv=$(IFS=:; echo "${fwd_names[*]}")
+	printf -v remote_cmd 'env -C %q WSLENV=%q MADC_BIN=bin/madc.exe MADC_FOREST_ENV_CHECK=%q' \
+		"$MADC_WIN_STAGE" "$wslenv" "${MADC_FOREST_ENV_CHECK:-0}"
+	remote_cmd+="$fwd_assigns"
 	for arg in "${stage_cmd[@]}"; do
 		printf -v quoted_arg ' %q' "$arg"
 		remote_cmd+="$quoted_arg"

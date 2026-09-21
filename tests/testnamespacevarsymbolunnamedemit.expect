@@ -1,0 +1,2 @@
+static int anonymous_value = 88;
+static int nested_anonymous = 99;

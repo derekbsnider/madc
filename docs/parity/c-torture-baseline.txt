@@ -1,0 +1,30 @@
+# gcc.c-torture/execute known-fail baseline — the c_torture_lane.sh ratchet.
+#
+# One test filename per line; '#' comments allowed. The lane is RED when any
+# test OUTSIDE this list fails, and LOUD when a test IN it passes, so the
+# baseline only ever SHRINKS.
+#
+# Established 2026-09-20 at 1611 passed / 4 compile-failed / 9 runtime-failed /
+# 61 skipped (--std=c17). Every entry below was verified to fail on the
+# v0.99.2 baseline binary too, so the list is PRE-EXISTING failures only — it
+# contains no regression and no test that was ever green on a released madc.
+#
+# Do not add a line here to make a red lane green. A new failure is a
+# regression: fix it, or have the owner rule it out of scope in writing.
+
+# --- compile-failed (4) ---
+20080506-1.c
+int-compare.c
+medce-1.c
+pr122000.c
+
+# --- runtime-failed (9) ---
+20010904-1.c
+20010904-2.c
+pr15296.c
+pr23135.c
+pr46309.c
+pr49768.c
+pr92904.c
+simd-1.c
+simd-2.c

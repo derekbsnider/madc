@@ -3358,6 +3358,19 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 			}
 		}
 	}
+	// v46: the overload-set DECLARATION IDENTITY the ranker reads —
+	// FuncDef::overload_spelling (one intern id) and overload_template_args
+	// (a word run of intern ids, appended BEFORE the paramrec run so that
+	// run stays contiguous). 0 / empty on a method. Restored by the RC2
+	// free-function restore; without them a restored ns-function member
+	// ranked with no spelling and no template args.
+	r.ovl_spelling_id = fd->overload_spelling.empty()
+			  ? 0u : forest_arena.strings.intern(fd->overload_spelling.c_str());
+	r.ovl_targ_begin = (uint32_t)forest_arena.payload.size();
+	r.ovl_targ_count = (uint32_t)fd->overload_template_args.size();
+	for (size_t t = 0; t < fd->overload_template_args.size(); ++t)
+		forest_arena.add_word(forest_arena.strings.intern(
+			fd->overload_template_args[t].c_str()));
 	r.params_begin = (uint32_t)forest_arena.payload.size();
 	r.params_count = (uint32_t)fd->parameters.size();
 	for (size_t p = 0; p < prs.size(); ++p)
@@ -4370,6 +4383,33 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 //      recorded aggregate (std::string -> the basic_string<char,...> product) emits
 //      a namespaced DK_TYPEDEF record instead. A '<'-bearing template-product key
 //      is skipped (the v10 follow-on, unchanged).
+// The func-def location of the function registered under `key`. funcdef_locs
+// is keyed by the EMITTED body symbol (the N_FUNC_DEF declarator id) — a
+// user class's member or a mangled free function defines its body under its
+// Itanium name (FuncDef::local_emit_name / emit_symbol), not its registration
+// key — so the body is looked up under the symbol the FuncDef says it emits
+// first, and under the key itself last (a body emitted under its own name).
+static std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
+forest_body_loc(Program *prog, const cir_frozen_forest &f, const std::string &key)
+{
+	typedef std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator loc_it;
+	auto fi = prog->funcdef_map.find(key);
+	if (fi != prog->funcdef_map.end() && fi->second) {
+		FuncDef *fd = fi->second;
+		if (!fd->local_emit_name.empty()) {
+			loc_it bl = f.funcdef_locs.find(fd->local_emit_name); // allowed-exception: lookup key, not symbol build
+			if (bl != f.funcdef_locs.end())
+				return bl;
+		}
+		if (!fd->emit_symbol.empty() && !fd->declaration_only) {
+			loc_it bl = f.funcdef_locs.find(fd->emit_symbol);
+			if (bl != f.funcdef_locs.end())
+				return bl;
+		}
+	}
+	return f.funcdef_locs.find(key);
+}
+
 static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				      const std::set<std::string> *pack_uncarriable)
 {
@@ -4389,7 +4429,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			if (!a.get_payload(r.methods_begin, i, md) || !md.name_id)
 				continue;
 			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
-				bl = f.funcdef_locs.find(a.strings.str(md.name_id));
+				bl = forest_body_loc(prog, f, a.strings.str(md.name_id));
 			if (bl == f.funcdef_locs.end())
 				continue;
 			madc::dis::defrec fr;
@@ -4430,7 +4470,7 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 				continue;
 			std::string fsym = a.strings.str(r.name_id);
 			std::map<std::string, std::pair<uint32_t, uint32_t> >::const_iterator
-				bl = f.funcdef_locs.find(fsym);
+				bl = forest_body_loc(prog, f, fsym);
 			if (bl == f.funcdef_locs.end()) {
 				DBG(std::cout << "arena_complete 1b: bodied " << fsym
 					      << " has NO func-def in the partition"
@@ -4730,8 +4770,8 @@ static void cir_forest_arena_complete(Program *prog, cir_frozen_forest &f,
 			for (size_t ei = 0; ei < osi.second.size(); ++ei) {
 				const Program::NamespaceFnOverload &e = osi.second[ei];
 				if (!e.var || !e.var->type
-				    || (!e.param_spelling.empty()
-					&& e.param_spelling[0] == '\x01'))
+				    || (!e.spelling().empty()
+					&& e.spelling()[0] == '\x01'))
 					continue;	// the fn-template placeholder seed
 				FuncDef *fd = dynamic_cast<FuncDef *>(e.var->type);
 				if (!fd)
@@ -6526,7 +6566,8 @@ static void cir_emit_cxx_source(FILE *out, Program *prog,
 // Build the cir_node tree and render it as C source (no compile/run).
 // Used by `--emit=c11|mc11`.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
-		  CirEmitLang lang)
+		  CirEmitLang lang,
+		  std::vector<CirEmitMapRow> *map)
 {
     // Error-tolerant parse (§3.5): --emit=c++ is a SOURCE view, not a
     // compilation — the retained tokens render exactly even when the parse
@@ -6591,7 +6632,7 @@ int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
 	cir_emit_cxx_source(out, prog, source_name);
     }
     else
-	cir_emit_c(out, tree, lang);
+	cir_emit_c(out, tree, lang, map);
 
     cir_finish(c2m);
     c2mir_finish(ctx);

@@ -1,0 +1,7 @@
+V5 emit-ok: ok
+V5 emit-text: ok
+V5 map-rows>0: ok
+V5 map-monotone: ok
+V5 lens-forward: ok
+V5 lens-roundtrip: ok
+V5 empty-park: ok

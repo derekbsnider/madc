@@ -1,0 +1,47 @@
+/* A cast applied to a member read through a CONST-qualified struct pointer.
+ * Regression (2026-09-20): the `->` member path took the pointee type straight
+ * from DataDefPTR::base_type, so for `struct S const *` it held the
+ * DataDefCONST WRAPPER. The guard above it classifies structurally —
+ * is_struct() sees through the wrapper and answered true — and the code then
+ * static_cast<DataDefSTRUCT *>'d the wrapper and called m_offset on it, so
+ * madc walked garbage and died with SIGSEGV inside
+ * DataDefSTRUCT::m_offset (gcc.c-torture execute/pr89369).
+ *
+ * The pointee of `const S *` is `const S`; member ACCESS is on the unqualified
+ * type. The peel now runs through DataDef::unqualified() (datadef.h — the one
+ * home for a top-level const peel) and the cast is the checked as_struct_dd(),
+ * so a non-struct is a diagnostic rather than a crash.
+ *
+ * Oracle: gcc -std=c17 and clang -std=c17 both compile and run this to the
+ * same output.
+ */
+
+struct S { unsigned int u[4]; };
+
+static void shift_pair(struct S *out, struct S const *in)
+{
+	unsigned long long th, tl;
+
+	/* the cast is what pushed the const-wrapped pointee down the crashing
+	 * path; the same member read without a cast always worked */
+	th = ((unsigned long long) in->u[3] << 32) | in->u[2];
+	tl = ((unsigned long long) in->u[1] << 32) | in->u[0];
+	out->u[0] = (unsigned int) (tl >> 8);
+	out->u[1] = (unsigned int) (th >> 8);
+}
+
+/* the const pointee reached through a typedef spells the same wrapper */
+typedef struct S const cS;
+static unsigned int first(cS *p) { return (unsigned int) p->u[0]; }
+
+int main(void)
+{
+	struct S a, b;
+	b.u[0] = 0x100;
+	b.u[1] = 2;
+	b.u[2] = 0x300;
+	b.u[3] = 4;
+	shift_pair(&a, &b);
+	printf("%u %u %u\n", a.u[0], a.u[1], first(&b));
+	return 0;
+}

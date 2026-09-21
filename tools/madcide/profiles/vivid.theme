@@ -12,3 +12,16 @@ function bold blue
 @gui bg #201a24
 @gui fg #ece4f0
 @gui accent #f0a35e
+
+# @presence (client-server V3c): the caret colours dealt round-robin to
+# clients at connect (a slot per line; the window renders another client's
+# caret in its slot colour, the TUI ignores these). Eight distinguishable
+# entries over the sixteen-colour palette (bold = bright).
+@presence 0 cyan
+@presence 1 magenta
+@presence 2 yellow
+@presence 3 green
+@presence 4 red
+@presence 5 blue
+@presence 6 bold cyan
+@presence 7 bold magenta

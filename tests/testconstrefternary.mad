@@ -1,0 +1,36 @@
+// A conditional whose condition is a member read through a `const T &`
+// parameter (self-host arc 2026-09-17, found by the nested-class reducer:
+// `t.last.existed ? 1 : 0` returned 0 while the member held true). The CIR
+// dead-arm prune asked the condition token is_constant(), which a member of a
+// const-qualified reference reports with no value behind it, so the prune
+// picked the false arm at compile time. Shapes: int, bool and nested-struct
+// members through const&, the same through non-const& and const*, an if, a
+// comparison, and a genuine literal condition. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+
+struct Plain { int a; bool flag; };
+struct holder { Plain in; int total; };
+
+bool c_flag_direct(const holder &h) { return h.in.flag; }
+int c_a_ternary(const holder &h) { return h.in.a ? 1 : 0; }
+int c_flag_ternary(const holder &h) { return h.in.flag ? 1 : 0; }
+int m_flag_ternary(holder &h) { return h.in.flag ? 1 : 0; }
+int p_flag_ternary(const holder *h) { return h->in.flag ? 1 : 0; }
+int c_flag_if(const holder &h) { if (h.in.flag) return 1; return 0; }
+int c_flag_cmp(const holder &h) { return h.in.flag == true ? 1 : 0; }
+int c_total_ternary(const holder &h) { return h.total ? 1 : 0; }
+int c_total_value(const holder &h) { return h.total ? h.total : -1; }
+int literal_true() { return 1 ? 5 : 6; }
+int literal_false() { return 0 ? 5 : 6; }
+
+int main()
+{
+    holder h; h.total = 3; h.in.a = 1; h.in.flag = true;
+    holder z; z.total = 0; z.in.a = 0; z.in.flag = false;
+    printf("%d %d %d %d %d %d %d %d %d\n", (int)c_flag_direct(h), c_a_ternary(h), c_flag_ternary(h),
+	   m_flag_ternary(h), p_flag_ternary(&h), c_flag_if(h), c_flag_cmp(h), c_total_ternary(h), c_total_value(h));
+    printf("%d %d %d %d %d %d\n", c_a_ternary(z), c_flag_ternary(z), c_total_ternary(z), c_total_value(z),
+	   literal_true(), literal_false());
+    return 0;
+}

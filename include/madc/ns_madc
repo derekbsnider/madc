@@ -17,6 +17,9 @@
 // Security: the runtime honours the engine's madc_runtime_eval_policy;
 // scope-access variants are gated by the parser's scope-access hooks.
 
+#include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
+#include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
+
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
     // `__madc_eval()`. The value-destination forms carry the rendered
@@ -69,8 +72,11 @@ namespace madc {
     // same front end bin/madc runs, in a policy-clamped child, and return
     // the compiler's own structured data as a value array. `filename` is
     // the display name diagnostics carry (default "<source>").
-    //   diagnostics rows: { severity, phase, message, file, line, column }
-    //       (severity "error"/"warning"; empty array = a clean buffer)
+    //   diagnostics rows: { severity, severity_code, phase, phase_code,
+    //       message, file, line, column } (severity "error"/"warning" with
+    //       its madc::diag_severity enumerator in severity_code — compare
+    //       against THAT, <bits/diag_enums>; phase likewise; empty array =
+    //       a clean buffer)
     //   outline rows:     { kind, name, line, column, end_line } for the
     //       buffer's OWN definitions, source order (kind: "function"
     //       today; classes/globals are a named extension seat; end_line
@@ -92,6 +98,34 @@ namespace madc {
     // child program — the runtime-eval machinery's confinement.
     bool emit(value &out, const char *source, const char *filename,
 	      const char *target);
+    // The same render by the target's KIND (<bits/file_kinds>): madc::fkC11 |
+    // madc::fkMC11 | madc::fkCPP (the family — the retained-source echo) —
+    // an enumerator the compiler checks. A kind the emitter has no rendering
+    // for is false, like an unknown name. An IDE carries the code; the name
+    // form is for text that just arrived (a command line).
+    bool emit(value &out, const char *source, const char *filename,
+	      int64_t target_kind);
+    // The same KIND render PLUS the source↔display COORDINATE MAP beside the
+    // text (V5): out_map arrives as an array of {disp, stored, len} rows
+    // (empty = nothing corresponds, park at 0) — madcdis/doc_lens.h's codec,
+    // the input to ui::lens_to_display / ui::lens_to_stored. Statement/line-
+    // level correlation today; column/expression precision is the later
+    // refinement. An IDE carries the target as a code; the map rides the View.
+    bool emit(value &out, value &out_map, const char *source,
+	      const char *filename, int64_t target_kind);
+
+    // The file-kind vocabulary's boundary converters (<bits/file_kinds>; the
+    // engine owns the tables, src/file_kinds.cpp — a standard's spelling is
+    // the --std= table's row): a kind's canonical spelling ("" for none);
+    // the kind a spelling names (madc::fkUNKNOWN = a misspelling, the
+    // caller's refusal); the kind a file NAME's extension answers — the
+    // FAMILY for C/C++ (madc::fkC / madc::fkCPP; the standard within a family
+    // comes from the manifest or --std=), madc::fkUNKNOWN for an extension
+    // no table names. Convert ONCE where text enters (a file open, a profile
+    // line, a command line); carry the code after; a switch dispatches it.
+    const char *file_kind_name(int64_t kind);
+    int64_t file_kind_of(const char *name);
+    int64_t file_kind_of_path(const char *path);
 
     // Persistent parse handles: the compiler-data surfaces above given a
     // LIFETIME. parse_open compiles (NEVER executes) `source` in a child
@@ -133,6 +167,104 @@ namespace madc {
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
     value &parse_spans(value &out, int64_t handle);
+
+    // Code-graph MCP L1 (design 2026-09-12): the live declaration/type
+    // graph as node-addressed reads over a parse handle. A node id is a
+    // type-id; a node is { id, kind, name } (+ line/column/end_line for a
+    // function). graph_symbols returns { nodes: [...] } — the TU's own
+    // top-level functions.
+    value &graph_symbols(value &out, int64_t handle);
+    value &graph_node(value &out, int64_t handle, int64_t node_id);
+    value &graph_type_of(value &out, int64_t handle, int64_t node_id);
+    value &graph_definition(value &out, int64_t handle, const char *name);
+    value &graph_members(value &out, int64_t handle, int64_t type_id);
+    value &graph_bases(value &out, int64_t handle, int64_t type_id);
+    value &graph_enclosing(value &out, int64_t handle, int64_t line,
+			   int64_t column);
+
+    // Code-graph MCP L1b (design 2026-09-12): the BODY graph over the live
+    // parse-handle TokenBase AST (a function's statement/expression tree),
+    // beside L1's decl/type graph above. A body node is { id, kind, name?,
+    // line, column } (+ end_line for a block); id is either a per-handle
+    // body handle or (only as an INPUT to graph_children) a type-id.
+    //   graph_body(handle, func_id, depth): func_id is a type-id (from
+    //     graph_symbols/definition/enclosing); returns the function's own
+    //     body subtree as { nodes:[...], edges:[{kind:"CONTAINS",from,to}],
+    //     truncated? }. depth < 0 = full (server-side capped); depth = 0 =
+    //     the function node alone.
+    //   graph_children(handle, id, depth): structural descent from ANY node
+    //     — id may be a body handle (returned by graph_body/graph_children
+    //     itself) or a function type-id (same result as graph_body); a
+    //     non-function type-id yields empty nodes (its children are
+    //     graph_members' job, not this verb's). depth < 0 = full; the
+    //     natural default at the call site is 1 (immediate children).
+    value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth);
+    value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth);
+
+    // Code-graph MCP L2 (design 2026-09-12): derived CALLS/REFERENCES edges.
+    //   graph_callees(handle, func_id): functions func_id calls (CALLS out).
+    //   graph_callers(handle, func_id): functions that call func_id (CALLS in).
+    //   graph_references(handle, def_id): every use-site of def_id (REFERENCES,
+    //     site granularity + enclosing) — def_id a FUNCTION type-id OR a GLOBAL
+    //     decl-id (from graph_search). graph_search(handle, kind, name~): decl
+    //     nodes by kind + name substring (v1: Function, Global). graph_impact(
+    //     handle, id): batched callers + references + enclosing in one call.
+    //   Each returns { nodes, edges?, truncated? }.
+    value &graph_callees(value &out, int64_t handle, int64_t func_id);
+    value &graph_callers(value &out, int64_t handle, int64_t func_id);
+    value &graph_references(value &out, int64_t handle, int64_t def_id);
+    value &graph_search(value &out, int64_t handle, const char *kind, const char *name_sub);
+    value &graph_impact(value &out, int64_t handle, int64_t id);
+
+    // Code-graph MCP L3 (design 2026-09-12): node editing primitives.
+    //   graph_span(handle, id): the node + span {line, column, end_line,
+    //     end_column} — 1-based lines, 0-based byte columns, start inclusive /
+    //     end exclusive — for a TU-own function definition, a global
+    //     declaration or a statement-level body node; {error} otherwise (an
+    //     expression node has no extent of its own: edit its statement).
+    //   graph_at(handle, line, column): the editable node whose span STARTS
+    //     there (a function, a global, or a statement of the enclosing
+    //     function); {} = none.
+    //   parse_refresh_checked(out_diags, handle, source): parse `source` into
+    //     a fresh tree and SWAP it in only if it adds no error over the live
+    //     one (true); false = rejected, the live tree and every id untouched.
+    //     out_diags = the candidate's diagnostics rows either way. A swap
+    //     advances the handle's generation: every earlier id is refused as
+    //     stale by every graph verb — re-query (or read the edit result's node).
+    //   parse_would_accept(out_diags, handle, source): the SAME verdict WITHOUT
+    //     the swap (Nexus L4c, the propose tier's validator) — the live tree,
+    //     its generation and every id untouched either way; a revision handle
+    //     answers it too (nothing to bump). One validator, a commit flag inside.
+    value &graph_span(value &out, int64_t handle, int64_t id);
+    value &graph_at(value &out, int64_t handle, int64_t line, int64_t column);
+    bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source);
+    bool parse_would_accept(value &out_diags, int64_t handle, const char *source);
+
+    // The git substrate (Nexus L4a) is the git:: namespace of the madcgit
+    // MODULE since the V6 seam — <ns_git> (`import madcgit;`): libgit2 is a
+    // dependency of the IDE's nexus, never part of madc (owner, 2026-09-15).
+
+    // The COMPARISON spelling of a path (V6c-2): symlinks, `.` and `..`
+    // resolved (POSIX realpath) when the path exists, the input spelling
+    // unchanged when it does not — never empty. THE canonicalizer the engine
+    // uses for path identity, so a file opened as `src/x.mad` and the same
+    // file named `/abs/src/x.mad` compare equal. Use it wherever two path
+    // spellings must name one document; do not write a second normalizer.
+    value &canonical_path(value &out, const char *path);
+
+    // Revision handles (Nexus L4b; design 2026-09-13 §3.3): parse_open_tagged
+    // opens a READ-ONLY parse handle of `source` whose generation is a fresh
+    // TAG (>= 2^20, engine-allocated) — every id it mints names it, so
+    // graph_route(handle, id) answers the handle an id belongs to: `handle`
+    // itself when the id carries its generation, the open tagged handle whose
+    // tag the id carries, or 0 (stale / unknown — run the verb on `handle`
+    // and its refusal says why). parse_refresh / parse_refresh_checked refuse
+    // a tagged handle; parse_close forgets its tag. parse_generation answers
+    // a handle's current generation (a tag for a revision handle), -1 = none.
+    int64_t parse_open_tagged(const char *source, const char *filename);
+    int64_t parse_generation(int64_t handle);
+    int64_t graph_route(int64_t handle, int64_t id);
+
     // The live-tree build/run pair (the running madc IS the compiler —
     // ^B never re-parses, never execs a madc binary):
     //   parse_build: emit a native artifact from the handle's EXISTING
@@ -236,6 +368,20 @@ namespace madc {
     // value, 0 = would block, -1 = closed and drained.
     int64_t chan_select(value &out, value &chans);
     int64_t chan_try_recv(value &out, int64_t chan);
+
+    // Byte-channel broadcast (V6a duplex push): write `line` to every channel
+    // registered via channel::share() except `except_id` (pass -1 to reach
+    // all). Best-effort — a dead peer is skipped, never fatal. The hub
+    // fan-out a serve task calls after its command appends change events.
+    void conn_broadcast(int64_t except_id, const char *line);
+
+    // Per-connection cookie (V6a tiers): an OPAQUE int the application stores
+    // against a share() id — madcide keeps the permission tier there. The
+    // engine never interprets it. conn_cookie returns -1 for an unknown id;
+    // conn_ids fills `out` with every live connection id (ascending).
+    void conn_set_cookie(int64_t id, int64_t cookie);
+    int64_t conn_cookie(int64_t id);
+    void conn_ids(value &out);
 
     // Park this task for `ms` milliseconds of SCHEDULER time (real
     // monotonic by default; virtual under MADC_TASK_VTIME=1 — the clock
@@ -354,11 +500,20 @@ namespace madc {
 	const char *const platform;
 	const char *const version;
 	const char *const hostname;
+	// The process id, portable (V6 seam): a bare getpid() resolves through
+	// the dlsym fallback on POSIX only — the UCRT spells it _getpid — so
+	// a dialect program that needs its own pid reads this fact instead.
+	const int64_t pid;
     };
     extern SysInfo sys;
 
     // madc::channel — one URI-addressed byte channel with line helpers
-    // (exec://, tcp://, file://, ... via the host channel registry).
+    // (exec://, tcp://, file://, stdio://, ... via the host channel
+    // registry). `stdio://` is THIS process's standard streams (read fd 0,
+    // write fd 1): the stdio deployment of a protocol server is a channel
+    // like any other, so one seat loop serves stdio and a socket. Its
+    // close() leaves fd 0/1 open (libc's stdout still owns fd 1);
+    // close_write() does close fd 1, so the peer sees EOF.
     // Declaration-only: methods resolve mangled-direct to the host class
     // (src/madc_channel_object.cpp). LAYOUT CONTRACT with
     // include/madcdis/channel.h — a single void* member, append-only,
@@ -368,12 +523,75 @@ namespace madc {
     // Non-copyable: the copy ctor is private and unimplemented.
     class channel {
     public:
+	// An empty channel with no endpoint yet — the target accept() fills.
+	channel();
 	channel(const char *uri);
 	channel(const char *uri, const char *mode);
 	~channel();
 
 	bool ok() const;
 	const char *last_error() const;
+
+	// Listener facet (a `listen://host:port` channel). accept() takes the
+	// next pending connection into `client` (an empty channel): 1 accepted,
+	// 0 none pending (park via wait_readable() and retry), -1 error / a
+	// non-listener. local_endpoint() reports the address actually bound
+	// (host:port after an ephemeral :0), "" for a non-listener; ring-
+	// lifetime pointer (copy before the next call).
+	int64_t accept(channel &client);
+	const char *local_endpoint();
+
+	// Hand-off facet (V6a duplex serve): an accepted connection rides into
+	// a `go` serve task as a `long` HANDLE, since `go` carries only long/
+	// double/pointer slots and this channel is non-copyable. detach()
+	// registers this channel's live endpoint under a fresh handle and
+	// re-empties this object (0 = nothing to hand off); adopt() moves a
+	// detached endpoint into an empty channel and consumes the handle
+	// (false = unknown/spent handle, or this channel still holds one). A
+	// one-shot transfer token; the registry is scheduler-thread-only. NOT a
+	// value-channel (chan_*) handle.
+	int64_t detach();
+	bool adopt(int64_t handle);
+
+	// Broadcast facet (V6a duplex push): a serve loop keeps its channel but
+	// shares WRITE access so a peer's task can push change events down this
+	// socket (the hub fan-out). share() registers this channel and returns
+	// its id; unshare() removes it (before close()). The free
+	// madc::conn_broadcast(except_id, line) writes `line` to every shared
+	// channel but `except_id`. Scheduler-thread-only; a cooperative write
+	// never yields mid-line, so a broadcast into a task parked in readline
+	// is atomic.
+	int64_t share();
+	void unshare(int64_t id);
+
+	// WebSocket facet (V6b): upgrade an accepted (or connected) byte
+	// channel to an RFC6455 message channel. upgrade_websocket() is the
+	// SERVER role — read the HTTP upgrade request (parking), send the 101
+	// accept, enter message mode; connect_websocket(resource) is the
+	// CLIENT role — send the upgrade request for `resource`, consume the
+	// 101. Both return false (with last_error) on a non-WebSocket / failed
+	// handshake. Afterwards readline() returns one text message, write()
+	// sends one text frame, read()/readall() refuse; ping/pong/close are
+	// handled internally and a close surfaces as readline() EOF.
+	bool upgrade_websocket();
+	bool connect_websocket(const char *resource);
+
+	// Header-framing facet (V6c-2): switch this channel into Content-Length
+	// MESSAGE mode — the framing the Language Server Protocol (and DAP, and
+	// BSP) uses: a header block, a blank line, then exactly that many bytes.
+	// A mode switch, not a handshake. Afterwards readline() returns one
+	// complete message body and write() emits the header plus the body;
+	// read()/readall() refuse (message-oriented), as they do for a
+	// WebSocket. false (with last_error) on a channel with no endpoint, or
+	// one already speaking another framing — a channel speaks one framing.
+	bool frame_headers();
+
+	// Serve facet (V6b-3): classify + route one accepted connection so a
+	// single --serve port carries all three seats. 2 = an api client (a
+	// JSON line, left buffered for readline); 1 = a WebSocket upgrade (the
+	// channel is now a message channel — run the ws window); 0 = a
+	// non-upgrade HTTP GET answered with `page` (close it); -1 = error.
+	int64_t serve_web(const char *page);
 
 	int64_t read(void *buffer, int64_t capacity);
 	// value carriers: the line/payload lands as a string-kind value;

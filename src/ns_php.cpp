@@ -13,7 +13,14 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>	// php::time
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>       // _unlink — win64 UCRT spells POSIX unlink() `_unlink`
+#include <direct.h>   // _mkdir / _rmdir — the UCRT spellings (php::mkdir / rmdir)
+#else
+#include <unistd.h>   // unlink(2)
+#endif
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -253,6 +260,57 @@ std::string *php_implode(std::string *result, const char *glue, madc::value *arr
 int64_t php_count(madc::value *arr)
 {
 	return (int64_t)ns_common::value_count(*arr);
+}
+
+// php::array_keys — PHP array_keys(): the keys of a map (an object-kind
+// carrier: its keys in the carrier's own order) or the indices 0..n-1 of a
+// list; anything else answers an empty array. The dialect's ONE way to
+// enumerate an object's keys (range-for over an object-kind carrier reads
+// size 0 by the madarray_size rule) — Nexus L4d's fold and manifests ride it.
+void php_array_keys(madc::value *out, madc::value *arr)
+{
+	std::vector<madc::value> keys;
+	if ( arr && arr->is_object() )
+	{
+		const std::map<std::string, madc::value> &m = arr->as_object();
+		for ( std::map<std::string, madc::value>::const_iterator it = m.begin();
+		      it != m.end(); ++it )
+			keys.push_back(madc::value(it->first));
+	}
+	else if ( arr && arr->is_array() )
+	{
+		int64_t n = (int64_t)ns_common::value_count(*arr);
+		for ( int64_t i = 0; i < n; ++i )
+			keys.push_back(madc::value(i));
+	}
+	*out = madc::value::make_array(keys);
+}
+
+// php::mkdir / php::rmdir — PHP mkdir() / rmdir(): true on success, false on
+// failure (an existing directory, a non-empty one, a missing one) — never a
+// throw. Host-side builtins, so win64-portable: the UCRT spells them _mkdir
+// (no mode) / _rmdir, and the host picks the spelling, as php::unlink does.
+int64_t php_mkdir(const char *path, int64_t mode)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	(void)mode;
+	return ::_mkdir(path) == 0 ? 1 : 0;
+#else
+	return ::mkdir(path, (mode_t)mode) == 0 ? 1 : 0;
+#endif
+}
+
+int64_t php_rmdir(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_rmdir(path) == 0 ? 1 : 0;
+#else
+	return ::rmdir(path) == 0 ? 1 : 0;
+#endif
 }
 
 // php::array_push — ONE overloaded name (PHP parity: no array_push_int
@@ -553,6 +611,31 @@ int64_t php_file_exists_value(const madc::value *v)
 	// C string for stat.
 	std::string p((const char *)v->data(), v->size());
 	return php_file_exists(p.c_str());
+}
+
+// php::unlink — PHP parity: delete a FILE (unlink fails on a directory,
+// unlike C remove() which rmdir's it). Returns true on success, false on
+// failure (a missing file included). A real host-side builtin so it runs
+// the platform's own delete — POSIX unlink(2), win64 _unlink — never a
+// dlsym'd libc `unlink` (which win64 UCRT does not export; it is _unlink).
+int64_t php_unlink(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_unlink(path) == 0 ? 1 : 0;
+#else
+	return ::unlink(path) == 0 ? 1 : 0;
+#endif
+}
+int64_t php_unlink_value(const madc::value *v)
+{
+	if ( !v || !v->is_string() || v->size() == 0 )
+		return 0;
+	// The payload is not NUL-terminated by contract — copy to a bounded
+	// C string (as php_file_exists_value does).
+	std::string p((const char *)v->data(), v->size());
+	return php_unlink(p.c_str());
 }
 
 // php::file_get_contents — PHP parity: the whole file as a string
@@ -860,6 +943,49 @@ const char *php_dirname_value(const madc::value *v, int64_t levels)
 	return php_dirname_slot(slot, levels);
 }
 
+// php::basename — php_basename parity (PHP 8): trailing separators trim,
+// the LAST component answers ("" for an empty or all-separator path); a
+// non-empty `suffix` that ends the component — and is shorter than it —
+// is cut. The separator rule is dirname's (one owner: php_dirname_is_sep),
+// and a WINDOWS-HOST drive prefix ("C:") is skipped like dirname skips it.
+static const char *php_basename_slot(std::string &slot, const char *suffix)
+{
+	std::string &s = slot;
+	size_t base = 0;
+	size_t end = s.size();
+#ifdef _WIN32
+	if ( s.size() >= 2 && s[1] == ':'
+	     && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) )
+		base = 2;
+#endif
+	while ( end > base && php_dirname_is_sep(s[end - 1]) )
+		--end;			// 1) trailing separators
+	size_t start = end;
+	while ( start > base && !php_dirname_is_sep(s[start - 1]) )
+		--start;		// 2) back to the separator before the component
+	std::string comp = s.substr(start, end - start);
+	if ( suffix && *suffix )
+	{
+		size_t sl = strlen(suffix);
+		if ( comp.size() > sl && comp.compare(comp.size() - sl, sl, suffix) == 0 )
+			comp.resize(comp.size() - sl);
+	}
+	slot = comp;
+	return slot.c_str();
+}
+
+const char *php_basename_cstr(const char *path, const char *suffix)
+{
+	std::string &slot = ns_common::ring_slot();
+	slot = path ? path : "";
+	return php_basename_slot(slot, suffix);
+}
+const char *php_basename_value(const madc::value *v, const char *suffix)
+{
+	std::string &slot = ns_common::value_text_slot(v);
+	return php_basename_slot(slot, suffix);
+}
+
 // Value-out element returns — PHP's array_pop/array_shift return the
 // element itself (mixed), which only the carrier can represent.
 madc::value *php_array_pop_value(madc::value *out, madc::value *arr)
@@ -1046,6 +1172,12 @@ std::string *__php_wordwrap(std::string *a, int64_t b, std::string *c) { return 
 void __php_explode(madc::value *a, const char *b, const char *c) { php_explode(a, b, c); }
 std::string *__php_implode(std::string *a, const char *b, madc::value *c) { return php_implode(a, b, c); }
 int64_t __php_count(madc::value *a) { return php_count(a); }
+// PHP time(): seconds since the Unix epoch (the dialect's wall clock; L4b).
+int64_t __php_time() { return (int64_t)::time((time_t *)0); }
+// PHP array_keys / mkdir / rmdir (Nexus L4d task 0).
+void __php_array_keys(madc::value *a, madc::value *b) { php_array_keys(a, b); }
+int64_t __php_mkdir(const char *a, int64_t b) { return php_mkdir(a, b); }
+int64_t __php_rmdir(const char *a) { return php_rmdir(a); }
 int64_t __php_array_push(madc::value *a, const char *b) { return php_array_push_str(a, b); }
 int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_int(a, b); }
 int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }
@@ -1087,6 +1219,8 @@ const char *__php_number_format_sep(int64_t a, const char *b) { return php_numbe
 const char *__php_wordwrap_cstr(const char *a, int64_t b, const char *c) { return php_wordwrap_cstr(a, b, c); }
 const char *__php_dirname_cstr(const char *a, int64_t b) { return php_dirname_cstr(a, b); }
 const char *__php_dirname_value(madc::value *a, int64_t b) { return php_dirname_value(a, b); }
+const char *__php_basename_cstr(const char *a, const char *b) { return php_basename_cstr(a, b); }
+const char *__php_basename_value(madc::value *a, const char *b) { return php_basename_value(a, b); }
 const char *__php_wordwrap_value(madc::value *a, int64_t b, const char *c) { return php_wordwrap_value(a, b, c); }
 const char *__php_implode_cstr(const char *a, madc::value *b) { return php_implode_cstr(a, b); }
 madc::value *__php_array_pop_value(madc::value *a, madc::value *b) { return php_array_pop_value(a, b); }
@@ -1101,6 +1235,8 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_unlink(madc::value *a) { return php_unlink_value(a); }
+int64_t __php_unlink_cstr(const char *a) { return php_unlink(a); }
 int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }
 int64_t __php_file_get_contents_vpath(madc::value *a, madc::value *b) { return php_file_get_contents_vpath(a, b); }
 int64_t __php_file_put_contents_cstr(const char *a, const char *b) { return php_file_put_contents_cstr(a, b); }

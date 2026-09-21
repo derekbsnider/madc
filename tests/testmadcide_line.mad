@@ -1,0 +1,56 @@
+// The ui::LINE client gate (client-server design 2026-09-09 §2.3b, slice
+// V2.5): `madcide <file> --line` — the ex / edlin line mode. The engine
+// LINE frontend (ui_line_frontend) renders the composed projection tree
+// through the level-0 sequential typesetter to stdout and reads ONE line of
+// stdin per cycle; IdeSession::line_input classifies each line (':' = a
+// colon command, anything else = text). The application under test is THE
+// tool (tools/madcide, one copy): run_line is the loop main hands --line to.
+//
+// Pins:
+//   1. a scripted stdin transcript (tests/testmadcide_line.input:
+//      "hello" / ":w" / ":q") through the real frontend: the level-0
+//      projection each cycle to stdout, the inserted line, the save, and
+//      the status line (Modified, the moved Row) all appear;
+//   2. the TWIN — the SAME transcript applied DIRECTLY through line_input
+//      (no frontend) on a copy of the file — agrees byte-for-byte with what
+//      the frontend-driven client saved: the engine frontend delivers stdin
+//      lines to the ONE classifier faithfully (the frontend is the only
+//      new machinery; the edits are the session's).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_line.inc"
+
+int main()
+{
+    const char *src = "long add(long a, long b) { return a + b; }\n";
+    const char *path = "madc_ide_line.mad";
+    const char *twin = "madc_ide_line_b.mad";
+    php::file_put_contents(path, src);
+    php::file_put_contents(twin, src);
+
+    // 1. The ex / edlin client over stdin (the .input transcript): the
+    //    level-0 projection each cycle to stdout. It inserts "hello" (a
+    //    bare line is text), saves (:w), and quits (:q).
+    run_line(path, false);
+
+    // 2. The twin: the SAME lines applied DIRECTLY through the classifier
+    //    (no frontend) on the copy. line_input is the one owner the
+    //    frontend feeds; if the frontend delivered the bytes faithfully the
+    //    two saved files are identical.
+    IdeSession S;
+    long doc = S.open(twin, false);
+    S.terminal(false);
+    long adoc = S.active(doc);
+    bool cont = true;
+    S.line_input(adoc, "hello", cont);
+    S.line_input(adoc, ":w", cont);
+    S.close();
+
+    var fa;
+    var fb;
+    php::file_get_contents(fa, path);
+    php::file_get_contents(fb, twin);
+    println("line-twin: doc-equal={} cont={}", fa == fb ? 1 : 0, cont ? 1 : 0);
+    return 0;
+}

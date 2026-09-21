@@ -1,0 +1,360 @@
+// Nexus L4e through the SEAT: every axis is a LAYER an asset has or lacks. A
+// two-asset project (a .mad and a binary member) — the .mad answers every
+// family; the binary keeps text / managed / versioned (graph.commits answers,
+// nexus.records answers) and the tree verbs refuse by the missing layer's
+// name. The EVIDENCE axis: a scratch suite discovered by the runner's
+// conventions, run through the canonical runner (pass / fail / timeout as
+// testrun events tagged node 0), test.results / list / candidates, an external
+// record's command, the unit family refused, the `target` slot, a proposal's
+// checks (a linked failing test leaves it open with the run attached), the
+// policy tables as data. In-process (self_id -1 = the operator); the scratch
+// files live inside the madc checkout, so the git layer exists with zero rows.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+// The connection seat routes a client's LSP traffic to lsp_handle (V6c-3c),
+// so the dispatcher comes first — madcide.mad's own order.
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+
+// A boolean field read without a throw: absent = false.
+bool flag(var &snap, const char *key)
+{
+    var v = snap[key];
+    if ( v.is_null() )
+	return false;
+    return v.as_boolean();
+}
+
+bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var resp;
+    mcp_handle(S, doc, -1, req, resp);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    if ( js::parse(snap, txt.c_str()) )
+	return true;
+    snap = { "error": txt };
+    return false;
+}
+
+// Does the word list carry `word`?
+bool has_word(var &words, const char *word)
+{
+    var wv = word;
+    for ( var x : words )
+	if ( x == wv )
+	    return true;
+    return false;
+}
+
+// The test record id named `name` in a test.list answer (0 = none).
+long id_of(var &list, const char *name)
+{
+    var nm = name;
+    for ( var r : list["rows"] )
+	if ( r["name"] == nm )
+	    return r["id"].as_integer();
+    return 0;
+}
+
+// The row for test id `id` in a test.run answer (left null when absent).
+void row_of(var &out, var &run, int64_t id)
+{
+    for ( var r : run["rows"] )
+	if ( r["test"].as_integer() == id )
+	    out = r;
+}
+
+// The message a refused call answered (the isError text).
+bool names(var &snap, const char *needle)
+{
+    var why = snap["error"];
+    if ( why.is_null() )
+	return false;
+    return why.index(needle) >= 0;
+}
+
+int main()
+{
+    const char *path = "madc_ide_layers.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\nlong run(long n) { return add(n, 1); }\n");
+    php::file_put_contents("madc_ide_layers.png", "not really an image\n");
+    php::file_put_contents("madc_ide_layers.prj.json",
+			   "{\"tus\": [\"madc_ide_layers.mad\", \"madc_ide_layers.png\"], \"entry\": \"main\"}\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "cannot open {}", path);
+	return 1;
+    }
+    S.terminal(false);
+    long w = S.world();
+    var snap;
+    bool err;
+    var none;
+
+    // ---- the .mad member: every layer but testable (no test records yet) ----
+    call_tool(snap, err, S, doc, 1, "graph.status", none);
+    var lw = snap["layers"];
+    var node = snap["node"];
+    var serves = node["serves"];
+    println("status: layers={} platform-set={} serves={} node={}", php::implode(",", lw),
+	    strlen(node["platform"].c_str()) > 0 ? 1 : 0, php::count(serves), node["node"]);
+
+    // ---- the binary member: text / versioned / managed; the tree verbs refuse ----
+    edit_file(w, S.es, doc, "madc_ide_layers.png");
+    call_tool(snap, err, S, doc, 2, "graph.status", none);
+    var plw = snap["layers"];
+    println("png-status: err={} layers={} handle={} errors={}", err ? 1 : 0, php::implode(",", plw), snap["handle"], snap["errors"]);
+    call_tool(snap, err, S, doc, 3, "graph.symbols", none);
+    println("png-symbols: err={} names-layer={}", err ? 1 : 0, names(snap, "no parseable layer for kind image ('graph.symbols' needs it") ? 1 : 0);
+    call_tool(snap, err, S, doc, 4, "graph.commits", none);
+    println("png-commits: err={}", err ? 1 : 0);
+    call_tool(snap, err, S, doc, 5, "nexus.records", none);
+    println("png-records: err={} rows={}", err ? 1 : 0, php::count(snap["rows"]));
+    var addref = { "ref": "symbol", "file": "madc_ide_layers.mad", "kind": "Function", "name": "add" };
+    var explargs = { "ref": addref };
+    call_tool(snap, err, S, doc, 6, "nexus.explain", explargs);
+    println("png-explain: err={} names-layer={}", err ? 1 : 0, names(snap, "no parseable layer") ? 1 : 0);
+    call_tool(snap, err, S, doc, 7, "test.list", none);
+    println("png-list: err={} rows={}", err ? 1 : 0, php::count(snap["rows"]));
+    var one = {};
+    one.push(1);
+    var runargs1 = { "ids": one };
+    call_tool(snap, err, S, doc, 8, "test.run", runargs1);
+    println("png-run: err={} names-layer={}", err ? 1 : 0, names(snap, "no testable layer") ? 1 : 0);
+    edit_file(w, S.es, S.active(doc), path);
+    call_tool(snap, err, S, doc, 9, "graph.status", none);
+    var blw = snap["layers"];
+    println("back: layers={} handle-set={}", php::count(blw), snap["handle"].as_integer() > 0 ? 1 : 0);
+
+    // ---- the scratch suite: discovered by the runner's conventions ----
+    php::mkdir("madc_ide_ltests");
+    php::file_put_contents("madc_ide_ltests/ok.mad", "int main() { println(\"hello\"); return 0; }\n");
+    php::file_put_contents("madc_ide_ltests/ok.expect", "hello\n");
+    php::file_put_contents("madc_ide_ltests/bad.mad", "int main() { println(\"bye\"); return 0; }\n");
+    php::file_put_contents("madc_ide_ltests/bad.expect", "hello\n");
+    php::file_put_contents("madc_ide_ltests/slow.mad", "int main() { madc::sleep_ms(4000); return 0; }\n");
+    php::file_put_contents("madc_ide_ltests/slow.timeout", "1\n");
+    var tdir = { "dir": "madc_ide_ltests" };
+    call_tool(snap, err, S, doc, 10, "test.discover", tdir);
+    println("discover: created={}", snap["created"]);
+    call_tool(snap, err, S, doc, 11, "graph.status", none);
+    var tlw = snap["layers"];
+    println("status-testable: {}", has_word(tlw, "testable") ? 1 : 0);
+    call_tool(snap, err, S, doc, 12, "test.list", none);
+    int64_t ok_id = id_of(snap, "ok");
+    int64_t bad_id = id_of(snap, "bad");
+    int64_t slow_id = id_of(snap, "slow");
+    var l0 = snap["rows"][0];
+    println("list: rows={} ids-set={} last-null={}", php::count(snap["rows"]), (ok_id > 0 && bad_id > 0 && slow_id > 0) ? 1 : 0,
+	    l0["last"].is_null() ? 1 : 0);
+
+    // ---- run the three through the canonical runner: pass / fail / timeout ----
+    var three = {};
+    three.push(ok_id);
+    three.push(bad_id);
+    three.push(slow_id);
+    var runargs = { "ids": three };
+    call_tool(snap, err, S, doc, 13, "test.run", runargs);
+    println("run: ok={} ran={} passed={} failed={} synced={} node={}", flag(snap, "ok") ? 1 : 0, snap["ran"], snap["passed"],
+	    snap["failed"], flag(snap, "synced") ? 1 : 0, snap["node"]);
+    var rok;
+    row_of(rok, snap, ok_id);
+    var rbad;
+    row_of(rbad, snap, bad_id);
+    var rslow;
+    row_of(rslow, snap, slow_id);
+    println("run-ok: result={} exit={} detail=[{}]", rok["result"], rok["exit"], rok["detail"]);
+    println("run-bad: result={} exit={} detail=[{}]", rbad["result"], rbad["exit"], rbad["detail"]);
+    println("run-slow: result={} exit={}", rslow["result"], rslow["exit"]);
+
+    // ---- results: the fold, its filters, the latest per test ----
+    call_tool(snap, err, S, doc, 14, "test.results", none);
+    var rows = snap["rows"];
+    var latest = snap["latest"];
+    array lk;
+    php::array_keys(lk, latest);
+    long nrows = php::count(rows);
+    var lastrow = rows[nrows - 1];
+    long last_seq = lastrow["seq"].as_integer();
+    var r0 = rows[0];
+    println("results: rows={} latest={} node0={} synced={} test0={}", nrows, php::count(lk), r0["node"], flag(r0, "synced") ? 1 : 0,
+	    r0["test"].as_integer() == ok_id ? 1 : 0);
+    var rq = { "test": ok_id };
+    call_tool(snap, err, S, doc, 15, "test.results", rq);
+    println("results-one: rows={}", php::count(snap["rows"]));
+    var nq = { "node": 7 };
+    call_tool(snap, err, S, doc, 16, "test.results", nq);
+    println("results-node7: rows={}", php::count(snap["rows"]));
+    var fam = { "family": "mad" };
+    call_tool(snap, err, S, doc, 17, "test.list", fam);
+    var okrow;
+    var badrow;
+    for ( var r : snap["rows"] )
+    {
+	if ( r["id"].as_integer() == ok_id )
+	    okrow = r;
+	if ( r["id"].as_integer() == bad_id )
+	    badrow = r;
+    }
+    var oklast = okrow["last"];
+    var badlast = badrow["last"];
+    println("list-last: ok={} bad={}", oklast["result"], badlast["result"]);
+    var oneok = {};
+    oneok.push(ok_id);
+    var ra = { "ids": oneok };
+    call_tool(snap, err, S, doc, 18, "test.run", ra);
+    var sq = { "since": last_seq };
+    call_tool(snap, err, S, doc, 19, "test.results", sq);
+    println("results-since: rows={}", php::count(snap["rows"]));
+
+    // ---- an external record: its own command; exit 0 = pass, 3 = fail ----
+    var extf = { "name": "ext-ok", "family": "external", "asset": "", "command": "{madc} --no-config madc_ide_ltests/ok.mad" };
+    var extc = { "rkind": "test", "fields": extf };
+    call_tool(snap, err, S, doc, 20, "nexus.create", extc);
+    int64_t ext_id = snap["id"].as_integer();
+    php::file_put_contents("madc_ide_ltests/exit3.mad", "int main() { return 3; }\n");
+    var extf3 = { "name": "ext-3", "family": "external", "asset": "", "command": "{madc} --no-config madc_ide_ltests/exit3.mad" };
+    var extc3 = { "rkind": "test", "fields": extf3 };
+    call_tool(snap, err, S, doc, 21, "nexus.create", extc3);
+    int64_t ext3_id = snap["id"].as_integer();
+    var exts = {};
+    exts.push(ext_id);
+    exts.push(ext3_id);
+    var rext = { "ids": exts };
+    call_tool(snap, err, S, doc, 22, "test.run", rext);
+    var xok;
+    row_of(xok, snap, ext_id);
+    var x3;
+    row_of(x3, snap, ext3_id);
+    println("external: ran={} ok={} ok-exit={} three={} three-exit={} three-detail=[{}]", snap["ran"], xok["result"], xok["exit"],
+	    x3["result"], x3["exit"], x3["detail"]);
+
+    // ---- the unit family: no runner here — the whole call refuses ----
+    var uf = { "name": "u", "family": "unit", "asset": "", "command": "" };
+    var uc = { "rkind": "test", "fields": uf };
+    call_tool(snap, err, S, doc, 23, "nexus.create", uc);
+    int64_t u_id = snap["id"].as_integer();
+    var us = {};
+    us.push(ok_id);
+    us.push(u_id);
+    var ru = { "ids": us };
+    call_tool(snap, err, S, doc, 24, "test.run", ru);
+    println("unit: err={} names-runner={}", err ? 1 : 0, names(snap, "no runner for family unit") ? 1 : 0);
+
+    // ---- the target slot: a foreign node refuses; this platform runs here ----
+    var tgt = { "ids": oneok, "target": "darwin-arm64" };
+    call_tool(snap, err, S, doc, 25, "test.run", tgt);
+    println("target-foreign: err={} names-node={}", err ? 1 : 0, names(snap, "no node offers 'darwin-arm64'") ? 1 : 0);
+    var plat = madc::sys.platform;
+    var here = { "ids": oneok, "target": plat };
+    call_tool(snap, err, S, doc, 26, "test.run", here);
+    println("target-here: ok={} node={}", flag(snap, "ok") ? 1 : 0, snap["node"]);
+
+    // ---- candidates: an explicit `tests` link; the named fallback ----
+    var okref = { "ref": "record", "id": ok_id };
+    var link1 = { "from": okref, "rel": "tests", "to": addref };
+    call_tool(snap, err, S, doc, 27, "nexus.link", link1);
+    var cargs = { "ref": addref };
+    call_tool(snap, err, S, doc, 28, "test.candidates", cargs);
+    var cts = snap["tests"];
+    var ct0 = cts[0];
+    println("candidates-add: tests={} fallback={} first={}", php::count(cts), flag(snap, "fallback") ? 1 : 0, ct0["id"].as_integer() == ok_id ? 1 : 0);
+    var runref = { "ref": "symbol", "file": "madc_ide_layers.mad", "kind": "Function", "name": "run" };
+    var cargs2 = { "ref": runref };
+    call_tool(snap, err, S, doc, 29, "test.candidates", cargs2);
+    var suite = snap["suite"];
+    println("candidates-run: tests={} fallback={} suite={} count={}", php::count(snap["tests"]), flag(snap, "fallback") ? 1 : 0,
+	    suite["family"], suite["count"]);
+
+    // ---- checks: a proposal with checks runs the linked test; accept runs them again ----
+    call_tool(snap, err, S, doc, 30, "test.results", none);
+    long before = php::count(snap["rows"]);
+    var dargs = { "name": "add" };
+    call_tool(snap, err, S, doc, 31, "graph.definition", dargs);
+    var dn = snap["nodes"][0];
+    int64_t add_id = dn["id"].as_integer();
+    var pargs = { "id": add_id, "src": "long add(long a, long b) { return a + b + 0; }", "propose": true, "checks": true };
+    call_tool(snap, err, S, doc, 32, "graph.replace", pargs);
+    long pseq = snap["proposal"].as_integer();
+    var chk = snap["checks"];
+    println("propose-checks: ok={} ran={} passed={} fallback={}", flag(snap, "ok") ? 1 : 0, chk["ran"], chk["passed"], flag(chk, "fallback") ? 1 : 0);
+    var sargs = { "seq": pseq };
+    call_tool(snap, err, S, doc, 33, "graph.proposal", sargs);
+    var pchk = snap["checks"];
+    var pc0 = pchk[0];
+    println("proposal-checks: rows={} tagged={} result={} status={}", php::count(pchk), pc0["proposal"].as_integer() == pseq ? 1 : 0,
+	    pc0["result"], snap["status"]);
+    call_tool(snap, err, S, doc, 34, "graph.accept", sargs);
+    var achk = snap["checks"];
+    println("accept: ok={} checks-ran={} checks-passed={}", flag(snap, "ok") ? 1 : 0, achk["ran"], achk["passed"]);
+    call_tool(snap, err, S, doc, 35, "test.results", none);
+    println("results-grew: {}", php::count(snap["rows"]) - before);
+    // a linked FAILING test: the proposal stays open with the run attached
+    var badref = { "ref": "record", "id": bad_id };
+    var link2 = { "from": badref, "rel": "tests", "to": runref };
+    call_tool(snap, err, S, doc, 36, "nexus.link", link2);
+    var dargs2 = { "name": "run" };
+    call_tool(snap, err, S, doc, 37, "graph.definition", dargs2);
+    var dn2 = snap["nodes"][0];
+    int64_t run_id = dn2["id"].as_integer();
+    var pargs2 = { "id": run_id, "src": "long run(long n) { return add(n, 2); }", "propose": true, "checks": true };
+    call_tool(snap, err, S, doc, 38, "graph.replace", pargs2);
+    long pseq2 = snap["proposal"].as_integer();
+    var chk2 = snap["checks"];
+    var sargs2 = { "seq": pseq2 };
+    call_tool(snap, err, S, doc, 39, "graph.proposal", sargs2);
+    var pchk2 = snap["checks"];
+    var pc20 = pchk2[0];
+    println("failing-check: ran={} failed={} status={} attached={} result={}", chk2["ran"], chk2["failed"], snap["status"],
+	    php::count(pchk2), pc20["result"]);
+    // a proposal whose target has no linked test any more: the fallback is
+    // named, nothing runs (the landed accept re-parsed the tree — the ids are
+    // fresh again through graph.definition)
+    var unlink1 = { "from": okref, "rel": "tests", "to": addref };
+    call_tool(snap, err, S, doc, 40, "nexus.unlink", unlink1);
+    call_tool(snap, err, S, doc, 41, "graph.definition", dargs);
+    var dn3 = snap["nodes"][0];
+    int64_t add_id2 = dn3["id"].as_integer();
+    var pargs3 = { "id": add_id2, "src": "long add(long a, long b) { return a + b + 1; }", "propose": true, "checks": true };
+    call_tool(snap, err, S, doc, 42, "graph.replace", pargs3);
+    var chk3 = snap["checks"];
+    var suite3 = chk3["suite"];
+    println("propose-fallback: ok={} ran={} fallback={} suite={}", flag(snap, "ok") ? 1 : 0, chk3["ran"], flag(chk3, "fallback") ? 1 : 0,
+	    suite3["family"]);
+
+    // ---- explain reports the layers; the policy tables as data ----
+    call_tool(snap, err, S, doc, 43, "nexus.explain", explargs);
+    var elw = snap["layers"];
+    println("explain: err={} layers={}", err ? 1 : 0, php::count(elw));
+    println("policy: run-tier={} run-needs-testable={} commits-needs-versioned={} explain-needs-parseable={} status-needs-text={}",
+	    tier_name(test_min_tier(tvRUN)), (test_min_layer(tvRUN) & alTESTABLE) != 0 ? 1 : 0,
+	    graph_min_layer(gvCOMMITS) == alVERSIONED ? 1 : 0, (nexus_min_layer(nvEXPLAIN) & alPARSEABLE) != 0 ? 1 : 0,
+	    graph_min_layer(gvSTATUS) == alTEXT ? 1 : 0);
+
+    php::unlink("madc_ide_ltests/ok.mad");
+    php::unlink("madc_ide_ltests/ok.expect");
+    php::unlink("madc_ide_ltests/bad.mad");
+    php::unlink("madc_ide_ltests/bad.expect");
+    php::unlink("madc_ide_ltests/slow.mad");
+    php::unlink("madc_ide_ltests/slow.timeout");
+    php::unlink("madc_ide_ltests/exit3.mad");
+    php::rmdir("madc_ide_ltests");
+    S.close();
+    php::unlink("madc_ide_layers.prj.json");
+    php::unlink("madc_ide_layers.png");
+    php::unlink(path);
+    return 0;
+}

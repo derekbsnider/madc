@@ -204,6 +204,44 @@ typedef uint64_t carray_dim_t;
 typedef __int128          madc_wide_int;
 typedef unsigned __int128 madc_wide_uint;
 
+// ---- ConstValue: the constant-evaluation carrier ------------------------
+// Every rung of the constant evaluator returns this. It exists so a constant
+// EXPRESSION can denote something that is not an integer: a constexpr OBJECT,
+// an ARRAY, or an address constant ([expr.const]). Before it, every rung
+// computed in madc_wide_int, so `constexpr S s{42}; static_assert(s.i == 42)`
+// had nowhere to put `s` and folded to nothing -- the single largest family
+// in the g++.dg C++11 lane (115 tests, "Expecting integer constant
+// expression").
+//
+// STAGE 1 IS A CARRIER WIDENING AND NOTHING ELSE. Integer is still the only
+// kind ever produced, and the integer path must stay byte-identical: these
+// rungs are on the path of EVERY non-type template argument, EVERY array
+// bound, EVERY enum initializer and the whole C torture suite. madc_wide_int
+// therefore converts BOTH WAYS implicitly, so no rung body changes -- only
+// the signatures widen. Stages 2-5 (constexpr ctor evaluation, member and
+// element access, address constants) fill the remaining kinds.
+class ConstValue
+{
+public:
+	enum class Kind : uint8_t { Integer, Object, Array, Address };
+
+	ConstValue() : _kind(Kind::Integer), _int(0) {}
+	// implicit BOTH ways on purpose -- see the stage-1 note above
+	ConstValue(madc_wide_int v) : _kind(Kind::Integer), _int(v) {}
+	operator madc_wide_int() const { return _int; }
+
+	Kind kind() const { return _kind; }
+	bool is_integer() const { return _kind == Kind::Integer; }
+	// The integer value. Named accessor for sites that want to be explicit
+	// about reading the integer kind; the implicit conversion above is what
+	// keeps the existing rung bodies unchanged.
+	madc_wide_int integer() const { return _int; }
+
+private:
+	Kind _kind;
+	madc_wide_int _int;
+};
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass,
 				// An unresolved template parameter `T` (DataDefTemplateParam).
 				// Append-only: never renumber. is_numeric/is_integer/is_real
@@ -282,6 +320,13 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // this is how the two stay consistent.
 			                        // (Fresh bit: 65536 is RETIRED, and reusing
 			                        // it would misread older serialized flags.)
+			  vfMUTABLE    =4194304, // mutable data member; carried in member_access
+			  vfTHREADLOCAL=2097152, // thread storage duration: C++11
+			                        // `thread_local` / C11 `_Thread_local`.
+			                        // Rides beside vfSTATIC/vfEXTERN (a
+			                        // storage-class SPECIFIER, not a
+			                        // duration of its own in madc's model)
+			                        // and lowers to c2mir's N_THREAD_LOCAL
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
@@ -330,6 +375,15 @@ public:
     // top-up sees it fresh).
     bool	 canonical_swept;
     const std::string &canonical_cpp_spelling() const { return canonical_cpp_spelling_; }
+    // The class spelling the Itanium encoders receive: the canonical C++
+    // spelling when the parser recorded one (a namespaced, nested or
+    // template-instance class), else the bare name — which IS the spelling of
+    // a global-namespace class (no canonical spelling is recorded for one;
+    // "Foo" encodes to 3Foo either way). ONE accessor, so the user-member
+    // mint, the vtable/RTTI symbols and the synthesized special members can
+    // never disagree about which class they name.
+    const std::string &cpp_linkage_spelling() const
+    { return canonical_cpp_spelling_.empty() ? name : canonical_cpp_spelling_; }
     // Derived-key cache. Only StructRegistry's sweep fills it; every reader
     // must treat !has_despaced_canonical() as "derive it yourself", never as
     // "this dd has no key".
@@ -603,6 +657,9 @@ public:
     {
 	return false;
     }
+    // True only for DataDefMemberFnPtr: a C++ pointer-to-member-function
+    // (`R (C::*)(Args)`, the 16-byte {ptr, adj} pair).
+    virtual bool is_member_function_pointer() const { return false; }
     // True only for DataDefMemberPtr: a C++ pointer-to-member (`T C::*`).
     // Lowered as a scalar (a ptrdiff_t offset for a data member), but distinct
     // from an ordinary pointer so the `.*`/`->*` operators (Stage 2) and
@@ -777,7 +834,7 @@ public:
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<std::vector<carray_dim_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
-    std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
+    std::vector<uint32_t> member_access;	// per-member flags: access (vfPRIVATE/vfPROTECTED), vfMUTABLE
     std::vector<int> member_origin;	// per-member: base index it came from, or -1 = own (MI flatten)
     struct AnonymousAggregateInfo
     {
@@ -1255,7 +1312,8 @@ public:
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
-		return (i < member_access.size()) ? member_access[i] : 0;
+		return (i < member_access.size())
+		? member_access[i] & (vfPRIVATE | vfPROTECTED) : 0;
 	return 0;
     }
     TokenBase *m_count_expr(const std::string &member) const
@@ -1842,6 +1900,32 @@ public:
     virtual bool is_member_pointer() const override { return true; }
 };
 
+// C++ pointer-to-MEMBER-FUNCTION `R (C::*)(Args)`. Itanium ABI: a 16-byte
+// `{ptr, adj}` pair — `ptr` the function's address for a non-virtual member,
+// or 1 + the vtable byte offset of the slot for a virtual one (odd = virtual),
+// `adj` the this-adjustment to the member's class subobject. madc lowers it to
+// exactly that struct (`struct __madc_memfnptr`), dispatching a virtual
+// member through the receiver's __vptr in its own vtable model; sizeof and
+// alignof are the ABI's (16, 8) — libstdc++'s std::function sizes its local
+// buffer from a union holding one (`_Nocopy_types`). `owner_class` is `C`
+// (NULL while unresolved at parse), `target` the member's signature.
+class DataDefMemberFnPtr : public DataDef
+{
+public:
+    DataDef *owner_class;
+    std::string owner_name;
+    FuncDef *target;
+    bool is_const_method;
+    DataDefMemberFnPtr(DataDef *owner, const std::string &owner_nm, FuncDef *fd,
+		       bool const_method)
+	: DataDef("memfnptr " + owner_nm, 16, DataType::dtRESERVED),
+	  owner_class(owner), owner_name(owner_nm), target(fd),
+	  is_const_method(const_method) {}
+    virtual bool is_member_pointer() const override { return true; }
+    virtual bool is_member_function_pointer() const override { return true; }
+    virtual size_t alignment() const override { return 8; }
+};
+
 class DataDefCArray : public DataDef
 {
 public:
@@ -1891,6 +1975,11 @@ public:
     // madc's historical int layout (gcc without -fshort-enums: unfixed
     // enums are int-sized).
     DataDef *underlying = NULL;
+    // Was the base DECLARED (`enum E : short`)? [conv.prom]/4 promotes a
+    // fixed enum to its underlying type; an unfixed one promotes by its
+    // VALUE range ([conv.prom]/3), not by the computed base — the two
+    // readers (overload ranking) need to tell them apart.
+    bool fixed_base = false;
 
     // The tag's OWN enumerators, in DECLARATION order — the one live owner of
     // "which enumerators belong to this enum, and what are their values".
@@ -1920,6 +2009,7 @@ public:
     void set_underlying(DataDef *u)
     {
 	underlying = u;
+	fixed_base = (u != NULL);
 	if ( u && u->size )
 	{
 	    size = u->size;
@@ -2143,12 +2233,48 @@ public:
     // every DataDefFPTR is NAMED "funcptr", so any spelling-consumer that
     // falls back to the name (the Itanium mangle in particular, which must
     // encode PF…E) needs this instead. Defined in parser.cpp.
-    std::string structural_spelling() const;
+    std::string structural_spelling(bool as_pointer = true) const;
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual bool is_function() const override { return true; }
     virtual bool is_numeric()  const override { return true; }
     virtual bool is_integer()  const override { return true; }
     virtual DataDefFPTR *as_fptr_dd() override { return this; }
 };
+
+// The STRUCTURAL C++ spelling of a function-pointer type through any pointer
+// layers: `int (*)(int)` for the fn-ptr itself, `int (*)(int)*` for a pointer
+// to one (an array of fn-ptrs decayed — Itanium PPFiiE), empty when `dd` is
+// not a function pointer at its base. THE one owner of that peel: the
+// mangler's parameter spelling (FuncDef::mangle_param_spelling) and the
+// DataDef fallback (cpp_spelling_for_mangle) both read it, so a prototype
+// spelled `int (*[4])(int)` and a definition spelled through
+// `typedef int (*fptr4[4])(int)` mint ONE Itanium symbol. Every DataDefFPTR is
+// named "funcptr" and its pointer "funcptr*", so a name-based spelling of
+// either encodes a class that nothing exports.
+inline std::string fptr_structural_spelling(DataDef *dd)
+{
+    int stars = 0;
+    for ( DataDef *base = dd; base; ++stars )
+    {
+	if ( DataDefFPTR *fp = base->as_fptr_dd() )
+	    return fp->target ? fp->structural_spelling() + std::string(stars, '*')
+			      : std::string();
+	// A parameter's OUTERMOST array decays to a pointer to its element
+	// (C11 6.7.6.3p7): `int (*[4])(int)` is a pointer to a fn-ptr, PPFiiE.
+	// An inner array does not decay (pointer-to-array): not this spelling.
+	if ( DataDefCArray *ca = dynamic_cast<DataDefCArray *>(base) )
+	{
+	    if ( base != dd || !ca->element_type )
+		return std::string();
+	    base = ca->element_type;
+	    continue;
+	}
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base);
+	if ( !ptr || !ptr->base_type )
+	    return std::string();
+	base = ptr->base_type;
+    }
+    return std::string();
+}
 
 #endif // __DATADEF_H

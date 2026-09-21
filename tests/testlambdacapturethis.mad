@@ -1,0 +1,19 @@
+// g++ 13.3 == clang++ 18.1: 17
+#include <stdio.h>
+
+struct Box {
+	int n;
+	int read()
+	{
+		auto f = [this]() { return this->n; };
+		return f();
+	}
+};
+
+int main()
+{
+	Box box;
+	box.n = 17;
+	printf("%d\n", box.read());
+	return 0;
+}

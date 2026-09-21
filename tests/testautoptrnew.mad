@@ -1,0 +1,33 @@
+// `auto *p = expr;` — a pointer declarator on a deduced type (self-host arc
+// 2026-09-17: madc's own include/tokens.h:1312 `auto *c = new TokenInt(_token);
+// c->source_text = ...` was the first error of 12 units: "member reference
+// type 'char' is not a structure or union" — the general auto deduction path
+// typed the variable from the pointer-wrapped placeholder instead of the
+// initializer). Shapes: `auto *` from new, from an address, from a pointer
+// variable, `auto **` from a pointer's address, `const auto *`, and the
+// range-for element `for (auto *p : arr)` over an array of pointers. Oracle: g++
+// and clang++ -std=c++11.
+#include <stdio.h>
+
+struct Tok { int v; const char *text; Tok(int x) : v(x), text("t") {} };
+struct Owner {
+    int v; const char *text;
+    Owner(int x) : v(x), text("o") {}
+    Tok *clone() { auto *c = new Tok(v); c->text = text; return c; }
+};
+
+int main()
+{
+    Owner o(7);
+    auto *t = o.clone();
+    int n = 41;
+    auto *pn = &n;
+    auto **ppn = &pn;
+    const auto *cp = &n;
+    int *ptrs[2] = { &n, pn };
+    int total = 0;
+    for ( auto *p : ptrs ) total += *p;
+    printf("%d %s %d %d %d %d\n", t->v, t->text, *pn + 1, **ppn, *cp, total);
+    delete t;
+    return 0;
+}

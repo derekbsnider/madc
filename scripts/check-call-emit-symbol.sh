@@ -10,7 +10,11 @@
 # divergence impossible to RE-introduce.
 #
 # The mechanical, unfakeable invariant: the FuncDef field `local_emit_name` may
-# be READ AS A VALUE (i.e. used to build a symbol) ONLY inside call_emit_symbol.
+# be READ AS A VALUE (i.e. used to build a symbol) ONLY inside the two
+# resolvers — call_emit_symbol (the symbol a CALL references) and
+# body_emit_symbol (the symbol madc's OWN body defines: the definition, the
+# vtable slots, the thunks — it deliberately skips emit_symbol, an EXTERNAL
+# definition's symbol, which is why it is not the same function).
 # Everywhere else it may appear only as:
 #   - a `.empty()` predicate (writer guards, the capture-decay structural check)
 #   - the LHS of an assignment `local_emit_name = ...` (the parser/CIR writers)
@@ -31,10 +35,11 @@ set -u
 cd "$(dirname "$0")/.."
 
 bad=$(awk '
-  # Track when we are inside a CirBuilder::call_emit_symbol definition (the one
-  # legitimate home of a local_emit_name value-read). Both overloads match; the
+  # Track when we are inside a CirBuilder::call_emit_symbol or
+  # CirBuilder::body_emit_symbol definition (the two legitimate homes of a
+  # local_emit_name value-read). Both call_emit_symbol overloads match; the
   # delegating one contains no local_emit_name token, so this is harmless.
-  /std::string[[:space:]]+CirBuilder::call_emit_symbol\(/ { infn=1 }
+  /std::string[[:space:]]+CirBuilder::(call|body)_emit_symbol\(/ { infn=1 }
   infn && /^}/ { infn=0; next }
   {
     if ($0 ~ /allowed-exception/) next      # audited per-line opt-out (see header)

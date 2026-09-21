@@ -1,0 +1,4 @@
+bound: yes
+served: 2
+clientA: seq=10 ok=1
+clientB: seq=20 ok=0 error=unknown command 'svae'

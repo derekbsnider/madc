@@ -57,6 +57,98 @@ inline bool pointer_phase_from_name(const std::string &s, pointer_phase &p)
     return false;
 }
 
+// The dialog MODE (ui::dialog_mode) and its name at the JSON boundary (the
+// request the host receives, the answer it posts) — ONE spelling owner.
+typedef ::ui::dialog_mode dialog_mode;
+inline const char *dialog_mode_name(dialog_mode m)
+{
+    switch ( m )
+    {
+	case dialog_mode::open: return "open";
+	case dialog_mode::save: return "save";
+    }
+    return "open";
+}
+inline bool dialog_mode_from_name(const std::string &s, dialog_mode &m)
+{
+    if ( s == "open" ) { m = dialog_mode::open; return true; }
+    if ( s == "save" ) { m = dialog_mode::save; return true; }
+    return false;
+}
+
+// The UI LEVEL (the shared text's ui::level — ordered by requirement, OWNER
+// 2026-09-09) and its name at the boundaries (the capabilities manifest's
+// `ui.levels`, ui::open's refusal, a command line's spelling) — ONE spelling
+// owner, both directions; the enum is contiguous ui::NONE..ui::GFX3D.
+typedef ::ui::level ui_level;
+inline const char *ui_level_name(ui_level l)
+{
+    switch ( l )
+    {
+	case ::ui::NONE:  return "none";
+	case ::ui::LINE:  return "line";
+	case ::ui::TUI:   return "tui";
+	case ::ui::WEB:   return "web";
+	case ::ui::GUI:   return "gui";
+	case ::ui::GFX2D: return "gfx2d";
+	case ::ui::GFX3D: return "gfx3d";
+    }
+    return "none";
+}
+inline bool ui_level_from_name(const std::string &s, ui_level &l)
+{
+    for ( int i = ::ui::NONE; i <= ::ui::GFX3D; ++i )
+	if ( s == ui_level_name((ui_level)i) )
+	{
+	    l = (ui_level)i;
+	    return true;
+	}
+    return false;
+}
+
+// A layout split's DIRECTION (ui::split) and a chrome pane's SIDE (ui::side)
+// — the client-server arc's container vocabulary (V2) — and their names at
+// the boundaries (a `.layout` profile's words, the page's op fields) — ONE
+// spelling owner each, both directions.
+typedef ::ui::split ui_split;
+inline const char *ui_split_name(ui_split d)
+{
+    switch ( d )
+    {
+	case ui_split::vertical:   return "vertical";
+	case ui_split::horizontal: return "horizontal";
+	case ui_split::none: break;
+    }
+    return "";
+}
+inline bool ui_split_from_name(const std::string &s, ui_split &d)
+{
+    if ( s == "vertical" )   { d = ui_split::vertical;   return true; }
+    if ( s == "horizontal" ) { d = ui_split::horizontal; return true; }
+    return false;
+}
+typedef ::ui::side ui_side;
+inline const char *ui_side_name(ui_side sd)
+{
+    switch ( sd )
+    {
+	case ui_side::left:   return "left";
+	case ui_side::right:  return "right";
+	case ui_side::top:    return "top";
+	case ui_side::bottom: return "bottom";
+	case ui_side::none: break;
+    }
+    return "";
+}
+inline bool ui_side_from_name(const std::string &s, ui_side &sd)
+{
+    if ( s == "left" )   { sd = ui_side::left;   return true; }
+    if ( s == "right" )  { sd = ui_side::right;  return true; }
+    if ( s == "top" )    { sd = ui_side::top;    return true; }
+    if ( s == "bottom" ) { sd = ui_side::bottom; return true; }
+    return false;
+}
+
 struct tui_event
 {
     tui_event_kind kind;
@@ -73,6 +165,12 @@ struct tui_event
 				// keys the widget does not consume (ins/del)
     name_id	   action;	// choose: the option's first action; 0 = none
     std::string	   action_name;	// action: the bound name ("" = unbound)
+    int64_t	   action_code;	// action: the bound CODE (0 = none — the
+				// application's own enum, bound as an integer
+				// or recorded from a `code` hint the control
+				// carried); choose: the option's `code` hint;
+				// dialog: the mode (ui::dialog_mode) — enums,
+				// not strings (owner law 2026-09-09)
     std::string	   seq;		// action: the canonical sequence spelling
     pointer_phase  phase;	// pointer: the gesture step
     long	   offset;	// pointer: BYTE offset in the edit node's text;
@@ -85,7 +183,7 @@ struct tui_event
 				// (madcide: the window index); -1 = none
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0),
+		  option(0), choice_focused(false), action(0), action_code(0),
 		  phase(pointer_phase::down), offset(0), subject(0), tag(-1) {}
 };
 

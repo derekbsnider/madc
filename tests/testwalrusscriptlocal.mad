@@ -1,0 +1,14 @@
+// Script mode: a top-level `:=` is a main-local visible to the rest of the
+// script, including inside an unbraced arm; an arm's own `:=` stays in the arm.
+bool cond = true;
+y := 1;
+
+if ( cond )
+	println("y = {}", y);
+if ( cond )
+	z := y + 2;
+if ( cond ) {
+	z2 := y + 3;
+	println("z2 = {}", z2);
+}
+println("y again = {}", y);

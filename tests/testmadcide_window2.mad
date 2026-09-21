@@ -1,0 +1,135 @@
+// Two CLIENTS on ONE session (client-server design 2026-09-09 §2.3, slices
+// V3b-2 + V3c): a second window is a second CLIENT with its OWN editor-state
+// bag over the SHARED document (spawn_view_es). The gate proves "one edit
+// seen in both windows": an edit applied through client A's session mutates
+// the one document, and client B — a DISTINCT es, its own caret / buffer /
+// layout — shows the edit on its next compose. V3c adds PRESENCE: B's caret
+// is passive to A's edit — the anchor registry SHIFTS it (not the old
+// clamp), and each client's editor node draws the OTHER clients as carets in
+// their dealt colour slot.
+//
+// WHICH client an event belongs to is decided by ui::event_any (pinned by
+// testuieventany, engine-level); the machinery under test HERE is the
+// shared-document session model, so the two clients are driven directly (no
+// display) exactly as the other madcide gates drive the session. The real
+// two-window webview pump (GTK smoke + the seam lanes) is the flagged
+// platform follow-up.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The exact value object ui::event produces for typed text.
+void ev_text(var &e, const char *t)
+{
+    var f = {
+	"event": "text",
+	"event_code": ui::event_kind::text,
+	"text": t
+    };
+    e = f;
+}
+
+// Does the level-0 typeset of this client's compose contain `needle`?
+// (perl::index returns -1 when absent.)
+bool client_shows(IdeSession &S, long w, long doc, const char *needle)
+{
+    long adoc = S.active(doc);
+    var tree;
+    S.compose_ide_tree(tree, adoc);
+    var rendered;
+    ui::render_tree(rendered, w, tree);
+    return perl::index(rendered.c_str(), needle) >= 0;
+}
+
+int main()
+{
+    const char *path = "madc_window2.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+
+    long w = ui::world_new();
+    long doc = setup_document(w, path, false);	// the ONE shared document
+    bind_lineed_verbs(w);			// the world's edit verbs (once)
+
+    // Two windows = two clients, each its own editor-state bag over the one
+    // document, built by the SAME per-client init the launch window uses.
+    long esA = spawn_view_es(w, doc, path);
+    long esB = spawn_view_es(w, doc, path);
+    println("spawned: A={} B={} distinct={}", esA > 0 ? "yes" : "no",
+	    esB > 0 ? "yes" : "no", esA != esB ? "yes" : "no");
+
+    IdeSession S;
+
+    // Both windows open on the same file; neither shows the edit yet.
+    S.attach(w, esA);
+    println("A-initial-file: {}", client_shows(S, w, doc, "return 0") ? "yes" : "no");
+    S.attach(w, esB);
+    println("B-initial-file: {}", client_shows(S, w, doc, "return 0") ? "yes" : "no");
+    println("B-before-edit: {}", client_shows(S, w, doc, "WINDOWTWO") ? "yes" : "no");
+
+    // The two clients share the one document (same active doc id).
+    S.attach(w, esA);
+    long da = S.active(doc);
+    S.attach(w, esB);
+    long db = S.active(doc);
+    println("shared-doc: same={}", (da == db && da == doc) ? "yes" : "no");
+
+    // Give window B a DISTINCT caret so the presence shift is unambiguous:
+    // the anchor registry must MOVE B's caret when A inserts above it (V3c —
+    // shift, not the old clamp-at-compose).
+    ui::set(w, esB, "caret", 20);
+
+    // Edit in window A: insert a distinctive token at its caret.
+    S.attach(w, esA);
+    long adocA = S.active(doc);
+    var e;
+    ev_text(e, "WINDOWTWO");
+    S.apply_ide_event(adocA, e);
+
+    // The one document mutated. A keeps its own FOCUSED caret (advanced past
+    // its insert to 9); B's caret is PASSIVE to A's edit — the anchor
+    // registry shifted it 20 → 29 (nine bytes inserted above it) instead of
+    // leaving it stale for a compose-time clamp.
+    println("A-caret={} B-caret={}", es_int(w, esA, "caret", -1),
+	    es_int(w, esB, "caret", -1));
+
+    // Presence: each client's editor node (compose_edit_node, the shared node
+    // builder) draws the OTHER clients on the doc as carets in their dealt
+    // colour slot — A sees B at 29 in slot 1, B sees A at 9 in slot 0, and
+    // neither draws itself (count 1).
+    var edA;
+    compose_edit_node(edA, w, esA, doc, es_int(w, esA, "caret", 0));
+    var presA = edA["hints"]["presence"];
+    var edB;
+    compose_edit_node(edB, w, esB, doc, es_int(w, esB, "caret", 0));
+    var presB = edB["hints"]["presence"];
+    println("A-presence-count={} B-presence-count={}",
+	    php::count(presA), php::count(presB));
+    println("A-sees-B: caret={} slot={}", presA[0]["caret"].as_integer(),
+	    presA[0]["colour"].as_integer());
+    println("B-sees-A: caret={} slot={}", presB[0]["caret"].as_integer(),
+	    presB[0]["colour"].as_integer());
+
+    // Window A shows its own edit; window B — the DISTINCT es — shows the
+    // SAME edit through the shared document. THIS is the gate.
+    S.attach(w, esA);
+    println("A-shows-edit: {}", client_shows(S, w, doc, "WINDOWTWO") ? "yes" : "no");
+    S.attach(w, esB);
+    println("B-shows-edit: {}", client_shows(S, w, doc, "WINDOWTWO") ? "yes" : "no");
+
+    // The viewwindow COMMAND parks a spawn that run_ide's loop turns into a
+    // real second window (the loop half is the GTK smoke / owner gate). A
+    // windowed client parks it; a terminal client refuses — a second window
+    // needs a window target.
+    S.attach(w, esA);
+    S.panel(true);			// esA renders regions: a windowed client
+    S.post(doc, cmdVIEWWINDOW);
+    long sdoc = 0;
+    bool parked = S.take_spawn(sdoc);
+    println("viewwindow-parked: {}", parked && sdoc == doc ? "yes" : "no");
+    S.panel(false);			// a terminal-style client (one tty)
+    S.post(doc, cmdVIEWWINDOW);
+    println("viewwindow-refused: {}", S.take_spawn(sdoc) ? "spawned" : "refused");
+
+    S.close();
+    return 0;
+}

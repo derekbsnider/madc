@@ -62,7 +62,7 @@ int main()
     push_buffer_row(w, es, doc, path);
     ui::set(w, es, "bufidx", 0);
 
-    long t = ui::open(ui_web::target());
+    long t = ui::open(ui::WEB);
     if ( !t )
 	return 1;
     S.panel(true);			// the window renders regions (the client's fact)
@@ -112,14 +112,11 @@ int main()
 		// The dialog is closed; now RUN the buffer through the window's
 		// own route (a console program -> the Terminal tab) and wait for
 		// the engine's wakes — no input is sent from here on.
-		var pane;
-		ui::get(pane, w, es, "pane");
-		println("RUN closed pane='{}'", pane);
+		println("RUN closed pane='{}'", pane_name(cur_pane(w, es)));
 		stage = 3;
 		run_buffer(w, es, doc);
-		var ptab;
-		ui::get(ptab, w, es, "paneltab");
-		println("RUN started live={} tab={}", es_int(w, es, "termlive", 0), ptab);
+		println("RUN started live={} tab={}", es_int(w, es, "termlive", 0),
+			view_name(slot_shown(w, es, slotPANEL)));
 		render(S, t, w, doc);
 	    }
 	}

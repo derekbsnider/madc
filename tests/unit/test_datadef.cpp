@@ -2055,3 +2055,46 @@ TEST_SUITE("DataDefTemplateParam (unresolved template parameter T)") {
         CHECK_FALSE(ddCHAR.is_template_param());
     }
 }
+
+TEST_CASE("constexpr subobject failures restore the token stream")
+{
+	Program pgm;
+	REQUIRE(pgm.set_language_standard("c++11"));
+	TokenProgram *decl = pgm.tokenize_buffer(
+		"struct S { int i; }; constexpr S table[2][2] = {{{7}, {8}}, {{9}, {10}}};",
+		"<constexpr-subobject-transaction>");
+	REQUIRE(decl != NULL);
+	REQUIRE(pgm.parse(decl));
+	Variable *table = pgm.findVariable("table");
+	REQUIRE(table != NULL);
+	REQUIRE((table->flags & vfCONSTBAKED) != 0);
+	// TokenStream has no clear(); swap_in IS the emptying owner (it returns
+	// the prior State, which this test does not need to restore).
+	pgm.tokens.swap_in(std::vector<TokenBase *>());
+	TokenBase *head = new TokenIdent("table");
+	TokenBase *open = new TokenOpSqr();
+	pgm.tokens.push_back(head);
+	pgm.tokens.push_back(open);
+	pgm.tokens.push_back(new TokenInt(0));
+	pgm.tokens.push_back(new TokenClSqr());
+	SUBCASE("incomplete array dimensions") {}
+	SUBCASE("aggregate is not an integer")
+	{
+		pgm.tokens.push_back(new TokenOpSqr());
+		pgm.tokens.push_back(new TokenInt(0));
+		pgm.tokens.push_back(new TokenClSqr());
+	}
+	SUBCASE("bounds error")
+	{
+		pgm.tokens.push_back(new TokenOpSqr());
+		pgm.tokens.push_back(new TokenInt(2));
+		pgm.tokens.push_back(new TokenClSqr());
+	}
+	pgm.tokens.push_back(new TokenSemi());
+	TokenBase *previous = new TokenSemi();
+	pgm.setTokenContext(previous, NULL);
+	CHECK_THROWS(pgm.parse_constant_primary());
+	CHECK(pgm.peekToken() == open);
+	CHECK(pgm.curToken() == head);
+	CHECK(pgm.prevToken() == previous);
+}

@@ -1,6 +1,138 @@
 # Test Status
 
-> **Current (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
+Standard-C regression sweep (2026-09-20, `7488a39cf`): a multi-standard
+coverage measurement run for the documentation found gcc c-torture at
+**1587/1624**, against **1614** at the 2026-08-12 baseline on identical scope.
+Classification against the v0.99.2 release binary showed **23 regressions**.
+Three defects, all in C mode, all fixed:
+
+1. A `static` prototype plus its definition read as a signature clash — the
+   C-linkage redeclaration check minted its two sides with different encoders,
+   so the prior side carried Itanium's internal-linkage `L` (`_ZL1fi`) and the
+   fresh side did not (`_Z1fi`). 22 of the 23. `tests/teststaticprotodef`.
+2. An unprototyped declaration (`int p();` after `int p(int,int);`) was
+   compared as though it were a prototype; C17 6.7.6.3p14 says an empty list
+   on a declaration specifies nothing about the parameters.
+3. A cast through a `const`-qualified struct pointer **crashed madc** — the
+   `->` path kept the `DataDefCONST` wrapper, the structural `is_struct()`
+   guard saw through it, and an unchecked `static_cast` then reinterpreted the
+   wrapper as a struct. `tests/testconstptrmembercast`.
+
+Torture now reads **1611/4/9/0TO/61skip** with **zero regressions** against
+v0.99.2 — all 13 remaining failures fail on that binary too and are listed in
+`docs/parity/c-torture-baseline.txt`. Both new tests match gcc and clang
+byte-for-byte; negative controls confirm genuine parameter-type, non-static
+and arity mismatches are still reported. Targeted neighbours (307
+struct/const/ptr/member/cast/proto tests) 302 passed, 0 failed, 5 skipped.
+
+The first attempt at (3) peeled const off the pointee globally and broke
+libc++ member lookup on both darwin arches (`__bit_reference`'s `__seg_`
+Unidentified); it is narrowed to the one site that needs a real
+`DataDefSTRUCT`. Measured coverage for every standard is published in
+`docs/conformance-coverage.md`.
+
+**Why it went unnoticed for five weeks:** gcc c-torture had no lane script and
+no ledger row, so nothing re-ran it while eight other lanes stayed green. It
+is a 25-second run. Suites are now tiered by time to run (owner directive):
+`scripts/fast_lanes.sh` runs c-testsuite, c-torture and the C++11 lane in
+under two minutes after every commit, and `lane_ledger.sh`'s new `commit` tier
+blocks develop and master on a stale fast lane.
+
+Empty-diagnostic slice (2026-09-18, `2d0a215d1`): targeted
+`testerror* teststaticassert* testdiag*` passed **6/6**. Five new fixtures cover
+empty C11/C++11 assertions, class assertions and nonempty user messages.
+`make -C src -j2` completed with `-Werror` and zero warnings; unit binaries
+were built but not executed. GCC/Clang diagnostic oracles agree.
+All 19 recorded empty-diagnostic files
+were checked individually after the commit: each reports `static assertion
+failed`, with no empty error or `std::exception`. These are still conformance
+failures. No full suite or lane script was run; suite baselines are unchanged.
+
+Reference-binding slice (2026-09-17, feature/selfhost-harness-claude):
+`testrefprvalue`, `testrefprvaluenamespace`, and `testrefprvaluereject` use
+`--std=c++11`; positive output and negative rejection checked with both g++
+and clang++. Targeted `testref* testrvalue* testmove* testconst*`: JIT 43/0,
+EXE 40/0, OBJ 40/0. Emitted C inspected for block storage and cleanup.
+Committed C++11 conformance lane pending; no full battery run for this slice.
+
+> **Current (2026-09-15, s198 — the reactor's Windows backend: the V6
+> transports work under Windows).** `feature/reactor-windows-claude` @
+> `124088428`. The WSAPoll reactor backend (the async-I/O reactor design's
+> item-4 "select floor"), a `poll_handle_kind` that rides with every handle,
+> the probe/hook socket arm, and accepted-socket blocking. All four
+> develop-gated lanes re-run green on `124088428` (a `src/` change stales
+> every lane): linux-battery fulltest jit **1379/0/9skip** + exe/obj
+> **1312/0** + packed **1379/0/9skip** + headerless **1345/0/43skip** + gui
+> **19/19 ×3** (`tmp/logs/rb-seam-battery.log`); c-testsuite **220/220**;
+> wine64 **1316/0/72skip** — the 15 socket-park `win64_skip` LIFTED
+> (1301→1316, 87→72skip; 3 madcgit + the remaining domain fixtures stay);
+> macOS build lane both arches. `test_io_reactor` 57/57 and `test_task_io`
+> 35/35 on Linux; the pre-build was clean on release (`-O2`), the mingw PE,
+> and the darwin clang keep-going probe. Two win64 gaps fixed on the way: the
+> session advertisement filename (a Windows canonical path's `\` and `:`) and
+> a transport test's 64-bit graph id truncated into a 32-bit LLP64 `long`.
+>
+> **Previous (2026-09-15, s196 — the V6 SEAM of the client-server arc: V6a
+> the `api` transport + headless `--serve` + duplex + tiers, V6b the `ws`
+> window, V6c-1 the MCP seat and the code-graph MCP + Nexus ladder L1–L4e,
+> V6c-2 the LSP face, V6c-3a the VS Code extension, V6c-3b executeCommand +
+> `$/madc/*` + one process two faces, V6c-3c the attach relay, V6c-4 session
+> discovery; plus the seam's own work — the duplication audit's fixes (one
+> bind owner, canonical file identity, tests on the production connection
+> task, MCP enums, the ONE change-stream reader, the JSON-RPC envelope, a
+> six-family adoption sweep) and the owner's ruling that libgit2 is a
+> dependency, not a distribution (the `madcgit` module; the subtree removed;
+> `libmadc.so` exports 0 `git_*`)):** FULL develop-set battery on the final
+> content `4d02c5dae` (`tmp/logs/rb-20260915-081758.log`): fulltest rc=0 —
+> every gate (now including `check-madcide-one-accept-loop`,
+> `check-madcide-id-width`, the reworked `check-one-git-owner` and
+> `check-c-abi-surface` with 0 `git_*` exports) and the warning ratchet — with
+> JIT **1379 passed / 0 failed / 0 timed out / 9 skipped**, native EXE
+> **1312/0**, OBJ **1312/0**, packed **1379/0/0/9**, headerless
+> **1345/0/0/43**. GUI stage under Xvfb: **19/19 JIT, 19/19 EXE, 19/19 OBJ**.
+> c-testsuite **220/220 gnu11**. release-win + `verify_pe_release` OK (234
+> units); wine64 **1301/0/0TO/87skip** — 18 new win64 skip fixtures: 15 for
+> the V6 transports' socket park (no Windows arm until the reactor's IOCP
+> backend; the stdio faces `--lsp` and `--mcp` run under wine and pass) and 3
+> for the madcgit module (no libgit2 for the mingw target on the container).
+> macOS cross release both arches (836 units each), `verify_macho_release` OK
+> both, `macho_exe_dylib_gate` OK, package-macos rc=0. The seam took four
+> battery runs: run 1 found GCC 13's `-O2` stringop-overflow false positive
+> (release + mingw), the wine lane found `getpid` undeclared on win64 (now
+> `madc::sys.pid`), 64-bit graph ids stored in a 32-bit `long`, and
+> GetFullPathName's trailing separator, and the macOS lane found clang's
+> `-Wunused-private-field` on the reactor's darwin stub — none visible to an
+> `-O0` g++ Linux lane, which is why the seam runs every lane. Release tier
+> unchanged since v0.99.2.
+>
+> **Previous (2026-09-09, s170 — slice V0 of the client-server arc: every
+> emitted code view is INDENTED and COLOURED. The emitter
+> (`src/cir_emit_c.cpp`) owns the layout — block-depth tabs, case labels
+> one level out, a control head's single-statement body on its own line,
+> the builder's `<labels>: 0;` carrier rendered as its labels — and renders
+> precedence-aware parentheses (C11 6.5 plus gcc's / clang's
+> `-Wparentheses` set and the `-(-x)` guard); the `^K A` lenses carry their
+> own highlight spans (the lexer over the emitted text). New reducer
+> `tests/testemitindent` (`--emit=c11`, 36 tab-literal expectation lines),
+> `testmadcide` pins `spans=1 indented=1` on the MC11 lens, new fulltest
+> gate `scripts/emit_layout_gate.sh` (gcc + clang `-Werror=parentheses`,
+> indentation shape, negative control)):** FULL develop-set battery on
+> 4d2687c4 (`tmp/logs/rb-20260909-042300.log`): fulltest rc=0 — every gate
+> and the warning ratchet — with JIT **1336 passed / 0 failed / 0 timed out
+> / 9 skipped**, native EXE **1276/0**, OBJ **1276/0** (the new reducer is
+> `exe_skip`: a render test), packed **1336/0/0/9**, headerless
+> **1302/0/0/43**. GUI stage under Xvfb: **17/17 JIT, 17/17 EXE, 17/17
+> OBJ**. release-win + `verify_pe_release` OK (234 units); wine64
+> **1277/0/0TO/68skip**; c-testsuite **220/220 gnu11** (`tmp/logs/cts-s170.log`); macOS cross
+> release both arches, verify_macho OK both, package-macos rc=0. Oracle for
+> the render change: `scripts/cir_fidelity.sh --all` (gcc asm of the
+> original vs the emitted C) — 1357 of 1358 verdicts identical to the
+> pre-change release binary; the one delta is the dev/release
+> implicit-prototype flavour (KG Gap
+> `implicit_libc_prototype_dev_vs_release_shape`), not the render. Release
+> tier unchanged since v0.99.2.
+>
+> **Previous (2026-09-09, the s169 owner hands-on round on the P2–P4 wave —
 > five findings on the staged Windows / Mac sets, all fixed on `develop`:
 > a dialog's Close button closes it (the `@pane` cancel-by-name admitted in
 > the dispatcher's ACTION region), the Build menu carries every `^B` row as

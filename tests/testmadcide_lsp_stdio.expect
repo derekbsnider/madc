@@ -1,0 +1,17 @@
+raw-open: 1
+wire-header: 1
+wire-blank-line: 1
+open: 1
+framed: 1
+capabilities-encoding: utf-16
+capabilities-sync: 2
+diagnostics-notification: 1
+diagnostics-method: textDocument/publishDiagnostics
+diagnostics-clean: 0
+symbols: 2
+symbol0: twice
+definition-count: 1
+definition-line: 0
+shutdown-result-null: 1
+stream-ends: 1
+exit-status: 0

@@ -52,6 +52,30 @@ void bind_lineed_verbs(long w)
 	ui::bind_check(w, LINEED_EDIT_VERBS[k], fullchk.c_str());
 }
 
+// A document's PATH and its KIND move together (client-server design §2.1:
+// file extension -> kind is an INPUT-boundary table, converted ONCE when
+// the file opens or is renamed — madc::file_kind_of_path, the engine's one
+// table; the code rides the document as "kind" and is never re-derived
+// from the name at use). ONE owner for the pair — every open, new-file and
+// save-as site calls it; a view buffer is not a document and keeps only a
+// display path.
+void doc_set_path(long w, long doc, const char *path)
+{
+    ui::set(w, doc, "path", path);
+    ui::set(w, doc, "kind", madc::file_kind_of_path(path));
+}
+
+// The document's kind (madc::fk*); madc::fkUNKNOWN for a document no open
+// site stamped.
+long doc_kind(long w, long doc)
+{
+    var k;
+    ui::get(k, w, doc, "kind");
+    if ( k.is_null() )
+	return madc::fkUNKNOWN;
+    return k.as_integer();
+}
+
 // Create the document entity and load its file: the setup BOTH editors
 // share (lined's line mode and vised's TUI mode edit the same document
 // shape). 0 = the file could not be read.
@@ -62,7 +86,7 @@ long setup_document(long w, const char *path, bool ro)
     if ( !php::file_get_contents(seed, path) )
 	return 0;
     ui::text_load(w, doc, seed.c_str());
-    ui::set(w, doc, "path", path);
+    doc_set_path(w, doc, path);
     ui::set(w, doc, "modified", false);
     if ( ro )
 	ui::set(w, doc, "read_only", true);

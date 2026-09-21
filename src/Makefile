@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o cir_freeze.o cir_emit_c.o madc_capabilities.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -162,6 +162,12 @@ HAVE_MADCDAT ?= 1
 # removes them.
 MIRDIR	= $(abspath ../third_party/mir)
 MIRBUILD = $(abspath ../obj/mir)
+# libgit2 is NOT in this repository and NOT in libmadc (owner ruling
+# 2026-09-15, superseding the L4a vendoring): madc carries no fixes to it, so
+# it is an ordinary dependency of the IDE's nexus — the SYSTEM library, bound
+# by the optional madcgit MODULE (src/madcgit.mk, lib/libmadcgit.so), never
+# linked into a madc image. The engine's export surface carries no git_*
+# symbol (scripts/check-c-abi-surface.sh).
 # MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
 # string literal so the built-in MADC_VERSION macro tracks the release version —
 # single source of truth, no hardcoded copy in the lexer.
@@ -448,7 +454,7 @@ MADC_STORAGE_DB_OFILES =
 # in -Bdynamic mode, where ld prefers the stage's libstdc++.dll.a over
 # its .a. System DLLs stay imports either way (ws2_32/kernel32/ucrt are
 # import libs).
-LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
+LIBS = -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--export-all-symbols -lws2_32 -lsecur32 -Wl,-Bstatic -lz -Wl,-Bdynamic -lpthread -lm $(OPTIONAL_LIBS)
 # The compat thunks join every link via the object list (compile rule beside
 # the other per-mode rules below); riding CORE_OFILES also puts them in the
 # per-mode libmadc archives, where any downstream consumer link needs them.
@@ -727,10 +733,13 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
+# The madcgit module's unit test links the module and the system libgit2:
+# madcgit.mk builds it (and adds it to TESTBINS) where pkg-config finds libgit2.
+MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp
 ifeq ($(HAVE_MADCDAT),1)
-ACTIVE_TESTSRCS = $(TESTSRCS)
+ACTIVE_TESTSRCS = $(filter-out $(MODULE_TESTSRCS), $(TESTSRCS))
 else
-ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS), $(TESTSRCS))
+ACTIVE_TESTSRCS = $(filter-out $(MADDAT_TESTSRCS) $(MODULE_TESTSRCS), $(TESTSRCS))
 endif
 ALL_TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
@@ -752,9 +761,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT)
 endif
 
 
@@ -767,6 +776,7 @@ all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
 include webview.mk
+include madcgit.mk
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
@@ -908,10 +918,13 @@ MACHO_READER = bin/madc
 RELEASE_MACOS_ARCHES = arm64 x86-64
 endif
 # The platform webview library (webview.mk) rides the release of each arch:
-# package_release_macos.sh ships it as lib/libmadcwebview.dylib.
+# package_release_macos.sh ships it as lib/libmadcwebview.dylib. The madcgit
+# module (madcgit.mk) rides too, with the minimal static libgit2 linked in;
+# package_release_macos.sh ships it as lib/libmadcgit.dylib.
 release-%-macos:
 	$(MAKE) hosted-$*-macos
 	$(MAKE) webview-$*-macos
+	$(MAKE) madcgit-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
 	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
 
@@ -965,10 +978,13 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # equivalence) run the EXACT shipped bytes under wine. The suite-facing
 # hosted exe stays live-parse; this is the packed product twin.
 # The platform webview library (webview.mk) rides the release too:
-# package_release_windows.sh ships bin/madcwebview.dll beside madc.exe.
+# package_release_windows.sh ships bin/madcwebview.dll beside madc.exe. The
+# madcgit module (madcgit.mk) rides too, with the minimal static libgit2 linked
+# in; package_release_windows.sh ships bin/madcgit.dll beside madc.exe.
 release-windows:
 	$(MAKE) hosted-x86-64-windows
 	$(MAKE) webview-windows
+	$(MAKE) madcgit-windows
 	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
 	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
@@ -1080,12 +1096,14 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
+	@cd .. && bash scripts/check-one-declarator-reader.sh
 	@cd .. && bash scripts/check-clone-origin.sh
 	@cd .. && bash scripts/check-one-pointer-peel.sh
 	@cd .. && bash scripts/check-one-macro-expander.sh
 	@cd .. && bash scripts/check-one-aggregate-layout.sh
 	@cd .. && bash scripts/check-one-dl-owner.sh
 	@cd .. && bash scripts/check-one-spawn-owner.sh
+	@cd .. && bash scripts/check-one-git-owner.sh
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-handle-table.sh
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
@@ -1098,6 +1116,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-library-spelling.sh
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
+	@cd .. && bash scripts/check-one-anchor-owner.sh
 	@cd .. && bash scripts/check-one-style-vocabulary.sh
 	@cd .. && bash scripts/check-expect-twins.sh
 	@cd .. && bash scripts/check-object-module-deps.sh
@@ -1115,6 +1134,9 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-madcide-single-owners.sh
 	@cd .. && bash scripts/check-madcide-seam.sh
 	@cd .. && bash scripts/check-madcide-command-registry.sh
+	@cd .. && bash scripts/check-madcide-enums.sh
+	@cd .. && bash scripts/check-madcide-one-accept-loop.sh
+	@cd .. && bash scripts/check-madcide-id-width.sh
 	@cd .. && bash scripts/check-object-mode-scope.sh
 	@cd .. && bash scripts/check-cancel-throw-owner.sh
 	@cd .. && bash scripts/check-child-status-map-owner.sh
@@ -1156,8 +1178,10 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
 	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/vector_abi_gate.sh
+	@cd .. && bash scripts/mangle_abi_gate.sh --selftest --interop
 	@cd .. && bash scripts/emitc_sret_gate.sh
 	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh
+	@cd .. && bash scripts/emit_layout_gate.sh
 	@cd .. && bash scripts/libcxx_gate.sh
 	@cd .. && bash scripts/project_gate.sh
 	@cd .. && bash scripts/forest_index_oracle.sh
@@ -1174,6 +1198,14 @@ gcctest: ../bin/madc
 
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
+
+# Self-host lane (ROADMAP 2.11): madc parses every TU this Makefile links into
+# bin/madc, with the compile flags derived from THIS Makefile by dry-run
+# (scripts/selfhost_lane.sh never restates a compiler line). Baseline-ratcheted
+# over docs/parity/selfhost-baseline.txt; a ledger lane, not a fulltest gate —
+# parser.cpp alone is a 70k-line C++ TU.
+selfhost: ../bin/madc
+	@cd .. && bash scripts/selfhost_lane.sh
 
 # Runtime helpers (__madc_* in va_helpers, the file-stream wrappers, the
 # exception runtime, namespace builtins, etc.) are resolved at runtime by
@@ -1193,6 +1225,8 @@ $(BINDIR)/test_process: $(PROCESS_FIXTURE)
 # prerequisite a regenerated .inc leaves a STALE test binary asserting the
 # old rows (the 2026-08-20 battery ran 1428 phantom failures that way).
 $(BINDIR)/test_rt_format: $(TESTDIR)/rt_format_oracle.inc
+# Same contract for the Itanium user-shape oracle (scripts/gen_mangle_oracle.sh).
+$(BINDIR)/test_mangle: $(TESTDIR)/mangle_oracle.inc
 
 $(PROCESS_FIXTURE): ../tests/helpers/process_fixture.cpp
 	mkdir -p $(BINDIR)

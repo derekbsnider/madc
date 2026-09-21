@@ -1,0 +1,205 @@
+// V6c-4: SESSION DISCOVERY — the ADVERTISEMENT a client finds a running
+// session by, so nobody has to be TOLD an address. ⚠️ It is an advertisement,
+// NOT a lock: madcide refuses no file (there is no swapfile mechanism here and
+// never was), so this publishes how to REACH a session and never excludes.
+//
+// This test holds a live session with a real listener — the `--serve` side —
+// advertises it, and then spawns `madcide <file> --lsp --attach` with NO
+// ADDRESS: the child must DISCOVER this session from the advertisement and
+// drive it, which is the whole point of the slice. Every answer must come from
+// THIS process's session.
+//
+// The session directory is hermetic (testmadcide_discover.env pins
+// MADCIDE_SESSION_DIR), so the gate never writes into a developer's real state
+// directory — and the spawned child inherits it, which is why it finds us.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+#include "../tools/madcide/madcide_ws.inc"
+#include "../tools/madcide/madcide_serve.inc"
+
+void send(madc::channel &c, var &msg)
+{
+    var js = js::stringify(msg);
+    c.write(js.c_str());
+}
+
+// Read one framed reply off the relay, dropping notifications (no id).
+bool read_reply(var &out, madc::channel &c)
+{
+    var line;
+    for ( ;; )
+    {
+	if ( !c.readline(line) )
+	    return false;
+	var msg;
+	if ( !js::parse(msg, line.c_str()) )
+	    return false;
+	if ( msg["id"].is_null() )
+	    continue;
+	out = msg;
+	return true;
+    }
+}
+
+int main()
+{
+    const char *path = "madc_ide_disc.mad";
+    php::file_put_contents(path,
+	"long twice(long a)\n{\n\treturn a + a;\n}\n\nint main()\n{\n\treturn twice(21);\n}\n");
+
+    // ---- the state directory the fixture pinned -------------------------
+    var dir;
+    session_dir(dir);
+    println("dir-set: {}", strlen(dir.c_str()) > 0 ? 1 : 0);
+    println("dir-hermetic: {}", strstr(dir.c_str(), "madc_disc_sessions") != 0 ? 1 : 0);
+
+    // ---- the running session, here in this process -----------------------
+    IdeSession S;
+    long doc = S.open(path, false);
+    println("session: {}", doc > 0 ? 1 : 0);
+    S.terminal(false);
+    long w = S.world();
+    long es = S.es;
+
+    madc::channel listener("listen://127.0.0.1:0");
+    println("listening: {}", listener.ok() ? 1 : 0);
+    var addr = listener.local_endpoint();	// ring lifetime: owned NOW
+
+    session_advertise(S, doc, addr);
+
+    // ---- the advertisement itself ---------------------------------------
+    var advert;
+    ui::get(advert, w, es, "advert");
+    println("advertised: {}", strlen(advert.c_str()) > 0 ? 1 : 0);
+    var text;
+    php::file_get_contents(text, advert.c_str());
+    var rec;
+    println("record-parses: {}", js::parse(rec, text.c_str()) ? 1 : 0);
+    println("record-schema: {}", rec["madcide"]);
+    // ⚠️ The endpoint must be the address ACTUALLY BOUND, not some other
+    // string: it travels as a carrier because a var's c_str() is a RING
+    // rendering, and session_record calls out several times before placing it.
+    // The first run of this slice advertised the FILE PATH as the endpoint.
+    println("record-endpoint-is-bound: {}", rec["endpoint"] == addr ? 1 : 0);
+    var cwd;
+    madc::canonical_path(cwd, ".");
+    println("record-root: {}", rec["root"] == cwd ? 1 : 0);
+    println("record-serves-lsp: {}", php::in_array("lsp", rec["serves"]) != 0 ? 1 : 0);
+    var want;
+    madc::canonical_path(want, path);
+    var docs = rec["documents"];
+    println("record-documents: {}", docs[0] == want ? 1 : 0);
+
+    // ---- matching ---------------------------------------------------------
+    var hit;
+    println("find-exact: {}", session_find(hit, path) ? 1 : 0);
+    println("find-exact-endpoint: {}", hit["endpoint"] == addr ? 1 : 0);
+    // A sibling the session does not hold is still COVERED by its root: a
+    // client attaching to edit it belongs on this session, not a second one.
+    var sib;
+    println("find-covered: {}", session_find(sib, "tools/madcide/madcide.mad") ? 1 : 0);
+    // ⚠️ NEGATIVE CONTROL. A root prefix must match at a COMPONENT BOUNDARY;
+    // a bare strncmp would say "/workspace/madc" covers "/workspace/madcX",
+    // and every session would match every file.
+    var root = rec["root"];
+    var nearly = format("{}X/sub/file.mad", root);
+    println("covers-sibling-prefix: {}", session_covers(root, nearly) ? 1 : 0);
+    var inside = format("{}/sub/file.mad", root);
+    println("covers-inside: {}", session_covers(root, inside) ? 1 : 0);
+    var miss;
+    println("find-elsewhere: {}", session_find(miss, "/nonesuch/elsewhere.mad") ? 1 : 0);
+
+    // ---- STALENESS is a connect test, never a pid test --------------------
+    // A crashed session leaves its file behind; the next scan removes it, so
+    // the directory self-heals with nobody running a cleanup. Port 1 is never
+    // a madcide.
+    var ghost = format("{}/ghost-999999.json", dir);
+    php::file_put_contents(ghost.c_str(),
+	"{\"madcide\":1,\"pid\":999999,\"endpoint\":\"127.0.0.1:1\",\"root\":\"/\",\"documents\":[]}");
+    println("ghost-written: {}", php::file_exists(ghost.c_str()) ? 1 : 0);
+    var all;
+    session_scan(all);
+    println("scan-live-only: {}", php::count(all));
+    println("ghost-reaped: {}", php::file_exists(ghost.c_str()) ? 0 : 1);
+
+    // ---- an editor that was never told the address ------------------------
+    // `--lsp --attach` with NO address: the child reads the advertisement,
+    // finds US, and drives this session. The gatekeeper shape with nothing
+    // typed anywhere.
+    // ⚠️ The PRODUCTION accept loop, not a single accept: a discovering client
+    // spends a connection on the LIVENESS PROBE before it opens the real one,
+    // so a seat that accepts once answers the probe and then deadlocks waiting
+    // for a relay it already refused to hear. This is also the loop run_tui and
+    // run_lsp --serve spawn, so the gate drives the shipped path.
+    long lh = listener.detach();
+    scope
+    {
+	go serve_accept_task(&S, doc, lh, w, es);
+
+	var self = madc::compiler_path();
+	var uri = format("exec://{} --no-config tools/madcide/madcide.mad {} --lsp --attach",
+			 self, path);
+	madc::channel relay(uri.c_str());
+	println("relay-open: {}", relay.ok() ? 1 : 0);
+	println("relay-framed: {}", relay.frame_headers() ? 1 : 0);
+
+	var caps = {};
+	var params = { "processId": 0, "rootUri": "", "capabilities": caps };
+	var init = { "jsonrpc": "2.0", "id": 1, "method": "initialize",
+		     "params": params };
+	send(relay, init);
+	var resp;
+	println("initialize: {}", read_reply(resp, relay) ? 1 : 0);
+	var caps2 = resp["result"]["capabilities"];
+	println("from-our-session: {}", caps2["documentSymbolProvider"].as_boolean() ? 1 : 0);
+
+	// A projection of OUR document, through a child that discovered us.
+	var tdoc = { "uri": format("file://{}", want) };
+	var sp = { "textDocument": tdoc };
+	var sym = { "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",
+		    "params": sp };
+	send(relay, sym);
+	var sresp;
+	read_reply(sresp, relay);
+	var syms = sresp["result"];
+	println("symbols: {}", php::count(syms));
+
+	// shutdown is the RELAY's own (lifecycle belongs to the connection), and
+	// exit ends it. Drain to EOF before closing, so the child finishes its
+	// own teardown instead of being cut off mid-exit.
+	var sd = { "jsonrpc": "2.0", "id": 3, "method": "shutdown" };
+	send(relay, sd);
+	var dresp;
+	println("shutdown: {}", read_reply(dresp, relay) ? 1 : 0);
+	var ex = { "jsonrpc": "2.0", "method": "exit" };
+	send(relay, ex);
+	relay.close_write();
+	var tail;
+	while ( relay.readline(tail) )
+	    ;
+	relay.close();
+	println("relay-exit-status: {}", relay.exit_status());
+	// End the accept task so `scope` can join it — the arc's trap #3: a task
+	// parked in accept is NOT woken by closing the fd, so the host pokes.
+	serve_accept_stop(w, es, addr);
+    }
+
+    // ---- withdraw ---------------------------------------------------------
+    session_withdraw(S);
+    println("withdrawn: {}", php::file_exists(advert.c_str()) ? 0 : 1);
+    var after;
+    session_scan(after);
+    println("scan-after: {}", php::count(after));
+
+    S.close();		// the listener rode into the accept task, which closed it
+    php::unlink(path);
+    println("done");
+    return 0;
+}

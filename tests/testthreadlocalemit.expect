@@ -1,0 +1,6 @@
+_Thread_local int tls_counter
+_Thread_local int tls_counter;
+static _Thread_local int tls_hits
+extern _Thread_local int tls_elsewhere
+_Thread_local _Bool _ZN4Mute6activeE = 0;
+static _Thread_local int calls = 0;

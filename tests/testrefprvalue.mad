@@ -1,0 +1,24 @@
+#include <stdio.h>
+int calls = 0;
+int dead = 0;
+int f() { ++calls; return 42; }
+struct A {
+ int n;
+ A() : n(73) {}
+ ~A() { ++dead; }
+};
+const int &global_literal = 19;
+int main() {
+ int &&r = f();
+ const int &k = 10;
+ int i = 3;
+ int &&alias = static_cast<int&&>(i);
+ alias = 9;
+ { const A &a = A();
+   int noise[4] = {1, 2, 3, 4};
+   printf("values: %d %d %d %d %d %d\n", r, k, a.n, i, calls, noise[3]);
+   printf("alive: %d global: %d\n", dead, global_literal);
+ }
+ printf("destroyed: %d\n", dead);
+ return 0;
+}

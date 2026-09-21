@@ -1,0 +1,41 @@
+// A GLOBAL-qualified namespace type in type position — `::ns::type` (self-host
+// arc 2026-09-17: madc's own include/madcdis/keys.h:40 `typedef ::ui::key
+// tui_key;` was the first error of 4 units: "Expecting type after 'typedef',
+// got '::'"). The declared-type resolver's leading-`::` arm knew only a global
+// TYPE (`::timespec`); a global NAMESPACE heading the chain now resolves as the
+// ordinary qualified lookup from the root. Shapes: a typedef, a variable, a
+// parameter, a nested namespace, a global type, a template argument — and a
+// typedef ALIAS of a scoped enum used as a scope (`tmode::on`, madcdis/keys.h:46
+// `tui_key::none`, the units' next error). Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+#include <vector>
+
+namespace ui { struct key { int code; }; namespace deep { enum class mode { off, on }; } }
+struct global_t { int g; };
+
+typedef ::ui::key tui_key;
+typedef ::ui::deep::mode tmode;	// an alias of a scoped enum, used as a SCOPE below
+::ui::key make_key(int c) { ::ui::key k; k.code = c; return k; }
+int read_key(const ::ui::key &k) { return k.code; }
+int mode_num(tmode m)
+{
+    switch ( m )
+    {
+	case tmode::off: return 10;
+	case tmode::on: return 11;
+    }
+    return 0;
+}
+
+int main()
+{
+    tui_key a = make_key(4);
+    ::global_t gt; gt.g = 5;
+    ::ui::deep::mode m = ::ui::deep::mode::on;
+    tmode m2 = tmode::off;	// the alias as a scope in an expression
+    std::vector< ::ui::key > keys;
+    keys.push_back(make_key(6));
+    printf("%d %d %d %d %d %d %d\n", read_key(a), gt.g, m == ::ui::deep::mode::on ? 1 : 0,
+	   (int)keys.size(), keys[0].code, mode_num(m2), mode_num(m));
+    return 0;
+}

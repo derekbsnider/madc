@@ -1,0 +1,45 @@
+// std::vector<S>::push_back / insert of a class with a std::string member and
+// user constructors but NO user copy constructor — the element is constructed
+// in place by `__new_allocator::construct(_Up *p, _Args &&...args)` as
+// `::new(p) _Up(std::forward<_Args>(args)...)`, i.e. the IMPLICIT copy/move
+// constructor (self-host arc 2026-09-17: "tsubst: class deferred-construction
+// object argument pack" at new_allocator.h:190, 42 units — the largest
+// family). The deferred-construction relower selected among the USER
+// constructors only and found none for a same-class element. Shapes: an
+// rvalue temporary, an lvalue, a nested-struct element, and a copy of the
+// whole vector (insert() is a separate gap: vector<bool>'s _M_insert_aux is
+// selected for every vector<T>). Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+#include <string>
+#include <vector>
+
+struct DD { int n; };
+
+struct Saved {
+    std::string key;
+    bool existed;
+    DD *value;
+    Saved(const std::string &k, bool e, DD *v) : key(k), existed(e), value(v) {}
+};
+
+struct Reg {
+    struct txn { struct Field { std::string name; int w; Field(const char *n, int w_) : name(n), w(w_) {} }; std::vector<Field> fields; };
+    txn t;
+    void add(const char *n, int w) { t.fields.push_back(txn::Field(n, w)); }
+};
+
+int main()
+{
+    DD d; d.n = 7;
+    std::vector<Saved> v;
+    v.push_back(Saved("a", true, &d));
+    Saved s("b", false, &d);
+    v.push_back(s);
+    v.push_back(Saved("c", true, &d));
+    std::vector<Saved> w(v);
+    Reg r; r.add("x", 3); r.add("yy", 4);
+    printf("%d %s %s %s %d %d %d\n", (int)v.size(), v[0].key.c_str(), v[1].key.c_str(), v[2].key.c_str(),
+	   (int)v[1].existed + (int)v[2].existed, w[0].value->n, (int)w.size());
+    printf("%d %s %d\n", (int)r.t.fields.size(), r.t.fields[1].name.c_str(), r.t.fields[0].w + r.t.fields[1].w);
+    return 0;
+}

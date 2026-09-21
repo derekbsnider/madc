@@ -1,0 +1,9 @@
+plain: c.mad
+suffix: c
+suffix-whole: c.mad
+suffix-miss: c.mad
+trailing: b
+bare: c
+root: []
+empty: []
+var: ok

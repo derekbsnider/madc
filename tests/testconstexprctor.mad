@@ -1,0 +1,31 @@
+// g++ and clang++ -std=c++11: ctor: 42 7 42 5
+// A constexpr CONSTRUCTOR reduces to its member-initializer list, so an object
+// it builds is readable in a constant expression exactly like an aggregate.
+extern "C" int printf(const char *, ...);
+
+const int j = 42;
+
+struct S {
+	int i;
+	int k;
+	constexpr S(int v, int w) : i(v), k(w) {}
+	constexpr S() : S(j, 7) {}       // DELEGATING
+};
+
+constexpr S a(42, 7);                    // direct-init
+constexpr S b{};                         // empty braced: the delegating ctor
+constexpr S c{j, 5};                     // braced ctor arguments
+
+static_assert(a.i == 42, "a.i");
+static_assert(a.k == 7, "a.k");
+static_assert(b.i == 42, "b.i");
+static_assert(c.i == 42 && c.k == 5, "c");
+
+enum { E = a.i, F = a.k, G = b.i, H = c.k };
+int arr[b.i - 40];                       // an array bound is a constant context
+
+int main()
+{
+	printf("ctor: %d %d %d %d\n", E, F, G, H);
+	return (int)(sizeof(arr) / sizeof(arr[0])) - 2;
+}

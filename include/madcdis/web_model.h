@@ -165,6 +165,7 @@
 #include "madcdis/ui_focus.h"
 #include "madcdis/ui_input.h"
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/text_utf16.h"	// col16_to_byte: the ONE UTF-16 column owner
 #include "madcdis/uinode.h"
 
 namespace madc {
@@ -208,29 +209,10 @@ inline void web_line_col(const std::string &text, long off,
     col = (size_t)off - line_start;
 }
 
-// A UTF-16 column (what a page's hit test reports — JavaScript string
-// indices) → the byte index in the line's UTF-8 text: one unit per code
-// point below U+10000, two for a four-byte sequence (a surrogate pair); a
-// column past the end clamps to the line's length, one inside a pair snaps
-// to the pair's start. The inverse of the page decoding the row's bytes.
-inline size_t web_byte_col(const std::string &t, long col16)
-{
-    size_t i = 0;
-    long units = 0;
-    while ( i < t.size() && units < col16 )
-    {
-	const unsigned char lead = (unsigned char)t[i];
-	size_t n = lead < 0x80 ? 1 : lead < 0xC0 ? 1 : lead < 0xE0 ? 2
-		 : lead < 0xF0 ? 3 : 4;	// a stray continuation byte: one unit
-	if ( i + n > t.size() )
-	    n = t.size() - i;
-	units += n == 4 ? 2 : 1;
-	if ( units > col16 )
-	    break;
-	i += n;
-    }
-    return i;
-}
+// A page's hit test reports a JavaScript string index — a UTF-16 code-unit
+// column — and the buffer stores bytes. That arithmetic is ONE owner,
+// madcdis/text_utf16.h (madc::col16_to_byte / col16_of_byte), shared with the
+// LSP face whose protocol default is the same encoding (V6c-2).
 
 class web_model
 {
@@ -274,6 +256,12 @@ class web_model
     // The choice nodes' focus slots by key, from the last compose — what a
     // {"kind":"choose","key":...} gesture resolves against (polish P2).
     std::map<std::string, size_t> _choice_slot;
+    // The last compose's action NAME -> CODE vocabulary (every tab, choice,
+    // button and menu item that carried a `code` hint beside its `action` /
+    // `id`): the page and the native menu post NAMES, and this converts
+    // them ONCE at that input boundary (enums, not strings — owner law
+    // 2026-09-09). Mutable: the menu bar's JSON is built by a const reader.
+    mutable std::map<std::string, int64_t> _action_codes;
     // The native menu the host draws (S2): the root's `menu` hint resolved
     // against the bindings — items gain the chord bound to their command
     // id (`key`) — as one JSON text; recomposed every compose and handed
@@ -335,6 +323,31 @@ class web_model
     // already hand them over in source order, so the sort is a contract,
     // not a cost. A row whose style is `normal` paints nothing and is
     // dropped here (the grid paints a no-op; the DOM would gain a span).
+    // The coordinate map's {disp,stored} anchors as JSON (viewsync linked
+    // scroll): the page maps a top line through these to the sibling pane's
+    // line. Only disp+stored are needed (len is for caret projection).
+    static nlohmann::json read_syncmap(const madc::value &hints)
+    {
+	nlohmann::json arr = nlohmann::json::array();
+	if ( !hints.is_object() )
+	    return arr;
+	const std::map<std::string, madc::value> &ho = hints.as_object();
+	std::map<std::string, madc::value>::const_iterator hi = ho.find("map");
+	if ( hi == ho.end() || !hi->second.is_array() )
+	    return arr;
+	for ( const madc::value &row : hi->second.as_array() )
+	{
+	    if ( !row.is_object() )
+		continue;
+	    long d = hint_of(row, "disp", -1);
+	    long s = hint_of(row, "stored", -1);
+	    if ( d < 0 || s < 0 )
+		continue;
+	    arr.push_back(nlohmann::json{ {"disp", d}, {"stored", s} });
+	}
+	return arr;
+    }
+
     static void read_spans(const madc::value &hints, std::vector<doc_span> &out)
     {
 	if ( !hints.is_object() )
@@ -520,7 +533,18 @@ class web_model
 		    item["id"] = id;
 		    item["title"] = hint_str(rows[i], "title");
 		    item["enabled"] = hint_of(rows[i], "enabled", 1) != 0;
-		    const std::string key = _keys.bindings().seq_for_action(id);
+		    const long mcode = hint_of(rows[i], "code", 0);
+		    if ( mcode )
+		    {
+			item["code"] = mcode;
+			_action_codes[id] = mcode;
+		    }
+		    // The accelerator: the chord the LOADED profile binds to
+		    // the item's code, else to its name (the tools' shape).
+		    std::string key = mcode ? _keys.bindings().seq_for_code(mcode)
+					    : std::string();
+		    if ( key.empty() )
+			key = _keys.bindings().seq_for_action(id);
 		    if ( !key.empty() )
 			item["key"] = key;
 		    items.push_back(item);
@@ -554,6 +578,20 @@ class web_model
 	    std::string region = hint_str(n.hints, "region");
 	    if ( !region.empty() )
 		op["region"] = region;
+	    // The layout DISCRIMINATORS (client-server arc V2): a `split`
+	    // group's direction, a chrome pane's `side` and a `size` percent
+	    // -- the words the composer put on the wire (ui_split_name /
+	    // ui_side_name) and the page divides by. Additive: no hint, no
+	    // field (the test_web_model negative control).
+	    std::string split = hint_str(n.hints, "split");
+	    if ( !split.empty() )
+		op["split"] = split;
+	    std::string side = hint_str(n.hints, "side");
+	    if ( !side.empty() )
+		op["side"] = side;
+	    long lsize = hint_of(n.hints, "size", 0);
+	    if ( lsize > 0 )
+		op["size"] = lsize;
 	    if ( hint_of(n.hints, "popup", 0) )
 		op["popup"] = true;
 	    // `dismiss` (S6): the action a press OUTSIDE a popup fires —
@@ -561,7 +599,11 @@ class web_model
 	    // the same {"kind":"action"} a menu item posts. Data, never a key.
 	    const std::string dismiss = hint_str(n.hints, "dismiss");
 	    if ( !dismiss.empty() )
+	    {
 		op["dismiss"] = dismiss;
+		if ( long dcode = hint_of(n.hints, "dismiss_code", 0) )
+		    _action_codes[dismiss] = dcode;
+	    }
 	    // The tab strip (madcide polish P3a): `tabs` as an ARRAY of
 	    // {title, action, active?} is the strip a group carries as DATA —
 	    // the page draws it above the group's children and a tab click
@@ -588,6 +630,11 @@ class web_model
 			nlohmann::json tb = nlohmann::json::object();
 			tb["title"] = title;
 			tb["action"] = action;
+			if ( long tcode = hint_of(rows[k], "code", 0) )
+			{
+			    tb["code"] = tcode;
+			    _action_codes[action] = tcode;
+			}
 			// The command's ARGUMENT (polish P4: a buffer tab names
 			// `bufsel` with its ring index) — posted back with the
 			// action; the gateway shape (commands take arguments).
@@ -622,6 +669,21 @@ class web_model
 			    theme[vi->first] = vi->second.as_string();
 		    if ( !theme.empty() )
 			op["theme"] = theme;
+		}
+		// The @presence palette (client-server V3c): slot -> colour spec
+		// strings, emitted like the theme; the page resolves each slot to a
+		// caret colour. String values only.
+		std::map<std::string, madc::value>::const_iterator pri = ho.find("presence");
+		if ( pri != ho.end() && pri->second.is_object() )
+		{
+		    nlohmann::json pal = nlohmann::json::object();
+		    const std::map<std::string, madc::value> &pv = pri->second.as_object();
+		    for ( std::map<std::string, madc::value>::const_iterator vi = pv.begin();
+			  vi != pv.end(); ++vi )
+			if ( vi->second.is_string() )
+			    pal[vi->first] = vi->second.as_string();
+		    if ( !pal.empty() )
+			op["presence"] = pal;
 		}
 	    }
 	}
@@ -676,6 +738,11 @@ class web_model
 			    nlohmann::json ch = nlohmann::json::object();
 			    ch["label"] = hint_str(rows[k], "label");
 			    ch["action"] = action;
+			    if ( long ccode = hint_of(rows[k], "code", 0) )
+			    {
+				ch["code"] = ccode;
+				_action_codes[action] = ccode;
+			    }
 			    choices.push_back(ch);
 			}
 		    }
@@ -741,9 +808,12 @@ class web_model
 	    f.k = focusable::kind::choice;
 	    f.option_count = n.children.size();
 	    for ( size_t i = 0; i < n.children.size(); ++i )
+	    {
 		f.option_actions.push_back(n.children[i].actions.empty()
 					   ? (name_id)0
 					   : n.children[i].actions[0]);
+		f.option_codes.push_back(hint_of(n.children[i].hints, "code", 0));
+	    }
 	    _focus.add(f);
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);
@@ -798,7 +868,14 @@ class web_model
 			    if ( choose )
 				b["choose"] = true;
 			    else
+			    {
 				b["action"] = action;
+				if ( long bcode = hint_of(rows[k], "code", 0) )
+				{
+				    b["code"] = bcode;
+				    _action_codes[action] = bcode;
+				}
+			    }
 			    buttons.push_back(b);
 			}
 		    }
@@ -846,6 +923,21 @@ class web_model
 	    size_t line, col;
 	    web_line_col(text, caret, line, col);
 	    op["caret"] = nlohmann::json{ {"line", (long)line}, {"col", (long)col} };
+	    // FOLLOW: an unfocused pane the composer asks to track its caret
+	    // (a cursor-synced source↔view pair) — the page honours + scrolls
+	    // to this caret though the pane holds no focus.
+	    if ( hint_of(n.hints, "follow", 0) )
+		op["follow"] = true;
+	    // SYNC (viewsync): a linked-scroll partner. The flag marks the pane;
+	    // the code pane also ships the coordinate map's {disp,stored} anchors
+	    // so the page can scroll the sibling to the corresponding statement.
+	    if ( hint_of(n.hints, "sync", 0) )
+	    {
+		op["sync"] = true;
+		nlohmann::json sm = read_syncmap(n.hints);
+		if ( !sm.empty() )
+		    op["map"] = sm;
+	    }
 	    if ( sel_start >= 0 && sel_end > sel_start )
 	    {
 		size_t l0, c0, l1, c1;
@@ -857,6 +949,36 @@ class web_model
 	    }
 	    else
 		op["sel"] = nullptr;
+	    // Presence (client-server V3c): the OTHER clients viewing this
+	    // document, drawn as carets in their dealt colour SLOT. Each
+	    // entry's byte caret becomes {line, col} the same way the focused
+	    // caret does; the page resolves the slot to a colour through the
+	    // root @presence palette.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &eho = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator pei = eho.find("presence");
+		if ( pei != eho.end() && pei->second.is_array() )
+		{
+		    nlohmann::json pres = nlohmann::json::array();
+		    for ( const madc::value &prow : pei->second.as_array() )
+		    {
+			if ( !prow.is_object() )
+			    continue;
+			long pcar = hint_of(prow, "caret", -1);
+			if ( pcar < 0 )
+			    continue;
+			size_t pl, pcl;
+			web_line_col(text, pcar, pl, pcl);
+			pres.push_back(nlohmann::json{
+			    { "line", (long)pl },
+			    { "col", (long)pcl },
+			    { "slot", hint_of(prow, "colour", 0) } });
+		    }
+		    if ( !pres.empty() )
+			op["presence"] = pres;
+		}
+	    }
 	    op["tabwidth"] = tabw;
 	    if ( rows > 0 )
 		op["rows"] = rows;
@@ -902,6 +1024,7 @@ public:
 	_focus.begin_compose();
 	_seen.clear();
 	_choice_slot.clear();
+	_action_codes.clear();
 	walk(r, tree, "0", "", ops, slots);
 	_focus.end_compose();
 	// An edit key that left the tree drops its basis — the page prunes
@@ -1033,7 +1156,7 @@ public:
 		for ( long i = 0; i < line; ++i )
 		    offset += (long)rows[i].t.size() + 1;
 		offset += (long)(past_end ? rows[line].t.size()
-					  : web_byte_col(rows[line].t, col));
+					  : col16_to_byte(rows[line].t, col));
 	    }
 	    _focus.set_focus(bi->second.slot);
 	    tui_event e;
@@ -1085,6 +1208,12 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::action;
 	    e.action_name = it->get<std::string>();
+	    // The name -> code conversion at this input boundary: the code
+	    // the last compose stamped on the control that posts this name.
+	    std::map<std::string, int64_t>::const_iterator ci =
+		_action_codes.find(e.action_name);
+	    if ( ci != _action_codes.end() )
+		e.action_code = ci->second;
 	    // The command's argument (polish P4): a tab's data rides the
 	    // event's `text` — what ui::event reports as `arg`.
 	    nlohmann::json::const_iterator ai = j.find("arg");
@@ -1105,6 +1234,9 @@ public:
 	    tui_event e;
 	    e.kind = tui_event_kind::dialog;
 	    e.action_name = mi->get<std::string>();
+	    dialog_mode dm;
+	    if ( dialog_mode_from_name(e.action_name, dm) )
+		e.action_code = (int64_t)dm;	// ui::dialog_mode, `mode_code`
 	    if ( pi != j.end() && pi->is_string() )
 		e.text = pi->get<std::string>();
 	    none.push_back(e);

@@ -1,0 +1,34 @@
+// An alias template whose target FORWARDS its parameter pack into a class
+// template specialization — `template<class R, class... A> using PA = P<R,
+// A...>;` — must expand every pack element. The alias instantiation bound each
+// template parameter to exactly ONE argument slot, so `PA<int, char, char>`
+// became `P<int, char>` (the second element dropped) while the base-clause
+// twin `struct Q : P<void, R, A...>` expanded correctly. libc++ spells
+// is_invocable through exactly this shape (`__invokable<_Fn, _Args...> =
+// __invokable_r<void, _Fn, _Args...>`), so every two-argument
+// is_invocable_v read false once the SFINAE chain behind it worked
+// (tests/testifconstexpr on the libc++ lane). Shapes: two and three surplus
+// elements, a prepended fixed argument, one element, zero elements, and the
+// alias/spelling identity. Oracle: g++ and clang++ -std=c++11 print
+// "2 3 1 0 3 1 1 1".
+#include <stdio.h>
+#include <type_traits>
+
+template<class R, class... A> struct P { static const int n = sizeof...(A); };
+template<class R, class... A> using PA = P<R, A...>;
+template<class R, class... A> using PB = P<void, R, A...>;
+template<class R, class... A> struct Q : P<void, R, A...> {};
+
+int main()
+{
+	printf("%d %d %d %d %d %d %d %d\n",
+	       PA<int, char, char>::n,
+	       PA<int, char, char, long>::n,
+	       PA<int, char>::n,
+	       PA<int>::n,
+	       PB<int, char, char>::n,
+	       Q<int, char, char>::n == 3,
+	       (int)std::is_same<PA<int, char, char>, P<int, char, char> >::value,
+	       (int)std::is_same<PB<int, char, char>, P<void, int, char, char> >::value);
+	return 0;
+}

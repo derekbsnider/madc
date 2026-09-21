@@ -1,0 +1,39 @@
+// g++ and clang++ -std=c++11 print a:9 r:b m:6 fa:3 p:4 sz:12 t:24 pf:5 ib:5
+//
+// A variable's declarator is a named declarator over the declared type: a
+// pointer-to-array `int (*pa)[3]`, a reference-to-array `char (&r)[3]`, a
+// 2-D array, an array of function pointers `int (*fa[2])(int)`, a pointer
+// through a function-type typedef `F *fp` (the pointer IS the function
+// pointer), a typedef'd array variable and a pointer to it, a declarator
+// list. (A pointer to a function-pointer VARIABLE, `PF *ppf = &pf2;`, is
+// parked: taking a function-pointer variable's address drops the `&` — KG Gap
+// addressof_fnptr_variable_drops_ampersand, reducer pending-tests/testfnptrvaraddr.) One reader —
+// Program::parse_declarator, Declaration mode; parseDeclaration's own ladder
+// carried a nested-group stash with goto re-entry and its own dims loop.
+extern "C" int printf(const char *, ...);
+
+typedef int F(int);
+typedef int (*PF)(int);
+typedef int arr3[3];
+int inc(int v) { return v + 1; }
+int dbl(int v) { return v * 2; }
+
+int main()
+{
+    int trip[3] = {7, 8, 9};
+    int (*pa)[3] = &trip;
+    char abc[3] = {'a', 'b', 'c'};
+    char (&r)[3] = abc;
+    int m[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    int (*fa[2])(int) = {dbl, inc};
+    F *fp = dbl;
+    PF pf2 = inc;
+    arr3 t3 = {1, 2, 3};
+    arr3 *pt = &t3;
+    int *ia, ib = 5;
+    ia = &ib;
+    printf("a:%d r:%c m:%d fa:%d p:%d sz:%d t:%d pf:%d ib:%d\n", (*pa)[2], r[1], m[1][2],
+	   fa[1](2), fp(2), (int)sizeof(m[0]), (int)sizeof(*pt) + (int)sizeof(t3),
+	   pf2(4), *ia);
+    return 0;
+}

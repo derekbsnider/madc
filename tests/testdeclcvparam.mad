@@ -1,0 +1,29 @@
+// g++ and clang++ -std=c++11 print a:8 b:8 c:8 d:8 e:8 f:5
+//
+// After a `(` in a declarator, a cv-qualifier begins a PARAMETER (`int(const
+// float &)`) — a nested declarator opens only with a ptr-operator (`*`, `&`,
+// `&&`, `C::*`) or another `(`, and a cv-qualifier can only FOLLOW a `*`.
+// The ONE declarator reader's nested-group predicate counted cv as an opener,
+// so a function type whose first parameter is cv-qualified read as a nested
+// group and refused, as an alias target and as a template argument
+// (g++.dg/cpp0x/variadic16's `int(const float&)`).
+extern "C" int printf(const char *, ...);
+
+template <class T> struct W { static const int v = sizeof(T *); };
+using F1 = int(float);
+using F2 = int(const float);
+using F3 = int(float &);
+using F4 = int(const float &);
+typedef int F5(const float &);
+
+int half(const float &f) { return (int)(f / 2); }
+
+int main()
+{
+    F4 *fp = half;
+    F5 *gp = half;
+    printf("a:%d b:%d c:%d d:%d e:%d f:%d\n", W<int(float)>::v, W<int(const float)>::v,
+	   W<int(float &)>::v, W<int(const float &)>::v, (int)sizeof(F5 *),
+	   fp(6.0f) + gp(4.0f));
+    return 0;
+}

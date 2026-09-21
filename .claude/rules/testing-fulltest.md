@@ -12,6 +12,15 @@ multi-hour push-gate lanes (fulltest + exe + obj + packed + headerless,
 c-testsuite, wine, the macOS cross build). A feature with a pending or
 known-open fix is NOT a merge wave yet — hold the long suites until it is
 complete, so they run once for the whole feature, not once per slice.
+The merge wave is the SEAM the arc's plan or design doc names — its RELEASE
+BOUNDARY (e.g. V1–V5 of the client-server arc) — never a slice, phase or "V"
+below it, however complete that slice is on its own: a slice with its own plan
+file and gates is still a slice. A pre-arc conversion slice, a design ruling and
+a defect fixed on the way (own commit, TARGETED gate) all ride the seam battery.
+Between seams the work banks on the arc's feature branch (pushes freely); the
+ONE battery, the lane records and the develop merge/push happen at the seam.
+Before launching the battery, name the seam it gates in one sentence; a sentence
+that names a slice is a targeted run, not a battery.
 When work touches native executable, AOT, runtime-parity, or shared codegen paths,
 the merge-wave battery also includes `bash scripts/run_tests.sh --exe`.
 Do not leave the tree with JIT green and EXE broken, or EXE green and JIT broken.

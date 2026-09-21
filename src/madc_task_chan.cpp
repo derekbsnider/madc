@@ -53,6 +53,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN 1
 #endif
+#include <winsock2.h>	// WSAPoll — the probe's socket arm; before windows.h
 #include <windows.h>
 #include <io.h>
 #else
@@ -63,6 +64,7 @@
 #include "libmadc/value.h"
 #include "madcdis/channel.h"
 #include "madc_task_io.h"
+#include "madc_io_reactor.h"
 #include "rt/rt_task.h"
 #include "rt/rt_except.h"
 
@@ -132,15 +134,20 @@ bool select_fire(SelectGroup *group, int64_t index, void *task)
 // on the parked task's stack exactly like ChanWaiter, share the SelectGroup
 // discipline (first fire claims fired_index; the group's wake-once guard
 // spans BOTH waiter kinds), and are eagerly unregistered by their owner on
-// resume. Handles are CRT fds on every platform (ProcessPipeChannel).
+// resume. A handle rides with its KIND (poll_handle_kind): a descriptor (a
+// CRT fd — ProcessPipeChannel, the console) or a socket, which on Windows
+// is a kernel SOCKET in a different space from the CRT's fds — the probe
+// and the blocking wait dispatch on the kind, never on the bare value.
 // ---------------------------------------------------------------------------
 
 struct IoWaiter {
 	intptr_t handle = -1;     // -1 = never registered (select's dead cases)
+	madc::poll_handle_kind kind = madc::poll_handle_kind::descriptor;
 	void *task = 0;
 	SelectGroup *group = 0;   // NULL = plain wait_readable
 	int64_t index = 0;
 	bool fired = false;
+	uint64_t reactor_id = 0;  // the reactor poll-op id (0 = not armed)
 	IoWaiter *next = 0;
 };
 
@@ -200,9 +207,28 @@ static long long host_deadline_remaining(long long timeout_ms)
 // Zero-timeout "read would make progress" probe: data, EOF, or a surfaced
 // error all count (POLLHUP/POLLERR — the read reports them; the waiter must
 // wake, not hang).
-bool io_probe_readable(intptr_t handle)
+bool io_probe_readable(intptr_t handle, madc::poll_handle_kind kind)
 {
 #if defined(_WIN32)
+	if (kind == madc::poll_handle_kind::socket) {
+		// A SOCKET is a kernel handle, not a CRT fd: ask winsock. The
+		// flags match the reactor's WSAPoll backend exactly, so the
+		// probe never disowns a wake the I/O thread posted (the poll
+		// op is one-shot — a disowned wake would leave the waiter
+		// unwatched). POLLNVAL (closed under us) and an error return
+		// are "readable": the read surfaces them — the pipe arm's rule.
+		WSAPOLLFD p;
+		p.fd = (SOCKET)handle;
+		p.events = POLLRDNORM;
+		p.revents = 0;
+		int r = WSAPoll(&p, 1, 0);
+		if (r < 0)
+			return true;
+		if (r == 0)
+			return false;
+		return (p.revents
+			& (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL)) != 0;
+	}
 	// CRT fd -> HANDLE. Consoles first (win-VT slice): GetConsoleMode
 	// succeeding IS the "is a console" classification, and PeekNamedPipe
 	// FAILS on consoles — the old pipe-only arm read that failure as
@@ -244,6 +270,7 @@ bool io_probe_readable(intptr_t handle)
 		return true;
 	return avail > 0;
 #else
+	(void)kind;	// a socket IS a descriptor here: one poll() for both
 	struct pollfd p;
 	p.fd = (int)handle;
 	p.events = POLLIN;
@@ -266,6 +293,93 @@ bool io_fire_waiter(IoWaiter *w)
 	return select_fire(w->group, w->index, w->task);
 }
 
+// The async I/O reactor backing the io-wait where a backend exists (epoll on
+// Linux, WSAPoll on Windows; macOS keeps the poll() path below until kqueue
+// lands). Scheduler-thread-owned: created lazily on the first genuine block,
+// abandoned on fork.
+//
+// The reactor is the BLOCKING-WAKEUP mechanism only: its I/O thread watches
+// every armed waiter's fd and rings the doorbell when any turns ready, so the
+// scheduler blocks on one fd (the doorbell) instead of poll()ing N. Readiness
+// DETERMINATION stays synchronous — io_probe_readable over g_io_head, exactly
+// as the poll() path — because the hook's zero-timeout probe and its
+// fd-beats-synthetic pass must observe a just-happened write NOW, before the
+// I/O thread has posted its async completion. So completions are drained and
+// DISCARDED (the probe is the source of truth); the poll op only has to fire
+// once to ring the doorbell.
+madc::io::Reactor *g_reactor;
+
+// The reactor for this platform, created on first use — or NULL where no
+// backend is compiled yet (the caller falls back to poll()). A creation
+// failure (fd exhaustion) also falls back to poll() rather than throwing
+// out of a blocking verb.
+madc::io::Reactor *reactor_or_null()
+{
+	if (!madc::io::Reactor::available())
+		return 0;
+	if (!g_reactor) {
+		try {
+			g_reactor = new madc::io::Reactor();
+		} catch (...) {
+			g_reactor = 0;
+		}
+	}
+	return g_reactor;
+}
+
+// Whether the reactor's backend watches a handle of this kind. Every
+// descriptor is epoll-able on Linux; the Windows backend polls SOCKETs only
+// — a console or an anonymous pipe is waited on by the hook's own arm.
+bool reactor_watches(madc::poll_handle_kind kind)
+{
+#if defined(_WIN32)
+	return kind == madc::poll_handle_kind::socket;
+#else
+	(void)kind;
+	return true;
+#endif
+}
+
+// Arm a blocking waiter's readiness watch (the doorbell will ring when its fd
+// turns ready). The op id rides the waiter so io_unregister can cancel it.
+void reactor_arm(IoWaiter *w)
+{
+	w->reactor_id = g_reactor->submit_poll((int)w->handle,
+					       madc::io::readable, 0);
+}
+
+// Retract a waiter's watch when it is torn down (fired or cancelled): cancel
+// the still-armed op (a no-op if it already fired) and clear the id.
+void reactor_disarm(IoWaiter *w)
+{
+	if (!w->reactor_id)
+		return;
+	g_reactor->submit_cancel(w->reactor_id);
+	w->reactor_id = 0;
+}
+
+// Empty the completion queue (and the doorbell it signalled). The completions
+// are the reactor's "an fd is ready" notices; the synchronous probe already
+// acted on them, so here they are only reclaimed.
+void reactor_drain_discard()
+{
+	madc::io::completion cs[64];
+	while (g_reactor->drain(cs, sizeof(cs) / sizeof(cs[0])) != 0) {
+	}
+}
+
+// One synchronous probe pass over the waiter list (the poll() path's readiness
+// determination, shared by every platform arm of the hook): fire every waiter
+// whose handle would make a read progress now.
+int io_probe_and_fire()
+{
+	int woke = 0;
+	for (IoWaiter *w = g_io_head; w; w = w->next)
+		if (!w->fired && io_probe_readable(w->handle, w->kind))
+			woke += io_fire_waiter(w) ? 1 : 0;
+	return woke;
+}
+
 // The scheduler's io wait (rt_task.h contract): -1 = no waiters (did not
 // wait); 0 = waited up to timeout_ms, nothing fired; >0 = tasks enqueued.
 int io_wait_hook(long long timeout_ms)
@@ -283,18 +397,24 @@ int io_wait_hook(long long timeout_ms)
 		&& __madc_task_switch_count() != g_host_mark;
 	int woke = 0;
 #if defined(_WIN32)
-	// Win arm (win-VT slice): consoles ARE waitable objects (signaled
-	// while input records are pending), so a console-only wait blocks
-	// properly in WaitForMultipleObjects with a real timeout. Anonymous
-	// pipes are NOT waitable — any pipe among the waiters keeps the
-	// 1 ms probe cadence for the whole set. Both paths re-probe after
-	// every wake (a console can signal on husk records; the probe
-	// drains those, unsignaling the handle — no busy loop).
+	// Win arm: consoles ARE waitable objects (signaled while input
+	// records are pending) and the reactor's doorbell is an Event, so a
+	// wait set of consoles + the doorbell blocks properly in
+	// WaitForMultipleObjects with a real timeout — a headless server
+	// (sockets only) blocks on the one doorbell; the tui with --serve
+	// (console + sockets) wakes on either. Anonymous pipes are NOT
+	// waitable — any pipe among the waiters (or a socket the reactor
+	// could not arm) keeps the 1 ms probe cadence for the whole set.
+	// Every path re-probes after every wake (a console can signal on
+	// husk records, the doorbell on a notice the probe already acted on;
+	// the probe drains/disowns those — no busy loop). Readiness is
+	// determined by the synchronous probe here exactly as on the POSIX
+	// reactor path: the I/O thread only supplies the wakeup.
 	long long start = (long long)GetTickCount64();
 	for (;;) {
-		for (IoWaiter *w = g_io_head; w; w = w->next)
-			if (!w->fired && io_probe_readable(w->handle))
-				woke += io_fire_waiter(w) ? 1 : 0;
+		woke += io_probe_and_fire();
+		if (g_reactor)
+			reactor_drain_discard();
 		if (woke || timeout_ms == 0)
 			return woke;
 		if (host_pending)
@@ -313,28 +433,74 @@ int io_wait_hook(long long timeout_ms)
 			step = host_rem;
 		HANDLE ws[MAXIMUM_WAIT_OBJECTS];
 		DWORD nw = 0;
-		bool pipes = false;
+		bool cadence = false;	// an unwaitable member: poll the set
+		bool doorbell = false;	// a socket the reactor watches
 		for (IoWaiter *w = g_io_head; w; w = w->next) {
 			if (w->fired)
 				continue;
+			if (w->kind == madc::poll_handle_kind::socket) {
+				if (w->reactor_id)
+					doorbell = true;
+				else
+					cadence = true;	// no reactor: poll it
+				continue;
+			}
 			HANDLE h = (HANDLE)_get_osfhandle((int)w->handle);
 			DWORD m = 0;
 			if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &m)
-			    && nw < MAXIMUM_WAIT_OBJECTS)
-				ws[nw++] = h;
+			    && nw < MAXIMUM_WAIT_OBJECTS - 1)
+				ws[nw++] = h;	// one slot stays for the doorbell
 			else
-				pipes = true;
+				cadence = true;	// a pipe (or the set is full)
 		}
-		if (pipes || nw == 0)
+		if (doorbell)
+			ws[nw++] = (HANDLE)g_reactor->doorbell();
+		if (cadence || nw == 0) {
 			Sleep(1);
-		else
-			WaitForMultipleObjects(nw, ws, FALSE,
-					       step < 0 ? INFINITE
-					       : step > 0x7fffffffLL
-						   ? (DWORD)0x7fffffff
-						   : (DWORD)step);
+			continue;
+		}
+		DWORD r = WaitForMultipleObjects(nw, ws, FALSE,
+						 step < 0 ? INFINITE
+						 : step > 0x7fffffffLL
+						     ? (DWORD)0x7fffffff
+						     : (DWORD)step);
+		if (doorbell && r == WAIT_OBJECT_0 + nw - 1)
+			g_reactor->wait_doorbell(0);	// clear it; re-probe
 	}
 #else
+	if (g_reactor) {
+		// Reactor path (Linux): readiness is determined SYNCHRONOUSLY
+		// (io_probe_and_fire — the poll() path's determination, so a
+		// just-happened write is seen NOW); the reactor's I/O thread only
+		// supplies the blocking WAKEUP via its doorbell. The host
+		// synthetic/deadline/EINTR discipline is unchanged from the poll()
+		// path — only the block itself moves off the scheduler thread.
+		int woke = io_probe_and_fire();
+		reactor_drain_discard();
+		if (woke)
+			return woke;			// fd readiness beats the host
+		if (timeout_ms == 0)
+			return 0;			// probe pass — nothing ready
+		if (host_pending)
+			return io_wake_host_synthetic();
+		int tmo = timeout_ms < 0 ? -1
+			: timeout_ms > (long long)INT_MAX ? INT_MAX
+			: (int)timeout_ms;
+		long long host_rem = host_deadline_remaining(timeout_ms);
+		if (host_rem >= 0 && (tmo < 0 || host_rem < (long long)tmo))
+			tmo = (int)host_rem;		// the host deadline bounds it
+		int wr = g_reactor->wait_doorbell(tmo);
+		woke = io_probe_and_fire();
+		reactor_drain_discard();
+		if (woke)
+			return woke;
+		if (wr < 0 && g_host && !g_host->fired)
+			return io_wake_host_synthetic();	// EINTR: SIGWINCH
+								// must reach the host
+		if (host_deadline_remaining(timeout_ms) == 0)
+			return io_wake_host_deadline();
+		return 0;	// timeout, or EINTR with no host (spurious)
+	}
 	int n = 0;
 	for (IoWaiter *w = g_io_head; w; w = w->next)
 		n++;
@@ -388,6 +554,12 @@ static void io_atfork_child()
 	g_host_mark = 0;
 	g_host_deadline = 0;
 	g_host_woke_deadline = false;
+	// The reactor's I/O thread did NOT survive the fork (fork copies only
+	// the calling thread), so its std::thread refers to a dead thread —
+	// never delete it (that would join the missing thread). Abandon the
+	// object (its fds leak in the short-lived child, as parent stacks do)
+	// and reset to never-used; the child re-creates on its first block.
+	g_reactor = 0;
 }
 
 void io_register(IoWaiter *w)
@@ -396,10 +568,14 @@ void io_register(IoWaiter *w)
 	__madc_task_io_atfork_hook = io_atfork_child;
 	w->next = g_io_head;
 	g_io_head = w;
+	if (reactor_watches(w->kind) && reactor_or_null())
+		reactor_arm(w);		// the I/O thread watches its fd
 }
 
 void io_unregister(IoWaiter *w)
 {
+	if (g_reactor)
+		reactor_disarm(w);	// cancel the watch (no-op once fired)
 	for (IoWaiter **pp = &g_io_head; *pp; pp = &(*pp)->next) {
 		if (*pp == w) {
 			*pp = w->next;
@@ -532,18 +708,19 @@ MadcChan *chan_of(int64_t h, const char *who)
 namespace madc {
 namespace taskio {
 
-bool poll_readable(intptr_t handle)
+bool poll_readable(intptr_t handle, poll_handle_kind kind)
 {
-	return io_probe_readable(handle);
+	return io_probe_readable(handle, kind);
 }
 
-void wait_readable(intptr_t handle)
+void wait_readable(intptr_t handle, poll_handle_kind kind)
 {
 	__madc_task_throw_if_cancelled();
-	if (io_probe_readable(handle))
+	if (io_probe_readable(handle, kind))
 		return;
 	IoWaiter me;
 	me.handle = handle;
+	me.kind = kind;
 	me.task = __madc_task_current();
 	io_register(&me);
 	__madc_task_park();
@@ -556,7 +733,8 @@ void wait_readable(intptr_t handle)
 host_wake host_wait_readable(intptr_t handle, long long timeout_ms)
 {
 	__madc_task_throw_if_cancelled();
-	if (io_probe_readable(handle))
+	// The host is the terminal's stdin: a descriptor (IoWaiter's default).
+	if (io_probe_readable(handle, poll_handle_kind::descriptor))
 		return host_wake::fired;
 	if (g_host)
 		__madc_throw_cstr("host_wait_readable: a host wait is"
@@ -783,6 +961,7 @@ int64_t chan_select(value &out, value &chans)
 				if (h < 0)
 					continue;   // closed under us: dead
 				ios[i].handle = h;
+				ios[i].kind = es[i].bytes->read_wait_kind();
 				ios[i].task = __madc_task_current();
 				ios[i].group = &grp;
 				ios[i].index = (int64_t)i;

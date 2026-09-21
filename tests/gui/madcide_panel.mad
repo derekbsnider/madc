@@ -42,7 +42,7 @@ int main()
     ui::set(w, es, "bufidx", 0);
     S.panel(true);			// what run_ide pushes for a window
 
-    long t = ui::open(ui_web::target());
+    long t = ui::open(ui::WEB);
     if ( !t )
 	return 1;
     println("PNL open");

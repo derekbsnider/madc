@@ -1,0 +1,3 @@
+#include <stdio.h>
+struct P { int a, b; };
+int main() { P *p = new P{1,2}; printf("%d %d\n", p->a, p->b); delete p; }

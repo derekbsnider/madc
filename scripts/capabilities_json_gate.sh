@@ -41,13 +41,19 @@ fi
 EMIT_MACRO=$(sed -n 's/.*#define CIR_EMIT_TARGETS "\([^"]*\)".*/\1/p' src/cir_emit_c.h)
 [ -n "$EMIT_MACRO" ] || fail "could not read CIR_EMIT_TARGETS from src/cir_emit_c.h"
 
+# The UI level names, straight from the one spelling owner (ui_level_name in
+# include/madcdis/ui_events.h — the enum text is include/madc/bits/ui_enums).
+LEVEL_NAMES=$(awk '/inline const char \*ui_level_name/ { on = 1 } on && /^}/ { exit } on' include/madcdis/ui_events.h | grep -o 'return "[a-z0-9]*"' | sed 's/return "//; s/"$//' | sort -u | tr '\n' '|')
+[ -n "$LEVEL_NAMES" ] || fail "could not read the ui level names from include/madcdis/ui_events.h"
+
 # 2. Structural + derived-content assertions. Emit the canonical standard list
 #    on stdout so the shell can drive the recognizer-acceptance loop below.
-python3 - "$D/manifest.json" VERSION "$EMIT_MACRO" >"$D/std_names" <<'PY'
+python3 - "$D/manifest.json" VERSION "$EMIT_MACRO" "$LEVEL_NAMES" >"$D/std_names" <<'PY'
 import json, pathlib, sys
 m = json.loads(pathlib.Path(sys.argv[1]).read_text())
 want_version = pathlib.Path(sys.argv[2]).read_text().strip()
 emit_macro = sys.argv[3].split("|")
+level_names = [n for n in sys.argv[4].split("|") if n]
 
 def die(msg):
     sys.stderr.write("capabilities_json_gate: " + msg + "\n"); sys.exit(1)
@@ -89,6 +95,19 @@ if "madc" in c or "madc" in cpp: die("madc (a dialect) leaked into a standards l
 # emit_targets is exactly CIR_EMIT_TARGETS, in order.
 if m["emit_targets"] != emit_macro:
     die("emit_targets %r != CIR_EMIT_TARGETS %r" % (m["emit_targets"], emit_macro))
+
+# ui.levels: the levels this build has a TARGET for — every name is one the
+# enum's spelling owner knows (manifest ⊆ enum), the grid level is always
+# there, and the levels every program has trivially (none, line) are NOT
+# advertised until a frontend serves them (the negative control).
+levels = m["ui"]["levels"]
+if not isinstance(levels, list) or not levels: die("ui.levels missing or empty")
+for l in levels:
+    if l not in level_names: die("ui.levels advertises %r, not a ui::level name %r" % (l, level_names))
+if "tui" not in levels: die("tui missing from ui.levels (the grid frontend is built in)")
+for l in ("none", "line"):
+    if l in levels: die("%r advertised in ui.levels with no frontend serving it" % l)
+if len(levels) != len(set(levels)): die("ui.levels repeats a level")
 
 for s in ("object", "executable", "shared", "relocatable"):
     if s not in m["native_outputs"]: die("%s missing from native_outputs" % s)

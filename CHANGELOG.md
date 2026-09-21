@@ -2,6 +2,1338 @@
 
 ## [Unreleased]
 
+## [v0.100.0] — 2026-09-21
+
+The Nexus release: madcide becomes a multi-client session with an IR that agents address as a graph, and C++ conformance becomes a measured number driven from 60% to 75.1%.
+
+### Overview — what this release is (2026-09-09 → 2026-09-21, 555 commits)
+
+Three arcs landed since v0.99.2, any one of which would have carried a
+release on its own. The detailed sections below are in reverse chronological
+order; this is the map.
+
+**1. The Nexus — madcide became a session server, and the IR became a graph
+agents can edit.** v0.99.2 shipped madcide as a desktop application. This
+release turns it into a *session* that many clients attach to, over several
+transports, with no display at all if you like:
+
+- **Views and containers** — the editor region is a real split tree, tool
+  panes are chrome slots, layouts persist beside the manifest, and a View can
+  re-represent the same document as source, MC11, C11 or C++ in place. The
+  owner's side-by-side (source left, MC11 right) falls out of it.
+- **A window is a client.** One cooperative loop serves N clients over
+  `ui::event_any`; a second window is a second client on the shared document,
+  with its own caret. Presence carets render in both the terminal and the web
+  face, shifted through one anchor registry.
+- **The change log is event-sourced** — an append-only JSONL journal whose
+  buffer text *is* both the persisted form and the wire form, with replay,
+  checkpointing, compaction and an `event:N` history View.
+- **Correlation maps** — the emitter records a `{byte, source-line}` row per
+  statement, so a caret in one View projects into its counterpart.
+- **Transports**: an `api` transport with permission tiers, a headless
+  `--serve`, an RFC6455 `ws` window on the same port, an **MCP seat**, an
+  **LSP face**, a **VS Code extension**, an attach relay and session
+  discovery — one process, several faces.
+- **The code-graph MCP and the Nexus ladder (L1–L4e)** — graph verbs over the
+  **live IR**, node editing through validated verbs rather than text patches,
+  PAST verbs over git history, a propose tier, intent records, asset layers
+  and a test-runner seat. This is the piece that makes madc's IR addressable
+  by an agent instead of only by a compiler.
+- Underneath it: an async I/O **reactor** with a Windows backend (WSAPoll),
+  which lifted 15 Windows skips, and **libgit2 demoted from a vendored
+  subtree to a `madcgit` module** — a dependency, not a distribution.
+
+**2. Self-hosting — madc parses its own source, measured per unit.** The
+harness exists and reports, which is what turns "can it compile itself?" from
+a question into a number that moves.
+
+**3. C++ conformance stopped being an assertion and became a measurement.**
+The C++11 conformance lane — gcc's own `g++.dg` suite, ratcheted against a
+baseline that only ever shrinks — was **built in this release window** and
+then driven hard:
+
+> **1169 (60%) on 2026-09-17 → 1464 / 1950 (75.1%)**, with zero failures
+> outside the baseline.
+
+The feature work behind that number is itself the release's largest body of
+change: **every C++ symbol madc defines now emits its real Itanium mangled
+name**, so a madc object file is ABI-compatible with g++ and clang and free
+functions overload by parameter type; **expression SFINAE**; **pointers to
+members**, types and values; **real lambda capture lists** including
+`mutable` persisting across calls; **inheriting constructors**; **references
+binding prvalues** with correct destructor timing; the **Itanium class ABI**
+for by-value parameters and returns; `thread_local`; and a consolidation of
+fourteen hand-rolled declarator readers into one owner, which fixed a long
+tail of declarator forms on the way.
+
+**4. And then the compliance work found three standard-C regressions.**
+Measuring coverage for the documentation turned up gcc c-torture at 1587 of
+1624 against 1614 six weeks earlier — a `static` prototype reading as a
+signature clash, an unprototyped declaration compared as a prototype, and a
+compiler SIGSEGV on a cast through a `const`-qualified struct pointer. All
+three are fixed; torture reads **1611/1624 with zero regressions** against the
+v0.99.2 binary. The suite had drifted for five weeks because it was a
+25-second run that nothing owned, which is why suites are now **tiered by time
+to run**: the fast tier gates every commit, the long lanes gate merges.
+
+Measured conformance for every standard madc can be measured against is
+published in [`docs/conformance-coverage.md`](docs/conformance-coverage.md).
+
+### Standard-C regressions found by a coverage sweep, and the lane tier that should have caught them (2026-09-20)
+
+- A **`static` function prototype followed by its definition** — ordinary C,
+  present in essentially every real translation unit — was refused with
+  `conflicting types for 'f'`. The C-linkage redeclaration check minted its
+  two sides with *different* encoders: the prior side through
+  `namespace_cpp_function_symbol`, which encodes internal linkage as Itanium's
+  `L` (`_ZL1fi`), and the fresh side straight from the parameter list
+  (`_Z1fi`), so for a static function they could never be equal. Linkage is a
+  property of the declaration, not of the parameter list, and the check
+  compares parameter signatures. 22 gcc.c-torture tests failed on this alone.
+  `tests/teststaticprotodef`.
+- An **unprototyped declaration** is now outside that check. In C an empty
+  parameter list on a *declaration* specifies nothing about the parameters
+  (C17 6.7.6.3p14), so `int p();` after `int p(int,int);` is compatible —
+  gcc and clang both accept it. `(void)` is a real zero-parameter prototype
+  and stays in scope; C++ spells `p()` as the zero-parameter prototype, so an
+  `extern "C"` function in C++ keeps the strict comparison.
+- A **cast through a `const`-qualified struct pointer crashed the compiler**.
+  The `->` path took the pointee straight from `DataDefPTR::base_type`, so for
+  `struct S const *` it held the `DataDefCONST` wrapper; the guard above it
+  classifies *structurally*, so `is_struct()` saw through the wrapper and
+  answered true, and an unchecked `static_cast<DataDefSTRUCT *>` then
+  reinterpreted the wrapper as the struct and `m_offset` walked garbage —
+  SIGSEGV on `(T) p->m` (gcc.c-torture `pr89369`). The peel now runs through
+  `DataDef::unqualified()` and the cast is the checked `as_struct_dd()`, so a
+  non-struct is a diagnostic and never a crash.
+  `tests/testconstptrmembercast`.
+
+gcc.c-torture/execute moves **1587 → 1611** of 1624 in scope, with **zero
+regressions** against the v0.99.2 release binary: all 13 remaining failures
+fail on that binary too and are listed in
+`docs/parity/c-torture-baseline.txt`.
+
+**Why it sat for five weeks.** gcc c-torture had no lane script and no ledger
+row, so nothing re-ran it between 2026-08-12 and 2026-09-20 while eight other
+lanes stayed green. It is a 25-second run — it was never expensive, it was
+unowned. Suites are now tiered by time to run:
+
+- `scripts/c_torture_lane.sh` ratchets torture against a baseline (RED outside
+  it, LOUD when a baseline test passes), with both controls verified.
+- `scripts/fast_lanes.sh` runs c-testsuite (4s), c-torture (25s) and the
+  C++11 lane (84s) — under two minutes — after every commit.
+- `lane_ledger.sh` gains a `commit` tier that blocks `--commit`, `--promote`
+  *and* `--release`, so a stale fast lane cannot reach develop or master.
+
+### Measured conformance coverage is published (2026-09-20)
+
+`docs/conformance-coverage.md` is new and is the single home for the measured
+numbers; `docs/language/cpp-features.md`, the roadmap and `docs/test-status.md`
+link to it rather than each carrying figures that drift apart. C: torture
+1611/1624 (99.2%) under c17, 1485/1624 (91.4%) under c23, c-testsuite 220/220.
+C++ (the compile-clean `g++.dg` subset): C++98 308/385, C++11 1464/1950,
+C++14 206/417, C++17 128/308, C++20 346/653. The document states its two
+caveats plainly — diagnostic tests are excluded from the denominators, and the
+per-era directories are not equal-difficulty samples, so an era's movement
+over time is signal while the ranking between eras is not.
+
+`docs/language/cpp-features.md` had not been revised since 2026-08-06 and
+understated madc: it now records Itanium symbol mangling, pointers to members,
+real lambda capture lists, inheriting constructors, references binding
+prvalues, the Itanium class ABI for by-value parameters and returns,
+`thread_local` and `std::get`/`tuple_element`, and corrects two stale
+boundaries — a `requires`-clause does gate class-template partial-specialization
+selection, and `import` is module *binding* through madc's module map rather
+than standard modules.
+
+### Release-tier lane triage — five regressions fixed, four gaps banked, every lane green (2026-09-20)
+
+- Owner directive (status UPDATE 64): before master, every release-lane RED is
+  classified against the v0.99.2 binary first — a pre-existing failure is
+  banked as a KG Gap and formally skipped with a stated reason, a regression
+  is fixed. Three release-lane failures below were regressions and are
+  fixed; four were pre-existing and are now formally skipped.
+- The CPU-architecture predefine now comes from the captured per-target macro
+  table alone; the lexer's leftover unconditional `__x86_64__` seed made the
+  arm64 darwin target define BOTH architectures, so the SDK's
+  `libkern/_OSByteOrder.h` included both the i386 and the arm `_OSSwapInt16`
+  overloads ("conflicting types"). Latent since 2026-05-16, exposed by the
+  runner's SDK 15.5 — fixed as a target-table correction, not a new feature.
+  `tests/testonecpumacro`.
+- `tests/testifdefdefinedoperand` probed the host architecture to get an
+  "always defined" macro for the unparenthesized `defined` operator, so
+  removing the bogus `__x86_64__` seed above turned it red on arm64 — the
+  test, not the fix, was wrong. It now defines its own probe macro and
+  checks BOTH polarities (defined and not-defined), which is what it was
+  always trying to test and is architecture-independent. Verified on both
+  darwin cross targets against the gcc and clang oracles, with a negative
+  control confirming the old form still `#error`s on the fixed arm64 cross.
+- A using-directive import alias (`using namespace std;`'s alias Variable for
+  `std::minmax`) is no longer mistaken for a pre-existing global by the C++
+  symbol-mangling overload tracking, which had renamed the user's real
+  `minmax`/`count` to `minmax__o2` and defeated `parseFunction`'s existing
+  reclaim rule ([basic.scope.pdecl]). Regression vs v0.99.2.
+  `tests/testglobalreclaimsusingimport` (libstdc++ with `<algorithm>`); also
+  `tests/testmultiret` under libc++ and both darwin arches.
+- A `decltype` return through a deduced function object now resolves at
+  three layers: the pattern lane in `resolve_decltype_call_return` claims a
+  template-id call only when the call's closing paren ends the whole
+  operand; `resolve_fn_template_return_by_key`'s deduce-from-call-arguments
+  lane binds a trailing function parameter pack from the surplus call
+  arguments; and `instantiate_template_alias_use` forwards every pack
+  element through an alias template instead of just the first. Regression
+  vs v0.99.2, exposed by the 2026-09-19 expression-SFINAE T1 change; fixes
+  `std::is_invocable_v` / `invoke_result` for libc++'s generic `__invoke`
+  bullet. `tests/testfwdpackdecltypereturn`, `tests/testaliaspackforward`.
+  C++11 g++.dg lane 1464/1950 (+1: `auto55.C`).
+- Four release-lane failures are PRE-EXISTING (the v0.99.2 binary fails them
+  too — forward gaps, not regressions) and now carry formal skip fixtures,
+  each with its own KG Gap: `tests/testtuplegetelement.libcxx_skip` (libc++
+  `<tuple>`'s `__tuple_impl` constructor overload set leads with
+  `__tuple_indices`/`__tuple_types` tag parameters madc doesn't match yet;
+  libstdc++ passes); `tests/testvectorpushclass.libcxx_skip` (a flaky SEGV,
+  2 of 6 runs, in the JIT'd `char_traits<char>::copy` during `std::vector`
+  relocation, linux libc++ only; darwin passes); and
+  `tests/testtidpackreturn.darwin_skip` /
+  `tests/testtidpackbasededuce.darwin_skip` (darwin only: a pack element
+  deduced as `long` spells `long long` in the instantiation's parameter
+  while the return type and the caller spell `long`, so the call binds the
+  bare pattern and MIR reports an undefined `mk` import —
+  `long_long_distinct_datadef_lp64`).
+- The darwin prelude restores the C++ `__BEGIN_DECLS` / `__END_DECLS` it
+  flattened away. The umbrella is preprocessed as C, so it baked Apple's
+  EMPTY C-branch definitions plus the `_CDEFS_H_` guard that stops the real
+  `<sys/cdefs.h>` from redefining them; the 36 served headers were covered by
+  the generator's own `extern "C"` wrapper, but a header the prelude does NOT
+  serve — `<netdb.h>`, `<sys/socket.h>`, `<arpa/inet.h>` are read from the
+  SDK — declared its prototypes with C++ linkage and they mangled once free
+  functions started mangling (`getservbyname` imported as
+  `_Z13getservbynamePKcS0_` on both arches). Regression vs v0.99.2.
+  `tests/testservent` on the darwin lane; gated twice, each with a negative
+  control: `gen_darwin_prelude.sh` refuses to install a prelude missing the
+  restoration, and `verify_macho_release.sh` authority 5 reads it back out of
+  the shipped binary's `.rodata`.
+- `scripts/win_suite.sh` now stages the repo's tracked-plus-untracked-but-
+  not-ignored `tests`/`tools`/`examples` over one tar stream instead of
+  `scp -r`; `scripts/remote_build.sh`'s output-directory excludes
+  (`bin/ obj/ lib/ tmp/ dist/`) are anchored to the transfer root, so a
+  nested `node_modules/semver/bin/` no longer loses its symlink target and
+  breaks the genuine-Windows release lane.
+
+### Release-tier lanes — all green on the fixed content (2026-09-20)
+
+Every lane re-ran on one sweep of a single commit and every one is recorded in
+`docs/lane-status.tsv`. Zero failures on any pass, on any platform, and no
+regression outside the classified set above.
+
+| lane | gate | v0.99.2 | now |
+|------|------|---------|-----|
+| darwin-suite arm64 | release | 1319/0/25skip | 1518/0/29skip |
+| darwin-suite Intel | release | 1320/0/24skip | 1519/0/28skip |
+| libcxx jit / exe / obj | release | 1330/0 · 1271/0 · 1271/0 | 1531/0 · 1435/0 · 1435/0 |
+| genuine-win | release | 1278/0/66skip | 1478/0/69skip |
+| linux-battery jit / exe / obj | develop | — | 1538/0 · 1442/0 · 1442/0 |
+| linux packed / headerless | develop | — | 1538/0 · 1504/0 |
+| wine64 | develop | 1474/0/69skip | 1478/0/69skip |
+| c-testsuite gnu11 | develop | 220/220 | 220/220 |
+| macos (build lane) | develop | rc=0 | rc=0 both arches |
+| gxx-c++11 | not gated | 1366/1950 | 1464/1950 (75.1%) |
+
+- The three RELEASE-gated lanes — the linux libc++ flavor, the darwin full
+  suite on both mac runner arches, and genuine Windows — are green together
+  for the first time since v0.99.2. Genuine Windows had not run since
+  2026-09-09; darwin went from seven arm64 / six Intel failures at the start
+  of this triage to zero on both.
+- `verify_macho_release` authority 5 ("C linkage restored") now gates the
+  prelude fix in the shipped Mach-O on three independent paths: the container
+  cross build and both real mac runners.
+- The develop-set lanes move +4 uniformly, which is exactly the four tests
+  this triage added; every skip count is unchanged except where a banked gap
+  added its own fixture.
+
+### The develop seam pre-build: the pack freezes reach the library bodies (2026-09-20/21)
+
+- Rebuilding every toolchain before the seam battery turned the system-header
+  pack freeze red on linux, darwin and Windows at once. Diffing the pack's
+  parse errors against the seam commit's pack showed sixteen new entries, all
+  pre-existing parser defects the freeze now reaches because it parses the
+  explicitly-instantiated library bodies a normal compile binds to the shared
+  library and never parses. Each has its own fix and reducer test.
+- A declarator's `&` now applies to the type before that level's own suffixes
+  ([dcl.ref], like `*`): `O &(*__pf)(O &)` is a pointer to a function returning
+  `O&`, not a reference to a function pointer, and the declarator reports a
+  reference only when the declared entity is one. libstdc++'s manipulator
+  inserters and extractors (`__pf(*this)`) parse again (twelve pack entries).
+  With that, a function TYPE's reference return lowers to a by-address return
+  and spells `T&` for the mangler (`_Z7callrefPFR1OS0_ES0_`, g++ parity);
+  the emitter and the structural spelling had both read the referent.
+  `tests/testfnptrrefreturnparam.mad`.
+- The right operand of `->*` / `.*` may be a parenthesized pm-expression
+  (`this->*(&time_get::do_get)` in locale_facets_nonio.tcc), read through the
+  one parenthesized-expression owner. `tests/testmemptrparenoperand.mad`.
+- `T const *` spells `const T*`: a prototype and its definition that place the
+  base's const on different sides are one function. mingw's `_bittest64`
+  declaration against its macro definition had "conflicted", killing the
+  Windows pack freeze at `src/rt/rt_posix_time.c`. `tests/testprotoconstplacement.mad`.
+- `*p++` / `*p--` on a captured pointer inside a lambda now notes the capture
+  and steps the enclosing pointer through its capture parameter (or the
+  persistent by-value copy). Found by the pre-merge duplication audit: six
+  expression shapes hand-roll one capture rule and this one had ported only
+  half of its sibling's fix. `tests/testlambdacapturederefstep.mad`.
+- The seam lanes then found what only they run: three parameter-reader
+  regressions of the declarator consolidation's T10 commit (c-testsuite
+  00162 and 00209, bisected), fixed at the reader and the emitter. A
+  parameter's spelling counts the stars inside a parenthesized declarator
+  (`int (*x)` is `int *x`); a parameter of array or function type adjusts to
+  a pointer however it was spelled, a typedef'd array included, and its alias
+  is dropped once it no longer names the type ([dcl.fct]/5); a pointer to a
+  function pointer (`int (**t)(int)`, an adjusted array of function pointers)
+  renders through the function-pointer declarator owner instead of
+  `long long *`. `tests/testtypedefarrayparam.mad`. The test runner's obj and
+  exe passes now honour the per-test `.timeout` fixture like the JIT pass
+  (testgraphpast failed only in the .o pass), and three tests added on
+  2026-09-17 gained win64 expectation twins for their LLP64 `long` sizes.
+- Pack baselines: linux and win64 68 -> 70 with the stated reason (six
+  `__cerb` entries are bodies that now parse past the fixed defect into the
+  pre-existing `sentry __cerb(*this, b)` gap seventeen sibling sites already
+  show); darwin 48 -> 45 (improved by the same fixes). Gaps filed for the
+  sentry local in the freeze, a member operator taking a function designator,
+  the address of a function-template specialization, and a call through an
+  inline constant member-function pointer.
+
+### The four pre-existing container failures settled (2026-09-20)
+
+- A constrained partial specialization's `requires`-clause is now folded in
+  the specialization's own declaring namespace ([temp.constr.decl]), not the
+  use's. libstdc++'s `__iter_concept_impl<_Iter>` (std::__detail) names the
+  alias template `__iter_traits` unqualified; folded from `__gnu_cxx` it was
+  never found, every constrained arm failed and the unconstrained primary
+  was applied, so `#include <string>` died at stl_iterator.h:1069 under
+  `--std=c++20` (testifconstexpr, testinvocable). The random-access arm had
+  masked this while `is_object_v<char>` mis-folded false; the shell-completing
+  constant read (f9f1bf77c) exposed it. `__iter_concept<char*>` is now
+  `contiguous_iterator_tag`, as g++ and clang++ say. Reducer
+  `tests/testconstrainedspecns.mad`.
+- A function-template instantiation now identifies its product by the
+  identity tag the registrar stamps on the product's overload spelling, not
+  by the overload set's last entry. Since a namespace function registers at
+  its declarator ([basic.scope.pdecl]), a same-name instantiation nested in
+  the body (libc++'s `max(a, b)` calling `max(a, b, __less<>())`) landed
+  last and received the outer product's template arguments, leaving
+  `std::max<size_type>` / `std::min<size_type>` in libc++'s vector as
+  undefined `__ns_std____1_max` / `__ns_std____1_min` imports
+  (testvecpb_libcxx, testvecmembercopy_libcxx). Reducer
+  `tests/testfntplproductidentity.mad`.
+- Diagnostics: `MADC_SHELLC_PROBE=1` traces shell-origin replays (stream
+  accounting) and a requires-expression type requirement's residual token;
+  the `MADC_SPECMATCH_PROBE` FAIL line spells the substituted constraint.
+- With the suite green again, fulltest's post-suite stages ran for the
+  first time since the seam battery of 2026-09-17 (make stops at the first
+  red stage) and two static gates were red in the lambda capture-mode slice
+  of that day: the by-value capture storage name derived a closure symbol
+  from a raw `local_emit_name` (now through `call_emit_symbol`), and the
+  seven by-value capture arms emitted a captured local's raw name (now
+  carrying the audited marker their by-reference siblings had). The
+  bare-pointer ratchet baseline follows the measured count down to 17.
+- A third post-suite stage was dark for the same reason: forest_bind_gate's
+  strbind case (the whole bound `<string>` TU byte-identical to a live
+  parse). Since a namespace-scope variable definition emits its Itanium
+  symbol, the producer freezes `_ZSt8in_place` for `std::in_place`, but the
+  consumer's flush applied the transported symbol only when rebuilding an
+  extern reference; a restored definition emitted the bare `in_place` and
+  its `__madc_ivg_` init guard followed. Every restored global now carries
+  the producer's symbol whichever flush arm builds it. A restored const
+  scalar also restores its baked value: since a `constexpr` object is
+  const, live folds `std::hardware_destructive_interference_size != 64`
+  and never loads the global, while the bound consumer, whose restored
+  Variable carried the const-baked flag but no storage, still loaded it.
+  The gate's assertions follow (Itanium spelling; the scalar odr-used by
+  address). Every stage after that gate was run individually on the
+  container before the final battery: all green.
+
+### `:=` short declarations follow Go/C++ block scoping (2026-09-19)
+
+- The substatement of an unbraced `if`/`else`/`while`/`do`/`for` is its own
+  block scope ([stmt.select]/1, [stmt.iter]/1): a `:=` (or a plain
+  declaration) inside it dies with the arm, and using the name afterwards is
+  "use of undeclared identifier". Script mode previously leaked such a
+  variable into the synthesized main; a written `main()` failed in c2mir
+  with "repeated declaration".
+- A second `:=` of a name already declared in the same scope is an error
+  ("'x' is already declared in this scope"); use `=` to assign. Inner-block
+  shadowing stays legal. See `docs/language/short-declaration.md`.
+- A braced arm at script file scope now sees top-level `:=` locals.
+
+### Declarator reader consolidation (2026-09-19)
+
+- Every declarator (`*`/`&`/`&&`/`C::*`, `( declarator )`, `[dims]`,
+  `(params) quals`) is read by ONE owner, `Program::parse_declarator`, in
+  every arm (typedef, alias, cast/sizeof type-ids, template arguments,
+  members, K&R and C++ parameters, template parameters, variables). Gate:
+  `scripts/check-one-declarator-reader.sh`. C++11 g++.dg lane 1412 → 1441
+  of 1950 (73.9%); pointer-to-function-pointer parameters and a handful of
+  declarator shapes remain recorded as gaps.
+
+### Empty static assertion diagnostics (2026-09-18)
+
+- Failed assertions with an empty user message now report `static assertion
+  failed`, in both statement and class scope. Nonempty messages are unchanged.
+- Five regression fixtures cover C11/C++11 empty messages and preservation of
+  nonempty messages. All 19 recorded empty-diagnostic GCC cases now report a
+  meaningful error; their underlying conformance failures remain.
+
+### Reference-variable temporary binding (2026-09-17)
+
+- Rvalue references and const lvalue references can bind prvalues, with block
+  storage and class cleanup lasting through the reference scope. Reference
+  casts preserve the original object; namespace direct class temporaries
+  construct in static storage, preserving self-pointers.
+- Dual-oracle C++11 tests cover later reads, xvalue mutation, destructor timing,
+  namespace identity, and rejection of a non-const lvalue reference to a prvalue.
+- Static-local prvalue binding refuses explicitly. Member and returned-reference
+  lifetime extension are outside this slice. Thread contract: local temporaries
+  belong to each invocation; namespace shared mutation requires synchronization.
+
+### Self-host harness — madc parses its own source, measured per unit (2026-09-17, in progress)
+
+- `scripts/selfhost_lane.sh` / `make -C src selfhost`: every TU the Makefile links
+  into `bin/madc` (flags derived from `make -n`, never restated) plus a wrapper TU
+  per own header runs through `--emit=c11`; a ratchet over
+  `docs/parity/selfhost-baseline.txt` (RED outside the baseline, loud when a
+  baseline unit passes). 69 of 172 units pass at this entry.
+- `thread_local` (C++11) / `_Thread_local` (C11) storage-class specifier: parsed,
+  carried as `vfTHREADLOCAL`, lowered to c2mir's `_Thread_local`; the JIT's MIR
+  floor has no TLS (documented deviation), emit-C/AOT are faithful. c2mir's
+  block-scope-only rule for `_Thread_local` without static/extern fixed in-tree.
+- Unnamed namespaces (`namespace { ... }`): members register in the enclosing
+  namespace with internal linkage.
+- `dynamic_cast<const T *>(p)`: cv-qualified targets.
+- `typedef enum [Tag] : T { ... } alias;`: the enum-base parses and the alias takes
+  its layout (`sizeof(alias) == sizeof(T)`) and enumerators.
+- Class `operator[]` element typing for reference-typed, member and expression
+  receivers: `v[i].field` on a `std::vector<Struct>&` parameter or a class member.
+- A block-scope typedef of a struct already defined at file scope references the
+  tag (libstdc++ algorithm bodies re-defined the element struct: "tag
+  redeclaration").
+- Constant expressions fold class-scoped constants through a qualified path:
+  `case n::V::kind::s:`, `n::V::limit`.
+- `auto *p = new T(...)`: a new-expression reports its type (`T *`); a range-for
+  element accepts pointer declarators (`for (auto *p : arr)`).
+- Global-qualified names: `::ns::type` in type position (typedef, declaration,
+  parameter, template argument), a typedef alias of a scoped enum as a scope
+  (`tmode::on`), and `::ns::nested::enum::e` in expressions.
+- Pointer-to-member-function types `R (C::*name)(Args) [const]` in struct,
+  union and class members, parameters, variables and typedefs — the Itanium
+  16-byte `{ptr, adj}` pair, one C struct (`__madc_memfnptr`); the values too:
+  `&C::m` (a virtual member encodes its vtable slot), `obj.*mp`, `p->*mp`, the
+  call through a bound member-function pointer, and pointer-to-data-member
+  declarators everywhere.
+- A namespace-scope function is reachable by its source name inside its own
+  body (recursion in `namespace q { int fib(int n) { ... fib(n - 1) ... } }`).
+- A leading `::` in a constant expression (`case ::ui::NONE:`).
+- A using-declaration imports an alias template (`using g::itraits;`).
+- A METHOD call passes a `Derived *` argument to a `Base *` parameter with the
+  derived-to-base adjustment (a secondary base read the wrong subobject).
+- A cast/postfix operand head (`(unsigned)f<T>()`) resolves through the entry
+  resolver — the enclosing namespace chain — with class scope still first.
+- The conditional operator prunes a dead arm only on a LITERAL condition; a
+  member read through a `const T &` parameter is not a compile-time constant
+  (`h.total ? 1 : 0` returned 0).
+- A constructor-bearing struct nested in a data-only aggregate inside a class
+  is owned by the aggregate (`Reg::txn::Saved`, not `Reg__Saved`).
+- A function template's type pack deduced from a template-id parameter expands
+  in its RETURN type (`std::get<I>(tuple<_Elements...>&)`): the explicit-args
+  return resolver no longer substitutes an unsupplied pack as empty, the pack
+  pattern locator treats `<` as an opener, and the nested unifier honours an
+  explicitly bound non-type parameter over the argument's base chain
+  (`__get_helper<1>` deduces from `_Tuple_impl<1,...>`). `std::get`,
+  `tuple_element`, `tuple_size` work.
+- A struct member declarator with a const between pointer stars
+  (`const char *const *paths;`).
+- The class-name is declared at its class-head, before the base clause (the CRTP
+  shape `class timed_mutex : ..., public __timed_mutex_impl<timed_mutex>`); a
+  member body of a class nested in — or instantiated while defining — an
+  enclosing class parses when the outermost definition completes
+  ([class.mem]/6 complete-class context).
+- The lane counts location-less `cir error:` lines as errors (24 units had read
+  as "0 errors").
+
+
+### C++ symbol mangling — every user-defined C++ symbol emits its Itanium name (2026-09-17)
+
+- **Under `--std=c++##` and `--std=madc`, madc now names every C++ symbol it
+  defines exactly as g++/clang do** — free functions, namespace functions, class
+  members, operators, constructors and destructors (C1/C2, D1/D2), function-
+  template and member-template products (`_Z4pickiiPi`, `_ZN3Foo3barEv`,
+  `_ZN3BoxIiEC1Ev`, `_Z4makeIiET_i`) — so a madc `.o`/`.so` is ABI-identical to
+  a g++/clang one and free functions overload by parameter type. `extern "C"`
+  and `main` stay bare; C mode (`--std=c##`) stays bare and reports a signature
+  clash as an error (owner law 2026-09-16: `--std=` determines semantics). The
+  internal `__oN` / `Class__member` / `__ns_` spellings survive only as
+  registration keys, never as emitted symbols. This is the root cause of the
+  darwin `send`/`channel` symptom: a user `send` is now a distinct Itanium
+  overload that never touches POSIX `send`.
+- **Machinery.** The Itanium encoders (`src/madc_mangle.cpp`) gain the array
+  production (`A<dim>_`) and a refusal guard (an unmanglable spelling yields ""
+  rather than an invalid symbol); parameter spellings desugar through ONE owner
+  (`FuncDef::mangle_spelling_for`); the symbol a body defines has one owner
+  (`CirBuilder::func_def_symbol`) and the translation record `body_symbol_keys`
+  maps emitted symbols back to registration keys for every name-keyed
+  structure; the frozen forest keeps the Itanium symbols across freeze and
+  restore; `FuncDef::body_defines_emit_symbol` is the one predicate deciding
+  whether a reference to a symbol demands madc's body or imports a library's
+  export.
+- **Gates.** `scripts/mangle_abi_gate.sh` (a 161-row oracle table from
+  g++/clang plus an interop lane linking madc objects against g++ objects both
+  ways, with set-equality and binding-strength checks),
+  `scripts/check-call-emit-symbol.sh` (every call symbol derives via
+  `call_emit_symbol`), `tests/abi/`, `tests/unit/test_mangle.cpp`,
+  `tests/testnamespacemangle.mad`. The seam battery ran green on every lane:
+  fulltest 1389/0/9skip, exe 1320/0, obj 1320/0, release, packed, headerless
+  1355/0/43skip, c-testsuite 220/220, wine 1329/0/69skip, macOS build + package.
+- **Seam findings fixed on the way** (each its own commit): the C-mode
+  signature-clash check compared a desugared spelling against a raw alias
+  (SMAUG's `skill_name(DO_FUN *)`); a grove-restored user member had no Itanium
+  bind; a block-scope C++ prototype declares the enclosing-namespace function
+  (g++) while a GNU nested definition does not; the emitted-C11 extern flush
+  deduped by registration name; libc++'s exported `basic_filebuf<char>`
+  constructor was derived from the header instead of imported. Under win64,
+  mingw's inline `printf` is an `extern "C++"` override and correctly names
+  `_Z6printfPKcz` (test twin `testemitindent.win64_expect`).
+- **Recorded for their own sessions:** `&ns::fn<targs>(args)` in
+  `parseAddressOfExpression` (pre-existing; KG Gap
+  `addressof_qualified_template_id_call`), the corpus end-to-end lane's four
+  parser shapes, `long long` vs `long` as distinct DataDefs on LP64,
+  function-type typedef pointer depth.
+
+### The madcgit module on the Windows and macOS cross targets (2026-09-15)
+
+- **The madcgit module (`git::*`, madc's read-only view of a local repository)
+  now ships in the Windows and macOS bundles.** libgit2 is a *build-time
+  requirement*, not part of the distribution: because those bundles have no
+  package manager to supply libgit2 at runtime, a minimal read-only libgit2 is
+  statically linked *into* our `libmadcgit` (nothing named libgit2 ships as its
+  own file, and `git::available()` is true on a fresh machine with nothing
+  installed). Linux keeps its system-dependency model. The three `.win64_skip`
+  fixtures the module's absence forced — `testgit`, `testgraphpast`,
+  `testnexus_records` — are lifted; the wine lane goes 1316/0/72skip →
+  1319/0/69skip. With #1 (the reactor's Windows backend) this completes the
+  Windows-and-macOS side of the owner's master-release gate.
+- **How it is built.** `scripts/stage_libgit2.sh` cross-builds a minimal
+  read-only static libgit2 (pinned v1.7.2; no https/ssh/http-parser/ntlm/iconv,
+  builtin regex) once per target and stages it — the same shape as the darwin
+  zstd stage, driven by `provision_container.sh`. `src/madcgit.mk` gains
+  per-mode cross arms mirroring `webview.mk`: on Windows `bin/madcgit.dll`
+  resolves madc's own symbols through libmadc's import library (a PE DLL cannot
+  carry undefined symbols the ELF way) and links `-lsecur32` for libgit2's
+  win32 SSPI; on macOS `lib/madcgit/<arch>-macos/libmadcgit.dylib` uses
+  `-undefined dynamic_lookup` and the system zlib. The release recipes and
+  packagers ship the module and libgit2's `COPYING` (GPLv2 with the linking
+  exception, which permits static linking).
+- **One win64 defect surfaced and fixed.** `git::relpath` returned
+  native-separator paths on Windows (`tests\file`); that value is cached as a
+  document's git-relative path and used to filter `git::log` and `git::show`,
+  which libgit2 (whose tracked paths are forward-slash) matched against
+  nothing — yielding empty commit rows and a crash on a null revision tag. The
+  module now normalizes its relpath output to forward slashes (git's own
+  convention; a no-op on Linux).
+
+### The reactor's Windows backend — the V6 transports work under Windows (2026-09-15)
+
+- **The V6 transports now park cooperative tasks on sockets under Windows**, so
+  every `listen://` seat, the ws window framer, the attach relay and session
+  discovery work there. The fifteen `.win64_skip` fixtures that named the gap
+  (`testsocketpark`, `testwsframe`, the ten `testmadcide_serve*`, `_attach`,
+  `_discover`, `_lsp_serve`) are lifted; the wine lane goes from 1301/0/87skip
+  to 1316/0/72skip. The owner's gate for a master release — the new
+  functionality working under Windows and macOS — is met on the Windows side.
+- **What was actually broken** was below the reactor. On Windows the task
+  park's readiness probe treated every waitable as a CRT fd (a console or an
+  `_open_osfhandle`'d pipe); a socket is a kernel `SOCKET` in a different
+  space, so the probe answered "readable" unconditionally and a parked reader
+  woke to nothing. Underneath that, a poll handle carried no namespace, and no
+  OS query disambiguates a bare integer. The fix is a `poll_handle_kind`
+  (descriptor | socket) that rides with every handle from the channel that
+  owns it, a `WSAPoll` socket arm in the probe, and — the second half of the
+  symptom — putting an accepted socket back in blocking mode (Winsock and the
+  BSDs hand `accept()`'s child the listener's non-blocking mode; Linux does
+  not), which also closes a latent macOS trap for solo-program socket reads.
+- **The reactor's Windows backend** is the async-I/O reactor design's item-4
+  "select floor": a `WSAPoll` readiness adapter with the epoll backend's exact
+  I/O-thread shape, a loopback UDP socket as the submit wake and a manual-reset
+  Event as the doorbell, so the scheduler's console wait joins it in one
+  `WaitForMultipleObjects`. The submit/drain/wait face is now written once for
+  every real backend, so the epoll behaviour is unchanged (`test_io_reactor`
+  57/57). IOCP proper waits for a consumer of the completion ops.
+- Two win64 gaps surfaced while lifting the skips, each fixed: the session
+  advertisement filename choked on a Windows canonical path (`Z:\…`, a
+  drive-letter colon and backslashes), and a transport test truncated a 64-bit
+  graph id into a 32-bit LLP64 `long`.
+
+### The V6 seam: the duplication audit's fixes, and libgit2 out of the distribution (2026-09-15)
+
+- **`/dupaudit` scoped to `madcdis` + `tools/madcide`** before the merge, as
+  the branching rule asks: 25 families recorded in the knowledge graph, 13 of
+  them consolidated here with a gate each. The ones that had DIVERGED (live
+  bugs): the serve face's bind was restated three times and the editor's copy
+  swallowed a failed bind (`serve_listen`, one owner; the editor now says so
+  on its status line); "is this the same file" was canonical at one site and
+  text at four (`same_file`; a TU added under one spelling while open under
+  another was double-added — reducer `proj-dup-abs`); six tests drove two
+  leftover connection spawners that tiered at ACCEPT while production
+  (`serve_web`) tiers at the FIRST BYTE, so the docs now say what is true —
+  *the first api client to speak owns the session* — and the tests speak in
+  the order they mean; the MCP seat's top-level dispatch was a `strcmp`
+  ladder (now `mcp_method` / `tool_family` enums; enums gate rule 6); and
+  ten folds read the JSONL change stream by hand and disagreed on a torn
+  line (four stopped and lost every record after it, one copied its bytes
+  forward) — `clog_records_of` / `clog_records` is the ONE reader, parsed
+  once per revision and cached, a torn line skipped and never re-emitted
+  (reducer `V6 torn-middle`). The redundant ones: the JSON-RPC 2.0 envelope
+  built by hand in three faces (`jsonrpc_reply` / `_error` / `_notify` /
+  `_request`; and madcide told clients it was "1.0.0" while its
+  advertisement said `madc::sys.version` — `madcide_self_info`), the last
+  path component (`php::basename`, landed in this arc, adopted), the dirty
+  flag read ten ways (`doc_modified`), the manifest-open test inlined nine
+  times (`proj_has_manifest`), the session URL (`session_url`), the
+  `-c` client restating the command core (`api_run`, ONE core), a
+  byte-identical twin of `keyed_get`, and the MCP refusal envelope
+  (`tool_refuse`). Every consolidation left a marker in
+  `check-madcide-single-owners.sh`, `check-madcide-one-accept-loop.sh` or
+  `check-madcide-enums.sh`, each with a negative control. Found on the way: a
+  `--serve` test published its session advertisement into the developer's
+  real state directory (a hermetic `.env` and a gate).
+- **libgit2 is a dependency, not a distribution** (owner ruling, on the
+  seam's static pre-run finding `check-c-abi-surface` RED: the vendored
+  archive linked into every image exported its whole C API — 876 `git_*`
+  symbols — from `libmadc.so`). The git substrate is the **`madcgit`
+  module** now, shaped exactly like the GUI module: a lazy row, an embedded
+  C interface (`madcgit.h`), the `git::` namespace in `<ns_git>`
+  (`open / head / revparse / log / show / blame / dirty / blame_text /
+  relpath`, `git::available`), `lib/libmadcgit.so` built by `src/madcgit.mk`
+  against the SYSTEM libgit2 where `pkg-config` finds it, and bound at load.
+  The engine keeps nothing git-specific (0 `git_*` exports); the subtree and
+  its recipe are gone (133 MB); the nexus degrades to "no repository"
+  without the module; `check-one-git-owner.sh` gained the READ-ONLY rule
+  that the vendored network-off configuration used to state. `libgit2-dev`
+  joins the container provisioning and `release.yml`; the Linux package
+  ships the module as a weak dependency. The cross-built Windows / macOS
+  images do not carry it yet (a fetched prebuilt is the named follow-up;
+  `testgit` / `testgraphpast` / `testnexus_records` are `win64_skip`).
+
+### madcide: transports + headless — the api seat, tiers, the ws window, the MCP seat, the LSP face, VS Code, attach, discovery (V6) (2026-09-11 → 2026-09-15)
+
+- **V6a — the `api` transport, `--serve`, duplex, tiers.** `madcide --serve
+  <host:port> <file>` opens a session with zero windows and serves clients
+  over `listen://` (a new accept channel in `madc::channel`, whose
+  `local_endpoint()` reports the port `:0` was given): one JSON line per
+  message — `{"cmd","args","seq"}` in, `{"seq","ok","errors","text"}` or
+  `{"seq","ok":false,"error"}` out — the command NAME resolved once at the
+  seat against the registry's one table. Every connection is served
+  CONCURRENTLY on its own cooperative task parked on the reactor-backed
+  channel (the async I/O reactor: a completion-oriented engine on a
+  dedicated I/O thread with an epoll backend; taskio's io-wait rides it), the
+  hub PUSHES change events to the other connected clients at append
+  (`{"event":…}`), and **permission tiers** gate the hub: the first api
+  client to speak is OWNER, every later one OBSERVER, promoted by
+  `clienttier <id> <tier>`; a verb above the caller's tier refuses with
+  prose. `api_run` is the ONE command core every transport drives.
+- **V6b — the `ws` WINDOW.** An RFC6455 WebSocket framer over a byte channel
+  (`channel.upgrade_websocket()` / `connect_websocket()` yield a message
+  channel); a ws client is a real window — the same `page.js`, DOM-op JSON
+  down the socket and the page's event JSON back into `post_event`; one
+  `--serve` port carries api + ws + the page (`serve_web` classifies each
+  accepted connection by its first byte), so a browser is a client of a
+  headless session.
+- **V6c-1 — the MCP seat** (`--mcp`): a JSON-RPC 2.0 / stdio Model Context
+  Protocol server over the same command core, returning structured state
+  ({ok, errors, cursor, diagnostics, outline}) rather than a rendered tree;
+  live-validated as an MCP server of an agent host. It grew the code-graph
+  ladder (next entry).
+- **V6c-2 — the LSP face** (`--lsp`): the Language Server Protocol over stdio
+  — `stdio://` became an ordinary channel, and the Content-Length framing an
+  engine facet (`channel.frame_headers()`, `madcdis/header_channel.h`, the
+  framing DAP and BSP share). No analysis of its own: semantic tokens ←
+  `parse_spans`, diagnostics ← the one compiler entry, `documentSymbol` ←
+  the outline, hover ← `parse_enclosing`, `definition` / `references` ← the
+  graph verbs; every edit rides the one text-mutation owner, so an LSP edit
+  appears in an open window and lands in the project stream. The position
+  ENCODING is negotiated at `initialize` and the UTF-16 ↔ byte column
+  arithmetic has one owner (`madcdis/text_utf16.h`), shared with the web hit
+  test; `madc::canonical_path` is the standing canonicalizer given a dialect
+  face. The face's vocabulary is enums (`lsp_method`, `pos_encoding`,
+  `lsp_symbol_kind`, `lsp_token_type`, `lsp_sync`).
+- **V6c-3a — the VS Code extension** (`tools/vscode-madcide/`): VS Code
+  drives madc through madcide's own compiler — the `madc` language with NO
+  TextMate grammar (the tokens are the parse's), the arc's stated acceptance
+  criterion. A real client on Microsoft's own protocol machinery
+  (`test/protocol_probe.js`) found three conformance defects the gates had
+  not; `lsp_name_span` is the one owner of "where a name anchors"
+  (`references` had highlighted a call's first argument).
+- **V6c-3b — madcide's real controls in VS Code.** `workspace/executeCommand`
+  onto the command registry (110 commands advertised = exactly what dispatch
+  accepts), `$/madc/event` (each change-log record verbatim, the one event
+  shape every transport carries), `$/madc/message`, `$/madc/serve`; and
+  **one process, two faces**: `--lsp --serve` combine, the accept loop a
+  cooperative task beside the stdio reader, so the window and the editor are
+  ONE session. Found on the way: an enum converter bounded by its last
+  enumerator (now a `*LAST` sentinel).
+- **V6c-3c — the attach relay.** `madcide <file> --lsp --attach <addr>` (and
+  `--mcp`) makes an editor or an agent a client of a session that is ALREADY
+  running instead of the owner of a private one: a connection DECLARES its
+  JSON-RPC dialect (`{"madc":"lsp"}`), lifecycle belongs to the connection
+  (the relay answers `shutdown` / `exit` itself), the relay opens no session.
+  The prerequisite bug: the negotiated position encoding lived on the session
+  and a second editor's `initialize` overwrote the first's — it is per
+  connection now, resolved once per message.
+- **V6c-4 — session discovery.** Every listening session publishes a JSON
+  record (endpoint, root, documents, pid, started, version, host, url, what it
+  serves) under `$XDG_STATE_HOME/madcide/sessions/`; `madcide --sessions`
+  lists them; `--attach` with NO address finds the session that holds the
+  file; the editor LISTENS BY DEFAULT (loopback, ephemeral; `--no-serve` opts
+  out) so it is discoverable. An ADVERTISEMENT, not a lock: madcide refuses no
+  file; staleness is a connect test, never a pid test, so the directory
+  self-heals. ⚠️ no auth, no TLS — bind loopback, tunnel over ssh.
+  Gates across the slices: `testmadcide_serve*`, `_ws`, `_web`, `_mcp`,
+  `_graph`, `_lsp`, `_lsp_stdio`, `_lsp_serve`, `_attach`, `_discover`,
+  `check-madcide-one-accept-loop.sh`; the instruments
+  `test/protocol_probe.js` / `attach_probe.js` (no network, no VS Code).
+
+### The code-graph MCP + the Nexus (L1–L4e): the live IR as a node-addressed graph an agent queries and edits by verbs (2026-09-12 → 2026-09-14)
+
+- **L1–L3 — graph verbs over the LIVE parse** (design
+  `2026-09-12-ast-graph-mcp-for-agents.md`): `graph.symbols / definition /
+  node / type_of / members / bases / enclosing / children / body` read the
+  decl/type graph and the body AST as nodes with entity-handle ids (never
+  byte offsets); `graph.callers / callees / references / search / impact`
+  derive CALLS and REFERENCES edges (functions and globals, cross-TU by
+  symbol); `graph.insert / replace / delete / span / at` edit NODES — parsed
+  fragments as node specs, generation-stamped ids, a validated refresh
+  (`madc::parse_would_accept`: the ONE candidate validator, commit or verdict)
+  — every edit a logged, grammar-validated verb with reverse-render, never a
+  text patch. Every edge is compiler ground truth.
+- **L4a — the git substrate**, now the `madcgit` module (see the seam entry).
+- **L4b — the PAST verbs**: `graph.status / source / history / commits /
+  revision / diff`; revision handles by generation TAG
+  (`madc::parse_open_tagged` — refresh refuses, close forgets), routed in
+  `graph_call`; `GitRepo::blame_buffer` blames the LIVE text; `git_relpath`
+  through the ONE path canonicalizer; `php::time()`.
+- **L4c — the propose tier**: a fourth level in the one tier ladder;
+  `graph_edit_apply` is ONE transaction over an ops list in APPLY | PROPOSE
+  mode; proposal + decision records; `graph.proposals / proposal / accept /
+  reject / withdraw` (a moved target refuses at accept); ONE project-scoped
+  event stream per session (every record carries doc + path; per-document
+  replay, `events_since`, compaction checkpoints; `clog_adopt` re-attaches a
+  restored log by path); the JSON-line seat carries the api AND the JSON-RPC
+  envelope.
+- **L4d — intent records + the MCP client**: `nexus.*` records and links in
+  the ONE stream (`nexus_fold`), refs by durable key, `nexus.explain` as one
+  compound verb, proposals gain constraints; madc as an MCP CLIENT over
+  `exec://` with manifests as data (`nexus.sources / nexus.sync`,
+  `test.discover`); `php::array_keys` (the dialect's one way to enumerate an
+  object's keys), `php::mkdir`, `php::rmdir`, `php::basename`.
+- **L4e — asset LAYERS + the verification axis**: one capability bitset per
+  asset (`asset_layers_of`: versioned / managed / lexable / parseable /
+  executable / testable) with per-family layer gates and refusals by name,
+  this node's offers and the `target` slot; the `test.*` runner seat (`list /
+  candidates / run / results`) over the canonical runner's `--report=json`
+  (one JSON object per verdict; the runner stays the ONE harness, the nexus
+  its client); testrun / buildrun events tagged by node; proposal checks from
+  linked tests. Gates: `testgraphaccessors`, `testgraphbody`, `testgraphedges`,
+  `testgraphedit`, `testgraphtagged`, `testgraphpast`, `testnexus_records`,
+  `testnexus_layers`, `testmcpclient`, `testmadcide_serve_propose`,
+  `testgit`; `check-one-git-owner.sh`.
+
+### madcide: correlation maps — the emitter's coordinate map, viewsync source↔MC11 (V5) (2026-09-10)
+
+- **V5 of the client-server arc** (design doc §2.6), the LAST local slice.
+  The emitter (`CEmit`) now counts the bytes it writes and records one
+  `{disp, source-line}` row per statement/declaration; the buffer-owning
+  layer converts the line to a stored byte and feeds `doc_map::add`, which
+  drops any non-monotone (reordered/hoisted) row — "maps to nothing", exactly
+  the approximate many-to-one §2.6 names. The `{disp, stored, len}` array
+  rides beside the text through a new `madc::emit(out, out_map, …)` overload.
+- **The emitted bytes are byte-identical** whether or not a map is collected
+  — the map is a pure side channel (`emit_layout_gate` + `testmadcide`
+  byte-identical composition are the oracle).
+- The lens path stores the map on the View's `map` field (the vmap that was
+  empty): `enter_lens` and `make_code_view` fill it; `view_lens_hints`
+  already forwards it, so `testmadcide`'s MC11 lens now shows `maprows-pos=1`.
+- **`viewsync on|off`** (the fourth view* verb) draws an unfocused source↔code
+  pair's caret PROJECTED from the focused caret through the map at compose
+  time (`viewsync_leaf_caret` — a READ-side projection, no duplicated caret
+  state, matching doc_lens' "projection is the one place display coordinates
+  come from"); `ui::lens_to_display`/`lens_to_stored` become live.
+- Statement/line granularity today; column/expression precision is the named
+  later refinement. Gates: `tests/testemitmap` (engine — rows > 0, monotone,
+  the lens round-trip, empty→park), `tests/testmadcide_correlation` (dialect —
+  a code View's map rows > 0, the projection round-trips both ways, the
+  fallback holds); the editor/IDE family byte-identical.
+- **viewsync linked scroll — one-way MASTER/SLAVE** (c4716c2f, owner ruling):
+  the pane you actively scroll is the master; the other follows one-way and
+  never pushes the master back. The prior echo guard let the slave snap the
+  master at the extremes (a dead zone where the short source's bottom maps to a
+  range of MC11 code), locking scrolling. Fixed with a driver/passenger guard
+  (the scrolled pane drives for 120ms; the partner's echoes are ignored), and
+  the follow-marker no longer scrolls (only the focused caret does). Verified:
+  ends meet, no lock, one-way.
+- **viewsync linked scroll — ends pinned** (db40b59b, owner feedback): the
+  panes drifted apart at the extremes (source at its end left the MC11 short of
+  its own end). The mapping now works in scrolltop space through anchor pairs
+  bookended by `(0,0)` and `(thisMax, partnerMax)`, so both panes reach top and
+  bottom together while statements still align in between. The padding route
+  was rejected (the MC11 is ~10× the source's length → the source pane would be
+  mostly whitespace). Verified in the real webview.
+- **viewsync = LINKED SCROLLING** (991302a9, owner ruling 2026-09-11): scroll
+  either pane by any means (wheel, bar, keys) and the other scrolls to the
+  corresponding statement, aligned through the coordinate map. The dialect
+  marks both editor panes `sync`; `web_model` ships the code pane's
+  `{disp,stored}` anchors; `page.js` maps a pane's top line through them to the
+  partner's line and scrolls it there (echo-guarded). Verified in the real
+  webview both directions; inert when viewsync is off (GUI snapshots +
+  `test_web_model` byte-identical). The caret-follow below stays as a
+  complementary trigger.
+- **viewsync scroll fix** (016b24fe, found in owner testing): the projection
+  was correct but the GUI web frontend discards an unfocused pane's caret
+  (`page.js`: `op.focus ? op.caret : null`), so the synced MC11 pane never
+  scrolled to it — "both sides scroll independently." A general `follow` hint
+  (the composer marks the synced leaf, `web_model` emits it, `page.js` honours
+  the caret and scrolls every `.caret` into its pane) fixes it; inert when
+  viewsync is off (GUI snapshots + `test_web_model` unchanged). The TUI already
+  scrolled to the caret unconditionally.
+- **The V1–V5 SEAM merge wave — the ONE battery, all lanes GREEN, arc merged
+  to develop (2026-09-11).** The owner tested viewsync in the running editor and
+  approved it ("it's good now"), passing the owner-tests-before-the-battery gate.
+  The seam battery on the sealed commit (89540d1b): linux-battery (fulltest jit
+  1347/0/9skip · exe/obj 1286/0 · packed 1347/0 · headerless 1313/0/43skip · gui
+  19/19 ×3; check-rule-trailers 0-missing; forest_crosstu OK), c-testsuite 220/220
+  gnu11, wine64 1286/0/70skip, macos both arches (836 units each, macho-verified,
+  packaged). All four develop-gated lanes fresh; `lane_ledger check --promote` green.
+- **Defect fixed on the way — the php::unlink win64 gap.** `testmadcide_correlation`
+  (V5) and `testmadcide_changelog` (V4) clean up with `php::unlink`, which lowers to
+  libc `unlink`; win64 UCRT exports only `_unlink`, so the packed PE fails at MIR
+  link ("undefined item unlink") before the test body runs. Both get a
+  `.win64_skip` (matching `testsmaug_requests`); the V4/V5 logic itself is win64-clean
+  (verified: all 8 V5 checks pass under wine with the cleanup removed, rc=0). Mapping
+  libc `unlink`→`_unlink` on win64 is a separate embedded-headers slice.
+- **Deferred (pre-existing, non-gated):** `testimplicitlibcproto{,c17}` fail only on
+  the win64-headerless lane — the win64 forest pack doesn't make `printf` adoptable
+  (K&R fallback) the way the linux pack does, so the shared `.headerless_expect`
+  (adopted prototype) mismatches. Not arc-caused (the adoption code 5393bf34 is on
+  develop; the arc's parser diff doesn't touch it; the test passes native,
+  linux-headerless, and plain win64). A win64-pack / per-arch-headerless-fixture
+  follow-up.
+
+### madcide: the change event log — redo/replay, event:N View, .prj.events (V4) (2026-09-10)
+
+- **V4 of the client-server arc** (design doc §2.4): every text mutation
+  appends one splice RECORD; replay reconstructs the buffer at any seq; a
+  checkpoint bounds replay; compaction sheds old records; the edit-history
+  View renders the doc at a past revision; `.prj.events` persists beside the
+  manifest. Fully **DIALECT-SIDE** — the engine (`madc/dis`) is untouched.
+- Recon changed the design for the better: text edits **bypass the verb
+  registry** (`ed_text_insert` calls `ui::text_insert` directly, not
+  `ui::act` → `mutation_context`), so the splice is known only at the ONE
+  text-mutation owner — exactly where §2.4 places it. The engine's
+  `mutation_context` journal would never see a keystroke.
+- **Core** (`tools/texteditor/editor_events.inc`): a per-document `changelog`
+  entity whose piece-table buffer holds JSONL (append = a text insert at end,
+  O(1) amortised; the buffer text IS the persisted form AND the wire form —
+  one serialisation). `seq` = the LSN, a monotonic per-document COUNTER, never
+  a byte offset (compaction rewrites the store, so the identity is
+  rewrite-stable). NOT a WAL — no write-ahead, no fsync, tail-loss tolerated.
+  `clog_replay` applies each splice to a scratch buffer via the engine's
+  `text_replace` (no dialect string surgery); a torn tail line is dropped; a
+  seq below the oldest surviving checkpoint clamps UP to it (the retention
+  rule) — never a silent empty. `clog_compact` keeps the last N records whole
+  after a fresh checkpoint (INVARIANT: never truncate past a needed one).
+- **madcide** (`tools/madcide/madcide_core.inc`): `make_history_view` (the
+  `event:N` View over a render buffer); `clog_persist`/`clog_restore`/
+  `proj_events_path` (the `.prj.events` sibling of the layout cache), hooked
+  into `proj_write` / `proj_open` / `proj_startup`.
+- Gate `tests/testmadcide_changelog` (headless): replay round-trip +
+  historical, the event:N View, checkpoint, compaction, the retention clamp,
+  and a persist→restore→replay round-trip. The editor/IDE family
+  (`testmadcide{,_cli,_line,_window2}`, `testidespanshift`) stays
+  byte-identical — journaling is a side entity, no composed output changes.
+  `check-madcide-single-owners` gains `clog_append` (a 4th allowed raw
+  `ui::text_insert`, the `append_build_line` case: a different, non-viewed
+  buffer). All dialect/madcide/seam/registry/enum/style/anchor gates PASS.
+- Follow-ups (single-file is V4's gated case, per the design): flush the log
+  on `^S` doc-save; unify to one project events file across docs for a
+  multi-file manifest (the log is per-doc today). **NEXT = V5** (correlation
+  maps) → the V1–V5 seam (one battery). Battery at the seam only.
+
+### madcide: the web render of presence carets + the @presence palette (V3c-2) (2026-09-10)
+
+- The render half of V3c presence — the OTHER clients' carets now appear in
+  the web window (V3c-1 built the compose hint and parsed the palette; this
+  draws it). **V3c COMPLETE → V3 COMPLETE.**
+- **web_model** (`include/madcdis/web_model.h`): the edit node's
+  `hints["presence"]` becomes `op["presence"] = [{line, col, slot}]` — each
+  peer caret run through `web_line_col` exactly as the focused caret; the root
+  group's `@presence` palette (slot → spec) is emitted like the `@gui` theme.
+- **page.js**: `renderLine` draws each peer caret as a `.pcaret .pslot-<slot>`
+  cell (a coloured bar, never the block cursor); `deco` folds presence in so
+  the incremental patch re-renders a peer-caret move; the root palette sets a
+  `--pcaret-<slot>` custom property (`presenceColour` maps the `@presence` spec
+  to `var(--pal-name[-bright])` with the page.css default). The edit node's
+  presence ARRAY is guarded off the palette-OBJECT apply.
+- **page.css**: `.pslot-0..7` draw the bar in the slot's `--pcaret-<slot>`
+  colour. **Dialect**: `load_theme` parses `@presence <slot> <spec>` into
+  `presence_theme` (multi-word specs kept whole); `compose_ide_tree` wires
+  `rh["presence"]`; the three theme files carry an eight-colour palette.
+- Gate `tests/gui/madcide_presence` (real webview, Xvfb): two clients over one
+  doc, A's window renders B's caret as `.pcaret.pslot-1` with `--pcaret-1` set
+  (`pcaret-count=1 slot=1 palette-set=1`). Plus `test_web_model` unit cases
+  (the `op["presence"]` translation + a no-presence negative control). GUI
+  19/19 × 3; the 18 existing snapshots unchanged; `testmadcide`/`_cli`/`_line`
+  byte-identical; unit 22/22; dialect/seam/registry/enum/style-vocabulary/
+  anchor-owner gates PASS. Battery at the V1–V5 seam only.
+
+### madcide: presence carets + the anchor registry shifts every client (V3c-1) (2026-09-10)
+
+- The client-server arc V3c presence, part 1 — the dialect machinery,
+  es/doc-centric so the direct-drive gate covers it with no run loop. A
+  **document carries a roster of the client es viewing it** (`es_view_doc`,
+  called by the ONE view builder `init_view_es` — the launch window and every
+  `viewwindow` spawn), and each es is **dealt a round-robin presence colour
+  SLOT** at connect (a monotonic per-document counter; a client that leaves
+  does not renumber the others).
+- **The anchor registry now shifts EVERY client, not just the editing es.**
+  `shift_anchors` (the one text-mutation owner) shifts each registered peer
+  client's caret + selection in the same pass — a peer caret was left stale
+  for a compose-time clamp before (the V3a follow-up), and now it **shifts**
+  with the text. `shift_es_anchors` factors the per-es shift: the editing es
+  skips its own caret (the edit call site sets it); a peer shifts caret + mark
+  + bend + spans; a peer that has navigated to another document is skipped.
+- **`compose_edit_node` draws the OTHER clients** on the doc as carets in
+  their dealt slot (`hints["presence"] = [{caret, colour, sel_*}]`); a client
+  never draws itself. Single-client compose is **byte-identical** (no peers →
+  no hint), so `testmadcide` / `_cli` / `_line` are unchanged.
+- The `@presence` palette (slot → colour) and the web render of the presence
+  carets are **V3c-2**; this slice is the machinery + the direct-drive gate.
+- Gate `tests/testmadcide_window2` extended: window B's caret shifts 20 → 29
+  when A inserts nine bytes above it (not clamped); A's node draws B at 29 in
+  slot 1, B's draws A at 9 in slot 0, neither draws itself. Green JIT/exe/obj;
+  `testmadcide`/`_cli`/`_line` byte-identical; `testidespanshift` intact;
+  GUI 18/18 × 3; `check-one-anchor-owner` + dialect/seam/registry/enum gates
+  PASS. The battery runs ONCE at the V1–V5 seam, never per slice (owner law).
+
+### madcide: the multi-client loop + viewwindow (V3b-2) (2026-09-10)
+
+- The client-server arc V3b-2, machinery-first: `run_ide` grows from one
+  frontend to a roster of **clients** and waits on any of them through
+  `ui::event_any` (V3b-1). For a single client the loop keeps its exact prior
+  shape — compose one, wait, apply — so every single-window / TUI / line path
+  is **byte-identical**; the multiplex only engages when a second client
+  joins.
+- The **client record is transport/level/capability-general from the first
+  window** (groundwork invariant #1): `{id, t, es, transport, level, tier,
+  last_seq, capabilities}`. Only a local window (`trLOCAL` / `tierOWNER`) is
+  built this week, but a remote platform node, an LSP editor and a VS Code
+  extension are the SAME record with a different transport. New enums
+  `ide_transport` / `ide_tier` (enums-not-strings).
+- **`spawn_view_es`** — a second window is a second client with its OWN
+  editor-state bag over the SHARED document; `open()`'s post-document init is
+  factored into ONE builder (`init_view_es`), so a spawned window's bag is
+  constructed by the same code as the launch window's. An edit in either
+  window mutates the one document and the other shows it on its next compose.
+- **`viewwindow`** command (`:viewwindow`, `cmdVIEWWINDOW` + registry row):
+  parks a spawn on the requesting client's es (a windowed client only — a
+  terminal client refuses); `run_ide` drains it (`take_spawn`) and opens the
+  frontend + joins the roster (`spawn_client`). The session never touches a
+  frontend handle (the gateway seam).
+- Gate `tests/testmadcide_window2`: two distinct clients over one document —
+  both open on the file, an edit through client A is seen in BOTH windows,
+  each keeps its own caret; the viewwindow command parks on a windowed client
+  and refuses on a terminal one. Green JIT/exe/obj; GUI 18/18 × 3 unchanged.
+- Ring-discipline fix in the factoring (found via `testmadcide`'s v2c-persist
+  under the runner's `--no-config`): `init_view_es` used the launch path as a
+  ring-lifetime `const char*` late, so the data loads clobbered it and
+  `launchpath` read empty (dropping the manifest + layout at the root base).
+  `init_view_es` / `spawn_view_es` now own the text first.
+- Flagged platform follow-up: the real webview multi-window pump (tick across
+  GTK/Cocoa/Win32) + window-close detection + multi-client teardown per-es
+  cleanup (the GTK smoke + seam lanes).
+
+### ui: event_any — the blocking decision over N frontends (V3b-1) (2026-09-10)
+
+- The client-server arc V3b (clients + windows), machinery-first: the engine
+  primitive a multi-client loop needs. `ui::event_any(out, targets, w)`
+  returns the next event from **any** of N frontends, tagged with
+  `out["target"]` = the handle it came from.
+- A sole target is **byte-identical** to `ui::event` (it blocks in
+  `read_events`, no poll cost), so `madcide --gui`, the terminal and the line
+  client are unchanged (the GUI suite is untouched). N targets share one
+  thread: each is polled a bounded round through the new non-blocking
+  `poll_events`, and the DOM frontend pumps the process-global platform loop
+  via the bounded `tick` op (never the `run` op that blocks on one window and
+  reads another window's event as a close). No window starves another.
+- Gate `testuieventany`: two fake web windows (no display) on one world; an
+  event posted to either is demuxed and tagged by target; one target equals
+  `ui::event`; empty targets return false. The real webview multi-window pump
+  (across GTK/Cocoa/Win32) and window-close detection are the flagged
+  follow-up; V3b-2 grows the dialect client loop and `viewwindow` onto this.
+
+### madcide: the anchor registry — one splice owner (V3a) (2026-09-10)
+
+- The client-server arc V3 begins (clients + windows + presence). V3a is the
+  foundation: the ONE text-mutation owner's span shifter becomes the **anchor
+  registry** — one primitive (`shift_offset`) reanchors every byte-anchored
+  thing on an edit in one pass (`shift_anchors`), so nothing set before a
+  keystroke goes stale.
+- The **selection markers** (mark / bend) now follow the text: they went stale
+  on every ordinary keystroke before (only `block_copy` shifted them, via a
+  hand-rolled copy of the splice — removed; the registry owns it). The live
+  focused caret stays each edit's own result. Presence carets (V3c) register
+  in the same one pass.
+- Gate `check-one-anchor-owner.sh`: one splice primitive, one pass, no
+  hand-rolled marker shift outside the owner.
+
+### madcide: the ex / edlin line mode — the `ui::LINE` client (V2.5) (2026-09-10)
+
+- The client-server arc V2.5: `madcide <file> --line` drives the same
+  live-parse session over **stdin/stdout with no cursor addressing** — the vi
+  `:` command mode without the TUI. It works over a pipe, in a dumb terminal,
+  and as an MCP seat's transcript. `ui::open(ui::LINE)` gains a real frontend
+  (`ui_line_frontend`): each cycle typesets the projection (the status line,
+  the document, any message) through the level-0 sequential renderer to stdout
+  and reads one line of stdin. A `:` line is a colon command (`w q wq x e r`,
+  `:N` to go to a line, the `viewsplit`/`viewfocus`/… verbs, `!cmd` for a
+  shell); any other line is text inserted at the caret.
+- The engine frontend stays **dumb** — a line becomes a `text` event; the
+  tool's line grammar lives in the session (`IdeSession::line_input`), next to
+  the registry and the colon interpreter, and posts `:` lines through the one
+  argument primitive (`command(cmdCOLON, …)`, the same path the `-c` one-shot
+  and the TUI `:` prompt take). No new command language. `run_line` is the loop
+  for `--line`, parallel to the `-c` one-shot's `run_once`.
+- Follow-up (deferred): the colon line reaching the FULL registry by name
+  (`:check`, `:find x`) — a colon-interpreter enhancement that improves the TUI
+  colon line equally.
+
+### madcide: layouts persist and the splitter feeds the session (V2c) (2026-09-10)
+
+- The client-server arc V2c (part 2): the page's splitter drag now makes the
+  **session's layout the size owner**. `viewsize <sidebar|panel> <percent>`
+  (`:viewsize panel 30`) sets a chrome band's size on the session and persists
+  it; the splitter posts it on release (`{action:'viewsize', arg:'sidebar
+  40'}` — reusing the action+arg path, no new wire event kind), and a fresh
+  web viewer with no localStorage renders the band at the layout size (matching
+  the TUI). This completes V2 (containers + layouts) — the `view*` menu titles,
+  key spellings and `viewtab` remain a deferred owner key-seat decision.
+
+### madcide: viewdock + the layout persists beside the manifest (2026-09-10)
+
+- The client-server arc V2c (part 1): `viewdock <left|right|top|bottom>`
+  (`:viewdock right`) moves the focused chrome pane (the last View brought up)
+  to a slot and side — left/right dock the sidebar, top/bottom the panel; an
+  absent or unknown direction refuses rather than docking to a default place.
+- **The workbench persists.** `layout_to_text` is `parse_layout`'s structural
+  inverse, and a client's live layout is written beside the manifest as
+  `<base>.prj.layout` (positions, sizes, modes, hidden flags — NOT the tabs'
+  contents; an editor pane persists as a source pane). It is written SILENTLY
+  and ONLY when a manifest is open — the implicit single-file project writes no
+  artifact — and restored at project open. A docked pane comes back on reopen;
+  a round-trip save→parse rebuilds an equal tree.
+- (Part 2, above, completes the splitter → the session's size. The view*
+  key/menu seats stay a deferred owner decision, batched.)
+
+### madcide: the editor region is a real split tree — the side-by-side (2026-09-10)
+
+- The client-server arc V2b: the editor region of a `.layout` is a tree of
+  splits over editor panes, and the composer WALKS it. A sole pane emits the
+  JOE screen, byte-identical; `viewsplit right|bottom` turns the focused pane
+  into a split rendered as a flex row/column of leaf columns (the grid divides
+  a rectangle, the page a flex box).
+- **The side-by-side the owner asked about:** `viewsplit right mc11` puts the
+  source on the left and its MC11 lowering (a code View of the buffer's render)
+  on the right — live source, its IR beside it (`c11` / `cpp` too). `viewfocus
+  next|prev` moves between panes with a full handoff (the focused pane's View
+  is live, its caret its own; a code-View pane is read-only). `viewclose`
+  collapses a pane back to its sibling; `viewopen <repr>` re-represents the
+  focused pane's View in place. Every verb reaches the `:` line
+  (`:viewsplit right mc11`) and the action dispatcher.
+- Deferred to a V2b follow-up: the menu titles + key spellings and `viewtab`
+  (a second tab on one pane); then V2c (`viewdock`, `<base>.prj.layout`
+  persistence, docs).
+
+### madcide: containers and layouts — the workbench is client data (2026-09-09)
+
+- **The layout is data on the client** (client-server design §2.2, slice
+  V2a): a `.layout` profile — the profile-parser family beside the `.keys` /
+  `.menu` / `.theme` loaders — describes where Views live: one editor region
+  (a `pane editor` or a `split`) and fixed-slot chrome panes (`pane sidebar
+  left 20%`, `pane panel bottom 25%`). `parse_layout` / `load_layout` /
+  `default_layout_text()` with a baked default (`profiles/default.layout`);
+  every word converts once at load (`ui::split_code` / `ui::side_code`,
+  `slot_of` / `pmode_of` / `view_of`) and a misspelling refuses the file with
+  its line, the baked default taking over. `ui::split { none, vertical,
+  horizontal }` and `ui::side { none, left, right, top, bottom }` join
+  `bits/ui_enums` (one text for engine and dialect) with the name owners in
+  `madcdis/ui_events.h`; `ide_container` / `ide_pmode` / `slotEDITOR` are the
+  IDE-private vocabulary.
+- **The tool Views come FROM the layout's chrome panes.** One surface,
+  `show_view(kind)` (find the chrome pane hosting a View kind, unhide it,
+  activate its tab, focus it), replaces the `panel` / `paneltab` flags and
+  the diags / outline popup arms; the panel persists like an editor's Output
+  pane until hidden. `haspanel` stops gating the panel — every client's
+  layout has one.
+- **The grid renderer learns RECTANGLES** (`madcdis/tui_model.h`): compose is
+  no longer a linear stream. The root's children partition into chrome bands
+  (a `region:sidebar|panel` node carved by its `side` / `size` — a sidebar
+  takes columns full-height, a panel rows from the centre) and the centre
+  flow; a `split` group divides its rect (vertical shares the columns, one
+  blank divider between; horizontal the rows) recursively; a leaf pane's
+  `tabs` render as its header line. With no chrome shown and no split the grid
+  is BYTE-IDENTICAL to the old stream (the negative control). The DOM
+  (`madcdis/web_model.h` + `ui_web/page.{js,css}`) gains the additive op
+  fields `split` (the direction word), `side` and `size`; a `split` group is a
+  flex row/column whose children flex by their `size` percent.
+- Gates (targeted, per the arc's seam-battery law): `tests/testmadcide_layout`
+  (the shipped file parses to the pinned tree; the baked default parses equal;
+  refusals with their line); `test_tui_model` (side-by-side split, a stacked
+  split, a bottom band + strip, a left band, byte-identity with nothing
+  hinted); `test_web_model` (the op fields + the negative control);
+  `check-madcide-enums` rule 5 (no `"slot"/"side"/"mode"/"dir"` text on a
+  layout node); `testmadcide` / `testmadcide_cli` / `testidepanel` /
+  `testidehints` and the 17 GUI snapshots unchanged.
+
+### madcide: the `ui::NONE` client — `madcide <file> -c "<command> [arg]"` (2026-09-09)
+
+- **One command, the projection, a verdict** (client-server design §2.3b,
+  slice V1.5): `madcide <file> -c "<command> [arg]"` opens the session with no
+  surface at all, posts ONE registry command (the name converts once at the
+  command-line boundary through the registry's table; an unknown name
+  refuses with exit 2 before a session opens), typesets the composed tree
+  through the level-0 renderer onto stdout — the headless harness's shape —
+  and exits with the verdict: 0 clean; 1 the file unreadable or ERROR rows
+  in the problems projection (`-c check` on a broken file); 2 the line
+  refused. The argument is what the prompt the command opens would have been
+  typed (`gotoline 3`, `find add`, `colon w`), committed by code.
+- `IdeSession::post(doc, code)` — one command by code through the one
+  dispatcher (the vi grammar's `vi_exec` rides it); `IdeSession::command(doc,
+  code, arg, cont)` — a command with its argument, the primitive the `-c`
+  line, the `:` line (V2.5) and the api seat (V6) share;
+  `IdeSession::error_count()` — the verdict query. New client file
+  `tools/madcide/madcide_once.inc`; `check-madcide-enums.sh` and
+  `check-madcide-seam.sh` scan it. `ui::open(ui::NONE)` keeps refusing: the
+  level has no frontend by design (a client there drives the session).
+- Gate: `tests/testmadcide_cli` (the `-c` output pinned against the session
+  driven directly for the same command, the verdicts, the argument feed);
+  `testmadcide` byte-identical.
+
+### Views — the lens is a View row; the ONE file-kind vocabulary (2026-09-09)
+
+- madcide's code lens (`^K A`) is a **View** (client-server design §2.1,
+  slice V1): `es.views` rows `{id, subject, kind, lang, revision, generator,
+  vbuf, rbuf, map}`; every editor tab carries its View, `es.fview` names the
+  focused container's; the cycle REPLACES the focused View's representation
+  in place (source → mc11 → c11 [→ c++] → source) and switches on the
+  language CODE; the composer composes the View by id. Navigation (caret /
+  mark / bend, the parked stored-space caret) is the CONTAINER's, never the
+  View's (owner ruling, §6 Q1). The `vdoc` / `view` / `vmap` bag strings are
+  gone. The identity lens composes byte-identically (`testmadcide`, the GUI
+  DOM snapshots); new `view-row` / `view-row-lens` / `view-kinds` pins hold
+  the row through the cycle and the misspelling refusals.
+- **`<bits/file_kinds>`** — the ONE file-kind vocabulary the IDE and the
+  compiler share (`madc::fk*`): text formats, the C standards, the C++
+  standards, madc's own (`madc`, `mc11`), other languages, binary formats,
+  GROUPED IN RANGES with a family head (`fkC`, `fkCPP`) and a `_LAST` marker
+  so membership is a range test. `Program::LanguageStd`'s enumerators ARE the
+  C / C++ / madc ranges (every `--std=` row keeps its enumerator; forest
+  format **v47**: the producer-config word's `language_std` bits carry the new
+  values, so a v46 pack refuses until `release` rebuilds it). The boundary
+  converters `madc::file_kind_name` / `file_kind_of` / `file_kind_of_path`
+  (src/file_kinds.cpp; dialect-visible through `<ns_madc>`) draw a standard's
+  spelling from the one `--std=` table ("c" and "c++" are the FAMILIES there,
+  not `--std=`'s aliases); a misspelling converts to `madc::fkUNKNOWN`. A
+  document's kind is stamped once at open / new-file / save-as
+  (`doc_set_path`); the c++ lens applies by a range test on it, no extension
+  ladder.
+- The emitter's depth-of-support table `cir_emit_lang_of_kind` (src/
+  cir_emit_c.h) is the ONE kind → `CirEmitLang` conversion; `--emit=`'s name
+  form converts through the vocabulary and rides it, so no render target is
+  spelled in the emitter; `madc::emit(out, src, file, int64_t kind)` renders
+  by kind. `test_cir`: LanguageStd = the ranges; every canonical `--std=`
+  name round-trips; `CIR_EMIT_TARGETS` names exactly the kinds the table
+  renders.
+- `ide_view` (`viewSOURCE | viewCODE | viewPROBLEMS | viewOUTPUT |
+  viewTERMINAL | viewPROJECT | viewOUTLINE | viewHELP`) and `ide_gen`
+  (`genMADC | genGCC | genCLANG`) join madcide's enums with `view_name` /
+  `view_of` / `gen_name`; `view_of` of a misspelling is `viewNONE`.
+
+### UI levels — a program opens the rendering model it wants (2026-09-09)
+
+- `ui::level` (`<bits/ui_enums>`): the ordered enum `ui::NONE < ui::LINE < ui::TUI
+  < ui::WEB < ui::GUI < ui::GFX2D < ui::GFX3D`, escalating in requirement and
+  platform specificity (owner ruling 2026-09-09). `ui::open(level)` opens the
+  target that DECLARES that level (the grid frontend for `ui::TUI`; a
+  script-hosted target registers with its level — `register_host(name,
+  level, ops)`, `<ns_ui_web>` serves `ui::WEB`); `ui::level_of(t)` reports it, so
+  "a real terminal exists" is `level_of(t) <= ui::TUI`. `open(name)` stays for
+  name-addressed opening (a test's fake host). madcide (`--gui`) and vised
+  (`--web`) pass a level; `ui_web::target()` is gone.
+- `madc --capabilities=json` gains `ui.levels`: the levels this build has a
+  target for (`tui`; `web` when the module map carries a GUI library row).
+  `capabilities_json_gate.sh` asserts the list against the enum's names.
+- This is sub-slice a of the "enums, not strings" conversion
+  (`docs/plans/2026-09-09-v05-enums-not-strings.md`; owner law 2026-09-09).
+
+### Action codes on every UI event; diagnostics enumerators (2026-09-09)
+
+- A key binding is `{name, code}`: `ui::bind_keys` accepts an INTEGER as the
+  bound value (an application's own enum) beside a name, and the `action`
+  event carries `action_code` (0 = none) beside `action` and `seq`. The
+  `choose` event carries the chosen option's `code` hint as `action_code`;
+  the `dialog` event carries `mode_code` (`ui::dialog_mode`, `<bits/ui_enums>`).
+- A web target converts a posted action NAME to its code once, at the input
+  boundary: every tab, choice, button, menu item or dismiss that carries a
+  `code` hint stamps the name → code table of that compose, and a menu
+  item's accelerator resolves by its code first.
+- `<bits/diag_enums>`: `madc::diag_severity` / `madc::diag_phase`, the one
+  enum text for the engine (`Program::DiagnosticSeverity` / `DiagnosticPhase`
+  are typedefs of it) and the dialect (`<ns_madc>` includes it) — a
+  `madc::diagnostics` row carries `severity_code` / `phase_code` to compare
+  against the enumerator, never the text.
+- Sub-slice b of the conversion (`docs/plans/2026-09-09-v05-enums-not-strings.md`).
+
+### madcide: the command vocabulary is an enum (2026-09-09)
+
+- `tools/madcide/madcide_enums.inc`: `enum ide_cmd` — every verb the IDE
+  dispatches (the registry commands, the key-named motions, the modal-scope
+  actions, the vi grammar, the pane-row verbs) — with the ONE name ↔ code
+  table beside it. A `.keys` profile's action names and a `.menu` file's
+  command ids resolve to codes when the file LOADS; an unknown word refuses
+  the file naming its line (`Profile 'x' line 12: unknown action 'svae'`) —
+  a misspelt binding is a load-time error, never a dead key. The dispatcher
+  is a `switch` on the code; the modal handlers, the vi grammar and the build
+  palette compare codes. Controls a window posts by name (menu items, tabs,
+  buttons, dialog dismissals, pane rows) carry their code, and a command
+  that still arrives by name converts once at the session's entry.
+- `scripts/check-madcide-command-registry.sh` re-anchored on the enum:
+  profiles ⊆ table, registry ⊆ table, table ≡ enum, every enumerator
+  dispatched, every spelled `cmd…` an enumerator; four negative controls.
+- Sub-slice c of the conversion; the composed trees and every `.expect` are
+  byte-identical (testmadcide's parser probes print through the name
+  converter and gain the refusal probe).
+
+### madcide: the state discriminators are enums (2026-09-09)
+
+- The bag's slots — the side pane, the panel tab, the prompt mode, the vi
+  mode — and the kinds that ride a terminal request, a build row, a file
+  dialog and the project manifest are prefixed enums in
+  `tools/madcide/madcide_enums.inc` (`paneOUTLINE`, `tabTERMINAL`, `pmFIND`,
+  `viNORMAL`, `rqRUN`, `dlgSAVE`, `pkGUI`, `bmTERMINAL`, `slotPOPUP`), read
+  and written through one owner per slot; a name appears only where text
+  leaves the program (a probe, a message, the page's region hook, the host's
+  dialog mode, the manifest file) through the `*_name()` converters.
+- A native file dialog's IDE kind (open / save / open-project) waits on the
+  bag for the answer; the host still receives only the dialog mode it speaks.
+- `scripts/check-madcide-enums.sh` (fulltest): no string written to a slot,
+  no compare against a discriminator's name word, no request kind as text;
+  three negative controls.
+- Sub-slice d of the conversion; every `.expect` byte-identical.
+- Fixed (owner ruling 2026-09-09): the diagnostics pane docks in a window's
+  bottom PANEL region — its original home is the panel's Problems tab. The
+  former layout table keyed it "diagnostics" while the pane spells "diags",
+  so it never received a region hint and floated wherever the page put an
+  unslotted node. The slot policy (`pane_slot_of`) is the interim default
+  until V2's `.layout` profiles make placement the user's.
+- Sub-slice e: the IDE's error count compares a diagnostics row's
+  `severity_code` against `madc::diag_severity::error` (the synthesized
+  "cannot open this TU" row carries its code beside the display word), and
+  `docs/madcide.md` documents that a profile's or menu's command words
+  resolve when the file loads and a misspelling refuses it naming the line.
+
+### Fixed: a tagged enum's enumerator has its enumeration type (2026-09-09)
+
+- In C++ mode an enumerator of a TAGGED enum at namespace or global scope
+  now has its enumeration type ([dcl.enum]/5) — `f(level)` binds
+  `f(ui::WEB)`, where before the constant was a plain `int` and the overload
+  set had no viable candidate. C keeps the C rule (an enumerator is an
+  `int`, C11 6.7.2.2p3).
+- The overload ranker grades an enum argument by [conv.prom]: its promoted
+  type (the fixed underlying type, and `int` when that promotes; for an
+  unfixed enum the first of `int` / `unsigned` / `long` / `unsigned long`
+  holding every enumerator) ranks above every other arithmetic conversion,
+  and a pointer or function-pointer parameter is never viable. Before, an
+  enum-typed operand of `cout <<` could tie the manipulator overload
+  `operator<<(ostream& (*)(ostream&))` and crash. "Is this parameter the
+  promoted type" is TYPE identity, never storage width: on the LLP64
+  Windows target `long` shares int's 32 bits but is a distinct type, so
+  `f(long)` is a conversion there too (mingw-g++ agrees) — the wine lane
+  had compiled the ambiguity reducer and refused `g3(int)`/`g3(long)`.
+  Reducer: `tests/testenumnsoverload.mad` (g++ / clang++ / mingw-g++
+  oracle).
+- An ambiguous overload call is REFUSED: two plain (non-template,
+  non-variadic) overloads tied for the best conversion total are an
+  ambiguity ([over.match.best]), reported as `call of overloaded 'ns::f'
+  with argument types (...) is ambiguous: candidates A and B` — as g++ and
+  clang++ do. Before, the first-declared candidate compiled silently
+  (`pr::take("k", cmdSAVE)` against `take(const char *, long)` /
+  `take(const char *, bool)` picked the `long` overload). A non-template
+  still beats a template specialization on an equal total. The verdict
+  rests on PROVEN facts only: both candidates concrete overloads whose
+  declaration identity is known, and their parameter types proven
+  distinct by the scorer's own identity (typedef-transparent, cv
+  stripped) — two restored twins of one `std::min` specialization are
+  one function. Reducer: `tests/testoverloadambig.mad` (`.expect_err`);
+  `forest_crosstu_gate` pins the twin case.
+- The forest restores an overload-set member WITH its declaration
+  identity. A namespace function's parameter spelling (with a template
+  instantiation's identity suffix) and an instantiation product's
+  template-argument spellings — the overload ranker's inputs — now live
+  on the `FuncDef` (`overload_spelling`, `overload_template_args`), ride
+  the frozen DK_FUNC record (format v46; the pack rebuilds) and come back
+  with the free-function restore; the set entry is just the Variable and
+  reads through, so no restore or using-import site can mint a blank one.
+  Before, a bound consumer's explicit-template-argument call
+  (`std::min<unsigned long>(a, b)` against a restored `<vector>`) found
+  no candidate with recorded template arguments, instantiated a THIRD
+  `std::min<uint64_t>` (`…__o2`) beside the two it restored, and the
+  ambiguity verdict could not see a restored member at all. The
+  instantiation MEMO comes back with it: a restored instantiation product
+  re-enters `fn_template_instantiated` under the `inst_key` its spelling
+  carries, so a bound consumer's use of a specialization the forest holds
+  hits the memo (as the TU's own earlier instantiation would live) instead
+  of instantiating it again — with the restored spelling matching, that
+  second body had landed under the RESTORED symbol (MIR "Repeated item
+  declaration"; `forest_bind_gate [statmem]` printed nothing). Gate:
+  `forest_crosstu_gate` leg D — per candidate both runs know, the live
+  and bound ranker inputs are identical and the bound run re-mints
+  nothing (LOADED == parsed on the overload set and the memo).
+- An anonymous function-pointer parameter in a function DEFINITION
+  (`long g(void (*)(int)) { … }`) is emitted with a synthesized name, as every
+  other unnamed parameter shape already was; c2mir refused the abstract
+  declarator ("parameter type without a name in function definition").
+  Reducer: `tests/testfnptrparamanon.mad`.
+- Naming the web UI level (`ui::WEB`) auto-includes the web target's
+  fragment (`<ns_ui_web>`, whose initializer registers the host), the way
+  spelling `ui_web::` did; a name qualified by a dialect namespace head may
+  pull a dialect fragment its own row names, never a std header; a fragment
+  never pulls itself; and a name the program declares (a parameter called
+  `js`) no longer suppresses a pulled fragment's own qualified mentions.
+
+### Emitted code views: indented and coloured (2026-09-09)
+
+- `--emit=c11` / `--emit=mc11` and the IDE's `^K A` lenses (MC11, C11) now
+  render INDENTED C — the emitter itself indents by block depth (tabs; case
+  labels one level out; a control statement's single-statement body on its
+  own line) — and carry only the parentheses C precedence and gcc's / clang's
+  `-Wparentheses` call for: `if (a > b)`, `return a - b;`, `a += i;` where
+  before every operator was wrapped (`if ((a > b))`, `return (a - b);`,
+  `(a += i);`). The parentheses that must stay do: `-(-b)`, `(a + b) * 2`,
+  a comparison inside `&`, `&&` within `||`, an assignment used as a
+  condition. One owner (`src/cir_emit_c.cpp`) serves the CLI and every lens.
+  Gate: `scripts/emit_layout_gate.sh` (fulltest) — the render compiles under
+  `-Werror=parentheses` on both canons, its bodies are tab-indented, and a
+  negative control with the old shapes fails.
+- The lenses render in COLOUR in both faces: the view buffer carries its own
+  highlight spans (the lexer-alone classification over the emitted text,
+  through the one span converter), where before a view showed plain text.
+  Owner requirement 2026-09-09 (KG Decision `emitted_views_indent_and_colour`).
+
 ## [v0.99.2] — 2026-09-09
 
 The owner's hands-on round on the polished local IDE — the last polish before

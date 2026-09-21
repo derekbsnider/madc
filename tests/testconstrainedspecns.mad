@@ -1,0 +1,23 @@
+// A constrained partial specialization whose requires-clause names an alias
+// template UNQUALIFIED (it lives in the spec's own namespace), used from
+// another namespace: libstdc++'s __iter_concept_impl<char*> in std::__detail
+// (`requires requires { typename __iter_traits<_Iter>::iterator_concept; }`)
+// reached from __gnu_cxx::__normal_iterator.
+#include <stdio.h>
+namespace det {
+	template<typename T> struct tr { };
+	template<typename T> struct tr<T*> { using cat = int; };
+	template<typename T, typename U> struct tr_impl { using type = tr<T>; };
+	template<typename T, typename U = T> using itr = typename tr_impl<T, U>::type;
+	template<typename I> struct impl { };
+	template<typename I> requires requires { typename itr<I>::cat; }
+	struct impl<I> { using type = typename itr<I>::cat; };
+	template<typename I> using iconcept = typename impl<I>::type;
+}
+template<typename It> struct NI { using concept_t = det::iconcept<It>; };
+int main()
+{
+	NI<char*>::concept_t v = 5;
+	printf("%d\n", v);
+	return 0;
+}

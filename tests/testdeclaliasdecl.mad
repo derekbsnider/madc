@@ -1,0 +1,38 @@
+// g++ and clang++ -std=c++11 print a:3 b:5 sz:12 t2:2 u1:9 f:8 m:11
+//
+// The TARGET of a using-alias is a type-id: an ABSTRACT declarator
+// ([dcl.name]) that may carry every declarator shape — an array suffix
+// (`int[3]`), a pointer-to-array with cv on the pointer (`(*const)[10]`), a
+// reference-to-array (`(&)[2]`), a bare FUNCTION type (`int(int)`), a
+// pointer-to-member-function with a const signature (`(C::*)(int) const`).
+// One reader — Program::parse_declarator, Abstract mode — reads them all;
+// the alias arm's private copy knew `(*)(params)` and nothing else.
+extern "C" int printf(const char *, ...);
+
+struct C { int k; int get(int v) const { return v + k; } };
+
+using A = int[3];
+using B = const int[2];
+using T = const int (*const)[10];
+using U = const int (&)[2];
+using F = int(int);
+using M = int (C::*)(int) const;
+
+int twice(int v) { return v * 2; }
+
+int main()
+{
+    A a = {1, 2, 3};
+    B b = {4, 5};
+    int arr[10] = {0, 1, 2};
+    const int c2[2] = {8, 9};
+    T t = &arr;
+    U u = c2;
+    F *fp = twice;
+    M m = &C::get;
+    C c;
+    c.k = 1;
+    printf("a:%d b:%d sz:%d t2:%d u1:%d f:%d m:%d\n",
+	   a[2], b[1], (int)sizeof(A), (*t)[2], u[1], fp(4), (c.*m)(10));
+    return 0;
+}

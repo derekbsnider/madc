@@ -1,0 +1,60 @@
+// The emitted C (--emit=c11 | mc11, and the IDE's ^K A lenses over the same
+// emitter) is auto-indented by block depth and carries only the parentheses
+// C precedence — and gcc's / clang's -Wparentheses — call for (owner ruling
+// 2026-09-09: every emitted code view is indented and coloured). The .flags
+// render this file as C11; the .expect pins the shape: tab-indented bodies,
+// case labels one level out, `if (a > b)` not `if ((a > b))`, `return a - b;`
+// not `return (a - b);`, and the parentheses that MUST stay: `-(-b)`,
+// `(a + b) * 2`, a comparison inside `&`, `&&` within `||`, an assignment
+// used as a condition, a cast over a sum. scripts/emit_layout_gate.sh
+// compiles the same render with -Werror=parentheses under both canons.
+#include <stdio.h>
+
+struct pt { int x; int y; };
+
+int pick(int a, int b, int *v)
+{
+    int s = 0;
+    long w = 0;
+    if (a > b) {
+	s = a - b;
+    } else if (a == b)
+	s = 1;
+    else
+	s = -(-b);
+    for (int i = 0; i < 3; i++)
+	s += i;
+    while (s > 100)
+	s -= (a + b) * 2;
+    switch (a & 3) {
+    case 0:
+	s = (a | b) << 1;
+	break;
+    case 1:
+    case 2:
+	s = a + b * 2;
+	break;
+    default:
+	s = (a > b) == (b > a);
+    }
+    if ((s = a % 7))
+	s = s || (a && b);
+    s = a & (b == 1);
+    s = (a + b) / (a - b + 7);
+    w = (long)a + (long)(a + b);
+    s = s > w ? s : (int)w;
+    s = -v[0] + *v;
+    do
+	s++;
+    while (s < 0);
+    return s - b;
+}
+
+int main()
+{
+    struct pt q = { 5, 2 };
+    int v[2] = { 3, 4 };
+    printf("%d\n", pick(q.x, q.y, v));
+    printf("%d\n", pick(q.y, q.x, v));
+    return 0;
+}

@@ -1,0 +1,26 @@
+// Regression (2026-09-09): an ANONYMOUS function-pointer parameter in a
+// function DEFINITION — `long g(void (*)(int)) { ... }` — was emitted as the
+// abstract declarator `void (*)(int)`, and c2mir refused the definition
+// ("parameter type without a name in function definition"). The parser's
+// parenthesized-declarator branch assumed the nameless shape occurs only in
+// prototypes; C++ allows it in a definition ([dcl.fct]/11), so it now takes
+// the same synthesized name every other abstract parameter shape does.
+// Oracle: g++ / clang++ print the two lines.
+#include <cstdio>
+
+namespace rk {
+long g(void (*)(int)) { return 1; }
+long g(int) { return 2; }
+long h(int (*)(int, int), int (*)[3]) { return 3; }
+}
+
+void cb(int) {}
+int add(int a, int b) { return a + b; }
+
+int main()
+{
+    int arr[3] = { 1, 2, 3 };
+    printf("g(cb) -> %ld g(5) -> %ld\n", rk::g(cb), rk::g(5));
+    printf("h -> %ld\n", rk::h(add, &arr));
+    return 0;
+}

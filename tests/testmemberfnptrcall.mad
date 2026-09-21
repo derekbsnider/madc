@@ -1,0 +1,40 @@
+// g++ and clang++ -std=c++11 print p:6 q:12 v:4 w:30
+//
+// A call through a pointer-to-member-function lowers to the Itanium sequence:
+// bit 0 of the pointer says "virtual", and the virtual arm indexes the
+// vtable through this->__vptr. A class with NO vtable can never set that bit,
+// so the virtual arm is dead — but emitting it anyway still REFERENCES
+// __vptr, and the C type-checker checks dead branches too.
+//
+// The virtual pair below is the negative control: it must keep dispatching
+// through the vtable, or the fix has simply deleted the virtual path.
+extern "C" int printf(const char *, ...);
+
+// No virtual functions — no __vptr to reference.
+struct Plain
+{
+    int m(int v) { return v + 1; }
+    int n(int v) { return v * 2; }
+};
+typedef int (Plain::*PlainMP)(int);
+
+// Polymorphic — the vtable arm must survive.
+struct Base { virtual int f(int v) { return v + 1; } virtual ~Base() {} };
+struct Derived : Base { int f(int v) override { return v * 10; } };
+typedef int (Base::*BaseMP)(int);
+
+int main()
+{
+    Plain pl;
+    PlainMP p = &Plain::m;
+    PlainMP q = &Plain::n;
+    printf("p:%d\n", (pl.*p)(5));
+    printf("q:%d\n", (pl.*q)(6));
+
+    Base b;
+    Derived d;
+    BaseMP v = &Base::f;
+    printf("v:%d\n", (b.*v)(3));
+    printf("w:%d\n", (d.*v)(3));
+    return 0;
+}

@@ -31,6 +31,8 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"		// Program::supported_*_standard_names()
+#include "madc_modules.h"	// the module map: a GUI-flagged row = a web-level target
+#include "madcdis/ui_events.h"	// ui_level_name — the one spelling owner of ui::level
 
 #include <iostream>
 #include <string>
@@ -96,6 +98,17 @@ void madc_print_capabilities_json()
     m["introspection"] = { "dump-source", "dump-cir", "dump-nodes",
 			   "dump-cir-checked", "dump-forest", "dump-registered",
 			   "show-stats" };
+
+    // The UI LEVELS this build has a target for (ui::level, bits/ui_enums —
+    // the names from the one spelling owner): the grid frontend (tui) is
+    // built in; the web level exists when the module map carries a GUI-flagged
+    // row (a LAZY library: known to the build, opened at first use — the
+    // manifest describes the binary, not the machine it runs on). ui::NONE and
+    // ui::LINE are every program's and list once a frontend serves them.
+    m["ui"]["levels"] = json::array();
+    m["ui"]["levels"].push_back(madc::hub::ui_level_name(ui::TUI));
+    if ( madc_module_any_flagged(MADC_MODULE_GUI) )
+	m["ui"]["levels"].push_back(madc::hub::ui_level_name(ui::WEB));
 
     m["embedding"]["libmadc"] = true;
     m["embedding"]["c_api"] = true;

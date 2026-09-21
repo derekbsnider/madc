@@ -1,0 +1,11 @@
+constexpr int inc(int a) { return a + 1; }
+
+template<int N> struct Tag { };
+void want3(Tag<3>);
+
+int main()
+{
+	Tag<inc(1)> t;
+	want3(t);
+	return 0;
+}

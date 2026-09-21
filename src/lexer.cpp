@@ -877,6 +877,10 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	source.get();
 	{
 	    TokenBase *stok = make_str(bytes, prefix != "u8");
+	    // An encoding-prefixed string carries a ud-suffix the same way a
+	    // plain one does: `U"\x1181"_s` ([lex.ext.string] selects the
+	    // operator by the literal's CHARACTER type, not by its spelling).
+	    lex_ud_suffix(stok);
 	    // Piece extent includes the encoding prefix (L"..."/u8"...").
 	    if ( source.line() == row )
 	    {
@@ -917,6 +921,9 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		  : prefix == "u" ? dd_char16()
 		  : prefix == "u8" ? static_cast<DataDef *>(&ddUINT8)
 		  : dd_platform_wchar());
+    // `U'x'_c` — an encoding-prefixed character literal takes a ud-suffix too
+    // ([lex.ext.char]).
+    lex_ud_suffix(ti);
     return ti;
 }
 
@@ -1285,6 +1292,19 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"madc", "ns_madc"},
 	{"ui", "ns_ui"},
 	{"ui_web", "ns_ui_web"},
+	{"ui_ws", "ns_ui_ws"},
+	// The git:: namespace (Nexus L4a → the V6 seam): the madcgit MODULE's
+	// dialect face — <ns_git> imports the module and wraps its C API.
+	{"git", "ns_git"},
+	// The web UI LEVEL's enumerator (ui::WEB, <bits/ui_enums>): a program
+	// that names the level it wants (`ui::open(ui::WEB)`, `lvl = ui::WEB`)
+	// wants the target that serves it — <ns_ui_web>, whose initializer
+	// registers the host. The same row `ui_web` served while programs
+	// spelled the target's NAME; the enumerator is the program's
+	// declaration of need (enums, not strings — owner law 2026-09-09). A
+	// MEMBER row (the word is not the fragment's own head) fires only
+	// QUALIFIED by its namespace head — a bare `WEB` is the user's word.
+	{"WEB", "ns_ui_web"},
 
 	{"size_t", "stddef.h"},
 	{"ptrdiff_t", "stddef.h"},
@@ -1377,6 +1397,8 @@ static std::vector<std::string> ordered_auto_include_headers(const std::set<std:
 	"ns_madc",
 	"ns_ui",
 	"ns_ui_web",
+	"ns_ui_ws",
+	"ns_git",
 	NULL
     };
 
@@ -1505,9 +1527,14 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // A word this TU DECLARES never auto-includes — not at the declaration
     // and not at any later mention: the TU provides the name itself
     // (gcc 20010409-1.c typedefs size_t, then uses it in `extern size_t
-    // strlen(...)`; pulling <stddef.h> in as well would redeclare it).
-    if ( auto_include_declared_words.count(word) )
+    // strlen(...)`; pulling <stddef.h> in as well would redeclare it). The
+    // TU's words, for the TU's mentions: a dialect FRAGMENT's mentions are
+    // the fragment's own — <ns_ui_web>'s `js::stringify` means the js
+    // surface even when the TU named a parameter `js` (testuihostfake) —
+    // so the TU's declared words never shadow a fragment scan.
+    if ( !auto_include_fragment_scan && auto_include_declared_words.count(word) )
 	return false;
+    std::string dialect_qualifier;	// `X::word` with X != std — set below
     // `typedef unsigned long size_t;` and similar declaration heads are
     // defining the identifier, not using the standard header surface: a
     // word that follows a TYPE (or a struct/class/enum tag keyword) is the
@@ -1564,9 +1591,10 @@ bool Program::auto_include_standard_identifier(const std::string &word,
 		TokenBase *q = *it;
 		if ( is_trivia_token(q) )
 		    continue;
-		if ( q->type() != TokenType::ttIdentifier
-		  || !((TokenIdent *)q)->spelling_is("std") )
+		if ( q->type() != TokenType::ttIdentifier )
 		    return false;
+		if ( !((TokenIdent *)q)->spelling_is("std") )
+		    dialect_qualifier = ((TokenIdent *)q)->spelling();
 		break;
 	    }
 	}
@@ -1576,6 +1604,27 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     const char *header = auto_include_header_for_identifier(word);
     if ( !header )
 	return false;
+    // A fragment never pulls ITSELF: <ns_ui_web>'s own `ui::WEB` (its
+    // register_host line) names the fragment being tokenized.
+    if ( auto_include_fragment_scan && auto_include_fragment_name == header )
+	return false;
+    // A MEMBER row of a dialect fragment (the word is not the fragment's own
+    // head: `WEB` for ns_ui_web) fires only when QUALIFIED by a dialect
+    // namespace head (`ui::WEB`) — a bare `WEB` is the user's word. And a
+    // name qualified by a dialect head may pull only a dialect FRAGMENT its
+    // own row names — never a std header: `ui::set` stays the ui surface's
+    // own, `madc::getline` never pulls <string>, a user qualifier
+    // (`Counter::set`) pulls nothing, as before.
+    const bool fragment_row = strncmp(header, "ns_", 3) == 0;
+    const bool member_row = fragment_row && word != header + 3;
+    if ( member_row && dialect_qualifier.empty() )
+	return false;
+    if ( !dialect_qualifier.empty() )
+    {
+	const char *qh = auto_include_header_for_identifier(dialect_qualifier);
+	if ( !qh || strncmp(qh, "ns_", 3) != 0 || !fragment_row )
+	    return false;
+    }
     // Inside a dialect fragment only the intrinsic and C-header providers
     // answer (fragment_may_pull_header) — a fragment's `println(stderr,
     // ...)` pulls bits/std_format and stdio.h; its `getline` never pulls
@@ -1850,6 +1899,8 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	// (auto_include_standard_identifier). Every other embedded header is a
 	// declaration surface — no scan, as before.
 	auto_include_fragment_scan = embedded_dialect_fragment_p(name);
+	std::string saved_fragment_name = auto_include_fragment_name;
+	auto_include_fragment_name = auto_include_fragment_scan ? name : std::string();
 	suppress_auto_include_scan = !auto_include_fragment_scan;
 	source = Source();
 	source.fname(name.c_str());
@@ -1881,6 +1932,7 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 	source = std::move(saved);
 	suppress_auto_include_scan = saved_suppress_auto_include_scan;
 	auto_include_fragment_scan = saved_fragment_scan;
+	auto_include_fragment_name = saved_fragment_name;
 	if ( protocol_visit )
 		pack_protocol_serving_end(protocol_saved);
 	mark_embedded_include_flag(name);
@@ -3161,7 +3213,12 @@ void Program::_tokenizer_init()
     define_map["__GNUC__"] = std::to_string(__GNUC__);
     define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
     define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
-    define_map["__x86_64__"] = "1";
+    // The CPU-architecture predefine (__x86_64__ / __aarch64__ / __arm64__)
+    // comes from the captured per-target table (madc_predefined_objects, seeded
+    // below), never from a host-side seed: an unconditional __x86_64__ here
+    // made the arm64 darwin target define BOTH arches, and the SDK's
+    // libkern/_OSByteOrder.h then included the i386 AND the arm inline
+    // _OSSwapInt16 definitions ("conflicting types", darwin-arm64 lane).
     // __LP64__ follows the target data model: gcc defines it on Linux and
     // darwin, mingw never does — and because mingw doesn't, the baked
     // predefine capture cannot overwrite a stale seed on win64 the way it
@@ -4680,11 +4737,17 @@ void Program::forest_install_pp(uint32_t unit)
 // resolve — a cross/hosted table may name a sysroot absent from this machine.
 // NOT for resolving argv[0] or a dladdr image name; those are different rules
 // with their own call sites.
-static std::string canonical_path_for_compare(const std::string &path)
+// Declared in madc_posix_io.h (promoted from a file-static in L4b so the git
+// substrate reads the same rule); the unqualified callers below keep their
+// spelling through the using-declaration.
+namespace madc { namespace detail {
+std::string canonical_path_for_compare(const std::string &path)
 {
-    std::string out = madc::detail::resolve_real_path(path.c_str());
+    std::string out = resolve_real_path(path.c_str());
     return out.empty() ? path : out;
 }
+} } // namespace madc::detail
+using madc::detail::canonical_path_for_compare;
 
 static const char *madc_fallback_include_paths[] = {
     "/usr/local/include/",
@@ -5850,7 +5913,7 @@ void Program::add_keywords()
 	// validated slices per docs/plans/2026-06-15-cpp-keyword-registry-plan.md.
 	//   C++98: this typename sizeof typeid true false
 	//          static_cast const_cast reinterpret_cast dynamic_cast
-	//   C++11: decltype alignof nullptr static_assert thread_local
+	//   C++11: decltype alignof nullptr static_assert
 	// --- C++20 — DEFERRED (NOT yet reserved). madc presents as a C++20+
 	//     dialect to real headers, which use `concept`/`requires` (active
 	//     under __cpp_lib_concepts, e.g. <compare>/<concepts>) and the
@@ -5903,6 +5966,13 @@ void Program::add_keywords()
 	// and storage-delegated `static constexpr` / `const constexpr`) and the
 	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
 	{ "constexpr",        STD_CPP11 },
+	// Slice 8 (thread_local, C++11 — self-host arc 2026-09-17): a real
+	// storage-class specifier, NOT ignored: TokenCppKeyword::parse records it
+	// (parsing_thread_local_decl, consumed by parseDeclaration exactly like
+	// parsing_static_decl) and the variable carries vfTHREADLOCAL, which the
+	// CIR builder lowers to c2mir's N_THREAD_LOCAL (`_Thread_local`). The C11
+	// spelling `_Thread_local` is registered below, gated on C11.
+	{ "thread_local",     STD_CPP11 },
 	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
 	{ "consteval",        STD_CPP20 },
@@ -5949,6 +6019,19 @@ void Program::add_keywords()
 	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
 	    keyword_map[cpp_reserved[i].kw] =
 		new TokenCppKeyword(cpp_reserved[i].kw);
+    // C11 `_Thread_local` ([6.7.1]): the C spelling of the same storage-class
+    // specifier — one parse arm (TokenCppKeyword::parse, by spelling), one
+    // variable flag, one lowering. Reserved from C11 on, and in every C++ /
+    // madc mode (an implementation-reserved identifier there; clang++ honours
+    // it as an extension). Never in C89/C99, where it is a valid identifier.
+    if ( language_std == STD_MADC || language_std >= STD_C11 )
+	if ( keyword_map.find("_Thread_local") == keyword_map.end() )
+	    keyword_map["_Thread_local"] = new TokenCppKeyword("_Thread_local");
+    // GNU `__thread`: the same specifier's pre-standard spelling, an
+    // implementation-reserved identifier gcc and clang honour in EVERY C
+    // and C++ mode (libstdc++'s <mutex> uses it under _GLIBCXX_HAVE_TLS).
+    if ( keyword_map.find("__thread") == keyword_map.end() )
+	keyword_map["__thread"] = new TokenCppKeyword("__thread");
 
     // Slice 7 — alternative-token operators ([lex.digraph]). In C++ these are
     // reserved keywords spelled as words; each is an exact synonym for a
@@ -6196,6 +6279,35 @@ TokenBase *Program::make_str(const std::string &bytes, bool wide)
 TokenBase *Program::make_char(int code)
 {
     return new TokenChar(code);
+}
+
+// [lex.ext]/1 — capture the ud-suffix of a user-defined-literal onto the
+// literal token it belongs to. A user-defined-literal is ONE preprocessing
+// token: `123_w` is a literal with suffix `_w`, while `123 _w` is two tokens
+// and ill-formed. That adjacency is visible ONLY here — by the time the
+// parser sees a token stream the whitespace is gone — so the suffix is lexed,
+// never reconstructed from neighbouring tokens.
+//
+// Called at each literal's completion point, AFTER the standard suffixes
+// (u/U/l/L, f/F, the imaginary and _FloatN families) have been consumed, so
+// what remains can only be a ud-suffix. A numeric literal followed directly
+// by an identifier is ill-formed in every dialect, so eating it here costs
+// nothing when no literal operator is declared — the parser then reports the
+// missing operator instead of a stray undeclared identifier.
+void Program::lex_ud_suffix(TokenBase *lit)
+{
+    // C++ only: in C, `123_w` is ill-formed, and silently absorbing the
+    // identifier would change the diagnostic the C lanes expect.
+    if ( !lit || !cpp_keyword_active(STD_CPP11) || !source.good() )
+	return;
+    int c = source.peek();
+    if ( c != '_' && !isalpha(c) )
+	return;
+    std::string sfx;
+    while ( source.good()
+	 && (source.peek() == '_' || isalnum(source.peek())) )
+	sfx += (char)source.get();
+    lit->ud_suffix_id = strpool.intern(sfx);
 }
 
 TokenBase *Program::make_datatype(const char *name, DataDef &dd)
@@ -7227,6 +7339,7 @@ TokenBase *Program::_getToken()
 	    source.get();
 	    {
 		TokenBase *stok = make_str(word);
+		lex_ud_suffix(stok);
 		// Source extent of this piece (see TokenStr::SrcPiece): from
 		// the opening quote through the closing quote, single-line
 		// only — a line-spanning literal (scanner-tolerated) keeps no
@@ -7300,7 +7413,11 @@ TokenBase *Program::_getToken()
 		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
-	    return make_char(word[0]);
+	    {
+		TokenBase *ctok = make_char(word[0]);
+		lex_ud_suffix(ctok);
+		return ctok;
+	    }
 	case '<':
 	    if (source.peek() == '=')
 	    {
@@ -7538,6 +7655,10 @@ TokenBase *Program::_getToken()
 		    DataDef *st = resolve_int_suffix_type(tval, is_hex_or_octal);
 		    if ( st )
 			ti->setDataType(st);
+		    // Every integer-literal path funnels through here, always
+		    // after its eat_int_suffix() — the one place a ud-suffix
+		    // can follow an integer literal.
+		    lex_ud_suffix(ti);
 		    return ti;
 		};
 		if ( is_binary_prefix(ch, source) )
@@ -7619,6 +7740,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			lex_ud_suffix(tr);
 			tr->source_text = lit_text;
 			return tr;
 		    }
@@ -7704,6 +7826,7 @@ TokenBase *Program::_getToken()
 			    tr->setDataType(&ddFLOAT);
 			else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			    tr->setDataType(&ddLDOUBLE);
+			lex_ud_suffix(tr);
 			tr->source_text = lit_text;
 			return tr;
 		    }
@@ -7777,6 +7900,7 @@ TokenBase *Program::_getToken()
 		    // value was parsed at full precision and then typed as a double.
 		    else if ( real_type_suffix == 'l' || real_type_suffix == 'L' )
 			tr->setDataType(&ddLDOUBLE);
+		lex_ud_suffix(tr);
 		    tr->source_text = lit_text;
 		    return tr;
 		}

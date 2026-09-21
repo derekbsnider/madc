@@ -439,23 +439,19 @@ class CirBuilder {
 	// detection, and typedef_emit_name.
 	static DataDefSTRUCT *struct_behind(DataDef *dd);
 
-	// GNU nested-function capture lowering. A nested function (`T inner(args){...}`
-	// defined inside another function) that references an enclosing local/param
-	// implicitly captures it BY REFERENCE — modelled exactly like a [&] lambda
-	// capture: each used enclosing variable becomes a hidden pointer parameter
-	// `T *name`, every body reference reads/writes through it (`(*name)`), and
-	// every call site forwards `&var`. While translating a nested function's
-	// body, m_cur_capture_set holds the enclosing Variables it MAY capture (its
-	// FuncDef::potential_captures, by pointer identity); m_cur_captured_fd is the
-	// FuncDef being filled. A var reference that hits the set is recorded in
-	// FuncDef::captured_vars (deterministic first-use order) and emitted as a
-	// deref of the same-named pointer parameter. NULL/empty outside a nested body.
+	// Nested-function / lambda capture lowering. While translating a capturing
+	// function's body, m_cur_capture_set holds the enclosing Variables it MAY
+	// capture (FuncDef::potential_captures, by pointer identity) and
+	// m_cur_captured_fd owns the per-name mode. A use is recorded in
+	// FuncDef::captured_vars in deterministic first-use order; its mode decides
+	// pointer-vs-value hidden parameter and deref-vs-direct body access.
 	FuncDef *m_cur_captured_fd = nullptr;
 	std::set<Variable *> m_cur_capture_set;
 	// Record `v` as a capture of the current nested function (idempotent) and
-	// return true when `v` is a captured variable of it. False when not nested
-	// or `v` is local/param to the nested function itself.
-	bool note_capture(Variable *v);
+	// return its mode. None means not nested or local/param to this function.
+	FuncDef::CaptureMode note_capture(Variable *v);
+	bool capture_is_read_only(Variable *v);
+	void materialize_value_captures(TokenDecl *decl);
 
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
@@ -673,6 +669,12 @@ class CirBuilder {
 	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
 	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// THE base-subobject pointer adjustment (static offset, or the vtable's
+	// vbase-offset slot for a virtual base): a `derived`-object address in,
+	// a `Base *` out. Both upcasts below and the inherited-constructor
+	// receiver share it — never re-spell the offset/cast block.
+	node_t base_subobject_addr(node_t value, DataDefCLASS *derived,
+				   DataDefCLASS *base, class TokenBase *origin);
 	// Derived->base pointer/reference conversion. Returns `value` unchanged when
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
@@ -1319,6 +1321,17 @@ public:
 	// body/instance lane serve ([temp.inst]).
 	bool extern_symbol_can_link(const std::string &sym);
 	std::string func_emit_name(const class Variable &v, class FuncDef *fd) const;
+	// The symbol a madc-emitted BODY defines (the definition, its lock-step
+	// prototype, the profiler self-address and the reachability mark all read
+	// this one rule): var_emit_name for a materialized library body,
+	// emit_symbol for a mangled file-scope user function. See the definition.
+	std::string func_def_symbol(class TokenFunc *tf, class FuncDef *fd) const;
+	// The symbol madc's OWN body for `v` defines: local_emit_name when the
+	// parser assigned one (a hoisted nested function, an arity-disambiguated
+	// method or operator, a user member's Itanium name), else var_emit_name.
+	// Never emit_symbol — that is an EXTERNAL definition's symbol. The body
+	// definition, the vtable slots and the thunks read THIS one rule.
+	std::string body_emit_symbol(const class Variable &v, class FuncDef *fd) const;
 	// THE single source of truth for the C symbol a CALL references. Precedence:
 	// an external ABI bind (emit_symbol, madc emits no body) wins; then a
 	// madc-emitted body's non-default symbol (local_emit_name — hoisted nested
@@ -1433,6 +1446,8 @@ public:
 	// Tag reference + struct_map registration for the late-struct sweep
 	// (Pass 1.97) — the #68 use_builtin_va_list pattern.
 	node_t int_complex_struct_ref(DataDefCOMPLEX *cdd);
+	DataDefSTRUCT *memfnptr_struct_dd();	// the one C struct behind every DataDefMemberFnPtr (created + registered once)
+	node_t memfnptr_struct_ref();	// the one C struct behind every DataDefMemberFnPtr
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);
@@ -1496,6 +1511,10 @@ public:
 	// with the c2m innermost-first suffix order
 	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
 	node_t fnptr_func_node(class FuncDef *fd);
+	// The pointer piece of a declarator — N_POINTER per level, then the
+	// pointee's array dims — shared by var_decl and typedef_decl.
+	void append_pointer_declarator(node_t decl_list, int levels,
+				       const std::vector<carray_dim_t> &ptr_array_dims);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
@@ -1660,6 +1679,17 @@ public:
 	// machinery madc does not synthesize — see is_externally_defined()).
 	std::string class_vtable_symbol(DataDefCLASS *cdd);
 	std::string class_typeinfo_symbol(DataDefCLASS *cdd);
+	// The function symbols cdd's madc-emitted vtable initializer will name
+	// (the final overrider of every function slot, under its BODY symbol)
+	// join referenced_funcs — run ahead of the referenced-only extern sweep
+	// (Pass 0.75), so a virtual member madc does not define in this TU is
+	// declared before the initializer that takes its address.
+	void note_vtable_slot_references(DataDefCLASS *cdd);
+	// A C++-presenting mode names a madc-defined class's vtable, RTTI and
+	// synthesized special members by their Itanium symbols (what a g++/clang
+	// TU references); the internal Cls__vtable / Cls___dtor spellings remain
+	// only where no C++ ABI is presented.
+	bool itanium_class_symbols(DataDefCLASS *cdd) const;
 	// `extern void *SYM[];` (deduped via m_rtti_data_externs), or NULL if already
 	// emitted. For referencing an externally-defined class's real _ZTVSt.../_ZTISt...
 	node_t data_extern_decl(const std::string &sym);
@@ -1776,6 +1806,8 @@ public:
 	// The pure-virtual slot (if any) that makes `cdd` abstract — the slot
 	// name whose most-derived resolution is still `= 0`; "" when concrete.
 	std::string class_pure_virtual_of(DataDefCLASS *cdd);
+	// The class declares a pure virtual DESTRUCTOR (`virtual ~A() = 0;`).
+	bool class_dtor_is_pure(DataDefCLASS *cdd);
 	// Dispatch a destructor through the receiver's vtable dtor slot; sname
 	// is "~" (D1 complete — explicit p->~X()) or "~$deleting" (D0 —
 	// delete). recv_vptr/recv_arg = two independent receiver translations.
@@ -1805,6 +1837,11 @@ public:
 	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// The node-level implicit copy: dst_lvalue from the object at
+	// src_addr (`struct cdd *`). ONE owner for try_implicit_copy_construct
+	// and the deferred-construction relower's same-class pack element.
+	node_t implicit_copy_construct_from_addr(node_t dst_lvalue, node_t src_addr,
+			       DataDefCLASS *cdd, TokenBase *origin);
 	// Memberwise reconstruction walk for the implicit copy ctor's
 	// NON-trivial arm (task #70): after the whole-object bit-copy,
 	// re-invoke the USER copy ctor of every (possibly nested) class
@@ -2049,6 +2086,15 @@ public:
 	// member statements (some member has a callable default ctor or is a
 	// ctorless class that itself needs construction).
 	bool class_needs_member_construction(DataDefCLASS *cdd);
+	// Stamp vptr(s) + default-construct class-type members through a bound
+	// receiver: what an implicit default ctor does, and what an INHERITED
+	// ctor must do after the base subobject is constructed.
+	void append_vptr_and_member_inits(node_t blk, const char *recv,
+					  DataDefCLASS *cdd,
+					  class TokenBase *origin, bool members);
+	// The class that DECLARED a selected ctor — not always `cdd`, because
+	// `using Base::Base;` imports the base's ctors into the derived's set.
+	DataDefCLASS *ctor_declaring_class(DataDefCLASS *cdd, FuncDef *ctor);
 	// Owner-subobject adjust through a VIRTUAL base, read from the
 	// vtable's vbase-offset slot at runtime (Itanium): a receiver whose
 	// STATIC class is not the object's most-derived type cannot use the
@@ -2094,6 +2140,15 @@ public:
 	// would destroy a vbase-carrying base's virtual bases twice.
 	std::string class_base_dtor_symbol(DataDefCLASS *cdd);
 	std::string class_complete_dtor_symbol(DataDefCLASS *cdd);
+	// The SYNTHESIZED dtor bodies' symbols (no user FuncDef behind them):
+	// the plain one (D2 of a vbase-carrying class, the one D1 otherwise),
+	// the vbase-complete wrapper (D1), the deleting one (D0).
+	std::string class_synth_dtor_symbol(DataDefCLASS *cdd);
+	std::string class_synth_complete_dtor_symbol(DataDefCLASS *cdd);
+	std::string class_deleting_dtor_symbol(DataDefCLASS *cdd);
+	// The madc-EMITTED dtor body: the user-written one's own body symbol
+	// (never an external bind) when the class has it, else the synthesized.
+	std::string class_madc_dtor_body_symbol(DataDefCLASS *cdd);
 	// Per-(class,N) stack-array destructor wrapper `Cls__arr<N>___dtor`: the
 	// cleanup attribute calls ONE function with &arr, so a fixed array of a
 	// dtor-carrying class destroys its N elements in REVERSE through this
@@ -2115,6 +2170,14 @@ public:
 	node_t synth_instr_exit_thunk();
 	node_t synth_complete_dtor_def(DataDefCLASS *cdd);
 	node_t synth_deleting_dtor_def(DataDefCLASS *cdd);
+	// `void ALIAS(params) { TARGET(params); }`, linkonce — the Itanium
+	// base-object ctor/dtor (C2 / D2) of a vbase-less class, which g++ emits
+	// as an alias of the complete-object body; MIR has no symbol aliases.
+	// `fd` supplies a ctor's parameter list (__this + its own); NULL is the
+	// dtor shape, `struct Cls *__this` alone.
+	node_t base_object_alias_def(const std::string &alias,
+				     const std::string &target,
+				     DataDefCLASS *cdd, class FuncDef *fd);
 	node_t synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd);
 	// Emit a synthesized destructor function for a class that needs a dtor
 	// (object members and/or a base dtor) but has no user-written one.

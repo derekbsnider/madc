@@ -27,6 +27,12 @@
 #include "ns_common.h"
 #include "libmadc/sysinfo.h"
 #include "madc_posix_io.h"	// get_host_name (host-facts seam)
+#if defined(_WIN32)
+#include <process.h>		// _getpid — sys.pid's UCRT spelling (never <windows.h>
+				// here: its `interface` macro collides with the module map)
+#else
+#include <unistd.h>		// getpid — sys.pid's POSIX spelling
+#endif
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
 
 // ---- madc::sys — the system object (task #91) ----------------------------
@@ -53,10 +59,23 @@ static const char *sys_detect_hostname()
     return name.c_str();
 }
 
+// The process id as a portable fact (V6 seam): the dialect's bare getpid()
+// resolved through the dlsym fallback on POSIX only — the UCRT exports
+// _getpid, so on the win64 madc every program naming getpid failed to
+// compile (the madcide family under wine). sys.pid says it on every platform.
+static int64_t sys_detect_pid()
+{
+#if defined(_WIN32)
+    return (int64_t)_getpid();
+#else
+    return (int64_t)getpid();
+#endif
+}
+
 // The facts initialize once at load (dynamic init of this TU); argv/path
 // are filled by sys_populate_args from the injected __madc_sys_init call.
 SysInfo sys = { value(), value(), sys_detect_platform(), MADC_VERSION_STR,
-		sys_detect_hostname() };
+		sys_detect_hostname(), sys_detect_pid() };
 
 void sys_populate_args(int argc, char **argv)
 {
@@ -207,6 +226,21 @@ value &outline(value &out, const char *source, const char *filename)
 bool emit(value &out, const char *source, const char *filename,
 	  const char *target)
 	{ std::string s = source ? source : "", f = filename ? filename : "", t = target ? target : ""; return madc_source_emit(&out, &s, &f, &t); }
+// The same render by the target's KIND (madc::file_kind, <bits/file_kinds>)
+// — an IDE carries the enumerator, never the spelling. The converters
+// file_kind_name / file_kind_of / file_kind_of_path the fragment declares
+// beside this live in src/file_kinds.cpp (the vocabulary's one text owner).
+bool emit(value &out, const char *source, const char *filename,
+	  int64_t target_kind)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_source_emit_kind(&out, &s, &f, target_kind); }
+// The same KIND render PLUS the source↔display COORDINATE MAP beside the text
+// (V5): out_map arrives as an array of {disp, stored, len} rows (empty =
+// nothing corresponds — park at 0), the input to ui::lens_to_display /
+// ui::lens_to_stored. An IDE stores it on the code View. Statement/line-level
+// today; column/expression precision is the named later refinement.
+bool emit(value &out, value &out_map, const char *source, const char *filename,
+	  int64_t target_kind)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_source_emit_kind_map(&out, &out_map, &s, &f, target_kind); }
 
 // Persistent parse handles (madcide AST-1): the compiler-data surfaces
 // above given a LIFETIME — open a live parse per TU, refresh it whole
@@ -230,6 +264,85 @@ value &parse_enclosing(value &out, int64_t handle, int64_t line,
 	{ madc_parse_enclosing(&out, handle, line, column); return out; }
 value &parse_spans(value &out, int64_t handle)
 	{ madc_parse_spans(&out, handle); return out; }
+
+// Code-graph MCP L1 (design 2026-09-12): the live declaration/type graph
+// as node-addressed reads over a parse handle. The <ns_madc> declaration
+// carries the node/result shapes.
+value &graph_symbols(value &out, int64_t handle)
+	{ madc_graph_symbols(&out, handle); return out; }
+value &graph_node(value &out, int64_t handle, int64_t node_id)
+	{ madc_graph_node(&out, handle, node_id); return out; }
+value &graph_type_of(value &out, int64_t handle, int64_t node_id)
+	{ madc_graph_type_of(&out, handle, node_id); return out; }
+value &graph_definition(value &out, int64_t handle, const char *name)
+	{ std::string n = name ? name : ""; madc_graph_definition(&out, handle, &n); return out; }
+value &graph_members(value &out, int64_t handle, int64_t type_id)
+	{ madc_graph_members(&out, handle, type_id); return out; }
+value &graph_bases(value &out, int64_t handle, int64_t type_id)
+	{ madc_graph_bases(&out, handle, type_id); return out; }
+value &graph_enclosing(value &out, int64_t handle, int64_t line, int64_t column)
+	{ madc_graph_enclosing(&out, handle, line, column); return out; }
+
+// Code-graph MCP L1b (design 2026-09-12): the body graph over the live
+// parse-handle TokenBase AST. graph_body(func) is the function's own
+// statement tree; graph_children(id) descends from any node (a body handle
+// or a function type-id). depth < 0 = unbounded (server-side capped).
+value &graph_body(value &out, int64_t handle, int64_t func_id, int64_t depth)
+	{ madc_graph_body(&out, handle, func_id, depth); return out; }
+value &graph_children(value &out, int64_t handle, int64_t id, int64_t depth)
+	{ madc_graph_children(&out, handle, id, depth); return out; }
+
+// Code-graph MCP L2 (design 2026-09-12): derived-edge verbs over the live
+// parse-handle forest. func_id is a FUNCTION type-id; def_id/id may be a
+// function type-id OR a global decl-id (from graph_search). Each returns
+// { nodes, edges?, truncated? }.
+value &graph_callees(value &out, int64_t handle, int64_t func_id)
+	{ madc_graph_callees(&out, handle, func_id); return out; }
+value &graph_callers(value &out, int64_t handle, int64_t func_id)
+	{ madc_graph_callers(&out, handle, func_id); return out; }
+value &graph_references(value &out, int64_t handle, int64_t def_id)
+	{ madc_graph_references(&out, handle, def_id); return out; }
+value &graph_search(value &out, int64_t handle, const char *kind, const char *name_sub)
+	{ std::string k = kind ? kind : ""; std::string n = name_sub ? name_sub : "";
+	  madc_graph_search(&out, handle, &k, &n); return out; }
+value &graph_impact(value &out, int64_t handle, int64_t id)
+	{ madc_graph_impact(&out, handle, id); return out; }
+
+// Code-graph MCP L3 (design 2026-09-12): a node's exact source extent, the node
+// starting at a position, and the validated whole-TU refresh (true = the
+// candidate replaced the live tree; false = rejected, nothing changed;
+// out_diags = the candidate's diagnostics either way).
+value &graph_span(value &out, int64_t handle, int64_t id)
+	{ madc_graph_span(&out, handle, id); return out; }
+value &graph_at(value &out, int64_t handle, int64_t line, int64_t column)
+	{ madc_graph_at(&out, handle, line, column); return out; }
+bool parse_refresh_checked(value &out_diags, int64_t handle, const char *source)
+	{ std::string s = source ? source : "";
+	  return madc_parse_refresh_checked(&out_diags, handle, &s); }
+bool parse_would_accept(value &out_diags, int64_t handle, const char *source)
+	{ std::string s = source ? source : "";
+	  return madc_parse_would_accept(&out_diags, handle, &s); }
+
+// (The git substrate's dialect face lived here as madc::git_* until the V6
+// seam; it is the git:: namespace of the madcgit MODULE now — <ns_git>.)
+
+// The comparison spelling of a path (V6c-2): the standing canonicalizer
+// (detail::canonical_path_for_compare — realpath when it resolves, the input
+// spelling otherwise) given a dialect face. Two spellings of one file must
+// compare EQUAL: a protocol client addresses a document by absolute URI while
+// a session may have opened it by a relative path, and without this the two
+// are different documents. Never answers empty — a caller compares the
+// result, and an empty answer would make every unresolvable path equal to
+// every other.
+value &canonical_path(value &out, const char *path)
+	{ out = detail::canonical_path_for_compare(path ? path : ""); return out; }
+
+// L4b (design §3.3): revision handles by generation TAG.
+int64_t parse_open_tagged(const char *source, const char *filename)
+	{ std::string s = source ? source : "", f = filename ? filename : "";
+	  return madc_parse_open_tagged(&s, &f); }
+int64_t parse_generation(int64_t handle) { return madc_parse_generation(handle); }
+int64_t graph_route(int64_t handle, int64_t id) { return madc_graph_route(handle, id); }
 
 // The live-tree build/run pair (OWNER RULING 2026-08-27 — the running
 // madc IS the compiler; ^B never re-parses, never execs a madc):

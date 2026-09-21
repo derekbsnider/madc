@@ -1,0 +1,91 @@
+# selfhost-baseline.txt — units of madc's OWN source that bin/madc does not
+# yet parse (ROADMAP 2.11, scripts/selfhost_lane.sh). One unit key per line:
+# the source path as src/Makefile spells it from src/ (ns_js.cpp, rt/rt_task.c,
+# ../obj/develop/embedded_headers.cpp) or a header's repo-relative path
+# (include/madc.h). The lane is RED on any failure NOT listed here and shouts
+# when a listed unit passes, so this file only ever SHRINKS. Fixes that turn a
+# unit green delete its line in the same commit.
+#
+# Seeded 2026-09-17 from the lane's third run on the container, at c9c42c084
+# (thread_local landed): 47 of 172 units passed. Shrunk as fixes land —
+# run 4 (d8d881925, unnamed namespaces): +libc_signatures.cpp +madc_config.cpp;
+# run 8 (class operator[] element typing): +include/madcdis/arena.h +include/token_arena.h;
+# run 10 (qualified class-scoped constants in constant expressions): +include/madcdis/prose.h +rt_dump_value.cpp;
+# run 12 (global-qualified `::ns::type`, alias-of-scoped-enum scopes): +include/madcdis/keys.h;
+# run 20 (using-declaration imports an alias template): +include/madcdis/snapshot.h;
+# run 24 (a deduced type pack expands in a fn template return type — std::get<I>): the 12
+#   channel units (libmadc/madcdis channel*, datachannel, header_channel, websocket_channel,
+#   madc_channel_stream/datachannel/header_channel/socket_channel.cpp));
+# run 26 (struct member declarator with a const between pointer stars): +include/madc_sys_includes.h
+#   +sys_include_paths.cpp;
+# run 30 (the IMPLICIT copy constructor for a same-class deferred-construction pack element —
+#   vector<T>::push_back(T)): 38 units — datadef.h, madc_modules.h, ns_common.h, every libmadc/
+#   madcdat/madcdis dataset|driver|flow|format_flow|mapper|relation|schema|sink|source_adapter
+#   header, git_repo.h, madc_channel_object/config_file/guards/modules.cpp, madcdat_storage(+gdbm).cpp,
+#   madcdis_driver/source_adapter.cpp, ns_common.cpp, rt_format_value.cpp.
+# Coverage = units not listed here.
+../obj/develop/embedded_headers.cpp
+cir_builder.cpp
+cir_dump.cpp
+cir_emit_c.cpp
+cir_format.cpp
+cir_freeze.cpp
+file_kinds.cpp
+include/cir_arena.h
+include/datatokens.h
+include/libmadc/dis.h
+include/libmadc/process.h
+include/madc.h
+include/madcdis/doc_lens.h
+include/madcdis/hub.h
+include/madcdis/interaction.h
+include/madcdis/intern_table.h
+include/madcdis/process.h
+include/madcdis/projection.h
+include/madcdis/render_text.h
+include/madcdis/text_buffer.h
+include/madcdis/tui_model.h
+include/madcdis/tui_provider.h
+include/madcdis/ui_events.h
+include/madcdis/ui_focus.h
+include/madcdis/ui_input.h
+include/madcdis/uinode.h
+include/madcdis/value_pool.h
+include/madcdis/verbs.h
+include/madcdis/web_model.h
+include/madcdis/world_text.h
+include/tokens.h
+lexer.cpp
+madc.cpp
+madc_c_api.cpp
+madc_capabilities.cpp
+madc_cir.cpp
+madc_error.cpp
+madc_io_reactor.cpp
+madc_mangle.cpp
+madc_mir_backend.cpp
+madc_posix_io.cpp
+madc_process.cpp
+madc_program.cpp
+madc_project.cpp
+madc_task_chan.cpp
+madc_value.cpp
+madc_websocket_channel.cpp
+madcdat_storage_bdb.cpp
+madcdat_storage_qdbm.cpp
+madcdat_storage_sqlite.cpp
+madcdis_query.cpp
+madcdis_snapshot.cpp
+madcdis_storage.cpp
+ns_js.cpp
+ns_madc.cpp
+ns_perl.cpp
+ns_php.cpp
+ns_python.cpp
+ns_ruby.cpp
+ns_rust.cpp
+ns_ui.cpp
+parser.cpp
+pch.cpp
+ui_term.cpp
+va_helpers.cpp

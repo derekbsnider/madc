@@ -1,0 +1,1 @@
+Structurally JIT-only: the test spawns the LANE'S OWN madc running madcide.mad --lsp (madc::compiler_path()). In a native artifact the running program is the test itself, not a compiler, so the child would be a copy of the test.

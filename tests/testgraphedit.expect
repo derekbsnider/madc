@@ -1,0 +1,20 @@
+opened: 1
+helper span: 1
+run span: 1
+global span: 1
+decl stmt span: 1
+for stmt span: 1
+return stmt span: 1
+leaf has no span: 1
+at round-trip stmt: 1
+at round-trip func: 1
+reject returns false: 1
+reject has diagnostics: 1
+reject keeps handle: 1
+accept returns true: 1
+old id stale: 1
+ids re-minted: 1
+new return span: 1
+fresh id resolves: 1
+lambda-holding func span: 1
+lambda stmt at is statement: 1

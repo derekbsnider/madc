@@ -1,0 +1,93 @@
+// ui::event_any — the multi-client blocking decision over N frontends
+// (client-server arc V3b-1). Two FAKE web windows (no display) on one
+// world; an event posted to either is returned by event_any tagged with the
+// handle (out["target"]) it came from, so a client loop knows which window
+// spoke. A sole target is byte-identical to ui::event (the single-window
+// path). The real webview multi-window pump (tick over the process-global
+// loop) and window-close detection ride the GTK smoke / the seam lanes; the
+// MACHINERY — the demux + the tag — is proved here with no window.
+//
+// post_event queues straight into a frontend's inbound, and event_any's
+// non-blocking poll drains it — so the test pre-posts to each window and
+// asserts the demux order and the target tag without a platform loop.
+void *ctx1 = 0;
+void *ctx2 = 0;
+int opened = 0;
+
+void *fake_open(const char *title, const char *page, void *ctx)
+{
+    opened++;
+    if ( opened == 1 )
+	ctx1 = ctx;
+    else
+	ctx2 = ctx;
+    return ctx;			// the host handle IS the ctx (post_event's key)
+}
+
+void fake_close(void *host) { }
+int64_t fake_eval(void *host, const char *js) { return 0; }
+int64_t fake_run(void *host) { return 1; }	// no canned loop — we pre-post
+int64_t fake_tick(void *host, int64_t ms) { return 1; }
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval,
+				    fake_run, 0, 0, fake_tick };
+static bool fake_registered = ui::register_host("fake2", ui::WEB, &fake_ops);
+
+int main()
+{
+    long w = ui::world_new();
+    long t1 = ui::open("fake2");
+    long t2 = ui::open("fake2");
+    println("opened -> {} {}", t1 > 0 ? "yes" : "no", t2 > 0 ? "yes" : "no");
+    println("two frontends -> {}", t1 != t2 ? "yes" : "no");
+
+    // A minimal shared tree so each window composes.
+    var edit = { "role": "edit", "content": "shared" };
+    var kids = {};
+    kids.push(edit);
+    var root = { "role": "group", "children": kids };
+    ui::render(t1, w, root);
+    ui::render(t2, w, root);
+
+    var ev;
+
+    // N == 1: event_any over one target = event(), plus the target tag.
+    ui::post_event(ctx1, "{\"kind\":\"text\",\"text\":\"solo\"}");
+    var one = {};
+    one.push(t1);
+    ui::event_any(ev, one, w);
+    println("solo: text={} target-t1={}", ev["text"],
+	    ev["target"].as_integer() == t1 ? "yes" : "no");
+
+    // N == 2: post to BOTH windows; event_any returns each event tagged
+    // with the window it came from.
+    ui::post_event(ctx1, "{\"kind\":\"text\",\"text\":\"AAA\"}");
+    ui::post_event(ctx2, "{\"kind\":\"text\",\"text\":\"BBB\"}");
+    var both = {};
+    both.push(t1);
+    both.push(t2);
+    ui::event_any(ev, both, w);
+    println("first: text={} target={}", ev["text"],
+	    ev["target"].as_integer() == t1 ? "t1"
+	    : (ev["target"].as_integer() == t2 ? "t2" : "?"));
+    ui::event_any(ev, both, w);
+    println("second: text={} target={}", ev["text"],
+	    ev["target"].as_integer() == t1 ? "t1"
+	    : (ev["target"].as_integer() == t2 ? "t2" : "?"));
+
+    // An event on the SECOND window alone is demuxed to t2 (proves it is
+    // not a fixed first-window bias).
+    ui::post_event(ctx2, "{\"kind\":\"text\",\"text\":\"CCC\"}");
+    ui::event_any(ev, both, w);
+    println("b-only: target={} text={}",
+	    ev["target"].as_integer() == t2 ? "t2" : "other", ev["text"]);
+
+    // No targets -> false.
+    var none = {};
+    println("empty -> {}", ui::event_any(ev, none, w) ? "true" : "false");
+
+    ui::close(t1);
+    ui::close(t2);
+    ui::world_close(w);
+    return 0;
+}

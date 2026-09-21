@@ -25,6 +25,8 @@ struct SysInfo
     const char *const platform;  // immutable fact: "linux" / "darwin" / ...
     const char *const version;   // immutable fact: MADC_VERSION_STR
     const char *const hostname;  // immutable fact: eager gethostname()
+    const int64_t pid;           // immutable fact: this process's id (portable —
+                                 // getpid() is POSIX-spelled, the UCRT says _getpid)
 };
 
 extern SysInfo sys;

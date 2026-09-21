@@ -1,0 +1,13 @@
+// g++ 13.3 == clang++ 18.1: 21
+#include <stdio.h>
+
+int main()
+{
+	int n = 1;
+	int m = 2;
+	auto f = [n, &m]() { return n + m; };
+	n = 10;
+	m = 20;
+	printf("%d\n", f());
+	return 0;
+}

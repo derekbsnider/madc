@@ -126,7 +126,7 @@ void compose_tree(var &root, long w, long es, long doc)
 
 // The TUI loop: compose as data -> render -> one semantic event ->
 // apply, until a quit verb says stop.
-void run_visual(const char *path, bool ro, const char *target)
+void run_visual(const char *path, bool ro, ui::level lvl)
 {
     long w = ui::world_new();
     long doc = setup_editor(w, path, ro);
@@ -136,10 +136,10 @@ void run_visual(const char *path, bool ro, const char *target)
 	return;
     }
     long es = ui::entity_by_name(w, "editor-state");
-    // The target-generic loop (compose-as-data -> render -> event -> apply):
-    // "term" is the grid frontend the tui_* names spell; the web target
-    // shows the same tree in a window.
-    long t = ui::open(target);
+    // The level-generic loop (compose-as-data -> render -> event -> apply):
+    // ui::TUI is the grid frontend the tui_* names spell; ui::WEB shows the
+    // same tree in a window (ui::level, owner 2026-09-09).
+    long t = ui::open(lvl);
     if ( t == 0 )
 	return;
     bool run = true;

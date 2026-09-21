@@ -1,0 +1,21 @@
+// `*p++` / `*p--` (the parser's TokenDerefStep idiom) on a CAPTURED pointer inside a
+// lambda body: by reference the enclosing p advances (`*((*p)++)` through the T**
+// capture parameter); by value the closure's own copy advances and persists across
+// calls, the enclosing p does not. g++ and clang++: `1 2 2 / 4 3 2 / 1 2 0`.
+#include <cstdio>
+int main() {
+    int buf[4] = {1, 2, 3, 4};
+    int *p = buf;
+    auto f = [&]() { return *p++; };
+    int a = f(); int b = f();
+    printf("%d %d %d\n", a, b, (int)(p - buf));
+    int *q = buf + 3;
+    auto g = [&]() { return *q--; };
+    int c = g(); int d = g();
+    printf("%d %d %d\n", c, d, (int)(q - buf) + 1);
+    int *r = buf;
+    auto h = [r]() mutable { return *r++; };
+    int e = h(); int k = h();
+    printf("%d %d %d\n", e, k, (int)(r - buf));
+    return 0;
+}

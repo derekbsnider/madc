@@ -1,0 +1,23 @@
+/* _Thread_local — the C11 spelling of the thread-storage-duration
+ * specifier (C11 [6.7.1]); reserved from C11 on, an identifier before.
+ * Oracle: gcc and clang -std=c11 (single-threaded). */
+#include <stdio.h>
+
+_Thread_local int tc = 3;
+extern _Thread_local int tc;
+static _Thread_local int tsc = 4;
+_Thread_local static int order_free = 9;
+
+int bump(void)
+{
+    static _Thread_local int n = 0;
+    return ++n;
+}
+
+int main(void)
+{
+    tc += 1; tsc += 2;
+    bump(); bump();
+    printf("tc=%d tsc=%d order_free=%d bump=%d\n", tc, tsc, order_free, bump());
+    return 0;
+}

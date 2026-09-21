@@ -1,0 +1,14 @@
+// php::unlink — PHP parity: delete a file, return true on success, false
+// on failure (a missing file included). A real host-side builtin, so it is
+// win64-portable (the libc symbol is _unlink on win64 UCRT).
+int main()
+{
+    const char *path = "phpunlink_tmp.txt";
+    php::file_put_contents(path, "x");
+    println("exists-before: {}", php::file_exists(path) ? 1 : 0);
+    println("unlink-ok: {}", php::unlink(path) ? 1 : 0);
+    println("exists-after: {}", php::file_exists(path) ? 1 : 0);
+    // PHP parity: unlink of a missing file is false (no crash, no throw).
+    println("unlink-missing: {}", php::unlink("phpunlink_nope.txt") ? 1 : 0);
+    return 0;
+}

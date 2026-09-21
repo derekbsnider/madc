@@ -1,0 +1,9 @@
+// Scalar, pointer, nested-block and trailing-return list initialization.
+#include <stdio.h>
+int zero() { return {}; }
+int one(int v) { if (v) { return {v}; } return {}; }
+double real() { return {2.5}; }
+int *nil() { return {}; }
+int *ptr(int *p) { return {p}; }
+struct Result { auto get() const -> long { return {}; } };
+int main() { int n = 17; Result r; printf("return: %d %d %.1f %d %d %ld\n", zero(), one(42), real(), nil() == 0, *ptr(&n), r.get()); return 0; }

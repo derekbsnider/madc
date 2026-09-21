@@ -1,0 +1,33 @@
+// A METHOD call passing a Derived* where the parameter is a Base* — the same
+// derived-to-base pointer conversion a free-function call already gets
+// (self-host arc 2026-09-17, found by testmemfnptr: `d.read(&b)` emitted
+// `read(&d, &b)` where a free function emitted `(struct Widget *)&b`; c2mir
+// warned "incompatible argument type for pointer type parameter"). Shapes: a
+// primary base, a secondary base at a non-zero offset (the pointer must move),
+// a pointer parameter and a const pointer parameter, static and instance
+// methods, and a method receiving its own class's derived. Oracle: g++ and
+// clang++ -std=c++11.
+#include <stdio.h>
+
+struct A { int a; virtual ~A() {} };
+struct B { int b; virtual ~B() {} };
+struct D : A, B { int d; };
+
+struct Reader {
+    int ra(const A *p) const { return p->a; }
+    int rb(const B *p) const { return p->b; }
+    static int sb(B *p) { return p->b * 10; }
+};
+
+struct Base { int k; virtual ~Base() {} int self(const Base *o) const { return k + o->k; } };
+struct Derived : Base { int extra; };
+
+int main()
+{
+    D d; d.a = 1; d.b = 2; d.d = 3;
+    Reader r;
+    Derived x; x.k = 5; x.extra = 9;
+    Derived y; y.k = 7; y.extra = 11;
+    printf("%d %d %d %d\n", r.ra(&d), r.rb(&d), Reader::sb(&d), x.self(&y));
+    return 0;
+}

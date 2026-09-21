@@ -1,0 +1,1 @@
+the canonical runner is bash and the env prefix is posix — test.run on win32 refuses by design (no testable layer), so the run half of this test has no win64 twin

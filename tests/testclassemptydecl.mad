@@ -1,0 +1,32 @@
+// An EMPTY member-declaration — a stray `;` after a member function body
+// (`TokenBase *token() { return _tbuf.token(); };`, include/madc.h:2145;
+// self-host arc 2026-09-17, 20 units: "Expecting type in class definition").
+// [class.mem]: member-declaration may be a bare `;`. Shapes: after a method
+// body, after a constructor body, after a data member, doubled, in a struct
+// with class-only syntax, and after a nested class. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+
+class T {
+    int v;;
+public:
+    T() : v(2) {};
+    int f() const { return v * 3; };
+    ;
+    struct In { int w; };;
+    In in;
+};
+
+struct S {
+    int a;
+    void set(int x) { a = x; };
+    ;
+};
+
+int main()
+{
+    T t; t.in.w = 4;
+    S s; s.set(5);
+    printf("%d %d %d\n", t.f(), t.in.w, s.a);
+    return 0;
+}

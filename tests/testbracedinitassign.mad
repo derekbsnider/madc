@@ -1,0 +1,24 @@
+// A braced list on the RHS of an assignment belongs to the assignment only
+// when the left operand is an LVALUE — a variable or an addressable
+// expression. Aggregate, class and scalar targets all take one.
+//
+// NOTE: the companion case `B *b = new D{}` is NOT here. The brace must stay
+// with the NEW-expression (claiming it for the assignment produced "Malformed
+// expression: 2 operands with no operator between them" —
+// g++.dg/cpp0x/noexcept76.C), but `new T{...}` does not yet DECLARE its
+// variable: using `b` afterwards says "use of undeclared identifier". That is
+// a PRE-EXISTING gap, identical on branches predating this work, so it gets
+// its own session rather than riding this fix.
+//
+// Expected output verified with both g++ and clang++ -std=c++11.
+#include <stdio.h>
+struct P { int a, b; };
+struct Q { int n; Q() : n(0) {} Q(int v) : n(v) {} };
+int main()
+{
+	P p; p = {1, 2};
+	Q q; q = {7};
+	int x; x = {5};
+	printf("assign: %d %d %d %d\n", p.a, p.b, q.n, x);
+	return 0;
+}

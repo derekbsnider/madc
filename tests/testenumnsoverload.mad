@@ -1,0 +1,71 @@
+// Regression (slice V0.5a, 2026-09-09): an unscoped enumerator of a TAGGED
+// enum at namespace / global scope registered as a plain `int` constant in
+// C++ mode, so `lv::open(lv::uiWEB)` against the overload set
+// {open(const char *), open(level)} found no viable candidate ("no matching
+// overload for 'ui::open' with argument types (int)"). [dcl.enum]/5: once the
+// closing brace is seen an enumerator has its ENUMERATION type — the
+// class-scope branch of TokenENUM::parse already did this; the global branch
+// kept the C rule (C11 6.7.2.2p3: int). Integral promotion still carries the
+// enumerator into arithmetic, comparisons and int parameters.
+// Oracle: g++ and clang++ print the lines in the .expect.
+#include <cstdio>
+
+namespace lv {
+    enum level : unsigned char { uiNONE = 0, uiLINE, uiTUI, uiWEB };
+    long open(const char *name) { return 100; }
+    long open(level l) { return (long)l; }
+}
+
+enum color { red = 1, green, blue };
+
+const char *name_of(color c)
+{
+    switch (c) {
+    case red:   return "red";
+    case green: return "green";
+    case blue:  return "blue";
+    }
+    return "?";
+}
+
+long take_int(int v) { return v * 10; }
+
+// [conv.prom] ranking: the promoted type beats every other arithmetic
+// conversion; a function pointer or a pointer parameter is never viable for
+// an enum argument (g++ and clang++ agree on all five). In a namespace:
+// overloading a PLAIN function at global scope is a separate open gap
+// (KG Gap global_scope_plain_fn_overloading — both definitions emit under
+// one C symbol), not this reducer's subject.
+namespace rk {
+long grade(int) { return 1; }
+long grade(long) { return 2; }
+long grade(bool) { return 3; }
+long grade(double) { return 4; }
+long g2(unsigned char) { return 1; }
+long g2(long) { return 2; }
+long g3(int) { return 1; }
+long g3(long) { return 2; }
+long g4(void (*)(int)) { return 1; }
+long g4(int) { return 2; }
+long g5(const char *) { return 1; }
+long g5(long) { return 2; }
+}
+
+int main()
+{
+    printf("open(level) -> %ld\n", lv::open(lv::uiWEB));
+    printf("open(name) -> %ld\n", lv::open("term"));
+    lv::level l = lv::uiTUI;
+    printf("var -> %ld\n", lv::open(l));
+    printf("arith -> %d\n", lv::uiWEB + 1);
+    printf("promote -> %ld\n", take_int(green));
+    printf("switch -> %s\n", name_of(blue));
+    printf("compare -> %d\n", lv::uiTUI < lv::uiWEB ? 1 : 0);
+    printf("sizeof -> %d\n", (int)sizeof(lv::uiWEB));
+    printf("grade(red) -> %ld\n", rk::grade(red));
+    printf("g2(uiWEB) -> %ld\n", rk::g2(lv::uiWEB));
+    printf("g3(uiWEB) -> %ld\n", rk::g3(lv::uiWEB));
+    printf("g4(red) -> %ld\n", rk::g4(red));
+    printf("g5(red) -> %ld\n", rk::g5(red));
+    return 0;
+}

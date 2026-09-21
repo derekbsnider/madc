@@ -1,0 +1,2 @@
+// A conditional operand is an expression, with no list-initialization target.
+int main() { return true ? {1} : 2; }

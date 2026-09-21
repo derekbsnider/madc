@@ -120,9 +120,13 @@ TEST_SUITE("madc_cir_emit_native") {
 
     TEST_CASE("-shared emits a dlopen-consumable ET_DYN shared object") {
 	std::string src_path = write_temp("/tmp/madc_unit_shared_XXXXXX.mad", 4,
+					  // The host consumes these by bare name (dlsym): the
+					  // C-export contract, which a C++-presenting program
+					  // spells extern "C" — a plain definition is the
+					  // Itanium _Z4maddii, as g++ -shared would export it.
 					  "int mul_base = 6;\n"
-					  "int madd(int a, int b) { return a + b; }\n"
-					  "int mmul(int a) { return a * mul_base; }\n");
+					  "extern \"C\" int madd(int a, int b) { return a + b; }\n"
+					  "extern \"C\" int mmul(int a) { return a * mul_base; }\n");
 	REQUIRE(!src_path.empty());
 	std::string so_path = write_temp("/tmp/madc_unit_shared_XXXXXX.so", 3, "");
 	REQUIRE(!so_path.empty());

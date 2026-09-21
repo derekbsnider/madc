@@ -1,0 +1,14 @@
+open: 1
+framed: 1
+exec-advertised: 1
+serve-note: 1
+serve-endpoint-nonempty: 1
+api-open: 1
+gotoline-ok: true
+delline-replied: 3
+api-ok: true
+api-sees-edit: 1
+shutdown-result-null: 1
+edit-event-note: 1
+edit-diagnostics-note: 1
+exit-status: 0

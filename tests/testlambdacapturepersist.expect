@@ -1,0 +1,4 @@
+repeat: 1 1
+state: 1 2 3 (outer k=0)
+struct: 12
+loop: 12

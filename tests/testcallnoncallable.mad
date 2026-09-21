@@ -1,0 +1,10 @@
+// [expr.call]/1: a call on an expression whose type is not a function, a
+// pointer to function, or a class with operator() is ill-formed. g++:
+// "void value not ignored as it ought to be"; clang++: "called object type
+// 'void' is not a function or function pointer".
+void v();
+int main()
+{
+	v()();
+	return 0;
+}

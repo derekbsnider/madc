@@ -1,0 +1,69 @@
+// g++ and clang++ -std=c++11 print S:104 fp:8 m3:6 pa:9 pm:2 pmf:12 b:4 fa:0 d:c A:16 ib:4 K:40 ky:3
+//
+// A struct or class DATA MEMBER's declarator is a named declarator over the
+// member's type: `(*fp)(int)`, `m[2][3]`, `(*pa)[3]` (a pointer to an array —
+// refused before), `C::*pm`, `(C::*pmf)(int) const`, `(*fa[2])(int)` (an array
+// of function pointers — refused before), a declarator LIST whose tail
+// restarts from the undecorated base (`int *a, b;` — b is an int; the
+// anonymous-struct tail started from a's decorated type). One reader —
+// Program::parse_declarator, Named mode — behind ONE member contract
+// (Program::member_declarator: element type + the declarator's own dims for
+// addMember); six member arms had six copies.
+extern "C" int printf(const char *, ...);
+
+struct C { int k; int get(int v) const { return v + k; } };
+int dbl(int v) { return v * 2; }
+int inc(int v) { return v + 1; }
+
+struct S
+{
+    int (*fp)(int);
+    int m[2][3];
+    int (*pa)[3];
+    int C::*pm;
+    int (C::*pmf)(int) const;
+    int *a, b;
+    char c[2], *d;
+    int (*fa[2])(int);
+};
+
+struct A { struct { int *ia, ib; } u; };
+
+class K
+{
+public:
+    int (*kfp)(int);
+    int km[2][2];
+    int kx, ky[3];
+};
+
+int main()
+{
+    S s;
+    C c;
+    c.k = 1;
+    int arr[3] = {7, 8, 9};
+    s.fp = dbl;
+    s.m[1][2] = 6;
+    s.pa = &arr;
+    s.pm = &C::k;
+    s.pmf = &C::get;
+    s.b = 4;
+    s.c[0] = 'c';
+    s.d = s.c;
+    s.fa[1] = inc;
+    A w;
+    w.u.ib = 4;
+    K k;
+    k.kfp = inc;
+    k.ky[2] = 3;
+    // (`s.b + s.fa[1](-1)` is NOT written as one operand: a member
+    // function-pointer call with a negative literal argument inside a binary
+    // `+` mis-parses today — KG Gap member_fnptr_call_negative_arg_in_binary,
+    // reducer tmp/declprobe/pending-tests/testmemfnptrcallnegarg.)
+    int fa1 = s.fa[1](-1);
+    printf("S:%d fp:%d m3:%d pa:%d pm:%d pmf:%d b:%d fa:%d d:%c A:%d ib:%d K:%d ky:%d\n",
+	   (int)sizeof(S), s.fp(4), s.m[1][2], (*s.pa)[2], c.*s.pm + 1, (c.*s.pmf)(11) - 0,
+	   s.b, fa1, s.d[0], (int)sizeof(A), (int)sizeof(w.u.ib), (int)sizeof(K), k.ky[2]);
+    return 0;
+}

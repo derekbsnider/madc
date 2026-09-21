@@ -7,6 +7,15 @@
 #define __TOKENDATA_H 1
 
 #include <cstring>
+#include <string>
+// Self-contained by contract: TokenDataType DERIVES from TokenIdent (tokens.h)
+// and holds a `DataDef &` plus the pre-registered dd* instances (datadef.h).
+// Without these the header only compiled as a fragment of an including TU's
+// order — g++ -fsyntax-only on it alone reads "expected class-name before '{'"
+// exactly as madc's own self-host lane did. Neither prerequisite includes this
+// header, so there is no cycle.
+#include "tokens.h"
+#include "datadef.h"
 
 class TokenDataType: public TokenIdent
 {

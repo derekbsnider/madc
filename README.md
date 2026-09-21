@@ -144,10 +144,24 @@ Current coverage includes:
   flow, preprocessor inclusion, and early C23 features
 - C++ classes, constructors and destructors, RAII, access control, inheritance,
   virtual dispatch, RTTI, exceptions, operator overloading, and templates
-- real `std::string`, streams, containers, references, lambdas, `constexpr`,
-  `noexcept`, and standard-gated language features
+- real `std::string`, streams, containers, references, lambdas **with capture
+  lists**, `constexpr`, `noexcept`, and standard-gated language features
+- **pointers to members** — types and values, `&C::m`, `.*`, `->*`, and calls
+  through a bound member pointer
+- **Itanium ABI compatibility**: every C++ symbol madc defines emits its real
+  mangled name, so a madc object file links against g++- and clang-built code
+  and free functions overload by parameter type; by-value class parameters and
+  returns follow the Itanium calling convention
 - range-based `for`, function pointers, `auto`, `:=`, `defer`, multiple return
   values, and `rust::match`
+
+**madc does not grade its own homework.** Conformance is measured against
+gcc's own testsuite and the third-party c-testsuite, and the numbers — with
+their scope and caveats — are published in
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md): C at
+**99.2%** of the in-scope gcc c-torture execute set under `--std=c17` and
+**220/220** on c-testsuite; C++ at **80.0%** (C++98) and **75.1%** (C++11) of
+the compile-clean `g++.dg` subset, with C++14/17/20 measured alongside.
 
 See the [usage guide](docs/usage.md) for the language surface and
 [architecture guide](docs/architecture.md) for lowering, ABI, and compiler
@@ -172,6 +186,49 @@ functions from several language ecosystems in one program.
 
 Namespace precedence can be selected explicitly with `prefer` or
 `#pragma prefer`; see [namespace precedence](docs/language/prefer.md).
+
+## madcide and the Nexus — the IDE *is* the running compiler
+
+`madcide` is not an editor that shells out to a compiler. The live parse in
+memory **is** the compilation, so diagnostics, the outline and the emitted
+views are projections of real compiler data rather than a second model that
+can drift.
+
+```bash
+madcide file.mad                              # terminal (the default grid)
+madcide file.mad --gui                        # native window: platform menu bar, file dialogs
+madcide file.mad --line                       # ex / edlin line mode over stdin
+madcide file.mad -c "check"                   # no UI at all — the exit status is the verdict
+madcide file.mad --serve 127.0.0.1:7777       # a session other clients attach to
+madcide file.mad --mcp                        # the MCP seat: the IR as a graph
+madcide file.mad --lsp --serve 127.0.0.1:0    # the LSP face
+madcide file.mad --attach                     # find the session holding this file
+```
+
+One composer and one client loop serve every face, so the terminal rendering
+is byte-identical to the window's.
+
+**A session, not a process.** A second window is a second *client* of the same
+document, with its own caret and its own View; presence carets shift through
+one anchor registry as anyone types. The editor region is a real split tree,
+tool panes are chrome slots, and layouts persist beside the project manifest.
+A View can re-represent the same document as source, MC11, C11 or C++ in
+place — put source left and MC11 right and the carets track each other
+through the emitter's correlation map.
+
+**Every change is an event.** The change log is an append-only journal that
+replays to any point, checkpoints, compacts, and surfaces as an `event:N`
+history View.
+
+**The Nexus — the IR as a graph agents edit.** Beyond the human faces,
+madcide exposes the *live IR* as a node-addressed graph over MCP: an agent
+queries structure, edits through validated verbs instead of text patches,
+walks history with PAST verbs over git, and proposes changes under a
+permission tier. LSP, a VS Code extension, attach and session discovery ride
+the same session — one process, several faces.
+
+See [`docs/madcide.md`](docs/madcide.md) and the design documents under
+[`docs/plans/`](docs/plans/).
 
 ## Embedding with libmadc
 
@@ -214,53 +271,75 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.99.2** — madcide is a desktop application on
-Linux, Windows and macOS. The IDE that IS the running compiler opens in a
-native window (`madcide file.mad --gui`) with the platform's own menu bar
-and file dialogs, editor tabs, a Problems / Output / Terminal panel,
-dialogs, a status bar as chrome, the JOE split as a window stack, the mouse,
-and the terminal's colour scheme; Build → Run runs the live parse forked
-with a console program on a real pseudo-terminal in the Terminal tab and a
-gui program in its own window, its output streaming as it happens; the
-panel and sidebar resize. ONE composer and ONE client loop serve both faces
-— the terminal is byte-identical. Underneath: `import name [as ns];` (C++20's
-`import` made whole — interface AND library, no platform spelling, JIT and
-native), `madc --capabilities=json`, the `ui::` web target the window is
-built on, and resource guards that default off. v0.99.2 itself is the
-owner's hands-on round on the polished window: output with no keystroke
-(the window's wait is the cooperative scheduler's wait), the Build menu's
-`^B` rows, a dialog's Close that closes and leaves nothing behind, and the
-resizable panes.
+The current release is **v0.100.0**, the Nexus release. madcide stops being
+a desktop application and becomes a **session**: a window is a *client*, so
+several windows share one document with their own carets and presence, the
+editor region is a real split tree whose layouts persist beside the manifest,
+and a View re-represents the same document as source, MC11, C11 or C++ in
+place — source left, MC11 right, carets tracking through the emitter's
+correlation map. Every change is an event in an append-only journal that
+replays, checkpoints and compacts. The session is reachable over an `api`
+transport with permission tiers, a headless `--serve`, a `ws` window on the
+same port, an MCP seat, an LSP face, a VS Code extension, attach and
+discovery. Beyond the human faces sits **the Nexus**: the live IR as a
+node-addressed graph an agent queries and edits through validated verbs
+rather than text patches, with history verbs over git and a propose tier.
+Underneath, the async I/O reactor gained a Windows backend and libgit2 became
+the `madcgit` module rather than a vendored subtree.
 
-Branch state: v0.99.2 is released on `develop`; the `master` promotion
-follows the release-tier lane ledger the same day (every platform lane's
-FULL suite green on this content), with public binaries built by CI for
-Linux (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel),
-each shipping the platform webview library beside the binaries.
+The same release makes C++ conformance a **measured** number. Every C++
+symbol madc defines now emits its real Itanium mangled name, so a madc object
+file links against g++- and clang-built code; expression SFINAE, pointers to
+members, real lambda captures, inheriting constructors and prvalue reference
+binding landed behind it. The `g++.dg` ratchet lane was built in this window
+and driven from **1169 (60%) to 1464 / 1950 (75.1%)**. That work then found
+three standard-C regressions — including a compiler SIGSEGV — which are fixed,
+returning gcc c-torture to 1611/1624 with zero regressions against v0.99.2.
 
-Latest validated results (the v0.99.2 battery, content 38a71163, and the
-release tier on the same content):
+Branch state: v0.100.0 is released on `develop`; the `master` promotion
+follows the release-tier lane ledger (every platform lane's FULL suite green
+on this content), with public binaries built by CI for Linux
+(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel), each
+shipping the platform webview library beside the binaries.
 
-- Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
-  **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
-  disk anywhere) **1301/0/0/43**
+Latest validated results — the full release tier, every lane green on one
+commit (`7488a39cf`, 2026-09-21). Measured conformance against third-party
+suites is published separately in
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md):
+
+- Linux JIT: **1540 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1444/0**, OBJ lane
+  **1444/0**; packed suite **1540/0/0/9**; headerless (no headers on
+  disk anywhere) **1506/0/0/43**; doctest **186/186**
 - the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
   split with both clicks, menu bar, the dialogs, the panel, Run into the
-  Terminal with no input, the resizable panel): **17/17 JIT, 17/17 EXE, 17/17 OBJ**
-- Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
+  Terminal with no input, the resizable panel): **19/19 JIT, 19/19 EXE, 19/19 OBJ**
+- Windows: packed Win64 under persistent Wine **1480/0/0TO/69skip**
   (`verify_pe_release` OK, 234 units); the FULL suite on genuine Windows 11
-  **1278/0/0TO/66skip**
-- c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
+  **1480/0/0TO/69skip**
+- **C conformance**: gcc `c-torture/execute` **1611/1624 in scope (99.2%)**
+  under `--std=c17`, ratcheted against a baseline of pre-existing failures;
+  c-testsuite **220/220, baseline empty** (`--std=gnu11`)
+- **C++ conformance**: gcc's own `g++.dg` compile-clean subset —
+  C++98 **308/385 (80.0%)**, C++11 **1464/1950 (75.1%)**, C++14 **206/417**,
+  C++17 **128/308**, C++20 **346/653**
 - macOS cross release on both architectures: 836 units, Mach-O release
-  verifier and the exe/dylib gate green; the FULL suite on GitHub's mac
-  runners: arm64 **1319/0/0TO/25skip**, Intel **1320/0/0TO/24skip**
-- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**
+  verifier (including the C-linkage authority) and the exe/dylib gate green;
+  the FULL suite on GitHub's mac runners: arm64 **1520/0/0TO/29skip**,
+  Intel **1521/0/0TO/28skip**
+- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1533/0/0TO/16skip, EXE/OBJ 1437/0**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.100.0](docs/release-notes/v0.100.0.md) — **the Nexus release**:
+  madcide becomes a multi-client session (a window is a client, presence,
+  split-tree Views, an event-sourced change log, correlation maps) reachable
+  over api / ws / MCP / LSP / VS Code / attach; the live IR becomes a graph
+  agents edit by verbs; Itanium symbol mangling and the C++ feature work
+  behind a conformance lane driven 60% → 75.1%; three standard-C regressions
+  found and fixed, and suites tiered by time to run.
 - [v0.99.2](docs/release-notes/v0.99.2.md) — the owner's hands-on round
   on the polished local IDE, the last polish before the master GUI release:
   output streams into the Terminal with no keystroke (the window's wait is

@@ -71,6 +71,7 @@ inline std::vector<tui_event> ui_apply_keys(key_resolver &keys_owner,
 	    tui_event e;
 	    e.kind = tui_event_kind::action;
 	    e.action_name = step.action_name;
+	    e.action_code = step.action_code;
 	    e.seq = step.seq;
 	    out.push_back(e);
 	    continue;

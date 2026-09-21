@@ -1,0 +1,1 @@
+same root as testgit.win_skip: the PAST verbs read the repository the test runs in, and the genuine-Windows stage is a staged file tree with no .git. The wine64 lane runs the same PE from the repo root and covers it.

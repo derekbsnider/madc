@@ -1,0 +1,7 @@
+ns: 11 22
+global: 31 32
+nested: 33
+extern-c: 44 44
+inner: 55 66
+extern-decl: 77
+anonymous: 88 99

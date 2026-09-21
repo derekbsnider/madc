@@ -1,0 +1,23 @@
+#!/../bin/madc
+// C++ SYMBOL MANGLING phase 3c: a USER class's member function TEMPLATE emits
+// the Itanium member-template specialization symbol g++/clang emit — on a
+// non-template class (_ZN3Box3getIiEET_v style) and const members — instead of
+// the internal Box__get__oN spelling. Member templates on a class TEMPLATE
+// (Holder<T>::box<U>) are the harder case; kept out of this reducer's asserts
+// but exercised so nothing regresses. Expected output = g++ (clang++ identical).
+#include <stdio.h>
+
+struct Box {
+	int base;
+	Box(int b) : base(b) {}
+	template <class U> U conv(U x) { return x + (U)base; }
+	template <class U> int tag() const { return base * 10 + (int)sizeof(U); }
+};
+
+int main()
+{
+	Box b(5);
+	printf("conv: %d %.1f\n", b.conv(3), b.conv(2.5));
+	printf("tag: %d %d\n", b.tag<char>(), b.tag<double>());
+	return 0;
+}

@@ -22,7 +22,7 @@ int main()
     IdeSession S;
     S.attach(w, es);
 
-    long t = ui::open(ui_web::target());
+    long t = ui::open(ui::WEB);
     if ( !t )
 	return 1;
     println("IDE open");

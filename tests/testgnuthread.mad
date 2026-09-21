@@ -1,0 +1,31 @@
+// The GNU `__thread` storage-class specifier — the pre-C++11 spelling of
+// thread_local that libstdc++'s <mutex> still uses (`extern __thread void*
+// __once_callable;` at mutex:823; self-host arc 2026-09-17, 2 units:
+// "Expecting type after 'extern'"). One storage-class specifier, three
+// spellings (thread_local, _Thread_local, __thread): the same parse arm, the
+// same variable flag, the same lowering. Shapes: extern + definition, an
+// initialized definition, static at block scope, a pointer. Oracle: g++ and
+// clang++ -std=c++11.
+#include <stdio.h>
+
+extern __thread int counter;
+__thread int counter = 5;
+__thread const char *label = "tls";
+static __thread long total;
+
+int bump(int by)
+{
+    static __thread int calls;
+    calls++;
+    counter += by;
+    total += counter;
+    return calls;
+}
+
+int main()
+{
+    bump(1); bump(2);
+    int calls = bump(0);
+    printf("%d %ld %s %d\n", counter, total, label, calls);
+    return 0;
+}

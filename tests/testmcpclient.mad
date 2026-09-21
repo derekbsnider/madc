@@ -1,0 +1,170 @@
+// Nexus L4d: madc as an MCP CLIENT. A manifest written by this test names the
+// lane's own madc ({madc}) running tests/mcp_fixture_server.mad as the
+// external system; nexus.sources loads it, nexus.sync spawns the child,
+// handshakes, validates the vocabulary against tools/list, pulls five rows and
+// folds them into task records with origin = fixture (a second sync updates,
+// never duplicates). A dead server answers its exit status; a manifest with a
+// misspelled vocabulary key refuses with its file and key. test.discover folds
+// a scratch tests directory by the runner's conventions (a .helper-owned unit
+// is skipped). In-process (self_id -1 = the operator).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+// The connection seat routes a client's LSP traffic to lsp_handle (V6c-3c),
+// so the dispatcher comes first — madcide.mad's own order.
+#include "../tools/madcide/madcide_lsp.inc"
+#include "../tools/madcide/madcide_seat.inc"
+
+// A boolean field read without a throw: absent = false.
+bool flag(var &snap, const char *key)
+{
+    var v = snap[key];
+    if ( v.is_null() )
+	return false;
+    return v.as_boolean();
+}
+
+bool call_tool(var &snap, bool &iserr, IdeSession &S, long doc, long id, const char *name, var &args)
+{
+    var params = { "name": name, "arguments": args };
+    var req = { "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params };
+    var resp;
+    mcp_handle(S, doc, -1, req, resp);
+    var result = resp["result"];
+    iserr = result["isError"].as_boolean();
+    var content = result["content"];
+    var item0 = content[0];
+    var txt = item0["text"];
+    if ( js::parse(snap, txt.c_str()) )
+	return true;
+    snap = { "error": txt };
+    return false;
+}
+
+// A manifest for a server run by the lane's own madc: {madc} substitutes.
+void write_manifest(const char *file, const char *name, const char *server, const char *listkey)
+{
+    var cmd = {};
+    cmd.push("{madc}");
+    cmd.push("--no-config");
+    cmd.push(server);
+    var noargs = {};
+    var map = { "summary": "title", "status": "state" };
+    var e_list = { "tool": "list_tasks", "args": noargs, "map": map };
+    var e_get = { "tool": "get_task", "args": noargs, "map": map };
+    var e_create = { "tool": "create_task", "args": noargs, "map": map };
+    var e_update = { "tool": "update_task", "args": noargs, "map": map };
+    var e_comment = { "tool": "comment", "args": noargs, "map": map };
+    var vocab;
+    vocab[listkey] = e_list;
+    vocab["get_task"] = e_get;
+    vocab["create_task"] = e_create;
+    vocab["update_task"] = e_update;
+    vocab["comment"] = e_comment;
+    var m = { "name": name, "transport": "stdio", "command": cmd, "vocabulary": vocab };
+    var js = js::stringify(m);
+    php::file_put_contents(file, js.c_str());
+}
+
+int main()
+{
+    const char *path = "madc_ide_mcpclient.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    if ( doc <= 0 )
+    {
+	println(stderr, "cannot open {}", path);
+	return 1;
+    }
+    S.terminal(false);
+    var snap;
+    bool err;
+    var none;
+
+    php::mkdir("madc_ide_mcp");
+    write_manifest("madc_ide_mcp/fixture.mcp.json", "fixture", "tests/mcp_fixture_server.mad", "list_tasks");
+    var dirargs = { "dir": "madc_ide_mcp" };
+    call_tool(snap, err, S, doc, 1, "nexus.sources", dirargs);
+    var srow = snap["rows"][0];
+    println("sources: err={} rows={} name={} tools={}", err ? 1 : 0, php::count(snap["rows"]), srow["name"],
+	    php::count(srow["tools"]));
+    var syncargs = { "source": "fixture" };
+    call_tool(snap, err, S, doc, 2, "nexus.sync", syncargs);
+    println("sync: ok={} rows={} created={} updated={} err={}", flag(snap, "ok") ? 1 : 0, snap["rows"],
+	    snap["created"], snap["updated"], snap["error"]);
+    var tasks = { "rkind": "task" };
+    call_tool(snap, err, S, doc, 3, "nexus.records", tasks);
+    var r0 = snap["rows"][0];
+    var f0 = r0["fields"];
+    println("records: n={} origin={} ext_key={} title={} state={}", php::count(snap["rows"]), r0["origin"],
+	    r0["ext_key"], f0["title"], r0["state"]);
+    call_tool(snap, err, S, doc, 4, "nexus.sync", syncargs);
+    println("sync2: created={} updated={}", snap["created"], snap["updated"]);
+    call_tool(snap, err, S, doc, 5, "nexus.records", tasks);
+    println("records2: n={}", php::count(snap["rows"]));
+    var nosuch = { "source": "nosuch" };
+    call_tool(snap, err, S, doc, 6, "nexus.sync", nosuch);
+    println("sync-nosuch: err={}", err ? 1 : 0);
+
+    // a dead server: a child that exits without a reply answers its status
+    php::mkdir("madc_ide_mcp_dead");
+    php::file_put_contents("madc_ide_mcp_dead/exit.mad", "int main() { return 3; }\n");
+    write_manifest("madc_ide_mcp_dead/dead.mcp.json", "dead", "madc_ide_mcp_dead/exit.mad", "list_tasks");
+    var deaddir = { "dir": "madc_ide_mcp_dead" };
+    call_tool(snap, err, S, doc, 7, "nexus.sources", deaddir);
+    println("sources-dead: err={} rows={}", err ? 1 : 0, php::count(snap["rows"]));
+    var deadsync = { "source": "dead" };
+    call_tool(snap, err, S, doc, 8, "nexus.sync", deadsync);
+    println("sync-dead: err={} exit_status={}", err ? 1 : 0, snap["exit_status"]);
+
+    // a misspelled vocabulary key refuses the manifest with its file and key
+    php::mkdir("madc_ide_mcp_bad");
+    write_manifest("madc_ide_mcp_bad/bad.mcp.json", "bad", "tests/mcp_fixture_server.mad", "list_tickets");
+    var baddir = { "dir": "madc_ide_mcp_bad" };
+    call_tool(snap, err, S, doc, 9, "nexus.sources", baddir);
+    var why = snap["error"];
+    println("sources-bad: err={} names-key={}", err ? 1 : 0, why.index("unknown vocabulary key 'list_tickets'") >= 0 ? 1 : 0);
+
+    // test.discover over a scratch tests directory: a .helper-owned unit skipped
+    php::mkdir("madc_ide_tdisc");
+    php::mkdir("madc_ide_tdisc/unit");
+    php::file_put_contents("madc_ide_tdisc/a.mad", "int main() { return 0; }\n");
+    php::file_put_contents("madc_ide_tdisc/b.mad", "int helper() { return 0; }\n");
+    php::file_put_contents("madc_ide_tdisc/b.helper", "owned by a.mad\n");
+    php::file_put_contents("madc_ide_tdisc/unit/u.cpp", "// a unit test\n");
+    var tdir = { "dir": "madc_ide_tdisc" };
+    call_tool(snap, err, S, doc, 10, "test.discover", tdir);
+    println("discover: discovered={} created={} updated={}", snap["discovered"], snap["created"], snap["updated"]);
+    call_tool(snap, err, S, doc, 11, "test.discover", tdir);
+    println("discover2: created={} updated={}", snap["created"], snap["updated"]);
+    var testsq = { "rkind": "test" };
+    call_tool(snap, err, S, doc, 12, "nexus.records", testsq);
+    var t0 = snap["rows"][0];
+    var tf0 = t0["fields"];
+    var t1 = snap["rows"][1];
+    var tf1 = t1["fields"];
+    println("test-records: n={} f0={} n0={} f1={} n1={}", php::count(snap["rows"]), tf0["family"], tf0["name"],
+	    tf1["family"], tf1["name"]);
+
+    php::unlink("madc_ide_tdisc/unit/u.cpp");
+    php::rmdir("madc_ide_tdisc/unit");
+    php::unlink("madc_ide_tdisc/a.mad");
+    php::unlink("madc_ide_tdisc/b.mad");
+    php::unlink("madc_ide_tdisc/b.helper");
+    php::rmdir("madc_ide_tdisc");
+    php::unlink("madc_ide_mcp_bad/bad.mcp.json");
+    php::rmdir("madc_ide_mcp_bad");
+    php::unlink("madc_ide_mcp_dead/dead.mcp.json");
+    php::unlink("madc_ide_mcp_dead/exit.mad");
+    php::rmdir("madc_ide_mcp_dead");
+    php::unlink("madc_ide_mcp/fixture.mcp.json");
+    php::rmdir("madc_ide_mcp");
+    S.close();
+    php::unlink(path);
+    return 0;
+}

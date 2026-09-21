@@ -1,0 +1,41 @@
+// Out-of-line member definitions of a class template AND of its partial
+// specialization — libstdc++'s `vector<bool, _Alloc>::_M_insert_aux` beside
+// `vector<_Tp, _Alloc>::_M_insert_aux` in vector.tcc (self-host arc
+// 2026-09-17, 13 units: "member reference is not a structure or union" at
+// vector.tcc:933 — vector<Entry>::insert instantiated the vector<bool> body).
+// The out-of-line registry keyed both definitions by the class name alone
+// and bound their template parameters positionally; a definition's class-head
+// arguments decide WHICH instantiations it defines (`<bool, A>` only those
+// with T = bool) and HOW its parameters bind (A is slot 1). Shapes: the
+// primary and the partial specialization each with an out-of-line member,
+// a member the specialization defines in-class, and both instantiated.
+// Oracle: g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+template<class T, class A> struct box {
+    T slot[4]; int n;
+    box() : n(0) {}
+    void put(T v);
+    int size() const;
+};
+template<class T, class A> void box<T, A>::put(T v) { slot[n++] = v; }
+template<class T, class A> int box<T, A>::size() const { return n; }
+
+template<class A> struct box<bool, A> {
+    unsigned bits; int n;
+    box() : bits(0), n(0) {}
+    void put(bool v);
+    int size() const { return n * 100; }
+};
+template<class A> void box<bool, A>::put(bool v) { if (v) bits |= 1u << n; n++; }
+
+struct alloc_tag {};
+
+int main()
+{
+    box<int, alloc_tag> bi; bi.put(3); bi.put(5);
+    box<bool, alloc_tag> bb; bb.put(true); bb.put(false); bb.put(true);
+    box<double, alloc_tag> bd; bd.put(2.5);
+    printf("%d %d %d %d %u %.1f\n", bi.size(), bi.slot[1], bb.size(), bb.n, bb.bits, bd.slot[0]);
+    return 0;
+}

@@ -1,0 +1,21 @@
+// operator[] indices keep each list together and use the parameter target.
+// NOTE: a subscript on a CALL RESULT (`identity(m)[{4,5}]`) is deliberately
+// absent — `operator[]` on a call result fails in madc with no braces at all
+// (tmp reducer: `identity(m)[i]`), so it belongs to that separate gap, not to
+// braced-init-list wiring.
+#include <stdio.h>
+struct Index { int row, col; Index(int r, int c): row(r), col(c) {} };
+struct Matrix { int operator[](Index i) { printf("index: %d %d\n", i.row, i.col); return i.row * 10 + i.col; } };
+struct Holder { Matrix m; int use() { return m[{3,4}]; } };
+struct Plain { int a, b; };
+struct Other { int operator[](const Plain &p) { return p.a * 10 + p.b; } };
+int main()
+{
+	Matrix m; Matrix &ref = m; Holder h; Other other;
+	int a = m[{1,2}];
+	int b = ref[{2,3}];
+	int c = h.use();
+	int e = other[{5,6}];
+	printf("values: %d %d %d %d\n", a, b, c, e);
+	return 0;
+}

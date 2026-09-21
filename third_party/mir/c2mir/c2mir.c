@@ -7911,7 +7911,11 @@ static void def_symbol (c2m_ctx_t c2m_ctx, enum symbol_mode mode, node_t id, nod
   assert (scope->code == N_MODULE || scope->code == N_BLOCK || scope->code == N_STRUCT
           || scope->code == N_UNION || scope->code == N_FUNC || scope->code == N_FOR);
   decl_spec = ((decl_t) def_node->attr)->decl_spec;
-  if (decl_spec.thread_local_p && !decl_spec.static_p && !decl_spec.extern_p)
+  /* C11 6.7.1p3: only a BLOCK-scope object declared _Thread_local must also be
+     static or extern; at file scope the specifier stands alone (gcc and clang
+     accept `_Thread_local int x;`, and reject the block-scope form). */
+  if (decl_spec.thread_local_p && !decl_spec.static_p && !decl_spec.extern_p
+      && scope != top_scope)
     error (c2m_ctx, POS (id), "auto %s is declared as thread local", id->u.s.s);
   if (!symbol_find (c2m_ctx, mode, id, scope, &sym)) {
     symbol_insert (c2m_ctx, mode, id, scope, def_node, NULL);

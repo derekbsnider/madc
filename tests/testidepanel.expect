@@ -1,4 +1,5 @@
 no-build: panel-index=-1
-build-live: panel-present=1
+build-live: panel-present=1 shown=output
 panel-has-output=1
-drained: panel-index=-1
+drained: panel-present=1
+hidden: panel-index=-1

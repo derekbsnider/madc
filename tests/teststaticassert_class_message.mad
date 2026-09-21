@@ -1,0 +1,4 @@
+// Preserve a nonempty class assertion message verbatim.
+struct Rejected {
+	static_assert(false, "class assertion detail");
+};

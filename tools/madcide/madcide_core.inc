@@ -17,6 +17,18 @@
 // (tests/testmadcide.mad drives it headlessly with the exact event value
 // shapes).
 
+#include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+
+// The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):
+// integers on the bag, an enumerator at every site, a name only where text
+// leaves the program (pane_name & co. in madcide_enums.inc).
+long cur_pane(long w, long es)		{ return es_int(w, es, "pane", paneNONE); }
+void set_pane(long w, long es, long p)	{ ui::set(w, es, "pane", p); }
+long cur_pmode(long w, long es)		{ return es_int(w, es, "pmode", pmNONE); }
+void set_pmode(long w, long es, long m)	{ ui::set(w, es, "pmode", m); }
+long cur_vimode(long w, long es)	{ return es_int(w, es, "vimode", viOFF); }
+void set_vimode(long w, long es, long m) { ui::set(w, es, "vimode", m); }
+
 // ---- the IDE session (the gateway seam, design doc 2026-08-31) ---------
 // THIS FILE IS THE SESSION LAYER. IdeSession owns the IDE's state and
 // semantics; apply_ide_event / compose_ide_tree are its surface. The ui
@@ -54,6 +66,11 @@ class IdeSession
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
+	long spawn_view(long doc);	// a NEW client view over the shared
+					// world + `doc` (viewwindow): a fresh
+					// es built like open()'s, returned to
+					// the client to open a frontend on;
+					// 0 = the profile + rescue both failed
 	bool apply_ide_event(long doc, var &ev);	// false = quit
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
 					// arm: the hit node's window tag
@@ -64,8 +81,31 @@ class IdeSession
 					// the vi modes-as-scopes arm:
 					// true = consumed; cont carries
 					// the continue/quit verdict
-	bool vi_exec(long doc, const char *a, long n);	// one named action,
-					// n times, through apply_ide_event
+	bool vi_exec(long doc, long code, long n);	// one command (its
+					// code), n times, through
+					// apply_ide_event
+	bool post(long doc, long code);	// ONE command by CODE through the
+					// one dispatcher (a client that
+					// speaks codes); false = quit
+	bool command(long doc, long code, const char *arg, bool &cont);
+					// a command WITH ITS ARGUMENT
+					// (the -c line, the api seat, a
+					// `:` verb): the argument is what
+					// the prompt the command opens
+					// would have been typed; false =
+					// refused (an argument the command
+					// does not take); cont = the
+					// continue / quit verdict
+	bool line_input(long doc, const char *line, bool &cont);
+					// ONE line of the ex / edlin client
+					// (ui::LINE, V2.5): a ':' line is a
+					// colon command (posted through
+					// command(cmdCOLON, …)); any other
+					// line is text inserted verbatim +
+					// a newline. false = refused; cont =
+					// the continue / quit verdict
+	long error_count();		// ERROR rows in the problems
+					// projection (a one-shot's verdict)
 	void vi_open_line(long doc, bool above);	// o / O / cc's line
 	long world();
 	long active(long fallback);	// the active buffer's document
@@ -77,8 +117,10 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
-	void panel(bool has);		// the client renders regions (P3a): the
-					// bottom PANEL with tabs is composed
+	void panel(bool has);		// the client renders REGIONS (a
+					// window): runs and the shell go to a
+					// pty in the Terminal tab; the panel
+					// itself is the layout's (V2)
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
 	void request_refused(var &req);	// the client cannot hand over a
@@ -87,6 +129,9 @@ class IdeSession
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
 	bool take_request(var &out);	// drain the parked terminal request
+	bool take_spawn(long &doc);	// drain a parked viewwindow spawn
+					// (the doc the new window views);
+					// false = none
 	void term_exec(var &req);	// run the guest between the
 					// client's suspend and resume
 	void close();			// stop builds, drain tasks, close
@@ -117,6 +162,46 @@ void path_sans_ext(var &out, var &p)
     const char *dot = strrchr(pc, '.');
     if ( dot != 0 )
 	out = perl::substr(p, 0, dot - pc);
+}
+
+// Two spellings of one file are ONE FILE — the identity question every
+// "is this buffer / TU / diagnostic about that file" site asks. Canonical on
+// both sides through madc::canonical_path, the engine's standing
+// canonicalizer (never a rule invented here). V6c-2 taught edit_file this
+// (`^K E /abs/path/x.mad` opened a second buffer on the file already open as
+// `x.mad`); the V6 seam audit found its three siblings still comparing text
+// — a TU added by one spelling while its buffer was open under another was
+// double-added, listed twice and dirty-marked on the wrong row. ONE owner.
+bool same_file(const char *a, const char *b)
+{
+    var ca;
+    var cb;
+    madc::canonical_path(ca, a);
+    madc::canonical_path(cb, b);
+    return ca == cb;
+}
+
+// A manifest is OPEN (loaded or materialized): the kind row shows, the
+// build rows go project-wide. (project_active is the WINDOW being up — a
+// different fact.) The ONE owner of the test — the V6 seam audit found it
+// inlined nine times beside this function, once four lines after calling it.
+bool proj_has_manifest(long w, long es)
+{
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    return !pf.is_null() && strlen(pf.c_str()) > 0;
+}
+
+// The persisted layout sits BESIDE the manifest (V2c, design §5): the
+// manifest path minus its extension, plus `.layout` — `foo.prj.json` ->
+// `foo.prj.layout`, `myproj.json` -> `myproj.layout`. One derivation for
+// the save (layout_persist) and the load (proj_load), so both name the
+// same file.
+void proj_layout_path(var &out, var &pf)
+{
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.layout", base);
 }
 
 // Where the profile/theme/status data lives (packaging arc PK7): the
@@ -184,10 +269,18 @@ bool scope_line_parts(var &line, var &scope, var &name, var &value)
     return true;
 }
 
-void parse_keys(var &table, var &scopes, const char *text)
+// Action NAMES resolve to their command CODES here (owner law 2026-09-09:
+// enums, not strings) — the profile text is the input boundary: the tables
+// hold ide_cmd codes (the engine binds a code-valued table as codes; the
+// scoped tables' values are codes), and an unknown name REFUSES the whole
+// text — false, `err` naming the line and the word — so a misspelt binding
+// is a load-time error the status line reports, never a dead key.
+bool parse_keys(var &table, var &scopes, const char *text, var &err)
 {
     var t;
     var sc = scopes;		// accumulate over what the caller seeded
+    var ct;
+    cmd_table(ct);
     array lines;
     php::explode(lines, "\n", text);
     long n = php::count(lines);
@@ -204,16 +297,22 @@ void parse_keys(var &table, var &scopes, const char *text)
 	    var action;
 	    if ( !scope_line_parts(line, scope, key, action) )
 		continue;
+	    long code = cmd_of_in(ct, action.c_str());
+	    if ( code == cmdNONE )
+	    {
+		err = format("line {}: unknown action '{}'", i + 1, action);
+		return false;
+	    }
 	    var one = sc[scope.c_str()];
 	    if ( one.is_null() )
 	    {
 		var fresh;
-		fresh[key.c_str()] = action;
+		fresh[key.c_str()] = code;
 		sc[scope.c_str()] = fresh;
 	    }
 	    else
 	    {
-		one[key.c_str()] = action;
+		one[key.c_str()] = code;
 		sc[scope.c_str()] = one;
 	    }
 	    continue;
@@ -224,10 +323,17 @@ void parse_keys(var &table, var &scopes, const char *text)
 	long cut = sp - ls;
 	var action = php::trim(sp + 1);
 	var seq = php::trim(perl::substr(line, 0, cut));
-	t[seq.c_str()] = action;
+	long code = cmd_of_in(ct, action.c_str());
+	if ( code == cmdNONE )
+	{
+	    err = format("line {}: unknown action '{}'", i + 1, action);
+	    return false;
+	}
+	t[seq.c_str()] = code;
     }
     table = t;
     scopes = sc;
+    return true;
 }
 
 // The baked MODAL defaults (owner keybinding law — REPEAT correction
@@ -286,7 +392,9 @@ void modal_keys(var &mk, long w, long es)
     if ( mk.is_null() )
     {
 	var t0;
-	parse_keys(t0, mk, modal_default_keys_text());
+	var err;
+	if ( !parse_keys(t0, mk, modal_default_keys_text(), err) )
+	    ui::set(w, es, "msg", format("Baked modal keys rejected: {}.", err));
 	ui::set(w, es, "modekeys", mk);
     }
 }
@@ -348,11 +456,13 @@ bool scope_action_named(var &out, long w, long es, const char *scope,
     var sc = mk[scope];
     if ( sc.is_null() )
 	return false;
-    var nm = format("{}", ev["action"]);
+    var code = ev["action_code"];
+    if ( code.is_null() || code.as_integer() == cmdNONE )
+	return false;
     for ( var a : sc )
-	if ( strcmp(a.c_str(), nm.c_str()) == 0 )
+	if ( a == code )
 	{
-	    out = nm;
+	    out = code;
 	    return true;
 	}
     return false;
@@ -360,7 +470,7 @@ bool scope_action_named(var &out, long w, long es, const char *scope,
 
 // The vi mode setter (defined with the vi machinery below — the loaders
 // need it: a modal personality starts in normal mode).
-void vi_enter(long w, long es, const char *mode);
+void vi_enter(long w, long es, long mode);
 
 // Load a named profile from the session's profile directory: parse it,
 // VALIDATE it handle-free (ui::tui_validate_keys — same rules the
@@ -385,11 +495,19 @@ bool load_profile(long w, long es, const char *name)
     }
     // The baked modal defaults ride UNDER every profile (same parser,
     // later lines win): a profile respells a modal key by carrying its
-    // own @scope line; one that says nothing keeps the defaults.
+    // own @scope line; one that says nothing keeps the defaults. Parsed
+    // FIRST, the profile over them — so a refusal names the PROFILE's own
+    // line: "Profile 'x' line 12: unknown action 'svae'."
     var full = format("{}\n{}", modal_default_keys_text(), txt);
     var table;
     var scopes;
-    parse_keys(table, scopes, full.c_str());
+    var err;
+    parse_keys(table, scopes, modal_default_keys_text(), err);
+    if ( !parse_keys(table, scopes, txt.c_str(), err) )
+    {
+	ui::set(w, es, "msg", format("Profile '{}' {}.", pname, err));
+	return false;
+    }
     if ( !ui::tui_validate_keys(table) )
     {
 	ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
@@ -404,7 +522,7 @@ bool load_profile(long w, long es, const char *name)
     // not light mark..caret; a set without it keeps the live pico rule.
     bool twopoint = false;
     for ( var a : table )
-	if ( a == "bend" )
+	if ( a == cmdBEND )
 	    twopoint = true;
     ui::set(w, es, "selblock", twopoint);
     // A profile that carries @normal key data IS a modal personality
@@ -412,7 +530,7 @@ bool load_profile(long w, long es, const char *name)
     // other profile clears vi mode — the tables its arm routes through
     // are gone. Data decides, never the profile's name.
     var vt = scopes["normal"];
-    vi_enter(w, es, vt.is_null() ? "" : "normal");
+    vi_enter(w, es, vt.is_null() ? viOFF : viNORMAL);
     ui::set(w, es, "profile", pname);
     ui::set(w, es, "bindtext", full);	// help documents the modal
 					// defaults along with the profile
@@ -442,19 +560,758 @@ bool bind_rescue_keys(long w, long es)
     var full = format("{}\n{}", modal_default_keys_text(), rescue_keys_text());
     var table;
     var scopes;
-    parse_keys(table, scopes, full.c_str());
+    var err;
+    parse_keys(table, scopes, modal_default_keys_text(), err);
+    if ( !parse_keys(table, scopes, rescue_keys_text(), err) )
+	return false;
     if ( !ui::tui_validate_keys(table) )
 	return false;
     ui::set(w, es, "keytable", table);
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
-    vi_enter(w, es, "");		// no @normal data in the rescue set
+    vi_enter(w, es, viOFF);		// no @normal data in the rescue set
     ui::set(w, es, "profile", "rescue");
     ui::set(w, es, "bindtext", full);
     ui::set(w, es, "msg",
 	    "No keybinding profile found — RESCUE keys: ^S save  ^Q quit  ^X discard  ^G help  ^P profile");
     return true;
+}
+
+// ---- layouts as data (client-server arc V2; design doc §2.2; plan
+//      2026-09-09-v2-containers-layouts-plan.md) ----------------------------
+// A LAYOUT is a tree of containers holding Views, owned by the client and
+// stored on the bag as "layout":
+//   { "window": name, "editor": <node>, "chrome": [ <pane>... ] }
+//   pane  { "kind": ctPANE, "slot", "side", "size", "mode", "tabs": [ <tab>... ], "active": 0, "focus", "hidden" }
+//   tab   = layout_tab(kind, view): the CONTAINER — its View and its own navigation (caret, mark, bend, grow)
+//   split { "kind": ctSPLIT, "dir": ui::split, "size", "children": [ <node>... ] }
+// The `.layout` text is the input boundary (profiles/default.layout, the
+// grammar in its header): every word converts ONCE here — slot_of, pmode_of,
+// view_of, ui::side_code, ui::split_code — and an unknown word REFUSES the
+// text with its line; a ragged indentation, a chrome pane inside a split, a
+// pane with children, a split with fewer than two children, two editor
+// regions or two windows refuse the same way (parse_keys' shape). The baked
+// default rides the same parser (the rescue-keys pattern).
+
+// THE layout-tab row shape, one owner (the single-owners gate counts the
+// container-navigation shape: this, push_buffer_row and edit_file's seed): a
+// fresh CONTAINER over a View of `kind` — its navigation starts at the top
+// with no block (design §6 Q1: caret / mark / bend live on the container).
+void layout_tab(var &out, long kind, long view)
+{
+    out = { "kind": kind, "view": view, "caret": 0, "mark": -1, "bend": -1,
+	    "grow": 0 };
+}
+
+// Split a trimmed line into its whitespace-separated words.
+void layout_words(var &out, var &line)
+{
+    var words = {};
+    const char *ls = line.c_str();
+    long n = strlen(ls);
+    long start = -1;
+    for ( long i = 0; i <= n; i = i + 1 )
+    {
+	bool sep = i == n || ls[i] == ' ' || ls[i] == '\t';
+	if ( !sep && start < 0 )
+	    start = i;
+	else if ( sep && start >= 0 )
+	{
+	    var wd = perl::substr(line, start, i - start);
+	    words.push(wd);
+	    start = -1;
+	}
+    }
+    out = words;
+}
+
+// A size word "NN%" -> NN (1..90); -1 when the word is not a size.
+long layout_size_of(var &word)
+{
+    const char *ws = word.c_str();
+    long n = strlen(ws);
+    if ( n < 2 || ws[n - 1] != '%' )
+	return -1;
+    for ( long i = 0; i < n - 1; i = i + 1 )
+	if ( ws[i] < '0' || ws[i] > '9' )
+	    return -1;
+    long v = php::intval(perl::substr(word, 0, n - 1));
+    if ( v < 1 || v > 90 )
+	return -1;
+    return v;
+}
+
+// The leading whitespace of a raw line (its nesting depth).
+long layout_depth_of(var &raw)
+{
+    const char *rs = raw.c_str();
+    long d = 0;
+    while ( rs[d] == ' ' || rs[d] == '\t' )
+	d = d + 1;
+    return d;
+}
+
+// One `pane` line's words (after the keyword) into a flat row. False + err.
+bool layout_pane_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: pane without a slot", lineno);
+	return false;
+    }
+    var sw = words[1];
+    long slot = slot_of(sw);
+    if ( slot == slotNONE || slot == slotPOPUP )
+    {
+	err = format("line {}: unknown slot '{}'", lineno, sw);
+	return false;
+    }
+    long side = ui::side_code("");
+    long size = 0;
+    long mode = lmNONE;
+    bool collecting = false;
+    bool focus = false;
+    bool hidden = false;
+    var tabs = {};
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	if ( wd == "views" )
+	{
+	    collecting = true;
+	    continue;
+	}
+	if ( wd == "focus" )
+	{
+	    focus = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( wd == "hidden" )
+	{
+	    hidden = true;
+	    collecting = false;
+	    continue;
+	}
+	if ( collecting )
+	{
+	    long k = view_of(wd);
+	    if ( k == viewNONE )
+	    {
+		err = format("line {}: unknown view '{}'", lineno, wd);
+		return false;
+	    }
+	    var tb;
+	    layout_tab(tb, k, 0);
+	    tabs.push(tb);
+	    continue;
+	}
+	long sz = layout_size_of(wd);
+	if ( sz > 0 )
+	{
+	    size = sz;
+	    continue;
+	}
+	const char *wds = wd.c_str();
+	if ( strlen(wds) > 1 && wds[strlen(wds) - 1] == '%' )
+	{
+	    err = format("line {}: bad size '{}' (1%..90%)", lineno, wd);
+	    return false;
+	}
+	long sd = ui::side_code(wd.c_str());
+	if ( sd != ui::side_code("") )
+	{
+	    side = sd;
+	    continue;
+	}
+	long pm = pmode_of(wd);
+	if ( pm != lmNONE )
+	{
+	    mode = pm;
+	    continue;
+	}
+	err = format("line {}: unknown word '{}'", lineno, wd);
+	return false;
+    }
+    if ( php::count(tabs) == 0 )
+    {
+	err = format("line {}: pane without views", lineno);
+	return false;
+    }
+    // The slot's side rule: a sidebar docks left or right, a panel bottom or
+    // top, the editor region has no side.
+    var sidev = side;
+    bool sideok = true;
+    if ( slot == slotSIDEBAR )
+	sideok = sidev == ui::side::left || sidev == ui::side::right;
+    else if ( slot == slotPANEL )
+	sideok = sidev == ui::side::bottom || sidev == ui::side::top;
+    else
+	sideok = sidev == ui::side::none;
+    if ( !sideok )
+    {
+	err = format("line {}: a {} pane cannot dock '{}'", lineno,
+		     slot_name(slot), ui::side_name(side));
+	return false;
+    }
+    if ( size == 0 && slot == slotSIDEBAR )
+	size = 20;
+    if ( size == 0 && slot == slotPANEL )
+	size = 25;
+    if ( mode == lmNONE )
+	mode = lmTABS;
+    long f = focus ? 1 : 0;
+    long h = hidden ? 1 : 0;
+    row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
+	    "mode": mode, "tabs": tabs, "active": 0, "focus": f, "hidden": h };
+    return true;
+}
+
+// One `split` line's words into a flat row. False + err.
+bool layout_split_row(var &row, var &words, long lineno, var &err)
+{
+    long nw = php::count(words);
+    if ( nw < 2 )
+    {
+	err = format("line {}: split without a direction", lineno);
+	return false;
+    }
+    var dw = words[1];
+    long dir = ui::split_code(dw.c_str());
+    if ( dir == ui::split_code("") )
+    {
+	err = format("line {}: unknown split direction '{}'", lineno, dw);
+	return false;
+    }
+    long size = 0;
+    for ( long i = 2; i < nw; i = i + 1 )
+    {
+	var wd = words[i];
+	long sz = layout_size_of(wd);
+	if ( sz <= 0 )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, wd);
+	    return false;
+	}
+	size = sz;
+    }
+    row = { "kind": ctSPLIT, "dir": dir, "size": size };
+    return true;
+}
+
+// Build the tree node for flat row `idx`: a pane as is; a split with its
+// children (the rows whose parent is idx, in order) built recursively.
+void layout_build(var &node, var &rows, long idx)
+{
+    var r = rows[idx];
+    if ( r["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	long n = php::count(rows);
+	for ( long i = 0; i < n; i = i + 1 )
+	{
+	    var c = rows[i];
+	    if ( c["parent"] == idx )
+	    {
+		var child;
+		layout_build(child, rows, i);
+		kids.push(child);
+	    }
+	}
+	node = { "kind": ctSPLIT, "dir": r["dir"], "size": r["size"],
+		 "children": kids };
+	return;
+    }
+    node = { "kind": ctPANE, "slot": r["slot"], "side": r["side"],
+	     "size": r["size"], "mode": r["mode"], "tabs": r["tabs"],
+	     "active": r["active"], "focus": r["focus"],
+	     "hidden": r["hidden"] };
+}
+
+// The parser: text -> the layout tree. False + err (the line and the word).
+bool parse_layout(var &layout, const char *text, var &err)
+{
+    var window = "";
+    var rows = {};		// flat: every pane / split with depth + parent
+    var open = {};		// indices of the split rows still open
+    array lines;
+    php::explode(lines, "\n", text);
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var raw = php::array_get_cstr(lines, i);
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	long lineno = i + 1;
+	var words;
+	layout_words(words, line);
+	var kw = words[0];
+	if ( kw == "@window" )
+	{
+	    if ( strlen(window.c_str()) > 0 )
+	    {
+		err = format("line {}: a second window (one window; V3 adds windows)", lineno);
+		return false;
+	    }
+	    if ( php::count(words) < 2 )
+	    {
+		err = format("line {}: window without a name", lineno);
+		return false;
+	    }
+	    window = words[1];
+	    continue;
+	}
+	long ct = container_of(kw);
+	if ( ct == ctNONE )
+	{
+	    err = format("line {}: unknown word '{}'", lineno, kw);
+	    return false;
+	}
+	long depth = layout_depth_of(raw);
+	// The open splits: a line at or above an open split's depth closes it.
+	while ( php::count(open) > 0 )
+	{
+	    var top = rows[open[php::count(open) - 1].as_integer()];
+	    if ( top["depth"].as_integer() < depth )
+		break;
+	    var shorter = {};
+	    long no = php::count(open) - 1;
+	    for ( long k = 0; k < no; k = k + 1 )
+		shorter.push(open[k]);
+	    open = shorter;
+	}
+	long parent = -1;
+	if ( php::count(open) > 0 )
+	{
+	    parent = open[php::count(open) - 1].as_integer();
+	    var pr = rows[parent];
+	    long cd = pr["childdepth"].as_integer();
+	    if ( cd == 0 )
+	    {
+		pr["childdepth"] = depth;
+		rows[parent] = pr;
+	    }
+	    else if ( cd != depth )
+	    {
+		err = format("line {}: ragged layout", lineno);
+		return false;
+	    }
+	}
+	else if ( depth > 0 )
+	{
+	    err = format("line {}: ragged layout", lineno);
+	    return false;
+	}
+	var row;
+	if ( ct == ctPANE )
+	{
+	    if ( !layout_pane_row(row, words, lineno, err) )
+		return false;
+	    if ( parent >= 0 && row["slot"] != slotEDITOR )
+	    {
+		err = format("line {}: a {} pane never splits", lineno,
+			     slot_name(row["slot"].as_integer()));
+		return false;
+	    }
+	}
+	else
+	{
+	    if ( !layout_split_row(row, words, lineno, err) )
+		return false;
+	}
+	row["depth"] = depth;
+	row["parent"] = parent;
+	row["childdepth"] = 0;
+	row["line"] = lineno;
+	rows.push(row);
+	if ( ct == ctSPLIT )
+	    open.push(php::count(rows) - 1);
+    }
+    // Every split holds two or more children; exactly one editor region;
+    // the chrome panes are top-level; one focus (the first editor pane when
+    // none is named).
+    long nr = php::count(rows);
+    long editor = -1;
+    long focused = 0;
+    var chrome = {};
+    for ( long i = 0; i < nr; i = i + 1 )
+    {
+	var r = rows[i];
+	if ( r["kind"] == ctSPLIT )
+	{
+	    long kids = 0;
+	    for ( long j = 0; j < nr; j = j + 1 )
+	    {
+		var c = rows[j];
+		if ( c["parent"] == i )
+		    kids = kids + 1;
+	    }
+	    if ( kids < 2 )
+	    {
+		err = format("line {}: a split needs two or more children", r["line"]);
+		return false;
+	    }
+	}
+	else if ( r["focus"].as_integer() != 0 )
+	    focused = focused + 1;
+	if ( r["parent"].as_integer() != -1 )
+	    continue;
+	if ( r["kind"] == ctSPLIT || r["slot"] == slotEDITOR )
+	{
+	    if ( editor >= 0 )
+	    {
+		err = format("line {}: a second editor region", r["line"]);
+		return false;
+	    }
+	    editor = i;
+	}
+	else
+	    chrome.push(i);
+    }
+    if ( editor < 0 )
+    {
+	err = "no editor region (a `pane editor` or a `split`)";
+	return false;
+    }
+    if ( focused > 1 )
+    {
+	err = "more than one pane carries focus";
+	return false;
+    }
+    if ( focused == 0 )
+    {
+	for ( long i = 0; i < nr; i = i + 1 )
+	{
+	    var r = rows[i];
+	    if ( r["kind"] == ctPANE && r["slot"] == slotEDITOR )
+	    {
+		r["focus"] = 1;
+		rows[i] = r;
+		break;
+	    }
+	}
+    }
+    var ed;
+    layout_build(ed, rows, editor);
+    var ch = {};
+    for ( var ci : chrome )
+    {
+	var cnode;
+	layout_build(cnode, rows, ci.as_integer());
+	ch.push(cnode);
+    }
+    if ( strlen(window.c_str()) == 0 )
+	window = "main";
+    layout = { "window": window, "editor": ed, "chrome": ch };
+    return true;
+}
+
+// The baked default: the shipped profiles/default.layout as inline data
+// through the SAME parser — what a missing or broken file falls back to.
+const char *default_layout_text()
+{
+    return "# baked default layout — profile data\n"
+	   "@window main\n"
+	   "pane editor tabs views source focus\n"
+	   "pane sidebar left 20% tabs views outline hidden\n"
+	   "pane panel bottom 25% tabs views problems output terminal hidden\n";
+}
+
+// Load a named layout from the profile directory onto the bag ("layout");
+// a missing or refused file falls back to the baked default and SAYS so on
+// the status line (a layout must exist: the composer places by it). False =
+// the fallback was taken.
+bool load_layout(long w, long es, const char *name)
+{
+    var lname = name;		// ring discipline: own the text first
+    var dir;
+    ui::get(dir, w, es, "profile_dir");
+    var txt;
+    var layout;
+    var err;
+    bool ok = php::file_get_contents(txt, format("{}/{}.layout", dir, lname));
+    if ( ok )
+	ok = parse_layout(layout, txt.c_str(), err);
+    else
+	err = "no such file";
+    if ( !ok )
+    {
+	var fallback;
+	var ferr;
+	parse_layout(fallback, default_layout_text(), ferr);
+	ui::set(w, es, "layout", fallback);
+	ui::set(w, es, "msg", format("Layout '{}' {} — the default layout is in use.", lname, err));
+	return false;
+    }
+    ui::set(w, es, "layout", layout);
+    return true;
+}
+
+// ---- the layout tree -> `.layout` text (parse_layout's inverse) -----------
+// V2c persistence (design §5): the live layout is written beside the manifest
+// so a docked pane / a resized band comes back on the next project open. The
+// emitter is parse_layout's STRUCTURAL inverse — window, the editor region,
+// the chrome panes — so parse_layout(layout_to_text(lo)) rebuilds an equal
+// tree. It omits what the grammar omits (a transient code render, the active
+// tab): those are session state, not layout (design §5: positions / sizes /
+// modes / hidden flags, NOT the tabs' contents).
+
+// One indentation prefix: two spaces per depth level. parse_layout reads a
+// line's depth as its leading-whitespace count and only requires siblings to
+// agree, so any consistent step round-trips.
+void layout_indent(var &out, long depth)
+{
+    var s = "";
+    for ( long i = 0; i < depth; i = i + 1 )
+	s = format("{}  ", s);
+    out = s;
+}
+
+// One pane line: `pane <slot> [<side>] [<size>%] <mode> views <kind>...
+// [focus] [hidden]` — mode and size BEFORE `views` and the flags after (so
+// the `views` list stops at a flag), the exact word order parse_layout reads.
+// An editor pane persists as a SOURCE pane (its tabs' Views are session
+// state); a chrome pane persists its tool tabs (fixed kinds).
+void layout_emit_pane(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    long slot = node["slot"].as_integer();
+    var line = format("{}pane {}", ind, slot_name(slot));
+    long side = node["side"].as_integer();
+    if ( side != ui::side::none )
+	line = format("{} {}", line, ui::side_name(side));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    line = format("{} {} views", line, pmode_name(node["mode"].as_integer()));
+    if ( slot == slotEDITOR )
+	line = format("{} {}", line, view_name(viewSOURCE));
+    else
+	for ( var t : node["tabs"] )
+	    line = format("{} {}", line, view_name(t["kind"].as_integer()));
+    if ( node["focus"].as_integer() != 0 )
+	line = format("{} focus", line);
+    if ( node["hidden"].as_integer() != 0 )
+	line = format("{} hidden", line);
+    out = format("{}\n", line);
+}
+
+// One split header line: `split <dir> [<size>%]`; the children follow indented
+// one level deeper.
+void layout_emit_split(var &out, var &node, long depth)
+{
+    var ind;
+    layout_indent(ind, depth);
+    var line = format("{}split {}", ind, ui::split_name(node["dir"].as_integer()));
+    long size = node["size"].as_integer();
+    if ( size > 0 )
+	line = format("{} {}%", line, size);
+    out = format("{}\n", line);
+}
+
+// A node (a pane or a split subtree) -> its text, children recursed one level
+// deeper.
+void layout_emit_node(var &out, var &node, long depth)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var body;
+	layout_emit_split(body, node, depth);
+	for ( var c : node["children"] )
+	{
+	    var cs;
+	    layout_emit_node(cs, c, depth + 1);
+	    body = format("{}{}", body, cs);
+	}
+	out = body;
+	return;
+    }
+    layout_emit_pane(out, node, depth);
+}
+
+// The whole tree -> text: `@window`, the editor region (a top-level pane or
+// split), then the chrome panes (top-level).
+void layout_to_text(var &out, var &lo)
+{
+    var s = "# madcide layout — written by the session; edit or delete freely\n";
+    s = format("{}@window {}\n", s, lo["window"]);
+    var ed;
+    layout_emit_node(ed, lo["editor"], 0);
+    s = format("{}{}", s, ed);
+    for ( var c : lo["chrome"] )
+    {
+	var cs;
+	layout_emit_pane(cs, c, 0);
+	s = format("{}{}", s, cs);
+    }
+    out = s;
+}
+
+// The client's layout tree; a session that never ran open (the headless
+// harness attaches over its own world) gets the baked default on first use.
+void layout_get(var &lo, long w, long es)
+{
+    ui::get(lo, w, es, "layout");
+    if ( lo.is_null() )
+    {
+	var err;
+	parse_layout(lo, default_layout_text(), err);
+	ui::set(w, es, "layout", lo);
+    }
+}
+
+// The chrome pane hosting a View KIND: its index in the layout's chrome and
+// the tab's index within it; -1 when no pane hosts the kind.
+long chrome_hosting(var &lo, long kind, long &tab)
+{
+    long ci = 0;
+    for ( var c : lo["chrome"] )
+    {
+	long ti = 0;
+	for ( var t : c["tabs"] )
+	{
+	    if ( t["kind"] == kind )
+	    {
+		tab = ti;
+		return ci;
+	    }
+	    ti = ti + 1;
+	}
+	ci = ci + 1;
+    }
+    tab = -1;
+    return -1;
+}
+
+// The kind a chrome pane SHOWS: its active tab's, viewNONE while hidden.
+long chrome_shown(var &c)
+{
+    if ( c["hidden"].as_integer() != 0 )
+	return viewNONE;
+    var tabs = c["tabs"];
+    long a = c["active"].as_integer();
+    if ( a < 0 || a >= php::count(tabs) )
+	return viewNONE;
+    var t = tabs[a];
+    return t["kind"].as_integer();
+}
+
+// The kind shown in the chrome pane of a SLOT (viewNONE: hidden or no such
+// pane) — a probe's read.
+long slot_shown(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
+	if ( c["slot"] == slot )
+	    return chrome_shown(c);
+    return viewNONE;
+}
+
+// Is a tool View SHOWN (its pane visible with it the active tab)?
+bool view_shown(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var c = lo["chrome"][ci];
+    return c["hidden"].as_integer() == 0 && c["active"].as_integer() == tab;
+}
+
+// SHOW a tool View: the chrome pane hosting it comes up with that tab active
+// — the ONE surface (the terminal's diags pane and the window's panel used
+// to be two). Focus stays where it is (Tab reaches the rows, as ever; V2b's
+// viewfocus moves it). Remembers the kind as the one the @pane esc hides.
+// False + a status message for a kind no pane of this layout hosts.
+bool show_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg", format("No pane of the layout hosts the {} view.",
+				     view_name(kind)));
+	return false;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["hidden"] = 0;
+    c["active"] = tab;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "chromelast", kind);
+    return true;
+}
+
+// HIDE the chrome pane hosting a kind; true when it was visible.
+bool hide_view(long w, long es, long kind)
+{
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    if ( ci < 0 )
+	return false;
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    bool was = c["hidden"].as_integer() == 0;
+    c["hidden"] = 1;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    if ( es_int(w, es, "chromelast", viewNONE) == kind )
+    {
+	long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    }
+    return was;
+}
+
+// The @pane esc on the chrome: hide the pane that showed the LAST kind; false
+// when nothing is up to hide (the key falls through).
+bool hide_last_view(long w, long es)
+{
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+	return false;
+    long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    return hide_view(w, es, k);
+}
+
+// TOGGLE a slot's chrome pane (the `panel` command): hidden <-> shown with
+// its active tab; a layout without that slot says so.
+void toggle_slot(long w, long es, long slot)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	bool hide = c["hidden"].as_integer() == 0;
+	c["hidden"] = hide ? 1 : 0;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	long last = hide ? viewNONE : chrome_shown(c);
+	ui::set(w, es, "chromelast", last);
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
 }
 
 // ---- theme as data (AST-2): classification -> style spec, a SCHEME ----
@@ -477,6 +1334,7 @@ bool load_theme(long w, long es, const char *name)
 	return false;
     var th;
     var gth;			// the @gui scope: CSS custom properties
+    var pth;			// the @presence scope: round-robin caret colours
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -492,6 +1350,22 @@ bool load_theme(long w, long es, const char *name)
 	// the TUI theme unchanged — one file, two renderings, later lines win.
 	if ( ls[0] == '@' )
 	{
+	    // @presence <slot> <style spec>: the round-robin caret colour a
+	    // client is dealt at connect (client-server V3c). A spec may be
+	    // multi-word ("bold red"), so read the tail whole — the shared scope
+	    // rule (scope_line_parts) keeps only the last word.
+	    if ( perl::index(ls, "@presence ") == 0 )
+	    {
+		var rest = php::trim(ls + 10);
+		const char *rc = rest.c_str();
+		const char *gap = strchr(rc, ' ');
+		if ( gap != 0 )
+		{
+		    var slot = php::trim(perl::substr(rest, 0, gap - rc));
+		    pth[slot.c_str()] = php::trim(gap + 1);
+		}
+		continue;
+	    }
 	    var scope;
 	    var prop;
 	    var val;
@@ -509,6 +1383,7 @@ bool load_theme(long w, long es, const char *name)
     }
     ui::set(w, es, "theme", th);
     ui::set(w, es, "gui_theme", gth);	// empty clears a prior scheme's vars
+    ui::set(w, es, "presence_theme", pth);	// empty clears the prior palette
     ui::set(w, es, "scheme", tname);
     return true;
 }
@@ -536,6 +1411,8 @@ bool load_menu(long w, long es, const char *name)
 	return false;
     var menus = {};
     var at;			// menu title -> index into menus
+    var ct;
+    cmd_table(ct);		// ids resolve to codes HERE (the input boundary)
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -577,7 +1454,16 @@ bool load_menu(long w, long es, const char *name)
 		    title = php::trim(perl::substr(title, 0, lb - ts));
 		}
 	    }
-	    item = { "id": id, "title": title, "when": when };
+	    // The command id resolves to its code at load; an unknown id
+	    // refuses the menu naming its line (enums, not strings).
+	    long code = cmd_of_in(ct, id.c_str());
+	    if ( code == cmdNONE )
+	    {
+		ui::set(w, es, "msg", format("Menu '{}' line {}: unknown command '{}'.",
+					     mname, i + 1, id));
+		return false;
+	    }
+	    item = { "id": id, "code": code, "title": title, "when": when };
 	}
 	var idx = at[menu.c_str()];
 	if ( idx.is_null() )
@@ -611,22 +1497,16 @@ void ensure_build_cmds(long w, long es);	// the Build menu composes the ^B rows
 // only; an unknown key never holds.
 void menu_context(var &ctx, long w, long es, long doc, long nav)
 {
-    var mod;
-    ui::get(mod, w, doc, "modified");
-    var pf;
-    ui::get(pf, w, es, "projfile");
-    var vm;
-    ui::get(vm, w, es, "vimode");
     var bufs;
     ui::get(bufs, w, es, "buffers");
     bool editable = es_flag(w, es, "editable");
-    bool dirty = !mod.is_null() && mod.as_boolean();
+    bool dirty = doc_modified(w, doc);
     bool selection = es_int(w, es, "mark", -1) >= 0;
     bool split = window_count(w, es) >= 2;
     bool buffers = !bufs.is_null() && php::count(bufs) > 1;
-    bool project = !pf.is_null() && strlen(pf.c_str()) > 0;
+    bool project = proj_has_manifest(w, es);
     bool building = es_int(w, es, "buildlive", 0) != 0;
-    bool modal = !vm.is_null() && strlen(vm.c_str()) > 0;
+    bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
     ctx = { "editable": editable, "dirty": dirty, "selection": selection,
 	    "split": split, "buffers": buffers, "project": project,
@@ -684,7 +1564,7 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 		items[] = { "sep": 1 };
 		continue;
 	    }
-	    var row = { "id": it["id"], "title": it["title"] };
+	    var row = { "id": it["id"], "code": it["code"], "title": it["title"] };
 	    var when = it["when"];
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
@@ -710,9 +1590,9 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 		for ( var br : brows )
 		{
 		    n = n + 1;
-		    var brow = { "id": format("build-{}", n),
+		    var brow = { "id": format("build-{}", n), "code": cmdBUILDROW,
 				 "title": format("{}", br["name"]) };
-		    bool stop = br["act"] == "bld-stop";
+		    bool stop = br["act"] == cmdBLD_STOP;
 		    if ( stop != live )
 			brow["enabled"] = 0;
 		    items.push(brow);
@@ -777,12 +1657,16 @@ void load_status(long w, long es, const char *name)
 // (the colour-unification slice, 2026-09-08; before it the rows also
 // carried the semantic class and the web coloured THAT from a palette of
 // its own). A class the scheme does not style is plain on both, so its
-// span is not emitted. ONE converter, two feeders: parse_spans
-// (refresh_spans, the full-parse state) and lex_spans (colour at load
-// before the parse lands). Like the status line, spans go stale with
-// edits until the next check/save. A plain identifier (styled by no
-// scheme) or a stale line skips.
-void spans_to_hspans(long w, long es, long doc, var &rows)
+// span is not emitted. ONE converter, three feeders: parse_spans
+// (refresh_spans, the full-parse state), lex_spans (colour at load
+// before the parse lands) and the view lens (enter_view: the lexer's
+// classes over the EMITTED text). `doc` is the buffer whose lines the
+// rows address; `dest` is the entity the rows land on — the state bag
+// for the document's own spans, the view buffer for a lens's (owner
+// 2026-09-09: every emitted code view is coloured). Like the status
+// line, spans go stale with edits until the next check/save. A plain
+// identifier (styled by no scheme) or a stale line skips.
+void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
 {
     var hs = {};
     var th;
@@ -803,14 +1687,14 @@ void spans_to_hspans(long w, long es, long doc, var &rows)
 	long s = ls + r["column"].as_integer();
 	hs[] = { "s": s, "e": s + r["length"].as_integer(), "c": c };
     }
-    ui::set(w, es, "hspans", hs);
+    ui::set(w, dest, "hspans", hs);
 }
 
 void refresh_spans(long w, long es, long doc, long h)
 {
     var rows;
     madc::parse_spans(rows, h);
-    spans_to_hspans(w, es, doc, rows);
+    spans_to_hspans(w, es, doc, rows, es);
 }
 
 // Lexical colour at load (staged parsing stage 1): keyword / number /
@@ -825,7 +1709,7 @@ void lex_first_spans(long w, long es, long doc)
     ui::get(p, w, doc, "path");
     var rows;
     madc::lex_spans(rows, t.c_str(), p.c_str());
-    spans_to_hspans(w, es, doc, rows);
+    spans_to_hspans(w, es, doc, rows, es);
 }
 
 // ---- compiler data on the bag (the meta-level, hub demand 3) ----------
@@ -863,6 +1747,12 @@ long ensure_phandle(long w, long es, long doc)
 	return 0;
     }
     refresh_spans(w, es, doc, h);
+    // The TEXT this handle was parsed from (code-graph MCP L3): an edit verb
+    // computes byte offsets from the tree's extents, so it must first know the
+    // live buffer IS that text — typing, undo or a remote splice moves the
+    // buffer without re-parsing. reparse_buffer and an accepted node-op keep
+    // it current.
+    ui::set(w, doc, "phandle_text", t);
     return h;
 }
 
@@ -885,6 +1775,7 @@ long reparse_buffer(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     madc::parse_refresh(h, t.c_str());
+    ui::set(w, doc, "phandle_text", t);	// the tree now describes THIS text
     refresh_spans(w, es, doc, h);
     return h;
 }
@@ -910,44 +1801,25 @@ long diag_error_count(var &diags)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = diags[i];
-	if ( r["severity"] == "error" )
+	if ( r["severity_code"] == madc::diag_severity::error )	// the row's enumerator (V0.5b), never its display word
 	    errs = errs + 1;
     }
     return errs;
 }
 
-// ---- the bottom PANEL (polish P3a) --------------------------------------
-// A region-rendering client (the window) pushes `haspanel`; under it the
-// composer adds a persistent, optionally visible tool window with TABS —
-// Problems (the diagnostics projection) and Output (the [build] stream):
-// VS Code's bottom pane in our palette. State on the bag: `panel`
-// (visible), `paneltab` (the active tab). The terminal never composes it
-// (byte-identical). Commands in the one vocabulary: panel (toggle),
-// problems, output (show that tab).
-void show_panel_tab(long w, long es, const char *tab)
-{
-    var t = tab;			// ring discipline: own the text first
-    ui::set(w, es, "panel", 1);
-    ui::set(w, es, "paneltab", t);
-}
-
-// ONE way to surface the diagnostics: the terminal's diags pane, or — in
-// a window — the panel's Problems tab. Six sites used to set the pane by
-// hand; a second surface is where they would have drifted.
+// ---- the tool Views' ONE surface (V2: the layout's chrome panes) ----------
+// The diagnostics show where the layout puts the problems View (the panel's
+// Problems tab by default — in the terminal too, the ruled relaxation); a
+// build's stream where it puts the output View. Six sites used to set the
+// pane by hand; a second surface is where they would have drifted.
 void show_diags(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, "problems");
-    else
-	ui::set(w, es, "pane", "diags");
+    show_view(w, es, viewPROBLEMS);
 }
 
-// A build starting: a window shows its stream in the Output tab; the
-// terminal reaches [build] via ^P as before.
 void show_output(long w, long es)
 {
-    if ( es_flag(w, es, "haspanel") )
-	show_panel_tab(w, es, "output");
+    show_view(w, es, viewOUTPUT);
 }
 
 // The check ACTION: refresh + report + show the pane.
@@ -993,9 +1865,7 @@ void toggle_profile(long w, long es)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var p = php::array_get_cstr(g, i);
-	const char *pc = p.c_str();
-	const char *sl = strrchr(pc, '/');
-	var nm = sl != 0 ? sl + 1 : pc;
+	var nm = php::basename(p);	// the last path component: PHP parity's owner
 	var base;
 	path_sans_ext(base, nm);
 	names.push(base);
@@ -1015,12 +1885,10 @@ void toggle_profile(long w, long es)
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 long active_doc(long w, long es, long fallback);
-void goto_pane_row(long w, long es, long doc, long option)
+void goto_pane_row(long w, long es, long doc, long option, bool outline)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
     var rows;
-    if ( pane == "outline" )
+    if ( outline )
 	ui::get(rows, w, es, "outline");
     else
 	ui::get(rows, w, es, "diags");
@@ -1050,18 +1918,127 @@ void goto_pane_row(long w, long es, long doc, long option)
     }
 }
 
-// THE view-active rule, one seat (dupaudit family view_active_predicate):
-// a view is active iff the editor-state bag carries a non-empty "view"
-// name. Out = the name; false = the original (identity lens). Defined
-// here, ahead of the prompt machinery (the theme completion consults it)
-// and of the view seam below.
-bool view_name(var &out, long w, long es)
+// ---- Views (client-server arc V1; design doc §2.1) ------------------------
+// A View is DATA on the session — es "views", rows
+//   { id, subject, kind, lang, revision, generator, vbuf, rbuf, map }
+// id: 1-based, never reused in a session (the row's index + 1); subject:
+// the document entity the View projects (an entity handle, never a byte
+// offset); kind: ide_view; lang: the representation's language (madc::fk*,
+// <bits/file_kinds>) — the subject's own kind for a source View, the render
+// target for a code View; revision: 0 = current (an event sequence number
+// from V4); generator: ide_gen (genMADC for a render, genNONE for stored
+// text); vbuf: the entity holding the View's TEXT — the subject for stored
+// text, the View's own render buffer for a code View (rbuf: that buffer,
+// allocated once per View and kept between renders); map: the coordinate
+// map to the subject's stored space (EMPTY for a wholly rendered view,
+// ui::lens_to_display; V5 fills it). A View's highlight SPANS live on its
+// text entity — the render buffer's "hspans" for a code View, the state
+// bag's stored-space "hspans" (edit-shifted by ed_text_insert / erase) for
+// stored text; view_spans is the one reader.
+// NAVIGATION (caret / mark / bend, the parked stored-space caret "ocaret")
+// is NOT View state (OWNER 2026-09-09, design §6 Q1): it belongs to the
+// CONTAINER that shows the View — the state bag for the focused editor tab
+// (the shared editor machinery's live cursor), the buffer row for the other
+// tabs, the window row for the S5 stack — so every client sits at its own
+// place in one shared text.
+// The FOCUSED View is es "fview": the View the focused container (the
+// active editor tab) shows; every buffer row carries its View as "view". A
+// session without the buffer table (the headless harness) gets its focused
+// View created on first need, over the document it drives. Defined here,
+// ahead of the prompt machinery (the theme completion consults the lens
+// predicate) and of the lens seam below.
+
+bool view_row(var &out, long w, long es, long id)
 {
-    var vw;
-    ui::get(vw, w, es, "view");
-    if ( vw.is_null() || strlen(vw.c_str()) == 0 )
+    if ( id <= 0 )
 	return false;
-    out = vw;
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() || php::count(vs) < id )
+	return false;
+    out = vs[id - 1];
+    return true;
+}
+
+void view_store(long w, long es, var &v)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    vs[v["id"].as_integer() - 1] = v;
+    ui::set(w, es, "views", vs);
+}
+
+// A new View over `subject`, its text the subject's own buffer; the id.
+long view_new(long w, long es, long subject, long kind, long lang)
+{
+    var vs;
+    ui::get(vs, w, es, "views");
+    if ( vs.is_null() )
+    {
+	var fresh = {};
+	vs = fresh;
+    }
+    long id = php::count(vs) + 1;
+    var nomap = {};
+    vs[] = { "id": id, "subject": subject, "kind": kind, "lang": lang,
+	     "revision": 0, "generator": genNONE, "vbuf": subject,
+	     "rbuf": 0, "map": nomap };
+    ui::set(w, es, "views", vs);
+    return id;
+}
+
+long focused_view(long w, long es)
+{
+    return es_int(w, es, "fview", 0);
+}
+
+// The focused View, created over `doc` (a source View) when the session
+// has none yet.
+long ensure_focused_view(long w, long es, long doc)
+{
+    long id = focused_view(w, es);
+    var v;
+    if ( view_row(v, w, es, id) )
+	return id;
+    id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    ui::set(w, es, "fview", id);
+    return id;
+}
+
+// The entity a View's text is read from: its render buffer while it is a
+// code View, else the document — the ONE place display-vs-stored routing
+// happens (nav_doc and the composer both read it). A null row (a session
+// with no View yet) is the document.
+long view_text_entity(var &v, long doc)
+{
+    if ( v.is_null() || v["kind"].as_integer() != viewCODE )
+	return doc;
+    long vb = v["vbuf"].as_integer();
+    return vb != 0 ? vb : doc;
+}
+
+// The one reader of a View's highlight rows (see the table comment).
+void view_spans(var &out, long w, long es, var &v)
+{
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	ui::get(out, w, v["vbuf"].as_integer(), "hspans");
+    else
+	ui::get(out, w, es, "hspans");
+}
+
+// THE lens-up rule, one seat (dupaudit family view_active_predicate): a
+// lens is up iff the focused View is a code render (viewCODE). Out = the
+// render language's name (madc::file_kind_name: "mc11" / "c11" / "c++"),
+// "" otherwise; false = the identity lens (a source View, or no View yet).
+bool lens_name(var &out, long w, long es)
+{
+    out = "";
+    var v;
+    if ( !view_row(v, w, es, focused_view(w, es)) )
+	return false;
+    if ( v["kind"].as_integer() != viewCODE )
+	return false;
+    out = madc::file_kind_name(v["lang"].as_integer());
     return true;
 }
 
@@ -1145,9 +2122,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	}
 	if ( e == 'm' )
 	{
-	    var m;
-	    ui::get(m, w, doc, "modified");
-	    if ( !m.is_null() && m.as_boolean() )
+	    if ( doc_modified(w, doc) )
 		seat = "(Modified) ";
 	}
 	if ( e == 'R' )
@@ -1182,11 +2157,10 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'M' )
 	{
 	    // The vi mode seat (vim's showmode; empty outside vi mode).
-	    var vm;
-	    ui::get(vm, w, es, "vimode");
-	    if ( vm == "insert" )
+	    long vm = cur_vimode(w, es);
+	    if ( vm == viINSERT )
 		seat = "-- INSERT -- ";
-	    else if ( vm == "normal" )
+	    else if ( vm == viNORMAL )
 		seat = "-- NORMAL -- ";
 	}
 	if ( e == 'x' )
@@ -1194,7 +2168,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'y' )
 	{
 	    var vw;
-	    if ( view_name(vw, w, es) )
+	    if ( lens_name(vw, w, es) )
 		seat = format("({}) ", vw);
 	}
 	long pad = width - strlen(seat.c_str());
@@ -1245,19 +2219,24 @@ void confirm_choices(var &out, long w, long es)
     modal_keys(mk, w, es);
     var sc = mk["confirm"];
     var titles = {};
-    titles[] = { "action": "pyes", "label": "Yes" };
-    titles[] = { "action": "pcancel", "label": "No" };
+    titles[] = { "code": cmdPYES, "label": "Yes" };
+    titles[] = { "code": cmdPCANCEL, "label": "No" };
     var rows = {};
     for ( var t : titles )
     {
-	var want = t["action"];
+	var want = t["code"];
 	bool bound = false;
 	if ( !sc.is_null() )
 	    for ( var a : sc )
-		if ( strcmp(a.c_str(), want.c_str()) == 0 )
+		if ( a == want )
 		    bound = true;
 	if ( bound )
+	{
+	    var nm;
+	    cmd_name(nm, want.as_integer());
+	    t["action"] = nm;		// the wire id the page posts back
 	    rows.push(t);
+	}
     }
     out = rows;
 }
@@ -1310,10 +2289,16 @@ void dialog_hints(var &box, long w, long es, const char *scope,
     scope_key_action(cancel, w, es, scope, "esc");
     if ( !cancel.is_null() )
     {
+	// The scope's cancel CODE; its name is the wire id the page posts
+	// (the engine converts it back to the code at that boundary).
+	var cname;
+	cmd_name(cname, cancel.as_integer());
 	var cb = { "label": "Close" };
-	cb["action"] = cancel;
+	cb["action"] = cname;
+	cb["code"] = cancel;
 	btns.push(cb);
-	bh["dismiss"] = cancel;
+	bh["dismiss"] = cname;
+	bh["dismiss_code"] = cancel;
     }
     dlg["buttons"] = btns;
     bh["dialog"] = dlg;
@@ -1333,7 +2318,12 @@ void prompt_hints(var &st, var &label, var &input, bool dismiss)
     var qi = { "label": label, "input": input };
     var h = { "popup": 1 };
     if ( dismiss )
-	h["dismiss"] = "pcancel";
+    {
+	var pc;
+	cmd_name(pc, cmdPCANCEL);
+	h["dismiss"] = pc;
+	h["dismiss_code"] = cmdPCANCEL;
+    }
     h["prompt"] = qi;
     st["hints"] = h;
 }
@@ -1345,9 +2335,7 @@ bool compose_overlay_row(var &row, long w, long es)
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
-	var pm;
-	ui::get(pm, w, es, "pmode");
-	if ( pm == "confirm" )
+	if ( cur_pmode(w, es) == pmCONFIRM )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
 	    // The question as a DIALOG in a window: the label and its
@@ -1454,17 +2442,17 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 // Label + input + completion mode on the bag; the shared status line
 // projects "label: input". While a prompt is up it consumes every event:
 // text appends, backspace trims, enter completes, esc cancels.
-void start_prompt(long w, long es, const char *label, const char *mode)
+void start_prompt(long w, long es, const char *label, long mode)
 {
     ui::set(w, es, "prompt", label);
-    ui::set(w, es, "pmode", mode);
+    set_pmode(w, es, mode);
     ui::set(w, es, "pinput", "");
 }
 
 void end_prompt(long w, long es)
 {
     ui::set(w, es, "prompt", "");
-    ui::set(w, es, "pmode", "");
+    set_pmode(w, es, pmNONE);
     ui::set(w, es, "pinput", "");
     ui::set(w, es, "pverb", "");
 }
@@ -1475,7 +2463,7 @@ void end_prompt(long w, long es)
 // or any bound action (^C included) cancels.
 void start_confirm(long w, long es, const char *label, const char *verb)
 {
-    start_prompt(w, es, label, "confirm");
+    start_prompt(w, es, label, pmCONFIRM);
     ui::set(w, es, "pverb", verb);
 }
 
@@ -1526,48 +2514,65 @@ void project_rows(long w, long es, long doc);
 // command, interpreted against the EXISTING vocabulary. False = quit.
 bool colon_command(long w, long es, long doc, long caret, var &in);
 
+// The view* verbs (V2b) — defined with the dispatcher, reached from the
+// colon line too (forward-declared for that earlier caller).
+void view_split(long w, long es, long doc, long dir, long lang);
+void view_focus(long w, long es, long doc, long dir);
+void view_close(long w, long es, long doc);
+void view_sync(long w, long es, var &arg);			// V5 cursor sync toggle
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow);	// V5 read-side projection
+void view_open(long w, long es, long doc, long lang);
+void view_dock(long w, long es, long slot, long side);	// V2c: chrome placement
+void view_size(long w, long es, long slot, long size);	// V2c: the splitter's size
+void view_window(long w, long es, long doc);		// V3b: a second window
+long viewsplit_dir_of(var &arg);
+long viewfocus_dir_of(var &arg);
+long viewrepr_lang_of(var &word);
+void viewsplit_args(var &arg, long &dir, long &lang);
+void viewdock_target(var &arg, long &slot, long &side);
+void viewsize_args(var &arg, long &slot, long &size);
+
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
 {
-    var mode;
-    ui::get(mode, w, es, "pmode");
+    long mode = cur_pmode(w, es);
     var in;
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
     if ( strlen(in.c_str()) == 0 )
 	return true;
-    if ( mode == "colon" )
+    if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
-    if ( mode == "find" )
+    if ( mode == pmFIND )
     {
 	ui::set(w, es, "search", in.c_str());
 	do_find(w, es, doc, caret);
 	return true;
     }
-    if ( mode == "gotoline" )
+    if ( mode == pmGOTOLINE )
     {
 	ui::set(w, es, "caret", caret_to_line(w, doc, php::intval(in), 0));
 	return true;
     }
-    if ( mode == "insertfile" )
+    if ( mode == pmINSERTFILE )
     {
 	insert_file(w, es, doc, caret, in.c_str());
 	return true;
     }
-    if ( mode == "editfile" )
+    if ( mode == pmEDITFILE )
     {
 	edit_file(w, es, doc, in.c_str());
 	return true;
     }
-    if ( mode == "saveas" )
+    if ( mode == pmSAVEAS )
 	return save_as(w, es, doc, in.c_str());
-    if ( mode == "openproject" )
+    if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
 	return true;
     }
-    if ( mode == "bufsel" )
+    if ( mode == pmBUFSEL )
     {
 	// The palette's Switch to Buffer…: the ring row whose path or base
 	// name is the answer.
@@ -1577,10 +2582,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	for ( long i = 0; i < nb; i = i + 1 )
 	{
 	    var bp = format("{}", bufs[i]["path"]);
-	    var bn = bp;
-	    const char *sl = strrchr(bp.c_str(), '/');
-	    if ( sl != 0 )
-		bn = sl + 1;
+	    var bn = php::basename(bp);
 	    if ( bp == in.c_str() || bn == in.c_str() )
 	    {
 		if ( i != es_int(w, es, "bufidx", 0) )
@@ -1591,7 +2593,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	ui::set(w, es, "msg", format("No buffer '{}'.", in));
 	return true;
     }
-    if ( mode == "projadd" )
+    if ( mode == pmPROJADD )
     {
 	// The prompt is a human client's ARGUMENT collector (gateway
 	// ruling): the command is projadd(path).
@@ -1600,7 +2602,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	    project_rows(w, es, doc);
 	return true;
     }
-    if ( mode == "tabwidth" )
+    if ( mode == pmTABWIDTH )
     {
 	long tw = php::intval(in);
 	if ( tw < 1 || tw > 16 )
@@ -1612,7 +2614,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	ui::set(w, es, "msg", format("Tab width {}.", tw));
 	return true;
     }
-    if ( mode == "theme" )
+    if ( mode == pmTHEME )
     {
 	// A colour SCHEME swap (owner: like the keybinding profiles):
 	// load the named theme and recolour from the handle's retained
@@ -1625,7 +2627,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	    return true;
 	}
 	var vw;
-	if ( !view_name(vw, w, es) )
+	if ( !lens_name(vw, w, es) )
 	    refresh_spans(w, es, doc, ensure_phandle(w, es, doc));
 	ui::set(w, es, "msg", format("Theme: {}.", in));
     }
@@ -1643,9 +2645,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
-    var pmode;
-    ui::get(pmode, w, es, "pmode");
-    if ( pmode == "confirm" )
+    if ( cur_pmode(w, es) == pmCONFIRM )
     {
 	// Single-key question: characters AND keys consult @confirm
 	// (a confirm reads its answer characters — unlike a prompt,
@@ -1656,14 +2656,14 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	if ( scoped_action(a, w, es, "confirm", ev)
 	  || scope_action_named(a, w, es, "confirm", ev) )
 	{
-	    if ( a == "pyes" )
+	    if ( a == cmdPYES )
 	    {
 		var vb;
 		ui::get(vb, w, es, "pverb");
 		end_prompt(w, es);
 		return do_verb(w, es, vb.c_str());
 	    }
-	    if ( a == "pcancel" )
+	    if ( a == cmdPCANCEL )
 		end_prompt(w, es);
 	    return true;
 	}
@@ -1689,7 +2689,7 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	var ke = { "event": "key", "event_code": ui::event_kind::key,
 		   "key": "enter", "key_code": ui::key::enter };
 	var ca;
-	if ( scoped_action(ca, w, es, "prompt", ke) && ca == "pcommit" )
+	if ( scoped_action(ca, w, es, "prompt", ke) && ca == cmdPCOMMIT )
 	    return finish_prompt(w, es, doc, caret);
 	return true;
     }
@@ -1707,11 +2707,11 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	return true;
     else if ( !scoped_action(a, w, es, "prompt", ev) )
 	return true;			// unbound keys are inert
-    if ( a == "pcommit" )
+    if ( a == cmdPCOMMIT )
 	return finish_prompt(w, es, doc, caret);	// false = a :q quit
-    else if ( a == "pcancel" )
+    else if ( a == cmdPCANCEL )
 	end_prompt(w, es);
-    else if ( a == "pdelchar" )
+    else if ( a == cmdPDELCHAR )
     {
 	var in;
 	ui::get(in, w, es, "pinput");
@@ -1768,12 +2768,10 @@ void block_copy(long w, long es, long doc, long caret)
     edit_checkpoint(w, es, doc, caret);
     ed_text_insert(w, es, doc, caret, blk.c_str());
     ui::set(w, doc, "modified", true);
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    if ( mark >= 0 && caret <= mark )
-	ui::set(w, es, "mark", mark + n);
-    if ( bend >= 0 && caret <= bend )
-	ui::set(w, es, "bend", bend + n);
+    // The markers past the insertion follow the text so the block keeps
+    // highlighting the ORIGINAL: the anchor registry (shift_anchors, in
+    // ed_text_insert) shifts mark / bend by the inserted length — this used
+    // to be a hand-rolled copy of that splice here (V3a removed it).
 }
 
 // ^K M: move the block to the caret (one undo step; the cursor lands on
@@ -1883,75 +2881,165 @@ void delete_word(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
-// ---- the view seam (AST-3): read-only code views -----------------------
-// A VIEW is a document lens applied at composition: the stored text stays
-// the document truth; what is DISPLAYED is the lens's rendered text
-// (madc::emit over the live buffer), held in a view-buffer entity so the
-// ONE shared navigation implementation (edit_key, find, goto-line) works
-// over the display space unchanged. The lens's coordinate map rides as
-// data on the bag ("vmap" — EMPTY for a wholly rendered view: nothing
-// corresponds; see ui::lens_to_display) and onto the edit node's hints;
-// the stored caret parks on "ocaret" and returns on exit; mutations and
-// stored-space history are refused through the one editable gate. The
-// identity lens (no view) adds NOTHING — the composed tree stays
-// byte-identical to today's.
+// ---- the lens seam (AST-3, re-expressed on Views in V1): read-only code
+//      views ---------------------------------------------------------------
+// A LENS is the focused View re-represented as a code View: the stored text
+// stays the document truth; what is DISPLAYED is the render (madc::emit
+// over the live buffer, by the target's KIND), held in the View's own
+// render buffer so the ONE shared navigation implementation (edit_key,
+// find, goto-line) works over the display space unchanged. The View's
+// coordinate map (EMPTY for a wholly rendered view: nothing corresponds;
+// see ui::lens_to_display) rides onto the edit node's hints; the
+// container's stored-space caret parks on "ocaret" and returns on exit;
+// mutations and stored-space history are refused through the one editable
+// gate. The identity lens (a source View) adds NOTHING — the composed tree
+// stays byte-identical.
 
-// The navigation target: the view buffer while a view is up, else the
-// document — the ONE place display-vs-stored routing happens.
+// The navigation target: the View's text entity — the render buffer while
+// a lens is up, else the document (view_text_entity, the one routing rule).
 long nav_doc(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
-	return doc;
-    long vd = es_int(w, es, "vdoc", 0);
-    return vd != 0 ? vd : doc;
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    return view_text_entity(v, doc);
 }
 
-bool enter_view(long w, long es, long doc, const char *name)
+// Re-represent the focused View as a code View in `lang` (madc::fkMC11 /
+// fkC11 / fkCPP — the kinds the emitter renders). False = the buffer does
+// not translate (the compiler's own rows surface; the View is unchanged).
+bool enter_lens(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
     var p;
     ui::get(p, w, doc, "path");
     var emitted;
-    if ( !madc::emit(emitted, t.c_str(), p.c_str(), name) )
+    var vmap;			// V5: the source↔display coordinate map, beside the text
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
 	run_check(w, es, doc);
 	return false;
     }
-    long vd = es_int(w, es, "vdoc", 0);
+    long id = ensure_focused_view(w, es, doc);
+    var v;
+    view_row(v, w, es, id);
+    long vd = v["rbuf"].as_integer();
     if ( vd == 0 )
     {
 	vd = ui::create(w, "view-buffer");
-	ui::set(w, es, "vdoc", vd);
+	v["rbuf"] = vd;
     }
     ui::text_load(w, vd, emitted.c_str());
-    ui::set(w, vd, "path", p);	// the status %n seat: a view is a lens
-				// over the file — its name IS the file's
-    var cur;
-    if ( !view_name(cur, w, es) )
-	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));
-    ui::set(w, es, "view", name);
-    var vm = {};
-    ui::set(w, es, "vmap", vm);
+    ui::set(w, vd, "path", p);	// the status %n seat: a lens is over the
+				// file — its name IS the file's (a display
+				// path only: the render buffer is no
+				// document and carries no kind)
+    // Colour on the lens (owner 2026-09-09: every emitted code view is
+    // syntax-coloured): the render buffer carries its OWN highlight spans —
+    // the lexer-alone classification (the colour-at-load path) over the
+    // EMITTED text, through the one converter, landing on the render
+    // buffer; the composer attaches the spans of whichever buffer it
+    // shows (view_spans). The emitted text is already indented — the
+    // emitter's own layout (src/cir_emit_c.cpp), one owner for --emit and
+    // every lens.
+    var vrows;
+    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
+    spans_to_hspans(w, es, vd, vrows, vd);
+    if ( v["kind"].as_integer() != viewCODE )
+	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));	// the CONTAINER
+				// parks its stored-space caret (never the row)
+    v["kind"] = viewCODE;
+    v["lang"] = lang;
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    v["map"] = vmap;		// V5: fills the vmap that was EMPTY (design §2.6)
+    view_store(w, es, v);
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     ui::set(w, es, "editable", false);
     ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
-    ui::set(w, es, "msg", format("View: {}", name));
+    ui::set(w, es, "msg", format("View: {}", madc::file_kind_name(lang)));
     return true;
 }
 
-void exit_view(long w, long es, long doc)
+// Back to the source View: the row's representation returns to the
+// subject's own text and kind; the container's parked caret returns.
+void exit_lens(long w, long es, long doc)
 {
-    ui::set(w, es, "view", "");
+    var v;
+    if ( view_row(v, w, es, focused_view(w, es)) )
+    {
+	long subject = v["subject"].as_integer();
+	v["kind"] = viewSOURCE;
+	v["lang"] = doc_kind(w, subject);
+	v["generator"] = genNONE;
+	v["vbuf"] = subject;
+	var nomap = {};
+	v["map"] = nomap;
+	view_store(w, es, v);
+    }
     ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
+}
+
+// A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
+// fkCPP): a NEW View with its own render buffer, coloured like the lens, the
+// subject untouched — for a `viewsplit right mc11` second pane (source left,
+// MC11 right) that does NOT re-represent the focused View. 0 = the subject
+// does not translate. The focused re-representation stays enter_lens; this is
+// its sibling for a fresh View (the emit / colour body is the same shape).
+long make_code_view(long w, long es, long subject, long lang)
+{
+    var t;
+    ui::text(t, w, subject);
+    var p;
+    ui::get(p, w, subject, "path");
+    var emitted;
+    var vmap;			// V5: the source↔display coordinate map
+    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+	return 0;
+    long id = view_new(w, es, subject, viewCODE, lang);
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, emitted.c_str());
+    ui::set(w, vd, "path", p);		// the status %n seat: a display path
+    var vrows;
+    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
+    spans_to_hspans(w, es, vd, vrows, vd);
+    v["generator"] = genMADC;
+    v["vbuf"] = vd;
+    v["map"] = vmap;		// V5: the fresh code View carries its map
+    view_store(w, es, v);
+    return id;
+}
+
+// The edit-history View (client-server arc V4; design doc S2.4): a View of
+// `doc` at a past revision `n` (an event seq), its text the change log
+// replayed to n onto a fresh render buffer. revision = n (0 = current); a
+// non-zero revision is a reconstructed past state, the subject untouched.
+long make_history_view(long w, long es, long doc, long n)
+{
+    var t;
+    clog_replay(t, w, doc, n);
+    long id = view_new(w, es, doc, viewSOURCE, doc_kind(w, doc));
+    var v;
+    view_row(v, w, es, id);
+    long vd = ui::create(w, "view-buffer");
+    ui::text_load(w, vd, t.c_str());
+    var p;
+    ui::get(p, w, doc, "path");
+    ui::set(w, vd, "path", p);
+    v["revision"] = n;
+    v["generator"] = genNONE;
+    v["vbuf"] = vd;
+    view_store(w, es, v);
+    return id;
 }
 
 // ---- AST-5: buffers (IDE-8) ------------------------------------------
@@ -1978,12 +3066,35 @@ long open_buffer_doc(long w, long es, const char *path)
 {
     long nd = setup_document(w, path, false);
     if ( nd != 0 )
+    {
+	clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
 	return nd;
+    }
     nd = ui::create(w, "document");
     ui::text_load(w, nd, "");
-    ui::set(w, nd, "path", path);
+    doc_set_path(w, nd, path);
     ui::set(w, nd, "modified", false);
     return nd;
+}
+
+// The View a buffer row (an editor tab) shows; a row from before the table
+// carried Views gets its source View here.
+long buffer_view(long w, long es, long idx)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) <= idx )
+	return 0;
+    var r = bufs[idx];
+    var v = r["view"];
+    if ( !v.is_null() && v.as_integer() != 0 )
+	return v.as_integer();
+    long vid = view_new(w, es, r["doc"].as_integer(), viewSOURCE,
+			doc_kind(w, r["doc"].as_integer()));
+    r["view"] = vid;
+    bufs[idx] = r;
+    ui::set(w, es, "buffers", bufs);
+    return vid;
 }
 
 // Switch the active buffer: leave any view (it lenses the OLD buffer),
@@ -1994,8 +3105,8 @@ long open_buffer_doc(long w, long es, const char *path)
 void switch_buffer(long w, long es, long olddoc, long idx)
 {
     var vw;
-    if ( view_name(vw, w, es) )
-	exit_view(w, es, olddoc);
+    if ( lens_name(vw, w, es) )
+	exit_lens(w, es, olddoc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
     long cur = es_int(w, es, "bufidx", 0);
@@ -2009,6 +3120,8 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     long nd = t["doc"].as_integer();
     ui::set(w, es, "bufidx", idx);
     ui::set(w, es, "adoc", nd);
+    ui::set(w, es, "fview", buffer_view(w, es, idx));	// the focused
+				// container's View is the tab's
     ui::set(w, es, "caret", t["caret"].as_integer());
     ui::set(w, es, "mark", t["mark"].as_integer());
     ui::set(w, es, "bend", t["bend"].as_integer());
@@ -2031,8 +3144,10 @@ void push_buffer_row(long w, long es, long nd, const char *path)
 	var fresh = {};
 	bufs = fresh;
     }
+    long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
+				// View: the source View over its document
     bufs[] = { "doc": nd, "path": path, "caret": 0,
-	       "mark": -1, "bend": -1 };
+	       "mark": -1, "bend": -1, "view": vid };
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -2054,19 +3169,24 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	var seed = {};
 	var op;
 	ui::get(op, w, olddoc, "path");
+	long lv = ensure_focused_view(w, es, olddoc);	// the live View too
 	seed[] = { "doc": olddoc, "path": op,
 		   "caret": es_int(w, es, "caret", 0),
-		   "mark": -1, "bend": -1 };
+		   "mark": -1, "bend": -1, "view": lv };
 	ui::set(w, es, "buffers", seed);
 	ui::set(w, es, "bufidx", 0);
 	ui::set(w, es, "adoc", olddoc);
 	ui::get(bufs, w, es, "buffers");
     }
     long n = php::count(bufs);
+    // Two spellings of one file are one BUFFER (V6c-2): same_file, or
+    // `^K E /abs/path/x.mad` opens a second buffer on the file already open
+    // as `x.mad` and the two then edit past each other.
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == p )
+	var rp = r["path"];
+	if ( same_file(rp.is_null() ? "" : rp.c_str(), p.c_str()) )
 	{
 	    if ( i == es_int(w, es, "bufidx", 0) )
 	    {
@@ -2408,27 +3528,92 @@ void proj_tu_rows(var &out, long w, long es, long doc)
 // The project's KIND (polish P2c): the manifest's "kind" — console
 // (absent) or gui. It decides the Windows executable's subsystem on a
 // project build (the engine reads the manifest itself) and where Run sends
-// the program's output. Ring-lifetime text; callers own it at once.
-const char *proj_kind(long w, long es)
+// the program's output. The manifest's word converts HERE (ide_projkind).
+long proj_kind(long w, long es)
 {
     var proj;
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
-	return "console";
+	return pkCONSOLE;
     var k = proj["kind"];
-    if ( k.is_null() )
-	return "console";
-    return k.c_str();
+    return projkind_of(k);
 }
 
-// A manifest is OPEN (loaded or materialized): the kind row shows, the
-// build rows go project-wide. (project_active is the WINDOW being up — a
-// different fact.)
-bool proj_has_manifest(long w, long es)
+// "A manifest is OPEN" is proj_has_manifest, defined with the path helpers at
+// the head of this file (its first caller, menu_context, precedes the project
+// layer).
+
+// The change-log file beside the manifest (client-server arc V4; design doc
+// S2.4): <base>.prj.events, a sibling of the layout cache. Only once a
+// manifest is open -- the implicit single-file project is memory-only (the
+// no-surprise-artifact law, design S6). false = no manifest.
+bool proj_events_path(var &out, long w, long es)
 {
+    if ( !proj_has_manifest(w, es) )
+	return false;
     var pf;
     ui::get(pf, w, es, "projfile");
-    return !pf.is_null() && strlen(pf.c_str()) > 0;
+    var base;
+    path_sans_ext(base, pf);
+    out = format("{}.events", base);
+    return true;
+}
+
+// Flush the SESSION's change log -- the ONE stream every document's records
+// ride (Nexus L4c) -- to <base>.prj.events (the whole buffer -> the file; the
+// buffer text IS the file's content -- one serialisation). A no-op with no
+// manifest. Follow-up: also flush on ^K S doc-save.
+void clog_persist(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    long le = clog_find(w);
+    if ( le <= 0 )
+	return;
+    var blob;
+    ui::text(blob, w, le);
+    php::file_put_contents(path.c_str(), blob.c_str());
+}
+
+// Restore the session's change log from <base>.prj.events on project open;
+// seq resumes at the last record's, so new events continue the sequence; the
+// restoring document's records are re-attached to it by path (clog_adopt --
+// their `doc` ids belong to the session that wrote them). A no-op with no
+// manifest or no file. ONE stream: loading a file over a session that already
+// logged events would drop the other documents' records (and collide their
+// seqs) -- refused with the reason, never silently (Nexus L4c).
+void clog_restore(long w, long es, long doc)
+{
+    var path;
+    if ( !proj_events_path(path, w, es) )
+	return;
+    var blob;
+    if ( !php::file_get_contents(blob, path.c_str()) )
+	return;
+    if ( clog_head(w, doc) > 0 )
+    {
+	// Beside the caller's message (the project announcement), never over it.
+	var prior;
+	ui::get(prior, w, es, "msg");
+	var note = "Events not restored: this session already logged events.";
+	if ( prior.is_null() || strlen(prior.c_str()) == 0 )
+	    ui::set(w, es, "msg", note.c_str());
+	else
+	    ui::set(w, es, "msg", format("{} {}", prior, note));
+	return;
+    }
+    long le = changelog_of(w, doc);
+    ui::text_load(w, le, blob.c_str());
+    // The head is the last record's seq — through the ONE reader (a torn
+    // line is not a record).
+    var recs;
+    clog_records_of(recs, blob);
+    long hi = 0;
+    for ( var rec : recs )
+	hi = rec["seq"].as_integer();
+    ui::set(w, le, "seq", hi);
+    clog_adopt(w, doc);
 }
 
 // Toggle console <-> gui and persist the manifest AT ONCE (the immediate-
@@ -2445,15 +3630,12 @@ void proj_toggle_kind(long w, long es, long doc)
 		"No project manifest yet — add a second file (^K I) first.");
 	return;
     }
-    var cur = proj_kind(w, es);		// own the ring text
-    var nk = "console";
-    if ( cur == "console" )
-	nk = "gui";
-    proj["kind"] = nk;
+    long nk = proj_kind(w, es) == pkCONSOLE ? pkGUI : pkCONSOLE;
+    proj["kind"] = projkind_name(nk);	// the manifest file's word
     ui::set(w, es, "proj", proj);
     proj_touch(w, es);
     if ( proj_write(w, es, doc) )
-	ui::set(w, es, "msg", format("Project kind: {}.", nk));
+	ui::set(w, es, "msg", format("Project kind: {}.", projkind_name(nk)));
 }
 
 bool proj_member(long w, long es, long doc, const char *path)
@@ -2461,8 +3643,11 @@ bool proj_member(long w, long es, long doc, const char *path)
     var rows;
     proj_tu_rows(rows, w, es, doc);
     for ( var r : rows )
-	if ( r["path"] == path )
+    {
+	var rp = r["path"];
+	if ( !rp.is_null() && same_file(rp.c_str(), path) )
 	    return true;
+    }
     return false;
 }
 
@@ -2476,7 +3661,7 @@ bool proj_write(long w, long es, long doc)
     ui::get(proj, w, es, "proj");
     var pf;
     ui::get(pf, w, es, "projfile");
-    bool fresh = pf.is_null() || strlen(pf.c_str()) == 0;
+    bool fresh = !proj_has_manifest(w, es);
     if ( fresh )
     {
 	var lp;
@@ -2494,7 +3679,28 @@ bool proj_write(long w, long es, long doc)
     }
     if ( fresh )
 	ui::set(w, es, "msg", format("Project file created: {}", pf));
+    clog_persist(w, es, doc);
     return true;
+}
+
+// Persist the live layout BESIDE the manifest (V2c) — silently (a layout
+// change carries its own status message; the file is a convenience cache, not
+// a document). ONLY when a manifest is open: the implicit single-file project
+// writes no artifact (the no-surprise-artifact law, design §6). Called by the
+// layout mutators (viewdock today; the splitter's `layout` event next).
+void layout_persist(long w, long es)
+{
+    if ( !proj_has_manifest(w, es) )
+	return;
+    var pf;
+    ui::get(pf, w, es, "projfile");
+    var lf;
+    proj_layout_path(lf, pf);
+    var lo;
+    layout_get(lo, w, es);
+    var txt;
+    layout_to_text(txt, lo);
+    php::file_put_contents(lf.c_str(), txt.c_str());
 }
 
 // projadd — the argument-taking membership verb (a prompt collects the
@@ -2539,9 +3745,7 @@ void proj_add(long w, long es, long doc, const char *path0)
     }
     ui::set(w, es, "proj", proj);
     proj_touch(w, es);
-    var pf0;
-    ui::get(pf0, w, es, "projfile");
-    bool had = !pf0.is_null() && strlen(pf0.c_str()) > 0;
+    bool had = proj_has_manifest(w, es);
     if ( proj_write(w, es, doc) && had )
 	ui::set(w, es, "msg", format("Added {} to the project.", p));
 }
@@ -2639,6 +3843,22 @@ bool proj_load(long w, long es, var &pf)
     ui::set(w, es, "proj", proj);
     ui::set(w, es, "projfile", pf);
     proj_touch(w, es);
+    // A persisted layout beside the manifest (V2c) restores the client's
+    // docked panes / band sizes. A missing file keeps the current layout; a
+    // malformed one is ignored (the cache never blocks a project open).
+    var lf;
+    proj_layout_path(lf, pf);
+    if ( php::file_exists(lf) )
+    {
+	var ltxt;
+	if ( php::file_get_contents(ltxt, lf.c_str()) )
+	{
+	    var newlo;
+	    var lerr;
+	    if ( parse_layout(newlo, ltxt.c_str(), lerr) )
+		ui::set(w, es, "layout", newlo);
+	}
+    }
     ui::set(w, es, "msg", format("Project {}: {} TU(s).", pf,
 				 php::count(tus)));
     return true;
@@ -2657,6 +3877,7 @@ void proj_startup(long w, long es, long doc)
     if ( !php::file_exists(pf) )
 	return;
     proj_load(w, es, pf);
+    clog_restore(w, es, doc);
 }
 
 // File -> Open Project… (polish P2b): the manifest the user chose (the
@@ -2665,11 +3886,12 @@ void proj_startup(long w, long es, long doc)
 // empty path (a cancelled dialog) does nothing.
 void proj_open(long w, long es, long doc, const char *path0)
 {
-    var pf = path0;		// ring discipline: own the text first
-    if ( strlen(pf.c_str()) == 0 )
+    var mpath = path0;		// ring discipline: own the text first
+    if ( strlen(mpath.c_str()) == 0 )
+	return;			// a cancelled dialog: no path given
+    if ( !proj_load(w, es, mpath) )
 	return;
-    if ( !proj_load(w, es, pf) )
-	return;
+    clog_restore(w, es, doc);
     proj_show(w, es, doc);
 }
 
@@ -2685,27 +3907,30 @@ void project_rows(long w, long es, long doc)
     var lf = php::strtolower(filt.c_str());
     long fn = strlen(lf.c_str());
     var rows = {};
-    var seen;			// path -> 1: earlier groups dedupe later
+    var seen;			// CANONICAL path -> 1: earlier groups dedupe later
     var bufs;
     ui::get(bufs, w, es, "buffers");
-    // [project] — manifest order.
+    // [project] — manifest order. Rows keep the manifest's own spelling; the
+    // dedupe and the buffer match are by file identity (same_file), so a TU
+    // spelled one way and its buffer opened another are ONE row.
     var tus;
     proj_tu_rows(tus, w, es, doc);
     for ( var tr : tus )
     {
 	var p = format("{}", tr["path"]);
-	seen[p.c_str()] = 1;
+	var cp;
+	madc::canonical_path(cp, p.c_str());
+	seen[cp.c_str()] = 1;
 	var lp = php::strtolower(p.c_str());
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
 	var mk = " ";
 	for ( var b : bufs )
 	{
-	    if ( b["path"] == p )
+	    var bp = b["path"];
+	    if ( !bp.is_null() && same_file(bp.c_str(), p.c_str()) )
 	    {
-		var m;
-		ui::get(m, w, b["doc"].as_integer(), "modified");
-		if ( !m.is_null() && m.as_boolean() )
+		if ( doc_modified(w, b["doc"].as_integer()) )
 		    mk = "*";
 	    }
 	}
@@ -2716,16 +3941,16 @@ void project_rows(long w, long es, long doc)
     for ( var b : bufs )
     {
 	var p = format("{}", b["path"]);
-	if ( !seen[p.c_str()].is_null() )
+	var cp;
+	madc::canonical_path(cp, p.c_str());
+	if ( !seen[cp.c_str()].is_null() )
 	    continue;
-	seen[p.c_str()] = 1;
+	seen[cp.c_str()] = 1;
 	var lp = php::strtolower(p.c_str());
 	if ( fn > 0 && perl::index(lp.c_str(), lf.c_str()) < 0 )
 	    continue;
-	var m;
-	ui::get(m, w, b["doc"].as_integer(), "modified");
 	var mk = " ";
-	if ( !m.is_null() && m.as_boolean() )
+	if ( doc_modified(w, b["doc"].as_integer()) )
 	    mk = "*";
 	rows[] = { "path": p, "tag": "open",
 		   "content": format("o{} {}", mk, p) };
@@ -2760,24 +3985,20 @@ void project_rows(long w, long es, long doc)
 
 void proj_show(long w, long es, long doc)
 {
-    ui::set(w, es, "pane", "project");
+    set_pane(w, es, panePROJECT);
     ui::set(w, es, "projfilter", "");
     project_rows(w, es, doc);
 }
 
 void proj_hide(long w, long es)
 {
-    ui::set(w, es, "pane", "");
+    set_pane(w, es, paneNONE);
     ui::set(w, es, "projfilter", "");
 }
 
 bool project_active(long w, long es)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane.is_null() )
-	return false;
-    return pane == "project";
+    return cur_pane(w, es) == panePROJECT;
 }
 
 // Every event while the project window is up (modal, like the prompt):
@@ -2806,7 +4027,7 @@ bool project_event(long w, long es, long doc, var &ev)
 		   "key": "enter", "key_code": ui::key::enter };
 	if ( !scoped_action(a, w, es, "project", ke) )
 	    return true;
-	if ( a == "projopen" )
+	if ( a == cmdPROJOPEN )
 	{
 	    var rows;
 	    ui::get(rows, w, es, "projrows");
@@ -2823,10 +4044,10 @@ bool project_event(long w, long es, long doc, var &ev)
     }
     if ( kind == ui::event_kind::action )
     {
-	var a = format("{}", ev["action"]);
-	if ( a == "project" || a == "quit" )
+	long a = ev_code(ev);
+	if ( a == cmdPROJECT || a == cmdQUIT )
 	    proj_hide(w, es);
-	else if ( a == "projaddcur" )
+	else if ( a == cmdPROJADDCUR )
 	{
 	    proj_addcur(w, es, doc);
 	    project_rows(w, es, doc);
@@ -2836,7 +4057,7 @@ bool project_event(long w, long es, long doc, var &ev)
 	    // The dialog's Close button / a press outside it (polish P2):
 	    // the @project cancel posted BY NAME.
 	    var pn;
-	    if ( scope_action_named(pn, w, es, "project", ev) && pn == "projclose" )
+	    if ( scope_action_named(pn, w, es, "project", ev) && pn == cmdPROJCLOSE )
 		proj_hide(w, es);
 	}
 	return true;
@@ -2846,9 +4067,9 @@ bool project_event(long w, long es, long doc, var &ev)
     var a;
     if ( !scoped_action(a, w, es, "project", ev) )
 	return true;			// unbound keys are inert
-    if ( a == "projclose" )
+    if ( a == cmdPROJCLOSE )
 	proj_hide(w, es);
-    else if ( a == "projdelchar" )
+    else if ( a == cmdPROJDELCHAR )
     {
 	var in;
 	ui::get(in, w, es, "projfilter");
@@ -2859,9 +4080,9 @@ bool project_event(long w, long es, long doc, var &ev)
 	    project_rows(w, es, doc);
 	}
     }
-    else if ( a == "projadd" )
-	start_prompt(w, es, "File to add to project", "projadd");
-    else if ( a == "projdel" )
+    else if ( a == cmdPROJADD )
+	start_prompt(w, es, "File to add to project", pmPROJADD);
+    else if ( a == cmdPROJDEL )
     {
 	var opt = ev["option"];
 	if ( opt.is_null() )
@@ -2891,31 +4112,27 @@ bool project_event(long w, long es, long doc, var &ev)
 // objects (iw), no repeat (.), and the caret is the shared byte caret
 // (it may sit one past a line's last character where vim's would not).
 //
-// State bags: "vimode" (""/"normal"/"insert"), "vicount" (the digits so
+// State bags: "vimode" (ide_vimode: viOFF / viNORMAL / viINSERT), "vicount" (the digits so
 // far), "viop"+"viopn" (the pending operator and its stashed count —
 // 2d3w multiplies to 6), "vipend" (the literal echo, vim's showcmd —
 // the %k seat renders it when no engine chord is in flight).
 
 bool vi_active(long w, long es)
 {
-    var m;
-    ui::get(m, w, es, "vimode");
-    if ( m.is_null() )
-	return false;
-    return strlen(m.c_str()) > 0;
+    return cur_vimode(w, es) != viOFF;
 }
 
 void vi_pending_clear(long w, long es)
 {
     ui::set(w, es, "vicount", "");
-    ui::set(w, es, "viop", "");
+    ui::set(w, es, "viop", (long)cmdNONE);	// the pending operator's code
     ui::set(w, es, "viopn", 0);
     ui::set(w, es, "vipend", "");
 }
 
-void vi_enter(long w, long es, const char *mode)
+void vi_enter(long w, long es, long mode)
 {
-    ui::set(w, es, "vimode", mode);
+    set_vimode(w, es, mode);
     vi_pending_clear(w, es);
 }
 
@@ -2923,11 +4140,9 @@ bool vi_pending(long w, long es)
 {
     var c;
     ui::get(c, w, es, "vicount");
-    var o;
-    ui::get(o, w, es, "viop");
     if ( !c.is_null() && strlen(c.c_str()) > 0 )
 	return true;
-    if ( !o.is_null() && strlen(o.c_str()) > 0 )
+    if ( es_int(w, es, "viop", cmdNONE) != cmdNONE )	// an operator pends
 	return true;
     return false;
 }
@@ -2944,12 +4159,19 @@ void vi_echo_push(long w, long es, const char *c)
 
 // The motion VOCABULARY an operator composes over — the shared movement
 // action names (the dispatcher's own arms + edit_key's key spellings).
-bool vi_is_motion(var &a)
+bool vi_is_motion(long a)
 {
-    return a == "left" || a == "right" || a == "up" || a == "down"
-	|| a == "home" || a == "end" || a == "pgup" || a == "pgdn"
-	|| a == "wordleft" || a == "wordright"
-	|| a == "top" || a == "bottom" || a == "vigoto";
+    switch ( a )
+    {
+	case cmdLEFT: case cmdRIGHT: case cmdUP: case cmdDOWN:
+	case cmdHOME: case cmdEND: case cmdPGUP: case cmdPGDN:
+	case cmdWORDLEFT: case cmdWORDRIGHT:
+	case cmdTOP: case cmdBOTTOM: case cmdVIGOTO:
+	    return true;
+	default:
+	    break;
+    }
+    return false;
 }
 
 // The operator payload: erase [lo, hi) as ONE undo step, caret to lo —
@@ -2976,7 +4198,7 @@ void vi_toggle(long w, long es)
 {
     if ( vi_active(w, es) )
     {
-	vi_enter(w, es, "");
+	vi_enter(w, es, viOFF);
 	ui::set(w, es, "msg", "vi mode off.");
 	return;
     }
@@ -2991,7 +4213,7 @@ void vi_toggle(long w, long es)
 		"No @normal keys in this profile (^T Keymap row: neovim).");
 	return;
     }
-    vi_enter(w, es, "normal");
+    vi_enter(w, es, viNORMAL);
     ui::set(w, es, "msg", "vi NORMAL mode (i inserts, ^N v leaves).");
 }
 
@@ -3012,46 +4234,44 @@ void vi_toggle(long w, long es)
 void modes_show(long w, long es)
 {
     var rows = {};
-    rows[] = { "act": "colon",
+    rows[] = { "act": cmdCOLON,
 	       "content": " :  vi command line — one ex command (w q e N !cmd ...)" };
-    rows[] = { "act": "vimode",
+    rows[] = { "act": cmdVIMODE,
 	       "content": " v  vi normal/insert editing — toggle modal mode" };
     ui::set(w, es, "modesrows", rows);
-    ui::set(w, es, "pane", "modes");
+    set_pane(w, es, paneMODES);
 }
 
 void modes_hide(long w, long es)
 {
-    ui::set(w, es, "pane", "");
+    set_pane(w, es, paneNONE);
 }
 
 bool modes_active(long w, long es)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane.is_null() )
-	return false;
-    return pane == "modes";
+    return cur_pane(w, es) == paneMODES;
 }
 
 // Enter the mode a palette row (or a @modes key) names. The palette
 // closes first — a mode takes the whole stage. False = quit (none of
 // the current modes quit; the contract rides the dispatch).
-bool modes_dispatch(long w, long es, long doc, long caret, var &a)
+bool modes_dispatch(long w, long es, long doc, long caret, long a)
 {
-    if ( a == "colon" )
+    if ( a == cmdCOLON )
     {
 	modes_hide(w, es);
-	start_prompt(w, es, "Command", "colon");
+	start_prompt(w, es, "Command", pmCOLON);
 	return true;
     }
-    if ( a == "vimode" )
+    if ( a == cmdVIMODE )
     {
 	modes_hide(w, es);
 	vi_toggle(w, es);
 	return true;
     }
-    ui::set(w, es, "msg", format("Unknown mode action '{}'.", a));
+    var an;
+    cmd_name(an, a);
+    ui::set(w, es, "msg", format("Unknown mode action '{}'.", an));
     return true;
 }
 
@@ -3068,7 +4288,7 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
     {
 	var a;
 	if ( scoped_action(a, w, es, "modes", ev) )
-	    return modes_dispatch(w, es, doc, caret, a);
+	    return modes_dispatch(w, es, doc, caret, a.as_integer());
 	return true;			// other typing is inert
     }
     if ( kind == ui::event_kind::choose )
@@ -3078,7 +4298,7 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 		   "key": "enter", "key_code": ui::key::enter };
 	if ( !scoped_action(a, w, es, "modes", ke) )
 	    return true;
-	if ( a == "modesopen" )
+	if ( a == cmdMODESOPEN )
 	{
 	    var rows;
 	    ui::get(rows, w, es, "modesrows");
@@ -3086,7 +4306,7 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
 	    if ( opt >= 0 && opt < php::count(rows) )
 	    {
 		var r = rows[opt];
-		var ra = format("{}", r["act"]);
+		long ra = r["act"].as_integer();
 		return modes_dispatch(w, es, doc, caret, ra);
 	    }
 	}
@@ -3094,15 +4314,15 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
     }
     if ( kind == ui::event_kind::action )
     {
-	var a = format("{}", ev["action"]);
-	if ( a == "modes" || a == "quit" )
+	long a = ev_code(ev);
+	if ( a == cmdMODES || a == cmdQUIT )
 	    modes_hide(w, es);
 	else
 	{
 	    // The dialog's Close button / a press outside it (polish P2):
 	    // the @modes cancel posted BY NAME.
 	    var mn;
-	    if ( scope_action_named(mn, w, es, "modes", ev) && mn == "modesclose" )
+	    if ( scope_action_named(mn, w, es, "modes", ev) && mn == cmdMODESCLOSE )
 		modes_hide(w, es);
 	}
 	return true;
@@ -3112,16 +4332,16 @@ bool modes_event(long w, long es, long doc, long caret, var &ev)
     var a;
     if ( !scoped_action(a, w, es, "modes", ev) )
 	return true;			// unbound keys are inert
-    if ( a == "modesclose" )
+    if ( a == cmdMODESCLOSE )
     {
 	modes_hide(w, es);
 	return true;
     }
-    if ( a == "modesopen" )
+    if ( a == cmdMODESOPEN )
 	return true;			// enter means CHOOSE; the engine
 					// hands it back as one when a row
 					// is focused
-    return modes_dispatch(w, es, doc, caret, a);
+    return modes_dispatch(w, es, doc, caret, a.as_integer());
 }
 
 // ---- IDE-10b: the ^B build palette --------------------------------------
@@ -3177,7 +4397,8 @@ long buffer_doc_named(long w, long es, const char *name)
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
-	if ( r["path"] == name )
+	var rp = r["path"];
+	if ( !rp.is_null() && same_file(rp.c_str(), name) )
 	    return r["doc"].as_integer();
     }
     return 0;
@@ -3279,6 +4500,17 @@ void build_pump(long w, long es, long bdoc, long stopc)
     else
 	append_build_line(w, es, bdoc, "[done]");
     ui::set(w, es, "buildlive", 0);
+    // The EVIDENCE record (Nexus L4e, design §3.11): this node's build / run
+    // verdict in the ONE stream, tagged by the node that produced it (0 =
+    // here). The pump is a session-thread task: one clog_append, no push —
+    // the next command's fan-out carries it.
+    long adoc = active_doc(w, es, 0);
+    if ( adoc != 0 )
+    {
+	var brec = { "kind": "buildrun", "es": es, "doc": adoc, "actor": -1, "node": 0, "uri": uri,
+		     "exit": xc, "stopped": stopped };
+	clog_append(w, adoc, brec);
+    }
 }
 
 // ONE capture starter for every stream the [build] buffer / the Output
@@ -3303,10 +4535,7 @@ void start_capture(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go build_pump(w, es, bdoc, stopc);
-    if ( es_flag(w, es, "haspanel") )
-	ui::set(w, es, "msg", format("{} — Output shows it.", t));
-    else
-	ui::set(w, es, "msg", format("Building — ^P [build] to watch."));
+    ui::set(w, es, "msg", format("{} — the Output tab shows it.", t));
 }
 
 void start_build(long w, long es, const char *cmd)
@@ -3449,7 +4678,7 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "termsrc", u);
     ui::set(w, es, "termlive", 1);
     ui::set(w, es, "termfocus", 1);
-    show_panel_tab(w, es, "terminal");
+    show_view(w, es, viewTERMINAL);
     go term_pump(w, es, tdoc, stopc, inc);
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
@@ -3481,7 +4710,7 @@ bool terminal_event(long w, long es, var &ev)
     if ( kind == ui::event_kind::key || kind == ui::event_kind::action )
     {
 	var a;
-	if ( scoped_action(a, w, es, "terminal", ev) && a == "termunfocus" )
+	if ( scoped_action(a, w, es, "terminal", ev) && a == cmdTERMUNFOCUS )
 	{
 	    ui::set(w, es, "termfocus", 0);
 	    ui::set(w, es, "msg", "Keyboard back to the editor.");
@@ -3595,9 +4824,7 @@ void native_build_task(long w, long es)
     }
     // Failure: surface the rows. Take the lower pane only when the user
     // has nothing else up (never stomp an open palette/help/options).
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) == 0 )
+    if ( cur_pane(w, es) == paneNONE )
 	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Build failed: {} problem(s).", php::count(diags)));
@@ -3626,9 +4853,7 @@ void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
     ui::set(w, es, "buildlive", 1);
     show_output(w, es);
     go native_build_task(w, es);
-    var md;
-    ui::get(md, w, doc, "modified");
-    if ( md.as_boolean() )
+    if ( doc_modified(w, doc) )
 	ui::set(w, es, "msg",
 		format("Building {} -> {} (live buffer: unsaved edits compile).", p, o));
     else
@@ -3661,13 +4886,18 @@ bool save_and_check(long w, long es, long doc);	// defined with the actions belo
 // chrome pushes it; the terminal and a headless session never do, so
 // their open / save-as keep prompting exactly as before). The answer
 // returns as a dialog EVENT the dispatcher handles (dialog_result).
-bool dialog_request(long w, long es, const char *mode, const char *title,
+bool dialog_request(long w, long es, long dlg, const char *title,
 		    var &initial)
 {
     if ( !es_flag(w, es, "hasdialogs") )
 	return false;
-    var rq = { "kind": "filedialog", "mode": mode, "title": title,
-	       "path": initial, "pause": 0 };
+    // The host speaks the dialog MODE (open | save — ui::dialog_mode's
+    // names, the wire word); the IDE's own KIND — what the answer means —
+    // rides the request for the fallback prompt and waits on the bag for
+    // the answer (dialog_result).
+    var rq = { "kind": rqFILEDIALOG, "dlg": dlg, "mode": dlg_host_mode(dlg),
+	       "title": title, "path": initial, "pause": 0 };
+    ui::set(w, es, "dlgkind", dlg);
     ui::set(w, es, "termreq", rq);
     return true;
 }
@@ -3680,7 +4910,7 @@ bool save_as(long w, long es, long doc, const char *path0)
     var p = path0;			// ring discipline: own the text first
     if ( strlen(p.c_str()) == 0 )
 	return true;
-    ui::set(w, doc, "path", p);
+    doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     var bufs;
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
@@ -3705,22 +4935,23 @@ bool save_as(long w, long es, long doc, const char *path0)
 // buffer under it; an empty path is the user's cancel.
 void dialog_result(long w, long es, long doc, var &ev)
 {
-    var mode = ev["mode"];
+    long dlg = es_int(w, es, "dlgkind", dlgOPEN);	// the request this answers
     var path = ev["path"];
     if ( path.is_null() || strlen(path.c_str()) == 0 )
     {
 	ui::set(w, es, "msg", "Cancelled.");
 	return;
     }
-    if ( mode == "save" )
+    switch ( dlg )
     {
-	save_as(w, es, doc, path.c_str());
-	return;
-    }
-    if ( mode == "openproject" )
-    {
-	proj_open(w, es, doc, path.c_str());
-	return;
+	case dlgSAVE:
+	    save_as(w, es, doc, path.c_str());
+	    return;
+	case dlgOPENPROJECT:
+	    proj_open(w, es, doc, path.c_str());
+	    return;
+	default:
+	    break;
     }
     edit_file(w, es, doc, path.c_str());
 }
@@ -3761,8 +4992,7 @@ void run_buffer(long w, long es, long doc)
 	var rp;
 	ui::get(rp, w, doc, "path");
 	var title = format("Run {}", rp);
-	var pk = proj_kind(w, es);
-	if ( pk == "gui" )
+	if ( proj_kind(w, es) == pkGUI )
 	{
 	    var uri = format("madcrun://{}", h);
 	    start_capture(w, es, title.c_str(), uri.c_str());
@@ -3774,7 +5004,7 @@ void run_buffer(long w, long es, long doc)
 	}
 	return;
     }
-    var rq = { "kind": "run", "doc": doc, "pause": 1 };
+    var rq = { "kind": rqRUN, "doc": doc, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3792,7 +5022,7 @@ void run_in_terminal(long w, long es, const char *cmd)
 	start_terminal(w, es, c.c_str(), uri.c_str());
 	return;
     }
-    var rq = { "kind": "cmd", "cmd": cmd, "pause": 1 };
+    var rq = { "kind": rqCMD, "cmd": cmd, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -3832,6 +5062,7 @@ bool proj_check_rows(var &merged, long w, long es)
 	    // visible as a row, never silent.
 	    rows[] = { "file": t["file"], "line": 1, "column": 0,
 		       "severity": "error",
+		       "severity_code": madc::diag_severity::error,
 		       "message": "cannot open this TU (file or manifest options)" };
 	    continue;
 	}
@@ -3853,7 +5084,7 @@ void proj_run_check(long w, long es, long doc)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer check IS the check.
 	run_check(w, es, doc);
@@ -3900,9 +5131,7 @@ void project_build_task(long w, long es)
 	ui::set(w, es, "msg", format("Built project {} -> {}", pf, o));
 	return;
     }
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) == 0 )
+    if ( cur_pane(w, es) == paneNONE )
 	show_diags(w, es);
     ui::set(w, es, "msg",
 	    format("Project build failed: {} problem(s).", php::count(diags)));
@@ -3912,7 +5141,7 @@ void start_project_build(long w, long es, long doc, var &kind, var &out)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer build IS the build.
 	var ot = "{base}";
@@ -3943,7 +5172,7 @@ void run_project(long w, long es, long doc)
 {
     var pf;
     ui::get(pf, w, es, "projfile");
-    if ( pf.is_null() || strlen(pf.c_str()) == 0 )
+    if ( !proj_has_manifest(w, es) )
     {
 	// Implicit single-file project: the buffer Run IS the run.
 	run_buffer(w, es, doc);
@@ -3966,8 +5195,7 @@ void run_project(long w, long es, long doc)
 	// A window: the --project JIT lane in a child — the Terminal tab
 	// for a console project, Output for a gui one (the kind).
 	var title = format("Run project {}", pf);
-	var pk = proj_kind(w, es);
-	if ( pk == "gui" )
+	if ( proj_kind(w, es) == pkGUI )
 	{
 	    var uri = format("madcproj://{}", pf);
 	    start_capture(w, es, title.c_str(), uri.c_str());
@@ -3979,7 +5207,7 @@ void run_project(long w, long es, long doc)
 	}
 	return;
     }
-    var rq = { "kind": "projrun", "pause": 1 };
+    var rq = { "kind": rqPROJRUN, "pause": 1 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -4023,8 +5251,7 @@ void ensure_build_cmds(long w, long es)
     ui::get(proj, w, es, "proj");
     var pf;
     ui::get(pf, w, es, "projfile");
-    bool projected = !proj.is_null() && !pf.is_null()
-		  && strlen(pf.c_str()) > 0;
+    bool projected = !proj.is_null() && proj_has_manifest(w, es);
     var rows = {};
     if ( projected )
     {
@@ -4037,14 +5264,14 @@ void ensure_build_cmds(long w, long es)
 	else
 	    pout = format("{}", o);
 	rows[] = { "name": "Check project (in-process)",
-		   "act": "bld-proj-check" };
+		   "act": cmdBLD_PROJ_CHECK };
 	rows[] = { "name": "Build project (in-process)", "kind": "exe",
-		   "out": pout, "act": "bld-proj-build" };
+		   "out": pout, "act": cmdBLD_PROJ_BUILD };
 	// bld-proj-run = the --project JIT lane, forked
-	rows[] = { "name": "Run project", "act": "bld-proj-run" };
+	rows[] = { "name": "Run project", "act": cmdBLD_PROJ_RUN };
 	rows[] = { "name": "Run native", "cmd": format("./{}", pout),
-		   "mode": "terminal", "act": "bld-run-cmd" };
-	rows[] = { "name": "Stop", "act": "bld-stop" };
+		   "mode": bmTERMINAL, "act": cmdBLD_RUN_CMD };
+	rows[] = { "name": "Stop", "act": cmdBLD_STOP };
 	// The manifest's commands section: {name, cmd, mode?} rows AS
 	// DATA, appended after the built-ins ({path}/{base}/{project}/
 	// {madc} substitute at choose time — build_subst). A malformed
@@ -4062,26 +5289,25 @@ void ensure_build_cmds(long w, long es)
 		    continue;
 		// (An if/else default, not a ternary: mixed scalar/carrier
 		// ternary arms are a banked lowering gap.)
-		var cm = c["mode"];
-		if ( cm.is_null() )
-		    cm = "capture";
+		var cmw = c["mode"];		// the manifest's word
+		long cm = bmode_of(cmw);	// converted where the row is built
 		rows[] = { "name": cn, "cmd": cc, "mode": cm,
-			   "act": "bld-run-cmd" };
+			   "act": cmdBLD_RUN_CMD };
 	    }
 	}
 	ui::set(w, es, "buildcmds", rows);
 	return;
     }
-    rows[] = { "name": "Check (in-process)", "act": "bld-check" };
+    rows[] = { "name": "Check (in-process)", "act": cmdBLD_CHECK };
     rows[] = { "name": "Build (in-process)", "kind": "exe",
-	       "out": "{base}", "act": "bld-native" };
+	       "out": "{base}", "act": cmdBLD_NATIVE };
     rows[] = { "name": "Build object (in-process)", "kind": "obj",
-	       "out": "{base}.o", "act": "bld-native" };
+	       "out": "{base}.o", "act": cmdBLD_NATIVE };
     // bld-run = fork the LIVE parse (madc::parse_run)
-    rows[] = { "name": "Run", "act": "bld-run" };
+    rows[] = { "name": "Run", "act": cmdBLD_RUN };
     rows[] = { "name": "Run native", "cmd": "./{base}",
-	       "mode": "terminal", "act": "bld-run-cmd" };
-    rows[] = { "name": "Stop", "act": "bld-stop" };
+	       "mode": bmTERMINAL, "act": cmdBLD_RUN_CMD };
+    rows[] = { "name": "Stop", "act": cmdBLD_STOP };
     ui::set(w, es, "buildcmds", rows);
 }
 
@@ -4095,101 +5321,99 @@ void build_choose(long w, long es, long doc, long option)
     if ( idx < 0 || idx >= php::count(rows) )
 	return;
     var r = rows[idx];
-    var a = format("{}", r["act"]);
-    ui::set(w, es, "pane", "");		// the palette closes on choose
-    if ( a == "bld-check" )
+    long a = r["act"].as_integer();
+    set_pane(w, es, paneNONE);		// the palette closes on choose
+    switch ( a )
     {
-	run_check(w, es, doc);
-	return;
-    }
-    if ( a == "bld-stop" )
-    {
-	stop_build(w, es);
-	return;
-    }
-    if ( a == "bld-native" )
-    {
-	var k = format("{}", r["kind"]);
-	var ot = format("{}", r["out"]);
-	start_native_build(w, es, doc, k, ot);
-	return;
-    }
-    if ( a == "bld-run" )
-    {
-	run_buffer(w, es, doc);
-	return;
-    }
-    // The project rows (^B correlation): check every TU / build the
-    // linked image / run the --project lane.
-    if ( a == "bld-proj-check" )
-    {
-	proj_run_check(w, es, doc);
-	return;
-    }
-    if ( a == "bld-proj-build" )
-    {
-	var k = format("{}", r["kind"]);
-	var ot = format("{}", r["out"]);
-	start_project_build(w, es, doc, k, ot);
-	return;
-    }
-    if ( a == "bld-proj-run" )
-    {
-	run_project(w, es, doc);
-	return;
+	case cmdBLD_CHECK:
+	    run_check(w, es, doc);
+	    return;
+	case cmdBLD_STOP:
+	    stop_build(w, es);
+	    return;
+	case cmdBLD_NATIVE:
+	{
+	    var k = format("{}", r["kind"]);
+	    var ot = format("{}", r["out"]);
+	    start_native_build(w, es, doc, k, ot);
+	    return;
+	}
+	case cmdBLD_RUN:
+	    run_buffer(w, es, doc);
+	    return;
+	// The project rows (^B correlation): check every TU / build the
+	// linked image / run the --project lane.
+	case cmdBLD_PROJ_CHECK:
+	    proj_run_check(w, es, doc);
+	    return;
+	case cmdBLD_PROJ_BUILD:
+	{
+	    var k = format("{}", r["kind"]);
+	    var ot = format("{}", r["out"]);
+	    start_project_build(w, es, doc, k, ot);
+	    return;
+	}
+	case cmdBLD_PROJ_RUN:
+	    run_project(w, es, doc);
+	    return;
+	default:
+	    break;			// cmdBLD_RUN_CMD: the row's own command
     }
     var cmd0 = format("{}", r["cmd"]);
     var cmd;
     build_subst(cmd, cmd0.c_str(), w, es, doc);
-    var mode = format("{}", r["mode"]);
-    if ( mode == "terminal" )
+    if ( r["mode"].as_integer() == bmTERMINAL )
 	run_in_terminal(w, es, cmd.c_str());
     else
 	start_build(w, es, cmd.c_str());
 }
 
-// The c++ view applies when the BUFFER'S OWN language is C/C++ (by
-// extension — the app's document-kind rule): its render is source-shaped
-// (madc::emit "c++" echoes the retained source), and a madc-dialect
-// buffer has no C++ respelling yet (the named seat, design doc §3.2).
+// The c++ view applies when the BUFFER'S OWN kind is in the C or C++
+// family (doc_kind — stamped once at open from the file name, never
+// re-derived here): its render is source-shaped (madc::emit for madc::fkCPP
+// echoes the retained source), and a madc-dialect buffer has no C++
+// respelling yet (the named seat, design doc §3.2). A range test on the
+// one file-kind vocabulary, never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    var p;
-    ui::get(p, w, doc, "path");
-    const char *pc = p.c_str();
-    const char *dot = strrchr(pc, '.');
-    if ( dot == 0 )
-	return false;
-    var ext = format("{}", dot);
-    return ext == ".c" || ext == ".cc" || ext == ".cpp" || ext == ".cxx"
-	|| ext == ".h" || ext == ".hpp";
+    long k = doc_kind(w, doc);
+    return (k >= madc::fkC && k <= madc::fkC_LAST)
+	|| (k >= madc::fkCPP && k <= madc::fkCPP_LAST);
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
 // [-> c++ on a C/C++ buffer] -> original.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
+// The cycle REPLACES the focused View's representation in place (one View
+// per tab; its navigation stays the container's). A switch on the render
+// language's code, never its spelling.
 void cycle_view(long w, long es, long doc)
 {
-    var vw;
-    if ( !view_name(vw, w, es) )
+    var v;
+    bool up = view_row(v, w, es, focused_view(w, es))
+	   && v["kind"].as_integer() == viewCODE;
+    if ( !up )
     {
-	enter_view(w, es, doc, "mc11");
+	enter_lens(w, es, doc, madc::fkMC11);
 	return;
     }
-    if ( vw == "mc11" )
+    switch ( v["lang"].as_integer() )
     {
-	if ( !enter_view(w, es, doc, "c11") )
-	    exit_view(w, es, doc);
-	return;
+	case madc::fkMC11:
+	    if ( !enter_lens(w, es, doc, madc::fkC11) )
+		exit_lens(w, es, doc);
+	    return;
+	case madc::fkC11:
+	    if ( cxx_view_applies(w, es, doc) )
+	    {
+		if ( !enter_lens(w, es, doc, madc::fkCPP) )
+		    exit_lens(w, es, doc);
+		return;
+	    }
+	    break;
     }
-    if ( vw == "c11" && cxx_view_applies(w, es, doc) )
-    {
-	if ( !enter_view(w, es, doc, "c++") )
-	    exit_view(w, es, doc);
-	return;
-    }
-    exit_view(w, es, doc);
+    exit_lens(w, es, doc);
 }
 
 // ---- ^K Z: hand the terminal to a shell -------------------------------
@@ -4207,7 +5431,7 @@ void open_shell(long w, long es)
 	start_terminal(w, es, "Shell", "pty://sh -c ${SHELL:-/bin/sh}");
 	return;
     }
-    var rq = { "kind": "shell", "pause": 0 };
+    var rq = { "kind": rqSHELL, "pause": 0 };
     if ( !term_request(w, es, rq) )
 	ui::set(w, es, "msg", "No terminal to suspend.");
 }
@@ -4219,9 +5443,7 @@ bool save_quit(long w, long es, long doc)
 {
     if ( !do_verb(w, es, "w") )
 	return false;
-    var m;
-    ui::get(m, w, doc, "modified");
-    if ( m.is_null() || !m.as_boolean() )
+    if ( !doc_modified(w, doc) )
 	return do_verb(w, es, "q");
     return true;	// the save failed; its message stands
 }
@@ -4294,19 +5516,66 @@ bool colon_command(long w, long es, long doc, long caret, var &in)
 	insert_file(w, es, doc, caret, arg.c_str());
 	return true;
     }
+    // The view* verbs (V2b) reach the colon line too — `:viewsplit right
+    // mc11`, `:viewfocus next`, `:viewclose`, `:viewopen mc11`; the same
+    // owners the dispatcher calls.
+    if ( verb == "viewsplit" )
+    {
+	long vdir;
+	long vlang;
+	viewsplit_args(arg, vdir, vlang);
+	view_split(w, es, doc, vdir, vlang);
+	return true;
+    }
+    if ( verb == "viewfocus" )
+    {
+	view_focus(w, es, doc, viewfocus_dir_of(arg));
+	return true;
+    }
+    if ( verb == "viewclose" )
+    {
+	view_close(w, es, doc);
+	return true;
+    }
+    if ( verb == "viewopen" )
+    {
+	view_open(w, es, doc, viewrepr_lang_of(arg));
+	return true;
+    }
+    if ( verb == "viewdock" )
+    {
+	long dslot;
+	long dside;
+	viewdock_target(arg, dslot, dside);
+	view_dock(w, es, dslot, dside);
+	return true;
+    }
+    if ( verb == "viewsize" )
+    {
+	long zslot;
+	long zsize;
+	viewsize_args(arg, zslot, zsize);
+	view_size(w, es, zslot, zsize);
+	return true;
+    }
+    if ( verb == "viewwindow" )
+    {
+	view_window(w, es, doc);
+	return true;
+    }
+    if ( verb == "viewsync" )
+    {
+	view_sync(w, es, arg);
+	return true;
+    }
     ui::set(w, es, "msg", format("Unknown command :{}", cmd));
     return true;
 }
 
 // Toggle the lower pane between `name` and hidden.
-void toggle_pane(long w, long es, const char *name)
+void toggle_pane(long w, long es, long p)
 {
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( pane == name )
-	ui::set(w, es, "pane", "");
-    else
-	ui::set(w, es, "pane", name);
+    set_pane(w, es, cur_pane(w, es) == p ? paneNONE : p);
 }
 
 // The pointer arm (IDE-9e aware): a press picks the WINDOW first. The
@@ -4356,15 +5625,705 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
     edit_pointer(w, es, target, ev, target == ad);
 }
 
+// ---- the view* verbs (V2b): the editor region a real split tree ---------
+// `viewsplit` turns the focused leaf into a `split` holding it and a NEW
+// leaf — a second window on the same subject (JOE's ^K O feel, side by
+// side); `viewfocus` moves the focus between the leaves; `viewclose` closes
+// the focused leaf (its parent split collapses to the sibling). The focused
+// leaf's active container IS the live es caret; an unfocused leaf parks its
+// caret on its node (`pcaret` / `pmark` / `pbend`), read by the composer's
+// snapshot. Every mutation rewrites the value-typed tree (one editor tree,
+// one owner: the bag's "layout").
+
+// The leaf count of an editor tree.
+long editor_leaf_count(var &node)
+{
+    if ( node["kind"] != ctSPLIT )
+	return 1;
+    long n = 0;
+    for ( var c : node["children"] )
+	n = n + editor_leaf_count(c);
+    return n;
+}
+
+// The tree-order index of the focused leaf (-1 = none), a running counter.
+long editor_focus_scan(var &node, long &seen)
+{
+    if ( node["kind"] != ctSPLIT )
+    {
+	long me = seen;
+	seen = seen + 1;
+	return node["focus"].as_integer() != 0 ? me : -1;
+    }
+    for ( var c : node["children"] )
+    {
+	long r = editor_focus_scan(c, seen);
+	if ( r >= 0 )
+	    return r;
+    }
+    return -1;
+}
+long editor_focused_index(var &node)
+{
+    long seen = 0;
+    return editor_focus_scan(node, seen);
+}
+
+// Rewrite: focus=1 on leaf `target` (tree order), 0 elsewhere.
+void editor_focus_set(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_focus_set(nc, c, target, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    leaf["focus"] = seen == target ? 1 : 0;
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_focus(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_focus_set(out, node, target, seen);
+}
+
+// Rewrite: park (caret, mark, bend) on leaf `target`.
+void editor_park_scan(var &out, var &node, long target, long ca, long ma,
+		      long be, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_park_scan(nc, c, target, ca, ma, be, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    var leaf = node;
+    if ( seen == target )
+    {
+	leaf["pcaret"] = ca;
+	leaf["pmark"] = ma;
+	leaf["pbend"] = be;
+    }
+    seen = seen + 1;
+    out = leaf;
+}
+void editor_do_park(var &out, var &node, long target, long ca, long ma,
+		    long be)
+{
+    long seen = 0;
+    editor_park_scan(out, node, target, ca, ma, be, seen);
+}
+
+// Read leaf `target` (a copy); out stays null when not found.
+void editor_read_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	for ( var c : node["children"] )
+	{
+	    editor_read_scan(out, c, target, seen);
+	    if ( !out.is_null() )
+		return;
+	}
+	return;
+    }
+    if ( seen == target )
+	out = node;
+    seen = seen + 1;
+}
+void editor_read_leaf(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_read_scan(out, node, target, seen);
+}
+
+// Rewrite: replace leaf `target` with `repl`.
+void editor_replace_scan(var &out, var &node, long target, var &repl,
+			 long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_replace_scan(nc, c, target, repl, seen);
+	    kids.push(nc);
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	out = repl;
+	return;
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_replace(var &out, var &node, long target, var &repl)
+{
+    long seen = 0;
+    editor_replace_scan(out, node, target, repl, seen);
+}
+
+// Rewrite: remove leaf `target`; a split that drops to one child collapses
+// to it. A removed node leaves `out` NULL (the reliable signal — a subscript
+// of a missing key is an empty container here, not null), which the parent
+// filters out.
+void editor_remove_scan(var &out, var &node, long target, long &seen)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var kids = {};
+	for ( var c : node["children"] )
+	{
+	    var nc;
+	    editor_remove_scan(nc, c, target, seen);
+	    if ( !nc.is_null() )
+		kids.push(nc);
+	}
+	if ( php::count(kids) == 1 )
+	{
+	    out = kids[0];
+	    return;
+	}
+	var nn = node;
+	nn["children"] = kids;
+	out = nn;
+	return;
+    }
+    if ( seen == target )
+    {
+	seen = seen + 1;
+	return;			// out stays null = removed
+    }
+    seen = seen + 1;
+    out = node;
+}
+void editor_do_remove(var &out, var &node, long target)
+{
+    long seen = 0;
+    editor_remove_scan(out, node, target, seen);
+}
+
+// "right" | "bottom" (the viewsplit direction word) -> the split enum.
+// A missing word splits vertically (the owner's side-by-side default).
+long viewsplit_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return ui::split::vertical;
+    var a = format("{}", arg);
+    if ( a == "bottom" || a == "down" || a == "below" )
+	return ui::split::horizontal;
+    return ui::split::vertical;		// right = side by side (the default)
+}
+
+// "next" | "prev" (the viewfocus direction word) -> +1 / -1.
+long viewfocus_dir_of(var &arg)
+{
+    if ( arg.is_null() )
+	return 1;
+    var a = format("{}", arg);
+    if ( a == "prev" || a == "up" || a == "left" || a == "back" )
+	return -1;
+    return 1;
+}
+
+// A viewsplit / viewtab / viewopen REPR word -> its render language
+// (madc::fkMC11 / fkC11 / fkCPP); 0 = a source pane (no code render).
+long viewrepr_lang_of(var &word)
+{
+    if ( word.is_null() )
+	return 0;
+    var a = format("{}", word);
+    if ( a == "mc11" )
+	return madc::fkMC11;
+    if ( a == "c11" )
+	return madc::fkC11;
+    if ( a == "cpp" || a == "c++" || a == "cxx" )
+	return madc::fkCPP;
+    return 0;			// source / src / unknown = a source pane
+}
+
+// `viewsplit right mc11` -> dir + render language: the FIRST word the
+// direction, the SECOND the representation (both optional).
+void viewsplit_args(var &arg, long &dir, long &lang)
+{
+    dir = ui::split::vertical;
+    lang = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+    {
+	var w0 = words[0];
+	dir = viewsplit_dir_of(w0);
+    }
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	lang = viewrepr_lang_of(w1);
+    }
+}
+
+// The View a leaf's active container shows: the primary leaf (tree order's
+// first, the ring host) shows the ring's current View; a secondary leaf its
+// active tab's. One reader for the composer's snapshot and the focus handoff.
+long leaf_view_of(long w, long es, var &leaf, bool primary)
+{
+    if ( primary )
+	return buffer_view(w, es, es_int(w, es, "bufidx", 0));
+    var tabs = leaf["tabs"];
+    var tab = tabs[leaf["active"].as_integer()];
+    return tab["view"].as_integer();
+}
+
+// viewsplit: the focused leaf becomes a split of itself and a NEW leaf. With
+// no repr the new leaf is a second window on the current subject (the SAME
+// View, JOE's ^K O feel); with a repr (`mc11` / `c11` / `cpp`) it is a code
+// View of that representation over the subject (source left, MC11 right — the
+// owner's side-by-side). Focus stays on the original leaf. Refused while the
+// S5 window stack is up (one axis at a time in V2b; the stack is JOE's).
+void view_split(long w, long es, long doc, long dir, long lang)
+{
+    if ( window_count(w, es) >= 2 )
+    {
+	ui::set(w, es, "msg",
+		"Close the extra windows (^K 1) before splitting the view.");
+	return;
+    }
+    long subject = active_doc(w, es, doc);
+    long ca = es_int(w, es, "caret", 0);
+    long nv;
+    long pcar;
+    long tkind;
+    if ( lang != 0 )
+    {
+	nv = make_code_view(w, es, subject, lang);
+	if ( nv == 0 )
+	{
+	    ui::set(w, es, "msg",
+		    format("Cannot render {} — the buffer does not translate.",
+			   madc::file_kind_name(lang)));
+	    return;
+	}
+	pcar = 0;			// a fresh code render starts at the top
+	tkind = viewCODE;
+    }
+    else
+    {
+	nv = focused_view(w, es);	// the same View — a second window
+	pcar = ca;
+	tkind = viewSOURCE;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long fi = editor_focused_index(etree);
+    if ( fi < 0 )
+	fi = 0;
+    var tab;
+    layout_tab(tab, tkind, nv);
+    var tabs = {};
+    tabs.push(tab);
+    long snone = ui::side_code("");
+    long ksed = slotEDITOR;
+    long mtabs = lmTABS;
+    var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
+		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
+		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
+    var focleaf;
+    editor_read_leaf(focleaf, etree, fi);
+    var kids = {};
+    kids.push(focleaf);
+    kids.push(newleaf);
+    var split = { "kind": ctSPLIT, "dir": dir, "size": 0, "children": kids };
+    var newtree;
+    editor_do_replace(newtree, etree, fi, split);
+    lo["editor"] = newtree;
+    ui::set(w, es, "layout", lo);
+    ui::set(w, es, "msg", format("{} views.", editor_leaf_count(newtree)));
+}
+
+// Make the leaf `arriving` (tree order) the live one: its parked caret goes
+// live, and its container's View becomes es "fview" — so the focused edit is
+// that leaf's (a code View routes display-vs-stored through nav_doc, and its
+// read-only verdict returns). The primary leaf's View is the ring's current;
+// a secondary's is its tab's.
+void editor_enter_leaf(long w, long es, var &tree, long arriving)
+{
+    var tleaf;
+    editor_read_leaf(tleaf, tree, arriving);
+    bool primary = arriving == 0;
+    long vid = leaf_view_of(w, es, tleaf, primary);
+    ui::set(w, es, "fview", vid);
+    ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
+    ui::set(w, es, "mark", tleaf["pmark"].as_integer());
+    ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    var v;
+    view_row(v, w, es, vid);
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+    {
+	// A code View is read-only — the lens contract (enter_lens's rule).
+	ui::set(w, es, "editable", false);
+	ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
+    }
+    else
+	derive_access(w, es);		// the file's own verdict
+}
+
+// viewfocus: move the focus between leaves. The live caret parks on the
+// leaving leaf's node; the arriving leaf becomes live (its View, its caret) —
+// the full handoff, so a code-View pane edits (refuses) as itself.
+void view_focus(long w, long es, long doc, long dir)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long cur = editor_focused_index(etree);
+    if ( cur < 0 )
+	cur = 0;
+    long nx = (cur + dir + n) % n;
+    var parked;
+    editor_do_park(parked, etree, cur, es_int(w, es, "caret", 0),
+		   es_int(w, es, "mark", -1), es_int(w, es, "bend", -1));
+    var focused;
+    editor_do_focus(focused, parked, nx);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    editor_enter_leaf(w, es, focused, nx);
+    ui::set(w, es, "msg", format("View {} of {}.", nx + 1, n));
+}
+
+// viewsync (client-server arc V5; design §2.6): toggle cursor synchronization
+// between a source View and its MC11/C11 View. On = the unfocused pane of a
+// source↔code pair draws its caret PROJECTED from the focused caret through
+// the coordinate map, never its own parked one — the sync is a read-side
+// projection at compose time (viewsync_leaf_caret), so no caret state is
+// duplicated. `arg` is on|off at the input boundary (a boolean flag), bare =
+// toggle; the stored state es "viewsync" is an integer.
+void view_sync(long w, long es, var &arg)
+{
+    long cur = es_int(w, es, "viewsync", 0);
+    var a = arg;
+    long on;
+    if ( a == "on" )
+	on = 1;
+    else if ( a == "off" )
+	on = 0;
+    else
+	on = cur ? 0 : 1;
+    ui::set(w, es, "viewsync", on);
+    ui::set(w, es, "msg", on ? "Cursor sync ON (source ↔ view)."
+			     : "Cursor sync off.");
+}
+
+// V5 read-side projection: the caret an unfocused leaf showing View `vid`
+// should draw when cursor-sync is on — the FOCUSED caret projected into this
+// View's coordinate space through the source↔MC11 pair's map. Only a pair of
+// one code View (carrying the map) and one source View projects; any other
+// combination (same representation, no map, no focused View) returns the
+// leaf's own parked caret (`fallback`). A refused projection (-1: an empty or
+// malformed map) also falls back — never a bad caret. `follow` is set to 1
+// only when a projection actually happened: the composer marks that leaf so
+// the frontend SCROLLS to (and marks) the synced caret, an unfocused pane it
+// would otherwise leave parked.
+long viewsync_leaf_caret(long w, long es, long vid, long fallback, long &follow)
+{
+    follow = 0;
+    long fvid = focused_view(w, es);
+    if ( fvid == 0 || fvid == vid )
+	return fallback;
+    var fv;
+    var tv;
+    if ( !view_row(fv, w, es, fvid) || !view_row(tv, w, es, vid) )
+	return fallback;
+    long fcaret = es_int(w, es, "caret", 0);
+    bool fcode = fv["kind"].as_integer() == viewCODE;
+    bool tcode = tv["kind"].as_integer() == viewCODE;
+    if ( tcode && !fcode )
+    {
+	// focused = source (stored space) → this = code (display space): the
+	// code View's map carries the stored↔display correspondence.
+	var m = tv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long d = ui::lens_to_display(m, fcaret);
+	if ( d < 0 )
+	    return fallback;
+	follow = 1;
+	return d;
+    }
+    if ( fcode && !tcode )
+    {
+	// focused = code (display space) → this = source (stored space).
+	var m = fv["map"];
+	if ( php::count(m) == 0 )
+	    return fallback;
+	long s = ui::lens_to_stored(m, fcaret);
+	if ( s < 0 )
+	    return fallback;
+	follow = 1;
+	return s;
+    }
+    return fallback;		// same representation: nothing to project
+}
+
+// viewclose: close the focused leaf; its parent split collapses to the
+// sibling and the focus moves to the previous leaf. The primary leaf (tree
+// order's first, the ring host) never closes — quit does that.
+void view_close(long w, long es, long doc)
+{
+    var lo;
+    layout_get(lo, w, es);
+    var etree = lo["editor"];
+    long n = editor_leaf_count(etree);
+    if ( n < 2 )
+    {
+	ui::set(w, es, "msg", "Only one view.");
+	return;
+    }
+    long fi = editor_focused_index(etree);
+    if ( fi <= 0 )
+    {
+	ui::set(w, es, "msg", "The primary view stays open (^K Q quits).");
+	return;
+    }
+    var removed;
+    editor_do_remove(removed, etree, fi);
+    long nf = fi - 1;
+    var focused;
+    editor_do_focus(focused, removed, nf);
+    lo["editor"] = focused;
+    ui::set(w, es, "layout", lo);
+    editor_enter_leaf(w, es, focused, nf);	// the survivor becomes live
+    ui::set(w, es, "msg", format("View closed — {} left.",
+				 editor_leaf_count(focused)));
+}
+
+// viewopen: re-represent the FOCUSED leaf's View as `lang` (a code render) or
+// back to source (lang 0). es "fview" IS the focused leaf's View, so this is
+// the lens re-representation the `view` cycle already owns — one owner for
+// the focused View whichever leaf holds it.
+void view_open(long w, long es, long doc, long lang)
+{
+    if ( lang == 0 )
+    {
+	exit_lens(w, es, doc);
+	ui::set(w, es, "msg", "View: source");
+	return;
+    }
+    if ( !enter_lens(w, es, doc, lang) )
+	exit_lens(w, es, doc);
+}
+
+// The viewdock direction word -> a (slot, side): `left`/`right` dock the
+// sidebar, `top`/`bottom` the panel (the slot rule parse_layout enforces). An
+// absent or unknown word is `ui::side::none` — view_dock refuses it, never
+// docks to a default place.
+void viewdock_target(var &arg, long &slot, long &side)
+{
+    side = ui::side::none;
+    slot = slotSIDEBAR;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    if ( php::count(words) < 1 )
+	return;
+    var w0 = words[0];
+    side = ui::side_code(w0.c_str());
+    if ( side == ui::side::top || side == ui::side::bottom )
+	slot = slotPANEL;
+    else
+	slot = slotSIDEBAR;		// left | right (none is refused below)
+}
+
+// viewdock <left|right|top|bottom>: move the FOCUSED chrome pane to a slot and
+// side. "Focused" is the chrome View last brought up (`chromelast`, the @pane
+// esc's target) — viewfocus reaching chrome is a V3 residue, so today docking
+// retargets the pane you just opened. The placement PERSISTS beside the
+// manifest (design §5). No direction, or no chrome open, is a refusal that
+// says what to do.
+void view_dock(long w, long es, long slot, long side)
+{
+    if ( side == ui::side::none )
+    {
+	ui::set(w, es, "msg", "viewdock: dock where? left | right | top | bottom.");
+	return;
+    }
+    long k = es_int(w, es, "chromelast", viewNONE);
+    if ( k == viewNONE )
+    {
+	ui::set(w, es, "msg",
+		"Open a pane (a sidebar or a panel view) before docking it.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, k, tab);
+    if ( ci < 0 )
+    {
+	ui::set(w, es, "msg",
+		format("No chrome pane hosts the {} view.", view_name(k)));
+	return;
+    }
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    c["slot"] = slot;
+    c["side"] = side;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    layout_persist(w, es);
+    ui::set(w, es, "msg", format("Docked {} to the {}.", view_name(k),
+				 ui::side_name(side)));
+}
+
+// `viewsize <sidebar|panel> <percent>` -> the chrome slot + a clamped size.
+// slotNONE / 0 for a missing or unknown word (view_size refuses). The slot
+// word converts at THIS input boundary (slot_of); the size is runtime numeric
+// data (a splitter's pixel drag turned into a percent), clamped to the
+// grammar's 1%..90%.
+void viewsize_args(var &arg, long &slot, long &size)
+{
+    slot = slotNONE;
+    size = 0;
+    if ( arg.is_null() )
+	return;
+    var words;
+    layout_words(words, arg);
+    long n = php::count(words);
+    if ( n >= 1 )
+	slot = slot_of(words[0]);
+    if ( n >= 2 )
+    {
+	var w1 = words[1];
+	long v = php::intval(w1);
+	if ( v < 1 )
+	    v = 1;
+	if ( v > 90 )
+	    v = 90;
+	size = v;
+    }
+}
+
+// viewsize: set the chrome pane of a slot to a size percent and PERSIST — so
+// the SESSION's layout owns the size (it rides <base>.prj.layout and the TUI
+// shares it), not the page's per-viewer localStorage. The splitter drag posts
+// it (`{action:'viewsize', arg:'sidebar 40'}`); `:viewsize panel 30` reaches
+// it from the keyboard too. Refuses a non-band slot (the editor's sizing is
+// the split's) or a slot the layout has no pane for.
+void view_size(long w, long es, long slot, long size)
+{
+    if ( slot != slotSIDEBAR && slot != slotPANEL )
+    {
+	ui::set(w, es, "msg", "viewsize: size which? sidebar | panel <percent>.");
+	return;
+    }
+    if ( size < 1 )
+    {
+	ui::set(w, es, "msg", "viewsize: a size 1%..90%.");
+	return;
+    }
+    var lo;
+    layout_get(lo, w, es);
+    var ch = lo["chrome"];
+    long n = php::count(ch);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var c = ch[i];
+	if ( !(c["slot"] == slot) )
+	    continue;
+	c["size"] = size;
+	ch[i] = c;
+	lo["chrome"] = ch;
+	ui::set(w, es, "layout", lo);
+	layout_persist(w, es);
+	ui::set(w, es, "msg", format("{} sized to {}%.", slot_name(slot), size));
+	return;
+    }
+    ui::set(w, es, "msg", format("The layout has no {} pane.", slot_name(slot)));
+}
+
+// viewwindow (client-server V3b-2b): a SECOND window on the session — a new
+// client viewing the same document (design §2.3). Opening a frontend is the
+// CLIENT layer's job (the gateway seam: the session never touches a
+// frontend handle), so this parks the doc-to-view on the requesting
+// client's es; run_ide's loop drains it (take_spawn), opens the frontend,
+// and adds the client record. Only a windowed client can host a second
+// window in one process — a terminal client (a single tty) refuses (the
+// TUI's own multi-pane shape is its layout, not a second frontend).
+void view_window(long w, long es, long doc)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "viewwindow: a second window needs a window target (--gui).");
+	return;
+    }
+    ui::set(w, es, "spawnview", doc);
+    ui::set(w, es, "msg", "Opening a new window…");
+}
+
 // Apply ONE semantic event (the value shapes the engine's event query
 // produces — action events from the bindings table included) — the
 // session surface. False = quit.
-bool IdeSession::apply_ide_event(long doc, var &ev)
+bool IdeSession::apply_ide_event(long doc, var &ev_in)
 {
     // The startup hint yields to the first event of any kind — the same
     // "first event returns the row" rule run_ide's loop used to apply.
     ui::set(w, es, "hint", 0);
+    // The session works on its OWN copy of the event: the command code is
+    // filled in below, never written into the client's object (a client
+    // may reuse one event value for its next post — the headless harness
+    // does — and a stale code would then shadow the new name).
+    var ev = ev_in;
     var kind = ev["event_code"];
+    // A command that arrived by NAME only — a client that speaks names (the
+    // headless harness, an API client; a control the target could not
+    // stamp) — converts ONCE here, the session's input boundary; the engine
+    // has already stamped a code-bound chord's code and a stamped control's.
+    // An unknown name is cmdNONE: refused below as "Unknown action".
+    if ( kind == ui::event_kind::action || kind == ui::event_kind::choose )
+    {
+	if ( ev_code(ev) == cmdNONE )
+	{
+	    var an = ev["action"];
+	    if ( !an.is_null() && strlen(an.c_str()) > 0 )
+		ev["action_code"] = cmd_of(an.c_str());
+	}
+    }
     // Stage-2: cooperative background tasks drained — the spawned parse
     // already parked its handle/spans on the bag; recompose only. Before
     // anything else: a wake is not a user gesture (it must not clear the
@@ -4425,344 +6384,409 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 
     if ( kind == ui::event_kind::action )
     {
+	// The NAME, where one rode along — an argument carrier (a Build menu
+	// row's "build-<n>"), the unknown-action message; never a compare.
 	var a = format("{}", ev["action"]);
-	if ( strlen(a.c_str()) == 0 )
+	long code = ev_code(ev);
+	if ( code == cmdNONE )
 	{
-	    ui::set(w, es, "msg", format("Unbound: {}", ev["seq"]));
-	    return true;
-	}
-	if ( a == "view" )
-	{
-	    cycle_view(w, es, doc);
+	    if ( strlen(a.c_str()) == 0 )
+		ui::set(w, es, "msg", format("Unbound: {}", ev["seq"]));
+	    else
+		ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	    return true;
 	}
 	// Stored-space interaction state (block markers) and history are
 	// meaningless against a displayed view: the one refusal, up front
 	// (mutating actions below refuse through the editable gate).
-	if ( viewing )
+	if ( viewing && (code == cmdMARK || code == cmdBEND
+		     || code == cmdUNDO || code == cmdREDO) )
 	{
-	    if ( a == "mark" || a == "bend" || a == "undo" || a == "redo" )
+	    refuse_edit(w, es);
+	    return true;
+	}
+	// THE dispatcher: a switch on the command CODE (enums, not strings —
+	// owner law 2026-09-09). Every arm leaves; a code no arm claims falls
+	// to the scope / motion handling below.
+	switch ( code )
+	{
+	    case cmdVIEW:
 	    {
-		refuse_edit(w, es);
+		cycle_view(w, es, doc);
 		return true;
 	    }
-	}
-	if ( a == "save" )
-	    return save_and_check(w, es, doc);
-	if ( a == "savequit" )
-	    return save_quit(w, es, doc);
-	if ( a == "quit" )
-	{
-	    // JOE ^K Q: a dirty buffer asks JOE's question on the bottom
-	    // line; the lineed q verb's refusal spelling stays lined's.
-	    var qm;
-	    ui::get(qm, w, doc, "modified");
-	    if ( !qm.is_null() && qm.as_boolean() )
+	    // The view* verbs (V2b): the editor region a real split tree.
+	    // `viewsplit right|bottom [repr]`, `viewfocus next|prev`,
+	    // `viewclose`, `viewopen [repr]` — the words ride the event's
+	    // `arg` (the colon line, a menu row's argument), read once into
+	    // the split / focus enum and the render language.
+	    case cmdVIEWSPLIT:
 	    {
-		start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
-			      "q!");
+		long vdir;
+		long vlang;
+		viewsplit_args(ev["arg"], vdir, vlang);
+		view_split(w, es, doc, vdir, vlang);
 		return true;
 	    }
-	    return do_verb(w, es, "q");
-	}
-	if ( a == "discard" )
-	    return do_verb(w, es, "q!");
-	if ( a == "find" )
-	{
-	    start_prompt(w, es, "Find", "find");
-	    return true;
-	}
-	if ( a == "findnext" )
-	{
-	    do_find(w, es, nav, caret);
-	    return true;
-	}
-	if ( a == "gotoline" )
-	{
-	    start_prompt(w, es, "Go to line", "gotoline");
-	    return true;
-	}
-	if ( a == "insertfile" )
-	{
-	    start_prompt(w, es, "Insert file", "insertfile");
-	    return true;
-	}
-	if ( a == "theme" )
-	{
-	    start_prompt(w, es, "Theme", "theme");
-	    return true;
-	}
-	if ( a == "mark" )
-	{
-	    ui::set(w, es, "mark", caret);
-	    return true;
-	}
-	if ( a == "bend" )
-	{
-	    ui::set(w, es, "bend", caret);
-	    return true;
-	}
-	if ( a == "blockcopy" )
-	{
-	    block_copy(w, es, doc, caret);
-	    return true;
-	}
-	if ( a == "blockmove" )
-	{
-	    block_move(w, es, doc, caret);
-	    return true;
-	}
-	if ( a == "blockdel" )
-	{
-	    block_del(w, es, doc, caret);
-	    return true;
-	}
-	if ( a == "undo" )
-	{
-	    undo_edit(w, es, doc);
-	    return true;
-	}
-	if ( a == "redo" )
-	{
-	    redo_edit(w, es, doc);
-	    return true;
-	}
-	if ( a == "delline" )
-	{
-	    delete_line(w, es, doc, caret);
-	    return true;
-	}
-	if ( a == "delword" )
-	{
-	    delete_word(w, es, doc, caret);
-	    return true;
-	}
-	if ( a == "wordleft" )
-	{
-	    ui::set(w, es, "caret", ui::text_word_left(w, nav, caret));
-	    return true;
-	}
-	if ( a == "wordright" )
-	{
-	    ui::set(w, es, "caret", ui::text_word_right(w, nav, caret));
-	    return true;
-	}
-	if ( a == "top" )
-	{
-	    ui::set(w, es, "caret", 0);
-	    return true;
-	}
-	if ( a == "bottom" )
-	{
-	    ui::set(w, es, "caret", ui::text_size(w, nav));
-	    return true;
-	}
-	if ( a == "check" )
-	{
-	    run_check(w, es, doc);
-	    return true;
-	}
-	if ( a == "outline" )
-	{
-	    var pane;
-	    ui::get(pane, w, es, "pane");
-	    if ( pane == "outline" )
-		ui::set(w, es, "pane", "");
-	    else
+	    case cmdVIEWFOCUS:
 	    {
-		refresh_outline(w, es, doc);
-		ui::set(w, es, "pane", "outline");
+		view_focus(w, es, doc, viewfocus_dir_of(ev["arg"]));
+		return true;
 	    }
-	    return true;
-	}
-	if ( a == "help" )
-	{
-	    toggle_pane(w, es, "help");
-	    return true;
-	}
-	if ( a == "options" )
-	{
-	    toggle_pane(w, es, "options");
-	    return true;
-	}
-	if ( a == "project" )
-	{
-	    proj_show(w, es, doc);
-	    return true;
-	}
-	if ( a == "projaddcur" )
-	{
-	    proj_addcur(w, es, doc);
-	    return true;
-	}
-	if ( a == "modes" )
-	{
-	    modes_show(w, es);
-	    return true;
-	}
-	if ( a == "vimode" )
-	{
-	    vi_toggle(w, es);
-	    return true;
-	}
-	if ( a == "colon" )
-	{
-	    // The colon line directly (a profile may seat it on its own
-	    // chord; the palette's ":" row is the discoverable door).
-	    start_prompt(w, es, "Command", "colon");
-	    return true;
-	}
-	if ( a == "refresh" )
-	{
-	    // JOE's ^R retype: the terminal is lying — a hard repaint is
-	    // the CLIENT's to perform (it owns refresh); the session only
-	    // parks the request. Headless sessions have no terminal
-	    // pushed; the action is safely inert there, as it always was.
-	    var rq = { "kind": "refresh", "pause": 0 };
-	    term_request(w, es, rq);
-	    return true;
-	}
-	if ( a == "build" )
-	{
-	    ensure_build_cmds(w, es);
-	    toggle_pane(w, es, "build");
-	    return true;
-	}
-	if ( a == "editfile" )
-	{
-	    // A window with native dialogs shows the platform's Open; the
-	    // terminal and a headless session keep JOE's prompt.
-	    var none = "";
-	    if ( !dialog_request(w, es, "open", "Open File", none) )
-		start_prompt(w, es, "Name of file to edit", "editfile");
-	    return true;
-	}
-	if ( a == "saveas" )
-	{
-	    var cur;
-	    ui::get(cur, w, doc, "path");
-	    if ( !dialog_request(w, es, "save", "Save As", cur) )
-		start_prompt(w, es, "Save as", "saveas");
-	    return true;
-	}
-	if ( a == "openproject" )
-	{
-	    // File -> Open Project… (polish P2b): the native Open over the
-	    // manifests; the terminal and a headless session keep a prompt.
-	    var none = "";
-	    if ( !dialog_request(w, es, "openproject", "Open Project", none) )
-		start_prompt(w, es, "Project file to open", "openproject");
-	    return true;
-	}
-	if ( a == "panel" )
-	{
-	    // The bottom panel's visibility (polish P3a) — data a window
-	    // renders; the terminal composes no panel either way.
-	    ui::set(w, es, "panel", es_int(w, es, "panel", 0) != 0 ? 0 : 1);
-	    return true;
-	}
-	if ( a == "problems" )
-	{
-	    show_panel_tab(w, es, "problems");
-	    return true;
-	}
-	if ( a == "output" )
-	{
-	    show_panel_tab(w, es, "output");
-	    return true;
-	}
-	if ( a == "terminal" )
-	{
-	    show_panel_tab(w, es, "terminal");
-	    if ( es_int(w, es, "termlive", 0) != 0 )
-		ui::set(w, es, "termfocus", 1);
-	    return true;
-	}
-	if ( a == "bufsel" )
-	{
-	    // Switch to a buffer (polish P4): by ring index when the command
-	    // carries its argument (a tab), else the prompt collects a name.
-	    var arg = ev["arg"];
-	    if ( !arg.is_null() && strlen(arg.c_str()) > 0 )
+	    case cmdVIEWCLOSE:
 	    {
-		var bufs;
-		ui::get(bufs, w, es, "buffers");
-		long idx = php::intval(arg);
-		if ( idx >= 0 && idx < php::count(bufs)
-		  && idx != es_int(w, es, "bufidx", 0) )
-		    switch_buffer(w, es, doc, idx);
+		view_close(w, es, doc);
+		return true;
 	    }
-	    else
-		start_prompt(w, es, "Buffer", "bufsel");
-	    return true;
-	}
-	if ( a == "shell" )
-	{
-	    open_shell(w, es);
-	    return true;
-	}
-	if ( a == "profile" )
-	{
-	    toggle_profile(w, es);
-	    return true;
-	}
-	// IDE-9e windows — JOE's verbs on their JOE seats.
-	if ( a == "splitw" )
-	{
-	    split_window(w, es, doc);
-	    return true;
-	}
-	if ( a == "nextw" )
-	{
-	    cycle_window(w, es, doc, 1);
-	    return true;
-	}
-	if ( a == "prevw" )
-	{
-	    cycle_window(w, es, doc, -1);
-	    return true;
-	}
-	if ( a == "killwin" )
-	{
-	    kill_window(w, es, doc, false);
-	    return true;
-	}
-	if ( a == "onlywin" )
-	{
-	    kill_window(w, es, doc, true);
-	    return true;
-	}
-	if ( a == "groww" )
-	{
-	    grow_window(w, es, 1);
-	    return true;
-	}
-	if ( a == "shrinkw" )
-	{
-	    grow_window(w, es, -1);
-	    return true;
-	}
-	// A Build MENU row (the ^B palette's rows as menu items): the id
-	// carries the 1-based row; build_choose owns the rest — the same
-	// row data, the same dispatcher the palette's choose reaches.
-	if ( a.index("build-") == 0 )
-	{
-	    ensure_build_cmds(w, es);
-	    build_choose(w, es, doc,
-			 php::intval(perl::substr(a, 6, strlen(a.c_str()) - 6)));
-	    return true;
+	    case cmdVIEWOPEN:
+	    {
+		view_open(w, es, doc, viewrepr_lang_of(ev["arg"]));
+		return true;
+	    }
+	    case cmdVIEWDOCK:
+	    {
+		long dslot;
+		long dside;
+		viewdock_target(ev["arg"], dslot, dside);
+		view_dock(w, es, dslot, dside);
+		return true;
+	    }
+	    case cmdVIEWSIZE:
+	    {
+		long zslot;
+		long zsize;
+		viewsize_args(ev["arg"], zslot, zsize);
+		view_size(w, es, zslot, zsize);
+		return true;
+	    }
+	    case cmdVIEWWINDOW:
+		view_window(w, es, doc);
+		return true;
+	    case cmdVIEWSYNC:
+		view_sync(w, es, ev["arg"]);
+		return true;
+	    case cmdSAVE:
+		return save_and_check(w, es, doc);
+	    case cmdSAVEQUIT:
+		return save_quit(w, es, doc);
+	    case cmdQUIT:
+	    {
+		// JOE ^K Q: a dirty buffer asks JOE's question on the bottom
+		// line; the lineed q verb's refusal spelling stays lined's.
+		if ( doc_modified(w, doc) )
+		{
+		    start_confirm(w, es, "Lose changes to this file (y,n,^C)?",
+				  "q!");
+		    return true;
+		}
+		return do_verb(w, es, "q");
+	    }
+	    case cmdDISCARD:
+		return do_verb(w, es, "q!");
+	    case cmdFIND:
+	    {
+		start_prompt(w, es, "Find", pmFIND);
+		return true;
+	    }
+	    case cmdFINDNEXT:
+	    {
+		do_find(w, es, nav, caret);
+		return true;
+	    }
+	    case cmdGOTOLINE:
+	    {
+		start_prompt(w, es, "Go to line", pmGOTOLINE);
+		return true;
+	    }
+	    case cmdINSERTFILE:
+	    {
+		start_prompt(w, es, "Insert file", pmINSERTFILE);
+		return true;
+	    }
+	    case cmdTHEME:
+	    {
+		start_prompt(w, es, "Theme", pmTHEME);
+		return true;
+	    }
+	    case cmdMARK:
+	    {
+		ui::set(w, es, "mark", caret);
+		return true;
+	    }
+	    case cmdBEND:
+	    {
+		ui::set(w, es, "bend", caret);
+		return true;
+	    }
+	    case cmdBLOCKCOPY:
+	    {
+		block_copy(w, es, doc, caret);
+		return true;
+	    }
+	    case cmdBLOCKMOVE:
+	    {
+		block_move(w, es, doc, caret);
+		return true;
+	    }
+	    case cmdBLOCKDEL:
+	    {
+		block_del(w, es, doc, caret);
+		return true;
+	    }
+	    case cmdUNDO:
+	    {
+		undo_edit(w, es, doc);
+		return true;
+	    }
+	    case cmdREDO:
+	    {
+		redo_edit(w, es, doc);
+		return true;
+	    }
+	    case cmdDELLINE:
+	    {
+		delete_line(w, es, doc, caret);
+		return true;
+	    }
+	    case cmdDELWORD:
+	    {
+		delete_word(w, es, doc, caret);
+		return true;
+	    }
+	    case cmdWORDLEFT:
+	    {
+		ui::set(w, es, "caret", ui::text_word_left(w, nav, caret));
+		return true;
+	    }
+	    case cmdWORDRIGHT:
+	    {
+		ui::set(w, es, "caret", ui::text_word_right(w, nav, caret));
+		return true;
+	    }
+	    case cmdTOP:
+	    {
+		ui::set(w, es, "caret", 0);
+		return true;
+	    }
+	    case cmdBOTTOM:
+	    {
+		ui::set(w, es, "caret", ui::text_size(w, nav));
+		return true;
+	    }
+	    case cmdCHECK:
+	    {
+		run_check(w, es, doc);
+		return true;
+	    }
+	    case cmdOUTLINE:
+	    {
+		// The outline View toggles where the layout hosts it (the
+		// sidebar by default): shown -> hidden; else refresh + show.
+		if ( view_shown(w, es, viewOUTLINE) )
+		    hide_view(w, es, viewOUTLINE);
+		else
+		{
+		    refresh_outline(w, es, doc);
+		    show_view(w, es, viewOUTLINE);
+		}
+		return true;
+	    }
+	    case cmdHELP:
+	    {
+		toggle_pane(w, es, paneHELP);
+		return true;
+	    }
+	    case cmdOPTIONS:
+	    {
+		toggle_pane(w, es, paneOPTIONS);
+		return true;
+	    }
+	    case cmdPROJECT:
+	    {
+		proj_show(w, es, doc);
+		return true;
+	    }
+	    case cmdPROJADDCUR:
+	    {
+		proj_addcur(w, es, doc);
+		return true;
+	    }
+	    case cmdMODES:
+	    {
+		modes_show(w, es);
+		return true;
+	    }
+	    case cmdVIMODE:
+	    {
+		vi_toggle(w, es);
+		return true;
+	    }
+	    case cmdCOLON:
+	    {
+		// The colon line directly (a profile may seat it on its own
+		// chord; the palette's ":" row is the discoverable door).
+		start_prompt(w, es, "Command", pmCOLON);
+		return true;
+	    }
+	    case cmdREFRESH:
+	    {
+		// JOE's ^R retype: the terminal is lying — a hard repaint is
+		// the CLIENT's to perform (it owns refresh); the session only
+		// parks the request. Headless sessions have no terminal
+		// pushed; the action is safely inert there, as it always was.
+		var rq = { "kind": rqREFRESH, "pause": 0 };
+		term_request(w, es, rq);
+		return true;
+	    }
+	    case cmdBUILD:
+	    {
+		ensure_build_cmds(w, es);
+		toggle_pane(w, es, paneBUILD);
+		return true;
+	    }
+	    case cmdEDITFILE:
+	    {
+		// A window with native dialogs shows the platform's Open; the
+		// terminal and a headless session keep JOE's prompt.
+		var none = "";
+		if ( !dialog_request(w, es, dlgOPEN, "Open File", none) )
+		    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
+		return true;
+	    }
+	    case cmdSAVEAS:
+	    {
+		var cur;
+		ui::get(cur, w, doc, "path");
+		if ( !dialog_request(w, es, dlgSAVE, "Save As", cur) )
+		    start_prompt(w, es, "Save as", pmSAVEAS);
+		return true;
+	    }
+	    case cmdOPENPROJECT:
+	    {
+		// File -> Open Project… (polish P2b): the native Open over the
+		// manifests; the terminal and a headless session keep a prompt.
+		var none = "";
+		if ( !dialog_request(w, es, dlgOPENPROJECT, "Open Project", none) )
+		    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
+		return true;
+	    }
+	    case cmdPANEL:
+	    {
+		// The panel pane's visibility (V2: the layout's chrome; every
+		// client renders it — the terminal as a band).
+		toggle_slot(w, es, slotPANEL);
+		return true;
+	    }
+	    case cmdPROBLEMS:
+	    {
+		show_view(w, es, viewPROBLEMS);
+		return true;
+	    }
+	    case cmdOUTPUT:
+	    {
+		show_view(w, es, viewOUTPUT);
+		return true;
+	    }
+	    case cmdTERMINAL:
+	    {
+		show_view(w, es, viewTERMINAL);
+		if ( es_int(w, es, "termlive", 0) != 0 )
+		    ui::set(w, es, "termfocus", 1);
+		return true;
+	    }
+	    case cmdBUFSEL:
+	    {
+		// Switch to a buffer (polish P4): by ring index when the command
+		// carries its argument (a tab), else the prompt collects a name.
+		var arg = ev["arg"];
+		if ( !arg.is_null() && strlen(arg.c_str()) > 0 )
+		{
+		    var bufs;
+		    ui::get(bufs, w, es, "buffers");
+		    long idx = php::intval(arg);
+		    if ( idx >= 0 && idx < php::count(bufs)
+		      && idx != es_int(w, es, "bufidx", 0) )
+			switch_buffer(w, es, doc, idx);
+		}
+		else
+		    start_prompt(w, es, "Buffer", pmBUFSEL);
+		return true;
+	    }
+	    case cmdSHELL:
+	    {
+		open_shell(w, es);
+		return true;
+	    }
+	    case cmdPROFILE:
+	    {
+		toggle_profile(w, es);
+		return true;
+	    }
+	    // IDE-9e windows — JOE's verbs on their JOE seats.
+	    case cmdSPLITW:
+	    {
+		split_window(w, es, doc);
+		return true;
+	    }
+	    case cmdNEXTW:
+	    {
+		cycle_window(w, es, doc, 1);
+		return true;
+	    }
+	    case cmdPREVW:
+	    {
+		cycle_window(w, es, doc, -1);
+		return true;
+	    }
+	    case cmdKILLWIN:
+	    {
+		kill_window(w, es, doc, false);
+		return true;
+	    }
+	    case cmdONLYWIN:
+	    {
+		kill_window(w, es, doc, true);
+		return true;
+	    }
+	    case cmdGROWW:
+	    {
+		grow_window(w, es, 1);
+		return true;
+	    }
+	    case cmdSHRINKW:
+	    {
+		grow_window(w, es, -1);
+		return true;
+	    }
+	    // A Build MENU row (the ^B palette's rows as menu items): the id
+	    // carries the 1-based row; build_choose owns the rest — the same
+	    // row data, the same dispatcher the palette's choose reaches.
+	    case cmdBUILDROW:
+	    {
+		ensure_build_cmds(w, es);
+		build_choose(w, es, doc,
+			     php::intval(perl::substr(a, 6, strlen(a.c_str()) - 6)));
+		return true;
+	    }
+	    default:
+		break;
 	}
 	// A chrome dialog's Close button or a press outside it (polish P2):
-	// the @pane scope's cancel posted BY NAME as an ACTION — what esc
-	// does in the terminal (the S6 rule: buttons post the scope's
-	// actions by name; the project and modes dialogs admit theirs the
-	// same way above). It must sit in THIS region: a Close is never a
-	// choose, and the motion fallback below would otherwise report it
-	// as an unknown action.
+	// the @pane scope's cancel posted as an ACTION — what esc does in
+	// the terminal (the S6 rule: buttons post the scope's actions; the
+	// project and modes dialogs admit theirs the same way above). It is
+	// admitted only when the @pane scope binds the code to some key, so
+	// a button reaches exactly what a key can.
 	var pc;
-	if ( scope_action_named(pc, w, es, "pane", ev) && pc == "paneclose" )
+	if ( scope_action_named(pc, w, es, "pane", ev) && pc == cmdPANECLOSE )
 	{
-	    ui::set(w, es, "pane", "");
+	    // A popup closes first; with none up, the chrome pane shown last
+	    // hides (V2) — the pick list's Close and the panel's esc share the
+	    // one @pane action.
+	    if ( cur_pane(w, es) != paneNONE )
+		set_pane(w, es, paneNONE);
+	    else
+		hide_last_view(w, es);
 	    return true;
 	}
 	// Motion (and the direct edit keys) DELEGATE to the shared
@@ -4771,10 +6795,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
 	// the dispatcher synthesizes the key event. One movement
 	// implementation. (IDE-10a reclaimed ^B/^F/^P/^N from the
 	// WordStar diamond — real arrow keys serve motion.)
-	var ke = { "event": "key", "event_code": ui::event_kind::key,
-		   "key": a, "key_code": ui::key_code(a.c_str()) };
-	if ( edit_key(w, es, nav, caret, ke) )
-	    return true;
+	ui::key mk = motion_key_of(code);
+	if ( mk != ui::key::none )
+	{
+	    var kn;
+	    cmd_name(kn, code);
+	    var ke = { "event": "key", "event_code": ui::event_kind::key,
+		       "key": kn, "key_code": mk };
+	    if ( edit_key(w, es, nav, caret, ke) )
+		return true;
+	}
+	if ( strlen(a.c_str()) == 0 )
+	    cmd_name(a, code);
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	return true;
     }
@@ -4785,53 +6817,58 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     }
     if ( kind == ui::event_kind::choose )
     {
-	var a = format("{}", ev["action"]);
-	// Build-pane rows dispatch by ROW (act + command + mode are the
-	// row's data); the act PREFIX routes — a new bld- verb needs no
-	// edit here — and build_choose owns the rest.
-	if ( a.index("bld-") == 0 )
+	// The chosen row's verb: its `code` hint (a code-stamped row) or the
+	// name a client posted, converted at the entry above.
+	switch ( ev_code(ev) )
 	{
-	    build_choose(w, es, doc, ev["option"].as_integer());
-	    return true;
-	}
-	if ( a == "goto" )
-	{
-	    // Pane rows carry STORED line numbers — meaningless against a
-	    // displayed view.
-	    if ( viewing )
-		refuse_edit(w, es);
-	    else
-		goto_pane_row(w, es, doc, ev["option"].as_integer());
-	    return true;
-	}
-	if ( a == "w" )
-	    return save_and_check(w, es, doc);
-	if ( a == "f" )
-	{
-	    start_prompt(w, es, "Find", "find");
-	    return true;
-	}
-	if ( a == "q" )
-	    return do_verb(w, es, "q");
-	if ( a == "opt-tabwidth" )
-	{
-	    start_prompt(w, es, "Tab width (1-16)", "tabwidth");
-	    return true;
-	}
-	if ( a == "opt-scheme" )
-	{
-	    start_prompt(w, es, "Theme", "theme");
-	    return true;
-	}
-	if ( a == "opt-keymap" )
-	{
-	    toggle_profile(w, es);
-	    return true;
-	}
-	if ( a == "opt-projkind" )
-	{
-	    proj_toggle_kind(w, es, doc);
-	    return true;
+	    // Build-pane rows dispatch by ROW (act + command + mode are the
+	    // row's data): the bld-* codes route here and build_choose owns
+	    // the rest.
+	    case cmdBLD_CHECK:
+	    case cmdBLD_NATIVE:
+	    case cmdBLD_RUN:
+	    case cmdBLD_RUN_CMD:
+	    case cmdBLD_STOP:
+	    case cmdBLD_PROJ_CHECK:
+	    case cmdBLD_PROJ_BUILD:
+	    case cmdBLD_PROJ_RUN:
+		build_choose(w, es, doc, ev["option"].as_integer());
+		return true;
+	    case cmdGOTO:
+	    case cmdGOTODEF:
+		// Pane rows carry STORED line numbers — meaningless against a
+		// displayed view. Two verbs, one handler: a problems row's
+		// goto and a definition's gotodef never make a choose guess
+		// which list it came from (both lists can be up at once).
+		if ( viewing )
+		    refuse_edit(w, es);
+		else
+		    goto_pane_row(w, es, doc, ev["option"].as_integer(),
+				  ev_code(ev) == cmdGOTODEF);
+		return true;
+	    // The shared editor menu's rows (compose_menu: Save / Find / Quit).
+	    case cmdW:
+		return save_and_check(w, es, doc);
+	    case cmdF:
+		start_prompt(w, es, "Find", pmFIND);
+		return true;
+	    case cmdQ:
+		return do_verb(w, es, "q");
+	    // The ^T Options rows.
+	    case cmdOPT_TABWIDTH:
+		start_prompt(w, es, "Tab width (1-16)", pmTABWIDTH);
+		return true;
+	    case cmdOPT_SCHEME:
+		start_prompt(w, es, "Theme", pmTHEME);
+		return true;
+	    case cmdOPT_KEYMAP:
+		toggle_profile(w, es);
+		return true;
+	    case cmdOPT_PROJKIND:
+		proj_toggle_kind(w, es, doc);
+		return true;
+	    default:
+		break;
 	}
 	return true;
     }
@@ -4842,16 +6879,22 @@ bool IdeSession::apply_ide_event(long doc, var &ev)
     // outline, diags, build alike — is @pane profile data (the baked
     // default: esc paneclose). The project window and prompts cancel in
     // their own scoped arms above (they route before this one).
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( strlen(pane.c_str()) > 0 )
+    if ( cur_pane(w, es) != paneNONE )
     {
 	var pa;
-	if ( scoped_action(pa, w, es, "pane", ev) && pa == "paneclose" )
+	if ( scoped_action(pa, w, es, "pane", ev) && pa == cmdPANECLOSE )
 	{
-	    ui::set(w, es, "pane", "");
+	    set_pane(w, es, paneNONE);
 	    return true;
 	}
+    }
+    else if ( es_int(w, es, "chromelast", viewNONE) != viewNONE )
+    {
+	// The chrome pane shown last hides on the @pane esc (V2).
+	var pa;
+	if ( scoped_action(pa, w, es, "pane", ev) && pa == cmdPANECLOSE
+	  && hide_last_view(w, es) )
+	    return true;
     }
     edit_key(w, es, nav, caret, ev);
     return true;	// unbound keys are inert (chords arrive as actions)
@@ -4886,7 +6929,7 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{} {} :{}", row["kind"],
 				   row["name"], row["line"]);
 	else if ( !row["file"].is_null()
-	       && !(row["file"] == dpath.c_str()) )
+	       && !same_file(row["file"].c_str(), dpath.c_str()) )
 	    it["content"] = format("{} {}:{} {} {}", row["file"],
 				   row["line"], row["column"],
 				   row["severity"], row["message"]);
@@ -4894,116 +6937,174 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{}:{} {} {}", row["line"],
 				   row["column"], row["severity"],
 				   row["message"]);
-	var ga = {};
-	ga[] = "goto";
-	it["actions"] = ga;
+	long verb = outline_pane ? cmdGOTODEF : cmdGOTO;
+	var gh = { "code": verb };	// a navigable row: its verb as a code
+	it["hints"] = gh;
 	items[] = it;
 	nrows = nrows + 1;
     }
     return nrows;
 }
 
-void IdeSession::compose_ide_tree(var &root, long doc)
+// Compose the edit node of a View, by id: the node presents the View's TEXT
+// entity (its render buffer, or the subject's own buffer for stored text)
+// through the ONE shared edit-node composer; the caller's single hints RMW
+// attaches the lens data — never a second read-modify-write of the hints
+// (the measured 3 ms copies, 2026-09-07). A session with no View yet
+// composes the document itself: byte-identical.
+void compose_view_node(var &ed, long w, long es, long id, long doc,
+		       long caret)
 {
-    long caret = es_int(w, es, "caret", 0);
-    // The view seam at composition: the edit node presents the NAV
-    // target's text (the lens's get) and, while a view is up, carries the
-    // lens data — the view name and its coordinate map — as hints. The
-    // identity lens (no view) takes neither branch: byte-identical.
-    long nav = nav_doc(w, es, doc);
-    bool viewing = nav != doc;
+    var v;
+    view_row(v, w, es, id);
+    compose_edit_node(ed, w, es, view_text_entity(v, doc), caret);
+}
 
-    // The JOE screen model (IDE-9b): no heading banner — the path, the
-    // modified/read-only badges, and the view name all render in the
-    // status line's %n / %m / %R / %y seats.
-    var ed;
-    compose_edit_node(ed, w, es, nav, caret);
-    // ONE read-modify-write of the edit node's hints: every hint below
-    // lands on this local and it is written back ONCE, after the region
-    // block. A var assignment is a deep copy, and with the highlight
-    // spans aboard (4841 rows on madcide_core.inc) each of the former
-    // three RMW passes cost two ~3 ms copies per composed keystroke
-    // (measured 2026-09-07).
-    var eh = ed["hints"];
-    if ( viewing )
+// The lens data a code View's edit node carries as hints: the render
+// language — its enumerator ("lang_code", what a client switches on) and
+// its name ("view", what a client shows) — the coordinate map, and the
+// View's own highlight spans. A source View adds nothing.
+void view_lens_hints(var &eh, long w, long es, var &v)
+{
+    long lang = v["lang"].as_integer();
+    eh["view"] = madc::file_kind_name(lang);
+    eh["lang_code"] = lang;
+    eh["map"] = v["map"];
+    var vhs;
+    view_spans(vhs, w, es, v);
+    if ( !vhs.is_null() && php::count(vhs) > 0 )
+	eh["spans"] = vhs;
+}
+
+// ---- the chrome panes (V2): composed FROM the layout ----------------------
+// A visible chrome pane is a group docked by its slot (`region`, the wire
+// word), placed by its `side` and `size` (the grid carves a band; the page
+// sets the slot's track), heading its tabs as a strip when it holds more
+// than one (each tab posts the command that shows its View — the S1 rule),
+// and holding the active tab's projection: Problems = the diagnostics rows,
+// Outline = the definitions (both through diag_items, the one builder),
+// Output = the [build] text (its tail), Terminal = the [terminal] screen. A
+// kind with no builder yet names itself. The pane's `focus` autofocuses its
+// list; Tab reaches it as ever.
+void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
+{
+    var strip = {};
+    long active = c["active"].as_integer();
+    long ntabs = php::count(c["tabs"]);
+    long shown = viewNONE;
+    long ti = 0;
+    for ( var t : c["tabs"] )
     {
-	var vw;
-	view_name(vw, w, es);
-	eh["view"] = vw;
-	var vm;
-	ui::get(vm, w, es, "vmap");
-	eh["map"] = vm;
+	long k = t["kind"].as_integer();
+	if ( ti == active )
+	    shown = k;
+	var nm = view_name(k);
+	var title = php::ucfirst(nm);
+	long sc = view_show_cmd(k);
+	var an;
+	cmd_name(an, sc);
+	var tb = { "title": title, "action": an, "code": sc };
+	if ( ti == active )
+	    tb["active"] = 1;
+	strip.push(tb);
+	ti = ti + 1;
     }
-    else
+    bool focus = c["focus"].as_integer() != 0;
+    var pkids = {};
+    switch ( shown )
     {
-	// Highlight spans (AST-2): the bag's themed byte-range rows ride
-	// the hints — stored-space only (a view shows a render), computed
-	// at (re)parse, just attached here.
-	var hs;
-	ui::get(hs, w, es, "hspans");
-	if ( !hs.is_null() && php::count(hs) > 0 )
-	    eh["spans"] = hs;
-    }
-
-    // The display tab width (IDE-9d ^T option) rides the edit node's
-    // hints like the caret — the model owns the expansion math.
-    long tabw = es_int(w, es, "tabwidth", 0);
-    if ( tabw > 0 )
-	eh["tabwidth"] = tabw;
-
-    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
-    // state read of the buffer's parse handle — stored-space only (a
-    // view's caret is display-space), and only once something opened the
-    // handle; composition never runs the compiler.
-    var fnctx = "";
-    var vw_st;
-    if ( !view_name(vw_st, w, es) )
-    {
-	long ph = es_int(w, doc, "phandle", 0);
-	if ( ph != 0 )
+	case viewTERMINAL:
 	{
-	    long cl = line_of(w, doc, caret);
-	    long cs = line_start_of(w, doc, cl);
-	    var encl;
-	    madc::parse_enclosing(encl, ph, cl, caret - cs);
-	    if ( !encl.is_null() )
-		fnctx = format("fn {}", encl["name"]);
+	    // The screen: an edit node over the [terminal] buffer (the
+	    // line-DOM, the caret at the end) whose subject is that buffer —
+	    // a press on it is how the program gets the keyboard
+	    // (pointer_event). Empty until something ran.
+	    long tdoc = term_doc_if_any(w, es);
+	    var tt = "";
+	    long tsz = 0;
+	    if ( tdoc != 0 )
+	    {
+		ui::text(tt, w, tdoc);
+		tsz = ui::text_size(w, tdoc);
+	    }
+	    var term = { "role": "edit" };
+	    term["content"] = tt;
+	    if ( tdoc != 0 )
+		term["subject"] = tdoc;
+	    var th = { "terminal": 1 };
+	    th["caret"] = tsz;
+	    if ( es_int(w, es, "termfocus", 0) != 0 )
+		th["focus"] = 1;
+	    term["hints"] = th;
+	    pkids.push(term);
+	    break;
+	}
+	case viewOUTPUT:
+	{
+	    var outn = { "role": "content" };
+	    var bt = "";
+	    long bdoc = build_doc_if_any(w, es);
+	    if ( bdoc != 0 )
+		ui::text(bt, w, bdoc);
+	    outn["content"] = bt;
+	    outn["hints"] = { "tail": 1 };	// a band shows the stream's END
+	    pkids.push(outn);
+	    break;
+	}
+	case viewOUTLINE:
+	case viewPROBLEMS:
+	{
+	    bool outline = shown == viewOUTLINE;
+	    var pb = { "role": "choice" };
+	    pb["label"] = outline ? "Outline" : "Problems";
+	    var pitems = {};
+	    long pn = diag_items(pitems, w, es, doc, outline);
+	    if ( pn == 0 )
+		pitems[] = { "role": "item",
+			     "content": outline ? "(no definitions)" : "(clean)" };
+	    pb["children"] = pitems;
+	    var ph = { "list": 1 };
+	    if ( focus )
+		ph["focus"] = 1;
+	    pb["hints"] = ph;
+	    pkids.push(pb);
+	    break;
+	}
+	default:
+	{
+	    var nn = { "role": "content" };
+	    nn["content"] = format("({} view)", view_name(shown));
+	    pkids.push(nn);
+	    break;
 	}
     }
-    var status;
-    compose_joe_statusline(status, w, es, nav, caret, fnctx);
+    var g = { "role": "group" };
+    long slot = c["slot"].as_integer();
+    // The wire carries the WORDS for the layout discriminators (the `region`
+    // precedent): slot -> region, the side enum -> its name; the renderers
+    // convert once back to the enum. `size` is the percent int.
+    var gh = { "region": slot_name(slot),
+	       "side": ui::side_name(c["side"].as_integer()),
+	       "size": c["size"] };
+    if ( ntabs > 1 )
+	gh["tabs"] = strip;
+    g["hints"] = gh;
+    g["children"] = pkids;
+    out = g;
+}
 
-    // Layout regions (slice 3, madcide GUI): the edit node is the editor
-    // group (a tab strip when more than one buffer is open), the status
-    // line is the status bar. These are ADDITIVE hint keys the grid model
-    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
-    // so the terminal composition is byte-identical; web_model lays a
-    // region'd node into the workbench grid. The active window's ed and
-    // status are stamped here, before the multi-window branch's own
-    // read-modify-write of ed["hints"] preserves the region.
-    long wc = window_count(w, es);
-    {
-	eh["region"] = "editor";
-	// With two-plus windows the active window carries the focus hint
-	// (the multi-window branch below composes the others); it rides
-	// the same single write-back.
-	if ( wc >= 2 )
-	    eh["focus"] = 1;
-	ed["hints"] = eh;
-    }
-    {
-	// While split (S5), the active window's status line is its HEADER
-	// in the editor slot like every other window's — the JOE shape, one
-	// status line per window, stacked in tree order; the status BAR is
-	// the single window's presentation. The window (the page) stacks a
-	// slot's nodes in order, so no window's node is left unplaced.
-	var sh = status["hints"];
-	sh["region"] = wc >= 2 ? "editor" : "statusbar";
-	status["hints"] = sh;
-    }
+// ---- the editor region (V2b, design §2.3): the client's editor slot is
+//      `layout["editor"]`, a tree of `split` nodes over editor-pane leaves.
+//      A SOLE leaf emits its status + edit FLAT into the slot — the JOE
+//      screen, byte-identical with the pre-split composition. A `viewsplit`
+//      turns the focused leaf into a split; the split composer (below) wraps
+//      each leaf in its own group. `compose_editor_flat` is the sole-leaf /
+//      primary-leaf emission: the buffer-ring strip (a window's fact) then
+//      the S5 window stack (two-plus windows) or the single status + edit.
 
-    var r = { "role": "group" };
-    var kids = {};
+void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
+			 long wc)
+{
     // The editor TABS (polish P4): under a window's fact, the buffer ring
     // as a tab strip above the window stack — a content node docked FIRST
     // into the editor region whose `tabs` hint carries the strip as data:
@@ -5027,16 +7128,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    {
 		var b = bufs[i];
 		var bp = format("{}", b["path"]);
-		var bn = bp;
-		const char *sl = strrchr(bp.c_str(), '/');
-		if ( sl != 0 )
-		    bn = sl + 1;
-		var m;
-		ui::get(m, w, b["doc"].as_integer(), "modified");
+		var bn = php::basename(bp);
 		var title = bn;
-		if ( !m.is_null() && m.as_boolean() )
+		if ( doc_modified(w, b["doc"].as_integer()) )
 		    title = format("{}*", bn);
-		var tb = { "title": title, "action": "bufsel" };
+		var tb = { "title": title, "action": "bufsel", "code": cmdBUFSEL };
 		tb["arg"] = format("{}", i);
 		if ( i == cur )
 		    tb["active"] = 1;
@@ -5123,15 +7219,261 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(status);	// JOE: ONE status line at the TOP
 	kids.push(ed);
     }
+}
 
-    var pane;
-    ui::get(pane, w, es, "pane");
-    if ( !pane.is_null() && strlen(pane.c_str()) > 0 )
+// One editor leaf's contents: a status header then the edit node, docked in
+// the editor region. The FOCUSED leaf is the live one — the status + edit
+// composed by the caller from es state, focus-hinted, carrying its leaf tag
+// (the pointer arm maps a press back to it). An unfocused leaf is a SNAPSHOT:
+// the primary leaf (tree order's first, the ring host) snapshots the active
+// buffer row (its caret parked there when focus left it); a secondary leaf
+// snapshots its active tree container. No spans / selection on a snapshot
+// (the S5 inactive-window rule).
+void compose_editor_leaf(var &lk, long w, long es, long doc, var &node,
+			 bool primary, bool focused, long myleaf, var &ed,
+			 var &status)
+{
+    // A leaf's status + edit are the flex-column CHILDREN of its leaf group
+    // (`.node[data-split] > .node`); the group is what carries `region:
+    // editor` (compose_editor_split), so the nodes inside carry NO region —
+    // a region here would make the page dock them into a nested workbench
+    // instead of stacking them in the column.
+    if ( focused )
+    {
+	var st = status;
+	var sh = st["hints"];
+	sh["region"] = "";
+	st["hints"] = sh;
+	lk.push(st);
+	var e = ed;
+	var eh = e["hints"];
+	eh["region"] = "";
+	eh["focus"] = 1;
+	eh["tag"] = myleaf;
+	if ( es_int(w, es, "viewsync", 0) )
+	    eh["sync"] = 1;		// V5: a linked-scroll partner (the map rides too)
+	e["hints"] = eh;
+	lk.push(e);
+	return;
+    }
+    // An unfocused leaf is a SNAPSHOT of its container's View at its parked
+    // caret (`pcaret`): the primary leaf shows the ring's current View, a
+    // secondary its active tab's. A code View snapshots its RENDER buffer and
+    // carries the lens hints (its name, coordinate map, colours); a source
+    // View its subject text and the doc's spans — the composer's single
+    // display-vs-stored routing (view_text_entity), the S5 inactive rule (no
+    // selection).
+    long vid = leaf_view_of(w, es, node, primary);
+    var v;
+    view_row(v, w, es, vid);
+    long sdoc = view_text_entity(v, v["subject"].as_integer());
+    long pc = node["pcaret"].as_integer();
+    long follow = 0;
+    if ( es_int(w, es, "viewsync", 0) )
+	pc = viewsync_leaf_caret(w, es, vid, pc, follow);	// V5: draw the projected caret
+    long sc = clamp_caret_to(w, sdoc, pc);
+    var wfn = "";
+    var wst;
+    compose_joe_statusline(wst, w, es, sdoc, sc, wfn);
+    lk.push(wst);
+    var wed = { "role": "edit" };
+    var wt;
+    ui::text(wt, w, sdoc);
+    wed["content"] = wt;
+    wed["subject"] = sdoc;
+    var wh = { "caret": sc, "tag": myleaf };
+    if ( follow )
+	wh["follow"] = 1;	// V5: a synced pane scrolls to (and marks) its caret
+    if ( es_int(w, es, "viewsync", 0) )
+	wh["sync"] = 1;		// V5: a linked-scroll partner (the code pane's map rides too)
+    if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
+	view_lens_hints(wh, w, es, v);		// the lens name + map + colours
+    else
+    {
+	var hs;
+	view_spans(hs, w, es, v);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    wh["spans"] = hs;
+    }
+    wed["hints"] = wh;
+    lk.push(wed);
+}
+
+// The editor tree as nodes: a split becomes a `split` GROUP (its direction
+// the wire word, the grid dividing its rect and the page a flex box) whose
+// children are the nodes' groups; a leaf becomes a group of [status, edit].
+// `leafno` numbers leaves in tree order — leaf 0 is the PRIMARY. Each node's
+// `size` (its share of the parent split) rides its group's hints.
+void compose_editor_node(var &out, long w, long es, long doc, var &node,
+			 var &ed, var &status, long &leafno)
+{
+    if ( node["kind"] == ctSPLIT )
+    {
+	var gkids = {};
+	for ( var c : node["children"] )
+	{
+	    var cg;
+	    compose_editor_node(cg, w, es, doc, c, ed, status, leafno);
+	    gkids.push(cg);
+	}
+	var g = { "role": "group", "children": gkids };
+	var gh = { "split": ui::split_name(node["dir"].as_integer()) };
+	long ssz = node["size"].as_integer();
+	if ( ssz > 0 )
+	    gh["size"] = ssz;
+	g["hints"] = gh;
+	out = g;
+	return;
+    }
+    long myleaf = leafno;
+    bool primary = leafno == 0;
+    leafno = leafno + 1;
+    bool focused = node["focus"].as_integer() != 0;
+    var lk = {};
+    compose_editor_leaf(lk, w, es, doc, node, primary, focused, myleaf, ed,
+			status);
+    var g = { "role": "group", "children": lk };
+    long sz = node["size"].as_integer();
+    if ( sz > 0 )
+    {
+	var gh = { "size": sz };
+	g["hints"] = gh;
+    }
+    out = g;
+}
+
+// Compose a split editor tree into the editor slot: one `split` group carrying
+// `region: editor` so it docks into the editor slot (the page's workbench grid)
+// and the terminal reads it as the centre flow — the leaves inside it flex.
+void compose_editor_split(var &kids, long w, long es, long doc, var &node,
+			  var &ed, var &status)
+{
+    long leafno = 0;
+    var g;
+    compose_editor_node(g, w, es, doc, node, ed, status, leafno);
+    var gh = g["hints"];
+    gh["region"] = "editor";
+    g["hints"] = gh;
+    kids.push(g);
+}
+
+void IdeSession::compose_ide_tree(var &root, long doc)
+{
+    long caret = es_int(w, es, "caret", 0);
+    // The View seam at composition: the edit node presents the focused
+    // View's text (its render buffer while a lens is up) and, for a code
+    // View, carries the lens data — the render language and its
+    // coordinate map — as hints. The identity lens (a source View, or no
+    // View yet) takes neither branch: byte-identical.
+    long fv = focused_view(w, es);
+    var fvrow;
+    view_row(fvrow, w, es, fv);
+    long nav = view_text_entity(fvrow, doc);
+    bool viewing = nav != doc;
+
+    // The JOE screen model (IDE-9b): no heading banner — the path, the
+    // modified/read-only badges, and the view name all render in the
+    // status line's %n / %m / %R / %y seats.
+    var ed;
+    compose_view_node(ed, w, es, fv, doc, caret);
+    // ONE read-modify-write of the edit node's hints: every hint below
+    // lands on this local and it is written back ONCE, after the region
+    // block. A var assignment is a deep copy, and with the highlight
+    // spans aboard (4841 rows on madcide_core.inc) each of the former
+    // three RMW passes cost two ~3 ms copies per composed keystroke
+    // (measured 2026-09-07).
+    var eh = ed["hints"];
+    if ( viewing )
+	view_lens_hints(eh, w, es, fvrow);
+    else
+    {
+	// Highlight spans (AST-2): the bag's themed byte-range rows ride
+	// the hints — the document's stored-space rows, computed at
+	// (re)parse, just attached here (a code View's rows live on its
+	// render buffer — view_spans is the one reader).
+	var hs;
+	view_spans(hs, w, es, fvrow);
+	if ( !hs.is_null() && php::count(hs) > 0 )
+	    eh["spans"] = hs;
+    }
+
+    // The display tab width (IDE-9d ^T option) rides the edit node's
+    // hints like the caret — the model owns the expansion math.
+    long tabw = es_int(w, es, "tabwidth", 0);
+    if ( tabw > 0 )
+	eh["tabwidth"] = tabw;
+
+    // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
+    // state read of the buffer's parse handle — stored-space only (a
+    // view's caret is display-space), and only once something opened the
+    // handle; composition never runs the compiler.
+    var fnctx = "";
+    var vw_st;
+    if ( !lens_name(vw_st, w, es) )
+    {
+	long ph = es_int(w, doc, "phandle", 0);
+	if ( ph != 0 )
+	{
+	    long cl = line_of(w, doc, caret);
+	    long cs = line_start_of(w, doc, cl);
+	    var encl;
+	    madc::parse_enclosing(encl, ph, cl, caret - cs);
+	    if ( !encl.is_null() )
+		fnctx = format("fn {}", encl["name"]);
+	}
+    }
+    var status;
+    compose_joe_statusline(status, w, es, nav, caret, fnctx);
+
+    // Layout regions (slice 3, madcide GUI): the edit node is the editor
+    // group (a tab strip when more than one buffer is open), the status
+    // line is the status bar. These are ADDITIVE hint keys the grid model
+    // never reads (tui_model reads caret/sel/focus/list/tabwidth/spans),
+    // so the terminal composition is byte-identical; web_model lays a
+    // region'd node into the workbench grid. The active window's ed and
+    // status are stamped here, before the multi-window branch's own
+    // read-modify-write of ed["hints"] preserves the region.
+    long wc = window_count(w, es);
+    {
+	eh["region"] = "editor";
+	// With two-plus windows the active window carries the focus hint
+	// (the multi-window branch below composes the others); it rides
+	// the same single write-back.
+	if ( wc >= 2 )
+	    eh["focus"] = 1;
+	ed["hints"] = eh;
+    }
+    {
+	// While split (S5), the active window's status line is its HEADER
+	// in the editor slot like every other window's — the JOE shape, one
+	// status line per window, stacked in tree order; the status BAR is
+	// the single window's presentation. The window (the page) stacks a
+	// slot's nodes in order, so no window's node is left unplaced.
+	var sh = status["hints"];
+	sh["region"] = wc >= 2 ? "editor" : "statusbar";
+	status["hints"] = sh;
+    }
+
+    var r = { "role": "group" };
+    var kids = {};
+    // The editor slot from the layout's editor tree (V2b). A sole editor
+    // leaf emits flat — the JOE screen, byte-identical; a `viewsplit` makes
+    // it a split and the split composer wraps each leaf in its own group.
+    var elo;
+    layout_get(elo, w, es);
+    var etree = elo["editor"];
+    if ( etree["kind"] == ctSPLIT )
+	compose_editor_split(kids, w, es, doc, etree, ed, status);
+    else
+	compose_editor_flat(kids, w, es, ed, status, wc);
+
+    long pane = cur_pane(w, es);
+    if ( pane != paneNONE )
     {
 	var box = { "role": "choice" };
 	var items = {};
 	long nrows = 0;
-	if ( pane == "help" )
+	if ( pane == paneHELP )
 	{
 	    // help = a projection of the loaded profile's own data
 	    var prof;
@@ -5153,7 +7495,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
 	}
-	else if ( pane == "options" )
+	else if ( pane == paneOPTIONS )
 	{
 	    // ^T options (IDE-9d): letter row = live value + the action
 	    // its ENTER fires — the theme prompt and profile toggle are
@@ -5166,32 +7508,31 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    ui::get(prof, w, es, "profile");
 	    var rows = {};
 	    rows[] = { "content": format("D Tab width   {}", tw),
-		       "act": "opt-tabwidth" };
+		       "act": cmdOPT_TABWIDTH };
 	    rows[] = { "content": format("S Scheme      {}", scheme),
-		       "act": "opt-scheme" };
+		       "act": cmdOPT_SCHEME };
 	    rows[] = { "content": format("K Keymap      {}", prof),
-		       "act": "opt-keymap" };
+		       "act": cmdOPT_KEYMAP };
 	    // The project kind (polish P2c): console | gui — shown while a
 	    // manifest is open (the implicit project has no manifest).
 	    if ( proj_has_manifest(w, es) )
 	    {
-		var pk = proj_kind(w, es);
-		rows[] = { "content": format("P Project kind {}", pk),
-			   "act": "opt-projkind" };
+		rows[] = { "content": format("P Project kind {}",
+					     projkind_name(proj_kind(w, es))),
+			   "act": cmdOPT_PROJKIND };
 	    }
 	    for ( var row : rows )
 	    {
 		var it = { "role": "item", "content": row["content"] };
-		var ga = {};
-		ga[] = row["act"];
-		it["actions"] = ga;
+		var gh = { "code": row["act"] };	// the row's verb, a code
+		it["hints"] = gh;
 		items.push(it);
 		nrows = nrows + 1;
 	    }
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "Change", nofilter);
 	}
-	else if ( pane == "build" )
+	else if ( pane == paneBUILD )
 	{
 	    // IDE-10b ^B: the same popup-list widget with the command
 	    // rows as data; a running build shows in the label.
@@ -5207,16 +7548,15 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 			   "content": c.is_null()
 			       ? format("{}", row["name"])
 			       : format("{}  [{}]", row["name"], c) };
-		var ga = {};
-		ga[] = row["act"];
-		it["actions"] = ga;
+		var gh = { "code": row["act"] };	// the row's verb, a code
+		it["hints"] = gh;
 		items[] = it;
 		nrows = nrows + 1;
 	    }
 	    var nofilter;
 	    dialog_hints(box, w, es, "pane", "Run", nofilter);
 	}
-	else if ( pane == "modes" )
+	else if ( pane == paneMODES )
 	{
 	    // The MODES palette: the same focused-list widget; rows come
 	    // precomposed from modes_show. Rows carry NO actions — what a
@@ -5233,7 +7573,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
-	else if ( pane == "project" )
+	else if ( pane == panePROJECT )
 	{
 	    // IDE-10a ^P — the PROJECT window (owner rulings 2026-08-31):
 	    // the LIST-presentation choice — model hints list (one row
@@ -5248,7 +7588,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var pf;
 	    ui::get(pf, w, es, "projfile");
 	    var pfd = "(no project file)";
-	    if ( !pf.is_null() && strlen(pf.c_str()) > 0 )
+	    if ( proj_has_manifest(w, es) )
 		pfd = pf;
 	    var prows;
 	    ui::get(prows, w, es, "projrows");
@@ -5274,148 +7614,25 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    dh["dialog"] = dg;
 	    box["hints"] = dh;
 	}
-	else
-	{
-	    // diagnostics / outline: projections of the STORED compiler
-	    // data — navigable rows carrying the `goto` action.
-	    bool outline_pane = pane == "outline";
-	    if ( outline_pane )
-		box["label"] = "Outline";
-	    else
-		box["label"] = "Diagnostics";
-	    nrows = diag_items(items, w, es, doc, outline_pane);
-	    if ( nrows == 0 )
-		items[] = { "role": "item",
-			    "content": outline_pane ? "(no definitions)"
-						    : "(clean)" };
-	}
 	box["children"] = items;
-	// The pane's workbench slot (slice 3) is madcide's OWN presentation
-	// policy for its OWN panes, expressed as DATA — a docked side view, a
-	// bottom panel, or a floating popup — never a name test in general
-	// machinery. A `popup` hint floats the choice as an overlay; a
-	// `region` hint docks it. Both are hints the grid model ignores.
-	var pane_slot = { "diagnostics": "sidebar", "outline": "sidebar",
-			  "build": "popup", "project": "popup",
-			  "modes": "popup", "help": "popup",
-			  "options": "popup" };
-	var slot = pane_slot[pane.c_str()];
-	if ( !slot.is_null() )
-	{
-	    var bh = box["hints"];
-	    if ( slot == "popup" )
-		bh["popup"] = 1;
-	    else
-		bh["region"] = slot;
-	    box["hints"] = bh;
-	}
+	// Every pane here is a PICK LIST (V2: the tool Views live in the
+	// layout's chrome panes below); dialog_hints floated it as a popup.
 	kids.push(box);
     }
 
-    // The live-build output panel (slice 3 Task 6): while a build streams,
-    // dock the [build] buffer's output as a panel region in the workbench
-    // (VS Code's Output shape). ADDITIVE and gated on buildlive — the TUI
-    // ignores region:panel and reaches [build] via ^P, and a drained build
-    // (buildlive == 0) composes no panel, so the terminal shape and every
-    // testmadcide compose-shape assertion are unchanged. Non-creating
-    // lookup: composition never mints a buffer.
-    if ( es_flag(w, es, "haspanel") )
+    // The CHROME panes (V2, design §2.2): every visible fixed-slot pane of
+    // the client's layout — after the popup, so a pick list keeps its place
+    // in the tree. The grid carves their bands by `side` / `size`; the page
+    // docks them by `region`.
+    var lo;
+    layout_get(lo, w, es);
+    for ( var c : lo["chrome"] )
     {
-	// The bottom PANEL (polish P3a): a `group` docked into the panel
-	// region whose `tabs` hint carries the STRIP as data — one tab per
-	// tool, each naming the command that shows it (a click posts it by
-	// name, the S1 rule) — and whose one child is the active tab's
-	// content: Problems = the diagnostics rows (diag_items, the same
-	// builder the terminal's pane uses), Output = the [build] buffer's
-	// text (live or last; empty when nothing was built). Composed only
-	// while `panel` is up.
-	if ( es_int(w, es, "panel", 0) != 0 )
-	{
-	    var tab;
-	    ui::get(tab, w, es, "paneltab");
-	    if ( tab.is_null() || strlen(tab.c_str()) == 0 )
-		tab = "problems";
-	    var strip = {};
-	    var t1 = { "title": "Problems", "action": "problems" };
-	    if ( tab == "problems" )
-		t1["active"] = 1;
-	    strip.push(t1);
-	    var t2 = { "title": "Output", "action": "output" };
-	    if ( tab == "output" )
-		t2["active"] = 1;
-	    strip.push(t2);
-	    var t3 = { "title": "Terminal", "action": "terminal" };
-	    if ( tab == "terminal" )
-		t3["active"] = 1;
-	    strip.push(t3);
-	    var pkids = {};
-	    if ( tab == "terminal" )
-	    {
-		// The screen: an edit node over the [terminal] buffer (the
-		// line-DOM, the caret at the end) whose subject is that
-		// buffer — a press on it is how the program gets the
-		// keyboard (pointer_event). Empty until something ran.
-		long tdoc = term_doc_if_any(w, es);
-		var tt = "";
-		long tsz = 0;
-		if ( tdoc != 0 )
-		{
-		    ui::text(tt, w, tdoc);
-		    tsz = ui::text_size(w, tdoc);
-		}
-		var term = { "role": "edit" };
-		term["content"] = tt;
-		if ( tdoc != 0 )
-		    term["subject"] = tdoc;
-		var th = { "terminal": 1 };
-		th["caret"] = tsz;
-		if ( es_int(w, es, "termfocus", 0) != 0 )
-		    th["focus"] = 1;
-		term["hints"] = th;
-		pkids.push(term);
-	    }
-	    else if ( tab == "output" )
-	    {
-		var out = { "role": "content" };
-		var bt = "";
-		long bdoc = build_doc_if_any(w, es);
-		if ( bdoc != 0 )
-		    ui::text(bt, w, bdoc);
-		out["content"] = bt;
-		pkids.push(out);
-	    }
-	    else
-	    {
-		var pb = { "role": "choice", "label": "Problems" };
-		var pitems = {};
-		long pn = diag_items(pitems, w, es, doc, false);
-		if ( pn == 0 )
-		    pitems[] = { "role": "item", "content": "(clean)" };
-		pb["children"] = pitems;
-		pb["hints"] = { "list": 1 };
-		pkids.push(pb);
-	    }
-	    var panel = { "role": "group" };
-	    var ph = { "region": "panel" };
-	    ph["tabs"] = strip;
-	    panel["hints"] = ph;
-	    panel["children"] = pkids;
-	    kids.push(panel);
-	}
-    }
-    else if ( es_int(w, es, "buildlive", 0) != 0 )
-    {
-	long bdoc = build_doc_if_any(w, es);
-	if ( bdoc != 0 )
-	{
-	    var bt;
-	    ui::text(bt, w, bdoc);
-	    var panel = { "role": "content" };
-	    panel["content"] = bt;
-	    var ph = { "region": "panel" };
-	    panel["hints"] = ph;
-	    kids.push(panel);
-	}
+	if ( c["hidden"].as_integer() != 0 )
+	    continue;
+	var cp;
+	compose_chrome_pane(cp, w, es, doc, c);
+	kids.push(cp);
     }
 
     // The bottom message line (JOE's msgbuf): prompts, the search
@@ -5446,6 +7663,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var rh;
     if ( !gt.is_null() && php::count(gt) > 0 )
 	rh["theme"] = gt;
+    // The @presence palette (V3c): the scheme's round-robin caret colours
+    // ride the root hints; a client renders another client's presence caret
+    // by its dealt slot. A hint the TUI ignores.
+    var pt;
+    ui::get(pt, w, es, "presence_theme");
+    if ( !pt.is_null() && php::count(pt) > 0 )
+	rh["presence"] = pt;
     // The menu / command data (S1): the bar's menus with their items'
     // ids, titles and enablement — a root hint the TUI ignores and a
     // chrome-rendering client (S2) draws natively.
@@ -5458,6 +7682,128 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 }
 
 // ---- the session lifecycle (the gateway seam) ---------------------------
+
+// The per-CLIENT view initialisation (client-server V3b-2). Everything a
+// client's editor-state bag needs once its world + document exist: its own
+// profile / theme / menu / layout, the buffer table's launch row, the
+// project read-back, and the first lexical colour. open() runs it for
+// client 0 over the es setup_editor created; spawn_view_es runs it for
+// every additional window onto the SAME session (viewwindow). ONE builder,
+// so a spawned window's bag is constructed by the same code as the launch
+// window's — a second window that renders the shared document identically.
+// Returns false ONLY when the startup profile AND the built-in rescue
+// bindings both fail (fatal; the caller reports the exit).
+bool init_view_es(long w, long es, long doc, const char *path)
+{
+    var p = path;		// ring discipline: own the text first — the
+				// data loads below cycle the ring, so a bare
+				// `path` pointer read empty at launchpath.
+    // resolve_profile_dir owns the search: source tree (beside this
+    // file, from any cwd — php::dirname splits both separators; '/'
+    // alone cost the first genuine-Win validation its keybindings),
+    // then the installed layouts anchored on the running binary (PK7).
+    var pdir;
+    resolve_profile_dir(pdir);
+    ui::set(w, es, "profile_dir", pdir.c_str());
+    load_status(w, es, "joe");	// the status FORMAT rides the profile
+    if ( !load_theme(w, es, "default") )
+	ui::set(w, es, "msg", "No theme 'default' — colours off.");
+    load_menu(w, es, "default");	// the menu/command data (optional, S1)
+    load_layout(w, es, "default");	// WHERE Views live (V2): the client's
+					// layout; the baked default when the
+					// file is missing or refused
+    // The profile loads LAST of the three data loads: a broken layout
+    // fails the theme too, and its message must not bury the rescue
+    // announcement — the status line has to SAY the fallback is active.
+    if ( !load_profile(w, es, "joe") )
+    {
+	// No profile file = NO bindings at all (they are pure data), so a
+	// silent continue traps the session in a bindingless editor (the
+	// first genuine-Win validation hit exactly this). The baked-in
+	// rescue set keeps the session usable — only ITS failure is fatal.
+	if ( !bind_rescue_keys(w, es) )
+	{
+	    var dir;
+	    ui::get(dir, w, es, "profile_dir");
+	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
+	    return false;
+	}
+    }
+    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
+    // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
+    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
+    push_buffer_row(w, es, doc, p.c_str());
+    ui::set(w, es, "bufidx", 0);
+    // Presence (client-server V3c): register this client as a viewer of the
+    // launch document — the anchor registry shifts every client's caret in
+    // one pass and compose draws the others, and this deals the es its
+    // round-robin presence colour slot.
+    es_view_doc(w, es, doc);
+    ui::set(w, es, "fview", buffer_view(w, es, 0));	// the focused
+				// container's View: the launch tab's
+    // The project (owner rulings 2026-08-31): the launch file anchors the
+    // implicit single-file project; a <base>.prj.json beside it IS the
+    // project and loads back (announced on the status line). launchpath
+    // rides as a VAR (proj_add / layout_persist read it to place the
+    // manifest and the layout beside the file — a bare const char* here
+    // read back empty and dropped both artifacts at the root base).
+    ui::set(w, es, "launchpath", p);
+    proj_startup(w, es, doc);
+    // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
+    // blocked the first render for seconds on a real C++ file): colour
+    // rides the first paint from the LEXICAL spans; the full parse runs
+    // as the client loop's pending step AFTER a render — the ONE
+    // mechanism startup and buffer switches share (parse_pending).
+    lex_first_spans(w, es, doc);
+    ui::set(w, es, "pending_parse", 1);
+    return true;
+}
+
+// A fresh client VIEW onto an existing world + document (client-server
+// V3b-2, viewwindow). A second window is a second CLIENT with its OWN
+// editor-state bag over the SHARED document — its own caret, buffer ring,
+// layout and focus; the documents live in the world both share, so an edit
+// in either window mutates the one document and the other window shows it
+// on its next compose. Mirrors setup_editor's es half (the world verbs are
+// already bound and the document already loaded), then the SAME per-client
+// init open() runs. Returns the new es, or 0 if the profile + rescue both
+// failed.
+long spawn_view_es(long w, long doc, const char *path)
+{
+    var p = path;		// ring discipline: own before the ring-using
+				// derive_access / init below clobber the slot
+    long es = ui::create(w, "editor-state");
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);
+    derive_access(w, es);
+    if ( !init_view_es(w, es, doc, p.c_str()) )
+	return 0;
+    return es;
+}
+
+// The session half of a viewwindow spawn (client-server V3b-2b): a fresh
+// client VIEW over the shared world + `doc`. The client layer (run_ide)
+// asks for it, then opens a frontend on the returned es and adds the
+// client record — the seam keeps the session free of frontend handles.
+long IdeSession::spawn_view(long doc)
+{
+    var dp;
+    ui::get(dp, w, doc, "path");
+    return spawn_view_es(w, doc, dp.c_str());
+}
+
+// Drain a parked viewwindow spawn: the doc a new window should view, left
+// on the requesting client's es by the viewwindow command. 0 = none.
+bool IdeSession::take_spawn(long &doc)
+{
+    long d = es_int(w, es, "spawnview", 0);
+    if ( d == 0 )
+	return false;
+    ui::set(w, es, "spawnview", 0);
+    doc = d;
+    return true;
+}
 
 // Full session startup: the world, the launch document, the data loads
 // (status format, theme, keybinding profile — all validated handle-free),
@@ -5473,51 +7819,8 @@ long IdeSession::open(const char *path0, bool ro)
     if ( doc == 0 )
 	return 0;
     es = ui::entity_by_name(w, "editor-state");
-    // resolve_profile_dir owns the search: source tree (beside this
-    // file, from any cwd — php::dirname splits both separators; '/'
-    // alone cost the first genuine-Win validation its keybindings),
-    // then the installed layouts anchored on the running binary (PK7).
-    var pdir;
-    resolve_profile_dir(pdir);
-    ui::set(w, es, "profile_dir", pdir.c_str());
-    load_status(w, es, "joe");	// the status FORMAT rides the profile
-    if ( !load_theme(w, es, "default") )
-	ui::set(w, es, "msg", "No theme 'default' — colours off.");
-    load_menu(w, es, "default");	// the menu/command data (optional, S1)
-    // The profile loads LAST of the three data loads: a broken layout
-    // fails the theme too, and its message must not bury the rescue
-    // announcement — the status line has to SAY the fallback is active.
-    if ( !load_profile(w, es, "joe") )
-    {
-	// No profile file = NO bindings at all (they are pure data), so a
-	// silent continue traps the session in a bindingless editor (the
-	// first genuine-Win validation hit exactly this). The baked-in
-	// rescue set keeps the session usable — only ITS failure is fatal.
-	if ( !bind_rescue_keys(w, es) )
-	{
-	    var dir;
-	    ui::get(dir, w, es, "profile_dir");
-	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
-	    return -1;
-	}
-    }
-    ui::set(w, es, "hint", 1);	// the transient bottom startup hint
-    // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
-    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
-    push_buffer_row(w, es, doc, p.c_str());
-    ui::set(w, es, "bufidx", 0);
-    // The project (owner rulings 2026-08-31): the launch file anchors the
-    // implicit single-file project; a <base>.prj.json beside it IS the
-    // project and loads back (announced on the status line).
-    ui::set(w, es, "launchpath", p);
-    proj_startup(w, es, doc);
-    // PAINT BEFORE THE PARSE (owner report, 2026-08-26: parse-on-load
-    // blocked the first render for seconds on a real C++ file): colour
-    // rides the first paint from the LEXICAL spans; the full parse runs
-    // as the client loop's pending step AFTER a render — the ONE
-    // mechanism startup and buffer switches share (parse_pending).
-    lex_first_spans(w, es, doc);
-    ui::set(w, es, "pending_parse", 1);
+    if ( !init_view_es(w, es, doc, p.c_str()) )
+	return -1;		// the profile AND rescue bindings both failed
     return doc;
 }
 
@@ -5582,13 +7885,22 @@ void IdeSession::panel(bool has)
 // terminal uses, so the command still completes.
 void IdeSession::dialog_fallback(var &req)
 {
-    var mode = req["mode"];
-    if ( mode == "save" )
-	start_prompt(w, es, "Save as", "saveas");
-    else if ( mode == "openproject" )
-	start_prompt(w, es, "Project file to open", "openproject");
-    else
-	start_prompt(w, es, "Name of file to edit", "editfile");
+    var dk = req["dlg"];
+    long dlg = dlgOPEN;
+    if ( !dk.is_null() )
+	dlg = dk.as_integer();
+    switch ( dlg )
+    {
+	case dlgSAVE:
+	    start_prompt(w, es, "Save as", pmSAVEAS);
+	    return;
+	case dlgOPENPROJECT:
+	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
+	    return;
+	default:
+	    break;
+    }
+    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
 }
 
 // A terminal request the client cannot serve (no terminal to suspend —
@@ -5596,9 +7908,9 @@ void IdeSession::dialog_fallback(var &req)
 // was silently dropped before polish P3b-1 (fix-what-you-find).
 void IdeSession::request_refused(var &req)
 {
-    var kind = format("{}", req["kind"]);
     ui::set(w, es, "msg",
-	    format("This client has no terminal to hand over for '{}'.", kind));
+	    format("This client has no terminal to hand over for '{}'.",
+		   req_name(req["kind"].as_integer())));
 }
 
 void IdeSession::pending_chord(const char *pcs)
@@ -5645,8 +7957,9 @@ void IdeSession::term_exec(var &req)
     // stdout first, or a block-buffered run (piped/headless) splices the
     // guest's output into the middle of a host line.
     fflush(stdout);
-    var kind = format("{}", req["kind"]);
-    if ( kind == "run" )
+    switch ( req["kind"].as_integer() )
+    {
+	case rqRUN:
     {
 	// Fork the buffer's LIVE parse (owner ruling 2026-08-27: the
 	// running madc IS the compiler) — the child inherits the tree.
@@ -5661,7 +7974,7 @@ void IdeSession::term_exec(var &req)
 	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 	return;
     }
-    if ( kind == "projrun" )
+	case rqPROJRUN:
     {
 	// The --project JIT lane in a fork child (win: a child of self).
 	var pf;
@@ -5673,18 +7986,20 @@ void IdeSession::term_exec(var &req)
 	    ui::set(w, es, "msg", format("Run finished (exit {}).", rc));
 	return;
     }
-    if ( kind == "cmd" )
+	case rqCMD:
     {
 	var c = format("{}", req["cmd"]);
 	system(c.c_str());
 	return;
     }
-    if ( kind == "shell" )
-    {
-	// $SHELL falls back to /bin/sh INSIDE the command — libc system()
-	// inherits the terminal, and no getenv is needed (the dlsym
-	// fallback would hand the pointer back as a long).
-	system("exec \"${SHELL:-/bin/sh}\"");
+	case rqSHELL:
+	    // $SHELL falls back to /bin/sh INSIDE the command — libc system()
+	    // inherits the terminal, and no getenv is needed (the dlsym
+	    // fallback would hand the pointer back as a long).
+	    system("exec \"${SHELL:-/bin/sh}\"");
+	    return;
+	default:
+	    break;
     }
 }
 
@@ -5721,22 +8036,105 @@ void IdeSession::close()
 
 // ---- the vi arm (modes-as-scopes — the session owns mode routing) -------
 
-// Run a named action n times through the ONE dispatcher (apply_ide_event
-// recursion — kind "action" never re-enters the vi arm, so motions, the
-// edit keys, and the IDE verbs all serve the grammar without a second
-// dispatch). False = the session ended (a quit propagates).
-bool IdeSession::vi_exec(long doc, const char *a, long n)
+// ONE command by CODE through the ONE dispatcher: the action event a
+// code-bound chord produces, without the chord (kind "action" never
+// re-enters the vi arm, so motions, the edit keys, and the IDE verbs all
+// serve a code-speaking client without a second dispatch). The vi grammar
+// (vi_exec), the `-c` one-shot and the api seat post through here. False =
+// the session ended (a quit propagates).
+bool IdeSession::post(long doc, long code)
 {
-    var an = a;		// own the text: `a` may lend a ring slot and the
-			// loop below makes ring-returning calls
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "", "action_code": code };
+    return apply_ide_event(doc, e);
+}
+
+// Run a named action n times through the ONE dispatcher.
+bool IdeSession::vi_exec(long doc, long code, long n)
+{
     for ( long i = 0; i < n; i = i + 1 )
-    {
-	var e = { "event": "action", "event_code": ui::event_kind::action,
-		  "action": an };
-	if ( !apply_ide_event(doc, e) )
+	if ( !post(doc, code) )
 	    return false;
-    }
     return true;
+}
+
+// A command WITH ITS ARGUMENT — the shape every non-interactive input
+// boundary posts (client-server design §2.3b: the `-c` command line now;
+// the `:` line's `:find x` and the api seat's {"cmd", "args"} later). The
+// argument is what the PROMPT the command opens would have been typed:
+// `find add` = the find prompt, "add", commit; `gotoline 7`; `colon w`; a
+// confirm reads it as its answer (`quit y`). The commit posts the @prompt
+// scope's pcommit by CODE (scope_action_named: a code reaches exactly what
+// a key can), so a profile's spelling of the commit key is not this
+// method's concern. False = refused: an argument for a command that opened
+// no prompt (the message says so — the caller's exit status 2). `cont` is
+// the continue / quit verdict the dispatcher returned.
+bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
+{
+    var a = arg;			// ring discipline: own the text first
+    cont = post(doc, code);
+    if ( !cont || strlen(a.c_str()) == 0 )
+	return true;
+    if ( !prompt_active(w, es) )
+    {
+	var nm;
+	cmd_name(nm, code);
+	ui::set(w, es, "msg", format("'{}' takes no argument.", nm));
+	return false;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": a };
+    cont = apply_ide_event(doc, t);
+    if ( !cont || !prompt_active(w, es) )
+	return true;			// a confirm answered (y / n)
+    cont = post(doc, cmdPCOMMIT);
+    return true;
+}
+
+// ONE line of the ex / edlin client (ui::LINE, client-server design §2.3b,
+// slice V2.5): the classifier the line frontend's raw-line `text` event
+// feeds (run_line). The engine frontend stays dumb — the tool's line
+// grammar lives HERE, where the registry and the colon interpreter do:
+//   - a ':' line is a colon command — the rest is the ex command, posted
+//     through the ONE argument primitive (post cmdCOLON to open the colon
+//     line, feed the text, commit by code), the SAME path the -c one-shot
+//     and the TUI ':' prompt reach colon_command by. A bare ':' runs
+//     nothing. Every colon verb (w q wq x e r, :N goto, the view* verbs,
+//     !shell) is reached with no new command language (owner: "the vi ':'
+//     mode without the TUI part").
+//   - any other line is TEXT: inserted verbatim (its bytes preserved — no
+//     trim, so indentation survives), then a newline, so successive lines
+//     stack. A read-only view refuses, as it does for a typed key.
+// cont carries the continue / quit verdict (a committed :q ends the loop).
+bool IdeSession::line_input(long doc, const char *line, bool &cont)
+{
+    cont = true;
+    var raw = line;			// ring discipline: own the text first
+    long n = strlen(raw.c_str());
+    if ( n > 0 && raw.c_str()[0] == ':' )
+    {
+	var rest = php::trim(perl::substr(raw, 1, n - 1));
+	if ( strlen(rest.c_str()) == 0 )
+	    return true;		// a bare ':' — nothing to run
+	command(doc, cmdCOLON, rest.c_str(), cont);
+	return cont;
+    }
+    var t = { "event": "text", "event_code": ui::event_kind::text, "text": raw };
+    cont = apply_ide_event(doc, t);
+    if ( cont )
+	cont = post(doc, cmdENTER);
+    return cont;
+}
+
+// ERROR rows in the problems projection after the last command — the
+// one-shot's verdict (`madcide f -c check` exits 1 on a broken file);
+// warnings never count, exactly as they never bar a build.
+long IdeSession::error_count()
+{
+    var diags;
+    ui::get(diags, w, es, "diags");
+    if ( diags.is_null() )
+	return 0;
+    return diag_error_count(diags);
 }
 
 // o / O (and cc's emptied line): break the line at the caret, land on
@@ -5745,10 +8143,10 @@ bool IdeSession::vi_exec(long doc, const char *a, long n)
 // opened line).
 void IdeSession::vi_open_line(long doc, bool above)
 {
-    vi_exec(doc, "enter", 1);
+    vi_exec(doc, cmdENTER, 1);
     if ( above )
-	vi_exec(doc, "left", 1);
-    vi_enter(w, es, "insert");
+	vi_exec(doc, cmdLEFT, 1);
+    vi_enter(w, es, viINSERT);
 }
 
 // The vi arm: routes the main key stream while a vi mode is active.
@@ -5765,19 +8163,18 @@ void IdeSession::vi_open_line(long doc, bool above)
 bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 {
     cont = true;
-    var mode;
-    ui::get(mode, w, es, "vimode");
+    long mode = cur_vimode(w, es);
     var kind = ev["event_code"];
-    if ( mode == "insert" )
+    if ( mode == viINSERT )
     {
 	if ( kind != ui::event_kind::key )
 	    return false;		// typing types; chords act
 	var ia;
 	if ( !scoped_action(ia, w, es, "insert", ev) )
 	    return false;
-	if ( ia == "vinormal" )
+	if ( ia == cmdVINORMAL )
 	{
-	    vi_enter(w, es, "normal");
+	    vi_enter(w, es, viNORMAL);
 	    return true;
 	}
 	return false;
@@ -5824,17 +8221,15 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     if ( n < 1 )
 	n = 1;
     bool counted = strlen(cnt.c_str()) > 0;
-    var opv;
-    ui::get(opv, w, es, "viop");
-    var ops = format("{}", opv);
+    long ops = es_int(w, es, "viop", cmdNONE);	// the pending operator
     long opn = es_int(w, es, "viopn", 1);
     if ( opn < 1 )
 	opn = 1;
     // Operators PEND (their count stashed aside, so d3w and 2d3w both
     // multiply); the SAME operator again is the line-wise form (dd/cc).
-    if ( a == "videlete" || a == "vichange" )
+    if ( a == cmdVIDELETE || a == cmdVICHANGE )
     {
-	if ( !(ops == a) )
+	if ( ops != a.as_integer() )
 	{
 	    ui::set(w, es, "viop", a);
 	    ui::set(w, es, "viopn", n);
@@ -5851,20 +8246,20 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 	    if ( ui::text_size(w, doc) >= before )
 		break;		// the edge (or a refusal): stop repeating
 	}
-	if ( a == "vichange" )
+	if ( a == cmdVICHANGE )
 	    vi_open_line(doc, true);	// cc leaves an opened empty line
 	return true;
     }
-    if ( vi_is_motion(a) )
+    if ( vi_is_motion(a.as_integer()) )
     {
 	long c0 = clamped_caret(w, es, nav);
-	if ( a == "vigoto" )
+	if ( a == cmdVIGOTO )
 	{
 	    // vim's G: a count is the LINE (5G); bare G is the bottom —
 	    // the same landing rule as the colon line's :N.
 	    if ( counted )
 		ui::set(w, es, "caret", caret_to_line(w, nav, n, 0));
-	    else if ( !vi_exec(doc, "bottom", 1) )
+	    else if ( !vi_exec(doc, cmdBOTTOM, 1) )
 	    {
 		cont = false;
 		return true;
@@ -5876,7 +8271,7 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 	    for ( long i = 0; i < steps; i = i + 1 )
 	    {
 		long before = es_int(w, es, "caret", 0);
-		if ( !vi_exec(doc, a.c_str(), 1) )
+		if ( !vi_exec(doc, a.as_integer(), 1) )
 		{
 		    cont = false;
 		    return true;
@@ -5885,7 +8280,7 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 		    break;	// the edge: further repeats are no-ops
 	    }
 	}
-	if ( strlen(ops.c_str()) == 0 )
+	if ( ops == cmdNONE )
 	{
 	    vi_pending_clear(w, es);	// a bare motion spends its count
 	    return true;
@@ -5895,33 +8290,33 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 	long c1 = clamped_caret(w, es, nav);
 	vi_pending_clear(w, es);
 	vi_span_del(w, es, doc, c0 < c1 ? c0 : c1, c0 < c1 ? c1 : c0);
-	if ( ops == "vichange" )
-	    vi_enter(w, es, "insert");
+	if ( ops == cmdVICHANGE )
+	    vi_enter(w, es, viINSERT);
 	return true;
     }
     // Insert-mode entries (a pending operator aborts — no text objects).
     vi_pending_clear(w, es);
-    if ( a == "viinsert" )
+    if ( a == cmdVIINSERT )
     {
-	vi_enter(w, es, "insert");
+	vi_enter(w, es, viINSERT);
 	return true;
     }
-    if ( a == "viappend" )
+    if ( a == cmdVIAPPEND )
     {
-	cont = vi_exec(doc, "right", 1);
-	vi_enter(w, es, "insert");
+	cont = vi_exec(doc, cmdRIGHT, 1);
+	vi_enter(w, es, viINSERT);
 	return true;
     }
-    if ( a == "viappendeol" || a == "viinsertbol" )
+    if ( a == cmdVIAPPENDEOL || a == cmdVIINSERTBOL )
     {
-	cont = vi_exec(doc, a == "viappendeol" ? "end" : "home", 1);
-	vi_enter(w, es, "insert");
+	cont = vi_exec(doc, a == cmdVIAPPENDEOL ? cmdEND : cmdHOME, 1);
+	vi_enter(w, es, viINSERT);
 	return true;
     }
-    if ( a == "viopenbelow" || a == "viopenabove" )
+    if ( a == cmdVIOPENBELOW || a == cmdVIOPENABOVE )
     {
-	bool above = a == "viopenabove";
-	cont = vi_exec(doc, above ? "home" : "end", 1);
+	bool above = a == cmdVIOPENABOVE;
+	cont = vi_exec(doc, above ? cmdHOME : cmdEND, 1);
 	if ( cont )
 	    vi_open_line(doc, above);
 	return true;
@@ -5929,6 +8324,6 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     // Everything else the @normal table names (x del, u undo, n
     // findnext, : colon, / find ...) runs count times through the ONE
     // dispatcher.
-    cont = vi_exec(doc, a.c_str(), n);
+    cont = vi_exec(doc, a.as_integer(), n);
     return true;
 }

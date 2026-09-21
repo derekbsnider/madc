@@ -196,7 +196,8 @@ int madc_cir_execute(Program *prog, const char *source_name,
 // Build the cir_node tree and render it as C source (no compile/run).
 // Backs --emit=c11|mc11. Returns 0 on success, -1 on build failure.
 int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
-		  CirEmitLang lang);
+		  CirEmitLang lang,
+		  std::vector<CirEmitMapRow> *map = nullptr);
 
 // AOT (-c/-o/-shared): full pipeline through gen OBJECT-CAPTURE mode —
 // translate + c2mir compile + MIR_link with a sentinel import resolver

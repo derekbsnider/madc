@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <string>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -879,6 +880,96 @@ TEST_CASE("TCP channel connects and preserves byte-stream half-close semantics")
 	CHECK(channel->read(response_buffer, sizeof(response_buffer), count, &err));
 	CHECK(count == 0);
 	channel->close();
+}
+
+TEST_CASE("listen channel binds an endpoint, accepts, and round-trips bytes")
+{
+	madc::error err;
+	std::unique_ptr<madc::DataChannel> listener =
+		madc::DataChannelRegistry::instance().open(
+			madc::DataSource("listen://127.0.0.1:0"),
+			madc::ChannelOpenMode::read_write, &err);
+	REQUIRE(listener.get() != nullptr);
+
+	// A listener is an acceptor AND pollable, but carries no bytes itself.
+	madc::AcceptorDataChannel *acceptor =
+		madc::acceptor_surface(listener.get());
+	REQUIRE(acceptor != nullptr);
+	madc::PollableDataChannel *pollable =
+		madc::pollable_surface(listener.get());
+	REQUIRE(pollable != nullptr);
+	std::size_t count = 0;
+	char probe = 0;
+	CHECK_FALSE(listener->read(&probe, 1, count, &err));
+	CHECK_FALSE(listener->write(&probe, 1, count, &err));
+
+	// Discover the ephemeral port getsockname assigned, then dial it raw.
+	std::string bound = acceptor->local_endpoint();
+	std::size_t colon = bound.rfind(':');
+	REQUIRE(colon != std::string::npos);
+	uint16_t port = static_cast<uint16_t>(std::stoi(bound.substr(colon + 1)));
+	REQUIRE(port != 0);
+
+	int client = ::socket(AF_INET, SOCK_STREAM, 0);
+	REQUIRE(client >= 0);
+	sockaddr_in address;
+	std::memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	REQUIRE(::connect(client, reinterpret_cast<sockaddr *>(&address),
+			  sizeof(address)) == 0);
+
+	// The non-blocking listener reads readable, then accept() yields the
+	// connection as an ordinary byte-stream child.
+	std::unique_ptr<madc::DataChannel> peer;
+	madc::AcceptResult result = madc::AcceptResult::would_block;
+	for ( int attempt = 0;
+	      attempt < 100 && result == madc::AcceptResult::would_block;
+	      ++attempt )
+	{
+		result = acceptor->accept(peer, &err);
+		if ( result != madc::AcceptResult::would_block )
+			break;
+		int handle = static_cast<int>(pollable->read_poll_handle());
+		fd_set readable;
+		FD_ZERO(&readable);
+		FD_SET(handle, &readable);
+		timeval timeout;
+		timeout.tv_sec = 1;
+		timeout.tv_usec = 0;
+		::select(handle + 1, &readable, nullptr, nullptr, &timeout);
+	}
+	REQUIRE(result == madc::AcceptResult::accepted);
+	REQUIRE(peer.get() != nullptr);
+	CHECK(peer->capabilities().read);
+	CHECK(peer->capabilities().write);
+	CHECK(peer->capabilities().half_close);
+
+	// client -> accepted peer
+	const char request[] = "listen-request";
+	REQUIRE(::send(client, request, sizeof(request) - 1, 0)
+		== static_cast<ssize_t>(sizeof(request) - 1));
+	char server_buffer[32] = {};
+	REQUIRE(peer->read(server_buffer, sizeof(server_buffer), count, &err));
+	CHECK(count == sizeof(request) - 1);
+	CHECK(std::memcmp(server_buffer, request, count) == 0);
+
+	// accepted peer -> client
+	const char response[] = "listen-response";
+	REQUIRE(madc::write_all(*peer, response, sizeof(response) - 1, &err));
+	char client_buffer[32] = {};
+	CHECK(::recv(client, client_buffer, sizeof(client_buffer), 0)
+		== static_cast<ssize_t>(sizeof(response) - 1));
+	CHECK(std::memcmp(client_buffer, response, sizeof(response) - 1) == 0);
+
+	::close(client);
+	peer->close();
+	listener->close();
+
+	// A closed listener refuses further accepts with an error (no crash),
+	// never a spurious would_block.
+	CHECK(acceptor->accept(peer, &err) == madc::AcceptResult::error);
 }
 
 TEST_CASE("UDP channel exposes datagrams without silent truncation")

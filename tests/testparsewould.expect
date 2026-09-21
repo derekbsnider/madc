@@ -1,0 +1,12 @@
+would-accept-good: 1
+gen-unchanged: 1
+id-still-fresh: 1
+would-accept-bad: 1
+bad-has-diag: 1
+gen-unchanged-after-bad: 1
+checked-swaps: 1
+gen-advanced: 1
+old-id-stale: 1
+would-accept-on-revision: 1
+revision-tag-unchanged: 1
+checked-on-revision-refused: 1

@@ -1,0 +1,10 @@
+// Function identity folding preserves defaults from earlier or later declarations.
+#include <stdio.h>
+struct Pair { int a, b; };
+void scalar(int = 7);
+void scalar(int n) { printf("scalar: %d\n", n); }
+void aggregate(Pair = {1, 2});
+void aggregate(Pair p) { printf("aggregate: %d %d\n", p.a, p.b); }
+void later(int n) { printf("later: %d\n", n); }
+void later(int = 9);
+int main() { scalar(); aggregate(); later(); return 0; }

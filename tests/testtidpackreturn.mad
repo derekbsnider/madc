@@ -1,0 +1,35 @@
+// A function template whose TYPE PACK is deduced from a template-id parameter
+// (`tup<E...> &`) and expanded again in the RETURN type — std::get<I>'s
+// `__tuple_element_t<__i, tuple<_Elements...>>&` shape (self-host arc
+// 2026-09-17, 34 units). Two roots: the explicit-args return-type lane
+// substituted the never-supplied pack as EMPTY, and the instantiation's
+// pattern locator did not treat `<` as an opener, re-emitting `tup<int,
+// tup<long>`. Shapes: the pack alone in the return, with an explicit non-type
+// argument, through an alias template over a recursive partial
+// specialization, and a qualified dependent return. Oracle: g++ and clang++
+// -std=c++11.
+#include <stdio.h>
+
+template<typename... E> struct tup { int n; };
+template<unsigned I, typename T> struct te;
+template<unsigned I, typename H, typename... R> struct te<I, tup<H, R...> > : te<I - 1, tup<R...> > {};
+template<typename H, typename... R> struct te<0, tup<H, R...> > { typedef H type; };
+template<unsigned I, typename T> using te_t = typename te<I, T>::type;
+
+template<typename... E> tup<E...> *mk(tup<E...> &t) { return &t; }
+template<unsigned I, typename... E> tup<E...> *pick(tup<E...> &t) { return I ? &t : 0; }
+template<unsigned I, typename... E> te_t<I, tup<E...> > width(tup<E...> &) { return (te_t<I, tup<E...> >)sizeof(te_t<I, tup<E...> >); }
+template<unsigned I, typename... E> typename te<I, tup<E...> >::type *qual(tup<E...> &, te_t<I, tup<E...> > *p) { return p; }
+
+int main()
+{
+    tup<int, long, double> t; t.n = 5;
+    tup<int, long, double> *a = mk(t);
+    tup<int, long, double> *b = pick<1>(t);
+    long w1 = (long)width<1>(t);
+    double w2 = (double)width<2>(t);
+    long q = 9;
+    long *qp = qual<1>(t, &q);
+    printf("%d %d %ld %.1f %ld\n", a->n, b == &t, w1, w2, *qp);
+    return 0;
+}

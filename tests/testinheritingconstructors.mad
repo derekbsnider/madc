@@ -1,0 +1,44 @@
+#include <cstdio>
+
+// [class.inhctor] — `using Base::Base;` makes the base's constructors part of
+// the derived class's overload set. madc's class-scope using-declaration
+// imported base METHODS only; constructors live in a separate list, so the
+// declaration was silently skipped, the derived class ended up with NO
+// constructors, and `B b(42);` was read as a FUNCTION DECLARATION.
+
+struct A
+{
+	int v;
+	A(int i) : v(i) {}
+	A(int i, int j) : v(i + j) {}
+};
+
+struct B : A { using A::A; };
+
+// [class.inhctor.init]/1: the inherited ctor initializes the BASE subobject;
+// everything else is initialized as if by a defaulted default constructor —
+// so this class-type member still gets constructed.
+struct M { int m; M() : m(3) {} };
+struct C : A { using A::A; M mem; };
+
+// A polymorphic derived class: the vptr must be stamped even though the
+// constructor that ran belongs to the base.
+struct P { int p; P(int i) : p(i) {} virtual int who() { return 1; } };
+struct Q : P { using P::P; int who() { return 2; } };
+
+int main()
+{
+	B b1(42);
+	B b2(1, 2);
+	printf("basic: %d %d\n", b1.v, b2.v);
+	C c(10);
+	printf("member: %d %d\n", c.v, c.mem.m);
+	Q q(5);
+	P *pp = &q;
+	printf("virtual: %d %d\n", pp->p, pp->who());
+	// The COPY constructor is NOT inherited ([class.inhctor]/3): this copies
+	// a B. Inheriting it would let a B-to-B copy select A's, slicing silently.
+	B b3(b1);
+	printf("copy: %d\n", b3.v);
+	return 0;
+}

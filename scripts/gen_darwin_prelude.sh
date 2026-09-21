@@ -147,9 +147,34 @@ mv "$UMB_TMP.grd" "$UMB_TMP.flt"
 # embedded umbrella rides into .rodata verbatim (gen_embedded_headers.sh
 # string tables survive llvm-strip), so the binary itself names its
 # prelude's provenance. A C comment — madc's lexer drops it at serve time.
+# The umbrella was flattened as C (-x c above), so Apple's __BEGIN_DECLS /
+# __END_DECLS — `extern "C" {` under __cplusplus — expanded EMPTY and the C
+# library surface arrived with no language linkage. Under madc's C++-presenting
+# modes a function of C++ linkage mangles (C++ symbol mangling, design §4.3),
+# so every libc prototype here would have imported as _Z4sqrtd instead of the
+# `sqrt` the dylibs export (testimportiface). Restore what the real headers
+# say: the whole C surface has C language linkage in a C++ TU. A C TU sees no
+# linkage-spec at all, exactly as before.
 {
     printf '/* MADC-DARWIN-PRELUDE-PROVENANCE: %s */\n' "$PROVENANCE"
+    printf '#ifdef __cplusplus\nextern "C" {\n#endif\n'
     cat "$UMB_TMP.flt"
+    printf '#ifdef __cplusplus\n}\n#endif\n'
+    # The linkage-spec above covers the umbrella's OWN prototypes. It does
+    # nothing for a header the prelude does NOT serve — <netdb.h>,
+    # <sys/socket.h>, <arpa/inet.h> are read from the real SDK — because the
+    # flatten (as C) also baked Apple's C-branch `#define __BEGIN_DECLS` and
+    # `#define __END_DECLS`, both EMPTY, plus the `_CDEFS_H_` guard that stops
+    # the real <sys/cdefs.h> from ever redefining them. Those headers' own
+    # __BEGIN_DECLS then expanded to nothing, their prototypes arrived with
+    # C++ language linkage, and since free functions mangle they imported
+    # under Itanium names nothing exports: getservbyname went out as
+    # _Z13getservbynamePKcS0_ on BOTH darwin arches (tests/testservent, the
+    # darwin release lane). Restore exactly what <sys/cdefs.h> says for a C++
+    # TU; a C TU keeps the empty pair it already had.
+    printf '#undef __BEGIN_DECLS\n#undef __END_DECLS\n'
+    printf '#ifdef __cplusplus\n#define __BEGIN_DECLS extern "C" {\n#define __END_DECLS }\n'
+    printf '#else\n#define __BEGIN_DECLS\n#define __END_DECLS\n#endif\n'
 } > "$UMB_TMP"
 rm -f "$UMB_TMP.flt"
 
@@ -158,6 +183,15 @@ rm -f "$UMB_TMP.flt"
 if ! grep -q "int printf" "$UMB_TMP"; then
     rm -f "$UMB_TMP"
     echo "Error: generated darwin prelude lacks printf — SDK/clang mismatch?" >&2
+    exit 1
+fi
+
+# The __BEGIN_DECLS restoration above is load-bearing for every SDK header
+# this prelude does not serve; a flatten that dropped it ships a prelude that
+# mangles the C library surface. Same refuse-to-install discipline as printf.
+if ! grep -q 'define __BEGIN_DECLS extern "C" {' "$UMB_TMP"; then
+    rm -f "$UMB_TMP"
+    echo "Error: generated darwin prelude lost the C++ __BEGIN_DECLS restoration" >&2
     exit 1
 fi
 

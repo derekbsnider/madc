@@ -1,0 +1,23 @@
+// g++ and clang++ -std=c++11: output recorded in the sibling .expect.
+extern "C" int printf(const char *, ...);
+struct S { int i; int j; };
+struct W { S a; int k; };
+constexpr S sa[2] = {{3, 4}, {42, 7}};
+constexpr W s = {{-13, 9}, 55};
+constexpr W table[2][2] = {{{{61, 62}, 63}, {{71, 72}, 73}}, {{{81, 82}, 83}, {{91, 92}, 93}}};
+// Value-initialization of the elements an initializer does not reach.
+// 1D here on purpose: the multi-dim array-of-struct partial row is a
+// recorded gap (scratchpad/finding-constexpr-multidim-partial.md).
+constexpr S shortarr[2] = {{5, 6}};
+struct MemberArrays { S row[2]; int grid[2][3]; };
+constexpr MemberArrays arrays = {{{1, 2}, {3, 4}}, {{11, 12, 13}, {21, 22, 23}}};
+enum { MA = arrays.row[1].j, MG = arrays.grid[1][2] };
+enum { A = sa[1].i, B = s.a.i, C = table[0][0].a.i, D = table[1][0].a.j, Z = shortarr[1].i };
+template<int V> struct Tag { static int get() { return V; } };
+int main() {
+ constexpr W local = {{-21, 22}, 23};
+ enum { L = local.a.i };
+ printf("mixed: %d %d %d %d %d local: %d template: %d\n", A, B, C, D, Z, L, Tag<table[0][1].a.j>::get());
+ printf("members: %d %d runtime: %d %d %d\n", MA, MG, sa[1].i, s.a.i, table[0][0].a.i);
+ return 0;
+}

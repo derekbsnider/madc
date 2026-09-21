@@ -1,0 +1,2 @@
+sizeof(member_pointer)=16 sizeof(union)=16 sizeof(data_ptr)=8
+apply=11 read=5 local=10 through=15 virtual=12 bigvirtual=150

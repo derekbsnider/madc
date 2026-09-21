@@ -1,0 +1,14 @@
+// `:=` inside an UNBRACED if/else arm declares an arm-local variable
+// ([stmt.select]/1: the substatement is its own block scope — Go and C++
+// agree; owner ruling 2026-09-19). Using it after the if is an error, and so
+// is a plain C++ declaration in an unbraced arm (testwalrusarmdecl).
+int main()
+{
+	bool cond = true;
+	if ( cond )
+		x := 1;
+	else
+		x := 2;
+	println("x = {}", x);
+	return 0;
+}

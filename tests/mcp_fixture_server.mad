@@ -1,0 +1,112 @@
+// The external system's stand-in (Nexus L4d): a tiny MCP server over stdio —
+// initialize, tools/list (five tools), tools/call with canned rows. Spawned by
+// tests/testmcpclient.mad through the manifest it writes (the lane's own madc
+// as the child); never run alone (the .helper sibling says so). Every reply
+// is flushed: the client waits on the line.
+void reply(var &id, var &result)
+{
+    var out = { "jsonrpc": "2.0", "id": id, "result": result };
+    var js = js::stringify(out);
+    println("{}", js);
+    fflush(stdout);
+}
+
+void text_result(var &out, var &payload)
+{
+    var js = js::stringify(payload);
+    var txt = js;
+    var item = { "type": "text", "text": txt };
+    var content = {};
+    content[] = item;
+    out = { "content": content, "isError": false };
+}
+
+void tool_row(var &tools, const char *name, const char *desc, var &schema)
+{
+    var t = { "name": name, "description": desc, "inputSchema": schema };
+    tools[] = t;
+}
+
+int main()
+{
+    var line;
+    while ( madc::getline(line) )
+    {
+	var req;
+	if ( !js::parse(req, line) )
+	    continue;
+	var id = req["id"];
+	if ( id.is_null() )
+	    continue;			// a notification
+	var method = req["method"];
+	if ( method == "initialize" )
+	{
+	    var toolscap = { "listChanged": false };
+	    var caps = { "tools": toolscap };
+	    var info = { "name": "fixture", "version": "0" };
+	    var result = { "protocolVersion": "2024-11-05", "capabilities": caps, "serverInfo": info };
+	    reply(id, result);
+	}
+	else if ( method == "tools/list" )
+	{
+	    var noprops = {};
+	    var schema = { "type": "object", "properties": noprops };
+	    var tools = {};
+	    tool_row(tools, "list_tasks", "every task", schema);
+	    tool_row(tools, "get_task", "one task by key", schema);
+	    tool_row(tools, "create_task", "a new task", schema);
+	    tool_row(tools, "update_task", "change a task", schema);
+	    tool_row(tools, "comment", "comment on a task", schema);
+	    var result = { "tools": tools };
+	    reply(id, result);
+	}
+	else if ( method == "tools/call" )
+	{
+	    var params = req["params"];
+	    var name = params["name"];
+	    var result;
+	    if ( name == "list_tasks" )
+	    {
+		var rows = {};
+		rows[] = { "key": "MC-1", "summary": "wire the fixture", "status": "open" };
+		rows[] = { "key": "MC-2", "summary": "map the vocabulary", "status": "open" };
+		rows[] = { "key": "MC-3", "summary": "fold the rows", "status": "done" };
+		rows[] = { "key": "MC-4", "summary": "refuse a bad key", "status": "open" };
+		rows[] = { "key": "MC-5", "summary": "second sync updates", "status": "active" };
+		text_result(result, rows);
+	    }
+	    else if ( name == "get_task" )
+	    {
+		var row = { "key": "MC-1", "summary": "wire the fixture", "status": "open" };
+		text_result(result, row);
+	    }
+	    else if ( name == "create_task" )
+	    {
+		var row = { "key": "MC-6" };
+		text_result(result, row);
+	    }
+	    else if ( name == "update_task" || name == "comment" )
+	    {
+		var row = { "ok": true };
+		text_result(result, row);
+	    }
+	    else
+	    {
+		var item = { "type": "text", "text": "unknown tool" };
+		var content = {};
+		content[] = item;
+		result = { "content": content, "isError": true };
+	    }
+	    reply(id, result);
+	}
+	else
+	{
+	    var err = { "code": -32601, "message": "Method not found" };
+	    var out = { "jsonrpc": "2.0", "id": id, "error": err };
+	    var js = js::stringify(out);
+	    println("{}", js);
+	    fflush(stdout);
+	}
+    }
+    return 0;
+}

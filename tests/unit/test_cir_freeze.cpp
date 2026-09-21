@@ -529,8 +529,11 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 		REQUIRE(thawed->typedef_name() != nullptr);
 		CHECK(std::string(thawed->typedef_name()) == "FROZEN_ALIAS_T");
 
-		// An identifier payload somewhere in the tree reads "helper"
-		// (bytes came from the CONTAINER's pool, via c2mir_uniq_str).
+		// An identifier payload somewhere in the tree reads the helper
+		// function's symbol (bytes came from the CONTAINER's pool, via
+		// c2mir_uniq_str). In a C++-presenting program `int helper(int)`
+		// carries its Itanium name, _Z6helperi — the identifier the
+		// definition and the call both spell (C++ symbol mangling, scope (c)).
 		bool saw_helper = false;
 		std::vector<node_t> work;
 		std::set<node_t> seen;
@@ -541,8 +544,8 @@ TEST_CASE("B3: cross-process closure — a FRESH live pool thaws correct strings
 			if (!seen.insert(n).second)
 				continue;
 			if (n->code == N_ID && n->u.s.s
-			    && strncmp(n->u.s.s, "helper", 6) == 0
-			    && n->u.s.len == 7)	// "helper" + NUL, as stored
+			    && strncmp(n->u.s.s, "_Z6helperi", 10) == 0
+			    && n->u.s.len == 11)	// "_Z6helperi" + NUL, as stored
 				saw_helper = true;
 			for (node_t op = c2mir_node_first_op(n); op;
 			     op = c2mir_node_next_op(op))
@@ -2707,7 +2710,7 @@ TEST_CASE("v21: skipped-ns-fn-template placeholder restores with its namespace b
 		std::vector<Program::NamespaceFnOverload> &ovset =
 			progB->namespace_fn_overload_sets["w3::w3pick"];
 		REQUIRE(ovset.size() == 1);
-		CHECK(ovset[0].param_spelling == "\x01fn-template-placeholder");
+		CHECK(ovset[0].spelling() == "\x01fn-template-placeholder");
 		CHECK(ovset[0].var == pv);
 	}
 	std::remove(inc_path.c_str());
@@ -2827,8 +2830,11 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 			      + std::to_string((long)getpid()) + ".msnap";
 	{
 		std::ofstream inc(inc_path.c_str());
-		// myva = the va_list shape; grid = a multi-dim fold (2*3 -> one
-		// record with count 6) over a PINNED element (int).
+		// myva = the va_list shape; grid = a multi-dim array over a PINNED
+		// element (int): C11 6.7.6.2 array 2 of array 3 of int, NESTED (one
+		// DK_CARRAY record per level) — the shape g++ gives the typedef and
+		// the shape the subscript lowering peels. (Before the ONE array
+		// builder landed the typedef arm folded 2*3 into one count-6 level.)
 		inc << "typedef struct __va_tag { unsigned int gp; unsigned int fp;\n"
 		       "    void *oa; void *rsa; } myva[1];\n"
 		       "typedef int grid[2][3];\n";
@@ -2894,13 +2900,19 @@ TEST_CASE("v25: an array-typed typedef (va_list shape) freezes as DK_CARRAY and 
 	REQUIRE(git != progB->datatype_map.end());
 	DataDefCArray *gr = dynamic_cast<DataDefCArray *>(&(*git)->definition);
 	REQUIRE(gr != nullptr);
-	CHECK(gr->count == 6);				// dims folded (2*3), as live
+	CHECK(gr->count == 2);				// outer level, nested as live
 	REQUIRE(gr->element_type != nullptr);
+	DataDefCArray *row = dynamic_cast<DataDefCArray *>(gr->element_type);
+	REQUIRE(row != nullptr);			// inner level restored as its own array
+	CHECK(row->count == 3);
+	CHECK(row->count_expr == nullptr);
+	CHECK(row->size == 12);				// 3 * sizeof(int)
+	REQUIRE(row->element_type != nullptr);
 	// The element swizzles back as a pinned 4-byte integer (a plain `int`
 	// serializes via its pinned rawtype slot — assert shape, not slot).
-	CHECK(gr->element_type->size == 4);
-	CHECK(gr->element_type->is_integer());
-	CHECK(gr->size == 24);				// 6 * sizeof(int)
+	CHECK(row->element_type->size == 4);
+	CHECK(row->element_type->is_integer());
+	CHECK(gr->size == 24);				// 2 * 12
 	CHECK(progB->user_typedef_names.count("myva") == 1);
 }
 

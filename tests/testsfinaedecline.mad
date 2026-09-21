@@ -1,0 +1,21 @@
+// Expression SFINAE, the decline half ([temp.deduct]/8): a substitution
+// failure while forming a candidate's return type is SILENT and drops the
+// candidate — the `...` fallback wins. Before: the diagnostic thrown inside
+// the substituted decltype was rendered + recorded before the trap caught
+// it, so the unit was refused although the fallback was then chosen.
+// (ADL of a function found only through the argument's namespace inside the
+// decltype is a separate gap — testsfinaeadl, parked.)
+#include <cstdio>
+struct B {};
+struct H { int foo(); static int nonexistent; };
+template<class T> decltype(T::nonexistent) k1(int);
+template<class T> char k1(...);
+template<class T> decltype(T().foo()) k2(int);
+template<class T> char k2(...);
+template<class T> decltype(undeclared_fn(T())) k3(int);
+template<class T> char k3(...);
+int main() {
+	printf("k1<B>:%d k2<B>:%d k3<B>:%d\n", (int)sizeof(k1<B>(0)), (int)sizeof(k2<B>(0)), (int)sizeof(k3<B>(0)));
+	printf("k1<H>:%d k2<H>:%d\n", (int)sizeof(k1<H>(0)), (int)sizeof(k2<H>(0)));
+	return 0;
+}

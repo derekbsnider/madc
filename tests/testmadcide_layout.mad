@@ -1,0 +1,172 @@
+// The layout profile gate (client-server arc V2a, design 2026-09-09 §2.2;
+// plan 2026-09-09-v2-containers-layouts-plan.md §2.2): a `.layout` file is
+// the input boundary WHERE Views live — every word converts ONCE at load
+// (slot_of, pmode_of, view_of, ui::side_code, ui::split_code) and a
+// misspelling refuses the text with its line. Pins:
+//   1. the shipped profiles/default.layout parses to the pinned tree, and
+//      the baked default (default_layout_text) parses to the SAME tree;
+//   2. a nested split tree parses by indentation (depth, direction, sizes);
+//   3. the refusals name their line: an unknown view, an unknown side, a
+//      ragged indent, a chrome pane inside a split, a one-child split, two
+//      editor regions, two windows, a word that is nothing;
+//   4. the session loads it at open (a missing name falls back and says so).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// One pane's facts on a line: slot side size mode tabs(kinds) focus hidden.
+void pane_line(var &out, var &p)
+{
+    var kinds = "";
+    for ( var t : p["tabs"] )
+	kinds = format("{}{}{}", kinds, strlen(kinds.c_str()) > 0 ? "," : "",
+		       view_name(t["kind"].as_integer()));
+    out = format("{} {} {}% {} [{}] focus={} hidden={}",
+		 slot_name(p["slot"].as_integer()),
+		 ui::side_name(p["side"].as_integer()),
+		 p["size"], pmode_name(p["mode"].as_integer()), kinds,
+		 p["focus"], p["hidden"]);
+}
+
+// A node's shape, recursively: a pane line, or split(dir size)[children].
+void node_shape(var &out, var &n)
+{
+    if ( n["kind"] == ctSPLIT )
+    {
+	var inner = "";
+	for ( var c : n["children"] )
+	{
+	    var cs;
+	    node_shape(cs, c);
+	    inner = format("{}{}{}", inner, strlen(inner.c_str()) > 0 ? " | " : "", cs);
+	}
+	out = format("split({} {}%)[{}]", ui::split_name(n["dir"].as_integer()),
+		     n["size"], inner);
+	return;
+    }
+    pane_line(out, n);
+}
+
+void refuse(const char *label, const char *text)
+{
+    var lo;
+    var err;
+    bool ok = parse_layout(lo, text, err);
+    println("{}: ok={} err={}", label, ok ? 1 : 0, err);
+}
+
+int main()
+{
+    // 1. The shipped file and the baked default: one tree.
+    var txt;
+    php::file_get_contents(txt, "tools/madcide/profiles/default.layout");
+    var lo;
+    var err;
+    bool ok = parse_layout(lo, txt.c_str(), err);
+    println("shipped: ok={} window={} chrome={}", ok ? 1 : 0, lo["window"],
+	    php::count(lo["chrome"]));
+    var es_shape;
+    node_shape(es_shape, lo["editor"]);
+    println("editor: {}", es_shape);
+    long ci = 0;
+    for ( var c : lo["chrome"] )
+    {
+	var cl;
+	pane_line(cl, c);
+	println("chrome{}: {}", ci, cl);
+	ci = ci + 1;
+    }
+    var baked;
+    var berr;
+    bool bok = parse_layout(baked, default_layout_text(), berr);
+    var a = js::stringify(lo);
+    var b = js::stringify(baked);
+    println("baked: ok={} identical={}", bok ? 1 : 0, a == b ? 1 : 0);
+
+    // 2. A nested split tree by indentation: source left; on the right a
+    //    horizontal split (40%) of two editor panes; a panel on top.
+    const char *nested =
+	"@window dev\n"
+	"split vertical\n"
+	"  pane editor 60% tabs views source focus\n"
+	"  split horizontal 40%\n"
+	"    pane editor tabs views source\n"
+	"    pane editor 30% stack views source code\n"
+	"pane panel top 30% tabs views problems output\n";
+    ok = parse_layout(lo, nested, err);
+    node_shape(es_shape, lo["editor"]);
+    println("nested: ok={} window={} chrome={} err={}", ok ? 1 : 0, lo["window"],
+	    php::count(lo["chrome"]), err);
+    println("nested-editor: {}", es_shape);
+    var pc;
+    pane_line(pc, lo["chrome"][0]);
+    println("nested-chrome0: {}", pc);
+    // No pane named focus: the first editor pane takes it.
+    ok = parse_layout(lo, "pane editor tabs views source\npane panel bottom 25% tabs views problems\n", err);
+    node_shape(es_shape, lo["editor"]);
+    println("default-focus: ok={} window={} editor={}", ok ? 1 : 0, lo["window"], es_shape);
+
+    // 3. The refusals, each with its line.
+    refuse("unknown-view", "pane editor tabs views sourse focus\n");
+    refuse("unknown-side", "pane editor tabs views source\npane sidebar up 20% tabs views outline\n");
+    refuse("panel-side", "pane editor tabs views source\npane panel left 20% tabs views problems\n");
+    refuse("unknown-word", "pane editor tabz views source\n");
+    refuse("bad-size", "pane editor tabs views source\npane sidebar left 120% tabs views outline\n");
+    refuse("ragged", "split vertical\n  pane editor tabs views source\n   pane editor tabs views source\n");
+    refuse("indented-top", "  pane editor tabs views source\n");
+    refuse("chrome-in-split", "split vertical\n  pane editor tabs views source\n  pane sidebar left 20% tabs views outline\n");
+    refuse("one-child", "split vertical\n  pane editor tabs views source\n");
+    refuse("two-editors", "pane editor tabs views source\npane editor tabs views source\n");
+    refuse("two-windows", "@window a\n@window b\npane editor tabs views source\n");
+    refuse("no-editor", "pane panel bottom 25% tabs views problems\n");
+    refuse("two-focus", "pane editor tabs views source focus\npane panel bottom 25% tabs views problems focus\n");
+    refuse("not-a-line", "layout main\n");
+    refuse("no-views", "pane editor tabs\n");
+
+    // 4. The session loads the layout at open; a missing name falls back to
+    //    the baked default and says so.
+    const char *path = "madc_ide_layout.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    var live;
+    ui::get(live, S.w, S.es, "layout");
+    println("session: doc={} window={} chrome={}", doc > 0 ? 1 : 0, live["window"],
+	    php::count(live["chrome"]));
+    bool fb = load_layout(S.w, S.es, "nosuch");
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    ui::get(live, S.w, S.es, "layout");
+    println("fallback: ok={} msg={} chrome={}", fb ? 1 : 0, msg, php::count(live["chrome"]));
+    S.close();
+    remove(path);
+
+    // 5. layout_to_text is parse_layout's STRUCTURAL inverse (V2c
+    //    persistence, design §5): emit a tree, re-parse, the tree comes back
+    //    equal. The editor region persists as source panes (a code render is
+    //    session state), so a round-tripped tree carries no code tabs.
+    var emitted;
+    layout_to_text(emitted, baked);
+    var reparsed;
+    bool rok = parse_layout(reparsed, emitted.c_str(), err);
+    var sa = js::stringify(baked);		// ring c_str: own each before ==
+    var sb = js::stringify(reparsed);
+    println("roundtrip-default: ok={} equal={}", rok ? 1 : 0, sa == sb ? 1 : 0);
+    // A vertical split of two source editor panes with a docked (right)
+    // sidebar round-trips too — the shape viewdock + a view split produce.
+    const char *rtsrc =
+	"@window main\n"
+	"split vertical\n"
+	"  pane editor 60% tabs views source focus\n"
+	"  pane editor tabs views source\n"
+	"pane sidebar right 20% tabs views outline hidden\n";
+    var rt;
+    parse_layout(rt, rtsrc, err);
+    layout_to_text(emitted, rt);
+    var rt2;
+    rok = parse_layout(rt2, emitted.c_str(), err);
+    var sc = js::stringify(rt);
+    var sd = js::stringify(rt2);
+    println("roundtrip-split: ok={} equal={}", rok ? 1 : 0, sc == sd ? 1 : 0);
+    return 0;
+}

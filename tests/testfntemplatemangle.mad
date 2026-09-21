@@ -1,0 +1,29 @@
+#!/../bin/madc
+// C++ SYMBOL MANGLING phase 3b: a USER function template's instantiation
+// products emit the Itanium template-specialization symbols g++/clang emit
+// (_Z4makeIiET_S0_, _Z7cast_toIliET_T0_, _ZN2ns6nidentIiEET_S1_) instead of
+// the internal make__oN spelling — deduced and explicit template arguments,
+// a namespace template, a template beside a non-template overload, a product
+// calling another product, and a template with a non-template parameter
+// (T_ vs i must not collapse). Expected output = g++ (clang++ identical).
+#include <stdio.h>
+
+template <class T> T make(T x) { return x; }
+template <class R, class A> R cast_to(A a) { return (R)a; }
+template <class T> T scale(T v, int k) { return v * k; }
+template <class T> T twice(T v) { return scale(v, 2); }
+int make(int a, int b) { return a * 10 + b; }
+
+namespace ns {
+	template <class T> T nident(T x) { return x; }
+	template <class T> T sum3(T a, T b, T c) { return a + b + c; }
+}
+
+int main()
+{
+	printf("make: %d %d %d\n", make(1), (int)make(2.5), make(3, 4));
+	printf("cast: %ld %d\n", cast_to<long>(7), cast_to<int>(9.9));
+	printf("scale: %d %.1f %d\n", scale(5, 3), scale(1.5, 4), twice(21));
+	printf("ns: %d %d %.1f\n", ns::nident(6), ns::sum3(1, 2, 3), ns::sum3(0.5, 0.25, 0.25));
+	return 0;
+}

@@ -1,0 +1,16 @@
+#include <stdio.h>
+int calls = 0;
+int f() { calls += 1; return 41; }
+int g() { calls += 100; return 99; }
+int main() {
+ int choose = 1;
+ int i = 3;
+ int j = 5;
+ int &&alias = choose ? static_cast<int&&>(i) : static_cast<int&&>(j);
+ alias = 8;
+ const int &copy = choose ? static_cast<int&&>(i) : j;
+ const int &call = choose ? f() : g();
+ i = 11;
+ printf("conditional: %d %d %d %d %d %d\n", i, j, alias, copy, call, calls);
+ return 0;
+}

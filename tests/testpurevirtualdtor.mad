@@ -1,0 +1,15 @@
+// An abstract class whose pure virtual destructor is never defined and never
+// used (no derived class, no object) must compile and link: the pure slot is
+// __cxa_pure_virtual and no deleting-destructor thunk names ~A ([class.dtor],
+// [class.abstract]; g++ emits no vtable at all for a class whose key function
+// is undefined). madc emitted `_ZN1AD1Ev` in the vtable and in _ZN1AD0Ev ->
+// "undeclared identifier _ZN1AD1Ev" (g++.dg sfinae8/9/12 declare exactly
+// this A).
+#include <cstdio>
+struct A { virtual ~A() = 0; };
+struct P { virtual void f() = 0; };
+template<class T> char is_abstract_probe(...);
+int main() {
+	printf("ok %d\n", (int)sizeof(is_abstract_probe<A>(0)));
+	return 0;
+}

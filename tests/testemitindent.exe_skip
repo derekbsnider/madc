@@ -1,0 +1,1 @@
+an --emit=c11 render test: the emitted text is the output, there is no program to run natively

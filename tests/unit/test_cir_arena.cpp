@@ -675,7 +675,7 @@ TEST_CASE("B3 arena: getPointerType write-through records a new project pointer 
 
 	// A project (non-well-known) base: getPointerType must CREATE a new DataDefPTR (not a
 	// cached / pinned-global return like int*/char*), so the write-through fires.
-	DataDefPTR *p = prog->getPointerType(&widget);
+	DataDefPTR *p = prog->getPointerType(&widget)->as_pointer_dd();	// a struct base: a real pointer
 	REQUIRE(p != NULL);
 
 	// --- reads are UNCHANGED (base_type stays the live read-cache) ---
@@ -696,7 +696,7 @@ TEST_CASE("B3 arena: getPointerType write-through records a new project pointer 
 	CHECK(arena_id_is_project(r.ref0));
 
 	// idempotent: a second call returns the SAME cached pointer (no duplicate write-through).
-	DataDefPTR *p2 = prog->getPointerType(&widget);
+	DataDef *p2 = prog->getPointerType(&widget);
 	CHECK(p2 == p);
 
 	delete prog;	// while widget is still in scope

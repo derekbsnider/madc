@@ -7,11 +7,13 @@
 #
 # The ONE allowed tui-named call in the session is ui::tui_validate_keys —
 # handle-free by contract (the session validates keybinding-profile data;
-# only the client binds).
+# only the client binds). The ui::NONE client (madcide_once.inc, the `-c`
+# one-shot) has no surface at all: no tui call, no tui key there either.
 set -u
 
 CORE="$(dirname "$0")/../tools/madcide/madcide_core.inc"
 CLIENT="$(dirname "$0")/../tools/madcide/madcide_client.inc"
+ONCE="$(dirname "$0")/../tools/madcide/madcide_once.inc"
 
 # tui CALLS in the session layer (name followed by an open paren — prose
 # mentions don't count), minus the handle-free validator.
@@ -43,6 +45,21 @@ if [ "$n" -ne 0 ]; then
 	exit 1
 fi
 
+n=$(count_tui_calls "$ONCE")
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-seam: FAIL — $n ui::tui_* call(s) in the ui::NONE" \
+	     "client (tools/madcide/madcide_once.inc). A one-shot has no" \
+	     "surface: it drives the session and typesets with ui::render_tree." >&2
+	exit 1
+fi
+
+if ! grep -q 'run_once' "$ONCE"; then
+	echo "check-madcide-seam: FAIL — the ui::NONE client" \
+	     "(tools/madcide/madcide_once.inc) no longer holds run_once;" \
+	     "the one-shot belongs to that client layer." >&2
+	exit 1
+fi
+
 if ! grep -q 'run_ide' "$CLIENT"; then
 	echo "check-madcide-seam: FAIL — the TUI client" \
 	     "(tools/madcide/madcide_client.inc) no longer holds run_ide;" \
@@ -70,6 +87,6 @@ if [ "$(count_tui_key "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
-echo "check-madcide-seam: OK (session layer tui-free; the client holds" \
-     "render/input/refresh/suspend)"
+echo "check-madcide-seam: OK (session layer tui-free; the TUI client holds" \
+     "render/input/refresh/suspend; the ui::NONE client holds run_once)"
 exit 0

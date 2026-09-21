@@ -1,0 +1,51 @@
+// Pointer-to-member-function TYPES in every declarator position — a union
+// member, a struct member, a typedef, a parameter, a local — with the Itanium
+// layout: 16 bytes, 8-aligned (self-host arc 2026-09-17: libstdc++
+// std_function.h:80 `void (_Undefined_class::*_M_member_pointer)();` inside
+// std::function's _Nocopy_types union was the first error of 42 units;
+// std::function sizes its local buffer from sizeof(_Nocopy_types)). The value
+// forms — `&C::m`, `.*`, `->*` — are the sibling test testmemfnptr. Oracle:
+// g++ and clang++ -std=c++11.
+#include <stdio.h>
+
+struct Widget {
+    int base;
+    int twice(int v) const { return 2 * v + base; }
+};
+
+union Nocopy {
+    void *object;
+    const void *const_object;
+    void (*function_pointer)();
+    void (Widget::*member_pointer)();
+};
+
+struct AnyData {
+    Nocopy unused;
+    char pod_data[sizeof(Nocopy)];
+};
+
+typedef int (Widget::*binop_t)(int) const;
+
+struct Dispatcher {
+    binop_t op;
+    int (Widget::*alt)(int) const;
+    int tag;
+};
+
+// A parameter and a local of the type — declared and sized, never bound to
+// a value here (the value forms are testmemfnptr's).
+int shape(const Widget *w, int (Widget::*fn)(int) const, int v)
+{
+    int (Widget::*local)(int) const;
+    (void)w; (void)fn; (void)local;
+    return v + (int)sizeof(fn) + (int)sizeof(local);
+}
+
+int main()
+{
+    printf("nocopy=%d anydata=%d binop=%d dispatcher=%d\n",
+	   (int)sizeof(Nocopy), (int)sizeof(AnyData), (int)sizeof(binop_t),
+	   (int)sizeof(Dispatcher));
+    return 0;
+}

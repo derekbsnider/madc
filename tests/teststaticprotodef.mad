@@ -1,0 +1,48 @@
+/* A `static` function PROTOTYPE followed by its DEFINITION is one function,
+ * not a signature clash. Regression (2026-09-20): the C-linkage redeclaration
+ * check minted its two sides with different encoders — the prior side through
+ * namespace_cpp_function_symbol, which encodes internal linkage as Itanium's
+ * `L` (_ZL1fi), and the fresh side straight from the parameter list (_Z1fi).
+ * They could never be equal for a static function, so every ordinary C
+ * translation unit that forward-declares a static was refused with
+ * "conflicting types for 'f'". 22 gcc.c-torture execute tests failed on it.
+ *
+ * Linkage is a property of the DECLARATION, not of the parameter list; the
+ * check compares parameter signatures. Oracle: gcc -std=c17 and clang -std=c17
+ * accept every form below (0 errors each).
+ */
+
+/* unnamed parameter in the prototype, named in the definition */
+static int f(int);
+static int f(int x) { return x; }
+
+/* named in both */
+static int g(int y);
+static int g(int y) { return y + 1; }
+
+/* void parameter list */
+static int h(void);
+static int h(void) { return 7; }
+
+/* trailing __attribute__ on the prototype — the shape the torture tests use */
+static int k(int) __attribute__((const));
+static int k(int v) { return v * 2; }
+
+/* the definition omits `static`; C keeps the internal linkage of the
+ * prototype, so this is one function too (C11 6.2.2p5) */
+static int m(int);
+int m(int w) { return w - 1; }
+
+/* struct parameter: the encoder must agree across the pair for aggregates */
+struct S { int a; long b; };
+static long n(struct S *) __attribute__((noinline));
+static long n(struct S *s) { return s->a + s->b; }
+
+int main(void)
+{
+	struct S s;
+	s.a = 3;
+	s.b = 39;
+	printf("%d %d %d %d %d %ld\n", f(41), g(1), h(), k(21), m(6), n(&s));
+	return 0;
+}

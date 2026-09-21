@@ -1,0 +1,572 @@
+# gxx-c++11-baseline.txt — known-failing g++.dg compile-clean tests (ROADMAP 2.12)
+#
+# The C++11 conformance lane's ratchet, the c-testsuite/torture precedent:
+# scripts/gxx_lane.sh is RED when a test outside this list fails, and reports
+# LOUDLY when a test IN this list passes — so the baseline only ever shrinks.
+#
+# Scope: g++.dg/{cpp0x,template} tests that are `dg-do compile` AND carry no
+# dg-error/dg-bogus/dg-warning/dg-message, i.e. they must compile CLEAN.
+# Diagnostic tests are a later phase (madc must produce the error, not fail).
+#
+# NOT a gate. Owner ruling 2026-09-04: C++11 parity is a ROADMAP GOAL and
+# blocks no push and no release. The goal's metric is class-(a) failures -> 0.
+#
+# FIRST MEASUREMENT 2026-09-17 on c019e7ea4 (container, --std=c++11):
+#   1169 passed, 777 compile-failed, 2 runtime-failed, 2 timed out, 2718 skipped
+#   => 1169 of 1950 in-scope (60%).
+# SHRUNK 2026-09-17 on 47e07b916 (781 -> 771): constexpr object declarations are
+#   const (08a38f847), a deferred global initialization is not a const write
+#   (e59691291), and a constexpr CALL folds in a constant expression (47e07b916).
+#   1179 passed, 767 compile-failed, 2 runtime-failed, 2 timed out => 1179/1950 (60.5%).
+#   Moved: constexpr-59937-1, constexpr-84463, constexpr-attribute2, constexpr-ctor7,
+#   constexpr-noexcept, constexpr-redeclaration4, nullptr01, nullptr02, nullptr05, sfinae69.
+# SHRUNK 2026-09-17 on f2f27b9f9 (771 -> 769): BOTH non-terminating recursions fixed —
+#   cpp0x/pr54318.C (501629b36, return-type resolution bounded by KEY) and
+#   template/friend7.C (f2f27b9f9, [temp.inst]/1 — a reference needs no complete type).
+#   1181 passed, 767 compile-failed, ZERO runtime-failed (was 2 — both were crashes),
+#   2 timed out => 1181/1950 (60.6%).
+# Paths are relative to the testsuite root (--root, /workspace/gcc_testsuite
+# on the container; the repo's gcc_testsuite symlink resolves on the host).
+# BASELINE ADDITION 2026-09-17 on fc36df398 — the ONE exception to the
+#   shrink-only rule above, recorded rather than hidden:
+#     g++.dg/cpp0x/pr87125.C
+#   It PASSED before inheriting constructors landed, and that pass was
+#   fiction: `struct V : S<int> { using S::S; };` left V with NO constructors
+#   at all, so `noexcept (V (0))` never reached the feature the test is named
+#   for (PR c++/87125). With the ctors actually inherited, the operand is a
+#   temporary construction whose ctor is a member template with a CONDITIONAL
+#   spec — `constexpr S (U) noexcept (T ())` — and madc refuses it loudly
+#   ("cannot faithfully evaluate noexcept(...) for this operand") rather than
+#   guess. It joins the 10 tests already failing on that same refusal; the fix
+#   is conditional-noexcept instantiation for member-template ctors, not a
+#   weakening of the refusal.
+#
+# SHRUNK 2026-09-18 (582 -> 559) in two slices on this branch:
+#   constexpr CONSTRUCTORS evaluate, delegation included (eeb715b4b) — 1 test,
+#     cpp0x/constexpr-delegating.C. In-class `constexpr` had been consumed and
+#     DROPPED, so no member ever reached FuncDef::is_constexpr.
+#   a NON-TYPE template parameter's DECLARATOR parses ([temp.param]/1) — 22
+#     tests. `int (*p)()`, `T C::*M`, `Opt const& o`, `void (&FN)()`,
+#     `int (&... p)[N]`: the list parser only ever read a bare NAME.
+#   1392 passed, 556 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1392/1950 (71.4%). 🎯 owner target: a master release at 75% = 1463.
+# SHRUNK 2026-09-18 (559 -> 554), Astra seat `coding`: REFERENCE declarators —
+#   `int (&a)[3]` as a parameter, `int (&r)[3] = x` as a declaration, and a
+#   reference-to-array receiver kept as a glvalue in a subscript. The
+#   parenthesized-declarator arms knew `*` and not `&`.
+#   1397 passed, 551 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1397/1950 (71.6%).
+# SHRUNK 2026-09-18 (554 -> 549): a reference binds to a BRACED ARRAY and the
+#   array's bound is DEDUCED from the initializer ([dcl.array]/3) — the seat's
+#   remainder kept the declared [0] extent, so the address was a `T (*)[0]`
+#   and c2mir warned. cpp0x/initlist-array2, -array3, -array5, initlist82,
+#   initlist89.
+#   1402 passed, 546 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1402/1950 (71.9%).
+# SHRUNK 2026-09-18 (549 -> 547), Astra seat `art`: an elaborated template-id
+#   tag (`struct A<int>::Entry<int> e;`) resolves through the declared-type
+#   resolver, and a decltype-HEADED statement routes through the ordinary
+#   type-headed classifier (`decltype(f())::value;`). cpp0x/sfinae56.C,
+#   template/dependent-name11.C. The seat's third commit was REVERTED
+#   (42b8334e3): a type-pack kind check in match_partial_specialization fixed
+#   3 and broke 5 — a predicate that RESOLVES answering a question that needs
+#   one that CLASSIFIES.
+#   1404 passed, 544 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1404/1950 (72.0%).
+# SHRUNK 2026-09-18 (547 -> 545), Astra seat `don`: the noexcept(...) OPERATOR
+#   over a throw-expression (always 0), over a temporary whose DESTRUCTION can
+#   throw, and over a member call whose noexcept CONDITION must resolve in
+#   complete-class context ([class.mem]) — the condition's source tokens are
+#   retained and folded after class completion. cpp0x/noexcept17.C,
+#   cpp0x/noexcept21.C. Only +2 for a sizeable change, but the refusal it
+#   narrows ("cannot faithfully evaluate noexcept(...) for this operand") still
+#   guards 10 more lane tests; placement-new and template-call operands remain.
+#   1406 passed, 542 compile-failed, 0 runtime-failed, 2 timed out
+#   => 1406/1950 (72.1%).
+
+g++.dg/cpp0x/addressof3.C
+g++.dg/cpp0x/alias-decl-15.C
+g++.dg/cpp0x/alias-decl-26.C
+g++.dg/cpp0x/alias-decl-32.C
+g++.dg/cpp0x/alias-decl-38.C
+g++.dg/cpp0x/alias-decl-46.C
+g++.dg/cpp0x/alias-decl-50.C
+g++.dg/cpp0x/alias-decl-52.C
+g++.dg/cpp0x/alias-decl-65.C
+g++.dg/cpp0x/alias-decl-69.C
+g++.dg/cpp0x/alias-decl-enum-1.C
+g++.dg/cpp0x/alias-decl-mem1.C
+g++.dg/cpp0x/alias-decl-variadic3.C
+g++.dg/cpp0x/alignas1.C
+g++.dg/cpp0x/alignas2.C
+g++.dg/cpp0x/alignas5.C
+g++.dg/cpp0x/alignas7.C
+g++.dg/cpp0x/alignof.C
+g++.dg/cpp0x/attributes-namespace5.C
+g++.dg/cpp0x/auto15.C
+g++.dg/cpp0x/auto19.C
+g++.dg/cpp0x/auto23.C
+g++.dg/cpp0x/auto40.C
+g++.dg/cpp0x/auto47.C
+g++.dg/cpp0x/constexpr-104226.C
+g++.dg/cpp0x/constexpr-105321.C
+g++.dg/cpp0x/constexpr-52282-1.C
+g++.dg/cpp0x/constexpr-52892-2.C
+g++.dg/cpp0x/constexpr-55708.C
+g++.dg/cpp0x/constexpr-57764.C
+g++.dg/cpp0x/constexpr-60199.C
+g++.dg/cpp0x/constexpr-61484.C
+g++.dg/cpp0x/constexpr-65080.C
+g++.dg/cpp0x/constexpr-67376.C
+g++.dg/cpp0x/constexpr-69315.C
+g++.dg/cpp0x/constexpr-71537.C
+g++.dg/cpp0x/constexpr-71828.C
+g++.dg/cpp0x/constexpr-77771.C
+g++.dg/cpp0x/constexpr-92015.C
+g++.dg/cpp0x/constexpr-__func__2.C
+g++.dg/cpp0x/constexpr-aggr1.C
+g++.dg/cpp0x/constexpr-aggr2.C
+g++.dg/cpp0x/constexpr-aggr3.C
+g++.dg/cpp0x/constexpr-arith-overflow.C
+g++.dg/cpp0x/constexpr-array-ptr.C
+g++.dg/cpp0x/constexpr-array-ptr2.C
+g++.dg/cpp0x/constexpr-array-ptr3.C
+g++.dg/cpp0x/constexpr-array-ptr4.C
+g++.dg/cpp0x/constexpr-array-ptr5.C
+g++.dg/cpp0x/constexpr-array-ptr6.C
+g++.dg/cpp0x/constexpr-array-ptr9.C
+g++.dg/cpp0x/constexpr-array10.C
+g++.dg/cpp0x/constexpr-array14.C
+g++.dg/cpp0x/constexpr-array19.C
+g++.dg/cpp0x/constexpr-array21.C
+g++.dg/cpp0x/constexpr-array24.C
+g++.dg/cpp0x/constexpr-array25.C
+g++.dg/cpp0x/constexpr-array29.C
+g++.dg/cpp0x/constexpr-array7.C
+g++.dg/cpp0x/constexpr-attribute.C
+g++.dg/cpp0x/constexpr-base.C
+g++.dg/cpp0x/constexpr-base7.C
+g++.dg/cpp0x/constexpr-bitfield2.C
+g++.dg/cpp0x/constexpr-bitfield3.C
+g++.dg/cpp0x/constexpr-builtin4.C
+g++.dg/cpp0x/constexpr-cache1.C
+g++.dg/cpp0x/constexpr-comma1.C
+g++.dg/cpp0x/constexpr-compare1.C
+g++.dg/cpp0x/constexpr-compare2.C
+g++.dg/cpp0x/constexpr-complex2.C
+g++.dg/cpp0x/constexpr-condition2.C
+g++.dg/cpp0x/constexpr-ctor14.C
+g++.dg/cpp0x/constexpr-ctor8.C
+g++.dg/cpp0x/constexpr-decltype3.C
+g++.dg/cpp0x/constexpr-decltype5.C
+g++.dg/cpp0x/constexpr-delegating2.C
+g++.dg/cpp0x/constexpr-delegating3.C
+g++.dg/cpp0x/constexpr-deref.C
+g++.dg/cpp0x/constexpr-empty4.C
+g++.dg/cpp0x/constexpr-ex4.C
+g++.dg/cpp0x/constexpr-fnptr.C
+g++.dg/cpp0x/constexpr-fold1.C
+g++.dg/cpp0x/constexpr-fold2.C
+g++.dg/cpp0x/constexpr-fwctor1.C
+g++.dg/cpp0x/constexpr-ice22.C
+g++.dg/cpp0x/constexpr-initlist10.C
+g++.dg/cpp0x/constexpr-initlist2.C
+g++.dg/cpp0x/constexpr-initlist3.C
+g++.dg/cpp0x/constexpr-invisiref1.C
+g++.dg/cpp0x/constexpr-is_literal.C
+g++.dg/cpp0x/constexpr-memchr.C
+g++.dg/cpp0x/constexpr-missing.C
+g++.dg/cpp0x/constexpr-noexcept2.C
+g++.dg/cpp0x/constexpr-noexcept4.C
+g++.dg/cpp0x/constexpr-nonlit.C
+g++.dg/cpp0x/constexpr-nsdmi3.C
+g++.dg/cpp0x/constexpr-nullptr-1.C
+g++.dg/cpp0x/constexpr-pos1.C
+g++.dg/cpp0x/constexpr-ptrcomp1.C
+g++.dg/cpp0x/constexpr-ptrmem.C
+g++.dg/cpp0x/constexpr-ptrmem5.C
+g++.dg/cpp0x/constexpr-ptrmem6.C
+g++.dg/cpp0x/constexpr-ptrsub.C
+g++.dg/cpp0x/constexpr-recursion2.C
+g++.dg/cpp0x/constexpr-redeclaration3.C
+g++.dg/cpp0x/constexpr-ref1.C
+g++.dg/cpp0x/constexpr-ref11.C
+g++.dg/cpp0x/constexpr-ref14.C
+g++.dg/cpp0x/constexpr-ref4.C
+g++.dg/cpp0x/constexpr-ref5.C
+g++.dg/cpp0x/constexpr-ref8.C
+g++.dg/cpp0x/constexpr-ref9.C
+g++.dg/cpp0x/constexpr-sizeof2.C
+g++.dg/cpp0x/constexpr-static11.C
+g++.dg/cpp0x/constexpr-static6.C
+g++.dg/cpp0x/constexpr-stmtexpr2.C
+g++.dg/cpp0x/constexpr-strchr.C
+g++.dg/cpp0x/constexpr-strstr.C
+g++.dg/cpp0x/constexpr-switch.C
+g++.dg/cpp0x/constexpr-temp2.C
+g++.dg/cpp0x/constexpr-trivial1.C
+g++.dg/cpp0x/constexpr-tuple2.C
+g++.dg/cpp0x/constexpr-type-decl1.C
+g++.dg/cpp0x/constexpr-typeid2.C
+g++.dg/cpp0x/constexpr-union4.C
+g++.dg/cpp0x/constexpr-union9.C
+g++.dg/cpp0x/constexpr-using.C
+g++.dg/cpp0x/constexpr-value2.C
+g++.dg/cpp0x/constexpr-value3.C
+g++.dg/cpp0x/constexpr-volatile4.C
+g++.dg/cpp0x/conv-tmpl1.C
+g++.dg/cpp0x/conv-tmpl6.C
+g++.dg/cpp0x/decltype-71879.C
+g++.dg/cpp0x/decltype-bitfield1.C
+g++.dg/cpp0x/decltype-mem-initializer1.C
+g++.dg/cpp0x/decltype-nonstatic1.C
+g++.dg/cpp0x/decltype1.C
+g++.dg/cpp0x/decltype12.C
+g++.dg/cpp0x/decltype23.C
+g++.dg/cpp0x/decltype25.C
+g++.dg/cpp0x/decltype30.C
+g++.dg/cpp0x/decltype33.C
+g++.dg/cpp0x/decltype34.C
+g++.dg/cpp0x/decltype40.C
+g++.dg/cpp0x/decltype42.C
+g++.dg/cpp0x/decltype5.C
+g++.dg/cpp0x/decltype57.C
+g++.dg/cpp0x/decltype58.C
+g++.dg/cpp0x/decltype6.C
+g++.dg/cpp0x/decltype61.C
+g++.dg/cpp0x/decltype72.C
+g++.dg/cpp0x/decltype73.C
+g++.dg/cpp0x/defaulted39.C
+g++.dg/cpp0x/defaulted50.C
+g++.dg/cpp0x/defaulted6.C
+g++.dg/cpp0x/desig2.C
+g++.dg/cpp0x/desig3.C
+g++.dg/cpp0x/dr2061.C
+g++.dg/cpp0x/dyncast1.C
+g++.dg/cpp0x/enum17.C
+g++.dg/cpp0x/enum30.C
+g++.dg/cpp0x/enum44.C
+g++.dg/cpp0x/fntmpdefarg10.C
+g++.dg/cpp0x/forw_enum11.C
+g++.dg/cpp0x/forw_enum14.C
+g++.dg/cpp0x/forw_enum2.C
+g++.dg/cpp0x/forw_enum3.C
+g++.dg/cpp0x/forw_enum5.C
+g++.dg/cpp0x/forw_enum7.C
+g++.dg/cpp0x/forw_enum9.C
+g++.dg/cpp0x/friend2.C
+g++.dg/cpp0x/gen-attrs-21.C
+g++.dg/cpp0x/gen-attrs-39.C
+g++.dg/cpp0x/gen-attrs-48.C
+g++.dg/cpp0x/gen-attrs-49.C
+g++.dg/cpp0x/gen-attrs-5.C
+g++.dg/cpp0x/gen-attrs-50.C
+g++.dg/cpp0x/gen-attrs-51.C
+g++.dg/cpp0x/gen-attrs-52.C
+g++.dg/cpp0x/implicit-delete1.C
+g++.dg/cpp0x/implicit13.C
+g++.dg/cpp0x/implicit17.C
+g++.dg/cpp0x/implicit7.C
+g++.dg/cpp0x/inh-ctor1.C
+g++.dg/cpp0x/inh-ctor10.C
+g++.dg/cpp0x/inh-ctor17.C
+g++.dg/cpp0x/inh-ctor18.C
+g++.dg/cpp0x/inh-ctor2.C
+g++.dg/cpp0x/inh-ctor38.C
+g++.dg/cpp0x/inh-ctor39.C
+g++.dg/cpp0x/inh-ctor6.C
+g++.dg/cpp0x/inh-ctor7.C
+g++.dg/cpp0x/initlist-array13.C
+g++.dg/cpp0x/initlist-array15.C
+g++.dg/cpp0x/initlist-array18.C
+g++.dg/cpp0x/initlist-array19.C
+g++.dg/cpp0x/initlist-array20.C
+g++.dg/cpp0x/initlist-const1.C
+g++.dg/cpp0x/initlist-deduce2.C
+g++.dg/cpp0x/initlist-deduce3.C
+g++.dg/cpp0x/initlist-explicit-sfinae.C
+g++.dg/cpp0x/initlist-explicit2.C
+g++.dg/cpp0x/initlist-opt2.C
+g++.dg/cpp0x/initlist-opt5.C
+g++.dg/cpp0x/initlist-opt7.C
+g++.dg/cpp0x/initlist-overload1.C
+g++.dg/cpp0x/initlist-ref3.C
+g++.dg/cpp0x/initlist102.C
+g++.dg/cpp0x/initlist104.C
+g++.dg/cpp0x/initlist118.C
+g++.dg/cpp0x/initlist119.C
+g++.dg/cpp0x/initlist120.C
+g++.dg/cpp0x/initlist124.C
+g++.dg/cpp0x/initlist129.C
+g++.dg/cpp0x/initlist132.C
+g++.dg/cpp0x/initlist133.C
+g++.dg/cpp0x/initlist14.C
+g++.dg/cpp0x/initlist20.C
+g++.dg/cpp0x/initlist3.C
+g++.dg/cpp0x/initlist30.C
+g++.dg/cpp0x/initlist34.C
+g++.dg/cpp0x/initlist35.C
+g++.dg/cpp0x/initlist50.C
+g++.dg/cpp0x/initlist54.C
+g++.dg/cpp0x/initlist67.C
+g++.dg/cpp0x/initlist73.C
+g++.dg/cpp0x/initlist96.C
+g++.dg/cpp0x/initlist98.C
+g++.dg/cpp0x/inline-ns1.C
+g++.dg/cpp0x/keywords2.C
+g++.dg/cpp0x/lambda/lambda-61148.C
+g++.dg/cpp0x/lambda/lambda-80947.C
+g++.dg/cpp0x/lambda/lambda-constexpr3.C
+g++.dg/cpp0x/lambda/lambda-conv12.C
+g++.dg/cpp0x/lambda/lambda-conv4.C
+g++.dg/cpp0x/lambda/lambda-conv9.C
+g++.dg/cpp0x/lambda/lambda-debug.C
+g++.dg/cpp0x/lambda/lambda-decltype2.C
+g++.dg/cpp0x/lambda/lambda-ice12.C
+g++.dg/cpp0x/lambda/lambda-ice14.C
+g++.dg/cpp0x/lambda/lambda-ice26.C
+g++.dg/cpp0x/lambda/lambda-mangle.C
+g++.dg/cpp0x/lambda/lambda-mangle6.C
+g++.dg/cpp0x/lambda/lambda-qualified.C
+g++.dg/cpp0x/lambda/lambda-this11.C
+g++.dg/cpp0x/lambda/lambda-this12.C
+g++.dg/cpp0x/lambda/lambda-this13.C
+g++.dg/cpp0x/lambda/lambda-this19.C
+g++.dg/cpp0x/lambda/lambda-this3.C
+g++.dg/cpp0x/local-targ1.C
+g++.dg/cpp0x/narrowing1.C
+g++.dg/cpp0x/noexcept01.C
+g++.dg/cpp0x/noexcept10.C
+g++.dg/cpp0x/noexcept11.C
+g++.dg/cpp0x/noexcept13.C
+g++.dg/cpp0x/noexcept16.C
+g++.dg/cpp0x/noexcept23.C
+g++.dg/cpp0x/noexcept26.C
+g++.dg/cpp0x/noexcept27.C
+g++.dg/cpp0x/noexcept49.C
+g++.dg/cpp0x/noexcept50.C
+g++.dg/cpp0x/noexcept51.C
+g++.dg/cpp0x/noexcept57.C
+g++.dg/cpp0x/noexcept79.C
+g++.dg/cpp0x/noexcept81.C
+g++.dg/cpp0x/noexcept85.C
+g++.dg/cpp0x/noexcept91.C
+g++.dg/cpp0x/noexcept91a.C
+g++.dg/cpp0x/nondeduced1.C
+g++.dg/cpp0x/nondeduced2.C
+g++.dg/cpp0x/nondeduced3.C
+g++.dg/cpp0x/nontype3.C
+g++.dg/cpp0x/nontype5.C
+g++.dg/cpp0x/nsdmi-defer1.C
+g++.dg/cpp0x/nsdmi-defer3.C
+g++.dg/cpp0x/nsdmi-list10.C
+g++.dg/cpp0x/nsdmi-list3.C
+g++.dg/cpp0x/nsdmi-template7.C
+g++.dg/cpp0x/nsdmi12.C
+g++.dg/cpp0x/nsdmi13.C
+g++.dg/cpp0x/nsdmi14.C
+g++.dg/cpp0x/nsdmi2.C
+g++.dg/cpp0x/nullptr12.C
+g++.dg/cpp0x/nullptr29.C
+g++.dg/cpp0x/nullptr39.C
+g++.dg/cpp0x/pr102305.C
+g++.dg/cpp0x/pr105256.C
+g++.dg/cpp0x/pr107065.C
+g++.dg/cpp0x/pr112365.C
+g++.dg/cpp0x/pr118390.C
+g++.dg/cpp0x/pr118532.C
+g++.dg/cpp0x/pr119580.C
+g++.dg/cpp0x/pr47476.C
+g++.dg/cpp0x/pr52742.C
+g++.dg/cpp0x/pr52744.C
+g++.dg/cpp0x/pr56868.C
+g++.dg/cpp0x/pr59816.C
+g++.dg/cpp0x/pr60430.C
+g++.dg/cpp0x/pr62024.C
+g++.dg/cpp0x/pr63904.C
+g++.dg/cpp0x/pr65398-2.C
+g++.dg/cpp0x/pr67625.C
+g++.dg/cpp0x/pr68116.C
+g++.dg/cpp0x/pr70528.C
+g++.dg/cpp0x/pr70887.C
+g++.dg/cpp0x/pr71054.C
+g++.dg/cpp0x/pr79457.C
+g++.dg/cpp0x/pr81325.C
+g++.dg/cpp0x/pr85462.C
+g++.dg/cpp0x/pr86379.C
+g++.dg/cpp0x/pr87125.C
+g++.dg/cpp0x/pr87539.C
+g++.dg/cpp0x/pr87750.C
+g++.dg/cpp0x/pr88410.C
+g++.dg/cpp0x/range-for11.C
+g++.dg/cpp0x/range-for17.C
+g++.dg/cpp0x/range-for18.C
+g++.dg/cpp0x/range-for2.C
+g++.dg/cpp0x/range-for20.C
+g++.dg/cpp0x/range-for32.C
+g++.dg/cpp0x/range-for33.C
+g++.dg/cpp0x/range-for34.C
+g++.dg/cpp0x/range-for38.C
+g++.dg/cpp0x/range-for39.C
+g++.dg/cpp0x/ref-bind6.C
+g++.dg/cpp0x/rv-cond3.C
+g++.dg/cpp0x/rv-decl1.C
+g++.dg/cpp0x/rv-dotstar.C
+g++.dg/cpp0x/rv-return.C
+g++.dg/cpp0x/rv-this2.C
+g++.dg/cpp0x/scoped_enum10.C
+g++.dg/cpp0x/scoped_enum4.C
+g++.dg/cpp0x/sfinae12.C
+g++.dg/cpp0x/sfinae14.C
+g++.dg/cpp0x/sfinae2.C
+g++.dg/cpp0x/sfinae23.C
+g++.dg/cpp0x/sfinae28.C
+g++.dg/cpp0x/sfinae29.C
+g++.dg/cpp0x/sfinae3.C
+g++.dg/cpp0x/sfinae32.C
+g++.dg/cpp0x/sfinae35.C
+g++.dg/cpp0x/sfinae36.C
+g++.dg/cpp0x/sfinae37.C
+g++.dg/cpp0x/sfinae38.C
+g++.dg/cpp0x/sfinae39.C
+g++.dg/cpp0x/sfinae4.C
+g++.dg/cpp0x/sfinae43.C
+g++.dg/cpp0x/sfinae44.C
+g++.dg/cpp0x/sfinae45.C
+g++.dg/cpp0x/sfinae47.C
+g++.dg/cpp0x/sfinae48.C
+g++.dg/cpp0x/sfinae50.C
+g++.dg/cpp0x/sfinae51.C
+g++.dg/cpp0x/sfinae53.C
+g++.dg/cpp0x/sfinae59.C
+g++.dg/cpp0x/sfinae60.C
+g++.dg/cpp0x/sfinae61.C
+g++.dg/cpp0x/sfinae63.C
+g++.dg/cpp0x/sfinae66.C
+g++.dg/cpp0x/sfinae9.C
+g++.dg/cpp0x/std-layout1.C
+g++.dg/cpp0x/stddef.C
+g++.dg/cpp0x/trailing1.C
+g++.dg/cpp0x/trailing11.C
+g++.dg/cpp0x/trailing7.C
+g++.dg/cpp0x/trivial1.C
+g++.dg/cpp0x/typedef-redecl.C
+g++.dg/cpp0x/udlit-addr.C
+g++.dg/cpp0x/udlit-args2.C
+g++.dg/cpp0x/udlit-concat.C
+g++.dg/cpp0x/udlit-friend.C
+g++.dg/cpp0x/udlit-inline.C
+g++.dg/cpp0x/udlit-namespace-using-directive.C
+g++.dg/cpp0x/udlit-overflow.C
+g++.dg/cpp0x/udlit-raw-length.C
+g++.dg/cpp0x/udlit-raw-str.C
+g++.dg/cpp0x/udlit-string-length.C
+g++.dg/cpp0x/udlit-string-literal.C
+g++.dg/cpp0x/variadic-alias2.C
+g++.dg/cpp0x/variadic-alias8.C
+g++.dg/cpp0x/variadic-crash3.C
+g++.dg/cpp0x/variadic-ex8.C
+g++.dg/cpp0x/variadic-lambda.C
+g++.dg/cpp0x/variadic-nested1.C
+g++.dg/cpp0x/variadic-nested2.C
+g++.dg/cpp0x/variadic-partial1.C
+g++.dg/cpp0x/variadic-partial3.C
+g++.dg/cpp0x/variadic-ttp6.C
+g++.dg/cpp0x/variadic114.C
+g++.dg/cpp0x/variadic12.C
+g++.dg/cpp0x/variadic129.C
+g++.dg/cpp0x/variadic140.C
+g++.dg/cpp0x/variadic141.C
+g++.dg/cpp0x/variadic143.C
+g++.dg/cpp0x/variadic15.C
+g++.dg/cpp0x/variadic157.C
+g++.dg/cpp0x/variadic160.C
+g++.dg/cpp0x/variadic161.C
+g++.dg/cpp0x/variadic18.C
+g++.dg/cpp0x/variadic182.C
+g++.dg/cpp0x/variadic19.C
+g++.dg/cpp0x/variadic22.C
+g++.dg/cpp0x/variadic27.C
+g++.dg/cpp0x/variadic29.C
+g++.dg/cpp0x/variadic37.C
+g++.dg/cpp0x/variadic44.C
+g++.dg/cpp0x/variadic7.C
+g++.dg/cpp0x/variadic75.C
+g++.dg/cpp0x/variadic87.C
+g++.dg/cpp0x/variadic9.C
+g++.dg/cpp0x/vt-55542.C
+g++.dg/cpp0x/vt-59988.C
+g++.dg/cpp0x/vt-82936.C
+g++.dg/template/access41a.C
+g++.dg/template/anonunion3.C
+g++.dg/template/arg9.C
+g++.dg/template/array33.C
+g++.dg/template/array34.C
+g++.dg/template/arrow3.C
+g++.dg/template/arrow4.C
+g++.dg/template/builtin-atomic-overloads1.C
+g++.dg/template/builtin-atomic-overloads8.C
+g++.dg/template/builtin-sfinae-check-function-arguments.C
+g++.dg/template/builtin-speculation-overloads1.C
+g++.dg/template/builtin-speculation-overloads4.C
+g++.dg/template/builtin-validate-nargs.C
+g++.dg/template/canon-type-12.C
+g++.dg/template/canon-type-15.C
+g++.dg/template/canon-type-16.C
+g++.dg/template/canon-type-17.C
+g++.dg/template/canon-type-18.C
+g++.dg/template/cond7.C
+g++.dg/template/conv1.C
+g++.dg/template/crash66.C
+g++.dg/template/ctor1.C
+g++.dg/template/deduce10.C
+g++.dg/template/deduce9.C
+g++.dg/template/defarg3.C
+g++.dg/template/dependent-base2.C
+g++.dg/template/dependent-base3.C
+g++.dg/template/dependent-name14.C
+g++.dg/template/evaluated1.C
+g++.dg/template/evaluated1a.C
+g++.dg/template/evaluated1b.C
+g++.dg/template/evaluated1c.C
+g++.dg/template/explicit-args2.C
+g++.dg/template/explicit-instantiation7.C
+g++.dg/template/explicit3.C
+g++.dg/template/friend15.C
+g++.dg/template/friend6.C
+g++.dg/template/friend76.C
+g++.dg/template/friend80.C
+g++.dg/template/friend83.C
+g++.dg/template/inherit.C
+g++.dg/template/instantiate11.C
+g++.dg/template/linkage4.C
+g++.dg/template/linkage4a.C
+g++.dg/template/mem_func_ptr.C
+g++.dg/template/memfriend1.C
+g++.dg/template/memfriend12.C
+g++.dg/template/memfriend3.C
+g++.dg/template/memfriend9.C
+g++.dg/template/non-dependent31.C
+g++.dg/template/pr69091.C
+g++.dg/template/pr71406.C
+g++.dg/template/pr84434.C
+g++.dg/template/pr88795.C
+g++.dg/template/pr96329.C
+g++.dg/template/pr97399.C
+g++.dg/template/ptrmem1.C
+g++.dg/template/ptrmem19.C
+g++.dg/template/ptrmem33.C
+g++.dg/template/ptrmem34.C
+g++.dg/template/sfinae-deleted-pr119343.C
+g++.dg/template/sfinae20.C
+g++.dg/template/sfinae22.C
+g++.dg/template/sfinae26.C
+g++.dg/template/sfinae29.C
+g++.dg/template/spec7.C
+g++.dg/template/template-keyword3.C
+g++.dg/template/ttp6.C
+g++.dg/template/typedef30.C
+g++.dg/template/typedef38.C
+g++.dg/template/typename21.C
+g++.dg/template/unify1.C
+g++.dg/cpp0x/sfinae-nullptr1.C

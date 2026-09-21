@@ -1,0 +1,11 @@
+// g++ and clang++ -std=c++11 print peer: 7 9 layout: 1 1.
+extern "C" int printf(const char *, ...);
+struct S { mutable int i; int j; };
+class C { public: mutable int i; int j; };
+constexpr S s = {42, 7};
+constexpr C c = {43, 9};
+enum { E = s.j, F = c.j };
+int main() {
+ printf("peer: %d %d layout: %d %d\n", E, F, __is_standard_layout(S), __is_standard_layout(C));
+ return 0;
+}
