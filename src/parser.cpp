@@ -54717,7 +54717,30 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
     pgm.parsing_static_decl = true;
     TokenBase *result = nullptr;
     if ( tn->type() == TokenType::ttKeyword )
+    {
 	result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	// A type keyword may DEFER its declarator instead of reading it:
+	// TokenENUM::parse resolves `enum Tag` / `enum {...}`, pushes the
+	// resolved type token BACK and returns NULL so the CALLER reads
+	// `Type declarator...`. That deferred declaration never saw
+	// parsing_static_decl, because this frame restores it below — so
+	// `static enum bt f(void)` silently lost its internal linkage and
+	// leaked as a GLOBAL symbol (three of c2mir.c's statics did).
+	// TokenSTRUCT::parse escapes it only because it calls
+	// parseDeclaration itself, inside the window.
+	// Read the deferred declaration here, through the same explicit
+	// is_static argument every other arm of this function uses, rather
+	// than widening the flag's lifetime: a keyword that legitimately
+	// declares nothing (`static enum E { A };`) leaves a ';' at the
+	// head, not a type, and must not consume the flag.
+	if ( !result && pgm.parsing_static_decl )
+	{
+	    TokenBase *deferred = pgm.peekToken();
+	    if ( deferred && deferred->type() == TokenType::ttDataType )
+		result = pgm.parseDeclaration(
+		    static_cast<TokenDataType *>(pgm.nextToken()), true);
+	}
+    }
     else if ( tn->type() != TokenType::ttDataType )
     {
 	// might be a typedef'd identifier
