@@ -31632,16 +31632,19 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 
     if ( deref_tb->id() == TokenID::tkOpBrk )
     {
-	TokenBase *inner_tb = nextToken();
-	TokenBase *inner_expr = parseExpression(inner_tb, true, false, true, 1);
+	// ONE owner for "what is inside *( ... )": parse_deref_paren_operand
+	// (right above) discriminates a CAST HEAD or a statement expression
+	// from a plain parenthesized expression, and folds the trailing
+	// -> . [ chain. This arm hand-rolled the plain-expression case only,
+	// so a cast head arrived at parseExpression as a bare TYPE token and
+	// died on "Expecting identifier": `(uint64_t) * (uint32_t *) v`
+	// (mir-hash.h:39, the one file that stopped madc preprocessing its
+	// own backend) refused, while the very same deref WITHOUT the outer
+	// cast — `*(uint32_t *) v`, which reaches the owner through the
+	// ordinary deref arm — compiled.
+	TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
 	if ( !inner_expr )
 	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	if ( peekToken()
-	  && (peekToken()->id() == TokenID::tkDeRef
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkOpSqr) )
-	    inner_expr = parsePostfixChainFrom(inner_expr,
-		postfix_expr_variable(inner_expr));
 	DataDef *dtype = effective_pointer_type_for_member_access(inner_expr);
 	if ( !dtype )
 	    dtype = inner_expr->datadef();
