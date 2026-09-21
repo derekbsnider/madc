@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+### madc now parses the C source of its own backend — 119 errors to 0
+
+`c2m` compiles `c2mir.c` clean; madc refused it with 119 errors. Five root
+causes, each fixed in its own commit with a reducer checked against both gcc
+and clang:
+
+- **An anonymous `union { const char *s; … } u;` member inside a struct** was
+  `Expecting type in anonymous struct definition`. Three member-list readers
+  exist in the parser and only two consumed a leading cv-qualifier run; the
+  anonymous-body reader consumed none. One member list stopping early takes
+  every member declared after it, which is why this arrived as 113 `no member
+  named 'c2m_ctx'` errors — the last member of the same struct — and one parse
+  error 6,000 lines earlier. All three now call the one cv owner, in the
+  leading *and* post-type position; the outer loop also accepts `restrict`.
+- **The preprocessor's blue paint (C11 6.10.3.4p2) was lost across a macro
+  argument's pre-expansion.** The self-referential accessor idiom `#define
+  str_tab c2m_ctx->str_tab` reached the rescan through `HTAB_CREATE` as
+  `c2m_ctx->c2m_ctx->str_tab` — 551 double expansions in `c2mir.c` alone. A
+  pushback frame now carries the set of names the argument consumed and
+  reports them upward through nesting, and the filter that decides what to
+  hide is transitive (a one-level version hid glibc's `_Mdouble_` and left
+  `extern _Mdouble_ acos (double __x)`).
+- **A macro is no longer hidden while its own arguments are pre-expanded**
+  (C11 6.10.3.1p1 — an argument is replaced *before* substitution). `MAX
+  ((unsigned int) MAX (i, 0), 1)` is gcc's own regression test for this and
+  now passes; `NL_HEAD (NL_HEAD (x))` kept the inner call literal before.
+- **A macro argument's leading newline is whitespace, not a token.** A call
+  wrapped across lines handed the argument after the break a leading newline
+  and `##` pasted across it, so MIR's `REP8`-built instruction enum silently
+  lost three enumerators. Three copies of the argument trim all stopped at
+  space and tab; there is one owner now.
+- **A cast's dereference operand may itself be a cast.** `(uint64_t) *
+  (uint32_t *) v` refused while the same dereference without the outer cast
+  compiled — the cast arm hand-rolled what `parse_deref_paren_operand` owns.
+
+Ratchets: gcc c-torture **1611 → 1612**, the c2mir corpora lane **298 → 302 of
+359**, and the packed-header PP parity baseline **158 → 146** known
+divergences from `g++ -dM` (the twelve resolved are kernel-header include
+guards madc's preprocessor now reaches).
+
+`c2mir.c` now stops one layer down, which is a separate arc: zero front-end
+errors, then 139 c2mir *check* errors on the tree the CIR builder emits.
+
+### Two unowned lanes joined the fast tier
+
+The GUI stage lived only inside `remote_build.sh`, so nothing could invoke it
+by name and nothing re-ran it — the same shape that let gcc c-torture drift
+for five weeks. It is `scripts/gui_lane.sh` now, with a zero-tests guard, and
+a host without `xvfb-run` is an error rather than a silent skip.
+`scripts/fast_lanes.sh` runs c-testsuite, c-torture, c2mir-tests, gui and
+gxx-c++11 in under three minutes, measured.
+
 ## [v0.100.0] — 2026-09-21
 
 The Nexus release: madcide becomes a multi-client session with an IR that agents address as a graph, and C++ conformance becomes a measured number driven from 60% to 75.1%.
