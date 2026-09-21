@@ -238,23 +238,31 @@ FULL suite green on this content), with public binaries built by CI for
 Linux (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel),
 each shipping the platform webview library beside the binaries.
 
-Latest validated results (the v0.99.2 battery, content 38a71163, and the
-release tier on the same content):
+Latest validated results — the full release tier, every lane green on one
+commit (`7488a39cf`, 2026-09-21). Measured conformance against third-party
+suites is published separately in
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
-- Linux JIT: **1335 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1276/0**, OBJ lane
-  **1276/0**; packed suite **1335/0/0/9**; headerless (no headers on
-  disk anywhere) **1301/0/0/43**
+- Linux JIT: **1540 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1444/0**, OBJ lane
+  **1444/0**; packed suite **1540/0/0/9**; headerless (no headers on
+  disk anywhere) **1506/0/0/43**; doctest **186/186**
 - the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
   split with both clicks, menu bar, the dialogs, the panel, Run into the
-  Terminal with no input, the resizable panel): **17/17 JIT, 17/17 EXE, 17/17 OBJ**
-- Windows: packed Win64 under persistent Wine **1276/0/0TO/68skip**
+  Terminal with no input, the resizable panel): **19/19 JIT, 19/19 EXE, 19/19 OBJ**
+- Windows: packed Win64 under persistent Wine **1480/0/0TO/69skip**
   (`verify_pe_release` OK, 234 units); the FULL suite on genuine Windows 11
-  **1278/0/0TO/66skip**
-- c-testsuite conformance: **220/220, baseline empty** (C mode, `--std=gnu11`)
+  **1480/0/0TO/69skip**
+- **C conformance**: gcc `c-torture/execute` **1611/1624 in scope (99.2%)**
+  under `--std=c17`, ratcheted against a baseline of pre-existing failures;
+  c-testsuite **220/220, baseline empty** (`--std=gnu11`)
+- **C++ conformance**: gcc's own `g++.dg` compile-clean subset —
+  C++98 **308/385 (80.0%)**, C++11 **1464/1950 (75.1%)**, C++14 **206/417**,
+  C++17 **128/308**, C++20 **346/653**
 - macOS cross release on both architectures: 836 units, Mach-O release
-  verifier and the exe/dylib gate green; the FULL suite on GitHub's mac
-  runners: arm64 **1319/0/0TO/25skip**, Intel **1320/0/0TO/24skip**
-- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1330/0/0TO/14skip, EXE/OBJ 1271/0**
+  verifier (including the C-linkage authority) and the exe/dylib gate green;
+  the FULL suite on GitHub's mac runners: arm64 **1520/0/0TO/29skip**,
+  Intel **1521/0/0TO/28skip**
+- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1533/0/0TO/16skip, EXE/OBJ 1437/0**
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
