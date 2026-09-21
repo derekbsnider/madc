@@ -97,25 +97,31 @@ Whatever the remaining gap is, it is upstream MIR's scalar code generation.
 
 ## Execution — floating point (regression sentinel)
 
-`donut.c` is call-heavy floating point and exists here for one reason: it is
-the sentinel for the **v0.93.0 MIR false-dependency fix**. MIR's x86-64
-generator emitted the merging scalar SSE converts (`cvtsi2ss` / `cvtsi2sd` /
-`cvtss2sd` / `cvtsd2ss`) bare, so every convert falsely depended on the
-destination register's previous writer — in sin/cos-heavy loops that is the
-previous libm call's return chain, serialising calls the out-of-order core
-could otherwise overlap. The fix is the dependency-breaking idiom gcc and
-clang both emit: `pxor dst,dst` before the convert.
+> **Not donut.c.** donut is `for(;;)` with `usleep(30000)`: it never
+> terminates and is sleep-bound, so it cannot be timed and cannot be
+> output-compared (md5 of output truncated by `timeout` differs per run — it
+> produced a spurious `MISMATCH` the first time this lane ran). The v0.93.0
+> figure came from a modified, sleep-free 300-frame variant.
+> `docs/benchmarks/fp-callchain.c` is an ORIGINAL benchmark isolating the same
+> mechanism — int→double converts feeding `sin`/`cos`/`sqrt`, bounded and
+> deterministic. Measured 2026-09-21: **gcc 26 ms, madc 27 ms, 1.04×**, output
+> identical. The pxor fix is holding.
 
-It made donut **2.8× faster (1.374s → 0.493s) and beat `gcc -O0` (0.514s)**.
+**Why this benchmark exists.** MIR's x86-64 generator emitted the merging
+scalar SSE converts (`cvtsi2ss` / `cvtsi2sd` / `cvtss2sd` / `cvtsd2ss`) bare,
+so every convert falsely depended on the destination register's previous
+writer — in sin/cos-heavy loops that is the previous libm call's return chain,
+serialising calls the out-of-order core could otherwise overlap (~76 vs ~24
+cycles per call). The v0.93.0 fix is the dependency-breaking idiom gcc and
+clang both emit: `pxor dst,dst` before the convert. It made the donut
+workload 2.8× faster (1.374s → 0.493s) and beat `gcc -O0` (0.514s).
 
-That defect was pure upstream MIR code, unchanged since 2019, and it was
-invisible to callgrind (identical dynamic instruction counts) and
-misattributed to libm by samplers. A silent revert — an upstream subtree pull,
-a pattern-table edit — would not show up in any correctness lane. **This
-benchmark is how we would find out.**
-
-`donut.c` is third-party source and is **not vendored**: the lane runs it when
-the owner's copy is present at the repo root and skips it otherwise.
+That defect was pure upstream MIR code, unchanged since 2019, at **identical
+dynamic instruction counts** — invisible to callgrind and misattributed to
+libm by samplers. A silent revert, most plausibly through an upstream subtree
+pull or a pattern-table edit, would pass every correctness lane we have.
+**This benchmark is how we would find out**, which is why the run-this
+triggers below name the MIR subtree explicitly.
 
 ## Execution — C++
 
@@ -155,9 +161,21 @@ the cleaner read on raw codegen; these are the read on C++ interop cost.
 performance baseline, not only the codegen one). Measured 2026-09-21 on
 `b3dc26b79`:
 
+**Measure with `bin/madc-release`, never `bin/madc`.** The `-O0` development
+build is 1.5–2.6× slower than the release build, which is what users actually
+run. Timing the dev build against gcc's release build produced a 3.76×
+geometric mean that was pure artifact; `benchmark_lane.sh` now defaults to the
+release binary and warns if pointed elsewhere.
+
+**Small files are startup-dominated; large files are where the forest pays.**
+Both regimes belong in the table, or it tells the opposite half of the story
+depending on which sources were picked:
+
 | source | gcc/g++ (ms) | madc (ms) | madc/gcc |
 |---|---:|---:|---:|
 | hello.c (trivial) | 12 | 28 | 2.33× |
+| sieve.c (small) | 14 | 24 | 1.71× |
+| string-build.cpp (`<string>`) | 72 | 173 | 2.40× |
 | hello.cpp (`<iostream>`) | 132 | 103 | **0.78×** |
 | smaug `act_wiz.c` (12,041 lines) | 400 | 246 | **0.61×** |
 | smaug `build.c` (10,312 lines) | 293 | 227 | **0.77×** |

@@ -9,13 +9,16 @@
 # Corpora:
 #   exec-c    third_party/mir/c-benchmarks (MIR's own shootout set, .arg/.expect)
 #   exec-cpp  docs/benchmarks/cpp          (container growth, vtable, std::string)
-#   exec-fp   donut.c at the repo root IF PRESENT — the call-heavy floating-point
+#   exec-fp   docs/benchmarks/fp-callchain.c — the call-heavy floating-point
 #             sentinel for the v0.93.0 MIR false-dependency fix (pxor before the
-#             merging SSE converts). That fix made donut 2.8x faster and BEAT
-#             gcc -O0; it is upstream code untouched since 2019, so a silent
-#             revert is exactly the regression this lane exists to catch.
-#             Not vendored: third-party source, run only if the owner's copy is
-#             there.
+#             merging SSE converts). That defect is upstream code untouched
+#             since 2019 and was invisible to callgrind (identical instruction
+#             counts), so a silent revert would pass every correctness lane.
+#             NOT donut.c: donut is `for(;;)` with usleep(30000), so it never
+#             terminates and is sleep-bound — comparing md5 of output truncated
+#             by `timeout` produced a spurious MISMATCH. This is an original
+#             benchmark isolating the same mechanism: int->double converts
+#             feeding libm calls, bounded, deterministic.
 #   compile   the same sources, timed as `-c` to an object.
 #
 # METHOD. Best-of-N wall clock, INTERLEAVED (a sequential A-then-B run
@@ -27,13 +30,16 @@
 # read the RATIO rather than the milliseconds (the ratio survives a change of
 # host, the absolute numbers do not).
 #
-#   MADC_BIN        binary under test (default bin/madc)
+#   MADC_BIN        binary under test (default bin/madc-RELEASE). Timing the
+#                   -O0 development build against gcc's release build inflated
+#                   the compile ratios 1.5-2.6x and produced a 3.76x geomean
+#                   that was pure artifact. Release is also what users have.
 #   MADC_BENCH_N    repetitions per timing (default 3)
 #   MADC_BENCH_TSV  append a machine-readable row per benchmark here
 set -u
 cd "$(dirname "$0")/.."
 
-BIN="${MADC_BIN:-bin/madc}"
+BIN="${MADC_BIN:-bin/madc-release}"
 N="${MADC_BENCH_N:-3}"
 TSV="${MADC_BENCH_TSV:-}"
 MIRB=third_party/mir/c-benchmarks
@@ -41,7 +47,13 @@ CPPB=docs/benchmarks/cpp
 STAMP=$(date -u +%FT%TZ)
 REV=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
-[ -x "$BIN" ] || { echo "benchmark_lane: $BIN missing — build first" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "benchmark_lane: $BIN missing — run: make -C src release" >&2; exit 1; }
+case "$BIN" in
+	*-release|*-release.exe) ;;
+	*) echo "benchmark_lane: WARNING — $BIN is not a release build. Compile-time" >&2
+	   echo "  ratios from an -O0 compiler are 1.5-2.6x inflated and not comparable" >&2
+	   echo "  to the recorded series. Use bin/madc-release." >&2;;
+esac
 mkdir -p tmp/bench
 
 now(){ date +%s%3N; }
@@ -100,14 +112,10 @@ done
 gm exec-c
 echo
 
-echo "EXECUTION — floating point (the v0.93.0 MIR false-dependency sentinel)"
+echo "EXECUTION — floating point (v0.93.0 MIR false-dependency sentinel)"
 reset_gm
-if [ -f donut.c ]; then
-	run_exec exec-fp donut donut.c "--std=c17" gcc
-	gm exec-fp
-else
-	echo "  donut.c not present at the repo root — skipped (not vendored)"
-fi
+run_exec exec-fp fp-callchain docs/benchmarks/fp-callchain.c "--std=c17" gcc 20000
+gm exec-fp
 echo
 
 echo "EXECUTION — C++ (g++ -O2 vs madc -O2 native binaries)"
@@ -115,7 +123,7 @@ printf "  %-18s %8s %8s %8s\n" benchmark "g++" "madc" ratio
 reset_gm
 for src in "$CPPB"/*.cpp; do
 	[ -e "$src" ] || continue
-	run_exec exec-cpp "$(basename "$src" .cpp)" "$src" "--std=c++11" g++ 200
+	run_exec exec-cpp "$(basename "$src" .cpp)" "$src" "--std=c++11" g++ 20000
 done
 gm exec-cpp
 echo
@@ -125,6 +133,12 @@ printf "  %-18s %8s %8s %8s\n" source "gcc" "madc" ratio
 reset_gm
 for src in "$MIRB"/sieve.c "$MIRB"/binary-trees.c; do
 	[ -e "$src" ] && run_compile compile-c "$(basename "$src")" "$src" "--std=c17" gcc
+done
+# A LARGE real TU: small files are startup-dominated and large ones are where
+# the frozen forest pays, so a table of only small files tells half the story
+# (and the opposite half). SMAUG is a symlink; skipped when absent.
+for src in MadSMAUG/upstream/smaug1.8/src/db.c MadSMAUG/upstream/smaug1.8/src/act_wiz.c; do
+	[ -e "$src" ] && run_compile compile-c-large "$(basename "$src") (large)" "$src" "--std=c17 -IMadSMAUG/upstream/smaug1.8/src" gcc
 done
 for src in "$CPPB"/*.cpp; do
 	[ -e "$src" ] && run_compile compile-cpp "$(basename "$src")" "$src" "--std=c++11" g++
