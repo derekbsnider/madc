@@ -2551,6 +2551,31 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
     return false;
 }
 
+// A macro argument's surrounding WHITESPACE is not part of the argument (C11
+// 6.10.3p10-11: the argument is a sequence of preprocessing tokens; the
+// whitespace around them is not one). NEWLINES count as whitespace here, and
+// that is the whole point: a call wrapped across lines hands the argument
+// after the break a leading "\n      ", and `##` then pastes across it.
+// mir.h's instruction-code enum is built out of REP8/REP10 calls wrapped
+// exactly that way, so `INSN_EL (\n        VURSHI64)` pasted as `MIR_` +
+// newline + `VURSHI64` — two tokens, and the enumerator MIR_VURSHI64 was
+// never declared at all. Three copies of this trim existed and all three
+// stopped at space and tab; this is the one owner.
+//
+// Trimming a newline out of the argument cannot move a line number: the
+// expansion is served from the pushback, and Source::get advances _lf/_cr
+// only for real buffer text (the physical newline was already counted when
+// the argument was read from the source).
+static void trim_macro_argument(std::string &s)
+{
+    while ( !s.empty() && (s.front() == ' ' || s.front() == '\t'
+			|| s.front() == '\n' || s.front() == '\r') )
+	s.erase(s.begin());
+    while ( !s.empty() && (s.back() == ' ' || s.back() == '\t'
+			|| s.back() == '\n' || s.back() == '\r') )
+	s.pop_back();
+}
+
 // Would the RESCAN of this replacement want to expand `name` from somewhere
 // other than the pre-expanded argument text — does this body, or any macro
 // body it reaches, spell `name` itself? Reads the same identifier view of a
@@ -8122,9 +8147,7 @@ TokenBase *Program::_getToken()
 			}
 			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
-			    // trim whitespace from arg
-			    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
-			    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+			    trim_macro_argument(arg);	// the ONE trim owner
 			    args.push_back(arg);
 			    arg.clear();
 			}
@@ -8199,8 +8222,7 @@ TokenBase *Program::_getToken()
 			    source.pushback(preserved);
 		    }
 		    // last argument
-		    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
-		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+		    trim_macro_argument(arg);		// the ONE trim owner
 		    if ( !arg.empty() || !args.empty() )
 			args.push_back(arg);
 		    if ( looks_like_decl_head(tokens)
@@ -8907,11 +8929,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    }
 		    if ( !marg.empty() || !margs.empty() )
 			margs.push_back(marg);
-		    auto trim = [](std::string &s) {
-			while ( !s.empty() && (s.front()==' '||s.front()=='\t') ) s.erase(s.begin());
-			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
-		    };
-		    for ( auto &a : margs ) trim(a);
+		    for ( auto &a : margs ) trim_macro_argument(a);
 		    std::vector<std::string> expanded_args = margs;
 		    size_t fixed = macro_fixed_param_count(m);
 		    for ( size_t ai = 0; ai < expanded_args.size(); ++ai )

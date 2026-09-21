@@ -1,0 +1,51 @@
+/* A macro invocation WRAPPED ACROSS LINES: the argument after the break
+ * arrives with a leading newline, and `##` then pastes across it.
+ *
+ *     REP8 (INSN_EL, VLSHI16, ..., VLSHI64,
+ *           VURSHI64)
+ *
+ * is how MIR's mir.h builds the instruction-code enum, and `INSN_EL (i)` is
+ * `MIR_##i`. madc pasted `MIR_` + "\n        " + `VURSHI64` and re-lexed it
+ * as TWO tokens, so the enumerator MIR_VURSHI64 was never declared and every
+ * later use of it was an undeclared identifier. Only the first argument on a
+ * continuation line was affected, which is why three of mir.h's ~40 REP
+ * calls broke and the rest were fine.
+ *
+ * C11 6.10.3p10-11: an argument is a sequence of preprocessing tokens; the
+ * whitespace around them is not part of it. Three copies of madc's argument
+ * trim all stopped at space and tab. gcc -std=c17 and clang -std=c17 agree
+ * on every line below.
+ */
+#include <stdio.h>
+
+#define CAT2(a, b) a##b
+#define EL(i) CAT2 (MIR_, i)
+#define REP2(M, a1, a2) M (a1), M (a2)
+#define REP4(M, a1, a2, a3, a4) REP2 (M, a1, a2), REP2 (M, a3, a4)
+
+enum codes {
+	/* the break before the LAST argument — mir.h's REP8 shape */
+	REP2 (EL, ZERO,
+	      ONE),
+	/* a break in the middle of the list, and a nested REP */
+	REP4 (EL, TWO, THREE,
+	      FOUR,
+	      FIVE),
+	/* trailing whitespace before the break, and an indented continuation */
+	REP2 (EL, SIX,   
+	              SEVEN),
+	MIR_COUNT
+};
+
+/* the same wrap in a non-paste position: an ordinary argument use */
+#define SUM3(a, b, c) ((a) + (b) + (c))
+
+int main(void)
+{
+	int total = SUM3 (1,
+			  2,
+			  3);
+	printf("wrap %d %d %d %d %d %d\n", (int)MIR_ONE, (int)MIR_FOUR,
+	       (int)MIR_FIVE, (int)MIR_SEVEN, (int)MIR_COUNT, total);
+	return 0;
+}
