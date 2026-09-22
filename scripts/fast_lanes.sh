@@ -12,6 +12,11 @@
 #                         tests against the constructs c2mir cares about
 #   gui           ~50s    tests/gui under Xvfb, JIT + exe + obj (builds
 #                         libmadcwebview; needs a host with xvfb-run)
+#   index-c       ~110s   kostya/index-c: one 16k-line self-verifying C program,
+#                         ~50 real-world tasks each checked against its own
+#                         checksum, run at -O2. Catches WRONG ANSWERS, which
+#                         the .expect suites are weakest at, and puts the
+#                         optimizer under those 50 oracles.
 #   gxx-c++11     ~85s    g++.dg compile-clean subset (a ROADMAP metric, never
 #                         a gate — owner ruling 2026-09-04 — but cheap, so it
 #                         is measured here rather than drifting)
@@ -79,6 +84,7 @@ run_lane c-torture   c-torture   yes bash scripts/c_torture_lane.sh
 run_lane c2mir-tests c2mir-tests yes bash scripts/c2mir_tests_lane.sh
 run_lane gui         gui         yes bash scripts/gui_lane.sh
 run_lane gxx-c++11   gxx-c++11   no  bash scripts/gxx_lane.sh
+run_lane index-c     index-c     yes bash scripts/index_c_lane.sh
 
 if [ "$rc_total" -ne 0 ]; then
 	echo "fast_lanes: RED — a gated fast lane failed above" >&2
