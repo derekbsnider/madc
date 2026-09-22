@@ -1540,7 +1540,8 @@ public:
 	// elements as that union's members.
 	node_t aggregate_init_list(const std::vector<TokenBase *> &inits,
 				   DataDef *dd, TokenBase *origin = NULL,
-				   bool slots_are_elements = false);
+				   bool slots_are_elements = false,
+				   bool has_field_designators = false);
 	// The aggregate type a NESTED brace list at slot `idx` initializes, or
 	// NULL when the slot is not a whole struct/union member (so the nested
 	// list stays type-less, as it has always been).

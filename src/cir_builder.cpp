@@ -9431,7 +9431,8 @@ node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate,
 		// slot_dd is the nested list's own aggregate type when the
 		// caller could name one; NULL keeps the historical type-less
 		// positional walk.
-		return aggregate_init_list(sl->inits, slot_dd, elem);
+		return aggregate_init_list(sl->inits, slot_dd, elem, false,
+					   sl->has_field_designators);
 	}
 	return translate_expr(elem);
 }
@@ -9472,7 +9473,8 @@ DataDef *CirBuilder::init_nested_list_type(DataDef *dd, size_t idx)
 // earlier one, so the LAST filled slot is the one that survives.
 node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				       DataDef *dd, TokenBase *origin,
-				       bool slots_are_elements)
+				       bool slots_are_elements,
+				       bool has_field_designators)
 {
 	node_t lst = list();
 	if (slots_are_elements) {
@@ -9494,16 +9496,102 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 	}
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(dd));
 	if (sdd && sdd->union_layout && !sdd->is_complex()) {
-		size_t chosen = inits.size();
+		// A GAP is NULL; a written slot is not. So the filled slots are
+		// exactly what the source spelled, and their COUNT is what says
+		// which of the three shapes this is.
+		std::vector<size_t> filled;
 		for (size_t i = 0; i < inits.size(); i++)
 			if (inits[i])
-				chosen = i;
-		if (chosen >= inits.size())
+				filled.push_back(i);
+		if (filled.empty())
 			return lst;	// `{ }` / all gaps: C zero-initializes
+		if (filled.size() == 1) {
+			// ONE member named, the case the designator spelling
+			// exists for. Slot 0 needs no designator — a positional
+			// union initializer already names the first member; an
+			// anonymous member has no name to spell, so it keeps
+			// the positional form too.
+			size_t chosen = filled.front();
+			node_t des = list();
+			if (chosen > 0 && chosen < sdd->members.size()
+			    && !sdd->members[chosen].first.empty())
+				append(des, node1(N_FIELD_ID,
+						  id(sdd->members[chosen].first.c_str())));
+			append(lst, node2(N_INIT, des,
+					  init_value(inits[chosen],
+						     init_slot_is_aggregate(dd, chosen),
+						     init_nested_list_type(dd, chosen))));
+			return lst;
+		}
+		// More than one slot is written. What they MEAN depends on
+		// whether a designator put them there, and the slots alone
+		// cannot say: `{.i = 1, .p = 0}` and `{6, 5}` are both two
+		// filled slots. The parser records it (c-testsuite 00216).
+		if (!has_field_designators) {
+			// POSITIONAL: the braces around the first member are
+			// elided and it eats as many values as it holds —
+			// `union { u8 w[16]; u16 h[8]; }` given `{6,5,4,3}`
+			// fills w[0..3]. These slots are VALUES, not member
+			// indices; there is no member 3 to designate.
+			std::vector<TokenBase *> nested(inits.begin(), inits.end());
+			node_t pdes = list();
+			if (!sdd->members.empty() && !sdd->members[0].first.empty())
+				append(pdes, node1(N_FIELD_ID,
+						   id(sdd->members[0].first.c_str())));
+			bool pelems = !sdd->member_counts.empty()
+				&& sdd->member_counts[0] != 1;
+			append(lst, node2(N_INIT, pdes,
+					  aggregate_init_list(nested,
+							      init_slot_type(dd, 0),
+							      origin, pelems)));
+			return lst;
+		}
+		// DESIGNATED. Two designators naming two DIFFERENT members are
+		// 6.7.9p17's override, and the last one wins. Two naming
+		// members of the same ANONYMOUS aggregate are not: that
+		// aggregate flattens into the union's member list, so both
+		// slots are two members of ONE union member and both must land.
+		const DataDefSTRUCT::AnonymousAggregateInfo *anon = NULL;
+		for (const DataDefSTRUCT::AnonymousAggregateInfo &ai
+		     : sdd->anonymous_aggregates) {
+			if (ai.aggregate == NULL)
+				continue;
+			bool all_inside = true;
+			for (size_t i : filled)
+				if (i < ai.first_member
+				    || i >= ai.first_member + ai.member_count) {
+					all_inside = false;
+					break;
+				}
+			if (all_inside) {
+				anon = &ai;
+				break;
+			}
+		}
+		if (anon != NULL) {
+			// An ANONYMOUS aggregate's members flatten into the
+			// union's member list, so `{.b = 8, .a = 7}` writes two
+			// slots that are two members of ONE union member. The
+			// anonymous member has no name to designate, and C does
+			// not need one: its members are visible at this level,
+			// so the source's own spelling is what to emit.
+			for (size_t i : filled) {
+				node_t des = list();
+				if (i < sdd->members.size()
+				    && !sdd->members[i].first.empty())
+					append(des, node1(N_FIELD_ID,
+							  id(sdd->members[i].first.c_str())));
+				append(lst, node2(N_INIT, des,
+						  init_value(inits[i],
+							     init_slot_is_aggregate(dd, i),
+							     init_nested_list_type(dd, i))));
+			}
+			return lst;
+		}
+		// Different members: the LAST designator is the one that
+		// survives (6.7.9p17).
+		size_t chosen = filled.back();
 		node_t des = list();
-		// Slot 0 needs no designator — a positional union initializer
-		// already names the first member. An anonymous member has no
-		// name to spell, so it keeps the positional form too.
 		if (chosen > 0 && chosen < sdd->members.size()
 		    && !sdd->members[chosen].first.empty())
 			append(des, node1(N_FIELD_ID,
@@ -9644,7 +9732,8 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	unwrap_scalar_braces_list(slit->inits, dd);
 
 	// ---- Build the initializer list: LIST( INIT(designators, value), ... ).
-	node_t inits = aggregate_init_list(slit->inits, dd, slit);
+	node_t inits = aggregate_init_list(slit->inits, dd, slit, false,
+					   slit->has_field_designators);
 
 	node_t cl = node2(N_COMPOUND_LITERAL, type_node, inits, slit);
 	return cl;
@@ -10079,7 +10168,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			unwrap_scalar_braces_list(tdecl->init_list, base_dd,
 						  elem_slots);
 			lst = aggregate_init_list(tdecl->init_list, base_dd,
-						  origin, elem_slots);
+						  origin, elem_slots,
+						  tdecl->init_has_field_designators);
 		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {

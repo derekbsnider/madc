@@ -35,6 +35,23 @@ struct holder {
 
 static long take (val_t v) { return v.i; }
 
+union anon_first {
+	struct { unsigned char a, b; };
+	struct { unsigned char q, r, s2, t; } s;
+};
+
+union anon_second {
+	int i;
+	struct { unsigned char x, y; };
+};
+
+union arr_first {
+	unsigned char w[16];
+	unsigned short h[8];
+};
+
+struct wrap_arr { union arr_first u; };
+
 int main (void)
 {
 	/* declaration */
@@ -64,6 +81,34 @@ int main (void)
 	val_t f = {.k = K_PTR};
 	val_t g = {K_INT};
 	printf ("first %d %d\n", (int) f.k, (int) g.k);
+
+	/* C11 6.7.9p17 says ONE member, and "the last designator wins" is the
+	 * WRONG way to get there: these shapes write several slots that all
+	 * reach the same member, and collapsing to the last one silently loses
+	 * the rest. Both regressed a fix that did exactly that
+	 * (c-testsuite 00216). */
+
+	/* an ANONYMOUS struct flattens its members into the union's member
+	 * list, so two designators at the union's own brace level are two
+	 * members of ONE union member — both must land */
+	union anon_first af = {.b = 8, .a = 7};
+	printf ("anonfirst %d %d\n", af.a, af.b);
+
+	/* the same, with the anonymous aggregate SECOND: its flattened slots
+	 * do not start at 0 */
+	union anon_second as = {.y = 6, .x = 5};
+	printf ("anonsecond %d %d\n", as.x, as.y);
+
+	/* a POSITIONAL union brace elides the braces around the first member,
+	 * which then eats as many values as it holds — these are VALUES, not
+	 * member indices, and there is no member 3 to designate */
+	union arr_first bf = {6, 5, 4, 3};
+	printf ("posarray %d %d %d %d\n", bf.w[0], bf.w[1], bf.w[2], bf.w[3]);
+
+	/* nested one level down, the c-testsuite 00216 shape exactly */
+	struct wrap_arr wa = {{9, 8, 7, 6}};
+	printf ("nestarray %d %d %d %d\n", wa.u.w[0], wa.u.w[1], wa.u.w[2],
+	        wa.u.w[3]);
 
 	return 0;
 }

@@ -899,6 +899,10 @@ class TokenDecl: public TokenVar
 public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
+    // Did a `.field =` designator write any slot of init_list? See
+    // TokenStructLit::has_field_designators — same fact, the declaration's
+    // top-level list instead of a literal's.
+    bool init_has_field_designators = false;
     std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
     // v25 forest SAVE state: the ctor-args list's RAW SOURCE TOKEN run (cloned,
     // commas included), captured only during a --freeze parse (the cursor tap,
@@ -985,6 +989,12 @@ public:
     // `T name[]` so c2mir sizes the array from the initializer count — the
     // faithful C99 lowering. Holds the ELEMENT type T.
     DataDef *array_elem_dd = nullptr;
+    // Did a `.field =` designator write any slot of THIS list? A union's slots
+    // are member indices when it did and plain VALUES when it did not, and the
+    // CIR builder cannot tell them apart afterwards: `{.i = 1, .p = 0}` and
+    // `{6, 5}` both arrive as two filled slots. Recorded here rather than
+    // guessed there (c-testsuite 00216).
+    bool has_field_designators = false;
     TokenStructLit() {}
     virtual TokenType type() const override { return TokenType::ttStructLit; }
     virtual TokenStructLit *as_struct_lit_tok() override { return this; }

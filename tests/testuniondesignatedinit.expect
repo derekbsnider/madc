@@ -5,3 +5,7 @@ nest 7 33
 arr 44 55
 alit 66 77
 first 2 1
+anonfirst 7 8
+anonsecond 5 6
+posarray 6 5 4 3
+nestarray 9 8 7 6

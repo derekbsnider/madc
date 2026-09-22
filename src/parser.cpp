@@ -13999,6 +13999,9 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 		    }
 		    TokenBase *value_tok = nextToken();
 		    std::vector<TokenBase *> *target_inits = &slit->inits;
+		    // The literal that OWNS the slot this designator writes —
+		    // the walk below descends into nested literals.
+		    TokenStructLit *target_lit = slit;
 		    DataDefSTRUCT *target_sdd = current_sdd;
 			size_t field_index = 0;
 			for ( size_t pi = 0; pi < field_path.size(); ++pi )
@@ -14021,8 +14024,11 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 				(*target_inits)[field_index] = nested_lit;
 			    }
 			    target_inits = &nested_lit->inits;
+			    target_lit = nested_lit;
 			    target_sdd = nested_sdd;
 			}
+			if ( target_lit )
+			    target_lit->has_field_designators = true;
 			if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(value_tok);
@@ -73237,6 +73243,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
+	bool init_has_field_designators = false;
 	bool saw_brace_init = false;
 	// Only real user-defined structs/classes accept brace init.
 	// Runtime-library class types use DataDefCLASS but have a concrete DataType;
@@ -73467,6 +73474,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				if ( slit->inits.size() <= design_field )
 				    slit->inits.resize(design_field + 1, NULL);
 				slit->inits[design_field] = value;
+				slit->has_field_designators = true;
 			    }
 			    else
 				slit->inits.push_back(value);
@@ -73586,6 +73594,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			{
 			    DataDefSTRUCT *target_sdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
 			    std::vector<TokenBase *> *target_inits = &init_list;
+			    // NULL while the target is the declaration's OWN
+			    // list; set once the walk descends into a nested
+			    // literal. Same fact as TokenStructLit's flag.
+			    TokenStructLit *target_lit = NULL;
 			    size_t field_index = 0;
 			    for ( size_t pi = 0; pi < field_path.size(); ++pi )
 			    {
@@ -73618,8 +73630,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				    (*target_inits)[field_index] = nested_lit;
 				}
 				target_inits = &nested_lit->inits;
+				target_lit = nested_lit;
 				target_sdd = nested_sdd;
 			    }
+			    if ( target_lit )
+				target_lit->has_field_designators = true;
+			    else
+				init_has_field_designators = true;
 			    if ( next_init && next_init->id() == TokenID::tkOpBrc )
 			    {
 				pushToken(next_init);
@@ -73955,6 +73972,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	td->line = tb->line;
 	td->column = tb->column;
 	td->init_list = init_list;
+	td->init_has_field_designators = init_has_field_designators;
 
 	// constexpr array declarations need their initializer bytes at PARSE
 	// time: enum initializers and non-type arguments precede CIR emission.
