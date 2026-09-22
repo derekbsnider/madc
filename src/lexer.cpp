@@ -3489,13 +3489,11 @@ void Program::_tokenizer_init()
     // (The IEEE quiet-comparison builtin family — isgreater/isless/
     // isunordered/… — is defined further below; quiet `<`/`>` are already
     // their correct lowering.)
-    // __builtin_constant_p(expr) — always return 0 (not a constant)
-    {
-	MacroDef m;
-	m.params = {"__expr"};
-	m.body = "0";
-	macro_map["__builtin_constant_p"] = m;
-    }
+    // __builtin_constant_p is a PARSER builtin (parser.cpp expression arm),
+    // not a macro: the answer depends on the PARSED operand, which the
+    // preprocessor cannot see. It used to expand to `0` here, which is wrong
+    // for every literal — see the parser arm for the gcc contract it must
+    // meet (bcp-1.c asserts 1 for a literal and 0 for a variable).
     // __builtin_choose_expr(cond, true_expr, false_expr) chooses by a
     // compile-time integer condition. The condition is already reduced
     // for the current GCC execute-suite use by __builtin_constant_p.
