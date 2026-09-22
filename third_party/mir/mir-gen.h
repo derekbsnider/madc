@@ -44,6 +44,15 @@ extern int MIR_gen_object_emit_executable (MIR_context_t ctx,
    debug builder (MIR_object_set_debug) or mapping function names to their
    .text offsets (MIR_object_find_symbol).  Borrowed; owned by gen. */
 extern struct MIR_object *MIR_gen_get_object (MIR_context_t ctx);
+/* Place the loaded modules' DATA into the capture and define their data
+   symbols, the step the emit entries otherwise run for themselves.  An
+   annotating consumer calls this when it must see DEFINED data symbols
+   (MIR_object_find_symbol only matches definitions) before it emits -- e.g.
+   madc defining an __attribute__((alias)) symbol at its target's address.
+   Idempotent, and the emit entries skip it once it has run, so every module
+   must already be loaded and linked.  0 on success, -1 when the context is
+   not an object-mode capture. */
+extern int MIR_gen_object_prepare (MIR_context_t ctx);
 extern void MIR_set_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_gen_interface (MIR_context_t ctx, MIR_item_t func_item);
 extern void MIR_set_lazy_bb_gen_interface (MIR_context_t ctx, MIR_item_t func_item);

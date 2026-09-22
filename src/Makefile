@@ -1095,6 +1095,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
+	@cd .. && bash scripts/check-alias-symbol-emission.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-declarator-reader.sh
 	@cd .. && bash scripts/check-clone-origin.sh
