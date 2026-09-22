@@ -322,7 +322,7 @@ each against `obj/mir/host/c2m`. Two link commands name the TU.
 
 ---
 
-## 9. The last item: a MIR BOOTSTRAP CYCLE (diagnosed 2026-09-22, not yet fixed)
+## 9. The last item: a MIR BOOTSTRAP CYCLE — DIAGNOSED AND FIXED 2026-09-22
 
 ### 9.1 One of the three was never a defect
 
@@ -392,3 +392,58 @@ A partial fix is not acceptable here (`finish-plans-fully`): leaving
 
 **Do not hard-code a name test in madc.** Rule #7: the general machinery must
 not special-case `mir.ui2f`. The cycle is MIR's to break.
+
+### 9.4 What shipped (`55f2268bf`), and one correction to §9.3
+
+The four helpers, their four `mir.*` alias exports and their `objload_builtin`
+entries are **gone** — the names no longer exist on either side of the link.
+`get_builtin` keeps only `va_arg` / `va_block_arg`, and a madc-built
+`mir-gen.o` now imports exactly one `mir.*` symbol, `mir.arg_memcpy`.
+
+- **UI2F / UI2D** — `expand_uint_to_fp_insn` in machinize. §9.3 called for
+  gcc's branchy shape; it is gcc's **arithmetic**, done **branchlessly** —
+  `t = i ^ ((i ^ ((i >>u 1) | (i & 1))) & m)` with `m = (int64_t) i >> 63`, then
+  `* (fp) ((m & 1) + 1)`. machinize runs *after* the CFG is built, so a new
+  basic block there would mean CFG surgery; a select over the sign mask needs
+  none, and both forms are correctly rounded.
+- **UI2LD** — §9.3 was WRONG to group it with the other two. An x87 long double
+  has a 64-bit mantissa, so every `uint64_t` is exactly representable, and the
+  sticky-bit trick — correct only where the low bits are being rounded away —
+  would lose the low bit of an odd value ≥ 2^63. It splits at 32 bits instead
+  (`(ld) hi * 2^32 + (ld) lo`), which is **exact**, not merely rounded.
+- **LD2I** — §9.3 said this half needed "real x86-64 generator work with the
+  register allocator in play". It did not. It is **one pattern**:
+  `fldt m1; fnstcw mu; movzwl mu,r0d; or $0xc00,r0d; mov %r0w,mv; fldcw mv;
+  fistpq mt; fldcw mu; mov r0,mt` — gcc's own sequence, using the DESTINATION
+  register as its scratch (dead until the last insn, and the source is pushed
+  onto the x87 stack first so r0 may safely alias m1's base). No hard-register
+  reservation, no RA interaction. Two red-zone scratch slots were added to the
+  pattern language, `mu` (-24(%rsp)) and `mv` (-26(%rsp)), beside the existing
+  `mt` (-16(%rsp)).
+
+**Evidence.** A 60-line reducer over every rounding boundary is byte-identical
+to gcc under the madc JIT, through madc's `.o`, and under a `c2m` whose entire
+libmir madc compiled — in `-ei`, `-eg` and `-el`. Differential over **426**
+`c-tests` programs against the gcc-built `c2m`: **219 identical, 0
+exit-status mismatches**, and `lacc/convert-int-float.c` and
+`lacc/convert-unsigned-float.c` — the two real defects — now identical.
+`lacc/bitfield-types-init.c` still differs, exactly as §9.1 predicted.
+
+Gate: `tests/testuintfloatconv.mad` (gcc + clang oracles).
+
+### 9.5 What this uncovered: MIR has NO floating → unsigned conversion
+
+`MIR_F2I` / `MIR_D2I` / `MIR_LD2I` are all **signed**, and `cast()` mapped a
+`uint64_t` target straight onto them — so `(uint64_t) 1.8e19` answered
+9223372036854775808 (the integer indefinite) on every MIR target, silently,
+with exit status 0. Pre-existing, not caused by §9.4: the helper that
+expansion replaced was `(int64_t) ld`, with exactly this behaviour.
+
+Fixed in c2mir (`8819bb058`), **Tier 2 rather than Tier 3**: adding
+`MIR_F2UI`/`D2UI`/`LD2UI` would mean five generators, the interpreter and the
+serializers, to buy what a portable six-insn expansion gets exactly —
+`c = fp >= 2^63; res = (int64_t) (fp - (fp) c * 2^63) ^ (c << 63)`. Branchless
+for the same reason as above: `cast()` emits straight-line code. Every MIR
+target gets the fix.
+
+Gate: `tests/testfptouint64.mad` (gcc + clang oracles).

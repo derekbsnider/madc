@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### The MIR bootstrap cycle: unsigned↔floating conversions are generated inline
+
+x86-64 has no unsigned-integer → floating instruction and no truncating x87
+integer store, so MIR's generator has to synthesize `UI2F`, `UI2D`, `UI2LD` and
+`LD2I`. It synthesized all four as a **call to a one-line C helper living in
+`mir-gen-x86_64.c` itself** — `static float mir_ui2f (uint64_t i) { return
+(float) i; }`. That is a bootstrap cycle: a C compiler built on MIR, compiling
+`mir-gen.c`, lowers that helper's body into a call to `mir.ui2f`, i.e. to
+itself, and it recurses until the stack dies. Nothing could see it until a
+libmir compiled entirely by madc ran.
+
+The four helpers, their `mir.*` exports and their loader entries are gone.
+`UI2F`/`UI2D` expand to gcc's arithmetic done branchlessly (machinize runs
+after the CFG is built, so a new basic block there would mean CFG surgery);
+`UI2LD` splits at 32 bits instead, because an x87 long double represents every
+`uint64_t` *exactly* and the sticky-bit trick would corrupt an odd value above
+2^63; `LD2I` is gcc's `fnstcw`/`fldcw` sequence as a single machine pattern,
+using the destination register as its own scratch.
+
+A reducer over every rounding boundary is byte-identical to gcc under the JIT,
+through a `.o`, and under a `c2m` whose whole libmir madc compiled — in `-ei`,
+`-eg` and `-el`. Over 426 `c-tests` programs the madc-built `c2m` and the
+gcc-built one now agree on every exit status, and the two float tests that
+differed are identical.
+
+### Floating → unsigned 64-bit conversion above 2^63
+
+Separately, MIR has **no** floating → unsigned integer instruction at all:
+`F2I`, `D2I` and `LD2I` are signed, and c2mir mapped a `uint64_t` target onto
+them, so any value at or above 2^63 came back as the integer indefinite,
+9223372036854775808 — silently, with exit status 0. c2mir lowers it now, for
+all three floating types, with gcc's compare/subtract/xor sequence written
+branchlessly, so every MIR target is fixed without a new MIR instruction.
+
 ### `__attribute__((alias))` defines its symbol — a madc-built libmir links and runs
 
 madc emitted no symbol for `__attribute__((alias("T")))` — not for MIR's eight
