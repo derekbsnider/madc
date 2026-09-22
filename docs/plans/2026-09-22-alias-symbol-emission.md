@@ -1,8 +1,11 @@
 # `__attribute__((alias))` symbol emission — handoff plan (2026-09-22)
 
-**Status:** diagnosed, designed, NOT implemented. Branch
-`feature/headerless-win-weak-import-claude` (carries only
-`scripts/promote_release.sh` so far).
+**Status: DONE 2026-09-22** — implemented, gated, and the milestone it serves
+is reached. Commit `4d497614b` on
+`feature/headerless-win-weak-import-claude`. §7 records what was measured
+afterwards, including the ONE defect still between here and a fully
+madc-built `c2m`. The design below is what shipped, with two corrections
+noted in §7.
 
 **Why it matters:** this is the gap between madc *compiling* all five MIR
 translation units (done, v0.100.1) and *linking* a madc-built libmir — i.e.
@@ -131,3 +134,86 @@ divergence.
   Do not double-strip when emitting the alias symbol.
 - `MIR_object_add_symbol` never dedupes by name (`madc_cir.cpp:620`). Emitting
   the same alias twice yields two symtab entries.
+
+
+---
+
+## 7. What shipped, and what it found (2026-09-22)
+
+### Two corrections to the design above
+
+- **Step 1 needed TWO new fields, not one.** `storage_alias_name` answers "what
+  does a REFERENCE to this declaration resolve to". The alias's own emitted
+  name is a third fact: the asm label when there is one, the declared name
+  otherwise. So `Variable` now carries `asm_label` and
+  `alias_definition_target` beside it, each with one writer.
+- **`var_emit_name(v)` is the WRONG name to emit the alias under** (step 2 said
+  to use it). For a data alias it returns the TARGET — that is the redirect. The
+  alias symbol's name is `v.asm_label.empty() ? v.name : v.asm_label`.
+- **It did need one MIR change after all** — a small one, and not a semantic
+  raise. A DATA alias's target is only a DEFINED symbol once the capture's
+  module-data walk has placed it, and that walk ran *inside* the emit entry,
+  i.e. after every chance to annotate. `MIR_gen_object_prepare` (mir-gen.c,
+  mir-gen.h) exposes the existing one-shot walk; the emit entries still run it
+  for themselves. madc calls it only on a TU that actually declares an alias,
+  so no other emit ordering moves. Upstreamable as-is.
+
+### Gates
+
+- `tests/testasmlabelalias.mad` (+ `.flags` `--std=c17`, `.expect`) — the
+  REFERENCE half, green in JIT, `--exe` and `--obj`. Oracle: `gcc -std=gnu17`
+  and `clang -std=gnu17` both print the three asserted lines.
+- `scripts/check-alias-symbol-emission.sh` — the DEFINING half, `nm` against
+  the gcc oracle, wired into `fulltest` after
+  `check-var-emit-name-bypass.sh`. Two negative controls: the comparison must
+  notice a missing alias name, and the asm label must vanish from an object
+  built without the attribute.
+
+### Step 4 — the eight exports, re-diffed
+
+`nm -g --defined-only`, madc vs the gcc-built object, per TU. **Zero gcc-only
+symbols in all four libmir TUs** (madc's extra entries are its own
+`__madc_shim_*` thunks):
+
+| TU | gcc globals | madc | gcc-only |
+|---|---|---|---|
+| `mir.c` | 151 | 153 | **0** (was missing `mir.va_arg`, `mir.va_block_arg`) |
+| `c2mir/c2mir.c` | 47 | 49 | **0** (was missing the six `__mir_*oti`) |
+| `mir-gen.c` | 19 | 20 | **0** (`mir.arg_memcpy`, `mir.ld2i`, `mir.ui2d`, `mir.ui2f`, `mir.ui2ld` all present) |
+| `mir-debug.c` | 40 | 40 | **0** |
+
+### Step 5 — LINK a madc-built libmir: DONE, AND IT WORKS
+
+`ar rcs libmir_madc.a` over madc-built `mir.o mir-gen.o mir-debug.o
+mir-debug-gdb.o c2mir.o`, linked into a `c2m`. Object-swap bisection:
+
+| c2mir.o | libmir | `c2m … -eg` |
+|---|---|---|
+| gcc | **madc** | **clean, rc=0, correct output** |
+| madc | gcc | correct output, then SIGSEGV in `c2mir_finish` |
+| madc | madc | correct output, then SIGSEGV in `c2mir_finish` |
+
+**A libmir compiled entirely by madc is correct** — front end, JIT generator
+and teardown. That is the milestone this plan served.
+
+Two things are needed to link it at all and are not defects: the madc objects
+reference madc's own value shims (`madc_value_get_type_id` and friends), so the
+link carries `-lmadc` (this is what `-static-libmadc` / the AOT ledger is for);
+and `/usr/local/lib/libmadc.so.0` is an ANCIENT copy (it still links
+`libasmjit.so`) that the loader prefers — set `LD_LIBRARY_PATH` to the repo
+`lib/` or the binary dies with `undefined symbol: madc_value_get_type_id`.
+
+### The two defects this uncovered — NEXT on the self-hosting path
+
+1. **madc's compilation of `c2mir.c` crashes in `c2mir_finish` after any
+   GENERATOR run.** Reproduce with the mixed binary above (madc `c2mir.o` + the
+   gcc libmir, so nothing else is in question). `-ei` clean; `-c` clean;
+   `-eg` and `-el` both print the program's correct output and then SIGSEGV in
+   teardown. `c2mir_finish` is four calls — `str_finish`, `reg_pages_finish`,
+   `MIR_free`, `c2m_dbg_reset` — so the reducer is already small. The output
+   is only visible under `stdbuf -o0`: buffered stdout is lost to the signal,
+   which makes this look like "produced nothing" if you do not force it.
+2. **`c2mir/c2mir-driver.c:1069` — "excess elements in array/struct/union
+   initializer" (3 check errors).** A SIXTH MIR TU madc cannot compile; it was
+   never in the "all five TUs" count because it is `c2m`'s `main`, not part of
+   libmir. Wanted for a fully madc-built `c2m`.

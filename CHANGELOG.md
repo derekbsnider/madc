@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### `__attribute__((alias))` defines its symbol — a madc-built libmir links and runs
+
+madc emitted no symbol for `__attribute__((alias("T")))` — not for MIR's eight
+exports specifically, for the attribute at all. It had only the *reference*
+half of what gcc does: a reference to the alias resolved to the target's
+storage (that redirect is how a system-header class static binds to its real
+Itanium symbol, and it is unchanged). The *defining* half — a second symbol of
+the alias's own name, its `asm` label when it has one, at the target's address
+— was never built. A running program cannot tell the two apart, which is how
+the gap survived a green suite; `nm` can, and now gates it.
+
+Three facts had been sharing `Variable::storage_alias_name`. They are now three
+fields with one meaning and one writer each. `parseFunction` was additionally
+passing `NULL` for the attribute's alias-target out-param, so a prototype
+carrying the attribute after its parameter list dropped it entirely.
+
+`MIR_gen_object_prepare` exposes the capture's module-data walk, which
+otherwise ran inside the emit entry — after every chance to annotate — so a
+DATA alias had no defined target to point at.
+
+Measured against gcc and clang (both define 6 globals on the reducer where
+madc defined 3, and 6 after). On MIR's own translation units `nm -g
+--defined-only` now shows **zero** gcc-only symbols where eight were missing:
+`mir.va_arg`, `mir.va_block_arg` and the six `__mir_*oti` helpers.
+
+With that closed, **a libmir built entirely by madc links and works**: linked
+against a gcc-built c2mir front end, the resulting `c2m` compiles C, JIT-
+generates machine code and runs it, cleanly. c2mir itself is one TU short — see
+the known gap below.
+
 ## [v0.100.1] — 2026-09-22
 
 A bugfix release: madc now compiles every translation unit of its own
