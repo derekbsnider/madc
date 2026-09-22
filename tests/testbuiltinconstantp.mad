@@ -1,0 +1,60 @@
+/* __builtin_constant_p(expr) answers 1 when the compiler can prove the operand
+ * is a compile-time constant, and 0 otherwise. glibc leans on it constantly
+ * (`memcpy(d, s, n)` picks a specialized inline path when `n` is a literal),
+ * and gcc's own gcc.c-torture/execute/bcp-1.c pins BOTH sides of the contract.
+ *
+ * madc answered 0 for everything, because the builtin was a PREPROCESSOR
+ * MACRO whose body was literally `0` (src/lexer.cpp). A macro sees TEXT, and
+ * "is this a constant expression" is only answerable after parsing — the same
+ * reason __builtin_classify_type stopped being a macro. Always-0 is not the
+ * conservative answer; it is the WRONG one for every literal.
+ *
+ * It is now a parse-time builtin in the expression arm, beside
+ * __builtin_classify_type and __builtin_types_compatible_p. It asks madc's ONE
+ * constant evaluator (parse_constant_integer_expression — the same owner that
+ * answers for case labels, array bounds and static_assert conditions), which
+ * is what makes the FOLDED case work: `(1234 + 45) & ~7` is a constant
+ * expression even though it is not a literal token. The attempt is
+ * speculative, so it is muted: declining is the ordinary outcome. A
+ * non-arithmetic literal — a string, a real — falls back to
+ * TokenBase::is_constant(), the existing owner of "is this token a literal".
+ *
+ * Both halves are asserted here on purpose. The `var` line is the control an
+ * overshooting fix fails: a variable, a post-increment, a call result, an
+ * address-of and a subscript are NOT constants, and answering 1 for any of
+ * them would make every glibc constant-gated branch lie in the other
+ * direction. The `param` line pins that a function PARAMETER is not a
+ * constant even when the caller passed a literal — gcc only answers 1 there
+ * after inlining, and madc never defines __OPTIMIZE__.
+ *
+ * gcc -std=c17 -O0 and clang -std=c17 -O0 both print exactly the asserted
+ * lines.
+ */
+#include <stdio.h>
+enum { ECONST = 12 };
+int g;
+static int func (void) { return 3; }
+static int takes (int x, const char *s) {
+	return __builtin_constant_p(x) * 10 + __builtin_constant_p(s[123456]);
+}
+int main (void)
+{
+	int v = 5;
+	const char *p = "abc";
+	printf ("const %d %d %d %d %d %d %d\n",
+		__builtin_constant_p(1),
+		__builtin_constant_p('a'),
+		__builtin_constant_p("hi"),
+		__builtin_constant_p((1234 + 45) & ~7),
+		__builtin_constant_p(sizeof(int)),
+		__builtin_constant_p(1.5),
+		__builtin_constant_p(ECONST + 1));
+	printf ("var %d %d %d %d %d\n",
+		__builtin_constant_p(v),
+		__builtin_constant_p(v++),
+		__builtin_constant_p(func()),
+		__builtin_constant_p(&g),
+		__builtin_constant_p(p[123456]));
+	printf ("param %d\n", takes (7, "zz"));
+	return 0;
+}

@@ -39059,6 +39059,74 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
+		// __builtin_constant_p(expr) — 1 when the operand is a compile-time
+		// constant, 0 otherwise. Was a lexer macro whose body was literally
+		// `0`, for exactly the reason __builtin_classify_type was: a macro
+		// sees TEXT, and "is this a constant expression" is only answerable
+		// AFTER parsing. Always-0 is not the conservative answer, it is the
+		// WRONG one for every literal — gcc's own bcp-1.c asserts 1 for `1`,
+		// `"hi"` and `(1234 + 45) & ~7` while asserting 0 for a variable, a
+		// parameter, a call result, `&global`, a local array and
+		// `x[123456]`. The operand is UNEVALUATED (gcc drops it, and so does
+		// this arm); TokenBase::is_constant() is the existing owner of "is
+		// this token a literal" — already true for char / int / real /
+		// string tokens and false for everything else.
+		if ( ident_tb->spelling_is("__builtin_constant_p") )
+		{
+		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_constant_p" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace();
+		    // Ask the ONE constant evaluator first: `(1234 + 45) & ~7` IS a
+		    // constant expression and `global + 1` is not, and
+		    // parse_constant_integer_expression is what already answers that
+		    // for case labels, array bounds and static_assert. Declining is
+		    // the ordinary outcome here, so the attempt is SPECULATIVE and
+		    // must not RENDER — the same contract, and the same mute, as the
+		    // constexpr token-run fold.
+		    bool is_const = false;
+		    TokenStream::Pos cp_saved = tokens.savepos();
+		    TokenBase *cp_cur = curToken();
+		    TokenBase *cp_prv = prevToken();
+		    {
+			DiagnosticRenderMute cp_mute;
+			try
+			{
+			    parse_constant_integer_expression();
+			    skip_expression_whitespace();
+			    // Under-consumption is a REFUSAL: an operand only
+			    // PARTLY folded is not a constant expression.
+			    is_const = peekToken()
+				    && peekToken()->id() == TokenID::tkClBrk;
+			}
+			catch ( ... )
+			{
+			    is_const = false;
+			}
+		    }
+		    if ( !is_const )
+		    {
+			tokens.restore(cp_saved);
+			setTokenContext(cp_cur, cp_prv);
+			TokenBase *first = nextToken();
+			TokenBase *expr = parseExpression(first, false, false, false, 0, true);
+			// A non-arithmetic LITERAL is still a constant: a string
+			// (gcc answers 1 for `"hi"`) or a real. is_constant() is
+			// the existing owner of that test.
+			is_const = expr && expr->is_constant();
+			skip_expression_whitespace();
+		    }
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_constant_p(...)" << flush;
+		    TokenInt *ti = new TokenInt((int64_t)(is_const ? 1 : 0));
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
 		if ( ident_tb->spelling_is("va_arg") )
 		{

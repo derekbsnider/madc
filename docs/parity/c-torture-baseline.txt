@@ -23,54 +23,31 @@ int-compare.c
 medce-1.c
 pr122000.c
 
-# GREW 2026-09-22 by bcp-1.c — OWNER RULED OUT OF SCOPE IN WRITING (owner, in
-# session, on the explanation below: "Let's do that then", accepting "rule
-# bcp-1.c out of scope in writing, and I'll implement __builtin_constant_p
-# properly as its own slice").
+# SHRUNK 2026-09-22: bcp-1.c passes. It entered this list that same day and
+# left it hours later, and the round trip is the useful record.
 #
-# This is the one case the "do not add a line here" rule above contemplates,
-# and the evidence is recorded so nobody has to re-derive it:
+# It tests __builtin_constant_p from both sides — bad0..bad10 must answer 0,
+# good0..good2 must answer 1 — calling each through a `volatile` fn-ptr table
+# so inlining cannot supply the answer. It had been "passing" for the wrong
+# reason: madc answered 0 for EVERY operand (the builtin was a preprocessor
+# macro whose body was literally `0`), so the good loop should have aborted —
+# but that loop's `(` follows a pending unary `!`, and the fn-ptr call arms
+# refused to form a call while any operator tighter than `=` was pending. The
+# call was DROPPED, the expression collapsed to `! (the function pointer)`,
+# never null, so abort() was skipped. Two bugs cancelling.
 #
-#   bcp-1.c tests __builtin_constant_p from both sides — bad0..bad10 must
-#   answer 0, good0..good2 must answer 1 — calling each through a `volatile`
-#   fn-ptr table so inlining cannot supply the answer. madc has no builtin: it
-#   registers a PREPROCESSOR MACRO whose body is literally `0`
-#   (src/lexer.cpp:3492, "always return 0"). So good0..good2 answer 0 and the
-#   good loop `if (! (*good_t0[i])()) abort();` must abort. The test should
-#   never have passed.
-#
-#   It passed because the CALL WAS DROPPED. That loop's `(` follows a pending
-#   unary `!`, and madc's fn-ptr call arms refused to form a call while any
-#   operator tighter than `=` was pending, so the `(` was read as a grouping
-#   paren and the expression collapsed to `! (the function pointer)` — never
-#   null, so `!ptr` was 0 and abort() was skipped. The bad loops have no
-#   pending operator, so those calls were real and really answered 0. Two
-#   bugs cancelling, and the polarity of the two loops is what hid it.
-#
-#   3c9adf420 fixed the call binding (a call is POSTFIX — it binds tighter
-#   than any pending binary operator; the question is adjacency). The call is
-#   now real, good0() genuinely returns 0, and the test aborts on the defect
-#   it was written to catch. madc got MORE correct and this lane got redder:
-#   a false green was removed, not a regression introduced.
-#
-#   VERIFIED against the pre-arc binary at 204a442ae (an ancestor of
-#   3c9adf420): it prints 0 for __builtin_constant_p(1) exactly as HEAD does —
-#   that gap is untouched by the arc — while `! (*tab[i])(5)` there assigns
-#   the pointer to an int and SIGSEGVs, where HEAD matches gcc and clang.
-#
-#   THE REAL FIX, owned and NEXT: __builtin_constant_p cannot stay a macro —
-#   the preprocessor sees text, and "is this a constant expression" is only
-#   answerable after parsing. It becomes a parse-time builtin that folds its
-#   argument through the existing constant-folding owners (the machinery
-#   behind static_assert conditions, array bounds and case labels) and emits
-#   1 or 0. madc never defines __OPTIMIZE__, so bcp-1.c's opt_t0 loop is
-#   skipped and a parse-time answer is sufficient — no inliner needed.
-#   When that lands, this entry comes back OUT.
+# 3c9adf420 fixed the call binding (a call is POSTFIX — the question is
+# adjacency, not a pending operator), which made the call real and exposed the
+# macro. The owner ruled the entry in while the real fix was written; the real
+# fix is __builtin_constant_p as a PARSE-TIME builtin asking madc's one
+# constant evaluator, so `(1234 + 45) & ~7` answers 1 and a variable, a
+# parameter, a call result, `&global` and `x[123456]` answer 0. gcc -O0 and
+# clang -O0 agree with madc on every case; tests/testbuiltinconstantp.mad
+# pins both halves.
 
-# --- runtime-failed (10) ---
+# --- runtime-failed (9) ---
 20010904-1.c
 20010904-2.c
-bcp-1.c
 pr15296.c
 pr23135.c
 pr46309.c
