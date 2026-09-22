@@ -1,0 +1,54 @@
+/* A cast whose operand is a dereference of ANOTHER cast:
+ *
+ *     (uint64_t) * (uint32_t *) v
+ *
+ * C11 6.5.4 — a cast-expression's operand is itself a cast-expression, so
+ * the `*` directly after `(uint64_t)` is unary dereference, and what follows
+ * it may be a further cast. mir-hash.h:39 is built on this shape, and it was
+ * the one construct that stopped madc preprocessing its own backend.
+ *
+ * Program::parse_deref_paren_operand is the ONE owner of "what is inside
+ * *( ... )" — it tells a CAST HEAD or a statement expression from a plain
+ * parenthesized expression. The cast arm (parse_cast_unary_deref_operand)
+ * hand-rolled the plain-expression case only, so the cast head reached the
+ * expression parser as a bare TYPE token and died on "Expecting identifier".
+ * The same deref WITHOUT the outer cast always worked, because that path
+ * reaches the owner.
+ *
+ * The NEGATIVE CONTROL is in this file on purpose: `(uint64_t)a * (uint64_t)b`
+ * is MULTIPLICATION. A fix that made `*` unary after every cast breaks it.
+ * gcc -std=c17 and clang -std=c17 agree on every line.
+ */
+#include <stdio.h>
+#include <stdint.h>
+
+static uint32_t word = 7;
+static uint32_t pair[2] = { 11, 13 };
+
+struct box { uint32_t v; };
+static struct box boxed = { 17 };
+
+int main(void)
+{
+	uint32_t a = 3, b = 5;
+	void *raw = &word;
+	void *praw = pair;
+	void *braw = &boxed;
+
+	/* the mir-hash.h shape, spaced and unspaced */
+	uint64_t spaced = (uint64_t) * (uint32_t *) raw << 32;
+	uint64_t tight = (uint64_t)*(uint32_t *)raw;
+	/* the deref without the outer cast — the path that always worked */
+	uint64_t bare = *(uint32_t *) raw;
+	/* a postfix chain after the cast's deref operand */
+	uint64_t sub = (uint64_t) * ((uint32_t *) praw + 1);
+	uint64_t mem = (uint64_t) ((struct box *) braw)->v;
+	/* NEGATIVE CONTROL: `*` between two cast-expressions is multiply */
+	uint64_t prod = (uint64_t)a * (uint64_t)b;
+
+	printf("cast %llu %llu %llu %llu %llu %llu\n",
+	       (unsigned long long)(spaced >> 32), (unsigned long long)tight,
+	       (unsigned long long)bare, (unsigned long long)sub,
+	       (unsigned long long)mem, (unsigned long long)prod);
+	return 0;
+}

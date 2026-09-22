@@ -1,0 +1,80 @@
+# c2mir-tests baseline — known failures in the corpora MIR ships beside our
+# backend (third_party/mir/c-tests/{new,lacc,havoc}), run by
+# scripts/c2mir_tests_lane.sh. One `dir/name.c` per line; # comments allowed.
+#
+# FIRST RUN 2026-09-21 on b3dc26b79: 298 passed, 61 failed of 359.
+# havoc 12/12 pass (deliberately corrupt source; the assertion is a clean
+# nonzero exit, not compilation). lacc 187/215. new 99/132.
+#
+# Every entry here is a PRE-EXISTING gap by construction: this corpus had
+# never been run against madc before today, so nothing was parked here to
+# hide a regression. The baseline only ever shrinks — a test that starts
+# passing is reported loudly by the lane.
+#
+# SHRUNK 2026-09-21 (298 -> 302 of 359) by the preprocessor fixes in this
+# wave: lacc/macro.c, lacc/macro-recursive.c, lacc/macro-skip-expand.c and
+# new/issue392.c. Three of those four are named for exactly what was broken —
+# the C11 6.10.3.4p2 blue paint across a macro argument's pre-expansion, and
+# the over-eager hide of a macro during its own argument's expansion.
+#
+# The `new/` failures are MIR's own regression tests and are the best
+# available reducers for the C constructs madc still cannot compile in
+# c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
+# __attribute__((cleanup)), which the in-tree MIR supports natively.
+lacc/comment.c
+lacc/declaration-default-int.c
+lacc/declarator-parens.c
+lacc/declare-auto-func.c
+lacc/function-incomplete.c
+lacc/function-pointer.c
+lacc/immediate-pointer.c
+lacc/include.c
+lacc/initialize-array.c
+lacc/initialize-object.c
+lacc/initialize-string.c
+lacc/linebreak.c
+lacc/pointer-immediate.c
+lacc/preprocess.c
+lacc/printstr.c
+lacc/signed-division.c
+lacc/sizeof.c
+lacc/string-addr.c
+lacc/string-conversion.c
+lacc/string-index.c
+lacc/stringify.c
+lacc/struct-assign.c
+lacc/struct-init-swap.c
+lacc/struct-padding.c
+lacc/typedef.c
+new/add-issue211.c
+new/cleanup-break.c
+new/cleanup-fall.c
+new/cleanup-goto.c
+new/cleanup-matrix.c
+new/cleanup-prefix-attr.c
+new/cleanup-return.c
+new/empty-asm.c
+new/enum_test.c
+new/int_min.c
+new/issue186-1.c
+new/issue189.c
+new/issue191-1.c
+new/issue191-2.c
+new/issue191-3.c
+new/issue191-4.c
+new/issue197.c
+new/issue198.c
+new/issue199.c
+new/issue202.c
+new/issue211.c
+new/issue241.c
+new/issue253.c
+new/issue441.c
+new/propcond-5.c
+new/propcond-6.c
+new/propcond-7.c
+new/ssa-ccp.c
+new/stmt-exprs.c
+new/typedef.c
+new/vector-size.c
+new/weak-linkonce.c

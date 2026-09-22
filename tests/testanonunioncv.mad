@@ -1,0 +1,76 @@
+/* A cv-qualifier on a member of an ANONYMOUS struct/union body.
+ *
+ * Three member-list readers exist in the parser: TokenSTRUCT::parse's own
+ * loop, its parse_nested_aggregate_body lambda (anonymous struct/union
+ * bodies), and Program::parse_class_anonymous_aggregate_members (the C++
+ * class twin). Two consumed a leading run of const/volatile/restrict; the
+ * middle one consumed NONE, so `union { const char *s; ... } u;` inside a
+ * struct was "Expecting type in anonymous struct definition".
+ *
+ * That is exactly what stopped madc compiling its own backend's c2mir.c,
+ * whose `struct decl` carries
+ *     union { const char *asm_str; MIR_item_t item; } u;
+ * and whose members AFTER that union then read as missing — 113 cascaded
+ * "no member named 'c2m_ctx'" errors from one parse failure.
+ *
+ * All three readers now call the ONE cv owner, Program::skip_cv_qualifier_
+ * tokens, in both the leading and the post-type position. gcc -std=c17 and
+ * clang -std=c17 accept every form below.
+ */
+#include <stdio.h>
+
+struct outer {
+	int before;
+	/* leading const — the member that broke */
+	union {
+		const char *s;
+		int i;
+	} u;
+	/* post-type qualifier: `char const *`, the interstitial position */
+	union {
+		char const *cs;
+		long l;
+	} v;
+	/* restrict on a pointer member of an anonymous body */
+	struct {
+		int *restrict rp;
+		int pad;
+	} w;
+	/* volatile, and a nested anonymous struct inside the union */
+	union {
+		volatile int vi;
+		struct {
+			short a, b;
+		} pair;
+	} x;
+	int after;
+};
+
+/* the OUTER member loop's own qualifier run (site one), including the
+ * `restrict` it used to stop short of */
+struct plain {
+	const int ci;
+	volatile long vl;
+	int *restrict rp;
+	char const *cp;
+};
+
+int main(void)
+{
+	struct outer o;
+	struct plain p = { 1, 2, (int *)0, "cp" };
+	int slot = 42;
+
+	o.before = 1;
+	o.u.s = "u";
+	o.v.cs = "v";
+	o.w.rp = &slot;
+	o.x.pair.a = 3;
+	o.x.pair.b = 4;
+	o.after = 5;
+
+	printf("anon %d %s %s %d %d %d %d %ld %s\n", o.before, o.u.s, o.v.cs,
+	       *o.w.rp, o.x.pair.a + o.x.pair.b, o.after,
+	       (int)p.ci, (long)p.vl, p.cp);
+	return 0;
+}

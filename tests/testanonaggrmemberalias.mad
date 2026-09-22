@@ -1,0 +1,95 @@
+/* A member of a NESTED aggregate keeps the typedef alias its type was
+ * spelled with.
+ *
+ *     typedef struct { int len; char *s; } str_t;
+ *     struct node { union { str_t s; int i; } u; };
+ *
+ * An anonymous struct has no tag, so the typedef alias is the ONLY name its
+ * type has. `TokenSTRUCT::parse`'s outer member loop recorded that alias on
+ * the member; its nested-aggregate body reader and the class-body twin never
+ * did — the same three-reader divergence that let an anonymous member skip the
+ * cv-qualifier run. With the alias gone the emitter re-inlined a FRESH
+ * anonymous body at every use, so `n->u.s = v;` assigned one anonymous struct
+ * from a different one: "incompatible types in assignment to struct/union",
+ * and passing a str_t to a function expecting one was "incompatible type for
+ * argument".
+ *
+ * All three readers now go through the ONE owner,
+ * Program::note_member_source_spelling.
+ *
+ * This is c2mir.c's own `struct node { union { str_t s; ... } u; }` — the six
+ * errors left after the ordering and compound-literal families were the whole
+ * of what remained when madc compiled its own backend.
+ *
+ * CONTROLS, in this file on purpose:
+ *   - `flat` — the member reader that ALWAYS recorded the alias; it must keep
+ *     working (this is the path that proved the other two were the gap).
+ *   - `deep` — a nested struct inside a nested struct, the recursive arm.
+ *   - `pair`/`tail` — two declarators on one line, `str_t a, b;`, so the
+ *     comma-tail arm records the alias too, not just the first declarator.
+ *   - `named` — a TAGGED nested type needs no alias; its tag is its name.
+ *
+ * gcc -std=c17 and clang -std=c17 both print the .expect line.
+ */
+#include <stdio.h>
+
+typedef struct { int len; char *s; } str_t;
+struct tagged { int v; };
+
+struct flat {
+	str_t a;
+};
+
+struct node {
+	union {
+		str_t s;
+		int i;
+	} u;
+};
+
+struct deep {
+	struct {
+		struct {
+			str_t d;
+		} mid;
+	} outer;
+};
+
+struct pairs {
+	struct {
+		str_t a, b;
+	} two;
+};
+
+struct named {
+	struct {
+		struct tagged t;
+	} n;
+};
+
+static void set_node(struct node *n, str_t v) { n->u.s = v; }
+static void set_flat(struct flat *f, str_t v) { f->a = v; }
+static void set_deep(struct deep *d, str_t v) { d->outer.mid.d = v; }
+
+int main(void)
+{
+	struct node n;
+	struct flat f;
+	struct deep d;
+	struct pairs p;
+	struct named m;
+	str_t v = { 3, "abc" };
+	str_t w = { 5, "wxyz!" };
+
+	set_node(&n, v);
+	set_flat(&f, v);
+	set_deep(&d, w);
+	p.two.a = v;
+	p.two.b = w;
+	m.n.t.v = 9;
+
+	printf("alias %d %s / flat %d / deep %d %s / pair %d %d / named %d\n",
+	       n.u.s.len, n.u.s.s, f.a.len, d.outer.mid.d.len, d.outer.mid.d.s,
+	       p.two.a.len, p.two.b.len, m.n.t.v);
+	return 0;
+}

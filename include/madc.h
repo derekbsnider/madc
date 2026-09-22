@@ -1881,6 +1881,15 @@ protected:
     {
 	size_t remaining;
 	std::string disabled_macro;
+	// The names a function-like macro's ARGUMENT pre-expansion consumed.
+	// C11 6.10.3.4p2 hides a macro name found while rescanning its own
+	// replacement; madc's paint is per-FRAME text, not per-token, and an
+	// argument is pre-expanded in a throwaway Source whose frames (and
+	// therefore whose paint) die before the outer replacement is pushed.
+	// Carrying the set here is what keeps `#define str_tab c2m_ctx->str_tab`
+	// expanded ONCE when it reaches the rescan through `HTAB_CREATE(T,
+	// str_tab, ...)` — see the filter in lexer.cpp's argument loop.
+	std::set<std::string> arg_disabled;
 	bool recount = true;   // false: text was already read once; re-reading
 			       // it must not re-advance the column counter
 	bool synthesized = false; // true: text never existed in the source
@@ -1898,23 +1907,61 @@ protected:
     std::string _pushback;		// pushback buffer for #define substitution
     std::deque<PushbackFrame> _pushback_frames;
     std::set<std::string> _inherited_disabled_macros;
+    // Every macro name this Source has expanded, accumulated. Read by the
+    // argument pre-expansion in lexer.cpp: the throwaway Source that expands
+    // one argument reports back which names it consumed, so the outer
+    // replacement's frame can hide them during its rescan.
+    std::set<std::string> _expanded_macro_names;
+    // The argument paint of every region that has SERVED characters since
+    // the last reset. A macro's replacement is segmented, so a painted
+    // argument region drains and pops while its text is still being
+    // collected as the NEXT macro's argument — the paint has to travel
+    // with the characters, not be read off a frame that is already gone.
+    // `OUTER(tab)` -> `GET (ctx->tab)` is the shape: GET's argument text
+    // came from OUTER's painted region, and without this it re-expanded
+    // to ctx->ctx->tab.
+    std::set<std::string> _served_arg_paint;
     size_t _synth_gets = 0;		// chars served from synthesized frames
     int _lf, _cr, _column;
     int _last_token_line = 0;		// see last_token_line()
     std::string _fname;
-    void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
-			    bool recount = true, bool synthesized = false)
+    void add_pushback_frame_len(size_t len, const std::string &disabled_macro,
+			       bool recount = true, bool synthesized = false,
+			       const std::set<std::string> *arg_disabled = NULL)
     {
-	if ( s.empty() )
+	if ( !len )
 	    return;
 	PushbackFrame frame;
-	frame.remaining = s.size();
+	frame.remaining = len;
 	frame.disabled_macro = disabled_macro;
+	if ( arg_disabled )
+	    frame.arg_disabled = *arg_disabled;
 	frame.recount = recount;
 	frame.synthesized = synthesized;
 	_pushback_frames.push_front(frame);
     }
+    void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
+			    bool recount = true, bool synthesized = false,
+			    const std::set<std::string> *arg_disabled = NULL)
+    {
+	add_pushback_frame_len(s.size(), disabled_macro, recount, synthesized,
+			       arg_disabled);
+    }
 public:
+    // A character range of a macro replacement that came from
+    // SUBSTITUTING an argument, and the parameter it substituted for.
+    // C11 6.10.3.1p1 macro-replaces an argument BEFORE substitution, so
+    // the names consumed doing that are already expanded WITHIN this
+    // range and must not expand again on the rescan — while the body's
+    // OWN occurrences of the same name must still expand. A paint set
+    // covering the whole replacement cannot express that difference;
+    // one range at a time can.
+    struct ArgSpan
+    {
+	size_t off;
+	size_t len;
+	std::string param;
+    };
     Source() { _lf = 0; _cr = 0; _column = 0; }
     const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
@@ -1947,11 +1994,106 @@ public:
 	_pushback = s + _pushback;
 	add_pushback_frame(s, "", false);
     }
-    void pushback_macro(const std::string &s, const std::string &disabled_macro)
+    // The argument paint in effect AT THE CURSOR: the frame the cursor is
+    // inside is the front one. Frames behind it are the enclosing
+    // expansions' not-yet-read remainders, whose ranges lie AHEAD of the
+    // cursor, so their argument paint does not cover this position.
+    // Reset at the START of a function-like macro invocation's argument
+    // collection; read after, to learn what paint covered the argument
+    // TEXT this invocation consumed.
+    void reset_served_arg_paint() { _served_arg_paint.clear(); }
+    const std::set<std::string> &served_arg_paint() const
+    { return _served_arg_paint; }
+    std::set<std::string> current_arg_paint() const
+    {
+	if ( _pushback_frames.empty() )
+	    return std::set<std::string>();
+	return _pushback_frames.front().arg_disabled;
+    }
+    // Push a function-like macro's replacement as one frame PER SEGMENT:
+    // each argument-substituted range carries that argument's paint, the
+    // body text between them carries none. This is what lets DEBUG's own
+    // `debug_file` expand while the copy its ARGUMENT already expanded
+    // stays put (`#define debug_file gen_ctx->debug_file` came out of
+    // mir-gen.c's `DEBUG (4, { fprintf (debug_file, ...); })` as
+    // `gen_ctx->gen_ctx->debug_file` — 49 hard errors in one file).
+    void pushback_macro_spans(const std::string &s,
+			      const std::string &disabled_macro,
+			      const std::vector<ArgSpan> &spans,
+			      const std::map<std::string,
+					     std::set<std::string> > &param_paint)
+    {
+	// BODY segments carry NO paint. A nested macro's replacement body is
+	// the macro's own text, and its occurrences of a name must expand even
+	// when an argument of the SAME call already expanded that name — that
+	// is exactly glibc's __MATHCALL chain (`CALL(fn, (WIDE x))` whose body
+	// also spells WIDE), and painting it emitted `extern WIDE acos(...)`.
+	// Only the argument-substituted ranges are painted, below.
+	std::set<std::string> inherited;
+	_pushback = s + _pushback;
+	if ( !disabled_macro.empty() )
+	    _expanded_macro_names.insert(disabled_macro);
+	// A name hidden for any segment was expanded while building this
+	// replacement, so it is reported upward (an argument three macros
+	// deep otherwise loses the paint at every level but the innermost).
+	for ( std::map<std::string, std::set<std::string> >::const_iterator
+		it = param_paint.begin(); it != param_paint.end(); ++it )
+	    _expanded_macro_names.insert(it->second.begin(), it->second.end());
+
+	struct Seg { size_t len; std::set<std::string> paint; };
+	std::vector<Seg> segs;
+	size_t pos = 0;
+	for ( size_t i = 0; i < spans.size(); ++i )
+	{
+	    const ArgSpan &sp = spans[i];
+	    // Defensive: a span that does not sit in order inside the text is
+	    // not trusted — fall back to leaving that stretch unpainted
+	    // rather than mis-attributing a range.
+	    if ( sp.off < pos || sp.len == 0 || sp.off + sp.len > s.size() )
+		continue;
+	    if ( sp.off > pos )
+	    {
+		Seg body; body.len = sp.off - pos; body.paint = inherited;
+		segs.push_back(body);
+	    }
+	    Seg arg; arg.len = sp.len; arg.paint = inherited;
+	    std::map<std::string, std::set<std::string> >::const_iterator
+		pp = param_paint.find(sp.param);
+	    if ( pp != param_paint.end() )
+		arg.paint.insert(pp->second.begin(), pp->second.end());
+	    segs.push_back(arg);
+	    pos = sp.off + sp.len;
+	}
+	if ( pos < s.size() )
+	{
+	    Seg tail; tail.len = s.size() - pos; tail.paint = inherited;
+	    segs.push_back(tail);
+	}
+	// add_pushback_frame_len pushes to the FRONT, so the FIRST segment
+	// must be pushed LAST to end up at the cursor.
+	for ( size_t i = segs.size(); i-- > 0; )
+	    add_pushback_frame_len(segs[i].len, disabled_macro, true, true,
+				   segs[i].paint.empty() ? NULL : &segs[i].paint);
+    }
+    void pushback_macro(const std::string &s, const std::string &disabled_macro,
+			const std::set<std::string> *arg_disabled = NULL)
     {
 	_pushback = s + _pushback;
-	add_pushback_frame(s, disabled_macro, true, true);
+	if ( !disabled_macro.empty() )
+	    _expanded_macro_names.insert(disabled_macro);
+	// A name hidden for THIS frame was expanded while building it, so it
+	// must be reported upward too: an argument three macros deep
+	// (`assert (VARR_GET (char, cs->ln, 0) == ...)` — cs expands inside
+	// VARR_GET's argument, inside assert's) otherwise loses the paint at
+	// every level but the innermost.
+	if ( arg_disabled )
+	    _expanded_macro_names.insert(arg_disabled->begin(),
+					 arg_disabled->end());
+	add_pushback_frame(s, disabled_macro, true, true, arg_disabled);
     }
+    // The names expanded while serving this Source (see _expanded_macro_names).
+    const std::set<std::string> &expanded_macro_names() const
+    { return _expanded_macro_names; }
     // Chars served from synthesized frames since open — the lexer compares
     // across one token read to stamp tfSYNTHPOS.
     size_t synth_reads() const { return _synth_gets; }
@@ -1959,17 +2101,36 @@ public:
     {
 	if ( _inherited_disabled_macros.count(name) )
 	    return true;
+	// The macro being RESCANNED stays hidden across every frame:
+	// 6.10.3.4p2 covers the whole rescan, including the expansions it
+	// triggers, and those frames sit in front of its remainder.
 	for ( const PushbackFrame &frame : _pushback_frames )
 	    if ( frame.disabled_macro == name )
 		return true;
+	// An ARGUMENT's paint belongs to the character range the argument was
+	// substituted into, so only the frame the cursor is actually inside
+	// may answer with it. A later sibling segment's paint must not reach
+	// back over the body text ahead of it — that is precisely what made
+	// the old whole-replacement paint need a guess. Nesting still works:
+	// a frame pushed while inside a painted region inherits its paint.
+	if ( !_pushback_frames.empty()
+	  && _pushback_frames.front().arg_disabled.count(name) )
+	    return true;
 	return false;
     }
-    void inherit_macro_disables(const Source &from, const std::string &current)
+    // `extra` is the paint of the specific text being pre-expanded — a macro
+    // ARGUMENT's own region paint. It is passed explicitly because by the
+    // time an argument is pre-expanded its region has drained, popped, and
+    // the per-argument accumulator has been reset for the next one.
+    void inherit_macro_disables(const Source &from, const std::string &current,
+				const std::set<std::string> *extra = NULL)
     {
 	_inherited_disabled_macros = from._inherited_disabled_macros;
 	for ( const PushbackFrame &frame : from._pushback_frames )
 	    if ( !frame.disabled_macro.empty() )
 		_inherited_disabled_macros.insert(frame.disabled_macro);
+	if ( extra )
+	    _inherited_disabled_macros.insert(extra->begin(), extra->end());
 	if ( !current.empty() )
 	    _inherited_disabled_macros.insert(current);
     }
@@ -2009,6 +2170,12 @@ public:
 	    {
 		recount = _pushback_frames.front().recount;
 		synthesized = _pushback_frames.front().synthesized;
+		// Empty in the overwhelming majority of frames, so this costs a
+		// branch on the hot char path and nothing else.
+		if ( !_pushback_frames.front().arg_disabled.empty() )
+		    _served_arg_paint.insert(
+			_pushback_frames.front().arg_disabled.begin(),
+			_pushback_frames.front().arg_disabled.end());
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
 	    }
@@ -7002,6 +7169,13 @@ public:
     // by the identifier-expression arm and the cast-operand dispatch).
     TokenBase *parse_complex_component_operand(bool want_imag, TokenBase *anchor);
     bool typedef_alias_matches_datadef(const std::string &alias, DataDef *dd);
+    // Record on the LAST member appended to `agg` what the member's TYPE
+    // SPELLING carried and the declarator cannot recover: the user typedef
+    // alias it was written with, and the token that locates it. EVERY
+    // member-list reader calls this — see docs/rules/design-principles.md.
+    void note_member_source_spelling(DataDefSTRUCT *agg,
+				     const std::string &type_spelling,
+				     DataDef *base_dd, TokenBase *name_tok);
     DataDef *resolve_current_class_type_alias(const std::string &name);
     bool resolve_current_class_static_member_const_value(const std::string &name, int64_t &out);
     bool fold_constant_qualified_member(TokenBase *first, madc_wide_int &out);

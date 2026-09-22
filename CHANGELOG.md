@@ -2,6 +2,152 @@
 
 ## [Unreleased]
 
+## [v0.100.1] — 2026-09-22
+
+A bugfix release: madc now compiles every translation unit of its own
+backend, and a preprocessor regression that broke the macOS SDK is fixed
+before it ever reached a release.
+
+### A variadic tail's pieces are separate arguments for macro hiding
+
+Two invocations of one macro in different comma-separated pieces of the same
+`__VA_ARGS__`: only the first expanded. macOS `<sys/qos.h>` spells six
+enumerators exactly that way, each calling `__QOS_CLASS_AVAILABLE()`, so the
+literal macro name ended up in enumerator position — *Expecting identifier in
+enum* — and every test that reached a real macOS SDK header failed with it.
+
+An argument is pre-expanded in a throwaway source seeded with the C11
+6.10.3.4p2 "blue paint" covering that argument's own text. The seed was read
+from a map keyed by *parameter*, and every piece of a variadic tail shares the
+one key `__VA_ARGS__` — so the seed also carried what **earlier** pieces had
+expanded. The code contradicted the contract stated in its own comment three
+lines above ("a sibling argument's paint must not reach it"). The seed is now
+per-argument. The paint still accumulates for the substituted *range*, which is
+what it is for, and fixed parameters are unaffected because only one argument
+ever maps to each.
+
+This was a regression against v0.100.0, introduced by the preprocessor work
+above and caught by the darwin lane before it shipped. It was classified by
+running the reducer against real binaries — it passes on the v0.100.0 release
+build and fails on the arc content — rather than inferred from the diff. The
+darwin suite goes 1520 → 1533 (arm64) and 1521 → 1534 (Intel).
+
+### madc compiles every translation unit of its own backend
+
+The last blocker was not a madc defect at all. In `mir-debug.c` the name
+`mir.arg_memcpy` is both an import the program spells and a helper the
+generator registers at run time, and `_MIR_builtin_func` refused to register
+a name `MIR_link` had already bound. `c2m` never meets the collision because
+c2mir parses a GNU `asm` label into an `N_ASM` node and *discards* it
+(`c2mir.c:4527`), so its reference keeps the original identifier; madc
+implements the label faithfully, as gcc does, and the two names meet. Its
+object file carries both `U mir.arg_memcpy` and `U probe` — the direct
+evidence of the drop. The registrar now adopts an existing *import* of the
+same name and repoints the module's own import at it; any non-import item of
+that name is still a real conflict and still raises. Upstream bug, fixed
+in-tree at `third_party/mir/mir.c`.
+
+Two earlier diagnoses were wrong and measurement killed both: madc already
+builds a fresh `MIR_context_t` per compile, so the shared-context theory was
+dead on arrival, and c2m's `object_import_resolver` turns out to be
+character-for-character identical to madc's.
+
+All five MIR translation units now compile to object files:
+
+    c2mir.c 12,041 lines · mir-gen.c 10,520 · mir.c 7,474 · mir-debug.c 3,456 · mir-debug-gdb.c 138
+
+Reproduce with
+`bin/madc --std=c17 -D_DEFAULT_SOURCE -Ithird_party/mir -Ithird_party/mir/c2mir -c -o /tmp/x.o third_party/mir/<file>`.
+Linking a madc-built libmir additionally needs the eight `asm()`-label alias
+exports madc does not yet emit — it redirects *references* through the asm
+name but never emits the alias symbol.
+
+### A type qualifier may sit inside a type-specifier run
+
+C99 6.7.2p2 lets declaration specifiers interleave in any order, so
+`unsigned const char` names the same type as `const unsigned char`. The
+lexer's bitmap accumulator ended its run at the first word that was not a
+type specifier, so the lone `unsigned` minted as `unsigned int` and
+`const char` arrived as a second base type. It now reads past an interleaved
+qualifier and hands it back *after* the minted type token — the trailing
+spelling the parser already accepted, which is why `unsigned char const *`
+always worked and the failure looked arbitrary.
+
+### index-c joins the fast tier
+
+[kostya/index-c](https://github.com/kostya/index-c) is one self-contained
+16k-line C program running ~50 real-world tasks, and it verifies itself: every
+task checksums its result against a known-expected value and the program exits
+nonzero if any differs. That makes it a gate on *wrong answers* rather than
+crashes — the class the `.expect` suites are weakest at. All 50 tasks are
+correct in every configuration measured, and the lane also puts a number on
+the optimizer gap:
+
+| | gcc | madc |
+|---|---|---|
+| `-O0` / default | 118.0s | **104.0s** |
+| `-O2` | 54.2s | 85.0s |
+| `-O3` | 51.8s | 85.2s |
+
+madc is *faster* than gcc at `-O0` and 1.57x slower at `-O2`: gcc gains 2.2x
+from `-O0` to `-O2` where madc gains 1.2x, and madc's `-O3` is identical to
+its own `-O2` because MIR's generator tops out at level 2. The corpus is
+cloned and run in place, never vendored, like the gcc testsuites.
+
+
+### madc now parses the C source of its own backend — 119 errors to 0
+
+`c2m` compiles `c2mir.c` clean; madc refused it with 119 errors. Five root
+causes, each fixed in its own commit with a reducer checked against both gcc
+and clang:
+
+- **An anonymous `union { const char *s; … } u;` member inside a struct** was
+  `Expecting type in anonymous struct definition`. Three member-list readers
+  exist in the parser and only two consumed a leading cv-qualifier run; the
+  anonymous-body reader consumed none. One member list stopping early takes
+  every member declared after it, which is why this arrived as 113 `no member
+  named 'c2m_ctx'` errors — the last member of the same struct — and one parse
+  error 6,000 lines earlier. All three now call the one cv owner, in the
+  leading *and* post-type position; the outer loop also accepts `restrict`.
+- **The preprocessor's blue paint (C11 6.10.3.4p2) was lost across a macro
+  argument's pre-expansion.** The self-referential accessor idiom `#define
+  str_tab c2m_ctx->str_tab` reached the rescan through `HTAB_CREATE` as
+  `c2m_ctx->c2m_ctx->str_tab` — 551 double expansions in `c2mir.c` alone. A
+  pushback frame now carries the set of names the argument consumed and
+  reports them upward through nesting, and the filter that decides what to
+  hide is transitive (a one-level version hid glibc's `_Mdouble_` and left
+  `extern _Mdouble_ acos (double __x)`).
+- **A macro is no longer hidden while its own arguments are pre-expanded**
+  (C11 6.10.3.1p1 — an argument is replaced *before* substitution). `MAX
+  ((unsigned int) MAX (i, 0), 1)` is gcc's own regression test for this and
+  now passes; `NL_HEAD (NL_HEAD (x))` kept the inner call literal before.
+- **A macro argument's leading newline is whitespace, not a token.** A call
+  wrapped across lines handed the argument after the break a leading newline
+  and `##` pasted across it, so MIR's `REP8`-built instruction enum silently
+  lost three enumerators. Three copies of the argument trim all stopped at
+  space and tab; there is one owner now.
+- **A cast's dereference operand may itself be a cast.** `(uint64_t) *
+  (uint32_t *) v` refused while the same dereference without the outer cast
+  compiled — the cast arm hand-rolled what `parse_deref_paren_operand` owns.
+
+Ratchets: gcc c-torture **1611 → 1612**, the c2mir corpora lane **298 → 302 of
+359**, and the packed-header PP parity baseline **158 → 146** known
+divergences from `g++ -dM` (the twelve resolved are kernel-header include
+guards madc's preprocessor now reaches).
+
+That left `c2mir.c` stopping one layer down — zero front-end errors, then 139
+c2mir *check* errors on the tree the CIR builder emits. Those are closed too;
+see the entry at the top of this release.
+
+### Two unowned lanes joined the fast tier
+
+The GUI stage lived only inside `remote_build.sh`, so nothing could invoke it
+by name and nothing re-ran it — the same shape that let gcc c-torture drift
+for five weeks. It is `scripts/gui_lane.sh` now, with a zero-tests guard, and
+a host without `xvfb-run` is an error rather than a silent skip.
+`scripts/fast_lanes.sh` runs c-testsuite, c-torture, c2mir-tests, gui and
+gxx-c++11 in under three minutes, measured.
+
 ## [v0.100.0] — 2026-09-21
 
 The Nexus release: madcide becomes a multi-client session with an IR that agents address as a graph, and C++ conformance becomes a measured number driven from 60% to 75.1%.

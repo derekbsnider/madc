@@ -3582,6 +3582,25 @@ bool Program::typedef_alias_matches_datadef(const std::string &alias, DataDef *d
     return top_level_matches == 1 && top_level_alias == dd;
 }
 
+// The ONE owner of "what did the member's type SPELLING say". A member's
+// declarator cannot recover it: once the type resolves to a DataDef, the
+// alias it was written with is gone, and for an ANONYMOUS aggregate that
+// alias is the only name the type has. Without it the emitter re-inlines a
+// fresh anonymous body per use, so `typedef struct {...} str_t;` used as
+// `union { str_t s; }` became a DIFFERENT type from every other str_t
+// (c2mir: "incompatible types in assignment to struct/union").
+void Program::note_member_source_spelling(DataDefSTRUCT *agg,
+					  const std::string &type_spelling,
+					  DataDef *base_dd, TokenBase *name_tok)
+{
+    if ( !agg || agg->members.empty() )
+	return;
+    if ( typedef_alias_matches_datadef(type_spelling, base_dd) )
+	agg->members.back().typedef_name = type_spelling;
+    if ( name_tok )
+	agg->members.back().origin = name_tok;
+}
+
 static DataDef *resolve_class_type_alias(DataDefCLASS *cls, const std::string &name)
 {
     if ( !cls )
@@ -31632,16 +31651,19 @@ TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
 
     if ( deref_tb->id() == TokenID::tkOpBrk )
     {
-	TokenBase *inner_tb = nextToken();
-	TokenBase *inner_expr = parseExpression(inner_tb, true, false, true, 1);
+	// ONE owner for "what is inside *( ... )": parse_deref_paren_operand
+	// (right above) discriminates a CAST HEAD or a statement expression
+	// from a plain parenthesized expression, and folds the trailing
+	// -> . [ chain. This arm hand-rolled the plain-expression case only,
+	// so a cast head arrived at parseExpression as a bare TYPE token and
+	// died on "Expecting identifier": `(uint64_t) * (uint32_t *) v`
+	// (mir-hash.h:39, the one file that stopped madc preprocessing its
+	// own backend) refused, while the very same deref WITHOUT the outer
+	// cast — `*(uint32_t *) v`, which reaches the owner through the
+	// ordinary deref arm — compiled.
+	TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
 	if ( !inner_expr )
 	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	if ( peekToken()
-	  && (peekToken()->id() == TokenID::tkDeRef
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkOpSqr) )
-	    inner_expr = parsePostfixChainFrom(inner_expr,
-		postfix_expr_variable(inner_expr));
 	DataDef *dtype = effective_pointer_type_for_member_access(inner_expr);
 	if ( !dtype )
 	    dtype = inner_expr->datadef();
@@ -39037,6 +39059,74 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    exStack.push(ti);
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
+		// __builtin_constant_p(expr) — 1 when the operand is a compile-time
+		// constant, 0 otherwise. Was a lexer macro whose body was literally
+		// `0`, for exactly the reason __builtin_classify_type was: a macro
+		// sees TEXT, and "is this a constant expression" is only answerable
+		// AFTER parsing. Always-0 is not the conservative answer, it is the
+		// WRONG one for every literal — gcc's own bcp-1.c asserts 1 for `1`,
+		// `"hi"` and `(1234 + 45) & ~7` while asserting 0 for a variable, a
+		// parameter, a call result, `&global`, a local array and
+		// `x[123456]`. The operand is UNEVALUATED (gcc drops it, and so does
+		// this arm); TokenBase::is_constant() is the existing owner of "is
+		// this token a literal" — already true for char / int / real /
+		// string tokens and false for everything else.
+		if ( ident_tb->spelling_is("__builtin_constant_p") )
+		{
+		    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_constant_p" << flush;
+		    nextToken(); // consume '('
+		    skip_expression_whitespace();
+		    // Ask the ONE constant evaluator first: `(1234 + 45) & ~7` IS a
+		    // constant expression and `global + 1` is not, and
+		    // parse_constant_integer_expression is what already answers that
+		    // for case labels, array bounds and static_assert. Declining is
+		    // the ordinary outcome here, so the attempt is SPECULATIVE and
+		    // must not RENDER — the same contract, and the same mute, as the
+		    // constexpr token-run fold.
+		    bool is_const = false;
+		    TokenStream::Pos cp_saved = tokens.savepos();
+		    TokenBase *cp_cur = curToken();
+		    TokenBase *cp_prv = prevToken();
+		    {
+			DiagnosticRenderMute cp_mute;
+			try
+			{
+			    parse_constant_integer_expression();
+			    skip_expression_whitespace();
+			    // Under-consumption is a REFUSAL: an operand only
+			    // PARTLY folded is not a constant expression.
+			    is_const = peekToken()
+				    && peekToken()->id() == TokenID::tkClBrk;
+			}
+			catch ( ... )
+			{
+			    is_const = false;
+			}
+		    }
+		    if ( !is_const )
+		    {
+			tokens.restore(cp_saved);
+			setTokenContext(cp_cur, cp_prv);
+			TokenBase *first = nextToken();
+			TokenBase *expr = parseExpression(first, false, false, false, 0, true);
+			// A non-arithmetic LITERAL is still a constant: a string
+			// (gcc answers 1 for `"hi"`) or a real. is_constant() is
+			// the existing owner of that test.
+			is_const = expr && expr->is_constant();
+			skip_expression_whitespace();
+		    }
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_constant_p(...)" << flush;
+		    TokenInt *ti = new TokenInt((int64_t)(is_const ? 1 : 0));
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
 		if ( ident_tb->spelling_is("va_arg") )
 		{
@@ -42066,6 +42156,32 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    {
 				cast_expr = parseExpression(cast_expr_tb, true);
 			    }
+			    // C11 6.5.2/6.5.4: postfix ++/-- is part of the
+			    // POSTFIX-expression, and a cast's operand is a
+			    // unary-expression — so `(int) p->n++` is
+			    // `(int)(p->n++)`, never `((int)p->n)++`. madc built the
+			    // latter, which is not an lvalue: mir-debug.c's
+			    // `return (int) obj->n_syms++;` emitted
+			    // `return ((int)obj->n_syms)++;` and c2mir refused it
+			    // ("lvalue required as left operand of assignment").
+			    // Same rule the deref operand already applies below
+			    // (`*(*x)++` is `*(((*x)++))`); one hook here covers
+			    // every operand arm above, since this is the single site
+			    // that builds the cast.
+			    if ( cast_expr && peekToken()
+			      && (peekToken()->id() == TokenID::tkInc
+			       || peekToken()->id() == TokenID::tkDec) )
+			    {
+				TokenBase *step_tb = nextToken();
+				TokenOperator *step;
+				if ( step_tb->id() == TokenID::tkInc )
+				    step = new TokenInc();
+				else
+				    step = new TokenDec();
+				step->left = cast_expr;
+				step->right = NULL;
+				cast_expr = step;
+			    }
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    // Caller wants only the cast group, not whatever
@@ -42092,14 +42208,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // Direct invocation through a struct-member function pointer,
 		    // e.g. `cmd.fn(3, 4)` or `tab[i].fn(ch, arg)`. Detected when the
 		    // top of exStack is a TokenMember whose datadef is DataDefFPTR.
-		    // The `(` must IMMEDIATELY follow the member access — if any
-		    // tighter-than-assignment operator has been pushed onto opStack
-		    // since the member was parsed (e.g. `ch->fn && (something_else)`),
-		    // the `(` belongs to the next sub-expression, not a call through
-		    // the fn-ptr. We only count operators with precedence < 14
-		    // (anything tighter than `=`); `=` itself is the OUTER context
-		    // for declaration init like `int v = (*flfunc)(args)` and must
-		    // not block the call.
+		    // The `(` must IMMEDIATELY follow the member access — that is an
+		    // ADJACENCY question about the token before the `(`, answered for
+		    // every arm here by the one owner paren_binds_to_receiver below.
+		    // A call is POSTFIX: it binds tighter than any pending binary
+		    // operator, so a pending operator says nothing about whether this
+		    // `(` is a call — `d->ok && d->rdr (a) == 0` has `&&` pending and
+		    // the `(` is still the call's. opstack_has_pending_op below stays
+		    // for the arms whose operand is not a completed postfix form.
 		    TokenMember *member_call_base = NULL;
 		    bool opstack_has_pending_op = false;
 		    {
@@ -42139,6 +42255,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			 || prev_for_member->id() == TokenID::tkBorEq
 			 || prev_for_member->id() == TokenID::tkBSLEq
 			 || prev_for_member->id() == TokenID::tkBSREq);
+		    // The `(` must bind directly to the operand already on the stack:
+		    // prevToken is that operand's own last token — its identifier
+		    // (named obj / member name), or its closing `)` (call / paren /
+		    // operator result) or `]` (subscript result). An intervening
+		    // operator (e.g. `f() * (x)`, `ch->fn && (something_else)`) leaves
+		    // prevToken as that operator, so the `(` does NOT bind here and
+		    // the paren stays a grouping. We do NOT gate on
+		    // opstack_has_pending_op: `cout << m(7)` must still bind `(7)` to m
+		    // (the just-pushed exStack object), a tighter call.
+		    bool paren_binds_to_receiver = prev_for_member
+			&& (prev_for_member->type() == TokenType::ttIdentifier
+			 || prev_for_member->id() == TokenID::tkClBrk
+			 || prev_for_member->id() == TokenID::tkClSqr);
 		    // P2.1b gap 1 — functor call `obj(args)`: when the exStack top
 		    // is a class OBJECT (a plain object variable) whose class declares
 		    // operator(), route the `(` to a method call on its operator().
@@ -42188,18 +42317,6 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			TokenBase *recv_node = exStack.empty() ? NULL : exStack.top();
 			DataDefCLASS *fcls = recv_node ? operand_object_class(recv_node) : NULL;
 			Variable *fmethod = fcls ? fcls->findMethod(functor_name) : NULL;
-			// The `(` must bind directly to the receiver: prevToken is the
-			// receiver's own last token — its identifier (named obj / member
-			// name), or its closing `)` (call/paren/operator result) or `]`
-			// (subscript result). An intervening operator (e.g. `f() * (x)`)
-			// leaves prevToken as that operator, so the `(` does NOT bind here
-			// and the paren stays a grouping. We do NOT gate on
-			// opstack_has_pending_op: `cout << m(7)` must still bind `(7)` to m
-			// (the just-pushed exStack object), a tighter call.
-			bool paren_binds_to_receiver = prev_for_member
-			    && (prev_for_member->type() == TokenType::ttIdentifier
-			     || prev_for_member->id() == TokenID::tkClBrk
-			     || prev_for_member->id() == TokenID::tkClSqr);
 			if ( fmethod
 			  && paren_binds_to_receiver
 			  && !member_is_assign_lhs )
@@ -42317,7 +42434,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 		    }
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && !member_is_assign_lhs
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
@@ -42346,7 +42463,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    TokenBase *subscript_call_base = NULL;
 		    DataDefFPTR *subscript_call_type = NULL;
 		    if ( !exStack.empty()
-		      && !opstack_has_pending_op
+		      && paren_binds_to_receiver
 		      && !member_is_assign_lhs
 		      && (dynamic_cast<TokenSubscript *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenSubscriptExpr *>(exStack.top()) != NULL)
@@ -42459,11 +42576,12 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // overload / instantiates the template from the call args,
 		    // exactly as the direct path would.
 		    // (`(args)` is a postfix call — precedence tighter than any
-		    // pending binary operator on opStack — so unlike the member
-		    // fptr path this does NOT gate on opstack_has_pending_op:
-		    // `size() + (std::max)(size(), __n)` must form the call even
-		    // with the `+` pending. prevToken()==`)` is the tight
-		    // discriminator that keeps it from firing spuriously.)
+		    // pending binary operator on opStack — so this does NOT gate on
+		    // opstack_has_pending_op: `size() + (std::max)(size(), __n)`
+		    // must form the call even with the `+` pending. prevToken()==`)`
+		    // is the tight discriminator that keeps it from firing
+		    // spuriously — the same adjacency test paren_binds_to_receiver
+		    // applies to the member / subscript arms.)
 		    TokenVar *fn_designator_base = NULL;
 		    TokenBase *prev_for_fn_designator = prevToken();
 		    if ( !exStack.empty()
@@ -46092,21 +46210,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 	uint32_t member_flags = 0;
-	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE
-	            // `mutable` storage-class-specifier on a member
-	            // ([dcl.stc]/9) — a reserved tkCPPKEYWORD in C++ modes
-	            // (never matches a C identifier spelled "mutable"). The
-	            // class-body member loop already consumes it; this is the
-	            // struct/union twin (libc++ __functional/function.h:484:
-	            // `mutable char __small[sizeof(void*) * 2];`).
-	            || (tn->id() == TokenID::tkCPPKEYWORD
-	             && contextual_identifier_name(tn) == "mutable")) )
+	for (;;)
 	{
-	    if ( tn->id() == TokenID::tkCPPKEYWORD )
-		member_flags |= vfMUTABLE;
-	    pgm.nextToken(); // consume qualifier
+	    // cv-qualifiers through the ONE owner — which also covers
+	    // `restrict`, where this copy stopped at const/volatile.
+	    pgm.skip_cv_qualifier_tokens();
 	    tn = pgm.peekToken();
+	    // `mutable` is a storage-class-specifier, not a cv-qualifier
+	    // ([dcl.stc]/9), so it stays here rather than in the owner: a
+	    // reserved tkCPPKEYWORD in C++ modes (never matches a C
+	    // identifier spelled "mutable"). The class-body member loop
+	    // already consumes it; this is the struct/union twin (libc++
+	    // __functional/function.h:484: `mutable char __small[...]`).
+	    if ( !(tn && tn->id() == TokenID::tkCPPKEYWORD
+	        && contextual_identifier_name(tn) == "mutable") )
+		break;
+	    member_flags |= vfMUTABLE;
+	    pgm.nextToken();
 	}
 
 	// expect a data type token (or typedef'd identifier, or 'struct Tag')
@@ -46202,6 +46322,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.pushToken(tn);
 			tn = pgm.peekToken();
 		    }
+		    // Leading cv-qualifiers on the member's type, through the
+		    // ONE owner (skip_cv_qualifier_tokens). This body had NO
+		    // qualifier handling — every arm below reads a type token
+		    // directly — so `union { const char *s; int i; } u;` inside
+		    // a struct was "Expecting type in anonymous struct
+		    // definition". That is what stopped madc compiling its own
+		    // backend: c2mir.c's `struct decl` carries exactly that
+		    // member (`union { const char *asm_str; MIR_item_t item; }
+		    // u;`), and its failure cascaded into 113 "no member named
+		    // 'c2m_ctx'" errors from the members declared after it.
+		    pgm.skip_cv_qualifier_tokens();
+		    if ( !(tn = pgm.peekToken()) )
+			pgm.Throw(loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		    TokenDataType *inner_type = NULL;
 		    if ( tn->type() == TokenType::ttDataType )
 			inner_type = (TokenDataType *)pgm.nextToken();
@@ -46303,6 +46436,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 			pgm.Throw(tn) << "Expecting type in anonymous struct definition" << flush;
 
+		    // `T const *p` — a qualifier between the type and the
+		    // declarator. Same owner, same rule as the leading run
+		    // (the class-body twin below has always had both).
+		    pgm.skip_cv_qualifier_tokens();
+
 		    DataDef *inner_base_dd = &inner_type->definition;
 		    DataDef *inner_member_dd = inner_base_dd;
 		    TokenBase *inner_ahead = pgm.peekToken();
@@ -46353,6 +46491,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			inner->addMember(inner_name, *inner_member_dd, inner_count,
 			    inner_count_expr, inner_is_array_decl, &inner_dims);
+			pgm.note_member_source_spelling(inner,
+				inner_type->spelling(), inner_base_dd, tn);
 		    }
 		    tn = pgm.nextToken();
 		    // Handle comma-separated members: `int f1, f2, f3;`
@@ -46379,8 +46519,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    inner->addBitField(cname, *comma_dd, bw);
 			}
 			else
+			{
 			    inner->addMember(cname, *comma_dd, ccount,
 				ccount_expr, cmd.is_array, &cmd.dims);
+			    pgm.note_member_source_spelling(inner,
+				    inner_type->spelling(), inner_base_dd, tn);
+			}
 			tn = pgm.nextToken();
 		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
@@ -46621,12 +46765,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
 			dds->member_access.back() |= member_flags;
-			if ( !dds->members.empty() )
-			{
-			    if ( !member_typedef_alias.empty() )
-				dds->members.back().typedef_name = member_typedef_alias;
-			    dds->members.back().origin = member_name_tok;
-			}
+			pgm.note_member_source_spelling(dds, member_typedef_alias,
+							base_member_dd, member_name_tok);
 			if ( member_align > 0 )
 			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
@@ -47023,18 +47163,17 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		pushToken(tn);
 	    tn = peekToken();
 	}
-	while ( tn && (tn->id() == TokenID::tkCONST
-	            || tn->id() == TokenID::tkVOLATILE
-	            || tn->id() == TokenID::tkRESTRICT) )
-	{
-	    nextToken();
-	    tn = peekToken();
-	}
+	skip_cv_qualifier_tokens();	// the ONE cv owner, not a fourth copy
+	tn = peekToken();
 	if ( !tn )
 	    Throw(loc) << "Unexpected end of input in anonymous class aggregate" << flush;
 
 	TokenBase *type_tb = nextToken();
 	DataDef *base_member_dd = NULL;
+	// The type's SPELLING, kept for note_member_source_spelling: a member
+	// written with a typedef alias emits ID("alias"), and for an anonymous
+	// aggregate that alias is the type's only name.
+	std::string member_type_spelling;
 	if ( type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION )
 	{
 	    if ( DataDefSTRUCT *nested =
@@ -47045,22 +47184,24 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		TokenDataType *mtype =
 		    resolve_declared_type_token(type_tb, true, true);
 		if ( mtype )
+		{
 		    base_member_dd = &mtype->definition;
+		    member_type_spelling = mtype->spelling();
+		}
 	    }
 	}
 	else if ( TokenDataType *mtype =
 		    resolve_declared_type_token(type_tb, true, true) )
+	{
 	    base_member_dd = &mtype->definition;
+	    member_type_spelling = mtype->spelling();
+	}
 	else if ( type_tb->id() == TokenID::tkENUM )
 	    base_member_dd = &ddINT;
 	if ( !base_member_dd )
 	    Throw(type_tb) << "Expecting type in anonymous class aggregate" << flush;
 
-	while ( peekToken()
-	     && (peekToken()->id() == TokenID::tkCONST
-	      || peekToken()->id() == TokenID::tkVOLATILE
-	      || peekToken()->id() == TokenID::tkRESTRICT) )
-	    nextToken();
+	skip_cv_qualifier_tokens();	// `T const *p`, same owner
 
 	bool done_members = false;
 	while ( !done_members )
@@ -47115,8 +47256,12 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		agg->addBitField(member_name, *member_dd, bf_width);
 	    }
 	    else
+	    {
 		agg->addMember(member_name, *member_dd, member_count, NULL,
 		    member_is_array, member_is_array ? &member_dims : NULL);
+		note_member_source_spelling(agg, member_type_spelling,
+					    base_member_dd, tn);
+	    }
 
 	    tn = nextToken();
 	    if ( !tn )
@@ -54668,7 +54813,30 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
     pgm.parsing_static_decl = true;
     TokenBase *result = nullptr;
     if ( tn->type() == TokenType::ttKeyword )
+    {
 	result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	// A type keyword may DEFER its declarator instead of reading it:
+	// TokenENUM::parse resolves `enum Tag` / `enum {...}`, pushes the
+	// resolved type token BACK and returns NULL so the CALLER reads
+	// `Type declarator...`. That deferred declaration never saw
+	// parsing_static_decl, because this frame restores it below — so
+	// `static enum bt f(void)` silently lost its internal linkage and
+	// leaked as a GLOBAL symbol (three of c2mir.c's statics did).
+	// TokenSTRUCT::parse escapes it only because it calls
+	// parseDeclaration itself, inside the window.
+	// Read the deferred declaration here, through the same explicit
+	// is_static argument every other arm of this function uses, rather
+	// than widening the flag's lifetime: a keyword that legitimately
+	// declares nothing (`static enum E { A };`) leaves a ';' at the
+	// head, not a type, and must not consume the flag.
+	if ( !result && pgm.parsing_static_decl )
+	{
+	    TokenBase *deferred = pgm.peekToken();
+	    if ( deferred && deferred->type() == TokenType::ttDataType )
+		result = pgm.parseDeclaration(
+		    static_cast<TokenDataType *>(pgm.nextToken()), true);
+	}
+    }
     else if ( tn->type() != TokenType::ttDataType )
     {
 	// might be a typedef'd identifier

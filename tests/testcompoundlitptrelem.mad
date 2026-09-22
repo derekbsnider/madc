@@ -1,0 +1,74 @@
+/* An ARRAY compound literal whose ELEMENT TYPE is a pointer.
+ *
+ *     (const char *[]) { "alloca", "__builtin_alloca", NULL }
+ *
+ * C11 6.5.2.5 — the literal's type is the type-name, here "array of pointer
+ * to const char". The star belongs to the ELEMENT, and in C it lives in the
+ * abstract DECLARATOR, never in the type specifier.
+ *
+ * The emitter built the array type-name as specifier + a lone N_ARR piece, so
+ * an element type of `char *` had nowhere to put its star: the specifier can
+ * only spell `char`. The literal emitted as `(char []){ ... }` — an array of
+ * CHAR — and every string initializer in it became "string is too long for
+ * array initializer". The stars now ride the same pointer piece var_decl uses,
+ * after the N_ARR (c2m's declarator list is innermost-first, so [ARR, POINTER]
+ * spells `char *[]`).
+ *
+ * This is c2mir.c's own ALLOCA / BUILTIN_VA_START / BUILTIN_VA_ARG macro shape
+ * (c2mir.c:10465-10470) — 13 of the 19 remaining errors when madc compiles its
+ * own backend were this one construct.
+ *
+ * CONTROLS, in this file on purpose:
+ *   - `cp[]` where `typedef const char *cp` ALREADY carries the star: exactly
+ *     one star total, not two. A fix that always appends the peeled levels
+ *     doubles it.
+ *   - `(int[]){...}` — a non-pointer element must gain no star.
+ *   - `(struct pt[]){...}` — a struct element (gcc pr98366) must still emit
+ *     its tag rather than a scalar.
+ *
+ * gcc -std=c17 and clang -std=c17 both print the .expect line.
+ */
+#include <stdio.h>
+#include <string.h>
+
+typedef const char *cp;
+
+struct pt { int x; int y; };
+
+static int eq(const char *s, const char *v[])
+{
+	for (int i = 0; v[i] != NULL; i++)
+		if (strcmp(v[i], s) == 0)
+			return 1;
+	return 0;
+}
+
+static int eqcp(const char *s, cp v[])
+{
+	for (int i = 0; v[i] != NULL; i++)
+		if (strcmp(v[i], s) == 0)
+			return 1;
+	return 0;
+}
+
+int main(void)
+{
+	int a = eq("__builtin_alloca", (const char *[]){ "alloca", "__builtin_alloca", NULL });
+	int b = eq("zzz", (const char *[]){ "alloca", "__builtin_alloca", NULL });
+	/* the sized form */
+	int c = eq("two", (const char *[3]){ "one", "two", NULL });
+	/* subscript the literal directly */
+	const char *d = (const char *[]){ "aa", "bb", NULL }[1];
+	/* element named by a typedef that already carries the star */
+	int e = eqcp("bee", (cp[]){ "ay", "bee", NULL });
+	/* two levels of element pointer */
+	static char one[] = "deep";
+	char *p1 = one;
+	char **f = (char **[]){ &p1, NULL }[0];
+	/* CONTROLS: non-pointer element, and a struct element (pr98366) */
+	int g = (int[]){ 4, 9, 16 }[2];
+	struct pt h = (struct pt[]){ { 1, 2 }, { 3, 4 } }[1];
+
+	printf("cl %d %d %d %s %d %s %d %d\n", a, b, c, d, e, *f, g, h.y);
+	return 0;
+}

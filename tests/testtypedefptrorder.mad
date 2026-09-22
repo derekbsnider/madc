@@ -1,0 +1,81 @@
+/* A POINTER typedef must not drag its struct's member dependencies above
+ * itself.
+ *
+ *     typedef struct Item *Item_t;            <- (1)
+ *     typedef struct Link { Item_t prev, next; } Link_t;
+ *     struct Item { Link_t link; int x; };
+ *
+ * (1) declares an alias for a POINTER, so `struct Item` need not be complete
+ * there — c2mir/gcc only need the tag. But the emitter resolved the struct
+ * BEHIND the typedef (peeling the pointer), saw it complete, and hoisted that
+ * struct's by-value member dependencies BEFORE appending the typedef's own
+ * node. `struct Item`'s by-value member is `Link_t`, so `struct Link`'s
+ * definition landed ABOVE line (1) — and its members spell `Item_t`, the very
+ * alias not yet declared. Result: `unknown type name 'Item_t'`.
+ *
+ * The hoist is needed exactly when the typedef renders the aggregate's BODY;
+ * for a tag-only reference (STRUCT(tag, IGNORE)) nothing needs a member
+ * complete, and the struct's own definition point hoists its own deps.
+ *
+ * This is mir.h / c2mir.c's DEF_DLIST_LINK shape verbatim:
+ *     typedef struct MIR_insn *MIR_insn_t;
+ *     DEF_DLIST_LINK (MIR_insn_t);
+ *     struct MIR_insn { DLIST_LINK (MIR_insn_t) insn_link; ... };
+ * Six names fell to it in c2mir.c — node_t, case_t, decl_t, MIR_item_t,
+ * MIR_insn_t, MIR_module_t — and the 49 further "invalid type argument of
+ * '->'" errors were their shadow.
+ *
+ * POSITIVE CONTROL, in this file on purpose: Pt_t / Box_t are typedefs that DO
+ * emit their aggregate body inline and DO have by-value struct members, so the
+ * hoist must still fire for them. A fix that removed the hoist outright breaks
+ * `box.lo.y`.
+ *
+ * gcc -std=c17 and clang -std=c17 both print the .expect line.
+ */
+#include <stdio.h>
+
+typedef struct Item *Item_t;
+
+typedef struct Link {
+	Item_t prev;
+	Item_t next;
+} Link_t;
+
+typedef struct Head {
+	Item_t head;
+	Item_t tail;
+} Head_t;
+
+struct Item {
+	Link_t link;
+	int x;
+};
+
+/* the same shape with the pointer typedef immediately adjacent to the
+ * dependent aggregate (mir.h's MIR_item_t spacing) */
+typedef struct Node *Node_t;
+typedef struct NLink { Node_t p; Node_t n; } NLink_t;
+struct Node { NLink_t l; int v; };
+
+/* POSITIVE CONTROL: bodies emitted inline, by-value members */
+typedef struct Pt { int x; int y; } Pt_t;
+typedef struct Box { Pt_t lo; Pt_t hi; } Box_t;
+
+int main(void)
+{
+	struct Item a, b;
+	struct Node m, n;
+	Head_t h;
+	Box_t box = { { 1, 2 }, { 3, 4 } };
+
+	a.x = 7; b.x = 5;
+	a.link.next = &b; b.link.prev = &a;
+	h.head = &a; h.tail = &b;
+	m.v = 11; n.v = 13;
+	m.l.n = &n;
+
+	printf("order %d %d %d %d %d %d %d\n",
+	       a.x, a.link.next->x, b.link.prev->x, h.tail->x,
+	       m.l.n->v, box.lo.y, box.hi.x);
+	return 0;
+}

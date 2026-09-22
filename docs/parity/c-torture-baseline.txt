@@ -11,12 +11,39 @@
 #
 # Do not add a line here to make a red lane green. A new failure is a
 # regression: fix it, or have the owner rule it out of scope in writing.
+#
+# SHRUNK 2026-09-21: 20080506-1.c passes. It is `MAX ((unsigned int) MAX (i,
+# 0), 1)` — a macro nested in its OWN argument, which C11 6.10.3.1p1 expands
+# before substitution (the macro is hidden only for the rescan of its
+# replacement, 6.10.3.4p2). madc hid it for the argument pre-expansion too.
+# 1611 -> 1612 passed, 4 -> 3 compile-failed.
 
-# --- compile-failed (4) ---
-20080506-1.c
+# --- compile-failed (3) ---
 int-compare.c
 medce-1.c
 pr122000.c
+
+# SHRUNK 2026-09-22: bcp-1.c passes. It entered this list that same day and
+# left it hours later, and the round trip is the useful record.
+#
+# It tests __builtin_constant_p from both sides — bad0..bad10 must answer 0,
+# good0..good2 must answer 1 — calling each through a `volatile` fn-ptr table
+# so inlining cannot supply the answer. It had been "passing" for the wrong
+# reason: madc answered 0 for EVERY operand (the builtin was a preprocessor
+# macro whose body was literally `0`), so the good loop should have aborted —
+# but that loop's `(` follows a pending unary `!`, and the fn-ptr call arms
+# refused to form a call while any operator tighter than `=` was pending. The
+# call was DROPPED, the expression collapsed to `! (the function pointer)`,
+# never null, so abort() was skipped. Two bugs cancelling.
+#
+# 3c9adf420 fixed the call binding (a call is POSTFIX — the question is
+# adjacency, not a pending operator), which made the call real and exposed the
+# macro. The owner ruled the entry in while the real fix was written; the real
+# fix is __builtin_constant_p as a PARSE-TIME builtin asking madc's one
+# constant evaluator, so `(1234 + 45) & ~7` answers 1 and a variable, a
+# parameter, a call result, `&global` and `x[123456]` answer 0. gcc -O0 and
+# clang -O0 agree with madc on every case; tests/testbuiltinconstantp.mad
+# pins both halves.
 
 # --- runtime-failed (9) ---
 20010904-1.c

@@ -1,0 +1,1 @@
+mir.arg_memcpy is registered by the generator's block-argument copy path; the darwin ABI never routes this struct through it, so the asm-labelled import stays undefined and MIR_link raises instead of honouring the weak declaration. The collision this test pins is structurally a SysV-x86-64 event.

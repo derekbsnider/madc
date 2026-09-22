@@ -1,0 +1,68 @@
+/* A function-like macro call in ELABORATED-TYPE-SPECIFIER (tag) position.
+ * The preprocessor runs before the parser, so `struct NAME (char)` MUST
+ * expand — what follows struct/union/enum/class is a TAG, and a tag is
+ * never followed by a parameter list.
+ *
+ * Regression (2026-09-21): madc suppresses function-like macro expansion at
+ * a declaration head, so `#define bug(...)` above a later real
+ * `void bug(const char *, ...)` does not eat the declarator (madc's
+ * deliberate leniency for SMAUG; gcc rejects that pattern). The classifier
+ * counted `struct`/`class`/`enum` as a declaration head, and the escape
+ * hatch that re-enables expansion only fires when the macro ARGUMENTS do
+ * not look like a prototype's parameter list. MIR's mir-varr.h is built
+ * entirely on this shape:
+ *
+ *     #define VARR_T(T) typedef struct VARR (T) { ... } VARR (T)
+ *
+ * and VARR is instantiated over TYPE NAMES (char, int, size_t) — precisely
+ * the arguments that made the hatch decline. `union` was never listed, so
+ * it already behaved correctly: same construct, different keyword, opposite
+ * result. gcc -std=c17 and clang -std=c17 accept every form below.
+ *
+ * The NEGATIVE CONTROL is its own test: tests/testmacrodefhead.mad holds the
+ * `#define bug(...)` + later-real-declaration pattern the suppression exists
+ * for. gcc REJECTS that one (the macro eats the declarator) — it is a
+ * deliberate madc divergence, which is why it cannot live in this
+ * gcc-oracle-clean file. Both must pass.
+ */
+#include <stdio.h>
+
+#define CONCAT2(A, B) A##B
+#define TAG(T) CONCAT2 (TAG_, T)
+
+/* tag AND declarator-id both macro calls, argument is a type word */
+#define DEF_T(T) typedef struct TAG (T) { int x; } TAG (T)
+DEF_T (char);
+DEF_T (int);
+
+/* the other elaborated-type-specifier keywords */
+typedef union TAG (long) { int a; float b; } uni_t;
+typedef enum TAG (short) { E_ZERO = 0, E_SEVEN = 7 } enum_t;
+
+/* direct (unnested) macro, no space before the paren */
+#define DIRECT(T) DIRECT_##T
+typedef struct DIRECT(char) { int d; } direct_t;
+
+/* A cv-qualifier or storage-class specifier does not complete a type either,
+ * so the identifier after one is still in TYPE position. mir-varr.h has six
+ * `const VARR (char) * varr` parameters that stayed unexpanded on this. */
+static int get_x (const TAG (char) * p) { return p->x; }
+static TAG (int) g_slot;
+
+int main(void)
+{
+	TAG_char c;
+	TAG_int i;
+	uni_t u;
+	enum_t e = E_SEVEN;
+	direct_t d;
+
+	c.x = 1;
+	i.x = 2;
+	u.a = 4;
+	d.d = 8;
+	g_slot.x = 9;
+	printf("tag %d %d %d %d %d %d %d\n", c.x, i.x, u.a, (int)e, d.d,
+	       get_x(&c), g_slot.x);
+	return 0;
+}

@@ -6,16 +6,30 @@
 # lanes gate merges and releases. This script is the fast tier.
 #
 #   c-testsuite   ~4s     220 single-exec C programs, compile+run+stdout
-#   c-torture     ~4min   gcc.c-torture/execute, the standard-C conformance set
+#   c-torture     ~30s    gcc.c-torture/execute, the standard-C conformance set
+#   c2mir-tests   ~5s     the three corpora MIR ships beside our own backend
+#                         (new/ lacc/ havoc/) — MIR's author's own regression
+#                         tests against the constructs c2mir cares about
+#   gui           ~50s    tests/gui under Xvfb, JIT + exe + obj (builds
+#                         libmadcwebview; needs a host with xvfb-run)
+#   index-c       ~110s   kostya/index-c: one 16k-line self-verifying C program,
+#                         ~50 real-world tasks each checked against its own
+#                         checksum, run at -O2. Catches WRONG ANSWERS, which
+#                         the .expect suites are weakest at, and puts the
+#                         optimizer under those 50 oracles.
 #   gxx-c++11     ~85s    g++.dg compile-clean subset (a ROADMAP metric, never
 #                         a gate — owner ruling 2026-09-04 — but cheap, so it
 #                         is measured here rather than drifting)
 #
-# Total well under six minutes. The reason this exists: gcc c-torture had no
-# lane script and no ledger row, so nothing re-ran it for five weeks and it
-# drifted 1614 -> 1587 passing while eight other lanes stayed green, carrying
-# three standard-C regressions including a parser SIGSEGV. The suite was never
-# expensive — it was simply unowned.
+# MEASURED 2026-09-21 on the desktop container: 4 + 28 + 5 + 51 + 86 = under
+# three minutes for the whole tier, incremental webview build included.
+#
+# The reason this exists: gcc c-torture had no lane script and no ledger row,
+# so nothing re-ran it for five weeks and it drifted 1614 -> 1587 passing while
+# eight other lanes stayed green, carrying three standard-C regressions
+# including a parser SIGSEGV. The suite was never expensive — it was simply
+# unowned. `gui` was the same shape: a stage inside remote_build.sh with no
+# script and no row, so it is a script now (scripts/gui_lane.sh) and runs here.
 #
 # Each GREEN lane is recorded in the ledger, so `lane_ledger.sh check --commit`
 # reports the fast tier's freshness the same way --promote and --release report
@@ -67,7 +81,10 @@ run_lane() {
 echo "=== fast lanes ($(git rev-parse --short HEAD), $(date -u +%FT%TZ)) ==="
 run_lane c-testsuite c-testsuite yes bash scripts/c_testsuite_lane.sh
 run_lane c-torture   c-torture   yes bash scripts/c_torture_lane.sh
+run_lane c2mir-tests c2mir-tests yes bash scripts/c2mir_tests_lane.sh
+run_lane gui         gui         yes bash scripts/gui_lane.sh
 run_lane gxx-c++11   gxx-c++11   no  bash scripts/gxx_lane.sh
+run_lane index-c     index-c     yes bash scripts/index_c_lane.sh
 
 if [ "$rc_total" -ne 0 ]; then
 	echo "fast_lanes: RED — a gated fast lane failed above" >&2

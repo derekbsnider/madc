@@ -1218,6 +1218,22 @@ static int compound_type_specifier_flag(const std::string &w)
     return 0;
 }
 
+// C99 6.7.2p2 — a declaration's specifiers may INTERLEAVE type specifiers with
+// type QUALIFIERS in any order, so `unsigned const char` names the same type as
+// `const unsigned char`. The accumulator below reads a RUN of type specifiers;
+// a qualifier sitting between two of them used to end that run early, minting
+// the lone `unsigned` as `unsigned int` and leaving `const char` to arrive as a
+// second base type ("Expecting identifier after type").
+// uthash spells it exactly that way — `unsigned const char *_hj_key` in
+// HASH_JEN — so every HASH_FIND/HASH_ADD in a program using uthash failed.
+static bool compound_type_qualifier_word(const std::string &w)
+{
+    return w == "const" || w == "volatile" || w == "restrict"
+	|| w == "__const" || w == "__const__"
+	|| w == "__volatile" || w == "__volatile__"
+	|| w == "__restrict" || w == "__restrict__";
+}
+
 static bool expansion_is_compound_type_specifiers(const std::string &text, int &flags)
 {
     flags = 0;
@@ -2245,6 +2261,15 @@ void Program::inject_pending_auto_includes()
 // declarator and the parse fails. Skips pointer decorators; stops at
 // the first non-`*` token and classifies it as type / qualifier /
 // typedef-identifier (→ decl head) or anything else (→ not decl head).
+//
+// The question is whether a COMPLETE TYPE SPECIFIER has already been seen:
+// only then is the identifier a declarator-id. A tag keyword, a cv-qualifier
+// and a storage-class specifier all fail to complete one.
+//
+// An ELABORATED-TYPE-SPECIFIER keyword is not this shape. What follows
+// `struct` / `class` / `enum` / `union` is a TAG, and a tag is never
+// followed by a parameter list — so there is no declarator here to
+// protect, and gcc expands unconditionally in tag position.
 static bool looks_like_decl_head(const TokenStream &tokens)
 {
     for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
@@ -2254,11 +2279,22 @@ static bool looks_like_decl_head(const TokenStream &tokens)
 	TokenType tt = t->type();
 	if ( tid == TokenID::tkMul ) continue;
 	if ( tt == TokenType::ttDataType ) return true;
+	// An elaborated-type-specifier keyword puts the identifier in TAG
+	// position, which is never a declarator: `struct VARR (char)` is a
+	// macro call, not `TYPE name (params)`.
 	if ( tid == TokenID::tkSTRUCT || tid == TokenID::tkCLASS
-	  || tid == TokenID::tkENUM ) return true;
+	  || tid == TokenID::tkENUM || tid == TokenID::tkUNION ) return false;
+	// A cv-qualifier or storage-class specifier does NOT complete a type,
+	// so it cannot by itself put the identifier in declarator position —
+	// keep walking. `(const VARR (char) *p)` reaches the `(` and expands
+	// (the qualifier opened the parameter's TYPE); `char const bug(...)`
+	// reaches `char` and suppresses (the type was already complete, so
+	// `bug` is the declarator-id). Returning true here left six
+	// `const VARR (char) * varr` parameters unexpanded in mir-varr.h.
 	if ( tid == TokenID::tkCONST || tid == TokenID::tkEXTERN
 	  || tid == TokenID::tkSTATIC || tid == TokenID::tkREGISTER
-	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT ) return true;
+	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT
+	  || tid == TokenID::tkVOLATILE ) continue;
 	return false;
     }
     return false;
@@ -2531,6 +2567,31 @@ static bool macro_param_has_expanded_use(const Program::MacroDef &macro,
     return false;
 }
 
+// A macro argument's surrounding WHITESPACE is not part of the argument (C11
+// 6.10.3p10-11: the argument is a sequence of preprocessing tokens; the
+// whitespace around them is not one). NEWLINES count as whitespace here, and
+// that is the whole point: a call wrapped across lines hands the argument
+// after the break a leading "\n      ", and `##` then pastes across it.
+// mir.h's instruction-code enum is built out of REP8/REP10 calls wrapped
+// exactly that way, so `INSN_EL (\n        VURSHI64)` pasted as `MIR_` +
+// newline + `VURSHI64` — two tokens, and the enumerator MIR_VURSHI64 was
+// never declared at all. Three copies of this trim existed and all three
+// stopped at space and tab; this is the one owner.
+//
+// Trimming a newline out of the argument cannot move a line number: the
+// expansion is served from the pushback, and Source::get advances _lf/_cr
+// only for real buffer text (the physical newline was already counted when
+// the argument was read from the source).
+static void trim_macro_argument(std::string &s)
+{
+    while ( !s.empty() && (s.front() == ' ' || s.front() == '\t'
+			|| s.front() == '\n' || s.front() == '\r') )
+	s.erase(s.begin());
+    while ( !s.empty() && (s.back() == ' ' || s.back() == '\t'
+			|| s.back() == '\n' || s.back() == '\r') )
+	s.pop_back();
+}
+
 // The one token-to-source spelling owner lives with reconstruct_source below.
 // Macro argument pre-expansion also needs it: its temporary token stream must
 // round-trip literals without changing their value or type.
@@ -2576,10 +2637,19 @@ static size_t macro_fixed_param_count(const Program::MacroDef &macro)
     return macro.params.size();
 }
 
+// `arg_spans`, when non-NULL, receives the character ranges of the returned
+// text that came from substituting a macro PARAMETER's already-expanded
+// argument. Source::pushback_macro_spans turns them into one paint region
+// per range, which is what keeps an argument's expansion from expanding a
+// second time on the rescan without also silencing the body's own uses.
+// Only the EXPANDED substitution is recorded: a `#param` stringification
+// becomes a string literal (never rescanned for identifiers) and a raw
+// `##` operand was never macro-replaced, so neither can double-expand.
 static std::string expand_function_macro_body(
 	const Program::MacroDef &macro,
 	const std::vector<std::string> &raw_args,
-	const std::vector<std::string> &expanded_args)
+	const std::vector<std::string> &expanded_args,
+	std::vector<Source::ArgSpan> *arg_spans = NULL)
 {
     std::map<std::string, std::string> raw_params;
     std::map<std::string, std::string> expanded_params;
@@ -2663,8 +2733,17 @@ static std::string expand_function_macro_body(
 		expanded_params.find(name);
 	    if ( value != expanded_params.end() )
 	    {
-		const std::string &sub = macro_param_use_is_raw(tokens, i)
+		bool raw_use = macro_param_use_is_raw(tokens, i);
+		const std::string &sub = raw_use
 		    ? raw_params[name] : value->second;
+		if ( arg_spans && !raw_use && !sub.empty() )
+		{
+		    Source::ArgSpan span;
+		    span.off = expanded.size();
+		    span.len = sub.size();
+		    span.param = name;
+		    arg_spans->push_back(span);
+		}
 		expanded += sub;
 		if ( after_paste && sub.empty() )
 		    expanded += ' ';	// placemarker: separate the next token
@@ -3426,13 +3505,11 @@ void Program::_tokenizer_init()
     // (The IEEE quiet-comparison builtin family — isgreater/isless/
     // isunordered/… — is defined further below; quiet `<`/`>` are already
     // their correct lowering.)
-    // __builtin_constant_p(expr) — always return 0 (not a constant)
-    {
-	MacroDef m;
-	m.params = {"__expr"};
-	m.body = "0";
-	macro_map["__builtin_constant_p"] = m;
-    }
+    // __builtin_constant_p is a PARSER builtin (parser.cpp expression arm),
+    // not a macro: the answer depends on the PARSED operand, which the
+    // preprocessor cannot see. It used to expand to `0` here, which is wrong
+    // for every literal — see the parser arm for the gcc contract it must
+    // meet (bcp-1.c asserts 1 for a literal and 0 for a variable).
     // __builtin_choose_expr(cond, true_expr, false_expr) chooses by a
     // compile-time integer condition. The condition is already reduced
     // for the current GCC execute-suite use by __builtin_constant_p.
@@ -7953,8 +8030,21 @@ TokenBase *Program::_getToken()
 		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[sid];
+		    // Learn what argument paint covers the TEXT this invocation is
+		    // about to consume: a painted argument region of an enclosing
+		    // replacement drains as we read, so the paint must be collected
+		    // while it is being served (Source::_served_arg_paint).
+		    source.reset_served_arg_paint();
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
+		    // Per-ARGUMENT, parallel to `args`: the paint of the regions that
+		    // served THIS argument's characters. Per-invocation is too coarse
+		    // and re-broke math.h: __MATHDECL (_Mdouble_, function, suffix,
+		    // args) reads its first argument from __MATHCALL's unpainted BODY
+		    // and its later ones from painted argument regions, so a union
+		    // over the whole call painted `_Mdouble_` and left every math
+		    // declaration as `extern _Mdouble_ acos (double __x)`.
+		    std::vector<std::set<std::string> > arg_served;
 		    std::string arg;
 		    PpGroupScan group;
 		    group.step('(', source.good() ? source.peek() : '\0');
@@ -8056,10 +8146,10 @@ TokenBase *Program::_getToken()
 			}
 			else if ( structural && mc == ',' && group.at_argument_level() )
 			{
-			    // trim whitespace from arg
-			    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
-			    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+			    trim_macro_argument(arg);	// the ONE trim owner
 			    args.push_back(arg);
+			    arg_served.push_back(source.served_arg_paint());
+			    source.reset_served_arg_paint();
 			    arg.clear();
 			}
 			else arg += mc;
@@ -8133,10 +8223,13 @@ TokenBase *Program::_getToken()
 			    source.pushback(preserved);
 		    }
 		    // last argument
-		    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
-		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+		    trim_macro_argument(arg);		// the ONE trim owner
 		    if ( !arg.empty() || !args.empty() )
+		    {
 			args.push_back(arg);
+			arg_served.push_back(source.served_arg_paint());
+		    }
+		    source.reset_served_arg_paint();
 		    if ( looks_like_decl_head(tokens)
 		      && decl_head_macro_args_look_like_prototype(args) )
 		    {
@@ -8164,6 +8257,20 @@ TokenBase *Program::_getToken()
 		    // Keep both forms because one parameter may have both kinds of
 		    // occurrence in the same body.
 		    std::vector<std::string> raw_args = args;
+		    // C11 6.10.3.4p2 blue paint, carried across the argument
+		    // boundary. Each argument is pre-expanded in a THROWAWAY
+		    // Source below; its frames (and with them its paint) die
+		    // when that Source does, so the outer replacement's rescan
+		    // used to re-expand a self-referential macro the argument
+		    // had already expanded once: `#define str_tab
+		    // c2m_ctx->str_tab` reached `HTAB_CREATE (T, str_tab, ...)`
+		    // as `&(c2m_ctx->c2m_ctx->str_tab)` — 551 such double
+		    // expansions in c2mir.c alone, 109 of them hard errors
+		    // ("no member named 'c2m_ctx'"). Collect what each argument
+		    // consumed and hand it to the replacement's frame.
+		    // Per-PARAMETER, not one union: the paint has to be attachable
+		    // to the range each argument was substituted into.
+		    std::map<std::string, std::set<std::string> > param_paint;
 		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
 		    size_t fixed_param_count = macro_fixed_param_count(macro);
 		    for ( size_t i = 0; i < args.size(); ++i )
@@ -8174,6 +8281,15 @@ TokenBase *Program::_getToken()
 			    param = macro.params[i];
 			else if ( macro.variadic )
 			    param = has_named_varargs ? macro.variadic_param : "__VA_ARGS__";
+			// The paint that covered THIS argument's own characters travels
+			// with them into the replacement — the region that served the
+			// text has usually drained and popped by now. Recorded before
+			// the skips below so it lands even when the argument needs no
+			// pre-expansion of its own.
+			if ( !param.empty() && i < arg_served.size()
+			  && !arg_served[i].empty() )
+			    param_paint[param].insert(arg_served[i].begin(),
+						      arg_served[i].end());
 			if ( param.empty()
 			  || !macro_param_has_expanded_use(macro, param) )
 			    continue;
@@ -8197,7 +8313,41 @@ TokenBase *Program::_getToken()
 			Source saved = std::move(source);
 			source = Source();
 			source.str(a);
-			source.inherit_macro_disables(saved, word);
+			// Inherit the ENCLOSING expansions' paint — the frames
+			// mid-rescan in `saved` — but NOT this macro's own
+			// name. C11 6.10.3.1p1: an argument is macro-replaced
+			// before substitution, as if it formed the rest of the
+			// file; the macro being expanded becomes hidden only
+			// for the RESCAN of its replacement (6.10.3.4p2), which
+			// pushback_macro below is what establishes. Hiding it
+			// here too silently dropped the inner expansion of a
+			// macro nested in its own argument —
+			// `NL_HEAD (NL_HEAD (r->u.ops)->u.ops)` in c2mir.c came
+			// out with the inner NL_HEAD unexpanded, and the `->`
+			// then had no pointer to read. Runaway recursion is
+			// still bounded: the frame-depth backstop above turns
+			// any missed paint into a clean diagnostic.
+			// This argument's OWN region paint governs its pre-expansion:
+			// names already expanded in the text must not expand twice
+			// (`OUTER(tab)` hands GET the already-expanded `ctx->tab`),
+			// while a sibling argument's paint must not reach it (math.h's
+			// __MATHDECL takes `_Mdouble_` from the body and the arg list
+			// from a painted region in the same call).
+			// param_paint is keyed by PARAMETER, and every comma-separated
+			// piece of a variadic tail shares ONE key (__VA_ARGS__), so it
+			// also holds what EARLIER siblings expanded — exactly the
+			// sibling paint the contract above excludes. Seeding from it
+			// hid a macro a previous piece had legitimately expanded:
+			// macOS <sys/qos.h> spells six enumerators as separate
+			// variadic pieces, each calling __QOS_CLASS_AVAILABLE(), and
+			// only the FIRST expanded — the literal macro name then sat in
+			// enumerator position ("Expecting identifier in enum") and took
+			// every darwin test that reaches a real SDK header with it.
+			// arg_served is per-ARGUMENT, which is what this contract means.
+			std::set<std::string> own_region_paint;
+			if ( i < arg_served.size() )
+			    own_region_paint = arg_served[i];
+			source.inherit_macro_disables(saved, "", &own_region_paint);
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )
@@ -8212,13 +8362,32 @@ TokenBase *Program::_getToken()
 				    break;
 			    }
 			}
+			param_paint[param].insert(
+			    source.expanded_macro_names().begin(),
+			    source.expanded_macro_names().end());
 			source = std::move(saved);
 			a = expanded_arg;
 		    }
+		    std::vector<Source::ArgSpan> arg_spans;
 		    std::string expanded =
-			expand_function_macro_body(macro, raw_args, args);
+			expand_function_macro_body(macro, raw_args, args,
+						   &arg_spans);
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
-		    source.pushback_macro(expanded, word);
+		    // Hide each argument's consumed names WITHIN THE RANGE that
+		    // argument was substituted into, and nowhere else. The body's
+		    // own occurrences of the same name sit outside every such
+		    // range and still expand, so the two cases no longer have to
+		    // be told apart by inspecting the body: `#define ALIGN(x)
+		    // ((x) + PAGE_SIZE - 1)` invoked as `ALIGN(PAGE_SIZE)` and
+		    // glibc's __MATHCALL_VEC -> __MATHCALL -> `_Mdouble_` are
+		    // both body uses, while mir-gen.c's `DEBUG (4, { fprintf
+		    // (debug_file, ...); })` over `#define debug_file
+		    // gen_ctx->debug_file` is an argument use. The old
+		    // whole-replacement paint had to GUESS between them (and
+		    // answered "do not paint" whenever the body mentioned the
+		    // name, which left the argument to double-expand).
+		    source.pushback_macro_spans(expanded, word, arg_spans,
+						param_paint);
 		    return getToken();
 		}
 			// #define substitution: inject the define value into the source stream
@@ -8391,6 +8560,7 @@ TokenBase *Program::_getToken()
 		    };
 		    // Read ahead, accumulating type specifier keywords
 		    std::vector<std::string> consumed;
+		    std::vector<std::string> deferred_quals;
 		    while ( true )
 		    {
 			int ws_count = 0;
@@ -8400,6 +8570,15 @@ TokenBase *Program::_getToken()
 			{
 			    counter += flag;
 			    consumed.push_back(w);
+			}
+			else if ( compound_type_qualifier_word(w) )
+			{
+			    // Interleaved qualifier: keep accumulating the
+			    // type specifiers around it, and hand the
+			    // qualifier back AFTER the minted type token
+			    // (see below) so it lands as a trailing
+			    // qualifier the parser already reads.
+			    deferred_quals.push_back(w);
 			}
 			else if ( !w.empty()
 			       && define_map.find(w) != define_map.end() )
@@ -8427,6 +8606,24 @@ TokenBase *Program::_getToken()
 				source.pushback_reread(std::string(" "));
 			    break;
 			}
+		    }
+		    // Hand back any interleaved qualifiers. _pushback PREPENDS,
+		    // so pushing them last puts them ahead of whatever the loop
+		    // already gave back: `unsigned const char *p` re-reads as
+		    // `const` then `*p` after the `unsigned char` token, i.e.
+		    // the trailing-qualifier spelling `unsigned char const *p`,
+		    // which is the SAME type (6.7.2p2) and a form the parser
+		    // already accepts. One string, so their relative order is
+		    // preserved without depending on push order.
+		    if ( !deferred_quals.empty() )
+		    {
+			std::string qtext;
+			for ( const std::string &q : deferred_quals )
+			{
+			    qtext += ' ';
+			    qtext += q;
+			}
+			source.pushback_reread(qtext);
 		    }
 		    // Resolve accumulated type specifiers to DataDef
 		    int normalized_counter = counter & ~TS_COMPLEX;
@@ -8803,11 +9000,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    }
 		    if ( !marg.empty() || !margs.empty() )
 			margs.push_back(marg);
-		    auto trim = [](std::string &s) {
-			while ( !s.empty() && (s.front()==' '||s.front()=='\t') ) s.erase(s.begin());
-			while ( !s.empty() && (s.back()==' '||s.back()=='\t') ) s.pop_back();
-		    };
-		    for ( auto &a : margs ) trim(a);
+		    for ( auto &a : margs ) trim_macro_argument(a);
 		    std::vector<std::string> expanded_args = margs;
 		    size_t fixed = macro_fixed_param_count(m);
 		    for ( size_t ai = 0; ai < expanded_args.size(); ++ai )

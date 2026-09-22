@@ -1,0 +1,166 @@
+/* C11 6.10.3.4p2 — a macro name found while rescanning its OWN replacement
+ * is not replaced. The self-referential member-accessor idiom depends on it:
+ *
+ *     #define str_tab c2m_ctx->str_tab
+ *
+ * `str_tab` must expand exactly ONCE, however deeply it is nested.
+ *
+ * madc's paint is per-FRAME text, not per-token: an expansion is pushed back
+ * with the expanded macro's name attached, and that name stays hidden while
+ * the text drains. A function-like macro's ARGUMENT, though, is pre-expanded
+ * in a throwaway Source whose frames die before the outer replacement is
+ * pushed — so the paint was lost at that boundary and the rescan expanded the
+ * name a second time:
+ *
+ *     HTAB_CREATE (tab_str_t, str_tab, ...)
+ *       ->  (HTAB_tab_str_t_create (&(c2m_ctx->c2m_ctx->str_tab), ...))
+ *
+ * 551 such double expansions in c2mir.c alone, 109 of them hard errors. The
+ * frame now carries the set of names the argument pre-expansion consumed.
+ *
+ * CLOSED (was KNOWN-OPEN here): a name that the argument expanded AND the
+ * macro body spells for itself used to be indistinguishable, because the
+ * paint covered the WHOLE replacement — so it was deliberately left unhidden
+ * to protect the body's own use, and the argument double-expanded.
+ *
+ *     #define both(x) ((x) + tab)    // body mentions `tab` too
+ *     both(tab)                      // was ctx->ctx->tab + ctx->tab
+ *
+ * The paint is now per REGION: each argument-substituted range carries that
+ * argument's paint, body text carries none. The two uses are different text,
+ * so neither has to be guessed at, and the 46-line "does the body mention
+ * it" heuristic this replaced is gone. gcc -std=c17 and clang -std=c17
+ * accept and agree on every form asserted below.
+ *
+ * The second half of this file is the OTHER side of that filter, and it is
+ * the reason the filter must be TRANSITIVE. glibc's math.h declares every
+ * function through __MATHCALL_VEC, whose body does NOT mention `_Mdouble_`
+ * but whose __MATHCALL does:
+ *
+ *     #define __MATHCALL_VEC(function, suffix, args) \
+ *       __SIMD_DECL (...) __MATHCALL (function, suffix, args)
+ *     #define __MATHCALL(function, suffix, args) \
+ *       __MATHDECL (_Mdouble_, function, suffix, args)
+ *
+ * The argument `(_Mdouble_ __x)` expands `_Mdouble_`, so a one-level "does
+ * the body mention it" filter paints the name and the declaration comes out
+ * as `extern _Mdouble_ acos (double __x)`. That mistake turned 109 c2mir.c
+ * errors into 150 math.h ones — every math declaration in every C program.
+ */
+#include <stdio.h>
+#include <math.h>
+
+struct ctx_s {
+	int tab;
+	int other;
+	struct sub_s *sub;
+	const int *arr;
+	int lvl;
+};
+struct sub_s {
+	int deep;
+};
+
+static struct ctx_s *ctx;
+static struct sub_s subject = { 7 };
+static const int numbers[3] = { 4, 5, 6 };
+static struct ctx_s subject_ctx = { 1, 2, &subject, numbers, 3 };
+
+/* the idiom: name == member name */
+#define tab ctx->tab
+#define other ctx->other
+#define sub ctx->sub
+/* two levels of it: `deep` goes through `sub`, which is itself self-referential */
+#define deep sub->deep
+
+/* function-like macros that take those names as ARGUMENTS */
+#define ADDR(V) (&(V))
+#define GET(V) (V)
+#define SUM(A, B) ((A) + (B))
+#define OUTER(V) GET (V)		/* nested function-like, same argument */
+
+/* the math.h shape: the name the argument expands is spelled by a macro the
+ * body REACHES, not by the body itself. It must still expand. */
+#define WIDE double
+#define DECL1(type, fn, args) extern type fn args
+#define DECL(type, fn, args) DECL1 (type, fn, args)
+#define CALL(fn, args) DECL (WIDE, fn, args)		/* mentions WIDE */
+#define SIMD_NOTE					/* nothing */
+#define CALLV(fn, args) SIMD_NOTE CALL (fn, args)	/* does NOT mention it */
+
+CALL (direct_decl, (WIDE x));
+CALLV (vec_decl, (WIDE x));
+
+double direct_decl (double x) { return x + 1; }
+double vec_decl (double x) { return x + 2; }
+
+/* THREE levels deep, the shape every `assert (VARR_GET (char, cs->ln, 0) ==
+ * ...)` in c2mir.c has: the self-referential name expands inside the
+ * argument of a nested function-like macro, inside the argument of an
+ * assert-like macro that also stringifies it. Each level pre-expands in its
+ * own throwaway Source, so the paint has to be reported UPWARD at every
+ * level, not just recorded at the innermost one. */
+#define arr ctx->arr
+#define VCAT3(A, B, C) A##B##C
+#define VOP(T, OP) VCAT3 (v_, T, OP)
+#define VGET(T, V, I) (VOP (T, get) ((V), (I)))
+#define CHECK(expr) ((expr) ? 1 : (printf ("bad: %s\n", #expr), 0))
+
+static int v_intget (const int *a, int i) { return a[i]; }
+
+/* a macro whose argument is another call of ITSELF */
+#define TWICE(X) ((X) + (X))
+
+/* THE OVERLAP, now asserted: the body spells `tab` for itself AND the
+ * argument expands it. Both must expand exactly ONCE. */
+#define both(x) ((x) + tab)
+/* the control the overlap must not cost: the body's own PAGE_SIZE still
+ * expands when the ARGUMENT is that same name */
+#define PAGE_SIZE 4
+#define ALIGN(x) ((x) + PAGE_SIZE - 1)
+
+/* mir-gen.c's DEBUG shape: a self-referential accessor used inside a
+ * function-like macro's brace-block argument, where the macro body ALSO
+ * tests the same name. 49 hard errors in mir-gen.c were this one construct
+ * ("no member named 'gen_ctx'" — i.e. gen_ctx->gen_ctx->debug_file). */
+#define lvl ctx->lvl
+#define WHEN(l, code) { if (lvl >= l) code; }
+
+int main(void)
+{
+	ctx = &subject_ctx;
+
+	printf("self %d %d %d %d %d %d %d\n",
+	       tab,			/* direct: already worked */
+	       *ADDR (tab),		/* through an argument: was ctx->ctx->tab */
+	       GET (other),
+	       SUM (tab, other),
+	       OUTER (tab),		/* two function-like levels */
+	       deep,			/* self-ref inside a self-ref */
+	       GET (deep));
+	printf("decl %.0f %.0f %.0f\n", direct_decl (1.0), vec_decl (1.0),
+	       sqrt (16.0));
+	printf("deep %d %d %d\n", VGET (int, arr, 1),
+	       CHECK (VGET (int, arr, 1) == 5),
+	       CHECK (VGET (int, arr, 2) == 6));
+	/* A macro nested in its OWN argument. C11 6.10.3.1p1 expands the
+	 * argument before substitution, as if it were the rest of the file —
+	 * the macro is hidden only for the RESCAN of its replacement. madc
+	 * hid it for the argument's pre-expansion too, so the inner call
+	 * stayed literal: c2mir.c's
+	 *     NL_HEAD (NL_HEAD (r->u.ops)->u.ops)
+	 * kept an unexpanded NL_HEAD whose `->` had no pointer to read. */
+	printf("nest %d %d\n", TWICE (TWICE (2)),
+	       CHECK (TWICE (TWICE (2)) == 8));
+	/* the overlap and its control */
+	printf("ovl %d %d %d\n", both (tab), ALIGN (PAGE_SIZE), both (2));
+	{
+		int hits = 0;
+		/* the DEBUG shape: `lvl` in the ARGUMENT is already expanded,
+		 * the one in the body's `if` is the body's own */
+		WHEN (1, { hits += lvl; });
+		WHEN (9, { hits += 100; });
+		printf("dbg %d\n", hits);
+	}
+	return 0;
+}

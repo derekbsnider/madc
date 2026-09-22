@@ -1,0 +1,112 @@
+/* C11 6.5.2 — a function call is a POSTFIX-expression. It binds tighter than
+ * every binary operator, so a pending binary operator says NOTHING about
+ * whether the `(` now being read opens an argument list:
+ *
+ *     d->ok && d->rdr (&t, 1, d->aux) == 0
+ *
+ * is `d->ok && ((d->rdr (&t, 1, d->aux)) == 0)`. madc's member-fn-ptr call arm
+ * gated on "has any tighter-than-assignment operator been pushed onto opStack
+ * since the member was parsed" — using a PENDING OPERATOR as a proxy for the
+ * ADJACENCY question "does this `(` follow the member's own name". With `&&`
+ * pending the arm declined, the `(` became a grouping paren, and the argument
+ * list was parsed as a comma expression:
+ *
+ *   - with a trailing comparison, the operator count no longer matched the
+ *     operand count and the parse died on "Malformed expression: 2 operands
+ *     with no operator between them" (mir-reduce.h:430, the last defect
+ *     blocking MIR's mir.c);
+ *   - WITHOUT one it was a SILENT WRONG ANSWER: the call was dropped and the
+ *     function POINTER itself became the operand, so `d->ok + d->rdr (...)`
+ *     returned a garbage address instead of the sum.
+ *
+ * The adjacency question already had one owner in the same function —
+ * paren_binds_to_receiver (prevToken is the operand's own last token: an
+ * identifier, a `)` or a `]`) — written for the functor arm with the note
+ * "We do NOT gate on opstack_has_pending_op". The member arm and the
+ * subscript arm are now that owner's callers too.
+ *
+ * CONTROLS, in this file on purpose — an overshooting fix must fail here:
+ *   (grp)  a grouping paren after a member fn-ptr STAYS a grouping. This is
+ *          the exact shape the old gate cited as its reason (`ch->fn &&
+ *          (something_else)`): prevToken is `&&`, not the member's name, so
+ *          the `(` is NOT a call and `p->rdr` is read as a truth value.
+ *   (lhs)  a member fn-ptr on the LEFT of `=` is not callable through the
+ *          RHS's opening paren: `p->rdr = (gate ? a : b)` assigns, and the
+ *          value asserted proves WHICH function was assigned.
+ *   (par)  the parenthesized designator form `(p->rdr) (args)` is a call —
+ *          prevToken is `)`, which the adjacency test accepts.
+ *
+ * gcc -std=c17 and clang -std=c17 accept every form below and agree on the
+ * numbers asserted.
+ */
+#include <stdio.h>
+
+typedef int (*reader_t) (void *b, int l, void *x);
+
+struct f {
+	int ok;
+	reader_t rdr;
+	void *aux;
+};
+
+static int zero_reader (void *b, int l, void *x)
+{
+	(void)b; (void)l; (void)x;
+	return 0;
+}
+
+static int one_reader (void *b, int l, void *x)
+{
+	(void)b; (void)l; (void)x;
+	return 1;
+}
+
+static int add_reader (void *b, int l, void *x)
+{
+	(void)b; (void)x;
+	return l + 40;
+}
+
+int main (void)
+{
+	int t = 0;
+	int gate = 1;
+	struct f d;
+	struct f *p = &d;
+	reader_t tab[2];
+
+	d.ok = 1;
+	d.aux = &t;
+
+	/* the reported hard error: binop + member fn-ptr call + comparison */
+	d.rdr = zero_reader;
+	int a = p->ok && p->rdr (&t, 1, p->aux) == 0;
+
+	/* the silent half: the call's VALUE, with a binop pending and no compare */
+	d.rdr = add_reader;
+	int b = p->ok + p->rdr (&t, 2, p->aux);
+
+	/* the `.` form is the same defect, not an arrow-only one */
+	int c = d.ok * d.rdr (&t, 5, d.aux);
+
+	/* the subscript arm shared the gate, and was silently wrong too */
+	tab[0] = zero_reader;
+	tab[1] = add_reader;
+	int e = gate && tab[0] (&t, 1, &t) == 0;
+	int f = gate + tab[1] (&t, 7, &t);
+
+	/* CONTROL grp: `&&` then `(` is a grouping paren, NOT a call */
+	int grp = p->rdr && (gate + 1) == 2;
+
+	/* CONTROL lhs: the `(` after `=` opens the RHS, never a call */
+	p->rdr = (gate ? one_reader : zero_reader);
+	int lhs = p->rdr (&t, 9, p->aux);
+
+	/* CONTROL par: `(p->rdr) (args)` IS a call — prevToken is `)` */
+	d.rdr = add_reader;
+	int par = gate + (p->rdr) (&t, 3, p->aux);
+
+	printf ("cb %d %d %d %d %d\n", a, b, c, e, f);
+	printf ("ctl %d %d %d\n", grp, lhs, par);
+	return 0;
+}

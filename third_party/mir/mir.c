@@ -4619,9 +4619,26 @@ MIR_item_t _MIR_builtin_func (MIR_context_t ctx, MIR_module_t module, const char
 
   name = _MIR_uniq_string (ctx, name);
   if ((ref_item = item_tab_find (ctx, name, &environment_module)) != NULL) {
-    if (ref_item->item_type != MIR_import_item || ref_item->addr != addr)
+    if (ref_item->item_type != MIR_import_item)
       MIR_get_error_func (ctx) (MIR_repeated_decl_error,
                                 "_MIR_builtin_func: func %s has already another address", name);
+    /* An IMPORT of this name may already be bound: the module being compiled
+       can legitimately reference a generator helper by its asm label, which is
+       exactly what MIR's own mir-debug.c does
+       (`extern char mir_objload_arg_memcpy asm ("mir.arg_memcpy")`). That is
+       not a conflicting definition -- it is the same entity named twice, and
+       the BUILTIN registration is the authoritative one, because the address
+       here is what the generator will actually call. In object mode the
+       address the link resolver supplied is a sentinel nothing ever reads, so
+       adopting ADDR cannot change behaviour; in JIT mode it repoints the
+       reference at the helper it always meant. A non-import item with this
+       name IS a real conflict and still raises.
+       Without this, any front end that implements asm labels faithfully (gcc
+       does, and so does madc) cannot compile MIR's own sources: the import is
+       bound first, then the generator needs the helper and the two collide.
+       c2mir never hit it only because it parses asm labels and discards them,
+       so its reference keeps the ORIGINAL identifier. */
+    ref_item->addr = addr;
   } else {
     curr_module = &environment_module;
     /* Use import for builtin func: */
@@ -4633,12 +4650,16 @@ MIR_item_t _MIR_builtin_func (MIR_context_t ctx, MIR_module_t module, const char
     curr_module = saved_module;
   }
   if ((item = item_tab_find (ctx, name, module)) != NULL) {
-    if (item->item_type != MIR_import_item || item->addr != addr || item->ref_def != ref_item)
+    if (item->item_type != MIR_import_item)
       MIR_get_error_func (
         ctx) (MIR_repeated_decl_error,
               "_MIR_builtin_func: func name %s was already defined differently in the "
               "module",
               name);
+    /* Same case, one level down: the module's OWN import of the name is
+       re-pointed at the environment item the builtin owns. */
+    item->addr = ref_item->addr;
+    item->ref_def = ref_item;
   } else {
     curr_module = module;
     item = new_export_import_forward (ctx, name, MIR_import_item, "import", FALSE);
