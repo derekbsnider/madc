@@ -18,17 +18,18 @@
  * 551 such double expansions in c2mir.c alone, 109 of them hard errors. The
  * frame now carries the set of names the argument pre-expansion consumed.
  *
- * KNOWN-OPEN, and this file is where it is written down: a name that the
- * argument expanded AND the macro body spells for itself cannot be told
- * apart in a per-frame paint, so it is deliberately NOT hidden (otherwise
- * `#define ALIGN(x) ((x) + PAGE_SIZE - 1)` invoked as `ALIGN(PAGE_SIZE)`
- * would lose the body's own PAGE_SIZE). In that overlap the pre-fix double
- * expansion survives:
+ * CLOSED (was KNOWN-OPEN here): a name that the argument expanded AND the
+ * macro body spells for itself used to be indistinguishable, because the
+ * paint covered the WHOLE replacement — so it was deliberately left unhidden
+ * to protect the body's own use, and the argument double-expanded.
  *
- *     #define both(x) x + tab        // body mentions `tab`
- *     both(tab)                      // -> ctx->ctx->tab + ctx->tab
+ *     #define both(x) ((x) + tab)    // body mentions `tab` too
+ *     both(tab)                      // was ctx->ctx->tab + ctx->tab
  *
- * Closing it needs per-token hide sets. gcc -std=c17 and clang -std=c17
+ * The paint is now per REGION: each argument-substituted range carries that
+ * argument's paint, body text carries none. The two uses are different text,
+ * so neither has to be guessed at, and the 46-line "does the body mention
+ * it" heuristic this replaced is gone. gcc -std=c17 and clang -std=c17
  * accept and agree on every form asserted below.
  *
  * The second half of this file is the OTHER side of that filter, and it is
@@ -54,6 +55,7 @@ struct ctx_s {
 	int other;
 	struct sub_s *sub;
 	const int *arr;
+	int lvl;
 };
 struct sub_s {
 	int deep;
@@ -62,7 +64,7 @@ struct sub_s {
 static struct ctx_s *ctx;
 static struct sub_s subject = { 7 };
 static const int numbers[3] = { 4, 5, 6 };
-static struct ctx_s subject_ctx = { 1, 2, &subject, numbers };
+static struct ctx_s subject_ctx = { 1, 2, &subject, numbers, 3 };
 
 /* the idiom: name == member name */
 #define tab ctx->tab
@@ -109,6 +111,21 @@ static int v_intget (const int *a, int i) { return a[i]; }
 /* a macro whose argument is another call of ITSELF */
 #define TWICE(X) ((X) + (X))
 
+/* THE OVERLAP, now asserted: the body spells `tab` for itself AND the
+ * argument expands it. Both must expand exactly ONCE. */
+#define both(x) ((x) + tab)
+/* the control the overlap must not cost: the body's own PAGE_SIZE still
+ * expands when the ARGUMENT is that same name */
+#define PAGE_SIZE 4
+#define ALIGN(x) ((x) + PAGE_SIZE - 1)
+
+/* mir-gen.c's DEBUG shape: a self-referential accessor used inside a
+ * function-like macro's brace-block argument, where the macro body ALSO
+ * tests the same name. 49 hard errors in mir-gen.c were this one construct
+ * ("no member named 'gen_ctx'" — i.e. gen_ctx->gen_ctx->debug_file). */
+#define lvl ctx->lvl
+#define WHEN(l, code) { if (lvl >= l) code; }
+
 int main(void)
 {
 	ctx = &subject_ctx;
@@ -135,5 +152,15 @@ int main(void)
 	 * kept an unexpanded NL_HEAD whose `->` had no pointer to read. */
 	printf("nest %d %d\n", TWICE (TWICE (2)),
 	       CHECK (TWICE (TWICE (2)) == 8));
+	/* the overlap and its control */
+	printf("ovl %d %d %d\n", both (tab), ALIGN (PAGE_SIZE), both (2));
+	{
+		int hits = 0;
+		/* the DEBUG shape: `lvl` in the ARGUMENT is already expanded,
+		 * the one in the body's `if` is the body's own */
+		WHEN (1, { hits += lvl; });
+		WHEN (9, { hits += 100; });
+		printf("dbg %d\n", hits);
+	}
 	return 0;
 }

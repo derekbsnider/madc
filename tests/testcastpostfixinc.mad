@@ -1,0 +1,58 @@
+/* C11 6.5.2 / 6.5.4 — postfix `++`/`--` is part of the POSTFIX-expression,
+ * and a cast's operand is a unary-expression. So
+ *
+ *     (int) obj->n_syms++
+ *
+ * means `(int)(obj->n_syms++)`: the member increments and the OLD value is
+ * cast. madc built `((int)obj->n_syms)++` instead — cast first, increment
+ * second — which is not an lvalue, so c2mir refused it with "lvalue required
+ * as left operand of assignment".
+ *
+ * Found by compiling MIR's own mir-debug.c, whose line 1324 is exactly
+ * `return (int) obj->n_syms++;`. It was the single defect left in that
+ * translation unit.
+ *
+ * The same rule is already applied one arm over for the deref operand
+ * (`*(*x)++` is `*(((*x)++))`, parser.cpp) — this is that rule for the cast
+ * operand, hooked at the ONE site that builds the cast node so every operand
+ * form is covered.
+ *
+ * CONTROLS, in this file on purpose:
+ *   - PREFIX `(int) ++plain` was never broken and must stay put: there the
+ *     increment really is inside the cast's operand already.
+ *   - `((int) plain)` with no increment, and a cast of a parenthesized
+ *     increment, must be unchanged.
+ *   - the cast RESULT of a named C++ cast still takes a trailing postfix
+ *     chain — that is a different rule and lives in its own test.
+ *
+ * gcc -std=c17 and clang -std=c17 both print the .expect line.
+ */
+#include <stdio.h>
+
+struct o { unsigned long n_syms; };
+
+static struct o obj = { 5 };
+static unsigned long plain = 9;
+static long counter = 100;
+
+int main(void)
+{
+	struct o *p = &obj;
+
+	/* the mir-debug.c shape, through `.` and through `->` */
+	int a = (int) obj.n_syms++;
+	int b = (int) p->n_syms++;
+	/* a plain scalar, and the decrement twin */
+	int c = (int) plain++;
+	int d = (int) counter--;
+	/* CONTROL: prefix — the increment is already the operand */
+	int e = (int) ++plain;
+	/* CONTROL: no increment at all */
+	int f = (int) plain;
+	/* CONTROL: the increment explicitly parenthesized inside the cast */
+	int g = (int) (counter--);
+
+	printf("cpi %d %d %d %d %d %d %d %lu %ld\n",
+	       a, b, c, d, e, f, g, obj.n_syms, counter);
+	return 0;
+}
