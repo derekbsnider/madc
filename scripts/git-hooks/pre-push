@@ -30,7 +30,11 @@ cd "$(git rev-parse --show-toplevel)"
 
 mode=""
 pushing=""
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# A DELETE sends an all-zero local sha. There is no content to test and
+	# no lane can speak for it, so deleting a branch must never be gated —
+	# a stale lane would otherwise make dead branches undeletable.
+	case "$local_sha" in *[!0]*) ;; *) continue;; esac
 	case "$remote_ref" in
 		refs/heads/develop) [ "$mode" != "--release" ] && mode=--promote;;
 		refs/heads/master) mode=--release;;
