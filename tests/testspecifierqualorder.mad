@@ -1,0 +1,57 @@
+/* C99 6.7.2p2 — a declaration's specifiers may INTERLEAVE type specifiers with
+ * type QUALIFIERS in any order. `unsigned const char`, `const unsigned char`
+ * and `unsigned char const` all name the same type.
+ *
+ * madc's lexer resolves a RUN of type-specifier words with a bitmap
+ * accumulator, chibicc-style, so that `unsigned long long int` and
+ * `long unsigned int long` agree. A QUALIFIER in the middle of that run ended
+ * it early: the lone `unsigned` minted as `unsigned int`, and the following
+ * `const char` then arrived as a SECOND base type —
+ * "Expecting identifier after type", pointing at the `const`.
+ *
+ * The run now reads past an interleaved qualifier and hands it back AFTER the
+ * minted type token, i.e. as the trailing-qualifier spelling, which is the
+ * same type and a form the parser already accepted (the `r` line below was
+ * always fine, which is what made the failure look arbitrary).
+ *
+ * Found by compiling kostya/index-c, a 16k-line self-verifying C stress test:
+ * uthash's HASH_JEN spells its key pointer `unsigned const char *_hj_key`, so
+ * every HASH_FIND/HASH_ADD in the program failed — 9 of the 11 errors that
+ * stopped madc compiling it at all.
+ *
+ * CONTROLS, in this file on purpose:
+ *   (c)  a qualifier that is NOT inside a specifier run must be untouched;
+ *   (n)  a non-specifier word must still END the run — if the accumulator
+ *        swallowed identifiers, `unsigned n` would lose its variable;
+ *   (w)  two interleaved qualifiers, to pin that the hand-back preserves
+ *        more than one;
+ *   (g_uc/g_lcui) the same orders at FILE scope, not just block scope.
+ *
+ * gcc -std=c17 and clang -std=c17 both print exactly the asserted lines.
+ */
+#include <stdio.h>
+
+static unsigned const char g_uc = 200;
+static long const unsigned int g_lcui = 4000000000u;
+
+int main (void)
+{
+	/* the failing order: a qualifier BETWEEN two type specifiers */
+	unsigned const char *p = (unsigned const char *) "AB";
+	/* the same type, three other legal spellings */
+	const unsigned char *q = (const unsigned char *) "CD";
+	unsigned char const *r = (unsigned char const *) "EF";
+	unsigned const short s = 65535;
+	/* more than one specifier after the qualifier */
+	long const unsigned int v = 4294967295u;
+	/* two interleaved qualifiers */
+	unsigned const volatile int w = 7;
+	/* CONTROL: a qualifier that is NOT inside a specifier run */
+	const int c = 3;
+	/* CONTROL: a non-specifier word still ends the run */
+	unsigned n = 9;
+
+	printf ("spec %d %d %d %u %lu %d\n", p[0], q[0], r[0], s, v, w);
+	printf ("ctl %d %u %d %lu\n", c, n, g_uc, g_lcui);
+	return 0;
+}
