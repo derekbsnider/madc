@@ -1218,6 +1218,22 @@ static int compound_type_specifier_flag(const std::string &w)
     return 0;
 }
 
+// C99 6.7.2p2 — a declaration's specifiers may INTERLEAVE type specifiers with
+// type QUALIFIERS in any order, so `unsigned const char` names the same type as
+// `const unsigned char`. The accumulator below reads a RUN of type specifiers;
+// a qualifier sitting between two of them used to end that run early, minting
+// the lone `unsigned` as `unsigned int` and leaving `const char` to arrive as a
+// second base type ("Expecting identifier after type").
+// uthash spells it exactly that way — `unsigned const char *_hj_key` in
+// HASH_JEN — so every HASH_FIND/HASH_ADD in a program using uthash failed.
+static bool compound_type_qualifier_word(const std::string &w)
+{
+    return w == "const" || w == "volatile" || w == "restrict"
+	|| w == "__const" || w == "__const__"
+	|| w == "__volatile" || w == "__volatile__"
+	|| w == "__restrict" || w == "__restrict__";
+}
+
 static bool expansion_is_compound_type_specifiers(const std::string &text, int &flags)
 {
     flags = 0;
@@ -8317,7 +8333,21 @@ TokenBase *Program::_getToken()
 			// while a sibling argument's paint must not reach it (math.h's
 			// __MATHDECL takes `_Mdouble_` from the body and the arg list
 			// from a painted region in the same call).
-			source.inherit_macro_disables(saved, "", &param_paint[param]);
+			// param_paint is keyed by PARAMETER, and every comma-separated
+			// piece of a variadic tail shares ONE key (__VA_ARGS__), so it
+			// also holds what EARLIER siblings expanded — exactly the
+			// sibling paint the contract above excludes. Seeding from it
+			// hid a macro a previous piece had legitimately expanded:
+			// macOS <sys/qos.h> spells six enumerators as separate
+			// variadic pieces, each calling __QOS_CLASS_AVAILABLE(), and
+			// only the FIRST expanded — the literal macro name then sat in
+			// enumerator position ("Expecting identifier in enum") and took
+			// every darwin test that reaches a real SDK header with it.
+			// arg_served is per-ARGUMENT, which is what this contract means.
+			std::set<std::string> own_region_paint;
+			if ( i < arg_served.size() )
+			    own_region_paint = arg_served[i];
+			source.inherit_macro_disables(saved, "", &own_region_paint);
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )
@@ -8530,6 +8560,7 @@ TokenBase *Program::_getToken()
 		    };
 		    // Read ahead, accumulating type specifier keywords
 		    std::vector<std::string> consumed;
+		    std::vector<std::string> deferred_quals;
 		    while ( true )
 		    {
 			int ws_count = 0;
@@ -8539,6 +8570,15 @@ TokenBase *Program::_getToken()
 			{
 			    counter += flag;
 			    consumed.push_back(w);
+			}
+			else if ( compound_type_qualifier_word(w) )
+			{
+			    // Interleaved qualifier: keep accumulating the
+			    // type specifiers around it, and hand the
+			    // qualifier back AFTER the minted type token
+			    // (see below) so it lands as a trailing
+			    // qualifier the parser already reads.
+			    deferred_quals.push_back(w);
 			}
 			else if ( !w.empty()
 			       && define_map.find(w) != define_map.end() )
@@ -8566,6 +8606,24 @@ TokenBase *Program::_getToken()
 				source.pushback_reread(std::string(" "));
 			    break;
 			}
+		    }
+		    // Hand back any interleaved qualifiers. _pushback PREPENDS,
+		    // so pushing them last puts them ahead of whatever the loop
+		    // already gave back: `unsigned const char *p` re-reads as
+		    // `const` then `*p` after the `unsigned char` token, i.e.
+		    // the trailing-qualifier spelling `unsigned char const *p`,
+		    // which is the SAME type (6.7.2p2) and a form the parser
+		    // already accepts. One string, so their relative order is
+		    // preserved without depending on push order.
+		    if ( !deferred_quals.empty() )
+		    {
+			std::string qtext;
+			for ( const std::string &q : deferred_quals )
+			{
+			    qtext += ' ';
+			    qtext += q;
+			}
+			source.pushback_reread(qtext);
 		    }
 		    // Resolve accumulated type specifiers to DataDef
 		    int normalized_counter = counter & ~TS_COMPLEX;

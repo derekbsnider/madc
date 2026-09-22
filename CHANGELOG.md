@@ -2,6 +2,69 @@
 
 ## [Unreleased]
 
+### madc compiles every translation unit of its own backend
+
+The last blocker was not a madc defect at all. In `mir-debug.c` the name
+`mir.arg_memcpy` is both an import the program spells and a helper the
+generator registers at run time, and `_MIR_builtin_func` refused to register
+a name `MIR_link` had already bound. `c2m` never meets the collision because
+c2mir parses a GNU `asm` label into an `N_ASM` node and *discards* it
+(`c2mir.c:4527`), so its reference keeps the original identifier; madc
+implements the label faithfully, as gcc does, and the two names meet. Its
+object file carries both `U mir.arg_memcpy` and `U probe` — the direct
+evidence of the drop. The registrar now adopts an existing *import* of the
+same name and repoints the module's own import at it; any non-import item of
+that name is still a real conflict and still raises. Upstream bug, fixed
+in-tree at `third_party/mir/mir.c`.
+
+Two earlier diagnoses were wrong and measurement killed both: madc already
+builds a fresh `MIR_context_t` per compile, so the shared-context theory was
+dead on arrival, and c2m's `object_import_resolver` turns out to be
+character-for-character identical to madc's.
+
+All five MIR translation units now compile to object files:
+
+    c2mir.c 12,041 lines · mir-gen.c 10,520 · mir.c 7,474 · mir-debug.c 3,456 · mir-debug-gdb.c 138
+
+Reproduce with
+`bin/madc --std=c17 -D_DEFAULT_SOURCE -Ithird_party/mir -Ithird_party/mir/c2mir -c -o /tmp/x.o third_party/mir/<file>`.
+Linking a madc-built libmir additionally needs the eight `asm()`-label alias
+exports madc does not yet emit — it redirects *references* through the asm
+name but never emits the alias symbol.
+
+### A type qualifier may sit inside a type-specifier run
+
+C99 6.7.2p2 lets declaration specifiers interleave in any order, so
+`unsigned const char` names the same type as `const unsigned char`. The
+lexer's bitmap accumulator ended its run at the first word that was not a
+type specifier, so the lone `unsigned` minted as `unsigned int` and
+`const char` arrived as a second base type. It now reads past an interleaved
+qualifier and hands it back *after* the minted type token — the trailing
+spelling the parser already accepted, which is why `unsigned char const *`
+always worked and the failure looked arbitrary.
+
+### index-c joins the fast tier
+
+[kostya/index-c](https://github.com/kostya/index-c) is one self-contained
+16k-line C program running ~50 real-world tasks, and it verifies itself: every
+task checksums its result against a known-expected value and the program exits
+nonzero if any differs. That makes it a gate on *wrong answers* rather than
+crashes — the class the `.expect` suites are weakest at. All 50 tasks are
+correct in every configuration measured, and the lane also puts a number on
+the optimizer gap:
+
+| | gcc | madc |
+|---|---|---|
+| `-O0` / default | 118.0s | **104.0s** |
+| `-O2` | 54.2s | 85.0s |
+| `-O3` | 51.8s | 85.2s |
+
+madc is *faster* than gcc at `-O0` and 1.57x slower at `-O2`: gcc gains 2.2x
+from `-O0` to `-O2` where madc gains 1.2x, and madc's `-O3` is identical to
+its own `-O2` because MIR's generator tops out at level 2. The corpus is
+cloned and run in place, never vendored, like the gcc testsuites.
+
+
 ### madc now parses the C source of its own backend — 119 errors to 0
 
 `c2m` compiles `c2mir.c` clean; madc refused it with 119 errors. Five root
@@ -42,8 +105,9 @@ Ratchets: gcc c-torture **1611 → 1612**, the c2mir corpora lane **298 → 302 
 divergences from `g++ -dM` (the twelve resolved are kernel-header include
 guards madc's preprocessor now reaches).
 
-`c2mir.c` now stops one layer down, which is a separate arc: zero front-end
-errors, then 139 c2mir *check* errors on the tree the CIR builder emits.
+That left `c2mir.c` stopping one layer down — zero front-end errors, then 139
+c2mir *check* errors on the tree the CIR builder emits. Those are closed too;
+see the entry at the top of this release.
 
 ### Two unowned lanes joined the fast tier
 
