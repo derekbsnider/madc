@@ -1,0 +1,40 @@
+// The prototype-adoption gate SAMPLES THE FAMILY, because pinning one name is
+// how ninety more went unmeasured: the win64 pack served no libc prototype at
+// all for three weeks while tests/testimplicitlibcproto.mad — printf, and only
+// printf — was the whole assertion, and the two lanes that could see it were
+// the two nobody gated.
+//
+// Every name here is an UNDECLARED call whose pack record is variadic and
+// C-primitive-shaped, so GCC canon applies to each: the call takes the
+// library's real prototype, never the zero-parameter K&R guess that is
+// ABI-wrong wherever variadic and named arguments travel differently.
+// snprintf earns its place twice — its size_t parameter is the typedef arm of
+// the adoption predicate, which a char*-only sample would never reach.
+//
+// sscanf's assertion carries no `extern int` prefix on purpose: glibc
+// __REDIRECTs the name, so the adopted Linux prototype emits as
+// `__isoc23_sscanf` while win64's emits as `sscanf`. The SHAPE is what
+// adoption owns, and both spellings contain it — pinning the redirect
+// spelling would make one lane's libc version the other lane's failure.
+//
+// Lanes: the strong assertion rides .headerless_expect — the packed artifact
+// with no headers on disk, on Linux AND (same fixture, PROFILE_DOMAINS puts
+// `headerless` first) the win64 PE under wine. Those are the lanes where the
+// library the pack IS is what gets adopted. The dev lane parses live headers
+// with no container bound, so its .expect asserts only the common head.
+// No .darwin_expect: the SDK's own declarator spellings are not measurable
+// from this host, and a twin written blind would make the mac lane red for a
+// spelling rather than a decline. printf stays pinned strongly there by
+// testimplicitlibcproto + its c17 twin, which is the name whose adoption the
+// Apple arm64 varargs ABI actually turns on.
+int main()
+{
+	char buf[64];
+	int a = 0, b = 0;
+
+	printf("%d\n", 1);
+	sprintf(buf, "%d %d", 2, 3);
+	snprintf(buf, sizeof(buf), "%d %d", 4, 5);
+	sscanf("6 7", "%d %d", &a, &b);
+	return 0;
+}

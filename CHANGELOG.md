@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### A definition is a declaration — the win64 pack serves its libc prototypes
+
+A call to an undeclared C library function adopts the frozen pack's real
+prototype (GCC canon: the builtin's), because the zero-parameter K&R guess is
+ABI-wrong wherever variadic and named arguments travel differently. The
+adoption predicate required the pack's record to be `declaration_only` — which
+asks "is this record bodyless", not "does the pack give this name a
+prototype". Those are the same question only on a C library that *declares*
+its formatted-I/O family. mingw-w64 **defines** it: `printf`, `fprintf`,
+`sprintf`, `scanf` and the rest are `__mingw_ovr` inline definitions under the
+`-D__USE_MINGW_ANSI_STDIO=1` this build passes. So on Windows adoption
+declined for all of them — 91 names (`stdio.h` 33, `wchar.h` 56, `stdlib.h` 4,
+`sys/stat.h` 2) — and every zero-include `printf` compiled as
+`extern int printf();`.
+
+C11 6.9.1: a function definition declares the function, and its declarator
+supplies the prototype. A bodied record now adopts as a prototype-only copy,
+so the pack keeps its own record's body for the bound-include path while the
+adopted copy can never reach an ODR-use materialization or emit a call to an
+inline body's symbol. None of this is win64-specific — Windows is only where a
+mainstream libc exercises it. The decline path also names the failing
+conjunct now; the gate that rejected an entire libc read as an unexplained
+"not in an adoptable C shape".
+
+The reducer samples the FAMILY (`printf`, `sprintf`, `snprintf`, `sscanf` —
+`snprintf` for the typedef'd parameter arm) rather than pinning one name,
+which is how ninety more went unmeasured, and `headerless-win` — the only lane
+that can see a win64 pack decline, because every other Windows lane reaches the
+mingw headers through wine's `Z:` — joins the develop push gate.
+
 ### The MIR bootstrap cycle: unsigned↔floating conversions are generated inline
 
 x86-64 has no unsigned-integer → floating instruction and no truncating x87
