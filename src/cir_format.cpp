@@ -203,7 +203,7 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 		// pointer type is ill-formed in real C++ too.
 		DataDefPTR *up = dynamic_cast<DataDefPTR *>(u);
 		DataDef *pt = up ? up->base_type : NULL;
-		if ( pt && pt->rawtype() == DataType::dtVOID )
+		if ( pt && pt->is_void() )
 			kind = fkPtr;
 		else
 		{

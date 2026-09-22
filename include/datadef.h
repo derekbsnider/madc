@@ -645,6 +645,19 @@ public:
     // comparison (tag-arithmetic retirement). Non-virtual; defined out-of-line
     // below because it needs the complete DataDefPTR / DataDefCONST types.
     bool is_cstr() const;
+    // True iff this IS the void type, modulo const/typedef: rawtype() is dtVOID
+    // AND the type is a value, not a pointer or a reference. The ONE owner of
+    // the question. A bare `rawtype() == dtVOID` (or `type()`) is ALSO true for
+    // void*, void**, ...: DataDefPTR::rawtype() forwards to the pointee, and a
+    // DataDefPTR is constructed with its pointee's type(). Sixteen sites asked
+    // it by hand and nine forgot the pointer guard — void** arithmetic scaled by
+    // one byte, the overload ranker accepted int** -> void** (a SILENT wrong
+    // overload), a range-for refused a void** iterator, a multi-return refused
+    // a void* slot. A dependent template-parameter placeholder also reports
+    // dtVOID; a caller that can see an uninstantiated pattern asks
+    // template_param_under_type_layers first (is_size1_pointer). Gated by
+    // scripts/check-one-void-predicate.sh.
+    bool is_void() const;
     // True only for DataDefTemplateParam: an UNRESOLVED template parameter `T`
     // in a not-yet-instantiated template pattern (two-tree / materialize-from-AST
     // Phase 1.5). A real typed placeholder — NOT the bare TokenIdent the parser
@@ -718,7 +731,7 @@ public:
 	    return 1;
 	if ( is_struct() || is_object() )
 	    return 12;
-	if ( rawtype() == DataType::dtVOID )
+	if ( is_void() )
 	    return 0;
 	return -1;
     }
@@ -1876,6 +1889,14 @@ inline bool DataDef::is_cstr() const
 	return false;
     return p->base_type->rawtype() == DataType::dtCHAR
 	&& !p->base_type->is_pointer();
+}
+
+// is_void() — declared in DataDef above. reftype() is rtValue for a value and
+// forwards through DataDefCONST, so `const void` is void while void*, void**,
+// void* const and void*& (DataDefREF: rtReference) are not.
+inline bool DataDef::is_void() const
+{
+    return rawtype() == DataType::dtVOID && reftype() == RefType::rtValue;
 }
 
 // C++ pointer-to-DATA-member `T C::*`. Lowered (Itanium ABI) as a `ptrdiff_t`

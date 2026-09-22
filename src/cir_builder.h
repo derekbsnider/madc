@@ -952,9 +952,12 @@ private:
 	// second expansion. Empty string on failure, with `why` set.
 	std::string dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 				    TokenBase *origin, std::string &why);
-	// The pointee's declared spec list. ONE owner, because the generated
-	// function's PARAMETER type and the cast at its call site must be the same
-	// type. False for a pointee with no renderable spec (void).
+	// The pointee's declared spec list — its SHAPE, void included. ONE owner,
+	// because the generated function's PARAMETER type and the cast at its call
+	// site must be the same type. A declaration takes it as-is.
+	bool pointee_decl_specs(DataDef *base, node_t specs);
+	// The dumper's form: pointee_decl_specs, but false for a void pointee
+	// (nothing to render). Never for a DECLARATION — `void **it` is legal.
 	bool dump_pointee_specs(DataDef *base, node_t specs);
 	node_t dump_fn_param(node_t specs, int stars, const char *name,
 			     TokenBase *origin);

@@ -5416,8 +5416,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 				"carrier return\n", host_sym.c_str());
 		return NULL;	// by-value carrier return: unsupported
 	}
-	bool ret_void = !ret_carrier && rv->rawtype() == DataType::dtVOID
-		     && !rv->is_pointer();
+	bool ret_void = !ret_carrier && rv->is_void();
 	bool ret_real = !ret_carrier && !ret_void && rv->is_real();
 	bool ret_ptr = ret_carrier
 		    || (!ret_void && !ret_real
@@ -5747,10 +5746,9 @@ static bool is_size1_pointer(DataDef *dd)
 	// silent — c2mir's own `c2m_ctx_loc` is exactly `(void **) ctx + 1`, so
 	// a madc-built c2mir found its context at the wrong address and crashed
 	// only later, in teardown.
-	// DataDef::is_cstr() guards the identical trap one type over
-	// ("!is_pointer() excludes char**", datadef.h:1878).
-	if (p->base_type->is_pointer()) return false;
-	return p->base_type->rawtype() == DataType::dtVOID;
+	// DataDef::is_void() is the one owner of that exclusion (it also rejects
+	// a reference), as is_cstr() is for the identical trap one type over.
+	return p->base_type->is_void();
 }
 
 static bool is_char_pointer(DataDef *dd)
@@ -15082,7 +15080,10 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				const DataDefPTR *op =
 					dynamic_cast<const DataDefPTR *>(other);
 				const DataDef *ob = op ? op->base_type : NULL;
-				if (!ob || ob->type() != DataType::dtVOID)
+				// [conv.ptr]: a class pointer converts to void*
+				// only — never to void** (whose type() is ALSO
+				// dtVOID: the silent int**/S* -> void** overload)
+				if (!ob || !ob->is_void())
 					return -1;
 				return 3;   // void* standard conversion
 			}
@@ -15111,8 +15112,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			    dynamic_cast<const DataDefCONST *>(pb))
 				pb = cw->base_type;
 			if (ab && pb) {
-				if (ab->type() == DataType::dtVOID
-				    || pb->type() == DataType::dtVOID)
+				if (ab->is_void() || pb->is_void())
 					return 3;   // void* standard conversion
 				if (ab == pb || ab->name == pb->name)
 					return 5;
@@ -20657,7 +20657,7 @@ static DataDef *main_ret_normalized(TokenFunc *tf, DataDef *ret_dd)
 	// name-only match: the same discriminator func_def's global-ctor
 	// wrapper uses for main (tf->method is populated for plain top-level
 	// functions too, so it cannot distinguish a class method here)
-	if (ret_dd && ret_dd->rawtype() == DataType::dtVOID
+	if (ret_dd && ret_dd->is_void()
 	    && tf->var.name == "main")
 		return &ddINT;
 	return ret_dd;
@@ -23841,7 +23841,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// an error (which gcc reports too).
 	if (tr->returns && m_cur_func_returns_void) {
 		DataDef *edd = tr->returns->datadef();
-		if (edd && !edd->is_pointer() && edd->rawtype() == DataType::dtVOID) {
+		if (edd && edd->is_void()) {
 			node_t items = list();
 			node_t expr = translate_expr(tr->returns);
 			for (node_t p : m_pending_stmts)
@@ -25095,7 +25095,7 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 	if (brdd && brdd->is_pointer() && !brdd->is_reference()) {
 		DataDefPTR *bp = dynamic_cast<DataDefPTR *>(brdd->unqualified());
 		DataDef *pointee = bp ? bp->base_type : NULL;
-		if (!pointee || pointee->rawtype() == DataType::dtVOID
+		if (!pointee || pointee->is_void()
 		    || pointee->is_function() || brdd->is_member_pointer())
 			return decline("its begin() returns a pointer with no "
 				       "renderable pointee");
@@ -25543,7 +25543,7 @@ node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cl
 	} else {
 		DataDef *ibase = ip.itptr ? ip.itptr->unqualified() : NULL;
 		int stars = ibase ? 1 + dd_peel_pointers(ibase) : 0;
-		if (!ibase || !dump_pointee_specs(ibase, ispecs))
+		if (!ibase || !pointee_decl_specs(ibase, ispecs))
 			return error_node("range-for: iterator pointee has no "
 					  "renderable declaration", fe);
 		for (int i = 0; i < stars; i++)
@@ -25708,7 +25708,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 		int astars_n = abase ? 1 + dd_peel_pointers(abase) : 0;
 		node_t aspecs = list();
 		node_t astars = list();
-		if (!abase || !dump_pointee_specs(abase, aspecs))
+		if (!abase || !pointee_decl_specs(abase, aspecs))
 			return error_node("range-for: array element type has no "
 					  "renderable declaration", fe);
 		for (int i = 0; i < astars_n; i++)
@@ -28685,7 +28685,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// A retbuf-returning fn also has a `void` C return type but goes through the
 	// __retbuf path, so keep it out of the plain-void lowering.
 	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_via_retbuf && ret_dd
-				  && ret_dd->rawtype() == DataType::dtVOID;
+				  && ret_dd->is_void();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
 	// Track a `Cls *` or `Cls&` return so translate_return can emit a
@@ -29689,10 +29689,10 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		ret_len_fd = class_method_def(ret_cdd, "size");
 		if (!ret_len_fd) ret_len_fd = class_method_def(ret_cdd, "length");
 		rkind = (ret_cstr_fd && ret_len_fd) ? R_TEXTOBJ : R_INST;
-	} else if (!rt || (rt->type() == DataType::dtVOID && !rt->is_pointer())) {
-		// Structural: a void* is a DataDefPTR whose type() is now dtVOID (the
-		// derivation moved off the tag), so guard with !is_pointer() — a void*
-		// return is not R_VOID; it falls to the pointer bail below (no shim).
+	} else if (!rt || rt->is_void()) {
+		// Structural: a void* is a DataDefPTR whose type() is ALSO dtVOID (the
+		// derivation moved off the tag); DataDef::is_void() owns that guard — a
+		// void* return is not R_VOID; it falls to the pointer bail below (no shim).
 		rkind = R_VOID;
 	} else if (rt->is_cstr()) {
 		rkind = R_CSTR;

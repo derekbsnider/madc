@@ -26569,7 +26569,7 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
       || dynamic_cast<DataDefARRAY *>(dd) || dynamic_cast<DataDefSIMD *>(dd)
       || dynamic_cast<DataDefAUTO *>(dd) || dynamic_cast<DataDefCOMPLEX *>(dd) )
 	return false;
-    return dd->type() == DataType::dtVOID || dd->is_numeric();
+    return dd->is_void() || dd->is_numeric();
 }
 
 // GCC canon (see the declaration): an undeclared variadic call adopts the
@@ -51851,7 +51851,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 {
     for ( DataDef *t : types )
     {
-	if ( !t || t->rawtype() == DataType::dtVOID )
+	if ( !t || t->is_void() )
 	    Throw(where) << "multi-return values cannot be 'void'" << flush;
 	if ( t->is_reference() )
 	    Throw(where) << "multi-return cannot carry reference values ('"
