@@ -47,7 +47,12 @@ int main (void)
 	/* controls: every other pointee was already right */
 	printf ("charp %ld\n", delta (base, (char *) base + 1));
 	printf ("intp %ld\n", delta (base, (int *) base + 1));
-	printf ("longp %ld\n", delta (base, (long *) base + 1));
+	/* `long` is the one type whose size differs between the 64-bit data
+	 * models (8 on LP64, 4 on LLP64/win64), so its line asserts the scale
+	 * EQUALS sizeof(long) rather than hard-coding one model's answer; the
+	 * fixed-width 8-byte control is long long. */
+	printf ("longp %d\n", delta (base, (long *) base + 1) == (long) sizeof (long));
+	printf ("llongp %ld\n", delta (base, (long long *) base + 1));
 	printf ("charpp %ld\n", delta (base, (char **) base + 1));
 
 	/* and the value actually read through it */

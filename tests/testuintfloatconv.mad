@@ -32,8 +32,12 @@
 #include <stdint.h>
 #include <string.h>
 
-static unsigned long fbits (float f) { uint32_t u; memcpy (&u, &f, 4); return (unsigned long) u; }
-static unsigned long dbits (double d) { uint64_t u; memcpy (&u, &d, 8); return (unsigned long) u; }
+/* Exact-width carriers: `unsigned long` is 32 bits on LLP64 (win64), where it
+ * truncated every double pattern to its low half — the conversions were right
+ * and the PRINTING was wrong (madc under wine was byte-identical to
+ * mingw-gcc on the old spelling). One .expect must hold on every data model. */
+static unsigned fbits (float f) { uint32_t u; memcpy (&u, &f, 4); return (unsigned) u; }
+static unsigned long long dbits (double d) { uint64_t u; memcpy (&u, &d, 8); return (unsigned long long) u; }
 
 int main (void) {
 	static const unsigned long long v[] = {
@@ -50,7 +54,7 @@ int main (void) {
 	unsigned i;
 
 	for (i = 0; i < sizeof (v) / sizeof (v[0]); i++)
-		printf ("u %llu f %08lx d %016lx\n", v[i], fbits ((float) v[i]), dbits ((double) v[i]));
+		printf ("u %llu f %08x d %016llx\n", v[i], fbits ((float) v[i]), dbits ((double) v[i]));
 
 	/* long double is checked against the value rebuilt from the integer with
 	 * SIGNED conversions only: v>>1 always fits a signed 64-bit integer, so
@@ -77,7 +81,7 @@ int main (void) {
 		long double third2 = 1.0L / 3.0L;
 
 		printf ("trunc %lld %lld\n", trunc_pos, trunc_neg);
-		printf ("cw %d %016lx\n", third == third2 ? 1 : 0, dbits ((double) third2));
+		printf ("cw %d %016llx\n", third == third2 ? 1 : 0, dbits ((double) third2));
 	}
 	return 0;
 }
