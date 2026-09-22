@@ -1319,6 +1319,42 @@ static int wrong_type_p (MIR_type_t type) {
   return !((MIR_T_I8 <= type && type <= MIR_T_P) || MIR_vector_type_p (type));
 }
 
+/* A CROSS build whose host long double is x87 extended (LDBL_MANT_DIG 64: a
+   64-bit significand with an EXPLICIT integer bit, padded to 16 bytes)
+   emitting for a target whose long double is IEEE binary128 (aarch64-linux)
+   must re-encode LD DATA. Every long double value reaches the target as bytes
+   through MIR_new_data -- a folded constant via simplify's immediate-to-memory
+   step, a static initializer via c2mir -- and those bytes were the HOST's, which
+   aarch64 read as a binary128 near zero: `1.0L / 3.0L` printed 0.000... The two
+   formats share the sign bit and the 15-bit exponent with bias 16383, so the
+   re-encoding is EXACT: drop the explicit integer bit and left-align the 63
+   fraction bits in binary128's 112-bit field (inf and NaN included -- x87's
+   quiet bit lands on binary128's). A different, documented limit remains: a
+   constant FOLDED on such a host carries 64 significand bits, not 113
+   (c2mir/aarch64/caarch64.h). Native builds: the macro is off -- identity. MIR
+   text output of a cross module prints this LD data as host long doubles, which
+   it no longer is: in a cross build it is target data. */
+#if MIR_TARGET_IS_AARCH64 && !MIR_TARGET_APPLE_P && LDBL_MANT_DIG == 64
+#define MIR_LD_DATA_X87_TO_BINARY128 1
+static void ld_data_x87_to_binary128 (uint8_t *p, size_t nel) {
+  for (size_t i = 0; i < nel; i++, p += 16) {
+    uint64_t sig, lo, hi;
+    uint16_t se;
+
+    memcpy (&sig, p, 8);
+    memcpy (&se, p + 8, 2);
+    /* a pseudo-denormal (exponent 0, integer bit set) is the normal number
+       with exponent 1 */
+    if ((se & 0x7fff) == 0 && (sig >> 63) != 0) se |= 1;
+    sig &= ~((uint64_t) 1 << 63); /* the explicit integer bit: implicit in binary128 */
+    lo = sig << 49;
+    hi = (sig >> 15) | ((uint64_t) se << 48);
+    memcpy (p, &lo, 8);
+    memcpy (p + 8, &hi, 8);
+  }
+}
+#endif
+
 MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type, size_t nel,
                          const void *els) {
   MIR_item_t tab_item, item = create_item (ctx, MIR_data_item, "data");
@@ -1347,6 +1383,9 @@ MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type
   data->el_type = canon_type (el_type);
   data->nel = nel;
   memcpy (data->u.els, els, el_len * nel);
+#ifdef MIR_LD_DATA_X87_TO_BINARY128
+  if (data->el_type == MIR_T_LD) ld_data_x87_to_binary128 (data->u.els, nel);
+#endif
   return item;
 }
 
