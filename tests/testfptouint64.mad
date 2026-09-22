@@ -1,0 +1,60 @@
+/* Floating -> unsigned 64-bit conversion above 2^63.
+ *
+ * MIR has no floating -> UNSIGNED integer instruction: MIR_F2I, MIR_D2I and
+ * MIR_LD2I are all signed. c2mir mapped a `uint64_t` target onto them anyway,
+ * so any value at or above 2^63 -- which has no signed 64-bit image -- came
+ * back as the target's "integer indefinite", 9223372036854775808, instead of
+ * itself. Silently: exit status 0, plausible-looking number, wrong answer.
+ * c2mir lowers it now (gcc's sequence, branchless): compare against 2^63, and
+ * at or above it subtract 2^63 before converting and put bit 63 back.
+ *
+ * Every value here is at or above 2^63, or a boundary next to it, because
+ * below 2^63 the old signed path was already right -- so a regression that
+ * only re-breaks the unsigned arm still moves these lines.
+ *
+ * Only UNSIGNED conversions are asserted. The out-of-range SIGNED conversion
+ * that used to serve them is undefined behaviour in C and genuinely differs by
+ * target (x86 yields the integer indefinite, aarch64 saturates), so it is not
+ * something a portable test may pin.
+ *
+ * Constants and runtime values are both exercised: a literal can be folded at
+ * compile time and never reach the conversion at all.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted lines.
+ */
+#include <stdio.h>
+#include <stdint.h>
+
+int main (void) {
+	static const double dv[] = {
+		9223372036854774784.0,		/* the largest double below 2^63 */
+		9223372036854775808.0,		/* 2^63 exactly                  */
+		9223372036854777856.0,		/* the next double above it      */
+		13835058055282163712.0,
+		18446744073709549568.0,		/* the largest double below 2^64 */
+	};
+	static const float fv[] = {
+		9223372036854775808.0f, 13835058055282163712.0f, 18446742974197923840.0f,
+	};
+	static const long double lv[] = {
+		9223372036854775807.0L, 9223372036854775808.0L, 9223372036854775809.0L,
+		18446744073709551614.0L, 18446744073709551615.0L,
+	};
+	volatile double dvar = 18446744073709549568.0;
+	volatile float fvar = 13835058055282163712.0f;
+	volatile long double lvar = 18446744073709551615.0L;
+	unsigned i;
+
+	for (i = 0; i < sizeof (dv) / sizeof (dv[0]); i++)
+		printf ("d2u %u %llu\n", i, (unsigned long long) dv[i]);
+	for (i = 0; i < sizeof (fv) / sizeof (fv[0]); i++)
+		printf ("f2u %u %llu\n", i, (unsigned long long) fv[i]);
+	for (i = 0; i < sizeof (lv) / sizeof (lv[0]); i++)
+		printf ("ld2u %u %llu\n", i, (unsigned long long) lv[i]);
+	printf ("var %llu %llu %llu\n", (unsigned long long) dvar, (unsigned long long) fvar,
+	        (unsigned long long) lvar);
+	/* below 2^63 the direct conversion must not have moved */
+	printf ("small %llu %llu %llu\n", (unsigned long long) 4294967296.0,
+	        (unsigned long long) 4294967296.0f, (unsigned long long) 4294967296.0L);
+	return 0;
+}

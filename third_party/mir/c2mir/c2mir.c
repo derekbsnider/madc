@@ -13143,6 +13143,54 @@ static void emit2_noopt (c2m_ctx_t c2m_ctx, MIR_insn_code_t code, MIR_op_t op1, 
   emit_insn (c2m_ctx, MIR_new_insn (c2m_ctx->ctx, code, op1, op2));
 }
 
+/* MIR has no floating -> UNSIGNED integer conversion: MIR_F2I / MIR_D2I /
+   MIR_LD2I are all signed, and a value at or above 2^63 has no signed 64-bit
+   image, so every target yields its "integer indefinite" (2^63) instead of the
+   value.  `(uint64_t) 1.8e19` therefore answered 9223372036854775808 --
+   silently, with the right exit status.  Lower it here, the way gcc does
+   (oracle: gcc -O2 -S on `(uint64_t) d`): below 2^63 convert directly; at or
+   above it, subtract 2^63, convert, and put bit 63 back with an xor (gcc's
+   btcq).  gcc branches; we do it branchlessly, because cast() emits a
+   straight-line sequence and owns no basic blocks, and every MIR target has an
+   FP comparison that yields 0 or 1 in an integer register.
+
+     c   = fp >= 2^63                 -- 0 or 1
+     fp2 = fp - (fp_type) c * 2^63
+     res = (int64_t) fp2 ^ (c << 63)
+
+   The subtraction cannot round.  Every value representable in [2^63, 2^64) is
+   a multiple of its own ulp, which is >= 1 in all three formats, and the
+   difference is below 2^63, so it is exact in the same format -- for float and
+   double as well as long double.  A negative or NaN operand takes the c == 0
+   arm, i.e. the plain signed conversion: what gcc emits, and undefined
+   behaviour in C either way.  */
+static op_t fp_to_uint64 (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t ft) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_insn_code_t ge_code = ft == MIR_T_F ? MIR_FGE : ft == MIR_T_D ? MIR_DGE : MIR_LDGE;
+  MIR_insn_code_t mul_code = ft == MIR_T_F ? MIR_FMUL : ft == MIR_T_D ? MIR_DMUL : MIR_LDMUL;
+  MIR_insn_code_t sub_code = ft == MIR_T_F ? MIR_FSUB : ft == MIR_T_D ? MIR_DSUB : MIR_LDSUB;
+  MIR_insn_code_t i2fp_code = ft == MIR_T_F ? MIR_I2F : ft == MIR_T_D ? MIR_I2D : MIR_I2LD;
+  MIR_insn_code_t fp2i_code = ft == MIR_T_F ? MIR_F2I : ft == MIR_T_D ? MIR_D2I : MIR_LD2I;
+  MIR_op_t two63_op = (ft == MIR_T_F   ? MIR_new_float_op (ctx, 9223372036854775808.0f)
+                       : ft == MIR_T_D ? MIR_new_double_op (ctx, 9223372036854775808.0)
+                                       : MIR_new_ldouble_op (ctx, 9223372036854775808.0L));
+  op_t val = get_new_temp (c2m_ctx, ft), two63 = get_new_temp (c2m_ctx, ft);
+  op_t bias = get_new_temp (c2m_ctx, ft), adj = get_new_temp (c2m_ctx, ft);
+  op_t big = get_new_temp (c2m_ctx, MIR_T_I64), top = get_new_temp (c2m_ctx, MIR_T_I64);
+  op_t res = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  emit2 (c2m_ctx, tp_mov (ft), val.mir_op, op.mir_op);
+  emit2 (c2m_ctx, tp_mov (ft), two63.mir_op, two63_op);
+  emit3 (c2m_ctx, ge_code, big.mir_op, val.mir_op, two63.mir_op);
+  emit2 (c2m_ctx, i2fp_code, bias.mir_op, big.mir_op);
+  emit3 (c2m_ctx, mul_code, bias.mir_op, bias.mir_op, two63.mir_op);
+  emit3 (c2m_ctx, sub_code, adj.mir_op, val.mir_op, bias.mir_op);
+  emit2 (c2m_ctx, fp2i_code, res.mir_op, adj.mir_op);
+  emit3 (c2m_ctx, MIR_LSH, top.mir_op, big.mir_op, MIR_new_int_op (ctx, 63));
+  emit3 (c2m_ctx, MIR_XOR, res.mir_op, res.mir_op, top.mir_op);
+  return res;
+}
+
 static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
   op_t res, interm;
   MIR_type_t op_type;
@@ -13259,6 +13307,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_FLOAT:
   float_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_F);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_F2I
@@ -13273,6 +13323,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_DOUBLE:
   double_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_D);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_D2I
@@ -13287,6 +13339,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_LDOUBLE:
   ldouble_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_LD);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_LD2I
