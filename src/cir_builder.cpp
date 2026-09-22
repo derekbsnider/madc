@@ -23270,8 +23270,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// c2mir rejects it, so cast the size-1 pointer operand(s) to
 			// `char *` — the exact size-1 semantics GCC uses — before the op.
 			if (code == N_ADD || code == N_SUB) {
-				DataDef *ldd = top->left  ? top->left->datadef()  : NULL;
-				DataDef *rdd = top->right ? top->right->datadef() : NULL;
+				// [conv.array]: an ARRAY operand decays to pointer-to-
+				// element BEFORE the arithmetic, and a C-array
+				// Variable's datadef() is its ELEMENT (the array-ness is
+				// a Variable flag, not a DataDefCArray). Asking about
+				// datadef() made `void *a[3]; a + 3` look like void*
+				// arithmetic and advance 3 BYTES instead of 24 — silent,
+				// on every build (gcc: 24). array_decay_pointer is the
+				// one owner of the decay; an array operand is never
+				// size-1 (its pointee is the complete element).
+				DataDef *ldd = m_prog ? m_prog->array_decay_pointer(top->left) : NULL;
+				DataDef *rdd = m_prog ? m_prog->array_decay_pointer(top->right) : NULL;
+				if (!ldd && top->left)
+					ldd = top->left->datadef();
+				if (!rdd && top->right)
+					rdd = top->right->datadef();
 				if (is_size1_pointer(ldd))
 					left = node2(N_CAST, char_ptr_type(), left, tb);
 				if (is_size1_pointer(rdd))
