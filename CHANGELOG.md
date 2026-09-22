@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### The audit's findings, measured and fixed: void pointers, ellipsis overloads, aarch64 long double
+
+The duplication audit run at the self-hosting merge reported two divergent
+families. Measured on the artifact, each turned out larger and different from
+what reading the code suggested, and each surfaced a defect one layer down.
+Five fixes, four of them silent wrong answers:
+
+- **`void **` is not `void`.** A pointer's `rawtype()` and `type()` both come
+  from its pointee, so sixteen hand-written "is this void" tests also said yes
+  to `void *` and `void **`; nine forgot the guard. Overload ranking treated
+  `int **` → `void **` as the `void *` conversion (a false ambiguity, or an
+  ill-typed call accepted); a multi-return refused a `void *` slot; a range-for
+  refused a `void **` iterator and — through the dumper's spec builder — a plain
+  `void *arr[2]`; `std::format` accepted `void **` while refusing `int *`.
+  `DataDef::is_void()` is now the one owner, gated by
+  `scripts/check-one-void-predicate.sh`.
+- **`void *a[3]; a + 3` advanced 3 bytes, not 24** — plain C, every build,
+  exit 0. The GNU `void *`-arithmetic rewrite asked about the array's element
+  type instead of its decay; it adopts `Program::array_decay_pointer` now.
+- **An ellipsis overload is viable.** `pick(void **)` vs `pick(...)` with an
+  `int **` called the `void **` one; `f(long)` vs `f(...)` with a struct called
+  `f(long)`. The free-function ranker scored the argument against the `...`'s
+  synthetic parameter slot; `FuncDef::fixed_param_count()` owns that slot now,
+  and an ellipsis match loses every tie ([over.ics.rank]).
+- **aarch64-linux could not link any program doing `long double`
+  arithmetic.** MIR's generator called helpers under dotted names nothing
+  exports on that target. They call libgcc's soft-float routines by name now —
+  exactly the set gcc's own objects import — with gcc's 32-bit post-compare for
+  the six comparisons. (ppc64, riscv64 and s390x carry the same helpers but are
+  not madc targets and have no object writer; they were never broken.)
+- **A `long double` constant reached aarch64-linux in the x86 host's byte
+  layout**, which reads as binary128 near zero (`1.0L/3.0L` printed `0.000…`).
+  `MIR_new_data`, the one place a value becomes target bytes, re-encodes x87 →
+  binary128 exactly. Folding on an x87 host is still 64-bit precise, not
+  113 — a documented limit.
+
+A new lane, `scripts/aarch64_ldouble_lane.sh` (`remote_build.sh aarch64-ld`),
+runs madc's aarch64-linux objects and a gcc-built aarch64 `c2m` under qemu
+against a gcc oracle: every long double builtin and every constant route,
+byte-identical. It is the first lane to exercise that madc target at all.
+
 ### A definition is a declaration — the win64 pack serves its libc prototypes
 
 A call to an undeclared C library function adopts the frozen pack's real
