@@ -404,8 +404,8 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
          x86_64-w64-mingw32-gcc -S; madc win lane 2026-08-12).  Store the
          value into this call's block area and pass the slot's ADDRESS as an
          ordinary pointer arg.  The value-typed path below would leave the
-         arg register unset and the native callee (e.g. the mir.ld2i
-         builtin) dereferences garbage -- the t_ld_d/t_ld_e reducers. */
+         arg register unset and the native callee dereferences garbage --
+         the t_ld_d/t_ld_e reducers. */
       MIR_op_t ld_addr_op
         = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
       gen_assert (arg_op.mode == MIR_OP_VAR);
@@ -754,18 +754,95 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   if (arg_stack_size != 0) prohibit_omitting_fp (gen_ctx);
 }
 
-static float mir_ui2f (uint64_t i) { return (float) i; }
-static double mir_ui2d (uint64_t i) { return (double) i; }
-static long double mir_ui2ld (uint64_t i) { return (long double) i; }
-static int64_t mir_ld2i (long double ld) { return (int64_t) ld; }
-static const char *UI2F = "mir.ui2f";
-static const char *UI2D = "mir.ui2d";
-static const char *UI2LD = "mir.ui2ld";
-static const char *LD2I = "mir.ld2i";
-static const char *UI2F_P = "mir.ui2f.p";
-static const char *UI2D_P = "mir.ui2d.p";
-static const char *UI2LD_P = "mir.ui2ld.p";
-static const char *LD2I_P = "mir.ld2i.p";
+/* x86-64 has no unsigned-integer -> floating-point instruction, so UI2F /
+   UI2D / UI2LD have to be synthesized.  MIR used to synthesize them as a CALL
+   to a one-line C helper (`static float mir_ui2f (uint64_t i) { return (float)
+   i; }` and friends) living in THIS file -- which is a bootstrap cycle: a C
+   compiler built on MIR, compiling mir-gen.c, lowers the body of that helper
+   into a call to `mir.ui2f`, i.e. to itself, and it recurses until the stack
+   dies.  Expanding the conversion in MIR IR here removes the helpers, and the
+   calls, entirely.  See docs/plans/2026-09-22-alias-symbol-emission.md sec 9.
+
+   gcc's shape for UI2F/UI2D is a branch -- test the sign, and on the negative
+   arm halve with a sticky low bit, convert, double.  We do the same arithmetic
+   branchlessly, selecting over the sign mask, because machinize runs after the
+   CFG is built and a new basic block here would mean CFG surgery.  Both are
+   correctly rounded.
+
+     m   = (int64_t) i >> 63        -- 0 or -1
+     ho  = (i >>u 1) | (i & 1)      -- halved, with the discarded bit made sticky
+     t   = i ^ ((i ^ ho) & m)       -- i when m == 0, ho when m == -1
+     sc  = (m & 1) + 1              -- 1 or 2
+     res = (fp) (int64_t) t * (fp) (int64_t) sc
+
+   For i < 2^63 that is a plain signed conversion scaled by 1.0.  For i >= 2^63
+   halving makes the value fit a signed 64-bit integer, and the sticky OR keeps
+   the bit that decides a round-to-nearest tie, so scaling by 2 -- exact -- puts
+   it back.
+
+   UI2LD cannot use that trick: an x87 long double has a 64-bit mantissa, so
+   EVERY uint64_t is exactly representable, and the sticky OR (correct only
+   where the low bits are being rounded away anyway) would lose the low bit of
+   an odd value >= 2^63.  Split at 32 bits instead and let the single add do
+   the only rounding there is:
+
+     res = (long double) (i >>u 32) * (long double) 2^32
+           + (long double) (i & 0xffffffff)
+
+   Each term is exact in a 64-bit mantissa, and so is their sum for any
+   uint64_t, so this is exact rather than merely correctly rounded.  */
+static void expand_uint_to_fp_insn (gen_ctx_t gen_ctx, MIR_insn_t insn) {
+  MIR_context_t ctx = gen_ctx->ctx;
+  MIR_func_t func = curr_func_item->u.func;
+  MIR_insn_code_t code = insn->code;
+  MIR_op_t res_op = insn->ops[0], src_op = insn->ops[1];
+
+#define ADD_CVT_INSN(i) gen_add_insn_before (gen_ctx, insn, (i))
+#define NEW_CVT_TEMP(t) _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, t, func))
+
+  gen_assert (res_op.mode == MIR_OP_VAR && src_op.mode == MIR_OP_VAR);
+  if (code == MIR_UI2LD) {
+    MIR_op_t hi_op = NEW_CVT_TEMP (MIR_T_I64), lo_op = NEW_CVT_TEMP (MIR_T_I64);
+    MIR_op_t two32_op = NEW_CVT_TEMP (MIR_T_I64);
+    MIR_op_t ld_hi_op = NEW_CVT_TEMP (MIR_T_LD), ld_lo_op = NEW_CVT_TEMP (MIR_T_LD);
+    MIR_op_t ld_two32_op = NEW_CVT_TEMP (MIR_T_LD), prod_op = NEW_CVT_TEMP (MIR_T_LD);
+
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_URSH, hi_op, src_op, MIR_new_int_op (ctx, 32)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_LSH, lo_op, src_op, MIR_new_int_op (ctx, 32)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_URSH, lo_op, lo_op, MIR_new_int_op (ctx, 32)));
+    ADD_CVT_INSN (
+      MIR_new_insn (ctx, MIR_MOV, two32_op, MIR_new_int_op (ctx, (int64_t) 1 << 32)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_I2LD, ld_hi_op, hi_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_I2LD, ld_lo_op, lo_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_I2LD, ld_two32_op, two32_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_LDMUL, prod_op, ld_hi_op, ld_two32_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_LDADD, res_op, prod_op, ld_lo_op));
+  } else {
+    MIR_type_t fp_type = code == MIR_UI2F ? MIR_T_F : MIR_T_D;
+    MIR_insn_code_t i2fp_code = code == MIR_UI2F ? MIR_I2F : MIR_I2D;
+    MIR_insn_code_t mul_code = code == MIR_UI2F ? MIR_FMUL : MIR_DMUL;
+    MIR_op_t mask_op = NEW_CVT_TEMP (MIR_T_I64), sticky_op = NEW_CVT_TEMP (MIR_T_I64);
+    MIR_op_t lsb_op = NEW_CVT_TEMP (MIR_T_I64), sel_op = NEW_CVT_TEMP (MIR_T_I64);
+    MIR_op_t val_op = NEW_CVT_TEMP (MIR_T_I64), scale_op = NEW_CVT_TEMP (MIR_T_I64);
+    MIR_op_t fp_val_op = NEW_CVT_TEMP (fp_type), fp_scale_op = NEW_CVT_TEMP (fp_type);
+
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_RSH, mask_op, src_op, MIR_new_int_op (ctx, 63)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_URSH, sticky_op, src_op, MIR_new_int_op (ctx, 1)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_AND, lsb_op, src_op, MIR_new_int_op (ctx, 1)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_OR, sticky_op, sticky_op, lsb_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_XOR, sel_op, src_op, sticky_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_AND, sel_op, sel_op, mask_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_XOR, val_op, src_op, sel_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_AND, scale_op, mask_op, MIR_new_int_op (ctx, 1)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, MIR_ADD, scale_op, scale_op, MIR_new_int_op (ctx, 1)));
+    ADD_CVT_INSN (MIR_new_insn (ctx, i2fp_code, fp_val_op, val_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, i2fp_code, fp_scale_op, scale_op));
+    ADD_CVT_INSN (MIR_new_insn (ctx, mul_code, res_op, fp_val_op, fp_scale_op));
+  }
+#undef NEW_CVT_TEMP
+#undef ADD_CVT_INSN
+  gen_delete_insn (gen_ctx, insn);
+}
 
 static const char *VA_ARG_P = "mir.va_arg.p";
 static const char *VA_ARG = "mir.va_arg";
@@ -778,15 +855,10 @@ static const char *VA_BLOCK_ARG = "mir.va_block_arg";
    export them from libmir under those exact names so the link resolves.
    (va_arg_builtin / va_block_arg_builtin get theirs in mir-x86_64.c;
    mingw/PE takes the same shape -- dotted asm labels + alias are
-   probe-verified on gas/COFF.) */
-extern __typeof (mir_ui2f) mir_ui2f_obj_export asm ("mir.ui2f")
-  __attribute__ ((alias ("mir_ui2f"), used));
-extern __typeof (mir_ui2d) mir_ui2d_obj_export asm ("mir.ui2d")
-  __attribute__ ((alias ("mir_ui2d"), used));
-extern __typeof (mir_ui2ld) mir_ui2ld_obj_export asm ("mir.ui2ld")
-  __attribute__ ((alias ("mir_ui2ld"), used));
-extern __typeof (mir_ld2i) mir_ld2i_obj_export asm ("mir.ld2i")
-  __attribute__ ((alias ("mir_ld2i"), used));
+   probe-verified on gas/COFF.)  The mir.ui2f / ui2d / ui2ld / ld2i family
+   used to be exported here too; those conversions are generated inline now
+   (see expand_uint_to_fp_insn and the MIR_LD2I pattern), so the names no
+   longer exist on either side of the link. */
 /* "mir.arg_memcpy" (block-argument copies) is bound to libc memcpy at gen
    time; give it a linkable definition of its own. */
 static void *mir_arg_memcpy (void *dest, const void *src, size_t n) {
@@ -803,30 +875,6 @@ static void get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *pr
 
   *func_import_item = *proto_item = NULL; /* to remove uninitialized warning */
   switch (code) {
-  case MIR_UI2F:
-    res_type = MIR_T_F;
-    *proto_item
-      = _MIR_builtin_proto (ctx, curr_func_item->module, UI2F_P, 1, &res_type, 1, MIR_T_I64, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, UI2F, mir_ui2f);
-    break;
-  case MIR_UI2D:
-    res_type = MIR_T_D;
-    *proto_item
-      = _MIR_builtin_proto (ctx, curr_func_item->module, UI2D_P, 1, &res_type, 1, MIR_T_I64, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, UI2D, mir_ui2d);
-    break;
-  case MIR_UI2LD:
-    res_type = MIR_T_LD;
-    *proto_item
-      = _MIR_builtin_proto (ctx, curr_func_item->module, UI2LD_P, 1, &res_type, 1, MIR_T_I64, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, UI2LD, mir_ui2ld);
-    break;
-  case MIR_LD2I:
-    res_type = MIR_T_I64;
-    *proto_item
-      = _MIR_builtin_proto (ctx, curr_func_item->module, LD2I_P, 1, &res_type, 1, MIR_T_LD, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LD2I, mir_ld2i);
-    break;
   case MIR_VA_ARG:
     res_type = MIR_T_I64;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, VA_ARG_P, 1, &res_type, 2,
@@ -1136,27 +1184,13 @@ static void target_machinize (gen_ctx_t gen_ctx) {
     case MIR_UI2F:
     case MIR_UI2D:
     case MIR_UI2LD:
-    case MIR_LD2I: {
-      /* Use a builtin func call: mov freg, func ref; call proto, freg, res_reg, op_reg */
-      MIR_item_t proto_item, func_import_item;
-      MIR_op_t freg_op, res_reg_op = insn->ops[0], op_reg_op = insn->ops[1], ops[4];
-
-      get_builtin (gen_ctx, code, &proto_item, &func_import_item);
-      assert (res_reg_op.mode == MIR_OP_VAR && op_reg_op.mode == MIR_OP_VAR);
-      freg_op
-        = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, curr_func_item->u.func));
-      next_insn = new_insn
-        = MIR_new_insn (ctx, MIR_MOV, freg_op, MIR_new_ref_op (ctx, func_import_item));
-      gen_add_insn_before (gen_ctx, insn, new_insn);
-      ops[0] = MIR_new_ref_op (ctx, proto_item);
-      ops[1] = freg_op;
-      ops[2] = res_reg_op;
-      ops[3] = op_reg_op;
-      new_insn = MIR_new_insn_arr (ctx, MIR_CALL, 4, ops);
-      gen_add_insn_before (gen_ctx, insn, new_insn);
-      gen_delete_insn (gen_ctx, insn);
+      /* No unsigned-int -> fp instruction on x86-64: synthesize it in MIR IR.
+         next_insn was read before the expansion and is still the insn after
+         this one -- everything expand_uint_to_fp_insn inserts goes BEFORE it
+         and needs no machinizing of its own.  MIR_LD2I is deliberately NOT in
+         this list: the x87 truncating store is a machine pattern. */
+      expand_uint_to_fp_insn (gen_ctx, insn);
       break;
-    }
     case MIR_VA_START: {
       MIR_op_t treg_op
         = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, curr_func_item->u.func));
@@ -1685,7 +1719,9 @@ struct pattern {
      R[0-2] = n-th operand in ModRM:rm with mod == 3
      S[0-2] = n-th operand in ModRM:rm with mod == 3, 8-bit registers
      m[0-2] = n-th operand is mem
-     mt = temp memory in red zone (-16(sp))
+     mt = temp memory in red zone (-16(sp), 8 bytes)
+     mu = temp memory in red zone (-24(sp), 2 bytes -- x87 control word)
+     mv = temp memory in red zone (-26(sp), 2 bytes -- x87 control word)
      mT = switch table memory (h11,r,8)
      ap = 2 and 3 operand forms address by plus (1st reg to base, 2nd reg to index, disp to disp)
      am = 2 and 3 operand forms address by mult (1st reg to index and mult const to scale)
@@ -1989,6 +2025,20 @@ static struct pattern patterns[] = {
   {MIR_D2F, "r md", "66 Y 0F EF r0 R0; F2 Y 0F 5A r0 m1", 0}, /* pxor r0,r0; cvtsd2ss r0,m1 */
   /* fld m1;fstps -16(sp);movss r0, -16(sp): */
   {MIR_LD2F, "r mld", "DB /5 m1; D9 /3 mt; F3 Y 0F 10 r0 mt", 0},
+  /* fldt m1; fnstcw mu; movzwl mu,r0d; or $0xc00,r0d; mov %r0w,mv; fldcw mv;
+     fistpq mt; fldcw mu; mov r0,mt
+     -- x87 has no truncating integer store before SSE3's fisttp, so C's
+     truncate-toward-zero conversion needs the control word's rounding-control
+     field set to 11 for the store and the caller's word restored after.  This
+     is gcc's sequence (gcc -O2 on `(int64_t) ld`, x86-64 baseline).
+     r0 doubles as the scratch register: it is the destination, dead until the
+     last insn, and the source is pushed onto the x87 stack FIRST so r0 may
+     safely be m1's base or index register.  That keeps the whole conversion
+     inside one pattern, with no hard-register reservation. */
+  {MIR_LD2I, "r mld",
+   "DB /5 m1; D9 /7 mu; Y 0F B7 r0 mu; Y 81 /1 R0 V0C00; 66 Y 89 r0 mv; D9 /5 mv; DF /7 mt; "
+   "D9 /5 mu; X 8B r0 mt",
+   0},
 
   /* movss -16(sp), r1; flds -16(sp); fstp m0: */
   {MIR_F2LD, "mld r", "F3 Y 0F 11 r1 mt; D9 /0 mt; DB /7 m0", 0},
@@ -2826,7 +2876,7 @@ static int get_max_insn_size (gen_ctx_t gen_ctx MIR_UNUSED, const char *replacem
         ch = *++p;
         modrm_p = TRUE;
         addr_p = TRUE;
-        if (ch == 't') { /* -16(%rsp) */
+        if (ch == 't' || ch == 'u' || ch == 'v') { /* red-zone scratch */
           disp8_p = TRUE;
         } else if (ch == 'T') {
           disp8_p = TRUE;
@@ -3028,12 +3078,17 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
         break;
       case 'm':
         ch = *++p;
-        if (ch == 't') { /* -16(%rsp) */
+        if (ch == 't' || ch == 'u' || ch == 'v') {
+          /* Red-zone scratch below the frame: 't' is the 8-byte slot at
+             -16(%rsp); 'u' and 'v' are the two 2-byte control-word slots
+             MIR_LD2I needs, at -24 and -26(%rsp).  All three are written and
+             read inside ONE machine-insn expansion, so they can never overlap
+             a live value, and none of them overlaps another. */
           setup_rm (NULL, &rm, 4);
           setup_index (NULL, &index, SP_HARD_REG);
           setup_base (&rex_b, &base, SP_HARD_REG);
           setup_mod (&mod, 1);
-          disp8 = (uint8_t) -16;
+          disp8 = (uint8_t) (ch == 't' ? -16 : ch == 'u' ? -24 : -26);
         } else if (ch == 'T') {
           MIR_op_t mem;
 
