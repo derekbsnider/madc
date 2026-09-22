@@ -5738,6 +5738,18 @@ static bool is_size1_pointer(DataDef *dd)
 	// substitution the operand types concretely from the instantiated
 	// shell's declaration (g++ rebuilds the op at instantiation the same way).
 	if (template_param_under_type_layers(p->base_type)) return false;
+	// `void **` is NOT one of these. DataDefPTR::rawtype() reports what a
+	// pointer chain ultimately points AT (datadef.h:1763 — "T** recurses to
+	// the innermost scalar"), so a bare rawtype()==dtVOID test also matched
+	// `void **`, `void ***`, ... whose pointee is a complete 8-byte object.
+	// Their arithmetic then scaled by ONE BYTE: `(void **) ctx + 1` emitted
+	// `(char *) ctx + 1` and read a pointer one byte out of place. It is
+	// silent — c2mir's own `c2m_ctx_loc` is exactly `(void **) ctx + 1`, so
+	// a madc-built c2mir found its context at the wrong address and crashed
+	// only later, in teardown.
+	// DataDef::is_cstr() guards the identical trap one type over
+	// ("!is_pointer() excludes char**", datadef.h:1878).
+	if (p->base_type->is_pointer()) return false;
 	return p->base_type->rawtype() == DataType::dtVOID;
 }
 
