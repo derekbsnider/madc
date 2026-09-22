@@ -1,0 +1,68 @@
+/* Pointer arithmetic on `void **` scales by sizeof(void *), not by 1.
+ *
+ * GNU C lets you do arithmetic on a `void *` with an element size of 1, as if
+ * it were `char *`. c2mir refuses that outright ("pointer to incomplete type
+ * as an operand of +/-"), so madc rewrites such an operand to `(char *)`
+ * before the `+`. The predicate that decided "is this a void pointer" asked
+ * `p->base_type->rawtype() == dtVOID` — and DataDefPTR::rawtype() reports what
+ * a pointer chain ultimately points AT, so it said yes to `void **`,
+ * `void ***` and every deeper level, whose pointee is a complete 8-byte
+ * object. Their arithmetic then scaled by ONE BYTE.
+ *
+ * It was silent. `void **p; p[1]` was always right (indexing never went
+ * through that rewrite) and only the explicit `p + 1` / `*(p + 1)` form read
+ * a pointer one byte out of place — so the value was garbage, not a fault,
+ * and the crash landed somewhere else entirely.
+ *
+ * The case that found it is c2mir's own context accessor:
+ *     static inline c2m_ctx_t *c2m_ctx_loc (MIR_context_t ctx) {
+ *       return (c2m_ctx_t *) ((void **) ctx + 1);
+ *     }
+ * madc emitted `lea 0x1(%rdi)` for it, so a madc-built c2mir stored its
+ * context at ctx+8 and looked for it at ctx+1. Everything worked until
+ * teardown, which then dereferenced NULL.
+ *
+ * Every other pointee was always correct, so they are here as the control:
+ * if a future change breaks the SCALE in general these move too, and if it
+ * breaks only the void-pointer predicate again only the void lines move.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted lines.
+ */
+#include <stdio.h>
+
+static long delta (void *from, void *to) { return (long) ((char *) to - (char *) from); }
+
+int main (void)
+{
+	char buf[64];
+	void *base = buf;
+
+	/* the regression: one and two levels of indirection */
+	printf ("voidpp %ld\n", delta (base, (void **) base + 1));
+	printf ("voidppp %ld\n", delta (base, (void ***) base + 1));
+
+	/* the GNU extension itself must KEEP its size-1 arithmetic */
+	printf ("voidp %ld\n", delta (base, (void *) ((char *) base) + 1));
+
+	/* controls: every other pointee was already right */
+	printf ("charp %ld\n", delta (base, (char *) base + 1));
+	printf ("intp %ld\n", delta (base, (int *) base + 1));
+	/* `long` is the one type whose size differs between the 64-bit data
+	 * models (8 on LP64, 4 on LLP64/win64), so its line asserts the scale
+	 * EQUALS sizeof(long) rather than hard-coding one model's answer; the
+	 * fixed-width 8-byte control is long long. */
+	printf ("longp %d\n", delta (base, (long *) base + 1) == (long) sizeof (long));
+	printf ("llongp %ld\n", delta (base, (long long *) base + 1));
+	printf ("charpp %ld\n", delta (base, (char **) base + 1));
+
+	/* and the value actually read through it */
+	void *slots[3];
+	slots[0] = (void *) 10;
+	slots[1] = (void *) 20;
+	slots[2] = (void *) 30;
+	void **p = slots;
+	printf ("read %ld %ld %ld\n", (long) *(p + 1), (long) p[1], (long) *(p + 2));
+	printf ("walk %ld\n", (long) (*(p + 2)) - (long) (*(p + 0)));
+
+	return 0;
+}

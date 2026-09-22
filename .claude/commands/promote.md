@@ -2,6 +2,21 @@
 
 Merges develop into master, tags the release, and pushes.
 
+**Run `bash scripts/promote_release.sh preflight` FIRST, and do not
+hand-drive the steps below.** This file is the reasoning; the script is
+the mechanism. Driving these steps from memory on 2026-09-22 (v0.100.1)
+skipped three of them — the master release notes were never written, the
+GitHub release was left a DRAFT, and the asset set was never confirmed —
+and nothing failed loudly, because none of those steps has a downstream
+consumer that complains. The script refuses without the notes file (and
+without a `## Features` section in it), gates on `lane_ledger.sh check
+--release`, and its `publish` verb asserts the release is not a draft and
+counts the assets:
+
+    bash scripts/promote_release.sh preflight   # every check, no mutation
+    bash scripts/promote_release.sh promote     # merge + tag + push
+    bash scripts/promote_release.sh publish     # flip the draft, verify assets
+
 ## Steps
 
 1. **Pre-flight checks**:

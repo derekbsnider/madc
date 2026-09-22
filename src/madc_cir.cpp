@@ -1063,6 +1063,89 @@ static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
     return true;
 }
 
+// Object mode: DEFINE the symbols __attribute__((alias("T"))) names.
+//
+// madc has always implemented the attribute as a REDIRECT — a reference to the
+// alias resolves to the target's storage, which is how <compare>'s class
+// statics bind to their real Itanium symbols. gcc and clang do that AND emit a
+// second symbol of the alias's own name at the target's address; that defining
+// half is this. Without it a madc-built libmir exports none of the eight
+// `mir.*` / `__mir_*` names the generated code imports, so nothing links
+// against it (mir-x86_64.c:154, mir-gen-x86_64.c:783, mir-int128-helper.h:302).
+//
+// Runs beside cir_register_tu_init for the same reason: after link, when the
+// eager gen interface has generated every function, so the target really is
+// defined in the capture. c2mir is NOT the reference here — `c2m -fobject`
+// ignores the attribute silently and rejects the asm-label spelling outright;
+// gcc/clang are the oracle.
+static bool cir_emit_alias_symbols(MIR_context_t ctx, Program *prog,
+				   const char *source_name)
+{
+    if (!prog || !prog->tkProgram)
+	return true;
+    MIR_object_t o = NULL;
+    for (Variable *v : prog->tkProgram->variables) {
+	if (!v || v->alias_definition_target.empty() || !v->is_global())
+	    continue;
+	// The alias's OWN emitted name: its asm label when it carries one
+	// (that IS the construct's point — `x asm("mir.va_arg")` defines
+	// "mir.va_arg", not "x"), else the declared name. NOT var_emit_name,
+	// which answers the reference question and returns the TARGET.
+	const std::string &sym = v->asm_label.empty() ? v->name : v->asm_label;
+	if (sym.empty())
+	    continue;
+	if (o == NULL) {
+	    // A DATA target is only a DEFINED symbol once the capture's
+	    // module-data walk has placed it; the walk otherwise runs inside
+	    // the emit entry, i.e. after every chance to annotate. Force it
+	    // here — and only here, on a TU that actually declares an alias,
+	    // so nothing else's emit ordering moves. Every module is loaded
+	    // and linked by this point (both call sites run right after
+	    // MIR_link), which is the walk's precondition.
+	    if (MIR_gen_object_prepare(ctx) != 0
+		|| (o = MIR_gen_get_object(ctx)) == NULL) {
+		fprintf(stderr, "%s: no object capture for alias symbol '%s'\n",
+			source_name, sym.c_str());
+		return false;
+	    }
+	}
+	int sec = 0;
+	uint64_t value = 0, size = 0;
+	if (!MIR_object_find_symbol(o, v->alias_definition_target.c_str(),
+				    &sec, &value, &size)) {
+	    // gcc: "error: 'x' aliased to undefined symbol 'f'". C requires
+	    // the target to be DEFINED in the same translation unit, so this
+	    // is the source's bug, not a capture we should paper over.
+	    fprintf(stderr, "%s: '%s' aliased to undefined symbol '%s'"
+		    " — an alias target must be defined in the same"
+		    " translation unit\n",
+		    source_name, sym.c_str(),
+		    v->alias_definition_target.c_str());
+	    return false;
+	}
+	// MIR_object_add_symbol never dedupes by name (madc_cir.cpp:620), so
+	// a second alias declaration of the same name would add a second
+	// symtab entry rather than replace the first.
+	if (MIR_object_find_symbol(o, sym.c_str(), NULL, NULL, NULL))
+	    continue;
+	const bool func_p = v->type && v->type->is_function();
+	// local_p=0: an alias is an export. weak_p=0: madc has no
+	// __attribute__((weak)) on declarations yet, and none of the MIR
+	// exports are weak.
+	if (MIR_object_add_symbol(o, sym.c_str(), sec, value, size,
+				  func_p ? 1 : 0, 0, 0) < 0) {
+	    fprintf(stderr, "%s: cannot define alias symbol '%s' in the object"
+		    " capture\n", source_name, sym.c_str());
+	    return false;
+	}
+	DBG(std::cout << "alias: defined '" << sym << "' at '"
+		      << v->alias_definition_target << "' (sec " << sec
+		      << " +" << value << ", size " << size << ")"
+		      << std::endl);
+    }
+    return true;
+}
+
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
     if (setjmp(cir_mir_error_jmp)) {
@@ -1273,6 +1356,10 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (!load_and_link(source_name, prog))
 	return false;
     if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+	teardown();
+	return false;
+    }
+    if (madc_object_mode && !cir_emit_alias_symbols(ctx, prog, source_name)) {
 	teardown();
 	return false;
     }
@@ -6505,6 +6592,13 @@ int madc_project_emit_native(MadcEngine &engine,
 	for (size_t bi = 0; bi < builders.size(); bi++)
 		if (!cir_register_tu_init(ctx, builders[bi],
 					  parsed[bi].name.c_str())) {
+			teardown();
+			return -1;
+		}
+	// Each TU's __attribute__((alias)) definitions, same ordering rule.
+	for (size_t bi = 0; bi < builders.size(); bi++)
+		if (!cir_emit_alias_symbols(ctx, parsed[bi].prog.get(),
+					    parsed[bi].name.c_str())) {
 			teardown();
 			return -1;
 		}

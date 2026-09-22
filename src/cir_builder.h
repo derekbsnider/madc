@@ -1527,7 +1527,25 @@ public:
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
 	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
-	node_t init_value(TokenBase *elem, bool target_is_aggregate = false);
+	node_t init_value(TokenBase *elem, bool target_is_aggregate = false,
+			  DataDef *slot_dd = NULL);
+	// The ONE builder of an aggregate's brace initializer list,
+	// LIST( INIT(designators, value), ... ). Owns the difference between a
+	// struct (positional, gaps zero-filled) and a UNION (exactly one
+	// member, named by an N_FIELD_ID designator when it is not the first).
+	// `slots_are_elements` says every slot is an ELEMENT of `dd` rather
+	// than a member of it — the array case. madc types a fixed array as
+	// its ELEMENT type with the count on the Variable (`val_t a[2]` has
+	// dd == val_t), so without this an array OF a union would read its
+	// elements as that union's members.
+	node_t aggregate_init_list(const std::vector<TokenBase *> &inits,
+				   DataDef *dd, TokenBase *origin = NULL,
+				   bool slots_are_elements = false,
+				   bool has_field_designators = false);
+	// The aggregate type a NESTED brace list at slot `idx` initializes, or
+	// NULL when the slot is not a whole struct/union member (so the nested
+	// list stays type-less, as it has always been).
+	DataDef *init_nested_list_type(DataDef *dd, size_t idx);
 	// True when positional slot `idx` of a brace initializer for aggregate
 	// type `dd` targets a member/element that is itself an aggregate (a
 	// fixed array or nested struct/union) — used so a designated-init GAP on
@@ -1544,7 +1562,8 @@ public:
 	// unhandled shapes emit unchanged.
 	TokenBase *unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd);
 	void unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
-				       DataDef *dd);
+				       DataDef *dd,
+				       bool slots_are_elements = false);
 	// Compile-time (re,im) fold of an integer-complex constant expression,
 	// and the {re, im} brace list it emits into a static initializer.
 	bool int_complex_const_fold(TokenBase *tb, long &re, long &im);

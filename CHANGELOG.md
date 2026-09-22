@@ -2,6 +2,127 @@
 
 ## [Unreleased]
 
+### A definition is a declaration — the win64 pack serves its libc prototypes
+
+A call to an undeclared C library function adopts the frozen pack's real
+prototype (GCC canon: the builtin's), because the zero-parameter K&R guess is
+ABI-wrong wherever variadic and named arguments travel differently. The
+adoption predicate required the pack's record to be `declaration_only` — which
+asks "is this record bodyless", not "does the pack give this name a
+prototype". Those are the same question only on a C library that *declares*
+its formatted-I/O family. mingw-w64 **defines** it: `printf`, `fprintf`,
+`sprintf`, `scanf` and the rest are `__mingw_ovr` inline definitions under the
+`-D__USE_MINGW_ANSI_STDIO=1` this build passes. So on Windows adoption
+declined for all of them — 91 names (`stdio.h` 33, `wchar.h` 56, `stdlib.h` 4,
+`sys/stat.h` 2) — and every zero-include `printf` compiled as
+`extern int printf();`.
+
+C11 6.9.1: a function definition declares the function, and its declarator
+supplies the prototype. A bodied record now adopts as a prototype-only copy,
+so the pack keeps its own record's body for the bound-include path while the
+adopted copy can never reach an ODR-use materialization or emit a call to an
+inline body's symbol. None of this is win64-specific — Windows is only where a
+mainstream libc exercises it. The decline path also names the failing
+conjunct now; the gate that rejected an entire libc read as an unexplained
+"not in an adoptable C shape".
+
+The reducer samples the FAMILY (`printf`, `sprintf`, `snprintf`, `sscanf` —
+`snprintf` for the typedef'd parameter arm) rather than pinning one name,
+which is how ninety more went unmeasured, and `headerless-win` — the only lane
+that can see a win64 pack decline, because every other Windows lane reaches the
+mingw headers through wine's `Z:` — joins the develop push gate.
+
+### The MIR bootstrap cycle: unsigned↔floating conversions are generated inline
+
+x86-64 has no unsigned-integer → floating instruction and no truncating x87
+integer store, so MIR's generator has to synthesize `UI2F`, `UI2D`, `UI2LD` and
+`LD2I`. It synthesized all four as a **call to a one-line C helper living in
+`mir-gen-x86_64.c` itself** — `static float mir_ui2f (uint64_t i) { return
+(float) i; }`. That is a bootstrap cycle: a C compiler built on MIR, compiling
+`mir-gen.c`, lowers that helper's body into a call to `mir.ui2f`, i.e. to
+itself, and it recurses until the stack dies. Nothing could see it until a
+libmir compiled entirely by madc ran.
+
+The four helpers, their `mir.*` exports and their loader entries are gone.
+`UI2F`/`UI2D` expand to gcc's arithmetic done branchlessly (machinize runs
+after the CFG is built, so a new basic block there would mean CFG surgery);
+`UI2LD` splits at 32 bits instead, because an x87 long double represents every
+`uint64_t` *exactly* and the sticky-bit trick would corrupt an odd value above
+2^63; `LD2I` is gcc's `fnstcw`/`fldcw` sequence as a single machine pattern,
+using the destination register as its own scratch.
+
+A reducer over every rounding boundary is byte-identical to gcc under the JIT,
+through a `.o`, and under a `c2m` whose whole libmir madc compiled — in `-ei`,
+`-eg` and `-el`. Over 426 `c-tests` programs the madc-built `c2m` and the
+gcc-built one now agree on every exit status, and the two float tests that
+differed are identical.
+
+### Floating → unsigned 64-bit conversion above 2^63
+
+Separately, MIR has **no** floating → unsigned integer instruction at all:
+`F2I`, `D2I` and `LD2I` are signed, and c2mir mapped a `uint64_t` target onto
+them, so any value at or above 2^63 came back as the integer indefinite,
+9223372036854775808 — silently, with exit status 0. c2mir lowers it now, for
+all three floating types, with gcc's compare/subtract/xor sequence written
+branchlessly, so every MIR target is fixed without a new MIR instruction.
+
+### `__attribute__((alias))` defines its symbol — a madc-built libmir links and runs
+
+madc emitted no symbol for `__attribute__((alias("T")))` — not for MIR's eight
+exports specifically, for the attribute at all. It had only the *reference*
+half of what gcc does: a reference to the alias resolved to the target's
+storage (that redirect is how a system-header class static binds to its real
+Itanium symbol, and it is unchanged). The *defining* half — a second symbol of
+the alias's own name, its `asm` label when it has one, at the target's address
+— was never built. A running program cannot tell the two apart, which is how
+the gap survived a green suite; `nm` can, and now gates it.
+
+Three facts had been sharing `Variable::storage_alias_name`. They are now three
+fields with one meaning and one writer each. `parseFunction` was additionally
+passing `NULL` for the attribute's alias-target out-param, so a prototype
+carrying the attribute after its parameter list dropped it entirely.
+
+`MIR_gen_object_prepare` exposes the capture's module-data walk, which
+otherwise ran inside the emit entry — after every chance to annotate — so a
+DATA alias had no defined target to point at.
+
+Measured against gcc and clang (both define 6 globals on the reducer where
+madc defined 3, and 6 after). On MIR's own translation units `nm -g
+--defined-only` now shows **zero** gcc-only symbols where eight were missing:
+`mir.va_arg`, `mir.va_block_arg` and the six `__mir_*oti` helpers.
+
+### A union brace initializes one member, named by a designator
+
+C11 6.7.9p17: a union's brace initializer initializes exactly one member, and a
+bare positional list can only ever name the *first*. madc lowered every
+designated initializer positionally with the earlier slots zero-filled —
+correct for a struct, impossible for a union, where `{.a = p}` became a
+two-element union initializer that c2mir refused.
+
+The parser already writes a `.member =` value into that member's slot, so the
+slot index *is* the member index; it only had to be spelled back as the
+`N_FIELD_ID` designator c2mir's grammar takes. The three sites that built an
+aggregate's initializer list are now one owner. `--emit=c11` learned to spell
+`.name`.
+
+### `void **` is not a size-1 pointer
+
+GNU C allows arithmetic on a `void *` with element size 1. The predicate that
+spotted it asked the pointee's `rawtype()`, which reports what a pointer chain
+ultimately points *at* — so `void **`, `void ***` and deeper all matched, and
+their arithmetic scaled by **one byte**. Silent: `p[1]` was always right, and
+only the explicit `p + 1` form read a pointer one byte out of place.
+
+### 🏁 A `c2m` built entirely by madc
+
+With those three fixed, **all six MIR translation units compile under madc**
+and archive into a working `libmir.a`. The resulting `c2m` compiles C,
+JIT-generates machine code and runs it — in `-ei`, `-eg` and `-el` — and the
+binary MIR it emits runs under the gcc-built `c2m`. Differentially tested
+against the gcc-built `c2m` over 140 `c-tests` programs: 137 identical. The
+three that differ are float/long-double conversion and are recorded as the
+next gap.
+
 ## [v0.100.1] — 2026-09-22
 
 A bugfix release: madc now compiles every translation unit of its own

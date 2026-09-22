@@ -103,6 +103,29 @@ public:
     uint32_t count;
     uint32_t flags;
     std::string storage_alias_name;
+    // storage_alias_name answers "what symbol does a REFERENCE to this
+    // declaration resolve to" — it is a redirect, written by the GNU asm
+    // label, by __attribute__((alias)) and by the mangled-direct namespace /
+    // class-static binds. The two fields below each carry exactly ONE of the
+    // facts that used to share it, because a single declaration can state
+    // both and they mean opposite things:
+    //
+    //   extern __typeof (f) x asm ("mir.va_arg") __attribute__ ((alias ("f")));
+    //
+    // asks for a symbol NAMED "mir.va_arg" DEFINED at f's address. gcc emits
+    // that second symbol; madc only ever built the redirect half, so the
+    // alias never appeared in the symbol table at all (the eight MIR exports
+    // a madc-built libmir needs).
+    //
+    // The asm label — the name this declaration is EMITTED UNDER. Empty when
+    // the declaration carries no label.
+    std::string asm_label;
+    // __attribute__((alias("T"))) — the symbol this declaration is an alias
+    // OF. Non-empty makes this declaration a DEFINITION of its own name (or
+    // asm label) at T's address; C requires T to be defined in the same
+    // translation unit, which is also why neither field is carried in the
+    // frozen-forest record: a system header can never hold the definition.
+    std::string alias_definition_target;
     std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
     // Explicit '*' count written on a function-type-typedef declarator, recorded
     // because the type stays a bare DataDefFPTR (fn-ptr CALL detection keys on it,

@@ -1,0 +1,114 @@
+/* A UNION brace initializer is not positional.
+ *
+ * C11 6.7.9p17: a union's brace initializes exactly ONE member, and a bare
+ * positional list can only ever name the FIRST one. madc lowered every
+ * designated initializer to a positional list with the earlier slots
+ * zero-filled — which is correct for a struct (`{.z=3}` and `{0,0,3}` are
+ * the same object) and impossible for a union: `{.a = p}` became a TWO-element
+ * union initializer and c2mir refused it, "excess elements in array/struct/
+ * union initializer".
+ *
+ * It took MIR's own c2m driver with it. c2mir-driver.c:1067-1069 passes three
+ * `(MIR_val_t){.i = ...}` / `{.a = ...}` compound literals to MIR_interp, and
+ * MIR_val_t's first member is `MIR_insn_code_t ic` — so every one of them
+ * designates a non-first member.
+ *
+ * Every shape here designates a member that is NOT the first, because the
+ * first member is exactly the case the old positional lowering got right.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted lines.
+ */
+#include <stdio.h>
+
+typedef enum { K_NONE, K_INT, K_PTR } kind_t;
+typedef union {
+	kind_t  k;		/* first member — never designated below */
+	long    i;
+	void   *p;
+	char    bytes[8];
+} val_t;
+
+struct holder {
+	int     tag;
+	val_t   v;		/* a union NESTED in a struct */
+};
+
+static long take (val_t v) { return v.i; }
+
+union anon_first {
+	struct { unsigned char a, b; };
+	struct { unsigned char q, r, s2, t; } s;
+};
+
+union anon_second {
+	int i;
+	struct { unsigned char x, y; };
+};
+
+union arr_first {
+	unsigned char w[16];
+	unsigned short h[8];
+};
+
+struct wrap_arr { union arr_first u; };
+
+int main (void)
+{
+	/* declaration */
+	val_t d = {.i = 11};
+	printf ("decl %ld\n", d.i);
+
+	/* compound literal, as an argument (the MIR_interp shape) */
+	printf ("lit %ld\n", take ((val_t){.i = 22}));
+
+	/* a later designator overrides an earlier one (6.7.9p17) */
+	val_t o = {.i = 1, .p = (void *) 0};
+	printf ("over %d\n", o.p == (void *) 0);
+
+	/* nested inside a struct, designated on both levels */
+	struct holder h = {.tag = 7, .v = {.i = 33}};
+	printf ("nest %d %ld\n", h.tag, h.v.i);
+
+	/* array of unions, each element designating a non-first member */
+	val_t arr[2] = {{.i = 44}, {.i = 55}};
+	printf ("arr %ld %ld\n", arr[0].i, arr[1].i);
+
+	/* an array compound literal of unions */
+	val_t *lit = (val_t[]){{.i = 66}, {.i = 77}};
+	printf ("alit %ld %ld\n", lit[0].i, lit[1].i);
+
+	/* the first member still works positionally and by name */
+	val_t f = {.k = K_PTR};
+	val_t g = {K_INT};
+	printf ("first %d %d\n", (int) f.k, (int) g.k);
+
+	/* C11 6.7.9p17 says ONE member, and "the last designator wins" is the
+	 * WRONG way to get there: these shapes write several slots that all
+	 * reach the same member, and collapsing to the last one silently loses
+	 * the rest. Both regressed a fix that did exactly that
+	 * (c-testsuite 00216). */
+
+	/* an ANONYMOUS struct flattens its members into the union's member
+	 * list, so two designators at the union's own brace level are two
+	 * members of ONE union member — both must land */
+	union anon_first af = {.b = 8, .a = 7};
+	printf ("anonfirst %d %d\n", af.a, af.b);
+
+	/* the same, with the anonymous aggregate SECOND: its flattened slots
+	 * do not start at 0 */
+	union anon_second as = {.y = 6, .x = 5};
+	printf ("anonsecond %d %d\n", as.x, as.y);
+
+	/* a POSITIONAL union brace elides the braces around the first member,
+	 * which then eats as many values as it holds — these are VALUES, not
+	 * member indices, and there is no member 3 to designate */
+	union arr_first bf = {6, 5, 4, 3};
+	printf ("posarray %d %d %d %d\n", bf.w[0], bf.w[1], bf.w[2], bf.w[3]);
+
+	/* nested one level down, the c-testsuite 00216 shape exactly */
+	struct wrap_arr wa = {{9, 8, 7, 6}};
+	printf ("nestarray %d %d %d %d\n", wa.u.w[0], wa.u.w[1], wa.u.w[2],
+	        wa.u.w[3]);
+
+	return 0;
+}

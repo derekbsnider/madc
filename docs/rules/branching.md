@@ -93,3 +93,28 @@ longer measures the right thing:
   failing test is fixed, or skipped with a `.darwin_skip` whose one line says
   why it is structurally out of the domain — the class-(c) convention of the C
   torture gate — before a master release.
+
+## Why `/dupaudit` runs in `/commit`, not before a merge
+
+Owner ruling, 2026-09-22: *"this dupaudit gate should be part of the /commit
+not part of the merge gate because it results in re-writing code."*
+
+The audit's findings are rewrites. At the merge, the seam battery has already
+run, so any consolidation the audit drives there is code the battery never
+tested: either the battery runs a second time for it, or untested code merges.
+Both are the wrong answer. At `/commit` the same rewrite is still part of ONE
+change, and Tier 1 and Tier 2 — which `/commit` runs AFTER the audit — validate
+it in minutes.
+
+It is also where the audit finds the most. New copies are born in the commit
+that writes them; an audit at the merge finds a copy weeks after it was
+written, when the author has moved on. The first merge-time run (2026-09-22,
+the self-hosting wave) found two divergent families — the MIR conversion
+builtins still carrying the bootstrap cycle on four non-x86 targets, and a
+`void`-pointee predicate unguarded at two sites — that each belonged to the
+commit that fixed the first instance, not to the merge.
+
+Scope it to the diff. A per-commit audit of the whole subsystem would be the
+Tier 3 mistake again; what changes per commit is the concepts the diff touches.
+An older family found on the way is recorded, not folded into the commit.
+

@@ -189,8 +189,31 @@ selftest() {
 		rm -f "$tmp"
 		return 1
 	fi
+	# The COMMIT tier: a stale `commit` row must block EVERY branch push
+	# (--commit, the tier the pre-push hook applies to a feature branch),
+	# and a stale `yes` row must NOT — that separation is the whole point
+	# of having three tiers, and a gate that cannot tell them apart would
+	# either block every WIP push or none of them.
+	{
+		printf '%s\n' "$HEADER"
+		printf 'selftest-commit-stale\tcommit\t%s\tnever\t0/0\n' "$stale_sha"
+	} > "$tmp"
+	if ( LEDGER="$tmp"; check --commit ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale commit-tier row passed --commit" >&2
+		rm -f "$tmp"
+		return 1
+	fi
+	{
+		printf '%s\n' "$HEADER"
+		printf 'selftest-promote-stale\tyes\t%s\tnever\t0/0\n' "$stale_sha"
+	} > "$tmp"
+	if ! ( LEDGER="$tmp"; check --commit ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale promote-tier row blocked --commit" >&2
+		rm -f "$tmp"
+		return 1
+	fi
 	rm -f "$tmp"
-	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes, release tier gates master only)"
+	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes, commit tier gates every branch, release tier gates master only)"
 }
 
 case "${1:-}" in

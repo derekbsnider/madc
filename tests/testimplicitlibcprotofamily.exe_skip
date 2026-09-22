@@ -1,0 +1,1 @@
+--emit=c11 shape test: the observable is the emitted prototype, there is no native artifact to build

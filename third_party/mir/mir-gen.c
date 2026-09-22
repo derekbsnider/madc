@@ -9951,9 +9951,20 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
   }
 }
 
+/* Place every loaded module's data into the capture and define its data
+   symbols.  One-shot: both emit entries may be called on one capture (a .o
+   alongside an executable), and an annotating consumer may have run it
+   already through MIR_gen_object_prepare. */
+static void gen_obj_run_data_walk (gen_ctx_t gen_ctx, MIR_context_t ctx) {
+  if (obj_data_emitted_p) return;
+  for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
+       m = DLIST_NEXT (MIR_module_t, m))
+    obj_emit_module_data (gen_ctx, m);
+  obj_data_emitted_p = TRUE;
+}
+
 /* Shared head of the emit entries: validate the capture state and run the
-   module-data walk exactly once (both entries may be called on one capture,
-   e.g. a .o alongside an executable). */
+   module-data walk. */
 static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *size) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
 
@@ -9961,13 +9972,16 @@ static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *si
   if (size != NULL) *size = 0;
   if (gen_ctx == NULL || !object_mode_p || gen_object == NULL || buf == NULL || size == NULL)
     return NULL;
-  if (!obj_data_emitted_p) {
-    for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
-         m = DLIST_NEXT (MIR_module_t, m))
-      obj_emit_module_data (gen_ctx, m);
-    obj_data_emitted_p = TRUE;
-  }
+  gen_obj_run_data_walk (gen_ctx, ctx);
   return gen_ctx;
+}
+
+int MIR_gen_object_prepare (MIR_context_t ctx) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+
+  if (gen_ctx == NULL || !object_mode_p || gen_object == NULL) return -1;
+  gen_obj_run_data_walk (gen_ctx, ctx);
+  return 0;
 }
 
 struct MIR_object *MIR_gen_get_object (MIR_context_t ctx) {

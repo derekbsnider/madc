@@ -13999,6 +13999,9 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 		    }
 		    TokenBase *value_tok = nextToken();
 		    std::vector<TokenBase *> *target_inits = &slit->inits;
+		    // The literal that OWNS the slot this designator writes —
+		    // the walk below descends into nested literals.
+		    TokenStructLit *target_lit = slit;
 		    DataDefSTRUCT *target_sdd = current_sdd;
 			size_t field_index = 0;
 			for ( size_t pi = 0; pi < field_path.size(); ++pi )
@@ -14021,8 +14024,11 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 				(*target_inits)[field_index] = nested_lit;
 			    }
 			    target_inits = &nested_lit->inits;
+			    target_lit = nested_lit;
 			    target_sdd = nested_sdd;
 			}
+			if ( target_lit )
+			    target_lit->has_field_designators = true;
 			if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(value_tok);
@@ -26626,32 +26632,77 @@ Variable *Program::forest_adopt_declared_function(const std::string &fname)
     if ( !rf )
 	return NULL;
     FuncDef *fd = rf->fd;
-    bool shape_ok = fd->is_varargs && fd->declaration_only
-		 && fd->namespace_name.empty()
-		 && forest_adoptable_c_type(&fd->returns);
+    // C11 6.9.1p1: a function DEFINITION declares the function -- its
+    // declarator supplies the prototype. Asking for declaration_only here
+    // asked "is the pack's record bodyless", which is a DIFFERENT question
+    // from "does the pack give this name a prototype" on any libc that ships
+    // its formatted-I/O family as header definitions. mingw-w64 defines
+    // printf/fprintf/sprintf/scanf/... as __mingw_ovr (inline/static __cdecl)
+    // DEFINITIONS under the -D__USE_MINGW_ANSI_STDIO=1 this build passes, so
+    // on win64 every undeclared libc call still took the K&R guess: 91 names
+    // (stdio.h 33, wchar.h 56, stdlib.h 4, sys/stat.h 2), printf among them.
+    const char *decline = NULL;
+    if ( !fd->is_varargs )
+	decline = "not variadic";
+    else if ( !fd->namespace_name.empty() )
+	decline = "namespaced";
+    else if ( !forest_adoptable_c_type(&fd->returns) )
+	decline = "return type is not a C-primitive shape";
+    bool shape_ok = decline == NULL;
     if ( shape_ok && !fd->return_typedef_name.empty() )
     {
 	std::string tn = fd->return_typedef_name;
 	shape_ok = resolve_named_datadef(tn) != NULL;
+	if ( !shape_ok )
+	    decline = "return typedef is unknown in this TU";
     }
     for ( size_t i = 0; shape_ok && i < fd->parameters.size(); ++i )
     {
 	shape_ok = forest_adoptable_c_type(fd->parameters[i]);
-	if ( shape_ok && i < fd->param_typedef_names.size()
+	if ( !shape_ok )
+	{
+	    decline = "parameter type is not a C-primitive shape";
+	    break;
+	}
+	if ( i < fd->param_typedef_names.size()
 	  && !fd->param_typedef_names[i].empty() )
 	{
 	    // The emitter spells a typedef'd parameter by its typedef NAME:
 	    // adoptable only when this TU already knows that name.
 	    std::string tn = fd->param_typedef_names[i];
 	    shape_ok = resolve_named_datadef(tn) != NULL;
+	    if ( !shape_ok )
+	    {
+		decline = "parameter typedef is unknown in this TU";
+		break;
+	    }
 	}
     }
     if ( !shape_ok )
     {
+	// Name the conjunct: the gate that rejected mingw's whole libc read as
+	// an unexplained "not in an adoptable C shape" for three weeks.
 	DBG(std::cout << "forest_adopt_declared_function(" << fname
-		      << ") pack declares it but not in an adoptable C shape"
-		      << (fd->is_varargs ? "" : " (not variadic)") << std::endl);
+		      << ") pack declares it but not in an adoptable C shape: "
+		      << decline << std::endl);
 	return NULL;
+    }
+    // GCC canon for an undeclared call is the library SYMBOL with the real
+    // types -- never the header definition's BODY (that is what an #include
+    // is for; mingw's printf body calls __mingw_vfprintf, and its
+    // emit_symbol, where one exists, names that inline body rather than an
+    // exported symbol). A bodied record therefore adopts as a PROTOTYPE-ONLY
+    // copy: the pack's own record keeps its body for the bound-include path,
+    // and nothing adopted here can reach an ODR-use materialization.
+    if ( !fd->declaration_only )
+    {
+	FuncDef *pfd = new FuncDef(*fd);
+	pfd->declaration_only = true;
+	pfd->has_forest_body = false;
+	pfd->forest_body_unit = 0;
+	pfd->forest_body_idx = 0;
+	pfd->emit_symbol.clear();
+	fd = pfd;
     }
     PendingForestFunc pf;
     pf.name = fname;
@@ -70261,6 +70312,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	if ( !func_alias_name.empty() )
 	{
+	    var->asm_label = func_alias_name;
 	    var->storage_alias_name = func_alias_name;
 	    // The label IS the function's library link symbol, so it lives on
 	    // the FuncDef too (FuncDef::emit_symbol — what call_emit_symbol
@@ -70332,9 +70384,23 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     std::set<std::string> func_attrs;
     size_t func_align = 0;
-    nt = consume_gnu_attributes(nt, &func_attrs, NULL, &func_align);
+    // The alias TARGET out-param was NULL here, so a prototype carrying
+    // __attribute__((alias("f"))) after its parameter list dropped the target
+    // on the floor — the parseDeclaration path (the `__typeof` spelling MIR
+    // uses) captured it, this one did not.
+    std::string func_alias_target;
+    nt = consume_gnu_attributes(nt, &func_attrs, &func_alias_target, &func_align);
     if ( !func_alias_name.empty() )
+    {
+	var->asm_label = func_alias_name;
 	var->storage_alias_name = func_alias_name;
+    }
+    if ( !func_alias_target.empty() )
+    {
+	var->alias_definition_target = func_alias_target;
+	if ( var->storage_alias_name.empty() )
+	    var->storage_alias_name = func_alias_target;
+    }
     if ( func_attrs.count("no_instrument_function")
       || func_attrs.count("__no_instrument_function__") )
 	func->no_instrument_function = true;
@@ -72842,11 +72908,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // as a pointer to a heap buffer allocated at scope entry and freed at
     // scope exit (see TokenCpnd::voperand / TokenCpnd::cleanup).
 
-    std::string storage_alias_name;
+    // The __attribute__((alias("T"))) TARGET — what this declaration is an
+    // alias OF. Deliberately NOT named storage_alias_name: that field answers
+    // a different question (what a reference to this declaration resolves to),
+    // and `decl_asm_alias` above holds the third fact (what the declaration is
+    // emitted under). One declaration can carry all three.
+    std::string decl_alias_target;
     if ( is_attribute_identifier_token(nt) )
     {
 	TokenBase *attr = nextToken();
-	nt = consume_gnu_attributes(attr, NULL, &storage_alias_name);
+	nt = consume_gnu_attributes(attr, NULL, &decl_alias_target);
 	if ( nt )
 	{
 	    pushToken(nt);
@@ -73187,7 +73258,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    if ( gotstatic )
 			fvar->flags |= vfSTATIC;
 		    if ( !decl_asm_alias.empty() )
+		    {
+			fvar->asm_label = decl_asm_alias;
 			fvar->storage_alias_name = decl_asm_alias;
+		    }
 		    DBG(std::cout << "parseDeclaration() function-typedef"
 			" declaration of " << id << std::endl);
 		}
@@ -73214,6 +73288,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
+	bool init_has_field_designators = false;
 	bool saw_brace_init = false;
 	// Only real user-defined structs/classes accept brace init.
 	// Runtime-library class types use DataDefCLASS but have a concrete DataType;
@@ -73444,6 +73519,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				if ( slit->inits.size() <= design_field )
 				    slit->inits.resize(design_field + 1, NULL);
 				slit->inits[design_field] = value;
+				slit->has_field_designators = true;
 			    }
 			    else
 				slit->inits.push_back(value);
@@ -73563,6 +73639,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			{
 			    DataDefSTRUCT *target_sdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
 			    std::vector<TokenBase *> *target_inits = &init_list;
+			    // NULL while the target is the declaration's OWN
+			    // list; set once the walk descends into a nested
+			    // literal. Same fact as TokenStructLit's flag.
+			    TokenStructLit *target_lit = NULL;
 			    size_t field_index = 0;
 			    for ( size_t pi = 0; pi < field_path.size(); ++pi )
 			    {
@@ -73595,8 +73675,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				    (*target_inits)[field_index] = nested_lit;
 				}
 				target_inits = &nested_lit->inits;
+				target_lit = nested_lit;
 				target_sdd = nested_sdd;
 			    }
+			    if ( target_lit )
+				target_lit->has_field_designators = true;
+			    else
+				init_has_field_designators = true;
 			    if ( next_init && next_init->id() == TokenID::tkOpBrc )
 			    {
 				pushToken(next_init);
@@ -73758,7 +73843,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	}
 	if ( var && !decl_asm_alias.empty() )
+	{
+	    var->asm_label = decl_asm_alias;
 	    var->storage_alias_name = decl_asm_alias;
+	}
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	// Record file-scope variables in top_decls in source order for the CIR
@@ -73837,9 +73925,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	    var->flags &= ~vfEXTERN;
 	}
-	if ( !storage_alias_name.empty() )
+	if ( !decl_alias_target.empty() )
 	{
-	    var->storage_alias_name = storage_alias_name;
+	    // The DEFINING half (the symbol this declaration creates at the
+	    // target's address) is emitted in object mode by
+	    // cir_emit_alias_symbols; the redirect below is the REFERENCE half
+	    // madc has always had.
+	    var->alias_definition_target = decl_alias_target;
+	    var->storage_alias_name = decl_alias_target;
 	    Variable *alias_target = resolve_global_storage_variable(var);
 	    if ( alias_target && alias_target != var )
 	    {
@@ -73924,6 +74017,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	td->line = tb->line;
 	td->column = tb->column;
 	td->init_list = init_list;
+	td->init_has_field_designators = init_has_field_designators;
 
 	// constexpr array declarations need their initializer bytes at PARSE
 	// time: enum initializers and non-type arguments precede CIR emission.

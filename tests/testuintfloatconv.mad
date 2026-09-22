@@ -1,0 +1,87 @@
+/* Unsigned 64-bit -> floating conversion, at every boundary that rounds.
+ *
+ * x86-64 has no unsigned-integer -> floating instruction, so MIR's generator
+ * has to synthesize UI2F / UI2D / UI2LD, and it has no truncating x87 integer
+ * store either, so it has to synthesize LD2I. It used to synthesize all four
+ * as a CALL to a one-line C helper -- `static float mir_ui2f (uint64_t i) {
+ * return (float) i; }` -- living in mir-gen-x86_64.c itself. That is a
+ * bootstrap cycle: a C compiler built on MIR, compiling mir-gen.c, lowered the
+ * body of that helper into a call to `mir.ui2f`, i.e. to itself, and it
+ * recursed until the stack died. It was invisible until a madc-built libmir
+ * ran (docs/plans/2026-09-22-alias-symbol-emission.md section 9).
+ *
+ * The conversions are generated inline now. This test is the ARITHMETIC gate
+ * on that: getting the cycle out is worthless if the synthesized sequence
+ * rounds differently from the hardware's signed conversion would.
+ *
+ * Every value here is a boundary that a wrong expansion gets wrong:
+ *   - below 2^63 the result must be the plain SIGNED conversion;
+ *   - at and above 2^63 the value no longer fits a signed 64-bit integer, so
+ *     the sequence halves it -- and must make the discarded bit STICKY, or a
+ *     round-to-nearest tie breaks the wrong way (16777217, 9007199254740993,
+ *     and the odd values just under 2^64 are exactly those ties);
+ *   - long double must NOT use that trick at all: its 64-bit mantissa holds
+ *     every uint64_t exactly, so a sticky low bit would corrupt an odd value
+ *     >= 2^63. It splits at 32 bits instead, which is exact.
+ * Bit patterns, not printf text: a %f comparison hides the single-ulp errors
+ * that are the whole point.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted lines.
+ */
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+
+/* Exact-width carriers: `unsigned long` is 32 bits on LLP64 (win64), where it
+ * truncated every double pattern to its low half — the conversions were right
+ * and the PRINTING was wrong (madc under wine was byte-identical to
+ * mingw-gcc on the old spelling). One .expect must hold on every data model. */
+static unsigned fbits (float f) { uint32_t u; memcpy (&u, &f, 4); return (unsigned) u; }
+static unsigned long long dbits (double d) { uint64_t u; memcpy (&u, &d, 8); return (unsigned long long) u; }
+
+int main (void) {
+	static const unsigned long long v[] = {
+		0ULL, 1ULL, 3ULL,
+		16777216ULL, 16777217ULL, 16777219ULL,	/* float tie boundary   */
+		9007199254740992ULL, 9007199254740993ULL, 9007199254740995ULL,	/* double tie */
+		9223372036854775807ULL,			/* 2^63-1: last signed  */
+		9223372036854775808ULL,			/* 2^63:   first that is not */
+		9223372036854775809ULL,			/* odd, just over 2^63  */
+		13835058055282163712ULL,
+		18446744073709549568ULL, 18446744073709551615ULL,
+		12297829382473034410ULL, 0x0123456789ABCDEFULL,
+	};
+	unsigned i;
+
+	for (i = 0; i < sizeof (v) / sizeof (v[0]); i++)
+		printf ("u %llu f %08x d %016llx\n", v[i], fbits ((float) v[i]), dbits ((double) v[i]));
+
+	/* long double is checked against the value rebuilt from the integer with
+	 * SIGNED conversions only: v>>1 always fits a signed 64-bit integer, so
+	 * its conversion is exact, and doubling it and adding the low bit back is
+	 * exact too. The split-at-32 expansion must reproduce that EXACTLY -- an
+	 * expansion that made the low bit sticky would differ on every odd value
+	 * at or above 2^63.  (The reverse direction, `(unsigned long long) ld`,
+	 * deliberately is not used here: MIR has no FP -> unsigned conversion,
+	 * which is a separate gap with its own test.) */
+	for (i = 0; i < sizeof (v) / sizeof (v[0]); i++) {
+		long double ld = (long double) v[i];
+		long double ref
+			= (long double) (long long) (v[i] >> 1) * 2.0L + (long double) (long long) (v[i] & 1);
+
+		printf ("ld %llu %d\n", v[i], ld == ref ? 1 : 0);
+	}
+
+	/* LD2I truncates toward zero regardless of the rounding mode, and has to
+	 * put the x87 control word back afterwards: `third` is computed before an
+	 * LD2I and `third2` after it, and they must agree. */
+	{
+		long double third = 1.0L / 3.0L;
+		long long trunc_pos = (long long) 12345.678L, trunc_neg = (long long) -12345.678L;
+		long double third2 = 1.0L / 3.0L;
+
+		printf ("trunc %lld %lld\n", trunc_pos, trunc_neg);
+		printf ("cw %d %016llx\n", third == third2 ? 1 : 0, dbits ((double) third2));
+	}
+	return 0;
+}
