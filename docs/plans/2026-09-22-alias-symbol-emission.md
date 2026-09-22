@@ -298,7 +298,9 @@ runs under the gcc-built `c2m`.
 Differentially tested against the gcc-built `c2m` over 140 `c-tests` programs:
 **137 identical**.
 
-### 8.4 The three that differ — NEXT, banked
+### 8.5 The three that differ — DIAGNOSED to ONE root cause (see below); §8.4 kept as first-pass notes
+
+### 8.4 The three that differ — first-pass notes
 
 All three are float / long-double conversion. **madc itself** (embedding a
 gcc-built libmir) runs all three correctly, so madc's own float handling is
@@ -316,3 +318,77 @@ each against `obj/mir/host/c2m`. Two link commands name the TU.
 
 ⚠️ Redirect the output and check `rc`: a segfault AFTER correct output reads as
 "produced nothing", because stdout is still buffered. Use `stdbuf -o0`.
+
+
+---
+
+## 9. The last item: a MIR BOOTSTRAP CYCLE (diagnosed 2026-09-22, not yet fixed)
+
+### 9.1 One of the three was never a defect
+
+`lacc/bitfield-types-init.c` differs with **every** one-object swap, including
+`mir-debug-gdb.o`, which cannot touch long-double arithmetic. The negative
+control settles it: an **all-gcc** `c2m` linked the same way (`-lmadc`, g++)
+also differs — and prints a *third* byte pattern. The program dumps the padding
+bytes of an uninitialized `long double`. Not a madc defect.
+
+**Real score: 138/140.**
+
+### 9.2 The other two are one root cause
+
+x86-64 has no unsigned-64→float instruction, so MIR's generator rewrites
+`MIR_UI2F` / `MIR_UI2D` / `MIR_UI2LD` / `MIR_LD2I` into a **call to its own
+builtin** (`get_builtin`, `mir-gen-x86_64.c:800`). Those builtins are four
+one-line static functions in that same file (`:757-760`):
+
+```c
+static float       mir_ui2f  (uint64_t i)    { return (float) i; }
+static double      mir_ui2d  (uint64_t i)    { return (double) i; }
+static long double mir_ui2ld (uint64_t i)    { return (long double) i; }
+static int64_t     mir_ld2i  (long double ld){ return (int64_t) ld; }
+```
+
+So when **madc** compiles `mir-gen.c`, the body of `mir_ui2f` is lowered into a
+call to `mir.ui2f` — itself. It recurses until the stack dies.
+
+Read off the artifact, not inferred:
+
+```
+madc's mir_ui2f:                          gcc's mir_ui2f:
+  sub    $0x8,%rsp                          test   %rdi,%rdi
+  mov    0x0(%rip),%rax   <- addrpool       js     <fixup>
+  call   *%rax                              pxor   %xmm0,%xmm0
+  add    $0x8,%rsp                          cvtsi2ss %rdi,%xmm0
+  ret                                       ret
+
+  reloc: .mir.addrpool+0x1440  R_X86_64_64  mir.ui2f
+         (ui2d 0x1450, ui2ld 0x1460, ld2i 0x1470)
+```
+
+gcc emits the conversion INLINE and calls nothing. Located by one-object swap:
+only madc's `mir-gen.o` reproduces it; `mir.o`, `mir-debug.o` and
+`mir-debug-gdb.o` all match.
+
+This is not a madc codegen bug. It is a **bootstrap cycle in MIR's design**,
+invisible until a compiler built on MIR compiled MIR itself.
+
+### 9.3 The fix is Tier 3 — raise MIR — and that is an owner decision
+
+`.claude/rules/lowering-vs-raising.md`: *"Raising MIR is the biggest fork step —
+do it only when decided and roadmapped, and design it for upstream."*
+
+- **UI2F / UI2D / UI2LD** expand in **portable MIR IR**, no assembly: test the
+  sign; if negative use the odd-bit trick (`(i >>u 1) | (i & 1)`), convert
+  signed, double it; else convert signed directly. That is the sequence gcc
+  emits, built from `MIR_BGES`/`MIR_URSH`/`MIR_AND`/`MIR_OR`/`MIR_I2F`/
+  `MIR_FADD` — all existing insns. Benefits every MIR user (removes a call from
+  hot conversion code) and is upstreamable as-is.
+- **LD2I** has no portable MIR-IR expansion — long double → int64 needs x87
+  (`fisttpll`, or the `fnstcw`/`fldcw` dance). That one is real x86-64 generator
+  work with the register allocator in play.
+
+A partial fix is not acceptable here (`finish-plans-fully`): leaving
+`mir_ld2i` self-recursive is a landmine that only fires on long-double code.
+
+**Do not hard-code a name test in madc.** Rule #7: the general machinery must
+not special-case `mir.ui2f`. The cycle is MIR's to break.
