@@ -1,4 +1,12 @@
-# /test — Build and run the full test suite
+# /test — TIER 3: build and run the full test suite
+
+This is the MERGE-WAVE battery — hours, run once at the arc's release boundary.
+It is one of THREE tiers (`.claude/rules/testing-fulltest.md`); running it for
+an ordinary change is the wrong tier, and so is skipping the middle one:
+
+  TIER 1  targeted, per change     — `bash scripts/run_tests.sh <names>`
+  TIER 2  per COMMIT, <3 minutes   — `bash scripts/fast_lanes.sh`, or `/commit`
+  TIER 3  per MERGE WAVE           — this command
 
 Run the full build + test pipeline and report results.
 

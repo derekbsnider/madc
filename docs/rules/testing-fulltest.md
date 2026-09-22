@@ -92,3 +92,60 @@ The SMAUG work made this concrete: "JIT green" was not enough. A small
 aggregate return bug left the EXE lane unable to create a character
 cleanly even though the ordinary suite was passing. The repo should not
 accept that kind of partial validation as "good enough" anymore.
+
+## Why the rule now names THREE tiers (owner, 2026-09-22)
+
+The rule described two tiers — targeted-per-change and battery-per-merge-wave —
+and said, in its first sentence, "never the full battery per commit." The fast
+conformance tier existed the whole time: `scripts/fast_lanes.sh`, under three
+minutes for six lanes, with its own `--commit` gate in `scripts/lane_ledger.sh`
+and its own `promote=commit` column in `docs/lane-status.tsv`. It was named in
+**none** of `.claude/rules/` — the files an agent actually loads.
+
+So the only two answers available to the question "what do I run?" were
+hand-rolled targeted tests or the multi-hour battery. The owner described the
+result exactly: *"you seem to either run super long-assed 3 hour test suites
+for every tiny thing, or you only run hand-rolled tests for a huge pile of
+changes... so random."*
+
+It is not randomness. It is a two-valued rule applied to a three-valued
+reality, and it will recur for any agent until the rule says three.
+
+The session that triggered this is the worked example. Five fixes landed —
+two of them in `third_party/mir` (every unsigned→floating conversion MIR
+generates) and one in `c2mir` (every float→`uint64_t` cast in every C program
+compiled) — validated with 16 targeted tests, hand reducers against gcc and
+clang, and a 426-program self-host differential. All green, all real, and all
+Tier 1. `c_torture_lane.sh` — 1612 standard-C programs, four minutes, the lane
+whose own header says it "belongs in the FAST tier that runs after every
+commit" — was classified as a "major test suite" and held for the seam, along
+with the rest of `fast_lanes.sh`. The branch was pushed five times without it.
+
+That misclassification had a second source worth recording: a session-scoped
+owner instruction to "pause before initiating any major test suites" was read
+as covering `fast_lanes.sh`. An instruction about Tier 3 was applied to Tier 2.
+Hence the last line of the rule: a pause instruction is about the battery, and
+if its scope is unclear, ask which tier it means.
+
+## Why the gate is at PUSH and not at COMMIT
+
+The obvious mechanism — a pre-commit hook that refuses a code commit until the
+fast tier is green — cannot work, and the reason is structural. The ledger
+records a lane green against `git rev-parse HEAD`, and freshness is
+`git diff --quiet <recorded> HEAD -- $CODE_PATHS`. Before you commit, HEAD is
+still the *previous* commit, so the first code commit of any change always
+reads stale, and the gate would block every code commit unconditionally.
+
+The push is where the model works: commit freely, and before the work leaves
+the machine the fast tier must be green on current content. The pre-push hook
+already enforced this for `develop` and `master` (`gate_applies --promote`
+already admits `promote=commit` rows). The hole was that feature branches
+pushed freely — which is precisely the hole the 2026-09-22 session fell
+through. The hook now applies the `--commit` tier to every branch, and the
+develop/master tiers on top of it where they applied before. Docs-only pushes
+stay free, because staleness is measured over `CODE_PATHS`.
+
+`/commit` (`.claude/commands/commit.md`) is the proactive half: it runs Tier 2
+on the working-tree content BEFORE committing, so the gate is satisfied by the
+time the push happens, and a red lane is found while the change is still one
+change.
