@@ -265,8 +265,11 @@ detector: the case that hurts here shares no text (six angle-bracket scanners,
 one guarded, a sixth unguarded copy written two days *after* the fix landed in
 the first).
 
-Run it **before merging a feature branch, scoped to the subsystem the feature
-touched** — that is where new copies are born. Findings are recorded as
+It runs **inside `/commit`, scoped to the commit's diff, before the build** —
+that is where new copies are born, and where a consolidation is still part of
+the change Tier 1 and Tier 2 validate. **Never as a merge gate:** the merge
+follows the battery, so anything it rewrites there is code the battery never
+ran. Findings are recorded as
 `DupFamily` nodes in `madc-knowledge` so later sweeps re-check instead of
 rediscovering, and every family that gets consolidated leaves a gate in
 `fulltest` so it cannot regrow. Non-Claude tools: read the command file and
@@ -397,9 +400,9 @@ editing — don't try to memorize all of them.
 ### Total rule footprint
 
 - **35 rules, 1093 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~414 lines** — loaded by Claude via
+- **This file (AGENTS.md): ~453 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1536 lines.**
+- **Grand total loaded by Claude Code per turn: ~1546 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

@@ -29,22 +29,32 @@ Run this.**
 
 2. **Classify the blast radius.** Intersect the staged paths with CODE_PATHS.
    A docs-only commit (`docs/`, `*.md`, `claude_status.json`, `CHANGELOG.md`)
-   skips Tier 2 and goes to step 6. Anything under `src/`, `include/`,
+   skips the audit and Tier 2 and goes to step 7. Anything under `src/`, `include/`,
    `third_party/`, `tests/`, `scripts/`, `tools/` or `examples/` runs it.
 
-3. **Build.** `bash scripts/remote_build.sh sync build pull`. QNAP law: this
+3. **Audit the diff for semantic duplication** (`/dupaudit`, scoped to THIS
+   diff — `.claude/commands/dupaudit.md`). It runs HERE, before the build,
+   because its findings rewrite code: a consolidation made now is part of the
+   change Tier 1 and Tier 2 are about to validate. For every helper, predicate
+   or rule the diff adds or edits, grep the CONCEPT for sibling
+   implementations and re-check the KG `DupFamily` rows whose scope overlaps.
+   A copy THIS change creates or diverges from is adopted/consolidated before
+   committing; an older family found on the way is recorded (`open`), not
+   folded into this commit (`fix-what-you-find.md`: its own commit).
+
+4. **Build.** `bash scripts/remote_build.sh sync build pull`. QNAP law: this
    shell is a NAS container — every build and every suite runs on the desktop
    container over `ssh -p 2299 dev@localhost`, never here. Read `build rc=`
    before believing anything downstream. Zero warnings is an owner law; the
    build is `-Werror`, so a warning is already a failure.
 
-4. **Tier 1 — targeted.** `bash scripts/run_tests.sh [--exe --obj] <names>` on
+5. **Tier 1 — targeted.** `bash scripts/run_tests.sh [--exe --obj] <names>` on
    the container, over the new test plus its neighbors. A fix touching native
    artifact, AOT or shared codegen paths runs `--exe --obj` too. A new fix
    without a reducer in `tests/` carrying BOTH oracles is not ready to commit
    (`.claude/rules/fix-what-you-find.md`).
 
-5. **Tier 2 — fast conformance.** On the container:
+6. **Tier 2 — fast conformance.** On the container:
    `( ulimit -t 3600; timeout 2400 bash scripts/fast_lanes.sh )`, redirected to
    a log. It is a RATCHET: a test failing OUTSIDE its recorded baseline is a
    regression and **stops the commit**; a baseline test that now passes is LOUD
@@ -54,7 +64,7 @@ Run this.**
    **A red lane is not a reason to commit anyway and fix later.** The tier's
    whole value is finding it while the change is still one change.
 
-6. **Write the message.** A commit touching `src/` or `include/` carries the
+7. **Write the message.** A commit touching `src/` or `include/` carries the
    four trailers, and `scripts/check-rule-trailers.sh` fails the build without
    them:
    `Hypothesis:` what you believed was wrong, written BEFORE editing ·
@@ -66,14 +76,14 @@ Run this.**
    `n/a — <reason>` is allowed; silence is not. Attribution trailers per the
    session's instructions.
 
-7. **Commit**, then **record the ledger**: `bash scripts/lane_ledger.sh record
+8. **Commit**, then **record the ledger**: `bash scripts/lane_ledger.sh record
    <lane> <tally>` for each lane that ran green, so
    `scripts/lane_ledger.sh check --commit` is fresh for the push gate. The row
    stamps the new HEAD, whose code content is what Tier 2 just tested.
    (`fast_lanes.sh` records automatically when it runs in the repo it is
    gating; when it ran on the container, copy the rows back.)
 
-8. **Report by tier.** Name each tier, what it ran, and its tally. "Tests
+9. **Report by tier.** Name each tier, what it ran, and its tally. "Tests
    passed" without a tier is the report that let this go wrong.
 
 ## When NOT to use this

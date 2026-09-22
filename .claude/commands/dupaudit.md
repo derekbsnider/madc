@@ -14,10 +14,17 @@ duplicated text at all. What exposed it was a **bookkeeping marker**.
 
 ## When to run
 
-At **feature-merge time, scoped to the subsystem the feature touched**. That is
-where new copies are born — someone working in an area without full knowledge of
-it. Running it there would have caught the sixth angle scanner in two days
-instead of seven weeks.
+Inside **`/commit`, scoped to the commit's diff** — step 3, BEFORE the build
+(`.claude/commands/commit.md`). That is where new copies are born, and a
+consolidation made there is still part of the change Tier 1 and Tier 2 then
+validate. Running it per commit would have caught the sixth angle scanner the
+day it was written instead of seven weeks later.
+
+**Never as a merge gate.** The merge follows the seam battery, so anything the
+audit rewrites there is code the battery never ran (owner ruling 2026-09-22;
+reasoning in `docs/rules/branching.md`). A wider sweep of a whole subsystem is
+still available on request — it is recon, and its findings become their own
+commits with their own Tier 1 + Tier 2.
 
 Also run it whenever a fix is about to land in something that "feels like it
 might exist elsewhere." That instinct is usually right.
