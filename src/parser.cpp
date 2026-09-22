@@ -21490,6 +21490,7 @@ static Variable *rank_fn_overload_candidates(
     const Program::NamespaceFnOverload *best_e = NULL;
     const Program::NamespaceFnOverload *tied = NULL;
     int best_score = -1;
+    bool best_uses_ellipsis = false;
     for ( const Program::NamespaceFnOverload &e : cands )
     {
 	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
@@ -21538,11 +21539,22 @@ static Variable *rank_fn_overload_candidates(
 	}
 	if ( !fd )
 	    continue;
-	size_t pn = fd->parameters.size();
-	// Default arguments make the function callable with
-	// [required..total] args (FuncDef::required_param_count).
-	if ( argtypes.size() < fd->required_param_count()
-	  || argtypes.size() > pn )
+	// [over.match.viable]/2: n arguments fit m parameters when n == m, when
+	// n < m and the rest have defaults (FuncDef::required_param_count), and —
+	// for a C-variadic candidate — when n > m, every extra argument taking
+	// the ellipsis ([over.ics.ellipsis]). Only the FIXED parameters are ever
+	// scored (fixed_param_count: the `...`'s synthetic ddINT64 slot is no
+	// parameter). Scoring an argument against that slot made `f(...)`
+	// unviable for a struct or a pointer, so `f(long)` vs `f(...)` with a
+	// struct called f(long) with a struct, and `pick(void **)` vs
+	// `pick(...)` with an int** called the void** one — g++ and clang++
+	// both take the ellipsis. The constructor ranker and
+	// method_body_matches_args already apply this rule.
+	size_t pn = fd->fixed_param_count();
+	bool variadic = fd->is_varargs;
+	if ( variadic ? argtypes.size() < pn
+		      : (argtypes.size() < fd->required_param_count()
+			 || argtypes.size() > pn) )
 	{
 #if MADC_DEBUG_FNTPL
 	    std::cerr << "FNTPL rank cand=" << e.var->name
@@ -21554,7 +21566,11 @@ static Variable *rank_fn_overload_candidates(
 	}
 	int total = 0;
 	bool ok = true;
-	for ( size_t i = 0; i < argtypes.size(); i++ )
+	// [over.ics.rank]/2.1: an ellipsis conversion sequence is WORSE than any
+	// standard or user-defined one, so a candidate that matched an argument
+	// by the ellipsis loses every tie to one that did not.
+	bool uses_ellipsis = variadic && argtypes.size() > pn;
+	for ( size_t i = 0; i < argtypes.size() && i < pn; i++ )
 	{
 	    bool refp = fd->is_ref_param(i);
 	    bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
@@ -21571,14 +21587,18 @@ static Variable *rank_fn_overload_candidates(
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
 	}
-	if ( ok && total > best_score )
+	if ( ok && (total > best_score
+		    || (total == best_score && best
+			&& best_uses_ellipsis && !uses_ellipsis)) )
 	{
 	    best_score = total;
 	    best = e.var;
 	    best_e = &e;
+	    best_uses_ellipsis = uses_ellipsis;
 	    tied = NULL;
 	}
-	else if ( ok && total == best_score && best && e.var != best )
+	else if ( ok && total == best_score && best && e.var != best
+	       && uses_ellipsis == best_uses_ellipsis )
 	{
 	    // Equal conversion totals. A non-template function beats a
 	    // template specialization ([over.match.best.general]); two PLAIN
@@ -29026,7 +29046,7 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
     // K&R empty parameter list accepts any argument count.
     if ( fd->parameters.empty() && !fd->is_void_params )
 	return var;
-    size_t pn = fd->parameters.size() - (fd->is_varargs ? 1 : 0);
+    size_t pn = fd->fixed_param_count();
     bool accepts = fd->is_varargs
 		 ? argc >= pn
 		 : (argc >= fd->required_param_count() && argc <= pn);
@@ -29043,7 +29063,7 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
 	    continue;
 	if ( nfd->parameters.empty() && !nfd->is_void_params )
 	    return nsv;   // placeholder/K&R: accepts any count
-	size_t npn = nfd->parameters.size() - (nfd->is_varargs ? 1 : 0);
+	size_t npn = nfd->fixed_param_count();
 	bool nacc = nfd->is_varargs
 		  ? argc >= npn
 		  : (argc >= nfd->required_param_count() && argc <= npn);
@@ -30588,8 +30608,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    {
 		// Capture params (nested fn / [&] lambda) live only in the CIR
 		// lowering, not fd->parameters — user arity is the full count.
-		size_t expected = fd->parameters.size()
-		    - (fd->is_varargs ? 1 : 0);
+		size_t expected = fd->fixed_param_count();
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
 	    }
@@ -30641,9 +30660,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	  && !(fd->parameters.empty() && !fd->is_void_params)
 	      && !is_overloaded_allocation_operator(tc->var.name) )
 	    {
-		size_t expected = fd->parameters.size()
-			- (function_uses_hidden_this(tc->var) ? 1 : 0)
-			- (fd->is_varargs ? 1 : 0);
+		size_t expected = fd->fixed_param_count()
+			- (function_uses_hidden_this(tc->var) ? 1 : 0);
 		// varargs functions accept expected or more args; fixed functions require exact match
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		{

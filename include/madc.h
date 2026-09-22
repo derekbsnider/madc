@@ -300,6 +300,18 @@ public:
     // ownerless DEFBODY re-run reproduces that context so instantiation
     // allowances (the local-class reuse at TokenCLASS::parse) apply as live.
     bool forest_body_in_instantiation = false;
+    // The REAL parameters of a C-variadic function. Every is_varargs FuncDef
+    // carries a SYNTHETIC trailing slot in `parameters` for the `...` (a
+    // ddINT64 `__va_args`: parseFunction, the declarator reader,
+    // __builtin_va_start, the C89 implicit declaration and the member-template
+    // stub all push one), and it is no parameter: an argument past the fixed
+    // ones takes the ellipsis ([over.ics.ellipsis]) and is never scored
+    // against it. Hidden __this/__retbuf slots are NOT removed here.
+    size_t fixed_param_count() const
+    {
+	return ( is_varargs && !parameters.empty() )
+	    ? parameters.size() - 1 : parameters.size();
+    }
     // Number of leading parameters that have NO default — the minimum arg count a
     // call must supply. Equals parameters.size() when no parameter has a default.
     size_t required_param_count() const
