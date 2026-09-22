@@ -9297,9 +9297,10 @@ TokenBase *CirBuilder::unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd)
 }
 
 void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
-					   DataDef *dd)
+					   DataDef *dd, bool slots_are_elements)
 {
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	DataDefSTRUCT *sdd = slots_are_elements
+		? NULL : dynamic_cast<DataDefSTRUCT *>(dd);
 	bool is_union = sdd && sdd->union_layout;
 	// An initializer that fills an AGGREGATE slot as ONE object keeps the
 	// positional cursor valid: a string literal (or its materialized
@@ -9326,8 +9327,13 @@ void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
 	DBG(std::cout << "unwrap_scalar_braces_list(" << (dd ? dd->name : "?")
 		      << ") slots=" << inits.size() << std::endl);
 	for (size_t i = 0; i < inits.size(); i++) {
-		size_t mi = is_union ? 0 : i;
-		DataDef *mdd = init_slot_type(dd, mi);
+		// The slot index IS the member index, for a union as much as a
+		// struct: the parser writes a `.member =` designator into that
+		// member's slot (parse_compound_struct_lit), so pinning a union
+		// to member 0 here read `{.a = {1,2}}` against the type of the
+		// FIRST member.
+		size_t mi = i;
+		DataDef *mdd = slots_are_elements ? dd : init_slot_type(dd, mi);
 		DBG(std::cout << "  slot " << i << " mdd="
 			      << (mdd ? mdd->name : "NULL") << " tok="
 			      << (inits[i] ? (int)inits[i]->type() : -1)
@@ -9379,7 +9385,8 @@ void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
 	}
 }
 
-node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
+node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate,
+			      DataDef *slot_dd)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
 	// `.field`/`[index]` designators into positional slots at parse time
@@ -9409,12 +9416,111 @@ node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
 		// and c2mir rejects it ("empty scalar initializer"). Fixing this
 		// requires CirBuilder to retain/re-derive designator info for
 		// flexible-array empty inits (tests/testflexarrayemptyinit.mad).
-		node_t inner = list();
-		for (size_t i = 0; i < sl->inits.size(); i++)
-			append(inner, node2(N_INIT, list(), init_value(sl->inits[i])));
-		return inner;
+		// slot_dd is the nested list's own aggregate type when the
+		// caller could name one; NULL keeps the historical type-less
+		// positional walk.
+		return aggregate_init_list(sl->inits, slot_dd, elem);
 	}
 	return translate_expr(elem);
+}
+
+DataDef *CirBuilder::init_nested_list_type(DataDef *dd, size_t idx)
+{
+	// Only a slot that is a WHOLE struct/union member (or an array
+	// element) names the nested list's type. A COUNTED-ARRAY member stores
+	// its ELEMENT type in members[] with the count in member_counts, so
+	// handing that type down would make the nested braces read as that
+	// type's members instead of as elements.
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(dd));
+	if (sdd && idx < sdd->member_counts.size() && sdd->member_counts[idx] != 1)
+		return NULL;
+	DataDef *mt = init_slot_type(dd, idx);
+	DataDef *mu = mt ? unqualified_type(mt) : NULL;
+	if (mu && mu->is_struct() && !mu->is_complex())
+		return mt;
+	return NULL;
+}
+
+// The ONE builder of an aggregate's brace initializer list:
+//
+//   initializer_list: N_LIST: N_INIT(N_LIST:(const_expr | N_FIELD_ID(N_ID))* initializer)*
+//
+// A struct is positional and its designated-init GAPs zero-fill, which is what
+// init_value's NULL handling does. A UNION is NOT positional: C11 6.7.9p17
+// initializes exactly ONE member, and a bare positional list can only ever name
+// the FIRST one — so zero-padding up to a designated member (correct for a
+// struct) turned `(union u){.a = p}` into a TWO-element union initializer and
+// c2mir rejected it, "excess elements in array/struct/union initializer". It
+// took every `(MIR_val_t){.a = ...}` in MIR's own c2m driver with it.
+//
+// Nothing was lost at parse: parse_compound_struct_lit writes a `.member =`
+// value into that member's positional SLOT, so the slot index IS the member
+// index. It only has to be spelled back as the N_FIELD_ID designator the
+// grammar above takes. A later initializer for the same union overrides an
+// earlier one, so the LAST filled slot is the one that survives.
+node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
+				       DataDef *dd, TokenBase *origin,
+				       bool slots_are_elements)
+{
+	node_t lst = list();
+	if (slots_are_elements) {
+		// Every slot is an ELEMENT of dd, not a member of it. The union
+		// rule below is about MEMBERS, so it must not fire here: madc
+		// types `val_t a[2]` as val_t itself (the count lives on the
+		// Variable), and reading those two elements as val_t's members
+		// designated the wrong thing entirely.
+		DataDef *eu = unqualified_type(dd);
+		DataDef *nested = (eu && eu->is_struct() && !eu->is_complex())
+				? dd : NULL;
+		bool elem_aggregate = eu && ((eu->is_struct() && !eu->is_complex())
+					     || eu->as_carray_dd() != NULL);
+		for (size_t i = 0; i < inits.size(); i++)
+			append(lst, node2(N_INIT, list(),
+					  init_value(inits[i], elem_aggregate,
+						     nested)));
+		return lst;
+	}
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(dd));
+	if (sdd && sdd->union_layout && !sdd->is_complex()) {
+		size_t chosen = inits.size();
+		for (size_t i = 0; i < inits.size(); i++)
+			if (inits[i])
+				chosen = i;
+		if (chosen >= inits.size())
+			return lst;	// `{ }` / all gaps: C zero-initializes
+		node_t des = list();
+		// Slot 0 needs no designator — a positional union initializer
+		// already names the first member. An anonymous member has no
+		// name to spell, so it keeps the positional form too.
+		if (chosen > 0 && chosen < sdd->members.size()
+		    && !sdd->members[chosen].first.empty())
+			append(des, node1(N_FIELD_ID,
+					  id(sdd->members[chosen].first.c_str())));
+		append(lst, node2(N_INIT, des,
+				  init_value(inits[chosen],
+					     init_slot_is_aggregate(dd, chosen),
+					     init_nested_list_type(dd, chosen))));
+		return lst;
+	}
+	for (size_t i = 0; i < inits.size(); i++) {
+		// A lowered-complex slot with a constant complex initializer
+		// folds to a nested {re, im} list — the runtime stmt-expr
+		// lowering is not a constant expression (testcomplexushort's
+		// global gs).
+		long fre, fim;
+		if (as_lowered_complex(init_slot_type(dd, i))
+		    && int_complex_const_fold(inits[i], fre, fim)) {
+			append(lst, node2(N_INIT, list(),
+					  int_complex_init_list(fre, fim,
+						origin ? origin : inits[i])));
+			continue;
+		}
+		append(lst, node2(N_INIT, list(),
+				  init_value(inits[i],
+					     init_slot_is_aggregate(dd, i),
+					     init_nested_list_type(dd, i))));
+	}
+	return lst;
 }
 
 // C99 compound literal `(T){ field... }` -> an unnamed object of type T,
@@ -9507,10 +9613,12 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 		}
 		node_t atype = node2(N_TYPE, aspec,
 				     node2(N_DECL, ignore(), adecl_list));
-		node_t ainits = list();
-		for (size_t i = 0; i < slit->inits.size(); i++)
-			append(ainits,
-			       node2(N_INIT, list(), init_value(slit->inits[i])));
+		// Every slot is an ELEMENT of array_elem_dd — that is how
+		// `(union u[]){{.a=1}}` reaches the union rule one level down,
+		// on each element's own nested list.
+		node_t ainits = aggregate_init_list(slit->inits,
+						    slit->array_elem_dd, slit,
+						    /*slots_are_elements=*/true);
 		return node2(N_COMPOUND_LITERAL, atype, ainits, slit);
 	}
 
@@ -9523,10 +9631,8 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	// c2mir refuses — see unwrap_scalar_braces).
 	unwrap_scalar_braces_list(slit->inits, dd);
 
-	// ---- Build the initializer list: LIST( INIT(LIST(), value), ... ). ----
-	node_t inits = list();
-	for (size_t i = 0; i < slit->inits.size(); i++)
-		append(inits, node2(N_INIT, list(), init_value(slit->inits[i])));
+	// ---- Build the initializer list: LIST( INIT(designators, value), ... ).
+	node_t inits = aggregate_init_list(slit->inits, dd, slit);
 
 	node_t cl = node2(N_COMPOUND_LITERAL, type_node, inits, slit);
 	return cl;
@@ -9952,26 +10058,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				append(lst, node2(N_INIT, list(), integer(ev)));
 			}
 		} else {
+			// A fixed array's declared type IS its element type
+			// here (the count lives on the Variable), so its brace
+			// slots are ELEMENTS, not members of that type.
+			bool elem_slots = v && v->is_fixed_array();
 			// Emission hygiene: unwrap braces-around-scalar slots
 			// (gcc warns, c2mir refuses — see unwrap_scalar_braces).
-			unwrap_scalar_braces_list(tdecl->init_list, base_dd);
-			for (size_t i = 0; i < tdecl->init_list.size(); i++) {
-				// A lowered-complex slot with a constant complex
-				// initializer folds to a nested {re, im} list —
-				// the runtime stmt-expr lowering is not a constant
-				// expression (testcomplexushort's global gs).
-				long fre, fim;
-				if (as_lowered_complex(init_slot_type(base_dd, i))
-				    && int_complex_const_fold(tdecl->init_list[i],
-							      fre, fim)) {
-					append(lst, node2(N_INIT, list(),
-						int_complex_init_list(fre, fim, origin)));
-					continue;
-				}
-				append(lst, node2(N_INIT, list(),
-						  init_value(tdecl->init_list[i],
-							     init_slot_is_aggregate(base_dd, i))));
-			}
+			unwrap_scalar_braces_list(tdecl->init_list, base_dd,
+						  elem_slots);
+			lst = aggregate_init_list(tdecl->init_list, base_dd,
+						  origin, elem_slots);
 		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {

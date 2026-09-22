@@ -962,6 +962,16 @@ void emit(CEmit &e, node_t n, int ctx)
 		emit_initializer(e, op(n, 1));
 		break;
 	}
+	case N_FIELD_ID:
+		// A MEMBER designator inside an N_INIT designator list:
+		// N_FIELD_ID(N_ID) -> `.name`. Emitted for a UNION whose brace
+		// initializes a member other than the first — that has no
+		// positional spelling at all (a union initializer holds exactly
+		// one element, which names the FIRST member). See
+		// CirBuilder::aggregate_init_list.
+		e.put('.');
+		emit(e, op(n, 0), P_NONE);
+		break;
 	case N_CAST:
 		// [0] = N_TYPE (target type), [1] = operand expression (a
 		// cast-expression: `(T)x`, `(T)(a + b)`, `((T)p)->f` by context)
