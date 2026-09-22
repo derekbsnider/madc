@@ -1,0 +1,68 @@
+/* Two invocations of ONE macro in DIFFERENT variadic pieces of the same call.
+ *
+ *     __QOS_ENUM (qos_class, unsigned int,
+ *         QOS_CLASS_USER_INTERACTIVE __QOS_CLASS_AVAILABLE (macos(10.10)) = 0x21,
+ *         QOS_CLASS_DEFAULT          __QOS_CLASS_AVAILABLE (macos(10.10)) = 0x15,
+ *         ...)
+ *
+ * is macOS <sys/qos.h>. Every enumerator is its own comma-separated piece of
+ * __VA_ARGS__ and each calls the same availability macro.
+ *
+ * madc pre-expands an argument in a throwaway Source seeded with the paint
+ * (C11 6.10.3.4p2 blue paint) that covers that argument's own text. The seed
+ * was read from a map keyed by PARAMETER — and every piece of a variadic tail
+ * shares the one key __VA_ARGS__, so the seed also carried what EARLIER
+ * pieces had expanded. The first __QOS_CLASS_AVAILABLE() expanded and painted
+ * the name; pieces two onward found it hidden and left it literal. A macro
+ * name sitting in enumerator position is "Expecting identifier in enum", and
+ * it took every darwin test that reaches a real SDK header with it.
+ *
+ * The paint is per-ARGUMENT, not per-parameter: sibling pieces are separate
+ * arguments and one must not hide a name for the next. The self-referential
+ * case that motivated the paint (an argument that already expanded a name
+ * must not expand it twice on the outer rescan) is unaffected — that is the
+ * SAME argument, and testmacroselfref covers it.
+ *
+ * gcc -std=c17 and clang -std=c17 agree on every line below.
+ */
+#include <stdio.h>
+
+#define AVAIL(...)			/* expands to nothing, like the real one */
+#define TAG(...) 0
+
+/* the <sys/qos.h> shape: empty-expansion macro, once per variadic piece */
+#define QOS_ENUM(name, type, ...) enum { __VA_ARGS__ }; typedef type name##_t
+
+QOS_ENUM (qos_class, unsigned int,
+	Q_INTERACTIVE
+		AVAIL (macos(10.10), ios(8.0)) = 0x21,
+	Q_INITIATED
+		AVAIL (macos(10.10), ios(8.0)) = 0x19,
+	Q_DEFAULT
+		AVAIL (macos(10.10), ios(8.0)) = 0x15,
+	Q_UNSPECIFIED
+		AVAIL (macos(10.10), ios(8.0)) = 0x00,
+);
+
+/* a NON-empty expansion in every piece, so the value itself carries proof
+ * that each call really expanded rather than vanishing some other way */
+#define VALS(first, ...) int vals[] = { __VA_ARGS__ };
+VALS (ignored,
+      TAG (a(1), b(2)) + 10,
+      TAG (c(3), d(4)) + 20,
+      TAG (e(5), f(6)) + 30)
+
+/* the same name used in the macro BODY and in a later piece: the body's own
+ * occurrence must still expand (that is not sibling paint) */
+#define BODY_USES(x, ...) int body[] = { TAG (z(0)) + x, __VA_ARGS__ };
+BODY_USES (100, TAG (y(9)) + 200)
+
+int main()
+{
+	printf("qos %d %d %d %d\n", (int)Q_INTERACTIVE, (int)Q_INITIATED,
+	       (int)Q_DEFAULT, (int)Q_UNSPECIFIED);
+	printf("size %d\n", (int)sizeof(qos_class_t));
+	printf("vals %d %d %d\n", vals[0], vals[1], vals[2]);
+	printf("body %d %d\n", body[0], body[1]);
+	return 0;
+}

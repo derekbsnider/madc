@@ -8333,7 +8333,21 @@ TokenBase *Program::_getToken()
 			// while a sibling argument's paint must not reach it (math.h's
 			// __MATHDECL takes `_Mdouble_` from the body and the arg list
 			// from a painted region in the same call).
-			source.inherit_macro_disables(saved, "", &param_paint[param]);
+			// param_paint is keyed by PARAMETER, and every comma-separated
+			// piece of a variadic tail shares ONE key (__VA_ARGS__), so it
+			// also holds what EARLIER siblings expanded — exactly the
+			// sibling paint the contract above excludes. Seeding from it
+			// hid a macro a previous piece had legitimately expanded:
+			// macOS <sys/qos.h> spells six enumerators as separate
+			// variadic pieces, each calling __QOS_CLASS_AVAILABLE(), and
+			// only the FIRST expanded — the literal macro name then sat in
+			// enumerator position ("Expecting identifier in enum") and took
+			// every darwin test that reaches a real SDK header with it.
+			// arg_served is per-ARGUMENT, which is what this contract means.
+			std::set<std::string> own_region_paint;
+			if ( i < arg_served.size() )
+			    own_region_paint = arg_served[i];
+			source.inherit_macro_disables(saved, "", &own_region_paint);
 			std::string expanded_arg;
 			TokenBase *at;
 			while ( (at = getToken()) )
