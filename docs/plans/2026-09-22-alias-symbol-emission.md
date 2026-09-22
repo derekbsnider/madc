@@ -1,11 +1,11 @@
 # `__attribute__((alias))` symbol emission — handoff plan (2026-09-22)
 
-**Status: DONE 2026-09-22** — implemented, gated, and the milestone it serves
-is reached. Commit `4d497614b` on
-`feature/headerless-win-weak-import-claude`. §7 records what was measured
-afterwards, including the ONE defect still between here and a fully
-madc-built `c2m`. The design below is what shipped, with two corrections
-noted in §7.
+**Status: DONE 2026-09-22**, and so are both defects it uncovered. Commits
+`4d497614b` (alias emission), the union-designator fix and the `void **`
+pointer-scaling fix, on `feature/headerless-win-weak-import-claude`. §7 records
+the alias work; **§8 records the two follow-on fixes and the 🏁 fully
+madc-built `c2m`**. The design below is what shipped, with corrections noted
+in §7.
 
 **Why it matters:** this is the gap between madc *compiling* all five MIR
 translation units (done, v0.100.1) and *linking* a madc-built libmir — i.e.
@@ -217,3 +217,102 @@ and `/usr/local/lib/libmadc.so.0` is an ANCIENT copy (it still links
    initializer" (3 check errors).** A SIXTH MIR TU madc cannot compile; it was
    never in the "all five TUs" count because it is `c2m`'s `main`, not part of
    libmir. Wanted for a fully madc-built `c2m`.
+
+
+---
+
+## 8. The two defects §7 banked — both FIXED, and the milestone completed
+
+The owner's rule applies: a feature is not done, and no full suite runs, while
+known defects of it are open. Both are fixed, each in its own commit with its
+own reducer and both oracles.
+
+### 8.1 A union brace initializes ONE member, named by a designator
+
+C11 6.7.9p17: a union's brace initializer initializes exactly one member, and a
+bare positional list can only ever name the FIRST. madc lowered every
+designated initializer to a positional list with the earlier slots zero-filled
+— correct for a struct, where `{.z=3}` and `{0,0,3}` are the same object, and
+impossible for a union: `{.a = p}` became a TWO-element union initializer and
+c2mir refused it, *"excess elements in array/struct/union initializer"*.
+
+`c2mir-driver.c:1067-1069` passes three `(MIR_val_t){.i = …}` / `{.a = …}`
+compound literals to `MIR_interp`, and `MIR_val_t`'s first member is
+`MIR_insn_code_t ic` — so every one of them designates a non-first member. That
+is why the sixth TU would not compile.
+
+Nothing was lost at parse: `parse_compound_struct_lit` writes the value into
+that member's positional SLOT, so the slot index IS the member index. It only
+had to be spelled back as the `N_FIELD_ID` designator c2mir's grammar already
+takes. The three sites that built an aggregate's initializer list are now one
+owner, `CirBuilder::aggregate_init_list`, which carries a `slots_are_elements`
+flag because **madc types a fixed array as its ELEMENT type** with the count on
+the Variable — without it, `val_t a[2] = {{.i=1},{.i=2}}` read its two
+ELEMENTS as two of `val_t`'s MEMBERS. `--emit=c11` learned to spell `.name`; it
+had been printing `/*<unhandled FIELD_ID>*/`.
+
+Gate: `tests/testuniondesignatedinit.mad`. Every shape designates a NON-first
+member, because the first member is exactly the case the positional lowering
+already got right.
+
+### 8.2 `void **` is not a size-1 pointer — and that was the `c2mir_finish` crash
+
+The teardown crash was not a teardown bug. GNU C allows arithmetic on a
+`void *` with element size 1; c2mir refuses it, so madc rewrites such an
+operand to `(char *)` before the `+`. `is_size1_pointer` decided with
+`p->base_type->rawtype() == dtVOID` — and `DataDefPTR::rawtype()` reports what a
+pointer chain ultimately points AT (`datadef.h:1763`, *"T\*\* recurses to the
+innermost scalar"*). So it said yes to `void **`, `void ***` and deeper, whose
+pointee is a complete 8-byte object, and **their arithmetic scaled by one
+byte**.
+
+c2mir's own context accessor is:
+
+```c
+static inline c2m_ctx_t *c2m_ctx_loc (MIR_context_t ctx) {
+  return (c2m_ctx_t *) ((void **) ctx + 1);
+}
+```
+
+madc emitted `lea 0x1(%rdi)` for it. A madc-built c2mir therefore **stored its
+context at ctx+8 and looked for it at ctx+1** — everything worked until
+teardown dereferenced NULL.
+
+It was silent: `p[1]` indexing never goes through the rewrite and was always
+right, so only the explicit `p + 1` form read a pointer one byte out of place
+and produced garbage rather than a fault. `DataDef::is_cstr()` already carried
+the identical guard one type over (*"!is_pointer() excludes char\*\*"*); the
+predicate is now spelled the same way.
+
+Gate: `tests/testvoidptrptrarith.mad`, with the GNU `void *` size-1 line as a
+control that must NOT move.
+
+### 8.3 🏁 A `c2m` built ENTIRELY by madc
+
+All SIX MIR translation units compiled by madc — `mir.c`, `mir-gen.c`,
+`mir-debug.c`, `mir-debug-gdb.c`, `c2mir/c2mir.c`, `c2mir/c2mir-driver.c` —
+archived into `libmir.a` and linked into a `c2m`. It compiles C, JIT-generates
+machine code and runs it, in `-ei`, `-eg` and `-el`, and the `.bmir` it emits
+runs under the gcc-built `c2m`.
+
+Differentially tested against the gcc-built `c2m` over 140 `c-tests` programs:
+**137 identical**.
+
+### 8.4 The three that differ — NEXT, banked
+
+All three are float / long-double conversion. **madc itself** (embedding a
+gcc-built libmir) runs all three correctly, so madc's own float handling is
+fine — it is madc's COMPILATION of MIR's conversion code that is wrong.
+
+| program | where | symptom |
+|---|---|---|
+| `lacc/convert-int-float.c` | madc-built **libmir** | SEGFAULT |
+| `lacc/convert-unsigned-float.c` | madc-built **libmir** | SEGFAULT |
+| `lacc/bitfield-types-init.c` | both mixes | wrong long-double BYTES (gcc `0,-99,20,-54,77,86,0,0` vs madc `0,-108,116,17,-4,127,0,0`) |
+
+Located by OBJECT SWAP, which is the method to reuse: build three binaries —
+all-madc, madc `c2mir.o` + gcc libmir, gcc `c2mir.o` + madc libmir — and diff
+each against `obj/mir/host/c2m`. Two link commands name the TU.
+
+⚠️ Redirect the output and check `rc`: a segfault AFTER correct output reads as
+"produced nothing", because stdout is still buffered. Use `stdbuf -o0`.

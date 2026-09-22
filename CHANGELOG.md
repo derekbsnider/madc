@@ -27,10 +27,37 @@ madc defined 3, and 6 after). On MIR's own translation units `nm -g
 --defined-only` now shows **zero** gcc-only symbols where eight were missing:
 `mir.va_arg`, `mir.va_block_arg` and the six `__mir_*oti` helpers.
 
-With that closed, **a libmir built entirely by madc links and works**: linked
-against a gcc-built c2mir front end, the resulting `c2m` compiles C, JIT-
-generates machine code and runs it, cleanly. c2mir itself is one TU short — see
-the known gap below.
+### A union brace initializes one member, named by a designator
+
+C11 6.7.9p17: a union's brace initializer initializes exactly one member, and a
+bare positional list can only ever name the *first*. madc lowered every
+designated initializer positionally with the earlier slots zero-filled —
+correct for a struct, impossible for a union, where `{.a = p}` became a
+two-element union initializer that c2mir refused.
+
+The parser already writes a `.member =` value into that member's slot, so the
+slot index *is* the member index; it only had to be spelled back as the
+`N_FIELD_ID` designator c2mir's grammar takes. The three sites that built an
+aggregate's initializer list are now one owner. `--emit=c11` learned to spell
+`.name`.
+
+### `void **` is not a size-1 pointer
+
+GNU C allows arithmetic on a `void *` with element size 1. The predicate that
+spotted it asked the pointee's `rawtype()`, which reports what a pointer chain
+ultimately points *at* — so `void **`, `void ***` and deeper all matched, and
+their arithmetic scaled by **one byte**. Silent: `p[1]` was always right, and
+only the explicit `p + 1` form read a pointer one byte out of place.
+
+### 🏁 A `c2m` built entirely by madc
+
+With those three fixed, **all six MIR translation units compile under madc**
+and archive into a working `libmir.a`. The resulting `c2m` compiles C,
+JIT-generates machine code and runs it — in `-ei`, `-eg` and `-el` — and the
+binary MIR it emits runs under the gcc-built `c2m`. Differentially tested
+against the gcc-built `c2m` over 140 `c-tests` programs: 137 identical. The
+three that differ are float/long-double conversion and are recorded as the
+next gap.
 
 ## [v0.100.1] — 2026-09-22
 
