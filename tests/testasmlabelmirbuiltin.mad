@@ -1,0 +1,70 @@
+/* A GNU asm label renames the symbol a declaration refers to:
+ *
+ *     extern char probe asm ("mir.arg_memcpy") __attribute__ ((weak));
+ *
+ * madc implements that faithfully — Program::consume_gnu_asm_label stores the
+ * label as the variable's emit_symbol — so the reference really is emitted
+ * under the label's name. gcc does the same. c2mir does NOT: it parses `asm`
+ * into an N_ASM node and discards it, so its reference keeps the ORIGINAL
+ * identifier.
+ *
+ * That difference is why madc alone could not compile MIR's own mir-debug.c,
+ * which contains exactly this declaration at line 2556. `mir.arg_memcpy` is
+ * also the name MIR's x86-64 generator registers for its block-argument copy
+ * helper (mir-gen-x86_64.c:548, `_MIR_builtin_func (ctx, module,
+ * "mir.arg_memcpy", memcpy)`). So in ONE translation unit the same name is
+ * both an import the program spells and a helper the generator owns:
+ *
+ *   - MIR_link binds the import first (in object mode to a sentinel address
+ *     that, by c2m's own comment, "nothing ever reads"),
+ *   - then the generator emits a call that needs the helper,
+ *   - and _MIR_builtin_func refused the name as already bound elsewhere:
+ *     "func mir.arg_memcpy has already another address".
+ *
+ * The registrar now ADOPTS an existing import instead of refusing it — same
+ * entity named twice, and the builtin's address is the authoritative one. A
+ * non-import item of that name is still a real conflict and still raises.
+ *
+ * This test needs all three ingredients or it proves nothing:
+ *   (1) the asm label naming a generator helper — drop it and the names never
+ *       meet (that is precisely how c2mir sidesteps the whole problem);
+ *   (2) a struct large enough to travel as a MIR block argument, so the
+ *       generator actually needs mir.arg_memcpy — a small struct never
+ *       registers the helper and the test passes vacuously;
+ *   (3) the value asserted, so a wrong block copy is caught rather than just
+ *       a successful compile.
+ *
+ * `touch` is multiplied by zero on purpose: &probe is a weak undefined symbol
+ * (NULL) under gcc and clang, and resolves to the adopted helper under madc's
+ * JIT, so its VALUE is not portable — only its existence matters here.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted line. (Plain
+ * -std=c17 REJECTS the asm label in both; madc is the permissive one.)
+ */
+#include <stdio.h>
+
+extern char probe asm ("mir.arg_memcpy") __attribute__ ((weak));
+
+struct big { long a[8]; char t[7]; double d; };
+
+static struct big mk (long seed)
+{
+	struct big b;
+	int i;
+	for (i = 0; i < 8; i++) b.a[i] = seed + i;
+	for (i = 0; i < 7; i++) b.t[i] = (char) ('a' + i);
+	b.d = 1.5;
+	return b;
+}
+
+static long take (struct big b, long k)
+{
+	return b.a[0] + b.a[7] + (long) b.t[0] + (long) b.d + k;
+}
+
+int main (void)
+{
+	long touch = (long) (&probe) * 0;
+	printf ("blk %ld\n", take (mk (10), 100) + touch);
+	return 0;
+}
