@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [v0.100.1] — 2026-09-22
+
+A bugfix release: madc now compiles every translation unit of its own
+backend, and a preprocessor regression that broke the macOS SDK is fixed
+before it ever reached a release.
+
+### A variadic tail's pieces are separate arguments for macro hiding
+
+Two invocations of one macro in different comma-separated pieces of the same
+`__VA_ARGS__`: only the first expanded. macOS `<sys/qos.h>` spells six
+enumerators exactly that way, each calling `__QOS_CLASS_AVAILABLE()`, so the
+literal macro name ended up in enumerator position — *Expecting identifier in
+enum* — and every test that reached a real macOS SDK header failed with it.
+
+An argument is pre-expanded in a throwaway source seeded with the C11
+6.10.3.4p2 "blue paint" covering that argument's own text. The seed was read
+from a map keyed by *parameter*, and every piece of a variadic tail shares the
+one key `__VA_ARGS__` — so the seed also carried what **earlier** pieces had
+expanded. The code contradicted the contract stated in its own comment three
+lines above ("a sibling argument's paint must not reach it"). The seed is now
+per-argument. The paint still accumulates for the substituted *range*, which is
+what it is for, and fixed parameters are unaffected because only one argument
+ever maps to each.
+
+This was a regression against v0.100.0, introduced by the preprocessor work
+above and caught by the darwin lane before it shipped. It was classified by
+running the reducer against real binaries — it passes on the v0.100.0 release
+build and fails on the arc content — rather than inferred from the diff. The
+darwin suite goes 1520 → 1533 (arm64) and 1521 → 1534 (Intel).
+
 ### madc compiles every translation unit of its own backend
 
 The last blocker was not a madc defect at all. In `mir-debug.c` the name
