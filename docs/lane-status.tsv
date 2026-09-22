@@ -6,9 +6,9 @@ wine64	yes	b025833d039c	2026-09-22	1494/0/0TO/69skip (+3 vs the previous 1491 = 
 macos	yes	b025833d039c	2026-09-22	BUILD lane: release-macos rc=0 on BOTH arches (verify_macho_release OK x2, 836 units each) + package-macos rc=0 + pull tarballs rc=0 — variadic-sibling-paint fix
 libcxx	release	b025833d039c	2026-09-22	jit 1547/0/0TO/16skip; exe 1451/0; obj 1451/0 (+4 vs the previous 1543 = the variadic-sibling-paint reducer and siblings)
 genuine-win	release	697c3338b12b	2026-09-22	1494/0/0TO/69skip — the FULL suite on the owner Windows 11 box over the W0.2 channel (scripts/win_suite.sh from the container; the packed madc-release-x86-64-windows.exe REBUILT from current content at 09:11 with DLLs + tests/tools/examples staged, MADC_SKIP_EXT="win64 win", 60 tests carry a domain skip fixture). +14 vs the 2026-09-21 row (1480/0/0TO/69skip) = the variadic-sibling-paint fix and its reducer. win_suite rc=0
-c-testsuite	commit	b02c083b06df	2026-09-22	220 passed, 0 failed (0 outside baseline)
-c-torture	commit	b02c083b06df	2026-09-22	1613 passed, 3 compile-failed, 8 runtime-failed, 0TO, 61skip (--std=c17), 11 failing, 0 outside baseline
-c2mir-tests	commit	b02c083b06df	2026-09-22	302 passed, 57 failed (0 outside baseline)
-gui	commit	b02c083b06df	2026-09-22	19 passed, 0 failed | EXE 19/0 | OBJ 19/0
-gxx-c++11	no	b02c083b06df	2026-09-22	1464 passed, 484 compile-failed, 2TO, 486 failing, 0 outside baseline
-index-c	yes	b02c083b06df	2026-09-22	50/50 tasks OK, 0 failed [-O2]
+c-testsuite	commit	523b140300fc	2026-09-22	220 passed, 0 failed (0 outside baseline)
+c-torture	commit	523b140300fc	2026-09-22	1613 passed, 3 compile-failed, 8 runtime-failed, 0TO, 61skip (--std=c17), 11 failing, 0 outside baseline
+c2mir-tests	commit	523b140300fc	2026-09-22	302 passed, 57 failed (0 outside baseline)
+gui	commit	523b140300fc	2026-09-22	19 passed, 0 failed | EXE 19/0 | OBJ 19/0
+gxx-c++11	no	523b140300fc	2026-09-22	1464 passed, 484 compile-failed, 2TO, 486 failing, 0 outside baseline
+index-c	yes	523b140300fc	2026-09-22	50/50 tasks OK, 0 failed [-O2]
