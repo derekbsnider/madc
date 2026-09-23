@@ -123,6 +123,11 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
    `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
    read a declarator by hand in an arm.
+   The operand of a unary `*`, a cast or a bare `sizeof` is a cast-expression
+   read by ONE owner, `Program::parseCastExpression` (the expression engine,
+   bounded), and a dereference is built only by `Program::build_indirection`
+   (gated by `check-one-deref-builder.sh`); every owner for layered pointers,
+   references, arrays and their symbols is indexed in `indirection.md`.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -396,13 +401,14 @@ editing — don't try to memorize all of them.
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
+| [indirection.md](.claude/rules/indirection.md) |    35 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); type minting/peeling, decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **35 rules, 1093 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~453 lines** — loaded by Claude via
+- **36 rules, 1128 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1546 lines.**
+- **Grand total loaded by Claude Code per turn: ~1590 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

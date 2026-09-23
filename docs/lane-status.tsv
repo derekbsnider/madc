@@ -6,10 +6,10 @@ linux-battery	yes	f16c4b30609d	2026-09-22	fulltest 1560/0/0TO/9skip; exe 1463/0;
 wine64	yes	f16c4b30609d	2026-09-22	1500/0/0TO/69skip — seam battery at b3d4460d0 ran 1498/2: the 2 were this wave's reducers hard-coding LP64 (madc byte-identical to mingw-gcc on them); fixed and re-run 2/2 under wine (madc code identical to this commit; f16c4b306 is TESTS-ONLY (testuintfloatconv + testvoidptrptrarith made data-model portable), re-run per lane 2/2 — owner 2026-09-22: a tests-only change re-runs the changed tests, never the battery)
 headerless-win	yes	f16c4b30609d	2026-09-22	1499/0/0TO/70skip — FIRST RUN AS A GATED LANE (promoted no->yes at 9290b5e73). Seam battery at b3d4460d0 ran 1497/2, the same two LP64-only reducers; re-run 2/2 with the win64 mask verified (7 include roots) (madc code identical to this commit; f16c4b306 is TESTS-ONLY (testuintfloatconv + testvoidptrptrarith made data-model portable), re-run per lane 2/2 — owner 2026-09-22: a tests-only change re-runs the changed tests, never the battery)
 macos	yes	f16c4b30609d	2026-09-22	BUILD lane: release-macos rc=0 on BOTH arches (verify_macho_release OK x2, 836 units each, C linkage restored) + package-macos rc=0 + pull tarballs rc=0 at b3d4460d0 (madc code identical to this commit; f16c4b306 is TESTS-ONLY (testuintfloatconv + testvoidptrptrarith made data-model portable), re-run per lane 2/2 — owner 2026-09-22: a tests-only change re-runs the changed tests, never the battery; a tests-only delta does not reach a build lane)
-c-testsuite	commit	33a1f0864bfa	2026-09-22	220 passed, 0 failed (0 outside baseline)
-c-torture	commit	33a1f0864bfa	2026-09-22	1613 passed, 3 compile-failed, 8 runtime-failed, 0TO, 61skip (--std=c17), 11 failing, 0 outside baseline
-c2mir-tests	commit	33a1f0864bfa	2026-09-22	302 passed, 57 failed (0 outside baseline)
-gui	commit	33a1f0864bfa	2026-09-22	19 passed, 0 failed | EXE 19/0 | OBJ 19/0
-gxx-c++11	no	33a1f0864bfa	2026-09-22	1464 passed, 484 compile-failed, 2TO, 486 failing, 0 outside baseline
-index-c	yes	33a1f0864bfa	2026-09-22	50/50 tasks OK, 0 failed [-O2]
 aarch64-ld	yes	33a1f0864bfa	2026-09-22	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK (oracle binary128, 16 lines); GREEN aot + jit on BOTH fixtures (tests/cross/aarch64_ldouble.c runtime builtins, tests/cross/aarch64_ldouble_const.c every constant route) — 0 dotted mir.* imports, links, byte-identical to gcc. promote=yes on the macos BUILD-lane precedent
+c-testsuite	commit	77ec719723c0	2026-09-23	220 passed, 0 failed (0 outside baseline)
+c-torture	commit	77ec719723c0	2026-09-23	1613 passed, 3 compile-failed, 8 runtime-failed, 0TO, 61skip (--std=c17), 11 failing, 0 outside baseline
+c2mir-tests	commit	77ec719723c0	2026-09-23	302 passed, 57 failed (0 outside baseline)
+gui	commit	77ec719723c0	2026-09-23	19 passed, 0 failed | EXE 19/0 | OBJ 19/0
+gxx-c++11	no	77ec719723c0	2026-09-23	1467 passed, 481 compile-failed, 2TO, 483 failing, 0 outside baseline (baseline -3)
+index-c	yes	77ec719723c0	2026-09-23	50/50 tasks OK, 0 failed [-O2]
