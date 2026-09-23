@@ -35,6 +35,11 @@
 #      drain (`while ( !opStack.empty() )`) elsewhere in parser.cpp is a copy
 #      without the juxtaposition check -- the conditional-end copy built
 #      `int r = (x)(4)` as `int r = x = 4` (tests/testjuxtaposeinit).
+#   6. the cast arm reads its operand with parseCastExpression and nothing
+#      else: between `cast_expr_tb = nextToken()` and the TokenCast it
+#      builds, exactly one parseCastExpression and no other reader. Nine shape
+#      arms read it before; the literal arm read only the literal
+#      (`(long)"abc"[1]`, tests/testcastoperand).
 # Two-sided: the negative control proves every pattern still bites.
 set -u
 cd "$(dirname "$0")/.."
@@ -182,5 +187,32 @@ if [ "$rn" -ne 0 ]; then
 	echo "  -> end the expression with Program::finish_expression (it refuses juxtaposed operands)."
 	exit 1
 fi
+# 6. the cast arm's operand reader
+cast_body() {
+	awk '/TokenBase \*cast_expr_tb = nextToken\(\);/ { inside = 1 }
+	     inside { print } inside && /new TokenCast\(cast_dd, cast_expr\)/ { exit }' "$@"
+}
+cat > "$ctl_dir/ctl3.cpp" <<'CTL'
+			    TokenBase *cast_expr_tb = nextToken();
+			    TokenBase *cast_expr = parseCastExpression(cast_expr_tb);
+			    if ( lit ) cast_expr = parsePostfixChain(cast_expr_tb);
+			    exStack.push(new TokenCast(cast_dd, cast_expr));
+CTL
+k1=$(cast_body "$ctl_dir/ctl3.cpp" | grep -vE '^[[:space:]]*//' | grep -oE '(try_)?parse[A-Za-z_]+\(|materialize_[a-z_]+\(|evaluate_type_query\(' | grep -vc '^parseCastExpression(')
+if [ "$k1" -ne 1 ]; then
+	echo "check-one-deref-builder: NEGATIVE CONTROL FAILED -- a second cast-operand"
+	echo "  reader matched $k1 of 1"
+	exit 1
+fi
+cb=$(cast_body src/parser.cpp | grep -vE '^[[:space:]]*//')
+ncast=$(printf '%s\n' "$cb" | grep -c 'parseCastExpression(' || true)
+nother=$(printf '%s\n' "$cb" | grep -oE '(try_)?parse[A-Za-z_]+\(|materialize_[a-z_]+\(|evaluate_type_query\(' | grep -vc '^parseCastExpression(' || true)
+echo "cast operand: parseCastExpression $ncast (target 1), other readers $nother (target 0)"
+if [ "$ncast" -ne 1 ] || [ "$nother" -ne 0 ]; then
+	printf '%s\n' "$cb" | grep -nE 'parse[A-Z][A-Za-z]*\(|materialize_'
+	echo "  -> the operand of a cast is a cast-expression: Program::parseCastExpression reads it."
+	exit 1
+fi
 echo "GREEN -- a unary \`*\` and a unary \`&\` each have one operand reader and one builder;"
-echo "  an array operand's element and the end of an expression each have one owner."
+echo "  a cast reads its operand with the same reader; an array operand's element and"
+echo "  the end of an expression each have one owner."

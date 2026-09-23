@@ -16947,59 +16947,6 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
     return false;
 }
 
-TokenBase *Program::materialize_cast_literal_operand(TokenBase *tb)
-{
-    if ( !tb )
-	return tb;
-    if ( tb->type() != TokenType::ttString )
-	return tb;
-
-    TokenStr *first = static_cast<TokenStr *>(tb);
-    std::string literal = first->str;
-    bool wide_literal = first->wide;
-    while ( peekToken() && peekToken()->type() == TokenType::ttString )
-    {
-	TokenStr *next = static_cast<TokenStr *>(nextToken());
-	if ( wide_literal || next->wide )
-	{
-	    if ( !wide_literal )
-	    {
-		std::string converted;
-		for ( unsigned char c : literal )
-		{
-		    converted += (char)c;
-		    converted += '\0';
-		    converted += '\0';
-		    converted += '\0';
-		}
-		literal = converted;
-		wide_literal = true;
-	    }
-	    if ( next->wide )
-		literal += next->str;
-	    else
-	    {
-		for ( unsigned char c : next->str )
-		{
-		    literal += (char)c;
-		    literal += '\0';
-		    literal += '\0';
-		    literal += '\0';
-		}
-	    }
-	}
-	else
-	    literal += next->str;
-    }
-
-    Variable *var = wide_literal ? addWideLiteral(literal) : addLiteral(literal);
-    TokenVar *tv = new TokenVar(*var);
-    tv->file = tb->file;
-    tv->line = tb->line;
-    tv->column = tb->column;
-    return tv;
-}
-
 static int64_t fixed_array_object_size(const Variable &var)
 {
     if ( !var.is_fixed_array() || !var.type || !var.type->size )
@@ -31557,10 +31504,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	if ( pid == TokenID::tkOpBrk )
 	{
 	    // `(` is a postfix operator too ([expr.post]) — a call on a
-	    // function-typed head. Only the QUALIFIED operand paths reach it:
-	    // an unqualified `f(x)` cast operand is claimed earlier by
-	    // parse_cast_function_call_operand, so the chain never needed this
-	    // arm until `(int)N::f(x)` was traced. Without it the `(x)` was
+	    // function-typed head. Only the QUALIFIED operand paths reach it
+	    // (a cast operand is read by parseCastExpression, the engine), so
+	    // the chain never needed this arm until `(int)N::f(x)` was traced
+	    // through the old cast-operand chain reader. Without it the `(x)` was
 	    // left in the stream and re-read as a parenthesized expression,
 	    // whose value silently replaced the call.
 	    Variable *callee = postfix_expr_variable(result);
@@ -31756,48 +31703,6 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     debug_deref_fail(*this, 2, star, dtype);
     Throw(star) << "cannot dereference non-pointer type" << flush;
     return NULL;
-}
-
-TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
-{
-    if ( !head || head->type() != TokenType::ttIdentifier )
-	return NULL;
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-	return NULL;
-
-    TokenIdent *ident = static_cast<TokenIdent *>(head);
-    Variable *var = findVariable(ident->spelling());
-    if ( !var || !var->type || !var->type->is_function() )
-	return NULL;
-
-    Variable *call_var = runtime_eval_scope_target(var);
-    bool public_scope_rebind = false;
-    if ( call_var == var )
-    {
-	call_var = runtime_eval_scope_public_target(var);
-	public_scope_rebind = (call_var != var);
-    }
-    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-    tc->auto_scope_context = public_scope_rebind
-	|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
-	 && is_runtime_eval_scope_public_name(ident->spelling()));
-
-    TokenBase *open = nextToken();
-    tc->file = open->file;
-    tc->line = open->line;
-    tc->column = open->column;
-    parseCallFunc(tc);
-    // Postfix binds tighter than the cast ([expr.post] vs [expr.cast]):
-    // `(int)getb().n` casts the MEMBER, not the call. Continue the postfix
-    // chain (`.` `->` `[` chained calls) from the call result — stopping
-    // here applied the cast to the call and the trailing `.n` dereferenced
-    // an int ("member reference is not a structure or union"). The
-    // qualified operand paths already flow through this same owner.
-    // var = NULL: a call result is not a named variable — the chain must
-    // synthesize its member proxy from the result TYPE (passing the callee's
-    // function-typed var made the arrow arm's proxy non-pointer, emitting
-    // N_FIELD on a pointer value).
-    return parsePostfixChainFrom(tc, NULL);
 }
 
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
@@ -41968,160 +41873,18 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // position. Otherwise the cast's close-paren leaks into
 			    // isUnaryPosition and they mis-parse as binary ops.
 			    _prv_token = NULL;
-			    TokenBase *cast_expr = NULL;
-			    // Casts in C bind tighter than binary operators: `(long)q
-			    // - n` means `((long)q) - n`, not `(long)(q - n)`.
-			    // Identifier operands, including calls, stop before any
-			    // trailing binary operator so `(uint64)f() << 32` widens
-			    // before the shift.
-		    if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && (is_realpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())
-		       || is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
-		    {
-			// (int)__real__ d — the component op is part of the cast
-			// operand; the plain identifier arms below would resolve
-			// `__real__` as a variable ("undeclared identifier").
-			cast_expr = parse_complex_component_operand(
-			    is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling()),
-			    cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && (((TokenIdent *)cast_expr_tb)->spelling_is("sizeof")
-		       || is_alignof_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
-		    {
-			// (long long)sizeof chunk — sizeof/alignof as the cast
-			// operand, BOTH forms ([expr.sizeof] allows a paren-less
-			// unary-expression operand). The plain identifier arms
-			// below would resolve `sizeof` as a variable ("undeclared
-			// identifier 'sizeof'" — the rt_format.c ledger parse),
-			// the same trap as the __real__/__imag__ arm above. One
-			// owner: the same resolver trio the main expression arm
-			// uses (dynamic type query, VLA sizeof, constant fold).
-			const char *qname = ((TokenIdent *)cast_expr_tb)->spelling();
-			if ( TokenBase *query_tb = try_parse_dynamic_type_query(cast_expr_tb, qname) )
-			    cast_expr = query_tb;
-			else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(cast_expr_tb, qname) )
-			    cast_expr = vla_tb;
-			else
-			{
-			    size_t query_value = evaluate_type_query(cast_expr_tb, qname);
-			    TokenInt *ti = new TokenInt((int64_t)query_value);
-			    ti->setDataType(&ddUINT64);
-			    ti->file = cast_expr_tb->file;
-			    ti->line = cast_expr_tb->line;
-			    ti->column = cast_expr_tb->column;
-			    cast_expr = ti;
-			}
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		      && (cast_expr = parse_cast_function_call_operand(cast_expr_tb)) )
-		    {
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && !(peekToken() && peekToken()->id() == TokenID::tkOpBrk) )
-		    {
-			cast_expr = parsePostfixChain(cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkMul )
-		    {
-			// A cast's operand is a cast-expression (C11 6.5.4) —
-			// the one bounded reader; `(char)**pp * 100` casts
-			// `**pp`, never the product.
-			cast_expr = parseCastExpression(cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkBand )
-		    {
-			cast_expr = parseAddressOfExpression(cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkOpBrk )
-		    {
-				// The cast body starts with `(`.  Two possibilities:
-				// a) Chained cast: `(long)(int)x` — the inner `(`
-				//    starts another `(type)expr` cast. Detected by
-				//    peeking for a type token inside the parens.
-				// b) Parenthesized expression: `(int)(a - b)`.
-				// For (a), push `(` back and let parseExpression
-				// handle the inner cast naturally. For (b), consume
-				// `(` and use stop_on_closing_paren.
-				TokenBase *inner_peek = peekToken();
-				bool inner_is_cast = inner_peek
-				    && (inner_peek->type() == TokenType::ttDataType
-					|| inner_peek->id() == TokenID::tkCONST
-					|| (inner_peek->type() == TokenType::ttIdentifier
-					    && (datatype_map.count(((TokenIdent *)inner_peek)->spelling())
-						|| struct_map.count(((TokenIdent *)inner_peek)->spelling())
-						|| resolve_current_class_type_alias(((TokenIdent *)inner_peek)->spelling())
-						// (__typeof (x))(x) — a typeof CAST
-						// (glibc math.h C++ regions);
-						// re-dispatch to the cast path,
-						// whose typeof arm resolves it.
-						|| is_typeof_identifier(((TokenIdent *)inner_peek)->spelling()))));
-				if ( inner_is_cast )
-				{
-				    // Push `(` back — parseExpression will handle it
-				    // as a cast via the normal `(type)expr` path.
-				    pushToken(cast_expr_tb);
-				    _prv_token = NULL;
-				    cast_expr = parseExpression(nextToken(), true);
-				}
-				else
-				{
-				    TokenBase *first_inner = nextToken();
-				    cast_expr = parseExpression(first_inner, true, false, true, 1);
-				}
-			    }
-			    else if ( cast_expr_tb
-				   && (cast_expr_tb->type() == TokenType::ttInteger
-				    || cast_expr_tb->type() == TokenType::ttReal
-				    || cast_expr_tb->type() == TokenType::ttChar
-				    || cast_expr_tb->type() == TokenType::ttString) )
-			    {
-				// Simple literal: cast binds tightly.
-				// (double)5 consumes only 5, not < 3.0.
-				cast_expr = materialize_cast_literal_operand(cast_expr_tb);
-			    }
-			    else
-			    {
-				// Every other operand — a unary operator (`-x`,
-				// `~0`, `!y`, `+15`), a keyword, `::name` — is
-				// the same cast-expression, read by the one
-				// bounded reader: `(char)-x * 100` casts `-x`
-				// only, `(unsigned char)~0` consumes only `~0`.
-				// An unbounded parse here cast the whole product
-				// (silent: -68 for 700).
-				cast_expr = parseCastExpression(cast_expr_tb);
-			    }
-			    // C11 6.5.2/6.5.4: postfix ++/-- is part of the
-			    // POSTFIX-expression, and a cast's operand is a
-			    // unary-expression — so `(int) p->n++` is
-			    // `(int)(p->n++)`, never `((int)p->n)++`. madc built the
-			    // latter, which is not an lvalue: mir-debug.c's
-			    // `return (int) obj->n_syms++;` emitted
-			    // `return ((int)obj->n_syms)++;` and c2mir refused it
-			    // ("lvalue required as left operand of assignment").
-			    // Same rule the deref operand already applies below
-			    // (`*(*x)++` is `*(((*x)++))`); one hook here covers
-			    // every operand arm above, since this is the single site
-			    // that builds the cast.
-			    if ( cast_expr && peekToken()
-			      && (peekToken()->id() == TokenID::tkInc
-			       || peekToken()->id() == TokenID::tkDec) )
-			    {
-				TokenBase *step_tb = nextToken();
-				TokenOperator *step;
-				if ( step_tb->id() == TokenID::tkInc )
-				    step = new TokenInc();
-				else
-				    step = new TokenDec();
-				step->left = cast_expr;
-				step->right = NULL;
-				cast_expr = step;
-			    }
+			    // The operand of a cast is a CAST-EXPRESSION (C11 6.5.4,
+			    // [expr.cast]; gcc's c_parser_cast_expression recurses into
+			    // itself) — read by the one bounded reader. It binds tighter
+			    // than any binary operator (`(long)q - n` is `((long)q) - n`,
+			    // `(uint64)f() << 32` widens before the shift, `(char)-x *
+			    // 100` casts `-x`) and takes its whole postfix chain
+			    // (`(int) p->n++` is `(int)(p->n++)`, `(long)"abc"[1]`).
+			    // Nine shape arms read it before — identifier, call, postfix
+			    // chain, `*`, `&`, paren, chained cast, literal, the rest —
+			    // each a partial copy of the engine; the literal arm read
+			    // only the literal.
+			    TokenBase *cast_expr = parseCastExpression(cast_expr_tb);
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    // Caller wants only the cast group, not whatever

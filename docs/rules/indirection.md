@@ -144,8 +144,16 @@ yet measured.
 - `reference_bind_address_expr` builds address nodes for reference binding
   (seven sites) beside `build_address_of` — candidate: share the plain-lvalue
   case.
-- `cast_operand_shape_arms`: the cast arm's identifier-chain, call, literal and
-  paren readers. Each is correct by shape; they duplicate `parseCastExpression`.
+- ~~`cast_operand_shape_arms`~~ — consolidated 2026-09-23: the cast arm read
+  its operand through nine shape arms (`__real__`, `sizeof`, identifier+call,
+  postfix chain, `*`, `&`, paren / chained cast, literal, the rest) and a
+  postfix-step hook, each re-deriving part of the engine — the call helper
+  was the engine's call arm minus explicit template arguments and the static
+  member reselect, the literal materializer re-did the lexer's adjacent-string
+  concatenation, and it read only the literal: `(long)"abc"[1]` sent the `[`
+  to the lambda introducer. The operand is `parseCastExpression`'s (gcc's
+  `c_parser_cast_expression` recurses into itself); the two helpers are
+  deleted. Reducer `tests/testcastoperand`; gated (rule 6).
 - `sizeof_operand_measurement`: `resolve_type_query_datadef`'s identifier fast
   paths measure with bare `chain->datadef()` (candidate).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that

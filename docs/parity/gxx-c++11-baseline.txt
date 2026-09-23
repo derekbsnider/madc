@@ -277,7 +277,6 @@ g++.dg/cpp0x/initlist-array13.C
 g++.dg/cpp0x/initlist-array15.C
 g++.dg/cpp0x/initlist-array18.C
 g++.dg/cpp0x/initlist-array19.C
-g++.dg/cpp0x/initlist-array20.C
 g++.dg/cpp0x/initlist-const1.C
 g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C

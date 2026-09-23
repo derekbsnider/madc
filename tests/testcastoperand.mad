@@ -1,0 +1,44 @@
+// The operand of a cast is a cast-expression (C11 6.5.4, [expr.cast]) — read
+// by the one bounded reader, Program::parseCastExpression, as gcc's
+// c_parser_cast_expression recurses into itself. The cast arm read its
+// operand through nine shape arms instead (identifier, call, postfix chain,
+// `*`, `&`, paren, literal, …); each re-derived part of the engine, and the
+// literal arm read only the literal: `(long)"abc"[1]` sent the `[` to the
+// lambda introducer (gcc: 98). Every shape the arms covered is here, bounded
+// at the cast (a binary operator after the operand is never cast).
+// Oracle: gcc and clang, -std=gnu17.
+#include <stdio.h>
+
+struct P { int x; int a[3]; struct P *next; };
+
+static int f(void) { return 7; }
+static int g(int v) { return v + 1; }
+static struct P gp = { 3, { 1, 2, 3 }, 0 };
+static struct P *getp(void) { return &gp; }
+
+int main(void)
+{
+    int x = 300;
+    struct P s = { 5, { 4, 5, 6 }, &gp };
+    struct P *sp = &s;
+    double d = 2.75;
+    unsigned u = 0xffffffffu;
+
+    printf("ident: %d %ld\n", (char)x * 2, (unsigned long)f() << 32 >> 32);
+    printf("call: %d %d\n", (char)g(x) + 1, (char)getp()->a[2] * 100);
+    printf("chain: %d %d %d\n", (char)s.x * 100, (char)sp->next->x * 100,
+	   (char)s.a[1] * 100);
+    printf("paren: %d %d %ld\n", (char)(x) * 2, (char)(x + 1) * 2,
+	   (long)(int)(char)x * 2);
+    printf("literal: %d %d %d %ld\n", (int)2.75 * 3, (char)300 * 2,
+	   (int)d * 3, (long)"abc"[1]);
+    printf("string: %ld %d\n", (long)*"xyz", (int)sizeof((char *)"abcd"));
+    int before = (char)x++ * 0 + x;
+    int member = (char)sp->x++ * 0 + s.x;
+    printf("step: %d %d\n", before, member);
+    printf("unary: %d %ld %d\n", (int)(unsigned char)u,
+	   (long)&s.a[2] - (long)&s.a[0], (char)sizeof(struct P) * 2);
+    printf("mixed: %d %d %ld\n", (char)u >> 1, (char)gp.a[0] + (char)gp.x,
+	   (long)(x > 5 ? 1 : 0) * 9);
+    return 0;
+}

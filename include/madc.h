@@ -6944,8 +6944,6 @@ public:
     // operator*; a fixed array decays; a dependent type defers; every other
     // operand must be a pointer.
     TokenBase *build_indirection(TokenBase *operand, TokenBase *star);
-    TokenBase *parse_cast_function_call_operand(TokenBase *head);
-    TokenBase *materialize_cast_literal_operand(TokenBase *tb);
     // Template-machinery leaf consumers: recognize a template-argument-list
     // close (`>` or split `>>`), detect whether we're in an instantiated member
     // body, consume a template-parameter type suffix, and collect a template

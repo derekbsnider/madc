@@ -1,0 +1,9 @@
+ident: 88 7
+call: 46 300
+chain: 500 300 500
+paren: 88 90 88
+literal: 6 88 6 98
+string: 120 8
+step: 301 6
+unary: 255 8 48
+mixed: -1 4 9
