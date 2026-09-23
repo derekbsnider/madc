@@ -6549,6 +6549,12 @@ public:
     DataDef *operand_value_datadef(TokenBase *operand);
     // [expr.cond]/7 / C11 6.5.15p5 for two ARITHMETIC arms; NULL otherwise.
     DataDef *conditional_arithmetic_type(TokenBase *t, TokenBase *f);
+    // The fn pointer a callable value calls through (itself, or a designator's
+    // [conv.func] pointer); NULL when not callable.
+    DataDefFPTR *function_value_pointer_type(DataDef *value_type);
+    // A call through a callable expression's value (src_node + __expr_fptr).
+    class TokenCallFunc *build_call_through_value(TokenBase *callee,
+			DataDefFPTR *fptr_type, TokenBase *paren, TokenBase *&next);
     // The element type of `for (auto x : container)`, deduced from the
     // container expression — the shared iteration recognizers answer it
     // (positional: operator[]'s return; iterator: operator*'s return), the

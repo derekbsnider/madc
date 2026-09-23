@@ -270,6 +270,24 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 	return cn->as_node();
 }
 
+// A function used as a VALUE (address-taken / function-pointer decay: `&abort`,
+// `f = exit`, `{abort}`, a reference bound to it, or the hoisted symbol of a
+// capture-free GNU nested fn): its call symbol, recorded so translate_module
+// emits a prototype — without it c2mir sees an "undeclared identifier" (call
+// sites already record callees; a bare value-use must too). NULL for a
+// CAPTURING nested fn, which cannot be a plain function pointer (no slot for
+// the captures — GCC uses a trampoline): the caller keeps the short source
+// name, so c2mir refuses cleanly rather than calling with garbage captures.
+node_t CirBuilder::function_value_symbol(const Variable &v, FuncDef *fd,
+					 TokenBase *origin)
+{
+	if (!fd->local_emit_name.empty() && !fd->captured_vars.empty())
+		return NULL;
+	std::string sym = call_emit_symbol(v, fd);
+	referenced_funcs.insert(sym);
+	return id(sym.c_str(), origin);
+}
+
 std::string CirBuilder::var_emit_name(const Variable &v) const
 {
 	// A wide string literal's Variable name embeds its raw UTF-32 payload
@@ -8837,6 +8855,38 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 		     integer(0, origin), origin);
 }
 
+// A POINTER or REFERENCE TO a function pointer — `int (**t)(int)`, `int
+// (*&r)(int)` — or a reference to a FUNCTION (`int (&f)(int)`, whose one
+// level IS the function's pointer: a pointer to a function TYPE is the
+// function pointer, getPointerType's fold). The peeled levels bind closest to
+// the name ([POINTER..., POINTER, FUNC] in c2m's innermost-first order) and
+// the pointee renders through the ONE fn-ptr declarator owner. A declaration
+// that peeled to the DataDefFPTR and printed its 64-bit rawtype spelled
+// `long long *t`, so `(*t)(i)` called an integer. False when the chain does
+// not end at a function or function pointer.
+bool CirBuilder::pointer_to_fnptr_pieces(DataDef *t, node_t spec_list,
+					  node_t decl_list)
+{
+	DataDef *base = t;
+	int levels = 0;
+	while (base && base->is_pointer() && !base->as_fptr_dd()) {
+		DataDefPTR *p = base->as_pointer_dd();
+		if (!p || !p->base_type) break;
+		base = p->base_type;
+		levels++;
+	}
+	DataDefFPTR *fp = (levels > 0 && base) ? base->as_fptr_dd() : NULL;
+	if (!fp || !fp->target)
+		return false;
+	if (!fp->ptr_syntax)
+		levels--;	// the level over a function TYPE is its own `*`
+	for (int s = 0; s < levels; s++)
+		append(decl_list, pointer());
+	fnptr_decl_pieces(fp->target, true, spec_list, decl_list,
+			  std::vector<carray_dim_t>());
+	return true;
+}
+
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			      const std::string &typedef_alias)
 {
@@ -8920,33 +8970,15 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return wrap(pspec, pdecl_list);
 	}
 
-	// A POINTER TO a function pointer — `int (**t)(int)`, or an array of
-	// function pointers adjusted to its element pointer ([dcl.fct]/5:
-	// `int (*t[4])(int)`, c-testsuite 00209's `fptr4 fp`): peel the pointer
-	// levels, render the pointee through the ONE fn-ptr declarator owner and
-	// bind the peeled levels closest to the name ([POINTER..., POINTER,
-	// FUNC] in c2m's innermost-first order). The generic tail below peeled
-	// down to the DataDefFPTR and printed its 64-bit rawtype: `long long *t`,
-	// so `(*t[i])(i)` called an integer.
+	// A POINTER (or reference) TO a function pointer — `int (**t)(int)`, or
+	// an array of function pointers adjusted to its element pointer
+	// ([dcl.fct]/5: `int (*t[4])(int)`, c-testsuite 00209's `fptr4 fp`):
+	// pointer_to_fnptr_pieces, the one owner var_decl shares.
 	{
-		DataDef *base = ptype;
-		int levels = 0;
-		while (base && base->is_pointer() && !base->as_fptr_dd()) {
-			DataDefPTR *p = base->as_pointer_dd();
-			if (!p || !p->base_type) break;
-			base = p->base_type;
-			levels++;
-		}
-		DataDefFPTR *fp = (levels > 0 && base) ? base->as_fptr_dd() : NULL;
-		if (fp && fp->target) {
-			node_t pspec = list();
-			node_t pdecl_list = list();
-			for (int s = 0; s < levels; s++)
-				append(pdecl_list, pointer());
-			fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
-					  std::vector<carray_dim_t>());
+		node_t pspec = list();
+		node_t pdecl_list = list();
+		if (pointer_to_fnptr_pieces(ptype, pspec, pdecl_list))
 			return wrap(pspec, pdecl_list);
-		}
 	}
 
 	// Array parameter decay: `T m[N]` -> `T *m`, `T m[N][M]` -> `T (*m)[M]`.
@@ -9902,12 +9934,27 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	    && fnptr_alias_is_fn(v->typedef_name))
 		fnptr = NULL;
 	node_t fnptr_decl_list = NULL;
+	// A pointer or reference TO a function pointer, or a reference to a
+	// function (pointer_to_fnptr_pieces, the rule param_decl already had):
+	// the peeled base is the DataDefFPTR, whose 64-bit rawtype spelled
+	// `long long *pp` — `(*pp)(4)` then called an integer.
+	bool ptr_to_fnptr = !fnptr && v->typedef_name.empty()
+			    && !v->is_fixed_array() && ptr_piece_levels > 0
+			    && base_dd && base_dd->as_fptr_dd();
+	bool fn_declarator = fnptr || ptr_to_fnptr;
 
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
 	// Pointer usages keep the alias as the type spec and carry the explicit
 	// stars on the declarator below.
 	node_t tl;
-	if (fnptr) {
+	if (ptr_to_fnptr) {
+		tl = list();
+		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
+		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
+		fnptr_decl_list = list();
+		pointer_to_fnptr_pieces(v->type, tl, fnptr_decl_list);
+	} else if (fnptr) {
 		tl = list();
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
 		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
@@ -9937,14 +9984,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// (append_var_type_specs) — a hand-rolled copy per storage class is how
 	// `static Cls g;` came to emit `static int g` while the extern arm had
 	// already been widened past the btStruct-only test.
-	if (!fnptr && (v->flags & vfSTATIC)) {
+	if (!fn_declarator && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
 		if (v->flags & vfTHREADLOCAL) append(new_list, simple(N_THREAD_LOCAL));
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
-	if (!fnptr && (v->flags & vfEXTERN)) {
+	if (!fn_declarator && (v->flags & vfEXTERN)) {
 		// An extern is a forward reference to a symbol defined elsewhere, so
 		// emit its type exactly as the definition would — preserve the typedef
 		// alias and struct tag. Dropping the alias made `extern bool x` degrade
@@ -9968,14 +10015,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t share = node1(N_SHARE, tl);
 	std::string emitted_var_name = var_emit_name(*v);
 	node_t var_id = id(emitted_var_name.c_str(), origin);
-	node_t decl_list = fnptr ? fnptr_decl_list : list();
+	node_t decl_list = fn_declarator ? fnptr_decl_list : list();
 
 	// c2m declarator order: in `T *arr[N]` the `[]` binds tighter than `*`
 	// (array of pointers), and c2m's declarator parser appends the pointer
 	// ops AFTER the direct-declarator's array ops. So the N_ARR nodes must
 	// precede the N_POINTER nodes in the decl list. Emit arrays first, then
 	// pointers — matching `direct_declarator`/`declarator` in c2mir.c.
-	if (!fnptr && v->is_fixed_array() && !v->dims.empty()) {
+	if (!fn_declarator && v->is_fixed_array() && !v->dims.empty()) {
 		// One N_ARR per dimension, outer dimension first:
 		// int m[2][2] -> ARR(...,2) ARR(...,2)
 		//
@@ -10021,13 +10068,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// `DO_FUN *fp;` (1) as a function-pointer variable. Other variables keep
 	// the legacy depth-derived count.
 	int decl_stars;
-	if (fnptr)
+	if (fn_declarator)
 		decl_stars = -1;
 	else if (v->fnptr_explicit_stars >= 0)
 		decl_stars = v->fnptr_explicit_stars;
 	else
 		decl_stars = explicit_star_count(v->type, v->typedef_name);
-	if (fnptr) {
+	if (fn_declarator) {
 		// fn-ptr declarator suffixes already built by fnptr_decl_pieces.
 	} else if (decl_stars >= 0) {
 		for (int s = 0; s < decl_stars; s++)
@@ -21843,24 +21890,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// function pointer (no slot for the captures — GCC uses a trampoline),
 			// so leaving the short name there yields a clean c2mir error rather
 			// than a callback that reads garbage captures.
-			if (FuncDef *nfd = (tv->var.type ? tv->var.type->as_funcdef_dd() : NULL)) {
-				// A function used as a VALUE (address-taken / function-pointer
-				// decay: `&abort`, `f = exit`, `{abort}`, or the hoisted symbol of
-				// a capture-free GNU nested fn). Emit its call symbol and record it
-				// so translate_module emits a prototype — without it c2mir sees an
-				// "undeclared identifier" (call sites already record callees; a bare
-				// value-use must too). EXCEPTION: a CAPTURING nested fn cannot be a
-				// plain function pointer (no slot for the captures — GCC uses a
-				// trampoline), so leave the short source name there to yield a clean
-				// c2mir error rather than a callback that reads garbage captures.
-				bool capturing_nested = !nfd->local_emit_name.empty()
-							&& !nfd->captured_vars.empty();
-				if (!capturing_nested) {
-					std::string sym = call_emit_symbol(tv->var, nfd);
-					referenced_funcs.insert(sym);
-					return id(sym.c_str(), tb);
-				}
-			}
+			if (FuncDef *nfd = (tv->var.type ? tv->var.type->as_funcdef_dd() : NULL))
+				if (node_t fv = function_value_symbol(tv->var, nfd, tb))
+					return fv;
 			// Record file-scope (non-local, non-param) references so
 			// translate_module can emit extern decls for libc globals
 			// (stderr/stdout/stdin) that were registered lazily and never
@@ -22189,6 +22221,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// path emitted the name without recording it, so
 			// `&std::numpunct<char>::id` produced a reference to
 			// _ZNSt7__cxx118numpunctIcE2idE that nothing declared.
+			// `&f` on a FUNCTION is its address, the same value its
+			// designator decays to ([conv.func]) — its call symbol. The
+			// source name made binding `int (&rf)(int) = g` an
+			// "undeclared identifier g".
+			if (FuncDef *afd = (ta->var.type ? ta->var.type->as_funcdef_dd() : NULL))
+				if (node_t fv = function_value_symbol(ta->var, afd, tb))
+					return fv;
 			note_global_reference(ta->var);
 			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);

@@ -64,6 +64,11 @@ answers.
   `f(pg)` picked `f(long)` over `f(int (*)(int))`. `k(g)` was refused as
   ambiguous between `k(bool)` and `k(long)`; it now picks `k(bool)`, as g++
   and clang++ do.
+- **Calls through a reference to a function or function pointer work**
+  (`int (*&r)(int) = pg; r(4)`, `int (&rf)(int) = g; rf(5)`). The call
+  used to be refused. A local, `static` or file-scope pointer to a function
+  pointer (`int (**pp)(int)`) now declares with its real type in C and C++;
+  it had been declared `long long *`.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -74,7 +79,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
 `testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
-`testcompoundassigntypec`, `testoverloadfnptrarg`.
+`testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
+`testfnptrptrc`.
 
 ### Unary `*` and `&` read their operand through one owner
 

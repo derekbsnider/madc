@@ -18,7 +18,9 @@
   never `is_function() && is_numeric()` or an unmarked `dynamic_cast<DataDefFPTR *>`
   (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either". Its
   overload rank is `score_arg_to_param`'s: a fn-pointer parameter by signature;
-  against arithmetic, bool is its one conversion, the rest rank neutral.
+  against arithmetic, bool is its one conversion, the rest rank neutral. A call
+  through a callable VALUE: `build_call_through_value`; a pointer/reference TO a
+  fn-pointer declares through cir's `pointer_to_fnptr_pieces`.
 - `*var`: `deref_type_for_variable`. The ARRAY an operand denotes (extents):
   `Program::array_operand_type`; its element (the ROW): `array_operand_element_type`
   — never the operand's `datadef()` (flattened). sizeof of an expression

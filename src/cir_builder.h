@@ -1521,6 +1521,13 @@ public:
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
+	// A pointer/reference TO a function pointer, or a reference to a function:
+	// the peeled levels + the fn-ptr pieces (param_decl and var_decl share it).
+	bool pointer_to_fnptr_pieces(DataDef *t, node_t spec_list, node_t decl_list);
+	// A function used as a value (its designator, `&f`, a reference bound to
+	// it): its call symbol, recorded for a prototype; NULL for a capturing
+	// nested fn.
+	node_t function_value_symbol(const Variable &v, class FuncDef *fd, TokenBase *origin);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.

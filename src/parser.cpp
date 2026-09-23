@@ -40590,6 +40590,31 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		}
 		ns_resolved:
+		// A REFERENCE to a function or a function pointer names its
+		// referent ([dcl.ref]): `int (*&r)(int) = pg; r(4)` calls pg's
+		// target, `int (&rf)(int) = g; rf(5)` calls g. madc stores the
+		// reference as a pointer, whose type is not callable, so the name
+		// was pushed as a value and `(4)` refused as a juxtaposed operand;
+		// the call goes through the referent's value, as `(expr)(args)`
+		// does.
+		if ( var->is_reference() && peekToken()
+		  && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    TokenVar *ref = new TokenVar(*var);
+		    if ( DataDefFPTR *fp =
+			    function_value_pointer_type(operand_value_type(ref)) )
+		    {
+			TokenBase *paren = nextToken();
+			TokenCallFunc *tc = build_call_through_value(ref, fp,
+								     paren, tb);
+			DBG(cout << "reference fptr call through " << var->name << endl);
+			opStack.push(tc);
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    delete ref;
+		}
 		if ( var->type->is_function() )
 		{
 		    // Explicit template arguments on a namespace function call
@@ -42328,20 +42353,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    if ( td && td->is_function() ) call_dd = td;
 			    else if ( fd && fd->is_function() ) call_dd = fd;
 			}
-			DataDefFPTR *fptr_type = call_dd ? call_dd->as_fptr_dd() : NULL;
-			if ( !fptr_type && call_dd )
-			    if ( FuncDef *func = call_dd->as_funcdef_dd() )
-				fptr_type = getPointerType(func)->as_fptr_dd();
-			if ( fptr_type )
+			if ( DataDefFPTR *fptr_type = function_value_pointer_type(call_dd) )
 			{
 			    exStack.pop();
-			    Variable *call_var = new Variable("__expr_fptr", *fptr_type, 1, NULL, false);
-			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-			    tc->src_node = call_expr;
-			    tc->file = tb->file;
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    tb = parseCallFunc(tc);
+			    TokenCallFunc *tc = build_call_through_value(call_expr,
+							    fptr_type, tb, tb);
 			    DBG(cout << "expression fptr call" << endl);
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
@@ -59006,6 +59022,38 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 		return r;
 	    }
     return operand_referent(operand, dd);
+}
+
+// The function pointer a callable VALUE is called through ([expr.call]/1): a
+// function pointer is itself, a function designator its [conv.func] pointer
+// (getPointerType). NULL for a value that is not callable.
+DataDefFPTR *Program::function_value_pointer_type(DataDef *value_type)
+{
+    if ( !value_type )
+	return NULL;
+    if ( DataDefFPTR *fp = value_type->as_fptr_dd() )
+	return fp;
+    if ( FuncDef *func = value_type->as_funcdef_dd() )
+	return getPointerType(func)->as_fptr_dd();
+    return NULL;
+}
+
+// A call THROUGH a callable expression — `(c ? f : g)(x)`, `(*fp)(x)`, a
+// reference to a function or a function pointer: the lowering loads the
+// callee from src_node (the expression's VALUE), and the call is typed by the
+// pointer's signature through a synthetic `__expr_fptr` variable. The call's
+// `(` is already consumed; `next` receives the token parseCallFunc returns.
+TokenCallFunc *Program::build_call_through_value(TokenBase *callee,
+			DataDefFPTR *fptr_type, TokenBase *paren, TokenBase *&next)
+{
+    Variable *call_var = new Variable("__expr_fptr", *fptr_type, 1, NULL, false);
+    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+    tc->src_node = callee;
+    tc->file = paren->file;
+    tc->line = paren->line;
+    tc->column = paren->column;
+    next = parseCallFunc(tc);
+    return tc;
 }
 
 // The type of a conditional whose arms are both ARITHMETIC ([expr.cond]/7,

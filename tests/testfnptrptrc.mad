@@ -1,0 +1,20 @@
+// A pointer to a function pointer — local, static and file-scope — declares
+// as `int (**pp)(int)` and calls through `(*pp)(x)` / `(**pp)(x)` (C11
+// 6.7.6.1, 6.5.2.2). Only a PARAMETER rendered that declarator: every other
+// declaration peeled to the function pointer and printed its 64-bit storage,
+// `long long *pp`, so `(*pp)(4)` was refused as "called object is not a
+// function or function pointer" (and before the call parsed at all, the call
+// was dropped and its argument printed).
+#include <stdio.h>
+static int g(int x) { return x * 2; }
+int (*gp)(int) = g;
+int (**file_pp)(int) = &gp;
+int main(void)
+{
+    int (*pg)(int) = g;
+    int (**pp)(int) = &pg;
+    static int (**spp)(int);
+    spp = &pg;
+    printf("%d %d %d %d\n", (*pp)(4), (**pp)(5), (*spp)(6), (*file_pp)(7));
+    return 0;
+}

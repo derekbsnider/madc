@@ -271,6 +271,27 @@ yet measured.
   beside it: a call THROUGH a reference to a fn-pointer (`int (*&r)(int) =
   pg; r(4)`) is refused as juxtaposed operands (`call_through_fnptr_reference`,
   next).
+- ~~`call_through_fnptr_reference`~~ — fixed 2026-09-23, four layers deep. (1)
+  Parse: the identifier arm asked `var->type->is_function()`, false for a
+  reference variable (its type is the lowered pointer), so `r(4)` pushed `r`
+  as a value and refused the `(`. A reference to a function or fn-pointer now
+  calls through its referent's value, the way `(expr)(args)` does: the
+  engine's two call-through arms share `function_value_pointer_type` and
+  `build_call_through_value`. (2) Declaration: only `param_decl` rendered a
+  pointer to a fn-pointer (`int (**fp)(int)`); `var_decl` peeled to the
+  DataDefFPTR and printed its 64-bit storage, `long long *pp`, for a local,
+  static or file-scope pointer OR reference to one, in C as well as C++ —
+  latent since `(*pp)(4)` used to be dropped whole (the pre-session binary
+  printed the argument). The arm is now `pointer_to_fnptr_pieces`, shared.
+  (3) A reference to a FUNCTION type lowered one level too deep (`int
+  (**fn)(int)`): a pointer to a function type IS the fn pointer
+  (`getPointerType`'s fold), so that level is the fn pointer's own `*`. (4)
+  Binding it, `&g` spelled the source name; `&f` of a function is its
+  designator's symbol (`function_value_symbol`, shared with the value arm).
+  Reducers `tests/testcallfnptrref` (C++), `tests/testfnptrptrc` (C). Found
+  beside it: a reference over a function or fn-pointer mangles as a pointer
+  (`PPFiiE` where g++ has `RPFiiE` / `RFiiE`; `reference_to_function_mangling`,
+  next).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs
