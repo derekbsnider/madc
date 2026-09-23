@@ -117,10 +117,12 @@ yet measured.
   incomplete copy of the end of an expression, so a pending `=` bound two
   juxtaposed operands (`int r = (x)(4)` built `int r = x = 4`, exit 0) —
   UPDATE 90's open question. `Program::finish_expression` is the one end.
-- `call_arm_callee_kinds`: the call arm admits a callee only as a ternary, a
-  deref, a cast or a member; `(x, f)(x)` and `(f = twice)(x)` are refused
-  (valid C, gcc 8) — any function-pointer-typed operand in postfix position
-  is a callee (verified).
+- ~~`call_arm_callee_kinds`~~ — consolidated 2026-09-23: the call through an
+  expression admitted a callee only as a ternary / deref / cast / member and
+  only with no binary operator pending. `(x, f)(x)`, `(f = twice)(x)` and
+  `g(3) + (*tab)(3)` were refused. A `(` directly after a closed operand of
+  function-pointer type is a call (adjacency, as every call arm asks it;
+  the type through `as_fptr_dd`). Reducer `tests/testcallthroughexpr`.
 - `function_vs_function_pointer_predicate`: two sites still spell "is FPTR" as
   `is_function() && is_numeric()` (cir_builder ~382, parser ~30550 — correct
   in meaning), and `dynamic_cast<DataDefFPTR *>` is common; `as_fptr_dd()`

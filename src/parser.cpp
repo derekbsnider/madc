@@ -42377,7 +42377,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && !member_is_assign_lhs
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(member_call_base->var.type) )
+		      && member_call_base->var.type
+		      && member_call_base->var.type->as_fptr_dd() )
 		    {
 			TokenMember *tmem = member_call_base;
 			exStack.pop();
@@ -42407,7 +42408,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && (dynamic_cast<TokenSubscript *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenSubscriptExpr *>(exStack.top()) != NULL)
 		      && (subscript_call_base = exStack.top()) != NULL
-		      && (subscript_call_type = dynamic_cast<DataDefFPTR *>(subscript_call_base->datadef())) != NULL )
+		      && subscript_call_base->datadef()
+		      && (subscript_call_type = subscript_call_base->datadef()->as_fptr_dd()) != NULL )
 		    {
 			exStack.pop();
 			Variable *call_var = new Variable("__subscript_fptr", *subscript_call_type, 1, NULL, false);
@@ -42432,7 +42434,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && !opstack_has_pending_op
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type)
+		      && var_call_base->var.type
+		      && var_call_base->var.type->as_fptr_dd()
 		      && !var_call_base->var.is_constant()
 		      && var_call_base->var.name.compare(0, 11, "__literal__") != 0 /* skip string literals */
 		      && var_call_base->var.name[0] != '(' /* skip grouped exprs */ )
@@ -42552,68 +42555,36 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    done = true;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    // Generic expression-as-function-pointer call:
-		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
-		    // exStack top is a ternary or explicit DataDefFPTR
-		    // expression. Only trigger for ternary expressions
-		    // and already-typed function pointers, NOT for plain
-		    // identifiers that happen to have a function type
-		    // (which would be a normal function call or a
-		    // parenthesized expression starting with a func name).
-		    if ( !exStack.empty() && !opstack_has_pending_op )
+		    // Call through a function-pointer EXPRESSION ([expr.call]/1):
+		    // `(c ? f : g)(x)`, `(*fp)(x)`, `((fn_t)p)(x)`, `(x, f)(x)`,
+		    // `(f = g)(x)` — a `(` directly after a CLOSED operand whose type
+		    // is a function pointer, or a function designator (wrapped in
+		    // its pointer type, [conv.func]). Adjacency decides, asked like
+		    // every call arm here (the token before the `(` is the operand's
+		    // closing `)`): a call is postfix and binds tighter than any
+		    // pending binary operator, so `g(3) + (*tab)(3)` is a call while
+		    // `(*fp) * (2)` — an operator between — keeps the grouping.
+		    // Members, subscripts, plain variables, designators and call
+		    // results have their own arms above.
+		    if ( !exStack.empty() && prev_for_member
+		      && prev_for_member->id() == TokenID::tkClBrk
+		      && !member_is_assign_lhs )
 		    {
 			TokenBase *call_expr = exStack.top();
 			DataDef *call_dd = call_expr->datadef();
-			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
-			// For ternary: check if either branch is a function reference.
-			TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr);
-			if ( terq )
+			// A ternary's own type may be neither branch's: ask the
+			// branches for the function they select.
+			if ( TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr) )
 			{
 			    DataDef *td = terq->true_expr ? terq->true_expr->datadef() : NULL;
 			    DataDef *fd = terq->false_expr ? terq->false_expr->datadef() : NULL;
 			    if ( td && td->is_function() ) call_dd = td;
 			    else if ( fd && fd->is_function() ) call_dd = fd;
-			    // For ternary, wrap in FPTR if needed
-			    if ( !fptr_type && call_dd && call_dd->is_function() )
-			    {
-				FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
-				if ( func )
-				    fptr_type = new DataDefFPTR(func);
-			    }
 			}
-			// Only trigger for genuine fptr patterns: ternary dispatch,
-			// member fptr, or deref fptr (*fptr)(args).
-			// Do NOT trigger for subscript expressions or plain
-			// identifiers — those are normal expressions followed by
-			// grouping parens, not function pointer invocations.
-			// (Subscript fptr calls like table[i](args) are rare and
-			// were not supported pre-v0.14; they cause false matches
-			// on SMAUG's DO_FUN/SPEC_FUN typedef system.)
-			if ( fptr_type && !terq )
-			{
-			    bool is_genuine_fptr =
-				call_expr->type() == TokenType::ttMember
-				|| call_expr->is_indirection()
-				// A CAST to a fn-ptr type followed by `(` is
-				// unambiguously a call — a cast result has no
-				// grouping/identifier reading (the SMAUG
-				// false-match concern below is about plain
-				// names and subscripts). c-testsuite 00210:
-				// `((int(*)(void))p)()` silently dropped the
-				// call and assigned the pointer, exit 0.
-				|| call_expr->as_cast_tok() != NULL;
-			    if ( !is_genuine_fptr )
-				fptr_type = NULL;
-			}
-			// Only trigger for: ternary dispatch, deref fptr, or a
-			// cast to fn-ptr. Members and subscripts are handled by
-			// their own dedicated fptr paths earlier in the code.
-			// The generic path's is_function() check is too
-			// aggressive for those.
-			if ( fptr_type && !terq
-			  && !call_expr->is_indirection()
-			  && call_expr->as_cast_tok() == NULL )
-			    fptr_type = NULL;
+			DataDefFPTR *fptr_type = call_dd ? call_dd->as_fptr_dd() : NULL;
+			if ( !fptr_type && call_dd )
+			    if ( FuncDef *func = call_dd->as_funcdef_dd() )
+				fptr_type = new DataDefFPTR(func);
 			if ( fptr_type )
 			{
 			    exStack.pop();
@@ -42685,8 +42656,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    && next->id() == TokenID::tkOpBrk
 			    && !exStack.empty()
 			    && exStack.top()->datadef()
-			    && (exStack.top()->datadef()->is_function()
-			     || dynamic_cast<DataDefFPTR *>(exStack.top()->datadef()));
+			    // a function or a function pointer: is_function()
+			    // answers both (a DataDefCONST forwards it)
+			    && exStack.top()->datadef()->is_function();
 			// A named-cast operand (`static_cast<T>(p)`) must STOP at its own closing
 			    // paren so a trailing `->m()`/`.m`/`[i]` binds to the CAST RESULT
 			    // (target type), not folds into the operand (base type).
