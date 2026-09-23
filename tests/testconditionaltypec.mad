@@ -1,0 +1,19 @@
+// C twin of testconditionaltype: in C a conditional with two arithmetic arms
+// ALWAYS takes the usual arithmetic conversions over the promoted arms (C11
+// 6.5.15p5) — even two arms of one type (`b ? uc : uc2` is int, a _Bool pair
+// is int). madc preferred the true arm's type. (An enum pair is left out: C's
+// unfixed-enum promotion is the separate c_unfixed_enum_promotion decision.)
+#include <stdio.h>
+#define T(x) _Generic((x), _Bool: "bool", char: "char", signed char: "schar", unsigned char: "uchar", short: "short", unsigned short: "ushort", int: "int", unsigned: "uint", long: "long", unsigned long: "ulong", float: "float", double: "double", default: "other")
+struct B { unsigned x : 3; };
+enum E { E0, E1 };
+int main(void) {
+    _Bool b = 1, nb = 0; unsigned char uc = 200, uc2 = 3; short ss = -5; char c = 'a', c2 = 'b';
+    int i = 7; unsigned u = 1; long l = 2; float fl = 1.5f; double d = 2.5; enum E e1 = E0, e2 = E1; struct B bt = {5};
+    _Bool t = 1, fa = 0;
+    printf("mix: %s %s %s %s %s %s %s\n", T(b ? uc : ss), T(b ? ss : 1), T(b ? i : u), T(b ? i : l), T(b ? fl : 1), T(b ? fl : d), T(b ? i : d));
+    printf("same: %s %s %s %s\n", T(b ? uc : uc2), T(b ? c : c2), T(b ? t : fa), T(b ? bt.x : 1u));
+    printf("size: %d %d %d %d\n", (int)sizeof(b ? uc : ss), (int)sizeof(b ? uc : uc2), (int)sizeof(b ? c : 1), (int)sizeof(b ? fl : d));
+    printf("val: %d %ld %.2f\n", (b ? uc : ss) + 100, (long)(nb ? i : -1L), (double)(nb ? fl : 3));
+    return 0;
+}

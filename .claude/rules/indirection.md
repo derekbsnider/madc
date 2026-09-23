@@ -28,6 +28,8 @@
 - A comparison or logical operator's result (bool in C++, int in C): the token's
   OWN type, recorded from `yields_truth_value()` by `resolve_object_operator_type`
   — never `resolved_type`.
+- `c ? a : b` over two arithmetic arms ([expr.cond]/7, C11 6.5.15p5):
+  `Program::conditional_arithmetic_type`, composed from the operand owners above.
 - End of an expression (bind pending operators, refuse juxtaposed operands):
   `Program::finish_expression` — every exit of `parseExpression`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;

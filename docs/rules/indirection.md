@@ -219,6 +219,25 @@ yet measured.
   class operand's overload still sets it and wins (`K::operator<` returning
   int stays int). Reducers `tests/testcomparebool` (C++), `testcompareboolc`
   (C stays int), `testcompareboolmadc` (the dialect formats `true`).
+- ~~`conditional_usual_arithmetic_conversion`~~ — fixed 2026-09-23, the
+  second found beside the operand-promotion family, and worse than recorded:
+  wrong VALUES, not only types. The engine's ternary arm typed a conditional as
+  its TRUE arm (the false arm only when the true one was int), so `b ? uc :
+  ss` was unsigned char where both languages say int, `b ? i : l` int (long),
+  `b ? fl : d` float and `b ? i : d` int (double), sizeof(b ? uc : ss) 1, and
+  `auto a1 = nb ? uc : ss` declared an unsigned char that stored -5 as 251.
+  c2mir computed the arms' conversion correctly all along; only the parse-side
+  type every consumer reads was wrong. `Program::conditional_arithmetic_type`
+  is [expr.cond]/7 for two arithmetic arms: C++ keeps a type both arms share
+  after lvalue-to-rvalue (`b ? uc : uc2` unsigned char, an enum pair the enum,
+  a bool pair bool), otherwise — and always in C (6.5.15p5) — the usual
+  arithmetic conversions over the promoted arms. It composes
+  `operand_value_datadef`, `promoted_operand_type`, `usual_arithmetic_result`
+  and `proven_scalar_identity`; the pointer, array, carrier and class rules
+  of the arm stay as they were. Reducers `tests/testconditionaltype`,
+  `testconditionaltypec`. Found beside it: C `_Generic` selects `default` for
+  an enum operand where gcc/clang select its compatible type (joins
+  `c_unfixed_enum_promotion`).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

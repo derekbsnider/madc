@@ -51,6 +51,12 @@ answers.
   `f(bool)`, `sizeof(i == j)` was 4 and `auto a = (i == j)` deduced `int`. In
   the madc dialect `println("{}", i < j)` now prints `true`, as `std::format`
   does.
+- **`c ? a : b` over two arithmetic arms has the standard's type.** madc took
+  the true arm's type, which gave wrong values as well as wrong types:
+  `auto a = nb ? uc : ss` stored -5 as 251, and `b ? i : d` / `b ? fl : d`
+  narrowed to `int` / `float`. C++ keeps a type both arms share (`b ? uc : uc2`
+  is `unsigned char`). Otherwise, and always in C, the usual arithmetic
+  conversions apply.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -59,7 +65,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
 `testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
 `testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
-`testcomparebool`, `testcompareboolc`, `testcompareboolmadc`.
+`testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
+`testconditionaltype`, `testconditionaltypec`.
 
 ### Unary `*` and `&` read their operand through one owner
 

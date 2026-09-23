@@ -6547,6 +6547,8 @@ public:
     // A CALL operand types by its RESOLVED callee's return — see
     // resolved_call_funcdef.
     DataDef *operand_value_datadef(TokenBase *operand);
+    // [expr.cond]/7 / C11 6.5.15p5 for two ARITHMETIC arms; NULL otherwise.
+    DataDef *conditional_arithmetic_type(TokenBase *t, TokenBase *f);
     // The element type of `for (auto x : container)`, deduced from the
     // container expression — the shared iteration recognizers answer it
     // (positional: operator[]'s return; iterator: operator*'s return), the

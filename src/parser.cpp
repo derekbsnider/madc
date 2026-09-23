@@ -42494,9 +42494,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // `feof(fp) ? "End" : fread_word(fp)`.
 		    DataDef *tdd = ternary->true_expr  ? ternary->true_expr->datadef()  : NULL;
 		    DataDef *fdd = ternary->false_expr ? ternary->false_expr->datadef() : NULL;
-		    DataDef *ternary_dd = tdd;
-		    if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
-			ternary_dd = fdd;
+		    // Two arithmetic arms: [expr.cond]/7's type, one owner.
+		    DataDef *ternary_dd = conditional_arithmetic_type(
+					    ternary->true_expr, ternary->false_expr);
+		    if ( !ternary_dd )
+		    {
+			ternary_dd = tdd;
+			if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
+			    ternary_dd = fdd;
+		    }
 		    // [expr.cond]/4 with the CARRIER (`var`): one arm a value (a
 		    // variable, a keyed slot, a `value &`), the other a type the
 		    // carrier's registered operator= rows take (a char pointer, a
@@ -59000,6 +59006,40 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 		return r;
 	    }
     return operand_referent(operand, dd);
+}
+
+// The type of a conditional whose arms are both ARITHMETIC ([expr.cond]/7,
+// C11 6.5.15p5). In C++ a type the two arms share after lvalue-to-rvalue (cv
+// dropped) is the result — `b ? uc : uc2` is unsigned char, `b ? e1 : e2` the
+// enum, `b ? true : false` bool (7.1); otherwise, and always in C, the usual
+// arithmetic conversions over the promoted arms (7.2). NULL when an arm is not
+// arithmetic: a pointer, an array (it decays), a function, a class, complex or
+// SIMD keep the conditional's other rules. The arms' value, promotion and
+// conversion are the operators' owners, not a copy.
+DataDef *Program::conditional_arithmetic_type(TokenBase *t, TokenBase *f)
+{
+    auto arithmetic_value = [this](TokenBase *e) -> DataDef * {
+	DataDef *d = e ? operand_value_datadef(e) : NULL;
+	d = d ? d->unqualified() : NULL;
+	if ( !d || !(d->is_numeric() || d->as_enum_dd()) || d->is_pointer()
+	  || d->is_function() || d->is_complex() || d->is_simd()
+	  || array_operand_type(e) )
+	    return NULL;
+	return d;
+    };
+    DataDef *tv = arithmetic_value(t);
+    DataDef *fv = tv ? arithmetic_value(f) : NULL;
+    if ( !fv )
+	return NULL;
+    if ( presents_as_cpp() )
+    {
+	DataDef *ti = proven_scalar_identity(tv);
+	if ( tv == fv || (ti && ti == proven_scalar_identity(fv)) )
+	    return tv;
+    }
+    DataDef *ua = usual_arithmetic_result(promoted_operand_type(t),
+					  promoted_operand_type(f));
+    return ua ? ua : resolve_builtin_type_spelling("int");
 }
 
 // [temp.deduct.call]/3 needs the argument expression's value category for a
