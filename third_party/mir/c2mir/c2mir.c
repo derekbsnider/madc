@@ -10346,12 +10346,15 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   node_t scope;
   mir_size_t start_offset = 0; /* to remove an uninitialized warning */
 
-  /* Exclude decls which will be in regs: */
+  /* Exclude decls which will be in regs.  A VOLATILE object never is: every access to it
+     must be a real load or store (C11 5.1.2.3p6), and a volatile local modified between
+     setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
+     is restored to its setjmp-time contents. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
-    if (scalar_type_p (type) && !int128_type_p (type)) {
+    if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p) {
       decl->reg_p = TRUE;
       continue;
     }

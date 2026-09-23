@@ -368,6 +368,28 @@ yet measured.
   template's pointer non-type argument is never instantiated
   (`fcall<&h>(4)`); `s.*&S::m` (the `.*` operand is not the cast-expression
   owner's); `FnPtr<(&g)>` keys a second specialization.
+- ~~`volatile_dropped_in_emitted_c`~~ — fixed 2026-09-23 in two steps,
+  silent. A `volatile` local changed between `setjmp` and `longjmp` keeps its
+  last stored value (C11 7.13.2.1p3) only because every access to a volatile
+  object is a real load or store (5.1.2.3p6). madc lost that twice over. (1)
+  The declaration reader consumed `volatile` and nothing carried it, so neither
+  the IR nor the `--emit=c11` output had it. (2) c2mir records
+  `type_qual.volatile_p` but never read it: `process_func_decls_for_allocation`
+  put every scalar local in a register, and `longjmp` restored the register's
+  `setjmp`-time contents. The reducer printed `jmp: -834290028` / `nested: 8`
+  where gcc and clang print 4511 and 47 at -O0 and -O2; c2m compiling the C
+  directly was wrong the same way. Step 1 (0378fc87d, the carrier): the object
+  carries `vfVOLATILE`, set from the reader's `base_volatile` /
+  `volatile_after_star`; cir appends `N_VOLATILE` to the spec list, or for a
+  pointer object to its own `N_POINTER` — the FIRST in c2m's suffix order,
+  which binds innermost first; `emit_declarator` renders pointer qualifiers;
+  a declarator list's tail re-pushes the qualifier through one owner,
+  `push_declarator_list_tail` (two copies merged). Step 2: c2mir's allocation
+  keeps a volatile scalar in memory. MIR-gen needed nothing (measured -O0
+  through -O3). Reducers `tests/testvolatileemit`, `tests/testvolatilesetjmpc`,
+  `tests/testvolatilesetjmpo2c`; MIR corpus `new/volatile-setjmp.c`. Open:
+  `pointee_volatile` (`volatile int *q`, a volatile member, `typedef
+  volatile`), a type-level qualifier like `DataDefCONST`.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

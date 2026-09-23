@@ -96,6 +96,13 @@ answers.
   `char` or `short` operand selected `int` (or default) in C compiled by c2m,
   and `_Generic(x, char *: ..., const char *: ...)` was refused as two
   compatible associations. (madc resolves `_Generic` itself; this is c2m's.)
+- **A `volatile` local keeps its value across `longjmp`.** madc dropped the
+  qualifier, and c2mir ignored it anyway and kept every scalar local in a
+  register, so a `volatile` local changed between `setjmp` and `longjmp` came
+  back with its `setjmp`-time value, or garbage (gcc and clang: 4511; madc:
+  -834290028). c2m compiling C directly had the same bug. `volatile` now also
+  reaches `--emit=c11` output, including a pointer object's own qualifier
+  (`int *volatile p`).
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -109,7 +116,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
 `testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
 `testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
-`testtplnontypegroup`.
+`testtplnontypegroup`, `testvolatileemit`, `testvolatilesetjmpc`,
+`testvolatilesetjmpo2c`.
 
 ### Unary `*` and `&` read their operand through one owner
 

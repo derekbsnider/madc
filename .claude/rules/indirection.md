@@ -59,6 +59,9 @@
   `consume_declarator_stars` (a caller's consumed leading `const` goes in as
   `leading_const`, never dropped); `[dims]`: `parse_array_dimensions` +
   `nest_carray_dims` (gated).
+- A top-level `volatile` qualifies the OBJECT (`vfVOLATILE`, from the reader's
+  `base_volatile` / `volatile_after_star`); cir: the spec list, or a pointer's own
+  (FIRST) `N_POINTER`. A declarator list's tail re-pushes it: `push_declarator_list_tail`.
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A non-type template argument spliced into a cloned body (one operand):
   `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).
