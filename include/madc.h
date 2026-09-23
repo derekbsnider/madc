@@ -224,7 +224,7 @@ public:
 	// A typedef'd const ref (`const_reference __x` — libc++ spells
 	// push_back this way) has NO leading const token, so const_params
 	// stays false; when the resolved type graph carries it (DataDefREF
-	// whose referent is DataDefCONST), read it from there.
+	// whose referent is const-qualified), read it from there.
 	if ( parameters[i]->is_reference() )
 	{
 	    const DataDefPTR *rp =
@@ -239,7 +239,7 @@ public:
 	// ("const_reference", "reference") hides BOTH facts from every
 	// carrier above — abstain rather than refuse a binding madc cannot
 	// prove illegal. The type-graph test above tightens this
-	// automatically as DataDefCONST coverage grows.
+	// automatically as DataDefQUAL coverage grows.
 	if ( i >= param_cpp_spellings.size() )
 	    return false;
 	const std::string &sp = param_cpp_spellings[i];
@@ -4541,7 +4541,8 @@ public:
     // stays its own object
     std::map<std::pair<DataDef *, size_t>, DataDefSIMD *> simd_type_cache;
     registration_map<DataDef *, DataDefREF *> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
-    registration_map<DataDef *, DataDefCONST *> const_type_cache; // cached const-T DataDefs
+    // cached cv-qualified DataDefs: ONE variant per (unqualified base, CvQual mask)
+    registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *> qualified_type_cache;
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -5314,7 +5315,7 @@ public:
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
-    bool typedef_prefix_const = false;	// C: a `const` between `typedef` and the aggregate keyword (`typedef const struct T *P;`) — the alias's base is the const-qualified aggregate; TokenSTRUCT::parse consumes it ONCE (read + clear), the typedef_prefix_align model
+    unsigned typedef_prefix_cv = cvNONE;	// C: the cv (CvQual) between `typedef` and the aggregate keyword (`typedef const struct T *P;`, `typedef volatile struct T V;`) — the alias's base is the cv-qualified aggregate; TokenSTRUCT::parse consumes it ONCE (read + clear), the typedef_prefix_align model
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
     // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser
@@ -6526,7 +6527,7 @@ public:
     // [over.match.funcs]/4 — cv of the implicit object ARGUMENT a member call
     // on `recv` supplies. The hidden __this receiver takes the ENCLOSING
     // method's cv (a const member's this points at const T); a named receiver
-    // takes its declared constness (vfCONSTANT-family flags or a DataDefCONST
+    // takes its declared constness (vfCONSTANT-family flags or a const-qualified
     // identity, reference-transparent). 1 = const, 0 = non-const, -1 = unknown.
     int implicit_object_constness(Variable &recv);
     // Static-member-call analogue of reselect_method_overload: a qualified
@@ -6612,11 +6613,16 @@ public:
     // operand ([expr.unary.op]p3), else pointer-to-type.
     DataDef *addressof_result_type(DataDef *operand_type);
     DataDefREF *getReferenceType(DataDef *base);
-    // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
-    // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for
-    // TYPE IDENTITY (so const T != T survives deduction / instantiation keying).
+    // THE qualified-type minter: `base` with the cv bits of `cv` (CvQual) ADDED
+    // to whatever it already carries — canonical, one DataDefQUAL per
+    // (unqualified base, mask), cached in qualified_type_cache (gcc's
+    // build_qualified_type). Idempotent; cv == cvNONE returns base unchanged.
+    // A qualifier has no runtime/ABI effect; this exists for TYPE IDENTITY
+    // (const T != T survives deduction / instantiation keying) and for the
+    // volatile access semantics the CIR renders. getConstType is const on it.
     // See docs/plans/2026-06-19-const-qualified-types.md.
-    DataDefCONST *getConstType(DataDef *base);
+    DataDef *getQualifiedType(DataDef *base, unsigned cv);
+    DataDefQUAL *getConstType(DataDef *base);
     // Id-addressable derived-type API — the boundary adapter for the type table
     // (design docs/plans/2026-06-12-type-table-value-abi-design.md §2/§6.1).
     // "pointer-to(id)" / "reference-to(id)" / "const(id)" resolved by typeid:
@@ -6707,7 +6713,7 @@ public:
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
 			      const std::set<std::string> *runtime_names = NULL,
-			      bool leading_const = false);
+			      unsigned leading_cv = cvNONE);
     bool nested_declarator_opens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
@@ -6717,7 +6723,7 @@ private:
 				    DeclaratorResult &out,
 				    const std::set<std::string> *runtime_names,
 				    int depth, bool base_built_here,
-				    bool leading_const = false);
+				    unsigned leading_cv = cvNONE);
     DataDef *parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 				       DeclaratorResult &out,
 				       const std::set<std::string> *runtime_names,
@@ -6738,11 +6744,12 @@ public:
 	bool is_array = false;
 	std::vector<carray_dim_t> dims;
     };
-    DataDef *member_declarator(DataDef *base, MemberDeclarator &md);
+    DataDef *member_declarator(DataDef *base, MemberDeclarator &md,
+			       unsigned leading_cv = cvNONE);
     void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 				   bool is_thread_local, bool is_volatile);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
-				 bool leading_const = false, bool *out_cv_seen = nullptr,
+				 unsigned leading_cv = cvNONE, bool *out_cv_seen = nullptr,
 				 bool *out_volatile_after_star = nullptr);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
@@ -6753,9 +6760,10 @@ public:
     bool comma_continuation_starts_declarator(TokenBase *peek);
     // Shared cv-qualifier consumers (const/volatile/restrict) for committed
     // type reads. Held form returns the first non-qualifier token; peek form
-    // consumes the run and leaves the following token unread.
+    // consumes the run, leaves the following token unread, and returns the
+    // run's cv mask (CvQual).
     TokenBase *skip_cv_qualifier_tokens(TokenBase *held);
-    void skip_cv_qualifier_tokens();
+    unsigned skip_cv_qualifier_tokens();
     // parse a `(params)` list after the opening '(' has been consumed; used by
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.

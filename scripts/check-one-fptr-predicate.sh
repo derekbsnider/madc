@@ -2,11 +2,11 @@
 # DRIFT-PREVENTION GATE -- "is this type a function pointer" has ONE owner,
 # DataDef::as_fptr_dd() (and "a function", as_funcdef_dd()).
 #
-# Both forward through a DataDefCONST wrapper. The two spellings they replace
+# Both forward through a DataDefQUAL wrapper. The two spellings they replace
 # do not: `dynamic_cast<DataDefFPTR *>(dd)` is NULL for a const-qualified
 # function pointer (`const fn_t *pc; (*pc)(3)` was refused by the call arms),
-# and `is_function() && is_numeric()` is TRUE for one -- a DataDefCONST
-# forwards both -- so the static_cast that followed it read a DataDefCONST as
+# and `is_function() && is_numeric()` is TRUE for one -- a DataDefQUAL
+# forwards both -- so the static_cast that followed it read a DataDefQUAL as
 # a DataDefFPTR. A bare is_function() is true for a function AND a function
 # pointer; ask it only when the meaning is "either".
 #
@@ -46,7 +46,7 @@ n1=$(printf '%s' "$ob" | grep -c . || true)
 echo "oblique function-pointer tests (is_function() && is_numeric()): $n1 (target 0)"
 if [ "$n1" -ne 0 ]; then
 	printf '%s\n' "$ob"
-	echo "  -> ask DataDef::as_fptr_dd(): it sees through a DataDefCONST and names the type."
+	echo "  -> ask DataDef::as_fptr_dd(): it sees through a DataDefQUAL and names the type."
 	exit 1
 fi
 un=$(code_lines "$CAST" $files | grep -v 'allowed-exception')

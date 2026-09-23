@@ -2844,7 +2844,7 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
 	// constants), SIMD vector, template param, or _Complex is its own concept.
-	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefCONST *>(dd)
+	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
 	    || dd->is_template_param() || dd->is_complex())
 		return 0;
@@ -2918,6 +2918,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	uint32_t kind;
 	DataDef *operand;
 	uint64_t carray_count = 0;
+	uint32_t record_flags = 0;
 	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
 	{
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
@@ -2926,9 +2927,12 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	{
 		kind = madc::dis::DK_PTR;   operand = p->base_type;
 	}
-	else if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd))
+	else if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd))
 	{
+		// The cv MASK rides flags (DK_CONST names the qualified variant;
+		// a pre-mask record's 0 reads back as const).
 		kind = madc::dis::DK_CONST; operand = k->base_type;
+		record_flags = k->quals;
 	}
 	else if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd))
 	{
@@ -2954,6 +2958,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.ref0     = forest_serialize_type_id(operand);	// operand, as a type-id
 	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
 	r.carray_count_hi = (uint32_t)(carray_count >> 32);
+	r.flags    = record_flags;
 	forest_arena.set_def_at(tid, r);
 }
 
@@ -3528,7 +3533,7 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			dd = p->base_type;
 			continue;
 		}
-		if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd)) {
+		if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd)) {
 			dd = k->base_type;
 			continue;
 		}

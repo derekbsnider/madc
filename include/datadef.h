@@ -139,7 +139,7 @@ class DataDefCLASS;
 class DataDefCOMPLEX;
 class DataDefPTR;
 class DataDefREF;
-class DataDefCONST;
+class DataDefQUAL;
 class DataDefCArray;
 class DataDefENUM;
 class DataDefTemplateParam;
@@ -259,6 +259,23 @@ enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 // docs/plans/2026-06-12-type-table-value-abi-design.md §2.
 enum class DerivedKind : uint8_t { dkPointer, dkReference, dkConst };
 
+// The cv-qualifier MASK a qualified type carries (DataDefQUAL::quals): one
+// variant per (unqualified base, mask), minted only by
+// Program::getQualifiedType — gcc's build_qualified_type, clang's QualType.
+// `restrict` is not in the mask (madc does not model it).
+enum CvQual : unsigned { cvNONE = 0u, cvCONST = 1u, cvVOLATILE = 2u };
+// The prefix a mask spells before a type name, in gcc's order.
+inline const char *cv_prefix_spelling(unsigned cv)
+{
+    switch ( cv & (cvCONST | cvVOLATILE) )
+    {
+	case cvCONST:			return "const ";
+	case cvVOLATILE:		return "volatile ";
+	case cvCONST | cvVOLATILE:	return "const volatile ";
+	default:			return "";
+    }
+}
+
 enum class DataType : uint16_t {
 	// Simple data types
 	dtVOID, dtBOOL, dtUINT8, dtBYTE=dtUINT8,  dtINT8, dtCHAR = dtINT8,
@@ -276,7 +293,7 @@ enum class DataType : uint16_t {
 		// Pointer/reference DERIVATION is no longer a numeric band on this
 		// enum (the retired dt*ptr=+10000 / dt*ref=+20000 ranges). Derived
 		// types ARE the structural object graph — DataDefPTR / DataDefREF /
-		// DataDefCONST (with base_type) plus the typeid table. Ask
+		// DataDefQUAL (with base_type) plus the typeid table. Ask
 		// is_pointer() / is_reference() / base_type / Program::derived_type_id,
 		// never tag arithmetic.
 		// (tag-arithmetic retirement: docs/plans/2026-06-30-tag-arithmetic-retirement-plan.md)
@@ -431,9 +448,10 @@ public:
     // lives in src/madc_mangle.cpp with the rest of the std:: symbol knowledge;
     // scripts/check-no-std-hardcoding.sh gates any second copy.
     bool is_std_initializer_list() const;
-    // This type with any top-level `const` peeled off (a DataDefCONST wrapper
-    // returns its base_type; everything else returns itself). Virtual so the
-    // wrapper class owns the peel — DataDefCONST overrides below. The CIR
+    // This type with its top-level cv-qualifiers peeled off — the WHOLE mask
+    // (a DataDefQUAL wrapper returns its base_type; everything else returns
+    // itself). Virtual so the wrapper class owns the peel — DataDefQUAL
+    // overrides below. The CIR
     // builder's unqualified_type() helpers delegate here, so the rule has one
     // home.
     virtual DataDef *unqualified() { return this; }
@@ -451,7 +469,7 @@ public:
     virtual DataDefCOMPLEX       *as_complex_dd()  { return NULL; }
     virtual DataDefPTR           *as_pointer_dd()  { return NULL; }
     virtual DataDefREF           *as_reference_dd(){ return NULL; }
-    virtual DataDefCONST         *as_const_dd()    { return NULL; }
+    virtual DataDefQUAL          *as_qualified_dd(){ return NULL; }
     virtual DataDefCArray        *as_carray_dd()   { return NULL; }
     virtual DataDefENUM          *as_enum_dd()     { return NULL; }
     // An enumeration's underlying type (fixed base or the computed one),
@@ -469,7 +487,7 @@ public:
     const DataDefCOMPLEX *as_complex_dd() const { return const_cast<DataDef *>(this)->as_complex_dd(); }
     const DataDefPTR     *as_pointer_dd() const { return const_cast<DataDef *>(this)->as_pointer_dd(); }
     const DataDefREF     *as_reference_dd() const { return const_cast<DataDef *>(this)->as_reference_dd(); }
-    const DataDefCONST   *as_const_dd()   const { return const_cast<DataDef *>(this)->as_const_dd(); }
+    const DataDefQUAL    *as_qualified_dd() const { return const_cast<DataDef *>(this)->as_qualified_dd(); }
     const DataDefCArray  *as_carray_dd()  const { return const_cast<DataDef *>(this)->as_carray_dd(); }
     const DataDefENUM    *as_enum_dd()    const { return const_cast<DataDef *>(this)->as_enum_dd(); }
     const DataDefTemplateParam *as_template_param_dd() const { return const_cast<DataDef *>(this)->as_template_param_dd(); }
@@ -622,7 +640,7 @@ public:
     }
     virtual bool is_pointer() const
     {
-	// Structural: only DataDefPTR (and DataDefCONST forwarding to it) is a
+	// Structural: only DataDefPTR (and DataDefQUAL forwarding to it) is a
 	// pointer. The +10000 tag band is retired; a plain DataDef never is.
 	return false;
     }
@@ -635,21 +653,34 @@ public:
     {
 	return false;
     }
-    // True only for DataDefCONST: a const-qualified type (`const T`). Lowered
-    // identically to T (const has no runtime/ABI effect — same size, DataType,
-    // codegen), but the type keeps its const-ness so type identity and spelling
-    // carry `const` — the single source of truth for const, no parallel flags
-    // (mirrors is_reference()/DataDefREF). See docs/plans/2026-06-19-const-qualified-types.md.
+    // True only for a DataDefQUAL whose mask has cvCONST: a const-qualified
+    // type (`const T`). Lowered identically to T (const has no runtime/ABI
+    // effect — same size, DataType, codegen), but the type keeps its const-ness
+    // so type identity and spelling carry `const` — the single source of truth
+    // for const, no parallel flags (mirrors is_reference()/DataDefREF). See
+    // docs/plans/2026-06-19-const-qualified-types.md.
     virtual bool is_const() const
     {
 	return false;
+    }
+    // Its volatile twin (C11 6.7.3p7): the mask has cvVOLATILE. An access
+    // through an lvalue of this type is performed exactly as written — the
+    // CIR renders it, c2mir marks the MIR memory operand (MIR_mem_t.volatile_p).
+    virtual bool is_volatile() const
+    {
+	return false;
+    }
+    // The TOP-LEVEL cv mask (CvQual bits); cvNONE for every unqualified type.
+    virtual unsigned cv_quals() const
+    {
+	return cvNONE;
     }
     // True iff this is a C string: a pointer whose immediate pointee is a char
     // scalar (modulo const at either level) — char*, const char*, char* const,
     // char& (a reference lowers as the pointer). EXCLUDES char** and other
     // pointers. The STRUCTURAL replacement for the old `type() == dtCHARptr` tag
     // comparison (tag-arithmetic retirement). Non-virtual; defined out-of-line
-    // below because it needs the complete DataDefPTR / DataDefCONST types.
+    // below because it needs the complete DataDefPTR / DataDefQUAL types.
     bool is_cstr() const;
     // True iff this IS the void type, modulo const/typedef: rawtype() is dtVOID
     // AND the type is a value, not a pointer or a reference. The ONE owner of
@@ -768,7 +799,7 @@ public:
 	return (DataType)_type;
     }
     // Derivation kind. Structural: a plain DataDef is a value; DataDefPTR ->
-    // rtPointer, DataDefREF -> rtReference, DataDefCONST forwards to base.
+    // rtPointer, DataDefREF -> rtReference, DataDefQUAL forwards to base.
     virtual RefType reftype()  const
     {
 	return RefType::rtValue;
@@ -1137,9 +1168,12 @@ public:
 	    ? (storage_bits - bitfield_next_bit - width)
 	    : bitfield_next_bit;
 	info.bit_width = width;
+	// The name test reads the UNQUALIFIED type: a qualifier never changes
+	// signedness, and `volatile int`'s own name is no builtin name (a
+	// `volatile signed f : 25` read back zero-extended — mir c-tests bf1.c).
 	bool alias_like_int =
 	    dd.rawtype() == DataType::dtINT32
-	    && !is_builtin_signed_integer_name(dd.name);
+	    && !is_builtin_signed_integer_name(dd.unqualified()->name);
 	// An enum-typed bit-field's signedness is the enum's UNDERLYING
 	// type's (gcc/clang: all-non-negative enumerators -> unsigned int ->
 	// zero-extend; a negative enumerator -> int -> sign-extend). The
@@ -1771,7 +1805,7 @@ public:
     virtual bool is_pointer() const override { return true; }
     virtual bool is_numeric() const override { return true; }
     virtual bool is_integer() const override { return true; }
-    // Classify STRUCTURALLY, not from the _type tag-band (mirrors DataDefCONST,
+    // Classify STRUCTURALLY, not from the _type tag-band (mirrors DataDefQUAL,
     // which already forwards these to base_type). A pointer's reftype is
     // rtPointer by construction; its rawtype is the pointee's rawtype (so T**
     // recurses to the innermost scalar, matching the historical one-subtraction
@@ -1824,25 +1858,34 @@ public:
 // strips it like any reference.
 class DataDefVOIDref: public DataDefREF { public: DataDefVOIDref(); };
 
-// A const-qualified type (`const T`). IS-A its base's lowering: const has NO
-// runtime/ABI effect, so the size, DataType, and all codegen behaviour are the
-// base's — but is_const() is true so type identity and the rendered name carry
-// `const`, surviving deduction / template-instantiation keying (the missing
-// identity behind map<int,int>'s pair-piecewise-ctor signature mismatch). Every
-// predicate that does not test is_const() FORWARDS to the base, so a consumer
-// that does not care about const treats a DataDefCONST exactly like its base
-// (the DataDefREF discipline). base_type is the unqualified T.
+// A cv-qualified type (`const T`, `volatile T`, `const volatile T`): ONE
+// variant carrying the qualifier MASK (quals, CvQual bits), never one class per
+// qualifier — gcc's build_qualified_type / clang's QualType. IS-A its base's
+// lowering: a qualifier has NO layout/ABI effect, so the size, DataType, and all
+// codegen behaviour are the base's — but is_const() / is_volatile() read the
+// mask, so type identity and the rendered name carry the qualifiers, surviving
+// deduction / template-instantiation keying (const: the missing identity behind
+// map<int,int>'s pair-piecewise-ctor signature mismatch) and reaching c2mir
+// (volatile: the CIR renders it; an access through it is performed exactly as
+// written). Every predicate that does not test a qualifier FORWARDS to the base,
+// so a consumer that does not care treats a DataDefQUAL exactly like its base
+// (the DataDefREF discipline). base_type is the UNQUALIFIED T; mint only
+// through Program::getQualifiedType (one variant per (base, mask)).
 // See docs/plans/2026-06-19-const-qualified-types.md (Phase 1 = this class).
-class DataDefCONST : public DataDef
+class DataDefQUAL : public DataDef
 {
 public:
     DataDef *base_type;
-    DataDefCONST(DataDef &base)
-	: DataDef("const " + base.name, base.size, base.type()), base_type(&base) {}
+    unsigned quals;
+    DataDefQUAL(DataDef &base, unsigned cv)
+	: DataDef(cv_prefix_spelling(cv) + base.name, base.size, base.type()),
+	  base_type(&base), quals(cv) {}
     virtual BaseType basetype() const override { return base_type->basetype(); }
     virtual DataType rawtype() const override { return base_type->rawtype(); }
     virtual RefType reftype() const override { return base_type->reftype(); }
-    virtual bool is_const() const override { return true; }
+    virtual bool is_const() const override { return (quals & cvCONST) != 0; }
+    virtual bool is_volatile() const override { return (quals & cvVOLATILE) != 0; }
+    virtual unsigned cv_quals() const override { return quals; }
     virtual bool is_complex() const override { return base_type->is_complex(); }
     virtual bool is_pointer() const override { return base_type->is_pointer(); }
     virtual bool is_reference() const override { return base_type->is_reference(); }
@@ -1857,12 +1900,12 @@ public:
     virtual bool is_unsigned() const override { return base_type->is_unsigned(); }
     virtual size_t alignment() const override { return base_type->alignment(); }
     virtual int gcc_type_class() const override { return base_type->gcc_type_class(); }
-    virtual DataDefCONST *as_const_dd() override { return this; }
+    virtual DataDefQUAL *as_qualified_dd() override { return this; }
     // The as_*_dd() accessors forward like the predicates do — a consumer
     // that asks is_struct() and then as_struct_dd() must get one coherent
     // view (a NULL here after a true predicate was the 00216 member-access
     // SIGSEGV once declarations began minting const pointees). Only
-    // as_const_dd() answers self; unqualified() is the peel.
+    // as_qualified_dd() answers self; unqualified() is the peel.
     virtual DataDefSTRUCT        *as_struct_dd() override   { return base_type->as_struct_dd(); }
     virtual DataDefCLASS         *as_class_dd() override    { return base_type->as_class_dd(); }
     virtual DataDefCOMPLEX       *as_complex_dd() override  { return base_type->as_complex_dd(); }
@@ -1880,7 +1923,7 @@ public:
 };
 
 // is_cstr() — declared in DataDef above; defined here where DataDefPTR /
-// DataDefCONST are complete. Strip a top-level const (char* const), require a
+// DataDefQUAL are complete. Strip a top-level qualifier (char* const), require a
 // pointer, then require the immediate pointee to be a char scalar (its rawtype
 // unwraps an inner const for const char*; !is_pointer() excludes char**).
 // Value-equivalent to the historical `type() == dtCHARptr` for every type, and
@@ -1888,7 +1931,7 @@ public:
 inline bool DataDef::is_cstr() const
 {
     const DataDef *d = this;
-    if ( const DataDefCONST *cd = dynamic_cast<const DataDefCONST *>(d) )
+    if ( const DataDefQUAL *cd = dynamic_cast<const DataDefQUAL *>(d) )
 	d = cd->base_type ? cd->base_type : d;
     const DataDefPTR *p = dynamic_cast<const DataDefPTR *>(d);
     if ( !p || !p->base_type )
@@ -1898,7 +1941,7 @@ inline bool DataDef::is_cstr() const
 }
 
 // is_void() — declared in DataDef above. reftype() is rtValue for a value and
-// forwards through DataDefCONST, so `const void` is void while void*, void**,
+// forwards through DataDefQUAL, so `const void` is void while void*, void**,
 // void* const and void*& (DataDefREF: rtReference) are not.
 inline bool DataDef::is_void() const
 {
@@ -2209,7 +2252,7 @@ extern DataDefAUTO ddAUTO;
 // real layout. basetype() is btTemplateParam so every inherited is_*() predicate
 // answers false (it is not numeric/integer/real/pointer/struct/object/function);
 // is_template_param() is the single discriminator consumers test (the
-// DataDefREF/DataDefCONST discipline — identity lives in the type, no parallel
+// DataDefREF/DataDefQUAL discipline — identity lives in the type, no parallel
 // flags). A pattern containing one is Tree-1 only and must be substituted before
 // it can be lowered/compiled; append_type_specs rejects a stray one via an error
 // node so an un-substituted placeholder surfaces loudly rather than mis-lowering.

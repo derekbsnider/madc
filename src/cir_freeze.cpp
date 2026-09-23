@@ -2666,7 +2666,8 @@ void CirFrozenForest::materialize_pass()
 			if (r.kind == madc::dis::DK_REF)
 				d = new DataDefREF(*operand);
 			else if (r.kind == madc::dis::DK_CONST)
-				d = new DataDefCONST(*operand);
+				// The cv mask rides flags; a pre-mask record (0) was const.
+				d = new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);
 			else if (r.kind == madc::dis::DK_CARRAY) {
 				// v25: rebuild the fixed-size array VERBATIM (name +
 				// folded count; a runtime-sized array is never recorded).

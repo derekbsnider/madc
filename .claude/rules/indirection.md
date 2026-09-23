@@ -43,9 +43,11 @@
   a postfix step's overload: `class_postfix_step_operator` (cir).
 
 ## Types
-- Mint `T*` / `T&` / `const T`: `getPointerType` (a function type or a FuncDef
+- Mint `T*` / `T&` / cv `T`: `getPointerType` (a function type or a FuncDef
   folds to its fn-pointer — [conv.func]) / `getReferenceType` (the one collapse)
-  / `getConstType`.
+  / `getQualifiedType` (ONE `DataDefQUAL` per (base, cv mask); `getConstType` is
+  const on it). "Is it const/volatile": `is_const()` / `is_volatile()`, never the
+  wrapper's class; `unqualified()` peels the whole mask.
 - One pointee level: `as_pointer_dd()`, never `dynamic_cast<DataDefPTR *>`.
   All levels: `dd_peel_pointers` (gated). void: `DataDef::is_void()` (gated).
 - A scalar's identity (`char` and `signed char` share one rawtype):
@@ -56,12 +58,15 @@
 
 ## Declarators and symbols
 - Declarators: `parse_declarator` / `member_declarator`; a `*`+cv run:
-  `consume_declarator_stars` (a caller's consumed leading `const` goes in as
-  `leading_const`, never dropped); `[dims]`: `parse_array_dimensions` +
-  `nest_carray_dims` (gated).
+  `consume_declarator_stars` (a caller's consumed leading cv goes in as the
+  `leading_cv` mask, never dropped; C mode qualifies each pointee); `[dims]`:
+  `parse_array_dimensions` + `nest_carray_dims` (gated).
 - A top-level `volatile` qualifies the OBJECT (`vfVOLATILE`, from the reader's
   `base_volatile` / `volatile_after_star`); cir: the spec list, or a pointer's own
   (FIRST) `N_POINTER`. A declarator list's tail re-pushes it: `push_declarator_list_tail`.
+  A member or a typedef has no flag: its top-level volatile is its TYPE's.
+- A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
+  `pointer(cv)` per level and `append_cv_specs` for the base (cir).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A non-type template argument spliced into a cloned body (one operand):
   `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).

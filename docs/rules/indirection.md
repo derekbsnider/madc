@@ -57,7 +57,7 @@ referent and `deref_type_for_variable` would type `*rp` as the pointer.
 
 ## Why the type owners
 
-- `as_pointer_dd()` forwards through a `DataDefCONST` wrapper.
+- `as_pointer_dd()` forwards through a `DataDefQUAL` wrapper.
   `dynamic_cast<DataDefPTR *>` does not, so it breaks on a const level (the
   header comment at `include/datadef.h` beside `as_pointer_dd`).
 - `DataDef::is_void()`: a bare `rawtype() == dtVOID` is also true for `void*`
@@ -124,7 +124,7 @@ yet measured.
   function-pointer type is a call (adjacency, as every call arm asks it;
   the type through `as_fptr_dd`). Reducer `tests/testcallthroughexpr`.
 - ~~`function_vs_function_pointer_predicate`~~ — consolidated 2026-09-23. A
-  `DataDefCONST` forwards `is_function()` and `is_numeric()`, so
+  `DataDefQUAL` forwards `is_function()` and `is_numeric()`, so
   `is_function() && is_numeric()` is true for a const function pointer, and
   the parser site that followed it with `static_cast<DataDefFPTR *>` misread
   the wrapper; `dynamic_cast<DataDefFPTR *>` is NULL for one (the call arms
@@ -387,9 +387,9 @@ yet measured.
   `push_declarator_list_tail` (two copies merged). Step 2: c2mir's allocation
   keeps a volatile scalar in memory. MIR-gen needed nothing (measured -O0
   through -O3). Reducers `tests/testvolatileemit`, `tests/testvolatilesetjmpc`,
-  `tests/testvolatilesetjmpo2c`; MIR corpus `new/volatile-setjmp.c`. Open:
-  `pointee_volatile` (`volatile int *q`, a volatile member, `typedef
-  volatile`), a type-level qualifier like `DataDefCONST`.
+  `tests/testvolatilesetjmpo2c`; MIR corpus `new/volatile-setjmp.c`. The
+  type-level half (`volatile int *q`, a volatile member, `typedef volatile`)
+  is `pointee_volatile`, below.
 - ~~`mir_volatile_memory_access`~~ — fixed 2026-09-23, one layer below the
   step above (a Tier 3 raise, on the owner's go). MIR had no volatile concept:
   at `-O2` GVN forwarded the load before a loop into the loop, so a spin on a
@@ -417,6 +417,47 @@ yet measured.
   Not fixed here, each its own gap: c2mir's member access does not merge the
   object's qualifiers into the member's TYPE (`c2mir_member_access_qualifiers`;
   the operand carries the bit, the C type does not).
+- ~~`pointee_volatile`~~ — fixed 2026-09-23 (C mode), silent. The step above
+  made MIR honour a volatile access; madc's front end still handed c2mir only a
+  volatile OBJECT. Every other spelling was dropped in the reader: the pointee
+  of `volatile int *q`, a struct member, `typedef volatile int vint`, a cast
+  `(volatile int *)p`, a parameter, a function's return, a level inside a
+  chain (`int *volatile *pp`). A spin through `volatile sig_atomic_t *` hung at
+  -O2 (the load hoisted), a `vint` local came back from `longjmp` as garbage,
+  and `_Generic` picked `int *` for all of them. The model is gcc's
+  `build_qualified_type`: `DataDefCONST` became ONE qualified variant,
+  `DataDefQUAL`, carrying a cv MASK, minted only by `getQualifiedType` (one
+  variant per (unqualified base, mask), `const(volatile T)` merged, never a
+  wrapper over a wrapper); `is_const()` / `is_volatile()` read the mask and
+  `unqualified()` peels all of it. A second class per qualifier would have
+  doubled every peel the const campaign had already made transparent. Every
+  site that asked "is this the const wrapper" was classified: a peel stays a
+  peel, a const TEST reads `is_const()`, a renderer spells the mask. The
+  producers are the pointee-const model's: `consume_declarator_stars` takes a
+  `leading_cv` mask (a `volatile` in its run qualifies the level like a
+  `const`), the declaration, both parameter readers and the cast arm pass their
+  leading run, the typedef reader its prefix mask (`typedef_prefix_cv` for the
+  tag forms) and its own top-level cv (a typedef has no flag), and
+  `member_declarator` the line's cv, a member's top-level volatile going into
+  its type. The CIR peel `dd_peel_pointers` records each level's cv
+  (`level_cv`), so var, member, typedef, parameter, return, typed-extern, cast,
+  fn-pointer and `va_arg` declarators spell `N_VOLATILE` where the type has it;
+  const is not spelled yet (c2mir would start enforcing it on madc's own
+  lowering; `cir_pointee_const_dropped`). The forest record carries the mask
+  in `flags` (0 = const, the records written before it). One consumer broke
+  on a qualified aggregate and was already broken for const: the brace-init
+  reader tested `dynamic_cast<DataDefSTRUCT *>` on the qualified type, so
+  `typedef const struct P CP; CP cp = { 3, 4 };` was refused — it reads the
+  unqualified type now. And the bit-field layout judged an `int` field's signedness
+  from its type's NAME, so `volatile signed f : 25` read back zero-extended
+  (the c2mir-tests lane's `new/bf1.c`); it reads the unqualified name. C mode only (`--std=c*`): under madc / C++ the
+  qualifier is overload and mangling identity, the const-qualified-types
+  campaign's. Gate `check-volatile-accesses.sh` gained a madc leg (-O0..-O3,
+  29 accesses, a cast and a typedef case). Reducers
+  `tests/testvolatilepointeec`, `tests/testvolatilepointeeo2c`,
+  `tests/testqualifiedaggregateinitc`. Residues: a top-level const member stays
+  unmodeled; `_Generic`'s association reader cannot read `volatile int (*)[4]`
+  (a hand-rolled type-name reader, refuses loudly).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

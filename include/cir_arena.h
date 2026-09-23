@@ -69,7 +69,8 @@ enum DefKind : uint32_t {
 	DK_VOID,	// (reserved)
 	DK_PTR,		// ref0 = pointee type-id
 	DK_REF,		// ref0 = referee type-id
-	DK_CONST,	// ref0 = unqualified type-id
+	DK_CONST,	// DataDefQUAL: ref0 = unqualified type-id, flags = its cv mask
+			// (CvQual; 0 = const — the records written before the mask)
 	DK_ENUM,
 	DK_STRUCT,	// members_* slice
 	DK_UNION,	// members_* slice, union layout

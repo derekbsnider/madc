@@ -12,11 +12,12 @@
 # insns that touched the objects -- a read-modify-write insn counts once, a
 # load plus a store twice.
 #
-# Oracle: gcc -O2 compiling the same cases. c2m at -O0..-O3 must match it case
-# for case. Two-sided: the control compiles the cases with -Dvolatile= and
-# must count FEWER accesses (the passes are live and the counter is not blind).
-# madc joins when its front end carries a pointee volatile (KG pointee_volatile);
-# today only a volatile OBJECT reaches the IR.
+# Oracle: gcc -O2 compiling the same cases. c2m AND madc at -O0..-O3 must match
+# it case for case: madc's front end reads every volatile the cases spell (a
+# pointee, a member, a cast, a typedef) into its IR (DataDefQUAL's cv mask) and
+# hands it to c2mir, or c2mir has nothing to honour. Two-sided: the control
+# compiles the cases with -Dvolatile= and must count FEWER accesses (the passes
+# are live and the counter is not blind).
 #
 # Two ONE-OWNER rules keep it that way (static, every host, two-sided):
 #   - c2mir builds the operand of a sub-object (a member, an __int128 half, a
@@ -107,12 +108,13 @@ fi
 [ "$static_fail" -eq 0 ] || exit 1
 
 C2M=${C2M:-obj/mir/host/c2m}
+MADC=${MADC:-bin/madc}
 if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
 	echo "check-volatile-accesses: one-owner rules green; the access count is skipped (x86-64 Linux only)"
 	exit 0
 fi
-if ! command -v gcc > /dev/null || [ ! -x "$C2M" ]; then
-	echo "check-volatile-accesses: needs gcc and $C2M (make -C src)" >&2
+if ! command -v gcc > /dev/null || [ ! -x "$C2M" ] || [ ! -x "$MADC" ]; then
+	echo "check-volatile-accesses: needs gcc, $C2M and $MADC (make -C src)" >&2
 	exit 1
 fi
 
@@ -123,6 +125,7 @@ cat > "$w/cases.c" <<'CASES'
 struct S { volatile int v; int w; };
 struct T { int a, b; };
 struct B { volatile unsigned f : 3, g : 5; };
+typedef volatile int vint;
 
 void c_touch (volatile int *vp, int *np, struct S *s) {
   *vp = 1;           /* dead-store elimination keeps both */
@@ -144,6 +147,12 @@ void c_field (volatile struct T *t) { t->a = 1; t->b = t->a; }
 void c_bits (struct B *b) { b->f = 5; }
 void c_complex (volatile _Complex double *z) { *z += 1.0; }
 void c_index (volatile int *vp) { vp[2] = vp[1]; }
+void c_cast (int *p, vint *q) { /* the pointee's volatile from a cast and a typedef */
+  *(volatile int *) p = 1;
+  *(volatile int *) p = 2;
+  *q = 3;
+  *q = 4;
+}
 CASES
 
 cat > "$w/harness.c" <<'HARNESS'
@@ -158,12 +167,14 @@ cat > "$w/harness.c" <<'HARNESS'
 struct S { volatile int v; int w; };
 struct T { int a, b; };
 struct B { volatile unsigned f : 3, g : 5; };
+typedef volatile int vint;
 void c_touch (volatile int *, int *, struct S *);
 int c_loop (volatile int *, int);
 void c_field (volatile struct T *);
 void c_bits (struct B *);
 void c_complex (volatile _Complex double *);
 void c_index (volatile int *);
+void c_cast (int *, vint *);
 
 static char *page;
 static long page_size, hits;
@@ -201,6 +212,7 @@ int main (void) {
   watch (); c_bits ((struct B *) (page + 192)); printf ("bits %ld\n", done ());
   watch (); c_complex ((volatile _Complex double *) (page + 256)); printf ("complex %ld\n", done ());
   watch (); c_index ((volatile int *) (page + 320)); printf ("index %ld\n", done ());
+  watch (); c_cast ((int *) (page + 384), (vint *) (page + 448)); printf ("cast %ld\n", done ());
   return 0;
 }
 HARNESS
@@ -219,7 +231,8 @@ loop 5
 field 3
 bits 2
 complex 4
-index 2"
+index 2
+cast 4"
 if [ "$oracle" != "$want" ]; then
 	echo "RED  the harness no longer measures what it did: gcc -O2 counts" >&2
 	echo "$oracle" | sed 's/^/       /' >&2
@@ -232,6 +245,15 @@ for lvl in -O0 -O1 -O2 -O3; do
 	got=$(count "$w/c2m.o") || { echo "RED  c2m $lvl: the cases did not run" >&2; fail=1; continue; }
 	if [ "$got" != "$oracle" ]; then
 		echo "RED  c2m $lvl performs a different number of volatile accesses than gcc -O2:" >&2
+		diff <(echo "$oracle") <(echo "$got") | sed 's/^/       /' >&2
+		fail=1
+	fi
+	rm -f "$w/madc.o"
+	( ulimit -t 60; timeout 60 "$MADC" $lvl --std=c17 -c -o "$w/madc.o" "$w/cases.c" ) \
+		|| { echo "RED  madc $lvl did not compile the cases" >&2; fail=1; continue; }
+	got=$(count "$w/madc.o") || { echo "RED  madc $lvl: the cases did not run" >&2; fail=1; continue; }
+	if [ "$got" != "$oracle" ]; then
+		echo "RED  madc $lvl performs a different number of volatile accesses than gcc -O2:" >&2
 		diff <(echo "$oracle") <(echo "$got") | sed 's/^/       /' >&2
 		fail=1
 	fi
@@ -251,5 +273,5 @@ fi
 if [ "$fail" -ne 0 ]; then
 	exit 1
 fi
-echo "check-volatile-accesses: c2m -O0..-O3 perform every volatile access gcc -O2 does ($(echo "$oracle" | sum) across six cases); the non-volatile control performs $(echo "$ctl" | sum)"
+echo "check-volatile-accesses: c2m and madc -O0..-O3 perform every volatile access gcc -O2 does ($(echo "$oracle" | sum) across seven cases); the non-volatile control performs $(echo "$ctl" | sum)"
 exit 0

@@ -113,6 +113,18 @@ answers.
   and order of loads and stores as gcc and clang, at every `-O` level.
   `*vp;`, `(void) *vp` and `(*vp, 0)` now perform their read. New gate
   `check-volatile-accesses.sh` counts the accesses at run time against gcc.
+- **`volatile` is part of the type in C.** Only a volatile object reached the
+  IR; `volatile int *q`, a volatile struct member, `typedef volatile int vint`,
+  a cast `(volatile int *)p`, a volatile parameter or return type all lost the
+  qualifier in the front end. A spin through a `volatile sig_atomic_t *` hung
+  at `-O2`, a `vint` local came back from `longjmp` as garbage, and `_Generic`
+  picked the `int *` association for every one. madc's const-qualified type
+  became one qualified type carrying a const/volatile mask (gcc's model), and
+  every spelling now reaches c2mir and `--emit=c11` output. C mode
+  (`--std=c*`); in madc and C++ modes the qualifier belongs to the
+  const-qualified-types work. Also fixed: a brace-initialized `typedef const
+  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`). The volatile
+  gate now counts madc's accesses too.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -127,7 +139,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
 `testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
 `testtplnontypegroup`, `testvolatileemit`, `testvolatilesetjmpc`,
-`testvolatilesetjmpo2c`, `testvolatilesignalc`.
+`testvolatilesetjmpo2c`, `testvolatilesignalc`, `testvolatilepointeec`,
+`testvolatilepointeeo2c`, `testqualifiedaggregateinitc`.
 
 ### Unary `*` and `&` read their operand through one owner
 

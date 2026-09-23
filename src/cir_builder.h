@@ -460,6 +460,10 @@ class CirBuilder {
 	// declared type minus the typedef's own base depth. Returns -1 when
 	// alias is empty (caller falls back to the non-typedef pointer path).
 	int explicit_star_count(DataDef *full_type, const std::string &alias);
+	// Under a typedef alias: the cv the use ADDS at the alias's own level
+	// (level_cv = dd_peel_pointers' record of the full type).
+	unsigned alias_use_cv(const std::string &alias, int stars,
+			      const std::vector<unsigned> &level_cv);
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
@@ -1504,7 +1508,11 @@ public:
 	// NULL Variable to skip the typedef-alias arm (specs only).
 	void append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
 				   DataDefSTRUCT *anon_sdd);
-	node_t pointer();
+	// One N_POINTER level; `cv` (CvQual) is the pointer's OWN qualifiers.
+	node_t pointer(unsigned cv = cvNONE);
+	// The cv qualifiers a spec list / N_POINTER qual list spells (see
+	// rendered_cv in cir_builder.cpp for which ones reach the emitted C).
+	void append_cv_specs(node_t lst, unsigned cv);
 
 	// ---- Function-pointer declarators ----
 	// A fn-ptr type (DataDefFPTR) must render as `ret (*name)(params)`, not the
@@ -1515,9 +1523,11 @@ public:
 	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
 	node_t fnptr_func_node(class FuncDef *fd);
 	// The pointer piece of a declarator — N_POINTER per level, then the
-	// pointee's array dims — shared by var_decl and typedef_decl.
+	// pointee's array dims — shared by var_decl and typedef_decl. level_cv
+	// (dd_peel_pointers' record) gives each level its own qualifiers.
 	void append_pointer_declarator(node_t decl_list, int levels,
-				       const std::vector<carray_dim_t> &ptr_array_dims);
+				       const std::vector<carray_dim_t> &ptr_array_dims,
+				       const std::vector<unsigned> *level_cv = NULL);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
@@ -2493,8 +2503,11 @@ public:
 // Peel ALL pointer levels off `dd` to its base type, returning the star count.
 // The one owner: the function-return emitters and the generated pointer dumper
 // (cir_dump.cpp) both need a multi-star type's real base, and a peel-one-level
-// copy in either place emits the wrong number of stars.
-int dd_peel_pointers(DataDef *&dd);
+// copy in either place emits the wrong number of stars. The base comes back
+// UNQUALIFIED; with level_cv, each level's own cv (CvQual) is recorded —
+// level_cv[i] for pointer level i (0 = the outermost: the object's own
+// pointer), then ONE more entry: the base's cv, so level_cv->size() == depth+1.
+int dd_peel_pointers(DataDef *&dd, std::vector<unsigned> *level_cv = NULL);
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
 // literal payloads, and the +madc fields (source position, typedef
