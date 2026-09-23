@@ -22623,6 +22623,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return flat;
 				}
 				base = id(var_emit_name(tsub->object).c_str(), tb);
+				// A REFERENCE to a pointer subscripts its REFERENT
+				// ([expr.sub]: `int *&rp; rp[1]` is `(*rp)[1]`): the
+				// reference is stored as a pointer to it — the TokenVar
+				// read's deref. The bare stored pointer indexed the
+				// reference's own cell (rp[1] read the NEXT int *).
+				// A carrier `value &` (its stored pointer IS the carrier
+				// address, below) and a class receiver (operator[],
+				// above) have no pointer referent.
+				if (tsub->object.is_reference()) {
+					DataDef *referent =
+						TokenSubscript::referent_type(tsub->object.type);
+					if (referent && referent->is_pointer()
+					    && !referent->is_reference())
+						base = node1(N_DEREF, base, tb);
+				}
 				}
 			}
 			// Carrier SLOT access (`bag["k"]`, `arr[i]` — parser-typed

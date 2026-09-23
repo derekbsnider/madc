@@ -495,6 +495,19 @@ yet measured.
   `*`), so it now qualifies the referent at the `&`. Reducer
   `tests/testvolatilemanglecxx` (calls through the g++ symbol names, declared
   `extern "C"`), unit cases in `test_mangle.cpp`.
+- ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
+  the volatile work (the HEAD baseline returned garbage, exit 0). A
+  subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the
+  reference's own cell: a reference is stored as a pointer to its referent,
+  the TokenVar read dereferences it (`x` -> `(*x)`), but the named-variable
+  subscript arm built the bare stored pointer as its base, so `rp[1]` read
+  the NEXT `int *` and returned it as an int. The arm now dereferences a
+  reference whose referent is a pointer — the read's own deref; a carrier
+  `value &` (its stored pointer IS the carrier) and a class receiver
+  (`operator[]`, above it) have no pointer referent. Found beside it: a
+  reference parameter's first level is its REFERENT, never a top-level cv,
+  so `int *volatile &` mangles `RVPi` (`param_declarator_spelling` spelled
+  it `RPi`). Reducer `tests/testrefptrsubscript`.
 - ~~`cxx_volatile_overload_rank`~~ — fixed 2026-09-23, silent. The ranker
   peeled the pointee's qualifier before comparing, so `int*` and `volatile
   int*` scored an identical exact match against both `f(int*)` and

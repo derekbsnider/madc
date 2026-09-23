@@ -2930,16 +2930,23 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 // in: C++ const is not in the type yet, modeled_cv) qualifies the base, each
 // inner level's own cv follows its `*` (cv_qualified_spelling); the outermost
 // level is the parameter object itself — top-level, which a function type
-// drops ([dcl.fct]/5). A volatile pointee then mangles V (`volatile int *` is
-// PVi) and a prototype and its definition spell alike. The reader appends the
-// reference and a multi-dimensional array's `(*)[N]` form after it.
+// drops ([dcl.fct]/5) — unless the parameter is a REFERENCE (`referent`, or
+// `param_dd` itself a reference): then the outermost level is the referent,
+// whose cv is part of the type (`int *volatile &` is RVPi). A volatile pointee
+// then mangles V (`volatile int *` is PVi) and a prototype and its definition
+// spell alike. The reader appends the reference and a multi-dimensional
+// array's `(*)[N]` form after it.
 static std::string param_declarator_spelling(DataDef *base, DataDef *param_dd,
-					     int stars, bool leading_const)
+					     int stars, bool leading_const,
+					     bool referent)
 {
     std::vector<unsigned> level_cv;	// [j] = cv after j dereferences
     DataDef *t = param_dd;
     if ( t && t->as_reference_dd() )
+    {
 	t = t->as_reference_dd()->base_type;
+	referent = true;
+    }
     for ( int j = 0; t && j <= stars; ++j )
     {
 	level_cv.push_back(t->cv_quals());
@@ -2956,7 +2963,7 @@ static std::string param_declarator_spelling(DataDef *base, DataDef *param_dd,
     for ( int j = stars - 1; j >= 0; --j )
     {
 	s += "*";
-	if ( j > 0 && (size_t)j < level_cv.size() )
+	if ( (j > 0 || referent) && (size_t)j < level_cv.size() )
 	    s = cv_qualified_spelling(s, level_cv[j], true);
     }
     return s;
@@ -53702,7 +53709,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	func->parameters.push_back(param_dd);
 	func->const_params.push_back(param_leading_const);
 	std::string param_spelling = param_declarator_spelling(
-	    base_param_dd, param_dd, param_ptr_depth, param_leading_const);
+	    base_param_dd, param_dd, param_ptr_depth, param_leading_const,
+	    param_is_ref);
 	if ( param_is_ref )
 	    param_spelling += param_rvalue_ref ? "&&" : "&";
 	func->param_cpp_spellings.push_back(param_spelling);
@@ -69324,7 +69332,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // `const char*` as Pc not PKc); a redeclaration compares it against
 	    // the prior signature (redecl_prior_sig). Fed to the Itanium mangler.
 	    std::string param_spelling = param_declarator_spelling(
-		&pb->definition, param_dd, param_ptr_depth, param_leading_const);
+		&pb->definition, param_dd, param_ptr_depth, param_leading_const,
+		rtype == RefType::rtReference);
 	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
 	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
 	    // declarator, so the encoder encodes it or refuses it — a bare

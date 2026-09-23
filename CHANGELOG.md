@@ -131,7 +131,9 @@ answers.
   `volatile int*` never picks `f(int*)`. A qualified pointer is a pointer
   everywhere: through a member `struct N *volatile next`, `n.next->v` was
   refused, `n.p + 2` stepped by 8 instead of 4, and deduction from it failed.
-  Also fixed: a brace-initialized `typedef const
+  Also fixed: a subscript through a reference to a pointer (`int *&rp;
+  rp[1]`) read the wrong memory and returned garbage — it now indexes the
+  referent; a brace-initialized `typedef const
   struct` (or volatile) local was refused (`CP cp = { 3, 4 };`). The volatile
   gate now counts madc's accesses too.
 
