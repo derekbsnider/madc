@@ -60,6 +60,10 @@ answers.
 - **A compound assignment (`+=` ... `^=`) has its left operand's type**, as
   `=` does. All ten were `int`: `sizeof(d *= 2)` was 4, and `*(p += 2)` was
   refused.
+- **A function-pointer argument picks the function-pointer overload.**
+  `f(pg)` picked `f(long)` over `f(int (*)(int))`. `k(g)` was refused as
+  ambiguous between `k(bool)` and `k(long)`; it now picks `k(bool)`, as g++
+  and clang++ do.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -70,7 +74,7 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
 `testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
-`testcompoundassigntypec`.
+`testcompoundassigntypec`, `testoverloadfnptrarg`.
 
 ### Unary `*` and `&` read their operand through one owner
 

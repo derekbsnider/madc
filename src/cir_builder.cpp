@@ -15067,6 +15067,22 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		}
 		return 5;
 	}
+	// A function ARGUMENT — a designator or a function pointer — against an
+	// ARITHMETIC parameter: [conv.bool] is its only conversion (a pointer
+	// converts to bool), ranked as one; none reaches an integer or floating
+	// type. The lane above answers every fn-pointer PARAMETER, but
+	// DataDefFPTR::is_numeric() is true, so a function pointer scored an
+	// exact 5 against `long` by its storage (rawtype 64 == 64), tied the
+	// fn-pointer overload and, declared first, won — `f(pg)` picked f(long)
+	// — while a designator scored the neutral 0 against bool as well as
+	// long: `k(g)` ambiguous. Any other arithmetic parameter ranks NEUTRAL,
+	// as a designator always did, not refused: a member-template or varargs
+	// placeholder's marker parameter is that same 64-bit storage, and a
+	// lambda (a function here) must still reach its instantiate-and-reselect
+	// arm (g++.dg lambda-conv10, lambda-mangle2, lambda-variadic8).
+	if ((adc->is_function() || adc->as_fptr_dd())
+	    && pdc->is_numeric() && !pdc->is_pointer())
+		return pdc->rawtype() == DataType::dtBOOL ? 3 : 0;
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr) {

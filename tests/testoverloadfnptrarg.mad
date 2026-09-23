@@ -1,0 +1,27 @@
+// A function argument — a designator or a function pointer — reaches an
+// ARITHMETIC parameter only through [conv.bool] (a pointer converts to bool);
+// there is no conversion to an integer or floating type. A function-pointer
+// parameter takes it by signature. madc's ranker answered every fn-pointer
+// PARAMETER but not a function ARGUMENT against an arithmetic one: a function
+// pointer scored an exact match against `long` by its 64-bit storage, tied the
+// fn-pointer overload and, declared first, won — `f(pg)` picked f(long),
+// silently — and a designator tied bool against long, so `k(g)` was refused
+// as ambiguous.
+#include <cstdio>
+static int g(int x) { return x * 2; }
+static int h(long x) { return (int)x + 1; }
+static const char *f(long) { return "long"; }
+static const char *f(int (*)(int)) { return "fptr"; }
+static const char *k(bool) { return "bool"; }
+static const char *k(long) { return "long"; }
+static const char *m(double) { return "double"; }
+static const char *m(int (*)(long)) { return "fptrl"; }
+typedef int (*FP)(int);
+int main() {
+    int (*pg)(int) = g; FP tp = g; int (*const cpg)(int) = g; int (*&rpg)(int) = pg; int (*ph)(long) = h;
+    std::printf("fptr: %s %s %s %s %s %s\n", f(pg), f(&g), f(g), f(tp), f(cpg), f(rpg));
+    std::printf("bool: %s %s\n", k(pg), k(g));
+    std::printf("other: %s %s\n", m(ph), m(h));
+    std::printf("call: %d %d\n", pg(3), ph(5));
+    return 0;
+}

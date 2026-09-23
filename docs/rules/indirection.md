@@ -250,6 +250,27 @@ yet measured.
   associativity). The operand gate's rule 3 refuses a bare
   `TokenMultiOp("@=")` (ten at the parent). Reducers
   `tests/testcompoundassigntype`, `testcompoundassigntypec`.
+- ~~`overload_rank_fptr_argument`~~ — fixed 2026-09-23, the fourth found beside
+  the operand-promotion family. `score_arg_to_param` answered every
+  fn-pointer PARAMETER (by signature) but not a function ARGUMENT against an
+  arithmetic parameter. `DataDefFPTR::is_numeric()` is true, so a
+  fn-pointer argument took the numeric lane and scored an exact 5 against
+  `long` by storage (rawtype 64 == 64), tied the fn-pointer overload and,
+  declared first, won — `f(pg)`, a typedef'd, a const and a reference
+  fn-pointer all picked `f(long)`, silently. A designator scored the neutral
+  0 against `long` and tied `k(bool)`'s boolean conversion, so `k(g)` was
+  refused as ambiguous. [conv.bool] is a function argument's only
+  arithmetic conversion, and the scorer now ranks it as one (3), beside the
+  parameter lane. Any other arithmetic parameter ranks NEUTRAL (0), as a
+  designator always did, rather than being refused. Refusing it was the first
+  cut, and Tier 2 caught it where the Tier 1 run had not: a
+  member-template or varargs placeholder's marker parameter is that same
+  64-bit storage, and a lambda (a function in madc) must still reach its
+  instantiate-and-reselect arm (g++.dg lambda-conv10, lambda-mangle2,
+  lambda-variadic8). Reducer `tests/testoverloadfnptrarg`. Found
+  beside it: a call THROUGH a reference to a fn-pointer (`int (*&r)(int) =
+  pg; r(4)`) is refused as juxtaposed operands (`call_through_fnptr_reference`,
+  next).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

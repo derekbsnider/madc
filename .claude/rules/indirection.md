@@ -16,7 +16,9 @@
   `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
 - Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
   never `is_function() && is_numeric()` or an unmarked `dynamic_cast<DataDefFPTR *>`
-  (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either".
+  (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either". Its
+  overload rank is `score_arg_to_param`'s: a fn-pointer parameter by signature;
+  against arithmetic, bool is its one conversion, the rest rank neutral.
 - `*var`: `deref_type_for_variable`. The ARRAY an operand denotes (extents):
   `Program::array_operand_type`; its element (the ROW): `array_operand_element_type`
   — never the operand's `datadef()` (flattened). sizeof of an expression
