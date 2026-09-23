@@ -6927,6 +6927,28 @@ static struct type *create_type (c2m_ctx_t c2m_ctx, struct type *copy) {
   return res;
 }
 
+/* C11 6.5.2.3p3-4: a member of a qualified object has the so-qualified type
+   (`vs.m` of a `volatile struct S vs` is a volatile int) -- an ARRAY member's
+   ELEMENTS (6.7.3p9).  Only const and volatile propagate; restrict and _Atomic
+   are the member's own.  TYPE is the member expression's private copy; an
+   array type is copied before its element is qualified (the declared member
+   type is shared). */
+static void qualify_member_type (c2m_ctx_t c2m_ctx, struct type *type,
+                                 const struct type_qual *obj_qual) {
+  if (!obj_qual->const_p && !obj_qual->volatile_p) return;
+  if (type->mode == TM_ARR) {
+    struct arr_type *arr_type = reg_malloc (c2m_ctx, sizeof (struct arr_type));
+
+    *arr_type = *type->u.arr_type;
+    arr_type->el_type = create_type (c2m_ctx, arr_type->el_type);
+    qualify_member_type (c2m_ctx, arr_type->el_type, obj_qual);
+    type->u.arr_type = arr_type;
+    return;
+  }
+  type->type_qual.const_p = type->type_qual.const_p || obj_qual->const_p;
+  type->type_qual.volatile_p = type->type_qual.volatile_p || obj_qual->volatile_p;
+}
+
 static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type *el_type,
                                                  mir_size_t size, mir_size_t nel,
                                                  node_t pos_node) {
@@ -11035,6 +11057,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                NL_HEAD (declarator->u.ops)->u.s.s);
       }
       t2 = create_type (c2m_ctx, decl->decl_spec.type);
+      /* The member expression's qualifiers include its object's
+         (qualify_member_type): `&vs.m` of a volatile `vs` is `volatile int *`. */
+      t2->type_qual = type_qual_union (&t2->type_qual, &e1->type->type_qual);
       if (op1->code == N_DEREF_FIELD && (e2 = NL_HEAD (op1->u.ops)->attr)->const_p) {
         e->const_p = TRUE;
         e->c.u_val = e2->c.u_val + decl->offset;
@@ -11091,6 +11116,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       assert (sym.def_node->code == N_MEMBER);
       decl = sym.def_node->attr;
       *e->type = *decl->decl_spec.type;
+      qualify_member_type (c2m_ctx, e->type, &t1->type_qual);
       e->u.lvalue_node = sym.def_node;
       if ((width = NL_EL (sym.def_node->u.ops, 3))->code != N_IGNORE && e->type->mode == TM_BASIC
           && (width_expr = width->attr)->const_p
