@@ -20647,6 +20647,15 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 						to->right->datadef()) )
 	{ to->set_resolved_type(vt); return; }
     }
+    // A built-in comparison or logical operator yields bool in C++
+    // ([expr.rel]/1, [expr.eq]/1, [expr.log.and]/1, [expr.log.or]/1,
+    // [expr.unary.op]/9) and int in C (C11 6.5.3.3p5, 6.5.8p6 ... 6.5.14p3,
+    // the token's default): `f(i == j)` picked f(int) and sizeof(i == j) was 4.
+    // It is the token's OWN type — never resolved_type, which reads as "an
+    // overload or a decay chose this" and which a class operand's overload
+    // below still sets, and wins with.
+    if ( to->yields_truth_value() && presents_as_cpp() )
+	to->setDataType(&ddBOOL);
     bool unary = to->argc() == 1;
     bool postfix = unary && to->left != NULL;
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;

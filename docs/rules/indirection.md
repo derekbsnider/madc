@@ -204,6 +204,21 @@ yet measured.
   `signed char` selects `char` in `_Generic`; C's GNU `__auto_type` is
   unsupported; a C unfixed enum promotes to int where gcc/clang pick
   `unsigned int` (madc and c2mir agree on int, so a backend decision).
+- ~~`cxx_comparison_result_not_bool`~~ — fixed 2026-09-23, the first found
+  beside the family above. Every built-in comparison and logical operator
+  (`==` `!=` `<` `>` `<=` `>=` `&&` `||` `!`) was typed int in C++ as well as C,
+  silently: `f(i == j)` picked `f(int)` over `f(bool)`, `sizeof(i == j)` was 4,
+  `auto a = (i == j)` deduced int, a template's `f(a < b)` did the same, and a
+  madc `println("{}", i < j)` printed 1 where the carrier's own comparison
+  printed true. The result is the language's, so it cannot live in the token
+  class alone (tokens carry no mode): each operator class answers
+  `yields_truth_value()`, and `resolve_object_operator_type` — the reduce-time
+  owner that already types built-ins — records bool as the token's OWN type
+  under `presents_as_cpp()`. Not `resolved_type`: that field also means "an
+  overload or a decay chose this" (`noexcept_eval_expr` reads it so), and a
+  class operand's overload still sets it and wins (`K::operator<` returning
+  int stays int). Reducers `tests/testcomparebool` (C++), `testcompareboolc`
+  (C stays int), `testcompareboolmadc` (the dialect formats `true`).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

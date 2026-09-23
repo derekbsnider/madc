@@ -515,6 +515,10 @@ public:
     void set_resolved_type(DataDef *d) { resolved_type = d; }
     virtual DataDef *datadef() const override
     { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
+    // A comparison or logical operator: its built-in result is a truth value
+    // — bool in C++, int in C (Program::resolve_object_operator_type records
+    // which, by the language, as the token's own type).
+    virtual bool yields_truth_value() const { return false; }
     virtual TokenBase *clone() override { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual int64_t ival() const override { return 0; }
     virtual size_t argc() const override { return 2; }
@@ -1009,6 +1013,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLnot; }
     virtual TokenBase *clone() override { TokenLnot *to = new TokenLnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence()   const override { return 2; }
+    virtual bool yields_truth_value() const override { return true; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const override { return 1; }
 };
@@ -1044,6 +1049,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLand; }
     virtual TokenBase *clone() override { return new TokenLand(); }
     virtual inline int precedence() const override { return 11; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // bitwise or operator | (inclusive or)
@@ -1073,6 +1079,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLor; }
     virtual TokenBase *clone() override { return new TokenLor(); }
     virtual inline int precedence() const override { return 12; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // bitwise xor operator ^ (exclusive or)
@@ -1130,6 +1137,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkEquals; }
     virtual TokenBase *clone() override { return new TokenEquals(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator === (exactly equal to)
@@ -1140,6 +1148,7 @@ public:
     virtual TokenID id() const override { return TokenID::tk3Eq; }
     virtual TokenBase *clone() override { return new Token3Eq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator !== (not exactly equal to) — !(===)
@@ -1150,6 +1159,7 @@ public:
     virtual TokenID id() const override { return TokenID::tk3NotEq; }
     virtual TokenBase *clone() override { return new Token3NotEq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator != (not equal to)
@@ -1160,6 +1170,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkNotEq; }
     virtual TokenBase *clone() override { return new TokenNotEq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator < (less than)
@@ -1170,6 +1181,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLT; }
     virtual TokenBase *clone() override { return new TokenLT(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator < (greater than)
@@ -1180,6 +1192,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkGT; }
     virtual TokenBase *clone() override { return new TokenGT(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <= (less than or equal to)
@@ -1190,6 +1203,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLE; }
     virtual TokenBase *clone() override { return new TokenLE(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <= (greater than or equal to)
@@ -1200,6 +1214,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkGE; }
     virtual TokenBase *clone() override { return new TokenGE(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <=> (three-way greater than, less than or equal to)

@@ -46,6 +46,11 @@ answers.
     and crashed.
   - `auto` and lambda return types stopped deducing `double` for `float`
     arithmetic.
+- **C++ comparisons and logical operators yield `bool`** (C keeps `int`).
+  They were `int` in both languages: `f(i == j)` picked `f(int)` over
+  `f(bool)`, `sizeof(i == j)` was 4 and `auto a = (i == j)` deduced `int`. In
+  the madc dialect `println("{}", i < j)` now prints `true`, as `std::format`
+  does.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -53,7 +58,8 @@ operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
 Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
 `testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
-`testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`.
+`testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
+`testcomparebool`, `testcompareboolc`, `testcompareboolmadc`.
 
 ### Unary `*` and `&` read their operand through one owner
 

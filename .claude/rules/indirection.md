@@ -25,6 +25,9 @@
   `operand_value_type` / `promoted_operand_type` (tokens.h) — every operator's type
   reads its children through them (gated: `check-one-operand-promotion.sh`); `auto`
   and a lambda's return deduce through `Program::operand_value_datadef`.
+- A comparison or logical operator's result (bool in C++, int in C): the token's
+  OWN type, recorded from `yields_truth_value()` by `resolve_object_operator_type`
+  — never `resolved_type`.
 - End of an expression (bind pending operators, refuse juxtaposed operands):
   `Program::finish_expression` — every exit of `parseExpression`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;

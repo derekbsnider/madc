@@ -366,7 +366,6 @@ g++.dg/cpp0x/nullptr29.C
 g++.dg/cpp0x/nullptr39.C
 g++.dg/cpp0x/pr102305.C
 g++.dg/cpp0x/pr105256.C
-g++.dg/cpp0x/pr107065.C
 g++.dg/cpp0x/pr112365.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
