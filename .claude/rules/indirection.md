@@ -59,7 +59,8 @@
 ## Declarators and symbols
 - Declarators: `parse_declarator` / `member_declarator`; a `*`+cv run:
   `consume_declarator_stars` (a caller's consumed leading cv goes in as the
-  `leading_cv` mask, never dropped; C mode qualifies each pointee); `[dims]`:
+  `leading_cv` mask, never dropped; the bits `modeled_cv()` names qualify each
+  pointee — volatile in every mode, const in C only); `[dims]`:
   `parse_array_dimensions` + `nest_carray_dims` (gated).
 - A top-level `volatile` qualifies the OBJECT (`vfVOLATILE`, from the reader's
   `base_volatile` / `volatile_after_star`); cir: the spec list, or a pointer's own

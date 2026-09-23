@@ -1,0 +1,82 @@
+// C++ mode: a loop spinning on a volatile sig_atomic_t that a signal handler
+// sets ends at -O2 however the volatile is spelled -- the POINTEE of a
+// pointer, a struct member, a typedef, a cast, a parameter -- and a volatile
+// local reached through a typedef keeps its last stored value across longjmp
+// ([intro.execution]/7: every access through a volatile glvalue is performed
+// as written). The pointee-cv producers modeled volatile in C mode only, so
+// under --std=c++17 (and in madc mode) only a volatile OBJECT reached the IR:
+// -O2 hoisted the loads and the loops never ended, and `longjmp:` printed
+// the register's setjmp-time garbage. modeled_cv() now puts volatile into the
+// type in every mode (const stays C-only: the C++ const identity is the const
+// campaign's).
+// Oracle: g++ and clang++ (-O0 and -O2) print testvolatilepointeeo2cxx.expect.
+#include <setjmp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/time.h>
+
+typedef volatile sig_atomic_t vsig;
+typedef volatile int vint;
+struct M { int pad; volatile sig_atomic_t f; };
+
+static sig_atomic_t plain0, plain3, plain4;
+static struct M m;
+static vsig td;
+static int phase;
+static jmp_buf jb;
+
+static void on_alarm (int sig) {
+  (void) sig;
+  switch (phase) {
+  case 0: plain0 = 1; break;
+  case 1: m.f = 1; break;
+  case 2: td = 1; break;
+  case 3: plain3 = 1; break;
+  default: plain4 = 1; break;
+  }
+}
+
+static void arm (int p) {
+  struct itimerval it = {{0, 0}, {0, 10000}};
+  phase = p;
+  signal (SIGALRM, on_alarm);
+  setitimer (ITIMER_REAL, &it, 0);
+}
+
+static long spin (volatile sig_atomic_t *p) {
+  long n = 0;
+  while (!*p) n++;
+  return n;
+}
+
+static void jump (int v) { longjmp (jb, v); }
+
+static int viatypedef (int n) {
+  vint acc = 0;
+  vint i;
+  if (setjmp (jb) == 0) { for (i = 0; i < n; i++) acc += i; jump (1); }
+  return acc * 100 + i;
+}
+
+int main (void) {
+  volatile sig_atomic_t *vp = &plain0;
+  long n0 = 0, n1 = 0, n2 = 0, n3 = 0, n4;
+
+  arm (0);
+  while (!*vp) n0++;
+  arm (1);
+  while (!m.f) n1++;
+  arm (2);
+  while (!td) n2++;
+  arm (3);
+  while (!*(volatile sig_atomic_t *) &plain3) n3++;
+  arm (4);
+  n4 = spin (&plain4);
+  printf ("pointee: %d\n", n0 > 0);
+  printf ("member: %d\n", n1 > 0);
+  printf ("typedef: %d\n", n2 > 0);
+  printf ("cast: %d\n", n3 > 0);
+  printf ("parameter: %d\n", n4 > 0);
+  printf ("longjmp: %d\n", viatypedef (10));
+  return 0;
+}

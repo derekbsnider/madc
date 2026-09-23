@@ -450,14 +450,29 @@ yet measured.
   `typedef const struct P CP; CP cp = { 3, 4 };` was refused — it reads the
   unqualified type now. And the bit-field layout judged an `int` field's signedness
   from its type's NAME, so `volatile signed f : 25` read back zero-extended
-  (the c2mir-tests lane's `new/bf1.c`); it reads the unqualified name. C mode only (`--std=c*`): under madc / C++ the
-  qualifier is overload and mangling identity, the const-qualified-types
-  campaign's. Gate `check-volatile-accesses.sh` gained a madc leg (-O0..-O3,
+  (the c2mir-tests lane's `new/bf1.c`); it reads the unqualified name. C mode
+  only at first (`--std=c*`); madc and C++ modes are `cxx_pointee_volatile`,
+  below. Gate `check-volatile-accesses.sh` gained a madc leg (-O0..-O3,
   29 accesses, a cast and a typedef case). Reducers
   `tests/testvolatilepointeec`, `tests/testvolatilepointeeo2c`,
   `tests/testqualifiedaggregateinitc`. Residues: a top-level const member stays
   unmodeled; `_Generic`'s association reader cannot read `volatile int (*)[4]`
   (a hand-rolled type-name reader, refuses loudly).
+- ~~`cxx_pointee_volatile`~~ — fixed 2026-09-23 (the producers), silent. The
+  step above gated every producer on `is_c_mode()`, so in madc mode — which is
+  also what a `.c` file with no `--std` compiles in — and in C++ modes a
+  volatile pointee, member or typedef still never reached the IR: the same
+  `-O2` spin hung, the same `vint` local came back from `longjmp` as garbage,
+  and `_Generic` picked `int *`. The scope is one statement now,
+  `Program::modeled_cv()` — volatile in every mode (an access is performed as
+  written, [intro.execution]/7), const in C only (the C++ const identity stays
+  the const campaign's) — and every producer masks with it:
+  `consume_declarator_stars`, the nested and parameter-array arms of
+  `parse_declarator`, `member_declarator`, the typedef reader's prefix and
+  top-level cv. Reducers `tests/testvolatilepointeeo2cxx` (`--std=c++17 -O2`)
+  and `tests/testvolatilepointeeo2` (madc mode, `-O2`). The volatile TYPE in
+  C++ then needs its identity — mangling, overload ranking, deduction,
+  volatile member functions — each its own step.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

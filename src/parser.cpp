@@ -1637,12 +1637,13 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
     // (getQualifiedType) before the next '*' derives from it, so `const char *`
     // and `char *` carry DISTINCT pointer identities (c-testsuite 00219's
     // _Generic lines) and `volatile int *q` points to a volatile int — every
-    // `*q` an access performed exactly as written (C11 5.1.2.3p6). C mode only
-    // for now — the C++ producer is the campaign's Phase 3/4 transparency
-    // sweep (overload ranking, mangling, template keying). Top-level cv —
-    // after the LAST star — stays the variable's flag, never a type wrap
+    // `*q` an access performed exactly as written (C11 5.1.2.3p6). The bits
+    // modeled are modeled_cv()'s: volatile in every mode, const in C only
+    // (the C++ const identity is the campaign's Phase 3/4 sweep). Top-level
+    // cv — after the LAST star — stays the variable's flag, never a type wrap
     // (lvalue conversion drops it, C11 6.3.2.1p2).
-    unsigned pending_cv = is_c_mode() ? leading_cv : cvNONE;
+    const unsigned modeled = modeled_cv();
+    unsigned pending_cv = leading_cv & modeled;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
     {
@@ -1665,8 +1666,7 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 	    {
 		if ( stars > 0 )
 		    const_after = true;	// const after the last '*' = top-level const ptr
-		if ( is_c_mode() )
-		    pending_cv |= cvCONST;
+		pending_cv |= cvCONST & modeled;
 		if ( out_cv_seen )
 		    *out_cv_seen = true;
 	    }
@@ -1674,8 +1674,7 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 	    {
 		if ( stars > 0 )
 		    volatile_after = true;	// volatile after the last '*' = the pointer object
-		if ( is_c_mode() )
-		    pending_cv |= cvVOLATILE;
+		pending_cv |= cvVOLATILE & modeled;
 	    }
 	    nextToken();		// consume const/volatile/restrict
 	}
@@ -52366,9 +52365,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	}
 	else
 	{
-	    if ( pgm.is_c_mode() && tn->id() == TokenID::tkCONST )
-		prefix_cv |= cvCONST;
-	    else if ( pgm.is_c_mode() && tn->id() == TokenID::tkVOLATILE )
+	    if ( tn->id() == TokenID::tkCONST )
+		prefix_cv |= cvCONST & pgm.modeled_cv();
+	    else if ( tn->id() == TokenID::tkVOLATILE )
 		prefix_cv |= cvVOLATILE;
 	    pgm.nextToken();
 	}
@@ -52716,8 +52715,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	       | (td.base_volatile ? cvVOLATILE : cvNONE))
 	    : ((td.const_after_star ? cvCONST : cvNONE)
 	       | (td.volatile_after_star ? cvVOLATILE : cvNONE));
-	if ( post_cv && pgm.is_c_mode() && alias_dd
-	  && !alias_dd->is_function() && !alias_dd->as_carray_dd() )
+	post_cv &= pgm.modeled_cv();
+	if ( post_cv && alias_dd && !alias_dd->is_function() && !alias_dd->as_carray_dd() )
 	    alias_dd = pgm.getQualifiedType(alias_dd, post_cv);
     }
 
@@ -52936,9 +52935,8 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 	    // no `*` consumed is the pointee's (C11 6.7.3p9 qualifies an array's
 	    // elements; `volatile int a[]` is `volatile int *a`).
 	    DataDef *elem = arr->element_type;
-	    if ( out.ptr_depth == 0 && out.nested_stars == 0 && is_c_mode()
-	      && !elem->as_carray_dd() )
-		elem = getQualifiedType(elem, leading_cv);
+	    if ( out.ptr_depth == 0 && out.nested_stars == 0 && !elem->as_carray_dd() )
+		elem = getQualifiedType(elem, leading_cv & modeled_cv());
 	    dd = getPointerType(elem);
 	    out.adjusted_array = true;
 	}
@@ -52977,12 +52975,12 @@ DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md,
     // after-the-specifier one with no `*` (`volatile int v;`, `int volatile
     // a[4]`: the elements), or one after the last `*` (`int *volatile p;`) —
     // is its TYPE's (C11 6.7.2.1p7, 6.7.3p9), so `&s.v` is `volatile int *`
-    // and every access to it is performed as written. C mode, the pointee-cv
-    // model's scope; a top-level const member stays unmodeled.
+    // and every access to it is performed as written — in every mode
+    // (modeled_cv); a top-level const member stays unmodeled.
     bool top_volatile = (dr.ptr_depth == 0 && dr.nested_stars == 0)
 	? ((leading_cv & cvVOLATILE) || dr.base_volatile)
 	: dr.volatile_after_star;
-    if ( top_volatile && is_c_mode() && elem && !elem->is_function() )
+    if ( top_volatile && elem && !elem->is_function() )
 	elem = getQualifiedType(elem, cvVOLATILE);
     md.is_array = !md.dims.empty() || md.count_expr != NULL;
     md.count = 1;
@@ -53247,9 +53245,8 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	// declarator derives from (`volatile int (*p)[4]`: pointer to array of
 	// volatile int; `const int (*x)` is `const int *x`) — the pointee-cv
 	// model of consume_declarator_stars, one level in.
-	if ( depth == 0 && out.ptr_depth == 0 && is_c_mode() && !dd->as_fptr_dd()
-	  && !dd->as_carray_dd() )
-	    dd = getQualifiedType(dd, leading_cv);
+	if ( depth == 0 && out.ptr_depth == 0 && !dd->as_fptr_dd() && !dd->as_carray_dd() )
+	    dd = getQualifiedType(dd, leading_cv & modeled_cv());
 	bool built = false;
 	dd = parse_declarator_suffixes(dd, mode, out, runtime_names, depth, false, built);
 	for ( size_t k = stash.size(); k-- > 0; )

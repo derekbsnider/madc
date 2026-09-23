@@ -6623,6 +6623,14 @@ public:
     // See docs/plans/2026-06-19-const-qualified-types.md.
     DataDef *getQualifiedType(DataDef *base, unsigned cv);
     DataDefQUAL *getConstType(DataDef *base);
+    // The cv bits a DECLARATOR's qualifiers put into the TYPE in the current
+    // mode — every producer (consume_declarator_stars, the nested and
+    // parameter-array arms of parse_declarator, member_declarator, the
+    // typedef reader) masks with this, the one statement of the scope.
+    // volatile is modeled in every mode (an access is performed as written,
+    // C11 5.1.2.3p6 / [intro.execution]); const in C only — the C++ const
+    // identity (overload ranking, mangling, deduction) is the const campaign's.
+    unsigned modeled_cv() const { return is_c_mode() ? (cvCONST | cvVOLATILE) : cvVOLATILE; }
     // Id-addressable derived-type API — the boundary adapter for the type table
     // (design docs/plans/2026-06-12-type-table-value-abi-design.md §2/§6.1).
     // "pointer-to(id)" / "reference-to(id)" / "const(id)" resolved by typeid:
