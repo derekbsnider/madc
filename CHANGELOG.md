@@ -92,6 +92,10 @@ answers.
   body.** `template <int (*P)()> ... P()` over `FnPtr<&g>` was refused as
   `&(g())`, and `O->m` over `Obj<&obj>` as `&(obj->m)`. New gate
   `check-one-nontype-splice.sh`.
+- **c2mir's own `_Generic` no longer promotes its controlling expression.** A
+  `char` or `short` operand selected `int` (or default) in C compiled by c2m,
+  and `_Generic(x, char *: ..., const char *: ...)` was refused as two
+  compatible associations. (madc resolves `_Generic` itself; this is c2m's.)
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and

@@ -11701,8 +11701,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     op1 = NL_HEAD (r->u.ops);
     check (c2m_ctx, op1, r);
     e1 = op1->attr;
-    t = *e1->type;
-    if (integer_type_p (&t)) t = integer_promotion (&t);
+    /* The controlling expression undergoes lvalue conversion and array/function-to-pointer
+       conversion ONLY (C11 6.5.1.1p2, C17 DR 481): no integer promotions (a char selects
+       char), and only the top level's qualifiers drop -- a pointee's stay. */
+    t = *adjust_type (c2m_ctx, e1->type);
+    clear_type_qual (&t.type_qual);
     list = NL_NEXT (op1);
     for (ga = NL_HEAD (list->u.ops); ga != NULL; ga = NL_NEXT (ga)) {
       assert (ga->code == N_GENERIC_ASSOC);
@@ -11719,7 +11722,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       decl_spec = type_name->attr;
       if (incomplete_type_p (c2m_ctx, decl_spec->type)) {
         error (c2m_ctx, POS (ga), "_Generic case has incomplete type");
-      } else if (compatible_types_p (&t, decl_spec->type, TRUE)) {
+      } else if (compatible_types_p (&t, decl_spec->type, FALSE)) {
         if (ga_case)
           error (c2m_ctx, POS (ga_case),
                  "_Generic expr type is compatible with more than one generic association type");
@@ -11729,7 +11732,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
           type_name2 = NL_HEAD (ga2->u.ops);
           if (type_name2->code != N_IGNORE
               && !(incomplete_type_p (c2m_ctx, t2 = ((struct decl_spec *) type_name2->attr)->type))
-              && compatible_types_p (t2, decl_spec->type, TRUE)) {
+              && compatible_types_p (t2, decl_spec->type, FALSE)) {
             error (c2m_ctx, POS (ga), "two or more compatible generic association types");
             break;
           }
