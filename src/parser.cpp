@@ -41292,11 +41292,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				top_is_cast_subscriptable = true;
 			}
 		    }
+		    // Any DEREFERENCE is a subscript base — asked by kind-free
+		    // is_indirection(): a stepped deref (`(*rp++)[1]`) reports
+		    // ttBase, and naming only TokenDeref / TokenDerefExpr sent its
+		    // `[` to the lambda introducer.
 		    if ( !exStack.empty()
 		      && (exStack.top()->type() == TokenType::ttMember
 		       || exStack.top()->type() == TokenType::ttSubscript
-		       || dynamic_cast<TokenDerefExpr *>(exStack.top()) != NULL
-		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL
+		       || exStack.top()->is_indirection()
 		       || top_is_complex_ptr_expr
 		       || top_is_cast_subscriptable) )
 		    {

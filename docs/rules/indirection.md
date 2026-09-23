@@ -125,10 +125,15 @@ yet measured.
   `is_function() && is_numeric()` (cir_builder ~382, parser ~30550 — correct
   in meaning), and `dynamic_cast<DataDefFPTR *>` is common; `as_fptr_dd()`
   is the const-safe owner (candidate: consolidate + gate).
-- `deref_kind_enumeration`: consumers that enumerate TokenDeref /
-  TokenDerefExpr by hand where they mean "any deref" (the subscript-base arm
-  ~41274 omits TokenDerefStep; eight cir_builder sites test TokenDerefExpr
-  alone) — candidate: `is_indirection()` where the meaning is "any".
+- ~~`deref_kind_enumeration`~~ — measured 2026-09-23: the subscript-base arm
+  named TokenDeref and TokenDerefExpr but not TokenDerefStep (ttBase), so
+  `(*rp++)[1]` on a pointer to a row fell to the lambda introducer; it asks
+  `is_indirection()` now (`tests/testderefstepsubscript`). Every other kind
+  test was measured correct: the CIR pack/tsubst walkers descend only into
+  child expressions (a named deref has none — `take3(*p...)`, `*p++...` and
+  `*(p + 0)...` all match g++), `va_arg`, `validate_expression_ast` and the
+  graph walker name every kind they mean, and each lvalue use of a step
+  (`*p++ = v`, `(*p++) += 2`, `++*p++`, `(*q++)->x`) matches gcc.
 - `reference_bind_address_expr` builds address nodes for reference binding
   (seven sites) beside `build_address_of` — candidate: share the plain-lvalue
   case.

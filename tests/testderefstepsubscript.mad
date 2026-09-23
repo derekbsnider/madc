@@ -1,0 +1,29 @@
+// A subscript of a STEPPED dereference: `(*rp++)[1]` is `(*(rp++))[1]`, the
+// row the old pointer addressed. The subscript-base arm listed the deref
+// node kinds it accepted and named TokenDeref and TokenDerefExpr but not
+// TokenDerefStep (whose type() is ttBase, not ttMember), so the `[` fell to
+// the lambda introducer: "Expecting a name in lambda capture list". It now
+// asks TokenBase::is_indirection() — any dereference. A pointer-typed step
+// (`(*q++)[0]`) was saved by the generic pointer fallback; a ROW (a pointer
+// to an array) was not. Oracle: gcc and clang, -std=c17.
+#include <stdio.h>
+
+int main(void)
+{
+    int m[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+    int (*rp)[3] = m;
+    int v = 7, w = 8;
+    int *pp[2] = { &v, &w };
+    int **q = pp;
+
+    int first = (*rp++)[1];
+    printf("row step: %d %d\n", first, (*rp)[1]);
+    int (*r2)[3] = m + 1;
+    int back = (*r2--)[0];
+    printf("row back: %d %d\n", back, (*r2)[0]);
+    printf("sizeof: %d\n", (int)sizeof((*rp++)[1]));
+    printf("still: %d\n", (int)(rp - m));
+    int pv = (*q++)[0];
+    printf("pointer step: %d %d\n", pv, (*q)[0]);
+    return 0;
+}
