@@ -2428,6 +2428,10 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     if ( !tb )
 	return NULL;
 
+    // An ARRAY head decays first ([conv.array]): its datadef() is the
+    // flattened element, so an array of pointers would read as one pointer.
+    if ( DataDef *decayed = array_decay_pointer(tb) )
+	return decayed;
     DataDef *dd = tb->datadef();
     // A REFERENCE head denotes its referent ([expr.ref]) — collapse it
     // BEFORE the pointer test when the referent is itself a pointer: a
@@ -2442,23 +2446,6 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 	    dd = ref;
     if ( dd && dd->is_pointer() )
 	return dd;
-    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
-    {
-	DataDef *elem = add->element_type ? add->element_type : &ddINT64;
-	return getPointerType(elem);
-    }
-
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
-    {
-	if ( tv->var.is_fixed_array() && tv->var.type )
-	    return getPointerType(tv->var.type);
-    }
-
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
-    {
-	if ( tm->is_fixed_array_member() && tm->var.type )
-	    return getPointerType(tm->var.type);
-    }
 
     if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
     {
@@ -20657,40 +20644,79 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
 // selection, chained operator expressions, and `auto` all mis-resolve.
-// Array-to-pointer decay ([conv.array]) for an operator operand: a fixed-array
-// variable / array member / array-typed expression denotes `element *` in a
-// value context. Mirrors the trichotomy in CirBuilder::ctor_arg_datadef.
-// TokenMember derives from TokenVar, so it is checked first. Returns NULL when
-// the operand is not an array.
-DataDef *Program::array_decay_pointer(TokenBase *operand)
+// The ELEMENT type of an operand that denotes an ARRAY — the type of `e[0]` —
+// or NULL when `e` is not an array. For a multi-dimensional array the element
+// is its ROW ([dcl.array]/[expr.sub]): `int m[2][3]` has element int[3], so
+// `*m` is a row, `sizeof *m` is 12 and `m + 1` steps a row.
+// THE owner of that question. madc stores an array FLATTENED: the node's
+// datadef() reports the SCALAR, and the extents live beside it — a variable's
+// dims, the struct's m_dims, a TokenSubscript's extra_indices, the depth of a
+// TokenSubscriptExpr chain. A consumer that asks datadef() loses the rows: an
+// array of function pointers reads as one function pointer, a row of pointers
+// as one pointer. `consumed` below counts the extents already indexed.
+// TokenMember derives from TokenVar, so it is asked first.
+DataDef *Program::array_operand_element_type(TokenBase *e)
 {
-    if ( !operand ) return NULL;
-    if ( TokenMember *tm = (operand ? operand->as_member_tok() : NULL) )
+    if ( !e ) return NULL;
+    size_t depth = 0;			// subscripts applied through a chain
+    TokenBase *root = e;
+    while ( TokenSubscriptExpr *tse = root->as_subscript_expr_tok() )
+    {
+	if ( !tse->base_expr )
+	    break;
+	++depth;
+	root = tse->base_expr;
+    }
+    if ( TokenMember *tm = root->as_member_tok() )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
-	    return getPointerType(tm->var.type);
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    const std::vector<carray_dim_t> *dims =
+		sdd ? sdd->m_dims(tm->var.name) : NULL;
+	    if ( dims && !dims->empty() )
+		return depth < dims->size()
+		    ? build_fixed_array_query_type(tm->var.type, *dims, depth + 1)
+		    : NULL;
+	    // extents not recorded: a one-dimensional member
+	    return depth == 0 ? tm->var.type : NULL;
+	}
     }
-    else if ( TokenVar *tv = (operand ? operand->as_var_tok() : NULL) )
+    else if ( TokenVar *tv = root->as_var_tok() )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
-	    return getPointerType(tv->var.type);
+	{
+	    if ( tv->var.dims.empty() )
+		return depth == 0 ? tv->var.type : NULL;
+	    return depth < tv->var.dims.size()
+		? build_fixed_array_query_type(tv->var.type, tv->var.dims, depth + 1)
+		: NULL;
+	}
     }
-    else if ( TokenSubscript *ts = (operand ? operand->as_subscript_tok() : NULL) )
+    else if ( TokenSubscript *ts = root->as_subscript_tok() )
     {
-	// A PARTIAL subscript of a multi-dimensional fixed array denotes the
-	// row sub-array, which decays to a pointer to the element type in a
-	// VALUE context ([expr.sub] + [conv.array]): `char s[2][4]` makes
-	// `s[1]` rank as char*, not char. A full subscript (one index per
-	// dimension) denotes the element — no decay.
-	if ( ts->object.is_fixed_array() && ts->object.type
-	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
-	    return getPointerType(ts->object.type);
+	// A PARTIAL subscript of a multi-dimensional fixed array denotes a
+	// row; a full one (an index per dimension) denotes the element.
+	size_t consumed = 1 + ts->extra_indices.size() + depth;
+	if ( ts->object.is_fixed_array() && ts->object.type )
+	    return consumed < ts->object.dims.size()
+		? build_fixed_array_query_type(ts->object.type, ts->object.dims,
+					       consumed + 1)
+		: NULL;
     }
-    if ( DataDef *odd = operand->datadef() )
+    if ( DataDef *odd = e->datadef() )
 	if ( DataDefCArray *ca = odd->as_carray_dd() )
-	    if ( ca->element_type )
-		return getPointerType(ca->element_type);
+	    return ca->element_type ? ca->element_type : &ddINT64;
     return NULL;
+}
+
+// Array-to-pointer decay ([conv.array]) for an operand in a VALUE context: an
+// array denotes a pointer to its first element — a pointer to its ROW, for a
+// multi-dimensional one. Returns NULL when the operand is not an array.
+DataDef *Program::array_decay_pointer(TokenBase *operand)
+{
+    DataDef *elem = array_operand_element_type(operand);
+    return elem ? getPointerType(elem) : NULL;
 }
 
 void Program::resolve_object_operator_type(TokenOperator *to)
@@ -31668,17 +31694,23 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     if ( tv && tv->var.type && !tv->var.type->is_reference() )
     {
 	Variable &var = tv->var;
+	// An ARRAY variable is neither: `*table` is table[0]
+	// (deref_type_for_variable types the row). madc stores it flattened, so
+	// its type is the ELEMENT's — an array of function pointers answers
+	// as_fptr_dd, an array of class objects answers operator*.
+	bool array = var.is_fixed_array();
 	// `*f` on a function, `*fp` on a function pointer, is the function
 	// designator ([expr.unary.op]/1) — still callable as `(*fp)(args)`.
 	// Asked as FuncDef / DataDefFPTR (both const-safe); is_function() is
 	// true for both, and the older `is_function() && is_numeric()` test
 	// was true for the POINTER only, so `*twice` was refused.
-	if ( !step && (var.type->as_funcdef_dd() || var.type->as_fptr_dd()) )
+	if ( !step && !array
+	  && (var.type->as_funcdef_dd() || var.type->as_fptr_dd()) )
 	    return operand;
 	// `*obj` on a class object dispatches its operator*. With a step the
 	// operator applies to the step's RESULT (`*it++` is `*(it++)`) —
 	// the expression arm below.
-	if ( !step )
+	if ( !step && !array )
 	    if ( TokenCallMethod *opcall =
 		    make_unary_object_operator_call(*this, &var, NULL, "operator*") )
 		return opcall;
@@ -31693,6 +31725,16 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
 	}
     }
 
+    // An ARRAY operand decays to a pointer to its first element
+    // ([conv.array]), so `*a` is `a[0]` — a ROW, for a multi-dimensional
+    // array (`char name[2][3]`: `*t.name` is char[3], `**t.name` a char).
+    // Asked FIRST: the operand's type view is the flattened element, which
+    // has lost the extents — the designator test below would take an array
+    // of function pointers for one, the pointer test a row of pointers for
+    // one pointer (`*pa[1]` typed int, not int *).
+    if ( !step )
+	if ( DataDef *elem = array_operand_element_type(pointer_expr) )
+	    return new TokenDerefExpr(operand, elem);
     DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
     if ( !dtype )
 	dtype = pointer_expr->datadef();
@@ -31703,37 +31745,8 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     }
     if ( !step && (dtype->as_funcdef_dd() || dtype->as_fptr_dd()) )
 	return operand;
-    // A fixed-array MEMBER decays to a pointer to its first element
-    // ([conv.array]) — its ROW, for a multi-dimensional member (`char
-    // name[2][3]`: `*t.name` is char[3], so `**t.name` is a char). Asked
-    // before the pointer test: the member's type view is already the
-    // flattened element pointer, which has lost the extents.
-    if ( TokenMember *tm = pointer_expr->as_member_tok() )
-	if ( tm->is_fixed_array_member() )
-	{
-	    DataDefSTRUCT *sdd = tm->owner_struct_type();
-	    const std::vector<carray_dim_t> *dims =
-		sdd ? sdd->m_dims(tm->var.name) : NULL;
-	    DataDef *row = (dims && !dims->empty())
-		? build_fixed_array_query_type(tm->var.type, *dims, 1)
-		: tm->var.type;
-	    return new TokenDerefExpr(operand, row);
-	}
     if ( dtype->is_pointer() )
 	return new TokenDerefExpr(operand, unwrap_subscript_element_type(dtype));
-
-    // Any other fixed array decays too: a partial subscript of a
-    // multi-dimensional array, an array-typed expression.
-    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(pointer_expr) )
-	if ( ts->object.is_fixed_array() )
-	    return new TokenDerefExpr(operand, dtype);
-    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(pointer_expr) )
-	if ( TokenVar *base_tv = dynamic_cast<TokenVar *>(tse->base_expr) )
-	    if ( base_tv->var.is_fixed_array() )
-		return new TokenDerefExpr(operand, dtype);
-    if ( DataDefCArray *ca = dtype->as_carray_dd() )
-	return new TokenDerefExpr(operand,
-				  ca->element_type ? ca->element_type : &ddINT64);
     if ( TokenCallMethod *opcall =
 	    make_unary_object_operator_call(*this, NULL, operand, "operator*") )
 	return opcall;
@@ -39754,7 +39767,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				ref_collapsed_lhs = true;
 			    }
 		    }
-		    else if ( lhs->type() == TokenType::ttMember )
+		    // An ARRAY head (a fixed-array member `q.in->x`, a row `(*ps)->x`)
+		    // decays to a pointer to its first element ([conv.array]) — the
+		    // expression-backed arm below asks the decay owner; the member
+		    // arm would read the flattened element type as the object.
+		    else if ( lhs->type() == TokenType::ttMember
+			   && !array_decay_pointer(lhs) )
 		    {
 			// TokenDeref and TokenDerefExpr also report ttMember (reuse
 			// member type for assignment compat) but are not TokenMember

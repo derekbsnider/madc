@@ -16,8 +16,12 @@
   `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
 - Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
   never bare `is_function()` (true for both) or `is_function() && is_numeric()`.
-- `*var`: `deref_type_for_variable`. Decay in a value context:
-  `Program::array_decay_pointer`. sizeof of an expression: `type_query_expression_value`.
+- `*var`: `deref_type_for_variable`. An ARRAY operand's element (its ROW, when
+  multi-dimensional): `Program::array_operand_element_type` — never the operand's
+  `datadef()` (flattened); decay (`array_decay_pointer`), `*a`, `a->m` ask it.
+  sizeof of an expression: `type_query_expression_value`.
+- End of an expression (bind pending operators, refuse juxtaposed operands):
+  `Program::finish_expression` — every exit of `parseExpression`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

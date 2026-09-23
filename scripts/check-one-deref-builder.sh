@@ -24,7 +24,18 @@
 #      reference_bind_address_expr (reference binding). The & reader once
 #      hand-read its operand too: `&*p` refused, and `&f` on a function-POINTER
 #      variable returned `f` (tests/testaddrofoperand).
-# Two-sided: the negative control proves both patterns still bite.
+#   4. what an ARRAY operand denotes (its element -- the ROW, multi-dimensional)
+#      is Program::array_operand_element_type's: madc stores an array flattened,
+#      so a pointer minted from a node's flattened type (`getPointerType(tv->
+#      var.type)`) is the scalar's, not the row's. Four sites did that; an array
+#      of function pointers read as one (`(*table)(5)` emitted `table(5)`,
+#      `sizeof(*table)` 16) and rows decayed to the scalar (tests/
+#      testfptrarrayderef, testarrayrowderef);
+#   5. the END of an expression is Program::finish_expression: a second operator
+#      drain (`while ( !opStack.empty() )`) elsewhere in parser.cpp is a copy
+#      without the juxtaposition check -- the conditional-end copy built
+#      `int r = (x)(4)` as `int r = x = 4` (tests/testjuxtaposeinit).
+# Two-sided: the negative control proves every pattern still bites.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -116,4 +127,60 @@ if [ "$npe" -ne 1 ] || [ "$npc" -ne 0 ] || [ "$ahand" -ne 0 ]; then
 	echo "  -> the operand of \`&\` is a cast-expression: read it with Program::parseCastExpression."
 	exit 1
 fi
-echo "GREEN -- a unary \`*\` and a unary \`&\` each have one operand reader and one builder."
+# 4. array decay from a flattened node type, outside the owner
+DECAY_PAT='getPointerType\([A-Za-z_]+(->|\.)(var|object)\.type\)'
+DECAY_OWNER='^DataDef \*Program::array_operand_element_type\('
+decay_outside() {
+	awk -v pat="$DECAY_PAT" -v owner="$DECAY_OWNER" '
+		$0 ~ owner { inside = 1 }
+		!inside && $0 ~ pat { print FILENAME ":" FNR ": " $0 }
+		inside && /^}/ { inside = 0 }
+	' "$@"
+}
+# 5. an operator-stack drain outside finish_expression
+drain_outside() {
+	awk '/^TokenBase \*Program::finish_expression\(/ { inside = 1 }
+	     !inside && /while \( !opStack\.empty\(\) \)$/ { print FILENAME ":" FNR ": " $0 }
+	     inside && /^}/ { inside = 0 }' "$@"
+}
+cat > "$ctl_dir/ctl2.cpp" <<'CTL'
+DataDef *Program::array_operand_element_type(TokenBase *e)
+{
+    return getPointerType(tv->var.type);
+}
+TokenBase *Program::finish_expression(std::stack<TokenBase *> &o, std::stack<TokenBase *> &x)
+{
+    while ( !opStack.empty() )
+	popOperator(opStack, exStack);
+}
+static void arm() {
+	    return getPointerType(tm->var.type);
+	    while ( !opStack.empty() )
+		popOperator(opStack, exStack);
+}
+CTL
+d1=$(decay_outside "$ctl_dir/ctl2.cpp" | grep -c .)
+d2=$(drain_outside "$ctl_dir/ctl2.cpp" | grep -c .)
+if [ "$d1" -ne 1 ] || [ "$d2" -ne 1 ]; then
+	echo "check-one-deref-builder: NEGATIVE CONTROL FAILED -- flattened decay matched"
+	echo "  $d1 of 1, an operator drain outside finish_expression $d2 of 1"
+	exit 1
+fi
+dbad=$(decay_outside src/*.cpp)
+dn=$(printf '%s' "$dbad" | grep -c . || true)
+echo "array decay minted from a flattened node type outside array_operand_element_type: $dn (target 0)"
+if [ "$dn" -ne 0 ]; then
+	printf '%s\n' "$dbad"
+	echo "  -> ask Program::array_operand_element_type / array_decay_pointer (the row, not the scalar)."
+	exit 1
+fi
+rbad=$(drain_outside src/parser.cpp)
+rn=$(printf '%s' "$rbad" | grep -c . || true)
+echo "operator-stack drains outside finish_expression: $rn (target 0)"
+if [ "$rn" -ne 0 ]; then
+	printf '%s\n' "$rbad"
+	echo "  -> end the expression with Program::finish_expression (it refuses juxtaposed operands)."
+	exit 1
+fi
+echo "GREEN -- a unary \`*\` and a unary \`&\` each have one operand reader and one builder;"
+echo "  an array operand's element and the end of an expression each have one owner."

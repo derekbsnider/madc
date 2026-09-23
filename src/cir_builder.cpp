@@ -15342,17 +15342,13 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 				if (rp->base_type)
 					return rp->base_type;
 		}
-		if (tv->var.is_fixed_array() && tv->var.type && m_prog)
-			return m_prog->getPointerType(tv->var.type);
 	}
-	if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
-		if (tm->is_fixed_array_member() && tm->var.type && m_prog)
-			return m_prog->getPointerType(tm->var.type);
-	}
-	if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
-		if (ca->element_type && m_prog)
-			return m_prog->getPointerType(ca->element_type);
-	}
+	// [conv.array] decay — ONE owner (Program::array_decay_pointer): a
+	// fixed-array variable or member, a partial subscript, a C array type.
+	// This function carried its own flattened copy of three of those arms.
+	if (m_prog)
+		if (DataDef *adp = m_prog->array_decay_pointer(arg))
+			return adp;
 	return arg->datadef();
 }
 
@@ -22562,8 +22558,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// element value, so use `.` — even when the base `p` is a
 				// pointer (`MENU_DATA *m; m[i].field`). Use `->` only if the
 				// element itself is a pointer (`T **pp; pp[i]->field`).
+				// A PARTIAL subscript (`ps[1]->x`, struct P ps[2][2])
+				// denotes a row, which decays: its datadef() is the
+				// flattened element, so the array question goes to
+				// the decay owner. Only an arrow access — the parser
+				// synthesizes a POINTER object for it — takes `->`:
+				// `ps[1].x` stays `.`, which the checker rejects.
 				DataDef *pdd = tm->parent_expr->datadef();
-				ptr_like = pdd && pdd->is_pointer();
+				ptr_like = (pdd && pdd->is_pointer())
+					|| (m_prog && tm->object.type
+					    && tm->object.type->is_pointer()
+					    && m_prog->array_decay_pointer(tm->parent_expr));
 			} else {
 				// A pointer object uses `->`; a bare array object decays to a
 				// pointer and also uses `->`.

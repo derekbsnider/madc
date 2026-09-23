@@ -96,6 +96,31 @@ yet measured.
   only as a TokenDerefExpr (now `TokenBase::is_indirection()`); `&*q++` and
   `(*sq++).m` (a stepped deref is an lvalue). Gated in
   `check-one-deref-builder.sh`.
+- ~~array operand element~~ — consolidated 2026-09-23: four sites re-derived
+  what an array operand denotes from its flattened `datadef()` (the scalar):
+  `array_decay_pointer`, `effective_pointer_type_for_member_access`, the CIR's
+  `ctor_arg_datadef`, and `build_indirection`'s own arms — and none knew a
+  `TokenSubscriptExpr` chain's depth. `Program::array_operand_element_type` is
+  the owner (the extents live in `dims`, `m_dims`, `extra_indices` and the
+  chain depth). Fixed: on an array OF function pointers the designator
+  identity fired (`(*table)(5)` emitted `table(5)`; `sizeof(*table)` 16, gcc 8,
+  silent; `(*grid[1])(5)` refused — the last two regressions of the `*`
+  consolidation); rows of pointers typed as one pointer (`sizeof(*pa[1])` 4,
+  gcc 8); a row decayed to the scalar (`sizeof(*(m + 1))` 4, gcc 12; `**(m +
+  1)`, `*s.g[1]` refused); `*arr` on a class array dispatched `operator*`;
+  `q.in->x` and `ps[1]->x` refused. Reducers `testfptrarrayderef`,
+  `testarrayrowderef`, `testarrayrowderefcpp`. Still open: `one.x` on an
+  array is accepted as `one[0].x` (gcc rejects); `type_query_chain_datadef`
+  counts one subscript level for a `TokenSubscriptExpr` (sizeof family).
+- ~~expression end~~ — consolidated 2026-09-23 (not indirection, but found
+  here): the conditional-end short-circuit of `parseExpression` was a second,
+  incomplete copy of the end of an expression, so a pending `=` bound two
+  juxtaposed operands (`int r = (x)(4)` built `int r = x = 4`, exit 0) —
+  UPDATE 90's open question. `Program::finish_expression` is the one end.
+- `call_arm_callee_kinds`: the call arm admits a callee only as a ternary, a
+  deref, a cast or a member; `(x, f)(x)` and `(f = twice)(x)` are refused
+  (valid C, gcc 8) — any function-pointer-typed operand in postfix position
+  is a callee (verified).
 - `function_vs_function_pointer_predicate`: two sites still spell "is FPTR" as
   `is_function() && is_numeric()` (cir_builder ~382, parser ~30550 — correct
   in meaning), and `dynamic_cast<DataDefFPTR *>` is common; `as_fptr_dd()`
