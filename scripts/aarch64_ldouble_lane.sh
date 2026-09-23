@@ -10,11 +10,14 @@
 # The builtins now call libgcc's soft-float routines by their real names, as
 # gcc's own objects do. This lane is what keeps that true.
 #
-# TWO FIXTURES: tests/cross/aarch64_ldouble.c (every builtin, every operand built
-# at run time) and tests/cross/aarch64_ldouble_const.c (every route a CONSTANT's
-# bytes take to the target — folded, literal, static scalar/array/member,
-# _Complex — which the x86-hosted cross compiler used to write in the host's x87
-# layout; aarch64 read them as binary128 near zero). THREE LEGS each:
+# EVERY FIXTURE tests/cross/aarch64_*.c (a filename convention — a new target
+# difference adds a file, never a branch here): aarch64_ldouble.c (every
+# builtin, every operand built at run time), aarch64_ldouble_const.c (every
+# route a CONSTANT's bytes take to the target — folded, literal, static
+# scalar/array/member, _Complex — which the x86-hosted cross compiler used to
+# write in the host's x87 layout; aarch64 read them as binary128 near zero), and
+# aarch64_char_sign.c (plain char is UNSIGNED here: signed char's folds, its
+# emitted spelling and _Generic's match, which read plain char). THREE LEGS each:
 #   oracle  aarch64-linux-gnu-gcc's binary under qemu — the expected output.
 #   aot     bin/madc-aarch64-linux -c, linked by aarch64 gcc, run under qemu:
 #           must import NO dotted mir.* name, and must print the oracle's bytes.
@@ -29,7 +32,6 @@ set -u
 cd "$(dirname "$0")/.."
 
 FIX=tests/cross/aarch64_ldouble.c
-CONSTFIX=tests/cross/aarch64_ldouble_const.c
 CC=aarch64-linux-gnu-gcc
 NM=aarch64-linux-gnu-nm
 QEMU="qemu-aarch64-static -L /usr/aarch64-linux-gnu"
@@ -60,7 +62,7 @@ if ! make -C third_party/mir BUILD_DIR="$JITB" CC="$CC" "$JITB/c2m" > "$D/c2m.lo
 	echo "RED  jit: the aarch64 c2m did not build"; tail -5 "$D/c2m.log"; fail=1
 fi
 
-for fx in "$FIX" "$CONSTFIX"; do
+for fx in tests/cross/aarch64_*.c; do
 	n=$(basename "$fx" .c)
 	"$CC" -O0 "$fx" -o "$D/$n.gcc" && $QEMU "$D/$n.gcc" > "$D/$n.oracle" \
 		|| { echo "RED  $n: the gcc oracle did not build or run"; fail=1; continue; }
@@ -92,5 +94,5 @@ for fx in "$FIX" "$CONSTFIX"; do
 	fi
 done
 
-[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on both fixtures)" && rm -rf "$D"
+[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on every fixture)" && rm -rf "$D"
 exit "$fail"

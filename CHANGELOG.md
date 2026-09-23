@@ -80,6 +80,10 @@ answers.
   `__builtin_types_compatible_p(char, signed char)` was 1. The emitted C
   spelled `signed char` as plain `char`, which on aarch64-linux (an
   unsigned-char target) turned `(signed char)200` into 200 instead of -56.
+- **c2mir folds a constant cast to `signed char` as `signed char`.** It cast
+  through the target's plain char, so on aarch64-linux `int x = (signed
+  char)200;` folded to 200. The aarch64 qemu lane now runs every
+  `tests/cross/aarch64_*.c` fixture and carries a char-sign fixture.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and

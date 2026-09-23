@@ -7577,7 +7577,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     CONV (TP_BOOL, mir_bool, u_val, mfrom) CONV (TP_UCHAR, mir_uchar, u_val, mfrom);     \
     CONV (TP_USHORT, mir_ushort, u_val, mfrom) CONV (TP_UINT, mir_uint, u_val, mfrom);   \
     CONV (TP_ULONG, mir_ulong, u_val, mfrom) CONV (TP_ULLONG, mir_ullong, u_val, mfrom); \
-    CONV (TP_SCHAR, mir_char, i_val, mfrom);                                             \
+    CONV (TP_SCHAR, mir_schar, i_val, mfrom);                                            \
     CONV (TP_SHORT, mir_short, i_val, mfrom) CONV (TP_INT, mir_int, i_val, mfrom);       \
     CONV (TP_LONG, mir_long, i_val, mfrom) CONV (TP_LLONG, mir_llong, i_val, mfrom);     \
     CONV (TP_FLOAT, mir_float, d_val, mfrom) CONV (TP_DOUBLE, mir_double, d_val, mfrom); \
@@ -7705,7 +7705,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
         else
           to_e->c.u_val = (mir_char) low;
         break;
-      case TP_SCHAR: to_e->c.i_val = (mir_char) low; break;
+      case TP_SCHAR: to_e->c.i_val = (mir_schar) low; break;
       case TP_SHORT: to_e->c.i_val = (mir_short) low; break;
       case TP_INT: to_e->c.i_val = (mir_int) low; break;
       case TP_LONG: to_e->c.i_val = (mir_long) low; break;
