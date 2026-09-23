@@ -315,6 +315,21 @@ yet measured.
   owner. Gates: two oracle-corpus rows (`f_fpref`, `f_fnref`, g++ == clang++)
   replayed by `test_mangle`, and the interop link lane — a madc definer and
   a g++ user, and the reverse — now carries both shapes.
+- ~~`c_signed_char_generic_identity`~~ — fixed 2026-09-23, silent. madc's
+  `DataType` enum folds `char` and `signed char` into one value (`dtCHAR =
+  dtINT8`), so every rawtype switch reads them as one type, and two of them
+  spoke for both. (1) CIR's `append_type_specs` emitted `signed char` as plain
+  `char`: on an unsigned-char target (aarch64-linux, under qemu) `signed char
+  sc = -3` printed 253 and `(int)(signed char)200` printed 200 where gcc
+  prints -3 and -56. (2) The signature renderer shared by `_Generic` and
+  `__builtin_types_compatible_p` (`canonical_builtin_simple_type_name`)
+  rendered both as `char`: `_Generic(sc, char: …, signed char: …)` chose
+  `char`, `signed char *` chose `char *`, and
+  `__builtin_types_compatible_p(char, signed char)` was 1. Both arms now ask
+  the one scalar-identity owner, `Program::proven_scalar_identity`, which
+  already told `ddINT8` from `ddCHAR`. C++ overloading was already right: it
+  ranks by that identity. Reducers `tests/testsignedcharc`, the emitted-C
+  spelling `tests/testsignedcharemit`, and the C++ twin `tests/testsignedchar`.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

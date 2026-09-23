@@ -4789,7 +4789,16 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	switch (dt) {
 	case DataType::dtVOID:   append(lst, simple(N_VOID)); break;
 	case DataType::dtBOOL:   append(lst, simple(N_BOOL)); break;
-	case DataType::dtCHAR:   append(lst, simple(N_CHAR)); break;
+	// dtCHAR IS dtINT8 (one enum value), so the rawtype cannot tell plain
+	// `char` from `signed char` — two distinct types (C11 6.2.5p15) told apart
+	// only by identity, whose one owner is Program::proven_scalar_identity.
+	// Spelling signed char as plain char changes its VALUE on an unsigned-char
+	// target: aarch64-linux read `(signed char)200` as 200, not -56.
+	case DataType::dtCHAR:
+		if (Program::proven_scalar_identity(dd) == &ddINT8)
+			append(lst, simple(N_SIGNED));
+		append(lst, simple(N_CHAR));
+		break;
 	case DataType::dtINT16:  append(lst, simple(N_SHORT)); break;
 	case DataType::dtINT32:  append(lst, simple(N_INT)); break;
 	case DataType::dtINT64:  append_i64(lst); break;

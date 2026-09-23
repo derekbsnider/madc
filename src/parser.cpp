@@ -14303,7 +14303,11 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 	case DataType::dtVOID: return "void";
 	case DataType::dtBOOL: return "bool";
 	case DataType::dtUINT8: return "unsigned char";
-	case DataType::dtINT8: return "char";
+	// dtINT8 is dtCHAR: `signed char` is its own type, distinct from plain
+	// char (C11 6.2.5p15), told apart only by identity — a signed char
+	// operand must select the `signed char` association, not `char`.
+	case DataType::dtINT8:
+	    return Program::proven_scalar_identity(dd) == &ddINT8 ? "signed char" : "char";
 	case DataType::dtUINT16: return "unsigned short";
 	case DataType::dtINT16: return "short";
 	case DataType::dtUINT24: return "unsigned int24";

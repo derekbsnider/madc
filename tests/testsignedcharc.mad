@@ -1,0 +1,22 @@
+// signed char is its own type in C (C11 6.2.5p15) — distinct from plain char
+// and from unsigned char. madc's rawtype folds char and signed char into one
+// enum value, so its _Generic and __builtin_types_compatible_p took signed
+// char (and signed char *) for char; identity is Program::proven_scalar_identity's.
+// Oracle: gcc and clang print the lines of testsignedcharc.expect.
+#include <stdio.h>
+#include <stdint.h>
+#define T(x) _Generic((x), char: "char", signed char: "schar", unsigned char: "uchar", default: "other")
+#define P(x) _Generic((x), char *: "char*", signed char *: "schar*", unsigned char *: "uchar*", const signed char *: "cschar*", default: "other")
+static signed char neg(signed char v) { return (signed char)-v; }
+static const signed char tab[3] = { -1, -2, 100 };
+int main(void) {
+    char c = 'a'; signed char sc = -3; unsigned char uc = 200; int8_t i8 = -7;
+    signed char *psc = &sc; char *pc = &c; const signed char *cpsc = &sc;
+    printf("gen: %s %s %s %s %s %s\n", T(c), T(sc), T(uc), T((signed char)1), T(*psc), T(i8));
+    printf("ptr: %s %s %s %s\n", P(psc), P(pc), P(&uc), P(cpsc));
+    printf("compat: %d %d %d %d\n", __builtin_types_compatible_p(char, signed char),
+           __builtin_types_compatible_p(signed char, int8_t), __builtin_types_compatible_p(char, char),
+           __builtin_types_compatible_p(signed char *, char *));
+    printf("val: %d %d %d %d %d\n", sc, (int)(signed char)200, neg(sc), tab[0] + tab[1], i8);
+    return 0;
+}

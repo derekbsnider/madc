@@ -75,6 +75,11 @@ answers.
 - **An aggregate's reference member binds its initializer.** `RM rm{lv}` (for
   `long &r`) used to store the value in the reference and then crash. A
   `const &` member binds a temporary too.
+- **`signed char` is its own type in C.** `_Generic` chose the `char`
+  association for a `signed char` (and `char *` for `signed char *`), and
+  `__builtin_types_compatible_p(char, signed char)` was 1. The emitted C
+  spelled `signed char` as plain `char`, which on aarch64-linux (an
+  unsigned-char target) turned `(signed char)200` into 200 instead of -56.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -86,7 +91,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
 `testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
-`testfnptrptrc`, `testrefmemberaggr`.
+`testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
+`testsignedcharemit`, `testsignedchar`.
 
 ### Unary `*` and `&` read their operand through one owner
 

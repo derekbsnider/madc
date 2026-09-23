@@ -48,6 +48,8 @@
   / `getConstType`.
 - One pointee level: `as_pointer_dd()`, never `dynamic_cast<DataDefPTR *>`.
   All levels: `dd_peel_pointers` (gated). void: `DataDef::is_void()` (gated).
+- A scalar's identity (`char` and `signed char` share one rawtype):
+  `Program::proven_scalar_identity` — never `rawtype()`.
 - Referent: `TokenSubscript::referent_type`; for member access
   `effective_pointer_type_for_member_access`. A multi-dim row:
   `build_fixed_array_query_type` — madc stores arrays flattened.
