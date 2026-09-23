@@ -64,10 +64,12 @@
   `leading_cv` mask, never dropped; the bits `modeled_cv()` names qualify each
   pointee — volatile in every mode, const in C only); `[dims]`:
   `parse_array_dimensions` + `nest_carray_dims` (gated).
-- A top-level `volatile` qualifies the OBJECT (`vfVOLATILE`, from the reader's
-  `base_volatile` / `volatile_after_star`); cir: the spec list, or a pointer's own
-  (FIRST) `N_POINTER`. A declarator list's tail re-pushes it: `push_declarator_list_tail`.
-  A member or a typedef has no flag: its top-level volatile is its TYPE's.
+- An object's top-level cv (`modeled_cv()`'s bits) is its declared TYPE's — a variable's
+  (parseDeclaration, from `base_cv` / `*_after_star`), a member's, a typedef's, a
+  reference's referent (the `&`); never a flag. A value slot dispatches on
+  `Variable::slot_type()`, the unqualified type. A declarator list's tail re-pushes it:
+  `push_declarator_list_tail`. Member access merges the object's cv: `member_access_type`
+  over `glvalue_cv`; a call argument's type: `call_argument_type`.
 - A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
   `pointer(cv)` per level and `append_cv_specs` for the base (cir).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.

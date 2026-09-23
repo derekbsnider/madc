@@ -2317,6 +2317,9 @@ bool value_from_storage(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;
@@ -2381,6 +2384,9 @@ bool set_storage_from_value(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;

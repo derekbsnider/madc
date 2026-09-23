@@ -21881,7 +21881,7 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     for ( size_t pi = 0; pi < n_rank; ++pi )
     {
 	TokenBase *p = tc->parameters[pi];
-	at.push_back(p ? operand_value_datadef(p) : NULL);
+	at.push_back(call_argument_type(p));
     }
     bool rejections_proven = true;
     Variable *ov = cls->findMethodOverload(id, at,
@@ -22310,7 +22310,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	bool all_args_known = true;
 	for ( TokenBase *p : tc->parameters )
 	{
-	    const DataDef *ad = p ? operand_value_datadef(p) : NULL;
+	    const DataDef *ad = call_argument_type(p);
 	    if ( !ad || datadef_involves_placeholder(
 			    const_cast<DataDef *>(ad), true) )
 		all_args_known = false;
@@ -22353,7 +22353,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     }
     std::vector<const DataDef *> at;
     for ( TokenBase *p : tc->parameters )
-	at.push_back(p ? p->datadef() : NULL);
+	at.push_back(call_argument_type(p));
     // Selection: a more-specialized overload may win the [temp.func.order]
     // tiebreak (`take(U*)` over `take(P)`). When findMethodOverload can't score
     // a candidate (e.g. a typedef-reference param it doesn't model), keep the
@@ -31450,7 +31450,9 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		      && (peekToken()->id() == TokenID::tkOpBrk
 		       || peekToken()->id() == TokenID::tkLT) )
 		    {
-			DataDefCLASS *method_cls = (DataDefCLASS *)obj_type;
+			// as_class_dd: obj_type is left qualified above (a `volatile C *`
+			// pointee, a volatile object) — a C cast reinterpreted the wrapper.
+			DataDefCLASS *method_cls = obj_type->as_class_dd();
 			bool explicit_targs_follow =
 			    peekToken()->id() == TokenID::tkLT;
 			Variable *mvar = explicit_targs_follow
@@ -31515,7 +31517,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    ssize_t ofs = sdd->m_offset(mname);
 	    if ( ofs == -1 )
 		Throw(mtb) << "no member named '" << mname << "'" << flush;
-	    DataDef *mtype = sdd->m_type(mname);
+	    // [expr.ref]/4: the object's cv qualifies the member — the pointee's
+	    // through `->` (obj_type is left qualified above), the head
+	    // glvalue's through `.`.
+	    DataDef *mtype = member_access_type(sdd->m_type(mname),
+		is_arrow ? obj_type->cv_quals() : glvalue_cv(result));
 	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
 	    mvar->flags = var ? member_proxy_flags(var->flags) : 0;
 
@@ -32022,6 +32028,33 @@ DataDef *Program::addressof_result_type(DataDef *operand_type)
 	if ( DataDefPTR *rp = operand_type->as_pointer_dd() )
 	    return getPointerType(rp->base_type);
     return getPointerType(operand_type);
+}
+
+unsigned Program::glvalue_cv(TokenBase *expr)
+{
+    DataDef *dd = expr ? expr->datadef() : NULL;
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dd->as_pointer_dd() )
+	    dd = rp->base_type;
+    return dd ? dd->cv_quals() & modeled_cv() : cvNONE;
+}
+
+DataDef *Program::member_access_type(DataDef *member_type, unsigned object_cv)
+{
+    object_cv &= modeled_cv();
+    if ( !member_type || !object_cv || member_type->is_reference()
+      || member_type->is_function() || member_type->as_carray_dd() )
+	return member_type;
+    return getQualifiedType(member_type, object_cv);
+}
+
+DataDef *Program::call_argument_type(TokenBase *arg)
+{
+    if ( !arg )
+	return NULL;
+    if ( DataDef *adp = array_decay_pointer(arg) )
+	return adp;
+    return operand_value_datadef(arg);
 }
 
 // THE builder of a unary address-of node, for an operand parseCastExpression
@@ -39528,7 +39561,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    std::vector<const DataDef *> at;
 			    for ( TokenBase *p : tc->parameters )
-				at.push_back(p ? p->datadef() : NULL);
+				at.push_back(call_argument_type(p));
 			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
 				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				{
@@ -39735,7 +39768,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
+		    // The member of a qualified object has the so-qualified type
+		    // ([expr.ref]/4, C11 6.5.2.3p3): `vs.m` is a volatile int.
+		    DataDef *mtype = member_access_type(
+			((DataDefSTRUCT *)struct_type)->m_type(id), glvalue_cv(lhs_dot));
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
 		    var->flags = member_proxy_flags(tv_var->flags);
@@ -39900,6 +39936,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    // get the pointed-to type
 		    DataDef *base = obj_type;
+		    unsigned arrow_object_cv = fixed_array_arrow ? glvalue_cv(lhs) : cvNONE;
 		    if ( !fixed_array_arrow )
 		    {
 			DataDefPTR *ptr_type = pointer_dd_of(obj_type);
@@ -39910,6 +39947,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// DataDefSTRUCT casts below must never see the
 			// DataDefQUAL wrapper (write-rejection through a
 			// const pointee is the const campaign's P4 residue).
+			// Its qualifiers still qualify the member's TYPE (below).
+			arrow_object_cv = ptr_type->base_type->cv_quals();
 			base = ptr_type->base_type->unqualified();
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
@@ -39974,7 +40013,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				std::vector<const DataDef *> at;
 				for ( TokenBase *p : tc->parameters )
-				    at.push_back(p ? p->datadef() : NULL);
+				    at.push_back(call_argument_type(p));
 				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
 				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				    {
@@ -40101,7 +40140,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
+		    // [expr.ref]/4: the pointee's cv qualifies the member (`pv->m`
+		    // through a `volatile S *` is a volatile int).
+		    DataDef *mtype = member_access_type(((DataDefSTRUCT *)base)->m_type(id),
+							arrow_object_cv);
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
@@ -59116,8 +59158,7 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
 	// the instantiated iterator overload's `int*` parameter, so the call fell
 	// back to the declaration-only placeholder and emitted an undefined
 	// `__ns_<fn>` import. array_decay_pointer returns NULL for non-arrays.
-	DataDef *adp = array_decay_pointer(tc->parameters[i]);
-	at.push_back(adp ? adp : operand_value_datadef(tc->parameters[i]));
+	at.push_back(call_argument_type(tc->parameters[i]));
 	zeros.push_back(is_zero_integer_literal(tc->parameters[i]));
     }
     Variable *w = find_namespace_function_overload(
@@ -59484,12 +59525,32 @@ static int fn_template_deduce_param(const std::string &spelling,
 	}
 	dd = static_cast<DataDefPTR *>(dd)->base_type;
     }
+    // [temp.deduct.call]/2: a by-value parameter (`T`) ignores the
+    // argument's top-level cv — the call argument type carries a volatile
+    // glvalue's qualifier for the reference arms, never into T.
+    if ( shape.amps == 0 && shape.stars == 0 )
+	dd = dd->unqualified();
     for ( size_t i = 0; i < shape.stars; ++i )
     {
 	DataDefPTR *p = pointer_dd_of(dd);
 	if ( !p || !p->base_type )
 	    return -1;
 	dd = p->base_type;
+    }
+    // A cv the PARAMETER spells on T itself (`volatile T *`, `volatile T &`)
+    // is not T's ([temp.deduct.call]/4: `volatile T *` from `volatile int *`
+    // deduces T = int). The words before the first `*` / `&` are T's level.
+    {
+	unsigned spelled_cv = cvNONE;
+	std::vector<std::string> sw;
+	fn_template_split_words(spelling, sw);
+	for ( size_t i = 0; i < sw.size() && sw[i] != "*" && sw[i] != "&"; ++i )
+	    if ( sw[i] == "volatile" )
+		spelled_cv |= cvVOLATILE;
+	    else if ( sw[i] == "const" )
+		spelled_cv |= cvCONST;
+	if ( pgm && (dd->cv_quals() & spelled_cv) )
+	    dd = pgm->getQualifiedType(dd->unqualified(), dd->cv_quals() & ~spelled_cv);
     }
     tp_out = shape.core;
     dd_out = canonical_template_binding_dd(dd);
@@ -72065,6 +72126,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
     bool saw_volatile_after_star = false, saw_base_volatile = false; // `int *volatile p` / `int volatile x`
+    bool saw_base_const = false;	// `int const x` (the declarator's east const)
     bool ret_is_ref = false;
     bool decl_rvalue_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
@@ -72113,6 +72175,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	saw_const_after_star = vd.const_after_star;
 	saw_volatile_after_star = vd.volatile_after_star;
 	saw_base_volatile = vd.base_volatile;
+	saw_base_const = vd.base_const;
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
@@ -72512,7 +72575,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	   && (paren_group_is_function_def()
 	       || paren_group_can_be_param_decl_clause())) )
     {
-	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
+	DataDefCLASS *ddc = decl_type->as_class_dd();	// a qualified class (a `vC` typedef) forwards
 	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
 	// existing brace-init route below; a NON-empty list with user ctors is
 	// a ctor-argument list and belongs here. EXCEPT the carrier: its `{}`
@@ -73357,6 +73420,32 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
+	// A top-level cv qualifies the OBJECT (C11 6.7.3p7) — `volatile int x`,
+	// `int volatile x`, `int *volatile p`, a volatile array or struct; `const`
+	// likewise — and an object's qualifiers are its declared TYPE's, as a
+	// member's and a typedef's are (`volatile int x` is `vint x`): `&x` is a
+	// `volatile int *` ([expr.unary.op]/3), `s.m` of a volatile `s` a volatile
+	// int, a reference binds it only as volatile, and the CIR spells it from
+	// the type. The bits are modeled_cv()'s (const in C only — the C++ const
+	// identity is the const campaign's; the vfCONSTANT read-only marking below
+	// is unchanged). A fixed array's is its element's (6.7.3p9; madc stores
+	// the element in var->type); a reference's is its referent's, already in
+	// its type (parse_declarator's `&`). Never `volatile int *p`, whose
+	// volatile is the POINTEE's. Before the file-scope snapshot below, which
+	// records the type the global is emitted with.
+	{
+	    unsigned object_cv = cvNONE;
+	    if ( ((gotvolatile || saw_base_volatile) && !saw_pointer_decl)
+	      || saw_volatile_after_star )
+		object_cv |= cvVOLATILE;
+	    if ( ((gotconst || saw_base_const) && !saw_pointer_decl)
+	      || saw_const_after_star )
+		object_cv |= cvCONST;
+	    object_cv &= modeled_cv();
+	    if ( object_cv && var && var->type && !var->type->is_reference()
+	      && !var->type->as_fptr_dd() && !var->type->is_function() )
+		var->type = getQualifiedType(var->type, object_cv);
+	}
 	// Record file-scope variables in top_decls in source order for the CIR
 	// backend (a struct defined inline here, `struct X {...} v;`, rides in
 	// this declaration). Locals (inside a function compound) are excluded.
@@ -73406,13 +73495,6 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( decl_is_const && !(var->flags & vfFIXEDARRAY)
 	  && !(var->type && var->type->is_struct()) )
 	    var->flags |= vfCONSTANT | vfCONSTDECL;
-	// A top-level `volatile` qualifies the OBJECT (C11 6.7.3p7): `volatile
-	// int x`, `int volatile x`, `int *volatile p`, a volatile array or struct
-	// — never `volatile int *p`, whose volatile is the POINTEE's (a type-level
-	// qualifier, the pointee_volatile gap).
-	if ( ((gotvolatile || saw_base_volatile) && !saw_pointer_decl)
-	  || saw_volatile_after_star )
-	    var->flags |= vfVOLATILE;
 	// The extern flag is set at variable-CREATION time (addVariable), so it
 	// can only mark a freshly-created symbol and can never demote an
 	// already-defined (existing non-extern) one — a global with both a

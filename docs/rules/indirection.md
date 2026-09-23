@@ -495,6 +495,51 @@ yet measured.
   `*`), so it now qualifies the referent at the `&`. Reducer
   `tests/testvolatilemanglecxx` (calls through the g++ symbol names, declared
   `extern "C"`), unit cases in `test_mangle.cpp`.
+- ~~`volatile_lvalue_type`~~ — fixed 2026-09-23, silent (V2 of volatile
+  across the board). A variable's own top-level volatile rode a flag,
+  `vfVOLATILE`, that the CIR spelled but no TYPE carried, while a member's
+  and a typedef's volatile were already their types' — one fact in two
+  representations. So `&vx` was `int *` (overload `f(volatile int*)` lost to
+  `f(int*)`, `T*` deduced `T = int`, `__builtin_types_compatible_p(__typeof__
+  (&vx), volatile int *)` was 0), a volatile lvalue bound `int &`, and `T &`
+  deduced `int` — a template body then accessed the object as non-volatile.
+  A bridge that re-merged the flag into a type wherever the language needs
+  the glvalue's type was drafted and dropped for the root: parseDeclaration
+  now qualifies the variable's TYPE (a fixed array's element, madc storing
+  the element in `var->type`; a reference's referent is already qualified at
+  the `&`), before the file-scope snapshot the global is emitted from; the CIR
+  spells it from the type (`peel_pointer_declarator`'s level cv, the alias's
+  added cv) and the two flag paths in `var_decl` are gone; the bit is
+  retired. Then member access merges the OBJECT's cv into the member's type
+  ([expr.ref]/4, C11 6.5.2.3p3) at the three `.`/`->` arms
+  (`member_access_type` over `glvalue_cv` — the glvalue's type cv, a
+  reference's referent); the six call-argument vectors (three spelled raw
+  `datadef()`, two `operand_value_datadef`, one with array decay) are one
+  owner, `call_argument_type`; a by-value parameter drops the argument's
+  top-level cv in `score_arg_to_param`, a by-value `T` in deduction, and a
+  parameter spelled `volatile T *` / `volatile T &` removes its own cv from
+  `T`. c2mir had the same hole on its own: its member access copied the
+  member's declared type (`qualify_member_type` now merges the object's
+  const/volatile, onto an array member's elements), and its `&` of a member
+  rebuilt the pointee from the declaration again (it now keeps the
+  expression's qualifiers) — `_Generic (&vs.m, volatile int *: 2)` picked
+  `int *` in plain C through c2m (MIR corpus `new/volatile-member-type.c`).
+  Two C-style casts read a now-qualified type as its class (the postfix
+  engine's method receiver, the ctor-declaration arm) — `as_class_dd()`
+  forwards. The model is the modeled bits', not volatile's alone: in C a
+  variable's top-level const is its type's too (`&cs.m` of a `const struct S
+  cs` is `const int *` — the new MIR corpus case failed through madc on
+  exactly that), C++ const staying the const campaign's (the vfCONSTANT
+  read-only marking is unchanged). That exposed the parse-time value slot:
+  `Variable::set` / `get` / `inc` / `dec` / `cmp` / `slot_size` dispatched on
+  `type == &ddINT`, so a qualified int stored nothing and `int arr[N]` with
+  `const int N = 4` folded to `int arr[0]` (sizeof refused) — they read
+  `slot_type()`, the unqualified type, now; so do libmadc's host value
+  marshallers. Reducers `tests/testvolatileobjecttypec`,
+  `tests/testvolatilelvaluecxx`, `tests/testconstobjecttypec`. Residues: a
+  function-pointer OBJECT's own volatile (`int (*volatile fp)(int)`) is not
+  modeled (it was spelled nowhere either); a volatile PARAMETER object
+  (`void f(volatile int n)`) is still non-volatile inside the body.
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

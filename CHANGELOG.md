@@ -131,6 +131,12 @@ answers.
   `volatile int*` never picks `f(int*)`. A qualified pointer is a pointer
   everywhere: through a member `struct N *volatile next`, `n.next->v` was
   refused, `n.p + 2` stepped by 8 instead of 4, and deduction from it failed.
+  A volatile object's lvalue is volatile: `&vx` is `volatile int *`, a
+  member of a volatile struct is volatile (in madc and in plain C through
+  c2m, where `_Generic (&vs.m, ...)` picked `int *`), a volatile lvalue binds
+  only `volatile int &`, and `T &` deduces `volatile int`. In C a const
+  object's lvalue is const the same way (`&cs.m` of a `const struct S cs` is
+  `const int *`).
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const

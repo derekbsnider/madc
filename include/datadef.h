@@ -355,12 +355,10 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // (Fresh bit: 65536 is RETIRED, and reusing
 			                        // it would misread older serialized flags.)
 			  vfMUTABLE    =4194304, // mutable data member; carried in member_access
-			  vfVOLATILE   =8388608, // a volatile-QUALIFIED object (a top-level
-			                        // `volatile`: `volatile int x`, `int
-			                        // volatile x`, `int *volatile p`) — every
-			                        // access is a real load/store (C11
-			                        // 5.1.2.3p6, 7.13.2.1p3); lowers to
-			                        // c2mir's N_VOLATILE
+			                        // (8388608 is RETIRED: it was vfVOLATILE,
+			                        // a volatile object's flag — an object's
+			                        // top-level volatile is its declared
+			                        // TYPE's now, as a member's is)
 			  vfTHREADLOCAL=2097152, // thread storage duration: C++11
 			                        // `thread_local` / C11 `_Thread_local`.
 			                        // Rides beside vfSTATIC/vfEXTERN (a

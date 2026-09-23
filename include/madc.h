@@ -5284,7 +5284,7 @@ public:
     LinkageSpec current_linkage = LinkageSpec::Cpp;
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
-    bool parsing_volatile_decl = false;	// current declaration's decl-specifiers carry `volatile` — vfVOLATILE on a variable it qualifies at the TOP level (no `*`); consumed by parseDeclaration like parsing_const_decl
+    bool parsing_volatile_decl = false;	// current declaration's decl-specifiers carry `volatile` — it qualifies the variable's TYPE at the top level (no `*`); consumed by parseDeclaration like parsing_const_decl
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_constexpr_decl = false;	// current declaration carried `constexpr` — stamp its FuncDef independently of object const-ness
     // Per-Program constexpr invocation stack. Each frame binds one callee's
@@ -6615,6 +6615,24 @@ public:
     // The type of '&x' from x's type: pointer-to-referent for a reference
     // operand ([expr.unary.op]p3), else pointer-to-type.
     DataDef *addressof_result_type(DataDef *operand_type);
+    // The cv of the OBJECT an lvalue expression designates: its type's (a
+    // reference denotes its referent). An object's top-level cv is its
+    // declared TYPE's — a variable's as a member's and a typedef's
+    // (parseDeclaration), a fixed array's its element's — so this is the one
+    // reader of "the glvalue's qualifiers" for member access ([expr.ref]/4,
+    // C11 6.5.2.3p3). Masked by modeled_cv().
+    unsigned glvalue_cv(TokenBase *expr);
+    // A data member's type as accessed through an object of cv `object_cv`
+    // (the member's own cv and the object's, merged — an array member's
+    // ELEMENT, madc storing it flattened; a reference member or a function
+    // unchanged).
+    DataDef *member_access_type(DataDef *member_type, unsigned object_cv);
+    // THE type a call argument ranks and deduces by (every overload and
+    // deduction argument vector): an array or function argument decayed,
+    // else the operand's value type — which keeps a volatile glvalue's
+    // qualifier: a by-value parameter drops it ([dcl.fct]/5,
+    // [temp.deduct.call]/2), a reference binds by it.
+    DataDef *call_argument_type(TokenBase *arg);
     DataDefREF *getReferenceType(DataDef *base);
     // THE qualified-type minter: `base` with the cv bits of `cv` (CvQual) ADDED
     // to whatever it already carries — canonical, one DataDefQUAL per

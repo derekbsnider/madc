@@ -182,58 +182,65 @@ public:
     // allocations keep type->size elements (C layout).
     static size_t slot_size(const DataDef &d)
     {
-	return (&d == &ddINT && d.size < 8) ? 8 : d.size;
+	const DataDef *u = d.unqualified();
+	return (u == &ddINT && u->size < 8) ? 8 : u->size;
     }
+    // The type the value slot is laid out and dispatched by: the variable's
+    // UNQUALIFIED type. An object's top-level cv is its declared type's
+    // (`const int N = 4` is QUAL(int)), and the identity ladders below asked
+    // `slot_type() == &ddINT` — a qualified int matched no arm, set() stored nothing,
+    // and `int arr[N]` folded to `int arr[0]`.
+    const DataDef *slot_type() const { return type ? type->unqualified() : type; }
     bool set(int64_t c)
     {
 	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   *((char *)data) = c;
-	else if (type == &ddBOOL)   *((bool *)data) = c;
+	/**/ if (slot_type() == &ddCHAR)   *((char *)data) = c;
+	else if (slot_type() == &ddBOOL)   *((bool *)data) = c;
 	// madc's `int` is 64-bit by design.  Writing only the low 4 bytes
 	// via `(int *)` left the high half at zero (calloc'd 0), so e.g.
 	// `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` failed because
 	// WEAR_NONE round-tripped as 0x00000000FFFFFFFF, not 0xFFFF..FFFF.
-	else if (type == &ddINT)    *((int64_t *)data) = c;
-	else if (type == &ddINT64)  *((int64_t *)data) = c;
-	else if (type == &ddINT8)   *((int8_t *)data) = c;
-	else if (type == &ddINT16)  *((int16_t *)data) = c;
-	else if (type == &ddINT24)  *((int16_t *)data) = c;
-	else if (type == &ddINT32)  *((int32_t *)data) = c;
-	else if (type == &ddUINT8)  *((uint8_t *)data) = c;
-	else if (type == &ddUINT16) *((uint16_t *)data) = c;
-	else if (type == &ddUINT24) *((uint16_t *)data) = c;
-	else if (type == &ddUINT32) *((uint32_t *)data) = c;
-	else if (type == &ddUINT64) *((uint64_t *)data) = c;
-	else if (type == &ddFLOAT)  *((float *)data) = c;
-	else if (type == &ddDOUBLE) *((double *)data) = c;
-	else if (dynamic_cast<DataDefENUM *>(type)) *((int32_t *)data) = c;
+	else if (slot_type() == &ddINT)    *((int64_t *)data) = c;
+	else if (slot_type() == &ddINT64)  *((int64_t *)data) = c;
+	else if (slot_type() == &ddINT8)   *((int8_t *)data) = c;
+	else if (slot_type() == &ddINT16)  *((int16_t *)data) = c;
+	else if (slot_type() == &ddINT24)  *((int16_t *)data) = c;
+	else if (slot_type() == &ddINT32)  *((int32_t *)data) = c;
+	else if (slot_type() == &ddUINT8)  *((uint8_t *)data) = c;
+	else if (slot_type() == &ddUINT16) *((uint16_t *)data) = c;
+	else if (slot_type() == &ddUINT24) *((uint16_t *)data) = c;
+	else if (slot_type() == &ddUINT32) *((uint32_t *)data) = c;
+	else if (slot_type() == &ddUINT64) *((uint64_t *)data) = c;
+	else if (slot_type() == &ddFLOAT)  *((float *)data) = c;
+	else if (slot_type() == &ddDOUBLE) *((double *)data) = c;
+	else if (dynamic_cast<const DataDefENUM *>(slot_type())) *((int32_t *)data) = c;
 	else 	     { return false; }
 	return true;
     }
     template<typename T> int cmp(T c)
     {
 	if ( !data ) { return 0; }
-	if (type == &ddCHAR)   return *((char *)data) == c;
-	if (type == &ddBOOL)   return *((bool *)data) == c;
-	if (type == &ddINT)    return *((int64_t *)data) == c;
-	if (type == &ddINT64)  return *((int64_t *)data) == c;
-	if (type == &ddINT8)   return *((int8_t *)data) == c;
-	if (type == &ddINT16)  return *((int16_t *)data) == c;
-	if (type == &ddINT24)  return *((int16_t *)data) == c;
-	if (type == &ddINT32)  return *((int32_t *)data) == c;
-	if (type == &ddUINT8)  return *((uint8_t *)data) == static_cast<uint8_t>(c);
-	if (type == &ddUINT16) return *((uint16_t *)data) == static_cast<uint16_t>(c);
-	if (type == &ddUINT24) return *((uint16_t *)data) == static_cast<uint16_t>(c);
-	if (type == &ddUINT32) return *((uint32_t *)data) == static_cast<uint32_t>(c);
-	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
-	if (type == &ddFLOAT)  return *((float *)data) == c;
-	if (type == &ddDOUBLE) return *((double *)data) == c;
-	if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data) == c;
+	if (slot_type() == &ddCHAR)   return *((char *)data) == c;
+	if (slot_type() == &ddBOOL)   return *((bool *)data) == c;
+	if (slot_type() == &ddINT)    return *((int64_t *)data) == c;
+	if (slot_type() == &ddINT64)  return *((int64_t *)data) == c;
+	if (slot_type() == &ddINT8)   return *((int8_t *)data) == c;
+	if (slot_type() == &ddINT16)  return *((int16_t *)data) == c;
+	if (slot_type() == &ddINT24)  return *((int16_t *)data) == c;
+	if (slot_type() == &ddINT32)  return *((int32_t *)data) == c;
+	if (slot_type() == &ddUINT8)  return *((uint8_t *)data) == static_cast<uint8_t>(c);
+	if (slot_type() == &ddUINT16) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (slot_type() == &ddUINT24) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (slot_type() == &ddUINT32) return *((uint32_t *)data) == static_cast<uint32_t>(c);
+	if (slot_type() == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
+	if (slot_type() == &ddFLOAT)  return *((float *)data) == c;
+	if (slot_type() == &ddDOUBLE) return *((double *)data) == c;
+	if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data) == c;
 	return 0;
     }
     int cmp(std::string &s)
     {
-	if (type == &ddCHARptr && data)
+	if (slot_type() == &ddCHARptr && data)
 	{
 	    const char *p = *(const char **)data;
 	    return p ? std::strcmp(p, s.c_str()) : -1;
@@ -243,61 +250,61 @@ public:
     bool dec()
     {
 	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   --*((char *)data);
-	else if (type == &ddINT)    --*((int64_t *)data);
-	else if (type == &ddINT64)  --*((int64_t *)data);
-	else if (type == &ddINT8)   --*((int8_t *)data);
-	else if (type == &ddINT16)  --*((int16_t *)data);
-	else if (type == &ddINT24)  --*((int16_t *)data);
-	else if (type == &ddINT32)  --*((int32_t *)data);
-	else if (type == &ddUINT8)  --*((uint8_t *)data);
-	else if (type == &ddUINT16) --*((uint16_t *)data);
-	else if (type == &ddUINT24) --*((uint16_t *)data);
-	else if (type == &ddUINT32) --*((uint32_t *)data);
-	else if (type == &ddUINT64) --*((uint64_t *)data);
-	else if (type == &ddFLOAT)  --*((float *)data);
-	else if (type == &ddDOUBLE) --*((double *)data);
+	/**/ if (slot_type() == &ddCHAR)   --*((char *)data);
+	else if (slot_type() == &ddINT)    --*((int64_t *)data);
+	else if (slot_type() == &ddINT64)  --*((int64_t *)data);
+	else if (slot_type() == &ddINT8)   --*((int8_t *)data);
+	else if (slot_type() == &ddINT16)  --*((int16_t *)data);
+	else if (slot_type() == &ddINT24)  --*((int16_t *)data);
+	else if (slot_type() == &ddINT32)  --*((int32_t *)data);
+	else if (slot_type() == &ddUINT8)  --*((uint8_t *)data);
+	else if (slot_type() == &ddUINT16) --*((uint16_t *)data);
+	else if (slot_type() == &ddUINT24) --*((uint16_t *)data);
+	else if (slot_type() == &ddUINT32) --*((uint32_t *)data);
+	else if (slot_type() == &ddUINT64) --*((uint64_t *)data);
+	else if (slot_type() == &ddFLOAT)  --*((float *)data);
+	else if (slot_type() == &ddDOUBLE) --*((double *)data);
 	return true;
     }
     bool inc()
     {
 	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   ++*((char *)data);
-	else if (type == &ddINT)    ++*((int64_t *)data);
-	else if (type == &ddINT64)  ++*((int64_t *)data);
-	else if (type == &ddINT8)   ++*((int8_t *)data);
-	else if (type == &ddINT16)  ++*((int16_t *)data);
-	else if (type == &ddINT24)  ++*((int16_t *)data);
-	else if (type == &ddINT32)  ++*((int32_t *)data);
-	else if (type == &ddUINT8)  ++*((uint8_t *)data);
-	else if (type == &ddUINT16) ++*((uint16_t *)data);
-	else if (type == &ddUINT24) ++*((uint16_t *)data);
-	else if (type == &ddUINT32) ++*((uint32_t *)data);
-	else if (type == &ddUINT64) ++*((uint64_t *)data);
-	else if (type == &ddFLOAT)  ++*((float *)data);
-	else if (type == &ddDOUBLE) ++*((double *)data);
+	/**/ if (slot_type() == &ddCHAR)   ++*((char *)data);
+	else if (slot_type() == &ddINT)    ++*((int64_t *)data);
+	else if (slot_type() == &ddINT64)  ++*((int64_t *)data);
+	else if (slot_type() == &ddINT8)   ++*((int8_t *)data);
+	else if (slot_type() == &ddINT16)  ++*((int16_t *)data);
+	else if (slot_type() == &ddINT24)  ++*((int16_t *)data);
+	else if (slot_type() == &ddINT32)  ++*((int32_t *)data);
+	else if (slot_type() == &ddUINT8)  ++*((uint8_t *)data);
+	else if (slot_type() == &ddUINT16) ++*((uint16_t *)data);
+	else if (slot_type() == &ddUINT24) ++*((uint16_t *)data);
+	else if (slot_type() == &ddUINT32) ++*((uint32_t *)data);
+	else if (slot_type() == &ddUINT64) ++*((uint64_t *)data);
+	else if (slot_type() == &ddFLOAT)  ++*((float *)data);
+	else if (slot_type() == &ddDOUBLE) ++*((double *)data);
 	return true;
     }
     template<typename T> T get()
     {
 	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   return *((char *)data);
-	else if (type == &ddINT)    return *((int64_t *)data);
-	else if (type == &ddINT64)  return *((int64_t *)data);
-	else if (type == &ddINT8)   return *((int8_t *)data);
-	else if (type == &ddINT16)  return *((int16_t *)data);
-	else if (type == &ddINT24)  return *((int16_t *)data);
-	else if (type == &ddINT32)  return *((int32_t *)data);
-	else if (type == &ddUINT8)  return *((uint8_t *)data);
-	else if (type == &ddUINT16) return *((uint16_t *)data);
-	else if (type == &ddUINT24) return *((uint16_t *)data);
-	else if (type == &ddUINT32) return *((uint32_t *)data);
-	else if (type == &ddUINT64) return *((uint64_t *)data);
-	else if (type == &ddINT128)  return *((madc_wide_int *)data);
-	else if (type == &ddUINT128) return *((madc_wide_uint *)data);
-	else if (type == &ddFLOAT)  return *((float *)data);
-	else if (type == &ddDOUBLE) return *((double *)data);
-	else if (dynamic_cast<DataDefENUM *>(type)) return *((int32_t *)data);
+	/**/ if (slot_type() == &ddCHAR)   return *((char *)data);
+	else if (slot_type() == &ddINT)    return *((int64_t *)data);
+	else if (slot_type() == &ddINT64)  return *((int64_t *)data);
+	else if (slot_type() == &ddINT8)   return *((int8_t *)data);
+	else if (slot_type() == &ddINT16)  return *((int16_t *)data);
+	else if (slot_type() == &ddINT24)  return *((int16_t *)data);
+	else if (slot_type() == &ddINT32)  return *((int32_t *)data);
+	else if (slot_type() == &ddUINT8)  return *((uint8_t *)data);
+	else if (slot_type() == &ddUINT16) return *((uint16_t *)data);
+	else if (slot_type() == &ddUINT24) return *((uint16_t *)data);
+	else if (slot_type() == &ddUINT32) return *((uint32_t *)data);
+	else if (slot_type() == &ddUINT64) return *((uint64_t *)data);
+	else if (slot_type() == &ddINT128)  return *((madc_wide_int *)data);
+	else if (slot_type() == &ddUINT128) return *((madc_wide_uint *)data);
+	else if (slot_type() == &ddFLOAT)  return *((float *)data);
+	else if (slot_type() == &ddDOUBLE) return *((double *)data);
+	else if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data);
 	return true;
     }
 };

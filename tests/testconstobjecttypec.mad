@@ -1,0 +1,30 @@
+// C: an object's top-level const is part of its declared TYPE, as its
+// volatile is (testvolatileobjecttypec) and as a typedef's already was:
+// `&k` of a `const int k` is `const int *`, a member of a const struct is
+// const (C11 6.5.2.3p3), an element of a const array is const (6.7.3p9).
+// The const rode the vfCONSTANT flag alone (an aggregate not even that), so
+// `gen:` printed 1 1 1 1. And the parse-time value slot of a const scalar
+// dispatches on its UNQUALIFIED type: the slot's identity ladder asked
+// `type == &ddINT`, so a qualified int stored nothing and `int arr[N]`
+// with `const int N = 4` folded to `int arr[0]` (sizeof refused).
+// Oracle: gcc and clang print testconstobjecttypec.expect.
+#include <stdio.h>
+struct S { int m; int a[2]; };
+static const int N = 4;
+const char *const names[2] = { "a", "b" };
+int main (void) {
+  const int k = 3;
+  int const e = 5;
+  const struct S cs = { 1, { 2, 3 } };
+  const int ca[3] = { 7, 8, 9 };
+  int arr[N];
+  for (int i = 0; i < N; i++) arr[i] = i * k;
+  printf ("vals: %d %d %d %d %d %s %d\n", k, e, cs.a[1], ca[2], arr[3], names[1], (int) sizeof arr);
+  printf ("gen: %d %d %d %d\n",
+          _Generic (&k, int *: 1, const int *: 3, default: 0),
+          _Generic (&e, int *: 1, const int *: 3, default: 0),
+          _Generic (&cs.m, int *: 1, const int *: 3, default: 0),
+          _Generic (&ca[0], int *: 1, const int *: 3, default: 0));
+  switch (k) { case 3: printf ("sw: 3\n"); break; default: printf ("sw: ?\n"); }
+  return 0;
+}
