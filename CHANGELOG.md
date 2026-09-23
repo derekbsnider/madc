@@ -88,6 +88,10 @@ answers.
   `typedef const char *ccp`, `typedef const int CI`, `typedef const struct T
   *P` and `(const char *)p` had all named the unqualified type, so `_Generic`
   chose `char *` and `__builtin_types_compatible_p(ccp, const char *)` was 0.
+- **A pointer non-type template argument is one operand in the template's
+  body.** `template <int (*P)()> ... P()` over `FnPtr<&g>` was refused as
+  `&(g())`, and `O->m` over `Obj<&obj>` as `&(obj->m)`. New gate
+  `check-one-nontype-splice.sh`.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -100,7 +104,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
 `testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
 `testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
-`testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`.
+`testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
+`testtplnontypegroup`.
 
 ### Unary `*` and `&` read their operand through one owner
 

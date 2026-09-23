@@ -348,6 +348,26 @@ yet measured.
   const-qualified-types campaign (`cxx_const_overload_identity` measured it
   there, silent too). Reducer `tests/testconsttypedefcastc`. Residues: `typedef
   const enum`, a trailing `int const` shared by a declarator list's tail.
+- ~~`template_arg_address_of_function`~~ — fixed 2026-09-23, a regression the
+  const family's wider Tier 1 found (`tests/testtplparamdeclarator`, outside
+  nb6). A non-type template argument substituted into a cloned body is ONE
+  operand ([temp.param]/8), but three clones spliced its raw tokens: the
+  class-template body clone, the out-of-line member clone and
+  `clone_template_tokens_with_type_subst`. `P()` over `&g` read `&(g())`, which
+  the `&` owner (450242bfe) rightly refuses ("expecting addressable
+  expression"); the old hand reader read `&g` and then called it. `O->m` over
+  `&obj` read `&(obj->m)`, refused before this arc as well. One owner now
+  splices, `splice_nontype_template_arg`: it groups a multi-token argument
+  exactly when the next body token is a postfix step (`(` `[` `.` `->` `++`
+  `--`, the only operators that bind tighter than the argument's own). A
+  template-argument position (`Other<P>`) is never followed by one, so the
+  spelling that keys the instantiation is unchanged. The alias-template
+  `tok_subst` carries TYPE arguments as tokens and stays out (`T(int)` must
+  never group). Gate: `check-one-nontype-splice.sh`, two-sided. Reducer
+  `tests/testtplnontypegroup`. Found beside it, each its own gap: a function
+  template's pointer non-type argument is never instantiated
+  (`fcall<&h>(4)`); `s.*&S::m` (the `.*` operand is not the cast-expression
+  owner's); `FnPtr<(&g)>` keys a second specialization.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

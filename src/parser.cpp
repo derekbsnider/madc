@@ -5826,14 +5826,68 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td,
     return true;
 }
 
+// A non-type template argument spliced into a body as raw tokens must still
+// read as ONE operand. Only a POSTFIX step — `(` `[` `.` `->` `++` `--` —
+// binds tighter than an argument's own operators (`&g`, `&obj`, `ns::f`), so
+// only a postfix step after the parameter needs the argument grouped: `P()`
+// over `&g` had read `&(g())`, `O->m` over `&obj` `&(obj->m)`. A
+// template-argument position (`Other<P>`) is followed by `,` or `>`, never a
+// postfix step, so the spelling that keys the instantiation stays unchanged.
+static bool template_arg_groups_before(const TokenBase *next)
+{
+    if ( !next )
+	return false;
+    switch ( next->id() )
+    {
+	case TokenID::tkOpBrk: case TokenID::tkOpSqr: case TokenID::tkDot:
+	case TokenID::tkDeRef: case TokenID::tkInc: case TokenID::tkDec:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+// A token the substitution SYNTHESIZES (a grouping paren) takes the source
+// position of the token it stands in for — the path back to the source
+// (mc11-ir.md).
+static TokenBase *synthesized_at(TokenBase *t, const TokenBase *at)
+{
+    if ( t && at )
+    {
+	t->file = at->file;
+	t->line = at->line;
+	t->column = at->column;
+    }
+    return t;
+}
+
+// THE splice of a non-type template argument into a cloned token run — the
+// class-template body clone, the out-of-line member clone and the default /
+// pattern clone (clone_template_tokens_with_type_subst) all substitute a
+// parameter NAME by the argument's tokens here: grouped when `next`, the body
+// token after the parameter, is a postfix step (template_arg_groups_before).
+static void splice_nontype_template_arg(std::vector<TokenBase *> &out,
+					const std::vector<TokenBase *> &arg,
+					const TokenBase *param, const TokenBase *next)
+{
+    bool group = arg.size() > 1 && template_arg_groups_before(next);
+    if ( group )
+	out.push_back(synthesized_at(new TokenOpBrk(), param));
+    for ( TokenBase *t : arg )
+	out.push_back(t ? t->clone_origin() : NULL);
+    if ( group )
+	out.push_back(synthesized_at(new TokenClBrk(), param));
+}
+
 static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	const std::vector<TokenBase *> &src,
 	const std::map<std::string, TokenDataType *> &subst,
 	const std::map<std::string, std::vector<TokenBase *> > *token_subst = NULL)
 {
     std::vector<TokenBase *> out;
-    for ( TokenBase *bt : src )
+    for ( size_t si_ = 0; si_ < src.size(); ++si_ )
     {
+	TokenBase *bt = src[si_];
 	if ( bt && bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->spelling();
@@ -5850,8 +5904,8 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 		    ti = token_subst->find(s);
 		if ( ti != token_subst->end() )
 		{
-		    for ( TokenBase *st : ti->second )
-			out.push_back(st ? st->clone_origin() : NULL);
+		    splice_nontype_template_arg(out, ti->second, bt,
+			si_ + 1 < src.size() ? src[si_ + 1] : NULL);
 		    continue;
 		}
 	    }
@@ -11012,8 +11066,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		token_subst.find(s);
 	    if ( nti != token_subst.end() )
 	    {
-		for ( size_t ni = 0; ni < nti->second.size(); ++ni )
-		    inj.push_back(nti->second[ni]->clone_origin());
+		splice_nontype_template_arg(inj, nti->second, bt,
+		    bi + 1 < td.body.size() ? td.body[bi + 1] : NULL);
 		continue;
 	    }
 	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
@@ -57160,9 +57214,8 @@ void Program::register_outofline_member_instantiations(
 		    toksubst.find(s);
 		if ( ti != toksubst.end() )
 		{
-		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
-			sub.push_back(ti->second[ni2]
-				      ? ti->second[ni2]->clone_origin() : NULL);
+		    splice_nontype_template_arg(sub, ti->second, bt,
+			bi + 1 < def.decl.size() ? def.decl[bi + 1] : NULL);
 		    continue;
 		}
 		if ( s == class_name )

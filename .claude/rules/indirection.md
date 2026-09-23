@@ -60,6 +60,8 @@
   `leading_const`, never dropped); `[dims]`: `parse_array_dimensions` +
   `nest_carray_dims` (gated).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
+- A non-type template argument spliced into a cloned body (one operand):
+  `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).
 - A spelling's decorations: `ItaniumMangler::parse_type`; P/R/O/K: `encode_type`. A
   function (pointer) through its layers: `fptr_structural_spelling` (a reference is R).
 
