@@ -1,0 +1,20 @@
+addr-var 5
+addr-sub 2
+addr-member 2
+addr-arrow 9
+addr-plus 1
+cast-addr 1
+addr-global 5
+addr-function 8
+paren-fnptr 8
+addr-deref 5
+addr-deref2 0
+addr-deref-call 5
+fnptr-addr 8
+fnptr-addr-eq 1
+deref-function 6
+deref-addr-function 6
+fnptr-deref1 10
+fnptr-param 8
+addr-deref-step 5 1
+member-of-deref-step 5 1

@@ -10,7 +10,12 @@
   (the engine, bounded). Deref node: `Program::build_indirection`, its only
   builder — `**x` is `*(*x)` by recursion, never a star count. Gate:
   `check-one-deref-builder.sh`.
-- Unary `&`: `parseAddressOfExpression` + `addressof_result_type`.
+- Unary `&`: its operand too is `parseCastExpression`'s, built by
+  `Program::build_address_of` (the reader keeps only the compound literal and
+  the unparenthesized qualified-id, [expr.unary.op]/4). Result type:
+  `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
+- Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
+  never bare `is_function()` (true for both) or `is_function() && is_numeric()`.
 - `*var`: `deref_type_for_variable`. Decay in a value context:
   `Program::array_decay_pointer`. sizeof of an expression: `type_query_expression_value`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;

@@ -1,0 +1,39 @@
+// Unary & over C++ operands ([expr.unary.op]/3-4): `&*it` takes the address
+// of what a class operator* returns by reference; `&*this` is `this`; an
+// UNPARENTHESIZED qualified-id names a pointer to member (`&C::m`) or a
+// static member's object (`&C::sm`) -- the one shape the & reader keeps as
+// its own arm, because [expr.unary.op]/4 decides it on the SPELLING. madc
+// refused `&*it` and `&*this` ("expecting variable name after '&'").
+// Oracle: g++ and clang++ -std=c++17 agree on every line.
+#include <stdio.h>
+
+struct It {
+    char *p;
+    char &operator*() { return *p; }
+};
+
+struct C {
+    int m;
+    static int sm;
+    bool self() { return &*this == this; }
+};
+int C::sm = 7;
+
+namespace ns { int g = 5; }
+
+int main()
+{
+    char buf[2] = { 7, 9 };
+    It it;
+    it.p = buf;
+    C c;
+    c.m = 3;
+
+    printf("addr-class-deref %d\n", &*it == buf);
+    printf("addr-this %d\n", c.self());
+    int C::*pm = &C::m;
+    printf("member-pointer %d\n", c.*pm);
+    printf("static-member %d\n", *&C::sm);
+    printf("namespace-member %d\n", *&ns::g);
+    return 0;
+}

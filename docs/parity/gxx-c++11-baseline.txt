@@ -125,7 +125,6 @@ g++.dg/cpp0x/constexpr-77771.C
 g++.dg/cpp0x/constexpr-92015.C
 g++.dg/cpp0x/constexpr-__func__2.C
 g++.dg/cpp0x/constexpr-aggr1.C
-g++.dg/cpp0x/constexpr-aggr2.C
 g++.dg/cpp0x/constexpr-aggr3.C
 g++.dg/cpp0x/constexpr-arith-overflow.C
 g++.dg/cpp0x/constexpr-array-ptr.C
@@ -215,7 +214,6 @@ g++.dg/cpp0x/constexpr-value3.C
 g++.dg/cpp0x/constexpr-volatile4.C
 g++.dg/cpp0x/conv-tmpl1.C
 g++.dg/cpp0x/conv-tmpl6.C
-g++.dg/cpp0x/decltype-71879.C
 g++.dg/cpp0x/decltype-bitfield1.C
 g++.dg/cpp0x/decltype-mem-initializer1.C
 g++.dg/cpp0x/decltype-nonstatic1.C
@@ -318,7 +316,6 @@ g++.dg/cpp0x/lambda/lambda-80947.C
 g++.dg/cpp0x/lambda/lambda-constexpr3.C
 g++.dg/cpp0x/lambda/lambda-conv12.C
 g++.dg/cpp0x/lambda/lambda-conv4.C
-g++.dg/cpp0x/lambda/lambda-conv9.C
 g++.dg/cpp0x/lambda/lambda-debug.C
 g++.dg/cpp0x/lambda/lambda-decltype2.C
 g++.dg/cpp0x/lambda/lambda-ice12.C
@@ -395,7 +392,6 @@ g++.dg/cpp0x/pr86379.C
 g++.dg/cpp0x/pr87125.C
 g++.dg/cpp0x/pr87539.C
 g++.dg/cpp0x/pr87750.C
-g++.dg/cpp0x/pr88410.C
 g++.dg/cpp0x/range-for11.C
 g++.dg/cpp0x/range-for17.C
 g++.dg/cpp0x/range-for18.C
@@ -411,7 +407,6 @@ g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
 g++.dg/cpp0x/rv-dotstar.C
 g++.dg/cpp0x/rv-return.C
-g++.dg/cpp0x/rv-this2.C
 g++.dg/cpp0x/scoped_enum10.C
 g++.dg/cpp0x/scoped_enum4.C
 g++.dg/cpp0x/sfinae12.C
@@ -486,7 +481,6 @@ g++.dg/cpp0x/variadic22.C
 g++.dg/cpp0x/variadic27.C
 g++.dg/cpp0x/variadic29.C
 g++.dg/cpp0x/variadic37.C
-g++.dg/cpp0x/variadic44.C
 g++.dg/cpp0x/variadic7.C
 g++.dg/cpp0x/variadic75.C
 g++.dg/cpp0x/variadic87.C
@@ -528,7 +522,6 @@ g++.dg/template/evaluated1b.C
 g++.dg/template/evaluated1c.C
 g++.dg/template/explicit-args2.C
 g++.dg/template/explicit-instantiation7.C
-g++.dg/template/explicit3.C
 g++.dg/template/friend15.C
 g++.dg/template/friend6.C
 g++.dg/template/friend76.C

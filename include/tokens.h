@@ -447,6 +447,13 @@ public:
     virtual TokenDerefExpr     *as_deref_expr_tok() { return NULL; }
     virtual TokenDerefStep     *as_deref_step_tok() { return NULL; }
     virtual TokenCast          *as_cast_tok()       { return NULL; }
+    // Is this a DEREFERENCE — any of the three nodes Program::build_indirection
+    // builds (TokenDeref for a named pointer, TokenDerefStep for `*p++`,
+    // TokenDerefExpr otherwise)? The builder picks the kind from the operand's
+    // shape; a consumer asking "is this `*x`" must not depend on that choice
+    // (a call arm that knew TokenDerefExpr alone lost `(*t)(i)`).
+    bool is_indirection()
+    { return as_deref_tok() || as_deref_expr_tok() || as_deref_step_tok(); }
 };
 
 // whitespace

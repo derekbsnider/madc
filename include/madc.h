@@ -7604,6 +7604,10 @@ public:
     // Parse the operand after unary `&`, preserving C precedence by
     // stopping before trailing binary operators.
     TokenBase *parseAddressOfExpression(TokenBase *ampersand);
+    // THE builder of a unary address-of node, for an operand
+    // parseCastExpression read: a function designator is its own address,
+    // a function POINTER an object like any other.
+    TokenBase *build_address_of(TokenBase *operand, TokenBase *amp);
     TokenFunc *build_expression_function(TokenProgram *tp,
 					 TokenBase *expr,
 					 DataDef *return_type,

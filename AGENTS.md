@@ -401,14 +401,14 @@ editing — don't try to memorize all of them.
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
-| [indirection.md](.claude/rules/indirection.md) |    35 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); type minting/peeling, decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
+| [indirection.md](.claude/rules/indirection.md) |    40 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); type minting/peeling, decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **36 rules, 1128 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1133 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1590 lines.**
+- **Grand total loaded by Claude Code per turn: ~1600 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

@@ -31668,10 +31668,12 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     if ( tv && tv->var.type && !tv->var.type->is_reference() )
     {
 	Variable &var = tv->var;
-	// `*f` / `*fp` is the function designator ([expr.unary.op]/1) —
-	// still callable as `(*fp)(args)`.
-	if ( !step && ((var.type->is_function() && var.type->is_numeric())
-		    || dynamic_cast<DataDefFPTR *>(var.type) != NULL) )
+	// `*f` on a function, `*fp` on a function pointer, is the function
+	// designator ([expr.unary.op]/1) — still callable as `(*fp)(args)`.
+	// Asked as FuncDef / DataDefFPTR (both const-safe); is_function() is
+	// true for both, and the older `is_function() && is_numeric()` test
+	// was true for the POINTER only, so `*twice` was refused.
+	if ( !step && (var.type->as_funcdef_dd() || var.type->as_fptr_dd()) )
 	    return operand;
 	// `*obj` on a class object dispatches its operator*. With a step the
 	// operator applies to the step's RESULT (`*it++` is `*(it++)`) —
@@ -31699,8 +31701,7 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
 	debug_deref_fail(*this, 1, star, NULL);
 	Throw(star) << "cannot dereference non-pointer type" << flush;
     }
-    if ( !step && (dynamic_cast<DataDefFPTR *>(dtype) != NULL
-		|| (dtype->is_function() && dtype->is_numeric())) )
+    if ( !step && (dtype->as_funcdef_dd() || dtype->as_fptr_dd()) )
 	return operand;
     // A fixed-array MEMBER decays to a pointer to its first element
     // ([conv.array]) — its ROW, for a multi-dimensional member (`char
@@ -31917,11 +31918,11 @@ static bool is_addressable_expression(TokenBase *expr)
 		|| dynamic_cast<TokenVar *>(tq->true_expr))
 	    && (is_addressable_expression(tq->false_expr)
 		|| dynamic_cast<TokenVar *>(tq->false_expr));
+    // Every dereference is an lvalue (C11 6.5.3.2p4) — `&*p++` included.
     return dynamic_cast<TokenMember *>(expr)
-	|| dynamic_cast<TokenDeref *>(expr)
+	|| expr->is_indirection()
 	|| dynamic_cast<TokenSubscript *>(expr)
-	|| dynamic_cast<TokenSubscriptExpr *>(expr)
-	|| dynamic_cast<TokenDerefExpr *>(expr);
+	|| dynamic_cast<TokenSubscriptExpr *>(expr);
 }
 
 // [expr.unary.op]p3: '&x' over a reference-typed operand yields the address
@@ -31938,9 +31939,43 @@ DataDef *Program::addressof_result_type(DataDef *operand_type)
     return getPointerType(operand_type);
 }
 
+// THE builder of a unary address-of node, for an operand parseCastExpression
+// read ([expr.unary.op]/3). A function DESIGNATOR is its own address
+// ([conv.func]: madc's value of a function name already IS the address); a
+// function POINTER is an object like any other, and its address points at
+// it — the reader once took every is_function() type for a designator, and
+// a DataDefFPTR answers is_function() too, so `fn_t *fpp = &f` stored `f`.
+// A named object gets TokenAddrOf (marked address-taken); any other
+// addressable expression TokenAddrExpr.
+TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
+{
+    if ( !operand )
+	Throw(amp) << "expecting addressable expression after '&'" << flush;
+    TokenVar *tv = operand->type() == TokenType::ttVariable
+		 ? operand->as_var_tok() : NULL;
+    if ( tv && tv->var.type && tv->var.type->as_funcdef_dd() )
+	return operand;
+    if ( tv )
+    {
+	tv->var.flags |= vfADDRTAKEN;
+	return new TokenAddrOf(tv->var, addressof_result_type(tv->var.type));
+    }
+    if ( !is_addressable_expression(operand) )
+	Throw(amp) << "expecting addressable expression after '&'" << flush;
+    // Lvalue-conditional arms that are plain variables escape their address
+    // through the select — mark them like a named operand.
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(operand) )
+    {
+	if ( TokenVar *t = dynamic_cast<TokenVar *>(tq->true_expr) )
+	    t->var.flags |= vfADDRTAKEN;
+	if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
+	    fv->var.flags |= vfADDRTAKEN;
+    }
+    return new TokenAddrExpr(operand, addressof_result_type(operand->datadef()));
+}
+
 TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 {
-    bool paren = false;
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
       && next_parenthesized_type_is_compound_literal() )
     {
@@ -31952,101 +31987,20 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	DataDef *aptr = addressof_result_type(compound->datadef());
 	return new TokenAddrExpr(compound, aptr);
     }
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-    {
-	nextToken(); // consume '('
-	paren = true;
-    }
-
     TokenBase *addr_tb = nextToken();
-    TokenBase *addr_expr = NULL;
-    if ( paren )
-    {
-	addr_expr = parseExpression(addr_tb, true, false, true, 1);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    // Lvalue-conditional arms that are plain variables escape their
-	    // address through the select — mark them like the direct &var arm.
-	    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(addr_expr) )
-	    {
-		if ( TokenVar *tv = dynamic_cast<TokenVar *>(tq->true_expr) )
-		    tv->var.flags |= vfADDRTAKEN;
-		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
-		    fv->var.flags |= vfADDRTAKEN;
-	    }
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    if ( tv->var.type && tv->var.type->is_function() )
-		return tv;
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&('" << flush;
-    }
-
-    bool postfix_chain = is_contextual_identifier_token(addr_tb)
-	&& peekToken()
-	&& (peekToken()->id() == TokenID::tkDot
-	 || peekToken()->id() == TokenID::tkDeRef
-	 || peekToken()->id() == TokenID::tkOpSqr);
-    if ( !postfix_chain && addr_tb->type() == TokenType::ttString
-      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-    {
-	addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
-    }
-    if ( postfix_chain )
-    {
-	if ( addr_tb->type() == TokenType::ttIdentifier )
-	    addr_expr = parsePostfixChain(addr_tb);
-	else
-	    addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
-    }
+    if ( !addr_tb )
+	Throw(ampersand) << "expecting addressable expression after '&'" << flush;
+    // An UNPARENTHESIZED qualified-id is the one operand this reader keeps:
+    // [expr.unary.op]/4 decides on the SPELLING whether `&C::m` names a
+    // pointer to member (`&(C::m)` does not), so the name is resolved here,
+    // before any expression reading. Every other operand is a
+    // cast-expression ([expr.unary.op]/3): parseCastExpression reads it —
+    // `&*p`, `&**pp`, `&*f(x)`, `&(expr)`, `&s.a[i]`, `&x` alike — and
+    // build_address_of builds the node.
     if ( is_contextual_identifier_token(addr_tb)
-      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+      && peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    if ( tv->var.type && tv->var.type->is_function() )
-		return tv;
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
-    }
-
-    if ( !is_contextual_identifier_token(addr_tb) )
-	Throw(addr_tb) << "expecting variable name after '&'" << flush;
     std::string aname = contextual_identifier_name(addr_tb);
-    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	// A qualifier before `::` is a namespace OR a class — `&S::n` for a static
 	// data member is as ordinary as `&N::m`. Resolving only namespaces here made
@@ -32194,52 +32148,20 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 				 << "' is not a member of namespace '"
 				 << aname << "'" << flush;
 	}
-	if ( ns_var->type && ns_var->type->is_function()
+	// A FUNCTION is its own address; a function-POINTER object is not
+	// (is_function() answers true for both — the designator test is the
+	// FuncDef itself).
+	if ( ns_var->type && ns_var->type->as_funcdef_dd()
 	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();
-	if ( ns_var->type && ns_var->type->is_function() )
+	if ( ns_var->type && ns_var->type->as_funcdef_dd() )
 	    return new TokenVar(*ns_var);
 	ns_var->flags |= vfADDRTAKEN;
 	DataDef *aptr = addressof_result_type(ns_var->type);
 	return new TokenAddrOf(*ns_var, aptr);
     }
-    Variable *avar = findVariable(aname);
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    if ( !avar && code && code->method && code->method->owner_class )
-    {
-	DataDefCLASS *cls = code->method->owner_class;
-	ssize_t ofs = cls->m_offset(aname);
-	if ( ofs >= 0 )
-	{
-	    std::string thisid = "__this";
-	    Variable *thisvar = code->method->findParameter(thisid);
-	    DataDef *mtype = cls->m_type(aname);
-	    if ( thisvar && mtype )
-	    {
-		Variable *member = new Variable(aname, *mtype, 1, NULL, false);
-		TokenMember *tm = new TokenMember(*thisvar, *member, ofs);
-		DataDef *aptr = addressof_result_type(mtype);
-		return new TokenAddrExpr(tm, aptr);
-	    }
-	}
     }
-    if ( !avar && is_dynamic_symbol_fallback_enabled()
-      && is_dynamic_symbol_allowed(aname) )
-    {
-	void *sym = madcdl_sym_default(aname.c_str());
-	if ( sym )
-	    avar = addFunction(aname,
-		dynamic_symbol_fallback_signature(aname),
-		(fVOIDFUNC)sym, /*isMethod*/false,
-		/*builtin_registration*/true);
-    }
-    if ( !avar )
-	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
-    if ( avar->type && avar->type->is_function() )
-	return new TokenVar(*avar);
-    avar->flags |= vfADDRTAKEN;
-    DataDef *aptr = addressof_result_type(avar->type);
-    return new TokenAddrOf(*avar, aptr);
+    return build_address_of(parseCastExpression(addr_tb), ampersand);
 }
 
 // Is `cls` the same as `target`, or derived (single-inheritance chain) from it?
@@ -39252,6 +39174,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 			    if ( lhs_dot->type() != TokenType::ttVariable
 			      && lhs_dot->type() != TokenType::ttMember
+			      && !lhs_dot->is_indirection()   // (*p++).member
 			      && lhs_dot->type() != TokenType::ttSubscript
 			      && lhs_dot->type() != TokenType::ttCompound
 			      && lhs_dot->type() != TokenType::ttStructLit
@@ -39290,7 +39213,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				struct_type = rp->base_type;
 			}
 		    }
-		    else if ( lhs_dot->type() == TokenType::ttMember )
+		    else if ( lhs_dot->type() == TokenType::ttMember
+			   || lhs_dot->as_deref_step_tok() )
 		    {
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
 			if ( tm )
@@ -39324,15 +39248,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    tv_var      = &tdl->var;
 			    struct_type =  tdl->deref_type;
 			}
-			else if ( TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(lhs_dot) )
+			else if ( lhs_dot->as_deref_expr_tok() || lhs_dot->as_deref_step_tok() )
 			{
-			    // (*expr).member — expr yields a pointer whose target
-			    // is a struct. Resolve member lookup against the
-			    // dereferenced struct type; codegen uses the expr's
-			    // pointer value as base via TokenMember's parent_expr
-			    // path.
-			    tv_var      = new Variable("__deref_expr", *tdxl->deref_type, 1, NULL, false);
-			    struct_type =  tdxl->deref_type;
+			    // (*expr).member / (*p++).member — the dereference
+			    // yields a struct lvalue through its own expression.
+			    // Resolve member lookup against the dereferenced
+			    // struct type; codegen uses the deref as base via
+			    // TokenMember's parent_expr path.
+			    DataDef *dt = lhs_dot->as_deref_expr_tok()
+				? lhs_dot->as_deref_expr_tok()->deref_type
+				: lhs_dot->as_deref_step_tok()->deref_type;
+			    tv_var      = new Variable("__deref_expr", *dt, 1, NULL, false);
+			    struct_type =  dt;
 			}
 			else
 			    Throw(tb) << "member reference '.' on unsupported deref expression" << flush;
@@ -39737,7 +39664,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // materialize the pointer value at codegen, then accesses
 		    // [ptr + offset] via the struct-value ("dot chain") branch.
 		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
-		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
+		    bool is_derefexpr_lhs = lhs_dot->as_deref_expr_tok() != NULL
+					 || lhs_dot->as_deref_step_tok() != NULL;
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
 			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
@@ -42644,7 +42572,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			{
 			    bool is_genuine_fptr =
 				call_expr->type() == TokenType::ttMember
-				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
+				|| call_expr->is_indirection()
 				// A CAST to a fn-ptr type followed by `(` is
 				// unambiguously a call — a cast result has no
 				// grouping/identifier reading (the SMAUG
@@ -42662,7 +42590,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			// The generic path's is_function() check is too
 			// aggressive for those.
 			if ( fptr_type && !terq
-			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL
+			  && !call_expr->is_indirection()
 			  && call_expr->as_cast_tok() == NULL )
 			    fptr_type = NULL;
 			if ( fptr_type )

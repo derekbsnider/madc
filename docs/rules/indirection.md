@@ -84,9 +84,29 @@ Each family is recorded as a `DupFamily` in `madc-knowledge`. "Verified" means
 measured on the artifact; "candidate" means found by a read-only recon and not
 yet measured.
 
-- `&` operand reader: `parseAddressOfExpression` hand-reads paren, chain, call,
-  `::` and identifier shapes. `&f` on a function-POINTER variable emits `f`
-  (verified: `fn_t *fpp = &f` compiles to `fpp = f`). `&*p` is refused.
+- ~~`&` operand reader~~ — consolidated 2026-09-23: `parseAddressOfExpression`
+  reads through `parseCastExpression` and builds with `build_address_of`,
+  keeping only the compound-literal and unparenthesized qualified-id arms
+  (`[expr.unary.op]/4` decides pointer-to-member on the spelling). Fixed:
+  `&*p` / `&**pp` / `&*f(x)` / `&*it` / `&*this` refused; `&f` on a
+  function-POINTER variable emitted `f` (silent); `(*twice)(3)` refused (the
+  designator test was an oblique FPTR test); `(*t)(i)` through a
+  pointer-to-function-pointer — first "Malformed expression", and after the
+  `*` consolidation a SILENT `*t = i` — because the call arm knew the callee
+  only as a TokenDerefExpr (now `TokenBase::is_indirection()`); `&*q++` and
+  `(*sq++).m` (a stepped deref is an lvalue). Gated in
+  `check-one-deref-builder.sh`.
+- `function_vs_function_pointer_predicate`: two sites still spell "is FPTR" as
+  `is_function() && is_numeric()` (cir_builder ~382, parser ~30550 — correct
+  in meaning), and `dynamic_cast<DataDefFPTR *>` is common; `as_fptr_dd()`
+  is the const-safe owner (candidate: consolidate + gate).
+- `deref_kind_enumeration`: consumers that enumerate TokenDeref /
+  TokenDerefExpr by hand where they mean "any deref" (the subscript-base arm
+  ~41274 omits TokenDerefStep; eight cir_builder sites test TokenDerefExpr
+  alone) — candidate: `is_indirection()` where the meaning is "any".
+- `reference_bind_address_expr` builds address nodes for reference binding
+  (seven sites) beside `build_address_of` — candidate: share the plain-lvalue
+  case.
 - `cast_operand_shape_arms`: the cast arm's identifier-chain, call, literal and
   paren readers. Each is correct by shape; they duplicate `parseCastExpression`.
 - `sizeof_operand_measurement`: `resolve_type_query_datadef`'s identifier fast
