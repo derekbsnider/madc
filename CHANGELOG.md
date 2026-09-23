@@ -72,6 +72,9 @@ answers.
 - **A reference to a function or a function pointer mangles as g++ does**:
   `RPFiiE` and `RFiiE`, not `PPFiiE`. A madc definition taking one, and a g++
   caller of it, now link.
+- **An aggregate's reference member binds its initializer.** `RM rm{lv}` (for
+  `long &r`) used to store the value in the reference and then crash. A
+  `const &` member binds a temporary too.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -83,7 +86,7 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
 `testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
-`testfnptrptrc`.
+`testfnptrptrc`, `testrefmemberaggr`.
 
 ### Unary `*` and `&` read their operand through one owner
 

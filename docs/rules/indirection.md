@@ -292,6 +292,17 @@ yet measured.
   beside it: a reference over a function or fn-pointer mangles as a pointer
   (`PPFiiE` where g++ has `RPFiiE` / `RFiiE`; `reference_to_function_mangling`,
   next).
+- ~~`reference_member_aggregate_init`~~ — fixed 2026-09-23. A reference MEMBER
+  of an aggregate binds its initializer as a reference parameter binds its
+  argument. CIR's brace-list builder (`aggregate_init_list`) handed every
+  slot to `init_value`, which translated the initializer's VALUE into the
+  reference's pointer slot: `struct RM { long &r; }; RM rm{lv};` stored 40
+  and the first read crashed. The class-aggregate lane applied a bare `&`,
+  which no prvalue has (`RC rt{5, 1}` for `const int &c`). Both now bind
+  through `ref_param_arg_addr`, the one reference-bind owner; the list
+  builder's four member arms share `init_slot_value`. Reducer
+  `tests/testrefmemberaggr`. (The parser-side reference-bind builder,
+  `reference_bind_address_expr`, is the separate candidate below.)
 - ~~`reference_to_function_mangling`~~ — fixed 2026-09-23. The structural
   spelling of a function (pointer) through its layers,
   `fptr_structural_spelling`, counted every peeled layer as a `*`, the

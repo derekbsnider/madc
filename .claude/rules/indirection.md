@@ -37,6 +37,8 @@
   `Program::conditional_arithmetic_type`, composed from the operand owners above.
 - End of an expression (bind pending operators, refuse juxtaposed operands):
   `Program::finish_expression` — every exit of `parseExpression`.
+- Binding a reference (an argument, an aggregate's reference MEMBER slot): cir's
+  `ref_param_arg_addr` (a const referent materializes a prvalue).
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

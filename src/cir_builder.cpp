@@ -9495,6 +9495,23 @@ DataDef *CirBuilder::init_nested_list_type(DataDef *dd, size_t idx)
 	return NULL;
 }
 
+// One MEMBER slot's initializer value. A REFERENCE member binds its
+// initializer's address, as a reference parameter does ([dcl.init.aggr]/4.2
+// copy-initializes each member from its initializer, [dcl.init.ref] binds a
+// reference to that object) — ref_param_arg_addr, the one reference-bind owner,
+// materializing a prvalue for a const referent. `RM rm{lv}` stored lv's VALUE
+// in the pointer slot and the first read dereferenced 40. Every other slot is
+// init_value's.
+node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i)
+{
+	DataDef *st = elem ? init_slot_type(unqualified_type(dd), i) : NULL;
+	if (DataDef *referent = st ? ref_param_referent(st) : NULL)
+		return ref_param_arg_addr(elem, referent,
+					  unqualified_type(referent) != referent);
+	return init_value(elem, init_slot_is_aggregate(dd, i),
+			  init_nested_list_type(dd, i));
+}
+
 // The ONE builder of an aggregate's brace initializer list:
 //
 //   initializer_list: N_LIST: N_INIT(N_LIST:(const_expr | N_FIELD_ID(N_ID))* initializer)*
@@ -9559,9 +9576,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				append(des, node1(N_FIELD_ID,
 						  id(sdd->members[chosen].first.c_str())));
 			append(lst, node2(N_INIT, des,
-					  init_value(inits[chosen],
-						     init_slot_is_aggregate(dd, chosen),
-						     init_nested_list_type(dd, chosen))));
+					  init_slot_value(inits[chosen], dd, chosen)));
 			return lst;
 		}
 		// More than one slot is written. What they MEAN depends on
@@ -9623,9 +9638,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 					append(des, node1(N_FIELD_ID,
 							  id(sdd->members[i].first.c_str())));
 				append(lst, node2(N_INIT, des,
-						  init_value(inits[i],
-							     init_slot_is_aggregate(dd, i),
-							     init_nested_list_type(dd, i))));
+						  init_slot_value(inits[i], dd, i)));
 			}
 			return lst;
 		}
@@ -9638,9 +9651,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			append(des, node1(N_FIELD_ID,
 					  id(sdd->members[chosen].first.c_str())));
 		append(lst, node2(N_INIT, des,
-				  init_value(inits[chosen],
-					     init_slot_is_aggregate(dd, chosen),
-					     init_nested_list_type(dd, chosen))));
+				  init_slot_value(inits[chosen], dd, chosen)));
 		return lst;
 	}
 	for (size_t i = 0; i < inits.size(); i++) {
@@ -9657,9 +9668,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			continue;
 		}
 		append(lst, node2(N_INIT, list(),
-				  init_value(inits[i],
-					     init_slot_is_aggregate(dd, i),
-					     init_nested_list_type(dd, i))));
+				  init_slot_value(inits[i], dd, i)));
 	}
 	return lst;
 }
@@ -16944,14 +16953,17 @@ node_t CirBuilder::class_aggregate_init(
 						      origin));
 				continue;
 			}
-			node_t init = translate_expr(arg);
+			// A reference member (pointer slot) BINDS to the
+			// initializer's address — the one reference-bind owner,
+			// which also materializes a prvalue for a const referent
+			// (a bare N_ADDR of `5` is not an lvalue).
+			DataDef *referent = ref_param_referent(mt);
+			node_t init = referent
+				? ref_param_arg_addr(arg, referent,
+						     unqualified_type(referent) != referent)
+				: translate_expr(arg);
 			if (!init)
 				return decline();
-			// A reference member (pointer slot) BINDS to the
-			// initializer's address (same rule as the ctor
-			// member-init lane).
-			if (mt && mt->is_reference())
-				init = node1(N_ADDR, init, origin);
 			node_t asgn = node2(N_ASSIGN, member_lvalue(mn), init,
 					    origin);
 			flush_pending_stmts(stmts);
