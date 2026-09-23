@@ -370,11 +370,15 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
-	// Function-pointer type "<ret> (*)(<params>)" → PF<ret><params>E.
+	// Function-pointer type "<ret> (*)(<params>)" → PF<ret><params>E, and a
+	// function REFERENCE "<ret> (&)(<params>)" → RF<ret><params>E.
 	size_t fp = s.find("(*)(");
+	const char *fn_deco = "P";
+	if (fp == std::string::npos && (fp = s.find("(&)(")) != std::string::npos)
+		fn_deco = "R";
 	if (fp != std::string::npos) {
 		t.is_funcptr = true;
-		t.decos.push_back("P");                 // pointer to the function type
+		t.decos.push_back(fn_deco);             // pointer / reference to the function type
 		t.fp_ret.push_back(parse_type(mstrip(s.substr(0, fp))));
 		size_t pend = s.rfind(')');
 		std::string ps = s.substr(fp + 4, pend - (fp + 4));

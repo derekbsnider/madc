@@ -45,6 +45,10 @@ template <class T> Cell<T>::Cell() : v() {}
 template <class T> void Cell<T>::put(T x) { v = x; }
 template <class T> T Cell<T>::get() const { return v; }
 int cell_check(int v);
+// A reference to a function pointer and a reference to a function: Itanium
+// RPFiiE / RFiiE — madc once encoded both as pointers (PPFiiE).
+int via_fnptr_ref(int (*&fp)(int), int v);
+int via_fn_ref(int (&fn)(int), int v);
 
 namespace tally {
     struct Ledger {

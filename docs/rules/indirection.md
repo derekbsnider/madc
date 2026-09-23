@@ -292,6 +292,18 @@ yet measured.
   beside it: a reference over a function or fn-pointer mangles as a pointer
   (`PPFiiE` where g++ has `RPFiiE` / `RFiiE`; `reference_to_function_mangling`,
   next).
+- ~~`reference_to_function_mangling`~~ — fixed 2026-09-23. The structural
+  spelling of a function (pointer) through its layers,
+  `fptr_structural_spelling`, counted every peeled layer as a `*`, the
+  reference's included: `int (*&)(int)` minted `_Z…PPFiiE` (g++ `RPFiiE`) and
+  `int (&)(int)` `PPFiiE` (g++ `RFiiE`), so a madc definition and a g++
+  caller never linked. It now records each layer (`*` or `&`), folds a
+  function TYPE's innermost layer into its own declarator core (`(*)` or
+  `(&)`, `structural_spelling_core`), and the mangler reads the `(&)(` form
+  as `RF…E`. The namespace-function reference path spells through the same
+  owner. Gates: two oracle-corpus rows (`f_fpref`, `f_fnref`, g++ == clang++)
+  replayed by `test_mangle`, and the interop link lane — a madc definer and
+  a g++ user, and the reverse — now carries both shapes.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

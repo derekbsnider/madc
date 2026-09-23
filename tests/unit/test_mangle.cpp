@@ -851,6 +851,10 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(free_fn("f_va",  {"const char*", "..."}), "_Z4f_vaPKcz");
 		ORACLE_CHECK(free_fn("f_fp",  {"int (*)(int)"}),       "_Z4f_fpPFiiE");
 		ORACLE_CHECK(free_fn("f_fpv", {"void (*)()"}),         "_Z5f_fpvPFvvE");
+		// A REFERENCE to a function pointer / to a function: the reference
+		// layer is R, never a second P (madc once minted PPFiiE for both).
+		ORACLE_CHECK(free_fn("f_fpref", {"int (*)(int)&"}),    "_Z7f_fprefRPFiiE");
+		ORACLE_CHECK(free_fn("f_fnref", {"int (&)(int)"}),     "_Z7f_fnrefRFiiE");
 		// `int[10]` arrives decayed — the parser spells the parameter `int*`
 		ORACLE_CHECK(free_fn("f_arr", {"int*"}),               "_Z5f_arrPi");
 		// A multi-dimensional array parameter decays to a POINTER TO ARRAY:

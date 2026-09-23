@@ -69,6 +69,9 @@ answers.
   used to be refused. A local, `static` or file-scope pointer to a function
   pointer (`int (**pp)(int)`) now declares with its real type in C and C++;
   it had been declared `long long *`.
+- **A reference to a function or a function pointer mangles as g++ does**:
+  `RPFiiE` and `RFiiE`, not `PPFiiE`. A madc definition taking one, and a g++
+  caller of it, now link.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and

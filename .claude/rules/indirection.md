@@ -55,6 +55,7 @@
   `consume_declarator_stars`; `[dims]`: `parse_array_dimensions` +
   `nest_carray_dims` (gated).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
-- A spelling's decorations: `ItaniumMangler::parse_type`; P/R/O/K: `encode_type`.
+- A spelling's decorations: `ItaniumMangler::parse_type`; P/R/O/K: `encode_type`. A
+  function (pointer) through its layers: `fptr_structural_spelling` (a reference is R).
 
 See `docs/rules/indirection.md` for the reasoning and the open families.

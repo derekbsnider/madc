@@ -2253,8 +2253,12 @@ public:
     // The STRUCTURAL C++ spelling `Ret (*)(P1,P2)` built from `target` —
     // every DataDefFPTR is NAMED "funcptr", so any spelling-consumer that
     // falls back to the name (the Itanium mangle in particular, which must
-    // encode PF…E) needs this instead. Defined in parser.cpp.
-    std::string structural_spelling(bool as_pointer = true) const;
+    // encode PF…E) needs this instead. `core` is the declarator between the
+    // parens: "*" a function pointer, "&" a function REFERENCE (Itanium
+    // RF…E), "" the function type itself, `Ret (P1,P2)`. Defined in parser.cpp.
+    std::string structural_spelling_core(const std::string &core) const;
+    std::string structural_spelling(bool as_pointer = true) const
+    { return structural_spelling_core(as_pointer ? "*" : ""); }
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual bool is_function() const override { return true; }
     virtual bool is_numeric()  const override { return true; }
@@ -2274,12 +2278,29 @@ public:
 // either encodes a class that nothing exports.
 inline std::string fptr_structural_spelling(DataDef *dd)
 {
-    int stars = 0;
-    for ( DataDef *base = dd; base; ++stars )
+    // The layers peeled, outermost first: '*' a pointer (or a decayed
+    // array), '&' a reference — a reference layer spells `&` (Itanium R),
+    // never a `*`: `int (*&)(int)` is RPFiiE, and counting it as a star
+    // minted PPFiiE, a symbol g++ never defines.
+    std::string layers;
+    for ( DataDef *base = dd; base; )
     {
 	if ( DataDefFPTR *fp = base->as_fptr_dd() )
-	    return fp->target ? fp->structural_spelling() + std::string(stars, '*')
-			      : std::string();
+	{
+	    if ( !fp->target )
+		return std::string();
+	    // A function TYPE's innermost layer is its own declarator: a
+	    // pointer to it IS the function pointer (getPointerType's fold), a
+	    // reference to it a function reference, `int (&)(int)` (RFiiE).
+	    std::string core = "*";
+	    if ( !fp->ptr_syntax && !layers.empty() )
+	    {
+		core = std::string(1, layers[layers.size() - 1]);
+		layers.erase(layers.size() - 1);
+	    }
+	    return fp->structural_spelling_core(core)
+		 + std::string(layers.rbegin(), layers.rend());
+	}
 	// A parameter's OUTERMOST array decays to a pointer to its element
 	// (C11 6.7.6.3p7): `int (*[4])(int)` is a pointer to a fn-ptr, PPFiiE.
 	// An inner array does not decay (pointer-to-array): not this spelling.
@@ -2287,12 +2308,14 @@ inline std::string fptr_structural_spelling(DataDef *dd)
 	{
 	    if ( base != dd || !ca->element_type )
 		return std::string();
+	    layers += '*';
 	    base = ca->element_type;
 	    continue;
 	}
 	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base);
 	if ( !ptr || !ptr->base_type )
 	    return std::string();
+	layers += ptr->is_reference() ? '&' : '*';
 	base = ptr->base_type;
     }
     return std::string();

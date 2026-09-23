@@ -2873,6 +2873,11 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 	return "";
     if ( as_ref )
     {
+	// A reference to a function (pointer) spells structurally, reference
+	// layer included (`int (*)(int)&`, `int (&)(int)` — RPFiiE / RFiiE).
+	std::string fps = fptr_structural_spelling(dd);
+	if ( !fps.empty() )
+	    return fps;
 	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
 	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
 	std::string s = base->canonical_cpp_spelling().empty()
@@ -2898,7 +2903,7 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 // THE owner of a DataDefFPTR's structural C++ spelling (declared in
 // datadef.h): `Ret (*)(P1,P2)` from the target FuncDef — the form the
 // Itanium mangler's function-pointer arm parses into PF…E.
-std::string DataDefFPTR::structural_spelling(bool as_pointer) const
+std::string DataDefFPTR::structural_spelling_core(const std::string &core) const
 {
     if ( !target )
 	return name;
@@ -2912,7 +2917,7 @@ std::string DataDefFPTR::structural_spelling(bool as_pointer) const
     // is PFR1ORS_E, g++ parity), as is_ref_param does for the parameters.
     if ( target->returns_reference() )
 	s += "&";
-    s += as_pointer ? " (*)(" : " (";
+    s += core.empty() ? std::string(" (") : " (" + core + ")(";
     for ( size_t i = 0; i < target->parameters.size(); ++i )
     {
 	if ( i )
@@ -2923,7 +2928,11 @@ std::string DataDefFPTR::structural_spelling(bool as_pointer) const
 	       ? target->parameters[i]->name
 	       : target->parameters[i]->canonical_cpp_spelling();
 	s += ps;
-	if ( target->is_ref_param(i)
+	// A function-(pointer) parameter's structural spelling already spells
+	// its reference layer (`int (&)(int)`); every other one gains the `&`.
+	bool structural = target->parameters[i]
+	    && !fptr_structural_spelling(target->parameters[i]).empty();
+	if ( target->is_ref_param(i) && !structural
 	  && (ps.empty() || ps.back() != '&') )
 	    s += "&";
     }
