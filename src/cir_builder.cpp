@@ -7098,10 +7098,43 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 // does not record the reference-ness this test would need — spilling a
 // stream would copy a non-copyable class. (The classifier's own tkBSL/
 // tkBSR entries remain correct for BUILTIN scalar shifts.)
+// The POSTFIX overload a class step `it++` / `it--` calls ([over.inc]): the
+// int-taking operator++(int) / operator--(int), told from the prefix form by
+// its dummy parameter in the mangled family. NULL when the class declares
+// only the prefix form (a postfix use then falls back to that).
+static FuncDef *class_postfix_step_operator(DataDefCLASS *icls, TokenID step_id)
+{
+	if (!icls)
+		return NULL;
+	std::string mc = icls->name + "__operator"
+		+ (step_id == TokenID::tkInc ? "++" : "--");
+	std::string mu = mc + "_un";
+	for (Variable *mv : icls->methods) {
+		if (!mv || (mv->name != mc && mv->name != mu)) continue;
+		FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
+		if (fd && fd->parameters.size() > 1)
+			return fd;
+	}
+	return NULL;
+}
+
 static bool class_operator_value_result(TokenBase *arg)
 {
 	TokenOperator *op = dynamic_cast<TokenOperator *>(arg);
-	if (!op || op->argc() != 2 || !op->left || !op->right)
+	if (!op)
+		return false;
+	// A POSTFIX class step (`it++`) calls operator++(int), which returns the
+	// OLD value: by value — the same prvalue as the binary family below —
+	// unless the selected overload returns a reference. As a receiver
+	// (`(it++).get()`, `*it++` -> operator*) the raw path emitted
+	// `&operator++(&it, 0)`, which is not an lvalue.
+	if ((op->id() == TokenID::tkInc || op->id() == TokenID::tkDec)
+	    && op->left && !op->right) {
+		FuncDef *post = class_postfix_step_operator(
+			as_class_instance(op->left->datadef()), op->id());
+		return post && !post->returns_reference();
+	}
+	if (op->argc() != 2 || !op->left || !op->right)
 		return false;
 	DataDef *dd = op->datadef();
 	if (!dd || dd->is_reference() || dd->is_pointer())
@@ -22933,16 +22966,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			std::string opmname = std::string("operator") + uop;
 			DataDefCLASS *icls = as_class_instance(operand_tb->datadef());
 			if (is_post && icls) {
-				// Prefer the parameterized (postfix) overload: scan the mangled
-				// family for a params>1 (int-taking) operator++/--.
-				std::string mc = icls->name + "__" + opmname;
-				std::string mu = mc + "_un";
-				FuncDef *post = NULL;
-				for (Variable *mv : icls->methods) {
-					if (!mv || (mv->name != mc && mv->name != mu)) continue;
-					FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
-					if (fd && fd->parameters.size() > 1) { post = fd; break; }
-				}
+				// Prefer the parameterized (postfix) overload.
+				FuncDef *post = class_postfix_step_operator(icls, tb->id());
 				if (post) {
 					// type()==ttVariable, not a TokenVar downcast:
 					// TokenMember/TokenCallFunc derive from TokenVar
