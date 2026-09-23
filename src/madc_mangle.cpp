@@ -322,47 +322,81 @@ TypeNode parse_type(const std::string &raw)
 	TypeNode t;
 	std::string s = mstrip(raw);
 
-	// Peel outer decorations. Trailing * / & first (outermost), then leading
-	// "const". We recurse by re-parsing the inner string, then prepend deco.
-	// Repeat until no decoration remains.
+	// Peel outer decorations, OUTERMOST first: the end of the spelling is the
+	// outermost level (a trailing `*`, `&`, `&&`, or a cv after the last
+	// `*`), a LEADING cv the innermost (it binds to the core), so the leading
+	// words are read only once no trailing decoration remains — reading them
+	// first merged `volatile int* volatile*`'s base qualifier into the outer
+	// level (PVPi for g++'s PVPVi). The cv words of ONE level (`const volatile
+	// int`, `int* const volatile`) are ONE <CV-qualifiers> set, spelled in
+	// the ABI's order r V K and a single substitution candidate (g++: `const
+	// volatile int*` is PVKi, never PKVi) — they accumulate in `level_cv` and
+	// flush as one deco before the next declarator operator and at the core.
+	unsigned level_cv = 0;
+	auto flush_cv = [&]() {
+		if (!level_cv) return;
+		std::string q;
+		if (level_cv & 2u) q += "V";
+		if (level_cv & 1u) q += "K";
+		t.decos.push_back(q);
+		level_cv = 0;
+	};
 	for (;;) {
 		s = mstrip(s);
 		if (!s.empty() && s.back() == '*') {
+			flush_cv();
 			t.decos.push_back("P");
 			s = s.substr(0, s.size() - 1);
 			continue;
 		}
 		// rvalue reference "&&" → O (must be tested before single &)
 		if (s.size() >= 2 && s.compare(s.size() - 2, 2, "&&") == 0) {
+			flush_cv();
 			t.decos.push_back("O");
 			s = s.substr(0, s.size() - 2);
 			continue;
 		}
 		if (!s.empty() && s.back() == '&') {
+			flush_cv();
 			t.decos.push_back("R");
 			s = s.substr(0, s.size() - 1);
 			continue;
 		}
-		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
-			t.decos.push_back("K");
-			s = s.substr(6);
-			continue;
-		}
-		// `typename rr<T>::type` — the keyword disambiguates a dependent
-		// name in source; the ABI encodes the nested-name alone
-		// (g++: RN2rrIT_E4typeE). Peel it as a no-op decoration.
-		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
-			s = s.substr(9);
-			continue;
-		}
-		// trailing " const" form
+		// trailing " const" / " volatile": the level the last operator made
+		// (or the core's east cv, `int const`)
 		if (s.size() >= 6 && s.compare(s.size() - 6, 6, " const") == 0) {
-			t.decos.push_back("K");
+			level_cv |= 1u;
 			s = s.substr(0, s.size() - 6);
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(s.size() - 9, 9, " volatile") == 0) {
+			level_cv |= 2u;
+			s = s.substr(0, s.size() - 9);
 			continue;
 		}
 		break;
 	}
+	// The core's leading words: its cv, and `typename rr<T>::type` — the
+	// keyword disambiguates a dependent name in source; the ABI encodes the
+	// nested-name alone (g++: RN2rrIT_E4typeE), a no-op decoration.
+	for (;;) {
+		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
+			level_cv |= 1u;
+			s = mstrip(s.substr(6));
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(0, 9, "volatile ") == 0) {
+			level_cv |= 2u;
+			s = mstrip(s.substr(9));
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
+			s = mstrip(s.substr(9));
+			continue;
+		}
+		break;
+	}
+	flush_cv();
 
 	// Template-param placeholder: "$T0" → template-param #0, etc.
 	if (s.size() >= 3 && s[0] == '$' && s[1] == 'T') {
@@ -452,10 +486,12 @@ TypeNode parse_param_type(const std::string &raw)
 {
 	TypeNode t = parse_type(raw);
 	// Top-level cv-qualification is not part of a function parameter type in
-	// the Itanium ABI (`const size_t` by value encodes as `m`). Keep pointee
-	// const (`const char*` -> `PKc`) and reference-to-const (`const T&` -> `RK...`).
-	if (t.decos.size() == 1 && t.decos[0] == "K")
-		t.decos.clear();
+	// the Itanium ABI ([dcl.fct]/5: `const size_t` by value encodes as `m`,
+	// `int* volatile` as `Pi`). Keep pointee cv (`const char*` -> `PKc`,
+	// `volatile int*` -> `PVi`) and a reference's referent's (`const T&` -> `RK...`).
+	// decos are outermost first: a leading qualifier set IS the top level.
+	if (!t.decos.empty() && t.decos[0].find_first_not_of("VK") == std::string::npos)
+		t.decos.erase(t.decos.begin());
 	return t;
 }
 

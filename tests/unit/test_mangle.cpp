@@ -123,6 +123,29 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_type_sub("const int*") == "PKi");
 	}
 
+	TEST_CASE("Volatile and cv-set pointer types (g++ / clang++ oracle)") {
+		// One level's cv words are ONE <CV-qualifiers> set, order V K.
+		CHECK(itanium_encode_type_sub("volatile int*") == "PVi");
+		CHECK(itanium_encode_type_sub("int volatile*") == "PVi");
+		CHECK(itanium_encode_type_sub("const volatile int*") == "PVKi");
+		CHECK(itanium_encode_type_sub("volatile const int*") == "PVKi");
+		// A cv after a `*` is that pointer's; the leading cv the core's.
+		CHECK(itanium_encode_type_sub("volatile int* volatile*") == "PVPVi");
+		CHECK(itanium_encode_type_sub("int* volatile*") == "PVPi");
+		CHECK(itanium_encode_type_sub("const char* const*") == "PKPKc");
+		CHECK(itanium_encode_type_sub("volatile int&") == "RVi");
+	}
+
+	TEST_CASE("Volatile parameters: top level dropped, pointee kept, one substitution per cv set") {
+		CHECK(itanium_mangle_nested_sub({}, "f", {"volatile int*"}) == "_Z1fPVi");
+		CHECK(itanium_mangle_nested_sub({}, "m", {"int* volatile"}) == "_Z1mPi");
+		CHECK(itanium_mangle_nested_sub({}, "v", {"volatile int"}) == "_Z1vi");
+		CHECK(itanium_mangle_nested_sub({}, "n", {"const volatile char*", "const volatile char*"})
+		      == "_Z1nPVKcS0_");
+		CHECK(itanium_mangle_nested_sub({}, "u", {"volatile int*", "volatile int*"}) == "_Z1uPViS0_");
+		CHECK(itanium_mangle_nested_sub({}, "q", {"volatile T*", "volatile T*"}) == "_Z1qPV1TS1_");
+	}
+
 	TEST_CASE("Reference types") {
 		CHECK(itanium_encode_type_sub("int&") == "Ri");
 		CHECK(itanium_encode_type_sub("const int&") == "RKi");

@@ -2922,6 +2922,46 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
+// THE mangle spelling of a declared parameter's type, for both parameter
+// readers (parseFunction, parseFnPtrParams): the token structure the reader
+// saw — the base type's spelling, then `stars` pointer levels — with EVERY
+// level's cv read from the declarator's TYPE (`param_dd`; a reference's
+// referent). The base level's cv (the leading `const` the reader consumed ORed
+// in: C++ const is not in the type yet, modeled_cv) qualifies the base, each
+// inner level's own cv follows its `*` (cv_qualified_spelling); the outermost
+// level is the parameter object itself — top-level, which a function type
+// drops ([dcl.fct]/5). A volatile pointee then mangles V (`volatile int *` is
+// PVi) and a prototype and its definition spell alike. The reader appends the
+// reference and a multi-dimensional array's `(*)[N]` form after it.
+static std::string param_declarator_spelling(DataDef *base, DataDef *param_dd,
+					     int stars, bool leading_const)
+{
+    std::vector<unsigned> level_cv;	// [j] = cv after j dereferences
+    DataDef *t = param_dd;
+    if ( t && t->as_reference_dd() )
+	t = t->as_reference_dd()->base_type;
+    for ( int j = 0; t && j <= stars; ++j )
+    {
+	level_cv.push_back(t->cv_quals());
+	DataDefPTR *p = j < stars ? t->as_pointer_dd() : NULL;
+	t = p ? p->base_type : NULL;
+    }
+    unsigned base_cv = (level_cv.size() == (size_t)stars + 1 ? level_cv.back() : cvNONE)
+		     | (leading_const ? cvCONST : cvNONE);
+    DataDef *ub = base ? base->unqualified() : NULL;
+    std::string s = ub ? (ub->canonical_cpp_spelling().empty()
+			  ? ub->name : ub->canonical_cpp_spelling())
+		       : std::string();
+    s = cv_qualified_spelling(s, base_cv, ub && ub->is_pointer());
+    for ( int j = stars - 1; j >= 0; --j )
+    {
+	s += "*";
+	if ( j > 0 && (size_t)j < level_cv.size() )
+	    s = cv_qualified_spelling(s, level_cv[j], true);
+    }
+    return s;
+}
+
 // THE owner of a DataDefFPTR's structural C++ spelling (declared in
 // datadef.h): `Ret (*)(P1,P2)` from the target FuncDef — the form the
 // Itanium mangler's function-pointer arm parses into PF…E.
@@ -7460,13 +7500,9 @@ static std::string basic_class_datadef_spelling(DataDef *dd)
     if ( !dd )
 	return std::string();
     if ( DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(dd) )
-    {
-	std::string operand = basic_class_datadef_spelling(qualified->base_type);
-	std::string cv = cv_prefix_spelling(qualified->quals);
-	if ( dynamic_cast<DataDefPTR *>(qualified->base_type) )
-	    return operand + " " + cv.substr(0, cv.size() - 1);
-	return cv + operand;
-    }
+	return cv_qualified_spelling(basic_class_datadef_spelling(qualified->base_type),
+				     qualified->quals,
+				     dynamic_cast<DataDefPTR *>(qualified->base_type) != NULL);
     if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
 	return basic_class_datadef_spelling(ref->base_type) + "&";
     if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
@@ -53188,6 +53224,22 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    // operator>> parameters, `__pf(*this)`), not a reference to a
 	    // function pointer; applying the `&` after this level's suffixes
 	    // built the latter and every call through __pf failed to parse.
+	    // The cv this level still holds qualifies the REFERENT ([dcl.ref]:
+	    // `volatile int &r` binds a volatile int, `int *volatile &p` a
+	    // volatile pointer) — a reference has no object of its own for a
+	    // top-level flag to qualify, so nothing else would keep it: the
+	    // leading run the caller consumed, or `int volatile &` read into
+	    // base_cv, before any `*`; the run after the last `*` otherwise.
+	    if ( depth == 0 )
+	    {
+		unsigned ref_cv = out.ptr_depth == 0
+		    ? (leading_cv | (out.base_const ? cvCONST : cvNONE)
+				  | (out.base_volatile ? cvVOLATILE : cvNONE))
+		    : ((out.const_after_star ? cvCONST : cvNONE)
+		       | (out.volatile_after_star ? cvVOLATILE : cvNONE));
+		if ( !dd->as_fptr_dd() && !dd->as_carray_dd() )
+		    dd = getQualifiedType(dd, ref_cv & modeled_cv());
+	    }
 	    dd = getReferenceType(dd);
 	    ref_dd = dd;
 	    ref_here = true;
@@ -53649,14 +53701,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 
 	func->parameters.push_back(param_dd);
 	func->const_params.push_back(param_leading_const);
-	std::string param_spelling;
-	if ( param_leading_const )
-	    param_spelling = "const ";
-	if ( base_param_dd )
-	    param_spelling += base_param_dd->canonical_cpp_spelling().empty()
-		? base_param_dd->name : base_param_dd->canonical_cpp_spelling();
-	for ( int sd = 0; sd < param_ptr_depth; ++sd )
-	    param_spelling += "*";
+	std::string param_spelling = param_declarator_spelling(
+	    base_param_dd, param_dd, param_ptr_depth, param_leading_const);
 	if ( param_is_ref )
 	    param_spelling += param_rvalue_ref ? "&&" : "&";
 	func->param_cpp_spellings.push_back(param_spelling);
@@ -69277,14 +69323,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // top-level pointee-const, so a DataDef-derived spelling would mangle
 	    // `const char*` as Pc not PKc); a redeclaration compares it against
 	    // the prior signature (redecl_prior_sig). Fed to the Itanium mangler.
-	    std::string param_spelling;
-	    if ( param_leading_const )
-		param_spelling = "const ";
-	    param_spelling += pb->definition.canonical_cpp_spelling().empty()
-		? pb->definition.name
-		: pb->definition.canonical_cpp_spelling();
-	    for ( int sd = 0; sd < param_ptr_depth; ++sd )
-		param_spelling += "*";
+	    std::string param_spelling = param_declarator_spelling(
+		&pb->definition, param_dd, param_ptr_depth, param_leading_const);
 	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
 	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
 	    // declarator, so the encoder encodes it or refuses it — a bare

@@ -276,6 +276,23 @@ inline const char *cv_prefix_spelling(unsigned cv)
     }
 }
 
+// THE C++ spelling of `cv` over an operand already spelled: a qualified POINTER
+// spells its cv AFTER the `*` (`int* volatile` — the pointer object is
+// volatile), any other operand before it (`volatile int`) — gcc's printed
+// order both ways. The one rule for every renderer (the DataDefQUAL name,
+// basic_class_datadef_spelling, the parameter mangle spelling): a prefix on a
+// pointer reads back as a pointer TO a qualified type — another type.
+inline std::string cv_qualified_spelling(const std::string &operand, unsigned cv,
+					 bool operand_is_pointer)
+{
+    std::string cvs = cv_prefix_spelling(cv);
+    if ( cvs.empty() )
+	return operand;
+    if ( operand_is_pointer )
+	return operand + " " + cvs.substr(0, cvs.size() - 1);
+    return cvs + operand;
+}
+
 enum class DataType : uint16_t {
 	// Simple data types
 	dtVOID, dtBOOL, dtUINT8, dtBYTE=dtUINT8,  dtINT8, dtCHAR = dtINT8,
@@ -1878,7 +1895,7 @@ public:
     DataDef *base_type;
     unsigned quals;
     DataDefQUAL(DataDef &base, unsigned cv)
-	: DataDef(cv_prefix_spelling(cv) + base.name, base.size, base.type()),
+	: DataDef(cv_qualified_spelling(base.name, cv, base.is_pointer()), base.size, base.type()),
 	  base_type(&base), quals(cv) {}
     virtual BaseType basetype() const override { return base_type->basetype(); }
     virtual DataType rawtype() const override { return base_type->rawtype(); }

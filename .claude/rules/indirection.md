@@ -71,7 +71,11 @@
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A non-type template argument spliced into a cloned body (one operand):
   `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).
-- A spelling's decorations: `ItaniumMangler::parse_type`; P/R/O/K: `encode_type`. A
-  function (pointer) through its layers: `fptr_structural_spelling` (a reference is R).
+- A spelling's decorations: `ItaniumMangler::parse_type` (trailing first; one level's
+  cv words are ONE V/K set); P/R/O/K/V: `encode_type`. A function (pointer) through its
+  layers: `fptr_structural_spelling` (a reference is R). A qualified type's spelling:
+  `cv_qualified_spelling`; a parameter's: `param_declarator_spelling` (cv from the type).
+- A pointer's or referent's qualification conversion ([conv.qual], [over.ics.rank]/3.2.5-6):
+  `score_arg_to_param` — never a peel of the pointee's cv before comparing.
 
 See `docs/rules/indirection.md` for the reasoning and the open families.
