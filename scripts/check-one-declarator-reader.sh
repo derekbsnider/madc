@@ -36,8 +36,9 @@
 #   peel/rebuild of alias dims (~3245), __builtin_va_list (~3505),
 #   ClassTypePattern CArray resolve (~8260), string-literal type (~13892),
 #   `&C::member` constants (~31966 MemberFnPtr, ~31982 MemberPtr),
-#   ternary call typing (~42332), deduction decay (~60273),
-#   fn-ptr variable bound from a function (~72627), VLA element type (~73831).
+#   getPointerType's [conv.func] decay of a FuncDef (~29410 — the ONE mint the
+#   call-through-expression, `+f`, deduction and `auto fp = f` sites share),
+#   VLA element type (~73831).
 #
 # Ratchet: a count must never RISE above BASELINE. Each migration LOWERS the
 # baseline in the same commit (a count below BASELINE without that edit also
@@ -55,7 +56,7 @@ SRC="${MADC_GATE_SRC:-src/parser.cpp}"   # override exists ONLY for --selftest
 
 # BASELINE (measured 2026-09-19 @ 85f3c91d4) -> END STATE after the plan lands
 BASE_FNPTRPARAMS=2   # -> 2  (definition + the owner's suffix call)
-BASE_FPTR=5           # owner + fnptr_twin + the 3 non-declarator sites above
+BASE_FPTR=3           # owner + fnptr_twin + getPointerType's FuncDef decay
 BASE_CARRAY=6         # -> 5  (owner x1 + 4 non-declarator sites)
 BASE_MEMBERPTR=3      # -> 2  (owner + the &C::field constant)
 BASE_MEMBERFNPTR=2    # -> 2  (owner + the &C::method constant)
@@ -99,6 +100,7 @@ control "nest_carray_dims' CArray construction"       'DataDefCArray \*level = n
 control "parse_declarator's member-fn-ptr fold"        'dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,'
 control "parse_declarator's function-type suffix"      'DataDefFPTR \*fp = new DataDefFPTR(func);'
 control "fnptr_twin's construction (the ONE fn-type -> fn-pointer twin)" 'DataDefFPTR \*twin = new DataDefFPTR(fn_type->target);'
+control "getPointerType's [conv.func] decay (the ONE FuncDef -> fn-pointer mint)" 'DataDefFPTR \*fp = new DataDefFPTR(fd);'
 control "parse_declarator's data member pointer fold" 'dd = new DataDefMemberPtr(owner, owner_name, \*dd);'
 
 if [ "${1:-}" = "--selftest" ]; then

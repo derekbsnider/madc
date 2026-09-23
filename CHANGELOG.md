@@ -2,10 +2,10 @@
 
 ## [Unreleased]
 
-### Arrays, calls, casts and `sizeof` each read their operand through one owner
+### Arrays, calls, casts, `sizeof` and arithmetic operands each read their operand through one owner
 
 The indirection families left open by the `*`/`&` consolidation, each measured
-against gcc and clang before it was touched. Four of them held silent wrong
+against gcc and clang before it was touched. Five of them held silent wrong
 answers.
 
 - **The end of an expression is one function** (`Program::finish_expression`).
@@ -31,13 +31,29 @@ answers.
 - **"Is this a function pointer" has one owner** (`as_fptr_dd()`, which sees
   through `const`). A site that `static_cast` a const wrapper is gone, and
   the structural sites are marked.
+- **An arithmetic operand's type has one owner per step**: the value it
+  denotes (a reference is its referent) and that value's integer promotions.
+  Every operator reads its operands through them.
+  - Unary `~`, `-` and `+` now promote. `f(~uc)` picked `f(unsigned char)`,
+    and `sizeof(~ch)` was 1.
+  - Unary `+` is a real operator, not dropped. A class's `operator+()` now
+    runs (`(+k).v` was 1, g++ 101), `sizeof(+a)` is 8, not 12, and
+    `+[](int){...}` compiles.
+  - A bit-field narrower than `int` promotes to `int`.
+  - `%` has a type: `l % 3` on a `long` was 4 bytes.
+  - A reference operand no longer types the expression as a pointer.
+    `auto a = rl + 2` and even `auto c = rl` bound a pointer to the value
+    and crashed.
+  - `auto` and lambda return types stopped deducing `double` for `float`
+    arithmetic.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
-operator drain, the cast operand); new `check-one-fptr-predicate.sh`.
+operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
+`check-one-operand-promotion.sh`.
 Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
 `testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
-`testsizeofoperand`.
+`testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`.
 
 ### Unary `*` and `&` read their operand through one owner
 

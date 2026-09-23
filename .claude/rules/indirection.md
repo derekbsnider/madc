@@ -21,14 +21,19 @@
   `Program::array_operand_type`; its element (the ROW): `array_operand_element_type`
   — never the operand's `datadef()` (flattened). sizeof of an expression
   (`type_query_expression_value`), decay (`array_decay_pointer`), `*a`, `a->m` ask them.
+- An operand's VALUE (a reference is its referent) and its integer promotions:
+  `operand_value_type` / `promoted_operand_type` (tokens.h) — every operator's type
+  reads its children through them (gated: `check-one-operand-promotion.sh`); `auto`
+  and a lambda's return deduce through `Program::operand_value_datadef`.
 - End of an expression (bind pending operators, refuse juxtaposed operands):
   `Program::finish_expression` — every exit of `parseExpression`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 
 ## Types
-- Mint `T*` / `T&` / `const T`: `getPointerType` / `getReferenceType` (the one
-  collapse) / `getConstType`.
+- Mint `T*` / `T&` / `const T`: `getPointerType` (a function type or a FuncDef
+  folds to its fn-pointer — [conv.func]) / `getReferenceType` (the one collapse)
+  / `getConstType`.
 - One pointee level: `as_pointer_dd()`, never `dynamic_cast<DataDefPTR *>`.
   All levels: `dd_peel_pointers` (gated). void: `DataDef::is_void()` (gated).
 - Referent: `TokenSubscript::referent_type`; for member access

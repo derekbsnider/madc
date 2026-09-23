@@ -164,8 +164,46 @@ yet measured.
   member-row subscript. `Program::array_operand_type` (the array with its
   extents; `array_operand_element_type` is its element) is the owner, a
   variable operand goes to the one expression measure, and the fast paths are
-  deleted. Reducer `tests/testsizeofoperand`. Still open: unary `~`/`+`/`-`
-  skip the integer promotions (Gap `unary_operator_integer_promotion`).
+  deleted. Reducer `tests/testsizeofoperand`.
+- ~~`arithmetic_operand_value_and_promotion`~~ — consolidated 2026-09-23 (the
+  handoff's Gap `unary_operator_integer_promotion`, measured at 3x its recon).
+  Every operator's parse-side type read its children as `left->datadef()` and
+  re-derived the promotion by hand, so the defects spread across the operator
+  set rather than one arm. Unary `~`/`-` kept the operand's type: `f(~uc)`
+  picked `f(unsigned char)`, and `sizeof(~ch)` was 1. Unary `+` was dropped
+  outright, so `(+k).v` never ran a class's `operator+()` (1, g++ 101),
+  `sizeof(+a)` measured the array (12, g++ 8), and `+[](int){...}` did not
+  compile. A bit-field narrower than int kept its declared `unsigned` type,
+  and `%` had no type at all (`l % 3` was 4 bytes). The worst case was a
+  reference operand, which typed the operator as the reference's lowered
+  POINTER: `auto a = rl + 2` bound a pointer to 42 and crashed. `auto` itself
+  deduced through a second copy of the operator typing (`deduce_expr_type`'s
+  `+ - * /` arm), which read a reference leaf the same way (`auto c = rl`
+  crashed) and answered double for any real operand (`auto x = f * 2` on a
+  float was 8 bytes). The owners are
+  `operand_value_type` ([expr]/5) and `promoted_operand_type` ([conv.prom],
+  bit-field and enum aware) over `integer_promoted_type`, which cir's
+  `enum_promotes_to` now composes from. Unary `+` is `TokenUnaryPlus` (c2mir's
+  one-operand `N_ADD`), and `deduce_expr_type` asks `operand_value_datadef`.
+  Reducers `tests/testunarypromotion`, `tests/testunarypromotionc`; gate
+  `check-one-operand-promotion.sh` (24 direct child reads and the shifts'
+  hand-rolled floor at the parent commit). `+f`'s decay type is
+  `getPointerType(f)`: the one `T*` mint already folded a function TYPE to its
+  fn-pointer, and now folds a FuncDef too ([conv.func]), so the three sites that
+  each minted a FuncDef's pointer by hand (the call through an expression,
+  deduction's decay, `auto fp = f`) share it — the declarator-reader gate's
+  `new DataDefFPTR(` baseline fell from 5 to 3.
+  Found beside it and fixed next, each its own commit: C++ `==`/`<`/`&&`/`!`
+  are typed int, not bool; `b ? uc : ss` skips the usual arithmetic
+  conversions; compound assignments (`+=` ... `^=`) have no type (int); a
+  function-pointer-typed argument never ranks against a function-pointer
+  parameter (`f(pg)` and `f(+g)` pick `f(long)`, silent); a free unary
+  `operator-`/`operator+` is refused; aggregate-initializing a reference
+  member (`RM rm{lv}`) stores the value as the pointer; `long long` is
+  `long`'s identity on Linux (`f(long)` + `f(long long)` collide); C
+  `signed char` selects `char` in `_Generic`; C's GNU `__auto_type` is
+  unsupported; a C unfixed enum promotes to int where gcc/clang pick
+  `unsigned int` (madc and c2mir agree on int, so a backend decision).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

@@ -16619,7 +16619,8 @@ static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
 //   arguments. A fn-pointer callee has no tracked exception spec: canon
 //   (g++/clang) answers `noexcept(p())` false, so 0.
 // - Builtin operators recurse; an operator RESOLVED onto a class overload
-//   types by resolved_type but does not name its method here — refuse.
+//   (a class operand) types by resolved_type but does not name its method
+//   here — refuse.
 // - TokenCast recurses (scalar conversions do not throw; a throwing
 //   dynamic_cast<T&> is not distinguishable post-parse and is accepted — no
 //   real-header noexcept condition spells one).
@@ -16706,7 +16707,13 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
     if ( tb->is_operator() )
     {
 	TokenOperator *to = static_cast<TokenOperator *>(tb);
-	if ( to->resolved_type )
+	// Refuse only an operator resolved onto a CLASS overload (a class
+	// operand). resolved_type alone also records a built-in's type — an
+	// array operand's decay (`a + 1`, `+a`), a SIMD comparison's vector, a
+	// <=> category — and those recurse like every built-in: g++ answers
+	// noexcept(a + 1) true where this refused it.
+	if ( to->resolved_type
+	  && (pgm.operand_object_class(to->left) || pgm.operand_object_class(to->right)) )
 	    return -1;
 	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
 				noexcept_eval_expr(pgm, to->right, depth + 1));
@@ -16841,6 +16848,8 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
 	}
 	return false;
     }
+    if ( TokenUnaryPlus *tp = dynamic_cast<TokenUnaryPlus *>(tb) )
+	return try_eval_known_integer(tp->right, out);
     if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(tb) )
     {
 	int64_t lhs = 0, rhs = 0;
@@ -20436,6 +20445,7 @@ static const char *object_operator_symbol(TokenID id)
 	case TokenID::tkAdd: return "+";
 	case TokenID::tkSub: return "-";
 	case TokenID::tkNeg: return "-";
+	case TokenID::tkUnaryPlus: return "+";
 	case TokenID::tkMul: return "*";
 	case TokenID::tkDiv: return "/";
 	case TokenID::tkMod: return "%";
@@ -20642,6 +20652,18 @@ void Program::resolve_object_operator_type(TokenOperator *to)
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
     if ( !operand ) return;
     DataDefCLASS *lc = operand_object_class(operand);
+    // Unary plus on an array or a function designator ([expr.unary.op]/7,
+    // [conv.array]/[conv.func]) is the decayed pointer. The operand's
+    // datadef() is the flattened element / the FuncDef, which the token's
+    // lazy view would read as a value (`sizeof(+a)` measured the array).
+    if ( !lc && to->id() == TokenID::tkUnaryPlus )
+    {
+	if ( DataDef *dp = array_decay_pointer(operand) )
+	{ to->set_resolved_type(dp); return; }
+	DataDef *od = operand->datadef();
+	if ( FuncDef *fd = od ? od->as_funcdef_dd() : NULL )
+	{ to->set_resolved_type(getPointerType(fd)); return; }
+    }
     if ( !lc && unary )
 	return;
     // Array-to-pointer decay in additive pointer arithmetic ([conv.array]):
@@ -29379,6 +29401,16 @@ DataDef *Program::getPointerType(DataDef *base)
 	    ptr_type_cache[base] = twin;
 	    return twin;
 	}
+    // A pointer to a FUNCTION (a FuncDef — a named function's own DataDef) is
+    // the function pointer over its signature: [conv.func]'s decay type. The
+    // call through an expression, `+f`, deduction's decay and `auto fp = f`
+    // each minted their own; ONE mint, interned like every other `T*`.
+    if ( FuncDef *fd = base ? base->as_funcdef_dd() : NULL )
+    {
+	DataDefFPTR *fp = new DataDefFPTR(fd);
+	ptr_type_cache[base] = fp;
+	return fp;
+    }
 
     // return well-known globals for common types
     if ( base == &ddVOID )  return &ddVOIDptr;
@@ -42290,7 +42322,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			DataDefFPTR *fptr_type = call_dd ? call_dd->as_fptr_dd() : NULL;
 			if ( !fptr_type && call_dd )
 			    if ( FuncDef *func = call_dd->as_funcdef_dd() )
-				fptr_type = new DataDefFPTR(func);
+				fptr_type = getPointerType(func)->as_fptr_dd();
 			if ( fptr_type )
 			{
 			    exStack.pop();
@@ -42549,7 +42581,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // should we delete tb ?
 		    tb = ts;
 		}
-		// Unary `+` (no-op): just consume and continue.
+		// Unary `+` ([expr.unary.op]/7): a real operator — the PROMOTED
+		// operand, an rvalue, and a class operand's operator+(). The lexer
+		// says TokenAdd; build the unary token here, as `-` becomes a
+		// TokenSub above, and let it bind by precedence like TokenNeg.
 		// Treat as unary when there's no value-producing operand
 		// on exStack, or when the previous token is a binary/assign
 		// operator (so `x = +20` works). Exclude postfix `++`/`--`
@@ -42576,7 +42611,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && _prv_token->id() != TokenID::tkClSqr
 		      && _prv_token->id() != TokenID::tkInc
 		      && _prv_token->id() != TokenID::tkDec)))) )
-		    return done ? ExprStep::Done : ExprStep::Break;
+		{
+		    TokenUnaryPlus *up = new TokenUnaryPlus();
+		    up->file = tb->file;
+		    up->line = tb->line;
+		    up->column = tb->column;
+		    tb = up;
+		}
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 		{
@@ -58834,6 +58875,95 @@ DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *wher
     return NULL;	// Throw does not return; keeps the compiler satisfied
 }
 
+// [expr]/5 — the VALUE an operand denotes, given its datadef(): a
+// reference-typed expression (a DataDefREF) denotes its referent, and so does
+// a reference VARIABLE, which madc lowers as its pointer (var.type is the
+// pointer, flagged is_reference). The one reference arm of operand_value_type
+// (tokens.h) and Program::operand_value_datadef.
+static DataDef *operand_referent(TokenBase *operand, DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    if ( dd->is_reference() )
+	return static_cast<DataDefPTR *>(dd)->base_type;
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
+    if ( tv && (tv->var.is_reference()) )
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    return rp->base_type;
+    return dd;
+}
+
+DataDef *operand_value_type(TokenBase *operand)
+{
+    return operand ? operand_referent(operand, operand->datadef()) : NULL;
+}
+
+// [conv.prom] of an integer TYPE (tokens.h). The bit-field rule needs the
+// operand and lives in promoted_operand_type. Identities are the builtin
+// spellings' (resolve_builtin_type_spelling), so a same_scalar_type compare
+// sees the promoted `int` as the declared `int`.
+DataDef *integer_promoted_type(DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    DataDef *t_int = Program::resolve_builtin_type_spelling("int");
+    if ( const DataDefENUM *e = dd->as_enum_dd() )
+    {
+	// [conv.prom]/4: a FIXED enum promotes to its underlying type, and on
+	// through that type's own promotion.
+	if ( e->fixed_base && e->underlying )
+	    return integer_promoted_type(e->underlying);
+	// [conv.prom]/3: an unfixed one to the first of int / unsigned int /
+	// long / unsigned long / long long / unsigned long long that holds every
+	// enumerator — by VALUE range ([dcl.enum]/8), not the computed underlying
+	// type (that is unsigned for a non-negative range, yet `enum { a, b }`
+	// promotes to int — g++ and clang++ pick f(int) over f(long)); past 32
+	// bits the first 64-bit SIGNED type, since every value fits int64 —
+	// `long` on LP64, `long long` on LLP64 (where long is 32-bit).
+	int64_t lo = 0, hi = 0;
+	for ( size_t i = 0; i < e->enumerators.size(); ++i )
+	{
+	    if ( e->enumerators[i].second < lo ) lo = e->enumerators[i].second;
+	    if ( e->enumerators[i].second > hi ) hi = e->enumerators[i].second;
+	}
+	if ( lo >= INT32_MIN && hi <= INT32_MAX )
+	    return t_int;
+	if ( lo >= 0 && hi <= (int64_t)UINT32_MAX )
+	    return Program::resolve_builtin_type_spelling("unsigned int");
+	return Program::resolve_builtin_type_spelling(
+	    target_llp64() ? "long long" : "long");
+    }
+    if ( dd->is_pointer() || dd->is_function() || dd->as_fptr_dd()
+      || dd->is_simd() || dd->is_complex() || !dd->is_integer() )
+	return dd;
+    // [conv.prom]/1-2: rank below int (bool, the character types, the shorts,
+    // char16_t, an LLP64 wchar_t) -> int. char32_t and an LP64 wchar_t are
+    // int-sized distinct types: the first of int / unsigned int holding them.
+    if ( dd->size < ddINT.size )
+	return t_int;
+    if ( dd->size == ddINT.size && (dd == dd_char32() || dd == dd_platform_wchar()) )
+	return dd->is_unsigned()
+	    ? Program::resolve_builtin_type_spelling("unsigned int") : t_int;
+    return dd;
+}
+
+DataDef *promoted_operand_type(TokenBase *operand)
+{
+    DataDef *dd = operand_value_type(operand);
+    if ( !dd )
+	return NULL;
+    dd = dd->unqualified();	// [conv.lval]: the prvalue is cv-unqualified
+    // [conv.prom]/5, C11 6.3.1.1p2: a bit-field narrower than int promotes to
+    // int whatever its declared type; one of int's width keeps its type's
+    // promotion (`unsigned w : 32` stays unsigned).
+    if ( dd->is_integer() && !dd->is_pointer() )
+	if ( TokenMember *tm = operand->as_member_tok() )
+	    if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+		if ( bf->bit_width < ddINT.size * 8 )
+		    return Program::resolve_builtin_type_spelling("int");
+    return integer_promoted_type(dd);
+}
+
 DataDef *Program::operand_value_datadef(TokenBase *operand)
 {
     DataDef *dd = operand ? operand->datadef() : NULL;
@@ -58860,13 +58990,7 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 		DataDef *r = &rfd->return_value_type();
 		return r;
 	    }
-    if ( dd->is_reference() )
-	return static_cast<DataDefPTR *>(dd)->base_type;
-    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
-    if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
-	    return rp->base_type;
-    return dd;
+    return operand_referent(operand, dd);
 }
 
 // [temp.deduct.call]/3 needs the argument expression's value category for a
@@ -59732,7 +59856,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( sp_.find('&') != std::string::npos )
 	    return arg_dd_;
 	if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd_) )
-	    return new DataDefFPTR(afd);
+	    return pgm.getPointerType(afd);
 	if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[ai]) )
 	    return adp;
 	return arg_dd_ ? arg_dd_->unqualified() : arg_dd_;
@@ -69928,34 +70052,17 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
 {
     if ( !expr )
 	return NULL;
-
-    if ( pgm && dynamic_cast<TokenCallFunc *>(expr) )
+    // The initializer's VALUE type ([dcl.spec.auto], [temp.deduct.call]/2):
+    // Program::operand_value_datadef — a call's resolved callee, a reference's
+    // referent ([expr]/5). An operator types itself through its own datadef(),
+    // which reads its operands through the promotion owners (tokens.h). The
+    // arm that re-derived + - * / here was a second copy of that typing: it
+    // read a reference leaf as its lowered POINTER (`auto a = rl + 2` bound a
+    // pointer to 42 and crashed; so did `auto c = rl`) and answered double for
+    // any real operand (`auto x = f * 2` on a float measured 8 bytes).
+    if ( pgm )
 	if ( DataDef *dd = pgm->operand_value_datadef(expr) )
 	    return dd;
-
-    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(expr) )
-    {
-	// Comparison / logical operators yield bool regardless of operands;
-	// their own datadef() already reflects that, so only fold the
-	// value-producing arithmetic operators here.
-	switch ( op->id() )
-	{
-	case TokenID::tkAdd: case TokenID::tkSub:
-	case TokenID::tkMul: case TokenID::tkDiv:
-	    {
-		DataDef *l = deduce_expr_type(pgm, op->left);
-		DataDef *r = deduce_expr_type(pgm, op->right);
-		if ( (l && l->is_real()) || (r && r->is_real()) )
-		    return &ddDOUBLE;
-		if ( l && l->is_pointer() ) return l;
-		if ( r && r->is_pointer() ) return r;
-		break;
-	    }
-	default:
-	    break;
-	}
-    }
-
     return expr->datadef();
 }
 
@@ -70418,8 +70525,8 @@ static bool literal_integer_value(TokenBase *tb, int64_t &out)
 	    return true;
 	}
     }
-    // Unary plus: +N (no-op)
-    if ( tb->id() == TokenID::tkAdd && static_cast<TokenOperator *>(tb)->left == nullptr )
+    // Unary plus: +N
+    if ( tb->id() == TokenID::tkUnaryPlus )
     {
 	TokenOperator *op = static_cast<TokenOperator *>(tb);
 	return literal_integer_value(op->right, out);
@@ -71807,7 +71914,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	    // create a DataDefFPTR wrapping the target function's FuncDef
 	    FuncDef *target_func = (FuncDef *)rhs_var->type;
-	    DataDefFPTR *fptr_type = new DataDefFPTR(target_func);
+	    DataDef *fptr_type = getPointerType(target_func);
 
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *fptr_type, id, 1, NULL, alloc);

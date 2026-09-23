@@ -4508,46 +4508,24 @@ static bool same_scalar_type(const DataDef *a, const DataDef *b)
 	return a->rawtype() == b->rawtype();
 }
 
-// [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? A
-// fixed enum promotes to its underlying type and, when that type itself
-// promotes (narrower than int), to int as well — both are promotions. An
-// unfixed enum promotes to the first of int / unsigned int / long / unsigned
-// long / long long / unsigned long long that holds every enumerator — by its
-// VALUE range (bmin..bmax, [dcl.enum]/8), not by the computed underlying type
-// (the canon rule makes that unsigned for a non-negative range, yet `enum {
-// a, b }` promotes to int: g++ and clang++ pick f(int) over f(long) for
-// `f(a)`, tests/testenumnsoverload.mad); a range past 32 bits promotes to
-// the first 64-bit SIGNED type of the list — `long` on LP64, `long long` on
-// LLP64 (where `long` is 32-bit) — never to the unsigned one, since every
-// enumerator value fits int64. "Is `target` that type" is type identity
-// (same_scalar_type), never storage width. Every other arithmetic parameter
-// is a conversion; a pointer or function pointer is not viable at all.
+// [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? Its
+// promoted type is integer_promoted_type's (the one owner of the enum rule:
+// by VALUE range for an unfixed enum, the underlying type's promotion for a
+// fixed one — tests/testenumnsoverload.mad), and a FIXED enum's conversion to
+// the underlying type itself is a promotion too. "Is `target` that type" is
+// type identity (same_scalar_type), never storage width. Every other
+// arithmetic parameter is a conversion; a pointer or function pointer is not
+// viable at all.
 static bool enum_promotes_to(const DataDefENUM *e, const DataDef *target)
 {
 	if (!e || !target || !target->is_numeric() || target->is_real()
 	    || target->is_pointer() || target->as_fptr_dd()
 	    || target->rawtype() == DataType::dtBOOL)
 		return false;
-	const DataDef *t_int = Program::resolve_builtin_type_spelling("int");
-	if (e->fixed_base && e->underlying) {
-		if (same_scalar_type(e->underlying, target))
-			return true;
-		return e->underlying->size < ddINT.size
-		    && same_scalar_type(target, t_int);
-	}
-	int64_t lo = 0, hi = 0;
-	for (size_t i = 0; i < e->enumerators.size(); ++i) {
-		if (e->enumerators[i].second < lo) lo = e->enumerators[i].second;
-		if (e->enumerators[i].second > hi) hi = e->enumerators[i].second;
-	}
-	if (lo >= INT32_MIN && hi <= INT32_MAX)
-		return same_scalar_type(target, t_int);
-	if (lo >= 0 && hi <= (int64_t)UINT32_MAX)
-		return same_scalar_type(target,
-			Program::resolve_builtin_type_spelling("unsigned int"));
+	if (e->fixed_base && e->underlying && same_scalar_type(e->underlying, target))
+		return true;
 	return same_scalar_type(target,
-		Program::resolve_builtin_type_spelling(
-			target_llp64() ? "long long" : "long"));
+		integer_promoted_type(const_cast<DataDefENUM *>(e)));
 }
 
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
@@ -19728,6 +19706,7 @@ bool CirBuilder::int_complex_const_fold(TokenBase *tb, long &re, long &im)
 		if (!int_complex_const_fold(top->right, r, i))
 			return false;
 		if (tb->id() == TokenID::tkNeg) { re = -r; im = -i; return true; }
+		if (tb->id() == TokenID::tkUnaryPlus) { re = r; im = i; return true; }
 		if (tb->id() == TokenID::tkBnot) { re = r; im = -i; return true; }
 		return false;
 	}
@@ -20083,6 +20062,9 @@ node_t CirBuilder::int_complex_unary(TokenOperator *top, TokenBase *tb)
 	if (!oc)
 		return NULL;
 	TokenID op = tb->id();
+	// +z is z: the struct spine has no promotion to apply.
+	if (op == TokenID::tkUnaryPlus)
+		return translate_expr(top->right);
 	if (op != TokenID::tkNeg && op != TokenID::tkBnot && op != TokenID::tkLnot)
 		return NULL;
 	node_t items = list();
@@ -20936,6 +20918,7 @@ static bool constant_integer_operand(TokenBase *t, madc_wide_int &out)
 		return false;
 	switch (t->id()) {
 	case TokenID::tkNeg:  out = -out; break;
+	case TokenID::tkUnaryPlus: break;
 	case TokenID::tkBnot: out = ~out; break;
 	case TokenID::tkLnot: out = !out; break;
 	default: return false;
@@ -23031,6 +23014,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			const char *uop = NULL;
 			switch (tb->id()) {
 			case TokenID::tkNeg:  uop = "-"; break;
+			case TokenID::tkUnaryPlus: uop = "+"; break;
 			case TokenID::tkLnot: uop = "!"; break;
 			case TokenID::tkBnot: uop = "~"; break;
 			default: break;
@@ -23049,6 +23033,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t operand = (tb->id() == TokenID::tkLnot)
 				? translate_cond(top->right)
 				: translate_expr(top->right);
+			// Unary plus: c2mir's one-operand N_ADD (its own parse of `+x`)
+			// applies the promotions to an arithmetic operand. A pointer,
+			// array or function operand (C++, [expr.unary.op]/7) is its
+			// decayed VALUE, which c2mir takes from the operand itself —
+			// its `+` accepts arithmetic only.
+			if (tb->id() == TokenID::tkUnaryPlus) {
+				DataDef *rt = top->datadef();
+				if (rt && (rt->is_pointer() || rt->as_fptr_dd()))
+					return operand;
+				return node1(N_ADD, operand, tb);
+			}
 			if (tb->id() == TokenID::tkNeg)
 				// Unary negation: c2mir represents `-x` as a SINGLE-operand
 				// N_SUB (grammar: `N_SUB (expr)`), lowered with float UNOP
