@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Unary `*` and `&` read their operand through one owner
+
+A handed-over parse error, `**c.pp()`, turned out to be one symptom of a
+family: six hand-written readers of a `*` operand, each covering part of the
+grammar, and every one wrong somewhere. The `&` reader had the same problem.
+Both now read their operand as a cast-expression through the expression
+engine, the way gcc's `c_parser_unary_expression` does, and each has one
+builder:
+
+- **Refused shapes that now parse:** `**c.pp()`, `**cp->p2`, `**first(pp)`,
+  `**arr2[0]`, `**::gpp`, `***sp->p3`, `**m` on a 2-D array, `sizeof **p`,
+  `sizeof -x`, `(int)*it`, `&*p`, `&**pp`, `&*it`, `&*this`, `(*twice)(3)`,
+  `&*q++`, `(*sq++).m`.
+- **Silent wrong answers fixed:** `*&x + 1` (was 0), `*static_cast<int*>(vp) + 1`
+  (9), `**(q)++` (dereferenced once), `(int)*p++` (lost the `++`),
+  `(char)**pp * 100`, `(char)-x * 100` and `(char)~x * 100` (the cast took
+  the whole product), `sizeof(*m)` on `int[2][3]` (4, not 12), and
+  `fn_t *fpp = &f`, which stored `f` itself.
+- **`*it++` on a class iterator** now compiles: the postfix step's by-value
+  result is materialized as a temporary before `operator*` is called on it.
+- **Conformance:** gxx-c++11 1464 → 1474 and c2mir-tests 302 → 304, with
+  nothing targeted at them; both baselines were shrunk.
+- **New rule** `.claude/rules/indirection.md` indexes the one owner for every
+  layered pointer, reference and array concern. The new gate
+  `scripts/check-one-deref-builder.sh` (in `fulltest`) keeps both families
+  from regrowing.
+
+Reducers: `tests/testderefoperandc`, `testderefoperandcpp`,
+`testaddrofoperand`, `testaddrofoperandcpp`, `testclasspostincprvalue`.
+
 ### The audit's findings, measured and fixed: void pointers, ellipsis overloads, aarch64 long double
 
 The duplication audit run at the self-hosting merge reported two divergent
