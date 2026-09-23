@@ -44,7 +44,7 @@ static void out_op (MIR_context_t ctx, FILE *f, MIR_op_t op) {
     int disp_p = FALSE, blk_p = MIR_blk_type_p (op.u.mem.type);
 
     if (!blk_p) {
-      fprintf (f, "*(");
+      fprintf (f, op.u.mem.volatile_p ? "*(volatile " : "*(");
       out_type (f, op.u.mem.type);
       fprintf (f, "*) ");
     }

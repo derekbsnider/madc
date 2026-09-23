@@ -199,7 +199,8 @@ upstream MIR: it carries native C99 `_Complex`,
 `__attribute__((cleanup))`, the scope-depth auto-local layout fix, the
 struct/union statement-expression copy-out fix, ≤16-byte SIMD/vector
 (`vector_size`/`ext_vector_type`) support, the Mach-O executable writer,
-and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
+volatile memory accesses (`MIR_mem_t.volatile_p`, honoured by every
+optimization pass), and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
 depends on. `make -C src` builds libmir + c2m itself, into
 `obj/mir/<variant>` (never inside the subtree). `vnmakarov/mir` is the
 true upstream; `github.com/derekbsnider/mir` is the historical former
@@ -378,7 +379,7 @@ that fails any of these is not merged.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
+| [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
 | [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 55 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |

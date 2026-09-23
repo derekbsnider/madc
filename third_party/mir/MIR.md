@@ -248,6 +248,15 @@
 	  <type>: <disp>
 	  <type>: [<disp>] (<base reg> [, <index reg> [, <scale> ]])
 ```
+      * A **volatile** memory operand (field `volatile_p` of `MIR_mem_t`, set after creation) is
+        an access through a volatile lvalue: the generator performs it exactly as written.  It is
+        never removed (even when its value is unused), merged with another access, given a value
+        forwarded from or to another access, moved, or folded into another insn, and it keeps its
+        order with every other volatile access.  Its MIR text prefixes the type with `volatile:`:
+
+```
+	  volatile:<type>: [<disp>] (<base reg> [, <index reg> [, <scale> ]])
+```
   * API function `MIR_output_str (MIR_context_t ctx, FILE *f, MIR_str_t str)` outputs the MIR string
     textual representation into given file
   * API function `MIR_output_op (MIR_context_t ctx, FILE *f, MIR_op_t op, MIR_func_t func)` outputs the operand

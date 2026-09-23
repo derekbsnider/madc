@@ -390,6 +390,33 @@ yet measured.
   `tests/testvolatilesetjmpo2c`; MIR corpus `new/volatile-setjmp.c`. Open:
   `pointee_volatile` (`volatile int *q`, a volatile member, `typedef
   volatile`), a type-level qualifier like `DataDefCONST`.
+- ~~`mir_volatile_memory_access`~~ — fixed 2026-09-23, one layer below the
+  step above (a Tier 3 raise, on the owner's go). MIR had no volatile concept:
+  at `-O2` GVN forwarded the load before a loop into the loop, so a spin on a
+  `volatile sig_atomic_t` flag set by a signal handler (C11 5.1.2.3p5) never
+  ended, in c2m and madc alike. Counted at run time, the pre-change c2m -O2
+  performed 3 of the 9 volatile accesses gcc -O2 performs in the gate's first
+  case and 2 of 3 in its member case (stores and reads removed or merged); at
+  -O0 it still missed 3, because c2mir never generated the read of a
+  discarded `*vp;`, `(void) *vp` or `(*vp, 0)` at all. `MIR_mem_t.volatile_p` now
+  marks an access through a volatile lvalue (`volatile:` in text MIR, a
+  `TAG_VOLATILE` prefix byte in binary MIR, `*(volatile T *)` in mir2c).
+  c2mir sets it at the five lvalue arms from the C type, and its one
+  sub-object builder, `mem_part_op` (six copies merged: a member, an
+  `__int128` half, a complex part, a block chunk, `__real__`/`__imag__`, a
+  V128 result view), carries an object's bit to its parts. Every MIR-gen pass
+  asks one predicate, `volatile_mem_insn_p`: address transformation keeps the
+  variable in memory, GVN gives the access no value number and never uses it
+  as a source (a store still kills what it may alias), DSE and both dead-code
+  eliminations keep it, and the combiner never moves it or folds it into a
+  read-modify-write insn. Gate `check-volatile-accesses.sh` counts the
+  accesses at run time (fault + single-step on a `PROT_NONE` page) against gcc
+  -O2 at c2m -O0..-O3, with a `-Dvolatile=` control, and holds the two
+  one-owner rules. Reducers `tests/testvolatilesignalc`, MIR corpus
+  `new/volatile-access.c`, cross fixture `tests/cross/aarch64_volatile.c`.
+  Not fixed here, each its own gap: c2mir's member access does not merge the
+  object's qualifiers into the member's TYPE (`c2mir_member_access_qualifiers`;
+  the operand carries the bit, the C type does not).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

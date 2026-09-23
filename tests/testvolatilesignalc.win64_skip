@@ -1,0 +1,1 @@
+setitimer and SIGALRM are POSIX; mingw has neither (mingw-gcc rejects this source too)

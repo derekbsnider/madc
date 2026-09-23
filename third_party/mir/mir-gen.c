@@ -2991,6 +2991,20 @@ static void finish_ssa (gen_ctx_t gen_ctx) {
 /* Add all copies which are uses of bb_insn to temp_bb_insns2.  Return TRUE if all bb_insn uses
    (skipping moves) are memory address.  Collect insns which bb_insn uses are memory in
    bb_mem_insns. */
+/* TRUE if INSN accesses memory through a volatile lvalue (MIR_mem_t.volatile_p).  Such an access
+   is an observable side effect: it is performed exactly as written, so no pass may remove it,
+   merge it with another access, forward a value to or from it, move it, or fold it into another
+   insn.  The ONE predicate every pass asks: address transformation, GVN, DSE, both dead code
+   eliminations and the combiner (LICM and pressure relief never move a memory insn at all).  A
+   vectorizer packing adjacent accesses must ask it too. */
+static int volatile_mem_insn_p (MIR_insn_t insn) {
+  for (size_t i = 0; i < insn->nops; i++)
+    if ((insn->ops[i].mode == MIR_OP_MEM && insn->ops[i].u.mem.volatile_p)
+        || (insn->ops[i].mode == MIR_OP_VAR_MEM && insn->ops[i].u.var_mem.volatile_p))
+      return TRUE;
+  return FALSE;
+}
+
 static int collect_addr_uses (gen_ctx_t gen_ctx, bb_insn_t bb_insn,
                               VARR (bb_insn_t) * bb_mem_insns) {
   int res = TRUE;
@@ -2999,6 +3013,8 @@ static int collect_addr_uses (gen_ctx_t gen_ctx, bb_insn_t bb_insn,
   for (ssa_edge_t se = bb_insn->insn->ops[0].data; se != NULL; se = se->next_use) {
     if (se->use->insn->ops[se->use_op_num].mode == MIR_OP_VAR_MEM) {
       gen_assert (move_code_p (se->use->insn->code) && se->use_op_num <= 1);
+      /* A volatile access through the address is a real memory access: keep the var there. */
+      if (volatile_mem_insn_p (se->use->insn)) res = FALSE;
       if (bb_mem_insns != NULL) VARR_PUSH (bb_insn_t, bb_mem_insns, se->use);
       continue;
     }
@@ -4529,6 +4545,14 @@ static void gvn_modify (gen_ctx_t gen_ctx) {
       int64_t val = 0, val2;
 
       next_bb_insn = DLIST_NEXT (bb_insn_t, bb_insn);
+      if (volatile_mem_insn_p (insn)) {
+        /* Performed as written: no value number, never replaced, deleted or used as a value
+           source (it is never entered into mem_expr_tab), and its nloc stays 0 -- the unknown
+           location DSE never deletes a store to.  A volatile store still clobbers every
+           available memory it may alias. */
+        if (move_code_p (insn->code)) update_mem_availability (gen_ctx, curr_available_mem, bb_insn);
+        continue;
+      }
       if (insn->code == MIR_MOV
           && (insn->ops[1].mode == MIR_OP_INT || insn->ops[1].mode == MIR_OP_UINT)) {
         bb_insn->gvn_val_const_p = TRUE;
@@ -5294,7 +5318,7 @@ static void dse (gen_ctx_t gen_ctx) {
       if (!move_code_p (insn->code)) continue;
       if (insn->ops[0].mode == MIR_OP_VAR_MEM) { /* store */
         if ((nloc = insn->ops[0].u.var_mem.nloc) != 0) {
-          if (!bitmap_clear_bit_p (live, nloc)) {
+          if (!bitmap_clear_bit_p (live, nloc) && !volatile_mem_insn_p (insn)) {
             DEBUG (2, {
               fprintf (debug_file, "Removing dead store ");
               print_bb_insn (gen_ctx, bb_insn, FALSE);
@@ -5346,6 +5370,7 @@ static int ssa_dead_insn_p (gen_ctx_t gen_ctx, bb_insn_t bb_insn) {
   ssa_edge_t ssa_edge;
 
   /* check control insns with possible output: */
+  if (volatile_mem_insn_p (insn)) return FALSE; /* a volatile access is a side effect */
   if (MIR_call_code_p (insn->code) || insn->code == MIR_ALLOCA || insn->code == MIR_BSTART
       || insn->code == MIR_VA_START || insn->code == MIR_VA_ARG
       || (insn->nops > 0 && insn->ops[0].mode == MIR_OP_VAR
@@ -9059,7 +9084,8 @@ static int combine_substitute (gen_ctx_t gen_ctx, bb_insn_t *bb_insn_ref, long *
        r0 = r2 op r3; ...; ... = r0  =>  ...; ... = r2 op r3 */
     var = insn->ops[1].u.var;
     if ((def_insn = get_uptodate_def_insn (gen_ctx, var)) == NULL
-        || fixed_place_insn_p (def_insn))
+        || fixed_place_insn_p (def_insn) || volatile_mem_insn_p (def_insn)
+        || volatile_mem_insn_p (insn))
       return FALSE;
     target_get_early_clobbered_hard_regs (def_insn, &early_clobbered_hard_reg1,
                                           &early_clobbered_hard_reg2);
@@ -9100,6 +9126,7 @@ static int combine_substitute (gen_ctx_t gen_ctx, bb_insn_t *bb_insn_ref, long *
     var = VARR_POP (MIR_reg_t, insn_vars);
     if ((def_insn = get_uptodate_def_insn (gen_ctx, var)) == NULL) continue;
     if (!move_code_p (def_insn->code)) continue;
+    if (volatile_mem_insn_p (def_insn)) continue; /* a volatile load stays where it is */
     insn_var_change_p = FALSE;
     for (i = 0; i < nops; i++) { /* Change all var occurences: */
       op_ref = &insn->ops[i];
@@ -9438,7 +9465,8 @@ static void dead_code_elimination (gen_ctx_t gen_ctx) {
         if (bitmap_clear_bit_p (live, var) || bitmap_bit_p (addr_regs, var)) dead_p = FALSE;
       }
       if (!reg_def_p) dead_p = FALSE;
-      if (dead_p && !MIR_call_code_p (insn->code) && insn->code != MIR_RET && insn->code != MIR_JRET
+      if (dead_p && !volatile_mem_insn_p (insn) && !MIR_call_code_p (insn->code)
+          && insn->code != MIR_RET && insn->code != MIR_JRET
           && insn->code != MIR_ALLOCA && insn->code != MIR_BSTART && insn->code != MIR_BEND
           && insn->code != MIR_VA_START && insn->code != MIR_VA_ARG && insn->code != MIR_VA_END
           && !(MIR_overflow_insn_code_p (insn->code)

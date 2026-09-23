@@ -103,6 +103,16 @@ answers.
   -834290028). c2m compiling C directly had the same bug. `volatile` now also
   reaches `--emit=c11` output, including a pointer object's own qualifier
   (`int *volatile p`).
+- **MIR knows what a volatile access is.** MIR had no volatile concept, so at
+  `-O2` its optimizer removed, merged and forwarded volatile loads and stores
+  like any others. A loop spinning on a `volatile sig_atomic_t` flag set by a
+  signal handler never ended, in madc and in c2m alike. A memory operand now
+  carries a volatile bit (`volatile:` in textual MIR, one prefix byte in binary
+  MIR), c2mir sets it on every access through a volatile lvalue, and every
+  optimization pass leaves such an access exactly as written: the same count
+  and order of loads and stores as gcc and clang, at every `-O` level.
+  `*vp;`, `(void) *vp` and `(*vp, 0)` now perform their read. New gate
+  `check-volatile-accesses.sh` counts the accesses at run time against gcc.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -117,7 +127,7 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
 `testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
 `testtplnontypegroup`, `testvolatileemit`, `testvolatilesetjmpc`,
-`testvolatilesetjmpo2c`.
+`testvolatilesetjmpo2c`, `testvolatilesignalc`.
 
 ### Unary `*` and `&` read their operand through one owner
 
