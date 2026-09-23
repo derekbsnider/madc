@@ -161,7 +161,6 @@ g++.dg/cpp0x/constexpr-decltype3.C
 g++.dg/cpp0x/constexpr-decltype5.C
 g++.dg/cpp0x/constexpr-delegating2.C
 g++.dg/cpp0x/constexpr-delegating3.C
-g++.dg/cpp0x/constexpr-deref.C
 g++.dg/cpp0x/constexpr-empty4.C
 g++.dg/cpp0x/constexpr-ex4.C
 g++.dg/cpp0x/constexpr-fnptr.C
@@ -392,7 +391,6 @@ g++.dg/cpp0x/pr70887.C
 g++.dg/cpp0x/pr71054.C
 g++.dg/cpp0x/pr79457.C
 g++.dg/cpp0x/pr81325.C
-g++.dg/cpp0x/pr85462.C
 g++.dg/cpp0x/pr86379.C
 g++.dg/cpp0x/pr87125.C
 g++.dg/cpp0x/pr87539.C
@@ -423,7 +421,6 @@ g++.dg/cpp0x/sfinae23.C
 g++.dg/cpp0x/sfinae28.C
 g++.dg/cpp0x/sfinae29.C
 g++.dg/cpp0x/sfinae3.C
-g++.dg/cpp0x/sfinae32.C
 g++.dg/cpp0x/sfinae35.C
 g++.dg/cpp0x/sfinae36.C
 g++.dg/cpp0x/sfinae37.C

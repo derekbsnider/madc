@@ -1,0 +1,27 @@
+single-var 7
+double-var 7
+paren-inner 7
+single-arrow 7
+global2 7
+fnptr1 10
+dot2 7
+arrow2 7
+call2 7
+sub2 7
+arrow3 7
+member-array2 7
+array2d-sub 4
+array2d-deref2 1
+paren-postinc2 7 1
+cast-postinc 7 1
+addrof-plus 6
+cast-deref2-mul 700
+cast-neg-mul 700
+cast-bnot-mul 600
+deref2-mul 700
+predec-sub 5
+sizeof-deref-member 1
+sizeof-deref3 8 1
+sizeof-array2d 12
+sizeof-member-array 3
+sizeof-bare 8 12 4

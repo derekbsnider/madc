@@ -6226,11 +6226,26 @@ public:
     }
     // helper: is prevToken in a position where the next operator would be postfix?
     // true when prevToken is ), ], or a non-operator value token
-    inline bool isPostfixPosition()
+    inline bool isPostfixPosition() { return token_ends_operand(_prv_token); }
+    // Does token `t` END an operand — so the operator after it is postfix or
+    // binary, never unary? The one answer isPostfixPosition() gives for
+    // prevToken and parseCastExpression's bound asks of the token just read.
+    // Has the cast-expression parseCastExpression is reading ended its
+    // operand? The token just read ends one (token_ends_operand), unless it
+    // is a step still waiting on the operator stack — a PREFIX `++`/`--`.
+    inline bool cast_expression_complete(const std::stack<TokenBase *> &opStack)
     {
-	if ( !_prv_token ) return false;
-	TokenID id = _prv_token->id();
-	if ( _prv_token->type() == TokenType::ttKeyword )
+	if ( !token_ends_operand(_cur_token) )
+	    return false;
+	return !( _cur_token
+	       && (_cur_token->id() == TokenID::tkInc || _cur_token->id() == TokenID::tkDec)
+	       && !opStack.empty() && opStack.top() == _cur_token );
+    }
+    inline bool token_ends_operand(TokenBase *t)
+    {
+	if ( !t ) return false;
+	TokenID id = t->id();
+	if ( t->type() == TokenType::ttKeyword )
 	    return !keywordStartsUnaryOperandContext(id);
 	// Symbols that open or continue expression contexts aren't values
 	// either — `{`, `(`, `,`, `;`, `=` mean the next `-` / `!` is
@@ -6243,7 +6258,7 @@ public:
 	    return false;
 	return id == TokenID::tkClBrk || id == TokenID::tkClSqr
 	    || id == TokenID::tkInc || id == TokenID::tkDec
-	    || !_prv_token->is_operator();
+	    || !t->is_operator();
     }
     inline TokenBase *nextToken()
     {
@@ -6768,7 +6783,8 @@ public:
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0,
 			       bool push_back_comma=false,
-			       bool cast_operand=false);
+			       bool cast_operand=false,
+			       bool unary_operand=false);
     // Control-flow signal an extracted parseExpression switch-arm handler
     // returns to the shunting-yard loop, one-to-one with the arm's original
     // inline control flow: Break = fall to the per-token epilogue (peek/advance),
@@ -6904,11 +6920,22 @@ public:
 					    madc_wide_int &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
-    TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
-    // The parenthesized operand of a unary '*' ('(' already consumed): ONE
-    // owner for the cast-head / statement-expr / grouped-expr discrimination
-    // shared by every deref arm; folds the trailing -> . [ postfix chain.
-    TokenBase *parse_deref_paren_operand(TokenBase *open_tb);
+    // THE reader of a cast-expression operand (C11 6.5.3/6.5.4,
+    // [expr.unary.op]/1, [expr.cast]): the operand of unary `*`, of a cast,
+    // of an unparenthesized sizeof. `first` is its already-consumed first
+    // token. It is the expression engine itself, bounded: the parse ends
+    // before the first token, at bracket depth 0, that cannot continue a
+    // unary-expression (a binary operator, `?`, `,`, `;`, a closer) and
+    // leaves that token in the stream. Postfix `->` `.` `[` `(` `++` `--`
+    // bind inside it; so does a nested `*`, cast or prefix step.
+    TokenBase *parseCastExpression(TokenBase *first);
+    // THE builder of a unary dereference node, for an operand
+    // parseCastExpression read (`star` names the site). A named variable
+    // keeps its dedicated TokenDeref / TokenDerefStep nodes; a function or
+    // function pointer is its own designator; a class object dispatches its
+    // operator*; a fixed array decays; a dependent type defers; every other
+    // operand must be a pointer.
+    TokenBase *build_indirection(TokenBase *operand, TokenBase *star);
     TokenBase *parse_cast_function_call_operand(TokenBase *head);
     TokenBase *materialize_cast_literal_operand(TokenBase *tb);
     // Template-machinery leaf consumers: recognize a template-argument-list
@@ -7383,6 +7410,7 @@ public:
     size_t parse_gnu_vector_size_attribute();
     void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
 					size_t *vector_bytes = NULL);
+    bool ellipsis_ahead();
     bool consume_ellipsis();
     // Parameter-signature / qualified-declarator parsing: count queued call args,
     // resolve a qualified class owner, parse a qualified declarator part, split an

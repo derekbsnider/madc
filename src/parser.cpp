@@ -2548,13 +2548,21 @@ static uint32_t member_proxy_flags(uint32_t owner_flags)
     return owner_flags & ~vfFIXEDARRAY;
 }
 
+static DataDef *build_fixed_array_query_type(DataDef *base_type,
+					     const std::vector<carray_dim_t> &dims,
+					     size_t consumed_dims);
+
+// The type `*var` denotes. A fixed array's `*a` is `a[0]`: its element for a
+// one-dimensional array, the ROW sub-array for a multi-dimensional one
+// (`int m[2][3]`: `*m` is int[3], so `**m` is an int — madc stores the
+// scalar element in var->type and the extents in var->dims).
 static DataDef *deref_type_for_variable(Variable *var)
 {
     if ( !var || !var->type )
 	return NULL;
 
     if ( var->is_fixed_array() )
-	return var->type;
+	return build_fixed_array_query_type(var->type, var->dims, 1);
 
     if ( var->type->is_pointer() )
     {
@@ -3257,6 +3265,11 @@ static DataDef *type_query_chain_datadef(TokenBase *chain)
 {
     if ( !chain )
 	return NULL;
+    // `*a` on a fixed array is `a[0]`: the ROW, for a multi-dimensional one
+    // (`int m[2][3]`: sizeof(*m) is 12, not the element's 4).
+    if ( TokenDeref *td = chain->as_deref_tok() )
+	if ( td->var.is_fixed_array() )
+	    return build_fixed_array_query_type(td->var.type, td->var.dims, 1);
     if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(chain) )
     {
 	if ( ts->object.is_fixed_array() )
@@ -14995,6 +15008,21 @@ bool Program::is_shared_global_extern_reference(TokenCpnd *code, Variable *var)
 }
 
 static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref);
+// THE measurement of a sizeof/alignof EXPRESSION operand, parenthesized or
+// not: a named fixed array measures every element; anything else measures
+// its type-query type (type_query_chain_datadef — dims-aware for a
+// subscript or a deref of a multi-dimensional array). 0 when untyped.
+static size_t type_query_expression_value(TokenBase *expr, bool want_alignof)
+{
+    if ( !expr )
+	return 0;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	if ( tv->var.is_fixed_array() )
+	    if ( size_t v = query_fixed_array_sizeof_value(tv, want_alignof, false) )
+		return v;
+    DataDef *dd = type_query_chain_datadef(expr);
+    return dd ? query_datadef_measure(dd, want_alignof) : 0;
+}
 
 TokenBase *Program::parse_parenthesized_expression(const char *context,
 						 bool stop_on_closing_paren)
@@ -15186,56 +15214,9 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	TokenBase *inner = nextToken();
 	return resolve_type_query_datadef(inner, op_name, have_value, query_value);
     }
-    else if ( type_tb->id() == TokenID::tkMul )
-    {
-	// `*` followed by anything but an identifier — `sizeof(*(p))`, the
-	// shape Apple's FD_ZERO expands to (`__builtin_bzero(p, sizeof(*(p)))`),
-	// `sizeof(*p + 1)` — is an EXPRESSION operand, not this arm's
-	// `*ident[.chain]` fast path. Consume nothing and decline: the caller's
-	// sizeof(expression) fallback parses `*` as the unary deref it is and
-	// measures the result type (gcc/clang: sizeof(*(p)) == sizeof(*p)).
-	// Throwing here made a legal C operand a parse error (darwin D4:
-	// teststructinterop, the first FD_ZERO madc ever met).
-	if ( !peekToken() || !is_contextual_identifier_token(peekToken()) )
-	    return NULL;
-	TokenBase *deref_tb = nextToken();
-	DataDef *deref_base = NULL;
-	if ( peekToken()
-	  && (peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef
-	   || peekToken()->id() == TokenID::tkOpSqr) )
-	{
-	    TokenBase *chain = parsePostfixChain(deref_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(deref_tb) << op_name << "(*expr): cannot determine type" << flush;
-	    if ( cdd->is_pointer() )
-	    {
-		DataDefPTR *cdp = dynamic_cast<DataDefPTR *>(cdd);
-		deref_base = (cdp && cdp->base_type) ? cdp->base_type : &ddINT64;
-	    }
-	    else
-		deref_base = cdd;
-	}
-	else
-	{
-	    std::string dname = contextual_identifier_name(deref_tb);
-	    Variable *dvar = findVariable(dname);
-	    if ( !dvar )
-		Throw(deref_tb) << "undeclared identifier '" << dname << "' in " << op_name << "(*...)" << flush;
-	    if ( dvar->is_fixed_array() )
-		deref_base = dvar->type;
-	    else if ( dvar->type->is_pointer() )
-	    {
-		DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
-		deref_base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
-	    }
-	    else
-		Throw(deref_tb) << op_name << "(*" << dname << "): not a pointer or array" << flush;
-	}
-	query_value = query_datadef_measure(deref_base, want_alignof);
-	have_value = true;
-    }
+    // A `*`-led operand is an EXPRESSION — no type-id starts with `*` — so
+    // nothing resolves here: the caller's expression operand reads it
+    // through the deref arm, the one reader (`sizeof(*(p))`, `sizeof(**pp)`).
 
     return dd;
 }
@@ -15293,46 +15274,20 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	return arity;
     }
 
+    // `sizeof unary-expression`, no parens (C11 6.5.3.4, [expr.sizeof]/1):
+    // the operand is a unary-expression — read by the one bounded reader,
+    // so `sizeof **pp`, `sizeof *c.pp()` and `sizeof -x` are operands like
+    // `sizeof *p`, and measured exactly as the parenthesized expression
+    // operand below is. A string literal is measured as the array it is.
     if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
-	TokenBase *probe = peekToken();
-	bool deref = (probe->id() == TokenID::tkMul);
-	if ( deref )
-	{
-	    nextToken();
-	    probe = peekToken();
-	}
-	// sizeof "literal" — string literal without parens
-	if ( probe && probe->type() == TokenType::ttString )
-	    return literal_token_sizeof(static_cast<TokenStr *>(nextToken()));
-	// sizeof literal-constant — `sizeof 0` (c-testsuite 00038): the
-	// unary-expression operand needs no parens; a numeric/char literal
-	// carries its own type, measured exactly as the parenthesized
-	// expression fallback measures expr->datadef().
-	if ( probe && (probe->type() == TokenType::ttInteger
-		    || probe->type() == TokenType::ttReal
-		    || probe->type() == TokenType::ttChar)
-	  && probe->datadef() )
-	    return query_datadef_measure(nextToken()->datadef(), want_alignof);
-	if ( !probe || !is_contextual_identifier_token(probe) )
-	    Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
-	TokenBase *id_tb = nextToken();
-	TokenBase *chain = parsePostfixChain(id_tb);
-	DataDef *cdd = type_query_chain_datadef(chain);
-	if ( !cdd )
-	    Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
-	size_t value = query_datadef_measure(cdd, want_alignof);
-	if ( deref && cdd->is_pointer() )
-	{
-	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(cdd);
-	    if ( pdd && pdd->base_type )
-		value = query_datadef_measure(pdd->base_type, want_alignof);
-	}
-	else if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
-	{
-	    if ( tv->var.is_fixed_array() )
-		value = query_fixed_array_sizeof_value(tv, want_alignof, deref);
-	}
+	TokenBase *first = nextToken();
+	if ( first->type() == TokenType::ttString )
+	    return literal_token_sizeof(static_cast<TokenStr *>(first));
+	TokenBase *expr = parseCastExpression(first);
+	size_t value = type_query_expression_value(expr, want_alignof);
+	if ( !value )
+	    Throw(first) << op_name << ": cannot determine type of expression" << flush;
 	return value;
     }
 
@@ -15381,13 +15336,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	TokenBase *expr = parseExpression(first, true, false, true, 1);
 	if ( expr && expr->datadef() )
 	{
-	    dd = expr->datadef();
-	    // For fixed arrays accessed as expressions, use element size
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-		if ( tv->var.is_fixed_array() )
-		    value = query_fixed_array_sizeof_value(tv, want_alignof, false);
-	    if ( !value )
-		value = query_datadef_measure(dd, want_alignof);
+	    value = type_query_expression_value(expr, want_alignof);
 	    have_value = true;
 	    dd = NULL; // have_value is set, skip the pointer/array loop below
 	    expr_fallback_consumed_paren = true;
@@ -31660,152 +31609,138 @@ static void debug_deref_fail(Program &pgm, int site, TokenBase *deref_tb,
 #define debug_deref_fail(pgm, site, tb, dt) do { } while (0)
 #endif
 
-// The parenthesized operand of a unary dereference — `*(...)` with the '('
-// already consumed (open_tb). ONE owner for the discrimination every deref
-// arm needs (single-star, two-star, and the N-star collect arm): a CAST
-// head (`*(TYPE*)p`, c-testsuite 00103) or a statement expression delegates
-// the whole group to parseExpression, whose cast/stmt-expr paths own type
-// resolution and consume the matching ')' themselves; anything else is a
-// parenthesized expression whose ')' is consumed here. A trailing -> . [
-// postfix chain binds tighter than the outer '*' and is folded in.
-TokenBase *Program::parse_deref_paren_operand(TokenBase *open_tb)
+// THE reader of a cast-expression operand — see madc.h. It is the expression
+// engine re-entered with the unary_operand bound (parseExpression's peek
+// point ends it), so every shape a unary-expression can take — a postfix
+// chain, a call, `::name`, a nested `*`, a cast, a prefix step, `&x`, a
+// named cast, a parenthesized group — reads through the one grammar, and
+// nothing after the operand is swallowed. It replaces five hand-rolled
+// per-shape readers (the deref arm's single-, two- and N-star arms, the
+// cast operand's deref reader, sizeof's star fast path): each re-derived a
+// subset, and every one was wrong somewhere — `**c.pp()` refused, `**(q)++`
+// dereferenced once, `*&x + 1` read `*(&x + 1)`, `(char)**pp * 100` cast the
+// product (tests/testderefoperandc, testderefoperandcpp).
+TokenBase *Program::parseCastExpression(TokenBase *first)
 {
-    TokenBase *peek_inner = peekToken();
-    bool inner_is_statement_expr =
-	peek_inner && peek_inner->id() == TokenID::tkOpBrc;
-    // token_starts_type_name owns the type-head test (it knows tkUNION —
-    // the inline list this replaces did not, which lost `*(union U*)p`);
-    // tkCLASS/tkRESTRICT are the deref-context extras that arm carried.
-    bool inner_is_cast_head =
-	!inner_is_statement_expr
-	&& peek_inner
-	&& ( peek_inner->id() == TokenID::tkCLASS
-	  || peek_inner->id() == TokenID::tkRESTRICT
-	  || token_starts_type_name(peek_inner) );
-    TokenBase *deref_expr;
-    if ( inner_is_cast_head || inner_is_statement_expr )
-    {
-	// stop_on_closing_paren=true so the matching ')' of the
-	// cast/statement-expression group ends parsing — otherwise
-	// conditional mode would chase past it into a following `=` or
-	// operator chain (the SMAUG `*(EXT_BV *)p = fread_bitvector(...)`
-	// family). Delegation consumes the ')' itself.
-	deref_expr = parseExpression(open_tb, true, false, true);
-    }
-    else
-    {
-	TokenBase *inner_tb = nextToken();
-	deref_expr = parseExpression(inner_tb, true);
-	TokenBase *close = nextToken();
-	if ( !close || close->id() != TokenID::tkClBrk )
-	    Throw(close ? close : open_tb) << "expected ')' after *(expr)" << flush;
-    }
-    if ( peekToken()
-      && (peekToken()->id() == TokenID::tkDeRef
-       || peekToken()->id() == TokenID::tkDot
-       || peekToken()->id() == TokenID::tkOpSqr) )
-	deref_expr = parsePostfixChainFrom(deref_expr,
-	    postfix_expr_variable(deref_expr));
-    return deref_expr;
+    if ( !first )
+	Throw(curToken()) << "expecting an operand" << flush;
+    // The head of a cast-expression is in UNARY position whatever preceded
+    // it — `sizeof **p`, `(T)-x`, `* *p` — the convention the cast arm's
+    // own operand head already applies: an operator here is prefix, never
+    // binary ("Missing operand").
+    _prv_token = NULL;
+    TokenBase *operand = parseExpression(first, true, false, false, 0,
+					 false, false, true);
+    if ( !operand )
+	Throw(first) << "expecting an operand" << flush;
+    return operand;
 }
 
-TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
+// A `++`/`--` that binds AFTER its operand (`p++`): the shape `*p++` reads
+// as `*(p++)`. NULL for a prefix step (its operand is `right`) or any other
+// node.
+static TokenOperator *postfix_step_node(TokenBase *tb)
 {
-    if ( !star || star->id() != TokenID::tkMul )
+    if ( !tb || (tb->id() != TokenID::tkInc && tb->id() != TokenID::tkDec) )
 	return NULL;
+    TokenOperator *step = tb->as_operator_tok();
+    return (step && step->left && !step->right) ? step : NULL;
+}
 
-    TokenBase *deref_tb = nextToken();
-    if ( !deref_tb )
+// THE builder of a unary dereference node — see madc.h. Composed from the
+// arms it replaces; each case names the shape that needs it.
+TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
+{
+    if ( !operand )
 	Throw(star) << "expecting pointer expression after '*'" << flush;
+    // `*p++` is `*(p++)`: the step is the operand, and the pointer it
+    // dereferences is its OLD value — the step's own operand.
+    TokenOperator *step = postfix_step_node(operand);
+    TokenBase *pointer_expr = step ? step->left : operand;
 
-    if ( deref_tb->id() == TokenID::tkOpBrk )
+    // A NAMED variable keeps its dedicated nodes: the CIR lowering's
+    // TokenDeref / TokenDerefStep arms carry the variable-only paths
+    // (lambda-capture dispatch, ctx bindings). A REFERENCE variable does
+    // not qualify — its value is the referent, which the expression arm
+    // below resolves (effective_pointer_type_for_member_access).
+    TokenVar *tv = pointer_expr->type() == TokenType::ttVariable
+		 ? pointer_expr->as_var_tok() : NULL;
+    if ( tv && tv->var.type && !tv->var.type->is_reference() )
     {
-	// ONE owner for "what is inside *( ... )": parse_deref_paren_operand
-	// (right above) discriminates a CAST HEAD or a statement expression
-	// from a plain parenthesized expression, and folds the trailing
-	// -> . [ chain. This arm hand-rolled the plain-expression case only,
-	// so a cast head arrived at parseExpression as a bare TYPE token and
-	// died on "Expecting identifier": `(uint64_t) * (uint32_t *) v`
-	// (mir-hash.h:39, the one file that stopped madc preprocessing its
-	// own backend) refused, while the very same deref WITHOUT the outer
-	// cast — `*(uint32_t *) v`, which reaches the owner through the
-	// ordinary deref arm — compiled.
-	TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
-	if ( !inner_expr )
-	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	DataDef *dtype = effective_pointer_type_for_member_access(inner_expr);
-	if ( !dtype )
-	    dtype = inner_expr->datadef();
-	if ( !dtype || !dtype->is_pointer() )
-	{
-	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
-		return new TokenDerefExpr(inner_expr, dep_base);
-	    debug_deref_fail(*this, 1, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
-    }
-
-    if ( deref_tb->type() != TokenType::ttIdentifier )
-    {
-	pushToken(deref_tb);
-	return NULL;
-    }
-
-    TokenBase *peek = peekToken();
-    if ( peek && peek->id() == TokenID::tkOpBrk )
-    {
-	pushToken(deref_tb);
-	return NULL;
-    }
-
-    TokenBase *pointer_expr = NULL;
-    if ( peek && (peek->id() == TokenID::tkDeRef
-	       || peek->id() == TokenID::tkDot
-	       || peek->id() == TokenID::tkOpSqr) )
-    {
-	pointer_expr = parsePostfixChain(deref_tb);
-	DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
-	if ( !dtype )
-	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
-	if ( !dtype )
-	{
-	    debug_deref_fail(*this, 2, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	if ( dtype->is_function() && dtype->is_numeric() )
-	    return pointer_expr;
-	if ( !dtype->is_pointer() )
-	{
-	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
-		if ( tm->is_fixed_array_member() )
-		    return new TokenDerefExpr(pointer_expr, dtype);
-	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
-		return new TokenDerefExpr(pointer_expr, dep_base);
-	    debug_deref_fail(*this, 3, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
-    }
-
-    std::string name = ((TokenIdent *)deref_tb)->spelling();
-    Variable *var = findVariable(name);
-    if ( !var )
-	Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
-    if ( var->type->is_function() && var->type->is_numeric() )
-	return new TokenVar(*var);
-    if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
-	return new TokenVar(*var);
-    DataDef *base = deref_type_for_variable(var);
-    if ( !base )
-    {
-	base = dependent_deref_result_type(var->type);
+	Variable &var = tv->var;
+	// `*f` / `*fp` is the function designator ([expr.unary.op]/1) —
+	// still callable as `(*fp)(args)`.
+	if ( !step && ((var.type->is_function() && var.type->is_numeric())
+		    || dynamic_cast<DataDefFPTR *>(var.type) != NULL) )
+	    return operand;
+	// `*obj` on a class object dispatches its operator*. With a step the
+	// operator applies to the step's RESULT (`*it++` is `*(it++)`) —
+	// the expression arm below.
+	if ( !step )
+	    if ( TokenCallMethod *opcall =
+		    make_unary_object_operator_call(*this, &var, NULL, "operator*") )
+		return opcall;
+	DataDef *base = deref_type_for_variable(&var);
+	if ( !base )
+	    base = dependent_deref_result_type(var.type);
 	if ( base )
-	    return new TokenDeref(*var, base);
-	debug_deref_fail(*this, 4, deref_tb, var->type);
-	Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	{
+	    if ( step )
+		return new TokenDerefStep(var, base, step->id() == TokenID::tkInc);
+	    return new TokenDeref(var, base);
+	}
     }
-    return new TokenDeref(*var, base);
+
+    DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
+    if ( !dtype )
+	dtype = pointer_expr->datadef();
+    if ( !dtype )
+    {
+	debug_deref_fail(*this, 1, star, NULL);
+	Throw(star) << "cannot dereference non-pointer type" << flush;
+    }
+    if ( !step && (dynamic_cast<DataDefFPTR *>(dtype) != NULL
+		|| (dtype->is_function() && dtype->is_numeric())) )
+	return operand;
+    // A fixed-array MEMBER decays to a pointer to its first element
+    // ([conv.array]) — its ROW, for a multi-dimensional member (`char
+    // name[2][3]`: `*t.name` is char[3], so `**t.name` is a char). Asked
+    // before the pointer test: the member's type view is already the
+    // flattened element pointer, which has lost the extents.
+    if ( TokenMember *tm = pointer_expr->as_member_tok() )
+	if ( tm->is_fixed_array_member() )
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    const std::vector<carray_dim_t> *dims =
+		sdd ? sdd->m_dims(tm->var.name) : NULL;
+	    DataDef *row = (dims && !dims->empty())
+		? build_fixed_array_query_type(tm->var.type, *dims, 1)
+		: tm->var.type;
+	    return new TokenDerefExpr(operand, row);
+	}
+    if ( dtype->is_pointer() )
+	return new TokenDerefExpr(operand, unwrap_subscript_element_type(dtype));
+
+    // Any other fixed array decays too: a partial subscript of a
+    // multi-dimensional array, an array-typed expression.
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(pointer_expr) )
+	if ( ts->object.is_fixed_array() )
+	    return new TokenDerefExpr(operand, dtype);
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(pointer_expr) )
+	if ( TokenVar *base_tv = dynamic_cast<TokenVar *>(tse->base_expr) )
+	    if ( base_tv->var.is_fixed_array() )
+		return new TokenDerefExpr(operand, dtype);
+    if ( DataDefCArray *ca = dtype->as_carray_dd() )
+	return new TokenDerefExpr(operand,
+				  ca->element_type ? ca->element_type : &ddINT64);
+    if ( TokenCallMethod *opcall =
+	    make_unary_object_operator_call(*this, NULL, operand, "operator*") )
+	return opcall;
+    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
+	return new TokenDerefExpr(operand, dep_base);
+    debug_deref_fail(*this, 2, star, dtype);
+    Throw(star) << "cannot dereference non-pointer type" << flush;
+    return NULL;
 }
 
 TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
@@ -42144,9 +42079,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    }
 		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkMul )
 		    {
-			cast_expr = parse_cast_unary_deref_operand(cast_expr_tb);
-			if ( !cast_expr )
-			    cast_expr = parseExpression(cast_expr_tb, true);
+			// A cast's operand is a cast-expression (C11 6.5.4) —
+			// the one bounded reader; `(char)**pp * 100` casts
+			// `**pp`, never the product.
+			cast_expr = parseCastExpression(cast_expr_tb);
 		    }
 		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkBand )
 		    {
@@ -42199,31 +42135,16 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				// (double)5 consumes only 5, not < 3.0.
 				cast_expr = materialize_cast_literal_operand(cast_expr_tb);
 			    }
-			    else if ( cast_expr_tb
-				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~
-				    || cast_expr_tb->id() == TokenID::tkNeg   // -
-				    || cast_expr_tb->id() == TokenID::tkLnot  // !
-				    || cast_expr_tb->id() == TokenID::tkAdd)  // +
-				   && peekToken()
-				   && (peekToken()->type() == TokenType::ttInteger
-				    || peekToken()->type() == TokenType::ttReal) )
-			    {
-				// Unary operator + literal: cast binds tightly.
-				// (unsigned char)~0 consumes only ~0, not * ' '.
-				TokenBase *operand_tb = nextToken();
-				TokenOperator *uop = dynamic_cast<TokenOperator *>(cast_expr_tb);
-				// Unary PLUS is a no-op ([expr.unary.op]/2) —
-				// `(I)+15` must yield the literal, never a
-				// TokenAdd with NULL left (untranslatable at
-				// CIR; c-testsuite 00205's initializer rows).
-				if ( cast_expr_tb->id() == TokenID::tkAdd )
-				    cast_expr = operand_tb;
-				else if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
-				else cast_expr = operand_tb;
-			    }
 			    else
 			    {
-				cast_expr = parseExpression(cast_expr_tb, true);
+				// Every other operand — a unary operator (`-x`,
+				// `~0`, `!y`, `+15`), a keyword, `::name` — is
+				// the same cast-expression, read by the one
+				// bounded reader: `(char)-x * 100` casts `-x`
+				// only, `(unsigned char)~0` consumes only `~0`.
+				// An unbounded parse here cast the whole product
+				// (silent: -68 for 700).
+				cast_expr = parseCastExpression(cast_expr_tb);
 			    }
 			    // C11 6.5.2/6.5.4: postfix ++/-- is part of the
 			    // POSTFIX-expression, and a cast's operand is a
@@ -43050,624 +42971,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			getPointerType(&ddVOID)));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-			// * dereference in unary position
-			if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
-			{
-			    TokenBase *deref_tb = nextToken();
-			    if ( deref_tb->id() == TokenID::tkOpBrk )
-		    {
-			// Cast head / statement expression / parenthesized
-			// expression — parse_deref_paren_operand owns the
-			// discrimination (shared with the multi-star arms).
-			TokenBase *deref_expr = parse_deref_paren_operand(deref_tb);
-			DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-			if ( !dtype )
-			    dtype = deref_expr->datadef();
-			if ( !dtype )
-			    { debug_deref_fail(*this, 15702, deref_tb, NULL);
-			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-			    }
-			if ( dynamic_cast<DataDefFPTR *>(dtype) != NULL )
-			{
-			    exStack.push(deref_expr);
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			if ( dtype->is_function() && dtype->is_numeric() )
-			{
-			    exStack.push(deref_expr);
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			if ( !dtype->is_pointer() )
-			{
-			    // Allow dereference of fixed-array struct members —
-			    // they decay to pointers (e.g. *edit->line for char line[N])
-			    TokenMember *tm_deref = dynamic_cast<TokenMember *>(deref_expr);
-			    if ( tm_deref && tm_deref->is_fixed_array_member() )
-			    {
-				exStack.push(new TokenDerefExpr(deref_expr, dtype));
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    if ( TokenCallMethod *opcall =
-				    make_unary_object_operator_call(*this, NULL,
-					deref_expr, "operator*") )
-			    {
-				exStack.push(opcall);
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    if ( DataDef *dep_base =
-				    dependent_deref_result_type(dtype) )
-			    {
-				exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    { debug_deref_fail(*this, 15736, deref_tb, NULL);
-			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-			    }
-			}
-			DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-			DataDef *base = dptr ? dptr->base_type : &ddINT64;
-			if ( peekToken()
-			  && (peekToken()->id() == TokenID::tkInc
-			   || peekToken()->id() == TokenID::tkDec) )
-			{
-			    // Postfix ++/-- binds tighter than the outer unary `*`:
-			    // `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-			    TokenBase *step_tb = nextToken();
-			    TokenOperator *step;
-			    if ( step_tb->id() == TokenID::tkInc )
-				step = new TokenInc();
-			    else
-				step = new TokenDec();
-			    step->left = deref_expr;
-			    step->right = NULL;
-			    exStack.push(new TokenDerefExpr(step, base));
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			exStack.push(new TokenDerefExpr(deref_expr, base));
-			    }
-			    else
-			    {
-				if ( (deref_tb->type() == TokenType::ttIdentifier
-				      // `this` is a KEYWORD token (tkCPPKEYWORD) but names
-				      // the hidden __this receiver — a variable-like head.
-				      // Without it, `*this = sv` (the trivial-class swap
-				      // shape) fell to the parseExpression fallback below,
-				      // which swallowed `= sv` into the operand and built
-				      // `*(this = sv)`. Only `this` widens here: other
-				      // contextual keywords (`new`, casts) have their own
-				      // expression grammar the fallback must keep owning.
-				   || contextual_identifier_name(deref_tb) == "this")
-				  && !(peekToken()
-				    && (peekToken()->id() == TokenID::tkOpBrk
-				     || peekToken()->id() == TokenID::tkDeRef
-				     || peekToken()->id() == TokenID::tkDot
-				     || peekToken()->id() == TokenID::tkNS
-				     || peekToken()->id() == TokenID::tkOpSqr)) )
-				{
-				    std::string dname = contextual_identifier_name(deref_tb);
-				    Variable *dvar = findVariable(dname);
-				    if ( !dvar && dname == "this" && code )
-					dvar = code->findVariableLocal(strpool,
-							       "__this");
-				    if ( !dvar && code && code->method
-				      && code->method->owner_class )
-				    {
-					DataDefCLASS *cls = code->method->owner_class;
-					ssize_t ofs = cls->m_offset(dname);
-					if ( ofs >= 0 )
-					{
-					    std::string thisid = "__this";
-					    Variable *thisvar = code->method->findParameter(thisid);
-					    DataDef *mtype = cls->m_type(dname);
-					    if ( thisvar && mtype )
-					    {
-						Variable *member =
-						    new Variable(dname, *mtype, 1, NULL, false);
-						TokenMember *tm =
-						    new TokenMember(*thisvar, *member, ofs);
-						// `*member` where the member is a CLASS
-						// object dispatches its operator* (the
-						// implicit-this member twin of the
-						// variable arm below — move_iterator's
-						// `*_M_current` on __normal_iterator).
-						if ( TokenCallMethod *opcall =
-							make_unary_object_operator_call(
-							    *this, NULL, tm, "operator*") )
-						{
-						    exStack.push(opcall);
-						    return done ? ExprStep::Done
-								: ExprStep::Break;
-						}
-						DataDef *base = NULL;
-						if ( tm->is_fixed_array_member() )
-						{
-						    DataDefSTRUCT *sdd =
-							tm->owner_struct_type();
-						    const std::vector<carray_dim_t> *dims =
-							sdd ? sdd->m_dims(tm->var.name) : NULL;
-						    base = (dims && !dims->empty())
-							? build_fixed_array_query_type(tm->var.type,
-							    *dims, 1)
-							: tm->var.type;
-						}
-						if ( !base )
-						    base =
-							dependent_deref_result_type(mtype);
-						if ( !base )
-						    { debug_deref_fail(*this, 15808, deref_tb, NULL);
-						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-						    }
-						// Postfix ++/-- binds tighter than the
-						// unary `*` ([expr.post]): `*p++ = c`
-						// post-steps the MEMBER pointer, then
-						// dereferences — the member twin of the
-						// variable arm's TokenDerefStep and the
-						// parenthesized arm's step-wrap. Without
-						// it the `++` stayed on the stream and
-						// applied to the DEREF result
-						// ((*p)++ = c, "lvalue required" —
-						// basic_streambuf::sputc's *__nout_++).
-						if ( peekToken()
-						  && (peekToken()->id() == TokenID::tkInc
-						   || peekToken()->id() == TokenID::tkDec) )
-						{
-						    TokenBase *step_tb = nextToken();
-						    TokenOperator *step;
-						    if ( step_tb->id() == TokenID::tkInc )
-							step = new TokenInc();
-						    else
-							step = new TokenDec();
-						    step->left = tm;
-						    step->right = NULL;
-						    exStack.push(new TokenDerefExpr(step, base));
-						    return done ? ExprStep::Done : ExprStep::Break;
-						}
-						exStack.push(new TokenDerefExpr(tm, base));
-						return done ? ExprStep::Done : ExprStep::Break;
-					    }
-					}
-				    }
-				    if ( !dvar )
-					Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
-				    // C function-to-pointer decay reverses through `*`:
-				    // `*fp` (where fp is a function pointer) IS the
-				    // function — still callable as `(*fp)(args)`. Push
-				    // the variable as a value and let the call-site
-				    // logic dispatch normally.
-				    if ( dvar->type->is_function() && dvar->type->is_numeric() )
-				    {
-					exStack.push(new TokenVar(*dvar));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( dynamic_cast<DataDefFPTR *>(dvar->type) != NULL )
-				    {
-					exStack.push(new TokenVar(*dvar));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(*this, dvar,
-						NULL, "operator*") )
-				    {
-					exStack.push(opcall);
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    DataDef *base = deref_type_for_variable(dvar);
-				    if ( !base )
-					base = dependent_deref_result_type(dvar->type);
-				    if ( !base )
-					{ debug_deref_fail(*this, 15842, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    if ( peekToken() && (peekToken()->id() == TokenID::tkInc || peekToken()->id() == TokenID::tkDec) )
-				    {
-					TokenBase *step_tb = nextToken();
-					TokenBase *step_expr = new TokenDerefStep(*dvar, base, step_tb->id() == TokenID::tkInc);
-					exStack.push(step_expr);
-					_cur_token = step_expr;
-				    }
-				    else
-					exStack.push(new TokenDeref(*dvar, base));
-				}
-			    else
-			    {
-				TokenBase *deref_expr = NULL;
-				if ( deref_tb->id() == TokenID::tkMul )
-				{
-				    TokenBase *inner_tb = nextToken();
-				    if ( !inner_tb )
-					Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				    if ( inner_tb->id() == TokenID::tkMul )
-				    {
-					// Multi-level dereference: ***p, ****p, etc.
-					// Collect all the `*` tokens, then the final
-					// operand, and build the deref chain bottom-up.
-					std::vector<TokenBase *> stars;
-					stars.push_back(deref_tb);  // the current `*`
-					stars.push_back(inner_tb);  // one more `*`
-					TokenBase *operand_tb = nextToken();
-					while ( operand_tb && operand_tb->id() == TokenID::tkMul )
-					{
-					    stars.push_back(operand_tb);
-					    operand_tb = nextToken();
-					}
-					// operand_tb is the identifier or '(' expr
-					if ( !operand_tb )
-					    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-					// How many of the stars the operand construction
-					// itself consumes: TokenDeref/TokenDerefStep deref
-					// once; a parenthesized/cast operand arrives
-					// underef'd, so EVERY star still needs a wrap (the
-					// old unconditional skip under-deref'd `***(expr)`
-					// by one — silent wrong answer, exit 0).
-					size_t derefs_done = 1;
-					// Build the innermost deref from the variable
-					if ( operand_tb->type() == TokenType::ttIdentifier )
-					{
-					    std::string vname = ((TokenIdent *)operand_tb)->spelling();
-					    Variable *var = findVariable(vname);
-					    if ( !var )
-						Throw(operand_tb) << "undeclared identifier '" << vname << "'" << flush;
-					    DataDef *base = deref_type_for_variable(var);
-					    if ( !base )
-						{ debug_deref_fail(*this, 15887, operand_tb, NULL);
-						Throw(operand_tb) << "cannot dereference non-pointer type" << flush;
-						}
-					    // Postfix ++/-- on the innermost variable:
-					    // `**pp++` = `*(*(pp++))`.  Wrap the variable
-					    // in a postfix step before building the deref
-					    // chain so the increment targets `pp`, not a
-					    // dereferenced value.
-					    if ( peekToken()
-					      && (peekToken()->id() == TokenID::tkInc
-					       || peekToken()->id() == TokenID::tkDec) )
-					    {
-						DBG(std::cout << "multi-deref: postfix step on " << vname << std::endl);
-						TokenBase *step_tb = nextToken();
-						deref_expr = new TokenDerefStep(*var, base,
-						    step_tb->id() == TokenID::tkInc);
-					    }
-					    else
-						deref_expr = new TokenDeref(*var, base);
-					}
-					else if ( operand_tb->id() == TokenID::tkOpBrk )
-					{
-					    deref_expr = parse_deref_paren_operand(operand_tb);
-					    derefs_done = 0;
-					}
-					else
-					    Throw(operand_tb) << "expecting identifier or '(' after multi-level '*'" << flush;
-					// Now wrap in TokenDerefExpr for each star the
-					// operand construction did not already consume.
-					for ( size_t si = derefs_done; si < stars.size(); ++si )
-					{
-					    DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-					    if ( !dtype )
-						dtype = deref_expr->datadef();
-					    if ( !dtype || !dtype->is_pointer() )
-						{ debug_deref_fail(*this, 15929, stars[si], NULL);
-						Throw(stars[si]) << "cannot dereference non-pointer type" << flush;
-						}
-					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
-					    deref_expr = new TokenDerefExpr(deref_expr, base);
-					}
-				    }
-				    else if ( inner_tb->id() == TokenID::tkOpBrk )
-				    {
-					TokenBase *inner_expr = parse_deref_paren_operand(inner_tb);
-					DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
-					if ( !inner_dtype )
-					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
-					if ( !inner_dtype || !inner_dtype->is_pointer() )
-					    { debug_deref_fail(*this, 15952, inner_tb, NULL);
-					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					    }
-					DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
-					DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
-					if ( peekToken()
-					  && (peekToken()->id() == TokenID::tkInc
-					   || peekToken()->id() == TokenID::tkDec) )
-					{
-					    // Postfix ++/-- binds tighter than the outer unary
-					    // `*`: `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-					    // Lower it the same way as the explicit `*p++` fast
-					    // path: wrap the pointer-valued inner expression in a
-					    // postfix step node, then dereference the OLD pointer
-					    // result.
-					    TokenBase *step_tb = nextToken();
-					    TokenOperator *step;
-					    if ( step_tb->id() == TokenID::tkInc )
-						step = new TokenInc();
-					    else
-						step = new TokenDec();
-					    step->left = inner_expr;
-					    step->right = NULL;
-					    deref_expr = step;
-					}
-					else
-					    deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-				    }
-				    else if ( inner_tb->type() == TokenType::ttIdentifier
-					  && !(peekToken()
-					    && (peekToken()->id() == TokenID::tkOpBrk
-					     || peekToken()->id() == TokenID::tkDeRef
-					     || peekToken()->id() == TokenID::tkDot
-					     || peekToken()->id() == TokenID::tkNS
-					     || peekToken()->id() == TokenID::tkOpSqr)) )
-				    {
-					std::string inner_name = ((TokenIdent *)inner_tb)->spelling();
-					Variable *inner_var = findVariable(inner_name);
-					if ( !inner_var )
-					    Throw(inner_tb) << "undeclared identifier '" << inner_name << "'" << flush;
-					DataDef *inner_base = deref_type_for_variable(inner_var);
-					if ( !inner_base )
-					    { debug_deref_fail(*this, 15991, inner_tb, NULL);
-					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					    }
-					// Postfix ++/-- on inner var: `**pp++`
-					// = `*(*(pp++))`.  Use TokenDerefStep so
-					// the increment targets pp.
-					if ( peekToken()
-					  && (peekToken()->id() == TokenID::tkInc
-					   || peekToken()->id() == TokenID::tkDec) )
-					{
-					    DBG(std::cout << "two-level deref: postfix step on " << inner_name << std::endl);
-					    TokenBase *step_tb = nextToken();
-					    deref_expr = new TokenDerefStep(*inner_var, inner_base,
-						step_tb->id() == TokenID::tkInc);
-					}
-					else
-					    deref_expr = new TokenDeref(*inner_var, inner_base);
-				    }
-				    else
-					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
-				}
-				else if ( (deref_tb->type() == TokenType::ttIdentifier
-					|| is_contextual_identifier_token(deref_tb))
-				   && peekToken()
-				   && (peekToken()->id() == TokenID::tkDeRef
-				    || peekToken()->id() == TokenID::tkDot
-				    || peekToken()->id() == TokenID::tkOpSqr) )
-				{
-				    // Postfix chain (e.g. `res->name`, `p.x`, `tab[i]`)
-				    // — parse only the chain so trailing binary operators
-				    // like `*p->name == '$'` don't get swallowed. The
-				    // head test matches parsePostfixChain's own contract
-				    // (contextual identifiers included): `this` is a
-				    // KEYWORD token, and `*this->pptr() = __c` (the
-				    // streambuf sputc shape) otherwise fell to the full
-				    // parseExpression fallback, which swallowed `= __c`
-				    // into the deref operand — the assignment's lhs
-				    // became the raw CALL ("lvalue required as left
-				    // operand of assignment").
-				    deref_expr = parsePostfixChain(deref_tb);
-				    // Postfix ++/-- binds tighter than the outer unary
-				    // `*`: `*s->p++ = c` is `*((s->p)++) = c`, never
-				    // `(*s->p)++ = c` — same lowering as the `*(expr)++`
-				    // arm: wrap the chain in a postfix step and deref
-				    // the OLD pointer value (Apple stdio's __sputc).
-				    if ( deref_expr && peekToken()
-				      && (peekToken()->id() == TokenID::tkInc
-				       || peekToken()->id() == TokenID::tkDec) )
-				    {
-					DataDef *chain_dtype =
-					    effective_pointer_type_for_member_access(deref_expr);
-					if ( !chain_dtype )
-					    chain_dtype = deref_expr->datadef();
-					if ( chain_dtype && chain_dtype->is_pointer() )
-					{
-					    DataDefPTR *chain_dptr =
-						dynamic_cast<DataDefPTR *>(chain_dtype);
-					    DataDef *chain_base = (chain_dptr && chain_dptr->base_type)
-						? chain_dptr->base_type : &ddINT64;
-					    TokenBase *step_tb = nextToken();
-					    TokenOperator *step;
-					    if ( step_tb->id() == TokenID::tkInc )
-						step = new TokenInc();
-					    else
-						step = new TokenDec();
-					    step->left = deref_expr;
-					    step->right = NULL;
-					    exStack.push(new TokenDerefExpr(step, chain_base));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				}
-				else if ( deref_tb->type() == TokenType::ttIdentifier
-				   && peekToken()
-				   && peekToken()->id() == TokenID::tkOpBrk )
-				{
-				    // *func(args) — parse just the call expression so
-				    // trailing `=` stays for the outer assignment, e.g.
-				    // `*foo(&c) = 2`. Push the deref_tb back and let
-				    // parseExpression handle the identifier+call, but
-				    // use stop_on_closing_paren at bracket depth 0 so
-				    // the parse ends after the call's `)`.
-				    std::string fname = ((TokenIdent *)deref_tb)->spelling();
-				    Variable *fvar = findVariable(fname);
-				    if ( fvar )
-				    {
-					TokenCallFunc *tcf = new TokenCallFunc(*fvar);
-					nextToken(); // consume '('
-					parseCallFunc(tcf);
-					deref_expr = tcf;
-				    }
-				    else
-					deref_expr = parseExpression(deref_tb, true);
-				}
-				else if ( (deref_tb->id() == TokenID::tkInc
-				        || deref_tb->id() == TokenID::tkDec)
-				    && peekToken()
-				    && peekToken()->type() == TokenType::ttIdentifier )
-				{
-				    // Pre-increment / pre-decrement of a pointer:
-				    // `*++p`, `*--p`. The recursive parseExpression
-				    // path would happily consume any trailing binary
-				    // operator (`*++p == 'e'` would parse as
-				    // `*(++p == 'e')`), so handle the unary step
-				    // explicitly: build a `TokenInc(right=p)` (pre-
-				    // increment, which mutates p and yields its new
-				    // value), then wrap it in a `TokenDerefExpr` so
-				    // the deref reads through the post-step pointer.
-				    TokenBase *id_tb = nextToken();
-				    std::string id_name = ((TokenIdent *)id_tb)->spelling();
-				    Variable *id_var = findVariable(id_name);
-				    if ( !id_var )
-					Throw(id_tb) << "undeclared identifier '" << id_name << "'" << flush;
-				    if ( !id_var->type->is_pointer() )
-				    {
-					std::string step_op = deref_tb->id() == TokenID::tkInc
-							    ? "operator++" : "operator--";
-					TokenCallMethod *step_call =
-					    make_unary_object_operator_call(*this, id_var, NULL, step_op);
-					TokenCallMethod *deref_call = step_call
-					    ? make_unary_object_operator_call(*this, id_var, step_call,
-						"operator*") : NULL;
-					if ( deref_call )
-					{
-					    exStack.push(deref_call);
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				    if ( !id_var->type->is_pointer() )
-					{ debug_deref_fail(*this, 16078, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    DataDefPTR *idptr = dynamic_cast<DataDefPTR *>(id_var->type);
-				    DataDef *base = (idptr && idptr->base_type) ? idptr->base_type : &ddINT64;
-				    TokenOperator *step;
-				    if ( deref_tb->id() == TokenID::tkInc )
-					step = new TokenInc();
-				    else
-					step = new TokenDec();
-				    step->left = NULL;
-				    step->right = new TokenVar(*id_var);
-				    deref_expr = new TokenDerefExpr(step, base);
-				    DataDef *dtype = id_var->type;
-				    if ( !dtype || !dtype->is_pointer() )
-					{ debug_deref_fail(*this, 16091, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    exStack.push(deref_expr);
-				    return done ? ExprStep::Done : ExprStep::Break;
-				}
-				else if ( deref_tb->id() == TokenID::tkOpBrk )
-				{
-				    TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
-				    if ( !inner_expr )
-					Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-				    DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
-				    if ( !inner_dtype )
-					inner_dtype = inner_expr->datadef();
-				    if ( !inner_dtype || !inner_dtype->is_pointer() )
-				    {
-					if ( TokenCallMethod *opcall =
-						make_unary_object_operator_call(*this, NULL,
-						    inner_expr, "operator*") )
-					{
-					    exStack.push(opcall);
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-					if ( DataDef *dep_base =
-						dependent_deref_result_type(inner_dtype) )
-					{
-					    exStack.push(new TokenDerefExpr(inner_expr, dep_base));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-					{ debug_deref_fail(*this, 16128, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    }
-				    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
-				    DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
-				    if ( peekToken()
-				      && (peekToken()->id() == TokenID::tkInc
-				       || peekToken()->id() == TokenID::tkDec) )
-				    {
-					// Postfix ++/-- binds tighter than the outer unary
-					// `*`: `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-					TokenBase *step_tb = nextToken();
-					TokenOperator *step;
-					if ( step_tb->id() == TokenID::tkInc )
-					    step = new TokenInc();
-					else
-					    step = new TokenDec();
-					step->left = inner_expr;
-					step->right = NULL;
-					exStack.push(new TokenDerefExpr(step, inner_base));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    else
-					deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-				}
-				else
-				    deref_expr = parseExpression(deref_tb, true);
-				if ( !deref_expr )
-				    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-				if ( !dtype )
-				    dtype = deref_expr->datadef();
-				if ( !dtype )
-				    { debug_deref_fail(*this, 16160, deref_tb, NULL);
-				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    }
-				if ( dtype->is_function() && dtype->is_numeric() )
-				{
-				    exStack.push(deref_expr);
-				    return done ? ExprStep::Done : ExprStep::Break;
-				}
-				if ( !dtype->is_pointer() )
-				{
-				    // Fixed-array struct members decay to pointers
-				    TokenMember *tm_d = dynamic_cast<TokenMember *>(deref_expr);
-				    if ( tm_d && tm_d->is_fixed_array_member() )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    // Multi-dim array subscripts decay to pointers:
-				    // *argv[i] where argv is char[N][M]
-				    TokenSubscript *ts_d = dynamic_cast<TokenSubscript *>(deref_expr);
-				    if ( ts_d && ts_d->object.is_fixed_array() )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    // Also handle TokenSubscriptExpr from parsePostfixChain
-				    TokenSubscriptExpr *tse_d = dynamic_cast<TokenSubscriptExpr *>(deref_expr);
-				    if ( tse_d )
-				    {
-					TokenVar *base_tv = dynamic_cast<TokenVar *>(tse_d->base_expr);
-					if ( base_tv && base_tv->var.is_fixed_array() )
-					{
-					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(*this, NULL,
-						deref_expr, "operator*") )
-				    {
-					exStack.push(opcall);
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( DataDef *dep_base =
-					    dependent_deref_result_type(dtype) )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    { debug_deref_fail(*this, 16207, deref_tb, NULL);
-				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    }
-				}
-				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-				DataDef *base = dptr ? dptr->base_type : &ddINT64;
-				exStack.push(new TokenDerefExpr(deref_expr, base));
-				}
-			    }
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
+		// * dereference in unary position ([expr.unary.op]/1): the
+		// operand is a cast-expression. parseCastExpression reads it —
+		// the engine, bounded — and build_indirection types it; a `**x`
+		// is the deref of `*x` by that same recursion, never a second
+		// reader.
+		if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
+		{
+		    TokenBase *first = nextToken();
+		    if ( !first )
+			Throw(tb) << "expecting pointer expression after '*'" << flush;
+		    exStack.push(build_indirection(parseCastExpression(first), tb));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		if ( tb->id() == TokenID::tkNS )
 		{
 		    TokenBase *name_tb = nextToken();
@@ -43833,7 +43149,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
-				    bool push_back_comma, bool cast_operand)
+				    bool push_back_comma, bool cast_operand,
+				    bool unary_operand)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     stack<TokenBase *> exStack;
@@ -44021,6 +43338,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// here, never a nil-deref (the pre-fix __recommend SIGSEGV shape).
 	if ( !tb )
 	    Throw(curToken()) << "unexpected end of input in expression" << flush;
+	// parseCastExpression's bound: a cast-expression ends, at depth 0, once
+	// its operand is complete and the next token cannot continue it — only
+	// a postfix `->` `.` `[` `(` `++` `--` can. The token stays in the
+	// stream for the enclosing parse (a binary operator, `?`, `,`, `;`,
+	// `=`, a pack-expansion `...`). A step still on the operator stack is
+	// PREFIX (`++p`, awaiting its operand), not the end of one.
+	if ( unary_operand && !brackets && cast_expression_complete(opStack) )
+	{
+	    TokenID nid = tb->id();
+	    bool continues = (nid == TokenID::tkDeRef || nid == TokenID::tkOpSqr
+			   || nid == TokenID::tkOpBrk || nid == TokenID::tkInc
+			   || nid == TokenID::tkDec
+			   || (nid == TokenID::tkDot && !ellipsis_ahead()));
+	    if ( !continues )
+		break;
+	}
 	// A pack-expansion ellipsis `...` (three consecutive dots) following a
 	// complete operand is the expansion marker, NOT a member access (a single
 	// `.`): `_Inherited(std::forward<_UElements>(__elements)...)`, `f(args...)`.
@@ -56015,14 +55348,19 @@ static bool is_template_param_separator(TokenBase *tb)
 	|| tb->id() == TokenID::tkBSR);
 }
 
+// Is the stream at a `...` (three `.` tokens)? Consumes nothing.
+bool Program::ellipsis_ahead()
+{
+    return peekToken() && peekToken()->id() == TokenID::tkDot
+	&& tokens.size() >= 3
+	&& tokens[1] && tokens[2]
+	&& tokens[1]->id() == TokenID::tkDot
+	&& tokens[2]->id() == TokenID::tkDot;
+}
+
 bool Program::consume_ellipsis()
 {
-    if ( !peekToken() || peekToken()->id() != TokenID::tkDot )
-	return false;
-    if ( tokens.size() < 3
-      || !tokens[1] || !tokens[2]
-      || tokens[1]->id() != TokenID::tkDot
-      || tokens[2]->id() != TokenID::tkDot )
+    if ( !ellipsis_ahead() )
 	return false;
     nextToken();
     nextToken();
