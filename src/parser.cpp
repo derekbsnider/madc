@@ -1625,11 +1625,13 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 // Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
 // loops so the explicit `*` count is handled the SAME way everywhere.
 int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
-				      bool leading_const, bool *out_cv_seen)
+				      bool leading_const, bool *out_cv_seen,
+				      bool *out_volatile_after_star)
 {
     int stars = 0;
     bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
+    bool volatile_after = false;	// a `volatile` after the LAST `*`: the pointer object itself
     // Pointee-const modeling (docs/plans/2026-06-19-const-qualified-types.md):
     // a const pending at the CURRENT level wraps that level's type in
     // DataDefCONST (getConstType) before the next '*' derives from it, so
@@ -1648,6 +1650,7 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 	    nextToken();		// consume '*'
 	    ++stars;
 	    const_after = false;	// any const before this star was low-level
+	    volatile_after = false;
 	    if ( !fnptr_base )
 	    {
 		if ( pending_const )
@@ -1666,11 +1669,15 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 		if ( out_cv_seen )
 		    *out_cv_seen = true;
 	    }
+	    else if ( peekToken()->id() == TokenID::tkVOLATILE && stars > 0 )
+		volatile_after = true;
 	    nextToken();		// consume const/volatile/restrict
 	}
     }
     if ( out_const_after_star )
 	*out_const_after_star = const_after;
+    if ( out_volatile_after_star )
+	*out_volatile_after_star = volatile_after;
     return stars;
 }
 
@@ -35425,6 +35432,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     bool saved_thread_local_decl = parsing_thread_local_decl;
     int saved_unnamed_ns_depth = unnamed_namespace_depth;
     bool saved_const_decl = parsing_const_decl;
+    bool saved_volatile_decl = parsing_volatile_decl;
     bool saved_constexpr_decl = parsing_constexpr_decl;
     bool saved_typedef_decl = parsing_typedef_decl;
     bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
@@ -35488,6 +35496,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = false;
     unnamed_namespace_depth = 0;
     parsing_const_decl = false;
+    parsing_volatile_decl = false;
     parsing_constexpr_decl = false;
     parsing_typedef_decl = false;
     dependent_pattern_ctor_inits = false;
@@ -35586,6 +35595,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = saved_thread_local_decl;
     unnamed_namespace_depth = saved_unnamed_ns_depth;
     parsing_const_decl = saved_const_decl;
+    parsing_volatile_decl = saved_volatile_decl;
     parsing_constexpr_decl = saved_constexpr_decl;
     parsing_typedef_decl = saved_typedef_decl;
     dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
@@ -52989,13 +52999,20 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    // `_bittest64(__int64 const *a, __int64 b)` prototype against its
 	    // `const __int64 *Base` macro definition "conflicted").
 	    if ( depth == 0 && out.ptr_depth == 0 && is_cv_qualifier_token(pk) )
+	    {
 		for ( size_t ci = 0; ci < tokens.size() && tokens[ci]
 				  && is_cv_qualifier_token(tokens[ci]); ++ci )
+		{
 		    if ( tokens[ci]->id() == TokenID::tkCONST )
 			out.base_const = true;
-	    bool const_after = false, cv_here = false;
+		    else if ( tokens[ci]->id() == TokenID::tkVOLATILE )
+			out.base_volatile = true;
+		}
+	    }
+	    bool const_after = false, cv_here = false, volatile_after = false;
 	    int stars = consume_declarator_stars(dd, &const_after,
-						 depth == 0 && leading_const, &cv_here);
+						 depth == 0 && leading_const, &cv_here,
+						 &volatile_after);
 	    if ( cv_here )
 		out.cv_seen = true;
 	    if ( fresh_fn )
@@ -53031,6 +53048,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    {
 		out.ptr_depth += stars;
 		out.const_after_star = const_after;
+		out.volatile_after_star = volatile_after;
 	    }
 	    else
 		out.nested_stars += stars;
@@ -54324,6 +54342,7 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
 TokenBase *TokenVOLATILE::parse(Program &pgm)
 {
     DBG(std::cout << "TokenVOLATILE::parse() — consuming volatile" << std::endl);
+    pgm.parsing_volatile_decl = true;
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'volatile'" << flush;
@@ -71733,6 +71752,26 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 }
 
 // parse either a variable declaration, or a function declaration
+
+// The next declarator of a declaration LIST (`static volatile int a, b;`,
+// `Q a(1), b(2);`) re-enters parseDeclaration through the stream: push a
+// clone of the base-type token and the decl-specifiers it carried, which
+// qualify EVERY declarator of the list — one owner for both list arms (the
+// constructor-syntax arm and the initializer arm).
+void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
+					bool is_thread_local, bool is_volatile)
+{
+    pushToken(type_tb->clone_origin());
+    if ( is_volatile )
+	pushToken(new TokenVOLATILE());
+    if ( parsing_extern_decl )
+	pushToken(new TokenEXTERN());
+    if ( is_static )
+	pushToken(new TokenSTATIC());
+    if ( is_thread_local )
+	pushToken(new TokenCppKeyword("thread_local"));
+}
+
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -71755,6 +71794,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( unnamed_namespace_depth > 0 && compounds.empty() && !parsing_extern_decl )
 	gotstatic = true;
     bool gotconst = parsing_const_decl;
+    bool gotvolatile = parsing_volatile_decl;
     bool gotconstexpr = parsing_constexpr_decl;
     bool gotinline = parsing_inline_decl;
     bool gotthreadlocal = parsing_thread_local_decl;
@@ -71764,6 +71804,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // storage duration.
     parsing_static_decl = false;
     parsing_const_decl = false;
+    parsing_volatile_decl = false;
     parsing_constexpr_decl = false;
     parsing_inline_decl = false;
     parsing_thread_local_decl = false;
@@ -71850,6 +71891,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
+    bool saw_volatile_after_star = false, saw_base_volatile = false; // `int *volatile p` / `int volatile x`
     bool ret_is_ref = false;
     bool decl_rvalue_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
@@ -71895,6 +71937,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( vd.ptr_depth > 0 || vd.nested_stars > 0 )
 	    saw_pointer_decl = true;
 	saw_const_after_star = vd.const_after_star;
+	saw_volatile_after_star = vd.volatile_after_star;
+	saw_base_volatile = vd.base_volatile;
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
@@ -72395,13 +72439,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    comma_continuation_starts_declarator(peek);
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
-		pushToken(tb->clone_origin());
-		if ( parsing_extern_decl )
-		    pushToken(new TokenEXTERN());
-		if ( gotstatic )
-		    pushToken(new TokenSTATIC());
-		if ( gotthreadlocal )
-		    pushToken(new TokenCppKeyword("thread_local"));
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -73190,6 +73228,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( decl_is_const && !(var->flags & vfFIXEDARRAY)
 	  && !(var->type && var->type->is_struct()) )
 	    var->flags |= vfCONSTANT | vfCONSTDECL;
+	// A top-level `volatile` qualifies the OBJECT (C11 6.7.3p7): `volatile
+	// int x`, `int volatile x`, `int *volatile p`, a volatile array or struct
+	// — never `volatile int *p`, whose volatile is the POINTEE's (a type-level
+	// qualifier, the pointee_volatile gap).
+	if ( ((gotvolatile || saw_base_volatile) && !saw_pointer_decl)
+	  || saw_volatile_after_star )
+	    var->flags |= vfVOLATILE;
 	// The extern flag is set at variable-CREATION time (addVariable), so it
 	// can only mark a freshly-created symbol and can never demote an
 	// already-defined (existing non-extern) one — a global with both a
@@ -73591,13 +73636,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
-		pushToken(tb->clone_origin());
-		if ( parsing_extern_decl )
-		    pushToken(new TokenEXTERN());
-		if ( gotstatic )
-		    pushToken(new TokenSTATIC());
-		if ( gotthreadlocal )
-		    pushToken(new TokenCppKeyword("thread_local"));
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
 	    }
 	}
 

@@ -5280,6 +5280,7 @@ public:
     LinkageSpec current_linkage = LinkageSpec::Cpp;
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_volatile_decl = false;	// current declaration's decl-specifiers carry `volatile` — vfVOLATILE on a variable it qualifies at the TOP level (no `*`); consumed by parseDeclaration like parsing_const_decl
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_constexpr_decl = false;	// current declaration carried `constexpr` — stamp its FuncDef independently of object const-ness
     // Per-Program constexpr invocation stack. Each frame binds one callee's
@@ -6690,7 +6691,9 @@ public:
 	int ptr_depth = 0;		// `*`s read at the top level (before any parens)
 	int nested_stars = 0;		// `*`s read inside `( ... )` levels
 	bool const_after_star = false;	// consume_declarator_stars' top-level report
+	bool volatile_after_star = false;	// its volatile twin: `T *volatile p` — the POINTER object is volatile
 	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
+	bool base_volatile = false;	// a `volatile` read BEFORE the first top-level `*` (`int volatile x`): with no `*` it qualifies the object
 	bool base_const = false;	// a `const` read BEFORE the first top-level `*` (`char const *p`): qualifies the base exactly like a leading const — the spelling the Itanium mangler reads (PKc) must not depend on which side of the type it was written
 	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
 	bool alias_adjusted = false;	// Parameter mode: the adjusted array was the BASE itself (a typedef'd array, `A3 a`) — the alias no longer names the parameter's type
@@ -6736,8 +6739,11 @@ public:
 	std::vector<carray_dim_t> dims;
     };
     DataDef *member_declarator(DataDef *base, MemberDeclarator &md);
+    void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
+				   bool is_thread_local, bool is_volatile);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
-				 bool leading_const = false, bool *out_cv_seen = nullptr);
+				 bool leading_const = false, bool *out_cv_seen = nullptr,
+				 bool *out_volatile_after_star = nullptr);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.

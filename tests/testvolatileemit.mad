@@ -1,0 +1,20 @@
+// The emitted C keeps a top-level `volatile` (C11 6.7.3p7): madc dropped it
+// everywhere — `volatile int acc` emitted `int acc`, so the backend saw an
+// ordinary object it may keep in a register across setjmp/longjmp (C11
+// 7.13.2.1p3 guarantees only a volatile one). A volatile POINTER object
+// qualifies its own declarator level (`int *volatile p`); `volatile int *q`
+// is the pointee's qualifier and stays out of this (pointee_volatile).
+int printf(const char *, ...);
+volatile int g = 1;
+static volatile int sg = 2;
+int main(void) {
+    volatile int acc = 0;
+    int volatile post = 3;
+    volatile int a = 4, b = 5;
+    int x = 6;
+    int *volatile p = &x;
+    struct { volatile int m; } s = { 7 };
+    int after = 8;
+    printf("%d %d %d %d %d %d %d %d %d\n", g, sg, acc, post, a, b, *p, s.m, after);
+    return 0;
+}

@@ -10021,6 +10021,17 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
+	// A volatile-qualified object (a top-level `volatile`, vfVOLATILE): the
+	// qualifier rides the spec list whichever arm above built it (C's order
+	// among the specifiers is free), so c2mir sees every access as volatile.
+	// A volatile POINTER object (`int *volatile p`) qualifies its own pointer
+	// in the declarator below instead — in the spec list it would qualify the
+	// POINTEE.
+	bool volatile_ptr_object = (v->flags & vfVOLATILE) && !fn_declarator
+				   && v->type && v->type->is_pointer()
+				   && !v->is_fixed_array();
+	if ((v->flags & vfVOLATILE) && !volatile_ptr_object)
+		append(tl, simple(N_VOLATILE));
 
 	// C++ `inline` variable (vague linkage): every including TU defines
 	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
@@ -10099,6 +10110,19 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			append(decl_list, pointer());
 	} else if (is_ptr) {
 		append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims);
+	}
+	if (volatile_ptr_object) {
+		// The object's own level is the pointer next to the name — the
+		// declarator list is innermost-binding FIRST (c2m's order, the one
+		// emit_declarator renders), so it is the first N_POINTER:
+		// `int *const *volatile p`.
+		node_t own = NULL;
+		for (node_t op = c2mir_node_first_op(decl_list); op && !own;
+		     op = c2mir_node_next_op(op))
+			if (op->code == N_POINTER)
+				own = op;
+		if (own)
+			append(c2mir_node_op(own, 0), simple(N_VOLATILE));
 	}
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);

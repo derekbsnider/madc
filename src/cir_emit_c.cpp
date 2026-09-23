@@ -495,7 +495,16 @@ void emit_declarator(CEmit &e, node_t decl)
 			node_t s = op(suffixes, i);
 			if (!s) break;
 			if (s->code == N_POINTER) {
-				d = "*" + d;
+				// The pointer level's own qualifiers (`*volatile p`,
+				// `*const p`): op 0 is its qualifier list.
+				std::string quals;
+				if (node_t ql = op(s, 0))
+					for (int qi = 0; ; qi++) {
+						node_t q = op(ql, qi);
+						if (!q) break;
+						quals += emit_to_string(e, q) + " ";
+					}
+				d = "*" + quals + d;
 				prefix_pointer = true;
 			} else {                     // N_FUNC -> "(params)", N_ARR -> "[size]"
 				if (prefix_pointer) d = "(" + d + ")";
