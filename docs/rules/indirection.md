@@ -473,6 +473,43 @@ yet measured.
   and `tests/testvolatilepointeeo2` (madc mode, `-O2`). The volatile TYPE in
   C++ then needs its identity — mangling, overload ranking, deduction,
   volatile member functions — each its own step.
+- ~~`cxx_volatile_mangling`~~ — fixed 2026-09-23, loud at link. With the
+  type distinct, its symbol was still g++'s for the unqualified type: every
+  parameter spelling the mangler reads was assembled by hand from tokens —
+  "leading const + base + stars" — in both parameter readers, so no volatile
+  (nor any cv below the first star) ever reached it; `f(int*)` and
+  `f(volatile int*)` both minted `_Z1fPi` and the second became `f__o2`, which
+  nothing links. `param_declarator_spelling` now spells a parameter from the
+  reader's token structure with EVERY level's cv read from the declarator's
+  type (the outermost level is the parameter object, dropped by [dcl.fct]/5),
+  and `ItaniumMangler::parse_type` reads the result: trailing decorations first
+  (a leading cv binds to the core — reading it first merged `volatile int*
+  volatile*`'s base qualifier into the outer level, PVPi for g++'s PVPVi), one
+  level's cv words as ONE `V`/`K` set and one substitution candidate
+  (`_Z1nPVKcS0_`), a leading cv set dropped for a parameter. The rule "a
+  qualified pointer spells its cv after the `*`" is `cv_qualified_spelling`,
+  shared by the `DataDefQUAL` name, `basic_class_datadef_spelling` and the
+  parameter spelling — the name spelled `int *volatile` as `volatile int*`,
+  the pointer TO volatile's name. A reference's leading cv qualified nothing:
+  `volatile int &r` was `int &` (the reader applies a pending cv only at a
+  `*`), so it now qualifies the referent at the `&`. Reducer
+  `tests/testvolatilemanglecxx` (calls through the g++ symbol names, declared
+  `extern "C"`), unit cases in `test_mangle.cpp`.
+- ~~`cxx_volatile_overload_rank`~~ — fixed 2026-09-23, silent. The ranker
+  peeled the pointee's qualifier before comparing, so `int*` and `volatile
+  int*` scored an identical exact match against both `f(int*)` and
+  `f(volatile int*)` and declaration order decided (a volatile argument could
+  select the overload that drops the qualifier). `score_arg_to_param` now
+  applies [conv.qual]: the argument's first-level pointee cv must be a subset
+  of the parameter's (else not viable), an added qualifier ranks one below
+  the identity ([over.ics.rank]/3.2.5), deeper levels must match exactly (an
+  added qualifier there needs const at each level between, which C++ mode
+  does not model yet); and a reference binds a referent of its own cv or a
+  less qualified lvalue — a non-const lvalue reference never a more qualified
+  one, a more qualified referent ranking one below ([over.ics.rank]/3.2.6).
+  Residue: a named volatile variable's lvalue still reports its unqualified
+  type (the object flag), so `f(&vx)` / `k(vx)` rank as `int` — the lvalue-cv
+  step, V2.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

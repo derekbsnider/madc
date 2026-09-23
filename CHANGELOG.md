@@ -122,7 +122,13 @@ answers.
   became one qualified type carrying a const/volatile mask (gcc's model), and
   every spelling now reaches c2mir and `--emit=c11` output — in C, in madc
   mode (what a `.c` file with no `--std` compiles in) and in C++ (`const` is
-  modeled in the type in C only). Also fixed: a brace-initialized `typedef const
+  modeled in the type in C only). In C++ the qualifier is now part of the
+  function's identity: `f(volatile int *)` mangles `_Z1fPVi` (it was
+  `_Z1fPi`, the second overload renamed `f__o2`, which nothing links), every
+  level's cv reaches the symbol (`PVPVi`, `PVKcS0_`), `volatile int &` binds
+  a volatile referent (`_Z1kRVi`), and overload resolution follows
+  [conv.qual]: `int*` still picks `f(int*)` over `f(volatile int*)`, a
+  `volatile int*` never picks `f(int*)`. Also fixed: a brace-initialized `typedef const
   struct` (or volatile) local was refused (`CP cp = { 3, 4 };`). The volatile
   gate now counts madc's accesses too.
 

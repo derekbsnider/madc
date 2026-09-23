@@ -15073,6 +15073,26 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		if (ar && ar->base_type)
 			adc = ar->base_type;
 	}
+	// A reference binds an lvalue of its referent's cv or a LESS qualified
+	// one ([dcl.init.ref]/5); a more-qualified referent ranks below the
+	// exact one ([over.ics.rank]/3.2.6: f(int&) over f(volatile int&) for an
+	// int lvalue). A non-const lvalue reference never binds a MORE qualified
+	// lvalue (g++: "binding reference of type 'int&' to 'volatile int'
+	// discards qualifiers"); a const one may, through a temporary. Only the
+	// modeled bits are in a type (modeled_cv), so the test is exact over
+	// what the types carry; the rest of the ranking reads the unqualified
+	// referent (param_is_ref is spent on the peels above).
+	if (param_is_ref) {
+		const unsigned acv = adc->cv_quals(), rcv = pdc->cv_quals();
+		if ((acv & ~rcv) && param_is_nonconst_lref)
+			return -1;
+		if (rcv & ~acv) {
+			int s = score_arg_to_param(adc, pdc->unqualified(), false,
+						   allow_udc, arg_is_zero_literal,
+						   param_is_nonconst_lref);
+			return s > 0 ? s - 1 : s;
+		}
+	}
 	// A class-object parameter binds: an argument of the SAME class (identity
 	// / copy), or — via one user-defined conversion — an argument that one of
 	// the class's single-argument constructors accepts.
@@ -15276,12 +15296,41 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr) {
 		if (p_ptr && a_ptr) {
+			// [conv.qual]: a pointer converts to a pointer to a MORE
+			// cv-qualified pointee — a qualification adjustment, Exact
+			// Match rank but worse than the identity it would otherwise
+			// tie with ([over.ics.rank]/3.2.5: f(int*) over
+			// f(volatile int*) for an int* argument) — and never to a
+			// LESS qualified one (g++: "invalid conversion from
+			// 'volatile int*' to 'int*'"). Below the first pointee
+			// every level must match exactly: adding a qualifier there
+			// needs const at each level between (int** -> volatile int**
+			// is ill-formed), and the const levels are the const
+			// campaign's (modeled_cv). Only the modeled bits exist in a
+			// type, so the test is exact over what the type carries.
+			const DataDefPTR *aq = adc->as_pointer_dd();
+			const DataDefPTR *pq = pdc->as_pointer_dd();
+			const unsigned acv = aq && aq->base_type ? aq->base_type->cv_quals() : 0u;
+			const unsigned pcv = pq && pq->base_type ? pq->base_type->cv_quals() : 0u;
+			if (acv & ~pcv)
+				return -1;
+			for (const DataDef *al = aq ? aq->base_type : NULL,
+				     *pl = pq ? pq->base_type : NULL;
+			     al && pl && al->is_pointer() && pl->is_pointer(); ) {
+				const DataDefPTR *an = al->as_pointer_dd();
+				const DataDefPTR *pn = pl->as_pointer_dd();
+				al = an ? an->base_type : NULL;
+				pl = pn ? pn->base_type : NULL;
+				if (al && pl && al->cv_quals() != pl->cv_quals())
+					return -1;
+			}
+			const int qual_adjust = acv != pcv ? 1 : 0;
 			const DataDefCLASS *ac = class_pointer_pointee(adc);
 			const DataDefCLASS *pc = class_pointer_pointee(pdc);
 			if (ac && pc) {
 				if (ac == pc)
-					return 5;
-				return ac->is_or_derives_from(pc) ? 4 : -1;
+					return 5 - qual_adjust;
+				return ac->is_or_derives_from(pc) ? 4 - qual_adjust : -1;
 			}
 			// A class pointee on exactly ONE side: the only pointer
 			// conversions are derived->base (both class, above) and
@@ -15301,7 +15350,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				// dtVOID: the silent int**/S* -> void** overload)
 				if (!ob || !ob->is_void())
 					return -1;
-				return 3;   // void* standard conversion
+				return 3 - qual_adjust;   // void* standard conversion
 			}
 			// BOTH pointees non-class: [conv.ptr] admits only the
 			// SAME pointee (cv-widening included) and to/from void*
@@ -15329,9 +15378,9 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				pb = cw->base_type;
 			if (ab && pb) {
 				if (ab->is_void() || pb->is_void())
-					return 3;   // void* standard conversion
+					return 3 - qual_adjust;   // void* standard conversion
 				if (ab == pb || ab->name == pb->name)
-					return 5;
+					return 5 - qual_adjust;
 				// ENUM pointees keep their own conversion domain
 				// exactly like enum VALUES above — [conv.ptr] has
 				// no enum*->other-enum* conversion. Enums are
@@ -15347,7 +15396,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				if (ape || ppe)
 					return (ape && ppe
 						&& same_enum_type(ape, ppe))
-						? 5 : -1;
+						? 5 - qual_adjust : -1;
 				// Two scalar pointees compare by TYPE IDENTITY when
 				// both are proven (Program::proven_scalar_identity,
 				// the one builtin table): [conv.ptr] has no
@@ -15379,14 +15428,14 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 							aid->name.c_str(), pb->name.c_str(),
 							pb->canonical_cpp_spelling().c_str(),
 							pid->name.c_str());
-					return aid == pid ? 5 : -1;
+					return aid == pid ? 5 - qual_adjust : -1;
 				}
 				if (ab->is_numeric() && pb->is_numeric())
 					return ab->rawtype() == pb->rawtype()
-						? 5 : -1;
+						? 5 - qual_adjust : -1;
 				return -1;
 			}
-			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+			return adc->rawtype() == pdc->rawtype() ? 5 - qual_adjust : 4 - qual_adjust;
 		}
 		// A null-pointer constant (integer literal 0) binds any pointer
 		// parameter — a standard conversion ([conv.ptr]), ranked below a
