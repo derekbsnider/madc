@@ -1,0 +1,7 @@
+member: 12 12 10 10
+member row: 5 5 48 16
+arrow: 10 5 48
+element: 10 5 4
+variable: 24 12 48 16
+pointer: 32 8 12 12
+deref: 12 16 5

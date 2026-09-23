@@ -3248,27 +3248,16 @@ static DataDef *build_fixed_array_query_type(DataDef *base_type,
     return result;
 }
 
-static DataDef *type_query_chain_datadef(TokenBase *chain)
+// The type sizeof/alignof measures for an expression operand: the ARRAY an
+// array operand denotes (Program::array_operand_type — its extents, never the
+// flattened scalar the node reports), else the node's type. `*m` on a fixed
+// array is its row already (deref_type_for_variable).
+static DataDef *type_query_chain_datadef(Program &pgm, TokenBase *chain)
 {
     if ( !chain )
 	return NULL;
-    // `*a` on a fixed array is `a[0]`: the ROW, for a multi-dimensional one
-    // (`int m[2][3]`: sizeof(*m) is 12, not the element's 4).
-    if ( TokenDeref *td = chain->as_deref_tok() )
-	if ( td->var.is_fixed_array() )
-	    return build_fixed_array_query_type(td->var.type, td->var.dims, 1);
-    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(chain) )
-    {
-	if ( ts->object.is_fixed_array() )
-	    return build_fixed_array_query_type(ts->object.type, ts->object.dims,
-						1 + ts->extra_indices.size());
-    }
-    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(chain) )
-    {
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(tse->base_expr) )
-	    if ( tv->var.is_fixed_array() )
-		return build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
-    }
+    if ( DataDef *at = pgm.array_operand_type(chain) )
+	return at;
     return chain->datadef();
 }
 
@@ -14999,7 +14988,8 @@ static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bo
 // not: a named fixed array measures every element; anything else measures
 // its type-query type (type_query_chain_datadef — dims-aware for a
 // subscript or a deref of a multi-dimensional array). 0 when untyped.
-static size_t type_query_expression_value(TokenBase *expr, bool want_alignof)
+static size_t type_query_expression_value(Program &pgm, TokenBase *expr,
+					  bool want_alignof)
 {
     if ( !expr )
 	return 0;
@@ -15007,7 +14997,7 @@ static size_t type_query_expression_value(TokenBase *expr, bool want_alignof)
 	if ( tv->var.is_fixed_array() )
 	    if ( size_t v = query_fixed_array_sizeof_value(tv, want_alignof, false) )
 		return v;
-    DataDef *dd = type_query_chain_datadef(expr);
+    DataDef *dd = type_query_chain_datadef(pgm, expr);
     return dd ? query_datadef_measure(dd, want_alignof) : 0;
 }
 
@@ -15030,52 +15020,15 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 					   const std::string &op_name,
 					   bool &have_value, size_t &query_value)
 {
-    bool want_alignof = is_alignof_identifier(op_name);
     DataDef *dd = NULL;
-    Variable *var = NULL;
 
     if ( is_contextual_identifier_token(type_tb) )
     {
 	std::string tname = contextual_identifier_name(type_tb);
-	var = findVariable(tname);
-	if ( var && peekToken()
-	  && (peekToken()->id() == TokenID::tkOpSqr
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef) )
-	{
-	    TokenBase *chain = parsePostfixChain(type_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
-	    query_value = query_datadef_measure(cdd, want_alignof);
-	    if ( !want_alignof )
-	    {
-		if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
-		{
-		    if ( tm->is_fixed_array_member() )
-		    {
-			DataDef *otype = tm->object.type;
-			if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-			    otype = opt->base_type;
-			if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
-			{
-			    std::string mname = tm->var.name;
-			    query_value *= sdd->m_count(mname);
-			}
-		    }
-		}
-	    }
-	    have_value = true;
+	// A VARIABLE names an expression operand — the caller's one
+	// expression measure reads it (array_operand_type for an array).
+	if ( findVariable(tname) )
 	    return NULL;
-	}
-	if ( var )
-	{
-	    query_value = query_datadef_measure(var->type, want_alignof);
-	    if ( !want_alignof && var->is_fixed_array() )
-		query_value *= var->total_elements();
-	    have_value = true;
-	    return NULL;
-	}
 	dd = resolve_current_class_type_alias(tname);
 	if ( dd )
 	    return dd;
@@ -15113,45 +15066,9 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->spelling();
-	var = findVariable(tname);
-	if ( var && peekToken()
-	  && (peekToken()->id() == TokenID::tkOpSqr
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef) )
-	{
-	    TokenBase *chain = parsePostfixChain(type_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
-	    query_value = query_datadef_measure(cdd, want_alignof);
-	    if ( !want_alignof )
-	    {
-		if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
-		{
-		    if ( tm->is_fixed_array_member() )
-		    {
-			DataDef *otype = tm->object.type;
-			if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-			    otype = opt->base_type;
-			if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
-			{
-			    std::string mname = tm->var.name;
-			    query_value *= sdd->m_count(mname);
-			}
-		    }
-		}
-	    }
-	    have_value = true;
-	    var = NULL;
-	}
-	else if ( var )
-	{
-	    query_value = query_datadef_measure(var->type, want_alignof);
-	    if ( !want_alignof && var->is_fixed_array() )
-		query_value *= var->total_elements();
-	    have_value = true;
-	}
-	else
+	// A VARIABLE names an expression operand (see the arm above).
+	if ( findVariable(tname) )
+	    return NULL;
 	{
 	    dd = resolve_current_class_type_alias(tname);
 	    if ( !dd )
@@ -15272,7 +15189,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	if ( first->type() == TokenType::ttString )
 	    return literal_token_sizeof(static_cast<TokenStr *>(first));
 	TokenBase *expr = parseCastExpression(first);
-	size_t value = type_query_expression_value(expr, want_alignof);
+	size_t value = type_query_expression_value(*this, expr, want_alignof);
 	if ( !value )
 	    Throw(first) << op_name << ": cannot determine type of expression" << flush;
 	return value;
@@ -15323,7 +15240,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	TokenBase *expr = parseExpression(first, true, false, true, 1);
 	if ( expr && expr->datadef() )
 	{
-	    value = type_query_expression_value(expr, want_alignof);
+	    value = type_query_expression_value(*this, expr, want_alignof);
 	    have_value = true;
 	    dd = NULL; // have_value is set, skip the pointer/array loop below
 	    expr_fallback_consumed_paren = true;
@@ -17380,7 +17297,7 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 	    // Fold the same constant the generic path computes for these
 	    // shapes (the operand tokens are already consumed).
 	    TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(
-					    type_query_chain_datadef(chain),
+					    type_query_chain_datadef(*this, chain),
 					    false));
 	    ti->setDataType(&ddUINT64);
 	    copy_token_location(ti, op_tb);
@@ -20591,18 +20508,19 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
 // selection, chained operator expressions, and `auto` all mis-resolve.
-// The ELEMENT type of an operand that denotes an ARRAY — the type of `e[0]` —
-// or NULL when `e` is not an array. For a multi-dimensional array the element
-// is its ROW ([dcl.array]/[expr.sub]): `int m[2][3]` has element int[3], so
-// `*m` is a row, `sizeof *m` is 12 and `m + 1` steps a row.
-// THE owner of that question. madc stores an array FLATTENED: the node's
-// datadef() reports the SCALAR, and the extents live beside it — a variable's
-// dims, the struct's m_dims, a TokenSubscript's extra_indices, the depth of a
-// TokenSubscriptExpr chain. A consumer that asks datadef() loses the rows: an
-// array of function pointers reads as one function pointer, a row of pointers
-// as one pointer. `consumed` below counts the extents already indexed.
-// TokenMember derives from TokenVar, so it is asked first.
-DataDef *Program::array_operand_element_type(TokenBase *e)
+// The ARRAY type an operand denotes — with its extents — or NULL when `e` is
+// not an array. A multi-dimensional array is the whole nested type: `int
+// m[2][3]` denotes int[2][3], `m[1]` int[3]; the element of either is its ROW.
+// THE owner of that question (sizeof measures it; array_operand_element_type,
+// decay, `*a` and `a->m` read its element). madc stores an array FLATTENED:
+// the node's datadef() reports the SCALAR, and the extents live beside it — a
+// variable's dims, the struct's m_dims, a TokenSubscript's extra_indices, the
+// depth of a TokenSubscriptExpr chain — so a consumer that asks datadef()
+// loses the rows (`sizeof s.n[1]` measured one char, an array of function
+// pointers read as one). Unrecorded extents are one dimension of the element
+// count (0 for a flexible member: its element is still right). TokenMember
+// derives from TokenVar, so it is asked first.
+DataDef *Program::array_operand_type(TokenBase *e)
 {
     if ( !e ) return NULL;
     size_t depth = 0;			// subscripts applied through a chain
@@ -20614,47 +20532,71 @@ DataDef *Program::array_operand_element_type(TokenBase *e)
 	++depth;
 	root = tse->base_expr;
     }
+    DataDef *base = NULL;		// the scalar element
+    std::vector<carray_dim_t> dims;
+    size_t consumed = depth;		// extents already indexed
+    bool array = false;
     if ( TokenMember *tm = root->as_member_tok() )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	{
 	    DataDefSTRUCT *sdd = tm->owner_struct_type();
-	    const std::vector<carray_dim_t> *dims =
+	    const std::vector<carray_dim_t> *md =
 		sdd ? sdd->m_dims(tm->var.name) : NULL;
-	    if ( dims && !dims->empty() )
-		return depth < dims->size()
-		    ? build_fixed_array_query_type(tm->var.type, *dims, depth + 1)
-		    : NULL;
-	    // extents not recorded: a one-dimensional member
-	    return depth == 0 ? tm->var.type : NULL;
+	    std::string mname = tm->var.name;
+	    if ( md && !md->empty() )
+		dims = *md;
+	    else
+		dims.assign(1, sdd ? sdd->m_count(mname) : 0);
+	    base = tm->var.type;
+	    array = true;
 	}
     }
     else if ( TokenVar *tv = root->as_var_tok() )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	{
-	    if ( tv->var.dims.empty() )
-		return depth == 0 ? tv->var.type : NULL;
-	    return depth < tv->var.dims.size()
-		? build_fixed_array_query_type(tv->var.type, tv->var.dims, depth + 1)
-		: NULL;
+	    if ( !tv->var.dims.empty() )
+		dims = tv->var.dims;
+	    else
+		dims.assign(1, tv->var.total_elements());
+	    base = tv->var.type;
+	    array = true;
 	}
     }
     else if ( TokenSubscript *ts = root->as_subscript_tok() )
     {
 	// A PARTIAL subscript of a multi-dimensional fixed array denotes a
 	// row; a full one (an index per dimension) denotes the element.
-	size_t consumed = 1 + ts->extra_indices.size() + depth;
 	if ( ts->object.is_fixed_array() && ts->object.type )
-	    return consumed < ts->object.dims.size()
-		? build_fixed_array_query_type(ts->object.type, ts->object.dims,
-					       consumed + 1)
-		: NULL;
+	{
+	    if ( !ts->object.dims.empty() )
+		dims = ts->object.dims;
+	    else
+		dims.assign(1, ts->object.total_elements());
+	    base = ts->object.type;
+	    consumed += 1 + ts->extra_indices.size();
+	    array = true;
+	}
     }
+    if ( array )
+	return consumed < dims.size()
+	    ? build_fixed_array_query_type(base, dims, consumed) : NULL;
     if ( DataDef *odd = e->datadef() )
-	if ( DataDefCArray *ca = odd->as_carray_dd() )
-	    return ca->element_type ? ca->element_type : &ddINT64;
+	if ( odd->as_carray_dd() )
+	    return odd;
     return NULL;
+}
+
+// The ELEMENT type of an operand that denotes an array — the type of `e[0]`,
+// the ROW for a multi-dimensional one — or NULL. array_operand_type's element.
+DataDef *Program::array_operand_element_type(TokenBase *e)
+{
+    DataDef *at = array_operand_type(e);
+    DataDefCArray *ca = at ? at->as_carray_dd() : NULL;
+    if ( !ca )
+	return NULL;
+    return ca->element_type ? ca->element_type : &ddINT64;
 }
 
 // Array-to-pointer decay ([conv.array]) for an operand in a VALUE context: an

@@ -6571,9 +6571,10 @@ public:
     // decayed `element *` type for a fixed-array variable / array member /
     // array-typed expression, else NULL. See parser.cpp.
     DataDef *array_decay_pointer(TokenBase *operand);
-    // The element type (the ROW, multi-dimensional) of an operand that
-    // denotes an array — the type of e[0] — or NULL. madc stores arrays
-    // flattened; this is where the extents are read back.
+    // The ARRAY type an operand denotes, with its extents, or NULL — madc
+    // stores arrays flattened; this is where the extents are read back.
+    DataDef *array_operand_type(TokenBase *e);
+    // Its element (the ROW, multi-dimensional) — the type of e[0] — or NULL.
     DataDef *array_operand_element_type(TokenBase *e);
     // The return CLASS of a captured FREE namespace binary operator on class
     // operands whose return is a class BY VALUE deducing to one of the operand

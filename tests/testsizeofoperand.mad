@@ -1,0 +1,38 @@
+// sizeof of an ARRAY-valued expression measures the whole array
+// ([expr.sizeof]/2: "when applied to an array, the result is the total
+// number of bytes in the array") — with its extents, which madc stores
+// beside the flattened scalar. Three measurers disagreed: the parenthesized
+// form patched a fixed-array member by its element count, the unparenthesized
+// form measured the node's scalar — `sizeof s.a` was 4 (gcc 12), `sizeof s.n`
+// 1 (gcc 10), `sizeof s.n[1]` 1 (gcc 5), all silent — and neither counted a
+// member-row subscript. ONE owner now: Program::array_operand_type; every
+// sizeof of an expression measures through it. Oracle: gcc and clang, -std=c17.
+#include <stdio.h>
+
+struct P { char c; int a[3]; double d; char n[2][5]; int g[2][3][4]; };
+
+int main(void)
+{
+    struct P s;
+    struct P *sp = &s;
+    struct P arr[3];
+    int m[2][3];
+    int c3[2][3][4];
+    char *strs[4];
+    int (*rp)[3] = m;
+
+    printf("member: %d %d %d %d\n", (int)sizeof s.a, (int)sizeof(s.a),
+	   (int)sizeof s.n, (int)sizeof(s.n));
+    printf("member row: %d %d %d %d\n", (int)sizeof s.n[1], (int)sizeof(s.n[1]),
+	   (int)sizeof s.g[1], (int)sizeof s.g[1][2]);
+    printf("arrow: %d %d %d\n", (int)sizeof sp->n, (int)sizeof sp->n[1],
+	   (int)sizeof(sp->g[0]));
+    printf("element: %d %d %d\n", (int)sizeof arr[1].n, (int)sizeof arr[1].n[0],
+	   (int)sizeof s.a[1]);
+    printf("variable: %d %d %d %d\n", (int)sizeof m, (int)sizeof m[1],
+	   (int)sizeof c3[1], (int)sizeof(c3[1][2]));
+    printf("pointer: %d %d %d %d\n", (int)sizeof strs, (int)sizeof *strs,
+	   (int)sizeof *rp, (int)sizeof rp[1]);
+    printf("deref: %d %d %d\n", (int)sizeof *m, (int)sizeof **c3, (int)sizeof *s.n);
+    return 0;
+}

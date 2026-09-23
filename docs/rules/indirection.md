@@ -154,8 +154,18 @@ yet measured.
   to the lambda introducer. The operand is `parseCastExpression`'s (gcc's
   `c_parser_cast_expression` recurses into itself); the two helpers are
   deleted. Reducer `tests/testcastoperand`; gated (rule 6).
-- `sizeof_operand_measurement`: `resolve_type_query_datadef`'s identifier fast
-  paths measure with bare `chain->datadef()` (candidate).
+- ~~`sizeof_operand_measurement`~~ — consolidated 2026-09-23: three measurers
+  of `sizeof expr` disagreed. The parenthesized form's two identifier fast
+  paths (a contextual-identifier copy and a plain one) read the chain with
+  `parsePostfixChain`, measured its flattened `datadef()` and patched a
+  fixed-array member by its element count; the unparenthesized form measured
+  the node's scalar (`sizeof s.a` 4, gcc 12; `sizeof s.n` 1, gcc 10; `sizeof
+  s.n[1]` 1, gcc 5 — a regression of the `*` consolidation); neither counted a
+  member-row subscript. `Program::array_operand_type` (the array with its
+  extents; `array_operand_element_type` is its element) is the owner, a
+  variable operand goes to the one expression measure, and the fast paths are
+  deleted. Reducer `tests/testsizeofoperand`. Still open: unary `~`/`+`/`-`
+  skip the integer promotions (Gap `unary_operator_integer_promotion`).
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs
