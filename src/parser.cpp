@@ -16753,7 +16753,7 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	// callee is a call.
 	if ( !tc->var.type || !tc->var.type->is_function() )
 	    return r;
-	if ( dynamic_cast<DataDefFPTR *>(tc->var.type) )
+	if ( tc->var.type->as_fptr_dd() )
 	    return 0;
 	FuncDef *fd = pgm.resolved_call_funcdef(tc);
 	pgm.resolve_noexcept_spec(fd);
@@ -20222,9 +20222,9 @@ bool DataDef::same_representation(DataDef &d)
 			return false;
 		FuncDef *af = dynamic_cast<FuncDef *>(a);
 		FuncDef *bf = dynamic_cast<FuncDef *>(b);
-		if ( DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(a) )
+		if ( DataDefFPTR *afp = a->as_fptr_dd() )
 			af = afp->target;
-		if ( DataDefFPTR *bfp = dynamic_cast<DataDefFPTR *>(b) )
+		if ( DataDefFPTR *bfp = b->as_fptr_dd() )
 			bf = bfp->target;
 		if ( !af || !bf )
 			return af == bf;
@@ -26558,7 +26558,7 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
     if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
 	return pdd->base_type == NULL
 	    || forest_adoptable_c_type(pdd->base_type, depth + 1);
-    if ( dynamic_cast<DataDefFPTR *>(dd) )
+    if ( dynamic_cast<DataDefFPTR *>(dd) ) // allowed-exception: structural walk (the CONST arm above recurses)
 	return true;
     if ( dd->is_struct() || dynamic_cast<DataDefENUM *>(dd)
       || dynamic_cast<DataDefARRAY *>(dd) || dynamic_cast<DataDefSIMD *>(dd)
@@ -30572,10 +30572,11 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	bool dependent_pack_call =
 	    dependent_parse_in_progress
 	    && (saw_pack_expansion_arg || token_tree_has_pack_expansion(tc));
-	// function pointer variable: type is DataDefFPTR, get target FuncDef
-	if ( tc->var.type->is_function() && tc->var.type->is_numeric() )
+	// function pointer variable: get its target FuncDef (as_fptr_dd sees
+	// through a DataDefCONST; the older is_function() && is_numeric() test
+	// was true for a const one too, and the static_cast then misread it)
+	if ( DataDefFPTR *fptr = tc->var.type->as_fptr_dd() )
 	{
-	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
 	    FuncDef *fd = fptr->target;
 	    // K&R: empty param list (not void) accepts any number of args
 	    if ( !dependent_pack_call
@@ -34672,7 +34673,7 @@ class ClassPatternNormalizer
 	    if ( array->count_expr )
 		fail(Program::ClassParseReason::DependentValueExpression);
 	}
-	else if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd) )
+	else if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd) ) // allowed-exception: structural pattern capture
 	{
 	    pattern.types[id].kind = Program::ClassTypePatternKind::FunctionPointer;
 	    pattern.types[id].flags = fptr->ptr_syntax ? 1u : 0u;
@@ -59314,9 +59315,9 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
     if ( p2 == std::string::npos || p2c == std::string::npos || p2c <= p2 )
 	return false;
 
-    FuncDef *fd = dynamic_cast<FuncDef *>(arg_dd);
+    FuncDef *fd = arg_dd ? arg_dd->as_funcdef_dd() : NULL;
     if ( !fd )
-	if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(arg_dd) )
+	if ( DataDefFPTR *fp = arg_dd ? arg_dd->as_fptr_dd() : NULL )
 	    fd = fp->target;
     if ( !fd )
 	return false;
@@ -69182,7 +69183,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
-		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL
+		else if ( param_dd->as_fptr_dd() != NULL
 		       || param_dd->is_member_pointer() )
 		{
 		    // A function-pointer or pointer-to-MEMBER parameter (`bool
@@ -71857,7 +71858,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // function-pointer variable. The shared helper consumes the star/qualifier
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
-    bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
+    bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL); // allowed-exception: the declarator's base node (a const base is a pointee)
     // The declarator — the ONE reader in Declaration mode over the declared
     // type: `C::[D::]*` chains (template-id owners included), stars with cv
     // (the declaration's leading const feeds C mode's pointee-const model),
@@ -72515,7 +72516,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // the name in funcdef_map while lookups kept the storage Variable, whose
     // ->data the vbase ctor probe then read as a Method* (the SMAUG tables.c
     // SIGSEGV; reducer tests/testfntypedefdecl.c).
-    if ( DataDefFPTR *fn_td = dynamic_cast<DataDefFPTR *>(decl_type) )
+    if ( DataDefFPTR *fn_td = dynamic_cast<DataDefFPTR *>(decl_type) ) // allowed-exception: the typedef's own node (Form-1 vs Form-2)
 	if ( !fn_td->ptr_syntax && fn_td->target && n_decl_stars == 0
 	  && arr_dims.empty() && !ret_is_ref
 	  && (nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkComma) )

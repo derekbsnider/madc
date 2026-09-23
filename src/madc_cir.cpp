@@ -3500,7 +3500,7 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 	if (!forest_arena_enabled)
 		return;
 	for (int depth = 0; dd && depth < 16; ++depth) {
-		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) {
+		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) { // allowed-exception: structural type-graph walk
 			uint32_t tid = type_id_for(fp);
 			if (!madc::dis::arena_id_is_project(tid)
 			    || forest_arena.has_def(tid))

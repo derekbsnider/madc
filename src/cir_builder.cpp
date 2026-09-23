@@ -379,7 +379,7 @@ std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 	// deduced from (for_each's `__f(*it)` calling print_name for a lambda
 	// argument once user functions carried Itanium symbols; a pointer to a
 	// library-bound function had the same latent bug).
-	if (v.type && v.type->is_function() && v.type->is_numeric())
+	if (v.type && v.type->as_fptr_dd())
 		return var_emit_name(v);
 	std::string sym = call_emit_symbol(fd, var_emit_name(v));
 	// task #69: the flavor-marshalling swap lives HERE — the one owner every
@@ -7939,7 +7939,7 @@ int CirBuilder::fnptr_alias_stars(const std::string &alias)
 	// A Form-2 pointer-to-function typedef already carries the pointer (0
 	// extra stars); a Form-1 function typedef does not, so a fn-ptr use of
 	// the alias needs one explicit `*`.
-	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition))
+	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition)) // allowed-exception: the alias's own node
 		return afp->ptr_syntax ? 0 : 1;
 	return 1;
 }
@@ -7956,7 +7956,7 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 	if (alias.empty() || !m_prog) return true;
 	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
 	if (it == m_prog->datatype_map.end() || !*it) return true;
-	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL;
+	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL; // allowed-exception: the alias's own node
 }
 
 // -----------------------------------------------------------------------
@@ -8934,7 +8934,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	}
 
 	// Function-pointer parameter (no typedef alias): `int (*fp)(int)`.
-	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) {
+	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) { // allowed-exception: renders the FPTR node (a const one renders via its wrapper)
 		node_t pspec = list();
 		node_t pdecl_list = list();
 		fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
@@ -9919,7 +9919,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// members, handled in member_node.)
 	// Declared through a typedef: the alias is the whole type spec ONLY when
 	// it names the function(-pointer) type itself — see fnptr_alias_is_fn.
-	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type);
+	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type); // allowed-exception: renders the FPTR node
 	if (fnptr && !v->typedef_name.empty()
 	    && fnptr_alias_is_fn(v->typedef_name))
 		fnptr = NULL;
@@ -10384,7 +10384,7 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 		flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
 		if (it != m_prog->datatype_map.end() && *it) {
 			base_depth = dd_ptr_depth(&(*it)->definition);
-			fnptr_alias = (dynamic_cast<DataDefFPTR *>(
+			fnptr_alias = (dynamic_cast<DataDefFPTR *>( // allowed-exception: the alias's own node
 					&(*it)->definition) != NULL);
 		}
 	}
@@ -10581,7 +10581,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	// pointer star(s) it carries beyond the alias (`DO_FUN *do_fun`). dtINT64
 	// rawtype would otherwise emit a `long` (or, via the alias, a member of
 	// bare function type) — both rejected/miscompiled by c2mir.
-	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) {
+	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) { // allowed-exception: renders the FPTR node
 		node_t mspec;
 		node_t mdl = list();
 		// The alias-spec form applies only when the typedef names the
@@ -20720,7 +20720,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// DataDefFPTR return as a bare `long`. Kept in lock-step with func_def.
 	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
-				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL; // allowed-exception: renders the return's FPTR node
 
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
@@ -26060,8 +26060,7 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 		    || u->is_complex() || u->is_member_pointer())
 			return error_node("go: only integer, floating and "
 				"pointer arguments spawn in this slice", tb);
-		if (u->is_pointer() || u->is_cstr()
-		    || dynamic_cast<DataDefFPTR *>(u))
+		if (u->is_pointer() || u->is_cstr() || u->as_fptr_dd())
 			slots.push_back(SK_PTR);
 		else if (u->is_real()) {
 			if (u->size > 8)
@@ -28753,7 +28752,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// the function declarator (built by fnptr_decl_pieces at the decl_list below).
 	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
-				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL; // allowed-exception: renders the return's FPTR node
 
 	// Retbuf-returning fn: C return type is `void`.
 	int ret_decl_stars = ret_star_depth;
@@ -29680,7 +29679,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		// K_INT and the shim passed a raw `long` to the fn-ptr parameter
 		// ("using integer without cast for pointer type parameter"). Treat it
 		// like any other pointer param: unmarshallable -> no shim.
-		if (pt->is_pointer() || pt->is_simd() || dynamic_cast<DataDefFPTR *>(pt))
+		if (pt->is_pointer() || pt->is_simd() || pt->as_fptr_dd())
 			return false;
 		if (pt->type() == DataType::dtBOOL)   { out.kind = ShimSlot::K_BOOL; return true; }
 		if (pt->is_integer())                 { out.kind = ShimSlot::K_INT;  return true; }
@@ -29740,7 +29739,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	} else if (rt->is_cstr()) {
 		rkind = R_CSTR;
 	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()
-		   || dynamic_cast<DataDefFPTR *>(rt)) {
+		   || rt->as_fptr_dd()) {
 		// trivial-class / pointer / SIMD returns: not marshalled yet. A
 		// function-pointer return is the same case as a fn-ptr parameter
 		// (classify_param): DataDefFPTR reports dtINT64/is_integer() and not

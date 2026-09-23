@@ -123,10 +123,15 @@ yet measured.
   `g(3) + (*tab)(3)` were refused. A `(` directly after a closed operand of
   function-pointer type is a call (adjacency, as every call arm asks it;
   the type through `as_fptr_dd`). Reducer `tests/testcallthroughexpr`.
-- `function_vs_function_pointer_predicate`: two sites still spell "is FPTR" as
-  `is_function() && is_numeric()` (cir_builder ~382, parser ~30550 — correct
-  in meaning), and `dynamic_cast<DataDefFPTR *>` is common; `as_fptr_dd()`
-  is the const-safe owner (candidate: consolidate + gate).
+- ~~`function_vs_function_pointer_predicate`~~ — consolidated 2026-09-23. A
+  `DataDefCONST` forwards `is_function()` and `is_numeric()`, so
+  `is_function() && is_numeric()` is true for a const function pointer, and
+  the parser site that followed it with `static_cast<DataDefFPTR *>` misread
+  the wrapper; `dynamic_cast<DataDefFPTR *>` is NULL for one (the call arms
+  refused `(*pc)(3)` through a `const fn_t *` — fixed with the call arm,
+  `faecc887e`). The ten semantic sites ask `as_fptr_dd()` / `as_funcdef_dd()`;
+  the thirteen that render or walk the FPTR node itself say so with
+  `// allowed-exception:`. Gate: `check-one-fptr-predicate.sh`.
 - ~~`deref_kind_enumeration`~~ — measured 2026-09-23: the subscript-base arm
   named TokenDeref and TokenDerefExpr but not TokenDerefStep (ttBase), so
   `(*rp++)[1]` on a pointer to a row fell to the lambda introducer; it asks

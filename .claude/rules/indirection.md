@@ -15,7 +15,8 @@
   the unparenthesized qualified-id, [expr.unary.op]/4). Result type:
   `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
 - Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
-  never bare `is_function()` (true for both) or `is_function() && is_numeric()`.
+  never `is_function() && is_numeric()` or an unmarked `dynamic_cast<DataDefFPTR *>`
+  (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either".
 - `*var`: `deref_type_for_variable`. An ARRAY operand's element (its ROW, when
   multi-dimensional): `Program::array_operand_element_type` — never the operand's
   `datadef()` (flattened); decay (`array_decay_pointer`), `*a`, `a->m` ask it.
