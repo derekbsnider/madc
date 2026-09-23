@@ -56,7 +56,8 @@
 
 ## Declarators and symbols
 - Declarators: `parse_declarator` / `member_declarator`; a `*`+cv run:
-  `consume_declarator_stars`; `[dims]`: `parse_array_dimensions` +
+  `consume_declarator_stars` (a caller's consumed leading `const` goes in as
+  `leading_const`, never dropped); `[dims]`: `parse_array_dimensions` +
   `nest_carray_dims` (gated).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A spelling's decorations: `ItaniumMangler::parse_type`; P/R/O/K: `encode_type`. A

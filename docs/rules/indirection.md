@@ -330,6 +330,24 @@ yet measured.
   already told `ddINT8` from `ddCHAR`. C++ overloading was already right: it
   ranks by that identity. Reducers `tests/testsignedcharc`, the emitted-C
   spelling `tests/testsignedcharemit`, and the C++ twin `tests/testsignedchar`.
+- ~~`c_const_pointee_typedef_cast`~~ — fixed 2026-09-23, silent, found beside
+  the signed-char family. A declaration hands its leading `const` to
+  `parse_declarator` (`leading_const`), and `consume_declarator_stars` wraps
+  the pointee (`const char *p` is not `char *`). The typedef reader and the C
+  cast arm consumed their leading `const` and passed nothing, so `typedef
+  const char *ccp`, `typedef const int CI; CI *`, `typedef const struct T
+  *P`, `(const char *)p` and `(ccp)p` all named `char *` / `int *` / `struct
+  T *`: `_Generic` chose the unqualified association, and
+  `__builtin_types_compatible_p(ccp, const char *)` was 0. The typedef's
+  prefix `const` now wraps its base (`getConstType`, the qualified type IS
+  the alias; `typedef int const CI` through the reader's `base_const`), the
+  struct/union tag forms receive it as `typedef_prefix_const` (the
+  `typedef_prefix_align` one-producer model), and the cast passes it as
+  `leading_const`, which binds only a pointee (a cast's result is
+  unqualified, C11 6.5.4). C mode only: C++ const identity is the
+  const-qualified-types campaign (`cxx_const_overload_identity` measured it
+  there, silent too). Reducer `tests/testconsttypedefcastc`. Residues: `typedef
+  const enum`, a trailing `int const` shared by a declarator list's tail.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs

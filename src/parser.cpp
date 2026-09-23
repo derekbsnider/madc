@@ -41805,8 +41805,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			DataDef *array_elem_dd = NULL;
 			int64_t array_explicit_count = 0;
 			{
+			    // The leading `const` this arm consumed (`(const char *)p`)
+			    // qualifies the POINTEE, never the cast's result (C11 6.5.4:
+			    // a cast yields the unqualified type) — leading_const binds
+			    // it to the first `*` exactly as a declaration's does.
 			    DeclaratorResult cast_decl;
-			    cast_dd = parse_declarator(cast_dd, DeclaratorMode::TypeIdOperand, cast_decl);
+			    cast_dd = parse_declarator(cast_dd, DeclaratorMode::TypeIdOperand, cast_decl,
+						       NULL, cast_qualifier
+							     && cast_qualifier->id() == TokenID::tkCONST);
 			    DataDefCArray *bare_array = (!cast_decl.saw_parens && !cast_decl.array_dims.empty())
 						      ? cast_dd->as_carray_dd() : NULL;
 			    if ( bare_array )
@@ -44792,6 +44798,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // later sibling parses must never inherit the outer typedef's alignment.
     size_t explicit_align = pgm.typedef_prefix_align;
     pgm.typedef_prefix_align = 0;
+    // `typedef const struct T *P;` (C): the alias derives from the
+    // const-qualified aggregate. Read + clear here, like the alignment.
+    bool typedef_const = pgm.typedef_prefix_const;
+    pgm.typedef_prefix_const = false;
     bool have_scalar_storage_order = false;
     bool reverse_scalar_storage = false;
     auto consume_attribute = [&]()
@@ -45031,7 +45041,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// `typedef struct S * (*fty)();` included; its `( * name )( params )`
 		// tail was a private copy of the reader's nested group).
 		Program::DeclaratorResult tag_decl;
-		DataDef *alias_dd = pgm.parse_declarator(tag_dd, Program::DeclaratorMode::Typedef, tag_decl);
+		DataDef *alias_dd = pgm.parse_declarator(
+		    typedef_const ? pgm.getConstType(tag_dd) : tag_dd,
+		    Program::DeclaratorMode::Typedef, tag_decl);
 		std::string alias_name = tag_decl.name;
 		tn = tag_decl.name_tok;
 		bool redecl = false;
@@ -46125,7 +46137,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // <stddef.h>: `typedef struct {...} max_align_t;`) — the reader's
 	    // Typedef-mode declarator-id rule (typedef_alias_spelling).
 	    Program::DeclaratorResult body_decl;
-	    DataDef *alias_dd = pgm.parse_declarator(dds, Program::DeclaratorMode::Typedef, body_decl);
+	    DataDef *alias_dd = pgm.parse_declarator(
+		typedef_const ? static_cast<DataDef *>(pgm.getConstType(dds)) : dds,
+		Program::DeclaratorMode::Typedef, body_decl);
 	    tn = body_decl.name_tok;
 	    TokenBase *alias = tn;
 	    const std::string alias_spelling = body_decl.name;
@@ -52184,6 +52198,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // post-type position below; prefix-position mode()/aligned-on-scalar
     // stay unapplied like the post-type position (no known consumer).
     size_t prefix_align = 0, prefix_vector = 0;
+    // A prefix `const` qualifies the aliased type (C11 6.7.8: `typedef const
+    // char *ccp;` names pointer-to-const-char, `typedef const int CI;` names
+    // const int). C models it on the BASE (getConstType), the pointee-const
+    // producer consume_declarator_stars derives from; C++ const identity is
+    // the const-qualified-types campaign's (docs/plans/2026-06-19-...).
+    bool prefix_const = false;
     while ( tn && (tn->id() == TokenID::tkCONST
 		|| tn->id() == TokenID::tkRESTRICT
 		|| tn->id() == TokenID::tkVOLATILE
@@ -52197,7 +52217,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.pushToken(after);
 	}
 	else
+	{
+	    if ( tn->id() == TokenID::tkCONST )
+		prefix_const = pgm.is_c_mode();
 	    pgm.nextToken();
+	}
 	tn = pgm.peekToken();
     }
 
@@ -52208,9 +52232,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	pgm.parsing_typedef_decl = true;
 	pgm.typedef_prefix_align = prefix_align;
+	pgm.typedef_prefix_const = prefix_const;
 	TokenBase *result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
 	pgm.parsing_typedef_decl = false;
 	pgm.typedef_prefix_align = 0;	// TokenSTRUCT consumed it; the class path never reads it
+	pgm.typedef_prefix_const = false;
 	return result;
     }
 
@@ -52459,6 +52485,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // The UNDECORATED base type: each declarator in a C typedef list
     // (`typedef signed char INT8,*PINT8;` — mingw basetsd.h/winnt.h) restarts
     // from here and takes its own pointer/array shape.
+    // (An array base's const qualifies its ELEMENTS, 6.7.3p9, and a function
+    // type has no qualified form — neither is wrapped here.)
+    if ( prefix_const && base_dd && !base_dd->as_carray_dd() && !base_dd->is_function() )
+	base_dd = pgm.getConstType(base_dd);
     DataDef *list_base_dd = base_dd;
 
     // GNU attributes at the specifier position (`typedef int
@@ -52527,6 +52557,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	alias_dd = pgm.parse_declarator(base_dd, Program::DeclaratorMode::Typedef, td);
 	alias = td.name;
 	alias_tok = td.name_tok;
+	// `typedef int const CI;` — the const after the specifier, with no `*`
+	// for consume_declarator_stars to bind it to, qualifies the alias.
+	if ( td.base_const && td.ptr_depth == 0 && pgm.is_c_mode() && alias_dd
+	  && !alias_dd->is_function() && !alias_dd->as_carray_dd() )
+	    alias_dd = pgm.getConstType(alias_dd);
     }
 
     if ( is_attribute_identifier_token(pgm.peekToken()) )

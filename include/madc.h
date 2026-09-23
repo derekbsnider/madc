@@ -5313,6 +5313,7 @@ public:
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
+    bool typedef_prefix_const = false;	// C: a `const` between `typedef` and the aggregate keyword (`typedef const struct T *P;`) — the alias's base is the const-qualified aggregate; TokenSTRUCT::parse consumes it ONCE (read + clear), the typedef_prefix_align model
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
     // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser

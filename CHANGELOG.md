@@ -84,6 +84,10 @@ answers.
   through the target's plain char, so on aarch64-linux `int x = (signed
   char)200;` folded to 200. The aarch64 qemu lane now runs every
   `tests/cross/aarch64_*.c` fixture and carries a char-sign fixture.
+- **C: a leading `const` in a typedef or a cast qualifies the pointee.**
+  `typedef const char *ccp`, `typedef const int CI`, `typedef const struct T
+  *P` and `(const char *)p` had all named the unqualified type, so `_Generic`
+  chose `char *` and `__builtin_types_compatible_p(ccp, const char *)` was 0.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -96,7 +100,7 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
 `testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
 `testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
-`testsignedcharemit`, `testsignedchar`.
+`testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`.
 
 ### Unary `*` and `&` read their operand through one owner
 
