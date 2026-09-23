@@ -7,9 +7,9 @@ wine64	yes	f16c4b30609d	2026-09-22	1500/0/0TO/69skip — seam battery at b3d4460
 headerless-win	yes	f16c4b30609d	2026-09-22	1499/0/0TO/70skip — FIRST RUN AS A GATED LANE (promoted no->yes at 9290b5e73). Seam battery at b3d4460d0 ran 1497/2, the same two LP64-only reducers; re-run 2/2 with the win64 mask verified (7 include roots) (madc code identical to this commit; f16c4b306 is TESTS-ONLY (testuintfloatconv + testvoidptrptrarith made data-model portable), re-run per lane 2/2 — owner 2026-09-22: a tests-only change re-runs the changed tests, never the battery)
 macos	yes	f16c4b30609d	2026-09-22	BUILD lane: release-macos rc=0 on BOTH arches (verify_macho_release OK x2, 836 units each, C linkage restored) + package-macos rc=0 + pull tarballs rc=0 at b3d4460d0 (madc code identical to this commit; f16c4b306 is TESTS-ONLY (testuintfloatconv + testvoidptrptrarith made data-model portable), re-run per lane 2/2 — owner 2026-09-22: a tests-only change re-runs the changed tests, never the battery; a tests-only delta does not reach a build lane)
 aarch64-ld	yes	79e3b55465b2	2026-09-23	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK (oracle binary128, 16 lines); GREEN aot + jit on every tests/cross/aarch64_*.c fixture (aarch64_char_sign, aarch64_ldouble, aarch64_ldouble_const, aarch64_volatile) — 0 dotted mir.* imports, links, byte-identical to gcc
-c-testsuite	commit	c700d97d4640	2026-09-23	220 passed, 0 failed (0 outside baseline)
-c-torture	commit	c700d97d4640	2026-09-23	1613 passed, 11 failing, 0 outside baseline
-c2mir-tests	commit	c700d97d4640	2026-09-23	307 passed, 55 failed (0 outside baseline)
-gui	commit	c700d97d4640	2026-09-23	19 passed x3 (JIT/EXE/OBJ)
-gxx-c++11	no	c700d97d4640	2026-09-23	1476 passed, 474 failing, 0 outside baseline
-index-c	yes	c700d97d4640	2026-09-23	50/50 tasks OK [-O2]
+c-testsuite	commit	8a17c76d3f1c	2026-09-23	220 passed, 0 failed (0 outside baseline)
+c-torture	commit	8a17c76d3f1c	2026-09-23	1613 passed, 11 failing, 0 outside baseline
+c2mir-tests	commit	8a17c76d3f1c	2026-09-23	307 passed, 55 failed (0 outside baseline)
+gui	commit	8a17c76d3f1c	2026-09-23	19 passed x3 (JIT/EXE/OBJ)
+gxx-c++11	no	8a17c76d3f1c	2026-09-23	1476 passed, 474 failing, 0 outside baseline
+index-c	yes	8a17c76d3f1c	2026-09-23	50/50 tasks OK [-O2]
