@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Arrays, calls, casts and `sizeof` each read their operand through one owner
+
+The indirection families left open by the `*`/`&` consolidation, each measured
+against gcc and clang before it was touched. Four of them held silent wrong
+answers.
+
+- **The end of an expression is one function** (`Program::finish_expression`).
+  An initializer, call argument or condition ended through a second copy that
+  skipped the "two operands, no operator" check: `int r = (x)(4)` with `x` an
+  `int` compiled to `int r = x = 4` and exited 0.
+- **An array operand's element has one owner** (`array_operand_type` /
+  `array_operand_element_type`). madc stores arrays flattened, and four sites
+  re-derived rows from the scalar. `sizeof(*table)` on an array of function
+  pointers was 16 (gcc 8); `sizeof(*pa[1])`, `sizeof(*(m + 1))` and
+  `sizeof(*c3[1])` measured the scalar; `(*table)(5)`, `(*grid[1])(5)`,
+  `*s.g[1]`, `**pa[1]`, `q.in->x` and `ps[1]->x` were refused; `*arr` on a
+  class array called `operator*`.
+- **`sizeof` of an expression is measured once.** `sizeof s.a` on a member
+  array was 4 (gcc 12), `sizeof s.n` 1 (gcc 10) and `sizeof s.n[1]` 1 (gcc 5),
+  all silent. The parenthesized form had its own patched copy.
+- **A call through any function-pointer expression**: adjacency decides, not
+  a list of callee kinds or a pending operator. `g(3) + (*tab)(3)`,
+  `(x, f)(x)`, `(f = twice)(x)` and calls through a `const fn_t *` now work.
+- **The operand of a cast is a cast-expression**: nine shape arms deleted.
+  `(long)"abc"[1]` now works, and gxx-c++11 gains `initlist-array20`.
+- **`(*rp++)[1]`** (a subscript of a stepped dereference) now parses.
+- **"Is this a function pointer" has one owner** (`as_fptr_dd()`, which sees
+  through `const`). A site that `static_cast` a const wrapper is gone, and
+  the structural sites are marked.
+
+Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
+operator drain, the cast operand); new `check-one-fptr-predicate.sh`.
+Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
+`testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
+`testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
+`testsizeofoperand`.
+
 ### Unary `*` and `&` read their operand through one owner
 
 A handed-over parse error, `**c.pp()`, turned out to be one symptom of a
