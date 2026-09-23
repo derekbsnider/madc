@@ -40915,7 +40915,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
 		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
 		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
-		 TokenBase *&result, bool cast_operand)
+		 bool cast_operand)
 {
     TokenOperator *to = NULL;
     Variable *var = NULL;
@@ -41482,7 +41482,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(close ? close : tb) << "Expected ')' after statement expression" << flush;
 			exStack.push(stmt_expr);
 			if ( stop_on_closing_paren && initial_brackets == 0 )
-			    { result = stmt_expr; return ExprStep::Return; }
+			    return ExprStep::Return;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // check for cast expression: (TYPE [*...]) expr
@@ -42117,7 +42117,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // QUICKMATCH macro expansion regressed when this
 			    // returned early there.
 			    if ( stop_on_closing_paren && opStack.empty() && initial_brackets == 0 )
-				{ result = exStack.top(); return ExprStep::Return; }
+				return ExprStep::Return;
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			// not a cast after all — fall through to grouping
@@ -42687,15 +42687,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    || (ternary_branch && next->id() == TokenID::tkTerC));
 			if ( ends_conditional )
 			{
-			    // Flush any remaining operators before returning so
-			    // expressions like `c = -(2)` complete the pending
-			    // unary `-` and assignment before the conditional-end
-			    // short-circuit. Otherwise exStack may hold only the
-			    // inner paren's value, losing the outer operator chain.
-			    while ( !opStack.empty() )
-				popOperator(opStack, exStack);
+			    // The conditional-end short-circuit is an END of the
+			    // expression: finish_expression binds the pending
+			    // operators (`c = -(2)` completes the unary `-` and the
+			    // assignment) and refuses leftover juxtaposed operands.
 			    DBG(std::cout << "Program::parseExpression() conditional end exStack:" << exStack.size() << std::endl);
-			    result = exStack.empty() ? NULL : exStack.top();
 			    return ExprStep::Return;
 			}
 		    }
@@ -43075,6 +43071,33 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
+// The END of an expression — the ONE owner, every exit of parseExpression
+// finishes here: each pending operator binds, then exactly ONE operand must
+// remain. More than one are operands juxtaposed with no operator between them,
+// which gcc/clang reject; returning the top would SILENTLY drop the rest
+// (`var m = { "a" 1 }` built `{ 1 }`; `int r = (x)(4)` built `int r = x = 4`
+// — the pending `=` bound the two juxtaposed operands and `r` was dropped,
+// exit 0). Adjacent string literals never reach here (lexer-level concat:
+// push_token_with_literal_concat).
+TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
+				      std::stack<TokenBase *> &exStack)
+{
+    if ( !opStack.empty() )
+	DBG(cout << "Emptying operator stack" << endl);
+
+    while ( !opStack.empty() )
+	popOperator(opStack, exStack);
+
+    if ( exStack.size() > 1 )
+	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
+	    << " operands with no operator between them" << flush;
+
+    DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
+    DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
+
+    return exStack.empty() ? NULL : exStack.top();
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma, bool cast_operand,
@@ -43135,11 +43158,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    case TokenType::ttMultiOp:
 	    case TokenType::ttOperator:
 		{
-		    TokenBase *arm_result = NULL;
 		    ExprStep step = parseExpr_operatorArm(tb, exStack, opStack, brackets, code,
 				conditional, ternary_branch, stop_on_closing_paren, initial_brackets, push_back_comma,
-				arm_result, cast_operand);
-		    if ( step == ExprStep::Return ) return arm_result;
+				cast_operand);
+		    if ( step == ExprStep::Return ) return finish_expression(opStack, exStack);
 		    if ( step == ExprStep::Continue ) continue;
 		    if ( step == ExprStep::Done ) done = true;
 		}
@@ -43361,27 +43383,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	tb = nextToken();
     }
 
-    if ( !opStack.empty() )
-	DBG(cout << "Emptying operator stack" << endl);
-
-    while ( !opStack.empty() )
-	popOperator(opStack, exStack);
-
-    // Operands left with NO operator between them = a malformed expression
-    // that would otherwise resolve to exStack.top() with the rest SILENTLY
-    // dropped (`var m = { "a" 1 }` built `{ 1 }` — exit 0, wrong value).
-    // gcc/clang error on operand juxtaposition; adjacent string literals
-    // never reach here (lexer-level concat: push_token_with_literal_concat).
-    if ( exStack.size() > 1 )
-	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
-	    << " operands with no operator between them" << flush;
-
-    DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
-    DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
-
     DBG(std::cout << "Program::parseExpression() end" << std::endl);
 
-    return exStack.empty() ? NULL : exStack.top();
+    return finish_expression(opStack, exStack);
 }
 
 // parse a structure definition

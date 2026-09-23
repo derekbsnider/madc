@@ -2959,6 +2959,10 @@ protected:
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool macro_name_defined(const std::string &name);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
+    // The end of an expression (every exit of parseExpression): bind the
+    // pending operators, refuse juxtaposed operands, return the one left.
+    TokenBase *finish_expression(std::stack<TokenBase *> &opStack,
+				 std::stack<TokenBase *> &exStack);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
@@ -6858,7 +6862,7 @@ public:
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
 				   int initial_brackets, bool push_back_comma,
-				   TokenBase *&result, bool cast_operand=false);
+				   bool cast_operand=false);
     // Old-style (K&R) parameter declarations: detection + parsing of the
     // `int f(a, b) int a; char *b; { … }` form (C only). The detectors peek
     // the stream; parse_old_style_parameter_declaration fills param_types.

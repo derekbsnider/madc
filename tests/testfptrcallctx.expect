@@ -1,0 +1,7 @@
+init: 8 8 13
+arg: 6 6 2
+cond: ok
+index: 3
+ternary: 12
+call: 14
+assign: 3
