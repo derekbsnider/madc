@@ -2009,7 +2009,7 @@ bool CirBuilder::dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			      int depth, bool nested, std::vector<node_t> &out,
 			      TokenBase *origin, std::string &why)
 {
-	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd->unqualified());
+	DataDefPTR *pdd = pointer_dd_of(dd->unqualified());
 	DataDef *pointee = pdd ? pdd->base_type : NULL;
 	// Refused by name, never guessed at. A void pointer has no pointee to
 	// render; a function pointer and a pointer-to-member are addresses rather

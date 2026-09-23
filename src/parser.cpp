@@ -2575,7 +2575,7 @@ static DataDef *deref_type_for_variable(Variable *var)
 
     if ( var->type->is_pointer() )
     {
-	DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(var->type);
+	DataDefPTR *dptr = pointer_dd_of(var->type);
 	return (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
     }
 
@@ -2900,7 +2900,7 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 	std::string fps = fptr_structural_spelling(dd);
 	if ( !fps.empty() )
 	    return fps;
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *ptr = pointer_dd_of(dd);
 	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
 	std::string s = base->canonical_cpp_spelling().empty()
 		      ? base->name : base->canonical_cpp_spelling();
@@ -3035,7 +3035,7 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	    {
 		bool refp = fd->is_ref_param(i);
 		bool ptrp = !refp
-		    && dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		    && pointer_dd_of(fd->parameters[i]) != NULL;
 		spelling = std_string_type()
 			 + (refp ? "&" : ptrp ? "*" : "");
 	    }
@@ -3227,7 +3227,7 @@ std::string Program::host_flavor_fn_symbol(const std::string &ns_name,
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	{
 	    DataDef *p = fd->parameters[i];
-	    if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+	    if ( DataDefPTR *pp = pointer_dd_of(p) )
 		p = pp->base_type ? pp->base_type : p;
 	    mask.push_back(p && p->marshals_value_text() ? 1 : 0);
 	}
@@ -3251,7 +3251,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
 	return std::string();
     DataDefPTR *self = fd->parameters.empty()
-	? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+	? NULL : pointer_dd_of(fd->parameters[0]);
     DataDefCLASS *cls = self
 	? dynamic_cast<DataDefCLASS *>(self->base_type) : NULL;
     if ( !cls )
@@ -3264,7 +3264,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
     {
 	DataDef *p = fd->parameters[i];
-	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+	if ( DataDefPTR *pp = pointer_dd_of(p) )
 	    p = pp->base_type ? pp->base_type : p;
 	mask.push_back(p && p->marshals_value_text() ? 1 : 0);
     }
@@ -3278,7 +3278,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
 	{
 	    bool refp = fd->is_ref_param(i);
 	    bool ptrp = !refp
-		&& dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		&& pointer_dd_of(fd->parameters[i]) != NULL;
 	    spelling = std_string_type() + (refp ? "&" : ptrp ? "*" : "");
 	}
 	psp.push_back(spelling);
@@ -3297,7 +3297,7 @@ static DataDef *unwrap_subscript_element_type(DataDef *base_type)
     base_type = TokenSubscript::referent_type(base_type);
     if ( !base_type )
 	return &ddINT64;
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type) )
+    if ( DataDefPTR *pdd = pointer_dd_of(base_type) )
 	return pdd->base_type ? pdd->base_type : &ddINT64;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(base_type) )
 	return add->element_type ? add->element_type : &ddINT64;
@@ -3371,14 +3371,14 @@ Program::CarrierIndex Program::madc_array_index_kind(TokenBase *idx)
 	return CarrierIndex::Index;
     // A reference denotes its referent (`value &kn` keys like kn does).
     if ( dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    if ( rp->base_type )
 		dd = rp->base_type;
     if ( dd->is_madc_array() )
 	return CarrierIndex::Runtime;
     if ( dd->is_pointer() )
     {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	return p && p->base_type
 	    && p->base_type->rawtype() == DataType::dtCHAR
 	    ? CarrierIndex::Key : CarrierIndex::Index;
@@ -3793,7 +3793,7 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
 		continue;
 	    if ( user_params == 1 && fd->is_ref_param(1) )
 	    {
-		DataDefPTR *pp = dynamic_cast<DataDefPTR *>(fd->parameters[1]);
+		DataDefPTR *pp = pointer_dd_of(fd->parameters[1]);
 		if ( pp && pp->base_type == base )
 		    continue;
 	    }
@@ -5268,7 +5268,7 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     // reference collapsing ([dcl.ref]p6) then yields the single reference. The
     // referent keeps its own cv (`const int` -> `const int&`).
     if ( adt->definition.is_reference() )
-	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(&adt->definition) )
+	if ( DataDefPTR *r = pointer_dd_of(&adt->definition) )
 	    if ( r->base_type )
 	    {
 		const std::string &rs = r->base_type->canonical_cpp_spelling();
@@ -5284,7 +5284,7 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     // iterator arithmetic. Fires only when the base's canonical differs from
     // its bare name, keeping every other pointer spelling byte-identical.
     if ( !adt->definition.is_reference() && adt->definition.is_pointer() )
-	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(&adt->definition) )
+	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(&adt->definition) ) // allowed-exception: structural (exact-class dispatch)
 	    if ( p->base_type )
 	    {
 		const std::string &bs = p->base_type->canonical_cpp_spelling();
@@ -5445,7 +5445,7 @@ static std::string template_binding_identity_spelling(DataDef *dd)
     if ( !dd )
 	return std::string();
     if ( dd->is_reference() )
-	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *r = pointer_dd_of(dd) )
 	    if ( r->base_type )
 		return template_binding_identity_spelling(r->base_type) + "&";
     DataDef *canon = canonical_template_binding_dd(dd);
@@ -7239,7 +7239,7 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
 	return true;
     if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
 	return class_has_unresolved_dependent_surface(cls);
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return datadef_has_unresolved_dependent_surface(ptr->base_type);
     if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
 	return datadef_has_unresolved_dependent_surface(arr->element_type);
@@ -7257,7 +7257,7 @@ static std::string dependent_surface_reason(DataDef *dd,
 	return std::string();
     if ( dd->is_template_param() )
 	return dd->name + " is a template parameter";
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return dependent_surface_reason(ptr->base_type, seen);
     if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
 	return dependent_surface_reason(arr->element_type, seen);
@@ -7426,7 +7426,7 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
 {
     if ( !dd )
 	return NULL;
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return ptr->base_type ? ptr->base_type : &ddINT64;
     if ( !datadef_has_unresolved_dependent_surface(dd) )
 	return NULL;
@@ -7502,10 +7502,10 @@ static std::string basic_class_datadef_spelling(DataDef *dd)
     if ( DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(dd) )
 	return cv_qualified_spelling(basic_class_datadef_spelling(qualified->base_type),
 				     qualified->quals,
-				     dynamic_cast<DataDefPTR *>(qualified->base_type) != NULL);
+				     pointer_dd_of(qualified->base_type) != NULL);
     if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
 	return basic_class_datadef_spelling(ref->base_type) + "&";
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return basic_class_datadef_spelling(ptr->base_type) + "*";
     if ( DataDefCArray *array = dynamic_cast<DataDefCArray *>(dd) )
 	return basic_class_datadef_spelling(array->element_type) + "["
@@ -8284,7 +8284,7 @@ class BasicClassPatternResolver
 		// chain minted placeholder args (task #72).
 		DataDef *core = memo_arguments[i];
 		int stars = 0;
-		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) )
+		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) ) // allowed-exception: structural (exact-class dispatch)
 		{
 		    if ( !p->base_type || p->is_reference() )
 			break;
@@ -14398,7 +14398,7 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 	std::string elem = canonical_builtin_simple_type_name(complex_dd->element_type);
 	return elem.empty() ? "" : "complex(" + elem + ")";
     }
-    if ( DataDefPTR *ptr_dd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr_dd = pointer_dd_of(dd) )
     {
 	std::string base = canonical_builtin_simple_type_name(ptr_dd->base_type);
 	return base.empty() ? "" : "ptr(" + base + ")";
@@ -16319,7 +16319,7 @@ static int trait_class_constructible(DataDefCLASS *c,
 	{
 	    DataDef *pdd = fd->parameters[i + 1];
 	    DataDef *pref = pdd;
-	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(pref) )
+	    if ( DataDefPTR *pr = pointer_dd_of(pref) )
 		if ( pr->is_reference() && pr->base_type )
 		    pref = pr->base_type;
 	    if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(pref) )
@@ -16380,7 +16380,7 @@ static int trait_class_constructible(DataDefCLASS *c,
 	{
 	    bool p_const = 1 < fd->const_params.size() && fd->const_params[1];
 	    DataDef *p1 = fd->parameters[1];
-	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p1) )
+	    if ( DataDefPTR *pr = pointer_dd_of(p1) )
 		if ( pr->is_reference() && pr->base_type )
 		{
 		    if ( pr->base_type->is_const() )
@@ -17060,7 +17060,7 @@ static int64_t token_pointer_element_size(TokenBase *tb)
 	    return tm->var.type->size ? (int64_t)tm->var.type->size : 1;
     }
     DataDef *dd = tb->datadef();
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *pdd = pointer_dd_of(dd) )
 	return (pdd->base_type && pdd->base_type->size) ? (int64_t)pdd->base_type->size : 1;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
 	return (add->element_type && add->element_type->size) ? (int64_t)add->element_type->size : 1;
@@ -17390,7 +17390,7 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 					     bool paren, bool deref,
 					     size_t after_ix)
 {
-    DataDefPTR *vp = dynamic_cast<DataDefPTR *>(v->type);
+    DataDefPTR *vp = pointer_dd_of(v->type);
     DataDefCArray *vc = vp ? dynamic_cast<DataDefCArray *>(vp->base_type)
 			   : NULL;
     if ( !vc || !vc->chain_has_runtime_size() )
@@ -17569,7 +17569,7 @@ TokenBase *Program::try_parse_vla_variable_sizeof(TokenBase *op_tb,
     if ( !total )
 	return NULL;
     DataDef *elem = v->type;
-    if ( DataDefPTR *wp = dynamic_cast<DataDefPTR *>(elem) )
+    if ( DataDefPTR *wp = pointer_dd_of(elem) )
 	elem = wp->base_type;
     while ( DataDefCArray *c = dynamic_cast<DataDefCArray *>(elem) )
     {
@@ -17881,7 +17881,7 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
     DataDef *current = base_dd;
     while ( true )
     {
-	if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(current) )
+	if ( DataDefPTR *pdd = pointer_dd_of(current) )
 	    current = pdd->base_type;
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(current);
 	if ( !sdd )
@@ -19959,7 +19959,7 @@ static const DataDefSTRUCT *param_concrete_class_for_proof(DataDef *pt, bool ref
     if ( !pt )
 	return NULL;
     if ( refp )
-	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pt) )
+	if ( DataDefPTR *pp = pointer_dd_of(pt) )
 	    pt = pp->base_type;
     return dynamic_cast<const DataDefSTRUCT *>(pt);
 }
@@ -20303,8 +20303,8 @@ bool DataDef::same_representation(DataDef &d)
 	// Pointers: recurse on the pointee when both sides carry one. (The
 	// builtin dtXXXptr tags encode a simple pointee, and DataDefPTR sets the
 	// same tag, so the tag compare below also covers pointer-to-simple.)
-	DataDefPTR *ap = dynamic_cast<DataDefPTR *>(a);
-	DataDefPTR *bp = dynamic_cast<DataDefPTR *>(b);
+	DataDefPTR *ap = pointer_dd_of(a);
+	DataDefPTR *bp = pointer_dd_of(b);
 	if ( ap && bp )
 		return ap->base_type->same_representation(*bp->base_type);
 	// Both are btSimple and NOT both DataDefPTR (a pointer pair was handled
@@ -21497,8 +21497,8 @@ static bool proven_distinct_types(const DataDef *a, const DataDef *b,
     b = b->unqualified();
     if ( !a || !b || a == b )
 	return false;
-    const DataDefPTR *pa = dynamic_cast<const DataDefPTR *>(a);
-    const DataDefPTR *pb = dynamic_cast<const DataDefPTR *>(b);
+    const DataDefPTR *pa = pointer_dd_of(a);
+    const DataDefPTR *pb = pointer_dd_of(b);
     if ( pa && pb )
 	return proven_distinct_types(pa->base_type, pb->base_type, depth + 1);
     if ( a->is_struct() && b->is_struct() )
@@ -21526,11 +21526,11 @@ static bool same_parameter_types(FuncDef *a, FuncDef *b, size_t n)
 	const DataDef *pa = a->parameters[i];
 	const DataDef *pb = b->parameters[i];
 	if ( a->is_ref_param(i) )
-	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pa) )
+	    if ( const DataDefPTR *r = pointer_dd_of(pa) )
 		if ( r->base_type )
 		    pa = r->base_type;
 	if ( b->is_ref_param(i) )
-	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pb) )
+	    if ( const DataDefPTR *r = pointer_dd_of(pb) )
 		if ( r->base_type )
 		    pb = r->base_type;
 	if ( proven_distinct_types(pa, pb, 0) )
@@ -21847,7 +21847,7 @@ int Program::implicit_object_constness(Variable &recv)
     DataDef *dd = recv.type;
     // Reference transparency: a reference receiver denotes its referent.
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    dd = rp->base_type;
     if ( dd && dd->is_const() )
 	return 1;
@@ -22941,7 +22941,7 @@ void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) 
 	if ( DataDefREF *rd = dynamic_cast<DataDefREF *>(behind) )
 	    behind = rd->base_type;
 	else if ( fd->is_ref_param(1) )
-	    if ( DataDefPTR *pd = dynamic_cast<DataDefPTR *>(behind) )
+	    if ( DataDefPTR *pd = pointer_dd_of(behind) )
 		behind = pd->base_type;
 	if ( behind ) behind = behind->unqualified();
 	if ( behind && behind->is_std_initializer_list() )
@@ -26640,7 +26640,7 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
 	return false;
     if ( DataDefQUAL *cdd = dynamic_cast<DataDefQUAL *>(dd) )
 	return forest_adoptable_c_type(cdd->base_type, depth + 1);
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) ) // allowed-exception: structural (exact-class dispatch)
 	return pdd->base_type == NULL
 	    || forest_adoptable_c_type(pdd->base_type, depth + 1);
     if ( dynamic_cast<DataDefFPTR *>(dd) ) // allowed-exception: structural walk (the CONST arm above recurses)
@@ -30350,7 +30350,7 @@ static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
     // operator--'s `_Iter&` return, which models as a DataDefPTR and
     // otherwise fails the class cast below.
     if ( recv_dd && recv_dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(recv_dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(recv_dd) )
 	    recv_dd = rp->base_type;
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(recv_dd);
     if ( !cls )
@@ -31386,7 +31386,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			    if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			      && obj_type && obj_type->is_pointer() )
 			    {
-				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(obj_type);
+				DataDefPTR *rp = pointer_dd_of(obj_type);
 				if ( rp && rp->base_type
 				  && (rp->base_type->is_struct()
 				   || rp->base_type->is_object()) )
@@ -31420,7 +31420,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    Throw(mtb) << "expression before '->' must be a pointer" << flush;
 		if ( !fixed_array_arrow )
 		{
-		    DataDefPTR *pt = dynamic_cast<DataDefPTR *>(obj_type);
+		    DataDefPTR *pt = pointer_dd_of(obj_type);
 		    if ( !pt || !pt->base_type )
 			Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
 		    // NOT peeled here. The pointee of `const S *` is `const S`, but the
@@ -34729,7 +34729,7 @@ class ClassPatternNormalizer
 	    Program::ClassTypePatternId operand = normalize_type(ref->base_type);
 	    pattern.types[id].operand = operand;
 	}
-	else if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	else if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) ) // allowed-exception: structural (exact-class dispatch)
 	{
 	    pattern.types[id].kind = Program::ClassTypePatternKind::Pointer;
 	    Program::ClassTypePatternId operand = normalize_type(ptr->base_type);
@@ -38346,7 +38346,7 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
 static DataDef *referent_if_reference(DataDef *dd)
 {
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    return rp->base_type;
     return dd;
 }
@@ -39294,7 +39294,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			  && struct_type && struct_type->is_pointer() )
 			{
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+			    DataDefPTR *rp = pointer_dd_of(struct_type);
 			    if ( rp && rp->base_type
 			      && (rp->base_type->is_struct()
 			       || rp->base_type->is_object()) )
@@ -39320,7 +39320,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( tm->var.is_reference()
 			      && struct_type && struct_type->is_pointer() )
 			    {
-				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+				DataDefPTR *rp = pointer_dd_of(struct_type);
 				if ( rp && rp->base_type
 				  && (rp->base_type->is_struct()
 				   || rp->base_type->is_object()) )
@@ -39443,7 +39443,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // through the typeid as parent_expr (class_this_arg passes
 			    // the pointer straight through as `this`).
 			    DataDef *rt = lhs_dot->datadef();
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rt);
+			    DataDefPTR *rp = pointer_dd_of(rt);
 			    struct_type = rp ? rp->base_type : rt;
 			    if ( !struct_type )
 				Throw(tb) << "typeid result has no type for member access" << flush;
@@ -39895,7 +39895,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    DataDef *base = obj_type;
 		    if ( !fixed_array_arrow )
 		    {
-			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
+			DataDefPTR *ptr_type = pointer_dd_of(obj_type);
 			if ( !ptr_type || !ptr_type->base_type )
 			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
 			// A const pointee (`const struct S *p`) accesses its
@@ -40989,7 +40989,7 @@ static DataDefCLASS *dtor_receiver_class(TokenBase *lhs, bool is_arrow)
 	    if ( DataDefQUAL *cq = dynamic_cast<DataDefQUAL *>(d) )
 		d = cq->base_type;
 	    else if ( d && d->is_reference() ) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(d);
+		DataDefPTR *p = pointer_dd_of(d);
 		if ( !p ) break;
 		d = p->base_type;
 	    }
@@ -40999,7 +40999,7 @@ static DataDefCLASS *dtor_receiver_class(TokenBase *lhs, bool is_arrow)
     };
     rdd = strip_cv_ref(rdd);
     if ( is_arrow && rdd && rdd->is_pointer() ) {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(rdd);
+	DataDefPTR *p = pointer_dd_of(rdd);
 	rdd = p ? strip_cv_ref(p->base_type) : NULL;
     }
     return dynamic_cast<DataDefCLASS *>(rdd);
@@ -41536,7 +41536,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				elem_type = class_elem;
 			    else if ( elem_type && elem_type->is_pointer() )
 			    {
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
+				DataDefPTR *pdd = pointer_dd_of(elem_type);
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 			    }
 			    else if ( elem_type && elem_type->is_simd() )
@@ -48675,7 +48675,7 @@ static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
     if ( !fd->is_deleted || fd->parameters.size() != 2 )
 	return;
     DataDef *p = fd->parameters[1];
-    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p) )
+    if ( DataDefPTR *pr = pointer_dd_of(p) )
 	if ( pr->is_reference() && pr->base_type )
 	    p = pr->base_type;
     if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(p) )
@@ -54946,7 +54946,7 @@ TokenBase *TokenDELETE::parse(Program &pgm)
     DataDef *dd = expr->datadef();
     if ( dd && dd->is_pointer() )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *ptr = pointer_dd_of(dd);
 	if ( ptr )
 	    del_class = dynamic_cast<DataDefCLASS *>(ptr->base_type);
     }
@@ -58038,7 +58038,7 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     DataDef *deduced = tc->parameters[arg_index]->datadef();
     if ( fd->template_return_deduce_from_pointer )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(deduced);
+	DataDefPTR *ptr = pointer_dd_of(deduced);
 	deduced = ptr ? ptr->base_type : NULL;
     }
     if ( !deduced )
@@ -59478,7 +59478,7 @@ static int fn_template_deduce_param(const std::string &spelling,
     }
     for ( size_t i = 0; i < shape.stars; ++i )
     {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if ( !p || !p->base_type )
 	    return -1;
 	dd = p->base_type;
@@ -59893,7 +59893,7 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 	}
 	if ( DataDefQUAL *c = dynamic_cast<DataDefQUAL *>(dd) )
 	    { dd = c->base_type; continue; }
-	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *p = pointer_dd_of(dd) )
 	    { dd = p->base_type; continue; }
 	break;
     }
@@ -60031,7 +60031,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    for ( size_t i = 0; i < tc->parameters.size(); ++i )
 	    {
 		DataDef *ad = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-		DataDefPTR *ap = dynamic_cast<DataDefPTR *>(ad);
+		DataDefPTR *ap = pointer_dd_of(ad);
 		DataDef *ab = ap ? ap->base_type : NULL;
 		fprintf(stderr, "FNTPLPROBE   arg[%zu]='%s' canon='%s' pointee='%s'"
 			" pcanon='%s' ident=%s\n", i,
@@ -66528,7 +66528,7 @@ static DataDef *unwrap_pointer_depth(DataDef *dd, int depth)
     DataDef *cur = dd;
     for ( int i = 0; i < depth; ++i )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(cur);
+	DataDefPTR *ptr = pointer_dd_of(cur);
 	if ( !ptr )
 	    return NULL;
 	cur = ptr->base_type;
@@ -66780,7 +66780,7 @@ static bool function_explicit_params_match(FuncDef *fd,
 	DataDef *expected = fd->parameters[pi];
 	if ( expected_ref )
 	{
-	    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(expected);
+	    DataDefPTR *ptr = pointer_dd_of(expected);
 	    expected = ptr ? ptr->base_type : NULL;
 	}
 	else if ( sigs[i].pointer_depth > 0 )

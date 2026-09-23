@@ -512,8 +512,27 @@ yet measured.
   step, V2.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
-- `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs
-  `as_pointer_dd()` 19 times (candidate).
+- ~~`single_level_pointee_accessor`~~ — consolidated 2026-09-23, a live
+  regression by then. Once a member's or a typedef's top-level cv became its
+  TYPE (`struct N *volatile next`, `typedef int *volatile vip` — QUAL over
+  PTR, in C since `pointee_volatile` and in every mode since
+  `cxx_pointee_volatile`), the 119 "is it a pointer, what does it point at"
+  sites that asked `dynamic_cast<DataDefPTR *>` — NULL for a qualified
+  pointer — all mis-answered: `n1.next->v` was refused ("expression before
+  '->' is not a typed pointer") in every mode, `n1.p + 2` stepped by the
+  pointer's own size (the element-size owner fell to `dd->size`), a
+  subscript typed the element `int64`, a `T *` deduction from a qualified
+  pointer argument failed, and a bit-field reached through a pointer to a
+  volatile struct lost its layout (`owner_struct_type` cast the qualified
+  pointee). 103 sites ask `as_pointer_dd()` now (`pointer_dd_of` for a
+  possibly-NULL type); the 16 that dispatch on the node's EXACT class keep
+  the cast, marked — `subst_datadef` and `tsubst_datadef_key` test PTR before
+  QUAL, so the forwarding accessor there would rebuild `QUAL(PTR(T))` as
+  `PTR(T')` and drop the qualifier on substitution; the forest records, the
+  class-pattern normalizer, and the structural spellings likewise. Gate
+  `check-one-pointee-accessor.sh` (fulltest; two-sided). Reducers
+  `tests/testqualifiedpointermember` (C) and
+  `tests/testqualifiedpointermembercxx`.
 - `all_levels_pointer_peel_gate_blind_spot`: two `&&`-clause peel loops the
   pointer-peel gate's regex misses (verified present; correct today).
 - `star_count_over_spelling_string`: the mangler's `parse_type` vs

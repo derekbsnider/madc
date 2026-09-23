@@ -2844,7 +2844,7 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
 	// constants), SIMD vector, template param, or _Complex is its own concept.
-	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd)
+	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
 	    || dd->is_template_param() || dd->is_complex())
 		return 0;
@@ -2923,7 +2923,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	{
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
 	}
-	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 	{
 		kind = madc::dis::DK_PTR;   operand = p->base_type;
 	}
@@ -3529,7 +3529,7 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			return;
 		}
 		// REF is-a PTR; both (and CONST) expose the operand as base_type.
-		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 			dd = p->base_type;
 			continue;
 		}
@@ -4350,7 +4350,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	if (!owner)
 	    continue;
 	DataDefPTR *p0 = fd->parameters.empty()
-		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]); // allowed-exception: structural (exact-class dispatch)
 	bool instance = p0 && p0->base_type == owner;
 	// v36 semantics on the UNCHANGED record layout: the per-param default
 	// runs (always in the layout, previously written empty here) now carry

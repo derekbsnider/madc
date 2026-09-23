@@ -823,6 +823,18 @@ public:
     }
 };
 
+// THE one-pointee-level accessor over a possibly-NULL type: as_pointer_dd()
+// with the null check dynamic_cast<DataDefPTR *> gave for free. A QUALIFIED
+// pointer (`int *volatile` — a member's or a typedef's top-level cv is its
+// type's) IS a pointer, and as_pointer_dd() forwards through DataDefQUAL; the
+// cast answered NULL for it, so `n.next->v` through a `struct N *volatile
+// next` member was refused and `n.p + 2` stepped by the pointer's own size.
+// Exact-class dispatch — a type REBUILD (subst_datadef), a substitution key,
+// a forest record — keeps the cast, marked `allowed-exception: structural`
+// (check-one-pointee-accessor.sh).
+inline DataDefPTR *pointer_dd_of(DataDef *dd) { return dd ? dd->as_pointer_dd() : NULL; }
+inline const DataDefPTR *pointer_dd_of(const DataDef *dd) { return dd ? dd->as_pointer_dd() : NULL; }
+
 // Apply an integer cast to the parse/CIR constant-fold carrier.  This is the
 // one truncation owner for typed integer constants: the parser's constant
 // expression spine and CIR-only folds must agree on target width and
@@ -1950,7 +1962,7 @@ inline bool DataDef::is_cstr() const
     const DataDef *d = this;
     if ( const DataDefQUAL *cd = dynamic_cast<const DataDefQUAL *>(d) )
 	d = cd->base_type ? cd->base_type : d;
-    const DataDefPTR *p = dynamic_cast<const DataDefPTR *>(d);
+    const DataDefPTR *p = pointer_dd_of(d);
     if ( !p || !p->base_type )
 	return false;
     return p->base_type->rawtype() == DataType::dtCHAR
@@ -2378,7 +2390,7 @@ inline std::string fptr_structural_spelling(DataDef *dd)
 	    base = ca->element_type;
 	    continue;
 	}
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base);
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(base); // allowed-exception: structural (exact-class dispatch)
 	if ( !ptr || !ptr->base_type )
 	    return std::string();
 	layers += ptr->is_reference() ? '&' : '*';

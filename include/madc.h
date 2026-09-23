@@ -228,7 +228,7 @@ public:
 	if ( parameters[i]->is_reference() )
 	{
 	    const DataDefPTR *rp =
-		dynamic_cast<const DataDefPTR *>(parameters[i]);
+		pointer_dd_of(parameters[i]);
 	    if ( rp && rp->base_type && rp->base_type->is_const() )
 		return false;
 	}
@@ -1142,9 +1142,12 @@ public:
     DataDefSTRUCT *owner_struct_type() const
     {
 	DataDef *otype = object.type;
-	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+	if ( DataDefPTR *opt = pointer_dd_of(otype) )
 	    otype = opt->base_type;
-	return dynamic_cast<DataDefSTRUCT *>(otype);
+	// The object may be QUALIFIED (`volatile struct S *p`, a `vS` typedef):
+	// its layout is the unqualified struct's (as_struct_dd forwards a
+	// class to its struct view, as the cast did).
+	return otype ? otype->unqualified()->as_struct_dd() : NULL;
     }
     const DataDefSTRUCT::BitFieldInfo *bitfield_info() const
     {
@@ -1377,7 +1380,7 @@ public:
         else if ( bt->is_pointer() )
         {
             // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
-            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+            DataDefPTR *pdd = pointer_dd_of(bt);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
         else if ( bt->type() == DataType::dtSIMD )
@@ -1398,7 +1401,7 @@ public:
     static DataDef *referent_type(DataDef *dd)
     {
         if ( dd && dd->is_reference() )
-            if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+            if ( DataDefPTR *rp = pointer_dd_of(dd) )
                 if ( rp->base_type )
                     return rp->base_type;
         return dd;

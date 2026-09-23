@@ -128,7 +128,10 @@ answers.
   level's cv reaches the symbol (`PVPVi`, `PVKcS0_`), `volatile int &` binds
   a volatile referent (`_Z1kRVi`), and overload resolution follows
   [conv.qual]: `int*` still picks `f(int*)` over `f(volatile int*)`, a
-  `volatile int*` never picks `f(int*)`. Also fixed: a brace-initialized `typedef const
+  `volatile int*` never picks `f(int*)`. A qualified pointer is a pointer
+  everywhere: through a member `struct N *volatile next`, `n.next->v` was
+  refused, `n.p + 2` stepped by 8 instead of 4, and deduction from it failed.
+  Also fixed: a brace-initialized `typedef const
   struct` (or volatile) local was refused (`CP cp = { 3, 4 };`). The volatile
   gate now counts madc's accesses too.
 

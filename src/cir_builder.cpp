@@ -834,7 +834,7 @@ static DataDefCLASS *dependent_placeholder_under_type_layers(DataDef *dd)
 			{ dd = cd->base_type; continue; }
 		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 			{ dd = rd->base_type; continue; }
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+		if (DataDefPTR *pd = pointer_dd_of(dd))
 			{ dd = pd->base_type; continue; }
 		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
 			{ dd = ad->element_type; continue; }
@@ -886,7 +886,7 @@ static std::string tsubst_datadef_key(DataDef *dd,
 		return tsubst_datadef_key(it->second, subst, seen);
 	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 		return "ref(" + tsubst_datadef_key(rd->base_type, subst, seen) + ")";
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return "ptr(" + tsubst_datadef_key(pd->base_type, subst, seen) + ")";
 	if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd))
 		return (cd->quals == cvCONST ? std::string("const(")
@@ -1224,7 +1224,7 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 		core = r->base_type;
 	}
 	while (core && !dynamic_cast<DataDefREF *>(core)) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(core);
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(core); // allowed-exception: structural (exact-class dispatch)
 		if (!p)
 			break;
 		++ptr_depth;
@@ -1236,7 +1236,7 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 		core = c->base_type;
 	}
 	if (!core || dynamic_cast<DataDefQUAL *>(core)
-	    || dynamic_cast<DataDefPTR *>(core)
+	    || dynamic_cast<DataDefPTR *>(core) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefTemplateParam *>(core))
 		return false;
 	if (cv & cvCONST)
@@ -1493,7 +1493,7 @@ static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
 	if (org.kind == Program::DependentDerivedOrigin::Deref) {
 		// NOTE: DataDefREF derives from DataDefPTR — the ref unwrap
 		// above must run first or `T&` would "deref" to T's pointee.
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(src))
+		if (DataDefPTR *pd = pointer_dd_of(src))
 			return pd->base_type;
 		return NULL;	// class-type deref (operator*) — not re-derived here
 	}
@@ -1519,7 +1519,7 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		return (prog && nb != rd->base_type)
 			   ? (DataDef *)prog->getReferenceType(nb) : dd;
 	}
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 		DataDef *nb = subst_datadef(prog, pd->base_type, subst,
 					    packs, pack_params);
 		return (prog && nb != pd->base_type)
@@ -1762,7 +1762,7 @@ static bool tsubst_destroy_call_has_template_pointee(TokenCallFunc *tc)
 		return false;
 	TokenBase *arg = tc->parameters[0];
 	DataDef *argdd = arg ? arg->datadef() : NULL;
-	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd);
+	DataDefPTR *pdd = pointer_dd_of(argdd);
 	return pdd && template_param_under_type_layers(pdd->base_type);
 }
 
@@ -2254,7 +2254,7 @@ static bool requeue_tsubst_instance_body(CirBuilder *cb, Program *prog, Variable
 static DataDef *tsubst_overload_arg_type(DataDef *dd)
 {
 	if (dd && dd->is_reference())
-		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd))
+		if (DataDefPTR *rp = pointer_dd_of(dd))
 			return rp->base_type;
 	return dd;
 }
@@ -3815,7 +3815,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				subst_datadef_active(src->datadef(), *subst);
 			DataDef *elem = concrete_obj;
 			if (td->is_arrow) {
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_obj);
+				DataDefPTR *pdd = pointer_dd_of(concrete_obj);
 				elem = pdd ? pdd->base_type : NULL;
 			}
 			if (!elem || template_param_under_type_layers(elem))
@@ -3859,7 +3859,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 		if (destroy_marker) {
 			DataDef *concrete_arg = subst_datadef_active(src->datadef(), *subst);
-			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
+			DataDefPTR *pdd = pointer_dd_of(concrete_arg);
 			DataDef *elem = pdd ? pdd->base_type : NULL;
 			if (!elem || template_param_under_type_layers(elem))
 				return CIR_NODE(error_node(
@@ -4631,7 +4631,7 @@ static bool same_object_class(const DataDef *a, const DataDef *b)
 static const DataDefCLASS *class_pointer_pointee(const DataDef *dd)
 {
 	dd = unqualified_type(dd);
-	const DataDefPTR *ptr = dynamic_cast<const DataDefPTR *>(dd);
+	const DataDefPTR *ptr = pointer_dd_of(dd);
 	if (!ptr || !ptr->base_type)
 		return NULL;
 	return as_user_class(ptr->base_type);
@@ -4674,7 +4674,7 @@ CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 	// parameter object's address).
 	if (DataDefCLASS *ic = class_param_via_invisible_ref(dd))
 		return { {}, true, ic };
-	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+	if (DataDefPTR *p = pointer_dd_of(dd)) {
 		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
 			return { {N_CHAR}, true, NULL };
 		return { {N_VOID}, true, NULL };
@@ -5221,13 +5221,13 @@ bool CirBuilder::flavor_marshal_candidate(FuncDef *fd) const
 		DataDef *p = fd->parameters[i];
 		if (!p)
 			continue;
-		if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p))
+		if (DataDefPTR *pp = pointer_dd_of(p))
 			p = pp->base_type ? pp->base_type : p;
 		if (p->marshals_value_text())
 			return true;
 	}
 	DataDef *r = &fd->return_value_type();
-	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+	if (DataDefPTR *rp = pointer_dd_of(r))
 		r = rp->base_type ? rp->base_type : r;
 	return r && r->marshals_value_text();
 }
@@ -5405,7 +5405,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		if (u->is_reference()) {
 			if (DataDef *r = ref_param_referent(u))
 				u = r;
-		} else if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(u))
+		} else if (DataDefPTR *pp = pointer_dd_of(u))
 			u = pp->base_type ? pp->base_type : u;
 		if (u->marshals_value_text()) {
 			if (u == p) {
@@ -5439,7 +5439,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	if (ru->is_reference()) {
 		if (DataDef *r = ref_param_referent(ru))
 			ru = r;
-	} else if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(ru))
+	} else if (DataDefPTR *rp = pointer_dd_of(ru))
 		ru = rp->base_type ? rp->base_type : ru;
 	bool ret_carrier = ru && ru->marshals_value_text();
 	if (ret_carrier && ru == rv && !fd->returns_reference()) {
@@ -5484,7 +5484,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		DataDef *p2 = cand->parameters[2];
 		if (!p1 || !p2 || !p1->is_pointer() || !p2->is_integer())
 			continue;
-		DataDefPTR *p1p = dynamic_cast<DataDefPTR *>(p1);
+		DataDefPTR *p1p = pointer_dd_of(p1);
 		DataDef *p1b = p1p ? p1p->base_type : NULL;
 		if (!p1b || (p1b->rawtype() != DataType::dtCHAR
 			     && p1b->rawtype() != DataType::dtINT8
@@ -5765,7 +5765,7 @@ node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
 static bool is_size1_pointer(DataDef *dd)
 {
 	if (!dd || !dd->is_pointer()) return false;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p || !p->base_type) return false;
 	// A DEPENDENT pointee (a template-param placeholder, whose repr rawtype
 	// is dtVOID) is "type not known yet", NOT void: the Tree-1 pattern must
@@ -5795,7 +5795,7 @@ static bool is_char_pointer(DataDef *dd)
 	// question (coercions, key classification, ranking).
 	dd = unqualified_type(dd);
 	if (!dd || !dd->is_pointer()) return false;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p || !p->base_type) return false;
 	return unqualified_type(p->base_type)->rawtype() == DataType::dtCHAR;
 }
@@ -5810,7 +5810,7 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 	// initializer / a ref-valued rhs takes the same derived->base subobject
 	// adjustment as a `V *` (task #36).
 	if (!dd || (!dd->is_pointer() && !dd->is_reference())) return NULL;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p) return NULL;
 	return as_user_class(p->base_type);
 }
@@ -6543,7 +6543,7 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	// `base`, one level too deep, so `pair<base*,base*>(const base*&, …)` never
 	// matched (the arg looked like the class, not a `base*`).
 	if (r && r->is_reference())
-		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+		if (DataDefPTR *rp = pointer_dd_of(r))
 			if (rp->base_type) r = rp->base_type;
 	return r;
 }
@@ -7301,7 +7301,7 @@ static DataDef *ref_param_referent(DataDef *pt)
 {
 	if (!pt || !pt->is_reference())
 		return NULL;
-	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(pt);
+	DataDefPTR *rp = pointer_dd_of(pt);
 	return rp ? rp->base_type : NULL;
 }
 
@@ -7670,7 +7670,7 @@ DataDefSTRUCT *CirBuilder::struct_behind(DataDef *dd)
 	}
 	DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
 	if (!s) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(unqualified_type(dd));
+		DataDefPTR *p = pointer_dd_of(unqualified_type(dd));
 		if (p) s = dynamic_cast<DataDefSTRUCT *>(unqualified_type(p->base_type));
 	}
 	return s;
@@ -8064,7 +8064,7 @@ static DataDef *vla_param_flat_elem(DataDef *ptype, int &stars)
 			continue;
 		}
 		if (elem && elem->is_pointer()) {
-			DataDefPTR *p = dynamic_cast<DataDefPTR *>(elem);
+			DataDefPTR *p = pointer_dd_of(elem);
 			if (p && p->base_type) {
 				elem = p->base_type;
 				elem_stars++;
@@ -10233,7 +10233,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		node_t count = translate_expr(v->vla_size_expr);
 		{
 			DataDef *w = v->type;
-			if (DataDefPTR *wp = dynamic_cast<DataDefPTR *>(w))
+			if (DataDefPTR *wp = pointer_dd_of(w))
 				w = wp->base_type;
 			for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(w);
 			     c; c = dynamic_cast<DataDefCArray *>(c->element_type)) {
@@ -12066,7 +12066,7 @@ DataDef *CirBuilder::operand_value_datadef(TokenBase *t)
 	if (!t) return NULL;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
 		if ((tv->var.is_reference()) && tv->var.type)
-			if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(tv->var.type))
+			if (DataDefPTR *p = pointer_dd_of(tv->var.type))
 				return p->base_type;
 	return t->datadef();
 }
@@ -12075,7 +12075,7 @@ static DataDef *reference_member_referent(TokenMember *tm)
 {
 	if (!tm || !tm->var.is_reference())
 		return NULL;
-	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tm->var.type);
+	DataDefPTR *rp = pointer_dd_of(tm->var.type);
 	return rp ? rp->base_type : NULL;
 }
 
@@ -13195,7 +13195,7 @@ static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
-			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			DataDefPTR *pp = pointer_dd_of(p1);
 			if (pp && pp->base_type) bind = pp->base_type;
 		}
 		if (same_object_class(cdd, bind)) return fd;
@@ -13269,7 +13269,7 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
-			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			DataDefPTR *pp = pointer_dd_of(p1);
 			if (pp && pp->base_type) bind = pp->base_type;
 		}
 		if (same_object_class(cdd, bind)) return fd;
@@ -15059,7 +15059,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// the referenced type T (object/value semantics), NOT as a raw pointer — so a
 	// `T` argument binds a `const T&` parameter (e.g. the copy ctor) like C++.
 	if (param_is_ref && pdc->is_pointer()) {
-		const DataDefPTR *pp = dynamic_cast<const DataDefPTR *>(pdc);
+		const DataDefPTR *pp = pointer_dd_of(pdc);
 		if (pp && pp->base_type)
 			pdc = pp->base_type;
 	}
@@ -15069,7 +15069,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// ref wrapper fell through every lane to the trailing neutral 0, and a
 	// varargs catch-all outranked the exact numeric candidate.
 	if (adc->is_reference()) {
-		const DataDefPTR *ar = dynamic_cast<const DataDefPTR *>(adc);
+		const DataDefPTR *ar = pointer_dd_of(adc);
 		if (ar && ar->base_type)
 			adc = ar->base_type;
 	}
@@ -15343,7 +15343,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (ac || pc) {
 				const DataDef *other = ac ? pdc : adc;
 				const DataDefPTR *op =
-					dynamic_cast<const DataDefPTR *>(other);
+					pointer_dd_of(other);
 				const DataDef *ob = op ? op->base_type : NULL;
 				// [conv.ptr]: a class pointer converts to void*
 				// only — never to void** (whose type() is ALSO
@@ -15365,9 +15365,9 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			// this cast cannot see keeps the rawtype comparison —
 			// reject only what is PROVEN unrelated.
 			const DataDefPTR *apt =
-				dynamic_cast<const DataDefPTR *>(adc);
+				pointer_dd_of(adc);
 			const DataDefPTR *ppt =
-				dynamic_cast<const DataDefPTR *>(pdc);
+				pointer_dd_of(pdc);
 			const DataDef *ab = apt ? apt->base_type : NULL;
 			const DataDef *pb = ppt ? ppt->base_type : NULL;
 			if (const DataDefQUAL *cw =
@@ -15523,7 +15523,7 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	// constructed string's rep stayed uninitialized.
 	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
 		if (tc->cast_type && tc->cast_type->is_reference())
-			if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tc->cast_type))
+			if (DataDefPTR *rp = pointer_dd_of(tc->cast_type))
 				if (rp->base_type)
 					return rp->base_type;
 	// A class-returning CALL argument types by the RESOLVED callee's
@@ -15570,7 +15570,7 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 			// referent entirely — leaving a `const int&` arg as `int*`,
 			// so `tuple<const int&>(const int&)` never matched.
 			if (DataDefPTR *rp =
-			    dynamic_cast<DataDefPTR *>(tv->var.type))
+			    pointer_dd_of(tv->var.type))
 				if (rp->base_type)
 					return rp->base_type;
 		}
@@ -15928,7 +15928,7 @@ static DataDef *initializer_list_element_type(DataDefCLASS *ilc)
 {
 	if (!ilc || ilc->members.size() != 2)
 		return NULL;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(ilc->members[0].second);
+	DataDefPTR *p = pointer_dd_of(ilc->members[0].second);
 	return p ? p->base_type : NULL;
 }
 
@@ -16301,7 +16301,7 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		else if (src_arg->datadef()) {
 			DataDef *src_dd = src_arg->datadef();
 			if (src_dd->is_reference())
-				if (DataDefPTR *ref = dynamic_cast<DataDefPTR *>(src_dd))
+				if (DataDefPTR *ref = pointer_dd_of(src_dd))
 					if (ref->base_type) src_dd = ref->base_type;
 			obj_cv = src_dd->is_const() ? 1 : 0;
 		}
@@ -17673,7 +17673,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			if (ofd && ofd->returns_reference()) {
 				DataDef *rd = &ofd->return_value_type();
 				if (rd && rd->is_pointer()) {
-					DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rd);
+					DataDefPTR *rp = pointer_dd_of(rd);
 					if (rp && rp->base_type)
 						return rp->base_type;
 				}
@@ -17902,7 +17902,7 @@ std::string datadef_cpp_spelling_w2(DataDef *dd)
 	if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd))
 		return c->canonical_cpp_spelling().empty() ? c->name
 						         : c->canonical_cpp_spelling();
-	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return datadef_cpp_spelling_w2(p->base_type) + "*";
 	return dd->name;
 }
@@ -18005,7 +18005,7 @@ static bool w2_datadef_involves_template_param(DataDef *dd)
 			dd = cd->base_type;
 			continue;
 		}
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+		if (DataDefPTR *pd = pointer_dd_of(dd)) {
 			dd = pd->base_type;
 			continue;
 		}
@@ -21112,7 +21112,7 @@ static std::string overflow_helper_name(const std::string &generic,
 		DataDef *dd = third_arg->datadef();
 		if (!is_p) {
 			// `&dst` — a pointer; the destination is its pointee.
-			if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd))
+			if (DataDefPTR *pdd = pointer_dd_of(dd))
 				dst = pdd->base_type;
 		} else {
 			// typed-zero — its own type is the destination type.
@@ -23655,7 +23655,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					}
 				}
 				DataDef *elem = NULL;
-				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
+				if (DataDefPTR *pdd = pointer_dd_of(argdd))
 					elem = pdd->base_type;
 				DataDefCLASS *ecls = as_class_instance(elem);
 				// Scalar / pointer / dtor-less element: emit nothing.
@@ -25395,7 +25395,7 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 	// reason the pointer walk excludes them: they are addresses, not handles on
 	// a value.
 	if (brdd && brdd->is_pointer() && !brdd->is_reference()) {
-		DataDefPTR *bp = dynamic_cast<DataDefPTR *>(brdd->unqualified());
+		DataDefPTR *bp = pointer_dd_of(brdd->unqualified());
 		DataDef *pointee = bp ? bp->base_type : NULL;
 		if (!pointee || pointee->is_void()
 		    || pointee->is_function() || brdd->is_member_pointer())
@@ -27446,7 +27446,7 @@ static bool tsubst_datadef_involves_template_param(DataDef *dd)
 		return true;
 	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 		return tsubst_datadef_involves_template_param(rd->base_type);
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return tsubst_datadef_involves_template_param(pd->base_type);
 	if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd))
 		return tsubst_datadef_involves_template_param(cd->base_type);
@@ -32438,7 +32438,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (gv->type->is_function())
 			continue;
 		{
-			DataDefPTR *fp = dynamic_cast<DataDefPTR *>(gv->type);
+			DataDefPTR *fp = pointer_dd_of(gv->type);
 			if (fp && fp->base_type && fp->base_type->is_function())
 				continue;
 		}
@@ -32447,7 +32447,7 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		DataDef *gdd = gv->type;
 		bool g_is_ptr = gdd->is_pointer();
-		DataDefPTR *gptr = g_is_ptr ? dynamic_cast<DataDefPTR *>(gdd) : NULL;
+		DataDefPTR *gptr = g_is_ptr ? dynamic_cast<DataDefPTR *>(gdd) : NULL; // allowed-exception: structural (exact-class dispatch)
 		if (gptr && gptr->base_type) gdd = gptr->base_type;
 
 		node_t ext_list = list();

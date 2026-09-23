@@ -48,7 +48,9 @@
   / `getQualifiedType` (ONE `DataDefQUAL` per (base, cv mask); `getConstType` is
   const on it). "Is it const/volatile": `is_const()` / `is_volatile()`, never the
   wrapper's class; `unqualified()` peels the whole mask.
-- One pointee level: `as_pointer_dd()`, never `dynamic_cast<DataDefPTR *>`.
+- One pointee level: `as_pointer_dd()` (`pointer_dd_of` when the type may be NULL) — a
+  qualified pointer IS a pointer; never `dynamic_cast<DataDefPTR *>` outside exact-class
+  dispatch (a rebuild, a key, a record — marked; gated: `check-one-pointee-accessor.sh`).
   All levels: `dd_peel_pointers` (gated). void: `DataDef::is_void()` (gated).
 - A scalar's identity (`char` and `signed char` share one rawtype):
   `Program::proven_scalar_identity` — never `rawtype()`.
