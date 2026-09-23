@@ -7574,10 +7574,8 @@ static std::string basic_class_pattern_type_spelling(
 	    {
 		const Program::ClassTypePattern &operand =
 		    binding.pattern.types[type.operand];
-		if ( operand.kind == Program::ClassTypePatternKind::Pointer )
-		    spelling += " const";
-		else
-		    spelling = "const " + spelling;
+		spelling = cv_qualified_spelling(spelling, type.flags ? type.flags : cvCONST,
+			operand.kind == Program::ClassTypePatternKind::Pointer);
 	    }
 	    else
 		for ( size_t i = 0; i < type.dimensions.size(); ++i )
@@ -8408,7 +8406,8 @@ public:
 	    result = pgm.getReferenceType(resolve(type.operand));
 	    break;
 	case Program::ClassTypePatternKind::ConstType:
-	    result = pgm.getConstType(resolve(type.operand));
+	    result = pgm.getQualifiedType(resolve(type.operand),
+					  type.flags ? type.flags : cvCONST);
 	    break;
 	case Program::ClassTypePatternKind::CArray:
 	    result = resolve(type.operand);
@@ -9836,7 +9835,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    Throw(at) << "Expecting a type argument to "
 				  << tname << "<>" << flush;
 		// Fold a trailing declarator suffix (`*`/`&`/`&&`) into the arg type.
-		adt = fold_template_arg_declarator(adt, at);
+		adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 		type_args.push_back(adt);
 		arg_types_by_slot.push_back(adt);
 		arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
@@ -12115,13 +12114,16 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    TokenDataType *resolved = NULL;
 	    try
 	    {
+		// A leading cv is the type-id's (`using p_t = volatile T *;`):
+		// resolve the base past it, then fold it in.
+		unsigned body_lead_cv = skip_cv_qualifier_tokens();
 		TokenBase *head = nextToken();
 		resolved = resolve_declared_type_token(head, true, true);
 		// Declarator suffix (`= U *`) folds BEFORE the
 		// leftover-strictness check, so a pointer-target alias
 		// passes it legitimately (same owner as the arg loop).
 		if ( resolved )
-		    resolved = fold_template_arg_declarator(resolved, head);
+		    resolved = fold_template_arg_declarator(resolved, head, NULL, body_lead_cv);
 		// The substituted body IS the type spelling: tokens left
 		// before the `;` sentinel mean the resolution did not cover
 		// it — a FAILURE, not a success (#27's require_full_parse
@@ -12336,7 +12338,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	// (`value_type const`, optional:790) — same owner-pair as the leading
 	// consume above; without it the separator read the `const` and threw.
 	consume_trailing_type_arg_qualifiers(cv_spelling);
-	adt = fold_template_arg_declarator(adt, at);
+	adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	TokenBase *sep = nextToken();
@@ -12393,7 +12395,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 					<< td.typeparams[ai] << " in "
 					<< tname << "<>" << flush;
 	// A defaulted param's declarator suffix (`class V = U*`) folds too.
-	adt = fold_template_arg_declarator(adt, dtok);
+	adt = fold_template_arg_declarator(adt, dtok, &cv_spelling);
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
 	args.push_back(adt);
@@ -12429,6 +12431,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	pushed_owner_scope = true;
     }
 
+    unsigned body_lead_cv = skip_cv_qualifier_tokens();	// the type-id's (`volatile T *`)
     TokenBase *head = nextToken();
     TokenDataType *resolved = resolve_declared_type_token(head, true, true);
     // Alias-target DECLARATOR suffix (`using rebind = U *;` — libc++
@@ -12438,7 +12441,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     // — map's tree-iterator chain instantiated with de-pointered args and
     // its operator-> return degraded to a placeholder, task #72).
     if ( resolved )
-	resolved = fold_template_arg_declarator(resolved, head);
+	resolved = fold_template_arg_declarator(resolved, head, NULL, body_lead_cv);
     bool have_sentinel = false;
     for ( size_t si = 0; si < tokens.size(); ++si )
 	if ( tokens[si] == alias_sentinel )
@@ -12500,12 +12503,13 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	{ class_scope_stack.push_back(td.owner_class); po2 = true; }
 	namespace_stack.push_back(td.defining_namespace);
 
+	unsigned body_lead_cv2 = skip_cv_qualifier_tokens();	// the type-id's, as the main lane
 	TokenBase *head2 = nextToken();
 	try
 	{
 	    resolved = resolve_declared_type_token(head2, true, true);
 	    if ( resolved )   // same declarator-suffix fold as the main lane
-		resolved = fold_template_arg_declarator(resolved, head2);
+		resolved = fold_template_arg_declarator(resolved, head2, NULL, body_lead_cv2);
 	}
 	catch ( ... ) { resolved = NULL; }
 
@@ -15784,7 +15788,7 @@ struct TraitTypeArg
 // spelled form produces. madc's IR keeps ONE reference kind post-resolution,
 // so a baked reference reads as the LVALUE form (trait uses that need the
 // rvalue distinction spell it with trailing `&&` tokens, which win above).
-static void unwrap_baked_trait_arg(TraitTypeArg &a)
+static void unwrap_baked_trait_arg(Program &pgm, TraitTypeArg &a)
 {
     if ( a.is_lref || a.is_rref )
 	return;
@@ -15793,10 +15797,14 @@ static void unwrap_baked_trait_arg(TraitTypeArg &a)
 	a.is_lref = true;
 	a.dd = rdd->base_type;
     }
-    if ( DataDefQUAL *cdd = dynamic_cast<DataDefQUAL *>(a.dd) )
+    // A baked CONST rides referent_const — the flag the spelled form's leading
+    // `const` sets. Every other qualifier stays in the TYPE: it is the
+    // argument's identity (__is_same(volatile int, int) is false; peeling the
+    // whole wrapper made libstdc++'s is_same<volatile int, int> true).
+    if ( a.dd && a.dd->is_const() )
     {
-	a.referent_const = cdd->is_const();
-	a.dd = cdd->base_type;
+	a.referent_const = true;
+	a.dd = pgm.getQualifiedType(a.dd->unqualified(), a.dd->cv_quals() & ~cvCONST);
     }
 }
 
@@ -16562,7 +16570,7 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	{ nextToken(); a.is_lref = true; a.referent_const |= pointer_const; }
 	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
 	{ nextToken(); a.is_rref = true; a.referent_const |= pointer_const; }
-	unwrap_baked_trait_arg(a);
+	unwrap_baked_trait_arg(*this, a);
 	// [meta.rqmts]: a type trait's class operand shall be complete — a
 	// pending shell (a deferred template-argument instantiation, a bodyless
 	// forward instantiation) completes on demand here, as sizeof's operand
@@ -16819,7 +16827,7 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	    ta.dd = a ? a->datadef() : NULL;
 	    if ( !ta.dd )
 		return -1;
-	    unwrap_baked_trait_arg(ta);
+	    unwrap_baked_trait_arg(pgm, ta);
 	    cargs.push_back(ta);
 	}
 	if ( r == 0 )
@@ -29728,8 +29736,31 @@ uint32_t Program::derived_type_id(DerivedKind kind, uint32_t operand_id)
     return type_id_for(derived);
 }
 
+DataDef *Program::parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl)
+{
+    leading_cv &= modeled_cv();
+    DataDef *folded = parse_declarator(base, DeclaratorMode::Abstract, decl, NULL, leading_cv);
+    // With no `*`, the type-id's own cv: the leading run, and an EAST cv the
+    // declarator itself read and only reported (`_Tp volatile` — libstdc++'s
+    // is_volatile<_Tp volatile>, add_volatile's `using type = _Tp volatile`).
+    unsigned own_cv = leading_cv | (((decl.base_volatile ? cvVOLATILE : cvNONE)
+				     | (decl.base_const ? cvCONST : cvNONE)) & modeled_cv());
+    if ( own_cv && decl.ptr_depth == 0 && decl.nested_stars == 0
+      && decl.ref == RefType::rtValue && !folded->as_fptr_dd() && !folded->as_carray_dd()
+      && !folded->is_function() )
+	folded = getQualifiedType(folded, own_cv);
+    // A cv after the last `*` qualifies that pointer (`int *volatile`).
+    unsigned top_cv = ((decl.volatile_after_star ? cvVOLATILE : cvNONE)
+		       | (decl.const_after_star ? cvCONST : cvNONE)) & modeled_cv();
+    if ( top_cv && decl.ptr_depth > 0 && decl.ref == RefType::rtValue )
+	folded = getQualifiedType(folded, top_cv);
+    return folded;
+}
+
 TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
-						     TokenBase *origin)
+						     TokenBase *origin,
+						     std::string *cv_spelling,
+						     unsigned extra_lead_cv)
 {
     // A template argument is a type-id: an ABSTRACT declarator over the
     // resolved type — `*`s with their cv, `&`/`&&`, `(*)(params)`, a bare
@@ -29740,8 +29771,34 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
     // copy of the star fold — and before this call this site's copy knew
     // only `*`/`&` and `(*)(params)`.
     DataDef *dd = &adt->definition;
+    // The modeled cv the caller read around the base leaves the spelling for
+    // the type: a type-id's leading cv qualifies the pointee at the first `*`
+    // (the declarator's leading_cv), or — no `*` — the type itself: a
+    // template argument's top-level cv IS part of it (`is_v<volatile int>`),
+    // unlike a declaration's, which is its object's.
+    unsigned lead_cv = extra_lead_cv;
+    if ( cv_spelling && !cv_spelling->empty() )
+    {
+	std::string kept;
+	size_t pos = 0;
+	while ( pos < cv_spelling->size() )
+	{
+	    size_t sp = cv_spelling->find(' ', pos);
+	    std::string w = cv_spelling->substr(pos, sp == std::string::npos
+						      ? std::string::npos : sp - pos);
+	    pos = sp == std::string::npos ? cv_spelling->size() : sp + 1;
+	    if ( w.empty() )
+		continue;
+	    unsigned bit = w == "const" ? cvCONST : w == "volatile" ? cvVOLATILE : cvNONE;
+	    if ( bit & modeled_cv() )
+		lead_cv |= bit;
+	    else
+		kept += w + " ";
+	}
+	*cv_spelling = kept;
+    }
     DeclaratorResult decl;
-    DataDef *folded = parse_declarator(dd, DeclaratorMode::Abstract, decl);
+    DataDef *folded = parse_type_id(dd, lead_cv, decl);
     if ( folded == dd )
 	return adt;
     TokenDataType *next = new TokenDataType(folded->name.c_str(), *folded);
@@ -33216,7 +33273,7 @@ bool Program::template_declared_in_namespace(const std::string &name,
 // — peel the pattern's pointer levels off the concrete type and bind PARAM to the
 // remainder), and a fully-concrete pattern (must spelling-equal the concrete arg).
 // On success records deductions in `ded`, adds a specificity score, returns true.
-static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
+static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> &pat,
 				   const std::vector<std::string> &spec_params,
 				   DataDef *concrete,
 				   const std::string &concrete_spelling,
@@ -33260,6 +33317,48 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     {
 	core = contextual_identifier_name(pat[i]);
 	++i;
+	// An ALIAS TEMPLATE whose target is one of its own parameters is
+	// transparent ([temp.alias]/2): `volatile __has_tuple_size<T>` (`using
+	// __has_tuple_size = T;`, g++.dg alias-decl-57's tuple_size spec)
+	// matches as `volatile T`. The pattern's argument list is split at depth
+	// one by the shared tracker. (The alias's defaulted SFINAE parameters
+	// are not checked: the spec could not be matched at all before.)
+	if ( i < pat.size() && pat[i]->id() == TokenID::tkLT )
+	    if ( Program::TemplateAliasDef *ad = pgm.find_template_alias(core) )
+		if ( ad->target.size() == 1 && is_contextual_identifier_token(ad->target[0]) )
+		{
+		    std::string tgt = contextual_identifier_name(ad->target[0]);
+		    size_t k = 0;
+		    while ( k < ad->typeparams.size() && ad->typeparams[k] != tgt )
+			++k;
+		    DelimDepth d(&pgm);
+		    size_t j = i + delim_scan_step(pat, i, d);	// the opening `<`
+		    std::vector<std::vector<TokenBase *> > args(1);
+		    bool closed = false;
+		    while ( j < pat.size() )
+		    {
+			bool comma = pat[j]->id() == TokenID::tkComma;
+			size_t n = delim_scan_step(pat, j, d);
+			if ( d.angle == 0 && d.top() )
+			{
+			    j += n;
+			    closed = true;
+			    break;
+			}
+			if ( comma && d.angle == 1 && d.paren == 0 && d.square == 0 && d.brace == 0 )
+			    args.push_back(std::vector<TokenBase *>());
+			else
+			    for ( size_t m = 0; m < n; ++m )
+				args.back().push_back(pat[j + m]);
+			j += n;
+		    }
+		    if ( closed && k < ad->typeparams.size() && k < args.size()
+		      && args[k].size() == 1 && is_contextual_identifier_token(args[k][0]) )
+		    {
+			core = contextual_identifier_name(args[k][0]);
+			i = j;
+		    }
+		}
 	while ( i < pat.size() )
 	{
 	    if ( pat[i]->id() == TokenID::tkMul ) { ++ptr; ++i; }
@@ -33329,6 +33428,17 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 	cur = ((DataDefPTR *)cur)->base_type;
     }
     if ( !cur ) return false;
+    // The qualifiers the pattern spells on PARAM are matched, not deduced
+    // ([temp.deduct.type]/8: `_Tp volatile` against `volatile int` binds
+    // _Tp = int): shed them from the binding. Only the modeled bits live in
+    // the type (modeled_cv); the rest were matched on the spelling above.
+    if ( !required_cv.empty() && cur->cv_quals() )
+    {
+	unsigned req = (required_cv.find("volatile") != std::string::npos ? cvVOLATILE : cvNONE)
+		     | (required_cv.find("const") != std::string::npos ? cvCONST : cvNONE);
+	if ( cur->cv_quals() & req )
+	    cur = pgm.getQualifiedType(cur->unqualified(), cur->cv_quals() & ~req);
+    }
     std::map<std::string, DataDef *>::iterator d = ded.find(core);
     if ( d != ded.end() && d->second && d->second->name != cur->name )
 	return false;                         // inconsistent (e.g. pair<T,T> with T!=T)
@@ -34751,14 +34861,13 @@ class ClassPatternNormalizer
 	}
 	else if ( DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(dd) )
 	{
-	    // The pattern models a const level alone; any other mask is not
-	    // normalizable into it (a volatile level would be read as const).
-	    if ( qualified->quals != cvCONST )
-	    {
-		fail(Program::ClassParseReason::UnnormalizableType);
-		return id;
-	    }
+	    // A qualified level: its cv MASK rides `flags` (0 = const — the
+	    // records written before the mask existed; a volatile or const
+	    // volatile level spells its bits), so `typedef T volatile type;` in
+	    // a class template keeps the pattern — it was refused, and the
+	    // fallback lost the qualifier (av<int>::type was int).
 	    pattern.types[id].kind = Program::ClassTypePatternKind::ConstType;
+	    pattern.types[id].flags = qualified->quals == cvCONST ? 0u : qualified->quals;
 	    Program::ClassTypePatternId operand =
 		normalize_type(qualified->base_type);
 	    pattern.types[id].operand = operand;
@@ -36925,7 +37034,7 @@ static bool read_local_type_arg(Program &pgm,
     { out.is_lref = true; ++i; }
     else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
     { out.is_rref = true; ++i; }
-    unwrap_baked_trait_arg(out);
+    unwrap_baked_trait_arg(pgm, out);
     // A DEPENDENT argument is unanswerable here: the CAPTURE parse of
     // gcc13's is_assignable folded `__is_assignable(_Tp, _Up)` with UNBOUND
     // params to 0 and froze `__bool_constant<0>` (false_type) as the
@@ -37964,7 +38073,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		!arg_types_by_slot[i]->definition.canonical_cpp_spelling().empty()
 		? arg_types_by_slot[i]->definition.canonical_cpp_spelling()
 		: arg_spellings[i];
-	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
+	    if ( !unify_spec_pattern_arg(*this, spec.spec_pattern[i], spec.typeparams,
 					 &arg_types_by_slot[i]->definition,
 					 arg_spellings[i], ded, score)
 	      && !unify_nested_spec_pattern_arg(
@@ -44048,7 +44157,10 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	{
 	    std::string alias_name = using_declaration_name(tn);
 	    pgm.nextToken(); // consume '='
-	    TokenBase *type_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
+	    // The target's leading cv is part of the type-id (`using VI =
+	    // volatile int;`): read as a mask, applied by parse_type_id below.
+	    unsigned alias_lead_cv = pgm.skip_cv_qualifier_tokens();
+	    TokenBase *type_tb = pgm.nextToken();
 	    TokenDataType *target = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
@@ -44061,8 +44173,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    // copy knew `(*)(params)` and nothing else (initlist-array17/20/22/6,
 	    // ref-bind1 in g++.dg).
 	    Program::DeclaratorResult alias_decl;
-	    alias_dd = pgm.parse_declarator(alias_dd, Program::DeclaratorMode::Abstract,
-					    alias_decl);
+	    alias_dd = pgm.parse_type_id(alias_dd, alias_lead_cv, alias_decl);
 	    TokenBase *semi = pgm.nextToken();
 	    if ( !semi || semi->id() != TokenID::tkSemi )
 		pgm.Throw(semi ? semi : tn) << "Expecting ';' after using alias" << flush;
@@ -55540,7 +55651,7 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    // bound T = int — decltype(qq<int&>(0)) was Q<int>, a silent wrong
 	    // type — and no reference- or function-type SFINAE default over T
 	    // could ever fail (g++.dg sfinae8/12/15: `f<int&>`, `f<void()>`).
-	    adt = fold_template_arg_declarator(adt, at);
+	    adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 	    dd = &adt->definition;
 	}
 	else

@@ -6677,7 +6677,16 @@ public:
     // One owner of the rule, shared by every template-argument parser — a pointer
     // OR reference type is a valid template argument (`Vec<T*>`,
     // `conditional<b, int&, long>`, `__conditional_t<…, remove_reference_t<R>&&, …>`).
-    TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin);
+    // `cv_spelling`: the cv words the caller read around the base (west and
+    // east); the MODELED ones (modeled_cv) move out of the spelling into the
+    // TYPE — the pointee's at the first `*`, else the type-id's own — so a
+    // `volatile int *` argument is a distinct type (__is_same, partial
+    // specialization binding), never a spelling over `int *`.
+    // `lead_cv`: a leading cv the caller read as a MASK (an alias-template
+    // body's `volatile T *`) — the same type-id cv as the spelling's.
+    TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin,
+						std::string *cv_spelling = NULL,
+						unsigned lead_cv = cvNONE);
     // Resolve a fn-template parameter's DEFAULT token run to a concrete type,
     // substituting the already-bound type parameters in, then resolving in an
     // isolated token stream (handles trait-expression / template-id defaults like
@@ -6739,6 +6748,14 @@ public:
 	bool saw_parens = false;	// a `( declarator )` was read
 	bool function_pending = false;	// Declaration mode stopped at `name(`
     };
+    // THE type-id's type: the abstract declarator over `base` (parse_declarator,
+    // Abstract) with the leading cv the caller consumed — which qualifies the
+    // pointee at the first `*`, or, with no `*`, the type itself together with
+    // an east cv (`T volatile`); a cv after the last `*` qualifies that pointer.
+    // A type-id's top-level cv IS part of its type (a template argument, a
+    // using-alias target), unlike a declaration's, which is its object's.
+    // modeled_cv() bits only.
+    DataDef *parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl);
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
 			      const std::set<std::string> *runtime_names = NULL,

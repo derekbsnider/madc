@@ -136,7 +136,12 @@ answers.
   c2m, where `_Generic (&vs.m, ...)` picked `int *`), a volatile lvalue binds
   only `volatile int &`, and `T &` deduces `volatile int`. In C a const
   object's lvalue is const the same way (`&cs.m` of a `const struct S cs` is
-  `const int *`).
+  `const int *`). A template argument's `volatile` is part of it:
+  `std::is_same<volatile int, int>` is false, `remove_volatile`,
+  `add_volatile` and `remove_pointer` over volatile types give g++'s
+  answers, and an alias template whose target begins with `const` or
+  `volatile` (`template <class T> using c_t = const T *;`) is no longer
+  refused.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const

@@ -540,6 +540,42 @@ yet measured.
   function-pointer OBJECT's own volatile (`int (*volatile fp)(int)`) is not
   modeled (it was spelled nowhere either); a volatile PARAMETER object
   (`void f(volatile int n)`) is still non-volatile inside the body.
+- ~~`cxx_volatile_template_args`~~ — fixed 2026-09-23, silent (V1d + V1f). A
+  template type argument's cv rode a spelling string beside a type that
+  lacked it (`consume_template_type_arg_qualifiers`), so `__is_same` and
+  partial-specialization binding — which read the DataDef — saw `volatile
+  int *` as `int *`: `same<volatile int *, int *>` was 1,
+  `is_volatile<remove_pointer<volatile int *>::type>` 0. The type-id's cv now
+  goes INTO the type through one owner, `parse_type_id` (the abstract
+  declarator with the caller's leading cv — the pointee's at the first `*`,
+  else the type-id's own together with an east `T volatile`; a cv after the
+  last `*` the pointer's), reached through `fold_template_arg_declarator`
+  (the modeled words leave the spelling, so nothing is spelled twice). Four
+  consumers had leaned on the qualifier being absent: the partial-spec
+  matcher bound `_Tp` of `remove_volatile<_Tp volatile>` to the QUALIFIED
+  type (the pattern's qualifier is matched, not deduced — [temp.deduct.type]
+  /8 — it now sheds it); `unwrap_baked_trait_arg` peeled any qualifier off a
+  baked trait argument, so libstdc++'s `is_same<volatile int, int>` was true
+  (a baked const still rides `referent_const`, every other bit stays); the
+  using-alias reader skipped its target's leading cv (`using VI = volatile
+  int;`); and the alias-template BODY readers could not resolve a leading cv
+  at all — an alias template whose target begins with `const` or `volatile`
+  (`template <class T> using c_t = const T *;`) was refused as an undeclared
+  identifier at every use. The class-pattern normalizer (V1f) refused any
+  qualified level whose mask was not const-only, so a class template's
+  `typedef T volatile type;` fell back and lost the qualifier; its ConstType
+  node carries the mask in `flags` now (0 = const, the older records). The
+  gxx-c++11 lane then named one more consumer: g++.dg alias-decl-57's
+  `tuple_size<volatile tuple<>>` had matched only because the argument LOST
+  its volatile (straight to the `tuple<T...>` spec); kept, it must match
+  `tuple_size<volatile __has_tuple_size<T>>`, and the flat matcher gave up at
+  an alias-template-id in a pattern. An alias template whose target is one
+  of its own parameters is transparent there now ([temp.alias]/2).
+  Reducers `tests/testvolatiletemplateargcxx`,
+  `tests/testvolatiletypetraitscxx` (real `<type_traits>`). Residue: the
+  spelled trait-argument reader (`__is_same(volatile int, int)` written
+  directly) still hand-rolls its stars and drops volatile — with the
+  `_Generic` and `typeof` readers, V5.
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the
