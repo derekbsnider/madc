@@ -852,114 +852,113 @@ public:
     virtual TokenAssign *as_assign_tok() override { return this; }
 };
 
-// assignment operator += (assignment by sum)
-class TokenAddEq: public TokenMultiOp
+// A compound assignment `a @= b` ([expr.ass]/1 and /7, C11 6.5.16p3): its
+// type is the LEFT operand's, as `=`'s is (TokenAssign reads the same
+// operand_value_type); a class's operator@= keeps its declared return
+// (resolved_type). The ten operators below declared no type of their own and
+// answered the operator default, int — `*(p += 2)` was refused.
+class TokenCompoundAssign: public TokenMultiOp
 {
 public:
-    TokenAddEq() : TokenMultiOp("+=") {}
-    virtual TokenID id() const override { return TokenID::tkAddEq; }
-    virtual TokenBase *clone() override { return new TokenAddEq(); }
+    TokenCompoundAssign(const char *s) : TokenMultiOp(s) {}
     virtual inline int precedence()   const override { return 14; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	if ( DataDef *ld = operand_value_type(left) ) return ld;
+	return TokenOperator::datadef();
+    }
+};
+
+// assignment operator += (assignment by sum)
+class TokenAddEq: public TokenCompoundAssign
+{
+public:
+    TokenAddEq() : TokenCompoundAssign("+=") {}
+    virtual TokenID id() const override { return TokenID::tkAddEq; }
+    virtual TokenBase *clone() override { return new TokenAddEq(); }
 };
 
 // assignment operator -= (assignment by difference)
-class TokenSubEq: public TokenMultiOp
+class TokenSubEq: public TokenCompoundAssign
 {
 public:
-    TokenSubEq() : TokenMultiOp("-=") {}
+    TokenSubEq() : TokenCompoundAssign("-=") {}
     virtual TokenID id() const override { return TokenID::tkSubEq; }
     virtual TokenBase *clone() override { return new TokenSubEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator *= (assignment by product)
-class TokenMulEq: public TokenMultiOp
+class TokenMulEq: public TokenCompoundAssign
 {
 public:
-    TokenMulEq() : TokenMultiOp("*=") {}
+    TokenMulEq() : TokenCompoundAssign("*=") {}
     virtual TokenID id() const override { return TokenID::tkMulEq; }
     virtual TokenBase *clone() override { return new TokenMulEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator /= (assignment by quotient)
-class TokenDivEq: public TokenMultiOp
+class TokenDivEq: public TokenCompoundAssign
 {
 public:
-    TokenDivEq() : TokenMultiOp("/=") {}
+    TokenDivEq() : TokenCompoundAssign("/=") {}
     virtual TokenID id() const override { return TokenID::tkDivEq; }
     virtual TokenBase *clone() override { return new TokenDivEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator %= (assignment by remainder)
-class TokenModEq: public TokenMultiOp
+class TokenModEq: public TokenCompoundAssign
 {
 public:
-    TokenModEq() : TokenMultiOp("%=") {}
+    TokenModEq() : TokenCompoundAssign("%=") {}
     virtual TokenID id() const override { return TokenID::tkModEq; }
     virtual TokenBase *clone() override { return new TokenModEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator <<= (assignment by bitwise left shift)
-class TokenBSLEq: public TokenMultiOp
+class TokenBSLEq: public TokenCompoundAssign
 {
 public:
-    TokenBSLEq() : TokenMultiOp("<<=") {}
+    TokenBSLEq() : TokenCompoundAssign("<<=") {}
     virtual TokenID id() const override { return TokenID::tkBSLEq; }
     virtual TokenBase *clone() override { return new TokenBSLEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator >>= (assignment by bitwise right shift)
-class TokenBSREq: public TokenMultiOp
+class TokenBSREq: public TokenCompoundAssign
 {
 public:
-    TokenBSREq() : TokenMultiOp(">>=") {}
+    TokenBSREq() : TokenCompoundAssign(">>=") {}
     virtual TokenID id() const override { return TokenID::tkBSREq; }
     virtual TokenBase *clone() override { return new TokenBSREq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator &= (assignment by bitwise and)
-class TokenBandEq: public TokenMultiOp
+class TokenBandEq: public TokenCompoundAssign
 {
 public:
-    TokenBandEq() : TokenMultiOp("&=") {}
+    TokenBandEq() : TokenCompoundAssign("&=") {}
     virtual TokenID id() const override { return TokenID::tkBandEq; }
     virtual TokenBase *clone() override { return new TokenBandEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator |= (assignment by bitwise or)
-class TokenBorEq: public TokenMultiOp
+class TokenBorEq: public TokenCompoundAssign
 {
 public:
-    TokenBorEq() : TokenMultiOp("|=") {}
+    TokenBorEq() : TokenCompoundAssign("|=") {}
     virtual TokenID id() const override { return TokenID::tkBorEq; }
     virtual TokenBase *clone() override { return new TokenBorEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator ^= (assignment by bitwise xor)
-class TokenXorEq: public TokenMultiOp
+class TokenXorEq: public TokenCompoundAssign
 {
 public:
-    TokenXorEq() : TokenMultiOp("^=") {}
+    TokenXorEq() : TokenCompoundAssign("^=") {}
     virtual TokenID id() const override { return TokenID::tkXorEq; }
     virtual TokenBase *clone() override { return new TokenXorEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // overload function operator ()

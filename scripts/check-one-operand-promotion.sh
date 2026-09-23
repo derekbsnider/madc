@@ -15,17 +15,21 @@
 # typed `rl + 2` as the reference's POINTER (auto bound a pointer to 42 and
 # crashed).
 #
-# Two rules:
+# Three rules:
 #   1. no `left->datadef()` / `right->datadef()` in include/tokens.h code
 #      lines -- a child is read through an owner;
 #   2. the int promotion floor (`ddINT.size`) is spelled only inside the
 #      owners: usual_arithmetic_result, integer_promoted_type,
-#      promoted_operand_type.
-# Two-sided: the negative control proves both rules still bite.
+#      promoted_operand_type;
+#   3. a compound assignment (`+=` ... `^=`) is a TokenCompoundAssign, never a
+#      bare TokenMultiOp("@=") -- the ten of them once declared no type and
+#      answered int (`*(p += 2)` was refused, `sizeof(d *= 2)` was 4).
+# Two-sided: the negative control proves every rule still bites.
 set -u
 cd "$(dirname "$0")/.."
 
 CHILD='\b(left|right)->datadef\(\)'
+BARE_COMPOUND='TokenMultiOp\("(\+|-|\*|/|%|<<|>>|&|\||\^)="\)'
 ALLOWED='usual_arithmetic_result|integer_promoted_type|promoted_operand_type'
 
 code_lines() { grep -HnE "$1" "${@:2}" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*//'; }
@@ -70,11 +74,18 @@ class TokenShift: public TokenOperator
     { if ( ld->size > ddINT.size ) return ld; }
 };
 CTL
+cat > "$ctl/c.h" <<'CTL'
+    TokenAddEq() : TokenCompoundAssign("+=") {}
+    TokenBSLEq() : TokenMultiOp("<<=") {}
+    TokenLE() : TokenMultiOp("<=") {}
+CTL
 c1=$(code_lines "$CHILD" "$ctl/t.h" | grep -c .)
 c2=$(floor_sites "$ctl/f.cpp" | grep -c .)
-if [ "$c1" -ne 1 ] || [ "$c2" -ne 2 ]; then
+c3=$(code_lines "$BARE_COMPOUND" "$ctl/c.h" | grep -c .)
+if [ "$c1" -ne 1 ] || [ "$c2" -ne 2 ] || [ "$c3" -ne 1 ]; then
 	echo "check-one-operand-promotion: NEGATIVE CONTROL FAILED -- a direct child"
-	echo "  read matched $c1 of 1, a hand-rolled int floor $c2 of 2"
+	echo "  read matched $c1 of 1, a hand-rolled int floor $c2 of 2, a bare"
+	echo "  compound assignment $c3 of 1"
 	exit 1
 fi
 
@@ -93,6 +104,14 @@ echo "int promotion floor spelled outside the owners: $n2 (target 0)"
 if [ "$n2" -ne 0 ]; then
 	printf '%s\n' "$fl"
 	echo "  -> ask promoted_operand_type / integer_promoted_type (tokens.h)."
+	exit 1
+fi
+bc=$(code_lines "$BARE_COMPOUND" include/tokens.h)
+n3=$(printf '%s' "$bc" | grep -c . || true)
+echo "compound assignments outside TokenCompoundAssign: $n3 (target 0)"
+if [ "$n3" -ne 0 ]; then
+	printf '%s\n' "$bc"
+	echo "  -> derive TokenCompoundAssign (the left operand's type, [expr.ass])."
 	exit 1
 fi
 echo "GREEN -- an arithmetic operand's value and promoted type each have one owner."

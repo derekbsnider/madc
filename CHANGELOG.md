@@ -57,6 +57,9 @@ answers.
   narrowed to `int` / `float`. C++ keeps a type both arms share (`b ? uc : uc2`
   is `unsigned char`). Otherwise, and always in C, the usual arithmetic
   conversions apply.
+- **A compound assignment (`+=` ... `^=`) has its left operand's type**, as
+  `=` does. All ten were `int`: `sizeof(d *= 2)` was 4, and `*(p += 2)` was
+  refused.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
@@ -66,7 +69,8 @@ Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
 `testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
 `testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
 `testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
-`testconditionaltype`, `testconditionaltypec`.
+`testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
+`testcompoundassigntypec`.
 
 ### Unary `*` and `&` read their operand through one owner
 

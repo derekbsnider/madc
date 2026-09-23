@@ -23,7 +23,8 @@
   (`type_query_expression_value`), decay (`array_decay_pointer`), `*a`, `a->m` ask them.
 - An operand's VALUE (a reference is its referent) and its integer promotions:
   `operand_value_type` / `promoted_operand_type` (tokens.h) — every operator's type
-  reads its children through them (gated: `check-one-operand-promotion.sh`); `auto`
+  reads its children through them; `=`/`@=` are the left operand's (`TokenAssign`,
+  `TokenCompoundAssign`) (gated: `check-one-operand-promotion.sh`); `auto`
   and a lambda's return deduce through `Program::operand_value_datadef`.
 - A comparison or logical operator's result (bool in C++, int in C): the token's
   OWN type, recorded from `yields_truth_value()` by `resolve_object_operator_type`

@@ -238,6 +238,18 @@ yet measured.
   `testconditionaltypec`. Found beside it: C `_Generic` selects `default` for
   an enum operand where gcc/clang select its compatible type (joins
   `c_unfixed_enum_promotion`).
+- ~~`compound_assignment_untyped`~~ — fixed 2026-09-23, the third found beside
+  the operand-promotion family. The ten compound-assignment classes (`+=` ...
+  `^=`) declared no type and answered the operator default, int, in both
+  languages: `_Generic(d *= 2)` selected int and `sizeof(uc += 1)` was 4
+  (silent, in C), `f(p += 1)` bound `f(int)` (a c2mir check error) and
+  `*(p += 2)` was refused as a dereference of a non-pointer. An assignment
+  expression has its left operand's type ([expr.ass]/1, C11 6.5.16p3) —
+  TokenAssign's own `operand_value_type(left)` rule — so the ten now derive
+  one `TokenCompoundAssign` carrying it (and their shared precedence and
+  associativity). The operand gate's rule 3 refuses a bare
+  `TokenMultiOp("@=")` (ten at the parent). Reducers
+  `tests/testcompoundassigntype`, `testcompoundassigntypec`.
 - `declarator_star_suffix_outside_parse_declarator`: seven `tkMul` loops that
   bypass `consume_declarator_stars` (range-for verified; six candidates).
 - `single_level_pointee_accessor`: `dynamic_cast<DataDefPTR *>` 106 times vs
