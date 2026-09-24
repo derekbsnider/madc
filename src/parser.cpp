@@ -75593,9 +75593,13 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 			not_a_type_list = true;
 			break;
 		    }
+		    // The entry's leading const qualifies its base — the modeled
+		    // bits only (modeled_cv: in madc and C++ modes a declarator puts
+		    // no const into a type; minting one here made the entry a
+		    // `char const *` beside every other C++ `char *`).
 		    DataDef *entry = &tdt->definition;
 		    if ( entry_const )
-			entry = getConstType(entry);
+			entry = getQualifiedType(entry, cvCONST & modeled_cv());
 		    TokenBase *sep = nextToken();
 		    saved.push_back(sep);
 		    while ( sep && sep->id() == TokenID::tkMul )

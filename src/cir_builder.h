@@ -1510,8 +1510,8 @@ public:
 				   DataDefSTRUCT *anon_sdd);
 	// One N_POINTER level; `cv` (CvQual) is the pointer's OWN qualifiers.
 	node_t pointer(unsigned cv = cvNONE);
-	// The cv qualifiers a spec list / N_POINTER qual list spells (see
-	// rendered_cv in cir_builder.cpp for which ones reach the emitted C).
+	// The cv qualifiers a spec list / N_POINTER qual list spells: every bit
+	// of the mask (const and volatile).
 	void append_cv_specs(node_t lst, unsigned cv);
 
 	// ---- Function-pointer declarators ----

@@ -442,8 +442,7 @@ yet measured.
   its type. The CIR peel `dd_peel_pointers` records each level's cv
   (`level_cv`), so var, member, typedef, parameter, return, typed-extern, cast,
   fn-pointer and `va_arg` declarators spell `N_VOLATILE` where the type has it;
-  const is not spelled yet (c2mir would start enforcing it on madc's own
-  lowering; `cir_pointee_const_dropped`). The forest record carries the mask
+  const was not spelled then (`cir_pointee_const_dropped`, below). The forest record carries the mask
   in `flags` (0 = const, the records written before it). One consumer broke
   on a qualified aggregate and was already broken for const: the brace-init
   reader tested `dynamic_cast<DataDefSTRUCT *>` on the qualified type, so
@@ -652,6 +651,16 @@ yet measured.
   reads through `parse_type_id`, `&`/`&&` intact. Reducers
   `tests/testgenerictypenamec`, `tests/testtraittypenamecxx`. Still banked:
   the `typeof` type-id reader (`typeof_type_id_cv`).
+- ~~`cir_pointee_const_dropped`~~ — fixed 2026-09-23 (after V5; owner: no
+  shims, rule #2). The tree spelled only the volatile bit of a type's mask:
+  `rendered_cv` filtered const out, on the theory that c2mir would begin
+  enforcing it against madc's own lowering (a constructor writing a const
+  member, a const member function's `this`). Measured at deletion: a C++
+  declarator puts no const into a type (`modeled_cv`), so those hazards do
+  not arise, and in C the lowering is the source's — every lane stayed green
+  with const spelled. `append_cv_specs` spells every bit; the filter is gone.
+  `const int k` emits `int const k`, and c2mir enforces what the source
+  declared.
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

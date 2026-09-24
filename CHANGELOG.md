@@ -149,7 +149,8 @@ answers.
   member declared `volatile` (or `int *volatile`) is volatile. `_Generic`
   associations and `__builtin_types_compatible_p` accept any type name
   (`volatile int (*)[4]`, `int (**)(int)`), and `__is_same(volatile int *,
-  int *)` is false.
+  int *)` is false. `const` now reaches c2mir and `--emit=c11` output too
+  (`const int k` was emitted as `int k`).
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const

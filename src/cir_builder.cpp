@@ -4710,19 +4710,14 @@ void CirBuilder::native_func_shape(FuncDef *fd, bool &ret_ptr,
 	}
 }
 
-// The cv the emitted tree SPELLS of a type's qualifier mask. Volatile only: a
-// volatile access must reach c2mir (MIR_mem_t.volatile_p) and --emit=c11.
-// Const is NOT rendered yet — c2mir would begin enforcing it on madc's own
-// lowering (a ctor writing a const member, a const method's `this`); that is its
-// own measured step (KG Gap cir_pointee_const_dropped).
-static unsigned rendered_cv(unsigned cv)
-{
-	return cv & cvVOLATILE;
-}
-
+// The cv of a type's qualifier mask in the emitted tree: every modeled bit
+// (a volatile access reaches c2mir's MIR_mem_t.volatile_p; a const is c2mir's
+// and --emit=c11's to enforce and spell).
 void CirBuilder::append_cv_specs(node_t lst, unsigned cv)
 {
-	if (rendered_cv(cv) & cvVOLATILE)
+	if (cv & cvCONST)
+		append(lst, simple(N_CONST));
+	if (cv & cvVOLATILE)
 		append(lst, simple(N_VOLATILE));
 }
 
