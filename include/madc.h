@@ -6666,7 +6666,12 @@ public:
     // volatile is modeled in every mode (an access is performed as written,
     // C11 5.1.2.3p6 / [intro.execution]); const in C only — the C++ const
     // identity (overload ranking, mangling, deduction) is the const campaign's.
-    unsigned modeled_cv() const { return is_c_mode() ? (cvCONST | cvVOLATILE) : cvVOLATILE; }
+    // A C type-NAME identity read (the _Generic / __builtin_types_compatible_p
+    // operand, C11 6.2.7 compatibility) models EVERY bit in every mode: the
+    // read ORs its mask in for its extent (parse_builtin_types_compatible_operand).
+    unsigned cv_identity_read = cvNONE;
+    unsigned modeled_cv() const
+    { return (is_c_mode() ? (cvCONST | cvVOLATILE) : cvVOLATILE) | cv_identity_read; }
     // Id-addressable derived-type API — the boundary adapter for the type table
     // (design docs/plans/2026-06-12-type-table-value-abi-design.md §2/§6.1).
     // "pointer-to(id)" / "reference-to(id)" / "const(id)" resolved by typeid:

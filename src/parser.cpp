@@ -14491,6 +14491,18 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
     if ( !type_tb )
 	return false;
 
+    // These operands answer C type compatibility (6.2.7), whose identity is
+    // every cv bit — in madc and C++ modes too, where a declarator's type
+    // models only volatile until the const campaign (KG
+    // cxx_const_overload_identity). The read widens modeled_cv() for its
+    // extent; the spelling reader this replaced kept const the same way
+    // (tests/testbuiltintypescompatible: char * vs const char * in madc mode).
+    struct CvIdentityRead {
+	unsigned &slot; unsigned saved;
+	CvIdentityRead(unsigned &s) : slot(s), saved(s) { s = cvCONST | cvVOLATILE; }
+	~CvIdentityRead() { slot = saved; }
+    } cv_identity(cv_identity_read);
+
     // A type NAME: the leading cv run, the base (a keyword or typedef type, a
     // typeof operand, a struct/union/enum tag), then the declarator through
     // the ONE type-id owner (parse_type_id — every level's cv, `(*)(params)`,
