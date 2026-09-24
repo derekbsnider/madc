@@ -636,6 +636,22 @@ yet measured.
   volatile; a class-body volatile bit-field; the C++-valid qualification
   conversion `int (*)[3]` -> `volatile int (*)[3]` lowers with no cast
   (c2mir warns, the value is right).
+- ~~`generic_association_paren_declarator`~~ — fixed 2026-09-23 (V5), loud
+  and silent. Two type-NAME readers hand-rolled their declarators outside the
+  one owner. `parse_builtin_types_compatible_operand` (the `_Generic`
+  association and `__builtin_types_compatible_p` reader) built a string
+  signature from a `*`/`[]` suffix loop: `volatile int (*)[4]` and `int (**)
+  (int)` were refused ("Expecting ':' in _Generic association"), and a union
+  spelled `union:` there but `struct:` on the controlling side. It resolves
+  the base now, reads the declarator through `parse_type_id`, and renders the
+  result with `canonical_builtin_simple_type_name` — the controlling side's
+  renderer, so one type spells one way (a top-level cv, a pointer's
+  included, is dropped: gcc's rule). The SPELLED trait-argument reader
+  (`__is_same(volatile int *, int *)` written out) hand-rolled its stars and
+  dropped every volatile — all three volatile comparisons were true; it too
+  reads through `parse_type_id`, `&`/`&&` intact. Reducers
+  `tests/testgenerictypenamec`, `tests/testtraittypenamecxx`. Still banked:
+  the `typeof` type-id reader (`typeof_type_id_cv`).
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

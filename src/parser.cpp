@@ -14457,26 +14457,6 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     return dd->name;
 }
 
-static void strip_top_level_type_qualifiers(std::string &sig)
-{
-    static const char *prefixes[] = {"const ", "volatile ", "restrict "};
-    bool changed = true;
-    while ( changed )
-    {
-	changed = false;
-	for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
-	{
-	    const char *prefix = prefixes[i];
-	    size_t len = strlen(prefix);
-	    if ( sig.compare(0, len, prefix) == 0 )
-	    {
-		sig.erase(0, len);
-		changed = true;
-	    }
-	}
-    }
-}
-
 bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						   std::string &sig)
 {
@@ -14484,41 +14464,32 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
     if ( !type_tb )
 	return false;
 
-    // The cv run renders in the canonical order canonical_builtin_simple_type_name
-    // spells a DataDefQUAL's mask (`volatile const int` == `const volatile int`);
-    // any other qualifier keeps its source order after it.
+    // A type NAME: the leading cv run, the base (a keyword or typedef type, a
+    // typeof operand, a struct/union/enum tag), then the declarator through
+    // the ONE type-id owner (parse_type_id — every level's cv, `(*)(params)`,
+    // `(*)[N]`, `[N]`) — rendered by the renderer the controlling side
+    // (generic_controlling_signature) reads, so both sides spell one type one
+    // way. Its hand-rolled `*`/`[]` suffix loop could not read `volatile int
+    // (*)[4]` or `int (**)(int)` at all. `restrict` is no type identity.
     unsigned leading_cv = cvNONE;
-    std::string leading_qualifiers;
     while ( is_type_qualifier_token(type_tb) )
     {
 	if ( type_tb->id() == TokenID::tkCONST )
 	    leading_cv |= cvCONST;
 	else if ( type_tb->id() == TokenID::tkVOLATILE )
 	    leading_cv |= cvVOLATILE;
-	else
-	{
-	    if ( !leading_qualifiers.empty() )
-		leading_qualifiers += ' ';
-	    leading_qualifiers += ((TokenKeyword *)type_tb)->spelling();
-	}
 	type_tb = nextToken();
 	if ( !type_tb )
 	    return false;
     }
-    if ( leading_cv )
-    {
-	std::string cv = cv_prefix_spelling(leading_cv);
-	cv.erase(cv.size() - 1);	// the trailing space: joined below
-	leading_qualifiers = leading_qualifiers.empty() ? cv : cv + " " + leading_qualifiers;
-    }
 
+    DataDef *base = NULL;
+    bool long_double = false;
     if ( type_tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *tdt = (TokenDataType *)type_tb;
-	if ( tdt->spelling_is("long double") )
-	    sig = "long double";
-	else
-	    sig = canonical_builtin_simple_type_name(&tdt->definition);
+	long_double = tdt->spelling_is("long double");
+	base = &tdt->definition;
     }
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
@@ -14563,13 +14534,10 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
 	       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
 		return false;
-	    sig = canonical_builtin_simple_type_name(inner_dd);
+	    base = inner_dd;
 	}
 	else
-	{
-	    DataDef *dd = resolve_named_datadef(tname);
-	    sig = canonical_builtin_simple_type_name(dd);
-	}
+	    base = resolve_named_datadef(tname);
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
@@ -14577,86 +14545,32 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
-	sig = (type_tb->id() == TokenID::tkSTRUCT ? "struct:" : "union:")
-	    + contextual_identifier_name(tag_tb);
+	base = struct_tag_or_implicit_forward(contextual_identifier_name(tag_tb),
+					      type_tb->id() == TokenID::tkUNION);
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
 	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
-	sig = "enum:" + contextual_identifier_name(tag_tb);
+	TokenDataType *etdt = find_c_enum_tag(contextual_identifier_name(tag_tb));
+	base = etdt ? &etdt->definition : NULL;
     }
-    else
+    if ( !base )
 	return false;
 
-    if ( sig.empty() )
+    skip_expression_whitespace();
+    DeclaratorResult decl;
+    DataDef *t = parse_type_id(base, leading_cv, decl);
+    // Top-level qualifiers are no part of the comparison (gcc's
+    // __builtin_types_compatible_p; a _Generic controlling type is
+    // lvalue-converted, 6.5.1.1p2).
+    t = t ? t->unqualified() : NULL;
+    if ( !t )
 	return false;
-    if ( !leading_qualifiers.empty() )
-	sig = leading_qualifiers + " " + sig;
-
-    bool wrapped = false;
-    while ( peekToken() )
-    {
-	skip_expression_whitespace();
-	if ( !peekToken() )
-	    break;
-	if ( peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    std::string ptr_qualifiers;
-	    unsigned ptr_cv = cvNONE;
-	    skip_expression_whitespace();
-	    while ( peekToken() && is_type_qualifier_token(peekToken()) )
-	    {
-		TokenBase *q = nextToken();
-		if ( q->id() == TokenID::tkCONST )
-		    ptr_cv |= cvCONST;
-		else if ( q->id() == TokenID::tkVOLATILE )
-		    ptr_cv |= cvVOLATILE;
-		else
-		{
-		    if ( !ptr_qualifiers.empty() )
-			ptr_qualifiers += ' ';
-		    ptr_qualifiers += ((TokenKeyword *)q)->spelling();
-		}
-	    }
-	    if ( ptr_cv )
-	    {
-		std::string cv = cv_prefix_spelling(ptr_cv);
-		cv.erase(cv.size() - 1);
-		ptr_qualifiers = ptr_qualifiers.empty() ? cv : cv + " " + ptr_qualifiers;
-	    }
-	    sig = ptr_qualifiers.empty()
-		? "ptr(" + sig + ")"
-		: ptr_qualifiers + " ptr(" + sig + ")";
-	    wrapped = true;
-	    continue;
-	}
-	if ( peekToken()->id() == TokenID::tkOpSqr )
-	{
-	    nextToken();
-	    int depth = 1;
-	    while ( depth > 0 )
-	    {
-		TokenBase *dim_tb = nextToken();
-		if ( !dim_tb )
-		    return false;
-		if ( dim_tb->id() == TokenID::tkOpSqr )
-		    ++depth;
-		else if ( dim_tb->id() == TokenID::tkClSqr )
-		    --depth;
-	    }
-	    sig = "array(" + sig + ")";
-	    wrapped = true;
-	    continue;
-	}
-	break;
-    }
-
-    if ( !wrapped )
-	strip_top_level_type_qualifiers(sig);
-    return true;
+    sig = (long_double && t == base->unqualified())
+	? std::string("long double") : canonical_builtin_simple_type_name(t);
+    return !sig.empty();
 }
 
 // C11 6.5.1.1 generic selection — `_Generic(ctrl, T1: e1, ..., default: eD)`.
@@ -16548,30 +16462,31 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	if ( !adt )
 	    Throw(at ? at : op_tb) << "Expecting a type argument to " << name << flush;
 	DataDef *dd = &adt->definition;
-	// Fold trailing pointer stars (`__is_pointer(int*)`), mirroring the
-	// template-argument parser.
-	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    dd = getPointerType(dd);
-	}
-	// cv-qualifiers on the POINTER itself (`char* const`, `const char*
-	// const&` — libc++'s `const _Tp&` with _Tp a pointer, once spelled):
-	// the top-level cv of a by-value operand is dropped ([expr.type]); on
-	// a reference operand it is the referent's constness.
-	bool pointer_const = false;
-	while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
-			     || peekToken()->id() == TokenID::tkVOLATILE) )
-	{
-	    if ( nextToken()->id() == TokenID::tkCONST )
-		pointer_const = true;
-	}
+	// The type-id's declarator through the ONE type-id owner
+	// (parse_type_id): `*`s with every level's modeled cv (so
+	// `__is_same(volatile int *, int *)` is false — this reader hand-rolled
+	// its stars and dropped every volatile), then `&`/`&&` (load-bearing for
+	// __is_assignable). A const on the pointer itself (`char* const&`,
+	// libc++'s `const _Tp&` with _Tp a pointer, once spelled) is the
+	// referent's constness on a reference operand; C++ const is not in the
+	// type, so it rides referent_const as the leading `const` does.
+	unsigned trait_lead_cv = (cv_spelling.find("volatile") != std::string::npos
+				  ? cvVOLATILE : cvNONE)
+			       | (cv_spelling.find("const") != std::string::npos
+				  ? cvCONST : cvNONE);
+	DeclaratorResult td;
+	dd = parse_type_id(dd, trait_lead_cv, td);
 	a.dd = dd;
-	// Trailing reference (`T&` / `T&&`) — load-bearing for __is_assignable.
-	if ( peekToken() && peekToken()->id() == TokenID::tkBand )
-	{ nextToken(); a.is_lref = true; a.referent_const |= pointer_const; }
-	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
-	{ nextToken(); a.is_rref = true; a.referent_const |= pointer_const; }
+	if ( td.ref == RefType::rtReference )
+	{
+	    if ( DataDefREF *r = dd->as_reference_dd() )
+		a.dd = r->base_type;
+	    if ( td.rvalue_ref )
+		a.is_rref = true;
+	    else
+		a.is_lref = true;
+	    a.referent_const |= td.const_after_star;
+	}
 	unwrap_baked_trait_arg(*this, a);
 	// [meta.rqmts]: a type trait's class operand shall be complete — a
 	// pending shell (a deferred template-argument instantiation, a bodyless

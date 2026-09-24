@@ -146,7 +146,10 @@ answers.
   and `this` inside it is `volatile C *`. A volatile parameter keeps its
   value across `longjmp`, K&R declarations may start with `volatile`, a
   `volatile int a[][3]` parameter's elements are volatile, and a C++ class
-  member declared `volatile` (or `int *volatile`) is volatile.
+  member declared `volatile` (or `int *volatile`) is volatile. `_Generic`
+  associations and `__builtin_types_compatible_p` accept any type name
+  (`volatile int (*)[4]`, `int (**)(int)`), and `__is_same(volatile int *,
+  int *)` is false.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const

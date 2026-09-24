@@ -71,8 +71,9 @@
   ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_type()`. A declarator list's tail re-pushes it:
   `push_declarator_list_tail`. Member access merges the object's cv: `member_access_type`
   over `glvalue_cv`; a call argument's type: `call_argument_type`.
-- A TYPE-ID (a template argument, a using-alias or alias-template target): `parse_type_id`
-  (via `fold_template_arg_declarator`) — its leading/east/after-star cv is the TYPE's.
+- A TYPE-ID (a template argument, a using-alias or alias-template target, a `_Generic` /
+  `__builtin_types_compatible_p` type name, a spelled trait argument): `parse_type_id`
+  — its leading/east/after-star cv is the TYPE's; never a hand-rolled `*`/`[]` loop.
 - A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
   `pointer(cv)` per level and `append_cv_specs` for the base (cir).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
