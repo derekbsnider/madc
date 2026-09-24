@@ -167,6 +167,9 @@ answers.
   `int` and `u + l` `unsigned int` (C: `long`, and `unsigned long`, since a
   32-bit `long` cannot hold every `unsigned int`); on macOS `long long`
   rendered as `long`.
+  The release binaries serve `<setjmp.h>` and `<signal.h>` from their own
+  header pack — a machine with no headers installed could not compile a
+  program that included them.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
