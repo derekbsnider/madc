@@ -85,6 +85,8 @@
   `cv_qualified_spelling`; a parameter's: `param_declarator_spelling` (cv from the type).
 - A pointer's or referent's qualification conversion ([conv.qual], [over.ics.rank]/3.2.5-6):
   `score_arg_to_param` — never a peel of the pointee's cv before comparing.
+- A partial specialization's pattern against a type: `unify_spec_pattern_arg` — each `*`
+  level's cv exactly (`level_cv`), the core's modeled cv on the TYPE, not its spelling.
 - A member function's cv-qualifier-seq: `FuncDef::method_cv()` (mangling, out-of-line
   matching, the record); the implicit object's cv: `Program::implicit_object_cv`.
 

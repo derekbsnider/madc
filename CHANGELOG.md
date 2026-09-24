@@ -154,7 +154,9 @@ answers.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const
-  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`). The volatile
+  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`); and a class
+  template partial specialization ignored a pointer level's `volatile`
+  (`S<T*>` matched `int *volatile`, `S<T volatile>` missed it). The volatile
   gate now counts madc's accesses too.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one

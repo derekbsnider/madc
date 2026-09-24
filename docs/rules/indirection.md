@@ -670,6 +670,18 @@ yet measured.
   with const spelled. `append_cv_specs` spells every bit; the filter is gone.
   `const int k` emits `int const k`, and c2mir enforces what the source
   declared.
+- ~~`partial_spec_pointer_level_cv`~~ — fixed 2026-09-24, silent, older than
+  the volatile work. `unify_spec_pattern_arg` (the flat `[cv] PARAM [*]*`
+  unifier) skipped every qualifier after a `*`, so `ip<T*>` matched `int
+  *volatile` and `iv<T *volatile>` matched a plain `int *`; and it matched
+  the core's `volatile` on a spelling PREFIX, which `int *volatile` (cv after
+  the star) never has, so `is_v<T volatile>` missed it. A class argument
+  matches only an identical type ([temp.class.spec.match]): each star records
+  its own cv (`level_cv`), each concrete level's modeled cv must equal it, and
+  the core's modeled cv is tested on the TYPE — only the unmodeled bits (C++
+  const, restrict) stay on the spelling. The pointer peel reads through
+  `pointer_dd_of` (it cast a qualified pointer to `DataDefPTR *`). Reducer
+  `tests/testvolatilepartialspeccxx`.
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

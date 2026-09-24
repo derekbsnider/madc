@@ -33289,6 +33289,9 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
     std::string core;
     int ptr = 0;
     int ref = 0;   // reference declarator level in the pattern (`_Tp&` / `_Tp&&`)
+    // The cv the pattern spells after its j-th `*` (level_cv[j], j from 1 —
+    // the innermost star first): that POINTER's own qualification.
+    std::vector<unsigned> level_cv(1, cvNONE);
     if ( simple )
     {
 	core = contextual_identifier_name(pat[i]);
@@ -33337,7 +33340,8 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 		}
 	while ( i < pat.size() )
 	{
-	    if ( pat[i]->id() == TokenID::tkMul ) { ++ptr; ++i; }
+	    if ( pat[i]->id() == TokenID::tkMul )
+	    { ++ptr; level_cv.push_back(cvNONE); ++i; }
 	    // A reference declarator (`&`/`&&`). madc collapses lvalue/rvalue refs
 	    // into one DataDefREF, so both spellings peel one reference level; the
 	    // count just records that the slot is a reference pattern (`_Tp&`).
@@ -33351,8 +33355,7 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 		// the qualifier. Skipping it silently made `is_const<_Tp const>`
 		// match PLAIN long — a silent wrong `true` that poisoned every
 		// make_unsigned<_Integral> in libc++'s num_put. A qualifier after a
-		// declarator token (`_Tp* const`) qualifies the POINTER level, which
-		// the flat model does not track — skipped as before.
+		// `*` (`_Tp* volatile`) qualifies that POINTER level: level_cv.
 		if ( ptr == 0 && ref == 0 )
 		{
 		    if ( pat[i]->id() == TokenID::tkCONST )
@@ -33362,13 +33365,36 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 		    else if ( pat[i]->id() == TokenID::tkRESTRICT )
 		    { required_cv += "restrict "; ++cv; }
 		}
+		else if ( ref == 0 )
+		{
+		    if ( pat[i]->id() == TokenID::tkCONST )
+			level_cv[ptr] |= cvCONST;
+		    else if ( pat[i]->id() == TokenID::tkVOLATILE )
+			level_cv[ptr] |= cvVOLATILE;
+		}
 		++i;
 	    }
 	    else { simple = false; break; }   // leftover token => not the simple shape
 	}
     }
-    if ( !required_cv.empty()
-      && concrete_spelling.compare(0, required_cv.size(), required_cv) != 0 )
+    // The pattern's cv on PARAM is a requirement on the concrete type at the
+    // core ([temp.deduct.type]/8). A modeled bit (modeled_cv) lives in the
+    // type and is tested there, after the declarator peel below — a spelling
+    // prefix cannot see `int *volatile` (its cv follows the star). An
+    // unmodeled bit (C++ const, restrict) lives in the spelling only.
+    const unsigned req_cv =
+	(required_cv.find("const") != std::string::npos ? cvCONST : cvNONE)
+	| (required_cv.find("volatile") != std::string::npos ? cvVOLATILE : cvNONE);
+    const unsigned typed_req = req_cv & pgm.modeled_cv();
+    std::string spelled_req;
+    if ( (req_cv & cvCONST) && !(typed_req & cvCONST) )
+	spelled_req += "const ";
+    if ( (req_cv & cvVOLATILE) && !(typed_req & cvVOLATILE) )
+	spelled_req += "volatile ";
+    if ( required_cv.find("restrict") != std::string::npos )
+	spelled_req += "restrict ";
+    if ( !spelled_req.empty()
+      && concrete_spelling.compare(0, spelled_req.size(), spelled_req) != 0 )
 	return false;
     bool is_param = false;
     if ( simple )
@@ -33396,25 +33422,32 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
     if ( ref )
     {
 	if ( !cur || !cur->is_reference() ) return false;
-	cur = ((DataDefPTR *)cur)->base_type;
+	DataDefPTR *rp = pointer_dd_of(cur);
+	cur = rp ? rp->base_type : NULL;
     }
+    // Outermost level first: the concrete's k-th level is the pattern's star
+    // (ptr - k), and a class argument matches only an IDENTICAL type
+    // ([temp.class.spec.match]) — the level's modeled cv is exactly the
+    // pattern's (`_Tp*` never matches `int *volatile`, `_Tp *volatile` never
+    // a plain `int *`).
     for ( int k = 0; k < ptr; ++k )
     {
 	if ( !cur || !cur->is_pointer() || cur->is_reference() ) return false;
-	cur = ((DataDefPTR *)cur)->base_type;
+	if ( (cur->cv_quals() & pgm.modeled_cv())
+	     != (level_cv[ptr - k] & pgm.modeled_cv()) )
+	    return false;
+	DataDefPTR *pp = pointer_dd_of(cur);
+	cur = pp ? pp->base_type : NULL;
     }
     if ( !cur ) return false;
+    if ( typed_req && (cur->cv_quals() & typed_req) != typed_req )
+	return false;
     // The qualifiers the pattern spells on PARAM are matched, not deduced
     // ([temp.deduct.type]/8: `_Tp volatile` against `volatile int` binds
     // _Tp = int): shed them from the binding. Only the modeled bits live in
     // the type (modeled_cv); the rest were matched on the spelling above.
-    if ( !required_cv.empty() && cur->cv_quals() )
-    {
-	unsigned req = (required_cv.find("volatile") != std::string::npos ? cvVOLATILE : cvNONE)
-		     | (required_cv.find("const") != std::string::npos ? cvCONST : cvNONE);
-	if ( cur->cv_quals() & req )
-	    cur = pgm.getQualifiedType(cur->unqualified(), cur->cv_quals() & ~req);
-    }
+    if ( req_cv && (cur->cv_quals() & req_cv) )
+	cur = pgm.getQualifiedType(cur->unqualified(), cur->cv_quals() & ~req_cv);
     std::map<std::string, DataDef *>::iterator d = ded.find(core);
     if ( d != ded.end() && d->second && d->second->name != cur->name )
 	return false;                         // inconsistent (e.g. pair<T,T> with T!=T)
