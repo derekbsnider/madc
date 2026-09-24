@@ -402,11 +402,11 @@ editing — don't try to memorize all of them.
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
-| [indirection.md](.claude/rules/indirection.md) |    93 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
+| [indirection.md](.claude/rules/indirection.md) |    94 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **36 rules, 1186 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1187 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~1600 lines.**

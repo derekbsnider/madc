@@ -670,6 +670,20 @@ yet measured.
   with const spelled. `append_cv_specs` spells every bit; the filter is gone.
   `const int k` emits `int const k`, and c2mir enforces what the source
   declared.
+- ~~`pointee_rawtype_rank`~~ — fixed 2026-09-24, silent, older than the
+  volatile work (HEAD printed the same). `score_arg_to_param`'s non-class
+  pointee arm fell back to a REPRESENTATION test (`rawtype()` equal) for a
+  pointee it could not prove, and a pointer's `rawtype()` is its own
+  pointee's — so an `int**` argument ranked EXACT against `int*`, and `D**`
+  against `B**`. `f(int*)` / `f(int**)` was called ambiguous; a function
+  template called at `T = volatile int` and then at `T = int *volatile` bound
+  the second call to the FIRST instance (`sizeof (T)` 4, g++ 8) — the one
+  census warning left on `testvolatileresiduecxx`, whose `pv (&k.p)` field
+  was green only because it ran the wrong instance. Below the first level
+  there is no conversion at all (not derived-to-base, not to `void*`;
+  [conv.qual]'s cv is checked level by level already), so a pointer pointee
+  must score the scorer's own EXACT rank one level down. Reducer
+  `tests/testpointeelevelovlcxx`.
 - ~~`partial_spec_pointer_level_cv`~~ — fixed 2026-09-24, silent, older than
   the volatile work. `unify_spec_pattern_arg` (the flat `[cv] PARAM [*]*`
   unifier) skipped every qualifier after a `*`, so `ip<T*>` matched `int

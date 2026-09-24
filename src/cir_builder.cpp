@@ -15363,6 +15363,22 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (ab && pb) {
 				if (ab->is_void() || pb->is_void())
 					return 3 - qual_adjust;   // void* standard conversion
+				// A POINTER pointee on either side: [conv.ptr] has
+				// no T** -> T* conversion and none at all below the
+				// first level (derived-to-base included; [conv.qual]'s
+				// cv is checked above), so the pointee must BE the
+				// other's type — this scorer's own EXACT rank one
+				// level down. A pointer's rawtype() is its own
+				// pointee's, so the representation test below graded
+				// int** exact against int*: f(int*)/f(int**) was
+				// "ambiguous", sz<int*>'s call bound sz<int>'s
+				// instance, and D** bound B** over void*
+				// (tests/testpointeelevelovlcxx).
+				if (ab->is_pointer() || pb->is_pointer())
+					return score_arg_to_param(ab, pb, false,
+								  false, false,
+								  false) == 5
+						? 5 - qual_adjust : -1;
 				if (ab == pb || ab->name == pb->name)
 					return 5 - qual_adjust;
 				// ENUM pointees keep their own conversion domain

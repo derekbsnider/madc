@@ -154,7 +154,11 @@ answers.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const
-  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`); and a class
+  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`); overload
+  resolution ranked an `int**` argument as an exact match for an `int*`
+  parameter (and `D**` for `B**`), so `f(int*)` / `f(int**)` was reported
+  ambiguous and a function template could run the instance built for a
+  different type (`sizeof (T)` 4 for an `int *volatile`); and a class
   template partial specialization ignored a pointer level's `volatile`
   (`S<T*>` matched `int *volatile`, `S<T volatile>` missed it). The volatile
   gate now counts madc's accesses too.
