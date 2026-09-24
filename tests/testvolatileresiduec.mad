@@ -1,0 +1,40 @@
+// C: the residue shapes of "an object's cv is its type's". A volatile
+// PARAMETER object keeps its value across longjmp (C11 7.13.2.1p3) — the
+// function type drops a parameter's top-level cv ([dcl.fct]/5, 6.7.6.3p15),
+// its definition declares it (`int f(volatile int n)`; the prototype stays
+// `int f(int)`); so does a K&R `volatile int a;` declaration (the list was
+// refused: `volatile` was not a declaration start). A multi-dimensional array
+// parameter `volatile int a[][3]` qualifies its ELEMENTS (6.7.3p9) — the row
+// type was left unqualified. A `const int c` member's `&s.c` is `const int *`
+// (a member's top-level cv is its type's, const too in C).
+// Oracle: clang (-O0 and -O2) and gcc -O0 print testvolatileresiduec.expect.
+#include <stdio.h>
+#include <setjmp.h>
+typedef int A3[3];
+struct S { const int c; int m; };
+static jmp_buf jb;
+static void jump (void) { longjmp (jb, 1); }
+static int param (volatile int n) {
+  if (setjmp (jb) == 0) { n = n * 10 + 5; jump (); }
+  return n;
+}
+static int kr (a, b) volatile int a; int b; {
+  if (setjmp (jb) == 0) { a = a * 10 + b; jump (); }
+  return a;
+}
+static int rows (volatile int a[][3]) {
+  return _Generic (&a[1][2], int *: 1, volatile int *: 2, default: 0);
+}
+static int twice (int x) { return 2 * x; }
+int main (void) {
+  volatile A3 va = { 1, 2, 3 };
+  struct S s = { 7, 8 };
+  int (*volatile fp) (int) = twice;
+  int m[2][3] = { { 0 } };
+  printf ("param: %d %d\n", param (4), kr (4, 6));
+  printf ("arr: %d %d\n", _Generic (&va[1], int *: 1, volatile int *: 2, default: 0), rows (m));
+  printf ("cmem: %d %d\n", _Generic (&s.c, int *: 1, const int *: 3, default: 0),
+          __builtin_types_compatible_p (__typeof__ (&s.c), const int *));
+  printf ("fp: %d\n", fp (21));
+  return 0;
+}

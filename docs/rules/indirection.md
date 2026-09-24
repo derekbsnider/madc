@@ -598,6 +598,44 @@ yet measured.
   the implicit `this` merges its cv. Reducer `tests/testvolatilemethodcxx`
   (the g++ symbols called through their names). Residue: a pointer to a
   volatile member function (`DataDefMemberFnPtr` carries const alone).
+- ~~`mir_target_volatile_audit`~~ — audited 2026-09-23 (V3), no defect. The
+  question: does any MIR target back end fold, merge, move or delete a
+  memory operand behind the generic passes' `volatile_mem_insn_p`? None of
+  mir-gen-{x86_64,aarch64,ppc64,riscv64,s390x}.c has a peephole or combine of
+  its own (the load-folding combiner is the generic one, which asks). Their
+  reads of a user operand's `var_mem` fields are `pattern_match_p` /
+  `target_memory_ok_p` (predicates), `out_insn` and `target_split_insns`
+  (both after the last volatile-sensitive pass — gvn, dse, the two dead-code
+  eliminations and both combines run before them), and `machinize_call`'s
+  copy of a by-value aggregate ARGUMENT (fresh operands without the bit; the
+  copy feeds the call, and no post-RA pass merges or reorders it). Every
+  other operand a target builds is a compiler-generated access (prologue,
+  `va_arg`, `alloca`, stack arguments). x86-64 is measured by
+  `check-volatile-accesses.sh` (-O0..-O3, c2m and madc); aarch64 by this
+  reading and the aarch64-ld qemu lane at the seam.
+- ~~`volatile_residue_shapes`~~ — fixed 2026-09-23 (V4), silent. Five
+  shapes the object-cv model had not reached: a volatile PARAMETER object
+  (`int f(volatile int n)` — the function type drops a parameter's top-level
+  cv, [dcl.fct]/5, but the definition must declare it: its body variable now
+  carries it through a `param_object_cvs` list parallel to `param_aliases`,
+  and the CIR's func_def declares `int volatile n` while the prototype keeps
+  `int n`; clang -O2 and gcc -O0 print 45 where madc printed 4 after
+  longjmp); a K&R `volatile int a;` declaration (refused: `volatile` was not a
+  declaration start, and the base reader skipped the cv); a multi-dimensional
+  array parameter `volatile int a[][3]` (the adjusted row stayed unqualified
+  — `qualify_array_elements` rebuilds a qualified array with its innermost
+  element qualified, 6.7.3p9); a C `const int c` member (unmodeled); and a
+  C++ class body's data member (`volatile int v;`, `int *volatile p;` — the
+  class arm read its leading cv as a mask and threw it away, and hand-rolled
+  a star loop that dropped each level's; it now takes
+  `consume_declarator_stars`, the star run's one owner). The four sites that
+  each computed "the object's own top-level cv" from a declarator result —
+  the declaration, the parameter reader, `member_declarator`, K&R — are one
+  owner, `declarator_object_cv`. Reducers `tests/testvolatileresiduec`,
+  `tests/testvolatileresiduecxx`. Residues: a function-pointer OBJECT's own
+  volatile; a class-body volatile bit-field; the C++-valid qualification
+  conversion `int (*)[3]` -> `volatile int (*)[3]` lowers with no cast
+  (c2mir warns, the value is right).
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

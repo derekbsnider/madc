@@ -6771,6 +6771,15 @@ public:
     // using-alias target), unlike a declaration's, which is its object's.
     // modeled_cv() bits only.
     DataDef *parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl);
+    // THE top-level cv of the OBJECT a declarator declares (modeled_cv bits):
+    // the leading run the caller consumed plus the declarator's own east cv
+    // when no `*` intervenes, else the cv after the last `*` (the pointer
+    // object's). A declaration's variable, a parameter object, a member and a
+    // K&R parameter all read it.
+    unsigned declarator_object_cv(const DeclaratorResult &r, unsigned leading_cv);
+    // A qualified ARRAY qualifies its elements (C11 6.7.3p9): `arr` rebuilt
+    // through nest_carray_dims with its innermost element qualified by `cv`.
+    DataDef *qualify_array_elements(DataDef *arr, unsigned cv);
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
 			      const std::set<std::string> *runtime_names = NULL,
@@ -6959,10 +6968,11 @@ public:
     bool is_old_style_parameter_head(TokenBase *tb);
     bool try_parse_implicit_int_function_definition(TokenBase *tb);
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
-    DataDef *parse_old_style_parameter_base(TokenBase *&nt);
+    DataDef *parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv = NULL);
     void parse_old_style_parameter_declaration(TokenBase *nt,
 		const std::vector<std::string> &param_ids,
-		std::map<std::string, DataDef *> &param_types);
+		std::map<std::string, DataDef *> &param_types,
+		std::map<std::string, unsigned> *param_object_cvs = NULL);
     bool scan_old_style_definition_suffix(std::vector<TokenBase *> &suffix);
     // Namespace resolution helpers: walk the enclosing-namespace chain to find
     // a member, resolve a bare name against the active namespace scope, and

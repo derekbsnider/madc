@@ -65,9 +65,10 @@
   pointee — volatile in every mode, const in C only); `[dims]`:
   `parse_array_dimensions` + `nest_carray_dims` (gated).
 - An object's top-level cv (`modeled_cv()`'s bits) is its declared TYPE's — a variable's
-  (parseDeclaration, from `base_cv` / `*_after_star`), a member's, a typedef's, a
-  reference's referent (the `&`); never a flag. A value slot dispatches on
-  `Variable::slot_type()`, the unqualified type. A declarator list's tail re-pushes it:
+  (parseDeclaration), a member's (incl. a class body's), a typedef's, a parameter
+  OBJECT's (the definition's, never the function type's), a reference's referent (the
+  `&`); never a flag — all through `declarator_object_cv`. A qualified array: its
+  ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_type()`. A declarator list's tail re-pushes it:
   `push_declarator_list_tail`. Member access merges the object's cv: `member_access_type`
   over `glvalue_cv`; a call argument's type: `call_argument_type`.
 - A TYPE-ID (a template argument, a using-alias or alias-template target): `parse_type_id`

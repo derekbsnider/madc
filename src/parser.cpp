@@ -50232,10 +50232,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	// --- normal member or method: type name ... ---
 	// Optional leading cv-qualifiers on a data member / method return type:
-	// `const char *m;`, `volatile int v;`. madc does not enforce member
-	// const-correctness, so consume them (a const data member is an ordinary
-	// member).
-	pgm.skip_cv_qualifier_tokens();
+	// `const char *m;`, `volatile int v;` — kept as a mask: the pointee's at
+	// the first `*`, a data member's own when no `*` intervenes (below).
+	unsigned class_member_lead_cv = pgm.skip_cv_qualifier_tokens();
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -50486,23 +50485,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// member-name parse below sees `const` where it expects the name — libstdc++'s
 	// `__concurrence_lock_error::what()` returns `char const*`, blocking the whole
 	// <memory> uninitialized-copy chain (vector reallocation).
-	while ( pgm.peekToken()
-	     && (pgm.peekToken()->id() == TokenID::tkCONST
-	      || pgm.peekToken()->id() == TokenID::tkVOLATILE) )
-	    pgm.nextToken();
+	unsigned class_member_east_cv = pgm.skip_cv_qualifier_tokens();
 
-	// check for pointer declarator(s): type * [*...] member_name
+	// Pointer declarator(s): type * [cv] [*...] member_name — the star+cv
+	// run's ONE owner, consume_declarator_stars: each pointee takes its level's
+	// cv (the leading/east run the first), and the cv after the last `*` is
+	// the pointer member's own. (Its hand-rolled copy dropped every cv.)
 	DataDef *cmember_dd = &mtype->definition;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	{
-	    pgm.nextToken(); // consume '*'
-	    cmember_dd = pgm.getPointerType(cmember_dd);
-	    while ( pgm.peekToken()
-		 && (pgm.peekToken()->id() == TokenID::tkCONST
-		  || pgm.peekToken()->id() == TokenID::tkVOLATILE
-		  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-		pgm.nextToken();
-	}
+	bool member_const_after = false, member_volatile_after = false;
+	int member_stars = pgm.consume_declarator_stars(cmember_dd, &member_const_after,
+		class_member_lead_cv | class_member_east_cv, NULL, &member_volatile_after);
+	if ( cmember_dd->as_fptr_dd() )		// a fn-pointer base: the owner counts, the reader applies
+	    for ( int s = 0; s < member_stars; ++s )
+		cmember_dd = pgm.getPointerType(cmember_dd);
+	// A DATA member's own top-level cv (its type's — [class.mem]; a method's
+	// return keeps only the pointee levels above), applied once it is known
+	// to be one (below).
+	unsigned class_member_object_cv = (member_stars == 0
+	    ? (class_member_lead_cv | class_member_east_cv)
+	    : ((member_const_after ? cvCONST : cvNONE)
+	       | (member_volatile_after ? cvVOLATILE : cvNONE))) & pgm.modeled_cv();
 
 	// Reference return type on a method: `T& method()` / `T& operator[]()`.
 	// ret_is_ref drives the FuncDef return type: parseFunction builds it as a
@@ -50533,7 +50535,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // `(&r)[N]`, `(*fa[N])(params)` — the ONE reader through the member
 	    // contract. (A method's `(` follows its NAME and is handled below.)
 	    Program::MemberDeclarator gmd;
-	    cmember_dd = pgm.member_declarator(cmember_dd, gmd);
+	    cmember_dd = pgm.member_declarator(cmember_dd, gmd,
+		member_stars == 0 ? class_member_lead_cv | class_member_east_cv : cvNONE);
 	    if ( gmd.count_expr )
 		pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
 	    ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
@@ -50840,6 +50843,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				 ? 0 : member_count * member_dims[di];
 		}
 	    }
+	    if ( class_member_object_cv && !cmember_dd->is_reference()
+	      && !cmember_dd->is_function() )
+		cmember_dd = pgm.getQualifiedType(cmember_dd, class_member_object_cv);
 	    if ( is_static_member )
 	    {
 		ddc->static_member_types[mname] = cmember_dd;
@@ -50999,7 +51005,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			// Each tail declarator: the ONE reader through the member
 			// contract, from the undecorated base.
 			Program::MemberDeclarator nmd;
-			DataDef *next_dd = pgm.member_declarator(&mtype->definition, nmd);
+			DataDef *next_dd = pgm.member_declarator(&mtype->definition, nmd,
+				class_member_lead_cv | class_member_east_cv);
 			TokenBase *nm = nmd.name_tok;
 			std::string nmname = nmd.name;
 			size_t ncount = nmd.count;
@@ -53060,6 +53067,35 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
     return arr;
 }
 
+unsigned Program::declarator_object_cv(const DeclaratorResult &r, unsigned leading_cv)
+{
+    unsigned cv = (r.ptr_depth == 0 && r.nested_stars == 0)
+	? (leading_cv | (r.base_const ? cvCONST : cvNONE)
+		      | (r.base_volatile ? cvVOLATILE : cvNONE))
+	: ((r.const_after_star ? cvCONST : cvNONE)
+	   | (r.volatile_after_star ? cvVOLATILE : cvNONE));
+    return cv & modeled_cv();
+}
+
+DataDef *Program::qualify_array_elements(DataDef *arr, unsigned cv)
+{
+    cv &= modeled_cv();
+    DataDefCArray *outer = arr ? arr->as_carray_dd() : NULL;
+    if ( !cv || !outer )
+	return arr;
+    std::vector<carray_dim_t> dims;
+    std::vector<TokenBase *> dim_exprs;
+    DataDef *elem = arr;
+    while ( DataDefCArray *c = elem->as_carray_dd() )
+    {
+	dims.push_back(c->count);
+	dim_exprs.push_back(c->count_expr);
+	elem = c->element_type;
+    }
+    return nest_carray_dims(getQualifiedType(elem, cv), dims, dim_exprs,
+			    std::string(), false);
+}
+
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
 // AT the first '[' (unconsumed); stops with the token after the last ']'
 // unconsumed. `T (*)[N]` / `T (*name)[N]` bind the dims to the parenthesized
@@ -53168,8 +53204,10 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 	    // no `*` consumed is the pointee's (C11 6.7.3p9 qualifies an array's
 	    // elements; `volatile int a[]` is `volatile int *a`).
 	    DataDef *elem = arr->element_type;
-	    if ( out.ptr_depth == 0 && out.nested_stars == 0 && !elem->as_carray_dd() )
-		elem = getQualifiedType(elem, leading_cv & modeled_cv());
+	    if ( out.ptr_depth == 0 && out.nested_stars == 0 )
+		elem = elem->as_carray_dd()
+		    ? qualify_array_elements(elem, leading_cv)	// `volatile int a[][3]`: the row's
+		    : getQualifiedType(elem, leading_cv & modeled_cv());
 	    dd = getPointerType(elem);
 	    out.adjusted_array = true;
 	}
@@ -53210,11 +53248,11 @@ DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md,
     // is its TYPE's (C11 6.7.2.1p7, 6.7.3p9), so `&s.v` is `volatile int *`
     // and every access to it is performed as written — in every mode
     // (modeled_cv); a top-level const member stays unmodeled.
-    bool top_volatile = (dr.ptr_depth == 0 && dr.nested_stars == 0)
-	? ((leading_cv & cvVOLATILE) || dr.base_volatile)
-	: dr.volatile_after_star;
-    if ( top_volatile && elem && !elem->is_function() )
-	elem = getQualifiedType(elem, cvVOLATILE);
+    // (modeled_cv: volatile everywhere, const too in C — a `const int c`
+    // member's `&s.c` is `const int *`.)
+    unsigned top_cv = declarator_object_cv(dr, leading_cv);
+    if ( top_cv && elem && !elem->is_function() )
+	elem = getQualifiedType(elem, top_cv);
     md.is_array = !md.dims.empty() || md.count_expr != NULL;
     md.count = 1;
     for ( size_t di = 0; di < md.dims.size(); ++di )
@@ -68312,12 +68350,21 @@ bool Program::parse_array_designator_initializer(TokenBase *&next_init,
     return true;
 }
 
-DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
+DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv)
 {
+    // The leading qualifier run: its cv is the declaration's (a K&R
+    // `volatile int a;` declares a volatile parameter object).
     while ( nt && (nt->id() == TokenID::tkCONST
+	       || nt->id() == TokenID::tkVOLATILE
 	       || nt->id() == TokenID::tkREGISTER
 	       || is_restrict_token(nt)) )
+    {
+	if ( lead_cv && nt->id() == TokenID::tkCONST )
+	    *lead_cv |= cvCONST;
+	else if ( lead_cv && nt->id() == TokenID::tkVOLATILE )
+	    *lead_cv |= cvVOLATILE;
 	nt = nextToken();
+    }
 
     if ( !nt )
 	Throw << "Unexpected end of input in K&R parameter declaration" << flush;
@@ -68357,9 +68404,11 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 void Program::parse_old_style_parameter_declaration(
 						  TokenBase *nt,
 						  const std::vector<std::string> &param_ids,
-						  std::map<std::string, DataDef *> &param_types)
+						  std::map<std::string, DataDef *> &param_types,
+						  std::map<std::string, unsigned> *param_object_cvs)
 {
-    DataDef *base_type = parse_old_style_parameter_base(nt);
+    unsigned lead_cv = cvNONE;
+    DataDef *base_type = parse_old_style_parameter_base(nt, &lead_cv);
     nt = nextToken();
 
     while ( nt )
@@ -68372,7 +68421,10 @@ void Program::parse_old_style_parameter_declaration(
 	// EVERY dimension a pointer level (`int a[2][3]` came out `int **`).
 	pushToken(nt);
 	DeclaratorResult kd;
-	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd);
+	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd,
+					      NULL, lead_cv);
+	if ( param_object_cvs && kd.ref != RefType::rtReference && !kd.adjusted_array )
+	    (*param_object_cvs)[kd.name] = declarator_object_cv(kd, lead_cv);
 	if ( kd.name.empty() )
 	    Throw(kd.name_tok ? kd.name_tok : nt) << "Expecting parameter name in K&R parameter declaration" << flush;
 	const std::string name = kd.name;
@@ -68403,6 +68455,7 @@ bool Program::is_old_style_parameter_declaration_start(TokenBase *tb)
 	return true;
     if ( tb->id() == TokenID::tkSTRUCT || tb->id() == TokenID::tkUNION
       || tb->id() == TokenID::tkENUM || tb->id() == TokenID::tkCONST
+      || tb->id() == TokenID::tkVOLATILE
       || tb->id() == TokenID::tkREGISTER || is_restrict_token(tb) )
 	return true;
     if ( is_contextual_identifier_token(tb) )
@@ -68856,6 +68909,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // complete) instead of `struct anonymous *p` for a pointer-to-typedef-of-
     // anonymous-aggregate parameter ("struct has no member" otherwise).
     vector<std::string> param_aliases;
+    // Parallel to param_aliases: each parameter object's own top-level cv,
+    // which the FUNCTION TYPE drops ([dcl.fct]/5) and the body's parameter
+    // variable keeps.
+    vector<unsigned> param_object_cvs;
     std::string param_alias;  // alias for the parameter currently being parsed
     TokenDataType *pb = NULL; // parameter basetype
     std::string pid;          // parameter id
@@ -68867,6 +68924,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // pointee-const survives — the DataDef loses it).
     int param_ptr_depth = 0;
     bool param_rvalue_ref = false;
+    // The parameter OBJECT's own top-level cv (below, per parameter).
+    unsigned param_object_cv = cvNONE;
     int anon_param_index = 0;
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
@@ -69172,6 +69231,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	ids.push_back("__this");
 	param_aliases.push_back("");
+
+	param_object_cvs.push_back(cvNONE);
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
 
@@ -69227,6 +69288,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    Throw(nt) << "Duplicate K&R parameter name" << flush;
 		ids.push_back(pid);
 		param_aliases.push_back("");
+		param_object_cvs.push_back(cvNONE);
 		old_style_ids.push_back(pid);
 
 		nt = nextToken();
@@ -69306,6 +69368,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    }
 	    ids.push_back("__va_args");
 	    param_aliases.push_back("");
+
+	    param_object_cvs.push_back(cvNONE);
 	    DBG(cout << "parseFunction() detected varargs, injected __va_args" << endl);
 	    // next token should be )
 	    nt = nextToken();
@@ -69425,6 +69489,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	rtype = RefType::rtValue;
 	param_ptr_depth = 0;
 	param_rvalue_ref = false;
+	param_object_cv = cvNONE;
 	DataDef *param_dd = &pb->definition;
 	{
 	    // The parameter's declarator — the ONE reader in Parameter mode over
@@ -69452,6 +69517,12 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // spelling is structural (mangle_spelling_for) and ignores this.
 	    param_ptr_depth = pr.ptr_depth + pr.nested_stars;
 	    param_rvalue_ref = pr.rvalue_ref;
+	    // The parameter OBJECT's top-level cv: the function type drops it
+	    // ([dcl.fct]/5 — `void f(volatile int n)` is `void f(int)`), the body's
+	    // `n` keeps it (a volatile parameter survives longjmp, C11 7.13.2.1p3).
+	    // A reference's is its referent's; an adjusted array's, its elements'.
+	    if ( pr.ref != RefType::rtReference && !pr.adjusted_array )
+		param_object_cv = declarator_object_cv(pr, param_leading_cv);
 	    if ( pr.alias_adjusted )
 		param_alias.clear();	// `A3 a`: the type is int*, the alias names an array
 	    if ( pr.cv_seen )
@@ -69586,6 +69657,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+
+		param_object_cvs.push_back(param_object_cv);
 		// The SAME desugar the registered side reads through
 		// (FuncDef::mangle_param_spelling): a fn-pointer typedef spells
 		// structurally, a scalar alias canonically — else a prototype's
@@ -69608,6 +69681,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+
+		param_object_cvs.push_back(param_object_cv);
 		func->param_cpp_spellings.push_back(param_spelling);
 		func->param_typedef_names.push_back(param_alias);
 		func->param_template_param_spelled_directly.push_back(
@@ -69690,11 +69765,22 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     if ( old_style_params )
     {
 	std::map<std::string, DataDef *> old_style_param_types;
+	std::map<std::string, unsigned> old_style_object_cvs;
 	while ( nt && nt->id() != TokenID::tkOpBrc )
 	{
 	    parse_old_style_parameter_declaration(nt, old_style_ids,
-						  old_style_param_types);
+						  old_style_param_types,
+						  &old_style_object_cvs);
 	    nt = nextToken();
+	}
+	// Each parameter object's own cv reaches its body variable
+	// (param_object_cvs is parallel to ids).
+	for ( size_t k = 0; k < ids.size() && k < param_object_cvs.size(); ++k )
+	{
+	    std::map<std::string, unsigned>::const_iterator oc =
+		old_style_object_cvs.find(ids[k]);
+	    if ( oc != old_style_object_cvs.end() )
+		param_object_cvs[k] = oc->second;
 	}
 
 	if ( !func_already_declared )
@@ -70395,6 +70481,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// typedef's complete definition.
 	if ( (size_t)user_param_index < param_aliases.size() )
 	    v->typedef_name = param_aliases[user_param_index];
+	if ( (size_t)user_param_index < param_object_cvs.size()
+	  && param_object_cvs[user_param_index] && !d->is_reference()
+	  && !d->is_function() && !d->as_carray_dd() )
+	    v->type = getQualifiedType(d, param_object_cvs[user_param_index]);
 	if ( (size_t)i < func->const_params.size() && func->const_params[i] )
 	    v->flags |= vfCONSTANT;
 	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
@@ -72299,8 +72389,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
-    bool saw_volatile_after_star = false, saw_base_volatile = false; // `int *volatile p` / `int volatile x`
-    bool saw_base_const = false;	// `int const x` (the declarator's east const)
+    unsigned decl_object_cv = cvNONE;	// the object's top-level cv (declarator_object_cv)
     bool ret_is_ref = false;
     bool decl_rvalue_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
@@ -72347,9 +72436,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( vd.ptr_depth > 0 || vd.nested_stars > 0 )
 	    saw_pointer_decl = true;
 	saw_const_after_star = vd.const_after_star;
-	saw_volatile_after_star = vd.volatile_after_star;
-	saw_base_volatile = vd.base_volatile;
-	saw_base_const = vd.base_const;
+	decl_object_cv = declarator_object_cv(vd, (gotconst ? cvCONST : cvNONE)
+						  | (gotvolatile ? cvVOLATILE : cvNONE));
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
@@ -73607,19 +73695,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// its type (parse_declarator's `&`). Never `volatile int *p`, whose
 	// volatile is the POINTEE's. Before the file-scope snapshot below, which
 	// records the type the global is emitted with.
-	{
-	    unsigned object_cv = cvNONE;
-	    if ( ((gotvolatile || saw_base_volatile) && !saw_pointer_decl)
-	      || saw_volatile_after_star )
-		object_cv |= cvVOLATILE;
-	    if ( ((gotconst || saw_base_const) && !saw_pointer_decl)
-	      || saw_const_after_star )
-		object_cv |= cvCONST;
-	    object_cv &= modeled_cv();
-	    if ( object_cv && var && var->type && !var->type->is_reference()
-	      && !var->type->as_fptr_dd() && !var->type->is_function() )
-		var->type = getQualifiedType(var->type, object_cv);
-	}
+	if ( decl_object_cv && var && var->type && !var->type->is_reference()
+	  && !var->type->as_fptr_dd() && !var->type->is_function() )
+	    var->type = getQualifiedType(var->type, decl_object_cv);
 	// Record file-scope variables in top_decls in source order for the CIR
 	// backend (a struct defined inline here, `struct X {...} v;`, rides in
 	// this declaration). Locals (inside a function compound) are excluded.

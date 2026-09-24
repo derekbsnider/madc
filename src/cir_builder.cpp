@@ -29126,13 +29126,23 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		for (size_t i = 0; i < nparam; i++) {
 			const char *pname = "p";
 			std::string ptypedef;
+			DataDef *ptype = fd->parameters[i];
 			if (tf->method && i < tf->method->parameters.size()) {
-				pname = tf->method->parameters[i]->name.c_str();
-				ptypedef = tf->method->parameters[i]->typedef_name;
+				Variable *pv = tf->method->parameters[i];
+				pname = pv->name.c_str();
+				ptypedef = pv->typedef_name;
+				// The parameter OBJECT's own top-level cv (`int f(volatile
+				// int n)`): the function type drops it ([dcl.fct]/5 — the
+				// prototype keeps `int n`), the DEFINITION declares it, so a
+				// volatile parameter lives in memory and survives longjmp
+				// (C11 7.13.2.1p3). The two are compatible (6.7.6.3p15).
+				if (pv->type && pv->type != ptype && pv->type->cv_quals()
+				    && pv->type->unqualified() == ptype->unqualified())
+					ptype = pv->type;
 			}
 			if (ptypedef.empty() && i < fd->param_typedef_names.size())
 				ptypedef = fd->param_typedef_names[i];
-			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
+			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
 	// Hidden `struct V *__madc_vb<i>` params for a madc-emitted ctor of a

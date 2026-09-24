@@ -143,7 +143,10 @@ answers.
   `volatile` (`template <class T> using c_t = const T *;`) is no longer
   refused. A volatile member function (`int get() volatile`) is its own
   overload with its own symbol (`_ZNV1C3getEv`), a volatile object calls it,
-  and `this` inside it is `volatile C *`.
+  and `this` inside it is `volatile C *`. A volatile parameter keeps its
+  value across `longjmp`, K&R declarations may start with `volatile`, a
+  `volatile int a[][3]` parameter's elements are volatile, and a C++ class
+  member declared `volatile` (or `int *volatile`) is volatile.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const
